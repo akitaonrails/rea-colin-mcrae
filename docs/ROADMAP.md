@@ -111,8 +111,8 @@ backend mutation, and both persistent font and root-bitmap pools now use a
 tested shared source store without monopolizing the backend. Transaction,
 fixed-slot, and mixed-pool tests cover 33 coexisting sources, optional upload
 holes, isolated required rollback, repeated-frame reuse, and global teardown.
-Host clock/input, native window execution, C3D frame-command execution and
-rasterization, and concrete composition/presentation remain before the
+Host clock/input, native window execution, C3D frame-command execution through
+the concrete backend, and concrete composition/presentation remain before the
 vertical-slice exit gate.
 Root-footer text reaches a tested software back-buffer pixel through
 localization, the shared store, and the persistent font pool. Root visual
@@ -123,8 +123,8 @@ presentation order and typed failure boundaries. It stages one owned prepared
 C3D plan at the root command, then consumes it once inside the terminal scene.
 The scene runs even without a selected object and now owns checked viewport
 setup, conditional depth clear, Begin/End cleanup, world reset, and the opaque
-scene tail. Concrete rasterization, latch cleanup, depth-8 post-scene work, and
-host presentation remain unimplemented boundaries.
+scene tail. Concrete C3D pixel-backend integration, latch cleanup, depth-8
+post-scene work, and host presentation remain unimplemented boundaries.
 The six optional root-menu C3D files now load through fixed slots and a bounded,
 byte-preserving parser. All three counted groups expose proven framing: group
 0's raw `u16` values; group 1's typed, borrowed 32/24-byte entry views; and
@@ -141,7 +141,8 @@ first-use order, and emits three compact indices per source entry. It retains
 borrowed typed source views rather than pretending to produce render-ready
 vertices. Runtime affine conversion, selector/resource preparation, associated
 side-vector materialization, and resource-derived mapping-coordinate scaling
-are now recovered below; material execution and pixels remain unrecovered.
+are now recovered below; general/non-root material execution and
+backend-integrated pixels remain unrecovered.
 Group-2 records now also classify complete
 `BM` signatures as opaque bitmap bytes and expose strictly framed, borrowed
 `ANIM` entries with their resource ordinals, raw advance thresholds, and
@@ -178,8 +179,8 @@ horizontal mapping-coordinate factors with one f32 store, shares first-resource
 claims by source vertex ordinal across selector runs, preserves same-entry
 duplicate multiplication, and only then compacts batches. The exact root corpus
 has square resources and therefore takes the proven zero-padding/no-multiply
-case under normal or quarter preparation. Palette/material binding, backend
-upload, rasterization, and the unresolved tuple-source gate are the next C3D
+case under normal or quarter preparation. Backend palette/material ownership,
+scene integration, and the unresolved tuple-source gate are the next C3D
 boundaries.
 The root transform oracle is now portable and deterministic. A source-owned
 quarter-wave table reconstructs the exact 4,096-entry legacy trig table, while
@@ -199,8 +200,9 @@ The root-only frame planner now performs that join transactionally. It checks
 the exact one-level root shape, resource selectors, compact batch payloads,
 viewport, slot presence, variant, and provenance before changing an angle, then
 owns source-ordered submission snapshots and the exact recovered transform and
-numeric draw words. Backend binding, depth/scene execution, visibility-latch
-consumption, rasterization, and terminal composition remain the next boundary.
+numeric draw words. Concrete backend binding, depth/scene execution,
+visibility-latch consumption, pixel-oracle integration, and terminal composition
+remain the next boundary.
 Prepared resources now map once into an arena-scoped opaque binding catalog.
 The root batch executor consumes a plan, preflights the complete catalog join,
 sets world state, and preserves the recovered resource-binding and persistent

@@ -14,6 +14,7 @@ use cmr_core::{
     root_menu_c3d_runtime::C3dMode2ResourceScaledVertex,
     root_menu_c3d_transform::{C3dMatrixWords, C3dViewportWords},
 };
+use cmr_formats::{bitmap::BitmapPaletteEntry, riff_palette::PaletteEntry};
 
 use crate::c3d_software::SoftwareC3dSampledTexture;
 
@@ -150,6 +151,40 @@ impl fmt::Display for SoftwareC3dRasterError {
 }
 
 impl std::error::Error for SoftwareC3dRasterError {}
+
+/// Named source-owned RGB-to-index policy for the first software oracle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SoftwareC3dIndexedQuantization {
+    /// Compare all 256 active-palette RGB entries by L1 distance, retain the
+    /// lowest index on a tie, and apply no dithering.
+    NearestRgbL1LowestIndexNoDither,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SoftwareC3dComposeError {
+    InvalidTargetExtent([u16; 2]),
+    InvalidTargetLength { expected: usize, actual: usize },
+    DepthTargetExtentMismatch { depth: [u16; 2], target: [u16; 2] },
+    Raster(SoftwareC3dRasterError),
+}
+
+impl fmt::Display for SoftwareC3dComposeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "software C3D indexed composition failed: {self:?}"
+        )
+    }
+}
+
+impl std::error::Error for SoftwareC3dComposeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Raster(source) => Some(source),
+            _ => None,
+        }
+    }
+}
 
 /// Row-major source-owned depth storage for the software compatibility path.
 #[derive(Clone, Debug, PartialEq)]
@@ -377,6 +412,43 @@ pub fn rasterize_root_c3d_fragments(
         },
         depth,
         visit,
+    )
+}
+
+/// Renders the explicit branch-zero, alpha-disabled COPY profile into an
+/// indexed target using a deterministic source-owned palette policy.
+///
+/// Texture RGB is mapped to the caller's active display palette by full-palette
+/// Manhattan distance. Exact and equal-distance ties retain the lowest index;
+/// index zero is an ordinary source and destination value. This mapping is a
+/// reconstruction policy, not a claim about a particular legacy D3D driver.
+///
+/// Target validation and the fragment rasterizer's complete validation happen
+/// before either the target or depth buffer is mutated.
+pub fn compose_root_c3d_indexed_copy_no_blend(
+    batch: &SoftwareC3dPreparedBatch,
+    texture: &SoftwareC3dSampledTexture,
+    depth: &mut SoftwareC3dDepthBuffer,
+    target_extent: [u16; 2],
+    target_pixels: &mut [u8],
+    active_palette: &[PaletteEntry; 256],
+    quantization: SoftwareC3dIndexedQuantization,
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dComposeError> {
+    compose_indexed_copy_no_blend(
+        batch,
+        IndexedTextureView {
+            raster: TextureView {
+                extent: texture.extent(),
+                indices: texture.indices(),
+                palette_len: texture.palette().len(),
+            },
+            palette: texture.palette(),
+        },
+        depth,
+        target_extent,
+        target_pixels,
+        active_palette,
+        quantization,
     )
 }
 
@@ -659,6 +731,86 @@ struct TextureView<'a> {
     extent: [u16; 2],
     indices: &'a [u8],
     palette_len: usize,
+}
+
+#[derive(Clone, Copy)]
+struct IndexedTextureView<'a> {
+    raster: TextureView<'a>,
+    palette: &'a [BitmapPaletteEntry],
+}
+
+fn compose_indexed_copy_no_blend(
+    batch: &SoftwareC3dPreparedBatch,
+    texture: IndexedTextureView<'_>,
+    depth: &mut SoftwareC3dDepthBuffer,
+    target_extent: [u16; 2],
+    target_pixels: &mut [u8],
+    active_palette: &[PaletteEntry; 256],
+    quantization: SoftwareC3dIndexedQuantization,
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dComposeError> {
+    validate_indexed_target(target_extent, target_pixels, depth.extent())?;
+    let palette_map = match quantization {
+        SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither => {
+            full_palette_manhattan_map(texture.palette, active_palette)
+        }
+    };
+    let target_width = usize::from(target_extent[0]);
+    rasterize_fragments(batch, texture.raster, depth, |fragment| {
+        let [x, y] = fragment.position();
+        let target_index = usize::from(y) * target_width + usize::from(x);
+        target_pixels[target_index] = palette_map[usize::from(fragment.texture_index())];
+    })
+    .map_err(SoftwareC3dComposeError::Raster)
+}
+
+fn validate_indexed_target(
+    extent: [u16; 2],
+    pixels: &[u8],
+    depth_extent: [u16; 2],
+) -> Result<(), SoftwareC3dComposeError> {
+    if extent[0] == 0 || extent[1] == 0 {
+        return Err(SoftwareC3dComposeError::InvalidTargetExtent(extent));
+    }
+    let expected = usize::from(extent[0]) * usize::from(extent[1]);
+    if pixels.len() != expected {
+        return Err(SoftwareC3dComposeError::InvalidTargetLength {
+            expected,
+            actual: pixels.len(),
+        });
+    }
+    if extent != depth_extent {
+        return Err(SoftwareC3dComposeError::DepthTargetExtentMismatch {
+            depth: depth_extent,
+            target: extent,
+        });
+    }
+    Ok(())
+}
+
+fn full_palette_manhattan_map(
+    texture_palette: &[BitmapPaletteEntry],
+    active_palette: &[PaletteEntry; 256],
+) -> Vec<u8> {
+    texture_palette
+        .iter()
+        .map(|source| {
+            let mut best_index = 0u8;
+            let mut best_distance = u16::MAX;
+            for (index, destination) in active_palette.iter().enumerate() {
+                let distance = u16::from(source.red.abs_diff(destination.red))
+                    + u16::from(source.green.abs_diff(destination.green))
+                    + u16::from(source.blue.abs_diff(destination.blue));
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_index = index as u8;
+                    if distance == 0 {
+                        break;
+                    }
+                }
+            }
+            best_index
+        })
+        .collect()
 }
 
 fn rasterize_fragments(
@@ -1044,6 +1196,21 @@ mod tests {
             extent,
             indices,
             palette_len: 256,
+        }
+    }
+
+    fn indexed_texture<'a>(
+        extent: [u16; 2],
+        indices: &'a [u8],
+        palette: &'a [BitmapPaletteEntry],
+    ) -> IndexedTextureView<'a> {
+        IndexedTextureView {
+            raster: TextureView {
+                extent,
+                indices,
+                palette_len: palette.len(),
+            },
+            palette,
         }
     }
 
@@ -1495,6 +1662,318 @@ mod tests {
         assert_eq!(fragment.uv(), [1.0, 1.0]);
         assert!(fragment.uv().into_iter().all(f32::is_finite));
         assert!(fragment.diffuse_argb().into_iter().all(f32::is_finite));
+    }
+
+    #[test]
+    fn indexed_copy_palette_map_uses_full_l1_lowest_ties_and_ignores_flags() {
+        let mut active = [PaletteEntry {
+            red: 250,
+            green: 250,
+            blue: 250,
+            flags: 0,
+        }; 256];
+        active[0] = PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 1,
+        };
+        active[1] = PaletteEntry {
+            red: 2,
+            green: 0,
+            blue: 0,
+            flags: 2,
+        };
+        active[2] = PaletteEntry {
+            red: 10,
+            green: 20,
+            blue: 30,
+            flags: 3,
+        };
+        active[3] = PaletteEntry {
+            flags: 4,
+            ..active[2]
+        };
+        active[255] = PaletteEntry {
+            red: 254,
+            green: 255,
+            blue: 255,
+            flags: 255,
+        };
+        let texture_palette = [
+            BitmapPaletteEntry {
+                red: 1,
+                green: 0,
+                blue: 0,
+                reserved: 255,
+            },
+            BitmapPaletteEntry {
+                red: 10,
+                green: 20,
+                blue: 30,
+                reserved: 127,
+            },
+            BitmapPaletteEntry {
+                red: 255,
+                green: 255,
+                blue: 255,
+                reserved: 99,
+            },
+        ];
+
+        assert_eq!(
+            full_palette_manhattan_map(&texture_palette, &active),
+            [0, 2, 255]
+        );
+
+        for (index, entry) in active.iter_mut().enumerate() {
+            entry.flags = index as u8;
+        }
+        assert_eq!(
+            full_palette_manhattan_map(&texture_palette, &active),
+            [0, 2, 255]
+        );
+    }
+
+    #[test]
+    fn indexed_copy_writes_index_zero_sample_and_preserves_uncovered_pixels() {
+        let color = [1.0, 0.25, 0.5, 0.75];
+        let batch = prepared_batch(vec![triangle(
+            [
+                screen([1.0, 1.0, 0.5], 1.0, [0.0, 0.0], color),
+                screen([3.0, 1.0, 0.5], 1.0, [0.0, 0.0], color),
+                screen([1.0, 3.0, 0.5], 1.0, [0.0, 0.0], color),
+            ],
+            0x0102_0304,
+        )]);
+        let texture_palette = [BitmapPaletteEntry {
+            red: 12,
+            green: 34,
+            blue: 56,
+            reserved: 0,
+        }];
+        let mut active = [PaletteEntry {
+            red: 255,
+            green: 255,
+            blue: 255,
+            flags: 0,
+        }; 256];
+        active[7] = PaletteEntry {
+            red: 12,
+            green: 34,
+            blue: 56,
+            flags: 200,
+        };
+        let mut depth = SoftwareC3dDepthBuffer::new_far([3, 3]).unwrap();
+        let mut target = [99; 9];
+
+        let outcome = compose_indexed_copy_no_blend(
+            &batch,
+            indexed_texture([1, 1], &[0], &texture_palette),
+            &mut depth,
+            [3, 3],
+            &mut target,
+            &active,
+            SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.covered(), 1);
+        assert_eq!(outcome.depth_passed(), 1);
+        assert_eq!(target, [99, 99, 99, 99, 7, 99, 99, 99, 99]);
+        assert_eq!(
+            depth.values(),
+            [1.0, 1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 1.0, 1.0]
+        );
+
+        let changed_color = [0.0, 1.0, 0.0, 0.0];
+        let changed_diffuse = prepared_batch(vec![triangle(
+            [
+                screen([1.0, 1.0, 0.5], 1.0, [0.0, 0.0], changed_color),
+                screen([3.0, 1.0, 0.5], 1.0, [0.0, 0.0], changed_color),
+                screen([1.0, 3.0, 0.5], 1.0, [0.0, 0.0], changed_color),
+            ],
+            0xfedc_ba98,
+        )]);
+        depth.clear_far();
+        target.fill(99);
+        compose_indexed_copy_no_blend(
+            &changed_diffuse,
+            indexed_texture([1, 1], &[0], &texture_palette),
+            &mut depth,
+            [3, 3],
+            &mut target,
+            &active,
+            SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+        )
+        .unwrap();
+        assert_eq!(target, [99, 99, 99, 99, 7, 99, 99, 99, 99]);
+
+        active[0] = active[7];
+        active[7] = PaletteEntry {
+            red: 255,
+            green: 255,
+            blue: 255,
+            flags: 0,
+        };
+        depth.clear_far();
+        target.fill(99);
+        compose_indexed_copy_no_blend(
+            &changed_diffuse,
+            indexed_texture([1, 1], &[0], &texture_palette),
+            &mut depth,
+            [3, 3],
+            &mut target,
+            &active,
+            SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+        )
+        .unwrap();
+        assert_eq!(target, [99, 99, 99, 99, 0, 99, 99, 99, 99]);
+    }
+
+    #[test]
+    fn indexed_copy_less_equal_layering_changes_color_only_on_depth_pass() {
+        let batch_at = |value| {
+            let color = [0.0; 4];
+            prepared_batch(vec![triangle(
+                [
+                    screen([0.0, 0.0, value], 1.0, [0.0, 0.0], color),
+                    screen([2.0, 0.0, value], 1.0, [0.0, 0.0], color),
+                    screen([0.0, 2.0, value], 1.0, [0.0, 0.0], color),
+                ],
+                0,
+            )])
+        };
+        let active = std::array::from_fn(|index| PaletteEntry {
+            red: index as u8,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        });
+        let palette = |red| {
+            [BitmapPaletteEntry {
+                red,
+                green: 0,
+                blue: 0,
+                reserved: 0,
+            }]
+        };
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let mut target = [77];
+
+        for (incoming, red, expected_pass, expected_target) in [
+            (0.5, 4, true, 4),
+            (0.5, 9, true, 9),
+            (0.75, 12, false, 9),
+            (0.25, 15, true, 15),
+        ] {
+            let outcome = compose_indexed_copy_no_blend(
+                &batch_at(incoming),
+                indexed_texture([1, 1], &[0], &palette(red)),
+                &mut depth,
+                [1, 1],
+                &mut target,
+                &active,
+                SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+            )
+            .unwrap();
+            assert_eq!(outcome.depth_passed(), usize::from(expected_pass));
+            assert_eq!(target, [expected_target]);
+        }
+        assert_eq!(depth.values(), [0.25]);
+    }
+
+    #[test]
+    fn indexed_copy_validation_is_effect_free_for_color_and_depth() {
+        let color = [0.0; 4];
+        let valid = triangle(
+            [
+                screen([0.0, 0.0, 0.5], 1.0, [0.0, 0.0], color),
+                screen([2.0, 0.0, 0.5], 1.0, [0.0, 0.0], color),
+                screen([0.0, 2.0, 0.5], 1.0, [0.0, 0.0], color),
+            ],
+            0,
+        );
+        let valid_batch = prepared_batch(vec![valid]);
+        let texture_palette = [BitmapPaletteEntry {
+            red: 1,
+            green: 2,
+            blue: 3,
+            reserved: 0,
+        }];
+        let active = [PaletteEntry {
+            red: 1,
+            green: 2,
+            blue: 3,
+            flags: 0,
+        }; 256];
+        let policy = SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither;
+
+        for (extent, length, expected) in [
+            (
+                [0, 1],
+                0,
+                SoftwareC3dComposeError::InvalidTargetExtent([0, 1]),
+            ),
+            (
+                [1, 1],
+                0,
+                SoftwareC3dComposeError::InvalidTargetLength {
+                    expected: 1,
+                    actual: 0,
+                },
+            ),
+            (
+                [2, 1],
+                2,
+                SoftwareC3dComposeError::DepthTargetExtentMismatch {
+                    depth: [1, 1],
+                    target: [2, 1],
+                },
+            ),
+        ] {
+            let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+            let before_depth = depth.clone();
+            let mut target = vec![88; length];
+            let before_target = target.clone();
+            assert_eq!(
+                compose_indexed_copy_no_blend(
+                    &valid_batch,
+                    indexed_texture([1, 1], &[0], &texture_palette),
+                    &mut depth,
+                    extent,
+                    &mut target,
+                    &active,
+                    policy,
+                ),
+                Err(expected)
+            );
+            assert_eq!(depth, before_depth);
+            assert_eq!(target, before_target);
+        }
+
+        let mut invalid = valid;
+        invalid.vertices[0].reciprocal_w = 0.0;
+        let invalid_batch = prepared_batch(vec![valid, invalid]);
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let before_depth = depth.clone();
+        let mut target = [88];
+        assert_eq!(
+            compose_indexed_copy_no_blend(
+                &invalid_batch,
+                indexed_texture([1, 1], &[0], &texture_palette),
+                &mut depth,
+                [1, 1],
+                &mut target,
+                &active,
+                policy,
+            ),
+            Err(SoftwareC3dComposeError::Raster(
+                SoftwareC3dRasterError::InvalidPreparedTriangle { triangle: 1 }
+            ))
+        );
+        assert_eq!(depth, before_depth);
+        assert_eq!(target, [88]);
     }
 
     #[test]

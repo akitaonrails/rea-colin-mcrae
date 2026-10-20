@@ -1,9 +1,9 @@
 //! Immutable retained C3D source textures for the software renderer.
 //!
 //! This retains immutable normalized sources and point-samples the statically
-//! proven aligned, zero-padding root subset. Palette attachment, material
-//! creation, unified/split upload topology, and rasterization remain explicit
-//! later boundaries.
+//! proven aligned, zero-padding root subset. Backend palette/material ownership,
+//! unified/split upload topology, and scene integration remain later boundaries;
+//! software raster stages are implemented separately.
 
 use std::{fmt, sync::Arc};
 
@@ -40,8 +40,8 @@ pub struct SoftwareC3dRetainedSource(Arc<RetainedC3dSourceInner>);
 
 /// Point-decimated, index-preserving root texture source.
 ///
-/// This still is not a backend texture: palette attachment, material creation,
-/// upload topology, and final display-palette conversion remain later policy.
+/// This still is not a backend texture: palette/material ownership, upload
+/// topology, and scene integration remain later policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SoftwareC3dSampledTexture {
     source: SoftwareC3dRetainedSource,
