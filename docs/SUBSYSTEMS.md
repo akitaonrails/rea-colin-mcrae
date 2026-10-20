@@ -61,7 +61,8 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::root_menu_frame`: canonical transcript generation and strict
   sequential routing through recovered bitmap/footer executors; root C3D is
   planned at its transcript position and consumed once by the always-run
-  terminal scene before the distinct presentation boundary.
+  terminal scene, followed by latch cleanup, the depth-gated deferred palette
+  commit, and the distinct presentation boundary.
 - `cmr-core::root_menu_c3d_scene`: backend-neutral depth-clear policy,
   view/viewport setup, BeginScene, optional prepared-batch submission, world
   reset, opaque ordered scene tail, EndScene cleanup, and selector-cache
@@ -79,8 +80,8 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   this contract.
 - `cmr-core::deferred_palette`: recovered runtime-base logical mapping and
   current/pending palette state, plus the depth-8-only 256-entry terminal
-  commit into an adapter and both observed software caches; frame-orchestrator
-  integration remains separate.
+  commit into an adapter and both observed software caches, now joined to the
+  root terminal-frame orchestrator.
 - `cmr-video::SoftwareIndexedBackend`: deterministic source-owned front/back
   framebuffers for exact-size indexed copies, recovered index-zero keyed glyph
   copies, and the bounded branch-zero root C3D software oracle; unrecovered

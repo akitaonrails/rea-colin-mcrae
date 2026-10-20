@@ -392,6 +392,14 @@ impl IndexedVideoBackend for SoftwareIndexedBackend {
     }
 }
 
+impl cmr_core::deferred_palette::DeferredPaletteAdapter for SoftwareIndexedBackend {
+    type Error = SoftwareVideoError;
+
+    fn upload_palette(&mut self, entries: &[PaletteEntry; 256]) -> Result<(), Self::Error> {
+        IndexedVideoBackend::upload_palette(self, PaletteHandle(0), entries)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

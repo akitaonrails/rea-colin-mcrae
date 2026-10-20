@@ -2,12 +2,19 @@
 //!
 //! Bitmap/footer behavior and C3D planning are implemented by recovered
 //! compatibility code. A staged C3D plan is consumed by the always-run scene
-//! transaction at the terminal `ComposeAndPresent` boundary, before present.
+//! transaction at the terminal `ComposeAndPresent` boundary. Its visibility
+//! cleanup completes before the depth-gated deferred palette commit, which in
+//! turn completes before presentation.
 
 use std::fmt;
 
 use cmr_formats::font::TextLayoutLimits;
+use cmr_formats::riff_palette::PaletteEntry;
 
+use crate::deferred_palette::{
+    DeferredPaletteAdapter, DeferredPaletteCommitError, DeferredPaletteCommitOutcome,
+    DeferredPaletteState, commit_deferred_palette,
+};
 use crate::display::{DisplayExtent, IndexedVideoBackend};
 use crate::font_raster::UploadedFontPool;
 use crate::localization::IndexedTextTable;
@@ -43,7 +50,21 @@ pub struct RootFrameOutcome<E> {
     pub footer: Option<RootFooterOutcome<E>>,
     pub c3d_commands: usize,
     pub scene_completed: bool,
+    pub palette_commit: DeferredPaletteCommitOutcome,
     pub presentation_completed: bool,
+}
+
+/// Mutable renderer-owned state consumed by the terminal palette boundary.
+///
+/// The adapter that performs the upload is the frame backend; the arena,
+/// recovered current/pending indexes, and the two native-equivalent software
+/// caches remain explicit caller-owned renderer state.
+pub struct RootFramePaletteResources<'a> {
+    pub bits_per_pixel: u8,
+    pub arena: &'a [[PaletteEntry; 256]],
+    pub state: &'a mut DeferredPaletteState,
+    pub renderer_cache: &'a mut [PaletteEntry; 256],
+    pub global_cache: &'a mut [PaletteEntry; 256],
 }
 
 pub struct RootFrameResources<'a, C> {
@@ -78,6 +99,10 @@ pub enum RootFrameError<E, L, S, P> {
     C3dScene {
         command_index: usize,
         source: S,
+    },
+    PaletteCommit {
+        command_index: usize,
+        source: DeferredPaletteCommitError<E>,
     },
     Presentation {
         command_index: usize,
@@ -128,6 +153,13 @@ impl<E: fmt::Display, L: fmt::Display, S: fmt::Display, P: fmt::Display> fmt::Di
                 formatter,
                 "root frame C3D scene at terminal command {command_index} failed: {source}"
             ),
+            Self::PaletteCommit {
+                command_index,
+                source,
+            } => write!(
+                formatter,
+                "root frame palette commit at terminal command {command_index} failed: {source}"
+            ),
             Self::Presentation {
                 command_index,
                 source,
@@ -154,6 +186,7 @@ where
             Self::Footer { source, .. } => Some(source),
             Self::C3dPlan { source, .. } => Some(source),
             Self::C3dScene { source, .. } => Some(source),
+            Self::PaletteCommit { source, .. } => Some(source),
             Self::Presentation { source, .. } => Some(source),
         }
     }
@@ -161,19 +194,25 @@ where
 
 /// Generates and executes one canonical root-menu transcript in exact order.
 ///
-/// Fatal bitmap, footer-layout/source, C3D-plan/scene, and presentation failures
-/// stop the frame. Individual footer glyph blit failures retain the recovered
-/// behavior: they remain ordered diagnostics and do not suppress later
-/// commands.
+/// Fatal bitmap, footer-layout/source, C3D-plan/scene, palette-commit, and
+/// presentation failures stop the frame. Individual footer glyph blit failures
+/// retain the recovered behavior: they remain ordered diagnostics and do not
+/// suppress later commands.
 pub fn execute_root_frame<B, C>(
     input: RootRenderInput,
     mut resources: RootFrameResources<'_, C>,
+    palette: RootFramePaletteResources<'_>,
     sources: &mut UploadedSourceStore<'_, B>,
     destination: B::Surface,
     text_limits: TextLayoutLimits,
-) -> RootFrameExecutionResult<B::Error, C::PlanError, C::SceneError, B::FinalError>
+) -> RootFrameExecutionResult<
+    <B as IndexedVideoBackend>::Error,
+    C::PlanError,
+    C::SceneError,
+    B::FinalError,
+>
 where
-    B: RootFrameHooks,
+    B: RootFrameHooks + DeferredPaletteAdapter<Error = <B as IndexedVideoBackend>::Error>,
     C: RootMenuC3dFramePipeline<B>,
 {
     if resources.bitmaps.center_variant() != resources.c3d.variant() {
@@ -191,6 +230,7 @@ where
     let mut c3d_commands = 0;
     let mut staged_c3d = None;
     let mut scene_completed = false;
+    let mut palette_commit = DeferredPaletteCommitOutcome::NoPendingPalette;
     let mut presentation_completed = false;
 
     for (command_index, command) in transcript.iter().copied().enumerate() {
@@ -278,6 +318,18 @@ where
                         source,
                     })?;
                 scene_completed = true;
+                palette_commit = commit_deferred_palette(
+                    palette.state,
+                    palette.bits_per_pixel,
+                    palette.arena,
+                    palette.renderer_cache,
+                    palette.global_cache,
+                    backend,
+                )
+                .map_err(|source| RootFrameError::PaletteCommit {
+                    command_index,
+                    source,
+                })?;
                 backend
                     .present_root_frame(destination, input.viewport_extent)
                     .map_err(|source| RootFrameError::Presentation {
@@ -299,6 +351,7 @@ where
         footer,
         c3d_commands,
         scene_completed,
+        palette_commit,
         presentation_completed,
     })
 }
@@ -316,6 +369,7 @@ mod tests {
 
     use super::*;
     use crate::blit::BlitPlan;
+    use crate::deferred_palette::PaletteArenaIndex;
     use crate::display::{CooperativeMode, DisplaySurfaces, IndexedMode, SurfaceTopology};
     use crate::font_assets::{FONT_COUNT, FontSet, FontStyle};
     use crate::frontend::{FrontendPhase, ROOT_FOOTER_TEXT_INDEX, RootSelection};
@@ -336,6 +390,7 @@ mod tests {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum BackendError {
         Blit(u8),
+        Palette,
     }
 
     impl fmt::Display for BackendError {
@@ -382,6 +437,7 @@ mod tests {
             destination: u16,
             extent: DisplayExtent,
         },
+        PaletteUpload(u8),
         Destroy(u8),
     }
 
@@ -391,6 +447,7 @@ mod tests {
         create_attempts: usize,
         fail_markers: Rc<RefCell<BTreeSet<u8>>>,
         fail_c3d: Rc<Cell<bool>>,
+        fail_palette: Rc<Cell<bool>>,
         fail_final: Rc<Cell<bool>>,
     }
 
@@ -402,6 +459,7 @@ mod tests {
                 create_attempts: 0,
                 fail_markers: Rc::new(RefCell::new(BTreeSet::new())),
                 fail_c3d: Rc::new(Cell::new(false)),
+                fail_palette: Rc::new(Cell::new(false)),
                 fail_final: Rc::new(Cell::new(false)),
             }
         }
@@ -507,6 +565,21 @@ mod tests {
         }
     }
 
+    impl DeferredPaletteAdapter for RecordingBackend {
+        type Error = BackendError;
+
+        fn upload_palette(&mut self, entries: &[PaletteEntry; 256]) -> Result<(), Self::Error> {
+            self.events
+                .borrow_mut()
+                .push(Event::PaletteUpload(entries[0].red));
+            if self.fail_palette.get() {
+                Err(BackendError::Palette)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     #[derive(Debug, Eq, PartialEq)]
     struct TestPlan {
         slot: RootMenuC3dSlot,
@@ -583,6 +656,40 @@ mod tests {
         }
     }
 
+    // Most dispatcher tests exercise non-indexed terminal behavior. Keep their
+    // setup compact while still routing through the real palette boundary.
+    fn execute_root_frame<'a>(
+        input: RootRenderInput,
+        resources: RootFrameResources<'a, RecordingC3dPipeline<'a>>,
+        sources: &mut UploadedSourceStore<'_, RecordingBackend>,
+        destination: u16,
+        text_limits: TextLayoutLimits,
+    ) -> RootFrameExecutionResult<BackendError, HookError, HookError, HookError> {
+        let mut state = DeferredPaletteState::new();
+        let empty = PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        };
+        let mut renderer_cache = [empty; 256];
+        let mut global_cache = [empty; 256];
+        super::execute_root_frame(
+            input,
+            resources,
+            RootFramePaletteResources {
+                bits_per_pixel: 32,
+                arena: &[],
+                state: &mut state,
+                renderer_cache: &mut renderer_cache,
+                global_cache: &mut global_cache,
+            },
+            sources,
+            destination,
+            text_limits,
+        )
+    }
+
     #[test]
     fn dispatches_complete_interactive_transcript_in_exact_order_without_reuploading() {
         let events = Rc::new(RefCell::new(Vec::new()));
@@ -649,6 +756,167 @@ mod tests {
                 ]
             );
             assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 16);
+        }
+    }
+
+    #[test]
+    fn terminal_scene_precedes_depth_eight_palette_commit_and_presentation() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut backend = RecordingBackend::new(Rc::clone(&events));
+        let fail_palette = Rc::clone(&backend.fail_palette);
+        {
+            let mut sources = UploadedSourceStore::new(&mut backend);
+            let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
+            let bitmaps = bitmap_pool(&mut sources, &[]);
+            let c3d_assets = synthetic_root_menu_c3d_set([true; 6], VisualVariant::Normal);
+            let mut c3d_angles = RootMenuC3dAngles::new();
+            let arena = [palette(0x6b), palette(0x9d)];
+            let mut state = DeferredPaletteState::new();
+            assert_eq!(
+                state.request(PaletteArenaIndex::new(0)),
+                crate::deferred_palette::PaletteRequestOutcome::PendingUpdated
+            );
+            let mut renderer_cache = palette(0);
+            let mut global_cache = palette(0);
+            events.borrow_mut().clear();
+
+            let outcome = super::execute_root_frame(
+                interactive_input(),
+                frame_resources(
+                    &footer_table(b"A"),
+                    &fonts,
+                    &bitmaps,
+                    &c3d_assets,
+                    &mut c3d_angles,
+                ),
+                RootFramePaletteResources {
+                    bits_per_pixel: 8,
+                    arena: &arena,
+                    state: &mut state,
+                    renderer_cache: &mut renderer_cache,
+                    global_cache: &mut global_cache,
+                },
+                &mut sources,
+                99,
+                TextLayoutLimits::default(),
+            )
+            .unwrap();
+
+            assert_eq!(
+                outcome.palette_commit,
+                DeferredPaletteCommitOutcome::Committed(PaletteArenaIndex::new(0))
+            );
+            assert_eq!(state.current(), Some(PaletteArenaIndex::new(0)));
+            assert_eq!(state.pending(), None);
+            assert_eq!(renderer_cache, arena[0]);
+            assert_eq!(global_cache, arena[0]);
+            let recorded = events.borrow();
+            assert_eq!(
+                &recorded[recorded.len() - 4..],
+                [
+                    scene_event(true),
+                    c3d_event(0, 8),
+                    Event::PaletteUpload(0x6b),
+                    present_event(),
+                ]
+            );
+            drop(recorded);
+
+            assert_eq!(
+                state.request(PaletteArenaIndex::new(1)),
+                crate::deferred_palette::PaletteRequestOutcome::PendingUpdated
+            );
+            fail_palette.set(true);
+            events.borrow_mut().clear();
+            let error = super::execute_root_frame(
+                interactive_input(),
+                frame_resources(
+                    &footer_table(b"A"),
+                    &fonts,
+                    &bitmaps,
+                    &c3d_assets,
+                    &mut c3d_angles,
+                ),
+                RootFramePaletteResources {
+                    bits_per_pixel: 8,
+                    arena: &arena,
+                    state: &mut state,
+                    renderer_cache: &mut renderer_cache,
+                    global_cache: &mut global_cache,
+                },
+                &mut sources,
+                99,
+                TextLayoutLimits::default(),
+            )
+            .unwrap_err();
+
+            assert!(matches!(
+                error,
+                RootFrameError::PaletteCommit {
+                    command_index: 7,
+                    source: DeferredPaletteCommitError::Adapter(BackendError::Palette),
+                }
+            ));
+            assert_eq!(state.current(), Some(PaletteArenaIndex::new(0)));
+            assert_eq!(state.pending(), Some(PaletteArenaIndex::new(1)));
+            assert_eq!(renderer_cache, arena[0]);
+            assert_eq!(global_cache, arena[0]);
+            let recorded = events.borrow();
+            assert_eq!(
+                &recorded[recorded.len() - 3..],
+                [
+                    scene_event(true),
+                    c3d_event(8, 16),
+                    Event::PaletteUpload(0x9d),
+                ]
+            );
+            assert!(
+                !recorded
+                    .iter()
+                    .any(|event| matches!(event, Event::Present { .. }))
+            );
+            drop(recorded);
+
+            events.borrow_mut().clear();
+            let outcome = super::execute_root_frame(
+                interactive_input(),
+                frame_resources(
+                    &footer_table(b"A"),
+                    &fonts,
+                    &bitmaps,
+                    &c3d_assets,
+                    &mut c3d_angles,
+                ),
+                RootFramePaletteResources {
+                    bits_per_pixel: 16,
+                    arena: &arena,
+                    state: &mut state,
+                    renderer_cache: &mut renderer_cache,
+                    global_cache: &mut global_cache,
+                },
+                &mut sources,
+                99,
+                TextLayoutLimits::default(),
+            )
+            .unwrap();
+            assert_eq!(
+                outcome.palette_commit,
+                DeferredPaletteCommitOutcome::SkippedNonIndexedDepth
+            );
+            assert_eq!(state.current(), Some(PaletteArenaIndex::new(0)));
+            assert_eq!(state.pending(), Some(PaletteArenaIndex::new(1)));
+            assert_eq!(renderer_cache, arena[0]);
+            assert_eq!(global_cache, arena[0]);
+            let recorded = events.borrow();
+            assert_eq!(
+                &recorded[recorded.len() - 3..],
+                [scene_event(true), c3d_event(16, 24), present_event()]
+            );
+            assert!(
+                !recorded
+                    .iter()
+                    .any(|event| matches!(event, Event::PaletteUpload(_)))
+            );
         }
     }
 
@@ -1338,6 +1606,15 @@ mod tests {
                 flags: 0,
             }; 256],
         }
+    }
+
+    fn palette(red: u8) -> [PaletteEntry; 256] {
+        [PaletteEntry {
+            red,
+            green: 2,
+            blue: 3,
+            flags: 0,
+        }; 256]
     }
 
     fn footer_table(footer: &[u8]) -> IndexedTextTable {

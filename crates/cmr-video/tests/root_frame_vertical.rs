@@ -6,6 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cmr_assets::{
     AssetFile, AssetProfile, AssetStore, ReviewedProfile, StorageEncoding, import_source,
 };
+use cmr_core::deferred_palette::{
+    DeferredPaletteCommitOutcome, DeferredPaletteState, PaletteArenaIndex,
+};
 use cmr_core::display::{
     CooperativeMode, DisplayExtent, IndexedMode, IndexedVideoBackend, SurfaceTopology,
 };
@@ -25,7 +28,9 @@ use cmr_core::root_menu_c3d_runtime::{
 use cmr_core::root_menu_c3d_scene::{PreparedRootMenuC3dPipeline, RootMenuC3dDepthClear};
 use cmr_core::root_menu_c3d_topology::prepare_root_menu_c3d_topology;
 use cmr_core::root_menu_c3d_visibility::RootMenuC3dVisibilityLatches;
-use cmr_core::root_menu_frame::{RootFrameResources, execute_root_frame};
+use cmr_core::root_menu_frame::{
+    RootFramePaletteResources, RootFrameResources, execute_root_frame,
+};
 use cmr_core::root_menu_visual::{
     ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16, ROOT_INITIAL_VERTICAL_TRANSFORM_Q16, RootRenderInput,
 };
@@ -87,6 +92,10 @@ fn synthetic_root_frame_captures_representative_layers_twice_without_reuploading
     .unwrap();
 
     let palette = active_palette();
+    let initial_palette = std::array::from_fn(|index| PaletteEntry {
+        flags: palette[index].flags ^ 0xff,
+        ..palette[index]
+    });
     let bitmaps = load_root_menu_bitmaps(
         &store,
         Language::English,
@@ -112,7 +121,7 @@ fn synthetic_root_frame_captures_representative_layers_twice_without_reuploading
     let mut angles = RootMenuC3dAngles::new();
     let mut visibility = RootMenuC3dVisibilityLatches::new();
 
-    let (mut backend, back) = initialized_backend(&palette);
+    let (mut backend, back) = initialized_backend(&initial_palette);
     let mut sources = UploadedSourceStore::new(&mut backend);
     let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
     let uploaded_bitmaps = upload_root_menu_bitmaps(&mut sources, prepared_bitmaps)
@@ -125,8 +134,28 @@ fn synthetic_root_frame_captures_representative_layers_twice_without_reuploading
     );
     let text = footer_table();
     assert!(sources.backend().presented_frame().is_none());
+    let palette_arena = [palette];
+    let mut palette_state = DeferredPaletteState::new();
+    assert!(matches!(
+        palette_state.request(PaletteArenaIndex::new(0)),
+        cmr_core::deferred_palette::PaletteRequestOutcome::PendingUpdated
+    ));
+    let empty_entry = PaletteEntry {
+        red: 0,
+        green: 0,
+        blue: 0,
+        flags: 0,
+    };
+    let mut renderer_palette_cache = [empty_entry; 256];
+    let mut global_palette_cache = [empty_entry; 256];
 
-    for expected_angle in [8, 16] {
+    for (expected_angle, expected_palette_commit) in [
+        (
+            8,
+            DeferredPaletteCommitOutcome::Committed(PaletteArenaIndex::new(0)),
+        ),
+        (16, DeferredPaletteCommitOutcome::NoPendingPalette),
+    ] {
         let pipeline = PreparedRootMenuC3dPipeline::new(
             &topology,
             &runtime,
@@ -144,6 +173,13 @@ fn synthetic_root_frame_captures_representative_layers_twice_without_reuploading
                 bitmaps: &uploaded_bitmaps,
                 c3d: pipeline,
             },
+            RootFramePaletteResources {
+                bits_per_pixel: 8,
+                arena: &palette_arena,
+                state: &mut palette_state,
+                renderer_cache: &mut renderer_palette_cache,
+                global_cache: &mut global_palette_cache,
+            },
             &mut sources,
             back,
             TextLayoutLimits::default(),
@@ -155,6 +191,7 @@ fn synthetic_root_frame_captures_representative_layers_twice_without_reuploading
         assert!(outcome.footer.is_some());
         assert_eq!(outcome.c3d_commands, 1);
         assert!(outcome.scene_completed);
+        assert_eq!(outcome.palette_commit, expected_palette_commit);
         assert!(outcome.presentation_completed);
         for slot in RootMenuC3dSlot::ALL {
             assert_eq!(
@@ -170,6 +207,9 @@ fn synthetic_root_frame_captures_representative_layers_twice_without_reuploading
         let presented = backend.presented_frame().unwrap();
         assert_eq!(presented.extent(), EXTENT);
         assert_eq!(presented.palette(), &palette);
+        assert_ne!(presented.palette(), &initial_palette);
+        assert_eq!(renderer_palette_cache, palette);
+        assert_eq!(global_palette_cache, palette);
         assert_eq!(presented.pixels(), backend.back_pixels().unwrap());
         assert_eq!(presented.pixels()[0], marker(RootMenuBitmapSlot::Backdrop));
         assert_eq!(presented.pixels()[124 * 640 + 232], expected_center_marker);
