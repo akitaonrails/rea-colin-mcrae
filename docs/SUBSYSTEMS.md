@@ -55,6 +55,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   sources, including append-only logical keys, transactional upload rollback,
   explicit release, unwind cleanup, and reverse-order teardown; the font and
   fixed-slot root-bitmap pools are its first persistent resource clients.
+- `cmr-core::root_menu_bitmap_raster`: fixed-slot surface preparation,
+  transactional persistent upload, pool-to-visual binding, and checked
+  per-command bitmap submission without reordering non-bitmap frame work.
 - `cmr-core::window`: pure compatibility reducer for recovered Win32 message
   handling, activation-driven pause/restore state, queue dispatch decisions,
   and fullscreen-flip versus windowed-vblank presentation planning.

@@ -111,12 +111,13 @@ backend mutation, and both persistent font and root-bitmap pools now use a
 tested shared source store without monopolizing the backend. Transaction,
 fixed-slot, and mixed-pool tests cover 33 coexisting sources, optional upload
 holes, isolated required rollback, repeated-frame reuse, and global teardown.
-Host clock/input, native window execution, root visual-command execution, the
-rest of root-frame composition, and presentation remain before the vertical-
-slice exit gate. Root-footer text reaches a tested software back-buffer pixel
-through localization, the shared store, and the persistent font pool. Root
-visual transcripts now name fixed bitmap slots directly; opaque handles remain
-only for the still-unimplemented C3D path.
+Host clock/input, native window execution, a sequential whole-frame dispatcher,
+C3D execution, and presentation remain before the vertical-slice exit gate.
+Root-footer text reaches a tested software back-buffer pixel through
+localization, the shared store, and the persistent font pool. Root visual
+transcripts name fixed bitmap slots directly, and the bitmap executor now
+submits their exact opaque/keyed plans with checked geometry and no per-frame
+uploads; opaque handles remain only for the still-unimplemented C3D path.
 
 Exit gate:
 

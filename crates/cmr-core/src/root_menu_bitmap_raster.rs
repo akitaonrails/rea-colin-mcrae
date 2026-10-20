@@ -9,13 +9,16 @@ use std::fmt;
 
 use cmr_formats::riff_palette::LegacyPalette256;
 
-use crate::blit::BlitPlan;
-use crate::display::IndexedVideoBackend;
+use crate::blit::{BlitDecision, BlitPlan, ColorKey, RectI16, plan_legacy_blit};
+use crate::display::{DisplayExtent, IndexedVideoBackend};
 use crate::localization::Language;
 use crate::root_menu_assets::VisualVariant;
 use crate::root_menu_bitmap_assets::{
     ROOT_MENU_BITMAP_REQUEST_COUNT, RootMenuBitmapIdentity, RootMenuBitmapLoadError,
     RootMenuBitmapParts, RootMenuBitmapSet, RootMenuBitmapSlot,
+};
+use crate::root_menu_visual::{
+    ANIMATION_BITMAP_SLOTS, CENTER_BITMAP_SLOTS, Point, ROOT_ENTRY_COUNT, Rect, RenderCommand,
 };
 use crate::source_store::{
     SourceAccessError, SourceBlitError, SourceKey, SourceUploadError, UploadedSourceStore,
@@ -342,6 +345,418 @@ impl<E: std::error::Error + 'static> std::error::Error for RootMenuBitmapBlitErr
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootBitmapCommandKind {
+    Backdrop,
+    ChromeShadow,
+    ChromeAnimation,
+    SelectedChrome,
+    CenterIcon,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootBitmapCommandOutcome {
+    NotBitmap,
+    NoOp,
+    Blitted,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum RootBitmapCommandError<E> {
+    EntryOutOfRange {
+        command: RootBitmapCommandKind,
+        index: u8,
+    },
+    UnexpectedSlot {
+        command: RootBitmapCommandKind,
+        actual: RootMenuBitmapSlot,
+        expected: RootMenuBitmapSlot,
+    },
+    MissingSlot(RootMenuBitmapSlot),
+    InvalidDestinationExtent(DisplayExtent),
+    SourceOutOfBounds {
+        slot: RootMenuBitmapSlot,
+        source: Rect,
+        extent: (u32, u32),
+    },
+    SourceExtentOutOfRange {
+        slot: RootMenuBitmapSlot,
+        extent: (u32, u32),
+    },
+    GeometryOutOfRange {
+        slot: RootMenuBitmapSlot,
+        source: Rect,
+        destination: Point,
+    },
+    Access {
+        slot: RootMenuBitmapSlot,
+        source: SourceAccessError,
+    },
+    Backend {
+        slot: RootMenuBitmapSlot,
+        source: E,
+    },
+}
+
+impl<E: fmt::Display> fmt::Display for RootBitmapCommandError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EntryOutOfRange { command, index } => {
+                write!(
+                    formatter,
+                    "root bitmap {command:?} index {index} is out of range"
+                )
+            }
+            Self::UnexpectedSlot {
+                command,
+                actual,
+                expected,
+            } => write!(
+                formatter,
+                "root bitmap {command:?} uses slot {actual:?}; expected {expected:?}"
+            ),
+            Self::MissingSlot(slot) => write!(formatter, "root bitmap slot {slot:?} is not loaded"),
+            Self::InvalidDestinationExtent(extent) => write!(
+                formatter,
+                "root bitmap destination extent {}x{} is outside the positive i16 range",
+                extent.width, extent.height
+            ),
+            Self::SourceOutOfBounds {
+                slot,
+                source,
+                extent,
+            } => write!(
+                formatter,
+                "root bitmap slot {slot:?} source {source:?} is outside {}x{}",
+                extent.0, extent.1
+            ),
+            Self::SourceExtentOutOfRange { slot, extent } => write!(
+                formatter,
+                "root bitmap slot {slot:?} extent {}x{} is outside the positive u16 range",
+                extent.0, extent.1
+            ),
+            Self::GeometryOutOfRange {
+                slot,
+                source,
+                destination,
+            } => write!(
+                formatter,
+                "root bitmap slot {slot:?} geometry {source:?} to {destination:?} is outside the i16 range"
+            ),
+            Self::Access { slot, source } => {
+                write!(
+                    formatter,
+                    "cannot access root bitmap slot {slot:?}: {source}"
+                )
+            }
+            Self::Backend { slot, source } => {
+                write!(formatter, "cannot draw root bitmap slot {slot:?}: {source}")
+            }
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for RootBitmapCommandError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Access { source, .. } => Some(source),
+            Self::Backend { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+const INDEX_ZERO_COLOR_KEY: ColorKey = ColorKey { low: 0, high: 0 };
+
+/// Executes one bitmap command without consuming or reordering other root
+/// transcript commands. Non-bitmap commands are classified as
+/// [`RootBitmapCommandOutcome::NotBitmap`] so a sequential caller can dispatch
+/// its retained copy elsewhere.
+pub fn execute_root_bitmap_command<B: IndexedVideoBackend>(
+    store: &mut UploadedSourceStore<'_, B>,
+    pool: &UploadedRootMenuBitmapPool,
+    command: RenderCommand,
+    destination: B::Surface,
+    destination_extent: DisplayExtent,
+) -> Result<RootBitmapCommandOutcome, RootBitmapCommandError<B::Error>> {
+    let Some(spec) = bitmap_command_spec(command)? else {
+        return Ok(RootBitmapCommandOutcome::NotBitmap);
+    };
+    let extent = pool
+        .extent(spec.slot)
+        .ok_or(RootBitmapCommandError::MissingSlot(spec.slot))?;
+    let source = spec.source.unwrap_or(Rect {
+        x: 0,
+        y: 0,
+        width: u16::try_from(extent.0)
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or(RootBitmapCommandError::SourceExtentOutOfRange {
+                slot: spec.slot,
+                extent,
+            })?,
+        height: u16::try_from(extent.1)
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or(RootBitmapCommandError::SourceExtentOutOfRange {
+                slot: spec.slot,
+                extent,
+            })?,
+    });
+    validate_source(spec.slot, source, extent)?;
+    let destination_width = positive_i16(destination_extent.width).ok_or(
+        RootBitmapCommandError::InvalidDestinationExtent(destination_extent),
+    )?;
+    let destination_height = positive_i16(destination_extent.height).ok_or(
+        RootBitmapCommandError::InvalidDestinationExtent(destination_extent),
+    )?;
+    let source_rect = checked_rect(spec.slot, source, spec.destination)?;
+    let destination_rect = RectI16 {
+        x: i16::try_from(spec.destination.x).map_err(|_| geometry_error(spec, source))?,
+        y: i16::try_from(spec.destination.y).map_err(|_| geometry_error(spec, source))?,
+        width: source_rect.width,
+        height: source_rect.height,
+    };
+    match plan_legacy_blit(
+        source_rect,
+        destination_rect,
+        destination_width,
+        destination_height,
+        spec.color_key,
+    ) {
+        BlitDecision::NoOp => Ok(RootBitmapCommandOutcome::NoOp),
+        BlitDecision::Blit(plan) => {
+            pool.blit(store, spec.slot, destination, plan)
+                .map_err(|error| match error {
+                    RootMenuBitmapBlitError::MissingOptionalSlot(slot) => {
+                        RootBitmapCommandError::MissingSlot(slot)
+                    }
+                    RootMenuBitmapBlitError::Access { slot, source } => {
+                        RootBitmapCommandError::Access { slot, source }
+                    }
+                    RootMenuBitmapBlitError::Backend { slot, source } => {
+                        RootBitmapCommandError::Backend { slot, source }
+                    }
+                })?;
+            Ok(RootBitmapCommandOutcome::Blitted)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct BitmapCommandSpec {
+    slot: RootMenuBitmapSlot,
+    source: Option<Rect>,
+    destination: Point,
+    color_key: Option<ColorKey>,
+}
+
+fn bitmap_command_spec<E>(
+    command: RenderCommand,
+) -> Result<Option<BitmapCommandSpec>, RootBitmapCommandError<E>> {
+    let keyed = Some(INDEX_ZERO_COLOR_KEY);
+    let spec = match command {
+        RenderCommand::Backdrop {
+            slot,
+            source,
+            destination,
+        } => checked_command_slot(
+            RootBitmapCommandKind::Backdrop,
+            slot,
+            RootMenuBitmapSlot::Backdrop,
+            source,
+            destination,
+            None,
+        )?,
+        RenderCommand::ChromeShadow {
+            slot,
+            entry,
+            source,
+            destination,
+        } => {
+            validate_entry(RootBitmapCommandKind::ChromeShadow, entry)?;
+            checked_command_slot(
+                RootBitmapCommandKind::ChromeShadow,
+                slot,
+                RootMenuBitmapSlot::MainShadow,
+                source,
+                destination,
+                keyed,
+            )?
+        }
+        RenderCommand::ChromeAnimation {
+            slot,
+            entry,
+            source,
+            destination,
+        } => {
+            let expected = ANIMATION_BITMAP_SLOTS
+                .get(usize::from(entry))
+                .copied()
+                .ok_or(RootBitmapCommandError::EntryOutOfRange {
+                    command: RootBitmapCommandKind::ChromeAnimation,
+                    index: entry,
+                })?;
+            checked_command_slot(
+                RootBitmapCommandKind::ChromeAnimation,
+                slot,
+                expected,
+                source,
+                destination,
+                keyed,
+            )?
+        }
+        RenderCommand::SelectedChrome {
+            slot,
+            entry,
+            source,
+            destination,
+        } => {
+            validate_entry(RootBitmapCommandKind::SelectedChrome, entry)?;
+            checked_command_slot(
+                RootBitmapCommandKind::SelectedChrome,
+                slot,
+                RootMenuBitmapSlot::MainSelected,
+                source,
+                destination,
+                keyed,
+            )?
+        }
+        RenderCommand::CenterIcon {
+            slot,
+            visual_index,
+            destination,
+        } => {
+            let expected = CENTER_BITMAP_SLOTS
+                .get(usize::from(visual_index))
+                .copied()
+                .ok_or(RootBitmapCommandError::EntryOutOfRange {
+                    command: RootBitmapCommandKind::CenterIcon,
+                    index: visual_index,
+                })?;
+            if slot != expected {
+                return Err(RootBitmapCommandError::UnexpectedSlot {
+                    command: RootBitmapCommandKind::CenterIcon,
+                    actual: slot,
+                    expected,
+                });
+            }
+            BitmapCommandSpec {
+                slot,
+                source: None,
+                destination,
+                color_key: keyed,
+            }
+        }
+        RenderCommand::FooterText { .. }
+        | RenderCommand::C3dObject { .. }
+        | RenderCommand::ComposeAndPresent => return Ok(None),
+    };
+    Ok(Some(spec))
+}
+
+fn validate_entry<E>(
+    command: RootBitmapCommandKind,
+    index: u8,
+) -> Result<(), RootBitmapCommandError<E>> {
+    if usize::from(index) >= ROOT_ENTRY_COUNT {
+        return Err(RootBitmapCommandError::EntryOutOfRange { command, index });
+    }
+    Ok(())
+}
+
+fn checked_command_slot<E>(
+    kind: RootBitmapCommandKind,
+    actual: RootMenuBitmapSlot,
+    expected: RootMenuBitmapSlot,
+    source: Rect,
+    destination: Point,
+    color_key: Option<ColorKey>,
+) -> Result<BitmapCommandSpec, RootBitmapCommandError<E>> {
+    if actual != expected {
+        return Err(RootBitmapCommandError::UnexpectedSlot {
+            command: kind,
+            actual,
+            expected,
+        });
+    }
+    Ok(BitmapCommandSpec {
+        slot: actual,
+        source: Some(source),
+        destination,
+        color_key,
+    })
+}
+
+fn validate_source<E>(
+    slot: RootMenuBitmapSlot,
+    source: Rect,
+    extent: (u32, u32),
+) -> Result<(), RootBitmapCommandError<E>> {
+    let right = i64::from(source.x) + i64::from(source.width);
+    let bottom = i64::from(source.y) + i64::from(source.height);
+    if source.x < 0
+        || source.y < 0
+        || source.width == 0
+        || source.height == 0
+        || right > i64::from(extent.0)
+        || bottom > i64::from(extent.1)
+    {
+        return Err(RootBitmapCommandError::SourceOutOfBounds {
+            slot,
+            source,
+            extent,
+        });
+    }
+    Ok(())
+}
+
+fn checked_rect<E>(
+    slot: RootMenuBitmapSlot,
+    source: Rect,
+    destination: Point,
+) -> Result<RectI16, RootBitmapCommandError<E>> {
+    Ok(RectI16 {
+        x: i16::try_from(source.x).map_err(|_| RootBitmapCommandError::GeometryOutOfRange {
+            slot,
+            source,
+            destination,
+        })?,
+        y: i16::try_from(source.y).map_err(|_| RootBitmapCommandError::GeometryOutOfRange {
+            slot,
+            source,
+            destination,
+        })?,
+        width: i16::try_from(source.width).map_err(|_| {
+            RootBitmapCommandError::GeometryOutOfRange {
+                slot,
+                source,
+                destination,
+            }
+        })?,
+        height: i16::try_from(source.height).map_err(|_| {
+            RootBitmapCommandError::GeometryOutOfRange {
+                slot,
+                source,
+                destination,
+            }
+        })?,
+    })
+}
+
+fn geometry_error<E>(spec: BitmapCommandSpec, source: Rect) -> RootBitmapCommandError<E> {
+    RootBitmapCommandError::GeometryOutOfRange {
+        slot: spec.slot,
+        source,
+        destination: spec.destination,
+    }
+}
+
+fn positive_i16(value: u16) -> Option<i16> {
+    let value = i16::try_from(value).ok()?;
+    (value > 0).then_some(value)
+}
+
 /// Uploads prepared root-menu surfaces into one shared transaction.
 ///
 /// Optional upload failures remain fixed-slot diagnostics and upload continues.
@@ -566,6 +981,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingBackend {
         events: Vec<Event>,
+        blits: Vec<BlitPlan>,
         create_attempts: usize,
         fail_create_at: Option<usize>,
         fail_blit: Cell<bool>,
@@ -640,8 +1056,9 @@ mod tests {
             &mut self,
             source: Self::Surface,
             destination: Self::Surface,
-            _plan: BlitPlan,
+            plan: BlitPlan,
         ) -> Result<(), Self::Error> {
+            self.blits.push(plan);
             self.events.push(Event::Blit {
                 source,
                 destination,
@@ -1141,6 +1558,359 @@ mod tests {
                 .filter(|event| matches!(event, Event::Destroy(_)))
                 .count(),
             FONT_COUNT + ROOT_MENU_BITMAP_REQUEST_COUNT
+        );
+    }
+
+    #[test]
+    fn command_executor_derives_exact_slots_geometry_and_color_keys() {
+        let prepared = prepare_parts(complete_parts(VisualVariant::Normal), &palette()).unwrap();
+        let mut backend = RecordingBackend::default();
+        let mut store = UploadedSourceStore::new(&mut backend);
+        let pool = upload_root_menu_bitmaps(&mut store, prepared).unwrap().pool;
+        let commands = [
+            RenderCommand::Backdrop {
+                slot: RootMenuBitmapSlot::Backdrop,
+                source: Rect::new(1, 0, 2, 1),
+                destination: Point::new(2, 3),
+            },
+            RenderCommand::ChromeShadow {
+                slot: RootMenuBitmapSlot::MainShadow,
+                entry: 0,
+                source: Rect::new(0, 0, 1, 1),
+                destination: Point::new(1, 2),
+            },
+            RenderCommand::ChromeAnimation {
+                slot: RootMenuBitmapSlot::Animation2,
+                entry: 2,
+                source: Rect::new(0, 0, 1, 1),
+                destination: Point::new(2, 2),
+            },
+            RenderCommand::SelectedChrome {
+                slot: RootMenuBitmapSlot::MainSelected,
+                entry: 0,
+                source: Rect::new(0, 0, 1, 1),
+                destination: Point::new(3, 2),
+            },
+            RenderCommand::CenterIcon {
+                slot: RootMenuBitmapSlot::Cone,
+                visual_index: 2,
+                destination: Point::new(4, 2),
+            },
+        ];
+        for command in commands {
+            assert_eq!(
+                execute_root_bitmap_command(
+                    &mut store,
+                    &pool,
+                    command,
+                    99,
+                    DisplayExtent {
+                        width: 10,
+                        height: 10,
+                    },
+                ),
+                Ok(RootBitmapCommandOutcome::Blitted)
+            );
+        }
+        assert_eq!(
+            store
+                .backend()
+                .blits
+                .iter()
+                .map(|plan| plan.legacy_flags())
+                .collect::<Vec<_>>(),
+            [0x10, 0x11, 0x11, 0x11, 0x11]
+        );
+        assert_eq!(store.backend().blits[0].color_key, None);
+        assert!(
+            store.backend().blits[1..]
+                .iter()
+                .all(|plan| { plan.color_key == Some(ColorKey { low: 0, high: 0 }) })
+        );
+        assert_eq!(
+            store.backend().blits[0].source,
+            crate::blit::RectEdges {
+                left: 1,
+                top: 0,
+                right: 3,
+                bottom: 1,
+            }
+        );
+        assert_eq!(
+            store.backend().blits[4].source,
+            crate::blit::RectEdges {
+                left: 0,
+                top: 0,
+                right: 4,
+                bottom: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn command_executor_clips_or_no_ops_without_reuploading() {
+        let prepared = prepare_parts(complete_parts(VisualVariant::Normal), &palette()).unwrap();
+        let mut backend = RecordingBackend::default();
+        let mut store = UploadedSourceStore::new(&mut backend);
+        let pool = upload_root_menu_bitmaps(&mut store, prepared).unwrap().pool;
+        let source_count = store.uploaded_source_count();
+        assert_eq!(
+            execute_root_bitmap_command(
+                &mut store,
+                &pool,
+                RenderCommand::SelectedChrome {
+                    slot: RootMenuBitmapSlot::MainSelected,
+                    entry: 0,
+                    source: Rect::new(0, 0, 2, 1),
+                    destination: Point::new(-1, 0),
+                },
+                99,
+                DisplayExtent {
+                    width: 4,
+                    height: 1,
+                },
+            ),
+            Ok(RootBitmapCommandOutcome::Blitted)
+        );
+        assert_eq!(
+            store.backend().blits.last().unwrap().source,
+            crate::blit::RectEdges {
+                left: 1,
+                top: 0,
+                right: 2,
+                bottom: 1,
+            }
+        );
+        let prior_blits = store.backend().blits.len();
+        assert_eq!(
+            execute_root_bitmap_command(
+                &mut store,
+                &pool,
+                RenderCommand::SelectedChrome {
+                    slot: RootMenuBitmapSlot::MainSelected,
+                    entry: 0,
+                    source: Rect::new(0, 0, 1, 1),
+                    destination: Point::new(-1, 0),
+                },
+                99,
+                DisplayExtent {
+                    width: 4,
+                    height: 1,
+                },
+            ),
+            Ok(RootBitmapCommandOutcome::NoOp)
+        );
+        assert_eq!(store.backend().blits.len(), prior_blits);
+        assert_eq!(store.uploaded_source_count(), source_count);
+    }
+
+    #[test]
+    fn command_executor_rejects_forged_commands_before_backend_effects() {
+        let prepared = prepare_parts(complete_parts(VisualVariant::Normal), &palette()).unwrap();
+        let mut backend = RecordingBackend::default();
+        let mut store = UploadedSourceStore::new(&mut backend);
+        let pool = upload_root_menu_bitmaps(&mut store, prepared).unwrap().pool;
+        let extent = DisplayExtent {
+            width: 4,
+            height: 1,
+        };
+        let cases = [
+            execute_root_bitmap_command(
+                &mut store,
+                &pool,
+                RenderCommand::SelectedChrome {
+                    slot: RootMenuBitmapSlot::MainShadow,
+                    entry: 0,
+                    source: Rect::new(0, 0, 1, 1),
+                    destination: Point::new(0, 0),
+                },
+                99,
+                extent,
+            ),
+            execute_root_bitmap_command(
+                &mut store,
+                &pool,
+                RenderCommand::ChromeAnimation {
+                    slot: RootMenuBitmapSlot::Animation0,
+                    entry: 7,
+                    source: Rect::new(0, 0, 1, 1),
+                    destination: Point::new(0, 0),
+                },
+                99,
+                extent,
+            ),
+            execute_root_bitmap_command(
+                &mut store,
+                &pool,
+                RenderCommand::ChromeShadow {
+                    slot: RootMenuBitmapSlot::MainShadow,
+                    entry: 7,
+                    source: Rect::new(0, 0, 1, 1),
+                    destination: Point::new(0, 0),
+                },
+                99,
+                extent,
+            ),
+            execute_root_bitmap_command(
+                &mut store,
+                &pool,
+                RenderCommand::SelectedChrome {
+                    slot: RootMenuBitmapSlot::MainSelected,
+                    entry: 7,
+                    source: Rect::new(0, 0, 1, 1),
+                    destination: Point::new(0, 0),
+                },
+                99,
+                extent,
+            ),
+            execute_root_bitmap_command(
+                &mut store,
+                &pool,
+                RenderCommand::Backdrop {
+                    slot: RootMenuBitmapSlot::Backdrop,
+                    source: Rect::new(4, 0, 1, 1),
+                    destination: Point::new(0, 0),
+                },
+                99,
+                extent,
+            ),
+            execute_root_bitmap_command(
+                &mut store,
+                &pool,
+                RenderCommand::Backdrop {
+                    slot: RootMenuBitmapSlot::Backdrop,
+                    source: Rect::new(0, 0, 1, 1),
+                    destination: Point::new(i32::MAX, 0),
+                },
+                99,
+                extent,
+            ),
+            execute_root_bitmap_command(
+                &mut store,
+                &pool,
+                RenderCommand::Backdrop {
+                    slot: RootMenuBitmapSlot::Backdrop,
+                    source: Rect::new(0, 0, 1, 1),
+                    destination: Point::new(0, 0),
+                },
+                99,
+                DisplayExtent {
+                    width: 0,
+                    height: 1,
+                },
+            ),
+        ];
+        assert!(matches!(
+            cases[0],
+            Err(RootBitmapCommandError::UnexpectedSlot { .. })
+        ));
+        assert!(matches!(
+            cases[1],
+            Err(RootBitmapCommandError::EntryOutOfRange { .. })
+        ));
+        assert!(matches!(
+            cases[2],
+            Err(RootBitmapCommandError::EntryOutOfRange {
+                command: RootBitmapCommandKind::ChromeShadow,
+                ..
+            })
+        ));
+        assert!(matches!(
+            cases[3],
+            Err(RootBitmapCommandError::EntryOutOfRange {
+                command: RootBitmapCommandKind::SelectedChrome,
+                ..
+            })
+        ));
+        assert!(matches!(
+            cases[4],
+            Err(RootBitmapCommandError::SourceOutOfBounds { .. })
+        ));
+        assert!(matches!(
+            cases[5],
+            Err(RootBitmapCommandError::GeometryOutOfRange { .. })
+        ));
+        assert!(matches!(
+            cases[6],
+            Err(RootBitmapCommandError::InvalidDestinationExtent(_))
+        ));
+        assert!(store.backend().blits.is_empty());
+    }
+
+    #[test]
+    fn command_executor_returns_nonbitmap_missing_access_and_backend_outcomes() {
+        let mut parts = complete_parts(VisualVariant::Normal);
+        parts.assets[RootMenuBitmapSlot::MainSelected.index()]
+            .bitmap
+            .palette
+            .pop();
+        let prepared = prepare_parts(parts, &palette()).unwrap();
+        let mut first_backend = RecordingBackend::default();
+        let mut first_store = UploadedSourceStore::new(&mut first_backend);
+        let pool = upload_root_menu_bitmaps(&mut first_store, prepared)
+            .unwrap()
+            .pool;
+        let extent = DisplayExtent {
+            width: 4,
+            height: 1,
+        };
+        for command in [
+            RenderCommand::FooterText {
+                text_index: 253,
+                position: Point::new(320, 470),
+                flags: 0x22,
+            },
+            RenderCommand::C3dObject {
+                object: crate::root_menu_visual::VisualHandle::new(1).unwrap(),
+                selection: 0,
+                angle_delta: 8,
+            },
+            RenderCommand::ComposeAndPresent,
+        ] {
+            assert_eq!(
+                execute_root_bitmap_command(&mut first_store, &pool, command, 99, extent,),
+                Ok(RootBitmapCommandOutcome::NotBitmap)
+            );
+        }
+        assert!(matches!(
+            execute_root_bitmap_command(
+                &mut first_store,
+                &pool,
+                RenderCommand::SelectedChrome {
+                    slot: RootMenuBitmapSlot::MainSelected,
+                    entry: 0,
+                    source: Rect::new(0, 0, 1, 1),
+                    destination: Point::new(0, 0),
+                },
+                99,
+                extent,
+            ),
+            Err(RootBitmapCommandError::MissingSlot(
+                RootMenuBitmapSlot::MainSelected
+            ))
+        ));
+
+        let backdrop = RenderCommand::Backdrop {
+            slot: RootMenuBitmapSlot::Backdrop,
+            source: Rect::new(0, 0, 1, 1),
+            destination: Point::new(0, 0),
+        };
+        let mut second_backend = RecordingBackend::default();
+        let mut second_store = UploadedSourceStore::new(&mut second_backend);
+        assert!(matches!(
+            execute_root_bitmap_command(&mut second_store, &pool, backdrop, 99, extent),
+            Err(RootBitmapCommandError::Access {
+                slot: RootMenuBitmapSlot::Backdrop,
+                source: SourceAccessError::ForeignKey(_),
+            })
+        ));
+        first_store.backend().fail_blit.set(true);
+        assert_eq!(
+            execute_root_bitmap_command(&mut first_store, &pool, backdrop, 99, extent),
+            Err(RootBitmapCommandError::Backend {
+                slot: RootMenuBitmapSlot::Backdrop,
+                source: BackendError::Blit,
+            })
         );
     }
 
