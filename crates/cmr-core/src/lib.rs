@@ -5,6 +5,7 @@ pub mod config;
 pub mod display;
 pub mod display_contract;
 pub mod font_assets;
+pub mod font_raster;
 pub mod frontend;
 pub mod input;
 pub mod localization;

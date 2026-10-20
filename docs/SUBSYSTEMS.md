@@ -76,6 +76,8 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   plus byte-text measurement and backend-neutral glyph layout plans.
 - `cmr-core::font_assets`: verified loading and stable style identity for the
   16 recovered frontend font atlases in original initialization order.
+- `cmr-core::font_raster`: backend-neutral indexed atlas conversion and
+  index-zero keyed execution of precomputed glyph plans with diagnostics.
 - `cmr-core::frontend`: checked first/root-screen navigation, transitions,
   idle/exit effects, and opaque target IDs.
 - `cmr-core::root_menu_assets`: typed, verified-profile paths for localized

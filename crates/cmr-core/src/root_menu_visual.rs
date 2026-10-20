@@ -9,6 +9,7 @@
 use std::num::NonZeroU32;
 
 use crate::{
+    font_assets::FontStyle,
     frontend::{FrontendPhase, ROOT_FOOTER_TEXT_INDEX, RootSelection},
     localization::Language,
 };
@@ -21,6 +22,9 @@ pub const CHROME_ANIMATION_SOURCE: Rect = Rect::new(0, 0, 400, 400);
 pub const CHROME_ANIMATION_DESTINATION: Point = Point::new(128, 40);
 pub const CENTER_ICON_OFFSET: Point = Point::new(-88, -116);
 pub const C3D_ANGLE_DELTA: u16 = 8;
+pub const ROOT_FOOTER_FONT_STYLE: FontStyle = FontStyle::GreenInfo;
+pub const ROOT_DORMANT_ENTRY_FONT_STYLE: FontStyle = FontStyle::Options;
+pub const ROOT_DORMANT_TITLE_FONT_STYLE: FontStyle = FontStyle::RedDynamic;
 
 pub const CENTER_VISUAL_BY_SELECTION: [usize; ROOT_ENTRY_COUNT] = [0, 0, 1, 2, 3, 4, 5];
 
@@ -343,6 +347,13 @@ mod tests {
         }
         assert_eq!(CHROME_ANIMATION_SOURCE, Rect::new(0, 0, 400, 400));
         assert_eq!(CHROME_ANIMATION_DESTINATION, Point::new(128, 40));
+    }
+
+    #[test]
+    fn root_font_globals_map_to_exact_loaded_styles() {
+        assert_eq!(ROOT_FOOTER_FONT_STYLE, FontStyle::GreenInfo);
+        assert_eq!(ROOT_DORMANT_ENTRY_FONT_STYLE, FontStyle::Options);
+        assert_eq!(ROOT_DORMANT_TITLE_FONT_STYLE, FontStyle::RedDynamic);
     }
 
     #[test]

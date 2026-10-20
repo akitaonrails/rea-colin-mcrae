@@ -118,8 +118,8 @@ fn loader_applies_configured_font_limits_with_context() {
             }
         ),
         Err(FontLoadError::Parse {
-            style: FontStyle::Yellow,
-            path: "New_Fe/Fonts/yellow.fon",
+            style: FontStyle::Title,
+            path: "New_Fe/Fonts/title.fon",
             source: FontError::GlyphLimitExceeded { count: 1, limit: 0 },
         })
     ));
