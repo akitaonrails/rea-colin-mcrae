@@ -450,9 +450,12 @@ pub fn prepare_root_menu_c3d_topology<'asset>(
 #[cfg(test)]
 mod tests {
     use std::{
+        cell::RefCell,
         collections::BTreeMap,
+        convert::Infallible,
         fs,
         path::PathBuf,
+        rc::Rc,
         sync::atomic::{AtomicU64, Ordering},
     };
 
@@ -474,6 +477,10 @@ mod tests {
         display::DisplayExtent,
         root_menu_assets::VisualVariant,
         root_menu_c3d_assets::{RootMenuC3dAngles, load_root_menu_c3d},
+        root_menu_c3d_execute::{
+            RootMenuC3dBatchBackend, RootMenuC3dBatchExecutor, RootMenuC3dBatchStage,
+            RootMenuC3dExecuteError, bind_root_menu_c3d_resources,
+        },
         root_menu_c3d_frame_plan::{
             ROOT_MENU_C3D_DRAW_FLAGS, ROOT_MENU_C3D_PRIMITIVE_CODE, ROOT_MENU_C3D_VERTEX_TYPE,
             RootMenuC3dFramePlanError, RootMenuC3dRootShapeIssue, plan_root_menu_c3d_frame,
@@ -491,6 +498,91 @@ mod tests {
     };
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum BatchEvent {
+        World(crate::root_menu_c3d_transform::C3dMatrixWords),
+        Binding(u8),
+        Draw {
+            batch_index: usize,
+            selector_index: usize,
+            vertex_type: u32,
+            primitive_code: u32,
+            draw_flags: u32,
+        },
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct BatchBackendError(RootMenuC3dBatchStage);
+
+    impl std::fmt::Display for BatchBackendError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(formatter, "injected {:?} failure", self.0)
+        }
+    }
+
+    impl std::error::Error for BatchBackendError {}
+
+    #[derive(Default)]
+    struct RecordingBatchBackend {
+        events: Vec<BatchEvent>,
+        fail: Option<(RootMenuC3dBatchStage, Option<u8>)>,
+    }
+
+    impl RecordingBatchBackend {
+        fn record(
+            &mut self,
+            stage: RootMenuC3dBatchStage,
+            binding: Option<u8>,
+            event: BatchEvent,
+        ) -> Result<(), BatchBackendError> {
+            self.events.push(event);
+            if self.fail == Some((stage, binding)) {
+                Err(BatchBackendError(stage))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl RootMenuC3dBatchBackend<u8> for RecordingBatchBackend {
+        type Error = BatchBackendError;
+
+        fn set_root_c3d_world(
+            &mut self,
+            world: crate::root_menu_c3d_transform::C3dMatrixWords,
+        ) -> Result<(), Self::Error> {
+            self.record(RootMenuC3dBatchStage::World, None, BatchEvent::World(world))
+        }
+
+        fn bind_root_c3d_resource(&mut self, binding: &u8) -> Result<(), Self::Error> {
+            self.record(
+                RootMenuC3dBatchStage::Binding,
+                Some(*binding),
+                BatchEvent::Binding(*binding),
+            )
+        }
+
+        fn draw_root_c3d_batch(
+            &mut self,
+            command: &crate::root_menu_c3d_frame_plan::RootMenuC3dDrawCommand,
+        ) -> Result<(), Self::Error> {
+            let C3dPreparedSelector::Resource(resource_id) = command.selector() else {
+                unreachable!("exact-root planner rejects missing selectors")
+            };
+            self.record(
+                RootMenuC3dBatchStage::Draw,
+                Some(resource_id.index() as u8),
+                BatchEvent::Draw {
+                    batch_index: command.batch_index(),
+                    selector_index: resource_id.index(),
+                    vertex_type: command.vertex_type(),
+                    primitive_code: command.primitive_code(),
+                    draw_flags: command.draw_flags(),
+                },
+            )
+        }
+    }
 
     #[test]
     fn aliases_and_missing_values_form_only_consecutive_equal_selector_runs() {
@@ -941,6 +1033,295 @@ mod tests {
             );
             assert_eq!(angles.angle(slot), 0);
         }
+    }
+
+    #[test]
+    fn binding_catalog_maps_once_checks_arena_and_releases_in_reverse_order() {
+        let slot = RootMenuC3dSlot::Rally;
+        let root_group = group(3, &[[0, 1, 2], [2, 1, 0], [1, 0, 2]], &[0, 1, 2]);
+        let blobs = [
+            (*b"BIND-FIRST!!", indexed_bmp(1, 2, 8)),
+            (*b"BIND-SECOND!", indexed_bmp(3, 4, 8)),
+            (*b"BIND-THIRD!!", indexed_bmp(5, 6, 8)),
+        ];
+        let fixture = fixture_for(&[(slot, exact_root_c3d(&root_group, &blobs))]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let independent = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let mut mapped = Vec::new();
+        let catalog = bind_root_menu_c3d_resources(&topology, |id, resource| {
+            mapped.push((
+                id.index(),
+                resource.first_slot(),
+                resource.first_resource_ordinal(),
+                resource.surface_color_key_index(),
+            ));
+            Ok::<_, Infallible>(id.index() as u8)
+        })
+        .unwrap();
+
+        assert_eq!(catalog.provenance(), topology.provenance());
+        assert_eq!(catalog.len(), 3);
+        assert_eq!(
+            mapped,
+            [(0, slot, 0, None), (1, slot, 1, None), (2, slot, 2, None),]
+        );
+        for (id, _) in topology.resources() {
+            assert_eq!(*catalog.binding(id).unwrap(), id.index() as u8);
+        }
+        let foreign_id = independent.resources().next().unwrap().0;
+        assert_eq!(
+            catalog.binding(foreign_id),
+            Err(C3dPreparedResourceAccessError::Foreign)
+        );
+
+        #[derive(Debug)]
+        struct DropBinding {
+            index: u8,
+            drops: Rc<RefCell<Vec<u8>>>,
+        }
+        impl Drop for DropBinding {
+            fn drop(&mut self) {
+                self.drops.borrow_mut().push(self.index);
+            }
+        }
+        let failed_drops = Rc::new(RefCell::new(Vec::new()));
+        let error = bind_root_menu_c3d_resources(&topology, |id, _| {
+            if id.index() == 2 {
+                Err("create")
+            } else {
+                Ok(DropBinding {
+                    index: id.index() as u8,
+                    drops: Rc::clone(&failed_drops),
+                })
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.resource_id.index(), 2);
+        assert_eq!(error.first_slot, slot);
+        assert_eq!(error.first_resource_ordinal, 2);
+        assert_eq!(error.source, "create");
+        assert_eq!(failed_drops.borrow().as_slice(), [1, 0]);
+
+        let unwind_drops = Rc::new(RefCell::new(Vec::new()));
+        let unwind_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = bind_root_menu_c3d_resources(&topology, |id, _| {
+                if id.index() == 2 {
+                    panic!("injected binding panic");
+                }
+                Ok::<_, Infallible>(DropBinding {
+                    index: id.index() as u8,
+                    drops: Rc::clone(&unwind_drops),
+                })
+            });
+        }));
+        assert!(unwind_result.is_err());
+        assert_eq!(unwind_drops.borrow().as_slice(), [1, 0]);
+
+        let committed_drops = Rc::new(RefCell::new(Vec::new()));
+        let committed = bind_root_menu_c3d_resources(&topology, |id, _| {
+            Ok::<_, Infallible>(DropBinding {
+                index: id.index() as u8,
+                drops: Rc::clone(&committed_drops),
+            })
+        })
+        .unwrap();
+        drop(committed);
+        assert_eq!(committed_drops.borrow().as_slice(), [2, 1, 0]);
+    }
+
+    #[test]
+    fn batch_executor_binds_changed_selectors_in_order_and_caches_across_frames() {
+        let slot = RootMenuC3dSlot::Championship;
+        let root_group = group(3, &[[2, 0, 2], [1, 1, 0], [0, 2, 1]], &[0, 1, 0]);
+        let blobs = [
+            (*b"EXEC-FIRST!!", indexed_bmp(1, 2, 8)),
+            (*b"EXEC-SECOND!", indexed_bmp(3, 4, 8)),
+        ];
+        let fixture = fixture_for(&[(slot, exact_root_c3d(&root_group, &blobs))]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let runtime = materialize_root_menu_mode2_resource_scaled(
+            &topology,
+            uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+        )
+        .unwrap();
+        let catalog =
+            bind_root_menu_c3d_resources(&topology, |id, _| Ok::<_, Infallible>(id.index() as u8))
+                .unwrap();
+        let extent = DisplayExtent {
+            width: 640,
+            height: 480,
+        };
+        let mut angles = RootMenuC3dAngles::new();
+        let first = plan_root_menu_c3d_frame(&topology, &runtime, &mut angles, slot, 8, extent)
+            .unwrap()
+            .unwrap();
+        let second = plan_root_menu_c3d_frame(&topology, &runtime, &mut angles, slot, 8, extent)
+            .unwrap()
+            .unwrap();
+        let third = plan_root_menu_c3d_frame(&topology, &runtime, &mut angles, slot, 8, extent)
+            .unwrap()
+            .unwrap();
+        let mut backend = RecordingBatchBackend::default();
+        let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
+
+        assert_eq!(
+            executor.execute(&mut backend, first).unwrap(),
+            crate::root_menu_c3d_execute::RootMenuC3dBatchOutcome {
+                bindings: 3,
+                draws: 3,
+            }
+        );
+        assert_eq!(
+            backend.events,
+            [
+                BatchEvent::World(root_menu_c3d_world(8)),
+                BatchEvent::Binding(0),
+                BatchEvent::Draw {
+                    batch_index: 0,
+                    selector_index: 0,
+                    vertex_type: 2,
+                    primitive_code: 4,
+                    draw_flags: 8,
+                },
+                BatchEvent::Binding(1),
+                BatchEvent::Draw {
+                    batch_index: 1,
+                    selector_index: 1,
+                    vertex_type: 2,
+                    primitive_code: 4,
+                    draw_flags: 8,
+                },
+                BatchEvent::Binding(0),
+                BatchEvent::Draw {
+                    batch_index: 2,
+                    selector_index: 0,
+                    vertex_type: 2,
+                    primitive_code: 4,
+                    draw_flags: 8,
+                },
+            ]
+        );
+
+        backend.events.clear();
+        assert_eq!(
+            executor.execute(&mut backend, second).unwrap(),
+            crate::root_menu_c3d_execute::RootMenuC3dBatchOutcome {
+                bindings: 2,
+                draws: 3,
+            }
+        );
+        assert_eq!(
+            backend.events[0],
+            BatchEvent::World(root_menu_c3d_world(16))
+        );
+        assert!(matches!(
+            backend.events[1],
+            BatchEvent::Draw { batch_index: 0, .. }
+        ));
+        assert_eq!(backend.events[2], BatchEvent::Binding(1));
+
+        backend.events.clear();
+        executor.invalidate_bindings();
+        executor.execute(&mut backend, third).unwrap();
+        assert_eq!(backend.events[1], BatchEvent::Binding(0));
+    }
+
+    #[test]
+    fn batch_executor_preflights_arena_and_uses_safe_failure_cache_boundaries() {
+        let slot = RootMenuC3dSlot::Options;
+        let root_group = group(1, &[[0, 0, 0]], &[0]);
+        let blobs = [(*b"EXEC-FAIL!!!", indexed_bmp(1, 2, 8))];
+        let fixture = fixture_for(&[(slot, exact_root_c3d(&root_group, &blobs))]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let foreign = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let runtime = materialize_root_menu_mode2_resource_scaled(
+            &topology,
+            uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+        )
+        .unwrap();
+        let catalog =
+            bind_root_menu_c3d_resources(&topology, |id, _| Ok::<_, Infallible>(id.index() as u8))
+                .unwrap();
+        let foreign_catalog =
+            bind_root_menu_c3d_resources(&foreign, |id, _| Ok::<_, Infallible>(id.index() as u8))
+                .unwrap();
+        let extent = DisplayExtent {
+            width: 640,
+            height: 480,
+        };
+        let mut angles = RootMenuC3dAngles::new();
+        let mut make_plan = || {
+            plan_root_menu_c3d_frame(&topology, &runtime, &mut angles, slot, 8, extent)
+                .unwrap()
+                .unwrap()
+        };
+        let mut backend = RecordingBatchBackend::default();
+        let mut foreign_executor = RootMenuC3dBatchExecutor::new(&foreign_catalog);
+
+        assert_eq!(
+            foreign_executor.execute(&mut backend, make_plan()),
+            Err(RootMenuC3dExecuteError::Preflight(
+                crate::root_menu_c3d_execute::RootMenuC3dBatchPreflightError::CatalogProvenanceMismatch
+            ))
+        );
+        assert!(backend.events.is_empty());
+
+        let mut world_executor = RootMenuC3dBatchExecutor::new(&catalog);
+        backend.fail = Some((RootMenuC3dBatchStage::World, None));
+        let world_error = world_executor
+            .execute(&mut backend, make_plan())
+            .unwrap_err();
+        assert!(matches!(
+            world_error,
+            RootMenuC3dExecuteError::Backend(ref error)
+                if error.stage == RootMenuC3dBatchStage::World
+                    && error.batch_index.is_none()
+                    && error.resource_id.is_none()
+        ));
+        assert!(matches!(backend.events.as_slice(), [BatchEvent::World(_)]));
+        backend.events.clear();
+        backend.fail = None;
+        world_executor.execute(&mut backend, make_plan()).unwrap();
+        assert_eq!(backend.events[1], BatchEvent::Binding(0));
+
+        backend.events.clear();
+        backend.fail = Some((RootMenuC3dBatchStage::World, None));
+        assert!(world_executor.execute(&mut backend, make_plan()).is_err());
+        backend.events.clear();
+        backend.fail = None;
+        world_executor.execute(&mut backend, make_plan()).unwrap();
+        assert!(matches!(backend.events[1], BatchEvent::Draw { .. }));
+
+        let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
+        backend.fail = Some((RootMenuC3dBatchStage::Binding, Some(0)));
+        assert!(matches!(
+            executor.execute(&mut backend, make_plan()),
+            Err(RootMenuC3dExecuteError::Backend(error))
+                if error.stage == RootMenuC3dBatchStage::Binding
+        ));
+        backend.events.clear();
+        backend.fail = None;
+        executor.execute(&mut backend, make_plan()).unwrap();
+        assert_eq!(backend.events[1], BatchEvent::Binding(0));
+
+        backend.events.clear();
+        backend.fail = Some((RootMenuC3dBatchStage::Draw, Some(0)));
+        let mut draw_failure_executor = RootMenuC3dBatchExecutor::new(&catalog);
+        assert!(matches!(
+            draw_failure_executor.execute(&mut backend, make_plan()),
+            Err(RootMenuC3dExecuteError::Backend(error))
+                if error.stage == RootMenuC3dBatchStage::Draw
+        ));
+        assert_eq!(backend.events[1], BatchEvent::Binding(0));
+        backend.events.clear();
+        backend.fail = None;
+        draw_failure_executor
+            .execute(&mut backend, make_plan())
+            .unwrap();
+        assert!(matches!(backend.events[1], BatchEvent::Draw { .. }));
     }
 
     #[test]

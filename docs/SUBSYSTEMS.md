@@ -147,6 +147,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   non-cloneable owned one-frame submission snapshots, retaining source batch
   order, prepared-arena provenance, exact transforms, and numeric draw words.
   Backend resource binding and terminal scene execution remain separate.
+- `cmr-core::root_menu_c3d_execute`: arena-scoped opaque RAII binding catalogs
+  plus source-ordered world/bind/draw execution with a persistent,
+  explicitly invalidatable selector cache. Scene/depth/latch/presentation
+  orchestration and concrete backend uploads remain separate.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes, plus explicit selection-slot mapping and six independent wrapping

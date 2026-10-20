@@ -200,6 +200,14 @@ viewport, slot presence, variant, and provenance before changing an angle, then
 owns source-ordered submission snapshots and the exact recovered transform and
 numeric draw words. Backend binding, depth/scene execution, visibility-latch
 consumption, rasterization, and terminal composition remain the next boundary.
+Prepared resources now map once into an arena-scoped opaque binding catalog.
+The root batch executor consumes a plan, preflights the complete catalog join,
+sets world state, and preserves the recovered resource-binding and persistent
+selector-cache order across source batches and frames. Branch-specific
+material/texture work remains inside the opaque backend binding. Bindings are
+released in reverse order, and external render paths can explicitly invalidate
+the cache. Terminal depth/scene staging, latch cleanup, presentation, and a
+concrete software/GPU implementation remain separate.
 
 Exit gate:
 

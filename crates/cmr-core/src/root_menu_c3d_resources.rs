@@ -54,6 +54,10 @@ impl C3dPreparedResourceId {
     pub const fn index(self) -> usize {
         self.index as usize
     }
+
+    pub(crate) const fn provenance(self) -> C3dPreparedResourceProvenance {
+        C3dPreparedResourceProvenance(self.arena)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

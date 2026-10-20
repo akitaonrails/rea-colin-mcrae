@@ -152,13 +152,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T18:50:18Z
-milestone=plan-root-c3d-frame-commands
+updated_utc=2026-10-20T18:56:11Z
+milestone=bind-root-c3d-batches
 completed=38
 partial=15
 not_started=51
 blocked=0
 total=104
-current_focus=D14-bind-root-c3d-resources-and-terminal-compose
+current_focus=D14-stage-root-c3d-at-terminal-scene-compose
 next_exit_gate=native-root-menu-vertical-slice
 <!-- PROGRESS-TAIL-END -->
