@@ -1,0 +1,13 @@
+[package]
+name = "cmr-assets"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+cmr-formats = { path = "../cmr-formats" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+

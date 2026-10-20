@@ -126,6 +126,11 @@ paths, sentinels, original stored hashes/sizes, storage encoding (`raw` or
 `gzip-cmpr`), optional decoded payload hashes/sizes, and preserved empty
 directories. It must never record the user's absolute source path.
 
+The first reviewed manifest is
+`profiles/installed-eu-derived-assets-v1.json` (SHA-256
+`2b06a119e61d9ab32cc47ecd147f0c29ba961f6888de59138ad625ccde4011c8`).
+It contains metadata for 5,143 files and no payload bytes or absolute paths.
+
 ## Safety and verification
 
 - Reject absolute, parent-traversal, NUL-containing, and ambiguous case-folded
@@ -139,6 +144,8 @@ directories. It must never record the user's absolute source path.
   required logical asset has exactly one owner.
 - Write to a fresh sibling staging directory, verify it, then atomically rename
   it into place. A failed staging directory is never considered ready.
+- Refuse an output whose parent is inside the source installation, and refuse
+  pre-existing output/staging paths instead of overwriting them.
 
 Mutable `save/cmRally.cfg` is runtime state, not an immutable asset. Persistence
 recovery will model it separately and test it using synthetic fixtures.

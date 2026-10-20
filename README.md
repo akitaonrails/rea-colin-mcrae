@@ -48,6 +48,24 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+Verify the currently cataloged source corpus, then import exact asset bytes into
+the ignored runtime directory:
+
+```sh
+mkdir -p runtime-data
+cargo run -q -p cmr-assets -- verify \
+  --source "$CMR_ORIGINAL_DIR" \
+  --profile profiles/installed-eu-derived-assets-v1.json
+cargo run -q -p cmr-assets -- import \
+  --source "$CMR_ORIGINAL_DIR" \
+  --profile profiles/installed-eu-derived-assets-v1.json \
+  --output runtime-data/installed-eu-derived-assets-v1
+```
+
+The profile accepts only the exact locally observed `Game/**` and `New_Fe/**`
+corpus. Other legitimate releases need their own reviewed metadata profiles;
+the importer intentionally has no `--ignore-hash` escape hatch.
+
 The execution plan and evidence policy live in [docs/ROADMAP.md](docs/ROADMAP.md)
 and [docs/EVIDENCE.md](docs/EVIDENCE.md). The reproducible REA workflow is in
 [docs/ANALYSIS.md](docs/ANALYSIS.md), and the asset boundary is described in

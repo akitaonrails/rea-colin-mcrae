@@ -42,6 +42,13 @@ contract tests.
 - Tests and fixtures must be source-owned and redistributable. Tiny synthetic
   fixtures may reproduce a format shape; do not derive fixtures by copying game
   payloads.
+- Recover behavior in test-backed increments. Every completed parser rule,
+  state transition, or compatibility contract needs focused unit coverage,
+  including meaningful malformed and boundary cases, before its milestone
+  commit. Run the full existing suite to prevent regression before advancing.
+- Express platform/backend expectations as shared contract tests so the later
+  modern backend is checked against the same behavior as the compatibility
+  implementation.
 - Make milestone commits only after the relevant checks pass. Use Conventional
   Commit subjects.
 - Update the evidence ledger and roadmap in the same milestone that changes a
