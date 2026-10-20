@@ -152,8 +152,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T19:57:29Z
-milestone=execute-recovered-native-presentation-plan
+updated_utc=2026-10-20T20:00:28Z
+milestone=model-deferred-palette-commit
 completed=38
 partial=18
 not_started=48

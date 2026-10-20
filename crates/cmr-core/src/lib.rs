@@ -3,6 +3,7 @@
 pub mod blit;
 pub mod c3d_batch;
 pub mod config;
+pub mod deferred_palette;
 pub mod display;
 pub mod display_contract;
 pub mod font_assets;

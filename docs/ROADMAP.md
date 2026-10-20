@@ -128,9 +128,11 @@ scene tail. The software backend now executes the bounded branch-zero plan into
 the indexed back buffer with persistent bindings and depth, then atomically
 captures an owned indexed frame and palette at the terminal hook. The separate
 native presentation executor now preserves sample-before-Flip invocation and
-the windowed vblank/fallback sequence behind a typed adapter. Visibility-latch
-cleanup, the 8-bit deferred palette commit, native host adaptation, and the
-unrecovered windowed copy owner remain unimplemented boundaries.
+the windowed vblank/fallback sequence behind a typed adapter. The recovered
+deferred-palette state and depth-8 commit are independently tested, including
+runtime group mapping, both software caches, and sentinel behavior.
+Visibility-latch cleanup, terminal-frame palette integration, native host
+adaptation, and the unrecovered windowed copy owner remain boundaries.
 The six optional root-menu C3D files now load through fixed slots and a bounded,
 byte-preserving parser. All three counted groups expose proven framing: group
 0's raw `u16` values; group 1's typed, borrowed 32/24-byte entry views; and
@@ -209,8 +211,8 @@ viewport, slot presence, variant, and provenance before changing an angle, then
 owns source-ordered submission snapshots and the exact recovered transform and
 numeric draw words. Concrete software binding, depth/scene execution, the pixel
 oracle, and a headless terminal capture are now joined. Visibility-latch
-consumption, the 8-bit deferred palette commit, and native presentation
-adaptation remain the next boundaries.
+consumption, terminal integration of the tested deferred-palette commit, and
+native presentation adaptation remain the next boundaries.
 Prepared resources now map once into an arena-scoped opaque binding catalog.
 The root batch executor consumes a plan, preflights the complete catalog join,
 sets world state, and preserves the recovered resource-binding and persistent

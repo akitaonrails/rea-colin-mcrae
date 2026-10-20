@@ -74,6 +74,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   windowed client-origin/vblank sequencing with subsequent-call VGA fallback;
   native window creation and the separate windowed copy owner remain outside
   this contract.
+- `cmr-core::deferred_palette`: recovered runtime-base logical mapping and
+  current/pending palette state, plus the depth-8-only 256-entry terminal
+  commit into an adapter and both observed software caches; frame-orchestrator
+  integration remains separate.
 - `cmr-video::SoftwareIndexedBackend`: deterministic source-owned front/back
   framebuffers for exact-size indexed copies, recovered index-zero keyed glyph
   copies, and the bounded branch-zero root C3D software oracle; unrecovered
