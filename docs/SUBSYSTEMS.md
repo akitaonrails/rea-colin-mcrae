@@ -132,6 +132,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::source_store::UploadedIndexedBitmap`: shared backend-neutral
   uploaded-bitmap identity and aligned extent used by root resources and ready
   for later frontend-specific pools.
+- `cmr-core::indexed_bitmap_raster`: identity-neutral preflight and execution
+  for persistent indexed bitmaps, including exact source-bound checks after
+  legacy destination clipping.
 - `cmr-core::root_menu_assets`: typed, verified-profile paths for localized
   root chrome, center icons, and normal/`g_` menu objects without asset bytes.
 - `cmr-formats::c3d`: bounded, byte-preserving admission of the observed

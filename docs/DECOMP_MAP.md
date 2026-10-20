@@ -94,6 +94,7 @@ Status markers:
 - [ ] `E10` Parse weather, particles, shadows, and environmental effects.
 - [ ] `E11` Produce representative image-comparison fixtures/tolerances.
 - [x] `E12` Prepare and transactionally upload deduplicated championship logo surfaces.
+- [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 
 ## F. Menus, game state, and persistence
 
@@ -159,13 +160,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T20:50:06Z
-milestone=plan-championship-setup-frame-and-upload-logos
-completed=45
+updated_utc=2026-10-20T20:54:06Z
+milestone=add-checked-generic-indexed-bitmap-execution
+completed=46
 partial=19
 not_started=47
 blocked=0
-total=111
+total=112
 current_focus=F04-E04-championship-setup-pixel-and-car-preview
 next_exit_gate=championship-setup-software-frame-execution
 <!-- PROGRESS-TAIL-END -->

@@ -41,6 +41,8 @@ from the caller-selected verified import; an opt-in reviewed-corpus test covers
 the complete set. Logo surfaces now have a transactional shared-store upload
 path, and an exact backend-neutral setup-frame plan covers title/rows,
 selection geometry, active preview ordering, and paired palette-cache behavior.
+An identity-neutral checked bitmap executor now supplies the shared safe blit
+boundary needed by selection, info-box, logo, and later frontend resources.
 These are platform-neutral compatibility contracts; registry, host clock/input,
 native window, audio, setup-screen pixel execution, later frontend screens, and
 gameplay integrations are not yet complete.

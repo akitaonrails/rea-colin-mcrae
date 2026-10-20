@@ -13,6 +13,7 @@ pub mod display_contract;
 pub mod font_assets;
 pub mod font_raster;
 pub mod frontend;
+pub mod indexed_bitmap_raster;
 pub mod input;
 pub mod localization;
 pub mod localization_assets;
