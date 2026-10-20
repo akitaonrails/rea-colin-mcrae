@@ -22,7 +22,7 @@ use cmr_core::{
 use cmr_formats::{bitmap::BitmapPaletteEntry, riff_palette::PaletteEntry};
 
 use crate::{
-    c3d_software::SoftwareC3dSampledTexture,
+    c3d_software::SoftwareC3dSampledTexture, packed_rgb_target::LogicalMaskedRgbTarget,
     selected_texture_conversion_oracle::SourceOwnedLogicalSelectedTexture,
 };
 
@@ -846,7 +846,63 @@ pub fn compose_championship_car_split_modulate_canonical_rgb_oracle(
     validate_championship_car_split_modulate_no_alpha_oracle_profile(profile)
         .map_err(SoftwareC3dComposeError::Raster)?;
     validate_rgb_target(target_extent, target_pixels, depth.extent())?;
+    let target_width = usize::from(target_extent[0]);
+    compose_championship_car_split_modulate_validated_target(
+        batch,
+        source,
+        depth,
+        |fragment, modulated| {
+            let [x, y] = fragment.position();
+            target_pixels[usize::from(y) * target_width + usize::from(x)] = modulated;
+        },
+    )
+}
 
+/// Composes the bounded alternate championship oracle into logical words for
+/// a separately selected runtime framebuffer format.
+///
+/// The texture has already crossed the source-owned selected-texture
+/// conversion boundary before bilinear filtering. Only depth-passing pixels
+/// are packed through the target's independent RGB masks; uncovered and
+/// depth-rejected logical words remain bit-exact. All fallible validation is
+/// completed before either target words or depth values change.
+///
+/// Logical words are not a legacy byte buffer. This function makes no claim
+/// about driver `Load`, effective device filtering, byte order, row pitch,
+/// dithering, or alpha-enabled rendering.
+pub fn compose_championship_car_split_modulate_logical_masked_rgb_oracle(
+    batch: &SoftwareC3dPreparedLitBatch,
+    source: SoftwareChampionshipCarSplitSource<'_>,
+    depth: &mut SoftwareC3dDepthBuffer,
+    target: &mut LogicalMaskedRgbTarget,
+    profile: SoftwareChampionshipCarSplitOracleProfile,
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dComposeError> {
+    validate_championship_car_split_modulate_no_alpha_oracle_profile(profile)
+        .map_err(SoftwareC3dComposeError::Raster)?;
+    let target_extent = target.extent();
+    validate_target_shape(target_extent, target.words().len(), depth.extent())?;
+
+    let target_width = usize::from(target_extent[0]);
+    compose_championship_car_split_modulate_validated_target(
+        batch,
+        source,
+        depth,
+        |fragment, modulated| {
+            let [x, y] = fragment.position();
+            target.pack_rgb8_at_source_owned_oracle(
+                usize::from(y) * target_width + usize::from(x),
+                modulated,
+            );
+        },
+    )
+}
+
+fn compose_championship_car_split_modulate_validated_target(
+    batch: &SoftwareC3dPreparedLitBatch,
+    source: SoftwareChampionshipCarSplitSource<'_>,
+    depth: &mut SoftwareC3dDepthBuffer,
+    mut write: impl FnMut(SoftwareC3dFragment, [u8; 3]),
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dComposeError> {
     let (texture, black_default) = match source {
         SoftwareChampionshipCarSplitSource::ConvertedTexture(texture) => (Some(texture), false),
         SoftwareChampionshipCarSplitSource::BlackDiffuseDefault => {
@@ -856,8 +912,9 @@ pub fn compose_championship_car_split_modulate_canonical_rgb_oracle(
     };
     validate_prepared_triangles(&batch.0).map_err(SoftwareC3dComposeError::Raster)?;
 
-    let target_width = usize::from(target_extent[0]);
     let texture_extent = texture.map_or([1, 1], SourceOwnedLogicalSelectedTexture::extent);
+    // rasterize_fragments_extent_only performs its remaining extent and batch
+    // validation before its first depth write or callback invocation.
     rasterize_fragments_extent_only(&batch.0, texture_extent, depth, |fragment| {
         let sampled = if black_default {
             [0.0; 3]
@@ -873,8 +930,7 @@ pub fn compose_championship_car_split_modulate_canonical_rgb_oracle(
                 .clamp(0.0, 255.0)
                 .round() as u8
         });
-        let [x, y] = fragment.position();
-        target_pixels[usize::from(y) * target_width + usize::from(x)] = modulated;
+        write(fragment, modulated);
     })
     .map_err(SoftwareC3dComposeError::Raster)
 }
@@ -1215,14 +1271,22 @@ fn validate_indexed_target(
     pixels: &[u8],
     depth_extent: [u16; 2],
 ) -> Result<(), SoftwareC3dComposeError> {
+    validate_target_shape(extent, pixels.len(), depth_extent)
+}
+
+fn validate_target_shape(
+    extent: [u16; 2],
+    actual_len: usize,
+    depth_extent: [u16; 2],
+) -> Result<(), SoftwareC3dComposeError> {
     if extent[0] == 0 || extent[1] == 0 {
         return Err(SoftwareC3dComposeError::InvalidTargetExtent(extent));
     }
     let expected = usize::from(extent[0]) * usize::from(extent[1]);
-    if pixels.len() != expected {
+    if actual_len != expected {
         return Err(SoftwareC3dComposeError::InvalidTargetLength {
             expected,
-            actual: pixels.len(),
+            actual: actual_len,
         });
     }
     if extent != depth_extent {
@@ -1239,23 +1303,7 @@ fn validate_rgb_target(
     pixels: &[[u8; 3]],
     depth_extent: [u16; 2],
 ) -> Result<(), SoftwareC3dComposeError> {
-    if extent[0] == 0 || extent[1] == 0 {
-        return Err(SoftwareC3dComposeError::InvalidTargetExtent(extent));
-    }
-    let expected = usize::from(extent[0]) * usize::from(extent[1]);
-    if pixels.len() != expected {
-        return Err(SoftwareC3dComposeError::InvalidTargetLength {
-            expected,
-            actual: pixels.len(),
-        });
-    }
-    if extent != depth_extent {
-        return Err(SoftwareC3dComposeError::DepthTargetExtentMismatch {
-            depth: depth_extent,
-            target: extent,
-        });
-    }
-    Ok(())
+    validate_target_shape(extent, pixels.len(), depth_extent)
 }
 
 fn full_palette_manhattan_map(
@@ -1723,8 +1771,10 @@ mod tests {
         legacy_c3d_pixel_format::{
             KnownRgbLayout, RawDdPixelFormat, SelectedNonAlphaTextureFormat,
         },
+        packed_rgb_target::{FramebufferRgbFormat, LogicalMaskedRgbTarget},
         selected_texture_conversion_oracle::{
-            SourceOwnedTextureConversionOraclePolicy, convert_selected_texture_source_owned_oracle,
+            SourceOwnedSelectedTextureCategory, SourceOwnedTextureConversionOraclePolicy,
+            convert_selected_texture_source_owned_oracle,
         },
     };
 
@@ -1836,6 +1886,13 @@ mod tests {
             },
             TEXTURE_CONVERSION_POLICY,
         )
+        .unwrap()
+    }
+
+    fn framebuffer_rgb565() -> FramebufferRgbFormat {
+        FramebufferRgbFormat::from_runtime_surface_descriptor(RawDdPixelFormat::from_dwords([
+            32, 0x40, 0, 16, 0xf800, 0x07e0, 0x001f, 0,
+        ]))
         .unwrap()
     }
 
@@ -3113,6 +3170,128 @@ mod tests {
 
         assert_eq!(target, [[4, 0, 0]]);
         assert_ne!(target, [[3, 0, 0]], "raw-RGB filtering would occur first");
+    }
+
+    #[test]
+    fn alternate_compositor_keeps_selected_texture_and_framebuffer_masks_distinct() {
+        let source = sampled_texture_with_palette_entry(1, [0, 129, 0]);
+        let converted_555 = convert_rgb555_texture(&source);
+        let batch = lit_pixel_batch([[1.0; 4]; 3]);
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let mut target = LogicalMaskedRgbTarget::new([1, 1], framebuffer_rgb565()).unwrap();
+
+        let outcome = compose_championship_car_split_modulate_logical_masked_rgb_oracle(
+            &batch,
+            SoftwareChampionshipCarSplitSource::ConvertedTexture(&converted_555),
+            &mut depth,
+            &mut target,
+            alternate_profile(),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.depth_passed(), 1);
+        // RGB555 materialization decodes green 129 as 132; the independent
+        // RGB565 framebuffer then packs 132 to six-bit value 33 (0x420).
+        assert_eq!(target.words(), &[0x0420]);
+        assert_eq!(
+            converted_555.category(),
+            SourceOwnedSelectedTextureCategory::OpaqueRgb16(KnownRgbLayout::Rgb555)
+        );
+        assert_eq!(target.format().layout().masks(), [0xf800, 0x07e0, 0x001f]);
+    }
+
+    #[test]
+    fn logical_masked_alternate_composition_errors_are_atomic() {
+        let converted = convert_palette_texture(&sampled_varying_2x2_texture());
+        let mut malformed = lit_pixel_batch([[1.0; 4]; 3]);
+        malformed.0.triangles[0].vertices[0].position[0] = f32::NAN;
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let mut target = LogicalMaskedRgbTarget::new([1, 1], framebuffer_rgb565()).unwrap();
+        target
+            .replace_from_canonical_rgb([1, 1], &[[17, 203, 49]])
+            .unwrap();
+        let words_before = target.words().to_vec();
+        let depth_before = depth.values().to_vec();
+
+        assert_eq!(
+            compose_championship_car_split_modulate_logical_masked_rgb_oracle(
+                &malformed,
+                SoftwareChampionshipCarSplitSource::ConvertedTexture(&converted),
+                &mut depth,
+                &mut target,
+                alternate_profile(),
+            ),
+            Err(SoftwareC3dComposeError::Raster(
+                SoftwareC3dRasterError::InvalidPreparedTriangle { triangle: 0 }
+            ))
+        );
+        assert_eq!(target.words(), words_before);
+        assert_eq!(depth.values(), depth_before);
+
+        let mut mismatched_depth = SoftwareC3dDepthBuffer::new_far([2, 1]).unwrap();
+        let mismatched_depth_before = mismatched_depth.values().to_vec();
+        assert_eq!(
+            compose_championship_car_split_modulate_logical_masked_rgb_oracle(
+                &lit_pixel_batch([[1.0; 4]; 3]),
+                SoftwareChampionshipCarSplitSource::ConvertedTexture(&converted),
+                &mut mismatched_depth,
+                &mut target,
+                alternate_profile(),
+            ),
+            Err(SoftwareC3dComposeError::DepthTargetExtentMismatch {
+                depth: [2, 1],
+                target: [1, 1],
+            })
+        );
+        assert_eq!(target.words(), words_before);
+        assert_eq!(mismatched_depth.values(), mismatched_depth_before);
+    }
+
+    #[test]
+    fn logical_masked_alternate_composition_preserves_rejected_and_uncovered_words() {
+        let converted = convert_palette_texture(&sampled_varying_2x2_texture());
+        let batch = lit_pixel_batch([[1.0; 4]; 3]);
+        let mut depth = SoftwareC3dDepthBuffer::new_far([2, 1]).unwrap();
+        let mut target = LogicalMaskedRgbTarget::new([2, 1], framebuffer_rgb565()).unwrap();
+        target
+            .replace_from_canonical_rgb([2, 1], &[[17, 203, 49], [91, 7, 222]])
+            .unwrap();
+        let words_before = target.words().to_vec();
+
+        let outcome = compose_championship_car_split_modulate_logical_masked_rgb_oracle(
+            &batch,
+            SoftwareChampionshipCarSplitSource::ConvertedTexture(&converted),
+            &mut depth,
+            &mut target,
+            alternate_profile(),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.covered(), 1);
+        assert_eq!(outcome.depth_passed(), 1);
+        assert_ne!(target.words()[0], words_before[0]);
+        assert_eq!(target.words()[1], words_before[1]);
+
+        let mut rejected_depth = SoftwareC3dDepthBuffer::new_far([2, 1]).unwrap();
+        rejected_depth.values[0] = 0.0;
+        let mut rejected_target =
+            LogicalMaskedRgbTarget::new([2, 1], framebuffer_rgb565()).unwrap();
+        rejected_target
+            .replace_from_canonical_rgb([2, 1], &[[17, 203, 49], [91, 7, 222]])
+            .unwrap();
+        let rejected_words_before = rejected_target.words().to_vec();
+        let rejected = compose_championship_car_split_modulate_logical_masked_rgb_oracle(
+            &batch,
+            SoftwareChampionshipCarSplitSource::ConvertedTexture(&converted),
+            &mut rejected_depth,
+            &mut rejected_target,
+            alternate_profile(),
+        )
+        .unwrap();
+        assert_eq!(rejected.depth_rejected(), 1);
+        assert_eq!(rejected.depth_passed(), 0);
+        assert_eq!(rejected_target.words(), rejected_words_before);
+        assert_eq!(rejected_depth.values(), &[0.0, 1.0]);
     }
 
     #[test]

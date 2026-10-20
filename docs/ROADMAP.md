@@ -275,8 +275,10 @@ source-owned mask utilities. Canonical RGB can be converted into logical masked
 framebuffer words without asserting byte order or pitch. A nominal source-owned
 conversion stage now retains Palette8 storage or materializes RGB555/RGB565
 logical words before the alternate oracle filters and modulates them. Driver
-texture `Load` equivalence, native surface layout, effective filter, dithering,
-alpha pixels, and backend integration remain separate.
+texture `Load` equivalence remains separate; a terminal oracle now packs only
+depth-passing results through independent logical framebuffer masks and leaves
+uncovered words unchanged. Native surface layout, effective filter, dithering,
+alpha pixels, and backend/session integration remain separate.
 
 Exit gate:
 

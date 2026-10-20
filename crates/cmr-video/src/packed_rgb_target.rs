@@ -165,6 +165,15 @@ impl LogicalMaskedRgbTarget {
         &self.words
     }
 
+    /// Packs one canonical RGB value into an already-validated logical pixel.
+    ///
+    /// This crate-private boundary lets a raster compositor update only the
+    /// pixels that pass depth testing. In particular, it does not decode and
+    /// repack untouched words, preserving their complete prior bit pattern.
+    pub(crate) fn pack_rgb8_at_source_owned_oracle(&mut self, index: usize, rgb: [u8; 3]) {
+        self.words[index] = self.format.layout().pack_rgb8(rgb);
+    }
+
     /// Replaces every target word from canonical `[red, green, blue]` pixels.
     ///
     /// All extent and length checks happen before the first write, so every

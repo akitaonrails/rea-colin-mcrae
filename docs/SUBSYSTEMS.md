@@ -161,8 +161,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   deliberately unintegrated canonical-RGB Type-2 MODULATE oracle. The
   `selected_texture_conversion_oracle` first materializes a nominal Palette8,
   RGB555, or RGB565 plane under an explicit no-dither policy; the compositor's
-  type boundary requires that conversion before its named bilinear policy.
-  Driver `Load` behavior, native
+  type boundary requires that conversion before its named bilinear policy. A
+  terminal source-owned compositor can pack depth-passing results through an
+  independently selected logical framebuffer mask while preserving untouched
+  words exactly. Driver `Load` behavior, native
   framebuffer layout, dithering, alpha, and backend presentation remain
   explicit boundaries.
 - `cmr-core::root_menu_c3d_render_state` decodes the game's `0x00008000`
