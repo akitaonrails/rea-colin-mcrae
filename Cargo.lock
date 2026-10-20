@@ -55,8 +55,11 @@ dependencies = [
 name = "cmr-video"
 version = "0.1.0"
 dependencies = [
+ "cmr-assets",
  "cmr-core",
  "cmr-formats",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

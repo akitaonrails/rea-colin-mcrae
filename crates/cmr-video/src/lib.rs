@@ -8,6 +8,8 @@ use cmr_core::display_contract::IndexedVideoBackendProbe;
 use cmr_core::surface::IndexedSurface;
 use cmr_formats::riff_palette::PaletteEntry;
 
+pub mod c3d_software;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceHandle(usize);
 
