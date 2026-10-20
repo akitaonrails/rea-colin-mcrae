@@ -172,7 +172,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   label/content aliasing, source-ordered prepared selectors, exact `-1`
   missing selectors, raw DIB dimension low words, typed failures, and
   transactional per-object rollback. Palette attachment and upload remain
-  separate.
+  separate. Its lower-level policy-driven arena builder now accepts owned car
+  or root identities and explicit append/intern/material/layout policies while
+  preserving the root wrapper's tested output.
 - `cmr-core::root_menu_c3d_topology`: combined fixed-slot resource preparation
   and borrowed topology planning tied to the exact source asset set. It joins
   arena-scoped selectors to ordered group1 records, exposes an opaque

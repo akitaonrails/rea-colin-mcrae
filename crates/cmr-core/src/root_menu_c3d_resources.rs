@@ -15,12 +15,13 @@ use std::{
 use cmr_formats::{
     bitmap::{BitmapError, BitmapLimits, IndexedBitmap, parse_indexed_bitmap},
     c3d::{
-        C3D_BLOB_LABEL_LEN, C3D_BLOB_RECORD_HEADER_LEN, C3dReferenceError, C3dResourceError,
-        C3dResourceView,
+        C3D_BLOB_LABEL_LEN, C3D_BLOB_RECORD_HEADER_LEN, C3dFile, C3dReferenceError,
+        C3dResourceError, C3dResourceView,
     },
 };
 
 use crate::{
+    championship_setup::CanonicalCar,
     root_menu_assets::{RootMenuObjectIdentity, VisualVariant},
     root_menu_c3d_assets::{
         ROOT_MENU_C3D_REQUEST_COUNT, RootMenuC3dAsset, RootMenuC3dSet, RootMenuC3dSlot,
@@ -28,6 +29,93 @@ use crate::{
 };
 
 pub const ROOT_MENU_C3D_RESOURCE_CAPACITY: usize = 2048;
+
+/// Concrete frontend object that first requested a prepared C3D resource.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum FrontendC3dOwner {
+    ChampionshipCar(CanonicalCar),
+    RootMenu(RootMenuC3dSlot),
+}
+
+/// Owned identity of one C3D input. Paths need not be static or root-menu paths.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct C3dSourceIdentity {
+    pub owner: FrontendC3dOwner,
+    pub path: Box<str>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dResourceAllocationPolicy {
+    InternExact,
+    AppendEveryResource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dEntryMaterialPolicy {
+    Mode2Ordinary,
+    Mode2SourceTuples,
+    FixedUniformWord(u32),
+}
+
+/// Explicit inputs and policies supplied to one C3D preparation pass.
+///
+/// Whether these values represent a recovered loader call depends on the
+/// caller; the isolated root adapter is intentionally not authoritative
+/// runtime state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dLoadPolicy {
+    pub mode: u8,
+    pub caller_option: u8,
+    pub caller_flags: u16,
+    pub surface_constructor_flags: u16,
+    pub entry_resource_count: u32,
+    pub allocation: C3dResourceAllocationPolicy,
+    pub surface_layout: C3dSurfaceLayoutGates,
+    pub material: C3dEntryMaterialPolicy,
+}
+
+impl C3dLoadPolicy {
+    #[must_use]
+    pub const fn unknown_render_flag_08(self) -> bool {
+        self.caller_flags & 0x08 != 0
+    }
+}
+
+/// Recovered gates controlling the resource surface layout.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct C3dSurfaceLayoutGates {
+    pub quarter_if_large: bool,
+    pub force_quarter: bool,
+    pub half_if_large: bool,
+    pub expand_width_dominant: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct C3dPreparedResourceOrigin {
+    source: C3dSourceIdentity,
+    source_resource_ordinal: u16,
+    preparation_policy: C3dLoadPolicy,
+}
+
+impl C3dPreparedResourceOrigin {
+    #[must_use]
+    pub const fn source(&self) -> &C3dSourceIdentity {
+        &self.source
+    }
+
+    #[must_use]
+    pub const fn source_resource_ordinal(&self) -> u16 {
+        self.source_resource_ordinal
+    }
+
+    /// Policy supplied to the preparation pass that first allocated this
+    /// resource. For the isolated root compatibility wrapper this is adapter
+    /// metadata, not the later caller-supplied runtime load state.
+    #[must_use]
+    pub const fn preparation_policy(&self) -> C3dLoadPolicy {
+        self.preparation_policy
+    }
+}
 
 static NEXT_RESOURCE_ARENA_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -110,9 +198,7 @@ pub enum C3dPreparedSelector {
 /// and palette remain authoritative.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct C3dPreparedResource {
-    first_slot: RootMenuC3dSlot,
-    first_path: &'static str,
-    first_resource_ordinal: u16,
+    origin: C3dPreparedResourceOrigin,
     source_label: [u8; C3D_BLOB_LABEL_LEN],
     source_dib_extent_low16: [u16; 2],
     bitmap: IndexedBitmap,
@@ -120,18 +206,26 @@ pub struct C3dPreparedResource {
 
 impl C3dPreparedResource {
     #[must_use]
-    pub const fn first_slot(&self) -> RootMenuC3dSlot {
-        self.first_slot
+    pub const fn origin(&self) -> &C3dPreparedResourceOrigin {
+        &self.origin
     }
 
     #[must_use]
-    pub const fn first_path(&self) -> &'static str {
-        self.first_path
+    pub const fn first_root_slot(&self) -> Option<RootMenuC3dSlot> {
+        match self.origin.source.owner {
+            FrontendC3dOwner::RootMenu(slot) => Some(slot),
+            FrontendC3dOwner::ChampionshipCar(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn first_path(&self) -> &str {
+        &self.origin.source.path
     }
 
     #[must_use]
     pub const fn first_resource_ordinal(&self) -> u16 {
-        self.first_resource_ordinal
+        self.origin.source_resource_ordinal
     }
 
     #[must_use]
@@ -227,6 +321,36 @@ impl RootMenuC3dPreparedObject {
     #[must_use]
     pub fn selectors_for_group1(&self, record_index: usize) -> Option<&C3dPreparedGroup1Selectors> {
         self.group1_selectors.get(record_index)
+    }
+}
+
+/// Domain-neutral prepared selectors and owned source identity for one C3D file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct C3dPreparedObject {
+    source: C3dSourceIdentity,
+    policy: C3dLoadPolicy,
+    ordinal_resources: Vec<C3dPreparedResourceId>,
+    group1_selectors: Vec<C3dPreparedGroup1Selectors>,
+}
+
+impl C3dPreparedObject {
+    #[must_use]
+    pub const fn source(&self) -> &C3dSourceIdentity {
+        &self.source
+    }
+
+    #[must_use]
+    pub const fn policy(&self) -> C3dLoadPolicy {
+        self.policy
+    }
+
+    #[must_use]
+    pub fn ordinal_resources(&self) -> &[C3dPreparedResourceId] {
+        &self.ordinal_resources
+    }
+
+    pub fn group1_selectors(&self) -> impl ExactSizeIterator<Item = &C3dPreparedGroup1Selectors> {
+        self.group1_selectors.iter()
     }
 }
 
@@ -358,14 +482,109 @@ impl std::error::Error for RootMenuC3dResourceDiagnostic {
     }
 }
 
+/// Finished domain-neutral prepared-resource arena.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct C3dPreparedArena {
+    arena: C3dPreparedResourceArenaId,
+    resources: Vec<C3dPreparedResource>,
+}
+
+impl C3dPreparedArena {
+    #[must_use]
+    pub const fn provenance(&self) -> C3dPreparedResourceProvenance {
+        C3dPreparedResourceProvenance(self.arena)
+    }
+
+    pub fn resource(
+        &self,
+        id: C3dPreparedResourceId,
+    ) -> Result<&C3dPreparedResource, C3dPreparedResourceAccessError> {
+        if id.arena != self.arena {
+            return Err(C3dPreparedResourceAccessError::Foreign);
+        }
+        self.resources
+            .get(id.index())
+            .ok_or(C3dPreparedResourceAccessError::Unknown {
+                index: id.index(),
+                resource_count: self.resources.len(),
+            })
+    }
+
+    pub fn resources(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (C3dPreparedResourceId, &C3dPreparedResource)> {
+        self.resources
+            .iter()
+            .enumerate()
+            .map(|(index, resource)| (resource_id(self.arena, index), resource))
+    }
+
+    #[must_use]
+    pub fn resource_len(&self) -> usize {
+        self.resources.len()
+    }
+}
+
+/// Transactional builder shared by root-menu and championship-car C3D inputs.
+#[derive(Debug)]
+pub struct C3dPreparedArenaBuilder {
+    arena: C3dPreparedResourceArenaId,
+    resources: Vec<C3dPreparedResource>,
+}
+
+impl C3dPreparedArenaBuilder {
+    pub fn new() -> Result<Self, C3dResourceArenaIdentityExhausted> {
+        Ok(Self {
+            arena: allocate_resource_arena_id()?,
+            resources: Vec::new(),
+        })
+    }
+
+    #[must_use]
+    pub fn resource_len(&self) -> usize {
+        self.resources.len()
+    }
+
+    /// Prepares one whole object, rolling back every resource appended by it
+    /// if bitmap decoding or selector resolution fails.
+    pub fn prepare_object(
+        &mut self,
+        source: C3dSourceIdentity,
+        file: &C3dFile,
+        policy: C3dLoadPolicy,
+        bitmap_limits: BitmapLimits,
+    ) -> Result<C3dPreparedObject, C3dResourcePreparationError> {
+        let checkpoint = self.resources.len();
+        let result = prepare_generic_object(
+            source,
+            file,
+            policy,
+            bitmap_limits,
+            self.arena,
+            &mut self.resources,
+        );
+        if result.is_err() {
+            self.resources.truncate(checkpoint);
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn finish(self) -> C3dPreparedArena {
+        C3dPreparedArena {
+            arena: self.arena,
+            resources: self.resources,
+        }
+    }
+}
+
 /// Owned resource arena plus six fixed optional prepared-object slots.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootMenuC3dResourceSet {
-    arena: C3dPreparedResourceArenaId,
+    arena: C3dPreparedArena,
     variant: VisualVariant,
     slots: [Option<RootMenuC3dPreparedObject>; ROOT_MENU_C3D_REQUEST_COUNT],
     diagnostics: Vec<RootMenuC3dResourceDiagnostic>,
-    resources: Vec<C3dPreparedResource>,
 }
 
 impl RootMenuC3dResourceSet {
@@ -376,7 +595,7 @@ impl RootMenuC3dResourceSet {
 
     #[must_use]
     pub const fn provenance(&self) -> C3dPreparedResourceProvenance {
-        C3dPreparedResourceProvenance(self.arena)
+        self.arena.provenance()
     }
 
     pub fn slots(
@@ -405,33 +624,18 @@ impl RootMenuC3dResourceSet {
         &self,
         id: C3dPreparedResourceId,
     ) -> Result<&C3dPreparedResource, C3dPreparedResourceAccessError> {
-        if id.arena != self.arena {
-            return Err(C3dPreparedResourceAccessError::Foreign);
-        }
-        self.resources
-            .get(id.index())
-            .ok_or(C3dPreparedResourceAccessError::Unknown {
-                index: id.index(),
-                resource_count: self.resources.len(),
-            })
+        self.arena.resource(id)
     }
 
     pub fn resources(
         &self,
     ) -> impl ExactSizeIterator<Item = (C3dPreparedResourceId, &C3dPreparedResource)> {
-        self.resources.iter().enumerate().map(|(index, resource)| {
-            let id = self.resource_id(index);
-            (id, resource)
-        })
+        self.arena.resources()
     }
 
     #[must_use]
     pub fn resource_len(&self) -> usize {
-        self.resources.len()
-    }
-
-    fn resource_id(&self, index: usize) -> C3dPreparedResourceId {
-        resource_id(self.arena, index)
+        self.arena.resource_len()
     }
 }
 
@@ -453,8 +657,7 @@ fn prepare_slots(
     source_slots: [Option<&RootMenuC3dAsset>; ROOT_MENU_C3D_REQUEST_COUNT],
     bitmap_limits: BitmapLimits,
 ) -> Result<RootMenuC3dResourceSet, C3dResourceArenaIdentityExhausted> {
-    let arena = allocate_resource_arena_id()?;
-    let mut resources = Vec::new();
+    let mut builder = C3dPreparedArenaBuilder::new()?;
     let mut slots = std::array::from_fn(|_| None);
     let mut diagnostics = Vec::new();
 
@@ -462,11 +665,22 @@ fn prepare_slots(
         let Some(asset) = source_slots[slot.index()] else {
             continue;
         };
-        let transaction_start = resources.len();
-        match prepare_object(asset, bitmap_limits, arena, &mut resources) {
-            Ok(prepared) => slots[slot.index()] = Some(prepared),
+        let policy = isolated_root_preparation_policy(builder.resource_len() as u32);
+        let source = C3dSourceIdentity {
+            owner: FrontendC3dOwner::RootMenu(asset.slot),
+            path: asset.path.into(),
+        };
+        match builder.prepare_object(source, &asset.file, policy, bitmap_limits) {
+            Ok(prepared) => {
+                slots[slot.index()] = Some(RootMenuC3dPreparedObject {
+                    slot: asset.slot,
+                    identity: asset.identity,
+                    path: asset.path,
+                    ordinal_resources: prepared.ordinal_resources,
+                    group1_selectors: prepared.group1_selectors,
+                });
+            }
             Err(source) => {
-                resources.truncate(transaction_start);
                 diagnostics.push(RootMenuC3dResourceDiagnostic {
                     slot,
                     identity: asset.identity,
@@ -478,22 +692,44 @@ fn prepare_slots(
     }
 
     Ok(RootMenuC3dResourceSet {
-        arena,
+        arena: builder.finish(),
         variant,
         slots,
         diagnostics,
-        resources,
     })
 }
 
-fn prepare_object(
-    asset: &RootMenuC3dAsset,
+/// Compatibility metadata for preparation through the root-only wrapper.
+/// Runtime callers remain authoritative for root mode-2 loader state until
+/// those states are explicitly threaded into this preparation boundary.
+const fn isolated_root_preparation_policy(entry_resource_count: u32) -> C3dLoadPolicy {
+    C3dLoadPolicy {
+        mode: 2,
+        caller_option: 0,
+        caller_flags: 0x11,
+        surface_constructor_flags: 0x35,
+        entry_resource_count,
+        allocation: C3dResourceAllocationPolicy::InternExact,
+        surface_layout: C3dSurfaceLayoutGates {
+            quarter_if_large: false,
+            force_quarter: false,
+            half_if_large: false,
+            expand_width_dominant: true,
+        },
+        material: C3dEntryMaterialPolicy::Mode2Ordinary,
+    }
+}
+
+fn prepare_generic_object(
+    source_identity: C3dSourceIdentity,
+    file: &C3dFile,
+    policy: C3dLoadPolicy,
     bitmap_limits: BitmapLimits,
     arena: C3dPreparedResourceArenaId,
     resources: &mut Vec<C3dPreparedResource>,
-) -> Result<RootMenuC3dPreparedObject, C3dResourcePreparationError> {
-    let mut ordinal_resources = Vec::with_capacity(asset.file.blob_records().len());
-    for (resource_index, record) in asset.file.blob_records().enumerate() {
+) -> Result<C3dPreparedObject, C3dResourcePreparationError> {
+    let mut ordinal_resources = Vec::with_capacity(file.blob_records().len());
+    for (resource_index, record) in file.blob_records().enumerate() {
         let resource_ordinal = u16::try_from(resource_index)
             .expect("C3D group-2 count is represented by a u16 header field");
         let resource_offset = record.offset() + C3D_BLOB_RECORD_HEADER_LEN;
@@ -537,10 +773,11 @@ fn prepare_object(
             dib_extent_low16: source_dib_extent_low16,
             bitmap,
         };
-        let id = intern_resource(
+        let id = allocate_resource(
             resources,
             arena,
-            asset,
+            &source_identity,
+            policy,
             resource_ordinal,
             resource_offset,
             source,
@@ -548,8 +785,7 @@ fn prepare_object(
         ordinal_resources.push(id);
     }
 
-    let mut group1_selectors = asset
-        .file
+    let mut group1_selectors = file
         .group1_records()
         .enumerate()
         .map(|(record_index, record)| C3dPreparedGroup1Selectors {
@@ -558,7 +794,7 @@ fn prepare_object(
             selectors: Vec::with_capacity(record.entries_24().len()),
         })
         .collect::<Vec<_>>();
-    for reference in asset.file.resolve_group2_references() {
+    for reference in file.resolve_group2_references() {
         let reference = reference.map_err(C3dResourcePreparationError::Reference)?;
         let selector = match reference.target() {
             None => C3dPreparedSelector::Missing,
@@ -573,10 +809,9 @@ fn prepare_object(
             .push(selector);
     }
 
-    Ok(RootMenuC3dPreparedObject {
-        slot: asset.slot,
-        identity: asset.identity,
-        path: asset.path,
+    Ok(C3dPreparedObject {
+        source: source_identity,
+        policy,
         ordinal_resources,
         group1_selectors,
     })
@@ -588,20 +823,23 @@ struct DecodedC3dResource {
     bitmap: IndexedBitmap,
 }
 
-fn intern_resource(
+fn allocate_resource(
     resources: &mut Vec<C3dPreparedResource>,
     arena: C3dPreparedResourceArenaId,
-    asset: &RootMenuC3dAsset,
+    source_identity: &C3dSourceIdentity,
+    policy: C3dLoadPolicy,
     resource_ordinal: u16,
     resource_offset: usize,
     source: DecodedC3dResource,
 ) -> Result<C3dPreparedResourceId, C3dResourcePreparationError> {
-    if let Some(index) = resources.iter().position(|resource| {
-        bounded_c_label_eq(&resource.source_label, &source.label)
-            && resource.bitmap.width == source.bitmap.width
-            && resource.bitmap.height == source.bitmap.height
-            && resource.bitmap.pixels == source.bitmap.pixels
-    }) {
+    if policy.allocation == C3dResourceAllocationPolicy::InternExact
+        && let Some(index) = resources.iter().position(|resource| {
+            bounded_c_label_eq(&resource.source_label, &source.label)
+                && resource.bitmap.width == source.bitmap.width
+                && resource.bitmap.height == source.bitmap.height
+                && resource.bitmap.pixels == source.bitmap.pixels
+        })
+    {
         return Ok(resource_id(arena, index));
     }
     if resources.len() == ROOT_MENU_C3D_RESOURCE_CAPACITY {
@@ -613,9 +851,11 @@ fn intern_resource(
     }
     let id = resource_id(arena, resources.len());
     resources.push(C3dPreparedResource {
-        first_slot: asset.slot,
-        first_path: asset.path,
-        first_resource_ordinal: resource_ordinal,
+        origin: C3dPreparedResourceOrigin {
+            source: source_identity.clone(),
+            source_resource_ordinal: resource_ordinal,
+            preparation_policy: policy,
+        },
         source_label: source.label,
         source_dib_extent_low16: source.dib_extent_low16,
         bitmap: source.bitmap,
@@ -663,6 +903,49 @@ fn bounded_c_label_eq(left: &[u8; C3D_BLOB_LABEL_LEN], right: &[u8; C3D_BLOB_LAB
         }
     }
     true
+}
+
+#[cfg(test)]
+fn prepare_object(
+    asset: &RootMenuC3dAsset,
+    bitmap_limits: BitmapLimits,
+    arena: C3dPreparedResourceArenaId,
+    resources: &mut Vec<C3dPreparedResource>,
+) -> Result<C3dPreparedObject, C3dResourcePreparationError> {
+    prepare_generic_object(
+        C3dSourceIdentity {
+            owner: FrontendC3dOwner::RootMenu(asset.slot),
+            path: asset.path.into(),
+        },
+        &asset.file,
+        isolated_root_preparation_policy(resources.len() as u32),
+        bitmap_limits,
+        arena,
+        resources,
+    )
+}
+
+#[cfg(test)]
+fn intern_resource(
+    resources: &mut Vec<C3dPreparedResource>,
+    arena: C3dPreparedResourceArenaId,
+    asset: &RootMenuC3dAsset,
+    resource_ordinal: u16,
+    resource_offset: usize,
+    source: DecodedC3dResource,
+) -> Result<C3dPreparedResourceId, C3dResourcePreparationError> {
+    allocate_resource(
+        resources,
+        arena,
+        &C3dSourceIdentity {
+            owner: FrontendC3dOwner::RootMenu(asset.slot),
+            path: asset.path.into(),
+        },
+        isolated_root_preparation_policy(resources.len() as u32),
+        resource_ordinal,
+        resource_offset,
+        source,
+    )
 }
 
 #[cfg(test)]
@@ -717,7 +1000,10 @@ mod tests {
             first_ids[0]
         );
         let retained = prepared.resource(first_ids[0]).unwrap();
-        assert_eq!(retained.first_slot(), RootMenuC3dSlot::Championship);
+        assert_eq!(
+            retained.first_root_slot(),
+            Some(RootMenuC3dSlot::Championship)
+        );
         assert_eq!(retained.first_resource_ordinal(), 0);
         assert_eq!(retained.source_label(), &label_a);
         assert_eq!(retained.source_dib_extent_low16(), [1, 1]);
@@ -806,7 +1092,7 @@ mod tests {
         );
 
         let unknown = C3dPreparedResourceId {
-            arena: first.arena,
+            arena: first.arena.arena,
             index: 1,
         };
         assert_eq!(
@@ -1026,7 +1312,10 @@ mod tests {
             .nth(1)
             .map(|(_, resource)| resource)
             .unwrap();
-        assert_eq!(second_resource.first_slot(), RootMenuC3dSlot::TimeTrial);
+        assert_eq!(
+            second_resource.first_root_slot(),
+            Some(RootMenuC3dSlot::TimeTrial)
+        );
         assert_eq!(
             prepared
                 .slots()
@@ -1189,6 +1478,276 @@ mod tests {
         assert_eq!(prepared.resource_len(), 0);
         assert_eq!(prepared.diagnostics().len(), 0);
         assert!(prepared.slots().all(|(_, object)| object.is_none()));
+    }
+
+    #[test]
+    fn generic_builder_applies_append_vs_intern_policy_without_losing_origin_policy() {
+        let duplicate = (*b"GENERIC-DUPE", indexed_bmp(7, 9, 1, 8));
+        let append_asset = object(
+            RootMenuC3dSlot::Championship,
+            &[vec![0, 1]],
+            &[duplicate.clone(), duplicate.clone()],
+        );
+        let intern_asset = object(
+            RootMenuC3dSlot::Rally,
+            &[vec![0]],
+            std::slice::from_ref(&duplicate),
+        );
+        let append_policy = mode8_policy(0);
+        let intern_policy = isolated_root_preparation_policy(2);
+        let mut builder = C3dPreparedArenaBuilder::new().unwrap();
+
+        let appended = builder
+            .prepare_object(
+                C3dSourceIdentity {
+                    owner: FrontendC3dOwner::ChampionshipCar(CanonicalCar::Subaru),
+                    path: String::from("Cars/Transient/Subaru.c3d").into_boxed_str(),
+                },
+                &append_asset.file,
+                append_policy,
+                BitmapLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            appended
+                .ordinal_resources()
+                .iter()
+                .map(|id| id.index())
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
+
+        let interned = builder
+            .prepare_object(
+                C3dSourceIdentity {
+                    owner: FrontendC3dOwner::RootMenu(RootMenuC3dSlot::Rally),
+                    path: "Root/Rally.c3d".into(),
+                },
+                &intern_asset.file,
+                intern_policy,
+                BitmapLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(interned.ordinal_resources()[0].index(), 0);
+        assert_eq!(builder.resource_len(), 2);
+
+        let arena = builder.finish();
+        let retained = arena.resource(interned.ordinal_resources()[0]).unwrap();
+        assert_eq!(retained.origin().preparation_policy(), append_policy);
+        assert_eq!(
+            retained.origin().source().owner,
+            FrontendC3dOwner::ChampionshipCar(CanonicalCar::Subaru)
+        );
+        assert_eq!(retained.first_root_slot(), None);
+        assert_eq!(
+            retained.origin().source().path.as_ref(),
+            "Cars/Transient/Subaru.c3d"
+        );
+        assert!(
+            retained
+                .origin()
+                .preparation_policy()
+                .unknown_render_flag_08()
+        );
+    }
+
+    #[test]
+    fn root_wrapper_matches_the_generic_mode2_arena_and_selector_snapshot() {
+        let asset = object(
+            RootMenuC3dSlot::Options,
+            &[vec![1, -1, 0, 1]],
+            &[
+                (*b"PARITY-FIRST", indexed_bmp(1, 10, 1, 8)),
+                (*b"PARITY-SECON", indexed_bmp(2, 20, 1, 8)),
+            ],
+        );
+        let root = prepare_slots(
+            VisualVariant::Normal,
+            slot_refs([None, None, None, None, Some(&asset), None]),
+            BitmapLimits::default(),
+        )
+        .unwrap();
+        let mut builder = C3dPreparedArenaBuilder::new().unwrap();
+        let generic_object = builder
+            .prepare_object(
+                C3dSourceIdentity {
+                    owner: FrontendC3dOwner::RootMenu(RootMenuC3dSlot::Options),
+                    path: asset.path.into(),
+                },
+                &asset.file,
+                isolated_root_preparation_policy(0),
+                BitmapLimits::default(),
+            )
+            .unwrap();
+        let generic = builder.finish();
+
+        let root_resources = root
+            .resources()
+            .map(|(id, resource)| {
+                (
+                    id.index(),
+                    *resource.source_label(),
+                    resource.source_dib_extent_low16(),
+                    resource.bitmap().clone(),
+                    resource.origin().clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let generic_resources = generic
+            .resources()
+            .map(|(id, resource)| {
+                (
+                    id.index(),
+                    *resource.source_label(),
+                    resource.source_dib_extent_low16(),
+                    resource.bitmap().clone(),
+                    resource.origin().clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(root_resources, generic_resources);
+
+        let selector_snapshot = |selectors: &[C3dPreparedSelector]| {
+            selectors
+                .iter()
+                .map(|selector| match selector {
+                    C3dPreparedSelector::Resource(id) => Some(id.index()),
+                    C3dPreparedSelector::Missing => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let root_object = root.get(RootMenuC3dSlot::Options).unwrap();
+        assert_eq!(
+            root_object
+                .ordinal_resources()
+                .iter()
+                .map(|id| id.index())
+                .collect::<Vec<_>>(),
+            generic_object
+                .ordinal_resources()
+                .iter()
+                .map(|id| id.index())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            root_object
+                .group1_selectors()
+                .map(|group| selector_snapshot(group.selectors()))
+                .collect::<Vec<_>>(),
+            generic_object
+                .group1_selectors()
+                .map(|group| selector_snapshot(group.selectors()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn isolated_root_preparation_policy_is_not_the_authoritative_runtime_load_state() {
+        use crate::root_menu_c3d_runtime::{C3dMode2CornerSource, C3dMode2LoadState};
+
+        let asset = object(
+            RootMenuC3dSlot::Championship,
+            &[vec![0]],
+            &[(*b"POLICY-SCOPE", indexed_bmp(1, 2, 1, 8))],
+        );
+        let prepared = prepare_slots(
+            VisualVariant::Normal,
+            slot_refs([Some(&asset), None, None, None, None, None]),
+            BitmapLimits::default(),
+        )
+        .unwrap();
+        let preparation_policy = prepared
+            .resources()
+            .next()
+            .unwrap()
+            .1
+            .origin()
+            .preparation_policy();
+        let caller_runtime_policy = C3dLoadPolicy::root_mode2(C3dMode2LoadState {
+            prepared_resource_count: 55,
+            corner_source: C3dMode2CornerSource::SourceEntryTuples,
+            surface_layout: C3dSurfaceLayoutGates::default(),
+        });
+
+        assert_eq!(preparation_policy.entry_resource_count, 0);
+        assert_eq!(caller_runtime_policy.entry_resource_count, 55);
+        assert_eq!(
+            preparation_policy.material,
+            C3dEntryMaterialPolicy::Mode2Ordinary
+        );
+        assert_eq!(
+            caller_runtime_policy.material,
+            C3dEntryMaterialPolicy::Mode2SourceTuples
+        );
+        assert_ne!(preparation_policy, caller_runtime_policy);
+    }
+
+    #[test]
+    fn generic_builder_rolls_back_failed_object_and_preserves_prior_resources() {
+        let good = object(
+            RootMenuC3dSlot::Championship,
+            &[vec![0]],
+            &[(*b"GENERIC-GOOD", indexed_bmp(3, 4, 1, 8))],
+        );
+        let failing = object(
+            RootMenuC3dSlot::Rally,
+            &[vec![0]],
+            &[
+                (*b"GENERIC-NEW!", indexed_bmp(5, 6, 1, 8)),
+                (*b"GENERIC-BAD!", b"opaque".to_vec()),
+            ],
+        );
+        let mut builder = C3dPreparedArenaBuilder::new().unwrap();
+        let prepared = builder
+            .prepare_object(
+                C3dSourceIdentity {
+                    owner: FrontendC3dOwner::ChampionshipCar(CanonicalCar::Ibiza),
+                    path: "Cars/Ibiza.c3d".into(),
+                },
+                &good.file,
+                mode8_policy(0),
+                BitmapLimits::default(),
+            )
+            .unwrap();
+        let retained_id = prepared.ordinal_resources()[0];
+
+        assert!(matches!(
+            builder.prepare_object(
+                C3dSourceIdentity {
+                    owner: FrontendC3dOwner::ChampionshipCar(CanonicalCar::Skoda),
+                    path: "Cars/Skoda.c3d".into(),
+                },
+                &failing.file,
+                mode8_policy(1),
+                BitmapLimits::default(),
+            ),
+            Err(C3dResourcePreparationError::UnsupportedResource {
+                resource_ordinal: 1,
+                kind: UnsupportedC3dResourceKind::Unknown,
+                ..
+            })
+        ));
+        assert_eq!(builder.resource_len(), 1);
+        let arena = builder.finish();
+        assert_eq!(arena.resource(retained_id).unwrap().bitmap().pixels, [3]);
+    }
+
+    const fn mode8_policy(entry_resource_count: u32) -> C3dLoadPolicy {
+        C3dLoadPolicy {
+            mode: 8,
+            caller_option: 1,
+            caller_flags: 0x18,
+            surface_constructor_flags: 0x15,
+            entry_resource_count,
+            allocation: C3dResourceAllocationPolicy::AppendEveryResource,
+            surface_layout: C3dSurfaceLayoutGates {
+                quarter_if_large: false,
+                force_quarter: false,
+                half_if_large: false,
+                expand_width_dominant: true,
+            },
+            material: C3dEntryMaterialPolicy::FixedUniformWord(0x9696_9696),
+        }
     }
 
     enum ExpectedError {

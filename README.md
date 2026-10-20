@@ -49,6 +49,10 @@ text path validates complete font work before issuing frame effects. Available
 setup text and 2D bitmap commands now execute in their recovered order after
 whole-frame preflight; info formatting, car C3D, palette integration, and the
 animation timer remain explicit downstream work.
+The C3D resource-preparation kernel now has explicit domain and mode policies,
+so championship mode 8 can append resources without being forced through the
+root menu's mode-2 slot types. The shared car-first frontend arena and car
+vertex execution remain the next C3D milestones.
 These are platform-neutral compatibility contracts; registry, host clock/input,
 native window, audio, setup-screen pixel execution, later frontend screens, and
 gameplay integrations are not yet complete.

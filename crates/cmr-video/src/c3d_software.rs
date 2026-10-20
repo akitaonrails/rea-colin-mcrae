@@ -73,7 +73,9 @@ impl SoftwareC3dRetainedSource {
     #[must_use]
     pub fn from_prepared(resource: &C3dPreparedResource) -> Self {
         Self::from_bitmap(
-            resource.first_slot(),
+            resource
+                .first_root_slot()
+                .expect("root software binding contains only root-owned C3D resources"),
             resource.bitmap(),
             resource.source_dib_extent_low16(),
             resource.surface_color_key_index(),

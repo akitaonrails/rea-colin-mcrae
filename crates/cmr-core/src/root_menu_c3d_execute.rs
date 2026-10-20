@@ -101,7 +101,7 @@ impl<H> RootMenuC3dBindingCatalog<H> {
 pub struct RootMenuC3dBindingBuildError<E> {
     pub resource_id: C3dPreparedResourceId,
     pub first_slot: crate::root_menu_c3d_assets::RootMenuC3dSlot,
-    pub first_path: &'static str,
+    pub first_path: Box<str>,
     pub first_resource_ordinal: u16,
     pub source: E,
 }
@@ -139,8 +139,10 @@ pub fn bind_root_menu_c3d_resources<H, E>(
             Err(source) => {
                 return Err(RootMenuC3dBindingBuildError {
                     resource_id,
-                    first_slot: resource.first_slot(),
-                    first_path: resource.first_path(),
+                    first_slot: resource
+                        .first_root_slot()
+                        .expect("root topology contains only root-owned C3D resources"),
+                    first_path: resource.first_path().into(),
                     first_resource_ordinal: resource.first_resource_ordinal(),
                     source,
                 });

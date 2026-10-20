@@ -15,8 +15,9 @@ use crate::{
     root_menu_assets::{RootMenuObjectIdentity, VisualVariant},
     root_menu_c3d_assets::{ROOT_MENU_C3D_REQUEST_COUNT, RootMenuC3dSlot},
     root_menu_c3d_resources::{
-        C3dPreparedResourceAccessError, C3dPreparedResourceId, C3dPreparedResourceProvenance,
-        C3dPreparedSelector,
+        C3dEntryMaterialPolicy, C3dLoadPolicy, C3dPreparedResourceAccessError,
+        C3dPreparedResourceId, C3dPreparedResourceProvenance, C3dPreparedSelector,
+        C3dResourceAllocationPolicy,
     },
     root_menu_c3d_topology::{
         RootMenuC3dGroup0Topology, RootMenuC3dGroup1Topology, RootMenuC3dObjectTopology,
@@ -37,14 +38,7 @@ pub enum C3dMode2CornerSource {
     SourceEntryTuples,
 }
 
-/// Recovered gates controlling the resource surface layout used by mode 2.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct C3dSurfaceLayoutGates {
-    pub quarter_if_large: bool,
-    pub force_quarter: bool,
-    pub half_if_large: bool,
-    pub expand_width_dominant: bool,
-}
+pub use crate::root_menu_c3d_resources::C3dSurfaceLayoutGates;
 
 /// State supplied independently to one root-menu C3D loader call.
 ///
@@ -55,6 +49,28 @@ pub struct C3dMode2LoadState {
     pub prepared_resource_count: u32,
     pub corner_source: C3dMode2CornerSource,
     pub surface_layout: C3dSurfaceLayoutGates,
+}
+
+impl C3dLoadPolicy {
+    /// Adapts the existing root mode-2 state without changing its behavior.
+    #[must_use]
+    pub const fn root_mode2(load_state: C3dMode2LoadState) -> Self {
+        Self {
+            mode: 2,
+            caller_option: 0,
+            caller_flags: 0x11,
+            surface_constructor_flags: 0x35,
+            entry_resource_count: load_state.prepared_resource_count,
+            allocation: C3dResourceAllocationPolicy::InternExact,
+            surface_layout: load_state.surface_layout,
+            material: match load_state.corner_source {
+                C3dMode2CornerSource::OrdinaryDefaults => C3dEntryMaterialPolicy::Mode2Ordinary,
+                C3dMode2CornerSource::SourceEntryTuples => {
+                    C3dEntryMaterialPolicy::Mode2SourceTuples
+                }
+            },
+        }
+    }
 }
 
 /// Fixed per-slot loader-entry states for the six independent root calls.
@@ -821,7 +837,9 @@ fn apply_resource_scaling(
                     source,
                 }
             })?;
-            let first_slot = resource.first_slot();
+            let first_slot = resource
+                .first_root_slot()
+                .expect("root topology contains only root-owned C3D resources");
             let [source_width, source_height] = resource.source_dib_extent_low16();
             let layout = derive_surface_layout(
                 source_width,

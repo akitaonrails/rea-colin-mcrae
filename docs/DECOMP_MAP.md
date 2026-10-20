@@ -164,8 +164,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T21:06:22Z
-milestone=execute-preflighted-championship-2d-frame
+updated_utc=2026-10-20T21:06:39Z
+milestone=extract-policy-driven-c3d-preparation-arena
 completed=49
 partial=20
 not_started=47

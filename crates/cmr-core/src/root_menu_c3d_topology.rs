@@ -1424,7 +1424,9 @@ mod tests {
         let catalog = bind_root_menu_c3d_resources(&topology, |id, resource| {
             mapped.push((
                 id.index(),
-                resource.first_slot(),
+                resource
+                    .first_root_slot()
+                    .expect("root topology contains only root-owned C3D resources"),
                 resource.first_resource_ordinal(),
                 resource.surface_color_key_index(),
             ));
