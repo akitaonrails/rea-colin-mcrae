@@ -16,6 +16,7 @@ pub mod root_menu_bitmap_assets;
 pub mod root_menu_bitmap_raster;
 pub mod root_menu_footer;
 pub mod root_menu_visual;
+pub mod source_store;
 pub mod startup;
 pub mod startup_display;
 pub mod startup_surface;
