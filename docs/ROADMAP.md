@@ -114,7 +114,9 @@ holes, isolated required rollback, repeated-frame reuse, and global teardown.
 Host clock/input, native window execution, root visual-command execution, the
 rest of root-frame composition, and presentation remain before the vertical-
 slice exit gate. Root-footer text reaches a tested software back-buffer pixel
-through localization, the shared store, and the persistent font pool.
+through localization, the shared store, and the persistent font pool. Root
+visual transcripts now name fixed bitmap slots directly; opaque handles remain
+only for the still-unimplemented C3D path.
 
 Exit gate:
 

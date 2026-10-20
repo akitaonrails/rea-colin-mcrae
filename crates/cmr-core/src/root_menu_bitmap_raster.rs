@@ -540,6 +540,7 @@ mod tests {
     use crate::font_assets::{FONT_COUNT, FontSet, FontStyle};
     use crate::font_raster::UploadedFontPool;
     use crate::root_menu_bitmap_assets::RootMenuBitmapAsset;
+    use crate::root_menu_visual::RootVisualAssets;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum BackendError {
@@ -947,6 +948,11 @@ mod tests {
         assert!(uploaded.pool.is_loaded(RootMenuBitmapSlot::MainShadow));
         assert!(!uploaded.pool.is_loaded(RootMenuBitmapSlot::Animation0));
         assert!(uploaded.pool.is_loaded(RootMenuBitmapSlot::Animation1));
+        let visual_assets = RootVisualAssets::from_bitmap_pool(&uploaded.pool, [None; 6]).unwrap();
+        assert!(!visual_assets.selected_chrome_loaded);
+        assert!(visual_assets.shadow_loaded);
+        assert!(!visual_assets.animations_loaded[0]);
+        assert!(visual_assets.animations_loaded[1]);
         assert_eq!(
             store.uploaded_source_count(),
             ROOT_MENU_BITMAP_REQUEST_COUNT - 2

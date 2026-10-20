@@ -5,6 +5,7 @@
 //! intentionally absent: static analysis showed that this screen uses
 //! bitmap/C3D visuals, not the generic entry-label renderer.
 
+use std::fmt;
 use std::num::NonZeroU32;
 
 use crate::{
@@ -12,6 +13,8 @@ use crate::{
     font_assets::FontStyle,
     frontend::{FrontendPhase, ROOT_FOOTER_TEXT_INDEX, RootSelection},
     localization::Language,
+    root_menu_bitmap_assets::RootMenuBitmapSlot,
+    root_menu_bitmap_raster::UploadedRootMenuBitmapPool,
 };
 
 pub const ROOT_ENTRY_COUNT: usize = 7;
@@ -29,6 +32,23 @@ pub const ROOT_DORMANT_ENTRY_FONT_STYLE: FontStyle = FontStyle::Options;
 pub const ROOT_DORMANT_TITLE_FONT_STYLE: FontStyle = FontStyle::RedDynamic;
 
 pub const CENTER_VISUAL_BY_SELECTION: [usize; ROOT_ENTRY_COUNT] = [0, 0, 1, 2, 3, 4, 5];
+pub const ANIMATION_BITMAP_SLOTS: [RootMenuBitmapSlot; ROOT_ENTRY_COUNT] = [
+    RootMenuBitmapSlot::Animation0,
+    RootMenuBitmapSlot::Animation1,
+    RootMenuBitmapSlot::Animation2,
+    RootMenuBitmapSlot::Animation3,
+    RootMenuBitmapSlot::Animation4,
+    RootMenuBitmapSlot::Animation5,
+    RootMenuBitmapSlot::Animation6,
+];
+pub const CENTER_BITMAP_SLOTS: [RootMenuBitmapSlot; CENTER_VISUAL_COUNT] = [
+    RootMenuBitmapSlot::ChampionshipGlobe,
+    RootMenuBitmapSlot::TimeTrialGlobe,
+    RootMenuBitmapSlot::Cone,
+    RootMenuBitmapSlot::Spanner,
+    RootMenuBitmapSlot::Disk,
+    RootMenuBitmapSlot::Quit,
+];
 
 pub const CHROME_SPECS: [ChromeSpec; ROOT_ENTRY_COUNT] = [
     ChromeSpec::new(Rect::new(0, 0, 256, 45), Point::new(178, 394), 0x0000),
@@ -95,7 +115,8 @@ impl ChromeSpec {
     }
 }
 
-/// Backend-owned non-null identifier. It is compared and echoed, never dereferenced.
+/// Backend-owned non-null C3D identifier. It is compared and echoed, never
+/// dereferenced. Indexed bitmaps use [`RootMenuBitmapSlot`] instead.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct VisualHandle(NonZeroU32);
 
@@ -116,16 +137,79 @@ impl VisualHandle {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootVisualAssets {
-    /// Required by the recovered frontend loader.
-    pub backdrop: VisualHandle,
     /// Decoded source dimensions used by the recovered full-rectangle guard.
     pub backdrop_extent: DisplayExtent,
-    pub shadow: Option<VisualHandle>,
-    pub animations: [Option<VisualHandle>; ROOT_ENTRY_COUNT],
-    pub selected_chrome: Option<VisualHandle>,
-    /// Required by the recovered frontend loader, in center-visual slot order.
-    pub center_icons: [VisualHandle; CENTER_VISUAL_COUNT],
+    pub shadow_loaded: bool,
+    pub animations_loaded: [bool; ROOT_ENTRY_COUNT],
+    pub selected_chrome_loaded: bool,
     pub c3d_objects: [Option<VisualHandle>; CENTER_VISUAL_COUNT],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootVisualAssetError {
+    MissingRequiredBitmap(RootMenuBitmapSlot),
+    BackdropExtentOutOfRange { width: u32, height: u32 },
+}
+
+impl fmt::Display for RootVisualAssetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingRequiredBitmap(slot) => {
+                write!(
+                    formatter,
+                    "required root visual bitmap {slot:?} is not loaded"
+                )
+            }
+            Self::BackdropExtentOutOfRange { width, height } => write!(
+                formatter,
+                "root backdrop extent {width}x{height} is outside the positive u16 range"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RootVisualAssetError {}
+
+impl RootVisualAssets {
+    pub fn from_bitmap_pool(
+        pool: &UploadedRootMenuBitmapPool,
+        c3d_objects: [Option<VisualHandle>; CENTER_VISUAL_COUNT],
+    ) -> Result<Self, RootVisualAssetError> {
+        for slot in [
+            RootMenuBitmapSlot::Backdrop,
+            RootMenuBitmapSlot::Selection,
+            RootMenuBitmapSlot::ChampionshipGlobe,
+            RootMenuBitmapSlot::TimeTrialGlobe,
+            RootMenuBitmapSlot::Cone,
+            RootMenuBitmapSlot::Spanner,
+            RootMenuBitmapSlot::Disk,
+            RootMenuBitmapSlot::Quit,
+        ] {
+            if !pool.is_loaded(slot) {
+                return Err(RootVisualAssetError::MissingRequiredBitmap(slot));
+            }
+        }
+        let (width, height) = pool
+            .extent(RootMenuBitmapSlot::Backdrop)
+            .expect("required backdrop presence was checked");
+        let backdrop_extent = DisplayExtent {
+            width: u16::try_from(width)
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or(RootVisualAssetError::BackdropExtentOutOfRange { width, height })?,
+            height: u16::try_from(height)
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or(RootVisualAssetError::BackdropExtentOutOfRange { width, height })?,
+        };
+        Ok(Self {
+            backdrop_extent,
+            shadow_loaded: pool.is_loaded(RootMenuBitmapSlot::MainShadow),
+            animations_loaded: ANIMATION_BITMAP_SLOTS.map(|slot| pool.is_loaded(slot)),
+            selected_chrome_loaded: pool.is_loaded(RootMenuBitmapSlot::MainSelected),
+            c3d_objects,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -146,24 +230,24 @@ pub struct RootRenderInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RenderCommand {
     Backdrop {
-        asset: VisualHandle,
+        slot: RootMenuBitmapSlot,
         source: Rect,
         destination: Point,
     },
     ChromeShadow {
-        asset: VisualHandle,
+        slot: RootMenuBitmapSlot,
         entry: u8,
         source: Rect,
         destination: Point,
     },
     ChromeAnimation {
-        asset: VisualHandle,
+        slot: RootMenuBitmapSlot,
         entry: u8,
         source: Rect,
         destination: Point,
     },
     SelectedChrome {
-        asset: VisualHandle,
+        slot: RootMenuBitmapSlot,
         entry: u8,
         source: Rect,
         destination: Point,
@@ -174,7 +258,7 @@ pub enum RenderCommand {
         flags: u8,
     },
     CenterIcon {
-        asset: VisualHandle,
+        slot: RootMenuBitmapSlot,
         visual_index: u8,
         destination: Point,
     },
@@ -213,7 +297,7 @@ pub fn root_render_transcript(
     let backdrop_source = backdrop_source(input);
     if source_fits(backdrop_source, assets.backdrop_extent) {
         commands.push(RenderCommand::Backdrop {
-            asset: assets.backdrop,
+            slot: RootMenuBitmapSlot::Backdrop,
             source: backdrop_source,
             destination: Point::new(0, 0),
         });
@@ -226,25 +310,25 @@ pub fn root_render_transcript(
                 continue;
             }
             let source = chrome_source_rect(input.language, index);
-            if let Some(asset) = assets.shadow {
+            if assets.shadow_loaded {
                 commands.push(RenderCommand::ChromeShadow {
-                    asset,
+                    slot: RootMenuBitmapSlot::MainShadow,
                     entry: index as u8,
                     source,
                     destination: spec.destination.offset(2, 2),
                 });
             }
-            if let Some(asset) = assets.selected_chrome {
-                if let Some(animation) = assets.animations[index] {
+            if assets.selected_chrome_loaded {
+                if assets.animations_loaded[index] {
                     commands.push(RenderCommand::ChromeAnimation {
-                        asset: animation,
+                        slot: ANIMATION_BITMAP_SLOTS[index],
                         entry: index as u8,
                         source: CHROME_ANIMATION_SOURCE,
                         destination: CHROME_ANIMATION_DESTINATION,
                     });
                 }
                 commands.push(RenderCommand::SelectedChrome {
-                    asset,
+                    slot: RootMenuBitmapSlot::MainSelected,
                     entry: index as u8,
                     source,
                     destination: spec.destination,
@@ -262,7 +346,7 @@ pub fn root_render_transcript(
         let selection = usize::from(input.selection.index());
         let visual = CENTER_VISUAL_BY_SELECTION[selection];
         commands.push(RenderCommand::CenterIcon {
-            asset: assets.center_icons[visual],
+            slot: CENTER_BITMAP_SLOTS[visual],
             visual_index: visual as u8,
             destination: center_icon_destination(input),
         });
@@ -343,15 +427,13 @@ mod tests {
 
     fn complete_assets() -> RootVisualAssets {
         RootVisualAssets {
-            backdrop: handle(1),
             backdrop_extent: DisplayExtent {
                 width: 1280,
                 height: 720,
             },
-            shadow: Some(handle(2)),
-            animations: std::array::from_fn(|index| Some(handle(10 + index as u32))),
-            selected_chrome: Some(handle(20)),
-            center_icons: std::array::from_fn(|index| handle(30 + index as u32)),
+            shadow_loaded: true,
+            animations_loaded: [true; ROOT_ENTRY_COUNT],
+            selected_chrome_loaded: true,
             c3d_objects: std::array::from_fn(|index| Some(handle(40 + index as u32))),
         }
     }
@@ -371,15 +453,15 @@ mod tests {
 
     fn backdrop() -> RenderCommand {
         RenderCommand::Backdrop {
-            asset: handle(1),
+            slot: RootMenuBitmapSlot::Backdrop,
             source: Rect::new(640, 240, 640, 480),
             destination: Point::new(0, 0),
         }
     }
 
-    fn center_icon(asset: VisualHandle, visual_index: u8) -> RenderCommand {
+    fn center_icon(visual_index: u8) -> RenderCommand {
         RenderCommand::CenterIcon {
-            asset,
+            slot: CENTER_BITMAP_SLOTS[usize::from(visual_index)],
             visual_index,
             destination: Point::new(232, 124),
         }
@@ -404,6 +486,29 @@ mod tests {
         }
         assert_eq!(CHROME_ANIMATION_SOURCE, Rect::new(0, 0, 400, 400));
         assert_eq!(CHROME_ANIMATION_DESTINATION, Point::new(128, 40));
+        assert_eq!(
+            ANIMATION_BITMAP_SLOTS,
+            [
+                RootMenuBitmapSlot::Animation0,
+                RootMenuBitmapSlot::Animation1,
+                RootMenuBitmapSlot::Animation2,
+                RootMenuBitmapSlot::Animation3,
+                RootMenuBitmapSlot::Animation4,
+                RootMenuBitmapSlot::Animation5,
+                RootMenuBitmapSlot::Animation6,
+            ]
+        );
+        assert_eq!(
+            CENTER_BITMAP_SLOTS,
+            [
+                RootMenuBitmapSlot::ChampionshipGlobe,
+                RootMenuBitmapSlot::TimeTrialGlobe,
+                RootMenuBitmapSlot::Cone,
+                RootMenuBitmapSlot::Spanner,
+                RootMenuBitmapSlot::Disk,
+                RootMenuBitmapSlot::Quit,
+            ]
+        );
     }
 
     #[test]
@@ -447,7 +552,7 @@ mod tests {
             let mut expected = vec![
                 backdrop(),
                 RenderCommand::ChromeShadow {
-                    asset: handle(2),
+                    slot: RootMenuBitmapSlot::MainShadow,
                     entry: selection,
                     source: CHROME_SPECS[usize::from(selection)].source,
                     destination: CHROME_SPECS[usize::from(selection)]
@@ -455,13 +560,13 @@ mod tests {
                         .offset(2, 2),
                 },
                 RenderCommand::ChromeAnimation {
-                    asset: assets.animations[usize::from(selection)].unwrap(),
+                    slot: ANIMATION_BITMAP_SLOTS[usize::from(selection)],
                     entry: selection,
                     source: CHROME_ANIMATION_SOURCE,
                     destination: CHROME_ANIMATION_DESTINATION,
                 },
                 RenderCommand::SelectedChrome {
-                    asset: handle(20),
+                    slot: RootMenuBitmapSlot::MainSelected,
                     entry: selection,
                     source: CHROME_SPECS[usize::from(selection)].source,
                     destination: CHROME_SPECS[usize::from(selection)].destination,
@@ -471,11 +576,30 @@ mod tests {
                     position: ROOT_FOOTER_POSITION,
                     flags: ROOT_FOOTER_FLAGS,
                 },
-                center_icon(assets.center_icons[visual], visual as u8),
+                center_icon(visual as u8),
             ];
             expected.extend(expected_object);
             expected.push(RenderCommand::ComposeAndPresent);
             assert_eq!(commands, expected, "selection {selection}");
+            assert!(!commands.iter().any(|command| matches!(
+                command,
+                RenderCommand::Backdrop {
+                    slot: RootMenuBitmapSlot::Selection,
+                    ..
+                } | RenderCommand::ChromeShadow {
+                    slot: RootMenuBitmapSlot::Selection,
+                    ..
+                } | RenderCommand::ChromeAnimation {
+                    slot: RootMenuBitmapSlot::Selection,
+                    ..
+                } | RenderCommand::SelectedChrome {
+                    slot: RootMenuBitmapSlot::Selection,
+                    ..
+                } | RenderCommand::CenterIcon {
+                    slot: RootMenuBitmapSlot::Selection,
+                    ..
+                }
+            )));
         }
     }
 
@@ -488,7 +612,7 @@ mod tests {
             root_render_transcript(render_input, &assets),
             vec![
                 backdrop(),
-                center_icon(handle(32), 2),
+                center_icon(2),
                 RenderCommand::C3dObject {
                     object: handle(43),
                     selection: 3,
@@ -525,15 +649,15 @@ mod tests {
     #[test]
     fn optional_handles_skip_only_their_layers_and_preserve_order() {
         let mut assets = complete_assets();
-        assets.shadow = None;
-        assets.animations[2] = None;
+        assets.shadow_loaded = false;
+        assets.animations_loaded[2] = false;
         assets.c3d_objects[2] = None;
         assert_eq!(
             root_render_transcript(input(2), &assets),
             vec![
                 backdrop(),
                 RenderCommand::SelectedChrome {
-                    asset: handle(20),
+                    slot: RootMenuBitmapSlot::MainSelected,
                     entry: 2,
                     source: Rect::new(0, 78, 256, 35),
                     destination: Point::new(208, 400),
@@ -543,7 +667,7 @@ mod tests {
                     position: ROOT_FOOTER_POSITION,
                     flags: ROOT_FOOTER_FLAGS,
                 },
-                center_icon(handle(31), 1),
+                center_icon(1),
                 RenderCommand::ComposeAndPresent,
             ]
         );
@@ -552,7 +676,7 @@ mod tests {
     #[test]
     fn selected_chrome_gate_owns_animation_but_not_shadow() {
         let mut assets = complete_assets();
-        assets.selected_chrome = None;
+        assets.selected_chrome_loaded = false;
         let commands = root_render_transcript(input(4), &assets);
         assert!(
             commands
@@ -584,7 +708,7 @@ mod tests {
         assert_eq!(
             commands[0],
             RenderCommand::Backdrop {
-                asset: assets.backdrop,
+                slot: RootMenuBitmapSlot::Backdrop,
                 source: Rect::new(520, 315, 800, 600),
                 destination: Point::new(0, 0),
             }
@@ -592,7 +716,7 @@ mod tests {
         assert!(commands.iter().any(|command| {
             *command
                 == RenderCommand::CenterIcon {
-                    asset: assets.center_icons[0],
+                    slot: RootMenuBitmapSlot::ChampionshipGlobe,
                     visual_index: 0,
                     destination: Point::new(512, 109),
                 }
