@@ -183,8 +183,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-video::packed_rgb_target`: a nominal runtime-framebuffer format and
   logical masked-word target kept type-distinct from selected texture formats.
   It retains the complete raw surface descriptor and converts canonical RGB
-  under validated masks, without exposing or inferring native byte order,
-  surface pitch, dithering, or presentation.
+  or a completed indexed plane plus explicit palette under validated masks,
+  without exposing or inferring native byte order, surface pitch, dithering,
+  palette provenance, or presentation.
 - `cmr-video::c3d_software_split_backend`: a standalone headless alternate
   backend that transactionally retains converted frontend bindings, owns an
   owner-scoped logical target plus depth buffer, preflights the complete frame

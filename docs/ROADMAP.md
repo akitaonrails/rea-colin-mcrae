@@ -283,7 +283,12 @@ headless split backend now owns the logical target/depth lifecycle,
 transactionally retains converted bindings, preflights every resolved batch
 before effects, validates retained-cache coherence, and executes repeated
 frames. Native layout, effective filter, dithering, alpha, indexed 2D
-composition, alternate-session ownership, and presentation remain open.
+composition, alternate-session ownership, and presentation remain open. A
+source-owned bridge can now expand a completed indexed frame through an
+explicit palette into that logical target without replaying keyed/clipped 2D
+work. It is a deterministic integration oracle only: recovered alternate
+per-source bitmap/font conversion, packed color keys, stretch behavior, and
+palette provenance still require focused evidence before session integration.
 
 Exit gate:
 

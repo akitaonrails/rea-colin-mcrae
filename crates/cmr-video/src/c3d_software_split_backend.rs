@@ -35,6 +35,7 @@ use cmr_core::{
         root_menu_c3d_viewport,
     },
 };
+use cmr_formats::riff_palette::PaletteEntry;
 
 use crate::{
     c3d_software::{SoftwareC3dSampledTexture, SoftwareC3dSamplingError},
@@ -343,6 +344,25 @@ impl SoftwareSplitC3dOracleBackend {
         self.require_inactive("replace_logical_target_from_canonical_rgb")?;
         self.target
             .replace_from_canonical_rgb(source_extent, source_pixels)
+            .map_err(SoftwareSplitC3dBackendError::Target)
+    }
+
+    /// Replaces the owned logical target from a completed indexed frame.
+    ///
+    /// `palette` is the caller-selected effective presentation palette. The
+    /// bridge does not infer legacy palette timing or replay individual 2D
+    /// operations, so their established clipping, keying, and order remain in
+    /// the completed indexed frame. Conversion is allowed only outside a C3D
+    /// scene and is atomic on validation failure.
+    pub fn replace_logical_target_from_indexed_palette(
+        &mut self,
+        source_extent: [u16; 2],
+        source_indices: &[u8],
+        palette: &[PaletteEntry; 256],
+    ) -> Result<(), SoftwareSplitC3dBackendError> {
+        self.require_inactive("replace_logical_target_from_indexed_palette")?;
+        self.target
+            .replace_from_indexed_palette(source_extent, source_indices, palette)
             .map_err(SoftwareSplitC3dBackendError::Target)
     }
 
@@ -957,6 +977,64 @@ mod tests {
             |_, ()| Ok::<(), std::convert::Infallible>(()),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn indexed_frame_bridge_is_atomic_and_rejected_during_an_active_scene() {
+        let mut backend = backend();
+        let handle = backend.target_handle();
+        let mut palette = [PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        }; 256];
+        palette[7] = PaletteEntry {
+            red: 255,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        };
+        backend
+            .replace_logical_target_from_indexed_palette([4, 3], &[7; 12], &palette)
+            .unwrap();
+        assert_eq!(backend.logical_target().words(), &[0xf800; 12]);
+        let words_before = backend.logical_target().words().to_vec();
+
+        assert_eq!(
+            backend.replace_logical_target_from_indexed_palette([4, 3], &[7; 11], &palette),
+            Err(SoftwareSplitC3dBackendError::Target(
+                LogicalMaskedRgbTargetError::InvalidSourceLength {
+                    expected: 12,
+                    actual: 11,
+                }
+            ))
+        );
+        assert_eq!(backend.logical_target().words(), words_before);
+
+        backend.clear_c3d_depth(handle, EXTENT).unwrap();
+        backend
+            .set_c3d_view(cmr_core::frontend_c3d_scene::C3D_IDENTITY_VIEW)
+            .unwrap();
+        backend
+            .set_c3d_viewport(
+                cmr_core::root_menu_c3d_transform::root_menu_c3d_viewport(EXTENT).unwrap(),
+            )
+            .unwrap();
+        backend.begin_c3d_scene(handle).unwrap();
+        assert_eq!(
+            backend.replace_logical_target_from_indexed_palette([4, 3], &[0; 12], &palette),
+            Err(SoftwareSplitC3dBackendError::InvalidSequence(
+                "replace_logical_target_from_indexed_palette"
+            ))
+        );
+        assert_eq!(backend.logical_target().words(), words_before);
+        backend.end_c3d_scene().unwrap();
+
+        backend
+            .replace_logical_target_from_indexed_palette([4, 3], &[0; 12], &palette)
+            .unwrap();
+        assert_eq!(backend.logical_target().words(), &[0; 12]);
     }
 
     #[test]

@@ -13,6 +13,7 @@ use std::fmt;
 use crate::legacy_c3d_pixel_format::{
     LegacyNonAlphaLayout, PixelFormatError, RawDdPixelFormat, RgbMaskLayout,
 };
+use cmr_formats::riff_palette::PaletteEntry;
 
 /// Runtime framebuffer format kept distinct from enumerated texture formats.
 ///
@@ -205,6 +206,45 @@ impl LogicalMaskedRgbTarget {
         }
         Ok(())
     }
+
+    /// Replaces every target word from indexed pixels under an explicit palette.
+    ///
+    /// The caller supplies the effective presentation palette after indexed
+    /// composition has completed. This source-owned bridge deliberately does
+    /// not infer whether that palette came from a source surface, deferred
+    /// state, or a legacy driver. All extent and length checks precede the
+    /// first write, so rejection preserves every prior target word.
+    pub fn replace_from_indexed_palette(
+        &mut self,
+        source_extent: [u16; 2],
+        source_indices: &[u8],
+        palette: &[PaletteEntry; 256],
+    ) -> Result<(), LogicalMaskedRgbTargetError> {
+        let expected = checked_pixel_count(source_extent).ok_or(
+            LogicalMaskedRgbTargetError::InvalidSourceExtent(source_extent),
+        )?;
+        if source_extent != self.extent {
+            return Err(LogicalMaskedRgbTargetError::SourceTargetExtentMismatch {
+                source: source_extent,
+                target: self.extent,
+            });
+        }
+        if source_indices.len() != expected {
+            return Err(LogicalMaskedRgbTargetError::InvalidSourceLength {
+                expected,
+                actual: source_indices.len(),
+            });
+        }
+
+        for (target, index) in self.words.iter_mut().zip(source_indices.iter().copied()) {
+            let entry = palette[usize::from(index)];
+            *target = self
+                .format
+                .layout()
+                .pack_rgb8([entry.red, entry.green, entry.blue]);
+        }
+        Ok(())
+    }
 }
 
 fn checked_pixel_count(extent: [u16; 2]) -> Option<usize> {
@@ -291,6 +331,78 @@ mod tests {
             target_565.format().layout().masks(),
             [0xf800, 0x07e0, 0x001f]
         );
+    }
+
+    #[test]
+    fn indexed_palette_bridge_uses_exact_indices_and_rgb565_packing() {
+        let mut palette = [PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        }; 256];
+        palette[1] = PaletteEntry {
+            red: 255,
+            green: 0,
+            blue: 0,
+            flags: 0xff,
+        };
+        palette[2] = PaletteEntry {
+            red: 0,
+            green: 255,
+            blue: 0,
+            flags: 0x80,
+        };
+        palette[255] = PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 255,
+            flags: 0x40,
+        };
+        let mut target = LogicalMaskedRgbTarget::new([4, 1], framebuffer_565()).unwrap();
+
+        target
+            .replace_from_indexed_palette([4, 1], &[1, 2, 255, 0], &palette)
+            .unwrap();
+
+        assert_eq!(target.words(), &[0xf800, 0x07e0, 0x001f, 0]);
+    }
+
+    #[test]
+    fn indexed_palette_bridge_rejections_preserve_every_target_word() {
+        let palette = [PaletteEntry {
+            red: 255,
+            green: 255,
+            blue: 255,
+            flags: 0,
+        }; 256];
+        let mut target = LogicalMaskedRgbTarget::new([2, 1], framebuffer_565()).unwrap();
+        target
+            .replace_from_canonical_rgb([2, 1], &[[12, 34, 56], [78, 90, 123]])
+            .unwrap();
+        let before = target.words().to_vec();
+
+        assert_eq!(
+            target.replace_from_indexed_palette([1, 1], &[0], &palette),
+            Err(LogicalMaskedRgbTargetError::SourceTargetExtentMismatch {
+                source: [1, 1],
+                target: [2, 1],
+            })
+        );
+        assert_eq!(target.words(), before);
+        assert_eq!(
+            target.replace_from_indexed_palette([2, 1], &[0], &palette),
+            Err(LogicalMaskedRgbTargetError::InvalidSourceLength {
+                expected: 2,
+                actual: 1,
+            })
+        );
+        assert_eq!(target.words(), before);
+        assert_eq!(
+            target.replace_from_indexed_palette([0, 1], &[], &palette),
+            Err(LogicalMaskedRgbTargetError::InvalidSourceExtent([0, 1]))
+        );
+        assert_eq!(target.words(), before);
     }
 
     #[test]
