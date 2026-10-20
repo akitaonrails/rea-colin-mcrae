@@ -94,6 +94,44 @@ impl SoftwareRootMenuSessionRequest {
             depth_clear: RootMenuC3dDepthClear::Clear,
         }
     }
+
+    /// Builds the narrowly scoped initial-session request recovered for the
+    /// reviewed official-EU data, software renderer, and fresh default mutable
+    /// configuration.
+    #[must_use]
+    pub fn official_eu_initial_software_default_config(
+        language: Language,
+        variant: VisualVariant,
+    ) -> Self {
+        Self::new(
+            language,
+            variant,
+            RootMenuC3dMode2LoadStates::official_eu_initial_software_default_config(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    use cmr_core::root_menu_c3d_assets::RootMenuC3dSlot;
+
+    use super::*;
+
+    #[test]
+    fn official_eu_initial_software_request_selects_recovered_load_states() {
+        let request = SoftwareRootMenuSessionRequest::official_eu_initial_software_default_config(
+            Language::French,
+            VisualVariant::GPrefixed,
+        );
+
+        assert_eq!(request.language, Language::French);
+        assert_eq!(request.variant, VisualVariant::GPrefixed);
+        assert_eq!(
+            RootMenuC3dSlot::ALL
+                .map(|slot| { request.c3d_load_states.get(slot).prepared_resource_count }),
+            [55, 63, 63, 69, 73, 79],
+        );
+    }
 }
 
 #[derive(Debug)]

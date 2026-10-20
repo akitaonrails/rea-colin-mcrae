@@ -117,6 +117,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   execution into the caller-selected active frame target.
 - `cmr-core::frontend`: checked first/root-screen navigation, transitions,
   idle/exit effects, and opaque target IDs.
+- `cmr-core::championship_setup`: pure three-row car/gear setup state with
+  explicit eligibility fallback, animation gates, profile commits on both
+  forward/back transitions, and a backend-neutral preview transcript.
 - `cmr-core::root_menu_assets`: typed, verified-profile paths for localized
   root chrome, center icons, and normal/`g_` menu objects without asset bytes.
 - `cmr-formats::c3d`: bounded, byte-preserving admission of the observed

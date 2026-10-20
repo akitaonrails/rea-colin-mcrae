@@ -17,9 +17,6 @@ use cmr_core::localization::Language;
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_bitmap_assets::RootMenuBitmapSlot;
 use cmr_core::root_menu_c3d_assets::RootMenuC3dSlot;
-use cmr_core::root_menu_c3d_runtime::{
-    C3dMode2CornerSource, C3dMode2LoadState, C3dSurfaceLayoutGates, RootMenuC3dMode2LoadStates,
-};
 use cmr_core::root_menu_visual::{
     ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16, ROOT_INITIAL_VERTICAL_TRANSFORM_Q16, RootRenderInput,
 };
@@ -38,17 +35,6 @@ const REVIEWED_PROFILE: &[u8] =
 const EXTENT: DisplayExtent = DisplayExtent {
     width: 640,
     height: 480,
-};
-
-const CONSERVATIVE_MODE2_STATE: C3dMode2LoadState = C3dMode2LoadState {
-    prepared_resource_count: 0,
-    corner_source: C3dMode2CornerSource::OrdinaryDefaults,
-    surface_layout: C3dSurfaceLayoutGates {
-        quarter_if_large: false,
-        force_quarter: false,
-        half_if_large: false,
-        expand_width_dominant: false,
-    },
 };
 
 #[test]
@@ -85,18 +71,9 @@ fn reviewed_import_renders_two_root_frames_and_releases_uploaded_sources() {
     )
     .expect("reviewed English loading art must initialize the software display");
 
-    let c3d_load_states = RootMenuC3dMode2LoadStates::new([
-        CONSERVATIVE_MODE2_STATE,
-        CONSERVATIVE_MODE2_STATE,
-        CONSERVATIVE_MODE2_STATE,
-        CONSERVATIVE_MODE2_STATE,
-        CONSERVATIVE_MODE2_STATE,
-        CONSERVATIVE_MODE2_STATE,
-    ]);
-    let request = SoftwareRootMenuSessionRequest::new(
+    let request = SoftwareRootMenuSessionRequest::official_eu_initial_software_default_config(
         Language::English,
         VisualVariant::Normal,
-        c3d_load_states,
     );
 
     let run = with_software_root_menu_session(&store, startup, request, |session| {

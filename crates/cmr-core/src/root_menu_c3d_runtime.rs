@@ -76,6 +76,38 @@ impl RootMenuC3dMode2LoadStates {
         }
     }
 
+    /// Recovered loader-entry state for a fresh official-EU frontend using the
+    /// software renderer and the default mutable configuration.
+    ///
+    /// This is deliberately narrower than a general root-menu default: an
+    /// accepted save, prior C3D allocations, a later reload, or a hardware
+    /// renderer can change one or more of these values.
+    #[must_use]
+    pub const fn official_eu_initial_software_default_config() -> Self {
+        const SURFACE_LAYOUT: C3dSurfaceLayoutGates = C3dSurfaceLayoutGates {
+            quarter_if_large: false,
+            force_quarter: false,
+            half_if_large: false,
+            expand_width_dominant: true,
+        };
+        const fn state(prepared_resource_count: u32) -> C3dMode2LoadState {
+            C3dMode2LoadState {
+                prepared_resource_count,
+                corner_source: C3dMode2CornerSource::OrdinaryDefaults,
+                surface_layout: SURFACE_LAYOUT,
+            }
+        }
+
+        Self::new([
+            state(55),
+            state(63),
+            state(63),
+            state(69),
+            state(73),
+            state(79),
+        ])
+    }
+
     #[must_use]
     pub const fn get(self, slot: RootMenuC3dSlot) -> C3dMode2LoadState {
         self.slots[slot.index()]
@@ -1149,6 +1181,37 @@ fn pack_mode2_tuple([t0, t1, t2, t3]: [u8; 4]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn official_eu_initial_software_default_config_maps_exact_root_slots() {
+        let states = RootMenuC3dMode2LoadStates::official_eu_initial_software_default_config();
+        let expected = [
+            (RootMenuC3dSlot::Championship, 55),
+            (RootMenuC3dSlot::Rally, 63),
+            (RootMenuC3dSlot::TimeTrial, 63),
+            (RootMenuC3dSlot::RallySchool, 69),
+            (RootMenuC3dSlot::Options, 73),
+            (RootMenuC3dSlot::Load, 79),
+        ];
+        let expected_layout = C3dSurfaceLayoutGates {
+            quarter_if_large: false,
+            force_quarter: false,
+            half_if_large: false,
+            expand_width_dominant: true,
+        };
+
+        for (slot, prepared_resource_count) in expected {
+            assert_eq!(
+                states.get(slot),
+                C3dMode2LoadState {
+                    prepared_resource_count,
+                    corner_source: C3dMode2CornerSource::OrdinaryDefaults,
+                    surface_layout: expected_layout,
+                },
+                "unexpected recovered state for {slot:?}",
+            );
+        }
+    }
 
     #[test]
     fn lit_vertex_accessors_preserve_the_exact_eight_word_abi() {

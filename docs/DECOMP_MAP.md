@@ -78,6 +78,7 @@ Status markers:
 - [~] `D16` Recover and implement final compose/present ownership.
 - [x] `D17` Assemble a production root-menu session from imported resources.
 - [ ] `D18` Run the complete root menu interactively in a native window.
+- [x] `D19` Bind the reviewed initial root C3D loader state without caller guesses.
 
 ## E. General renderer and scene data
 
@@ -98,10 +99,11 @@ Status markers:
 - [~] `F01` Recover remaining frontend screen graph and callbacks.
 - [ ] `F02` Implement options, controller setup, and calibration screens.
 - [ ] `F03` Implement profile creation/load/save/delete flows.
-- [ ] `F04` Implement championship, rally, time trial, and school menus.
+- [~] `F04` Implement championship, rally, time trial, and school menus.
 - [ ] `F05` Recover event, country, stage, car, and difficulty data models.
 - [ ] `F06` Implement results, records, unlocks, and championship progression.
 - [ ] `F07` Verify all persistence round trips and failure recovery.
+- [x] `F08` Model championship car/gear setup, transitions, commits, and preview transcript.
 
 ## G. Driving simulation and race systems
 
@@ -154,13 +156,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T20:28:30Z
-milestone=pass-reviewed-import-root-session-smoke
-completed=40
-partial=18
-not_started=48
+updated_utc=2026-10-20T20:36:36Z
+milestone=recover-championship-setup-and-root-loader-state
+completed=42
+partial=19
+not_started=47
 blocked=0
-total=106
-current_focus=D14-D16-root-compatibility-gaps
-next_exit_gate=native-host-shell-and-root-presentation
+total=108
+current_focus=F01-F04-next-frontend-vertical-slice
+next_exit_gate=championship-setup-assets-and-frame
 <!-- PROGRESS-TAIL-END -->
