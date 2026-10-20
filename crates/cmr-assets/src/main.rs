@@ -5,8 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cmr_assets::{AssetProfile, catalog_standard_source, import_source, verify_source};
-use sha2::{Digest, Sha256};
+use cmr_assets::{ReviewedProfile, catalog_standard_source, import_source, verify_source};
 
 fn main() -> ExitCode {
     match run(std::env::args_os().skip(1)) {
@@ -48,8 +47,9 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<String, String> {
             let source = required_path(&options, "--source")?;
             let profile_path = required_path(&options, "--profile")?;
             reject_unknown(&options, &["--source", "--profile"])?;
-            let (_, profile) = load_profile(&profile_path)?;
-            let summary = verify_source(&source, &profile).map_err(|error| error.to_string())?;
+            let reviewed = load_profile(&profile_path)?;
+            let summary =
+                verify_source(&source, reviewed.profile()).map_err(|error| error.to_string())?;
             serde_json::to_string(&summary).map_err(|error| error.to_string())
         }
         Some("import") => {
@@ -57,9 +57,9 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<String, String> {
             let profile_path = required_path(&options, "--profile")?;
             let output = required_path(&options, "--output")?;
             reject_unknown(&options, &["--source", "--profile", "--output"])?;
-            let (document, profile) = load_profile(&profile_path)?;
-            let summary = import_source(&source, &output, &profile, &sha256(&document))
-                .map_err(|error| error.to_string())?;
+            let reviewed = load_profile(&profile_path)?;
+            let summary =
+                import_source(&source, &output, &reviewed).map_err(|error| error.to_string())?;
             serde_json::to_string(&summary).map_err(|error| error.to_string())
         }
         _ => Err(usage()),
@@ -113,11 +113,9 @@ fn reject_unknown(options: &BTreeMap<String, OsString>, allowed: &[&str]) -> Res
     Ok(())
 }
 
-fn load_profile(path: &Path) -> Result<(Vec<u8>, AssetProfile), String> {
+fn load_profile(path: &Path) -> Result<ReviewedProfile, String> {
     let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let profile = serde_json::from_slice(&document)
-        .map_err(|error| format!("{}: invalid profile JSON: {error}", path.display()))?;
-    Ok((document, profile))
+    ReviewedProfile::from_json(&document).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -128,17 +126,6 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
     file.write_all(bytes)
         .map_err(|error| format!("{}: {error}", path.display()))
-}
-
-fn sha256(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    let digest = Sha256::digest(bytes);
-    let mut encoded = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    encoded
 }
 
 fn usage() -> String {

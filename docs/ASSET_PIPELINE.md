@@ -69,8 +69,8 @@ The initial read-only scan found:
   must be preserved instead of deduplicated.
 
 Compatibility mode preserves the exact stored bytes. The runtime asset reader
-will sniff gzip, perform a bounded inflate with CRC validation, require the
-`CMPR` envelope, validate the declared length, and expose the inner payload.
+sniffs gzip, performs a bounded inflate with CRC validation, requires the
+`CMPR` envelope, validates the declared length, and exposes the inner payload.
 Non-gzip input passes through unchanged. A decoded cache may be added later but
 cannot become the canonical imported representation.
 
@@ -92,6 +92,18 @@ Its unit tests cover Windows separators/casing, missing entries, drive/absolute
 paths, traversal, repeated separators, NULs, and ambiguous components. This is
 a portability design backed by observed path mismatches; exact legacy Win32
 path failure behavior remains a separate recovery question.
+
+`cmr-assets::AssetStore` connects that lookup contract to an imported runtime
+tree. Import and store APIs accept a `ReviewedProfile` parsed and hashed from
+the exact distributed JSON bytes, so a digest cannot be paired with substituted
+metadata. Opening a store requires matching `import-state.json` identity and
+digest. Every load rechecks the root and path components for links, verifies
+the stored size and SHA-256 against reviewed metadata, enforces caller-supplied
+stored and decoded byte limits, confirms the declared storage encoding, and
+returns raw or decoded `CMPR` payload bytes. Synthetic tests cover state
+mismatches, Windows path lookup, raw/wrapped loads, post-import tampering,
+encoding disagreement, size bounds, substituted profiles, and replaced
+root/component symlinks.
 
 ## Manifest sketch
 
@@ -144,6 +156,8 @@ static evidence established startup reads from `ini/**`.
 
 - Reject absolute, parent-traversal, NUL-containing, and ambiguous case-folded
   manifest paths.
+- Reject Windows-invalid and device-alias components, including drive-relative
+  prefixes, trailing dots/spaces, and `CON`/`NUL`/`COM1`-style names.
 - Bound input size, decoded size, entry count, nesting, and compression ratio.
 - Never overwrite the source installation.
 - Copy rather than hardlink so runtime writes cannot mutate the source.

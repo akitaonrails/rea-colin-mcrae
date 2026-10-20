@@ -12,9 +12,9 @@ the source version and prepare a local, ignored `runtime-data/` tree.
 ## Current status
 
 Milestone 0 (provenance and reconstruction plan) is complete. Milestone 1 has
-started with a bounded parser for the observed raw/gzip-`CMPR` asset storage
-convention, strict asset import/lookup, and the first recovered startup-art
-selection contract. No gameplay subsystem is yet claimed compatible.
+started with bounded parsers for the observed asset storage and indexed startup
+art, strict asset import/runtime loading, and recovered startup-art selection
+and surface contracts. No gameplay subsystem is yet claimed compatible.
 
 Known artifacts from the initial local installation:
 
@@ -63,8 +63,8 @@ cargo run -q -p cmr-assets -- import \
   --output runtime-data/installed-eu-derived-assets-v2
 ```
 
-The profile accepts only the exact locally observed `Game/**` and `New_Fe/**`
-corpus. Other legitimate releases need their own reviewed metadata profiles;
+The profile accepts only the exact locally observed `Game/**`, `New_Fe/**`, and
+`ini/**` corpus. Other legitimate releases need reviewed metadata profiles;
 the importer intentionally has no `--ignore-hash` escape hatch.
 
 The execution plan and evidence policy live in [docs/ROADMAP.md](docs/ROADMAP.md)

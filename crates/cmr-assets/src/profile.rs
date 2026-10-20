@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AssetProfile {
@@ -20,6 +21,61 @@ pub struct AssetFile {
     pub size: u64,
     pub sha256: String,
     pub encoding: StorageEncoding,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReviewedProfile {
+    profile: AssetProfile,
+    sha256: String,
+}
+
+#[derive(Debug)]
+pub enum ReviewedProfileError {
+    Json(serde_json::Error),
+    Profile(ProfileError),
+}
+
+impl fmt::Display for ReviewedProfileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Json(error) => write!(formatter, "invalid profile JSON: {error}"),
+            Self::Profile(error) => write!(formatter, "invalid asset profile: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ReviewedProfileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Json(error) => Some(error),
+            Self::Profile(error) => Some(error),
+        }
+    }
+}
+
+impl ReviewedProfile {
+    /// Parses and validates a profile while binding it to the exact distributed
+    /// JSON bytes. Whitespace changes intentionally produce a different digest.
+    pub fn from_json(document: &[u8]) -> Result<Self, ReviewedProfileError> {
+        let profile: AssetProfile =
+            serde_json::from_slice(document).map_err(ReviewedProfileError::Json)?;
+        profile.validate().map_err(ReviewedProfileError::Profile)?;
+        let digest = Sha256::digest(document);
+        let mut sha256 = String::with_capacity(digest.len() * 2);
+        use std::fmt::Write as _;
+        for byte in digest {
+            write!(sha256, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        Ok(Self { profile, sha256 })
+    }
+
+    pub fn profile(&self) -> &AssetProfile {
+        &self.profile
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -187,9 +243,30 @@ fn is_portable_relative_path(path: &str) -> bool {
         && !path.ends_with('/')
         && !path.contains('\\')
         && !path.contains('\0')
-        && path
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
+        && path.split('/').all(is_windows_portable_component)
+}
+
+fn is_windows_portable_component(part: &str) -> bool {
+    if part.is_empty()
+        || part == "."
+        || part == ".."
+        || part.ends_with([' ', '.'])
+        || part
+            .chars()
+            .any(|character| character <= '\u{1f}' || "<>:\"|?*".contains(character))
+    {
+        return false;
+    }
+
+    let stem = part.split('.').next().unwrap_or(part).to_ascii_uppercase();
+    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        && !is_numbered_device(&stem, "COM")
+        && !is_numbered_device(&stem, "LPT")
+}
+
+fn is_numbered_device(stem: &str, prefix: &str) -> bool {
+    stem.strip_prefix(prefix)
+        .is_some_and(|number| matches!(number.as_bytes(), [b'1'..=b'9']))
 }
 
 #[cfg(test)]
@@ -223,7 +300,19 @@ mod tests {
 
     #[test]
     fn rejects_parent_traversal_and_backslashes() {
-        for invalid in ["Game/../secret", "Game\\file", "/absolute", "Game//file"] {
+        for invalid in [
+            "Game/../secret",
+            "Game\\file",
+            "/absolute",
+            "Game//file",
+            "Game/C:escape",
+            "Game/foo.",
+            "Game/foo ",
+            "Game/CON",
+            "Game/nul.txt",
+            "Game/Com1.bin",
+            "Game/LPT9",
+        ] {
             let mut candidate = profile();
             candidate.files = vec![file(invalid)];
             assert!(matches!(
@@ -280,5 +369,15 @@ mod tests {
                 Err(ProfileError::InvalidSha256 { .. })
             ));
         }
+    }
+
+    #[test]
+    fn reviewed_profile_digest_is_bound_to_exact_json() {
+        let compact = serde_json::to_vec(&profile()).unwrap();
+        let pretty = serde_json::to_vec_pretty(&profile()).unwrap();
+        let compact = ReviewedProfile::from_json(&compact).unwrap();
+        let pretty = ReviewedProfile::from_json(&pretty).unwrap();
+        assert_eq!(compact.profile().id, "synthetic");
+        assert_ne!(compact.sha256(), pretty.sha256());
     }
 }

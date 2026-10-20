@@ -5,21 +5,21 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::verify::{join_portable, require_real_directory, sha256, verify_file};
-use crate::{AssetProfile, VerificationError, verify_source};
+use crate::{AssetProfile, ReviewedProfile, VerificationError, verify_source};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ImportSummary {
     pub schema_version: u32,
     pub profile: String,
     pub profile_sha256: String,
-    pub files: usize,
+    pub files: u64,
     pub stored_bytes: u64,
 }
 
 #[derive(Debug)]
 pub enum ImportError {
     Verification(VerificationError),
-    InvalidProfileDigest,
+    TooManyFiles,
     InvalidOutput(PathBuf),
     OutputExists(PathBuf),
     StageExists(PathBuf),
@@ -34,7 +34,7 @@ impl fmt::Display for ImportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Verification(error) => write!(formatter, "source verification failed: {error}"),
-            Self::InvalidProfileDigest => write!(formatter, "profile SHA-256 is not lowercase hex"),
+            Self::TooManyFiles => write!(formatter, "asset file count does not fit import state"),
             Self::InvalidOutput(path) => {
                 write!(formatter, "invalid output path: {}", path.display())
             }
@@ -75,12 +75,10 @@ impl From<VerificationError> for ImportError {
 pub fn import_source(
     source: &Path,
     output: &Path,
-    profile: &AssetProfile,
-    profile_sha256: &str,
+    reviewed: &ReviewedProfile,
 ) -> Result<ImportSummary, ImportError> {
-    if !is_sha256(profile_sha256) {
-        return Err(ImportError::InvalidProfileDigest);
-    }
+    let profile = reviewed.profile();
+    let profile_sha256 = reviewed.sha256();
 
     let verified = verify_source(source, profile)?;
     let parent = output
@@ -198,7 +196,7 @@ fn populate_stage(
         schema_version: 1,
         profile: profile.id.clone(),
         profile_sha256: profile_sha256.to_owned(),
-        files: verified.files,
+        files: u64::try_from(verified.files).map_err(|_| ImportError::TooManyFiles)?,
         stored_bytes: verified.stored_bytes,
     };
     let state = serde_json::to_vec_pretty(&summary).map_err(ImportError::Serialize)?;
@@ -208,13 +206,6 @@ fn populate_stage(
         source,
     })?;
     Ok(summary)
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn cleanup_stage(stage: &Path) {
@@ -275,13 +266,17 @@ mod tests {
         (source, profile)
     }
 
+    fn reviewed(profile: &AssetProfile) -> ReviewedProfile {
+        ReviewedProfile::from_json(&serde_json::to_vec(profile).unwrap()).unwrap()
+    }
+
     #[test]
     fn imports_exact_bytes_and_state_through_atomic_destination() {
         let base = TestDirectory::new();
         let (source, profile) = fixture(&base);
         let output = base.0.join("runtime-data");
-        let digest = "ab".repeat(32);
-        let summary = import_source(&source, &output, &profile, &digest).unwrap();
+        let reviewed = reviewed(&profile);
+        let summary = import_source(&source, &output, &reviewed).unwrap();
         assert_eq!(fs::read(output.join("Game/a.bin")).unwrap(), b"asset");
         assert!(output.join("Game/empty").is_dir());
         let state: ImportSummary =
@@ -297,7 +292,7 @@ mod tests {
         let output = base.0.join("runtime-data");
         fs::create_dir(&output).unwrap();
         fs::write(output.join("keep"), b"untouched").unwrap();
-        let error = import_source(&source, &output, &profile, &"ab".repeat(32)).unwrap_err();
+        let error = import_source(&source, &output, &reviewed(&profile)).unwrap_err();
         assert!(matches!(error, ImportError::OutputExists(_)));
         assert_eq!(fs::read(output.join("keep")).unwrap(), b"untouched");
     }
@@ -308,7 +303,7 @@ mod tests {
         let (source, profile) = fixture(&base);
         fs::write(source.join("Game/a.bin"), b"changed").unwrap();
         let output = base.0.join("runtime-data");
-        assert!(import_source(&source, &output, &profile, &"ab".repeat(32)).is_err());
+        assert!(import_source(&source, &output, &reviewed(&profile)).is_err());
         assert!(!output.exists());
         let stage = base
             .0
@@ -317,20 +312,11 @@ mod tests {
     }
 
     #[test]
-    fn refuses_invalid_profile_digest() {
-        let base = TestDirectory::new();
-        let (source, profile) = fixture(&base);
-        let error =
-            import_source(&source, &base.0.join("out"), &profile, "not-a-hash").unwrap_err();
-        assert!(matches!(error, ImportError::InvalidProfileDigest));
-    }
-
-    #[test]
     fn refuses_output_inside_source_tree() {
         let base = TestDirectory::new();
         let (source, profile) = fixture(&base);
         let output = source.join("Game/imported");
-        let error = import_source(&source, &output, &profile, &"ab".repeat(32)).unwrap_err();
+        let error = import_source(&source, &output, &reviewed(&profile)).unwrap_err();
         assert!(matches!(error, ImportError::InvalidOutput(path) if path == output));
     }
 }
