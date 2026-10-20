@@ -160,8 +160,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   selection priority (`0x400`→16, `0x200`→24, `0x100`→32) and exposes a
   deliberately unintegrated canonical-RGB Type-2 MODULATE oracle. Its bilinear
   filter and pre-conversion RGB precision are named source-owned policies;
-  selected `DDPixelFormat`, driver `Load` conversion, framebuffer packing,
-  dithering, alpha, and backend presentation remain explicit boundaries.
+  selected-format texture conversion, driver `Load` behavior, native
+  framebuffer layout, dithering, alpha, and backend presentation remain
+  explicit boundaries.
 - `cmr-core::root_menu_c3d_render_state` decodes the game's `0x00008000`
   capability-derived alpha gate, including its inverse pre-scene depth-clear
   decision and fixed source-alpha/inverse-source-alpha factors. It also records
@@ -171,9 +172,15 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   unresolved and unintegrated.
 - `cmr-video::legacy_c3d_pixel_format`: exact eight-dword legacy descriptor
   retention, evidence-bounded palette/RGB555/RGB565 candidacy, and separate
-  safe mask validation. Caller-supplied-mask pack/unpack is explicitly
-  source-owned policy; driver conversion, byte layout, pitch, and dithering are
-  not inferred.
+  safe mask validation. It retains separate palette and opaque-RGB callback
+  slots and applies the explicit recovered palette gate without depending on
+  renderer depth. Caller-supplied-mask pack/unpack is explicitly source-owned
+  policy; driver conversion, byte layout, pitch, and dithering are not inferred.
+- `cmr-video::packed_rgb_target`: a nominal runtime-framebuffer format and
+  logical masked-word target kept type-distinct from selected texture formats.
+  It retains the complete raw surface descriptor and converts canonical RGB
+  under validated masks, without exposing or inferring native byte order,
+  surface pitch, dithering, or presentation.
 - `cmr-video::software_championship_session`: callback-scoped standalone
   assembly retaining all 14 prepared car topology/runtime pairs, one shared
   binding executor, explicit raster-selection, optional source-ordered per-car

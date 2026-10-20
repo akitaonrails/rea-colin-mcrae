@@ -12,6 +12,7 @@ pub mod c3d_software;
 mod c3d_software_backend;
 pub mod c3d_software_raster;
 pub mod legacy_c3d_pixel_format;
+pub mod packed_rgb_target;
 mod root_frame_software;
 pub mod software_championship_session;
 pub mod software_root_menu_session;

@@ -8,6 +8,7 @@
 use std::fmt;
 
 const DDPF_ALPHA_PIXELS: u32 = 0x0000_0001;
+const DDPF_FOUR_CC: u32 = 0x0000_0004;
 const DDPF_PALETTE_INDEXED_8: u32 = 0x0000_0020;
 const DDPF_RGB: u32 = 0x0000_0040;
 
@@ -64,6 +65,11 @@ impl RawDdPixelFormat {
     #[must_use]
     pub const fn has_alpha_pixels_flag(self) -> bool {
         self.flags() & DDPF_ALPHA_PIXELS != 0
+    }
+
+    #[must_use]
+    pub const fn has_four_cc_flag(self) -> bool {
+        self.flags() & DDPF_FOUR_CC != 0
     }
 
     #[must_use]
@@ -291,6 +297,124 @@ pub enum KnownRgbLayout {
     Rgb555,
     Rgb565,
 }
+
+/// Driver-enumerated non-alpha texture formats retained by the legacy
+/// enumeration callback.
+///
+/// Palette and opaque-RGB candidates occupy distinct callback slots. Keeping
+/// them separate prevents a later selection step from deriving one category
+/// from the other or from a renderer-depth preference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetainedNonAlphaTextureFormats {
+    palette_8: Option<RawDdPixelFormat>,
+    opaque_rgb_16: Option<RawDdPixelFormat>,
+}
+
+impl RetainedNonAlphaTextureFormats {
+    #[must_use]
+    pub const fn new(
+        palette_8: Option<RawDdPixelFormat>,
+        opaque_rgb_16: Option<RawDdPixelFormat>,
+    ) -> Self {
+        Self {
+            palette_8,
+            opaque_rgb_16,
+        }
+    }
+
+    #[must_use]
+    pub const fn palette_8(self) -> Option<RawDdPixelFormat> {
+        self.palette_8
+    }
+
+    #[must_use]
+    pub const fn opaque_rgb_16(self) -> Option<RawDdPixelFormat> {
+        self.opaque_rgb_16
+    }
+
+    /// Selects the primary retained texture format using the recovered gate.
+    ///
+    /// A successful palette gate selects only the palette callback slot. When
+    /// the gate is false, selection falls back to the opaque RGB callback
+    /// slot. Renderer depth is intentionally not an input: texture-format
+    /// enumeration and renderer-depth provenance are independent contracts.
+    pub fn select_primary(
+        self,
+        palette_gate_succeeded: bool,
+    ) -> Result<SelectedNonAlphaTextureFormat, TextureFormatSelectionError> {
+        if palette_gate_succeeded {
+            let descriptor = self
+                .palette_8
+                .ok_or(TextureFormatSelectionError::MissingPaletteCandidate)?;
+            if !descriptor.is_legacy_palette_candidate() {
+                return Err(TextureFormatSelectionError::InvalidPaletteCandidate);
+            }
+            return Ok(SelectedNonAlphaTextureFormat::Palette8(descriptor));
+        }
+
+        let descriptor = self
+            .opaque_rgb_16
+            .ok_or(TextureFormatSelectionError::MissingOpaqueRgbCandidate)?;
+        let layout = descriptor
+            .legacy_opaque_rgb_candidate()
+            .ok_or(TextureFormatSelectionError::InvalidOpaqueRgbCandidate)?;
+        Ok(SelectedNonAlphaTextureFormat::OpaqueRgb16 { descriptor, layout })
+    }
+}
+
+/// The primary non-alpha texture descriptor selected from the retained slots.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectedNonAlphaTextureFormat {
+    Palette8(RawDdPixelFormat),
+    OpaqueRgb16 {
+        descriptor: RawDdPixelFormat,
+        layout: KnownRgbLayout,
+    },
+}
+
+impl SelectedNonAlphaTextureFormat {
+    #[must_use]
+    pub const fn descriptor(self) -> RawDdPixelFormat {
+        match self {
+            Self::Palette8(descriptor) | Self::OpaqueRgb16 { descriptor, .. } => descriptor,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextureFormatSelectionError {
+    MissingPaletteCandidate,
+    InvalidPaletteCandidate,
+    MissingOpaqueRgbCandidate,
+    InvalidOpaqueRgbCandidate,
+}
+
+impl fmt::Display for TextureFormatSelectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingPaletteCandidate => {
+                write!(
+                    formatter,
+                    "palette gate selected a missing palette candidate"
+                )
+            }
+            Self::InvalidPaletteCandidate => {
+                write!(formatter, "palette slot is not a legacy palette candidate")
+            }
+            Self::MissingOpaqueRgbCandidate => {
+                write!(formatter, "opaque RGB fallback candidate is missing")
+            }
+            Self::InvalidOpaqueRgbCandidate => {
+                write!(
+                    formatter,
+                    "opaque RGB slot is not a legacy RGB555/RGB565 candidate"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for TextureFormatSelectionError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PixelFormatError {
@@ -622,5 +746,105 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn primary_selection_uses_palette_only_when_its_gate_succeeds() {
+        let palette = descriptor(DDPF_PALETTE_INDEXED_8, 8, [0; 3], 0);
+        let rgb = descriptor(DDPF_RGB, 16, [0xf800, 0x07e0, 0x001f], 0);
+        let candidates = RetainedNonAlphaTextureFormats::new(Some(palette), Some(rgb));
+
+        assert_eq!(
+            candidates.select_primary(true),
+            Ok(SelectedNonAlphaTextureFormat::Palette8(palette))
+        );
+        assert_eq!(
+            candidates.select_primary(false),
+            Ok(SelectedNonAlphaTextureFormat::OpaqueRgb16 {
+                descriptor: rgb,
+                layout: KnownRgbLayout::Rgb565,
+            })
+        );
+    }
+
+    #[test]
+    fn primary_selection_reports_the_missing_selected_category() {
+        let rgb = descriptor(DDPF_RGB, 16, [0x7c00, 0x03e0, 0x001f], 0);
+        let palette = descriptor(DDPF_PALETTE_INDEXED_8, 8, [0; 3], 0);
+
+        assert_eq!(
+            RetainedNonAlphaTextureFormats::new(None, Some(rgb)).select_primary(true),
+            Err(TextureFormatSelectionError::MissingPaletteCandidate)
+        );
+        assert_eq!(
+            RetainedNonAlphaTextureFormats::new(Some(palette), None).select_primary(false),
+            Err(TextureFormatSelectionError::MissingOpaqueRgbCandidate)
+        );
+    }
+
+    #[test]
+    fn primary_selection_rejects_wrong_or_malformed_selected_categories() {
+        let palette = descriptor(DDPF_PALETTE_INDEXED_8, 8, [0; 3], 0);
+        let rgb = descriptor(DDPF_RGB, 16, [0x7c00, 0x03e0, 0x001f], 0);
+
+        assert_eq!(
+            RetainedNonAlphaTextureFormats::new(Some(rgb), None).select_primary(true),
+            Err(TextureFormatSelectionError::InvalidPaletteCandidate)
+        );
+        assert_eq!(
+            RetainedNonAlphaTextureFormats::new(None, Some(palette)).select_primary(false),
+            Err(TextureFormatSelectionError::InvalidOpaqueRgbCandidate)
+        );
+        assert_eq!(
+            RetainedNonAlphaTextureFormats::new(
+                None,
+                Some(descriptor(DDPF_RGB, 16, [0xf000, 0x0f00, 0x00ff], 0)),
+            )
+            .select_primary(false),
+            Err(TextureFormatSelectionError::InvalidOpaqueRgbCandidate)
+        );
+    }
+
+    #[test]
+    fn primary_selection_preserves_the_complete_enumerated_descriptor() {
+        let raw_palette = [
+            0x20,
+            DDPF_PALETTE_INDEXED_8 | 0x8000_0000,
+            0x4142_4344,
+            0xfeed_beef,
+            0x1111_1111,
+            0x2222_2222,
+            0x3333_3333,
+            0x4444_4444,
+        ];
+        let palette = RawDdPixelFormat::from_dwords(raw_palette);
+        let selected = RetainedNonAlphaTextureFormats::new(Some(palette), None)
+            .select_primary(true)
+            .unwrap();
+
+        // The recovered callback predicate is a flag test. Selection must not
+        // canonicalize union fields that the callback retained verbatim.
+        assert_eq!(selected.descriptor().dwords(), raw_palette);
+    }
+
+    #[test]
+    fn texture_selection_api_has_no_renderer_depth_input() {
+        let rgb = descriptor(
+            DDPF_RGB | 0x8000_0000,
+            16,
+            [0x7c00, 0x03e0, 0x001f],
+            0xdead_beef,
+        );
+        let candidates = RetainedNonAlphaTextureFormats::new(None, Some(rgb));
+
+        assert_eq!(candidates.opaque_rgb_16(), Some(rgb));
+        assert_eq!(candidates.palette_8(), None);
+        assert_eq!(
+            candidates.select_primary(false),
+            Ok(SelectedNonAlphaTextureFormat::OpaqueRgb16 {
+                descriptor: rgb,
+                layout: KnownRgbLayout::Rgb555,
+            })
+        );
     }
 }

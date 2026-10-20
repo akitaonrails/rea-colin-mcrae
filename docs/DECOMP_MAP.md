@@ -98,7 +98,7 @@ Status markers:
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
 - [x] `E15` Recover championship mode-8 C3D preparation and session ownership.
-- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone software session, all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission, exact alternate render-depth selection, capability-derived alpha/depth-clear contract, filter-request cache outcomes, and raw/validated legacy pixel-format masks implemented; driver `Load` conversion, effective alternate filtering, native packed output, alpha pixels, and alternate backend integration remain).
+- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone software session, all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission, exact alternate render-depth selection, capability-derived alpha/depth-clear contract, filter-request cache outcomes, raw/validated legacy pixel-format masks, retained non-alpha texture selection, and a role-safe logical framebuffer packing boundary implemented; driver `Load` conversion, effective alternate filtering, native byte layout/pitch, alpha pixels, and alternate backend integration remain).
 
 ## F. Menus, game state, and persistence
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T23:19:46Z
-milestone=model-runtime-pixel-formats-and-filter-cache
+updated_utc=2026-10-20T23:23:07Z
+milestone=select-texture-format-and-pack-logical-framebuffer
 completed=50
 partial=20
 not_started=47
 blocked=0
 total=117
-current_focus=E16-selected-format-conversion-boundary
-next_exit_gate=model-selected-texture-candidate-ownership-and-pack-true-color-target
+current_focus=E16-split-texture-conversion-boundary
+next_exit_gate=model-source-owned-selected-texture-conversion-before-filtering
 <!-- PROGRESS-TAIL-END -->
