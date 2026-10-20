@@ -116,6 +116,13 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   ordinals by first use within each run, and emits compact three-index streams
   while retaining borrowed typed entries. It does not prepare selectors or
   materialize runtime vertex/side-vector payloads.
+- `cmr-core::root_menu_c3d_resources`: root-only, backend-neutral preparation
+  of embedded C3D bitmaps into an owned 2,048-entry arena and six fixed object
+  slots. It preserves source indices, embedded palettes, index-zero color key,
+  label/content aliasing, source-ordered prepared selectors, exact `-1`
+  missing selectors, typed failures, and transactional per-object rollback.
+  Palette attachment, conditional downsampling, upload, and vertex conversion
+  remain separate.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes, plus explicit selection-slot mapping and six independent wrapping

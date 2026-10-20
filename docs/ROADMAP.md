@@ -147,6 +147,15 @@ the general embedded resource set is not limited to the standalone 8-bit
 subset. A selected animation record can now resolve each frame ordinal against
 the same file's group-2 table through an exact-size borrowed iterator; an
 invalid frame remains a typed result and does not hide later frames.
+For the root-only corpus-backed subset, all six objects of either visual variant
+can now prepare into an owned fixed-slot resource set. Every embedded bitmap is
+strictly decoded while preserving source indices and its full embedded palette;
+index zero remains the recovered color key. Bounded-label/dimensions/pixels
+matches share arena-scoped stable prepared IDs, entry24 selectors retain source
+order and `-1` remains an explicit missing selector, and one bad optional object
+rolls back only its new resources before later slots continue. Palette
+attachment, legacy conditional quarter-resolution, backend upload, and runtime
+vertices remain later boundaries.
 
 Exit gate:
 
