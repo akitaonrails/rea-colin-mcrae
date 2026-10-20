@@ -111,16 +111,18 @@ backend mutation, and both persistent font and root-bitmap pools now use a
 tested shared source store without monopolizing the backend. Transaction,
 fixed-slot, and mixed-pool tests cover 33 coexisting sources, optional upload
 holes, isolated required rollback, repeated-frame reuse, and global teardown.
-Host clock/input, native window execution, C3D section decoding/execution, and
-concrete composition/presentation remain before the vertical-slice exit gate.
+Host clock/input, native window execution, C3D geometry/rendering, and concrete
+composition/presentation remain before the vertical-slice exit gate.
 Root-footer text reaches a tested software back-buffer pixel through
 localization, the shared store, and the persistent font pool. Root visual
 transcripts name fixed bitmap slots directly, and the bitmap executor now
 submits their exact opaque/keyed plans with checked geometry and no per-frame
-uploads. A sequential frame dispatcher preserves bitmap/footer/C3D-command/
-final-boundary order and typed failure boundaries without pretending its
-injected C3D-command and final `ComposeAndPresent` hooks are implemented; opaque
-handles remain only for that still-unimplemented C3D path.
+uploads. A sequential frame dispatcher preserves bitmap/footer/C3D/final-
+boundary order and typed failure boundaries. It resolves typed commands against
+the exact parsed six-slot C3D set, advances six persistent wrapping angles,
+skips missing optional objects without mutation, and passes a borrowed parsed-
+object binding to the still-injected renderer hook. Final `ComposeAndPresent`
+also remains an explicit unimplemented boundary.
 The six optional root-menu C3D files now load through fixed slots and a bounded,
 byte-preserving parser. All three counted groups now expose only proven framing:
 group 0's raw `u16` values, group 1's opaque 32/24-byte entry arrays, and group
@@ -128,8 +130,8 @@ group 0's raw `u16` values, group 1's opaque 32/24-byte entry arrays, and group
 resolvers now implement the proven group-0→group-1, entry24 `+2/+4/+6`→local
 entry32, and group-1-entry24→group-2 numeric joins, including the latter's `-1`
 sentinel, without making reference validity a structural parse requirement.
-Entry/blob meanings, runtime-object construction, command execution, and pixels
-remain unrecovered rather than inferred.
+Entry/blob meanings, runtime-object construction, geometry/material execution,
+and pixels remain unrecovered rather than inferred.
 
 Exit gate:
 

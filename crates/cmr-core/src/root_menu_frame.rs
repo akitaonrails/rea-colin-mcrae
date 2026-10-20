@@ -1,8 +1,8 @@
 //! Sequential execution boundary for one recovered root-menu frame.
 //!
-//! Bitmap and footer behavior is implemented by recovered compatibility code.
-//! C3D-command handling and the final `ComposeAndPresent` tail remain explicit
-//! injected boundaries until those subsystems are recovered.
+//! Bitmap/footer behavior and C3D slot/angle binding are implemented by
+//! recovered compatibility code. C3D pixel rendering and the final
+//! `ComposeAndPresent` tail remain explicit injected boundaries.
 
 use std::fmt;
 
@@ -11,14 +11,16 @@ use cmr_formats::font::TextLayoutLimits;
 use crate::display::{DisplayExtent, IndexedVideoBackend};
 use crate::font_raster::UploadedFontPool;
 use crate::localization::IndexedTextTable;
+use crate::root_menu_assets::VisualVariant;
 use crate::root_menu_bitmap_raster::{
     RootBitmapCommandError, RootBitmapCommandOutcome, UploadedRootMenuBitmapPool,
     execute_root_bitmap_command,
 };
+use crate::root_menu_c3d_assets::{RootMenuC3dAngles, RootMenuC3dFrameObject, RootMenuC3dSet};
 use crate::root_menu_footer::{RootFooterError, RootFooterOutcome, render_root_footer};
 use crate::root_menu_visual::{
-    CENTER_VISUAL_COUNT, ROOT_FOOTER_FLAGS, ROOT_FOOTER_POSITION, RenderCommand, RootRenderInput,
-    RootVisualAssetError, RootVisualAssets, VisualHandle, root_render_transcript,
+    ROOT_FOOTER_FLAGS, ROOT_FOOTER_POSITION, RenderCommand, RootRenderInput, RootVisualAssetError,
+    RootVisualAssets, root_render_transcript,
 };
 use crate::source_store::UploadedSourceStore;
 
@@ -36,9 +38,7 @@ pub trait RootFrameHooks: IndexedVideoBackend {
         &mut self,
         destination: Self::Surface,
         destination_extent: DisplayExtent,
-        object: VisualHandle,
-        selection: u8,
-        angle_delta: u16,
+        object: RootMenuC3dFrameObject<'_>,
     ) -> Result<(), Self::C3dError>;
 
     fn finalize_compose_and_present(
@@ -58,18 +58,22 @@ pub struct RootFrameOutcome<E> {
     pub final_hook_completed: bool,
 }
 
-#[derive(Clone, Copy)]
 pub struct RootFrameResources<'a> {
     pub text: &'a IndexedTextTable,
     pub fonts: &'a UploadedFontPool,
     pub bitmaps: &'a UploadedRootMenuBitmapPool,
-    pub c3d_objects: [Option<VisualHandle>; CENTER_VISUAL_COUNT],
+    pub c3d_assets: &'a RootMenuC3dSet,
+    pub c3d_angles: &'a mut RootMenuC3dAngles,
 }
 
 pub type RootFrameExecutionResult<E, C, P> = Result<RootFrameOutcome<E>, RootFrameError<E, C, P>>;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum RootFrameError<E, C, P> {
+    C3dVariantMismatch {
+        bitmap_variant: VisualVariant,
+        object_variant: VisualVariant,
+    },
     VisualAssets(RootVisualAssetError),
     Bitmap {
         command_index: usize,
@@ -92,6 +96,13 @@ pub enum RootFrameError<E, C, P> {
 impl<E: fmt::Display, C: fmt::Display, P: fmt::Display> fmt::Display for RootFrameError<E, C, P> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::C3dVariantMismatch {
+                bitmap_variant,
+                object_variant,
+            } => write!(
+                formatter,
+                "root-menu bitmap variant {bitmap_variant:?} does not match C3D variant {object_variant:?}"
+            ),
             Self::VisualAssets(source) => {
                 write!(formatter, "cannot bind root frame visual assets: {source}")
             }
@@ -135,6 +146,7 @@ where
 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::C3dVariantMismatch { .. } => None,
             Self::VisualAssets(source) => Some(source),
             Self::Bitmap { source, .. } => Some(source),
             Self::Footer { source, .. } => Some(source),
@@ -160,7 +172,13 @@ pub fn execute_root_frame<B>(
 where
     B: RootFrameHooks,
 {
-    let visuals = RootVisualAssets::from_bitmap_pool(resources.bitmaps, resources.c3d_objects)
+    if resources.bitmaps.center_variant() != resources.c3d_assets.variant() {
+        return Err(RootFrameError::C3dVariantMismatch {
+            bitmap_variant: resources.bitmaps.center_variant(),
+            object_variant: resources.c3d_assets.variant(),
+        });
+    }
+    let visuals = RootVisualAssets::from_bitmap_pool(resources.bitmaps)
         .map_err(RootFrameError::VisualAssets)?;
     let transcript = root_render_transcript(input, &visuals);
     let mut bitmap_blits = 0;
@@ -223,20 +241,17 @@ where
                 }
                 footer = Some(outcome);
             }
-            RenderCommand::C3dObject {
-                object,
-                selection,
-                angle_delta,
-            } => {
+            RenderCommand::C3dObject { slot, angle_delta } => {
+                let Some(object) = resources.c3d_angles.advance_frame_object(
+                    resources.c3d_assets,
+                    slot,
+                    angle_delta,
+                ) else {
+                    continue;
+                };
                 sources
                     .backend_mut()
-                    .execute_c3d_command(
-                        destination,
-                        input.viewport_extent,
-                        object,
-                        selection,
-                        angle_delta,
-                    )
+                    .execute_c3d_command(destination, input.viewport_extent, object)
                     .map_err(|source| RootFrameError::C3dCommand {
                         command_index,
                         source,
@@ -295,6 +310,7 @@ mod tests {
         RootMenuBitmapParts, RootMenuBitmapSlot,
     };
     use crate::root_menu_bitmap_raster::{prepare_parts, upload_root_menu_bitmaps};
+    use crate::root_menu_c3d_assets::{RootMenuC3dSlot, synthetic_root_menu_c3d_set};
     use crate::root_menu_visual::{
         C3D_ANGLE_DELTA, ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16, ROOT_INITIAL_VERTICAL_TRANSFORM_Q16,
     };
@@ -334,9 +350,11 @@ mod tests {
         C3d {
             destination: u16,
             extent: DisplayExtent,
-            object: VisualHandle,
-            selection: u8,
-            angle_delta: u16,
+            slot: RootMenuC3dSlot,
+            asset_marker: u8,
+            previous_angle: u16,
+            resulting_angle: u16,
+            delta: u16,
         },
         Present {
             destination: u16,
@@ -455,16 +473,16 @@ mod tests {
             &mut self,
             destination: u16,
             extent: DisplayExtent,
-            object: VisualHandle,
-            selection: u8,
-            angle_delta: u16,
+            object: RootMenuC3dFrameObject<'_>,
         ) -> Result<(), Self::C3dError> {
             self.events.borrow_mut().push(Event::C3d {
                 destination,
                 extent,
-                object,
-                selection,
-                angle_delta,
+                slot: object.slot(),
+                asset_marker: object.asset().file.header().unknown_08[0],
+                previous_angle: object.previous_angle(),
+                resulting_angle: object.resulting_angle(),
+                delta: object.delta(),
             });
             if self.fail_c3d.get() {
                 Err(HookError::C3d)
@@ -498,6 +516,8 @@ mod tests {
             let mut sources = UploadedSourceStore::new(&mut backend);
             let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
             let bitmaps = bitmap_pool(&mut sources, &[]);
+            let c3d_assets = synthetic_root_menu_c3d_set([true; 6], VisualVariant::Normal);
+            let mut c3d_angles = RootMenuC3dAngles::new();
             let create_attempts = sources.backend().create_attempts;
             let source_count = sources.uploaded_source_count();
             events.borrow_mut().clear();
@@ -509,7 +529,8 @@ mod tests {
                         &footer_table(b"A"),
                         &fonts,
                         &bitmaps,
-                        [Some(VisualHandle::new(7).unwrap()); 6],
+                        &c3d_assets,
+                        &mut c3d_angles,
                     ),
                     &mut sources,
                     99,
@@ -537,7 +558,7 @@ mod tests {
                     Event::Blit(root_marker(RootMenuBitmapSlot::MainSelected)),
                     Event::Blit(font_marker(FontStyle::GreenInfo)),
                     Event::Blit(root_marker(RootMenuBitmapSlot::ChampionshipGlobe)),
-                    c3d_event(),
+                    c3d_event(0, 8),
                     present_event(),
                     Event::Blit(root_marker(RootMenuBitmapSlot::Backdrop)),
                     Event::Blit(root_marker(RootMenuBitmapSlot::MainShadow)),
@@ -545,10 +566,83 @@ mod tests {
                     Event::Blit(root_marker(RootMenuBitmapSlot::MainSelected)),
                     Event::Blit(font_marker(FontStyle::GreenInfo)),
                     Event::Blit(root_marker(RootMenuBitmapSlot::ChampionshipGlobe)),
-                    c3d_event(),
+                    c3d_event(8, 16),
                     present_event(),
                 ]
             );
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 16);
+        }
+    }
+
+    #[test]
+    fn frame_binding_keeps_selection_slots_and_angles_independent() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut backend = RecordingBackend::new(Rc::clone(&events));
+        {
+            let mut sources = UploadedSourceStore::new(&mut backend);
+            let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
+            let bitmaps = bitmap_pool(&mut sources, &[]);
+            let c3d_assets = synthetic_root_menu_c3d_set([true; 6], VisualVariant::Normal);
+            let mut c3d_angles = RootMenuC3dAngles::new();
+            events.borrow_mut().clear();
+
+            execute_root_frame(
+                interactive_input(),
+                frame_resources(
+                    &footer_table(b"A"),
+                    &fonts,
+                    &bitmaps,
+                    &c3d_assets,
+                    &mut c3d_angles,
+                ),
+                &mut sources,
+                99,
+                TextLayoutLimits::default(),
+            )
+            .unwrap();
+            let mut rally_input = interactive_input();
+            rally_input.selection = RootSelection::new(1).unwrap();
+            for _ in 0..2 {
+                execute_root_frame(
+                    rally_input,
+                    frame_resources(
+                        &footer_table(b"A"),
+                        &fonts,
+                        &bitmaps,
+                        &c3d_assets,
+                        &mut c3d_angles,
+                    ),
+                    &mut sources,
+                    99,
+                    TextLayoutLimits::default(),
+                )
+                .unwrap();
+            }
+
+            let bindings: Vec<_> = events
+                .borrow()
+                .iter()
+                .filter_map(|event| match event {
+                    Event::C3d {
+                        slot,
+                        asset_marker,
+                        previous_angle,
+                        resulting_angle,
+                        ..
+                    } => Some((*slot, *asset_marker, *previous_angle, *resulting_angle)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                bindings,
+                [
+                    (RootMenuC3dSlot::Championship, 0, 0, 8),
+                    (RootMenuC3dSlot::Rally, 1, 0, 8),
+                    (RootMenuC3dSlot::Rally, 1, 8, 16),
+                ]
+            );
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 8);
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Rally), 16);
         }
     }
 
@@ -566,13 +660,21 @@ mod tests {
                     RootMenuBitmapSlot::Animation0,
                 ],
             );
+            let c3d_assets = synthetic_root_menu_c3d_set([false; 6], VisualVariant::Normal);
+            let mut c3d_angles = RootMenuC3dAngles::new();
             events.borrow_mut().clear();
             let mut input = interactive_input();
             input.horizontal_transform_q16 = 0x10000;
             input.vertical_transform_q16 = 0x8000;
             let outcome = execute_root_frame(
                 input,
-                frame_resources(&footer_table(b"A"), &fonts, &bitmaps, [None; 6]),
+                frame_resources(
+                    &footer_table(b"A"),
+                    &fonts,
+                    &bitmaps,
+                    &c3d_assets,
+                    &mut c3d_angles,
+                ),
                 &mut sources,
                 99,
                 TextLayoutLimits::default(),
@@ -581,6 +683,7 @@ mod tests {
             assert_eq!(outcome.bitmap_blits, 2);
             assert_eq!(outcome.bitmap_no_ops, 1);
             assert_eq!(outcome.c3d_commands, 0);
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 0);
             assert_eq!(
                 events.borrow().as_slice(),
                 [
@@ -601,11 +704,19 @@ mod tests {
             let mut sources = UploadedSourceStore::new(&mut backend);
             let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
             let bitmaps = bitmap_pool_with_backdrop_extent(&mut sources, &[], (65_536, 1));
+            let c3d_assets = synthetic_root_menu_c3d_set([true; 6], VisualVariant::Normal);
+            let mut c3d_angles = RootMenuC3dAngles::new();
             events.borrow_mut().clear();
             assert!(matches!(
                 execute_root_frame(
                     interactive_input(),
-                    frame_resources(&footer_table(b"A"), &fonts, &bitmaps, [None; 6]),
+                    frame_resources(
+                        &footer_table(b"A"),
+                        &fonts,
+                        &bitmaps,
+                        &c3d_assets,
+                        &mut c3d_angles,
+                    ),
                     &mut sources,
                     99,
                     TextLayoutLimits::default(),
@@ -618,6 +729,43 @@ mod tests {
                 ))
             ));
             assert!(events.borrow().is_empty());
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 0);
+        }
+    }
+
+    #[test]
+    fn bitmap_and_c3d_variant_mismatch_fails_before_any_frame_effect() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut backend = RecordingBackend::new(Rc::clone(&events));
+        {
+            let mut sources = UploadedSourceStore::new(&mut backend);
+            let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
+            let bitmaps = bitmap_pool(&mut sources, &[]);
+            let c3d_assets = synthetic_root_menu_c3d_set([true; 6], VisualVariant::GPrefixed);
+            let mut c3d_angles = RootMenuC3dAngles::new();
+            events.borrow_mut().clear();
+
+            assert!(matches!(
+                execute_root_frame(
+                    interactive_input(),
+                    frame_resources(
+                        &footer_table(b"A"),
+                        &fonts,
+                        &bitmaps,
+                        &c3d_assets,
+                        &mut c3d_angles,
+                    ),
+                    &mut sources,
+                    99,
+                    TextLayoutLimits::default(),
+                ),
+                Err(RootFrameError::C3dVariantMismatch {
+                    bitmap_variant: VisualVariant::Normal,
+                    object_variant: VisualVariant::GPrefixed,
+                })
+            ));
+            assert!(events.borrow().is_empty());
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 0);
         }
     }
 
@@ -633,6 +781,8 @@ mod tests {
             let mut sources = UploadedSourceStore::new(&mut backend);
             let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
             let bitmaps = bitmap_pool(&mut sources, &[]);
+            let c3d_assets = synthetic_root_menu_c3d_set([true; 6], VisualVariant::Normal);
+            let mut c3d_angles = RootMenuC3dAngles::new();
             events.borrow_mut().clear();
             let outcome = execute_root_frame(
                 interactive_input(),
@@ -640,7 +790,8 @@ mod tests {
                     &footer_table(b"AA"),
                     &fonts,
                     &bitmaps,
-                    [Some(VisualHandle::new(7).unwrap()); 6],
+                    &c3d_assets,
+                    &mut c3d_angles,
                 ),
                 &mut sources,
                 99,
@@ -671,7 +822,7 @@ mod tests {
                     Event::Blit(font_marker(FontStyle::GreenInfo)),
                     Event::Blit(font_marker(FontStyle::GreenInfo)),
                     Event::Blit(root_marker(RootMenuBitmapSlot::ChampionshipGlobe)),
-                    c3d_event(),
+                    c3d_event(0, 8),
                     present_event(),
                 ]
             );
@@ -683,7 +834,8 @@ mod tests {
                     &footer_table(b"AA"),
                     &fonts,
                     &bitmaps,
-                    [Some(VisualHandle::new(7).unwrap()); 6],
+                    &c3d_assets,
+                    &mut c3d_angles,
                 ),
                 &mut sources,
                 99,
@@ -709,6 +861,7 @@ mod tests {
                     Event::Blit(root_marker(RootMenuBitmapSlot::MainSelected)),
                 ]
             );
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 8);
         }
     }
 
@@ -724,6 +877,8 @@ mod tests {
         {
             let mut frame_sources = UploadedSourceStore::new(&mut frame_backend);
             let bitmaps = bitmap_pool(&mut frame_sources, &[]);
+            let c3d_assets = synthetic_root_menu_c3d_set([true; 6], VisualVariant::Normal);
+            let mut c3d_angles = RootMenuC3dAngles::new();
             frame_events.borrow_mut().clear();
             let error = execute_root_frame(
                 interactive_input(),
@@ -731,7 +886,8 @@ mod tests {
                     &footer_table(b"A"),
                     &fonts,
                     &bitmaps,
-                    [Some(VisualHandle::new(7).unwrap()); 6],
+                    &c3d_assets,
+                    &mut c3d_angles,
                 ),
                 &mut frame_sources,
                 99,
@@ -756,6 +912,7 @@ mod tests {
                     Event::Blit(root_marker(RootMenuBitmapSlot::MainSelected)),
                 ]
             );
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 0);
         }
     }
 
@@ -770,6 +927,8 @@ mod tests {
             let mut sources = UploadedSourceStore::new(&mut backend);
             let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
             let bitmaps = bitmap_pool(&mut sources, &[]);
+            let c3d_assets = synthetic_root_menu_c3d_set([true; 6], VisualVariant::Normal);
+            let mut c3d_angles = RootMenuC3dAngles::new();
             fail_markers
                 .borrow_mut()
                 .insert(root_marker(RootMenuBitmapSlot::Backdrop));
@@ -781,7 +940,8 @@ mod tests {
                         &footer_table(b"A"),
                         &fonts,
                         &bitmaps,
-                        [Some(VisualHandle::new(7).unwrap()); 6],
+                        &c3d_assets,
+                        &mut c3d_angles,
                     ),
                     &mut sources,
                     99,
@@ -793,6 +953,7 @@ mod tests {
                 })
             ));
             assert_eq!(events.borrow().len(), 1);
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 0);
             fail_markers.borrow_mut().clear();
 
             events.borrow_mut().clear();
@@ -804,7 +965,8 @@ mod tests {
                         &footer_table(b"A"),
                         &fonts,
                         &bitmaps,
-                        [Some(VisualHandle::new(7).unwrap()); 6],
+                        &c3d_assets,
+                        &mut c3d_angles,
                     ),
                     &mut sources,
                     99,
@@ -821,6 +983,7 @@ mod tests {
                     .iter()
                     .any(|event| matches!(event, Event::Present { .. }))
             );
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 8);
             fail_c3d.set(false);
 
             events.borrow_mut().clear();
@@ -832,7 +995,8 @@ mod tests {
                         &footer_table(b"A"),
                         &fonts,
                         &bitmaps,
-                        [Some(VisualHandle::new(7).unwrap()); 6],
+                        &c3d_assets,
+                        &mut c3d_angles,
                     ),
                     &mut sources,
                     99,
@@ -847,6 +1011,7 @@ mod tests {
                 events.borrow().last(),
                 Some(Event::Present { .. })
             ));
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 16);
         }
     }
 
@@ -862,13 +1027,16 @@ mod tests {
             let mut input = interactive_input();
             input.phase = FrontendPhase::BeginTransition;
             input.entry_visuals_suppressed = true;
+            let c3d_assets = synthetic_root_menu_c3d_set([true; 6], VisualVariant::Normal);
+            let mut c3d_angles = RootMenuC3dAngles::new();
             let outcome = execute_root_frame(
                 input,
                 frame_resources(
                     &footer_table(b"A"),
                     &fonts,
                     &bitmaps,
-                    [Some(VisualHandle::new(7).unwrap()); 6],
+                    &c3d_assets,
+                    &mut c3d_angles,
                 ),
                 &mut sources,
                 99,
@@ -878,6 +1046,7 @@ mod tests {
             assert_eq!(outcome.bitmap_blits, 1);
             assert!(outcome.footer.is_none());
             assert_eq!(outcome.c3d_commands, 0);
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 0);
             assert_eq!(
                 events.borrow().as_slice(),
                 [
@@ -892,13 +1061,15 @@ mod tests {
         text: &'a IndexedTextTable,
         fonts: &'a UploadedFontPool,
         bitmaps: &'a UploadedRootMenuBitmapPool,
-        c3d_objects: [Option<VisualHandle>; CENTER_VISUAL_COUNT],
+        c3d_assets: &'a RootMenuC3dSet,
+        c3d_angles: &'a mut RootMenuC3dAngles,
     ) -> RootFrameResources<'a> {
         RootFrameResources {
             text,
             fonts,
             bitmaps,
-            c3d_objects,
+            c3d_assets,
+            c3d_angles,
         }
     }
 
@@ -918,16 +1089,18 @@ mod tests {
         }
     }
 
-    fn c3d_event() -> Event {
+    fn c3d_event(previous_angle: u16, resulting_angle: u16) -> Event {
         Event::C3d {
             destination: 99,
             extent: DisplayExtent {
                 width: 640,
                 height: 480,
             },
-            object: VisualHandle::new(7).unwrap(),
-            selection: 0,
-            angle_delta: C3D_ANGLE_DELTA,
+            slot: RootMenuC3dSlot::Championship,
+            asset_marker: RootMenuC3dSlot::Championship.index() as u8,
+            previous_angle,
+            resulting_angle,
+            delta: C3D_ANGLE_DELTA,
         }
     }
 

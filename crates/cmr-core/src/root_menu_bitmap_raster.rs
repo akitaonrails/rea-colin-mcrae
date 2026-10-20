@@ -955,6 +955,7 @@ mod tests {
     use crate::font_assets::{FONT_COUNT, FontSet, FontStyle};
     use crate::font_raster::UploadedFontPool;
     use crate::root_menu_bitmap_assets::RootMenuBitmapAsset;
+    use crate::root_menu_c3d_assets::RootMenuC3dSlot;
     use crate::root_menu_visual::RootVisualAssets;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1365,7 +1366,7 @@ mod tests {
         assert!(uploaded.pool.is_loaded(RootMenuBitmapSlot::MainShadow));
         assert!(!uploaded.pool.is_loaded(RootMenuBitmapSlot::Animation0));
         assert!(uploaded.pool.is_loaded(RootMenuBitmapSlot::Animation1));
-        let visual_assets = RootVisualAssets::from_bitmap_pool(&uploaded.pool, [None; 6]).unwrap();
+        let visual_assets = RootVisualAssets::from_bitmap_pool(&uploaded.pool).unwrap();
         assert!(!visual_assets.selected_chrome_loaded);
         assert!(visual_assets.shadow_loaded);
         assert!(!visual_assets.animations_loaded[0]);
@@ -1861,8 +1862,7 @@ mod tests {
                 flags: 0x22,
             },
             RenderCommand::C3dObject {
-                object: crate::root_menu_visual::VisualHandle::new(1).unwrap(),
-                selection: 0,
+                slot: RootMenuC3dSlot::Championship,
                 angle_delta: 8,
             },
             RenderCommand::ComposeAndPresent,

@@ -6,7 +6,6 @@
 //! bitmap/C3D visuals, not the generic entry-label renderer.
 
 use std::fmt;
-use std::num::NonZeroU32;
 
 use crate::{
     display::DisplayExtent,
@@ -15,6 +14,7 @@ use crate::{
     localization::Language,
     root_menu_bitmap_assets::RootMenuBitmapSlot,
     root_menu_bitmap_raster::UploadedRootMenuBitmapPool,
+    root_menu_c3d_assets::RootMenuC3dSlot,
 };
 
 pub const ROOT_ENTRY_COUNT: usize = 7;
@@ -115,26 +115,6 @@ impl ChromeSpec {
     }
 }
 
-/// Backend-owned non-null C3D identifier. It is compared and echoed, never
-/// dereferenced. Indexed bitmaps use [`RootMenuBitmapSlot`] instead.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct VisualHandle(NonZeroU32);
-
-impl VisualHandle {
-    #[must_use]
-    pub const fn new(value: u32) -> Option<Self> {
-        match NonZeroU32::new(value) {
-            Some(value) => Some(Self(value)),
-            None => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u32 {
-        self.0.get()
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootVisualAssets {
     /// Decoded source dimensions used by the recovered full-rectangle guard.
@@ -142,7 +122,6 @@ pub struct RootVisualAssets {
     pub shadow_loaded: bool,
     pub animations_loaded: [bool; ROOT_ENTRY_COUNT],
     pub selected_chrome_loaded: bool,
-    pub c3d_objects: [Option<VisualHandle>; CENTER_VISUAL_COUNT],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -173,7 +152,6 @@ impl std::error::Error for RootVisualAssetError {}
 impl RootVisualAssets {
     pub fn from_bitmap_pool(
         pool: &UploadedRootMenuBitmapPool,
-        c3d_objects: [Option<VisualHandle>; CENTER_VISUAL_COUNT],
     ) -> Result<Self, RootVisualAssetError> {
         for slot in [
             RootMenuBitmapSlot::Backdrop,
@@ -207,7 +185,6 @@ impl RootVisualAssets {
             shadow_loaded: pool.is_loaded(RootMenuBitmapSlot::MainShadow),
             animations_loaded: ANIMATION_BITMAP_SLOTS.map(|slot| pool.is_loaded(slot)),
             selected_chrome_loaded: pool.is_loaded(RootMenuBitmapSlot::MainSelected),
-            c3d_objects,
         })
     }
 }
@@ -263,8 +240,7 @@ pub enum RenderCommand {
         destination: Point,
     },
     C3dObject {
-        object: VisualHandle,
-        selection: u8,
+        slot: RootMenuC3dSlot,
         angle_delta: u16,
     },
     ComposeAndPresent,
@@ -281,9 +257,11 @@ const fn chrome_source_rect(language: Language, index: usize) -> Rect {
 
 /// Produces the recovered root-menu draw order without performing any I/O.
 ///
-/// Missing optional chrome/object handles omit only their corresponding
-/// commands. Reconstruction requires backdrop and center handles, although one
-/// dynamically constructed center path was unchecked by the original loader.
+/// Missing optional chrome surfaces omit only their corresponding commands.
+/// C3D commands retain stable slot identity; parsed-object availability is
+/// resolved by the frame executor. Reconstruction requires backdrop and center
+/// surfaces, although one dynamically constructed center path was unchecked by
+/// the original loader.
 /// Chrome and footer drawing is restricted to numeric frontend phase 1; the
 /// selected center visual remains part of entry dispatch in other phases unless
 /// the recovered transition-suppression gate is set.
@@ -350,10 +328,9 @@ pub fn root_render_transcript(
             visual_index: visual as u8,
             destination: center_icon_destination(input),
         });
-        if let Some(object) = assets.c3d_objects.get(selection).copied().flatten() {
+        if let Some(slot) = RootMenuC3dSlot::for_selection(input.selection) {
             commands.push(RenderCommand::C3dObject {
-                object,
-                selection: selection as u8,
+                slot,
                 angle_delta: C3D_ANGLE_DELTA,
             });
         }
@@ -421,10 +398,6 @@ mod tests {
         height: 480,
     };
 
-    fn handle(value: u32) -> VisualHandle {
-        VisualHandle::new(value).unwrap()
-    }
-
     fn complete_assets() -> RootVisualAssets {
         RootVisualAssets {
             backdrop_extent: DisplayExtent {
@@ -434,7 +407,6 @@ mod tests {
             shadow_loaded: true,
             animations_loaded: [true; ROOT_ENTRY_COUNT],
             selected_chrome_loaded: true,
-            c3d_objects: std::array::from_fn(|index| Some(handle(40 + index as u32))),
         }
     }
 
@@ -544,11 +516,13 @@ mod tests {
         for selection in 0..ROOT_ENTRY_COUNT as u8 {
             let commands = root_render_transcript(input(selection), &assets);
             let visual = CENTER_VISUAL_BY_SELECTION[usize::from(selection)];
-            let expected_object = (selection < 6).then(|| RenderCommand::C3dObject {
-                object: assets.c3d_objects[usize::from(selection)].unwrap(),
-                selection,
-                angle_delta: C3D_ANGLE_DELTA,
-            });
+            let expected_object =
+                RootMenuC3dSlot::for_selection(input(selection).selection).map(|slot| {
+                    RenderCommand::C3dObject {
+                        slot,
+                        angle_delta: C3D_ANGLE_DELTA,
+                    }
+                });
             let mut expected = vec![
                 backdrop(),
                 RenderCommand::ChromeShadow {
@@ -614,8 +588,7 @@ mod tests {
                 backdrop(),
                 center_icon(2),
                 RenderCommand::C3dObject {
-                    object: handle(43),
-                    selection: 3,
+                    slot: RootMenuC3dSlot::RallySchool,
                     angle_delta: C3D_ANGLE_DELTA,
                 },
                 RenderCommand::ComposeAndPresent,
@@ -647,11 +620,10 @@ mod tests {
     }
 
     #[test]
-    fn optional_handles_skip_only_their_layers_and_preserve_order() {
+    fn optional_bitmaps_skip_only_their_layers_and_preserve_order() {
         let mut assets = complete_assets();
         assets.shadow_loaded = false;
         assets.animations_loaded[2] = false;
-        assets.c3d_objects[2] = None;
         assert_eq!(
             root_render_transcript(input(2), &assets),
             vec![
@@ -668,6 +640,10 @@ mod tests {
                     flags: ROOT_FOOTER_FLAGS,
                 },
                 center_icon(1),
+                RenderCommand::C3dObject {
+                    slot: RootMenuC3dSlot::TimeTrial,
+                    angle_delta: C3D_ANGLE_DELTA,
+                },
                 RenderCommand::ComposeAndPresent,
             ]
         );
@@ -814,11 +790,5 @@ mod tests {
                 .count(),
             1
         );
-    }
-
-    #[test]
-    fn zero_is_not_a_valid_visual_handle() {
-        assert_eq!(VisualHandle::new(0), None);
-        assert_eq!(VisualHandle::new(1).unwrap().get(), 1);
     }
 }

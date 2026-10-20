@@ -9,7 +9,10 @@ use std::fmt;
 use cmr_assets::{AssetStore, AssetStoreError};
 use cmr_formats::c3d::{C3dError, C3dFile, C3dLimits, parse_c3d};
 
-use crate::root_menu_assets::{RootMenuObjectIdentity, VisualVariant};
+use crate::{
+    frontend::RootSelection,
+    root_menu_assets::{RootMenuObjectIdentity, VisualVariant},
+};
 
 pub const ROOT_MENU_C3D_REQUEST_COUNT: usize = RootMenuObjectIdentity::ALL.len();
 
@@ -56,6 +59,22 @@ impl RootMenuC3dSlot {
     #[must_use]
     pub const fn path(self, variant: VisualVariant) -> &'static str {
         self.identity().path(variant)
+    }
+
+    /// Maps the six object-bearing root selections to their fixed C3D slots.
+    /// The seventh root entry has no corresponding object.
+    #[must_use]
+    pub const fn for_selection(selection: RootSelection) -> Option<Self> {
+        match selection.index() {
+            0 => Some(Self::Championship),
+            1 => Some(Self::Rally),
+            2 => Some(Self::TimeTrial),
+            3 => Some(Self::RallySchool),
+            4 => Some(Self::Options),
+            5 => Some(Self::Load),
+            6 => None,
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -186,6 +205,91 @@ impl RootMenuC3dSet {
     }
 }
 
+/// Persistent wrapping angle state for the six root-menu C3D slots.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RootMenuC3dAngles {
+    values: [u16; ROOT_MENU_C3D_REQUEST_COUNT],
+}
+
+impl RootMenuC3dAngles {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            values: [0; ROOT_MENU_C3D_REQUEST_COUNT],
+        }
+    }
+
+    #[must_use]
+    pub const fn angle(&self, slot: RootMenuC3dSlot) -> u16 {
+        self.values[slot.index()]
+    }
+
+    /// Advances one loaded object's angle and returns its exact frame binding.
+    /// An empty slot leaves every persistent angle unchanged.
+    #[must_use]
+    pub fn advance_frame_object<'asset>(
+        &mut self,
+        assets: &'asset RootMenuC3dSet,
+        slot: RootMenuC3dSlot,
+        delta: u16,
+    ) -> Option<RootMenuC3dFrameObject<'asset>> {
+        let asset = assets.get(slot)?;
+        let previous_angle = self.values[slot.index()];
+        let resulting_angle = previous_angle.wrapping_add(delta);
+        self.values[slot.index()] = resulting_angle;
+        Some(RootMenuC3dFrameObject {
+            asset,
+            slot,
+            previous_angle,
+            resulting_angle,
+            delta,
+        })
+    }
+}
+
+impl Default for RootMenuC3dAngles {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One frame's binding between a loaded root-menu object and its angle step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootMenuC3dFrameObject<'asset> {
+    asset: &'asset RootMenuC3dAsset,
+    slot: RootMenuC3dSlot,
+    previous_angle: u16,
+    resulting_angle: u16,
+    delta: u16,
+}
+
+impl<'asset> RootMenuC3dFrameObject<'asset> {
+    #[must_use]
+    pub const fn asset(&self) -> &'asset RootMenuC3dAsset {
+        self.asset
+    }
+
+    #[must_use]
+    pub const fn slot(&self) -> RootMenuC3dSlot {
+        self.slot
+    }
+
+    #[must_use]
+    pub const fn previous_angle(&self) -> u16 {
+        self.previous_angle
+    }
+
+    #[must_use]
+    pub const fn resulting_angle(&self) -> u16 {
+        self.resulting_angle
+    }
+
+    #[must_use]
+    pub const fn delta(&self) -> u16 {
+        self.delta
+    }
+}
+
 /// Attempts all six recovered root-menu object requests in selection order.
 ///
 /// Every request is optional in the shipped loader. Missing, rejected, or
@@ -246,4 +350,142 @@ fn load_object(
         path,
         file,
     })
+}
+
+/// Builds a proprietary-free fixed-slot set for this crate's unit tests.
+#[cfg(test)]
+pub(crate) fn synthetic_root_menu_c3d_set(
+    presence: [bool; ROOT_MENU_C3D_REQUEST_COUNT],
+    variant: VisualVariant,
+) -> RootMenuC3dSet {
+    let slots = std::array::from_fn(|index| {
+        presence[index].then(|| {
+            let slot = RootMenuC3dSlot::ALL[index];
+            RootMenuC3dAsset {
+                slot,
+                identity: slot.identity(),
+                path: slot.path(variant),
+                file: parse_c3d(&synthetic_c3d_bytes(index as u8), C3dLimits::default())
+                    .expect("test C3D must parse"),
+            }
+        })
+    });
+    RootMenuC3dSet {
+        variant,
+        slots,
+        diagnostics: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+fn synthetic_c3d_bytes(marker: u8) -> Vec<u8> {
+    use cmr_formats::c3d::{C3D_FORMAT_VERSION, C3D_MAGIC};
+
+    let mut input = vec![0; 64];
+    input[0..4].copy_from_slice(&C3D_MAGIC);
+    input[4..8].copy_from_slice(&C3D_FORMAT_VERSION.to_le_bytes());
+    input[8] = marker;
+    for (index, count) in [0u16, 0, 1].into_iter().enumerate() {
+        let start = 12 + index * 2;
+        input[start..start + 2].copy_from_slice(&count.to_le_bytes());
+    }
+    for (index, offset) in [32u32, 40, 48].into_iter().enumerate() {
+        let start = 20 + index * 4;
+        input[start..start + 4].copy_from_slice(&offset.to_le_bytes());
+    }
+    input
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_root_selection_maps_explicitly_to_its_object_slot() {
+        for (value, expected) in RootMenuC3dSlot::ALL.into_iter().enumerate() {
+            let selection = RootSelection::new(value as u8).unwrap();
+            assert_eq!(RootMenuC3dSlot::for_selection(selection), Some(expected));
+        }
+        assert_eq!(
+            RootMenuC3dSlot::for_selection(RootSelection::new(6).unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn angles_start_at_zero_and_advance_independently() {
+        let assets = set_with_asset(RootMenuC3dSlot::Rally);
+        let mut angles = RootMenuC3dAngles::new();
+        assert!(
+            RootMenuC3dSlot::ALL
+                .into_iter()
+                .all(|slot| angles.angle(slot) == 0)
+        );
+
+        angles
+            .advance_frame_object(&assets, RootMenuC3dSlot::Rally, 9)
+            .unwrap();
+
+        for slot in RootMenuC3dSlot::ALL {
+            assert_eq!(
+                angles.angle(slot),
+                if slot == RootMenuC3dSlot::Rally { 9 } else { 0 }
+            );
+        }
+    }
+
+    #[test]
+    fn missing_slot_returns_none_without_mutating_any_angle() {
+        let assets = set_with_asset(RootMenuC3dSlot::Championship);
+        let mut angles = RootMenuC3dAngles::new();
+        angles
+            .advance_frame_object(&assets, RootMenuC3dSlot::Championship, 17)
+            .unwrap();
+        let before = angles.clone();
+
+        assert_eq!(
+            angles.advance_frame_object(&assets, RootMenuC3dSlot::Rally, u16::MAX),
+            None
+        );
+        assert_eq!(angles, before);
+    }
+
+    #[test]
+    fn angle_advancement_wraps_at_u16_boundary() {
+        let slot = RootMenuC3dSlot::Options;
+        let assets = set_with_asset(slot);
+        let mut angles = RootMenuC3dAngles::new();
+        angles
+            .advance_frame_object(&assets, slot, u16::MAX)
+            .unwrap();
+
+        let binding = angles.advance_frame_object(&assets, slot, 2).unwrap();
+
+        assert_eq!(binding.previous_angle(), u16::MAX);
+        assert_eq!(binding.resulting_angle(), 1);
+        assert_eq!(binding.delta(), 2);
+        assert_eq!(angles.angle(slot), 1);
+    }
+
+    #[test]
+    fn frame_binding_borrows_the_exact_asset_and_retains_the_slot() {
+        let slot = RootMenuC3dSlot::TimeTrial;
+        let assets = set_with_asset(slot);
+        let expected_asset = assets.get(slot).unwrap();
+        let mut angles = RootMenuC3dAngles::new();
+
+        let binding = angles.advance_frame_object(&assets, slot, 8).unwrap();
+
+        assert!(std::ptr::eq(binding.asset(), expected_asset));
+        assert_eq!(binding.slot(), slot);
+        assert_eq!(binding.previous_angle(), 0);
+        assert_eq!(binding.resulting_angle(), 8);
+        assert_eq!(binding.delta(), 8);
+    }
+
+    fn set_with_asset(slot: RootMenuC3dSlot) -> RootMenuC3dSet {
+        let mut presence = [false; ROOT_MENU_C3D_REQUEST_COUNT];
+        presence[slot.index()] = true;
+        synthetic_root_menu_c3d_set(presence, VisualVariant::Normal)
+    }
 }

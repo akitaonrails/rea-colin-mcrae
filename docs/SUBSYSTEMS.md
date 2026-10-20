@@ -104,7 +104,8 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   content semantics.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
-  holes.
+  holes, plus explicit selection-slot mapping and six independent wrapping
+  frame-angle states bound to the exact parsed asset.
 - `cmr-core::root_menu_visual`: exact phase-gated root chrome geometry, Q16
   backdrop crop and center placement, and an ordered asset/object transcript.
 - `cmr-core::root_menu_animation`: pure activation, wrap, tween-schedule, and
@@ -114,6 +115,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::root_menu_bitmap_raster`: fixed-slot identity preparation using
   the active palette and unchanged indices, with typed optional/required
   conversion policy and no backend side effects.
+- `cmr-core::root_menu_frame`: ordered bitmap/footer dispatch plus parsed C3D
+  slot binding and angle advancement; C3D pixel rendering and final
+  composition remain backend boundaries.
 
 The canonical binary maps registry language values 0–4 to English, French,
 German, Spanish, and Italian startup paths. The supplied corpus has no Italian
