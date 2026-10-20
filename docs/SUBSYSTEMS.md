@@ -69,6 +69,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::window`: pure compatibility reducer for recovered Win32 message
   handling, activation-driven pause/restore state, queue dispatch decisions,
   and fullscreen-flip versus windowed-vblank presentation planning.
+- `cmr-core::presentation`: platform-neutral execution of the recovered native
+  presentation plan, including fullscreen sample-before-Flip invocation and
+  windowed client-origin/vblank sequencing with subsequent-call VGA fallback;
+  native window creation and the separate windowed copy owner remain outside
+  this contract.
 - `cmr-video::SoftwareIndexedBackend`: deterministic source-owned front/back
   framebuffers for exact-size indexed copies, recovered index-zero keyed glyph
   copies, and the bounded branch-zero root C3D software oracle; unrecovered

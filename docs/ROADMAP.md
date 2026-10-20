@@ -111,10 +111,10 @@ backend mutation, and both persistent font and root-bitmap pools now use a
 tested shared source store without monopolizing the backend. Transaction,
 fixed-slot, and mixed-pool tests cover 33 coexisting sources, optional upload
 holes, isolated required rollback, repeated-frame reuse, and global teardown.
-Host clock/input and native window execution/presentation remain before the
-vertical-slice exit gate. Complete root frames can now be composed and captured
-by the deterministic headless backend, without assigning native display
-semantics to that test oracle.
+Host clock/input, native window creation, and a host adapter for the recovered
+presentation executor remain before the vertical-slice exit gate. Complete
+root frames can now be composed and captured by the deterministic headless
+backend, without assigning native display semantics to that test oracle.
 Root-footer text reaches a tested software back-buffer pixel through
 localization, the shared store, and the persistent font pool. Root visual
 transcripts name fixed bitmap slots directly, and the bitmap executor now
@@ -126,9 +126,11 @@ The scene runs even without a selected object and now owns checked viewport
 setup, conditional depth clear, Begin/End cleanup, world reset, and the opaque
 scene tail. The software backend now executes the bounded branch-zero plan into
 the indexed back buffer with persistent bindings and depth, then atomically
-captures an owned indexed frame and palette at the terminal hook. Latch-clearing
-integration, depth-8 post-scene work, and native host presentation remain
-unimplemented boundaries.
+captures an owned indexed frame and palette at the terminal hook. The separate
+native presentation executor now preserves sample-before-Flip invocation and
+the windowed vblank/fallback sequence behind a typed adapter. Visibility-latch
+cleanup, the 8-bit deferred palette commit, native host adaptation, and the
+unrecovered windowed copy owner remain unimplemented boundaries.
 The six optional root-menu C3D files now load through fixed slots and a bounded,
 byte-preserving parser. All three counted groups expose proven framing: group
 0's raw `u16` values; group 1's typed, borrowed 32/24-byte entry views; and
@@ -207,8 +209,8 @@ viewport, slot presence, variant, and provenance before changing an angle, then
 owns source-ordered submission snapshots and the exact recovered transform and
 numeric draw words. Concrete software binding, depth/scene execution, the pixel
 oracle, and a headless terminal capture are now joined. Visibility-latch
-consumption, depth-8 post-processing, and native presentation remain the next
-boundaries.
+consumption, the 8-bit deferred palette commit, and native presentation
+adaptation remain the next boundaries.
 Prepared resources now map once into an arena-scoped opaque binding catalog.
 The root batch executor consumes a plan, preflights the complete catalog join,
 sets world state, and preserves the recovered resource-binding and persistent
@@ -216,8 +218,8 @@ selector-cache order across source batches and frames. Branch-specific
 material/texture work remains inside the opaque backend binding. Bindings are
 released in reverse order, and external render paths can explicitly invalidate
 the cache. The software backend implements the bounded branch-zero binding and
-headless frame capture; latch cleanup, native presentation, alternate profiles,
-and a portable GPU implementation remain separate.
+headless frame capture; latch cleanup, native presentation adaptation,
+alternate profiles, and a portable GPU implementation remain separate.
 
 Exit gate:
 
