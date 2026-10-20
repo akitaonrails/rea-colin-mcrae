@@ -35,10 +35,12 @@ software session now assembles the verified user import and renders repeated
 complete root frames; an opt-in reviewed-corpus smoke test covers two frames
 and teardown. The first post-root championship setup state now also preserves
 car/gear filtering, navigation, preview identities, and the original commit-on-
-Escape behavior as a tested pure model. These are platform-neutral
-compatibility contracts; registry, host clock/input, native window, audio,
-setup-screen asset rendering, later frontend screens, and gameplay integrations
-are not yet complete.
+Escape behavior as a tested pure model. Its production asset boundary now
+admits all 14 car objects and palettes plus 11 deduplicated manufacturer logos
+from the caller-selected verified import; an opt-in reviewed-corpus test covers
+the complete set. These are platform-neutral compatibility contracts;
+registry, host clock/input, native window, audio, setup-screen pixel execution,
+later frontend screens, and gameplay integrations are not yet complete.
 
 Known artifacts from the initial local installation:
 

@@ -104,6 +104,7 @@ Status markers:
 - [ ] `F06` Implement results, records, unlocks, and championship progression.
 - [ ] `F07` Verify all persistence round trips and failure recovery.
 - [x] `F08` Model championship car/gear setup, transitions, commits, and preview transcript.
+- [x] `F09` Admit all championship setup cars, palettes, and deduplicated logos from a verified user import.
 
 ## G. Driving simulation and race systems
 
@@ -156,13 +157,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T20:36:36Z
-milestone=recover-championship-setup-and-root-loader-state
-completed=42
+updated_utc=2026-10-20T20:45:15Z
+milestone=admit-championship-setup-assets
+completed=43
 partial=19
 not_started=47
 blocked=0
-total=108
-current_focus=F01-F04-next-frontend-vertical-slice
-next_exit_gate=championship-setup-assets-and-frame
+total=109
+current_focus=F01-F04-championship-setup-frame
+next_exit_gate=championship-setup-frame-plan-and-asset-upload
 <!-- PROGRESS-TAIL-END -->

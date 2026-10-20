@@ -120,6 +120,12 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::championship_setup`: pure three-row car/gear setup state with
   explicit eligibility fallback, animation gates, profile commits on both
   forward/back transitions, and a backend-neutral preview transcript.
+- `cmr-core::championship_assets`: verified-store admission of the 14 canonical
+  car C3Ds and palettes plus 11 deduplicated manufacturer-logo bitmaps, with
+  typed source-relative failures and no bundled payloads.
+- `cmr-core::source_store::UploadedIndexedBitmap`: shared backend-neutral
+  uploaded-bitmap identity and aligned extent used by root resources and ready
+  for later frontend-specific pools.
 - `cmr-core::root_menu_assets`: typed, verified-profile paths for localized
   root chrome, center icons, and normal/`g_` menu objects without asset bytes.
 - `cmr-formats::c3d`: bounded, byte-preserving admission of the observed
