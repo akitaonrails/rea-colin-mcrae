@@ -1,0 +1,12 @@
+[package]
+name = "cmr-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dev-dependencies]
+cmr-assets = { path = "../cmr-assets" }
+serde_json.workspace = true
+
+

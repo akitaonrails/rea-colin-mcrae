@@ -34,6 +34,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmr-core"
+version = "0.1.0"
+dependencies = [
+ "cmr-assets",
+ "serde_json",
+]
+
+[[package]]
 name = "cmr-formats"
 version = "0.1.0"
 dependencies = [

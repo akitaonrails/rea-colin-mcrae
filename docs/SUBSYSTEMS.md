@@ -32,6 +32,19 @@ define a clean compatibility interface.
 Each result should update [EVIDENCE.md](EVIDENCE.md) and create or refine one
 owned interface. Broad bulk decompilation is deliberately out of scope.
 
+## Implemented contracts
+
+- `cmr-formats::stored_asset`: bounded raw/gzip-`CMPR` storage decoding.
+- `cmr-assets::AssetIndex`: safe Windows-style logical lookup against reviewed
+  metadata.
+- `cmr-core::startup`: loading/legal palette and bitmap selection for the four
+  language directories present in the observed corpus.
+
+The canonical binary also contains an `ITALIAN` path literal near the four
+selected language paths, but the supplied corpus has no Italian directory and
+the recovered language-index bounds are not yet established. Italian startup
+selection remains unknown rather than being fabricated or silently aliased.
+
 ## Binary roles and variants
 
 - `Rally.exe` is the gameplay executable: PE32 i386, fixed image base

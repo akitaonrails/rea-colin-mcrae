@@ -13,7 +13,8 @@ the source version and prepare a local, ignored `runtime-data/` tree.
 
 Milestone 0 (provenance and reconstruction plan) is complete. Milestone 1 has
 started with a bounded parser for the observed raw/gzip-`CMPR` asset storage
-convention. No gameplay subsystem is yet claimed compatible.
+convention, strict asset import/lookup, and the first recovered startup-art
+selection contract. No gameplay subsystem is yet claimed compatible.
 
 Known artifacts from the initial local installation:
 
