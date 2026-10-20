@@ -151,6 +151,14 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   backend-neutral pre-scene hook rejects absent/unsupported car state before
   depth clear, and the full terminal test covers draw, group-4 commit, and
   captured presentation.
+- `cmr-video::software_championship_session`: callback-scoped standalone
+  assembly retaining all 14 prepared car topology/runtime pairs, one shared
+  binding executor, explicit raster-selection and 2D mapping policies, compact
+  car/FCHE palettes, preview/transform/route state, and persistent uploaded
+  sources. It selects car resources only from the validated transcript and
+  releases every upload before returning the backend. The compact palette
+  indices and supported software-oracle raster tuple are source-owned policy,
+  not imported process-global state.
 - `cmr-core::frontend_c3d_resources`: one frontend-session prepared arena with
   the exact 55-resource mode-8 car prefix followed by six fixed optional root
   slots, preserving cross-domain IDs, aliases, rollback, and diagnostics.

@@ -10,6 +10,15 @@
 use std::path::PathBuf;
 
 use cmr_assets::{AssetStore, ReviewedProfile};
+use cmr_core::championship_car_transform::ChampionshipCarInput;
+use cmr_core::championship_setup::{
+    ActivePreview, CAR_ROW_TAG, CanonicalCar, ChampionshipSetupRenderTranscript, GEAR_ROW_TAG,
+    GearChoice, NEXT_ROW_TAG, RenderRow, RowValue, SetupRowText,
+};
+use cmr_core::championship_setup_frame::ChampionshipSetupFrameState;
+use cmr_core::championship_setup_visual::{
+    ChampionshipSetupVisualInput, NextPreviewContext, Q16Point, RowPresentation,
+};
 use cmr_core::deferred_palette::{DeferredPaletteCommitOutcome, PaletteArenaIndex};
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
 use cmr_core::frontend::{FrontendPhase, RootSelection};
@@ -26,6 +35,10 @@ use cmr_core::surface::PaletteMapping;
 use cmr_formats::bitmap::BitmapLimits;
 use cmr_formats::stored_asset::DecodeLimits;
 use cmr_video::SoftwareIndexedBackend;
+use cmr_video::software_championship_session::{
+    SoftwareChampionshipFrameRequest, SoftwareChampionshipRasterSelection,
+    SoftwareChampionshipSessionRequest, with_software_championship_session,
+};
 use cmr_video::software_root_menu_session::{
     ROOT_MENU_DISK_PALETTE_INDEX, SoftwareRootMenuSessionRequest, with_software_root_menu_session,
 };
@@ -156,6 +169,72 @@ fn reviewed_import_renders_two_type1_copy_root_frames_and_releases_uploaded_sour
     assert_eq!(run.backend.uploaded_source_count(), 0);
 }
 
+#[test]
+#[ignore = "requires a user-owned import selected with CMR_RUNTIME_DATA"]
+fn reviewed_import_builds_retained_championship_session_and_renders_two_frames() {
+    let runtime_root = std::env::var_os("CMR_RUNTIME_DATA")
+        .map(PathBuf::from)
+        .expect("CMR_RUNTIME_DATA must name an imported runtime-data directory");
+    let reviewed = ReviewedProfile::from_json(REVIEWED_PROFILE).expect("reviewed profile is valid");
+    let store = AssetStore::open(
+        &runtime_root,
+        &reviewed,
+        DecodeLimits {
+            max_stored_bytes: 64 * 1024 * 1024,
+            max_payload_bytes: 256 * 1024 * 1024,
+        },
+    )
+    .expect("CMR_RUNTIME_DATA must contain a complete matching reviewed import");
+    let startup = initialize_startup_display(
+        &store,
+        SoftwareIndexedBackend::default(),
+        StartupDisplayRequest {
+            mode: IndexedMode {
+                extent: EXTENT,
+                bits_per_pixel: 8,
+            },
+            cooperative: CooperativeMode::ExclusiveFullscreen,
+            screen: StartupScreen::Loading,
+            language: StartupLanguage::English,
+            mapping: PaletteMapping::Identity,
+            bitmap_limits: BitmapLimits::default(),
+        },
+    )
+    .expect("reviewed English loading art must initialize the software display");
+    let request = SoftwareChampionshipSessionRequest::new(
+        Language::English,
+        VisualVariant::Normal,
+        SoftwareChampionshipRasterSelection::supported_software_oracle_policy(),
+        PaletteMapping::Identity,
+        PaletteMapping::Identity,
+    );
+
+    let run = with_software_championship_session(&store, startup, request, |session| {
+        let source_count = session.uploaded_source_count();
+        let transcript = reviewed_championship_transcript();
+        let render = |session: &mut cmr_video::software_championship_session::SoftwareChampionshipSession<'_, '_, '_, '_>| {
+            session.render(SoftwareChampionshipFrameRequest {
+                visual: reviewed_championship_input(&transcript),
+                setup: ChampionshipSetupFrameState::default(),
+                car_input: ChampionshipCarInput { f9: false, f10: false },
+                base_basis: [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x10000],
+            })
+        };
+        let first = render(session).expect("first championship frame renders");
+        assert_eq!(first.scene.submission.unwrap().draws, 0);
+        let second = render(session).expect("second championship frame renders");
+        assert!(second.scene.submission.unwrap().draws > 0);
+        assert_eq!(session.uploaded_source_count(), source_count);
+        assert!(session.backend().presented_frame().is_some());
+    })
+    .expect("reviewed assets build the software championship session");
+
+    assert_eq!(run.startup_copy.front, Ok(()));
+    assert_eq!(run.startup_copy.back, Ok(()));
+    assert_eq!(run.backend.uploaded_source_count(), 0);
+    assert!(run.backend.presented_frame().is_some());
+}
+
 fn root_input() -> RootRenderInput {
     RootRenderInput {
         phase: FrontendPhase::Interactive,
@@ -166,5 +245,63 @@ fn root_input() -> RootRenderInput {
         horizontal_transform_q16: ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16,
         vertical_transform_q16: ROOT_INITIAL_VERTICAL_TRANSFORM_Q16,
         entry_visuals_suppressed: false,
+    }
+}
+
+fn reviewed_championship_transcript() -> ChampionshipSetupRenderTranscript {
+    let car = CanonicalCar::Subaru;
+    ChampionshipSetupRenderTranscript {
+        title_text_index: 0x13,
+        rows: [
+            RenderRow {
+                tag: CAR_ROW_TAG,
+                text: SetupRowText::ChooseCar,
+                selected: true,
+                value: RowValue::Car(car),
+            },
+            RenderRow {
+                tag: GEAR_ROW_TAG,
+                text: SetupRowText::ChooseGear,
+                selected: false,
+                value: RowValue::Gear(GearChoice::BitClear),
+            },
+            RenderRow {
+                tag: NEXT_ROW_TAG,
+                text: SetupRowText::Localized(0x18),
+                selected: false,
+                value: RowValue::None,
+            },
+        ],
+        highlight_row: 0,
+        preview: ActivePreview::Car {
+            canonical_car: car,
+            object_name: car.object_name(),
+            logo_name: car.logo_name(),
+        },
+    }
+}
+
+fn reviewed_championship_input<'a>(
+    transcript: &'a ChampionshipSetupRenderTranscript,
+) -> ChampionshipSetupVisualInput<'a> {
+    ChampionshipSetupVisualInput {
+        viewport: EXTENT,
+        frontend_offset_q16: Q16Point::new(-0x1_6666, 0x1_0000),
+        row_anchors_q16: [
+            Q16Point::new(0x1_a000, -0x8000),
+            Q16Point::new(0x1_a000, -0x7000),
+            Q16Point::new(0x1_a000, -0x6000),
+        ],
+        preview_anchor_q16: Q16Point::new(0x1_8000, -0xc000),
+        rows: [RowPresentation {
+            visible: true,
+            enabled: true,
+        }; 3],
+        selected_text_widths: [100, 80, 60],
+        transcript,
+        next_context: NextPreviewContext {
+            state_byte: 0,
+            mode_byte: 0,
+        },
     }
 }

@@ -17,7 +17,7 @@ use cmr_core::championship_car_scene::{
 use cmr_core::championship_car_transform::{ChampionshipCarInput, ChampionshipCarState};
 use cmr_core::championship_car_visibility::ChampionshipCarVisibilityLatches;
 use cmr_core::championship_frame_assets::{
-    CHEQUERED_FRAME_DESCRIPTORS, CHEQUERED_PALETTE_DESCRIPTOR, INFO_BOX_DESCRIPTOR,
+    CHEQUERED_FRAME_DESCRIPTORS, CHEQUERED_PALETTE_DESCRIPTOR, ChequeredFrame, INFO_BOX_DESCRIPTOR,
     load_championship_frame_assets, prepare_championship_frame_surfaces,
     upload_championship_frame_surfaces,
 };
@@ -41,19 +41,21 @@ use cmr_core::deferred_palette::{
     DeferredPaletteCommitOutcome, DeferredPaletteState, PaletteArenaIndex, PaletteGroupBases,
 };
 use cmr_core::display::{
-    CooperativeMode, DisplayExtent, IndexedMode, IndexedVideoBackend, SurfaceTopology,
+    CooperativeMode, DisplayExtent, IndexedDisplay, IndexedMode, IndexedVideoBackend,
+    StartupCopyOutcome, SurfaceTopology,
 };
-use cmr_core::font_assets::FontSet;
+use cmr_core::font_assets::{FONT_COUNT, FontSet, FontStyle};
 use cmr_core::font_raster::UploadedFontPool;
 use cmr_core::frontend_c3d_resources::prepare_frontend_c3d_resources;
 use cmr_core::frontend_c3d_route::FrontendC3dRouteState;
 use cmr_core::frontend_c3d_scene::C3dDepthClear;
-use cmr_core::localization::IndexedTextTable;
+use cmr_core::localization::{IndexedTextTable, Language};
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_c3d_assets::load_root_menu_c3d;
 use cmr_core::root_menu_c3d_resources::C3dPreparedSelector;
 use cmr_core::root_menu_c3d_visibility::RootMenuC3dVisibilityLatches;
 use cmr_core::source_store::UploadedSourceStore;
+use cmr_core::startup_display::StartupDisplay;
 use cmr_core::surface::PaletteMapping;
 use cmr_formats::bitmap::BitmapLimits;
 use cmr_formats::c3d::{
@@ -67,6 +69,11 @@ use cmr_formats::stored_asset::DecodeLimits;
 use cmr_video::c3d_software::prepare_software_frontend_c3d_bindings;
 use cmr_video::c3d_software_raster::{
     SoftwareC3dRasterError, SoftwareChampionshipCarRasterProfile,
+};
+use cmr_video::software_championship_session::{
+    SoftwareChampionshipFrameRequest, SoftwareChampionshipRasterSelection,
+    SoftwareChampionshipSessionBuildError, SoftwareChampionshipSessionRequest,
+    with_software_championship_session,
 };
 use cmr_video::{SoftwareC3dBackendError, SoftwareIndexedBackend};
 use sha2::{Digest, Sha256};
@@ -82,6 +89,7 @@ const IDENTITY_BASIS: [i32; 9] = [Q16_ONE, 0, 0, 0, Q16_ONE, 0, 0, 0, Q16_ONE];
 const RESOURCE_INDEX: u8 = 217;
 const BOOTSTRAP_RED: u8 = 11;
 const CAR_PALETTE_RED: u8 = 73;
+const SECOND_CAR_PALETTE_RED: u8 = 83;
 
 #[test]
 fn prepared_type2_car_executes_resource_missing_resource_on_software_backend() {
@@ -386,6 +394,233 @@ fn terminal_frame_presents_visible_car_indices_under_initial_group4_palette() {
     );
 }
 
+#[test]
+fn public_championship_session_retains_state_and_releases_uploaded_sources() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let bootstrap = palette(BOOTSTRAP_RED);
+    let startup = synthetic_startup(bootstrap);
+    let request = SoftwareChampionshipSessionRequest::new(
+        Language::English,
+        VisualVariant::Normal,
+        SoftwareChampionshipRasterSelection::supported_software_oracle_policy(),
+        PaletteMapping::Identity,
+        PaletteMapping::Identity,
+    );
+
+    let run = with_software_championship_session(&store, startup, request, |session| {
+        let persistent_sources = session.uploaded_source_count();
+        assert_eq!(
+            persistent_sources,
+            FONT_COUNT + MANUFACTURER_LOGOS.len() + 16
+        );
+        assert_eq!(session.backend().active_palette(), Some(&bootstrap));
+        assert_eq!(session.renderer_palette_cache(), &bootstrap);
+        assert_eq!(session.global_palette_cache(), &bootstrap);
+        assert!(session.selection_is_deferred());
+        assert!(session.backend().presented_frame().is_none());
+
+        let transcript = championship_transcript();
+        let initial_preview = session.preview_cache();
+        let initial_transform = session.car_transform();
+        let initial_pixels = session.backend().back_pixels().unwrap().to_vec();
+        let initial_depth = session.backend().c3d_depth_values().unwrap().to_vec();
+        let mut wrong_extent = championship_input(&transcript);
+        wrong_extent.viewport.width -= 1;
+        assert!(
+            session
+                .render(SoftwareChampionshipFrameRequest {
+                    visual: wrong_extent,
+                    setup: ChampionshipSetupFrameState::default(),
+                    car_input: ChampionshipCarInput {
+                        f9: false,
+                        f10: false,
+                    },
+                    base_basis: IDENTITY_BASIS,
+                })
+                .is_err()
+        );
+        assert_eq!(session.preview_cache(), initial_preview);
+        assert_eq!(session.car_transform(), initial_transform);
+        assert_eq!(session.backend().back_pixels().unwrap(), initial_pixels);
+        assert_eq!(session.backend().c3d_depth_values().unwrap(), initial_depth);
+        assert!(session.backend().presented_frame().is_none());
+
+        let first = session
+            .render(SoftwareChampionshipFrameRequest {
+                visual: championship_input(&transcript),
+                setup: ChampionshipSetupFrameState::default(),
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            })
+            .unwrap();
+        assert_eq!(first.scene.submission.unwrap().draws, 0);
+        assert_eq!(
+            first.palette_commit,
+            DeferredPaletteCommitOutcome::Committed(PaletteArenaIndex::new(0))
+        );
+        assert_eq!(session.uploaded_source_count(), persistent_sources);
+        assert_ne!(session.preview_cache(), initial_preview);
+        assert_ne!(session.car_transform(), initial_transform);
+
+        let second = session
+            .render(SoftwareChampionshipFrameRequest {
+                visual: championship_input(&transcript),
+                setup: ChampionshipSetupFrameState::default(),
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            })
+            .unwrap();
+        assert_eq!(second.scene.submission.unwrap().draws, 3);
+        assert_eq!(
+            second.palette_commit,
+            DeferredPaletteCommitOutcome::NoPendingPalette
+        );
+        assert_eq!(session.uploaded_source_count(), persistent_sources);
+        let presented = session.backend().presented_frame().unwrap();
+        assert!(presented.pixels().contains(&RESOURCE_INDEX));
+        assert_eq!(
+            presented.palette()[RESOURCE_INDEX as usize].red,
+            CAR_PALETTE_RED
+        );
+
+        let second_car = championship_transcript_for(CanonicalCar::Ibiza);
+        let switched = session
+            .render(SoftwareChampionshipFrameRequest {
+                visual: championship_input(&second_car),
+                setup: ChampionshipSetupFrameState::default(),
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            })
+            .unwrap();
+        assert_eq!(switched.scene.submission.unwrap().draws, 3);
+        assert_eq!(
+            switched.palette_commit,
+            DeferredPaletteCommitOutcome::Committed(PaletteArenaIndex::new(1))
+        );
+        assert_eq!(
+            session.backend().presented_frame().unwrap().palette()[RESOURCE_INDEX as usize].red,
+            SECOND_CAR_PALETTE_RED
+        );
+
+        let before_next_transform = session.car_transform();
+        let next = championship_next_transcript();
+        let next_outcome = session
+            .render(SoftwareChampionshipFrameRequest {
+                visual: championship_input(&next),
+                setup: ChampionshipSetupFrameState {
+                    chequered_frame: Some(ChequeredFrame::Frame01),
+                },
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            })
+            .unwrap();
+        assert_eq!(next_outcome.scene.submission, None);
+        assert_eq!(
+            next_outcome.palette_commit,
+            DeferredPaletteCommitOutcome::Committed(PaletteArenaIndex::new(14))
+        );
+        assert_eq!(session.car_transform(), before_next_transform);
+        assert_eq!(
+            session.palette_state().current(),
+            Some(PaletteArenaIndex::new(14))
+        );
+        assert_eq!(
+            session.active_c3d_route(),
+            Some(cmr_core::frontend_c3d_route::FrontendC3dRoute::ChampionshipCar)
+        );
+        assert!(
+            CanonicalCar::ALL
+                .into_iter()
+                .all(|car| session.car_visibility().mask(car).raw() == 0)
+        );
+        assert!(
+            cmr_core::root_menu_c3d_assets::RootMenuC3dSlot::ALL
+                .into_iter()
+                .all(|slot| session.root_visibility().mask(slot).raw() == 0)
+        );
+        assert_eq!(session.uploaded_source_count(), persistent_sources);
+        persistent_sources
+    })
+    .unwrap();
+
+    assert_eq!(run.output, FONT_COUNT + MANUFACTURER_LOGOS.len() + 16);
+    assert_eq!(run.backend.uploaded_source_count(), 0);
+    assert!(run.backend.presented_frame().is_some());
+    assert_eq!(
+        run.startup_copy,
+        StartupCopyOutcome {
+            front: Ok(()),
+            back: Ok(()),
+        }
+    );
+}
+
+#[test]
+fn championship_session_rejects_unsupported_profile_before_callback() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let mut unsupported = SoftwareChampionshipCarRasterProfile::
+        MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND;
+    unsupported.alpha_blend = true;
+    let request = SoftwareChampionshipSessionRequest::new(
+        Language::English,
+        VisualVariant::Normal,
+        SoftwareChampionshipRasterSelection::caller_asserted(unsupported),
+        PaletteMapping::Identity,
+        PaletteMapping::Identity,
+    );
+    let result = with_software_championship_session::<()>(
+        &store,
+        synthetic_startup(palette(BOOTSTRAP_RED)),
+        request,
+        |_| panic!("unsupported profile must not enter the callback"),
+    );
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("unsupported profile unexpectedly built a session"),
+    };
+
+    assert!(matches!(
+        error,
+        SoftwareChampionshipSessionBuildError::RasterProfile(SoftwareC3dBackendError::Raster(
+            SoftwareC3dRasterError::UnsupportedChampionshipCarProfile(_)
+        ))
+    ));
+}
+
+fn synthetic_startup(bootstrap: [PaletteEntry; 256]) -> StartupDisplay<SoftwareIndexedBackend> {
+    let display = IndexedDisplay::initialize(
+        SoftwareIndexedBackend::default(),
+        IndexedMode {
+            extent: EXTENT,
+            bits_per_pixel: 8,
+        },
+        CooperativeMode::ExclusiveFullscreen,
+        &bootstrap,
+    )
+    .unwrap();
+    StartupDisplay {
+        display,
+        copy: StartupCopyOutcome {
+            front: Ok(()),
+            back: Ok(()),
+        },
+    }
+}
+
 fn initialized_backend() -> (
     SoftwareIndexedBackend,
     cmr_core::display::DisplaySurfaces<cmr_video::SurfaceHandle>,
@@ -450,7 +685,10 @@ fn synthetic_font(identity: u8) -> Vec<u8> {
 }
 
 fn championship_transcript() -> ChampionshipSetupRenderTranscript {
-    let car = CanonicalCar::Subaru;
+    championship_transcript_for(CanonicalCar::Subaru)
+}
+
+fn championship_transcript_for(car: CanonicalCar) -> ChampionshipSetupRenderTranscript {
     ChampionshipSetupRenderTranscript {
         title_text_index: 0x13,
         rows: [
@@ -479,6 +717,34 @@ fn championship_transcript() -> ChampionshipSetupRenderTranscript {
             object_name: car.object_name(),
             logo_name: car.logo_name(),
         },
+    }
+}
+
+fn championship_next_transcript() -> ChampionshipSetupRenderTranscript {
+    ChampionshipSetupRenderTranscript {
+        title_text_index: 0x13,
+        rows: [
+            RenderRow {
+                tag: CAR_ROW_TAG,
+                text: SetupRowText::ChooseCar,
+                selected: false,
+                value: RowValue::Car(CanonicalCar::Ibiza),
+            },
+            RenderRow {
+                tag: GEAR_ROW_TAG,
+                text: SetupRowText::ChooseGear,
+                selected: false,
+                value: RowValue::Gear(GearChoice::BitClear),
+            },
+            RenderRow {
+                tag: NEXT_ROW_TAG,
+                text: SetupRowText::Localized(0x18),
+                selected: true,
+                value: RowValue::None,
+            },
+        ],
+        highlight_row: 2,
+        preview: ActivePreview::Next,
     }
 }
 
@@ -524,10 +790,10 @@ fn synthetic_store(temporary: &TestDirectory) -> AssetStore {
         );
         files.insert(
             descriptor.palette_path,
-            synthetic_palette(if descriptor.car == CanonicalCar::Subaru {
-                CAR_PALETTE_RED
-            } else {
-                0
+            synthetic_palette(match descriptor.car {
+                CanonicalCar::Subaru => CAR_PALETTE_RED,
+                CanonicalCar::Ibiza => SECOND_CAR_PALETTE_RED,
+                _ => 0,
             }),
         );
     }
@@ -538,6 +804,10 @@ fn synthetic_store(temporary: &TestDirectory) -> AssetStore {
     files.insert(CHEQUERED_PALETTE_DESCRIPTOR.path, synthetic_palette(0));
     for descriptor in CHEQUERED_FRAME_DESCRIPTORS {
         files.insert(descriptor.path, indexed_bitmap(182, 128, 0));
+    }
+    files.insert(Language::English.frontend_path(), b"A\n".repeat(0xfe));
+    for (index, style) in FontStyle::ALL.into_iter().enumerate() {
+        files.insert(style.path(), synthetic_font(index as u8));
     }
 
     let mut profile_files = Vec::with_capacity(files.len());

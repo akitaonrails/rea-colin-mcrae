@@ -62,8 +62,13 @@ actor-RGB-disabled, unified-indexed COPY/no-blend software profile now produces
 tested car color/depth pixels without RGB quantization. An end-to-end software
 car/palette/presentation terminal test renders those indices, commits a
 discriminating group-4 palette, and captures presentation under that palette.
-Selecting recovered retained state and wiring enabled mutation remain the next
-C3D milestone.
+A callback-scoped software championship session now owns all 14 car
+topology/runtime pairs, the shared binding catalog, explicit raster-profile
+provenance, compact palette policy, and retained frame state across car and
+Next previews, then releases every uploaded source. Static recovery shows that
+the original device branch, alpha, word-5 mutation, and actor-RGB gates were
+independently retained rather than selected by championship entry. Wiring the
+enabled mutation profiles remains the next C3D milestone.
 These are platform-neutral compatibility contracts; registry, host clock/input,
 native window, audio, setup-screen pixel execution, later frontend screens, and
 gameplay integrations are not yet complete.

@@ -253,9 +253,13 @@ asset-to-scene test pins resource/default/resource execution and exact indexed
 color/depth output. Car-present scenes now invoke a backend-specific effect-free
 preflight before any terminal pixel or state effect; an end-to-end software
 car/palette/presentation test renders the car, commits a discriminating group-4
-request, and captures the same indices under the new palette. Building
-a production championship session that selects recovered retained state and
-wires enabled word-5 mutation remains separate.
+request, and captures the same indices under the new palette. A callback-scoped
+software championship session now loads and retains all 14 car topology/runtime
+pairs, explicit raster-profile provenance, compact car/FCHE palette layout,
+shared bindings, and frame state; synthetic and reviewed-import tests cover
+hidden-to-visible rendering, car switching, Next, presentation, and teardown.
+The original device branch, alpha, word-5 mutation, and actor-RGB gates are
+independent retained inputs. Enabled word-5 submission remains separate.
 
 Exit gate:
 
