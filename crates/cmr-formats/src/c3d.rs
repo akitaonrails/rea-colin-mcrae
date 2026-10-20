@@ -12,6 +12,15 @@ pub const C3D_MAGIC: [u8; 4] = *b"CM3D";
 pub const C3D_FORMAT_VERSION: u32 = 100;
 pub const C3D_SECTION_COUNT: usize = 3;
 pub const C3D_GROUP0_FIXED_LEN: usize = 80;
+/// Offset of the signed little-endian 16-bit field observed in group-0 records.
+pub const C3D_GROUP0_FIELD_04_OFFSET: usize = 4;
+/// Offset of the first signed little-endian Q16.16 affine-matrix component.
+pub const C3D_GROUP0_AFFINE_MATRIX_OFFSET: usize = 8;
+/// Number of Q16.16 components in the group-0 affine matrix.
+pub const C3D_GROUP0_AFFINE_MATRIX_COMPONENT_COUNT: usize = 16;
+/// Encoded byte length of the group-0 affine matrix.
+pub const C3D_GROUP0_AFFINE_MATRIX_BYTE_LEN: usize =
+    C3D_GROUP0_AFFINE_MATRIX_COMPONENT_COUNT * size_of::<i32>();
 pub const C3D_GROUP0_VALUE_COUNT_OFFSET: usize = 76;
 pub const C3D_GROUP0_VALUES_OFFSET: usize = 80;
 pub const C3D_GROUP1_FIXED_LEN: usize = 48;
@@ -360,6 +369,24 @@ impl<'a> C3dGroup0Record<'a> {
     #[must_use]
     pub fn declared_len(self) -> u32 {
         read_u32(self.bytes, 0)
+    }
+
+    /// Returns the signed little-endian field at byte offset `+4`.
+    #[must_use]
+    pub fn field_04_i16(self) -> i16 {
+        read_i16(self.bytes, C3D_GROUP0_FIELD_04_OFFSET)
+    }
+
+    /// Returns the 16 signed little-endian Q16.16 matrix components beginning
+    /// at byte offset `+8`, without assigning a coordinate convention.
+    #[must_use]
+    pub fn affine_matrix_q16(self) -> [i32; C3D_GROUP0_AFFINE_MATRIX_COMPONENT_COUNT] {
+        std::array::from_fn(|index| {
+            read_i32(
+                self.bytes,
+                C3D_GROUP0_AFFINE_MATRIX_OFFSET + index * size_of::<i32>(),
+            )
+        })
     }
 
     #[must_use]
@@ -1928,7 +1955,68 @@ mod tests {
         let blob = parsed.blob_records().next().unwrap();
         assert_eq!(blob.offset(), 351);
         assert_eq!(blob.blob(), [7, 8, 9, 10]);
+
         assert_eq!(parsed.bytes(), input);
+    }
+
+    #[test]
+    fn exposes_group0_signed_field_04_boundaries_without_changing_record_bytes() {
+        assert_eq!(C3D_GROUP0_FIELD_04_OFFSET, 4);
+
+        for expected in [-1, 0, i16::MIN, i16::MAX] {
+            let mut input = fixture([1, 0, 0], [32, 112, 112], 112);
+            assert_eq!(write_group0_record(&mut input, 32, &[], &[]), 112);
+            input[32 + C3D_GROUP0_FIELD_04_OFFSET..32 + C3D_GROUP0_FIELD_04_OFFSET + 2]
+                .copy_from_slice(&expected.to_le_bytes());
+            let original = input.clone();
+
+            let parsed = parse_c3d(&input, LIMITS).unwrap();
+            let record = parsed.group0_records().next().unwrap();
+
+            assert_eq!(record.field_04_i16(), expected);
+            assert_eq!(record.bytes(), &original[32..112]);
+            assert_eq!(parsed.bytes(), original);
+        }
+    }
+
+    #[test]
+    fn exposes_all_group0_affine_matrix_q16_positions_as_signed_little_endian() {
+        assert_eq!(C3D_GROUP0_AFFINE_MATRIX_OFFSET, 8);
+        assert_eq!(C3D_GROUP0_AFFINE_MATRIX_COMPONENT_COUNT, 16);
+        assert_eq!(C3D_GROUP0_AFFINE_MATRIX_BYTE_LEN, 64);
+
+        let expected = [
+            i32::MIN,
+            i32::MAX,
+            -1,
+            0,
+            1,
+            0x0102_0304,
+            -0x0102_0304,
+            0x0001_0000,
+            -0x0001_0000,
+            0x1234_5678,
+            -0x0123_4567,
+            0x7f00_ff80,
+            -2,
+            i32::from(i16::MIN),
+            i32::from(i16::MAX),
+            42,
+        ];
+        let mut input = fixture([1, 0, 0], [32, 112, 112], 112);
+        assert_eq!(write_group0_record(&mut input, 32, &[], &[]), 112);
+        for (index, value) in expected.iter().enumerate() {
+            let start = 32 + C3D_GROUP0_AFFINE_MATRIX_OFFSET + index * 4;
+            input[start..start + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let original = input.clone();
+
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        let record = parsed.group0_records().next().unwrap();
+
+        assert_eq!(record.affine_matrix_q16(), expected);
+        assert_eq!(record.bytes(), &original[32..112]);
+        assert_eq!(parsed.bytes(), original);
     }
 
     #[test]

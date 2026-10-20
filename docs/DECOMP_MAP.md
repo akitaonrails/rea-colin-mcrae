@@ -152,13 +152,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T17:53:46Z
-milestone=plan-root-c3d-topology
+updated_utc=2026-10-20T18:11:41Z
+milestone=materialize-root-c3d-runtime-prescale
 completed=38
 partial=12
 not_started=54
 blocked=0
 total=104
-current_focus=D14-convert-root-c3d-runtime-vertices
+current_focus=D14-recover-resource-coordinate-scaling
 next_exit_gate=native-root-menu-vertical-slice
 <!-- PROGRESS-TAIL-END -->

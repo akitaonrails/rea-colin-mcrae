@@ -8,7 +8,10 @@
 
 use std::fmt;
 
-use cmr_formats::bitmap::BitmapLimits;
+use cmr_formats::{
+    bitmap::BitmapLimits,
+    c3d::{C3D_GROUP0_VALUES_OFFSET, C3dGroup0Record, C3dGroup1Record},
+};
 
 use crate::{
     c3d_batch::{C3dBatchPlanError, C3dConsecutiveBatch, plan_consecutive_batches},
@@ -25,7 +28,7 @@ use crate::{
 #[derive(Debug, Eq, PartialEq)]
 pub struct RootMenuC3dGroup1Topology<'asset> {
     record_index: usize,
-    record_offset: usize,
+    record: C3dGroup1Record<'asset>,
     batches: Vec<C3dConsecutiveBatch<'asset, C3dPreparedSelector>>,
 }
 
@@ -37,12 +40,73 @@ impl<'asset> RootMenuC3dGroup1Topology<'asset> {
 
     #[must_use]
     pub const fn record_offset(&self) -> usize {
-        self.record_offset
+        self.record.offset()
+    }
+
+    #[must_use]
+    pub const fn record(&self) -> C3dGroup1Record<'asset> {
+        self.record
     }
 
     #[must_use]
     pub fn batches(&self) -> &[C3dConsecutiveBatch<'asset, C3dPreparedSelector>] {
         &self.batches
+    }
+}
+
+/// One checked group-0 value that selects a group-1 topology template.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootMenuC3dGroup1TopologyReference {
+    value_index: usize,
+    source_offset: usize,
+    group1_ordinal: u16,
+}
+
+impl RootMenuC3dGroup1TopologyReference {
+    #[must_use]
+    pub const fn value_index(self) -> usize {
+        self.value_index
+    }
+
+    #[must_use]
+    pub const fn source_offset(self) -> usize {
+        self.source_offset
+    }
+
+    #[must_use]
+    pub const fn group1_ordinal(self) -> u16 {
+        self.group1_ordinal
+    }
+}
+
+/// One source group-0 record and its ordered, checked group-1 references.
+#[derive(Debug, Eq, PartialEq)]
+pub struct RootMenuC3dGroup0Topology<'asset> {
+    record_index: usize,
+    record: C3dGroup0Record<'asset>,
+    references: Vec<RootMenuC3dGroup1TopologyReference>,
+}
+
+impl<'asset> RootMenuC3dGroup0Topology<'asset> {
+    #[must_use]
+    pub const fn record_index(&self) -> usize {
+        self.record_index
+    }
+
+    #[must_use]
+    pub const fn record_offset(&self) -> usize {
+        self.record.offset()
+    }
+
+    #[must_use]
+    pub const fn record(&self) -> C3dGroup0Record<'asset> {
+        self.record
+    }
+
+    pub fn references(
+        &self,
+    ) -> impl ExactSizeIterator<Item = RootMenuC3dGroup1TopologyReference> + '_ {
+        self.references.iter().copied()
     }
 }
 
@@ -52,6 +116,7 @@ pub struct RootMenuC3dObjectTopology<'asset> {
     slot: RootMenuC3dSlot,
     identity: RootMenuObjectIdentity,
     path: &'static str,
+    group0_records: Vec<RootMenuC3dGroup0Topology<'asset>>,
     groups: Vec<RootMenuC3dGroup1Topology<'asset>>,
 }
 
@@ -69,6 +134,17 @@ impl<'asset> RootMenuC3dObjectTopology<'asset> {
     #[must_use]
     pub const fn path(&self) -> &'static str {
         self.path
+    }
+
+    pub fn group0_records(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &RootMenuC3dGroup0Topology<'asset>> {
+        self.group0_records.iter()
+    }
+
+    #[must_use]
+    pub fn group0_record(&self, record_index: usize) -> Option<&RootMenuC3dGroup0Topology<'asset>> {
+        self.group0_records.get(record_index)
     }
 
     pub fn groups(&self) -> impl ExactSizeIterator<Item = &RootMenuC3dGroup1Topology<'asset>> {
@@ -168,6 +244,17 @@ pub enum RootMenuC3dTopologyError {
         source_record_offset: usize,
         selector_record_offset: usize,
     },
+    Group1ReferenceOutOfBounds {
+        slot: RootMenuC3dSlot,
+        identity: RootMenuObjectIdentity,
+        path: &'static str,
+        group0_record_index: usize,
+        group0_record_offset: usize,
+        value_index: usize,
+        source_offset: usize,
+        ordinal: u16,
+        group1_count: usize,
+    },
     Batch {
         slot: RootMenuC3dSlot,
         identity: RootMenuObjectIdentity,
@@ -215,6 +302,20 @@ impl fmt::Display for RootMenuC3dTopologyError {
                 formatter,
                 "cannot plan root-menu C3D slot {slot:?} ({identity:?}) at {path} group-1 record {record_index} at offset {record_offset}: {source}"
             ),
+            Self::Group1ReferenceOutOfBounds {
+                slot,
+                identity,
+                path,
+                group0_record_index,
+                group0_record_offset,
+                value_index,
+                source_offset,
+                ordinal,
+                group1_count,
+            } => write!(
+                formatter,
+                "root-menu C3D slot {slot:?} ({identity:?}) at {path} group-0 record {group0_record_index} at offset {group0_record_offset} value {value_index} at offset {source_offset} has group-1 ordinal {ordinal}, outside {group1_count} records"
+            ),
         }
     }
 }
@@ -224,7 +325,9 @@ impl std::error::Error for RootMenuC3dTopologyError {
         match self {
             Self::ArenaIdentity(source) => Some(source),
             Self::Batch { source, .. } => Some(source),
-            Self::Group1Correspondence { .. } | Self::Group1Metadata { .. } => None,
+            Self::Group1Correspondence { .. }
+            | Self::Group1Metadata { .. }
+            | Self::Group1ReferenceOutOfBounds { .. } => None,
         }
     }
 }
@@ -287,14 +390,47 @@ pub fn prepare_root_menu_c3d_topology<'asset>(
                 })?;
             groups.push(RootMenuC3dGroup1Topology {
                 record_index,
-                record_offset: record.offset(),
+                record,
                 batches,
+            });
+        }
+
+        let group1_count = groups.len();
+        let mut group0_records = Vec::new();
+        for (record_index, record) in asset.file.group0_records().enumerate() {
+            let mut references = Vec::with_capacity(record.values().len());
+            for (value_index, ordinal) in record.values().enumerate() {
+                let source_offset = record.offset() + C3D_GROUP0_VALUES_OFFSET + value_index * 2;
+                if usize::from(ordinal) >= group1_count {
+                    return Err(RootMenuC3dTopologyError::Group1ReferenceOutOfBounds {
+                        slot,
+                        identity: prepared.identity(),
+                        path: prepared.path(),
+                        group0_record_index: record_index,
+                        group0_record_offset: record.offset(),
+                        value_index,
+                        source_offset,
+                        ordinal,
+                        group1_count,
+                    });
+                }
+                references.push(RootMenuC3dGroup1TopologyReference {
+                    value_index,
+                    source_offset,
+                    group1_ordinal: ordinal,
+                });
+            }
+            group0_records.push(RootMenuC3dGroup0Topology {
+                record_index,
+                record,
+                references,
             });
         }
         slots[slot.index()] = Some(RootMenuC3dObjectTopology {
             slot,
             identity: prepared.identity(),
             path: prepared.path(),
+            group0_records,
             groups,
         });
     }
@@ -333,6 +469,10 @@ mod tests {
         root_menu_assets::VisualVariant,
         root_menu_c3d_assets::load_root_menu_c3d,
         root_menu_c3d_resources::{C3dPreparedResourceAccessError, C3dResourcePreparationError},
+        root_menu_c3d_runtime::{
+            C3dMode2CornerSource, C3dMode2LoadState, RootMenuC3dMode2LoadStates,
+            materialize_root_menu_mode2_pre_scale,
+        },
     };
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -512,41 +652,455 @@ mod tests {
         assert!(group.batches().is_empty());
     }
 
+    #[test]
+    fn catalogs_group0_reference_ownership_and_rejects_bad_ordinals_transactionally() {
+        let matrix = identity_matrix();
+        let groups = [group(1, &[[0, 0, 0]], &[-1])];
+        let valid = c3d_with_group0(
+            &[Group0 {
+                field_04: -1,
+                matrix,
+                references: vec![0, 0],
+            }],
+            &groups,
+            &[],
+        );
+        let fixture = fixture_for(&[(RootMenuC3dSlot::Load, valid)]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let object = topology.get(RootMenuC3dSlot::Load).unwrap();
+        let group0 = object.group0_record(0).unwrap();
+        let references = group0.references().collect::<Vec<_>>();
+
+        assert_eq!(group0.record_index(), 0);
+        assert_eq!(group0.record().field_04_i16(), -1);
+        assert_eq!(references.len(), 2);
+        assert_eq!(references[0].value_index(), 0);
+        assert_eq!(references[1].value_index(), 1);
+        assert_eq!(references[0].group1_ordinal(), 0);
+        assert_eq!(references[1].group1_ordinal(), 0);
+        assert_eq!(references[0].source_offset(), group0.record_offset() + 80);
+        assert_eq!(references[1].source_offset(), group0.record_offset() + 82);
+
+        let invalid = c3d_with_group0(
+            &[Group0 {
+                field_04: 0,
+                matrix,
+                references: vec![1],
+            }],
+            &groups,
+            &[],
+        );
+        let fixture = fixture_for(&[(RootMenuC3dSlot::Rally, invalid)]);
+        let assets = load(&fixture);
+        let source_group0 = assets
+            .get(RootMenuC3dSlot::Rally)
+            .unwrap()
+            .file
+            .group0_records()
+            .next()
+            .unwrap();
+
+        assert_eq!(
+            prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()),
+            Err(RootMenuC3dTopologyError::Group1ReferenceOutOfBounds {
+                slot: RootMenuC3dSlot::Rally,
+                identity: RootMenuC3dSlot::Rally.identity(),
+                path: RootMenuC3dSlot::Rally.path(VisualVariant::Normal),
+                group0_record_index: 0,
+                group0_record_offset: source_group0.offset(),
+                value_index: 0,
+                source_offset: source_group0.offset() + 80,
+                ordinal: 1,
+                group1_count: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn runtime_instances_use_per_load_snapshot_and_latch_pass_through_after_minus_one() {
+        let entries = [[1 << 16, 2 << 16, 3 << 16, 0, 0, 0, 0, 0]];
+        let groups = [runtime_group(&entries, &[[0, 0, 0]], &[0], &[[[0; 4]; 3]])];
+        let mut translated = identity_matrix();
+        translated[12] = 10 << 16;
+        translated[13] = 20 << 16;
+        translated[14] = 30 << 16;
+        let fixture = fixture_for(&[(
+            RootMenuC3dSlot::Championship,
+            c3d_with_group0(
+                &[
+                    Group0 {
+                        field_04: 0,
+                        matrix: translated,
+                        references: vec![0],
+                    },
+                    Group0 {
+                        field_04: -1,
+                        matrix: translated,
+                        references: vec![0],
+                    },
+                    Group0 {
+                        field_04: 0,
+                        matrix: translated,
+                        references: vec![0],
+                    },
+                ],
+                &groups,
+                &[(*b"RUNTIME!!!!!", indexed_bmp(1, 2, 8))],
+            ),
+        )]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+
+        let transformed = materialize_root_menu_mode2_pre_scale(
+            &topology,
+            uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+        )
+        .unwrap();
+        let object = transformed.get(RootMenuC3dSlot::Championship).unwrap();
+        let records = object.group0_records().collect::<Vec<_>>();
+        let first_vertex = |record_index: usize| {
+            records[record_index]
+                .references()
+                .next()
+                .unwrap()
+                .batches()
+                .next()
+                .unwrap()
+                .vertices()[0]
+        };
+        assert_eq!(first_vertex(0).first_triplet(), [11.0, 22.0, 33.0]);
+        assert_eq!(first_vertex(1).first_triplet(), [1.0, 2.0, 3.0]);
+        assert_eq!(first_vertex(2).first_triplet(), [1.0, 2.0, 3.0]);
+
+        let pass_through = materialize_root_menu_mode2_pre_scale(
+            &topology,
+            uniform_load_states(u32::MAX, C3dMode2CornerSource::OrdinaryDefaults),
+        )
+        .unwrap();
+        for record in pass_through
+            .get(RootMenuC3dSlot::Championship)
+            .unwrap()
+            .group0_records()
+        {
+            assert_eq!(
+                record
+                    .references()
+                    .next()
+                    .unwrap()
+                    .batches()
+                    .next()
+                    .unwrap()
+                    .vertices()[0]
+                    .first_triplet(),
+                [1.0, 2.0, 3.0]
+            );
+        }
+    }
+
+    #[test]
+    fn independent_slots_use_their_own_loader_count_and_corner_gate() {
+        let groups = [runtime_group(
+            &[[1 << 16, 2 << 16, 3 << 16, 0, 0, 0, 0, 0]],
+            &[[0, 0, 0]],
+            &[0],
+            &[[[0xaa, 0xbb, 0xcc, 0xdd]; 3]],
+        )];
+        let mut translated = identity_matrix();
+        translated[12] = 10 << 16;
+        let object = |label| {
+            c3d_with_group0(
+                &[Group0 {
+                    field_04: 0,
+                    matrix: translated,
+                    references: vec![0],
+                }],
+                &groups,
+                &[(label, indexed_bmp(1, 2, 8))],
+            )
+        };
+        let fixture = fixture_for(&[
+            (RootMenuC3dSlot::Championship, object(*b"SLOT-STATE-A")),
+            (RootMenuC3dSlot::Rally, object(*b"SLOT-STATE-B")),
+        ]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let mut states = [C3dMode2LoadState {
+            prepared_resource_count: 1,
+            corner_source: C3dMode2CornerSource::OrdinaryDefaults,
+        }; ROOT_MENU_C3D_REQUEST_COUNT];
+        states[RootMenuC3dSlot::Championship.index()] = C3dMode2LoadState {
+            prepared_resource_count: 0,
+            corner_source: C3dMode2CornerSource::SourceEntryTuples,
+        };
+
+        let runtime = materialize_root_menu_mode2_pre_scale(
+            &topology,
+            RootMenuC3dMode2LoadStates::new(states),
+        )
+        .unwrap();
+        let vertex = |slot| {
+            runtime
+                .get(slot)
+                .unwrap()
+                .group0_records()
+                .next()
+                .unwrap()
+                .references()
+                .next()
+                .unwrap()
+                .batches()
+                .next()
+                .unwrap()
+                .vertices()[0]
+        };
+
+        assert_eq!(
+            vertex(RootMenuC3dSlot::Championship).first_triplet(),
+            [11.0, 2.0, 3.0]
+        );
+        assert_eq!(
+            vertex(RootMenuC3dSlot::Championship).opaque_triplet_words()[1],
+            0xddaa_bbcc
+        );
+        assert_eq!(
+            vertex(RootMenuC3dSlot::Rally).first_triplet(),
+            [1.0, 2.0, 3.0]
+        );
+        assert_eq!(
+            vertex(RootMenuC3dSlot::Rally).opaque_triplet_words()[1],
+            0x9600_0000
+        );
+    }
+
+    #[test]
+    fn mode2_mutation_is_global_last_writer_and_side_vectors_precede_it() {
+        let entries = [[
+            0,
+            0,
+            0,
+            2 * 65_536 + 16_384,
+            67_108_565,
+            1 << 16,
+            2 << 16,
+            3 << 16,
+        ]];
+        let final_tuple = [0xaa, 0xbb, 0xcc, 0xdd];
+        let groups = [runtime_group(
+            &entries,
+            &[[0, 0, 0], [0, 0, 0], [0, 0, 0]],
+            &[0, -1, 0],
+            &[[[1, 2, 3, 4]; 3], [[5, 6, 7, 8]; 3], [final_tuple; 3]],
+        )];
+        let fixture = fixture_for(&[(
+            RootMenuC3dSlot::Options,
+            c3d_with_group0(
+                &[Group0 {
+                    field_04: -1,
+                    matrix: identity_matrix(),
+                    references: vec![0],
+                }],
+                &groups,
+                &[(*b"LAST-WRITER!", indexed_bmp(1, 2, 8))],
+            ),
+        )]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let runtime = materialize_root_menu_mode2_pre_scale(
+            &topology,
+            uniform_load_states(0, C3dMode2CornerSource::SourceEntryTuples),
+        )
+        .unwrap();
+        let reference = runtime
+            .get(RootMenuC3dSlot::Options)
+            .unwrap()
+            .group0_records()
+            .next()
+            .unwrap()
+            .references()
+            .next()
+            .unwrap();
+        let batches = reference.batches().collect::<Vec<_>>();
+
+        assert_eq!(batches.len(), 3);
+        for batch in &batches {
+            assert_eq!(batch.indices(), &[0, 0, 0]);
+            assert_eq!(batch.source_entry32_ordinals(), &[0]);
+            assert_eq!(batch.vertices().len(), 1);
+            assert_eq!(batch.vertices()[0].opaque_triplet_words()[1], 0xddaa_bbcc);
+            assert_eq!(batch.vertices()[0].opaque_triplet_words()[2], 0xff00_0000);
+            assert_eq!(
+                batch.vertices()[0].opaque_triplet_words()[0],
+                1.0f32.to_bits()
+            );
+            assert_eq!(
+                batch.side_vectors()[0].words(),
+                [1.0f32.to_bits(), 2.0f32.to_bits(), 3.0f32.to_bits()]
+            );
+            assert_eq!(batch.vertices()[0].adjusted_pair()[0], 1.25);
+            assert_eq!(
+                batch.vertices()[0].adjusted_pair()[1].to_bits(),
+                0x4480_1fdb
+            );
+        }
+
+        let defaults = materialize_root_menu_mode2_pre_scale(
+            &topology,
+            uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+        )
+        .unwrap();
+        for batch in defaults
+            .get(RootMenuC3dSlot::Options)
+            .unwrap()
+            .group0_records()
+            .next()
+            .unwrap()
+            .references()
+            .next()
+            .unwrap()
+            .batches()
+        {
+            assert_eq!(batch.vertices()[0].opaque_triplet_words()[1], 0x9600_0000);
+        }
+    }
+
+    #[test]
+    fn missing_last_writer_overrides_an_earlier_present_tuple() {
+        let groups = [runtime_group(
+            &[[0; 8]],
+            &[[0, 0, 0], [0, 0, 0]],
+            &[0, -1],
+            &[[[1, 2, 3, 4]; 3], [[5, 6, 7, 8]; 3]],
+        )];
+        let fixture = fixture_for(&[(
+            RootMenuC3dSlot::Load,
+            c3d_with_group0(
+                &[Group0 {
+                    field_04: -1,
+                    matrix: identity_matrix(),
+                    references: vec![0],
+                }],
+                &groups,
+                &[(*b"MISS-LAST!!!", indexed_bmp(1, 2, 8))],
+            ),
+        )]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let runtime = materialize_root_menu_mode2_pre_scale(
+            &topology,
+            uniform_load_states(0, C3dMode2CornerSource::SourceEntryTuples),
+        )
+        .unwrap();
+        for batch in runtime
+            .get(RootMenuC3dSlot::Load)
+            .unwrap()
+            .group0_records()
+            .next()
+            .unwrap()
+            .references()
+            .next()
+            .unwrap()
+            .batches()
+        {
+            assert_eq!(
+                batch.vertices()[0].opaque_triplet_words()[1..],
+                [0xff00_0000, 0xff00_0000]
+            );
+        }
+    }
+
+    fn identity_matrix() -> [i32; 16] {
+        let mut matrix = [0; 16];
+        matrix[0] = 1 << 16;
+        matrix[5] = 1 << 16;
+        matrix[10] = 1 << 16;
+        matrix[15] = 1 << 16;
+        matrix
+    }
+
+    fn uniform_load_states(
+        prepared_resource_count: u32,
+        corner_source: C3dMode2CornerSource,
+    ) -> RootMenuC3dMode2LoadStates {
+        RootMenuC3dMode2LoadStates::splat(C3dMode2LoadState {
+            prepared_resource_count,
+            corner_source,
+        })
+    }
+
     #[derive(Clone)]
     struct Group {
-        entry32_count: usize,
+        entries_32: Vec<[i32; 8]>,
         corners: Vec<[u16; 3]>,
         selectors: Vec<i16>,
+        tuples: Vec<[[u8; 4]; 3]>,
     }
 
     fn group(entry32_count: usize, corners: &[[u16; 3]], selectors: &[i16]) -> Group {
         assert_eq!(corners.len(), selectors.len());
         Group {
-            entry32_count,
+            entries_32: vec![[0; 8]; entry32_count],
             corners: corners.to_vec(),
             selectors: selectors.to_vec(),
+            tuples: vec![[[0; 4]; 3]; selectors.len()],
         }
     }
 
+    fn runtime_group(
+        entries_32: &[[i32; 8]],
+        corners: &[[u16; 3]],
+        selectors: &[i16],
+        tuples: &[[[u8; 4]; 3]],
+    ) -> Group {
+        assert_eq!(corners.len(), selectors.len());
+        assert_eq!(tuples.len(), selectors.len());
+        Group {
+            entries_32: entries_32.to_vec(),
+            corners: corners.to_vec(),
+            selectors: selectors.to_vec(),
+            tuples: tuples.to_vec(),
+        }
+    }
+
+    struct Group0 {
+        field_04: i16,
+        matrix: [i32; 16],
+        references: Vec<u16>,
+    }
+
     fn c3d(groups: &[Group], blobs: &[([u8; 12], Vec<u8>)]) -> Vec<u8> {
+        c3d_with_group0(&[], groups, blobs)
+    }
+
+    fn c3d_with_group0(
+        group0_records: &[Group0],
+        groups: &[Group],
+        blobs: &[([u8; 12], Vec<u8>)],
+    ) -> Vec<u8> {
+        let group0_len = group0_records
+            .iter()
+            .map(|record| C3D_GROUP0_VALUES_OFFSET + record.references.len() * 2)
+            .sum::<usize>();
         let group1_len = groups
             .iter()
             .map(|group| {
                 C3D_GROUP1_FIXED_LEN
-                    + group.entry32_count * C3D_GROUP1_ENTRY32_LEN
+                    + group.entries_32.len() * C3D_GROUP1_ENTRY32_LEN
                     + group.selectors.len() * C3D_GROUP1_ENTRY24_LEN
             })
             .sum::<usize>();
-        let blob_start = C3D_HEADER_LEN + group1_len;
+        let group1_start = C3D_HEADER_LEN + group0_len;
+        let blob_start = group1_start + group1_len;
         let total_len = blob_start + blobs.iter().map(|(_, blob)| 16 + blob.len()).sum::<usize>();
         let mut bytes = vec![0; total_len];
         bytes[0..4].copy_from_slice(&C3D_MAGIC);
         bytes[4..8].copy_from_slice(&C3D_FORMAT_VERSION.to_le_bytes());
+        bytes[12..14].copy_from_slice(&(group0_records.len() as u16).to_le_bytes());
         bytes[14..16].copy_from_slice(&(groups.len() as u16).to_le_bytes());
         bytes[16..18].copy_from_slice(&(blobs.len() as u16).to_le_bytes());
         for (index, offset) in [
             C3D_HEADER_LEN as u32,
-            C3D_HEADER_LEN as u32,
+            group1_start as u32,
             blob_start as u32,
         ]
         .into_iter()
@@ -557,17 +1111,40 @@ mod tests {
         }
 
         let mut offset = C3D_HEADER_LEN;
+        for record in group0_records {
+            let record_len = C3D_GROUP0_VALUES_OFFSET + record.references.len() * 2;
+            bytes[offset..offset + 4].copy_from_slice(&(record_len as u32).to_le_bytes());
+            bytes[offset + 4..offset + 6].copy_from_slice(&record.field_04.to_le_bytes());
+            for (index, value) in record.matrix.iter().enumerate() {
+                let field = offset + 8 + index * 4;
+                bytes[field..field + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            bytes[offset + 76] = record.references.len() as u8;
+            for (index, ordinal) in record.references.iter().enumerate() {
+                let field = offset + C3D_GROUP0_VALUES_OFFSET + index * 2;
+                bytes[field..field + 2].copy_from_slice(&ordinal.to_le_bytes());
+            }
+            offset += record_len;
+        }
+        debug_assert_eq!(offset, group1_start);
         for group in groups {
             let record_len = C3D_GROUP1_FIXED_LEN
-                + group.entry32_count * C3D_GROUP1_ENTRY32_LEN
+                + group.entries_32.len() * C3D_GROUP1_ENTRY32_LEN
                 + group.selectors.len() * C3D_GROUP1_ENTRY24_LEN;
             bytes[offset + 12..offset + 16].copy_from_slice(&(record_len as u32).to_le_bytes());
             bytes[offset + 16..offset + 18]
-                .copy_from_slice(&(group.entry32_count as u16).to_le_bytes());
+                .copy_from_slice(&(group.entries_32.len() as u16).to_le_bytes());
             bytes[offset + 18..offset + 20]
                 .copy_from_slice(&(group.selectors.len() as u16).to_le_bytes());
             let entries24 =
-                offset + C3D_GROUP1_FIXED_LEN + group.entry32_count * C3D_GROUP1_ENTRY32_LEN;
+                offset + C3D_GROUP1_FIXED_LEN + group.entries_32.len() * C3D_GROUP1_ENTRY32_LEN;
+            for (entry_index, components) in group.entries_32.iter().enumerate() {
+                let entry = offset + C3D_GROUP1_FIXED_LEN + entry_index * C3D_GROUP1_ENTRY32_LEN;
+                for (component_index, component) in components.iter().enumerate() {
+                    let field = entry + component_index * 4;
+                    bytes[field..field + 4].copy_from_slice(&component.to_le_bytes());
+                }
+            }
             for (index, (corners, selector)) in
                 group.corners.iter().zip(&group.selectors).enumerate()
             {
@@ -577,6 +1154,10 @@ mod tests {
                     bytes[field..field + 2].copy_from_slice(&ordinal.to_le_bytes());
                 }
                 bytes[entry + 8..entry + 10].copy_from_slice(&selector.to_le_bytes());
+                for (corner_index, tuple) in group.tuples[index].iter().enumerate() {
+                    let field = entry + 10 + corner_index * 4;
+                    bytes[field..field + 4].copy_from_slice(tuple);
+                }
             }
             offset += record_len;
         }

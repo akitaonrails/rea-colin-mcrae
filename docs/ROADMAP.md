@@ -160,12 +160,14 @@ Prepared selectors now feed the checked consecutive-run topology planner through
 a combined constructor tied to the exact borrowed asset set. The resulting
 fixed-slot plans preserve group order, source views, missing selectors, compact
 first-use vertex ordinals, and preparation diagnostics without exposing an
-unsafe arbitrary source/preparation join. Runtime vertex conversion remains the
-next boundary. Static evidence now fixes its wrapping Q16 affine arithmetic,
-f32 field layout, opaque pre-mutation side-vector capture, and mode-2 packed
-corner mutation. The affine/pass-through choice depends on the loader-entry
-prepared-resource-count snapshot; root call ordering and that global's lifetime
-remain unresolved, as does resource-driven one-time coordinate scaling.
+unsafe arbitrary source/preparation join. Group-0 references now retain their
+owning record and checked group-1 target, and the pre-scale mode-2 materializer
+reproduces wrapping Q16 affine arithmetic, f32 field layout, the persistent
+pass-through latch, opaque pre-mutation side vectors, source-order last-writer
+corner mutation, missing selectors, and batch compaction. All reviewed root
+records force pass-through. Per-slot loader state keeps the unresolved tuple
+gate explicit. Resource-driven one-time coordinate scaling remains the next
+boundary.
 
 Exit gate:
 
