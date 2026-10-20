@@ -11,10 +11,12 @@ use std::fmt;
 use cmr_formats::bitmap::BitmapLimits;
 
 use crate::{
+    c3d_topology::{C3dObjectTopology, C3dObjectTopologyError, build_c3d_object_topology},
     championship_assets::{CHAMPIONSHIP_CAR_COUNT, ChampionshipAssets},
     championship_setup::CanonicalCar,
     root_menu_assets::VisualVariant,
     root_menu_c3d_assets::{ROOT_MENU_C3D_REQUEST_COUNT, RootMenuC3dSet, RootMenuC3dSlot},
+    root_menu_c3d_execute::{C3dBindingBuildError, C3dBindingCatalog, bind_prepared_c3d_resources},
     root_menu_c3d_resources::{
         C3dEntryMaterialPolicy, C3dLoadPolicy, C3dPreparedArena, C3dPreparedArenaBuilder,
         C3dPreparedObject, C3dPreparedResource, C3dPreparedResourceAccessError,
@@ -23,7 +25,22 @@ use crate::{
         C3dSurfaceLayoutGates, FrontendC3dOwner, RootMenuC3dPreparedObject,
         RootMenuC3dResourceDiagnostic, prepare_root_menu_c3d_objects,
     },
+    root_menu_c3d_runtime::{
+        C3dResourceScaledMaterializationError, C3dResourceScaledObject,
+        materialize_c3d_resource_scaled,
+    },
 };
+
+/// Maps every car and root resource in a frontend-session arena exactly once.
+///
+/// The callback receives resources in stable arena order. A failed or unwound
+/// build releases already-created handles in reverse order.
+pub fn bind_frontend_c3d_resources<H, E>(
+    prepared: &FrontendC3dPrepared,
+    mut bind: impl FnMut(C3dPreparedResourceId, &C3dPreparedResource) -> Result<H, E>,
+) -> Result<C3dBindingCatalog<H>, C3dBindingBuildError<E>> {
+    bind_prepared_c3d_resources(prepared.provenance(), prepared.resources(), &mut bind)
+}
 
 /// Resource count visible on entry to each recovered fresh-session car load.
 pub const CHAMPIONSHIP_C3D_ENTRY_RESOURCE_SNAPSHOTS: [u32; CHAMPIONSHIP_CAR_COUNT] =
@@ -107,6 +124,92 @@ impl FrontendC3dPrepared {
         id: C3dPreparedResourceId,
     ) -> Result<&C3dPreparedResource, C3dPreparedResourceAccessError> {
         self.arena.resource(id)
+    }
+
+    /// Joins one car's prepared selectors to its exact parsed source geometry.
+    pub fn car_topology<'asset>(
+        &self,
+        championship: &'asset ChampionshipAssets,
+        car: CanonicalCar,
+    ) -> Result<C3dObjectTopology<'asset>, C3dObjectTopologyError> {
+        build_c3d_object_topology(
+            &championship.car(car).object,
+            self.car(car),
+            self.provenance(),
+        )
+    }
+
+    /// Materializes one car with its exact checked mode-8 load policy.
+    pub fn materialize_car(
+        &self,
+        car: CanonicalCar,
+        topology: &C3dObjectTopology<'_>,
+    ) -> Result<C3dResourceScaledObject, FrontendC3dCarMaterializationError> {
+        let prepared = self.car(car);
+        if topology.source() != prepared.source()
+            || topology.source_sha256() != prepared.source_sha256()
+        {
+            return Err(FrontendC3dCarMaterializationError::ObjectMismatch { car });
+        }
+        if topology.policy() != prepared.policy() {
+            return Err(FrontendC3dCarMaterializationError::PolicyMismatch { car });
+        }
+        let runtime_policy = prepared.policy();
+        materialize_c3d_resource_scaled(topology, runtime_policy, self.provenance(), |id| {
+            self.resource(id)
+        })
+        .map_err(
+            |source| FrontendC3dCarMaterializationError::Materialization {
+                car,
+                path: prepared.source().path.clone(),
+                source,
+            },
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FrontendC3dCarMaterializationError {
+    ObjectMismatch {
+        car: CanonicalCar,
+    },
+    PolicyMismatch {
+        car: CanonicalCar,
+    },
+    Materialization {
+        car: CanonicalCar,
+        path: Box<str>,
+        source: C3dResourceScaledMaterializationError,
+    },
+}
+
+impl fmt::Display for FrontendC3dCarMaterializationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ObjectMismatch { car } => {
+                write!(
+                    formatter,
+                    "C3D topology does not belong to championship car {car:?}"
+                )
+            }
+            Self::PolicyMismatch { car } => write!(
+                formatter,
+                "C3D topology does not retain the prepared mode-8 policy for championship car {car:?}"
+            ),
+            Self::Materialization { car, path, source } => write!(
+                formatter,
+                "cannot materialize championship car {car:?} at {path}: {source}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FrontendC3dCarMaterializationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Materialization { source, .. } => Some(source),
+            Self::ObjectMismatch { .. } | Self::PolicyMismatch { .. } => None,
+        }
     }
 }
 

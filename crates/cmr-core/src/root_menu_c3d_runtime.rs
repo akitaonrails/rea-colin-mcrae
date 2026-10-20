@@ -12,12 +12,13 @@ use std::fmt;
 use cmr_formats::c3d::{C3dEntry32, C3dGroup0Record};
 
 use crate::{
+    c3d_topology::{C3dGroup1Topology, C3dObjectTopology},
     root_menu_assets::{RootMenuObjectIdentity, VisualVariant},
     root_menu_c3d_assets::{ROOT_MENU_C3D_REQUEST_COUNT, RootMenuC3dSlot},
     root_menu_c3d_resources::{
-        C3dEntryMaterialPolicy, C3dLoadPolicy, C3dPreparedResourceAccessError,
+        C3dEntryMaterialPolicy, C3dLoadPolicy, C3dPreparedResource, C3dPreparedResourceAccessError,
         C3dPreparedResourceId, C3dPreparedResourceProvenance, C3dPreparedSelector,
-        C3dResourceAllocationPolicy, C3dVertexMutationBranch,
+        C3dResourceAllocationPolicy, C3dVertexMutationBranch, FrontendC3dOwner,
     },
     root_menu_c3d_topology::{
         RootMenuC3dGroup0Topology, RootMenuC3dGroup1Topology, RootMenuC3dObjectTopology,
@@ -407,7 +408,7 @@ impl C3dType2ResourceScaledVertex {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub struct RootMenuC3dMode2ResourceScaledBatch {
+pub struct C3dResourceScaledBatch {
     selector: C3dPreparedSelector,
     source_entry32_ordinals: Vec<u16>,
     vertices: Vec<C3dMode2ResourceScaledVertex>,
@@ -415,7 +416,7 @@ pub struct RootMenuC3dMode2ResourceScaledBatch {
     indices: Vec<u16>,
 }
 
-impl RootMenuC3dMode2ResourceScaledBatch {
+impl C3dResourceScaledBatch {
     #[must_use]
     pub const fn selector(&self) -> C3dPreparedSelector {
         self.selector
@@ -442,15 +443,17 @@ impl RootMenuC3dMode2ResourceScaledBatch {
     }
 }
 
+pub type RootMenuC3dMode2ResourceScaledBatch = C3dResourceScaledBatch;
+
 #[derive(Debug, Eq, PartialEq)]
-pub struct RootMenuC3dMode2ResourceScaledReference {
+pub struct C3dResourceScaledReference {
     value_index: usize,
     source_offset: usize,
     group1_ordinal: u16,
-    batches: Vec<RootMenuC3dMode2ResourceScaledBatch>,
+    batches: Vec<C3dResourceScaledBatch>,
 }
 
-impl RootMenuC3dMode2ResourceScaledReference {
+impl C3dResourceScaledReference {
     #[must_use]
     pub const fn value_index(&self) -> usize {
         self.value_index
@@ -466,19 +469,21 @@ impl RootMenuC3dMode2ResourceScaledReference {
         self.group1_ordinal
     }
 
-    pub fn batches(&self) -> impl ExactSizeIterator<Item = &RootMenuC3dMode2ResourceScaledBatch> {
+    pub fn batches(&self) -> impl ExactSizeIterator<Item = &C3dResourceScaledBatch> {
         self.batches.iter()
     }
 }
 
+pub type RootMenuC3dMode2ResourceScaledReference = C3dResourceScaledReference;
+
 #[derive(Debug, Eq, PartialEq)]
-pub struct RootMenuC3dMode2ResourceScaledGroup0 {
+pub struct C3dResourceScaledGroup0 {
     record_index: usize,
     record_offset: usize,
-    references: Vec<RootMenuC3dMode2ResourceScaledReference>,
+    references: Vec<C3dResourceScaledReference>,
 }
 
-impl RootMenuC3dMode2ResourceScaledGroup0 {
+impl C3dResourceScaledGroup0 {
     #[must_use]
     pub const fn record_index(&self) -> usize {
         self.record_index
@@ -489,10 +494,37 @@ impl RootMenuC3dMode2ResourceScaledGroup0 {
         self.record_offset
     }
 
-    pub fn references(
-        &self,
-    ) -> impl ExactSizeIterator<Item = &RootMenuC3dMode2ResourceScaledReference> {
+    pub fn references(&self) -> impl ExactSizeIterator<Item = &C3dResourceScaledReference> {
         self.references.iter()
+    }
+}
+
+pub type RootMenuC3dMode2ResourceScaledGroup0 = C3dResourceScaledGroup0;
+
+/// Resource-scaled runtime geometry for one frontend-neutral C3D object.
+#[derive(Debug, Eq, PartialEq)]
+pub struct C3dResourceScaledObject {
+    provenance: C3dPreparedResourceProvenance,
+    source: crate::root_menu_c3d_resources::C3dSourceIdentity,
+    policy: C3dLoadPolicy,
+    group0_records: Vec<C3dResourceScaledGroup0>,
+}
+
+impl C3dResourceScaledObject {
+    #[must_use]
+    pub const fn provenance(&self) -> C3dPreparedResourceProvenance {
+        self.provenance
+    }
+    #[must_use]
+    pub const fn source(&self) -> &crate::root_menu_c3d_resources::C3dSourceIdentity {
+        &self.source
+    }
+    #[must_use]
+    pub const fn policy(&self) -> C3dLoadPolicy {
+        self.policy
+    }
+    pub fn group0_records(&self) -> impl ExactSizeIterator<Item = &C3dResourceScaledGroup0> {
+        self.group0_records.iter()
     }
 }
 
@@ -501,7 +533,7 @@ pub struct RootMenuC3dMode2ResourceScaledObject {
     slot: RootMenuC3dSlot,
     identity: RootMenuObjectIdentity,
     path: &'static str,
-    group0_records: Vec<RootMenuC3dMode2ResourceScaledGroup0>,
+    object: C3dResourceScaledObject,
 }
 
 impl RootMenuC3dMode2ResourceScaledObject {
@@ -523,7 +555,12 @@ impl RootMenuC3dMode2ResourceScaledObject {
     pub fn group0_records(
         &self,
     ) -> impl ExactSizeIterator<Item = &RootMenuC3dMode2ResourceScaledGroup0> {
-        self.group0_records.iter()
+        self.object.group0_records()
+    }
+
+    #[must_use]
+    pub const fn object(&self) -> &C3dResourceScaledObject {
+        &self.object
     }
 }
 
@@ -592,6 +629,56 @@ pub enum RootMenuC3dMode2MaterializationError {
         axis: C3dSurfaceLayoutAxis,
         extent_bits: u16,
     },
+}
+
+/// Domain-neutral failure while materializing one prepared C3D object.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum C3dResourceScaledMaterializationError {
+    ForeignTopology {
+        topology: C3dPreparedResourceProvenance,
+        resources: C3dPreparedResourceProvenance,
+    },
+    MissingGroup1Topology {
+        group0_record_index: usize,
+        value_index: usize,
+        group1_ordinal: u16,
+        group1_count: usize,
+    },
+    ResourceAccess {
+        group0_record_index: usize,
+        value_index: usize,
+        group1_ordinal: u16,
+        entry24_index: usize,
+        entry24_offset: usize,
+        resource_id: C3dPreparedResourceId,
+        source: C3dPreparedResourceAccessError,
+    },
+    UnusableSurfaceExtent {
+        group0_record_index: usize,
+        value_index: usize,
+        group1_ordinal: u16,
+        entry24_index: usize,
+        entry24_offset: usize,
+        resource_id: C3dPreparedResourceId,
+        first_owner: FrontendC3dOwner,
+        axis: C3dSurfaceLayoutAxis,
+        extent_bits: u16,
+    },
+}
+
+impl fmt::Display for C3dResourceScaledMaterializationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "cannot materialize C3D object: {self:?}")
+    }
+}
+
+impl std::error::Error for C3dResourceScaledMaterializationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ResourceAccess { source, .. } => Some(source),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for RootMenuC3dMode2MaterializationError {
@@ -710,22 +797,128 @@ fn materialize_resource_scaled_object(
     load_states: RootMenuC3dMode2LoadStates,
 ) -> Result<RootMenuC3dMode2ResourceScaledObject, RootMenuC3dMode2MaterializationError> {
     let load_state = load_states.get(object.slot());
-    let mut pass_through = load_state.prepared_resource_count != 0;
+    let policy = C3dLoadPolicy::root_mode2(load_state);
+    let runtime =
+        materialize_c3d_resource_scaled(object.object(), policy, topology.provenance(), |id| {
+            topology.resource(id)
+        })
+        .map_err(|source| map_root_materialization_error(object.slot(), source))?;
+    Ok(RootMenuC3dMode2ResourceScaledObject {
+        slot: object.slot(),
+        identity: object.identity(),
+        path: object.path(),
+        object: runtime,
+    })
+}
+
+fn map_root_materialization_error(
+    slot: RootMenuC3dSlot,
+    source: C3dResourceScaledMaterializationError,
+) -> RootMenuC3dMode2MaterializationError {
+    match source {
+        C3dResourceScaledMaterializationError::ForeignTopology { .. } => {
+            unreachable!("root topology owns the resource arena passed to its adapter")
+        }
+        C3dResourceScaledMaterializationError::MissingGroup1Topology {
+            group0_record_index,
+            value_index,
+            group1_ordinal,
+            group1_count,
+        } => RootMenuC3dMode2MaterializationError::MissingGroup1Topology {
+            slot,
+            group0_record_index,
+            value_index,
+            group1_ordinal,
+            group1_count,
+        },
+        C3dResourceScaledMaterializationError::ResourceAccess {
+            group0_record_index,
+            value_index,
+            group1_ordinal,
+            entry24_index,
+            entry24_offset,
+            resource_id,
+            source,
+        } => RootMenuC3dMode2MaterializationError::ResourceAccess {
+            slot,
+            group0_record_index,
+            value_index,
+            group1_ordinal,
+            entry24_index,
+            entry24_offset,
+            resource_id,
+            source,
+        },
+        C3dResourceScaledMaterializationError::UnusableSurfaceExtent {
+            group0_record_index,
+            value_index,
+            group1_ordinal,
+            entry24_index,
+            entry24_offset,
+            resource_id,
+            first_owner: FrontendC3dOwner::RootMenu(first_slot),
+            axis,
+            extent_bits,
+        } => RootMenuC3dMode2MaterializationError::UnusableSurfaceExtent {
+            slot,
+            group0_record_index,
+            value_index,
+            group1_ordinal,
+            entry24_index,
+            entry24_offset,
+            resource_id,
+            first_slot,
+            axis,
+            extent_bits,
+        },
+        C3dResourceScaledMaterializationError::UnusableSurfaceExtent {
+            first_owner: FrontendC3dOwner::ChampionshipCar(_),
+            ..
+        } => unreachable!("isolated root topology cannot contain car-owned resources"),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ResourceScaleContext {
+    group0_record_index: usize,
+    value_index: usize,
+    group1_ordinal: u16,
+}
+
+/// Materializes resource-scaled geometry for one object against an explicit
+/// runtime load policy and arena. Affine/pass-through and vertex mutation use
+/// that explicit policy; UV scaling uses the allocation origin's surface
+/// policy because an interned resource retains its first-created surface.
+pub(crate) fn materialize_c3d_resource_scaled<'resource>(
+    topology: &C3dObjectTopology<'_>,
+    runtime_policy: C3dLoadPolicy,
+    resource_provenance: C3dPreparedResourceProvenance,
+    mut resource: impl FnMut(
+        C3dPreparedResourceId,
+    )
+        -> Result<&'resource C3dPreparedResource, C3dPreparedResourceAccessError>,
+) -> Result<C3dResourceScaledObject, C3dResourceScaledMaterializationError> {
+    if topology.provenance() != resource_provenance {
+        return Err(C3dResourceScaledMaterializationError::ForeignTopology {
+            topology: topology.provenance(),
+            resources: resource_provenance,
+        });
+    }
+    let mut pass_through = runtime_policy.entry_resource_count != 0;
     let mut group0_records = Vec::new();
-    for group0 in object.group0_records() {
+    for group0 in topology.group0_records() {
         if group0.record().field_04_i16() == -1 {
             pass_through = true;
         }
         let transform = !pass_through;
-        let group1_count = object.groups().len();
+        let group1_count = topology.groups().len();
         let references = group0
             .references()
             .map(|reference| {
-                let group1 = object
+                let group1 = topology
                     .group(usize::from(reference.group1_ordinal()))
                     .ok_or(
-                        RootMenuC3dMode2MaterializationError::MissingGroup1Topology {
-                            slot: object.slot(),
+                        C3dResourceScaledMaterializationError::MissingGroup1Topology {
                             group0_record_index: group0.record_index(),
                             value_index: reference.value_index(),
                             group1_ordinal: reference.group1_ordinal(),
@@ -733,20 +926,19 @@ fn materialize_resource_scaled_object(
                         },
                     )?;
                 let context = ResourceScaleContext {
-                    slot: object.slot(),
                     group0_record_index: group0.record_index(),
                     value_index: reference.value_index(),
                     group1_ordinal: reference.group1_ordinal(),
                 };
                 let batches = materialize_resource_scaled_reference(
-                    topology,
-                    load_states,
+                    &mut resource,
+                    runtime_policy,
                     group0.record(),
                     group1,
                     transform,
                     context,
                 )?;
-                Ok(RootMenuC3dMode2ResourceScaledReference {
+                Ok(C3dResourceScaledReference {
                     value_index: reference.value_index(),
                     source_offset: reference.source_offset(),
                     group1_ordinal: reference.group1_ordinal(),
@@ -754,36 +946,31 @@ fn materialize_resource_scaled_object(
                 })
             })
             .collect::<Result<_, _>>()?;
-        group0_records.push(RootMenuC3dMode2ResourceScaledGroup0 {
+        group0_records.push(C3dResourceScaledGroup0 {
             record_index: group0.record_index(),
             record_offset: group0.record_offset(),
             references,
         });
     }
-    Ok(RootMenuC3dMode2ResourceScaledObject {
-        slot: object.slot(),
-        identity: object.identity(),
-        path: object.path(),
+    Ok(C3dResourceScaledObject {
+        provenance: resource_provenance,
+        source: topology.source().clone(),
+        policy: runtime_policy,
         group0_records,
     })
 }
 
-#[derive(Clone, Copy)]
-struct ResourceScaleContext {
-    slot: RootMenuC3dSlot,
-    group0_record_index: usize,
-    value_index: usize,
-    group1_ordinal: u16,
-}
-
-fn materialize_resource_scaled_reference(
-    topology: &RootMenuC3dTopology<'_>,
-    load_states: RootMenuC3dMode2LoadStates,
+fn materialize_resource_scaled_reference<'resource>(
+    resource: &mut impl FnMut(
+        C3dPreparedResourceId,
+    )
+        -> Result<&'resource C3dPreparedResource, C3dPreparedResourceAccessError>,
+    runtime_policy: C3dLoadPolicy,
     group0: C3dGroup0Record<'_>,
-    group1: &RootMenuC3dGroup1Topology<'_>,
+    group1: &C3dGroup1Topology<'_>,
     transform: bool,
     context: ResourceScaleContext,
-) -> Result<Vec<RootMenuC3dMode2ResourceScaledBatch>, RootMenuC3dMode2MaterializationError> {
+) -> Result<Vec<C3dResourceScaledBatch>, C3dResourceScaledMaterializationError> {
     let matrix = group0.affine_matrix_q16();
     let mut vertices = group1
         .record()
@@ -795,19 +982,13 @@ fn materialize_resource_scaled_reference(
         .map(|vertex| C3dOpaqueSideVector(vertex.opaque_triplet_words()))
         .collect::<Vec<_>>();
 
-    let load_state = load_states.get(context.slot);
-    apply_vertex_mutation(
-        &mut vertices,
-        group1,
-        C3dLoadPolicy::root_mode2(load_state).vertex_mutation_branch(),
-        load_state.corner_source,
-    );
-    apply_resource_scaling(topology, load_states, &mut vertices, group1, context)?;
+    apply_policy_vertex_mutation(&mut vertices, group1, runtime_policy);
+    apply_resource_scaling(resource, &mut vertices, group1, context)?;
 
     Ok(group1
         .batches()
         .iter()
-        .map(|batch| RootMenuC3dMode2ResourceScaledBatch {
+        .map(|batch| C3dResourceScaledBatch {
             selector: batch.selector(),
             source_entry32_ordinals: batch.unique_entry32_ordinals().to_vec(),
             vertices: batch
@@ -856,6 +1037,64 @@ fn apply_vertex_mutation(
     }
 }
 
+fn apply_policy_vertex_mutation(
+    vertices: &mut [C3dMode2PreScaleVertex],
+    group1: &C3dGroup1Topology<'_>,
+    policy: C3dLoadPolicy,
+) {
+    for batch in group1.batches() {
+        for entry in batch.entries_24() {
+            match policy.vertex_mutation_branch() {
+                C3dVertexMutationBranch::Type1 => {
+                    apply_type1_entry_mutation(
+                        vertices,
+                        entry.entry32_ordinals(),
+                        batch.selector(),
+                    );
+                }
+                C3dVertexMutationBranch::Type2 => match policy.material {
+                    C3dEntryMaterialPolicy::Mode2Ordinary => apply_type2_entry_mutation(
+                        vertices,
+                        entry.entry32_ordinals(),
+                        [ORDINARY_MODE2_CORNER; 3],
+                        batch.selector(),
+                    ),
+                    C3dEntryMaterialPolicy::Mode2SourceTuples => apply_type2_entry_mutation(
+                        vertices,
+                        entry.entry32_ordinals(),
+                        entry.corner_tuples(),
+                        batch.selector(),
+                    ),
+                    C3dEntryMaterialPolicy::FixedUniformWord(word) => {
+                        apply_type2_fixed_word_mutation(
+                            vertices,
+                            entry.entry32_ordinals(),
+                            word,
+                            batch.selector(),
+                        );
+                    }
+                },
+            }
+        }
+    }
+}
+
+fn apply_type2_fixed_word_mutation(
+    vertices: &mut [C3dMode2PreScaleVertex],
+    ordinals: [u16; 3],
+    word: u32,
+    selector: C3dPreparedSelector,
+) {
+    for ordinal in ordinals {
+        let vertex = &mut vertices[usize::from(ordinal)];
+        vertex.words[4] = match selector {
+            C3dPreparedSelector::Resource(_) => word,
+            C3dPreparedSelector::Missing => MODE2_OPAQUE_WORD,
+        };
+        vertex.words[5] = MODE2_OPAQUE_WORD;
+    }
+}
+
 fn apply_type1_entry_mutation(
     vertices: &mut [C3dMode2PreScaleVertex],
     ordinals: [u16; 3],
@@ -889,13 +1128,15 @@ fn apply_type2_entry_mutation(
     }
 }
 
-fn apply_resource_scaling(
-    topology: &RootMenuC3dTopology<'_>,
-    load_states: RootMenuC3dMode2LoadStates,
+fn apply_resource_scaling<'resource>(
+    resource: &mut impl FnMut(
+        C3dPreparedResourceId,
+    )
+        -> Result<&'resource C3dPreparedResource, C3dPreparedResourceAccessError>,
     vertices: &mut [C3dMode2PreScaleVertex],
-    group1: &RootMenuC3dGroup1Topology<'_>,
+    group1: &C3dGroup1Topology<'_>,
     context: ResourceScaleContext,
-) -> Result<(), RootMenuC3dMode2MaterializationError> {
+) -> Result<(), C3dResourceScaledMaterializationError> {
     let mut visited = vec![false; vertices.len()];
     let mut entry24_index = 0;
     for batch in group1.batches() {
@@ -905,9 +1146,8 @@ fn apply_resource_scaling(
             let C3dPreparedSelector::Resource(resource_id) = batch.selector() else {
                 continue;
             };
-            let resource = topology.resource(resource_id).map_err(|source| {
-                RootMenuC3dMode2MaterializationError::ResourceAccess {
-                    slot: context.slot,
+            let resource = resource(resource_id).map_err(|source| {
+                C3dResourceScaledMaterializationError::ResourceAccess {
                     group0_record_index: context.group0_record_index,
                     value_index: context.value_index,
                     group1_ordinal: context.group1_ordinal,
@@ -917,25 +1157,21 @@ fn apply_resource_scaling(
                     source,
                 }
             })?;
-            let first_slot = resource
-                .first_root_slot()
-                .expect("root topology contains only root-owned C3D resources");
             let [source_width, source_height] = resource.source_dib_extent_low16();
             let layout = derive_surface_layout(
                 source_width,
                 source_height,
-                load_states.get(first_slot).surface_layout,
+                resource.origin().preparation_policy().surface_layout,
             )
             .map_err(|issue| {
-                RootMenuC3dMode2MaterializationError::UnusableSurfaceExtent {
-                    slot: context.slot,
+                C3dResourceScaledMaterializationError::UnusableSurfaceExtent {
                     group0_record_index: context.group0_record_index,
                     value_index: context.value_index,
                     group1_ordinal: context.group1_ordinal,
                     entry24_index: current_index,
                     entry24_offset: entry.offset(),
                     resource_id,
-                    first_slot,
+                    first_owner: resource.origin().source().owner,
                     axis: issue.axis,
                     extent_bits: issue.extent_bits,
                 }

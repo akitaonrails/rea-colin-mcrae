@@ -168,30 +168,26 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   ordinals by first use within each run, and emits compact three-index streams
   while retaining borrowed typed entries. It does not prepare selectors or
   materialize runtime vertex/side-vector payloads.
-- `cmr-core::root_menu_c3d_resources`: root-only, backend-neutral preparation
-  of embedded C3D bitmaps into an owned 2,048-entry arena and six fixed object
-  slots. It preserves source indices and embedded palettes while explicitly
-  recording that the root mode-2 path has no surface color key,
-  label/content aliasing, source-ordered prepared selectors, exact `-1`
-  missing selectors, raw DIB dimension low words, typed failures, and
-  transactional per-object rollback. Palette attachment and upload remain
-  separate. Its lower-level policy-driven arena builder now accepts owned car
-  or root identities and explicit append/intern/material/layout policies while
-  preserving the root wrapper's tested output.
-- `cmr-core::root_menu_c3d_topology`: combined fixed-slot resource preparation
-  and borrowed topology planning tied to the exact source asset set. It joins
-  arena-scoped selectors to ordered group1 records, exposes an opaque
-  unforgeable arena provenance for downstream joins, catalogs checked group0
-  references, preserves consecutive runs and compact first-use ordinals, and
-  returns no partial value on topology failure.
-- `cmr-core::root_menu_c3d_runtime`: fixed-slot, per-group0-reference mode-2
-  materialization through the recovered wrapping Q16/f32 conversion, explicit
-  per-load global-state inputs, pre-mutation opaque side capture, ordered corner
-  mutation, resource-derived surface-layout and mapping-coordinate scaling,
-  first-usable-resource visitation, and compact batches. The generic checked
-  path retains raw 16-bit wrapping and one-store f64→f32 arithmetic; both
-  runtime stages retain the originating arena provenance. Backend resources,
-  palette/material binding, and rasterization remain separate.
+- `cmr-core::root_menu_c3d_resources`: policy-driven, backend-neutral
+  preparation of embedded C3D bitmaps into an owned 2,048-entry arena. It
+  accepts car or root identities plus explicit append/intern/material/layout
+  policies, SHA-binds each prepared object to its exact admitted C3D bytes,
+  preserves selectors and raw DIB metadata, and rolls back failed objects.
+  Root fixed-slot preparation remains a parity-tested adapter.
+- `cmr-core::c3d_topology`: crate-private single-object topology join that
+  verifies source SHA-256 and selector arena before borrowing ordered group1
+  records, resolving checked group0 references, and preserving consecutive
+  selector runs and compact first-use ordinals. Public car/root APIs choose the
+  source/prepared pair rather than exposing an arbitrary join.
+- `cmr-core::root_menu_c3d_topology`: combined fixed-slot root preparation and
+  metadata/error adapter over the domain-neutral topology seam.
+- `cmr-core::root_menu_c3d_runtime`: domain-neutral resource-scaled CPU
+  materialization through recovered wrapping Q16/f32 conversion, explicit load
+  policy, pre-mutation side capture, type-1/type-2 mutation, first-allocation
+  surface-layout UV scaling, first-usable-resource visitation, and compact
+  batches. Root mode 2 remains a parity-tested adapter; the championship path
+  closes over its SHA-checked mode-8 policy and fixed `0x96969696` word.
+  Backend submission, palette integration, and rasterization remain separate.
 - `cmr-core::root_menu_c3d_transform`: deterministic root-only fixed-point
   transform words with source-owned quarter-wave trigonometry, integer-derived
   square-root normalization, exact raw-angle branch behavior, persistent Q16
@@ -201,10 +197,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   non-cloneable owned one-frame submission snapshots, retaining source batch
   order, prepared-arena provenance, exact transforms, and numeric draw words.
   Backend resource binding and terminal scene execution remain separate.
-- `cmr-core::root_menu_c3d_execute`: arena-scoped opaque RAII binding catalogs
-  plus source-ordered world/bind/draw execution with a persistent,
-  explicitly invalidatable selector cache. Scene/depth/latch/presentation
-  orchestration and concrete backend uploads remain separate.
+- `cmr-core::root_menu_c3d_execute`: generic arena-scoped opaque RAII binding
+  catalogs plus the root source-ordered world/bind/draw executor with a
+  persistent, explicitly invalidatable selector cache. One frontend catalog
+  can own car and root resources; scene/depth/latch/presentation orchestration
+  remains separate.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes, plus explicit selection-slot mapping and six independent wrapping

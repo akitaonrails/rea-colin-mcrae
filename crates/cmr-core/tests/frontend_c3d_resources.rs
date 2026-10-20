@@ -1,7 +1,10 @@
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
+    convert::Infallible,
     fs,
     path::PathBuf,
+    rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -9,11 +12,13 @@ use cmr_assets::{
     AssetFile, AssetProfile, AssetStore, ReviewedProfile, StorageEncoding, import_source,
 };
 use cmr_core::{
+    c3d_topology::C3dObjectTopologyError,
     championship_assets::{CHAMPIONSHIP_CARS, MANUFACTURER_LOGOS, load_championship_assets},
     championship_setup::CanonicalCar,
     frontend_c3d_resources::{
         CHAMPIONSHIP_C3D_ENTRY_RESOURCE_SNAPSHOTS, CHAMPIONSHIP_C3D_RESOURCE_PREFIX_LEN,
-        FrontendC3dPreparationError, prepare_frontend_c3d_resources,
+        FrontendC3dCarMaterializationError, FrontendC3dPreparationError,
+        bind_frontend_c3d_resources, prepare_frontend_c3d_resources,
     },
     root_menu_assets::VisualVariant,
     root_menu_c3d_assets::{RootMenuC3dSlot, load_root_menu_c3d},
@@ -21,6 +26,7 @@ use cmr_core::{
         C3dEntryMaterialPolicy, C3dPreparedResourceAccessError, C3dResourceAllocationPolicy,
         C3dSourceIdentity, C3dSurfaceLayoutGates, FrontendC3dOwner,
     },
+    root_menu_c3d_runtime::C3dResourceScaledMaterializationError,
 };
 use cmr_formats::{
     bitmap::BitmapLimits,
@@ -262,6 +268,183 @@ fn one_session_owner_keeps_ids_stable_and_independent_sessions_reject_them() {
     assert_eq!(
         second.resource(id),
         Err(C3dPreparedResourceAccessError::Foreign)
+    );
+}
+
+#[test]
+fn car_topology_rejects_substituted_source_and_cross_car_materialization() {
+    let files = complete_files(RootShape::None);
+    let fixture = Fixture::new(&files);
+    let (championship, root) = load_inputs(&fixture.store);
+    let prepared =
+        prepare_frontend_c3d_resources(&championship, &root, BitmapLimits::default()).unwrap();
+
+    let subaru = prepared
+        .car_topology(&championship, CanonicalCar::Subaru)
+        .unwrap();
+    let subaru_runtime = prepared
+        .materialize_car(CanonicalCar::Subaru, &subaru)
+        .unwrap();
+    assert_eq!(
+        subaru_runtime.policy(),
+        prepared.car(CanonicalCar::Subaru).policy()
+    );
+    assert_eq!(
+        prepared.materialize_car(CanonicalCar::Ibiza, &subaru),
+        Err(FrontendC3dCarMaterializationError::ObjectMismatch {
+            car: CanonicalCar::Ibiza,
+        })
+    );
+
+    let second =
+        prepare_frontend_c3d_resources(&championship, &root, BitmapLimits::default()).unwrap();
+    let second_subaru = second
+        .car_topology(&championship, CanonicalCar::Subaru)
+        .unwrap();
+    assert!(matches!(
+        prepared.materialize_car(CanonicalCar::Subaru, &second_subaru),
+        Err(FrontendC3dCarMaterializationError::Materialization {
+            car: CanonicalCar::Subaru,
+            ref path,
+            source: C3dResourceScaledMaterializationError::ForeignTopology { .. },
+        }) if path.as_ref() == CHAMPIONSHIP_CARS[0].object_path
+    ));
+
+    let mut substituted_files = files;
+    let substituted = substituted_files
+        .get_mut(CHAMPIONSHIP_CARS[0].object_path)
+        .unwrap();
+    *substituted.last_mut().unwrap() ^= 1;
+    let substituted_fixture = Fixture::new(&substituted_files);
+    let (substituted_championship, _) = load_inputs(&substituted_fixture.store);
+    assert!(matches!(
+        prepared.car_topology(&substituted_championship, CanonicalCar::Subaru),
+        Err(C3dObjectTopologyError::SourceMismatch { .. })
+    ));
+}
+
+#[test]
+fn frontend_catalog_maps_mixed_owners_once_and_preserves_arena_and_teardown() {
+    let fixture = Fixture::new(&complete_files(RootShape::SyntheticAliasAndGrowth));
+    let (championship, root) = load_inputs(&fixture.store);
+    let prepared =
+        prepare_frontend_c3d_resources(&championship, &root, BitmapLimits::default()).unwrap();
+    let foreign =
+        prepare_frontend_c3d_resources(&championship, &root, BitmapLimits::default()).unwrap();
+    let mut mapped = Vec::new();
+    let catalog = bind_frontend_c3d_resources(&prepared, |id, resource| {
+        mapped.push((
+            id.index(),
+            resource.origin().source().owner,
+            resource.origin().preparation_policy().surface_layout,
+        ));
+        Ok::<_, Infallible>(id.index())
+    })
+    .unwrap();
+
+    assert_eq!(catalog.provenance(), prepared.provenance());
+    assert_eq!(catalog.len(), prepared.resource_len());
+    assert_eq!(mapped.len(), prepared.resource_len());
+    assert!(
+        mapped
+            .iter()
+            .enumerate()
+            .all(|(index, mapped)| mapped.0 == index)
+    );
+    assert!(
+        mapped[..CHAMPIONSHIP_C3D_RESOURCE_PREFIX_LEN]
+            .iter()
+            .all(|(_, owner, _)| matches!(owner, FrontendC3dOwner::ChampionshipCar(_)))
+    );
+    assert!(
+        mapped[CHAMPIONSHIP_C3D_RESOURCE_PREFIX_LEN..]
+            .iter()
+            .all(|(_, owner, _)| matches!(owner, FrontendC3dOwner::RootMenu(_)))
+    );
+    assert_eq!(
+        mapped[0],
+        (
+            0,
+            FrontendC3dOwner::ChampionshipCar(CanonicalCar::Subaru),
+            C3dSurfaceLayoutGates {
+                expand_width_dominant: true,
+                ..C3dSurfaceLayoutGates::default()
+            },
+        )
+    );
+    assert!(matches!(mapped[55].1, FrontendC3dOwner::RootMenu(_)));
+    let aliased_from_car = prepared
+        .root(RootMenuC3dSlot::Championship)
+        .unwrap()
+        .ordinal_resources()[0];
+    assert_eq!(aliased_from_car.index(), 0);
+    assert_eq!(*catalog.binding(aliased_from_car).unwrap(), 0);
+    assert_eq!(
+        prepared
+            .resource(aliased_from_car)
+            .unwrap()
+            .origin()
+            .source()
+            .owner,
+        FrontendC3dOwner::ChampionshipCar(CanonicalCar::Subaru)
+    );
+    for (id, _) in prepared.resources() {
+        assert_eq!(*catalog.binding(id).unwrap(), id.index());
+    }
+    let foreign_id = foreign.resources().next().unwrap().0;
+    assert_eq!(
+        catalog.binding(foreign_id),
+        Err(C3dPreparedResourceAccessError::Foreign)
+    );
+
+    #[derive(Debug)]
+    struct DropBinding {
+        index: usize,
+        drops: Rc<RefCell<Vec<usize>>>,
+    }
+    impl Drop for DropBinding {
+        fn drop(&mut self) {
+            self.drops.borrow_mut().push(self.index);
+        }
+    }
+
+    let rollback_drops = Rc::new(RefCell::new(Vec::new()));
+    let error = bind_frontend_c3d_resources(&prepared, |id, resource| {
+        if id.index() == 3 {
+            Err("bind")
+        } else {
+            assert!(matches!(
+                resource.origin().source().owner,
+                FrontendC3dOwner::ChampionshipCar(_)
+            ));
+            Ok(DropBinding {
+                index: id.index(),
+                drops: Rc::clone(&rollback_drops),
+            })
+        }
+    })
+    .unwrap_err();
+    assert_eq!(error.resource_id.index(), 3);
+    assert_eq!(
+        error.origin.source().owner,
+        FrontendC3dOwner::ChampionshipCar(CanonicalCar::Subaru)
+    );
+    assert_eq!(error.origin.source_resource_ordinal(), 3);
+    assert_eq!(error.source, "bind");
+    assert_eq!(rollback_drops.borrow().as_slice(), [2, 1, 0]);
+
+    let committed_drops = Rc::new(RefCell::new(Vec::new()));
+    let committed = bind_frontend_c3d_resources(&prepared, |id, _| {
+        Ok::<_, Infallible>(DropBinding {
+            index: id.index(),
+            drops: Rc::clone(&committed_drops),
+        })
+    })
+    .unwrap();
+    drop(committed);
+    assert_eq!(
+        committed_drops.borrow().as_slice(),
+        (0..prepared.resource_len()).rev().collect::<Vec<_>>()
     );
 }
 

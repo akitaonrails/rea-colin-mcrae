@@ -41,19 +41,19 @@ impl<T> Drop for ReverseDropVec<T> {
     }
 }
 
-/// Backend-owned bindings for every interned resource in one prepared arena.
+/// Backend-owned bindings for every prepared resource in one C3D arena.
 ///
 /// `H` should own its backend lifetime (normally through RAII). If construction
 /// fails, every handle already returned by the mapper is dropped with the
 /// partial catalog.
 #[derive(Debug, Eq, PartialEq)]
-pub struct RootMenuC3dBindingCatalog<H> {
+pub struct C3dBindingCatalog<H> {
     provenance: C3dPreparedResourceProvenance,
     resource_ids: Vec<C3dPreparedResourceId>,
     bindings: Vec<H>,
 }
 
-impl<H> Drop for RootMenuC3dBindingCatalog<H> {
+impl<H> Drop for C3dBindingCatalog<H> {
     fn drop(&mut self) {
         while let Some(binding) = self.bindings.pop() {
             drop(binding);
@@ -61,7 +61,7 @@ impl<H> Drop for RootMenuC3dBindingCatalog<H> {
     }
 }
 
-impl<H> RootMenuC3dBindingCatalog<H> {
+impl<H> C3dBindingCatalog<H> {
     #[must_use]
     pub const fn provenance(&self) -> C3dPreparedResourceProvenance {
         self.provenance
@@ -94,6 +94,36 @@ impl<H> RootMenuC3dBindingCatalog<H> {
             .filter(|expected| **expected == id)
             .and_then(|_| self.bindings.get(id.index()))
             .ok_or(C3dPreparedResourceAccessError::Foreign)
+    }
+}
+
+/// Compatibility name retained for the isolated root-menu pipeline.
+pub type RootMenuC3dBindingCatalog<H> = C3dBindingCatalog<H>;
+
+#[derive(Debug)]
+pub struct C3dBindingBuildError<E> {
+    pub resource_id: C3dPreparedResourceId,
+    pub origin: crate::root_menu_c3d_resources::C3dPreparedResourceOrigin,
+    pub source: E,
+}
+
+impl<E: fmt::Display> fmt::Display for C3dBindingBuildError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "cannot bind C3D resource {} from {:?} ({}) ordinal {}: {}",
+            self.resource_id.index(),
+            self.origin.source().owner,
+            self.origin.source().path,
+            self.origin.source_resource_ordinal(),
+            self.source
+        )
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for C3dBindingBuildError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
     }
 }
 
@@ -131,28 +161,40 @@ pub fn bind_root_menu_c3d_resources<H, E>(
     topology: &RootMenuC3dTopology<'_>,
     mut bind: impl FnMut(C3dPreparedResourceId, &C3dPreparedResource) -> Result<H, E>,
 ) -> Result<RootMenuC3dBindingCatalog<H>, RootMenuC3dBindingBuildError<E>> {
-    let mut resource_ids = Vec::with_capacity(topology.resource_len());
-    let mut bindings = ReverseDropVec::with_capacity(topology.resource_len());
-    for (resource_id, resource) in topology.resources() {
-        let binding = match bind(resource_id, resource) {
-            Ok(binding) => binding,
-            Err(source) => {
-                return Err(RootMenuC3dBindingBuildError {
-                    resource_id,
-                    first_slot: resource
-                        .first_root_slot()
-                        .expect("root topology contains only root-owned C3D resources"),
-                    first_path: resource.first_path().into(),
-                    first_resource_ordinal: resource.first_resource_ordinal(),
-                    source,
-                });
-            }
-        };
+    bind_prepared_c3d_resources(topology.provenance(), topology.resources(), &mut bind).map_err(
+        |error| RootMenuC3dBindingBuildError {
+            resource_id: error.resource_id,
+            first_slot: match error.origin.source().owner {
+                crate::root_menu_c3d_resources::FrontendC3dOwner::RootMenu(slot) => slot,
+                crate::root_menu_c3d_resources::FrontendC3dOwner::ChampionshipCar(_) => {
+                    unreachable!("root topology contains only root-owned C3D resources")
+                }
+            },
+            first_path: error.origin.source().path.clone(),
+            first_resource_ordinal: error.origin.source_resource_ordinal(),
+            source: error.source,
+        },
+    )
+}
+
+pub(crate) fn bind_prepared_c3d_resources<'resource, H, E>(
+    provenance: C3dPreparedResourceProvenance,
+    resources: impl ExactSizeIterator<Item = (C3dPreparedResourceId, &'resource C3dPreparedResource)>,
+    bind: &mut impl FnMut(C3dPreparedResourceId, &C3dPreparedResource) -> Result<H, E>,
+) -> Result<C3dBindingCatalog<H>, C3dBindingBuildError<E>> {
+    let mut resource_ids = Vec::with_capacity(resources.len());
+    let mut bindings = ReverseDropVec::with_capacity(resources.len());
+    for (resource_id, resource) in resources {
+        let binding = bind(resource_id, resource).map_err(|source| C3dBindingBuildError {
+            resource_id,
+            origin: resource.origin().clone(),
+            source,
+        })?;
         resource_ids.push(resource_id);
         bindings.push(binding);
     }
-    Ok(RootMenuC3dBindingCatalog {
-        provenance: topology.provenance(),
+    Ok(C3dBindingCatalog {
+        provenance,
         resource_ids,
         bindings: bindings.into_vec(),
     })
@@ -388,4 +430,29 @@ fn backend_error<E>(
         resource_id,
         source,
     })
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_distinguishes_unknown_same_arena_ids_from_foreign_ids() {
+        let known = C3dPreparedResourceId::new_for_test(0);
+        let unknown = C3dPreparedResourceId::new_for_test(1);
+        let catalog = C3dBindingCatalog {
+            provenance: known.provenance(),
+            resource_ids: vec![known],
+            bindings: vec![7u8],
+        };
+
+        assert_eq!(catalog.binding(known), Ok(&7));
+        assert_eq!(
+            catalog.binding(unknown),
+            Err(C3dPreparedResourceAccessError::Unknown {
+                index: 1,
+                resource_count: 1,
+            })
+        );
+    }
 }

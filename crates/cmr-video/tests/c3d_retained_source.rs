@@ -111,7 +111,7 @@ fn real_preparation_binding_owns_normalized_source_after_inputs_drop() {
     assert_eq!(catalog.len(), 1);
     let sampled = catalog.binding(resource_id).unwrap();
     let retained = sampled.source();
-    assert_eq!(retained.first_slot(), RootMenuC3dSlot::Championship);
+    assert_eq!(retained.first_slot(), Some(RootMenuC3dSlot::Championship));
     assert_eq!(retained.extent(), [4, 4]);
     assert_eq!(retained.source_dib_extent_low16(), [4, 4]);
     assert_eq!(retained.indices(), (0..16).collect::<Vec<_>>());

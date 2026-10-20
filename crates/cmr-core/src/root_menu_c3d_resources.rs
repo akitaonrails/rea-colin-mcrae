@@ -19,6 +19,7 @@ use cmr_formats::{
         C3dResourceError, C3dResourceView,
     },
 };
+use sha2::{Digest, Sha256};
 
 use crate::{
     championship_setup::CanonicalCar,
@@ -325,6 +326,7 @@ pub struct RootMenuC3dPreparedObject {
     identity: RootMenuObjectIdentity,
     path: &'static str,
     source: C3dSourceIdentity,
+    source_sha256: [u8; 32],
     policy: C3dLoadPolicy,
     ordinal_resources: Vec<C3dPreparedResourceId>,
     group1_selectors: Vec<C3dPreparedGroup1Selectors>,
@@ -352,6 +354,11 @@ impl RootMenuC3dPreparedObject {
         &self.source
     }
 
+    #[must_use]
+    pub const fn source_sha256(&self) -> [u8; 32] {
+        self.source_sha256
+    }
+
     /// Policy metadata used by this preparation pass. Runtime load state stays
     /// authoritative where the compatibility runtime supplies it separately.
     #[must_use]
@@ -375,6 +382,11 @@ impl RootMenuC3dPreparedObject {
     }
 
     #[must_use]
+    pub fn group1_selector_groups(&self) -> &[C3dPreparedGroup1Selectors] {
+        &self.group1_selectors
+    }
+
+    #[must_use]
     pub fn selectors_for_group1(&self, record_index: usize) -> Option<&C3dPreparedGroup1Selectors> {
         self.group1_selectors.get(record_index)
     }
@@ -384,6 +396,7 @@ impl RootMenuC3dPreparedObject {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct C3dPreparedObject {
     source: C3dSourceIdentity,
+    source_sha256: [u8; 32],
     policy: C3dLoadPolicy,
     ordinal_resources: Vec<C3dPreparedResourceId>,
     group1_selectors: Vec<C3dPreparedGroup1Selectors>,
@@ -393,6 +406,11 @@ impl C3dPreparedObject {
     #[must_use]
     pub const fn source(&self) -> &C3dSourceIdentity {
         &self.source
+    }
+
+    #[must_use]
+    pub const fn source_sha256(&self) -> [u8; 32] {
+        self.source_sha256
     }
 
     #[must_use]
@@ -407,6 +425,41 @@ impl C3dPreparedObject {
 
     pub fn group1_selectors(&self) -> impl ExactSizeIterator<Item = &C3dPreparedGroup1Selectors> {
         self.group1_selectors.iter()
+    }
+
+    #[must_use]
+    pub fn group1_selector_groups(&self) -> &[C3dPreparedGroup1Selectors] {
+        &self.group1_selectors
+    }
+}
+
+impl crate::c3d_topology::C3dPreparedObjectView for RootMenuC3dPreparedObject {
+    fn source(&self) -> &C3dSourceIdentity {
+        self.source()
+    }
+    fn policy(&self) -> C3dLoadPolicy {
+        self.preparation_policy()
+    }
+    fn source_sha256(&self) -> [u8; 32] {
+        self.source_sha256()
+    }
+    fn group1_selector_groups(&self) -> &[C3dPreparedGroup1Selectors] {
+        self.group1_selector_groups()
+    }
+}
+
+impl crate::c3d_topology::C3dPreparedObjectView for C3dPreparedObject {
+    fn source(&self) -> &C3dSourceIdentity {
+        self.source()
+    }
+    fn policy(&self) -> C3dLoadPolicy {
+        self.policy()
+    }
+    fn source_sha256(&self) -> [u8; 32] {
+        self.source_sha256()
+    }
+    fn group1_selector_groups(&self) -> &[C3dPreparedGroup1Selectors] {
+        self.group1_selector_groups()
     }
 }
 
@@ -754,6 +807,7 @@ pub(crate) fn prepare_root_menu_c3d_objects(
                     identity: asset.identity,
                     path: asset.path,
                     source: prepared.source,
+                    source_sha256: prepared.source_sha256,
                     policy: prepared.policy,
                     ordinal_resources: prepared.ordinal_resources,
                     group1_selectors: prepared.group1_selectors,
@@ -885,6 +939,7 @@ fn prepare_generic_object(
 
     Ok(C3dPreparedObject {
         source: source_identity,
+        source_sha256: Sha256::digest(file.bytes()).into(),
         policy,
         ordinal_resources,
         group1_selectors,

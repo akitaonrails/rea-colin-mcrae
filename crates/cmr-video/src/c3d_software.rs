@@ -7,11 +7,15 @@
 
 use std::{fmt, sync::Arc};
 
+use cmr_core::frontend_c3d_resources::{FrontendC3dPrepared, bind_frontend_c3d_resources};
 use cmr_core::root_menu_c3d_assets::RootMenuC3dSlot;
 use cmr_core::root_menu_c3d_execute::{
-    RootMenuC3dBindingBuildError, RootMenuC3dBindingCatalog, bind_root_menu_c3d_resources,
+    C3dBindingBuildError, C3dBindingCatalog, RootMenuC3dBindingBuildError,
+    RootMenuC3dBindingCatalog, bind_root_menu_c3d_resources,
 };
-use cmr_core::root_menu_c3d_resources::C3dPreparedResource;
+use cmr_core::root_menu_c3d_resources::{
+    C3dPreparedResource, C3dSurfaceLayoutGates, FrontendC3dOwner,
+};
 use cmr_core::root_menu_c3d_runtime::{
     C3dSurfaceLayoutError, ResolvedC3dSurfaceLayout, RootMenuC3dMode2LoadStates,
     resolve_c3d_surface_layout,
@@ -21,7 +25,7 @@ use cmr_formats::bitmap::{BitmapPaletteEntry, IndexedBitmap};
 
 #[derive(Debug, Eq, PartialEq)]
 struct RetainedC3dSourceInner {
-    first_slot: RootMenuC3dSlot,
+    owner: FrontendC3dOwner,
     width: u32,
     height: u32,
     source_was_top_down: bool,
@@ -67,25 +71,36 @@ pub enum SoftwareC3dSamplingError {
         vertical: i32,
     },
     EmptySampledExtent([u16; 2]),
+    NonRootOwner(FrontendC3dOwner),
 }
 
 impl SoftwareC3dRetainedSource {
     #[must_use]
     pub fn from_prepared(resource: &C3dPreparedResource) -> Self {
+        Self::from_resource(resource)
+    }
+
+    fn from_resource(resource: &C3dPreparedResource) -> Self {
         Self::from_bitmap(
-            resource
-                .first_root_slot()
-                .expect("root software binding contains only root-owned C3D resources"),
+            resource.origin().source().owner,
             resource.bitmap(),
             resource.source_dib_extent_low16(),
             resource.surface_color_key_index(),
         )
     }
 
-    /// First root slot that established the authoritative interned resource.
+    /// Root slot that established the resource, or `None` for a car-owned origin.
     #[must_use]
-    pub fn first_slot(&self) -> RootMenuC3dSlot {
-        self.0.first_slot
+    pub fn first_slot(&self) -> Option<RootMenuC3dSlot> {
+        match self.0.owner {
+            FrontendC3dOwner::RootMenu(slot) => Some(slot),
+            FrontendC3dOwner::ChampionshipCar(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn owner(&self) -> FrontendC3dOwner {
+        self.0.owner
     }
 
     #[must_use]
@@ -122,7 +137,7 @@ impl SoftwareC3dRetainedSource {
     }
 
     fn from_bitmap(
-        first_slot: RootMenuC3dSlot,
+        owner: FrontendC3dOwner,
         bitmap: &IndexedBitmap,
         source_dib_extent_low16: [u16; 2],
         color_key_index: Option<u8>,
@@ -141,7 +156,7 @@ impl SoftwareC3dRetainedSource {
             .collect::<Vec<_>>()
             .into_boxed_slice();
         Self(Arc::new(RetainedC3dSourceInner {
-            first_slot,
+            owner,
             width: bitmap.width,
             height: bitmap.height,
             source_was_top_down: bitmap.source_was_top_down,
@@ -154,6 +169,18 @@ impl SoftwareC3dRetainedSource {
 }
 
 impl SoftwareC3dSampledTexture {
+    /// Builds a sampled texture using the policy that first allocated this
+    /// frontend-session resource.
+    pub fn from_prepared_frontend(
+        resource: &C3dPreparedResource,
+    ) -> Result<Self, SoftwareC3dSamplingError> {
+        let source = SoftwareC3dRetainedSource::from_resource(resource);
+        Self::from_retained(
+            source,
+            resource.origin().preparation_policy().surface_layout,
+        )
+    }
+
     /// Builds only the statically proven square, aligned root texture subset.
     ///
     /// General rectangular padding is rejected because the legacy surface's
@@ -164,6 +191,17 @@ impl SoftwareC3dSampledTexture {
     pub fn from_retained_root(
         source: SoftwareC3dRetainedSource,
         load_states: RootMenuC3dMode2LoadStates,
+    ) -> Result<Self, SoftwareC3dSamplingError> {
+        let slot = source
+            .first_slot()
+            .ok_or(SoftwareC3dSamplingError::NonRootOwner(source.owner()))?;
+        let gates = load_states.get(slot).surface_layout;
+        Self::from_retained(source, gates)
+    }
+
+    fn from_retained(
+        source: SoftwareC3dRetainedSource,
+        gates: C3dSurfaceLayoutGates,
     ) -> Result<Self, SoftwareC3dSamplingError> {
         let raw = source.source_dib_extent_low16();
         let normalized = source.extent();
@@ -186,8 +224,6 @@ impl SoftwareC3dSampledTexture {
                 actual: source.indices().len(),
             });
         }
-
-        let gates = load_states.get(source.first_slot()).surface_layout;
         let layout =
             resolve_c3d_surface_layout(raw, gates).map_err(SoftwareC3dSamplingError::Layout)?;
         if layout.horizontal_padding() != 0 || layout.vertical_padding() != 0 {
@@ -271,9 +307,26 @@ pub fn prepare_software_root_c3d_bindings(
     })
 }
 
+/// Builds one sampled software texture for every resource in a prepared
+/// frontend-session arena, including the championship-car prefix.
+///
+/// Surface layout comes from the allocating resource origin. This matters for
+/// a root selector that aliases an earlier car resource: the shared resource is
+/// still created once under its original mode-8 allocation policy.
+pub fn prepare_software_frontend_c3d_bindings(
+    prepared: &FrontendC3dPrepared,
+) -> Result<
+    C3dBindingCatalog<SoftwareC3dSampledTexture>,
+    C3dBindingBuildError<SoftwareC3dSamplingError>,
+> {
+    bind_frontend_c3d_resources(prepared, |_, resource| {
+        SoftwareC3dSampledTexture::from_prepared_frontend(resource)
+    })
+}
+
 impl fmt::Display for SoftwareC3dSamplingError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "unsupported root C3D sampling input: {self:?}")
+        write!(formatter, "unsupported C3D sampling input: {self:?}")
     }
 }
 
@@ -291,7 +344,17 @@ mod tests {
     use cmr_core::root_menu_c3d_runtime::{
         C3dMode2CornerSource, C3dMode2LoadState, C3dSurfaceLayoutGates, C3dSurfaceReduction,
     };
-    use cmr_formats::bitmap::BitmapMetadata;
+    use cmr_core::{
+        championship_setup::CanonicalCar,
+        root_menu_c3d_resources::{
+            C3dEntryMaterialPolicy, C3dLoadPolicy, C3dPreparedArenaBuilder,
+            C3dResourceAllocationPolicy, C3dSourceIdentity,
+        },
+    };
+    use cmr_formats::{
+        bitmap::{BitmapLimits, BitmapMetadata},
+        c3d::{C3D_FORMAT_VERSION, C3D_MAGIC, C3dLimits, parse_c3d},
+    };
 
     use super::*;
 
@@ -328,7 +391,7 @@ mod tests {
         };
 
         let retained = SoftwareC3dRetainedSource::from_bitmap(
-            RootMenuC3dSlot::Championship,
+            FrontendC3dOwner::RootMenu(RootMenuC3dSlot::Championship),
             &bitmap,
             [0xfffe, 2],
             None,
@@ -336,7 +399,7 @@ mod tests {
         let shared = retained.clone();
         drop(bitmap);
 
-        assert_eq!(retained.first_slot(), RootMenuC3dSlot::Championship);
+        assert_eq!(retained.first_slot(), Some(RootMenuC3dSlot::Championship));
         assert_eq!(retained.extent(), [2, 2]);
         assert_eq!(retained.source_dib_extent_low16(), [0xfffe, 2]);
         assert!(!retained.source_was_top_down());
@@ -386,7 +449,7 @@ mod tests {
             },
         };
         let retained = SoftwareC3dRetainedSource::from_bitmap(
-            RootMenuC3dSlot::Championship,
+            FrontendC3dOwner::RootMenu(RootMenuC3dSlot::Championship),
             &bitmap,
             [8, 8],
             None,
@@ -415,6 +478,92 @@ mod tests {
     }
 
     #[test]
+    fn frontend_sampling_ignores_different_alias_consumer_gates_and_uses_origin_layout() {
+        let bitmap = indexed_bmp_8x8();
+        let mut bytes = vec![0; 32 + 16 + bitmap.len()];
+        bytes[0..4].copy_from_slice(&C3D_MAGIC);
+        bytes[4..8].copy_from_slice(&C3D_FORMAT_VERSION.to_le_bytes());
+        bytes[16..18].copy_from_slice(&1u16.to_le_bytes());
+        for index in 0..3 {
+            bytes[20 + index * 4..24 + index * 4].copy_from_slice(&32u32.to_le_bytes());
+        }
+        bytes[32..44].copy_from_slice(b"CAR-TEXTURE!");
+        bytes[44..48].copy_from_slice(&(bitmap.len() as u32).to_le_bytes());
+        bytes[48..].copy_from_slice(&bitmap);
+        let file = parse_c3d(&bytes, C3dLimits::default()).unwrap();
+        let mut builder = C3dPreparedArenaBuilder::new().unwrap();
+        let object = builder
+            .prepare_object(
+                C3dSourceIdentity {
+                    owner: FrontendC3dOwner::ChampionshipCar(CanonicalCar::Subaru),
+                    path: "synthetic-car.c3d".into(),
+                },
+                &file,
+                C3dLoadPolicy {
+                    mode: 8,
+                    caller_option: 1,
+                    caller_flags: 0x18,
+                    surface_constructor_flags: 0x15,
+                    entry_resource_count: 0,
+                    allocation: C3dResourceAllocationPolicy::AppendEveryResource,
+                    surface_layout: C3dSurfaceLayoutGates {
+                        force_quarter: true,
+                        ..C3dSurfaceLayoutGates::default()
+                    },
+                    material: C3dEntryMaterialPolicy::FixedUniformWord(0x9696_9696),
+                },
+                BitmapLimits::default(),
+            )
+            .unwrap();
+        let id = object.ordinal_resources()[0];
+        let alias = builder
+            .prepare_object(
+                C3dSourceIdentity {
+                    owner: FrontendC3dOwner::RootMenu(RootMenuC3dSlot::Championship),
+                    path: "synthetic-root.c3d".into(),
+                },
+                &file,
+                C3dLoadPolicy {
+                    mode: 2,
+                    caller_option: 0,
+                    caller_flags: 0x11,
+                    surface_constructor_flags: 0x35,
+                    entry_resource_count: 1,
+                    allocation: C3dResourceAllocationPolicy::InternExact,
+                    surface_layout: C3dSurfaceLayoutGates::default(),
+                    material: C3dEntryMaterialPolicy::Mode2Ordinary,
+                },
+                BitmapLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(alias.ordinal_resources(), [id]);
+        assert_ne!(
+            alias.policy().surface_layout,
+            object.policy().surface_layout
+        );
+        let arena = builder.finish();
+        let resource = arena.resource(id).unwrap();
+        let generic_retained = SoftwareC3dRetainedSource::from_prepared(resource);
+        assert_eq!(generic_retained.first_slot(), None);
+        assert_eq!(generic_retained.owner(), resource.origin().source().owner);
+        let sampled = SoftwareC3dSampledTexture::from_prepared_frontend(resource).unwrap();
+
+        assert_eq!(
+            sampled.source().owner(),
+            FrontendC3dOwner::ChampionshipCar(CanonicalCar::Subaru)
+        );
+        assert_eq!(sampled.extent(), [2, 2]);
+        assert_eq!(sampled.layout().reduction(), C3dSurfaceReduction::Quarter);
+        assert_eq!(sampled.indices(), [56, 60, 24, 28]);
+        assert_eq!(
+            resolve_c3d_surface_layout([8, 8], alias.policy().surface_layout)
+                .unwrap()
+                .extent_bits(),
+            [8, 8]
+        );
+    }
+
+    #[test]
     fn half_sampling_uses_every_second_source_coordinate() {
         let bitmap = IndexedBitmap {
             width: 64,
@@ -433,7 +582,7 @@ mod tests {
             },
         };
         let retained = SoftwareC3dRetainedSource::from_bitmap(
-            RootMenuC3dSlot::Championship,
+            FrontendC3dOwner::RootMenu(RootMenuC3dSlot::Championship),
             &bitmap,
             [64, 64],
             None,
@@ -487,7 +636,7 @@ mod tests {
         let states = RootMenuC3dMode2LoadStates::splat(default_state);
 
         let padded = SoftwareC3dRetainedSource::from_bitmap(
-            RootMenuC3dSlot::Championship,
+            FrontendC3dOwner::RootMenu(RootMenuC3dSlot::Championship),
             &bitmap,
             [4, 8],
             None,
@@ -501,7 +650,7 @@ mod tests {
         );
 
         let mismatched = SoftwareC3dRetainedSource::from_bitmap(
-            RootMenuC3dSlot::Championship,
+            FrontendC3dOwner::RootMenu(RootMenuC3dSlot::Championship),
             &bitmap,
             [4, 0xffff],
             None,
@@ -518,7 +667,7 @@ mod tests {
         unaligned_bitmap.width = 6;
         unaligned_bitmap.pixels = vec![0; 48];
         let unaligned = SoftwareC3dRetainedSource::from_bitmap(
-            RootMenuC3dSlot::Championship,
+            FrontendC3dOwner::RootMenu(RootMenuC3dSlot::Championship),
             &unaligned_bitmap,
             [6, 8],
             None,
@@ -531,7 +680,7 @@ mod tests {
         let mut top_down_bitmap = bitmap.clone();
         top_down_bitmap.source_was_top_down = true;
         let top_down = SoftwareC3dRetainedSource::from_bitmap(
-            RootMenuC3dSlot::Championship,
+            FrontendC3dOwner::RootMenu(RootMenuC3dSlot::Championship),
             &top_down_bitmap,
             [4, 8],
             None,
@@ -544,7 +693,7 @@ mod tests {
         let mut short_bitmap = bitmap;
         short_bitmap.pixels.pop();
         let short = SoftwareC3dRetainedSource::from_bitmap(
-            RootMenuC3dSlot::Championship,
+            FrontendC3dOwner::RootMenu(RootMenuC3dSlot::Championship),
             &short_bitmap,
             [4, 8],
             None,
@@ -556,5 +705,24 @@ mod tests {
                 actual: 31,
             })
         );
+    }
+
+    fn indexed_bmp_8x8() -> Vec<u8> {
+        const PIXEL_OFFSET: usize = 14 + 40 + 256 * 4;
+        const PIXEL_LEN: usize = 8 * 8;
+        let mut bytes = vec![0; PIXEL_OFFSET + PIXEL_LEN];
+        let file_len = bytes.len() as u32;
+        bytes[0..2].copy_from_slice(b"BM");
+        bytes[2..6].copy_from_slice(&file_len.to_le_bytes());
+        bytes[10..14].copy_from_slice(&(PIXEL_OFFSET as u32).to_le_bytes());
+        bytes[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bytes[18..22].copy_from_slice(&8i32.to_le_bytes());
+        bytes[22..26].copy_from_slice(&8i32.to_le_bytes());
+        bytes[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bytes[28..30].copy_from_slice(&8u16.to_le_bytes());
+        bytes[34..38].copy_from_slice(&(PIXEL_LEN as u32).to_le_bytes());
+        bytes[46..50].copy_from_slice(&256u32.to_le_bytes());
+        bytes[PIXEL_OFFSET..].copy_from_slice(&(0..64).collect::<Vec<_>>());
+        bytes
     }
 }
