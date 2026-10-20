@@ -10,7 +10,7 @@ use cmr_core::display::{
     CooperativeMode, DisplayExtent, DisplaySurfaces, IndexedMode, IndexedVideoBackend,
     SurfaceTopology,
 };
-use cmr_core::startup::{Language, StartupScreen};
+use cmr_core::startup::{StartupLanguage, StartupScreen};
 use cmr_core::startup_display::{
     StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
 };
@@ -94,7 +94,7 @@ fn verified_import_decodes_and_maps_a_startup_surface_end_to_end() {
     let surface = load_startup_surface(
         &store,
         StartupScreen::Loading,
-        Language::English,
+        StartupLanguage::English,
         PaletteMapping::NearestNonzero,
         BitmapLimits::default(),
     )
@@ -111,7 +111,7 @@ fn verified_import_decodes_and_maps_a_startup_surface_end_to_end() {
         load_startup_surface(
             &store,
             StartupScreen::Legal,
-            Language::English,
+            StartupLanguage::English,
             PaletteMapping::NearestNonzero,
             BitmapLimits::default(),
         ),
@@ -131,7 +131,7 @@ fn verified_import_decodes_and_maps_a_startup_surface_end_to_end() {
             },
             cooperative: CooperativeMode::Windowed,
             screen: StartupScreen::Loading,
-            language: Language::English,
+            language: StartupLanguage::English,
             mapping: PaletteMapping::NearestNonzero,
             bitmap_limits: BitmapLimits::default(),
         },
@@ -174,7 +174,7 @@ fn verified_import_decodes_and_maps_a_startup_surface_end_to_end() {
             },
             cooperative: CooperativeMode::Windowed,
             screen: StartupScreen::Loading,
-            language: Language::English,
+            language: StartupLanguage::English,
             mapping: PaletteMapping::NearestNonzero,
             bitmap_limits: BitmapLimits::default(),
         },

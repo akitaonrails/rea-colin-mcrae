@@ -4,7 +4,11 @@
 //! Consequently this module exposes typed accessors only for recovered fields
 //! and preserves every other byte without assigning it a meaning.
 
-use std::{error::Error, fmt};
+use std::{
+    error::Error,
+    fmt,
+    io::{self, Write},
+};
 
 use crate::localization::Language;
 
@@ -201,6 +205,13 @@ pub struct ConfigLoadResult {
     pub disposition: ConfigLoadDisposition,
 }
 
+/// Reports whether persistence wrote the legacy record or honored its save gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigWriteDisposition {
+    Written,
+    SkippedBySaveGate,
+}
+
 /// Models the record-selection and byte-mutation portion of startup loading.
 ///
 /// An exact-sized stored record replaces the defaults and has its runtime-only
@@ -241,6 +252,29 @@ pub fn load_config_or_defaults(
             }
         }
     }
+}
+
+/// Persists one complete legacy configuration record to caller-owned storage.
+///
+/// The byte contract is unchanged: successful writes contain exactly
+/// [`LEGACY_CONFIG_SIZE`] bytes in their original order. This boundary is
+/// intentionally safer than the recovered legacy writer: it retries interrupted
+/// and short writes and reports write or flush failures. It does not open or
+/// replace filesystem paths. A filesystem caller should write to a sibling
+/// staging file and atomically replace the destination only after this function
+/// succeeds; replacement guarantees are platform-specific and therefore remain
+/// outside this portable core.
+pub fn write_config<W: Write>(
+    writer: &mut W,
+    config: &LegacyConfig,
+) -> io::Result<ConfigWriteDisposition> {
+    if !config.should_save() {
+        return Ok(ConfigWriteDisposition::SkippedBySaveGate);
+    }
+
+    writer.write_all(config.as_bytes())?;
+    writer.flush()?;
+    Ok(ConfigWriteDisposition::Written)
 }
 
 fn c_string_bytes(bytes: &[u8]) -> &[u8] {
@@ -440,5 +474,162 @@ mod tests {
     #[test]
     fn registry_subkey_is_separate_from_the_machine_wide_hive() {
         assert_eq!(LEGACY_REGISTRY_SUBKEY, r"SOFTWARE\Codemasters\Rally\1.00");
+    }
+
+    struct FragmentingWriter {
+        bytes: Vec<u8>,
+        max_chunk: usize,
+        interrupt_once: bool,
+        flushes: usize,
+    }
+
+    impl io::Write for FragmentingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.interrupt_once {
+                self.interrupt_once = false;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+
+            let accepted = bytes.len().min(self.max_chunk);
+            self.bytes.extend_from_slice(&bytes[..accepted]);
+            Ok(accepted)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn write_retries_interruption_and_short_writes_without_changing_bytes() {
+        let mut bytes = [0; LEGACY_CONFIG_SIZE];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = index.wrapping_mul(37) as u8;
+        }
+        bytes[SAVE_FLAGS_OFFSET] &= !1;
+        let config = LegacyConfig::from_exact_bytes(&bytes).unwrap();
+        let mut writer = FragmentingWriter {
+            bytes: Vec::new(),
+            max_chunk: 17,
+            interrupt_once: true,
+            flushes: 0,
+        };
+
+        assert_eq!(
+            write_config(&mut writer, &config).unwrap(),
+            ConfigWriteDisposition::Written
+        );
+        assert_eq!(writer.bytes, bytes);
+        assert_eq!(writer.flushes, 1);
+    }
+
+    struct PanicWriter;
+
+    impl io::Write for PanicWriter {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            panic!("save-gated records must not touch the writer")
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            panic!("save-gated records must not flush the writer")
+        }
+    }
+
+    #[test]
+    fn write_honors_save_gate_without_touching_storage() {
+        let mut bytes = [0; LEGACY_CONFIG_SIZE];
+        bytes[SAVE_FLAGS_OFFSET] = 1;
+        let config = LegacyConfig::from_exact_bytes(&bytes).unwrap();
+
+        assert_eq!(
+            write_config(&mut PanicWriter, &config).unwrap(),
+            ConfigWriteDisposition::SkippedBySaveGate
+        );
+    }
+
+    struct ZeroWriter;
+
+    impl io::Write for ZeroWriter {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn write_reports_a_writer_that_makes_no_progress() {
+        let config = config_with(0);
+        let error = write_config(&mut ZeroWriter, &config).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::WriteZero);
+    }
+
+    struct FailingWriter {
+        bytes: Vec<u8>,
+        accept_before_error: usize,
+        flushes: usize,
+    }
+
+    impl io::Write for FailingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.bytes.len() == self.accept_before_error {
+                return Err(io::Error::other("synthetic write failure"));
+            }
+
+            let accepted = bytes
+                .len()
+                .min(self.accept_before_error.saturating_sub(self.bytes.len()));
+            self.bytes.extend_from_slice(&bytes[..accepted]);
+            Ok(accepted)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn write_propagates_failure_after_a_partial_record_without_flushing() {
+        let config = config_with(0);
+        let mut writer = FailingWriter {
+            bytes: Vec::new(),
+            accept_before_error: 31,
+            flushes: 0,
+        };
+
+        let error = write_config(&mut writer, &config).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(writer.bytes.len(), 31);
+        assert_eq!(writer.flushes, 0);
+    }
+
+    struct FlushFailingWriter {
+        bytes: Vec<u8>,
+    }
+
+    impl io::Write for FlushFailingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("synthetic flush failure"))
+        }
+    }
+
+    #[test]
+    fn write_propagates_flush_failure_after_the_complete_record() {
+        let config = config_with(0);
+        let mut writer = FlushFailingWriter { bytes: Vec::new() };
+
+        let error = write_config(&mut writer, &config).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(writer.bytes, config.as_bytes());
     }
 }

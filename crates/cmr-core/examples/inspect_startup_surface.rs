@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use cmr_assets::{AssetStore, ReviewedProfile};
-use cmr_core::startup::{Language, StartupScreen};
+use cmr_core::startup::{StartupLanguage, StartupScreen};
 use cmr_core::startup_surface::load_startup_surface;
 use cmr_core::surface::PaletteMapping;
 use cmr_formats::bitmap::BitmapLimits;
@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn arguments() -> Result<(PathBuf, PathBuf, StartupScreen, Language), Box<dyn Error>> {
+fn arguments() -> Result<(PathBuf, PathBuf, StartupScreen, StartupLanguage), Box<dyn Error>> {
     let mut arguments = env::args_os();
     let executable = arguments.next().unwrap_or_default();
     let usage = || {
@@ -77,10 +77,10 @@ fn arguments() -> Result<(PathBuf, PathBuf, StartupScreen, Language), Box<dyn Er
         _ => return Err(usage().into()),
     };
     let language = match arguments.next().and_then(|value| value.into_string().ok()) {
-        Some(value) if value.eq_ignore_ascii_case("english") => Language::English,
-        Some(value) if value.eq_ignore_ascii_case("french") => Language::French,
-        Some(value) if value.eq_ignore_ascii_case("german") => Language::German,
-        Some(value) if value.eq_ignore_ascii_case("spanish") => Language::Spanish,
+        Some(value) if value.eq_ignore_ascii_case("english") => StartupLanguage::English,
+        Some(value) if value.eq_ignore_ascii_case("french") => StartupLanguage::French,
+        Some(value) if value.eq_ignore_ascii_case("german") => StartupLanguage::German,
+        Some(value) if value.eq_ignore_ascii_case("spanish") => StartupLanguage::Spanish,
         _ => return Err(usage().into()),
     };
     if arguments.next().is_some() {

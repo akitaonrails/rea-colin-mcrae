@@ -59,10 +59,13 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   sampling are explicit errors rather than guessed behavior.
 - `cmr-core::config`: opaque exact-size legacy configuration admission,
   recovered volatile-byte clearing and save gate, plus safe registry-value
-  parsing without assigning meaning to unknown record bytes.
+  parsing and caller-owned exact-record writing without assigning meaning to
+  unknown bytes.
 - `cmr-core::localization`: shared five-language identity, distinct frontend
   and in-game path policy, bounded byte-oriented table splitting, and safe
   indexed lookup with the recovered diagnostic fallback.
+- `cmr-core::localization_assets`: verified import loading for the recovered
+  fixed-width frontend and in-game text tables with path-aware failures.
 - `cmr-core::input`: platform-neutral keyboard and WinMM-compatible joystick
   masks, rising-edge state, raw menu-key repeat, frontend combination policy,
   and focus-gated sampling. OS polling and force feedback remain backend work.

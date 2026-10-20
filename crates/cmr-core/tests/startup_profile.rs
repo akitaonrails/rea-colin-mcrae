@@ -1,5 +1,5 @@
 use cmr_assets::{AssetIndex, AssetProfile};
-use cmr_core::startup::{Language, StartupScreen, select_startup_assets};
+use cmr_core::startup::{StartupLanguage, StartupScreen, select_startup_assets};
 
 const PROFILE: &str = include_str!("../../../profiles/installed-eu-derived-assets-v2.json");
 
@@ -9,10 +9,10 @@ fn every_recovered_startup_path_resolves_in_the_reviewed_profile() {
     let index = AssetIndex::from_profile(&profile).unwrap();
 
     for language in [
-        Language::English,
-        Language::French,
-        Language::German,
-        Language::Spanish,
+        StartupLanguage::English,
+        StartupLanguage::French,
+        StartupLanguage::German,
+        StartupLanguage::Spanish,
     ] {
         for screen in [StartupScreen::Loading, StartupScreen::Legal] {
             let assets = select_startup_assets(screen, language);

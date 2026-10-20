@@ -7,7 +7,7 @@ use crate::display::{
     BackendFailure, CooperativeMode, DisplayInitError, IndexedDisplay, IndexedMode,
     IndexedVideoBackend, StartupCopyError, StartupCopyOutcome,
 };
-use crate::startup::{Language, StartupScreen};
+use crate::startup::{StartupLanguage, StartupScreen};
 use crate::startup_surface::{
     StartupSurfaceError, load_startup_bitmap_surface, load_startup_palette,
 };
@@ -53,7 +53,7 @@ pub struct StartupDisplayRequest {
     pub mode: IndexedMode,
     pub cooperative: CooperativeMode,
     pub screen: StartupScreen,
-    pub language: Language,
+    pub language: StartupLanguage,
     pub mapping: PaletteMapping,
     pub bitmap_limits: BitmapLimits,
 }

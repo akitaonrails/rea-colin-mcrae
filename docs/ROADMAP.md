@@ -98,6 +98,13 @@ same milestone. Shared backend contracts supplement, rather than replace,
 focused boundary and failure tests; no later subsystem may depend on an
 untested compatibility rule.
 
+Current implemented portion: reviewed asset-store loading now reaches startup
+art and fixed-width frontend/game localization tables; configuration has an
+opaque exact-size load model and a tested caller-owned write boundary; indexed
+startup presentation runs against the deterministic software backend. Native
+window/input/clock integration and a frontend-state renderer remain before the
+vertical-slice exit gate.
+
 Exit gate:
 
 - clean build from source on the declared toolchain;

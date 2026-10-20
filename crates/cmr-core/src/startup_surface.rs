@@ -4,7 +4,7 @@ use cmr_assets::{AssetStore, AssetStoreError};
 use cmr_formats::bitmap::{BitmapError, BitmapLimits, parse_indexed_bitmap};
 use cmr_formats::riff_palette::{LegacyPalette256, PaletteError, parse_legacy_palette_256};
 
-use crate::startup::{Language, StartupScreen, select_startup_assets};
+use crate::startup::{StartupLanguage, StartupScreen, select_startup_assets};
 use crate::surface::{IndexedSurface, PaletteMapping, SurfaceError, indexed_surface};
 
 #[derive(Debug)]
@@ -52,7 +52,7 @@ impl std::error::Error for StartupSurfaceError {
 pub fn load_startup_surface(
     store: &AssetStore,
     screen: StartupScreen,
-    language: Language,
+    language: StartupLanguage,
     mapping: PaletteMapping,
     bitmap_limits: BitmapLimits,
 ) -> Result<IndexedSurface, StartupSurfaceError> {
@@ -65,7 +65,7 @@ pub fn load_startup_surface(
 pub fn load_startup_palette(
     store: &AssetStore,
     screen: StartupScreen,
-    language: Language,
+    language: StartupLanguage,
 ) -> Result<LegacyPalette256, StartupSurfaceError> {
     let selected = select_startup_assets(screen, language);
     let palette_bytes =
@@ -85,7 +85,7 @@ pub fn load_startup_palette(
 pub fn load_startup_bitmap_surface(
     store: &AssetStore,
     screen: StartupScreen,
-    language: Language,
+    language: StartupLanguage,
     palette: LegacyPalette256,
     mapping: PaletteMapping,
     bitmap_limits: BitmapLimits,
