@@ -19,6 +19,7 @@ use cmr_core::root_menu_c3d_scene::{
     PreparedRootMenuC3dPipeline, RootMenuC3dDepthClear, RootMenuC3dFramePipeline,
 };
 use cmr_core::root_menu_c3d_topology::prepare_root_menu_c3d_topology;
+use cmr_core::root_menu_c3d_visibility::RootMenuC3dVisibilityLatches;
 use cmr_formats::bitmap::{BitmapLimits, BitmapPaletteEntry};
 use cmr_formats::c3d::{
     C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS, C3D_FORMAT_VERSION, C3D_GROUP0_VALUES_OFFSET,
@@ -185,10 +186,12 @@ fn imported_root_c3d_scene_writes_back_buffer_and_reuses_retained_binding() {
     let catalog = prepare_software_root_c3d_bindings(&topology, load_states).unwrap();
     let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
     let mut angles = RootMenuC3dAngles::new();
+    let mut visibility = RootMenuC3dVisibilityLatches::new();
     let mut pipeline = PreparedRootMenuC3dPipeline::new(
         &topology,
         &runtime,
         &mut angles,
+        &mut visibility,
         &mut executor,
         RootMenuC3dDepthClear::Clear,
     )

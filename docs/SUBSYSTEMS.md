@@ -66,6 +66,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   view/viewport setup, BeginScene, optional prepared-batch submission, world
   reset, opaque ordered scene tail, EndScene cleanup, and selector-cache
   disposition, with checked prepared-pipeline provenance.
+- `cmr-core::root_menu_c3d_visibility`: persistent six-slot raw visibility
+  latches set only by successful prepared-frame planning and cleared after
+  every terminal scene attempt before later frame-completion work.
 - `cmr-core::window`: pure compatibility reducer for recovered Win32 message
   handling, activation-driven pause/restore state, queue dispatch decisions,
   and fullscreen-flip versus windowed-vblank presentation planning.

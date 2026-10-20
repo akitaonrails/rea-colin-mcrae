@@ -131,8 +131,10 @@ native presentation executor now preserves sample-before-Flip invocation and
 the windowed vblank/fallback sequence behind a typed adapter. The recovered
 deferred-palette state and depth-8 commit are independently tested, including
 runtime group mapping, both software caches, and sentinel behavior.
-Visibility-latch cleanup, terminal-frame palette integration, native host
-adaptation, and the unrecovered windowed copy owner remain boundaries.
+Terminal-frame palette integration, native host adaptation, and the
+unrecovered windowed copy owner remain boundaries. The prepared pipeline now
+sets the selected root visibility latch after successful planning and clears
+all six after every terminal scene attempt.
 The six optional root-menu C3D files now load through fixed slots and a bounded,
 byte-preserving parser. All three counted groups expose proven framing: group
 0's raw `u16` values; group 1's typed, borrowed 32/24-byte entry views; and
@@ -210,9 +212,10 @@ the exact one-level root shape, resource selectors, compact batch payloads,
 viewport, slot presence, variant, and provenance before changing an angle, then
 owns source-ordered submission snapshots and the exact recovered transform and
 numeric draw words. Concrete software binding, depth/scene execution, the pixel
-oracle, and a headless terminal capture are now joined. Visibility-latch
-consumption, terminal integration of the tested deferred-palette commit, and
-native presentation adaptation remain the next boundaries.
+oracle, and a headless terminal capture are now joined. The selected one-frame
+visibility latch is now set transactionally and all six root latches are
+cleared after the scene attempt. Terminal integration of the tested
+deferred-palette commit and native presentation adaptation remain next.
 Prepared resources now map once into an arena-scoped opaque binding catalog.
 The root batch executor consumes a plan, preflights the complete catalog join,
 sets world state, and preserves the recovered resource-binding and persistent
@@ -220,8 +223,9 @@ selector-cache order across source batches and frames. Branch-specific
 material/texture work remains inside the opaque backend binding. Bindings are
 released in reverse order, and external render paths can explicitly invalidate
 the cache. The software backend implements the bounded branch-zero binding and
-headless frame capture; latch cleanup, native presentation adaptation,
-alternate profiles, and a portable GPU implementation remain separate.
+headless frame capture and visibility-latch cleanup; native presentation
+adaptation, alternate profiles, and a portable GPU implementation remain
+separate.
 
 Exit gate:
 

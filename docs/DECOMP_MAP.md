@@ -152,8 +152,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T20:00:28Z
-milestone=model-deferred-palette-commit
+updated_utc=2026-10-20T20:02:04Z
+milestone=integrate-root-visibility-latches
 completed=38
 partial=18
 not_started=48

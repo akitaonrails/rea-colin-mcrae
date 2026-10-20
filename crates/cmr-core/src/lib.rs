@@ -26,6 +26,7 @@ pub mod root_menu_c3d_runtime;
 pub mod root_menu_c3d_scene;
 pub mod root_menu_c3d_topology;
 pub mod root_menu_c3d_transform;
+pub mod root_menu_c3d_visibility;
 pub mod root_menu_footer;
 pub mod root_menu_frame;
 pub mod root_menu_visual;

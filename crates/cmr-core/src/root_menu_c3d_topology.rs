@@ -503,6 +503,7 @@ mod tests {
             ROOT_MENU_C3D_PROJECTION, ROOT_MENU_C3D_VIEW, root_menu_c3d_viewport,
             root_menu_c3d_world,
         },
+        root_menu_c3d_visibility::RootMenuC3dVisibilityLatches,
     };
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -1000,12 +1001,14 @@ mod tests {
         let mut first_executor = RootMenuC3dBatchExecutor::new(&first_catalog);
         let mut second_executor = RootMenuC3dBatchExecutor::new(&second_catalog);
         let mut angles = RootMenuC3dAngles::new();
+        let mut visibility = RootMenuC3dVisibilityLatches::new();
 
         assert!(
             PreparedRootMenuC3dPipeline::new(
                 &first,
                 &first_runtime,
                 &mut angles,
+                &mut visibility,
                 &mut first_executor,
                 RootMenuC3dDepthClear::Clear,
             )
@@ -1016,6 +1019,7 @@ mod tests {
                 &first,
                 &second_runtime,
                 &mut angles,
+                &mut visibility,
                 &mut first_executor,
                 RootMenuC3dDepthClear::Clear,
             ),
@@ -1026,6 +1030,7 @@ mod tests {
                 &first,
                 &first_runtime,
                 &mut angles,
+                &mut visibility,
                 &mut second_executor,
                 RootMenuC3dDepthClear::Clear,
             ),
@@ -1052,10 +1057,12 @@ mod tests {
         .unwrap();
         let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
         let mut angles = RootMenuC3dAngles::new();
+        let mut visibility = RootMenuC3dVisibilityLatches::new();
         let mut pipeline = PreparedRootMenuC3dPipeline::new(
             &topology,
             &runtime,
             &mut angles,
+            &mut visibility,
             &mut executor,
             RootMenuC3dDepthClear::Clear,
         )
@@ -1067,17 +1074,48 @@ mod tests {
         };
 
         let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
+        assert_eq!(pipeline.visibility_mask(slot).raw(), 0xff);
+        assert!(
+            pipeline
+                .plan_frame(
+                    slot,
+                    8,
+                    DisplayExtent {
+                        width: 0,
+                        height: 480,
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(
+            pipeline.visibility_mask(slot).raw(),
+            0xff,
+            "a transactional planning error leaves existing latches unchanged"
+        );
         pipeline
             .execute_terminal_scene(&mut backend, 7, extent, plan)
             .unwrap();
+        assert_eq!(pipeline.visibility_mask(slot).raw(), 0x00);
+        assert!(
+            pipeline
+                .plan_frame(RootMenuC3dSlot::Options, 8, extent)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            pipeline.visibility_mask(RootMenuC3dSlot::Options).raw(),
+            0x00
+        );
         assert_eq!(backend.binding_count(), 1);
 
         backend.batch.events.clear();
         backend.tail_state = RootMenuC3dBindingState::Changed;
         let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
+        assert_eq!(pipeline.visibility_mask(slot).raw(), 0xff);
         pipeline
             .execute_terminal_scene(&mut backend, 7, extent, plan)
             .unwrap();
+        assert_eq!(pipeline.visibility_mask(slot).raw(), 0x00);
         assert_eq!(backend.binding_count(), 0);
 
         backend.batch.events.clear();
@@ -1086,6 +1124,7 @@ mod tests {
         pipeline
             .execute_terminal_scene(&mut backend, 7, extent, plan)
             .unwrap();
+        assert_eq!(pipeline.visibility_mask(slot).raw(), 0x00);
         assert_eq!(backend.binding_count(), 1);
 
         backend.batch.events.clear();
@@ -1096,6 +1135,7 @@ mod tests {
                 .execute_terminal_scene(&mut backend, 7, extent, plan)
                 .is_err()
         );
+        assert_eq!(pipeline.visibility_mask(slot).raw(), 0x00);
         backend.batch.fail = None;
         backend.batch.events.clear();
         let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
@@ -1104,7 +1144,15 @@ mod tests {
             .unwrap();
         assert_eq!(backend.binding_count(), 1);
 
-        for failure in [RootMenuC3dSceneStage::Tail, RootMenuC3dSceneStage::End] {
+        for failure in [
+            RootMenuC3dSceneStage::ClearDepth,
+            RootMenuC3dSceneStage::View,
+            RootMenuC3dSceneStage::Viewport,
+            RootMenuC3dSceneStage::Begin,
+            RootMenuC3dSceneStage::ResetWorld,
+            RootMenuC3dSceneStage::Tail,
+            RootMenuC3dSceneStage::End,
+        ] {
             backend.batch.events.clear();
             backend.scene_fail = Some(failure);
             let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
@@ -1113,13 +1161,22 @@ mod tests {
                     .execute_terminal_scene(&mut backend, 7, extent, plan)
                     .is_err()
             );
+            assert_eq!(pipeline.visibility_mask(slot).raw(), 0x00);
             backend.scene_fail = None;
             backend.batch.events.clear();
             let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
             pipeline
                 .execute_terminal_scene(&mut backend, 7, extent, plan)
                 .unwrap();
-            assert_eq!(backend.binding_count(), 1, "failure stage {failure:?}");
+            let expected_rebinds = usize::from(matches!(
+                failure,
+                RootMenuC3dSceneStage::Tail | RootMenuC3dSceneStage::End
+            ));
+            assert_eq!(
+                backend.binding_count(),
+                expected_rebinds,
+                "failure stage {failure:?}"
+            );
         }
     }
 

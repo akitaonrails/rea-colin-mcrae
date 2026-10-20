@@ -22,6 +22,7 @@ use crate::{
         C3dMatrixWords, C3dViewportWords, ROOT_MENU_C3D_VIEW, RootMenuC3dViewportError,
         root_menu_c3d_viewport,
     },
+    root_menu_c3d_visibility::{RootMenuC3dVisibilityLatches, RootMenuC3dVisibilityMask},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -277,6 +278,7 @@ pub struct PreparedRootMenuC3dPipeline<'a, 'asset, 'catalog, H> {
     topology: &'a RootMenuC3dTopology<'asset>,
     runtime: &'a RootMenuC3dMode2ResourceScaledRuntime,
     angles: &'a mut RootMenuC3dAngles,
+    visibility: &'a mut RootMenuC3dVisibilityLatches,
     batches: &'a mut RootMenuC3dBatchExecutor<'catalog, H>,
     depth_clear: RootMenuC3dDepthClear,
 }
@@ -309,6 +311,7 @@ impl<'a, 'asset, 'catalog, H> PreparedRootMenuC3dPipeline<'a, 'asset, 'catalog, 
         topology: &'a RootMenuC3dTopology<'asset>,
         runtime: &'a RootMenuC3dMode2ResourceScaledRuntime,
         angles: &'a mut RootMenuC3dAngles,
+        visibility: &'a mut RootMenuC3dVisibilityLatches,
         batches: &'a mut RootMenuC3dBatchExecutor<'catalog, H>,
         depth_clear: RootMenuC3dDepthClear,
     ) -> Result<Self, PreparedRootMenuC3dPipelineError> {
@@ -325,6 +328,7 @@ impl<'a, 'asset, 'catalog, H> PreparedRootMenuC3dPipeline<'a, 'asset, 'catalog, 
             topology,
             runtime,
             angles,
+            visibility,
             batches,
             depth_clear,
         })
@@ -336,14 +340,23 @@ impl<'a, 'asset, 'catalog, H> PreparedRootMenuC3dPipeline<'a, 'asset, 'catalog, 
         angle_delta: u16,
         extent: DisplayExtent,
     ) -> Result<Option<RootMenuC3dFramePlan>, RootMenuC3dFramePlanError> {
-        plan_root_menu_c3d_frame(
+        let plan = plan_root_menu_c3d_frame(
             self.topology,
             self.runtime,
             self.angles,
             slot,
             angle_delta,
             extent,
-        )
+        )?;
+        if let Some(plan) = &plan {
+            self.visibility.show_all_layers(plan.slot());
+        }
+        Ok(plan)
+    }
+
+    #[must_use]
+    pub const fn visibility_mask(&self, slot: RootMenuC3dSlot) -> RootMenuC3dVisibilityMask {
+        self.visibility.mask(slot)
     }
 }
 
@@ -386,6 +399,9 @@ where
             plan,
             |backend, plan| self.batches.execute(backend, plan),
         );
+        // The native path clears after the scene returns. Clearing after typed
+        // reconstruction failures as well prevents stale one-frame latches.
+        self.visibility.clear_all();
         match &result {
             Ok(outcome) if outcome.binding_state == RootMenuC3dBindingState::Changed => {
                 self.batches.invalidate_bindings();

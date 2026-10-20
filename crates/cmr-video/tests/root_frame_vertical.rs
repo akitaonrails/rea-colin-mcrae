@@ -24,6 +24,7 @@ use cmr_core::root_menu_c3d_runtime::{
 };
 use cmr_core::root_menu_c3d_scene::{PreparedRootMenuC3dPipeline, RootMenuC3dDepthClear};
 use cmr_core::root_menu_c3d_topology::prepare_root_menu_c3d_topology;
+use cmr_core::root_menu_c3d_visibility::RootMenuC3dVisibilityLatches;
 use cmr_core::root_menu_frame::{RootFrameResources, execute_root_frame};
 use cmr_core::root_menu_visual::{
     ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16, ROOT_INITIAL_VERTICAL_TRANSFORM_Q16, RootRenderInput,
@@ -109,6 +110,7 @@ fn synthetic_root_frame_captures_representative_layers_twice_without_reuploading
     let catalog = prepare_software_root_c3d_bindings(&topology, load_states).unwrap();
     let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
     let mut angles = RootMenuC3dAngles::new();
+    let mut visibility = RootMenuC3dVisibilityLatches::new();
 
     let (mut backend, back) = initialized_backend(&palette);
     let mut sources = UploadedSourceStore::new(&mut backend);
@@ -129,6 +131,7 @@ fn synthetic_root_frame_captures_representative_layers_twice_without_reuploading
             &topology,
             &runtime,
             &mut angles,
+            &mut visibility,
             &mut executor,
             RootMenuC3dDepthClear::Clear,
         )
@@ -153,6 +156,13 @@ fn synthetic_root_frame_captures_representative_layers_twice_without_reuploading
         assert_eq!(outcome.c3d_commands, 1);
         assert!(outcome.scene_completed);
         assert!(outcome.presentation_completed);
+        for slot in RootMenuC3dSlot::ALL {
+            assert_eq!(
+                visibility.mask(slot).raw(),
+                0x00,
+                "terminal scene must clear every root visibility latch"
+            );
+        }
         assert_eq!(angles.angle(RootMenuC3dSlot::Championship), expected_angle);
         assert_eq!(sources.uploaded_source_count(), persistent_source_count);
 
