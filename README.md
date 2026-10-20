@@ -22,7 +22,8 @@ SDL backends. No gameplay subsystem is yet claimed compatible.
 
 `cmr-video` currently supplies a deterministic in-memory indexed framebuffer
 used as the first executable backend oracle. It supports the recovered
-exact-size startup copy and rejects unrecovered stretch/color-key behavior.
+exact-size startup and index-zero keyed copies while rejecting unrecovered
+stretch and other color-key behavior.
 
 The first frontend foundation also includes bounded legacy configuration and
 localization models plus deterministic keyboard/joystick input rules. These

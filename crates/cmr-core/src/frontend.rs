@@ -5,6 +5,8 @@
 
 use std::{error::Error, fmt};
 
+use crate::config::LegacyConfig;
+
 pub const ROOT_SCREEN_ID: ScreenId = ScreenId(0x00d4_8b80);
 pub const EXIT_SCREEN_ID: ScreenId = ScreenId(0x00d4_2058);
 pub const ATTRACT_SCREEN_ID: ScreenId = ScreenId(0x00d4_37c8);
@@ -197,6 +199,10 @@ pub struct FrontendState {
 }
 
 impl FrontendState {
+    pub fn from_config(config: &LegacyConfig, now: u32) -> Result<Self, InvalidRootSelection> {
+        Self::after_startup_art(config.root_selection_byte(), now)
+    }
+
     pub fn after_startup_art(saved_selection: u8, now: u32) -> Result<Self, InvalidRootSelection> {
         Ok(Self {
             continuation: FrontendContinuation::Running,
@@ -496,6 +502,23 @@ mod tests {
         assert_eq!(state.root_selection().index(), 4);
         assert_eq!(state.idle_since, 123);
         assert!(!state.exit_requested);
+    }
+
+    #[test]
+    fn config_bridge_reads_only_the_recovered_selection_byte() {
+        let mut bytes = [0xa5; crate::config::LEGACY_CONFIG_SIZE];
+        bytes[0x24] = 6;
+        let config = LegacyConfig::from_exact_bytes(&bytes).unwrap();
+        let state = FrontendState::from_config(&config, 77).unwrap();
+        assert_eq!(state.root_selection().index(), 0);
+        assert_eq!(state.idle_since(), 77);
+
+        bytes[0x24] = 7;
+        let config = LegacyConfig::from_exact_bytes(&bytes).unwrap();
+        assert_eq!(
+            FrontendState::from_config(&config, 0).unwrap_err(),
+            InvalidRootSelection { value: 7 }
+        );
     }
 
     #[test]

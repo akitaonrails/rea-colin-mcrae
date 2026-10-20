@@ -19,6 +19,7 @@ pub const LEGACY_REGISTRY_SUBKEY: &str = r"SOFTWARE\Codemasters\Rally\1.00";
 const SAVE_FLAGS_OFFSET: usize = 0x08;
 const HARDWARE_INDEX_OFFSET: usize = 0x12;
 const LANGUAGE_FLAGS_OFFSET: usize = 0x20;
+const ROOT_SELECTION_OFFSET: usize = 0x24;
 const LANGUAGE_MASK: u8 = 0x07;
 const VOLATILE_START: usize = 0x184;
 const VOLATILE_END: usize = 0x5d4;
@@ -105,6 +106,17 @@ impl LegacyConfig {
     pub fn set_language(&mut self, language: Language) {
         let flags = &mut self.bytes[LANGUAGE_FLAGS_OFFSET];
         *flags = (*flags & !LANGUAGE_MASK) | language.index() as u8;
+    }
+
+    /// Raw persisted selection consumed by the recovered root frontend screen.
+    /// Validation and the observed `6 -> 0` remap belong to `frontend`.
+    #[must_use]
+    pub fn root_selection_byte(&self) -> u8 {
+        self.bytes[ROOT_SELECTION_OFFSET]
+    }
+
+    pub fn set_root_selection_byte(&mut self, selection: u8) {
+        self.bytes[ROOT_SELECTION_OFFSET] = selection;
     }
 
     fn clear_volatile_runtime_region(&mut self) {
@@ -373,12 +385,16 @@ mod tests {
         let mut config = config_with(0xa8);
         config.set_hardware_index(7);
         config.set_language(Language::Spanish);
+        config.set_root_selection_byte(5);
 
         assert_eq!(config.hardware_index(), 7);
         assert_eq!(config.language(), Some(Language::Spanish));
         assert_eq!(config.as_bytes()[LANGUAGE_FLAGS_OFFSET], 0xab);
         assert_eq!(config.as_bytes()[HARDWARE_INDEX_OFFSET - 1], 0xa8);
         assert_eq!(config.as_bytes()[HARDWARE_INDEX_OFFSET + 1], 0xa8);
+        assert_eq!(config.root_selection_byte(), 5);
+        assert_eq!(config.as_bytes()[ROOT_SELECTION_OFFSET - 1], 0xa8);
+        assert_eq!(config.as_bytes()[ROOT_SELECTION_OFFSET + 1], 0xa8);
     }
 
     #[test]

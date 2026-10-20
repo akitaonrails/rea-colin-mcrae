@@ -41,7 +41,7 @@ impl fmt::Display for SoftwareVideoError {
             Self::UnsupportedColorKey => {
                 write!(
                     formatter,
-                    "software compatibility backend has no recovered color-key rule"
+                    "software compatibility backend only supports the recovered index-zero color key"
                 )
             }
             Self::UnsupportedStretch => {
@@ -296,7 +296,10 @@ impl IndexedVideoBackend for SoftwareIndexedBackend {
         if plan.method == BlitMethod::Stretch {
             return Err(SoftwareVideoError::UnsupportedStretch);
         }
-        if plan.color_key.is_some() {
+        if plan
+            .color_key
+            .is_some_and(|key| key.low != 0 || key.high != 0)
+        {
             return Err(SoftwareVideoError::UnsupportedColorKey);
         }
         let source_surface = self.surface(source)?.clone();
@@ -343,8 +346,20 @@ impl IndexedVideoBackend for SoftwareIndexedBackend {
                 * destination_surface.width
                 + plan.destination.left as usize;
             let count = source_width as usize;
-            destination_surface.pixels[destination_start..destination_start + count]
-                .copy_from_slice(&source_surface.pixels[source_start..source_start + count]);
+            let source_row = &source_surface.pixels[source_start..source_start + count];
+            let destination_row =
+                &mut destination_surface.pixels[destination_start..destination_start + count];
+            if plan.color_key.is_some() {
+                for (source_pixel, destination_pixel) in
+                    source_row.iter().zip(destination_row.iter_mut())
+                {
+                    if *source_pixel != 0 {
+                        *destination_pixel = *source_pixel;
+                    }
+                }
+            } else {
+                destination_row.copy_from_slice(source_row);
+            }
         }
         Ok(())
     }
@@ -533,6 +548,140 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(color_key_error, SoftwareVideoError::UnsupportedColorKey);
+    }
+
+    #[test]
+    fn index_zero_color_key_preserves_destination_pixels() {
+        let display = IndexedDisplay::initialize(
+            SoftwareIndexedBackend::default(),
+            IndexedMode {
+                extent: DisplayExtent {
+                    width: 4,
+                    height: 1,
+                },
+                bits_per_pixel: 8,
+            },
+            CooperativeMode::Windowed,
+            &palette(7),
+        )
+        .unwrap();
+        let mut backend = display.into_backend();
+        let destination = backend.visible_front.unwrap();
+        let destination_edges = cmr_core::blit::RectEdges {
+            left: 0,
+            top: 0,
+            right: 4,
+            bottom: 1,
+        };
+
+        let background = backend
+            .create_source(&surface(4, vec![9, 9, 9, 9]))
+            .unwrap();
+        backend
+            .blit(
+                background,
+                destination,
+                BlitPlan {
+                    source: destination_edges,
+                    destination: destination_edges,
+                    method: BlitMethod::Fast,
+                    color_key: None,
+                },
+            )
+            .unwrap();
+
+        let glyph = backend
+            .create_source(&surface(4, vec![0, 1, 0, 2]))
+            .unwrap();
+        backend
+            .blit(
+                glyph,
+                destination,
+                BlitPlan {
+                    source: destination_edges,
+                    destination: destination_edges,
+                    method: BlitMethod::Fast,
+                    color_key: Some(cmr_core::blit::ColorKey { low: 0, high: 0 }),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(backend.visible_pixels(), Some([9, 1, 9, 2].as_slice()));
+    }
+
+    #[test]
+    fn clipped_index_zero_key_uses_shifted_source_and_rejects_other_ranges() {
+        let display = IndexedDisplay::initialize(
+            SoftwareIndexedBackend::default(),
+            IndexedMode {
+                extent: DisplayExtent {
+                    width: 4,
+                    height: 1,
+                },
+                bits_per_pixel: 8,
+            },
+            CooperativeMode::Windowed,
+            &palette(7),
+        )
+        .unwrap();
+        let mut backend = display.into_backend();
+        let destination = backend.visible_front.unwrap();
+        let glyph = backend
+            .create_source(&surface(4, vec![0, 1, 0, 2]))
+            .unwrap();
+
+        backend
+            .blit(
+                glyph,
+                destination,
+                BlitPlan {
+                    source: cmr_core::blit::RectEdges {
+                        left: 1,
+                        top: 0,
+                        right: 4,
+                        bottom: 1,
+                    },
+                    destination: cmr_core::blit::RectEdges {
+                        left: 0,
+                        top: 0,
+                        right: 3,
+                        bottom: 1,
+                    },
+                    method: BlitMethod::Fast,
+                    color_key: Some(cmr_core::blit::ColorKey { low: 0, high: 0 }),
+                },
+            )
+            .unwrap();
+        assert_eq!(backend.visible_pixels(), Some([1, 0, 2, 0].as_slice()));
+
+        for color_key in [
+            cmr_core::blit::ColorKey { low: 0, high: 1 },
+            cmr_core::blit::ColorKey { low: 1, high: 0 },
+        ] {
+            assert_eq!(
+                backend.blit(
+                    glyph,
+                    destination,
+                    BlitPlan {
+                        source: cmr_core::blit::RectEdges {
+                            left: 0,
+                            top: 0,
+                            right: 4,
+                            bottom: 1,
+                        },
+                        destination: cmr_core::blit::RectEdges {
+                            left: 0,
+                            top: 0,
+                            right: 4,
+                            bottom: 1,
+                        },
+                        method: BlitMethod::Fast,
+                        color_key: Some(color_key),
+                    },
+                ),
+                Err(SoftwareVideoError::UnsupportedColorKey)
+            );
+        }
     }
 
     #[test]

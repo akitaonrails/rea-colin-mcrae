@@ -55,8 +55,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   handling, activation-driven pause/restore state, queue dispatch decisions,
   and fullscreen-flip versus windowed-vblank presentation planning.
 - `cmr-video::SoftwareIndexedBackend`: deterministic source-owned front/back
-  framebuffers for exact-size indexed copies; unrecovered stretch and color-key
-  sampling are explicit errors rather than guessed behavior.
+  framebuffers for exact-size indexed copies and recovered index-zero keyed
+  glyph copies; unrecovered stretch and other color-key ranges are explicit
+  errors rather than guessed behavior.
 - `cmr-core::config`: opaque exact-size legacy configuration admission,
   recovered volatile-byte clearing and save gate, plus safe registry-value
   parsing and caller-owned exact-record writing without assigning meaning to
@@ -73,6 +74,8 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   startup/drift, compatibility buckets, focus gating, and unsigned deadlines.
 - `cmr-formats::font`: bounded fixed-layout indexed FON atlas/trailer decoding
   plus byte-text measurement and backend-neutral glyph layout plans.
+- `cmr-core::font_assets`: verified loading and stable style identity for the
+  16 recovered frontend font atlases in original initialization order.
 - `cmr-core::frontend`: checked first/root-screen navigation, transitions,
   idle/exit effects, and ordered rendering transcript over opaque target IDs.
 

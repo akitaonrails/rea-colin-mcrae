@@ -103,9 +103,9 @@ art and fixed-width frontend/game localization tables; configuration has an
 opaque exact-size load model and a tested caller-owned write boundary; indexed
 startup presentation runs against the deterministic software backend. The
 first/root frontend state, fixed-layout font parsing, byte-text layout, input,
-window-loop, and timing rules are pure tested contracts. Host clock/input,
-native window execution, font-asset loading, and pixel composition remain
-before the vertical-slice exit gate.
+window-loop, and timing rules are pure tested contracts, and all 16 font styles
+load through the verified import. Host clock/input, native window execution,
+and pixel composition remain before the vertical-slice exit gate.
 
 Exit gate:
 
