@@ -139,7 +139,11 @@ first-use order, and emits three compact indices per source entry. It retains
 borrowed typed source views rather than pretending to produce render-ready
 vertices. Runtime affine conversion, selector/resource preparation, associated
 side-vector materialization, geometry/material execution, and pixels remain
-unrecovered rather than inferred.
+unrecovered rather than inferred. Group-2 records now also classify complete
+`BM` signatures as opaque bitmap bytes and expose strictly framed, borrowed
+`ANIM` entries with their resource ordinals, raw advance thresholds, and
+separate legacy low-byte behavior. Bitmap pixels remain undecoded here because
+the embedded resource set is not limited to the standalone 8-bit subset.
 
 Exit gate:
 

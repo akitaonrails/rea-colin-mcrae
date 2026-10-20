@@ -104,7 +104,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   resource ordinal, byte-exact corner tuples, and unknown scalar fields,
   plus checked borrowed group-0→group-1, entry24 `+2/+4/+6`→same-record entry32,
   and group-1-entry24→group-2 ordinal resolution without assigning target
-  content semantics. Runtime conversion and batching remain separate.
+  content semantics. Group-2 resources may be classified on demand as opaque
+  `BM` bytes, checked borrowed `ANIM` frame references/thresholds, or unknown
+  bytes without forcing universal bitmap decoding. Runtime conversion and
+  batching remain separate.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one
   group-1 record and caller-prepared selectors. It preserves maximal
   consecutive selector runs and source entry order, deduplicates local entry32

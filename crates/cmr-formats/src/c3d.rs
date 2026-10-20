@@ -22,6 +22,9 @@ pub const C3D_GROUP1_ENTRY24_LEN: usize = 24;
 pub const C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS: [usize; 3] = [2, 4, 6];
 pub const C3D_BLOB_RECORD_HEADER_LEN: usize = 16;
 pub const C3D_BLOB_LABEL_LEN: usize = 12;
+pub const C3D_ANIMATION_MAGIC: [u8; 4] = *b"ANIM";
+pub const C3D_ANIMATION_HEADER_LEN: usize = 8;
+pub const C3D_ANIMATION_FRAME_LEN: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct C3dLimits {
@@ -542,6 +545,174 @@ pub struct C3dBlobRecord<'a> {
     blob: &'a [u8],
 }
 
+/// A known borrowed group-2 resource representation.
+///
+/// Bitmap payloads are classified only by their complete two-byte `BM`
+/// signature. They remain opaque because the group-2 framing does not prove a
+/// universal bitmap subset. Animation payloads use the exact `ANIM` framing
+/// observed in the reviewed corpus and are checked before this view is built.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dResourceView<'a> {
+    BitmapBytes(&'a [u8]),
+    Animation(C3dAnimation<'a>),
+    Unknown(&'a [u8]),
+}
+
+/// One checked, borrowed `ANIM` resource.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dAnimation<'a> {
+    offset: usize,
+    bytes: &'a [u8],
+    frame_count: u32,
+}
+
+impl<'a> C3dAnimation<'a> {
+    /// Returns the absolute byte offset of the `ANIM` magic in the C3D payload.
+    #[must_use]
+    pub const fn offset(self) -> usize {
+        self.offset
+    }
+
+    #[must_use]
+    pub const fn bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+
+    /// Returns the complete little-endian count stored at animation offset 4.
+    #[must_use]
+    pub const fn frame_count(self) -> u32 {
+        self.frame_count
+    }
+
+    /// Returns the low count byte used by the recovered legacy loader.
+    ///
+    /// The exact `ANIM` view is framed by [`Self::frame_count`]; this accessor
+    /// preserves the narrower behavior separately instead of conflating it
+    /// with the corpus-backed `u32` field.
+    #[must_use]
+    pub const fn legacy_frame_count(self) -> u8 {
+        self.frame_count as u8
+    }
+
+    pub fn frames(self) -> impl ExactSizeIterator<Item = C3dAnimationFrame<'a>> {
+        let frames = &self.bytes[C3D_ANIMATION_HEADER_LEN..];
+        let (frames, remainder) = frames.as_chunks::<C3D_ANIMATION_FRAME_LEN>();
+        debug_assert!(remainder.is_empty());
+        frames
+            .iter()
+            .enumerate()
+            .map(move |(index, bytes)| C3dAnimationFrame {
+                offset: self.offset + C3D_ANIMATION_HEADER_LEN + index * C3D_ANIMATION_FRAME_LEN,
+                bytes,
+            })
+    }
+}
+
+/// One borrowed four-byte entry from a checked `ANIM` resource.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dAnimationFrame<'a> {
+    offset: usize,
+    bytes: &'a [u8; C3D_ANIMATION_FRAME_LEN],
+}
+
+impl<'a> C3dAnimationFrame<'a> {
+    #[must_use]
+    pub const fn offset(self) -> usize {
+        self.offset
+    }
+
+    #[must_use]
+    pub const fn bytes(self) -> &'a [u8; C3D_ANIMATION_FRAME_LEN] {
+        self.bytes
+    }
+
+    /// Returns the little-endian group-2 resource ordinal consumed by the
+    /// recovered loader.
+    #[must_use]
+    pub fn resource_ordinal(self) -> u16 {
+        read_u16(self.bytes, 0)
+    }
+
+    /// Returns the complete little-endian advance threshold stored on disk.
+    #[must_use]
+    pub fn raw_advance_threshold(self) -> u16 {
+        read_u16(self.bytes, 2)
+    }
+
+    /// Returns the low threshold byte retained by the recovered legacy loader.
+    #[must_use]
+    pub fn legacy_advance_threshold(self) -> u8 {
+        self.bytes[2]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dResourceError {
+    TruncatedAnimationHeader {
+        resource_offset: usize,
+        actual: usize,
+        required: usize,
+    },
+    AnimationLengthOverflow {
+        resource_offset: usize,
+        frame_count: u32,
+    },
+    TruncatedAnimationFrames {
+        resource_offset: usize,
+        frame_count: u32,
+        expected_len: usize,
+        actual_len: usize,
+    },
+    TrailingAnimationBytes {
+        resource_offset: usize,
+        frame_count: u32,
+        expected_len: usize,
+        actual_len: usize,
+    },
+}
+
+impl fmt::Display for C3dResourceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TruncatedAnimationHeader {
+                resource_offset,
+                actual,
+                required,
+            } => write!(
+                formatter,
+                "ANIM resource at offset {resource_offset} needs a {required}-byte header but contains {actual} bytes"
+            ),
+            Self::AnimationLengthOverflow {
+                resource_offset,
+                frame_count,
+            } => write!(
+                formatter,
+                "ANIM resource at offset {resource_offset} has frame count {frame_count}, which overflows the addressable payload length"
+            ),
+            Self::TruncatedAnimationFrames {
+                resource_offset,
+                frame_count,
+                expected_len,
+                actual_len,
+            } => write!(
+                formatter,
+                "ANIM resource at offset {resource_offset} declares {frame_count} frames and needs {expected_len} bytes but contains {actual_len}"
+            ),
+            Self::TrailingAnimationBytes {
+                resource_offset,
+                frame_count,
+                expected_len,
+                actual_len,
+            } => write!(
+                formatter,
+                "ANIM resource at offset {resource_offset} declares {frame_count} frames and needs {expected_len} bytes but contains {actual_len} including trailing bytes"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for C3dResourceError {}
+
 /// One successfully resolved group-0 value and its borrowed group-1 target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct C3dGroup1Reference<'a> {
@@ -780,6 +951,64 @@ impl<'a> C3dBlobRecord<'a> {
     #[must_use]
     pub const fn blob(self) -> &'a [u8] {
         self.blob
+    }
+
+    /// Classifies this record without copying or decoding its payload.
+    ///
+    /// Full `ANIM` magic opts into checked framing. Other payloads, including
+    /// short or partial animation prefixes, remain unknown. A full `BM`
+    /// signature identifies opaque bitmap bytes but deliberately makes no
+    /// claim about their header, bit depth, compression, or pixel layout.
+    pub fn classify_resource(self) -> Result<C3dResourceView<'a>, C3dResourceError> {
+        let resource_offset = self.offset + C3D_BLOB_RECORD_HEADER_LEN;
+        if self.blob.starts_with(&C3D_ANIMATION_MAGIC) {
+            if self.blob.len() < C3D_ANIMATION_HEADER_LEN {
+                return Err(C3dResourceError::TruncatedAnimationHeader {
+                    resource_offset,
+                    actual: self.blob.len(),
+                    required: C3D_ANIMATION_HEADER_LEN,
+                });
+            }
+
+            let frame_count = read_u32(self.blob, 4);
+            let expected_len = usize::try_from(frame_count)
+                .ok()
+                .and_then(|count| count.checked_mul(C3D_ANIMATION_FRAME_LEN))
+                .and_then(|frames_len| frames_len.checked_add(C3D_ANIMATION_HEADER_LEN))
+                .ok_or(C3dResourceError::AnimationLengthOverflow {
+                    resource_offset,
+                    frame_count,
+                })?;
+
+            if self.blob.len() < expected_len {
+                return Err(C3dResourceError::TruncatedAnimationFrames {
+                    resource_offset,
+                    frame_count,
+                    expected_len,
+                    actual_len: self.blob.len(),
+                });
+            }
+            if self.blob.len() > expected_len {
+                return Err(C3dResourceError::TrailingAnimationBytes {
+                    resource_offset,
+                    frame_count,
+                    expected_len,
+                    actual_len: self.blob.len(),
+                });
+            }
+
+            return Ok(C3dResourceView::Animation(C3dAnimation {
+                offset: resource_offset,
+                bytes: self.blob,
+                frame_count,
+            }));
+        }
+
+        if self.blob.starts_with(b"BM") {
+            return Ok(C3dResourceView::BitmapBytes(self.blob));
+        }
+
+        Ok(C3dResourceView::Unknown(self.blob))
     }
 }
 
@@ -2249,6 +2478,152 @@ mod tests {
     }
 
     #[test]
+    fn classifies_checked_animation_frames_with_exact_offsets_and_legacy_bytes() {
+        let animation = [
+            b'A', b'N', b'I', b'M', 2, 0, 0, 0, 0x34, 0x12, 0xcd, 0xab, 0x78, 0x56, 0xef, 0xbe,
+        ];
+        let mut input = fixture([0, 0, 1], [0, 0, 40], 72);
+        assert_eq!(
+            write_blob_record(&mut input, 40, *b"ANIMATION!!!", &animation),
+            input.len()
+        );
+
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        let record = parsed.blob_records().next().unwrap();
+        let C3dResourceView::Animation(animation) = record.classify_resource().unwrap() else {
+            panic!("expected checked animation view");
+        };
+
+        assert_eq!(animation.offset(), 56);
+        assert_eq!(animation.bytes(), &input[56..72]);
+        assert_eq!(animation.frame_count(), 2);
+        assert_eq!(animation.legacy_frame_count(), 2);
+        assert!(std::ptr::eq(
+            animation.bytes().as_ptr(),
+            parsed.bytes()[56..].as_ptr()
+        ));
+
+        let frames = animation.frames().collect::<Vec<_>>();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].offset(), 64);
+        assert_eq!(frames[0].bytes(), &[0x34, 0x12, 0xcd, 0xab]);
+        assert_eq!(frames[0].resource_ordinal(), 0x1234);
+        assert_eq!(frames[0].raw_advance_threshold(), 0xabcd);
+        assert_eq!(frames[0].legacy_advance_threshold(), 0xcd);
+        assert_eq!(frames[1].offset(), 68);
+        assert_eq!(frames[1].resource_ordinal(), 0x5678);
+        assert_eq!(frames[1].raw_advance_threshold(), 0xbeef);
+        assert_eq!(frames[1].legacy_advance_threshold(), 0xef);
+        assert!(std::ptr::eq(
+            frames[1].bytes().as_ptr(),
+            parsed.bytes()[68..].as_ptr()
+        ));
+    }
+
+    #[test]
+    fn classifies_only_complete_known_magic_and_keeps_bitmaps_opaque() {
+        for unknown in [b"".as_slice(), b"A", b"ANI", b"ANIX payload"] {
+            assert_eq!(
+                blob_record(unknown).classify_resource(),
+                Ok(C3dResourceView::Unknown(unknown))
+            );
+        }
+
+        for malformed_bitmap in [b"BM".as_slice(), b"BMnot-a-header"] {
+            assert_eq!(
+                blob_record(malformed_bitmap).classify_resource(),
+                Ok(C3dResourceView::BitmapBytes(malformed_bitmap))
+            );
+        }
+    }
+
+    #[test]
+    fn reports_animation_header_frame_and_trailing_bounds_separately() {
+        for actual in C3D_ANIMATION_MAGIC.len()..C3D_ANIMATION_HEADER_LEN {
+            let mut blob = C3D_ANIMATION_MAGIC.to_vec();
+            blob.resize(actual, 0);
+            assert_eq!(
+                blob_record(&blob).classify_resource(),
+                Err(C3dResourceError::TruncatedAnimationHeader {
+                    resource_offset: 56,
+                    actual,
+                    required: C3D_ANIMATION_HEADER_LEN,
+                })
+            );
+        }
+
+        let truncated = [b'A', b'N', b'I', b'M', 2, 0, 0, 0, 1, 0, 2, 0];
+        assert_eq!(
+            blob_record(&truncated).classify_resource(),
+            Err(C3dResourceError::TruncatedAnimationFrames {
+                resource_offset: 56,
+                frame_count: 2,
+                expected_len: 16,
+                actual_len: 12,
+            })
+        );
+
+        let trailing = [b'A', b'N', b'I', b'M', 0, 0, 0, 0, 0xff];
+        assert_eq!(
+            blob_record(&trailing).classify_resource(),
+            Err(C3dResourceError::TrailingAnimationBytes {
+                resource_offset: 56,
+                frame_count: 0,
+                expected_len: 8,
+                actual_len: 9,
+            })
+        );
+    }
+
+    #[test]
+    fn preserves_full_animation_count_while_exposing_legacy_low_byte() {
+        let frame_count = 258_u32;
+        let expected_len =
+            C3D_ANIMATION_HEADER_LEN + frame_count as usize * C3D_ANIMATION_FRAME_LEN;
+        let mut blob = Vec::with_capacity(expected_len);
+        blob.extend_from_slice(&C3D_ANIMATION_MAGIC);
+        blob.extend_from_slice(&frame_count.to_le_bytes());
+        blob.resize(expected_len, 0);
+
+        let C3dResourceView::Animation(animation) = blob_record(&blob).classify_resource().unwrap()
+        else {
+            panic!("expected checked animation view");
+        };
+        assert_eq!(animation.frame_count(), 258);
+        assert_eq!(animation.legacy_frame_count(), 2);
+        assert_eq!(animation.frames().len(), 258);
+
+        let mut maximum = C3D_ANIMATION_MAGIC.to_vec();
+        maximum.extend_from_slice(&u32::MAX.to_le_bytes());
+        let result = blob_record(&maximum).classify_resource();
+        if usize::BITS > 32 {
+            let expected_len = usize::try_from(u32::MAX)
+                .unwrap()
+                .checked_mul(C3D_ANIMATION_FRAME_LEN)
+                .unwrap()
+                .checked_add(C3D_ANIMATION_HEADER_LEN)
+                .unwrap();
+            assert_eq!(
+                result,
+                Err(C3dResourceError::TruncatedAnimationFrames {
+                    resource_offset: 56,
+                    frame_count: u32::MAX,
+                    expected_len,
+                    actual_len: C3D_ANIMATION_HEADER_LEN,
+                })
+            );
+        } else {
+            assert_eq!(
+                result,
+                Err(C3dResourceError::AnimationLengthOverflow {
+                    resource_offset: 56,
+                    frame_count: u32::MAX,
+                })
+            );
+        }
+    }
+
+    #[test]
     fn blob_iterator_uses_only_the_third_count_and_position() {
         let mut input = fixture([0, 0, 1], [59, 58, 40], 60);
         let label = *b"THIRD-ONLY!!";
@@ -2460,6 +2835,14 @@ mod tests {
             input[start..start + 4].copy_from_slice(&offset.to_le_bytes());
         }
         input
+    }
+
+    fn blob_record(blob: &[u8]) -> C3dBlobRecord<'_> {
+        C3dBlobRecord {
+            offset: 40,
+            label: b"RESOURCE-VW!",
+            blob,
+        }
     }
 
     fn write_blob_record(
