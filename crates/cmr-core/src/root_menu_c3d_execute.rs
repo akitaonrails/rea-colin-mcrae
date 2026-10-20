@@ -288,6 +288,11 @@ impl<'catalog, H> RootMenuC3dBatchExecutor<'catalog, H> {
         }
     }
 
+    #[must_use]
+    pub const fn provenance(&self) -> C3dPreparedResourceProvenance {
+        self.catalog.provenance()
+    }
+
     /// Invalidates the selector cache after another render path may have
     /// changed shared backend material or texture state.
     pub fn invalidate_bindings(&mut self) {

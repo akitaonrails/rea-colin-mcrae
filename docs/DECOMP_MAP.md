@@ -74,7 +74,7 @@ Status markers:
 - [x] `D13` Bind parsed C3D slots and per-object angle state to root frames.
 - [~] `D14` Decode the root C3D geometry/material/resource contract.
 - [ ] `D15` Render root C3D pixels in the compatibility renderer.
-- [ ] `D16` Recover and implement final compose/present ownership.
+- [~] `D16` Recover and implement final compose/present ownership.
 - [ ] `D17` Run the complete root menu interactively in a native window.
 
 ## E. General renderer and scene data
@@ -152,13 +152,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T18:56:11Z
-milestone=bind-root-c3d-batches
+updated_utc=2026-10-20T19:03:35Z
+milestone=stage-root-c3d-terminal-scene
 completed=38
-partial=15
-not_started=51
+partial=16
+not_started=50
 blocked=0
 total=104
-current_focus=D14-stage-root-c3d-at-terminal-scene-compose
+current_focus=D15-render-root-c3d-pixels
 next_exit_gate=native-root-menu-vertical-slice
 <!-- PROGRESS-TAIL-END -->

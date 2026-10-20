@@ -1,8 +1,8 @@
 //! Sequential execution boundary for one recovered root-menu frame.
 //!
-//! Bitmap/footer behavior and C3D slot/angle binding are implemented by
-//! recovered compatibility code. C3D pixel rendering and the final
-//! `ComposeAndPresent` tail remain explicit injected boundaries.
+//! Bitmap/footer behavior and C3D planning are implemented by recovered
+//! compatibility code. A staged C3D plan is consumed by the always-run scene
+//! transaction at the terminal `ComposeAndPresent` boundary, before present.
 
 use std::fmt;
 
@@ -16,7 +16,7 @@ use crate::root_menu_bitmap_raster::{
     RootBitmapCommandError, RootBitmapCommandOutcome, UploadedRootMenuBitmapPool,
     execute_root_bitmap_command,
 };
-use crate::root_menu_c3d_assets::{RootMenuC3dAngles, RootMenuC3dFrameObject, RootMenuC3dSet};
+use crate::root_menu_c3d_scene::RootMenuC3dFramePipeline;
 use crate::root_menu_footer::{RootFooterError, RootFooterOutcome, render_root_footer};
 use crate::root_menu_visual::{
     ROOT_FOOTER_FLAGS, ROOT_FOOTER_POSITION, RenderCommand, RootRenderInput, RootVisualAssetError,
@@ -24,24 +24,11 @@ use crate::root_menu_visual::{
 };
 use crate::source_store::UploadedSourceStore;
 
-/// Unrecovered root-frame operations supplied by a platform/render adapter.
-///
-/// Both calls receive the same destination token and extent used by indexed
-/// drawing. This keeps ordering and target identity explicit without claiming
-/// how C3D composition or presentation is implemented. Those target arguments
-/// are reconstruction context, not recovered C3D call parameters.
+/// Final presentation supplied by a platform/render adapter.
 pub trait RootFrameHooks: IndexedVideoBackend {
-    type C3dError;
     type FinalError;
 
-    fn execute_c3d_command(
-        &mut self,
-        destination: Self::Surface,
-        destination_extent: DisplayExtent,
-        object: RootMenuC3dFrameObject<'_>,
-    ) -> Result<(), Self::C3dError>;
-
-    fn finalize_compose_and_present(
+    fn present_root_frame(
         &mut self,
         destination: Self::Surface,
         destination_extent: DisplayExtent,
@@ -55,21 +42,22 @@ pub struct RootFrameOutcome<E> {
     pub bitmap_no_ops: usize,
     pub footer: Option<RootFooterOutcome<E>>,
     pub c3d_commands: usize,
-    pub final_hook_completed: bool,
+    pub scene_completed: bool,
+    pub presentation_completed: bool,
 }
 
-pub struct RootFrameResources<'a> {
+pub struct RootFrameResources<'a, C> {
     pub text: &'a IndexedTextTable,
     pub fonts: &'a UploadedFontPool,
     pub bitmaps: &'a UploadedRootMenuBitmapPool,
-    pub c3d_assets: &'a RootMenuC3dSet,
-    pub c3d_angles: &'a mut RootMenuC3dAngles,
+    pub c3d: C,
 }
 
-pub type RootFrameExecutionResult<E, C, P> = Result<RootFrameOutcome<E>, RootFrameError<E, C, P>>;
+pub type RootFrameExecutionResult<E, L, S, P> =
+    Result<RootFrameOutcome<E>, RootFrameError<E, L, S, P>>;
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum RootFrameError<E, C, P> {
+pub enum RootFrameError<E, L, S, P> {
     C3dVariantMismatch {
         bitmap_variant: VisualVariant,
         object_variant: VisualVariant,
@@ -83,17 +71,23 @@ pub enum RootFrameError<E, C, P> {
         command_index: usize,
         source: RootFooterError<E>,
     },
-    C3dCommand {
+    C3dPlan {
         command_index: usize,
-        source: C,
+        source: L,
     },
-    Finalization {
+    C3dScene {
+        command_index: usize,
+        source: S,
+    },
+    Presentation {
         command_index: usize,
         source: P,
     },
 }
 
-impl<E: fmt::Display, C: fmt::Display, P: fmt::Display> fmt::Display for RootFrameError<E, C, P> {
+impl<E: fmt::Display, L: fmt::Display, S: fmt::Display, P: fmt::Display> fmt::Display
+    for RootFrameError<E, L, S, P>
+{
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::C3dVariantMismatch {
@@ -120,28 +114,36 @@ impl<E: fmt::Display, C: fmt::Display, P: fmt::Display> fmt::Display for RootFra
                 formatter,
                 "root frame footer command {command_index} failed: {source}"
             ),
-            Self::C3dCommand {
+            Self::C3dPlan {
                 command_index,
                 source,
             } => write!(
                 formatter,
-                "root frame C3D-command hook {command_index} failed: {source}"
+                "root frame C3D plan at command {command_index} failed: {source}"
             ),
-            Self::Finalization {
+            Self::C3dScene {
                 command_index,
                 source,
             } => write!(
                 formatter,
-                "root frame final hook at command {command_index} failed: {source}"
+                "root frame C3D scene at terminal command {command_index} failed: {source}"
+            ),
+            Self::Presentation {
+                command_index,
+                source,
+            } => write!(
+                formatter,
+                "root frame presentation at command {command_index} failed: {source}"
             ),
         }
     }
 }
 
-impl<E, C, P> std::error::Error for RootFrameError<E, C, P>
+impl<E, L, S, P> std::error::Error for RootFrameError<E, L, S, P>
 where
     E: std::error::Error + 'static,
-    C: std::error::Error + 'static,
+    L: std::error::Error + 'static,
+    S: std::error::Error + 'static,
     P: std::error::Error + 'static,
 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -150,32 +152,34 @@ where
             Self::VisualAssets(source) => Some(source),
             Self::Bitmap { source, .. } => Some(source),
             Self::Footer { source, .. } => Some(source),
-            Self::C3dCommand { source, .. } => Some(source),
-            Self::Finalization { source, .. } => Some(source),
+            Self::C3dPlan { source, .. } => Some(source),
+            Self::C3dScene { source, .. } => Some(source),
+            Self::Presentation { source, .. } => Some(source),
         }
     }
 }
 
 /// Generates and executes one canonical root-menu transcript in exact order.
 ///
-/// Fatal bitmap, footer-layout/source, C3D-command-hook, and final-hook failures
+/// Fatal bitmap, footer-layout/source, C3D-plan/scene, and presentation failures
 /// stop the frame. Individual footer glyph blit failures retain the recovered
 /// behavior: they remain ordered diagnostics and do not suppress later
 /// commands.
-pub fn execute_root_frame<B>(
+pub fn execute_root_frame<B, C>(
     input: RootRenderInput,
-    resources: RootFrameResources<'_>,
+    mut resources: RootFrameResources<'_, C>,
     sources: &mut UploadedSourceStore<'_, B>,
     destination: B::Surface,
     text_limits: TextLayoutLimits,
-) -> RootFrameExecutionResult<B::Error, B::C3dError, B::FinalError>
+) -> RootFrameExecutionResult<B::Error, C::PlanError, C::SceneError, B::FinalError>
 where
     B: RootFrameHooks,
+    C: RootMenuC3dFramePipeline<B>,
 {
-    if resources.bitmaps.center_variant() != resources.c3d_assets.variant() {
+    if resources.bitmaps.center_variant() != resources.c3d.variant() {
         return Err(RootFrameError::C3dVariantMismatch {
             bitmap_variant: resources.bitmaps.center_variant(),
-            object_variant: resources.c3d_assets.variant(),
+            object_variant: resources.c3d.variant(),
         });
     }
     let visuals = RootVisualAssets::from_bitmap_pool(resources.bitmaps)
@@ -185,7 +189,9 @@ where
     let mut bitmap_no_ops = 0;
     let mut footer = None;
     let mut c3d_commands = 0;
-    let mut final_hook_completed = false;
+    let mut staged_c3d = None;
+    let mut scene_completed = false;
+    let mut presentation_completed = false;
 
     for (command_index, command) in transcript.iter().copied().enumerate() {
         match command {
@@ -242,39 +248,48 @@ where
                 footer = Some(outcome);
             }
             RenderCommand::C3dObject { slot, angle_delta } => {
-                let Some(object) = resources.c3d_angles.advance_frame_object(
-                    resources.c3d_assets,
-                    slot,
-                    angle_delta,
-                ) else {
-                    continue;
-                };
-                sources
-                    .backend_mut()
-                    .execute_c3d_command(destination, input.viewport_extent, object)
-                    .map_err(|source| RootFrameError::C3dCommand {
+                if staged_c3d.is_some() {
+                    unreachable!("canonical transcript emitted multiple root C3D commands");
+                }
+                staged_c3d = resources
+                    .c3d
+                    .plan(slot, angle_delta, input.viewport_extent)
+                    .map_err(|source| RootFrameError::C3dPlan {
                         command_index,
                         source,
                     })?;
-                c3d_commands += 1;
+                c3d_commands += usize::from(staged_c3d.is_some());
             }
             RenderCommand::ComposeAndPresent => {
                 if command_index + 1 != transcript.len() {
                     unreachable!("canonical transcript emitted nonterminal final command");
                 }
-                sources
-                    .backend_mut()
-                    .finalize_compose_and_present(destination, input.viewport_extent)
-                    .map_err(|source| RootFrameError::Finalization {
+                let backend = sources.backend_mut();
+                resources
+                    .c3d
+                    .execute_terminal_scene(
+                        backend,
+                        destination,
+                        input.viewport_extent,
+                        staged_c3d.take(),
+                    )
+                    .map_err(|source| RootFrameError::C3dScene {
                         command_index,
                         source,
                     })?;
-                final_hook_completed = true;
+                scene_completed = true;
+                backend
+                    .present_root_frame(destination, input.viewport_extent)
+                    .map_err(|source| RootFrameError::Presentation {
+                        command_index,
+                        source,
+                    })?;
+                presentation_completed = true;
             }
         }
     }
 
-    if !final_hook_completed {
+    if !presentation_completed {
         unreachable!("canonical transcript omitted its final command");
     }
     Ok(RootFrameOutcome {
@@ -283,7 +298,8 @@ where
         bitmap_no_ops,
         footer,
         c3d_commands,
-        final_hook_completed,
+        scene_completed,
+        presentation_completed,
     })
 }
 
@@ -310,6 +326,7 @@ mod tests {
         RootMenuBitmapParts, RootMenuBitmapSlot,
     };
     use crate::root_menu_bitmap_raster::{prepare_parts, upload_root_menu_bitmaps};
+    use crate::root_menu_c3d_assets::{RootMenuC3dAngles, RootMenuC3dSet};
     use crate::root_menu_c3d_assets::{RootMenuC3dSlot, synthetic_root_menu_c3d_set};
     use crate::root_menu_visual::{
         C3D_ANGLE_DELTA, ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16, ROOT_INITIAL_VERTICAL_TRANSFORM_Q16,
@@ -355,6 +372,11 @@ mod tests {
             previous_angle: u16,
             resulting_angle: u16,
             delta: u16,
+        },
+        Scene {
+            destination: u16,
+            extent: DisplayExtent,
+            has_plan: bool,
         },
         Present {
             destination: u16,
@@ -466,32 +488,9 @@ mod tests {
     }
 
     impl RootFrameHooks for RecordingBackend {
-        type C3dError = HookError;
         type FinalError = HookError;
 
-        fn execute_c3d_command(
-            &mut self,
-            destination: u16,
-            extent: DisplayExtent,
-            object: RootMenuC3dFrameObject<'_>,
-        ) -> Result<(), Self::C3dError> {
-            self.events.borrow_mut().push(Event::C3d {
-                destination,
-                extent,
-                slot: object.slot(),
-                asset_marker: object.asset().file.header().unknown_08[0],
-                previous_angle: object.previous_angle(),
-                resulting_angle: object.resulting_angle(),
-                delta: object.delta(),
-            });
-            if self.fail_c3d.get() {
-                Err(HookError::C3d)
-            } else {
-                Ok(())
-            }
-        }
-
-        fn finalize_compose_and_present(
+        fn present_root_frame(
             &mut self,
             destination: u16,
             extent: DisplayExtent,
@@ -502,6 +501,82 @@ mod tests {
             });
             if self.fail_final.get() {
                 Err(HookError::Present)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct TestPlan {
+        slot: RootMenuC3dSlot,
+        asset_marker: u8,
+        previous_angle: u16,
+        resulting_angle: u16,
+        delta: u16,
+    }
+
+    struct RecordingC3dPipeline<'a> {
+        assets: &'a RootMenuC3dSet,
+        angles: &'a mut RootMenuC3dAngles,
+        fail_plan: bool,
+    }
+
+    impl RootMenuC3dFramePipeline<RecordingBackend> for RecordingC3dPipeline<'_> {
+        type Plan = TestPlan;
+        type PlanError = HookError;
+        type SceneError = HookError;
+
+        fn variant(&self) -> VisualVariant {
+            self.assets.variant()
+        }
+
+        fn plan(
+            &mut self,
+            slot: RootMenuC3dSlot,
+            angle_delta: u16,
+            _extent: DisplayExtent,
+        ) -> Result<Option<Self::Plan>, Self::PlanError> {
+            if self.fail_plan {
+                return Err(HookError::C3d);
+            }
+            Ok(self
+                .angles
+                .advance_frame_object(self.assets, slot, angle_delta)
+                .map(|object| TestPlan {
+                    slot: object.slot(),
+                    asset_marker: object.asset().file.header().unknown_08[0],
+                    previous_angle: object.previous_angle(),
+                    resulting_angle: object.resulting_angle(),
+                    delta: object.delta(),
+                }))
+        }
+
+        fn execute_terminal_scene(
+            &mut self,
+            backend: &mut RecordingBackend,
+            destination: u16,
+            extent: DisplayExtent,
+            plan: Option<Self::Plan>,
+        ) -> Result<(), Self::SceneError> {
+            backend.events.borrow_mut().push(Event::Scene {
+                destination,
+                extent,
+                has_plan: plan.is_some(),
+            });
+            if let Some(plan) = plan {
+                backend.events.borrow_mut().push(Event::C3d {
+                    destination,
+                    extent,
+                    slot: plan.slot,
+                    asset_marker: plan.asset_marker,
+                    previous_angle: plan.previous_angle,
+                    resulting_angle: plan.resulting_angle,
+                    delta: plan.delta,
+                });
+            }
+            if backend.fail_c3d.get() {
+                Err(HookError::C3d)
             } else {
                 Ok(())
             }
@@ -540,7 +615,8 @@ mod tests {
                 assert_eq!(outcome.bitmap_blits, 5);
                 assert_eq!(outcome.bitmap_no_ops, 0);
                 assert_eq!(outcome.c3d_commands, 1);
-                assert!(outcome.final_hook_completed);
+                assert!(outcome.scene_completed);
+                assert!(outcome.presentation_completed);
                 assert!(matches!(
                     outcome.footer,
                     Some(RootFooterOutcome::Rendered { .. })
@@ -558,6 +634,7 @@ mod tests {
                     Event::Blit(root_marker(RootMenuBitmapSlot::MainSelected)),
                     Event::Blit(font_marker(FontStyle::GreenInfo)),
                     Event::Blit(root_marker(RootMenuBitmapSlot::ChampionshipGlobe)),
+                    scene_event(true),
                     c3d_event(0, 8),
                     present_event(),
                     Event::Blit(root_marker(RootMenuBitmapSlot::Backdrop)),
@@ -566,6 +643,7 @@ mod tests {
                     Event::Blit(root_marker(RootMenuBitmapSlot::MainSelected)),
                     Event::Blit(font_marker(FontStyle::GreenInfo)),
                     Event::Blit(root_marker(RootMenuBitmapSlot::ChampionshipGlobe)),
+                    scene_event(true),
                     c3d_event(8, 16),
                     present_event(),
                 ]
@@ -690,6 +768,7 @@ mod tests {
                     Event::Blit(root_marker(RootMenuBitmapSlot::Backdrop)),
                     Event::Blit(root_marker(RootMenuBitmapSlot::MainSelected)),
                     Event::Blit(font_marker(FontStyle::GreenInfo)),
+                    scene_event(false),
                     present_event(),
                 ]
             );
@@ -822,6 +901,7 @@ mod tests {
                     Event::Blit(font_marker(FontStyle::GreenInfo)),
                     Event::Blit(font_marker(FontStyle::GreenInfo)),
                     Event::Blit(root_marker(RootMenuBitmapSlot::ChampionshipGlobe)),
+                    scene_event(true),
                     c3d_event(0, 8),
                     present_event(),
                 ]
@@ -866,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn foreign_font_pool_is_typed_and_stops_before_center_and_final_hooks() {
+    fn foreign_font_pool_is_typed_and_stops_before_center_scene_and_presentation() {
         let font_events = Rc::new(RefCell::new(Vec::new()));
         let mut font_backend = RecordingBackend::new(font_events);
         let mut font_sources = UploadedSourceStore::new(&mut font_backend);
@@ -917,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn fatal_bitmap_c3d_and_final_hook_failures_are_indexed_and_fail_fast() {
+    fn fatal_bitmap_scene_and_presentation_failures_are_indexed_and_fail_fast() {
         let events = Rc::new(RefCell::new(Vec::new()));
         let mut backend = RecordingBackend::new(Rc::clone(&events));
         let fail_markers = Rc::clone(&backend.fail_markers);
@@ -957,6 +1037,37 @@ mod tests {
             fail_markers.borrow_mut().clear();
 
             events.borrow_mut().clear();
+            assert!(matches!(
+                execute_root_frame(
+                    interactive_input(),
+                    RootFrameResources {
+                        text: &footer_table(b"A"),
+                        fonts: &fonts,
+                        bitmaps: &bitmaps,
+                        c3d: RecordingC3dPipeline {
+                            assets: &c3d_assets,
+                            angles: &mut c3d_angles,
+                            fail_plan: true,
+                        },
+                    },
+                    &mut sources,
+                    99,
+                    TextLayoutLimits::default(),
+                ),
+                Err(RootFrameError::C3dPlan {
+                    command_index: 6,
+                    source: HookError::C3d,
+                })
+            ));
+            assert!(
+                !events
+                    .borrow()
+                    .iter()
+                    .any(|event| matches!(event, Event::Scene { .. } | Event::Present { .. }))
+            );
+            assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 0);
+
+            events.borrow_mut().clear();
             fail_c3d.set(true);
             assert!(matches!(
                 execute_root_frame(
@@ -972,8 +1083,8 @@ mod tests {
                     99,
                     TextLayoutLimits::default(),
                 ),
-                Err(RootFrameError::C3dCommand {
-                    command_index: 6,
+                Err(RootFrameError::C3dScene {
+                    command_index: 7,
                     source: HookError::C3d
                 })
             ));
@@ -1002,7 +1113,7 @@ mod tests {
                     99,
                     TextLayoutLimits::default(),
                 ),
-                Err(RootFrameError::Finalization {
+                Err(RootFrameError::Presentation {
                     command_index: 7,
                     source: HookError::Present
                 })
@@ -1011,6 +1122,7 @@ mod tests {
                 events.borrow().last(),
                 Some(Event::Present { .. })
             ));
+            assert!(events.borrow().contains(&c3d_event(8, 16)));
             assert_eq!(c3d_angles.angle(RootMenuC3dSlot::Championship), 16);
         }
     }
@@ -1051,6 +1163,7 @@ mod tests {
                 events.borrow().as_slice(),
                 [
                     Event::Blit(root_marker(RootMenuBitmapSlot::Backdrop)),
+                    scene_event(false),
                     present_event(),
                 ]
             );
@@ -1063,13 +1176,16 @@ mod tests {
         bitmaps: &'a UploadedRootMenuBitmapPool,
         c3d_assets: &'a RootMenuC3dSet,
         c3d_angles: &'a mut RootMenuC3dAngles,
-    ) -> RootFrameResources<'a> {
+    ) -> RootFrameResources<'a, RecordingC3dPipeline<'a>> {
         RootFrameResources {
             text,
             fonts,
             bitmaps,
-            c3d_assets,
-            c3d_angles,
+            c3d: RecordingC3dPipeline {
+                assets: c3d_assets,
+                angles: c3d_angles,
+                fail_plan: false,
+            },
         }
     }
 
@@ -1101,6 +1217,17 @@ mod tests {
             previous_angle,
             resulting_angle,
             delta: C3D_ANGLE_DELTA,
+        }
+    }
+
+    fn scene_event(has_plan: bool) -> Event {
+        Event::Scene {
+            destination: 99,
+            extent: DisplayExtent {
+                width: 640,
+                height: 480,
+            },
+            has_plan,
         }
     }
 

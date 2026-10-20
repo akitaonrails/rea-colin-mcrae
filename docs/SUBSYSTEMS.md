@@ -59,9 +59,13 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   transactional persistent upload, pool-to-visual binding, and checked
   per-command bitmap submission without reordering non-bitmap frame work.
 - `cmr-core::root_menu_frame`: canonical transcript generation and strict
-  sequential routing through recovered bitmap/footer executors, with typed
-  injected boundaries for still-unrecovered C3D command handling and the final
-  `ComposeAndPresent` tail.
+  sequential routing through recovered bitmap/footer executors; root C3D is
+  planned at its transcript position and consumed once by the always-run
+  terminal scene before the distinct presentation boundary.
+- `cmr-core::root_menu_c3d_scene`: backend-neutral depth-clear policy,
+  view/viewport setup, BeginScene, optional prepared-batch submission, world
+  reset, opaque ordered scene tail, EndScene cleanup, and selector-cache
+  disposition, with checked prepared-pipeline provenance.
 - `cmr-core::window`: pure compatibility reducer for recovered Win32 message
   handling, activation-driven pause/restore state, queue dispatch decisions,
   and fullscreen-flip versus windowed-vblank presentation planning.

@@ -474,7 +474,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        display::DisplayExtent,
+        display::{
+            CooperativeMode, DisplayExtent, DisplaySurfaces, IndexedMode, IndexedVideoBackend,
+            SurfaceTopology,
+        },
         root_menu_assets::VisualVariant,
         root_menu_c3d_assets::{RootMenuC3dAngles, load_root_menu_c3d},
         root_menu_c3d_execute::{
@@ -490,6 +493,11 @@ mod tests {
             C3dMode2CornerSource, C3dMode2LoadState, C3dSurfaceLayoutAxis, C3dSurfaceLayoutGates,
             RootMenuC3dMode2LoadStates, RootMenuC3dMode2MaterializationError,
             materialize_root_menu_mode2_pre_scale, materialize_root_menu_mode2_resource_scaled,
+        },
+        root_menu_c3d_scene::{
+            PreparedRootMenuC3dPipeline, PreparedRootMenuC3dPipelineError, RootMenuC3dBindingState,
+            RootMenuC3dDepthClear, RootMenuC3dFramePipeline, RootMenuC3dSceneBackend,
+            RootMenuC3dSceneStage,
         },
         root_menu_c3d_transform::{
             ROOT_MENU_C3D_PROJECTION, ROOT_MENU_C3D_VIEW, root_menu_c3d_viewport,
@@ -581,6 +589,160 @@ mod tests {
                     draw_flags: command.draw_flags(),
                 },
             )
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct SceneBackendError(RootMenuC3dSceneStage);
+
+    impl std::fmt::Display for SceneBackendError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(formatter, "injected {:?} scene failure", self.0)
+        }
+    }
+
+    impl std::error::Error for SceneBackendError {}
+
+    struct RecordingSceneBatchBackend {
+        batch: RecordingBatchBackend,
+        scene_fail: Option<RootMenuC3dSceneStage>,
+        tail_state: RootMenuC3dBindingState,
+    }
+
+    impl Default for RecordingSceneBatchBackend {
+        fn default() -> Self {
+            Self {
+                batch: RecordingBatchBackend::default(),
+                scene_fail: None,
+                tail_state: RootMenuC3dBindingState::Preserved,
+            }
+        }
+    }
+
+    impl RecordingSceneBatchBackend {
+        fn scene(&self, stage: RootMenuC3dSceneStage) -> Result<(), SceneBackendError> {
+            if self.scene_fail == Some(stage) {
+                Err(SceneBackendError(stage))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn binding_count(&self) -> usize {
+            self.batch
+                .events
+                .iter()
+                .filter(|event| matches!(event, BatchEvent::Binding(_)))
+                .count()
+        }
+    }
+
+    impl IndexedVideoBackend for RecordingSceneBatchBackend {
+        type Error = SceneBackendError;
+        type Surface = u8;
+        type Palette = u8;
+
+        fn create_device(&mut self) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+        fn set_cooperative_mode(&mut self, _: CooperativeMode) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+        fn set_display_mode(&mut self, _: IndexedMode) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+        fn create_surfaces(
+            &mut self,
+            _: SurfaceTopology,
+            _: IndexedMode,
+        ) -> Result<DisplaySurfaces<u8>, Self::Error> {
+            unreachable!()
+        }
+        fn create_palette(
+            &mut self,
+            _: &[cmr_formats::riff_palette::PaletteEntry; 256],
+        ) -> Result<u8, Self::Error> {
+            unreachable!()
+        }
+        fn attach_palette(&mut self, _: u8, _: u8) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+        fn upload_palette(
+            &mut self,
+            _: u8,
+            _: &[cmr_formats::riff_palette::PaletteEntry; 256],
+        ) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+        fn create_source(&mut self, _: &crate::surface::IndexedSurface) -> Result<u8, Self::Error> {
+            unreachable!()
+        }
+        fn blit(&mut self, _: u8, _: u8, _: crate::blit::BlitPlan) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+        fn destroy_source(&mut self, _: u8) {
+            unreachable!()
+        }
+    }
+
+    impl RootMenuC3dBatchBackend<u8> for RecordingSceneBatchBackend {
+        type Error = BatchBackendError;
+
+        fn set_root_c3d_world(
+            &mut self,
+            world: crate::root_menu_c3d_transform::C3dMatrixWords,
+        ) -> Result<(), Self::Error> {
+            self.batch.set_root_c3d_world(world)
+        }
+
+        fn bind_root_c3d_resource(&mut self, binding: &u8) -> Result<(), Self::Error> {
+            self.batch.bind_root_c3d_resource(binding)
+        }
+
+        fn draw_root_c3d_batch(
+            &mut self,
+            command: &crate::root_menu_c3d_frame_plan::RootMenuC3dDrawCommand,
+        ) -> Result<(), Self::Error> {
+            self.batch.draw_root_c3d_batch(command)
+        }
+    }
+
+    impl RootMenuC3dSceneBackend for RecordingSceneBatchBackend {
+        type SceneError = SceneBackendError;
+
+        fn clear_root_c3d_depth(
+            &mut self,
+            _: u8,
+            _: DisplayExtent,
+        ) -> Result<(), Self::SceneError> {
+            self.scene(RootMenuC3dSceneStage::ClearDepth)
+        }
+        fn set_root_c3d_view(
+            &mut self,
+            _: crate::root_menu_c3d_transform::C3dMatrixWords,
+        ) -> Result<(), Self::SceneError> {
+            self.scene(RootMenuC3dSceneStage::View)
+        }
+        fn set_root_c3d_viewport(
+            &mut self,
+            _: crate::root_menu_c3d_transform::C3dViewportWords,
+        ) -> Result<(), Self::SceneError> {
+            self.scene(RootMenuC3dSceneStage::Viewport)
+        }
+        fn begin_root_c3d_scene(&mut self, _: u8) -> Result<(), Self::SceneError> {
+            self.scene(RootMenuC3dSceneStage::Begin)
+        }
+        fn reset_root_c3d_world(&mut self) -> Result<(), Self::SceneError> {
+            self.scene(RootMenuC3dSceneStage::ResetWorld)
+        }
+        fn finish_root_c3d_scene_tail(
+            &mut self,
+        ) -> Result<RootMenuC3dBindingState, Self::SceneError> {
+            self.scene(RootMenuC3dSceneStage::Tail)?;
+            Ok(self.tail_state)
+        }
+        fn end_root_c3d_scene(&mut self) -> Result<(), Self::SceneError> {
+            self.scene(RootMenuC3dSceneStage::End)
         }
     }
 
@@ -806,6 +968,159 @@ mod tests {
         assert_eq!(plan.commands()[1].indices(), &[0, 0, 1]);
         assert_eq!(plan.commands()[2].source_entry32_ordinals(), &[0, 2, 1]);
         assert_eq!(plan.commands()[2].indices(), &[0, 1, 2]);
+    }
+
+    #[test]
+    fn prepared_scene_pipeline_rejects_cross_arena_runtime_and_bindings() {
+        let slot = RootMenuC3dSlot::Rally;
+        let group = group(3, &[[0, 1, 2]], &[0]);
+        let blobs = [(*b"PIPELINE-ONE", indexed_bmp(2, 2, 8))];
+        let fixture = fixture_for(&[(slot, exact_root_c3d(&group, &blobs))]);
+        let assets = load(&fixture);
+        let first = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let second = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let first_runtime = materialize_root_menu_mode2_resource_scaled(
+            &first,
+            uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+        )
+        .unwrap();
+        let second_runtime = materialize_root_menu_mode2_resource_scaled(
+            &second,
+            uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+        )
+        .unwrap();
+        let first_catalog = bind_root_menu_c3d_resources(&first, |id, _| {
+            Ok::<_, std::convert::Infallible>(id.index() as u8)
+        })
+        .unwrap();
+        let second_catalog = bind_root_menu_c3d_resources(&second, |id, _| {
+            Ok::<_, std::convert::Infallible>(id.index() as u8)
+        })
+        .unwrap();
+        let mut first_executor = RootMenuC3dBatchExecutor::new(&first_catalog);
+        let mut second_executor = RootMenuC3dBatchExecutor::new(&second_catalog);
+        let mut angles = RootMenuC3dAngles::new();
+
+        assert!(
+            PreparedRootMenuC3dPipeline::new(
+                &first,
+                &first_runtime,
+                &mut angles,
+                &mut first_executor,
+                RootMenuC3dDepthClear::Clear,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            PreparedRootMenuC3dPipeline::new(
+                &first,
+                &second_runtime,
+                &mut angles,
+                &mut first_executor,
+                RootMenuC3dDepthClear::Clear,
+            ),
+            Err(PreparedRootMenuC3dPipelineError::RuntimeProvenanceMismatch)
+        ));
+        assert!(matches!(
+            PreparedRootMenuC3dPipeline::new(
+                &first,
+                &first_runtime,
+                &mut angles,
+                &mut second_executor,
+                RootMenuC3dDepthClear::Clear,
+            ),
+            Err(PreparedRootMenuC3dPipelineError::BindingProvenanceMismatch)
+        ));
+    }
+
+    #[test]
+    fn prepared_scene_pipeline_executes_real_plans_and_invalidates_uncertain_bindings() {
+        let slot = RootMenuC3dSlot::Rally;
+        let root_group = group(1, &[[0, 0, 0]], &[0]);
+        let blobs = [(*b"PIPE-EXECUTE", indexed_bmp(2, 2, 8))];
+        let fixture = fixture_for(&[(slot, exact_root_c3d(&root_group, &blobs))]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let runtime = materialize_root_menu_mode2_resource_scaled(
+            &topology,
+            uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+        )
+        .unwrap();
+        let catalog = bind_root_menu_c3d_resources(&topology, |id, _| {
+            Ok::<_, std::convert::Infallible>(id.index() as u8)
+        })
+        .unwrap();
+        let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
+        let mut angles = RootMenuC3dAngles::new();
+        let mut pipeline = PreparedRootMenuC3dPipeline::new(
+            &topology,
+            &runtime,
+            &mut angles,
+            &mut executor,
+            RootMenuC3dDepthClear::Clear,
+        )
+        .unwrap();
+        let mut backend = RecordingSceneBatchBackend::default();
+        let extent = DisplayExtent {
+            width: 640,
+            height: 480,
+        };
+
+        let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
+        pipeline
+            .execute_terminal_scene(&mut backend, 7, extent, plan)
+            .unwrap();
+        assert_eq!(backend.binding_count(), 1);
+
+        backend.batch.events.clear();
+        backend.tail_state = RootMenuC3dBindingState::Changed;
+        let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
+        pipeline
+            .execute_terminal_scene(&mut backend, 7, extent, plan)
+            .unwrap();
+        assert_eq!(backend.binding_count(), 0);
+
+        backend.batch.events.clear();
+        backend.tail_state = RootMenuC3dBindingState::Preserved;
+        let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
+        pipeline
+            .execute_terminal_scene(&mut backend, 7, extent, plan)
+            .unwrap();
+        assert_eq!(backend.binding_count(), 1);
+
+        backend.batch.events.clear();
+        backend.batch.fail = Some((RootMenuC3dBatchStage::World, None));
+        let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
+        assert!(
+            pipeline
+                .execute_terminal_scene(&mut backend, 7, extent, plan)
+                .is_err()
+        );
+        backend.batch.fail = None;
+        backend.batch.events.clear();
+        let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
+        pipeline
+            .execute_terminal_scene(&mut backend, 7, extent, plan)
+            .unwrap();
+        assert_eq!(backend.binding_count(), 1);
+
+        for failure in [RootMenuC3dSceneStage::Tail, RootMenuC3dSceneStage::End] {
+            backend.batch.events.clear();
+            backend.scene_fail = Some(failure);
+            let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
+            assert!(
+                pipeline
+                    .execute_terminal_scene(&mut backend, 7, extent, plan)
+                    .is_err()
+            );
+            backend.scene_fail = None;
+            backend.batch.events.clear();
+            let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
+            pipeline
+                .execute_terminal_scene(&mut backend, 7, extent, plan)
+                .unwrap();
+            assert_eq!(backend.binding_count(), 1, "failure stage {failure:?}");
+        }
     }
 
     #[test]

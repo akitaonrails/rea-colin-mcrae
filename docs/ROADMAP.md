@@ -118,12 +118,13 @@ Root-footer text reaches a tested software back-buffer pixel through
 localization, the shared store, and the persistent font pool. Root visual
 transcripts name fixed bitmap slots directly, and the bitmap executor now
 submits their exact opaque/keyed plans with checked geometry and no per-frame
-uploads. A sequential frame dispatcher preserves bitmap/footer/C3D/final-
-boundary order and typed failure boundaries. It resolves typed commands against
-the exact parsed six-slot C3D set, advances six persistent wrapping angles,
-skips missing optional objects without mutation, and passes a borrowed parsed-
-object binding to the still-injected renderer hook. Final `ComposeAndPresent`
-also remains an explicit unimplemented boundary.
+uploads. A sequential frame dispatcher preserves bitmap/footer/C3D/scene/
+presentation order and typed failure boundaries. It stages one owned prepared
+C3D plan at the root command, then consumes it once inside the terminal scene.
+The scene runs even without a selected object and now owns checked viewport
+setup, conditional depth clear, Begin/End cleanup, world reset, and the opaque
+scene tail. Concrete rasterization, latch cleanup, depth-8 post-scene work, and
+host presentation remain unimplemented boundaries.
 The six optional root-menu C3D files now load through fixed slots and a bounded,
 byte-preserving parser. All three counted groups expose proven framing: group
 0's raw `u16` values; group 1's typed, borrowed 32/24-byte entry views; and
