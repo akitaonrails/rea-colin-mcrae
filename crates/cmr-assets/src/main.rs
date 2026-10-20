@@ -170,4 +170,30 @@ mod tests {
             .contains("unknown")
         );
     }
+
+    #[test]
+    fn every_command_requires_an_explicit_source_path() {
+        for arguments in [
+            &[
+                "catalog",
+                "--id",
+                "local",
+                "--output-profile",
+                "profile.json",
+            ][..],
+            &["verify", "--profile", "profile.json"],
+            &[
+                "import",
+                "--profile",
+                "profile.json",
+                "--output",
+                "runtime-data",
+            ],
+        ] {
+            assert_eq!(
+                run(args(arguments)),
+                Err("missing required option --source".to_owned())
+            );
+        }
+    }
 }

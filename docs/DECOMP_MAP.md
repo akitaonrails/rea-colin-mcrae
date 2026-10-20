@@ -152,8 +152,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T19:26:57Z
-milestone=preflight-software-c3d-raster
+updated_utc=2026-10-20T19:33:47Z
+milestone=rasterize-software-c3d-fragments
 completed=38
 partial=18
 not_started=48

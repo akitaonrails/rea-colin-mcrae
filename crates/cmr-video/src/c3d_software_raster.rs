@@ -15,6 +15,8 @@ use cmr_core::{
     root_menu_c3d_transform::{C3dMatrixWords, C3dViewportWords},
 };
 
+use crate::c3d_software::SoftwareC3dSampledTexture;
+
 const CLIP_PLANE_COUNT: usize = 6;
 
 /// A lit C3D vertex after world/view/projection and clip-volume normalization.
@@ -126,15 +128,134 @@ pub enum SoftwareC3dRasterError {
     InvalidViewport,
     NonFiniteResult,
     NonPositiveHomogeneousW,
+    InvalidDepthExtent([u16; 2]),
+    InvalidTextureExtent([u16; 2]),
+    InvalidTextureIndexLength {
+        expected: usize,
+        actual: usize,
+    },
+    TexturePaletteIndexOutOfRange {
+        index: u8,
+        palette_len: usize,
+    },
+    InvalidPreparedTriangle {
+        triangle: usize,
+    },
 }
 
 impl fmt::Display for SoftwareC3dRasterError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "software C3D raster preflight failed: {self:?}")
+        write!(formatter, "software C3D raster operation failed: {self:?}")
     }
 }
 
 impl std::error::Error for SoftwareC3dRasterError {}
+
+/// Row-major source-owned depth storage for the software compatibility path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoftwareC3dDepthBuffer {
+    extent: [u16; 2],
+    values: Box<[f32]>,
+}
+
+impl SoftwareC3dDepthBuffer {
+    /// Source-owned initialization uses far value `1.0`, matching the value
+    /// established by the recovered depth-only clear.
+    pub fn new_far(extent: [u16; 2]) -> Result<Self, SoftwareC3dRasterError> {
+        if extent[0] == 0 || extent[1] == 0 {
+            return Err(SoftwareC3dRasterError::InvalidDepthExtent(extent));
+        }
+        let pixel_count = usize::from(extent[0]) * usize::from(extent[1]);
+        Ok(Self {
+            extent,
+            values: vec![1.0; pixel_count].into_boxed_slice(),
+        })
+    }
+
+    #[must_use]
+    pub const fn extent(&self) -> [u16; 2] {
+        self.extent
+    }
+
+    #[must_use]
+    pub fn values(&self) -> &[f32] {
+        &self.values
+    }
+
+    /// Performs the recovered depth-only clear without touching color.
+    pub fn clear_far(&mut self) {
+        self.values.fill(1.0);
+    }
+}
+
+/// One depth-passing, point-sampled software C3D fragment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SoftwareC3dFragment {
+    position: [u16; 2],
+    depth: f32,
+    uv: [f32; 2],
+    texture_index: u8,
+    diffuse_argb: [f32; 4],
+    flat_diffuse: u32,
+}
+
+impl SoftwareC3dFragment {
+    #[must_use]
+    pub const fn position(self) -> [u16; 2] {
+        self.position
+    }
+
+    #[must_use]
+    pub const fn depth(self) -> f32 {
+        self.depth
+    }
+
+    #[must_use]
+    pub const fn uv(self) -> [f32; 2] {
+        self.uv
+    }
+
+    #[must_use]
+    pub const fn texture_index(self) -> u8 {
+        self.texture_index
+    }
+
+    /// Screen-affine lit color for the later Gouraud/modulate profile.
+    #[must_use]
+    pub const fn diffuse_argb(self) -> [f32; 4] {
+        self.diffuse_argb
+    }
+
+    /// Original first-index color for the later flat/copy profile.
+    #[must_use]
+    pub const fn flat_diffuse(self) -> u32 {
+        self.flat_diffuse
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SoftwareC3dFragmentOutcome {
+    covered: usize,
+    depth_passed: usize,
+    depth_rejected: usize,
+}
+
+impl SoftwareC3dFragmentOutcome {
+    #[must_use]
+    pub const fn covered(self) -> usize {
+        self.covered
+    }
+
+    #[must_use]
+    pub const fn depth_passed(self) -> usize {
+        self.depth_passed
+    }
+
+    #[must_use]
+    pub const fn depth_rejected(self) -> usize {
+        self.depth_rejected
+    }
+}
 
 /// Immutable transform state consumed by one software batch preflight.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -235,6 +356,28 @@ pub fn preflight_root_c3d_batch(
         .map(RasterInputVertex::from)
         .collect::<Vec<_>>();
     preflight_indexed_triangle_list(&vertices, command.indices(), transforms)
+}
+
+/// Visits depth-passing fragments for one prepared batch in triangle/scanline
+/// order using the deterministic point-filter compatibility policy.
+///
+/// All fallible validation completes before depth is mutated or `visit` runs.
+pub fn rasterize_root_c3d_fragments(
+    batch: &SoftwareC3dPreparedBatch,
+    texture: &SoftwareC3dSampledTexture,
+    depth: &mut SoftwareC3dDepthBuffer,
+    visit: impl FnMut(SoftwareC3dFragment),
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dRasterError> {
+    rasterize_fragments(
+        batch,
+        TextureView {
+            extent: texture.extent(),
+            indices: texture.indices(),
+            palette_len: texture.palette().len(),
+        },
+        depth,
+        visit,
+    )
 }
 
 /// Applies the recovered row-vector transform chain and `D3DVIEWPORT2` clip
@@ -508,7 +651,214 @@ fn preflight_indexed_triangle_list(
 
 fn signed_screen_area(vertices: [SoftwareC3dScreenVertex; 3]) -> f32 {
     let [a, b, c] = vertices.map(SoftwareC3dScreenVertex::position);
-    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    edge(a, b, [c[0], c[1]])
+}
+
+#[derive(Clone, Copy)]
+struct TextureView<'a> {
+    extent: [u16; 2],
+    indices: &'a [u8],
+    palette_len: usize,
+}
+
+fn rasterize_fragments(
+    batch: &SoftwareC3dPreparedBatch,
+    texture: TextureView<'_>,
+    depth: &mut SoftwareC3dDepthBuffer,
+    mut visit: impl FnMut(SoftwareC3dFragment),
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dRasterError> {
+    validate_texture(texture)?;
+    validate_prepared_triangles(batch)?;
+
+    let [target_width, target_height] = depth.extent;
+    let mut outcome = SoftwareC3dFragmentOutcome::default();
+    for triangle in &batch.triangles {
+        let positions = triangle.vertices.map(SoftwareC3dScreenVertex::position);
+        let area = signed_screen_area(triangle.vertices);
+        let Some([minimum_x, maximum_x]) =
+            candidate_axis_bounds(positions.map(|position| position[0]), target_width)
+        else {
+            continue;
+        };
+        let Some([minimum_y, maximum_y]) =
+            candidate_axis_bounds(positions.map(|position| position[1]), target_height)
+        else {
+            continue;
+        };
+
+        for y in minimum_y..=maximum_y {
+            for x in minimum_x..=maximum_x {
+                let sample = [f32::from(x) + 0.5, f32::from(y) + 0.5];
+                let edges = [
+                    edge(positions[1], positions[2], sample),
+                    edge(positions[2], positions[0], sample),
+                    edge(positions[0], positions[1], sample),
+                ];
+                let edge_pairs = [
+                    [positions[1], positions[2]],
+                    [positions[2], positions[0]],
+                    [positions[0], positions[1]],
+                ];
+                if !(0..3).all(|index| edge_accepts(edges[index], edge_pairs[index])) {
+                    continue;
+                }
+                outcome.covered += 1;
+
+                let weights = edges.map(|value| f64::from(value) / f64::from(area));
+                let interpolated_depth =
+                    weighted_scalar(weights, triangle.vertices.map(|vertex| vertex.position[2]))
+                        .clamp(0.0, 1.0) as f32;
+                let target_index = usize::from(y) * usize::from(target_width) + usize::from(x);
+                if interpolated_depth > depth.values[target_index] {
+                    outcome.depth_rejected += 1;
+                    continue;
+                }
+
+                let reciprocal_w = weighted_scalar(
+                    weights,
+                    triangle.vertices.map(SoftwareC3dScreenVertex::reciprocal_w),
+                );
+                let uv_over_w = weighted_pair(
+                    weights,
+                    triangle.vertices.map(SoftwareC3dScreenVertex::uv_over_w),
+                );
+                let uv = [
+                    (uv_over_w[0] / reciprocal_w).clamp(0.0, 1.0) as f32,
+                    (uv_over_w[1] / reciprocal_w).clamp(0.0, 1.0) as f32,
+                ];
+                let diffuse_argb = weighted_quad(
+                    weights,
+                    triangle.vertices.map(SoftwareC3dScreenVertex::diffuse_argb),
+                )
+                .map(|component| component.clamp(0.0, 1.0) as f32);
+                let texture_index = sample_point_clamped(texture, uv);
+
+                depth.values[target_index] = interpolated_depth;
+                outcome.depth_passed += 1;
+                visit(SoftwareC3dFragment {
+                    position: [x, y],
+                    depth: interpolated_depth,
+                    uv,
+                    texture_index,
+                    diffuse_argb,
+                    flat_diffuse: triangle.flat_diffuse,
+                });
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+fn validate_texture(texture: TextureView<'_>) -> Result<(), SoftwareC3dRasterError> {
+    let [width, height] = texture.extent;
+    if width == 0 || height == 0 {
+        return Err(SoftwareC3dRasterError::InvalidTextureExtent(texture.extent));
+    }
+    let expected = usize::from(width) * usize::from(height);
+    if texture.indices.len() != expected {
+        return Err(SoftwareC3dRasterError::InvalidTextureIndexLength {
+            expected,
+            actual: texture.indices.len(),
+        });
+    }
+    if let Some(index) = texture
+        .indices
+        .iter()
+        .copied()
+        .find(|index| usize::from(*index) >= texture.palette_len)
+    {
+        return Err(SoftwareC3dRasterError::TexturePaletteIndexOutOfRange {
+            index,
+            palette_len: texture.palette_len,
+        });
+    }
+    Ok(())
+}
+
+fn validate_prepared_triangles(
+    batch: &SoftwareC3dPreparedBatch,
+) -> Result<(), SoftwareC3dRasterError> {
+    for (triangle_index, triangle) in batch.triangles.iter().enumerate() {
+        let valid_vertices = triangle.vertices.iter().all(|vertex| {
+            vertex
+                .position
+                .into_iter()
+                .chain([vertex.reciprocal_w])
+                .chain(vertex.uv_over_w)
+                .chain(vertex.diffuse_argb)
+                .all(f32::is_finite)
+                && vertex.reciprocal_w > 0.0
+        });
+        let area = signed_screen_area(triangle.vertices);
+        if !valid_vertices || !area.is_finite() || area <= 0.0 {
+            return Err(SoftwareC3dRasterError::InvalidPreparedTriangle {
+                triangle: triangle_index,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn candidate_axis_bounds(coordinates: [f32; 3], extent: u16) -> Option<[u16; 2]> {
+    let minimum = coordinates.into_iter().fold(f32::INFINITY, f32::min);
+    let maximum = coordinates.into_iter().fold(f32::NEG_INFINITY, f32::max);
+    let last = i64::from(extent - 1);
+    let first_pixel = ((minimum - 0.5).ceil() as i64).clamp(0, last);
+    let last_pixel = ((maximum - 0.5).floor() as i64).clamp(0, last);
+    (first_pixel <= last_pixel).then_some([first_pixel as u16, last_pixel as u16])
+}
+
+fn edge(start: [f32; 3], end: [f32; 3], sample: [f32; 2]) -> f32 {
+    if point_precedes(start, end) {
+        raw_edge(start, end, sample)
+    } else {
+        -raw_edge(end, start, sample)
+    }
+}
+
+fn raw_edge(start: [f32; 3], end: [f32; 3], sample: [f32; 2]) -> f32 {
+    (end[0] - start[0]) * (sample[1] - start[1]) - (end[1] - start[1]) * (sample[0] - start[0])
+}
+
+fn point_precedes(left: [f32; 3], right: [f32; 3]) -> bool {
+    left[0]
+        .total_cmp(&right[0])
+        .then_with(|| left[1].total_cmp(&right[1]))
+        .is_le()
+}
+
+fn edge_accepts(value: f32, [start, end]: [[f32; 3]; 2]) -> bool {
+    if value > 0.0 {
+        return true;
+    }
+    if value != 0.0 {
+        return false;
+    }
+    let delta_x = end[0] - start[0];
+    let delta_y = end[1] - start[1];
+    delta_y < 0.0 || (delta_y == 0.0 && delta_x > 0.0)
+}
+
+fn weighted_scalar(weights: [f64; 3], values: [f32; 3]) -> f64 {
+    (weights[0] * f64::from(values[0]) + weights[1] * f64::from(values[1]))
+        + weights[2] * f64::from(values[2])
+}
+
+fn weighted_pair(weights: [f64; 3], values: [[f32; 2]; 3]) -> [f64; 2] {
+    std::array::from_fn(|component| weighted_scalar(weights, values.map(|value| value[component])))
+}
+
+fn weighted_quad(weights: [f64; 3], values: [[f32; 4]; 3]) -> [f64; 4] {
+    std::array::from_fn(|component| weighted_scalar(weights, values.map(|value| value[component])))
+}
+
+fn sample_point_clamped(texture: TextureView<'_>, uv: [f32; 2]) -> u8 {
+    let [width, height] = texture.extent.map(usize::from);
+    let u = uv[0].clamp(0.0, 1.0);
+    let v = uv[1].clamp(0.0, 1.0);
+    let x = ((u * width as f32).floor() as usize).min(width - 1);
+    let y = ((v * height as f32).floor() as usize).min(height - 1);
+    texture.indices[y * width + x]
 }
 
 fn decode_matrix(matrix: C3dMatrixWords) -> [f32; 16] {
@@ -651,6 +1001,49 @@ mod tests {
             diffuse,
             specular: 0xff00_0000,
             uv,
+        }
+    }
+
+    fn screen(
+        position: [f32; 3],
+        reciprocal_w: f32,
+        uv: [f32; 2],
+        diffuse_argb: [f32; 4],
+    ) -> SoftwareC3dScreenVertex {
+        SoftwareC3dScreenVertex {
+            position,
+            reciprocal_w,
+            uv_over_w: [uv[0] * reciprocal_w, uv[1] * reciprocal_w],
+            diffuse_argb,
+            specular_argb: [0.0; 4],
+        }
+    }
+
+    fn prepared_batch(triangles: Vec<SoftwareC3dPreparedTriangle>) -> SoftwareC3dPreparedBatch {
+        SoftwareC3dPreparedBatch {
+            triangles: triangles.into_boxed_slice(),
+            source_triangle_count: 0,
+            fully_clipped_source_triangle_count: 0,
+            counter_clockwise_triangle_count: 0,
+            degenerate_triangle_count: 0,
+        }
+    }
+
+    fn triangle(
+        vertices: [SoftwareC3dScreenVertex; 3],
+        flat_diffuse: u32,
+    ) -> SoftwareC3dPreparedTriangle {
+        SoftwareC3dPreparedTriangle {
+            vertices,
+            flat_diffuse,
+        }
+    }
+
+    fn texture<'a>(extent: [u16; 2], indices: &'a [u8]) -> TextureView<'a> {
+        TextureView {
+            extent,
+            indices,
+            palette_len: 256,
         }
     }
 
@@ -930,5 +1323,319 @@ mod tests {
                     .unwrap_err();
             assert_eq!(error, SoftwareC3dRasterError::NonPositiveHomogeneousW);
         }
+    }
+
+    #[test]
+    fn top_left_pixel_centers_give_shared_edges_exactly_one_owner() {
+        let color = [1.0, 0.0, 0.0, 0.0];
+        let a = screen([0.5, 0.5, 0.5], 1.0, [0.0, 0.0], color);
+        let b = screen([2.5, 0.5, 0.5], 1.0, [0.0, 0.0], color);
+        let c = screen([0.5, 2.5, 0.5], 1.0, [0.0, 0.0], color);
+        let d = screen([2.5, 2.5, 0.5], 1.0, [0.0, 0.0], color);
+        let batch = prepared_batch(vec![
+            triangle([a, b, c], 0x1111_1111),
+            triangle([b, d, c], 0x2222_2222),
+        ]);
+        let mut depth = SoftwareC3dDepthBuffer::new_far([3, 3]).unwrap();
+        let mut fragments = Vec::new();
+
+        let outcome = rasterize_fragments(&batch, texture([1, 1], &[0]), &mut depth, |fragment| {
+            fragments.push(fragment)
+        })
+        .unwrap();
+
+        assert_eq!(outcome.covered(), 4);
+        assert_eq!(outcome.depth_passed(), 4);
+        assert_eq!(outcome.depth_rejected(), 0);
+        assert!(
+            fragments
+                .iter()
+                .all(|fragment| fragment.texture_index() == 0)
+        );
+        assert_eq!(
+            fragments
+                .iter()
+                .map(|fragment| (fragment.position(), fragment.flat_diffuse()))
+                .collect::<Vec<_>>(),
+            [
+                ([0, 0], 0x1111_1111),
+                ([1, 0], 0x1111_1111),
+                ([0, 1], 0x1111_1111),
+                ([1, 1], 0x2222_2222),
+            ]
+        );
+    }
+
+    #[test]
+    fn reversed_fractional_edges_are_exact_complements_without_cracks_or_overlap() {
+        let fixtures = [
+            (
+                [33.293_736, 0.688_705_3],
+                [33.706_264, 0.311_294_7],
+                [34.0, 1.0],
+                [33.0, 0.0],
+                [33, 0],
+            ),
+            (
+                [64.580_11, 0.162_179_86],
+                [64.419_89, 0.837_820_2],
+                [64.0, 1.0],
+                [65.0, 0.0],
+                [64, 0],
+            ),
+        ];
+
+        for (a, b, first_outer, second_outer, target) in fixtures {
+            let sample = [f32::from(target[0]) + 0.5, f32::from(target[1]) + 0.5];
+            let a3 = [a[0], a[1], 0.5];
+            let b3 = [b[0], b[1], 0.5];
+            assert_eq!(edge(a3, b3, sample), -edge(b3, a3, sample));
+
+            let make_vertex =
+                |point: [f32; 2]| screen([point[0], point[1], 0.5], 1.0, [0.0, 0.0], [0.0; 4]);
+            let batch = prepared_batch(vec![
+                triangle(
+                    [make_vertex(a), make_vertex(b), make_vertex(first_outer)],
+                    1,
+                ),
+                triangle(
+                    [make_vertex(b), make_vertex(a), make_vertex(second_outer)],
+                    2,
+                ),
+            ]);
+            let mut depth = SoftwareC3dDepthBuffer::new_far([66, 2]).unwrap();
+            let mut owners = Vec::new();
+            rasterize_fragments(&batch, texture([1, 1], &[0]), &mut depth, |fragment| {
+                if fragment.position() == target {
+                    owners.push(fragment.flat_diffuse());
+                }
+            })
+            .unwrap();
+
+            assert_eq!(owners.len(), 1, "shared sample {sample:?}: {owners:?}");
+        }
+    }
+
+    #[test]
+    fn preflight_and_fragment_validation_share_the_canonical_area_predicate() {
+        let points = [
+            [782.551_15, 846.957_7, 0.5],
+            [-67.476_28, 277.881_74, 0.5],
+            [507.540_13, 662.843_44, 0.5],
+        ];
+        let [a, b, c] = points;
+        let differently_ordered = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        assert_eq!(differently_ordered, 0.015_625);
+
+        let vertices = points.map(|position| screen(position, 1.0, [0.0, 0.0], [0.0; 4]));
+        assert_eq!(signed_screen_area(vertices).to_bits(), (-0.0_f32).to_bits());
+        let batch = prepared_batch(vec![triangle(vertices, 0)]);
+        assert_eq!(
+            validate_prepared_triangles(&batch),
+            Err(SoftwareC3dRasterError::InvalidPreparedTriangle { triangle: 0 })
+        );
+    }
+
+    #[test]
+    fn fragment_interpolation_is_perspective_for_uv_and_affine_for_depth() {
+        let batch = prepared_batch(vec![triangle(
+            [
+                screen([1.0, 1.0, 1.0 / 8.0], 1.0, [0.0, 0.0], [1.0, 0.0, 0.0, 0.0]),
+                screen([5.0, 1.0, 5.0 / 8.0], 0.5, [1.0, 0.0], [0.0, 1.0, 0.0, 0.0]),
+                screen(
+                    [1.0, 5.0, 7.0 / 8.0],
+                    0.25,
+                    [0.0, 1.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                ),
+            ],
+            0x9600_0000,
+        )]);
+        let indices = (0..16).collect::<Vec<_>>();
+        let mut depth = SoftwareC3dDepthBuffer::new_far([6, 6]).unwrap();
+        let mut selected = None;
+
+        rasterize_fragments(&batch, texture([4, 4], &indices), &mut depth, |fragment| {
+            if fragment.position() == [2, 2] {
+                selected = Some(fragment);
+            }
+        })
+        .unwrap();
+        let fragment = selected.unwrap();
+
+        assert_near(fragment.depth(), 19.0 / 32.0);
+        assert_near(fragment.uv()[0], 6.0 / 17.0);
+        assert_near(fragment.uv()[1], 3.0 / 17.0);
+        assert_eq!(fragment.texture_index(), 1);
+        assert_near(fragment.diffuse_argb()[0], 0.25);
+        assert_near(fragment.diffuse_argb()[1], 0.375);
+        assert_near(fragment.diffuse_argb()[2], 0.375);
+    }
+
+    #[test]
+    fn finite_extreme_interpolation_stays_finite_before_clamping() {
+        let mut vertices = [
+            screen([0.0, 0.0, 0.5], 1.0, [0.0, 0.0], [1.0; 4]),
+            screen([2.0, 0.0, 0.5], 1.0, [0.0, 0.0], [1.0; 4]),
+            screen([0.0, 2.0, 0.5], 1.0, [0.0, 0.0], [1.0; 4]),
+        ];
+        for vertex in &mut vertices {
+            vertex.uv_over_w = [f32::MAX; 2];
+        }
+        let batch = prepared_batch(vec![triangle(vertices, 0)]);
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let mut selected = None;
+
+        rasterize_fragments(&batch, texture([1, 1], &[0]), &mut depth, |fragment| {
+            selected = Some(fragment);
+        })
+        .unwrap();
+
+        let fragment = selected.unwrap();
+        assert_eq!(fragment.uv(), [1.0, 1.0]);
+        assert!(fragment.uv().into_iter().all(f32::is_finite));
+        assert!(fragment.diffuse_argb().into_iter().all(f32::is_finite));
+    }
+
+    #[test]
+    fn point_sampler_clamps_and_uses_floor_times_extent() {
+        let indices = [10, 11, 12, 13, 20, 21, 22, 23];
+        let texture = texture([4, 2], &indices);
+        let cases: [([f32; 2], u8); 9] = [
+            ([-0.25, -1.0], 10),
+            ([0.0, 0.0], 10),
+            ([0.20, 0.25], 10),
+            ([0.25, 0.25], 11),
+            ([0.5, 0.25], 12),
+            ([0.75, 0.25], 13),
+            ([1.0, 0.25], 13),
+            ([2.0, 0.5], 23),
+            ([0.5, 1.0], 22),
+        ];
+
+        for (uv, expected) in cases {
+            assert_eq!(sample_point_clamped(texture, uv), expected, "{uv:?}");
+        }
+    }
+
+    #[test]
+    fn less_equal_depth_writes_equal_and_nearer_fragments_only() {
+        let make_batch = |depth| {
+            let value = screen([0.0, 0.0, depth], 1.0, [0.0, 0.0], [0.0; 4]);
+            let right = screen([2.0, 0.0, depth], 1.0, [0.0, 0.0], [0.0; 4]);
+            let bottom = screen([0.0, 2.0, depth], 1.0, [0.0, 0.0], [0.0; 4]);
+            prepared_batch(vec![triangle([value, right, bottom], 0)])
+        };
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let mut written = Vec::new();
+
+        for (incoming, index, expected_pass) in [
+            (1.00, 5, true),
+            (0.75, 10, true),
+            (0.80, 20, false),
+            (0.75, 30, true),
+            (0.25, 40, true),
+        ] {
+            let outcome = rasterize_fragments(
+                &make_batch(incoming),
+                texture([1, 1], &[index]),
+                &mut depth,
+                |fragment| written.push(fragment.texture_index()),
+            )
+            .unwrap();
+            assert_eq!(outcome.depth_passed(), usize::from(expected_pass));
+            assert_eq!(outcome.depth_rejected(), usize::from(!expected_pass));
+        }
+
+        assert_eq!(written, [5, 10, 30, 40]);
+        assert_eq!(depth.values(), [0.25]);
+        depth.clear_far();
+        assert_eq!(depth.values(), [1.0]);
+    }
+
+    #[test]
+    fn target_bounds_and_validation_fail_before_depth_mutation() {
+        assert_eq!(
+            SoftwareC3dDepthBuffer::new_far([0, 3]),
+            Err(SoftwareC3dRasterError::InvalidDepthExtent([0, 3]))
+        );
+        let color = [0.0; 4];
+        let batch = prepared_batch(vec![triangle(
+            [
+                screen([-1.0, -1.0, 0.5], 1.0, [0.0, 0.0], color),
+                screen([4.0, -1.0, 0.5], 1.0, [0.0, 0.0], color),
+                screen([-1.0, 4.0, 0.5], 1.0, [0.0, 0.0], color),
+            ],
+            0,
+        )]);
+        let mut depth = SoftwareC3dDepthBuffer::new_far([3, 3]).unwrap();
+        let mut positions = Vec::new();
+        rasterize_fragments(&batch, texture([1, 1], &[0]), &mut depth, |fragment| {
+            positions.push(fragment.position());
+        })
+        .unwrap();
+        assert_eq!(positions, [[0, 0], [1, 0], [0, 1]]);
+
+        depth.clear_far();
+        let before = depth.clone();
+        assert_eq!(
+            rasterize_fragments(&batch, texture([2, 2], &[0, 1, 2]), &mut depth, |_| panic!(
+                "validation must precede visits"
+            ),),
+            Err(SoftwareC3dRasterError::InvalidTextureIndexLength {
+                expected: 4,
+                actual: 3,
+            })
+        );
+        assert_eq!(depth, before);
+
+        let mut visits = 0;
+        assert_eq!(
+            rasterize_fragments(
+                &batch,
+                TextureView {
+                    extent: [0, 1],
+                    indices: &[],
+                    palette_len: 256,
+                },
+                &mut depth,
+                |_| visits += 1,
+            ),
+            Err(SoftwareC3dRasterError::InvalidTextureExtent([0, 1]))
+        );
+        assert_eq!(depth, before);
+        assert_eq!(visits, 0);
+
+        assert_eq!(
+            rasterize_fragments(
+                &batch,
+                TextureView {
+                    extent: [1, 1],
+                    indices: &[7],
+                    palette_len: 7,
+                },
+                &mut depth,
+                |_| visits += 1,
+            ),
+            Err(SoftwareC3dRasterError::TexturePaletteIndexOutOfRange {
+                index: 7,
+                palette_len: 7,
+            })
+        );
+        assert_eq!(depth, before);
+        assert_eq!(visits, 0);
+
+        let valid = batch.triangles[0];
+        let mut invalid = valid;
+        invalid.vertices[0].reciprocal_w = 0.0;
+        let invalid_batch = prepared_batch(vec![valid, valid, invalid]);
+        assert_eq!(
+            rasterize_fragments(&invalid_batch, texture([1, 1], &[0]), &mut depth, |_| {
+                visits += 1
+            },),
+            Err(SoftwareC3dRasterError::InvalidPreparedTriangle { triangle: 2 })
+        );
+        assert_eq!(depth, before);
+        assert_eq!(visits, 0);
     }
 }
