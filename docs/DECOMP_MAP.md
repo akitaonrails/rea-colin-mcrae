@@ -70,7 +70,7 @@ Status markers:
 - [x] `D09` Load all six optional root C3D objects in stable slots.
 - [x] `D10` Parse all three C3D counted record groups losslessly.
 - [x] `D11` Resolve group-0→group-1 and entry24→group-2 numeric references.
-- [~] `D12` Resolve entry24 `+2/+4/+6` references to 32-byte entries.
+- [x] `D12` Resolve entry24 `+2/+4/+6` references to 32-byte entries.
 - [ ] `D13` Bind parsed C3D slots and per-object angle state to root frames.
 - [ ] `D14` Decode the root C3D geometry/material/resource contract.
 - [ ] `D15` Render root C3D pixels in the compatibility renderer.
@@ -152,13 +152,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T17:09:38Z
-milestone=decode-c3d-numeric-references
-completed=36
-partial=12
+updated_utc=2026-10-20T17:12:54Z
+milestone=resolve-c3d-entry32-references
+completed=37
+partial=11
 not_started=56
 blocked=0
 total=104
-current_focus=D12-entry24-attribute-references
+current_focus=D13-bind-c3d-slots-and-angle-state
 next_exit_gate=native-root-menu-vertical-slice
 <!-- PROGRESS-TAIL-END -->

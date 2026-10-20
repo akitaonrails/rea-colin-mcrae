@@ -125,11 +125,11 @@ The six optional root-menu C3D files now load through fixed slots and a bounded,
 byte-preserving parser. All three counted groups now expose only proven framing:
 group 0's raw `u16` values, group 1's opaque 32/24-byte entry arrays, and group
 2's raw label fields plus opaque length-delimited blobs. Checked borrowed
-resolvers now implement the proven group-0→group-1 and group-1-entry24→group-2
-numeric joins, including the latter's `-1` sentinel, without making reference
-validity a structural parse requirement. Entry/blob meanings, runtime-object
-construction, command execution, and pixels remain unrecovered rather than
-inferred.
+resolvers now implement the proven group-0→group-1, entry24 `+2/+4/+6`→local
+entry32, and group-1-entry24→group-2 numeric joins, including the latter's `-1`
+sentinel, without making reference validity a structural parse requirement.
+Entry/blob meanings, runtime-object construction, command execution, and pixels
+remain unrecovered rather than inferred.
 
 Exit gate:
 

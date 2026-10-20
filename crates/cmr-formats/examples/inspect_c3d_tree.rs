@@ -27,7 +27,7 @@ fn main() -> ExitCode {
     match inspect_roots(&roots) {
         Ok(summary) => {
             println!(
-                "files={} group0_records={} group0_bytes={} group0_values={} group0_to_group1={} group0_to_group1_errors={} group1_records={} group1_bytes={} entries32={} entries24={} group1_to_group2={} group2_sentinels={} group1_to_group2_errors={} blob_records={} blob_bytes={} group0_reaches_group1={} group1_reaches_group2={} group0_exact_layout={} group1_exact_layout={} records_exhaust_payload={}",
+                "files={} group0_records={} group0_bytes={} group0_values={} group0_to_group1={} group0_to_group1_errors={} group1_records={} group1_bytes={} entries32={} entries24={} entry24_to_entry32={} entry24_to_entry32_errors={} group1_to_group2={} group2_sentinels={} group1_to_group2_errors={} blob_records={} blob_bytes={} group0_reaches_group1={} group1_reaches_group2={} group0_exact_layout={} group1_exact_layout={} records_exhaust_payload={}",
                 summary.files,
                 summary.group0_records,
                 summary.group0_bytes,
@@ -38,6 +38,8 @@ fn main() -> ExitCode {
                 summary.group1_bytes,
                 summary.entries32,
                 summary.entries24,
+                summary.entry24_to_entry32,
+                summary.entry24_to_entry32_errors,
                 summary.group1_to_group2,
                 summary.group2_sentinels,
                 summary.group1_to_group2_errors,
@@ -70,6 +72,8 @@ struct Summary {
     group1_bytes: u64,
     entries32: u64,
     entries24: u64,
+    entry24_to_entry32: u64,
+    entry24_to_entry32_errors: u64,
     group1_to_group2: u64,
     group2_sentinels: u64,
     group1_to_group2_errors: u64,
@@ -180,6 +184,16 @@ fn inspect_file(path: &Path, summary: &mut Summary) -> Result<(), String> {
         "C3D 24-byte entry count",
     )?;
     checked_accumulate(
+        &mut summary.entry24_to_entry32,
+        file_summary.entry24_to_entry32,
+        "C3D 24-byte-to-32-byte entry reference count",
+    )?;
+    checked_accumulate(
+        &mut summary.entry24_to_entry32_errors,
+        file_summary.entry24_to_entry32_errors,
+        "C3D 24-byte-to-32-byte entry reference-error count",
+    )?;
+    checked_accumulate(
         &mut summary.group1_to_group2,
         file_summary.group1_to_group2,
         "C3D group-1-to-group-2 reference count",
@@ -283,6 +297,8 @@ struct FileSummary {
     group1_bytes: u64,
     entries32: u64,
     entries24: u64,
+    entry24_to_entry32: u64,
+    entry24_to_entry32_errors: u64,
     group1_to_group2: u64,
     group2_sentinels: u64,
     group1_to_group2_errors: u64,
@@ -340,6 +356,15 @@ fn inspect_payload(payload: &[u8]) -> Result<FileSummary, C3dError> {
         }
         group1_end = record.offset() + record.bytes().len();
     }
+    let mut entry24_to_entry32 = 0;
+    let mut entry24_to_entry32_errors = 0;
+    for reference in parsed.resolve_entry32_references() {
+        if reference.is_ok() {
+            entry24_to_entry32 += 1;
+        } else {
+            entry24_to_entry32_errors += 1;
+        }
+    }
     let mut group1_to_group2 = 0;
     let mut group2_sentinels = 0;
     let mut group1_to_group2_errors = 0;
@@ -374,6 +399,8 @@ fn inspect_payload(payload: &[u8]) -> Result<FileSummary, C3dError> {
         group1_bytes,
         entries32,
         entries24,
+        entry24_to_entry32,
+        entry24_to_entry32_errors,
         group1_to_group2,
         group2_sentinels,
         group1_to_group2_errors,
@@ -438,6 +465,8 @@ mod tests {
                 group1_bytes: 0,
                 entries32: 0,
                 entries24: 0,
+                entry24_to_entry32: 0,
+                entry24_to_entry32_errors: 0,
                 group1_to_group2: 0,
                 group2_sentinels: 0,
                 group1_to_group2_errors: 0,
@@ -489,6 +518,8 @@ mod tests {
                 group1_bytes: 48,
                 entries32: 0,
                 entries24: 0,
+                entry24_to_entry32: 0,
+                entry24_to_entry32_errors: 0,
                 group1_to_group2: 0,
                 group2_sentinels: 0,
                 group1_to_group2_errors: 0,
@@ -529,6 +560,8 @@ mod tests {
         let summary = inspect_payload(&payload).unwrap();
         assert_eq!(summary.group0_to_group1, 1);
         assert_eq!(summary.group0_to_group1_errors, 0);
+        assert_eq!(summary.entry24_to_entry32, 0);
+        assert_eq!(summary.entry24_to_entry32_errors, 6);
         assert_eq!(summary.group1_to_group2, 1);
         assert_eq!(summary.group2_sentinels, 1);
         assert_eq!(summary.group1_to_group2_errors, 0);
@@ -538,9 +571,39 @@ mod tests {
         let invalid = inspect_payload(&payload).unwrap();
         assert_eq!(invalid.group0_to_group1, 0);
         assert_eq!(invalid.group0_to_group1_errors, 1);
+        assert_eq!(invalid.entry24_to_entry32, 0);
+        assert_eq!(invalid.entry24_to_entry32_errors, 6);
         assert_eq!(invalid.group1_to_group2, 0);
         assert_eq!(invalid.group2_sentinels, 1);
         assert_eq!(invalid.group1_to_group2_errors, 1);
+    }
+
+    #[test]
+    fn payload_summary_counts_entry24_to_entry32_references_and_errors() {
+        let mut payload = vec![0; 168];
+        payload[0..4].copy_from_slice(&C3D_MAGIC);
+        payload[4..8].copy_from_slice(&C3D_FORMAT_VERSION.to_le_bytes());
+        payload[14..16].copy_from_slice(&1_u16.to_le_bytes());
+        payload[20..24].copy_from_slice(&32_u32.to_le_bytes());
+        payload[24..28].copy_from_slice(&32_u32.to_le_bytes());
+        payload[28..32].copy_from_slice(&168_u32.to_le_bytes());
+        payload[32..44].copy_from_slice(b"GROUP1-REFS!");
+        payload[44..48].copy_from_slice(&136_u32.to_le_bytes());
+        payload[48..50].copy_from_slice(&2_u16.to_le_bytes());
+        payload[50..52].copy_from_slice(&1_u16.to_le_bytes());
+        for (ordinal_index, ordinal) in [0_u16, 1, 0].into_iter().enumerate() {
+            let offset = 144 + 2 + ordinal_index * 2;
+            payload[offset..offset + 2].copy_from_slice(&ordinal.to_le_bytes());
+        }
+
+        let summary = inspect_payload(&payload).unwrap();
+        assert_eq!(summary.entry24_to_entry32, 3);
+        assert_eq!(summary.entry24_to_entry32_errors, 0);
+
+        payload[148..150].copy_from_slice(&2_u16.to_le_bytes());
+        let invalid = inspect_payload(&payload).unwrap();
+        assert_eq!(invalid.entry24_to_entry32, 2);
+        assert_eq!(invalid.entry24_to_entry32_errors, 1);
     }
 
     #[test]

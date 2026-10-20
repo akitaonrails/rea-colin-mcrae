@@ -19,6 +19,7 @@ pub const C3D_GROUP1_PREFIX_LEN: usize = 12;
 pub const C3D_GROUP1_UNKNOWN_LEN: usize = 28;
 pub const C3D_GROUP1_ENTRY32_LEN: usize = 32;
 pub const C3D_GROUP1_ENTRY24_LEN: usize = 24;
+pub const C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS: [usize; 3] = [2, 4, 6];
 pub const C3D_BLOB_RECORD_HEADER_LEN: usize = 16;
 pub const C3D_BLOB_LABEL_LEN: usize = 12;
 
@@ -151,6 +152,68 @@ impl C3dFile {
             entries_24: &self.bytes[span.entries_32_end..span.entries_24_end],
             trailing: &self.bytes[span.entries_24_end..span.end],
         }
+    }
+
+    /// Resolves the three unsigned little-endian ordinals at `+2`, `+4`, and
+    /// `+6` in every group-1 24-byte entry against the 32-byte entries in the
+    /// same group-1 record.
+    ///
+    /// Resolution is deliberately separate from structural parsing. Each
+    /// source ordinal yields one result, so a bad ordinal does not hide later
+    /// references.
+    pub fn resolve_entry32_references(
+        &self,
+    ) -> impl Iterator<Item = Result<C3dEntry32Reference<'_>, C3dReferenceError>> {
+        self.group1_records
+            .iter()
+            .enumerate()
+            .flat_map(move |(group1_record_index, span)| {
+                let (entries_32, entries_32_remainder) = self.bytes
+                    [span.entries_32_start..span.entries_32_end]
+                    .as_chunks::<C3D_GROUP1_ENTRY32_LEN>();
+                debug_assert!(entries_32_remainder.is_empty());
+                let (entries_24, entries_24_remainder) = self.bytes
+                    [span.entries_32_end..span.entries_24_end]
+                    .as_chunks::<C3D_GROUP1_ENTRY24_LEN>();
+                debug_assert!(entries_24_remainder.is_empty());
+                entries_24
+                    .iter()
+                    .enumerate()
+                    .flat_map(move |(entry24_index, entry)| {
+                        C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS
+                            .into_iter()
+                            .enumerate()
+                            .map(move |(ordinal_index, ordinal_offset)| {
+                                let source_offset = span.entries_32_end
+                                    + entry24_index * C3D_GROUP1_ENTRY24_LEN
+                                    + ordinal_offset;
+                                let ordinal = read_u16(entry, ordinal_offset);
+                                let target_index = usize::from(ordinal);
+                                let target = entries_32.get(target_index).ok_or(
+                                    C3dReferenceError::Entry32OrdinalOutOfBounds {
+                                        group1_record_index,
+                                        entry24_index,
+                                        ordinal_index,
+                                        entry24_field_offset: ordinal_offset,
+                                        source_offset,
+                                        ordinal,
+                                        entry32_count: entries_32.len(),
+                                    },
+                                )?;
+                                Ok(C3dEntry32Reference {
+                                    group1_record_index,
+                                    entry24_index,
+                                    ordinal_index,
+                                    entry24_field_offset: ordinal_offset,
+                                    source_offset,
+                                    ordinal,
+                                    target_offset: span.entries_32_start
+                                        + target_index * C3D_GROUP1_ENTRY32_LEN,
+                                    target,
+                                })
+                            })
+                    })
+            })
     }
 
     pub fn blob_records(&self) -> impl ExactSizeIterator<Item = C3dBlobRecord<'_>> {
@@ -403,6 +466,62 @@ pub struct C3dGroup2Reference<'a> {
     target: Option<C3dBlobRecord<'a>>,
 }
 
+/// One successfully resolved group-1 24-byte-entry ordinal and its borrowed
+/// 32-byte-entry target from the same group-1 record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dEntry32Reference<'a> {
+    group1_record_index: usize,
+    entry24_index: usize,
+    ordinal_index: usize,
+    entry24_field_offset: usize,
+    source_offset: usize,
+    ordinal: u16,
+    target_offset: usize,
+    target: &'a [u8; C3D_GROUP1_ENTRY32_LEN],
+}
+
+impl<'a> C3dEntry32Reference<'a> {
+    #[must_use]
+    pub const fn group1_record_index(self) -> usize {
+        self.group1_record_index
+    }
+
+    #[must_use]
+    pub const fn entry24_index(self) -> usize {
+        self.entry24_index
+    }
+
+    #[must_use]
+    pub const fn ordinal_index(self) -> usize {
+        self.ordinal_index
+    }
+
+    #[must_use]
+    pub const fn entry24_field_offset(self) -> usize {
+        self.entry24_field_offset
+    }
+
+    #[must_use]
+    pub const fn source_offset(self) -> usize {
+        self.source_offset
+    }
+
+    #[must_use]
+    pub const fn ordinal(self) -> u16 {
+        self.ordinal
+    }
+
+    #[must_use]
+    pub const fn target_offset(self) -> usize {
+        self.target_offset
+    }
+
+    #[must_use]
+    pub const fn target(self) -> &'a [u8; C3D_GROUP1_ENTRY32_LEN] {
+        self.target
+    }
+}
+
 impl<'a> C3dGroup2Reference<'a> {
     #[must_use]
     pub const fn group1_record_index(self) -> usize {
@@ -452,6 +571,15 @@ pub enum C3dReferenceError {
         ordinal: i16,
         record_count: usize,
     },
+    Entry32OrdinalOutOfBounds {
+        group1_record_index: usize,
+        entry24_index: usize,
+        ordinal_index: usize,
+        entry24_field_offset: usize,
+        source_offset: usize,
+        ordinal: u16,
+        entry32_count: usize,
+    },
 }
 
 impl fmt::Display for C3dReferenceError {
@@ -485,6 +613,18 @@ impl fmt::Display for C3dReferenceError {
             } => write!(
                 formatter,
                 "C3D group-1 record {group1_record_index} 24-byte entry {entry24_index} at offset {source_offset} has group-2 ordinal {ordinal}, outside {record_count} records"
+            ),
+            Self::Entry32OrdinalOutOfBounds {
+                group1_record_index,
+                entry24_index,
+                ordinal_index,
+                entry24_field_offset,
+                source_offset,
+                ordinal,
+                entry32_count,
+            } => write!(
+                formatter,
+                "C3D group-1 record {group1_record_index} 24-byte entry {entry24_index} ordinal {ordinal_index} at entry offset +{entry24_field_offset} (file offset {source_offset}) has 32-byte-entry ordinal {ordinal}, outside {entry32_count} entries"
             ),
         }
     }
@@ -1335,6 +1475,185 @@ mod tests {
             &parsed.bytes()[216..217]
         ));
         assert!(references.next().is_none());
+    }
+
+    #[test]
+    fn resolves_entry24_unsigned_ordinals_within_their_own_group1_record() {
+        let mut input = fixture([0, 1, 0], [32, 64, 256], 256);
+        assert_eq!(
+            write_group1_record(&mut input, 64, *b"GROUP1-ATTR!", 3, 2, 0),
+            256
+        );
+        let entries32_start = 64 + C3D_GROUP1_FIXED_LEN;
+        for index in 0..3 {
+            input[entries32_start + index * C3D_GROUP1_ENTRY32_LEN] = 0xa0 + index as u8;
+        }
+        let entries24_start = entries32_start + 3 * C3D_GROUP1_ENTRY32_LEN;
+        for (entry_index, ordinals) in [[2_u16, 1, 0], [3, u16::MAX, 1]].into_iter().enumerate() {
+            for (ordinal_index, ordinal) in ordinals.into_iter().enumerate() {
+                let offset = entries24_start
+                    + entry_index * C3D_GROUP1_ENTRY24_LEN
+                    + C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS[ordinal_index];
+                input[offset..offset + 2].copy_from_slice(&ordinal.to_le_bytes());
+            }
+        }
+
+        // Structural admission and byte preservation remain independent from
+        // the two intentionally invalid semantic references.
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        assert_eq!(parsed.bytes(), input);
+        let mut references = parsed.resolve_entry32_references();
+
+        for (ordinal_index, (ordinal, source_offset, target_offset)) in
+            [(2, 210, 176), (1, 212, 144), (0, 214, 112)]
+                .into_iter()
+                .enumerate()
+        {
+            let reference = references.next().unwrap().unwrap();
+            assert_eq!(reference.group1_record_index(), 0);
+            assert_eq!(reference.entry24_index(), 0);
+            assert_eq!(reference.ordinal_index(), ordinal_index);
+            assert_eq!(
+                reference.entry24_field_offset(),
+                C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS[ordinal_index]
+            );
+            assert_eq!(reference.source_offset(), source_offset);
+            assert_eq!(reference.ordinal(), ordinal);
+            assert_eq!(reference.target_offset(), target_offset);
+            assert_eq!(reference.target()[0], 0xa0 + ordinal as u8);
+            assert!(std::ptr::eq(
+                reference.target().as_ptr(),
+                parsed.bytes()[target_offset..target_offset + C3D_GROUP1_ENTRY32_LEN].as_ptr()
+            ));
+        }
+
+        assert_eq!(
+            references.next().unwrap(),
+            Err(C3dReferenceError::Entry32OrdinalOutOfBounds {
+                group1_record_index: 0,
+                entry24_index: 1,
+                ordinal_index: 0,
+                entry24_field_offset: 2,
+                source_offset: 234,
+                ordinal: 3,
+                entry32_count: 3,
+            })
+        );
+        assert_eq!(
+            references.next().unwrap(),
+            Err(C3dReferenceError::Entry32OrdinalOutOfBounds {
+                group1_record_index: 0,
+                entry24_index: 1,
+                ordinal_index: 1,
+                entry24_field_offset: 4,
+                source_offset: 236,
+                ordinal: u16::MAX,
+                entry32_count: 3,
+            })
+        );
+        let after_errors = references.next().unwrap().unwrap();
+        assert_eq!(after_errors.entry24_index(), 1);
+        assert_eq!(after_errors.ordinal_index(), 2);
+        assert_eq!(after_errors.source_offset(), 238);
+        assert_eq!(after_errors.ordinal(), 1);
+        assert_eq!(after_errors.target_offset(), 144);
+        assert!(references.next().is_none());
+    }
+
+    #[test]
+    fn reports_relocated_entry32_references_when_the_target_array_is_empty() {
+        let mut input = fixture([0, 1, 0], [32, 200, 272], 300);
+        assert_eq!(
+            write_group1_record(&mut input, 200, *b"GROUP1-EMPTY", 0, 1, 0),
+            272
+        );
+        for (ordinal_index, ordinal) in [0_u16, 256, u16::MAX].into_iter().enumerate() {
+            let source_offset = 248 + C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS[ordinal_index];
+            input[source_offset..source_offset + 2].copy_from_slice(&ordinal.to_le_bytes());
+        }
+
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        let errors = parsed
+            .resolve_entry32_references()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_err();
+        assert_eq!(
+            errors,
+            C3dReferenceError::Entry32OrdinalOutOfBounds {
+                group1_record_index: 0,
+                entry24_index: 0,
+                ordinal_index: 0,
+                entry24_field_offset: 2,
+                source_offset: 250,
+                ordinal: 0,
+                entry32_count: 0,
+            }
+        );
+
+        let all = parsed
+            .resolve_entry32_references()
+            .collect::<Vec<Result<_, _>>>();
+        assert_eq!(all.len(), 3);
+        assert!(matches!(
+            all[1],
+            Err(C3dReferenceError::Entry32OrdinalOutOfBounds {
+                ordinal_index: 1,
+                source_offset: 252,
+                ordinal: 256,
+                entry32_count: 0,
+                ..
+            })
+        ));
+        assert!(matches!(
+            all[2],
+            Err(C3dReferenceError::Entry32OrdinalOutOfBounds {
+                ordinal_index: 2,
+                source_offset: 254,
+                ordinal: u16::MAX,
+                entry32_count: 0,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn entry32_ordinals_are_scoped_to_each_originating_group1_record() {
+        let mut input = fixture([0, 2, 0], [32, 32, 240], 240);
+        let second_record = write_group1_record(&mut input, 32, *b"GROUP1-FIRST", 1, 1, 0);
+        assert_eq!(second_record, 136);
+        assert_eq!(
+            write_group1_record(&mut input, second_record, *b"GROUP1-SECON", 1, 1, 0),
+            240
+        );
+        input[80] = 0xa1;
+        input[184] = 0xb2;
+        for entries24_start in [112, 216] {
+            for ordinal_offset in C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS {
+                input[entries24_start + ordinal_offset..entries24_start + ordinal_offset + 2]
+                    .copy_from_slice(&0_u16.to_le_bytes());
+            }
+        }
+
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        let references = parsed
+            .resolve_entry32_references()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(references.len(), 6);
+        assert!(
+            references[..3]
+                .iter()
+                .all(|reference| reference.group1_record_index() == 0
+                    && reference.target_offset() == 80
+                    && reference.target()[0] == 0xa1)
+        );
+        assert!(
+            references[3..]
+                .iter()
+                .all(|reference| reference.group1_record_index() == 1
+                    && reference.target_offset() == 184
+                    && reference.target()[0] == 0xb2)
+        );
     }
 
     #[test]
