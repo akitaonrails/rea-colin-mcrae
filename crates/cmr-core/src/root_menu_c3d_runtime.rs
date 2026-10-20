@@ -844,34 +844,111 @@ fn apply_resource_scaling(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SurfaceLayout {
+pub enum C3dSurfaceReduction {
+    None,
+    Half,
+    Quarter,
+}
+
+impl C3dSurfaceReduction {
+    #[must_use]
+    pub const fn divisor(self) -> u16 {
+        match self {
+            Self::None => 1,
+            Self::Half => 2,
+            Self::Quarter => 4,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResolvedC3dSurfaceLayout {
     width: i16,
     height: i16,
     horizontal_padding: i32,
     vertical_padding: i32,
+    reduction: C3dSurfaceReduction,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SurfaceLayoutIssue {
+pub struct C3dSurfaceLayoutError {
     axis: C3dSurfaceLayoutAxis,
     extent_bits: u16,
+}
+
+impl ResolvedC3dSurfaceLayout {
+    #[must_use]
+    pub const fn extent_bits(self) -> [u16; 2] {
+        [self.width as u16, self.height as u16]
+    }
+
+    #[must_use]
+    pub const fn horizontal_padding(self) -> i32 {
+        self.horizontal_padding
+    }
+
+    #[must_use]
+    pub const fn vertical_padding(self) -> i32 {
+        self.vertical_padding
+    }
+
+    #[must_use]
+    pub const fn reduction(self) -> C3dSurfaceReduction {
+        self.reduction
+    }
+}
+
+impl C3dSurfaceLayoutError {
+    #[must_use]
+    pub const fn axis(self) -> C3dSurfaceLayoutAxis {
+        self.axis
+    }
+
+    #[must_use]
+    pub const fn extent_bits(self) -> u16 {
+        self.extent_bits
+    }
+}
+
+impl fmt::Display for C3dSurfaceLayoutError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unusable {:?} C3D surface extent bits {:#06x}",
+            self.axis, self.extent_bits
+        )
+    }
+}
+
+impl std::error::Error for C3dSurfaceLayoutError {}
+
+/// Resolves the recovered legacy surface dimensions without allocating pixels.
+pub fn resolve_c3d_surface_layout(
+    [original_width, original_height]: [u16; 2],
+    gates: C3dSurfaceLayoutGates,
+) -> Result<ResolvedC3dSurfaceLayout, C3dSurfaceLayoutError> {
+    derive_surface_layout(original_width, original_height, gates)
 }
 
 fn derive_surface_layout(
     original_width: u16,
     original_height: u16,
     gates: C3dSurfaceLayoutGates,
-) -> Result<SurfaceLayout, SurfaceLayoutIssue> {
+) -> Result<ResolvedC3dSurfaceLayout, C3dSurfaceLayoutError> {
     let mut width = original_width.wrapping_add(3) & !3;
     let mut height = original_height;
     let large = width >= 64 && height >= 64;
-    if (gates.quarter_if_large && large) || gates.force_quarter {
+    let reduction = if (gates.quarter_if_large && large) || gates.force_quarter {
         width /= 4;
         height /= 4;
+        C3dSurfaceReduction::Quarter
     } else if gates.half_if_large && large {
         width /= 2;
         height /= 2;
-    }
+        C3dSurfaceReduction::Half
+    } else {
+        C3dSurfaceReduction::None
+    };
 
     let mut horizontal_padding = 0;
     let mut vertical_padding = 0;
@@ -886,23 +963,24 @@ fn derive_surface_layout(
 
     let signed_width = width as i16;
     if horizontal_padding != 0 && signed_width <= 0 {
-        return Err(SurfaceLayoutIssue {
+        return Err(C3dSurfaceLayoutError {
             axis: C3dSurfaceLayoutAxis::Horizontal,
             extent_bits: width,
         });
     }
     let signed_height = height as i16;
     if vertical_padding != 0 && signed_height <= 0 {
-        return Err(SurfaceLayoutIssue {
+        return Err(C3dSurfaceLayoutError {
             axis: C3dSurfaceLayoutAxis::Vertical,
             extent_bits: height,
         });
     }
-    Ok(SurfaceLayout {
+    Ok(ResolvedC3dSurfaceLayout {
         width: signed_width,
         height: signed_height,
         horizontal_padding,
         vertical_padding,
+        reduction,
     })
 }
 
@@ -1198,20 +1276,22 @@ mod tests {
     fn surface_layout_aligns_scales_and_expands_in_recovered_order() {
         assert_eq!(
             derive_surface_layout(5, 3, C3dSurfaceLayoutGates::default()),
-            Ok(SurfaceLayout {
+            Ok(ResolvedC3dSurfaceLayout {
                 width: 8,
                 height: 3,
                 horizontal_padding: 0,
                 vertical_padding: 0,
+                reduction: C3dSurfaceReduction::None,
             })
         );
         assert_eq!(
             derive_surface_layout(5, 10, C3dSurfaceLayoutGates::default()),
-            Ok(SurfaceLayout {
+            Ok(ResolvedC3dSurfaceLayout {
                 width: 10,
                 height: 10,
                 horizontal_padding: 3,
                 vertical_padding: 0,
+                reduction: C3dSurfaceReduction::None,
             })
         );
         assert_eq!(
@@ -1223,11 +1303,12 @@ mod tests {
                     ..C3dSurfaceLayoutGates::default()
                 },
             ),
-            Ok(SurfaceLayout {
+            Ok(ResolvedC3dSurfaceLayout {
                 width: 8,
                 height: 8,
                 horizontal_padding: 0,
                 vertical_padding: 6,
+                reduction: C3dSurfaceReduction::None,
             })
         );
     }
@@ -1241,12 +1322,25 @@ mod tests {
         };
         assert_eq!(
             derive_surface_layout(128, 64, both),
-            Ok(SurfaceLayout {
+            Ok(ResolvedC3dSurfaceLayout {
                 width: 32,
                 height: 16,
                 horizontal_padding: 0,
                 vertical_padding: 0,
+                reduction: C3dSurfaceReduction::Quarter,
             })
+        );
+        assert_eq!(
+            resolve_c3d_surface_layout([61, 64], both)
+                .unwrap()
+                .reduction(),
+            C3dSurfaceReduction::Quarter
+        );
+        assert_eq!(
+            resolve_c3d_surface_layout([60, 64], both)
+                .unwrap()
+                .reduction(),
+            C3dSurfaceReduction::None
         );
         assert_eq!(
             derive_surface_layout(
@@ -1257,11 +1351,12 @@ mod tests {
                     ..C3dSurfaceLayoutGates::default()
                 },
             ),
-            Ok(SurfaceLayout {
+            Ok(ResolvedC3dSurfaceLayout {
                 width: 64,
                 height: 32,
                 horizontal_padding: 0,
                 vertical_padding: 0,
+                reduction: C3dSurfaceReduction::Half,
             })
         );
         assert_eq!(
@@ -1273,11 +1368,12 @@ mod tests {
                     ..C3dSurfaceLayoutGates::default()
                 },
             ),
-            Ok(SurfaceLayout {
+            Ok(ResolvedC3dSurfaceLayout {
                 width: 2,
                 height: 2,
                 horizontal_padding: 0,
                 vertical_padding: 0,
+                reduction: C3dSurfaceReduction::Quarter,
             })
         );
     }
@@ -1286,20 +1382,22 @@ mod tests {
     fn surface_layout_preserves_wrapping_and_rejects_only_used_negative_extents() {
         assert_eq!(
             derive_surface_layout(65_535, 1, C3dSurfaceLayoutGates::default()),
-            Ok(SurfaceLayout {
+            Ok(ResolvedC3dSurfaceLayout {
                 width: 1,
                 height: 1,
                 horizontal_padding: 2,
                 vertical_padding: 0,
+                reduction: C3dSurfaceReduction::None,
             })
         );
         assert_eq!(
             derive_surface_layout(65_535, 0, C3dSurfaceLayoutGates::default()),
-            Ok(SurfaceLayout {
+            Ok(ResolvedC3dSurfaceLayout {
                 width: 0,
                 height: 0,
                 horizontal_padding: 0,
                 vertical_padding: 0,
+                reduction: C3dSurfaceReduction::None,
             })
         );
         assert_eq!(
@@ -1311,11 +1409,12 @@ mod tests {
                     ..C3dSurfaceLayoutGates::default()
                 },
             ),
-            Ok(SurfaceLayout {
+            Ok(ResolvedC3dSurfaceLayout {
                 width: 1,
                 height: 0,
                 horizontal_padding: 0,
                 vertical_padding: 0,
+                reduction: C3dSurfaceReduction::Quarter,
             })
         );
         assert_eq!(
@@ -1327,7 +1426,7 @@ mod tests {
                     ..C3dSurfaceLayoutGates::default()
                 },
             ),
-            Err(SurfaceLayoutIssue {
+            Err(C3dSurfaceLayoutError {
                 axis: C3dSurfaceLayoutAxis::Vertical,
                 extent_bits: 40_000,
             })

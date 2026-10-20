@@ -152,8 +152,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T19:13:24Z
-milestone=retain-software-c3d-source-bindings
+updated_utc=2026-10-20T19:17:50Z
+milestone=sample-root-c3d-source-indices
 completed=38
 partial=16
 not_started=50

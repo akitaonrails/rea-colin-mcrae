@@ -9,11 +9,14 @@ use cmr_assets::{
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_c3d_assets::{RootMenuC3dSlot, load_root_menu_c3d};
 use cmr_core::root_menu_c3d_execute::bind_root_menu_c3d_resources;
+use cmr_core::root_menu_c3d_runtime::{
+    C3dMode2CornerSource, C3dMode2LoadState, C3dSurfaceLayoutGates, RootMenuC3dMode2LoadStates,
+};
 use cmr_core::root_menu_c3d_topology::prepare_root_menu_c3d_topology;
 use cmr_formats::bitmap::{BitmapLimits, BitmapPaletteEntry};
 use cmr_formats::c3d::{C3D_FORMAT_VERSION, C3D_MAGIC, C3dLimits};
 use cmr_formats::stored_asset::DecodeLimits;
-use cmr_video::c3d_software::SoftwareC3dRetainedSource;
+use cmr_video::c3d_software::{SoftwareC3dRetainedSource, SoftwareC3dSampledTexture};
 use sha2::{Digest, Sha256};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -42,7 +45,7 @@ fn real_preparation_binding_owns_normalized_source_after_inputs_drop() {
         let temporary = TestDirectory::new();
         let source = temporary.0.join("source");
         let path = RootMenuC3dSlot::Championship.path(VisualVariant::Normal);
-        let bytes = one_resource_c3d(&indexed_bitmap_2x2());
+        let bytes = one_resource_c3d(&indexed_bitmap_4x4());
         let source_file = source.join(path);
         fs::create_dir_all(source_file.parent().unwrap()).unwrap();
         fs::write(&source_file, &bytes).unwrap();
@@ -88,9 +91,9 @@ fn real_preparation_binding_owns_normalized_source_after_inputs_drop() {
     assert_eq!(catalog.len(), 1);
     let retained = catalog.binding(resource_id).unwrap();
     assert_eq!(retained.first_slot(), RootMenuC3dSlot::Championship);
-    assert_eq!(retained.extent(), [2, 2]);
-    assert_eq!(retained.source_dib_extent_low16(), [2, 2]);
-    assert_eq!(retained.indices(), [0, 2, 3, 4]);
+    assert_eq!(retained.extent(), [4, 4]);
+    assert_eq!(retained.source_dib_extent_low16(), [4, 4]);
+    assert_eq!(retained.indices(), (0..16).collect::<Vec<_>>());
     assert_eq!(retained.palette().len(), 256);
     assert_eq!(
         retained.palette()[0],
@@ -112,6 +115,19 @@ fn real_preparation_binding_owns_normalized_source_after_inputs_drop() {
     );
     assert_eq!(retained.color_key_index(), None);
     assert_eq!(retained.indices()[0], 0);
+
+    let sampled = SoftwareC3dSampledTexture::from_retained_root(
+        retained.clone(),
+        RootMenuC3dMode2LoadStates::splat(C3dMode2LoadState {
+            prepared_resource_count: 0,
+            corner_source: C3dMode2CornerSource::OrdinaryDefaults,
+            surface_layout: C3dSurfaceLayoutGates::default(),
+        }),
+    )
+    .unwrap();
+    assert_eq!(sampled.extent(), [4, 4]);
+    assert_eq!(sampled.indices(), (0..16).collect::<Vec<_>>());
+    assert_eq!(sampled.palette(), retained.palette());
 }
 
 fn one_resource_c3d(bitmap: &[u8]) -> Vec<u8> {
@@ -128,12 +144,12 @@ fn one_resource_c3d(bitmap: &[u8]) -> Vec<u8> {
     input
 }
 
-fn indexed_bitmap_2x2() -> Vec<u8> {
-    const WIDTH: usize = 2;
-    const HEIGHT: usize = 2;
+fn indexed_bitmap_4x4() -> Vec<u8> {
+    const WIDTH: usize = 4;
+    const HEIGHT: usize = 4;
     const PALETTE_BYTES: usize = 256 * 4;
     const PIXEL_OFFSET: usize = 14 + 40 + PALETTE_BYTES;
-    const STORED_BYTES: usize = 4 * HEIGHT;
+    const STORED_BYTES: usize = WIDTH * HEIGHT;
     let mut input = vec![0; PIXEL_OFFSET + STORED_BYTES];
     let file_size = input.len() as u32;
     input[0..2].copy_from_slice(b"BM");
@@ -153,8 +169,10 @@ fn indexed_bitmap_2x2() -> Vec<u8> {
         input[start + 2] = (index as u8).wrapping_add(2);
         input[start + 3] = 0xa5;
     }
-    input[PIXEL_OFFSET..PIXEL_OFFSET + 4].copy_from_slice(&[3, 4, 0xee, 0xee]);
-    input[PIXEL_OFFSET + 4..PIXEL_OFFSET + 8].copy_from_slice(&[0, 2, 0xee, 0xee]);
+    input[PIXEL_OFFSET..PIXEL_OFFSET + 4].copy_from_slice(&[12, 13, 14, 15]);
+    input[PIXEL_OFFSET + 4..PIXEL_OFFSET + 8].copy_from_slice(&[8, 9, 10, 11]);
+    input[PIXEL_OFFSET + 8..PIXEL_OFFSET + 12].copy_from_slice(&[4, 5, 6, 7]);
+    input[PIXEL_OFFSET + 12..PIXEL_OFFSET + 16].copy_from_slice(&[0, 1, 2, 3]);
     input
 }
 
