@@ -99,7 +99,8 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-formats::c3d`: bounded, byte-preserving admission of the observed
   `CM3D` header and all three proven counted layouts, including raw group-0
   `u16` values, opaque group-1 32/24-byte entries, and group-2 label/blob pairs,
-  without assigning content semantics.
+  plus checked borrowed group-0→group-1 and group-1-entry24→group-2 ordinal
+  resolution without assigning target content semantics.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes.

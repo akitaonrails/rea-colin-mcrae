@@ -27,15 +27,20 @@ fn main() -> ExitCode {
     match inspect_roots(&roots) {
         Ok(summary) => {
             println!(
-                "files={} group0_records={} group0_bytes={} group0_values={} group1_records={} group1_bytes={} entries32={} entries24={} blob_records={} blob_bytes={} group0_reaches_group1={} group1_reaches_group2={} group0_exact_layout={} group1_exact_layout={} records_exhaust_payload={}",
+                "files={} group0_records={} group0_bytes={} group0_values={} group0_to_group1={} group0_to_group1_errors={} group1_records={} group1_bytes={} entries32={} entries24={} group1_to_group2={} group2_sentinels={} group1_to_group2_errors={} blob_records={} blob_bytes={} group0_reaches_group1={} group1_reaches_group2={} group0_exact_layout={} group1_exact_layout={} records_exhaust_payload={}",
                 summary.files,
                 summary.group0_records,
                 summary.group0_bytes,
                 summary.group0_values,
+                summary.group0_to_group1,
+                summary.group0_to_group1_errors,
                 summary.group1_records,
                 summary.group1_bytes,
                 summary.entries32,
                 summary.entries24,
+                summary.group1_to_group2,
+                summary.group2_sentinels,
+                summary.group1_to_group2_errors,
                 summary.blob_records,
                 summary.blob_bytes,
                 summary.group0_reaches_group1,
@@ -59,10 +64,15 @@ struct Summary {
     group0_records: u64,
     group0_bytes: u64,
     group0_values: u64,
+    group0_to_group1: u64,
+    group0_to_group1_errors: u64,
     group1_records: u64,
     group1_bytes: u64,
     entries32: u64,
     entries24: u64,
+    group1_to_group2: u64,
+    group2_sentinels: u64,
+    group1_to_group2_errors: u64,
     blob_records: u64,
     blob_bytes: u64,
     group0_reaches_group1: u64,
@@ -140,6 +150,16 @@ fn inspect_file(path: &Path, summary: &mut Summary) -> Result<(), String> {
         "C3D group-0 value count",
     )?;
     checked_accumulate(
+        &mut summary.group0_to_group1,
+        file_summary.group0_to_group1,
+        "C3D group-0-to-group-1 reference count",
+    )?;
+    checked_accumulate(
+        &mut summary.group0_to_group1_errors,
+        file_summary.group0_to_group1_errors,
+        "C3D group-0-to-group-1 reference-error count",
+    )?;
+    checked_accumulate(
         &mut summary.group1_records,
         file_summary.group1_records,
         "C3D group-1 record count",
@@ -158,6 +178,21 @@ fn inspect_file(path: &Path, summary: &mut Summary) -> Result<(), String> {
         &mut summary.entries24,
         file_summary.entries24,
         "C3D 24-byte entry count",
+    )?;
+    checked_accumulate(
+        &mut summary.group1_to_group2,
+        file_summary.group1_to_group2,
+        "C3D group-1-to-group-2 reference count",
+    )?;
+    checked_accumulate(
+        &mut summary.group2_sentinels,
+        file_summary.group2_sentinels,
+        "C3D group-2 sentinel count",
+    )?;
+    checked_accumulate(
+        &mut summary.group1_to_group2_errors,
+        file_summary.group1_to_group2_errors,
+        "C3D group-1-to-group-2 reference-error count",
     )?;
     summary.blob_records = summary
         .blob_records
@@ -242,10 +277,15 @@ struct FileSummary {
     group0_records: u64,
     group0_bytes: u64,
     group0_values: u64,
+    group0_to_group1: u64,
+    group0_to_group1_errors: u64,
     group1_records: u64,
     group1_bytes: u64,
     entries32: u64,
     entries24: u64,
+    group1_to_group2: u64,
+    group2_sentinels: u64,
+    group1_to_group2_errors: u64,
     blob_records: u64,
     blob_bytes: u64,
     group0_reaches_group1: bool,
@@ -273,6 +313,15 @@ fn inspect_payload(payload: &[u8]) -> Result<FileSummary, C3dError> {
         }
         group0_end = record.offset() + record.bytes().len();
     }
+    let mut group0_to_group1 = 0;
+    let mut group0_to_group1_errors = 0;
+    for reference in parsed.resolve_group1_references() {
+        if reference.is_ok() {
+            group0_to_group1 += 1;
+        } else {
+            group0_to_group1_errors += 1;
+        }
+    }
 
     let mut group1_records = 0;
     let mut group1_bytes = 0;
@@ -290,6 +339,16 @@ fn inspect_payload(payload: &[u8]) -> Result<FileSummary, C3dError> {
             group1_exact_layout += 1;
         }
         group1_end = record.offset() + record.bytes().len();
+    }
+    let mut group1_to_group2 = 0;
+    let mut group2_sentinels = 0;
+    let mut group1_to_group2_errors = 0;
+    for reference in parsed.resolve_group2_references() {
+        match reference {
+            Ok(reference) if reference.target().is_some() => group1_to_group2 += 1,
+            Ok(_) => group2_sentinels += 1,
+            Err(_) => group1_to_group2_errors += 1,
+        }
     }
 
     let mut blob_records = 0;
@@ -309,10 +368,15 @@ fn inspect_payload(payload: &[u8]) -> Result<FileSummary, C3dError> {
         group0_records,
         group0_bytes,
         group0_values,
+        group0_to_group1,
+        group0_to_group1_errors,
         group1_records,
         group1_bytes,
         entries32,
         entries24,
+        group1_to_group2,
+        group2_sentinels,
+        group1_to_group2_errors,
         blob_records,
         blob_bytes,
         group0_reaches_group1: group0_end
@@ -368,10 +432,15 @@ mod tests {
                 group0_records: 0,
                 group0_bytes: 0,
                 group0_values: 0,
+                group0_to_group1: 0,
+                group0_to_group1_errors: 0,
                 group1_records: 0,
                 group1_bytes: 0,
                 entries32: 0,
                 entries24: 0,
+                group1_to_group2: 0,
+                group2_sentinels: 0,
+                group1_to_group2_errors: 0,
                 blob_records: 1,
                 blob_bytes: 3,
                 group0_reaches_group1: true,
@@ -414,10 +483,15 @@ mod tests {
                 group0_records: 1,
                 group0_bytes: 80,
                 group0_values: 0,
+                group0_to_group1: 0,
+                group0_to_group1_errors: 0,
                 group1_records: 1,
                 group1_bytes: 48,
                 entries32: 0,
                 entries24: 0,
+                group1_to_group2: 0,
+                group2_sentinels: 0,
+                group1_to_group2_errors: 0,
                 blob_records: 1,
                 blob_bytes: 0,
                 group0_reaches_group1: true,
@@ -427,6 +501,46 @@ mod tests {
                 records_exhaust_payload: true,
             }
         );
+    }
+
+    #[test]
+    fn payload_summary_counts_resolved_sentinel_and_invalid_references() {
+        let mut payload = vec![0; 228];
+        payload[0..4].copy_from_slice(&C3D_MAGIC);
+        payload[4..8].copy_from_slice(&C3D_FORMAT_VERSION.to_le_bytes());
+        payload[12..14].copy_from_slice(&1u16.to_le_bytes());
+        payload[14..16].copy_from_slice(&1u16.to_le_bytes());
+        payload[16..18].copy_from_slice(&1u16.to_le_bytes());
+        payload[20..24].copy_from_slice(&32u32.to_le_bytes());
+        payload[24..28].copy_from_slice(&116u32.to_le_bytes());
+        payload[28..32].copy_from_slice(&212u32.to_le_bytes());
+
+        payload[32..36].copy_from_slice(&84u32.to_le_bytes());
+        payload[108] = 1;
+        payload[112..114].copy_from_slice(&0u16.to_le_bytes());
+
+        payload[116..128].copy_from_slice(b"GROUP1-REFS!");
+        payload[128..132].copy_from_slice(&96u32.to_le_bytes());
+        payload[134..136].copy_from_slice(&2u16.to_le_bytes());
+        payload[172..174].copy_from_slice(&0i16.to_le_bytes());
+        payload[196..198].copy_from_slice(&(-1i16).to_le_bytes());
+        payload[212..224].copy_from_slice(b"GROUP2-ZERO!");
+
+        let summary = inspect_payload(&payload).unwrap();
+        assert_eq!(summary.group0_to_group1, 1);
+        assert_eq!(summary.group0_to_group1_errors, 0);
+        assert_eq!(summary.group1_to_group2, 1);
+        assert_eq!(summary.group2_sentinels, 1);
+        assert_eq!(summary.group1_to_group2_errors, 0);
+
+        payload[112..114].copy_from_slice(&1u16.to_le_bytes());
+        payload[172..174].copy_from_slice(&(-2i16).to_le_bytes());
+        let invalid = inspect_payload(&payload).unwrap();
+        assert_eq!(invalid.group0_to_group1, 0);
+        assert_eq!(invalid.group0_to_group1_errors, 1);
+        assert_eq!(invalid.group1_to_group2, 0);
+        assert_eq!(invalid.group2_sentinels, 1);
+        assert_eq!(invalid.group1_to_group2_errors, 1);
     }
 
     #[test]

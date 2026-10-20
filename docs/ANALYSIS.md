@@ -105,10 +105,14 @@ cargo run --locked -p cmr-formats --example inspect_c3d_tree -- \
 The first command establishes exact reviewed-corpus identity. The scanner then
 decodes supported raw or gzip/`CMPR` storage and validates the bounded C3D
 header, all three recovered record iterators, group 0's counted `u16` values,
-and group 1's opaque 32-byte and 24-byte entry arrays. By itself the scanner is
-an inspection aid, not provenance verification. It reports aggregate counts,
-bytes, exact-layout counts, and section-boundary diagnostics only. Exact layout
-and section exhaustion are corpus evidence, not universal format requirements.
+and group 1's opaque 32-byte and 24-byte entry arrays. It also exercises the
+checked numeric joins from group 0 to group 1 and from group-1 24-byte entries
+to group 2, counting the observed `-1` sentinel separately from invalid
+references. By itself the scanner is an inspection aid, not provenance
+verification. It reports aggregate counts, bytes, reference outcomes,
+exact-layout counts, and section-boundary diagnostics only. Exact layout,
+reference validity, and section exhaustion are corpus evidence, not universal
+format requirements.
 
 The unbuilt source checkout can be used later after an explicitly authorized
 dependency install/build. Until then, commands in this document describe the

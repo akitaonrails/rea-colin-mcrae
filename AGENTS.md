@@ -10,6 +10,9 @@ shipped binaries and user-owned data. It is not a distribution of the game.
 - Read original media in place. Generated manifests may contain paths relative
   to a user-selected source root, sizes, hashes, and format metadata, but not
   payload bytes.
+- Never commit a developer's absolute original-media path. Commands and code
+  must accept an explicit `--source` root or use the documented
+  `CMR_ORIGINAL_DIR` example variable.
 - Put local REA snapshots and investigation output under `.work/`.
 - Put imported or converted user data under `runtime-data/`. Both directories
   are ignored by Git.
@@ -53,4 +56,8 @@ contract tests.
   Commit subjects.
 - Update the evidence ledger and roadmap in the same milestone that changes a
   compatibility claim.
+- Update `docs/DECOMP_MAP.md` and recompute its final progress-tail counters in
+  every milestone that completes or materially advances a reconstruction item.
+  Keep the progress block as the final lines so a developer can monitor it with
+  `tail`/`watch`.
 

@@ -90,7 +90,55 @@ impl C3dFile {
     }
 
     pub fn group1_records(&self) -> impl ExactSizeIterator<Item = C3dGroup1Record<'_>> {
-        self.group1_records.iter().map(|span| C3dGroup1Record {
+        self.group1_records
+            .iter()
+            .map(|span| self.group1_record_view(span))
+    }
+
+    /// Resolves every counted group-0 value as a group-1 record ordinal.
+    ///
+    /// Resolution is deliberately separate from structural parsing. Each
+    /// source value yields one result, so a bad ordinal does not hide later
+    /// references.
+    pub fn resolve_group1_references(
+        &self,
+    ) -> impl Iterator<Item = Result<C3dGroup1Reference<'_>, C3dReferenceError>> {
+        self.group0_records
+            .iter()
+            .enumerate()
+            .flat_map(move |(group0_record_index, span)| {
+                let (values, remainder) =
+                    self.bytes[span.values_start..span.values_end].as_chunks::<2>();
+                debug_assert!(remainder.is_empty());
+                values
+                    .iter()
+                    .copied()
+                    .map(u16::from_le_bytes)
+                    .enumerate()
+                    .map(move |(value_index, ordinal)| {
+                        let source_offset = span.values_start + value_index * 2;
+                        let target = self.group1_records.get(usize::from(ordinal)).ok_or(
+                            C3dReferenceError::Group1OrdinalOutOfBounds {
+                                group0_record_index,
+                                value_index,
+                                source_offset,
+                                ordinal,
+                                record_count: self.group1_records.len(),
+                            },
+                        )?;
+                        Ok(C3dGroup1Reference {
+                            group0_record_index,
+                            value_index,
+                            source_offset,
+                            ordinal,
+                            target: self.group1_record_view(target),
+                        })
+                    })
+            })
+    }
+
+    fn group1_record_view(&self, span: &C3dGroup1RecordSpan) -> C3dGroup1Record<'_> {
+        C3dGroup1Record {
             offset: span.offset,
             bytes: &self.bytes[span.offset..span.end],
             prefix: self.bytes[span.offset..span.offset + C3D_GROUP1_PREFIX_LEN]
@@ -102,17 +150,82 @@ impl C3dFile {
             entries_32: &self.bytes[span.entries_32_start..span.entries_32_end],
             entries_24: &self.bytes[span.entries_32_end..span.entries_24_end],
             trailing: &self.bytes[span.entries_24_end..span.end],
-        })
+        }
     }
 
     pub fn blob_records(&self) -> impl ExactSizeIterator<Item = C3dBlobRecord<'_>> {
-        self.blob_records.iter().map(|span| C3dBlobRecord {
+        self.blob_records
+            .iter()
+            .map(|span| self.blob_record_view(span))
+    }
+
+    /// Resolves the signed little-endian ordinal at `+8` in every group-1
+    /// 24-byte entry. `-1` is the observed no-record sentinel.
+    ///
+    /// Resolution is deliberately separate from structural parsing. Each
+    /// source entry yields one result, so a bad ordinal does not hide later
+    /// references.
+    pub fn resolve_group2_references(
+        &self,
+    ) -> impl Iterator<Item = Result<C3dGroup2Reference<'_>, C3dReferenceError>> {
+        self.group1_records
+            .iter()
+            .enumerate()
+            .flat_map(move |(group1_record_index, span)| {
+                let (entries, remainder) = self.bytes[span.entries_32_end..span.entries_24_end]
+                    .as_chunks::<C3D_GROUP1_ENTRY24_LEN>();
+                debug_assert!(remainder.is_empty());
+                entries
+                    .iter()
+                    .enumerate()
+                    .map(move |(entry24_index, entry)| {
+                        let source_offset =
+                            span.entries_32_end + entry24_index * C3D_GROUP1_ENTRY24_LEN + 8;
+                        let ordinal = read_i16(entry, 8);
+                        let target = match ordinal {
+                            -1 => None,
+                            ..=-2 => {
+                                return Err(C3dReferenceError::InvalidNegativeGroup2Ordinal {
+                                    group1_record_index,
+                                    entry24_index,
+                                    source_offset,
+                                    ordinal,
+                                });
+                            }
+                            0.. => {
+                                let index = usize::try_from(ordinal)
+                                    .expect("non-negative i16 always fits usize");
+                                let target = self.blob_records.get(index).ok_or(
+                                    C3dReferenceError::Group2OrdinalOutOfBounds {
+                                        group1_record_index,
+                                        entry24_index,
+                                        source_offset,
+                                        ordinal,
+                                        record_count: self.blob_records.len(),
+                                    },
+                                )?;
+                                Some(self.blob_record_view(target))
+                            }
+                        };
+                        Ok(C3dGroup2Reference {
+                            group1_record_index,
+                            entry24_index,
+                            source_offset,
+                            ordinal,
+                            target,
+                        })
+                    })
+            })
+    }
+
+    fn blob_record_view(&self, span: &C3dBlobRecordSpan) -> C3dBlobRecord<'_> {
+        C3dBlobRecord {
             offset: span.offset,
             label: self.bytes[span.offset..span.offset + C3D_BLOB_LABEL_LEN]
                 .try_into()
                 .expect("validated C3D blob label"),
             blob: &self.bytes[span.blob_start..span.blob_end],
-        })
+        }
     }
 }
 
@@ -241,6 +354,143 @@ pub struct C3dBlobRecord<'a> {
     label: &'a [u8; C3D_BLOB_LABEL_LEN],
     blob: &'a [u8],
 }
+
+/// One successfully resolved group-0 value and its borrowed group-1 target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dGroup1Reference<'a> {
+    group0_record_index: usize,
+    value_index: usize,
+    source_offset: usize,
+    ordinal: u16,
+    target: C3dGroup1Record<'a>,
+}
+
+impl<'a> C3dGroup1Reference<'a> {
+    #[must_use]
+    pub const fn group0_record_index(self) -> usize {
+        self.group0_record_index
+    }
+
+    #[must_use]
+    pub const fn value_index(self) -> usize {
+        self.value_index
+    }
+
+    #[must_use]
+    pub const fn source_offset(self) -> usize {
+        self.source_offset
+    }
+
+    #[must_use]
+    pub const fn ordinal(self) -> u16 {
+        self.ordinal
+    }
+
+    #[must_use]
+    pub const fn target(self) -> C3dGroup1Record<'a> {
+        self.target
+    }
+}
+
+/// One successfully resolved group-1 24-byte entry and its borrowed group-2
+/// target. The target is absent for the `-1` sentinel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dGroup2Reference<'a> {
+    group1_record_index: usize,
+    entry24_index: usize,
+    source_offset: usize,
+    ordinal: i16,
+    target: Option<C3dBlobRecord<'a>>,
+}
+
+impl<'a> C3dGroup2Reference<'a> {
+    #[must_use]
+    pub const fn group1_record_index(self) -> usize {
+        self.group1_record_index
+    }
+
+    #[must_use]
+    pub const fn entry24_index(self) -> usize {
+        self.entry24_index
+    }
+
+    #[must_use]
+    pub const fn source_offset(self) -> usize {
+        self.source_offset
+    }
+
+    #[must_use]
+    pub const fn ordinal(self) -> i16 {
+        self.ordinal
+    }
+
+    #[must_use]
+    pub const fn target(self) -> Option<C3dBlobRecord<'a>> {
+        self.target
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dReferenceError {
+    Group1OrdinalOutOfBounds {
+        group0_record_index: usize,
+        value_index: usize,
+        source_offset: usize,
+        ordinal: u16,
+        record_count: usize,
+    },
+    InvalidNegativeGroup2Ordinal {
+        group1_record_index: usize,
+        entry24_index: usize,
+        source_offset: usize,
+        ordinal: i16,
+    },
+    Group2OrdinalOutOfBounds {
+        group1_record_index: usize,
+        entry24_index: usize,
+        source_offset: usize,
+        ordinal: i16,
+        record_count: usize,
+    },
+}
+
+impl fmt::Display for C3dReferenceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Group1OrdinalOutOfBounds {
+                group0_record_index,
+                value_index,
+                source_offset,
+                ordinal,
+                record_count,
+            } => write!(
+                formatter,
+                "C3D group-0 record {group0_record_index} value {value_index} at offset {source_offset} has group-1 ordinal {ordinal}, outside {record_count} records"
+            ),
+            Self::InvalidNegativeGroup2Ordinal {
+                group1_record_index,
+                entry24_index,
+                source_offset,
+                ordinal,
+            } => write!(
+                formatter,
+                "C3D group-1 record {group1_record_index} 24-byte entry {entry24_index} at offset {source_offset} has group-2 ordinal {ordinal}, which is negative and is not the -1 sentinel"
+            ),
+            Self::Group2OrdinalOutOfBounds {
+                group1_record_index,
+                entry24_index,
+                source_offset,
+                ordinal,
+                record_count,
+            } => write!(
+                formatter,
+                "C3D group-1 record {group1_record_index} 24-byte entry {entry24_index} at offset {source_offset} has group-2 ordinal {ordinal}, outside {record_count} records"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for C3dReferenceError {}
 
 impl<'a> C3dBlobRecord<'a> {
     #[must_use]
@@ -751,6 +1001,14 @@ fn read_u16(input: &[u8], offset: usize) -> u16 {
     )
 }
 
+fn read_i16(input: &[u8], offset: usize) -> i16 {
+    i16::from_le_bytes(
+        input[offset..offset + 2]
+            .try_into()
+            .expect("validated record"),
+    )
+}
+
 fn read_u32(input: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(
         input[offset..offset + 4]
@@ -943,6 +1201,203 @@ mod tests {
         assert_eq!(blob.offset(), 351);
         assert_eq!(blob.blob(), [7, 8, 9, 10]);
         assert_eq!(parsed.bytes(), input);
+    }
+
+    #[test]
+    fn resolves_group0_values_as_borrowed_group1_records_and_continues_after_error() {
+        let mut input = fixture([2, 2, 0], [32, 200, 296], 296);
+        let second_group0 = write_group0_record(&mut input, 32, &[1, 2, 0], &[]);
+        assert_eq!(second_group0, 118);
+        assert_eq!(
+            write_group0_record(&mut input, second_group0, &[1], &[]),
+            200
+        );
+        let second_group1 = write_group1_record(&mut input, 200, *b"GROUP1-ZERO!", 0, 0, 0);
+        assert_eq!(second_group1, 248);
+        assert_eq!(
+            write_group1_record(&mut input, second_group1, *b"GROUP1-ONE!!", 0, 0, 0,),
+            296
+        );
+
+        // Structural admission remains independent from ordinal validity.
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        let mut references = parsed.resolve_group1_references();
+
+        let first = references.next().unwrap().unwrap();
+        assert_eq!(first.group0_record_index(), 0);
+        assert_eq!(first.value_index(), 0);
+        assert_eq!(first.source_offset(), 112);
+        assert_eq!(first.ordinal(), 1);
+        assert!(std::ptr::eq(
+            first.target().bytes(),
+            &parsed.bytes()[248..296]
+        ));
+
+        assert_eq!(
+            references.next().unwrap(),
+            Err(C3dReferenceError::Group1OrdinalOutOfBounds {
+                group0_record_index: 0,
+                value_index: 1,
+                source_offset: 114,
+                ordinal: 2,
+                record_count: 2,
+            })
+        );
+
+        let after_error = references.next().unwrap().unwrap();
+        assert_eq!(after_error.group0_record_index(), 0);
+        assert_eq!(after_error.value_index(), 2);
+        assert_eq!(after_error.source_offset(), 116);
+        assert_eq!(after_error.ordinal(), 0);
+        assert!(std::ptr::eq(
+            after_error.target().bytes(),
+            &parsed.bytes()[200..248]
+        ));
+
+        let next_record = references.next().unwrap().unwrap();
+        assert_eq!(next_record.group0_record_index(), 1);
+        assert_eq!(next_record.value_index(), 0);
+        assert_eq!(next_record.source_offset(), 198);
+        assert_eq!(next_record.ordinal(), 1);
+        assert!(references.next().is_none());
+    }
+
+    #[test]
+    fn resolves_group1_entry_offset_8_as_signed_little_endian_group2_ordinal() {
+        let mut input = fixture([0, 1, 2], [32, 32, 200], 235);
+        assert_eq!(
+            write_group1_record(&mut input, 32, *b"GROUP1-REFS!", 0, 5, 0),
+            200
+        );
+        let entries_start = 32 + C3D_GROUP1_FIXED_LEN;
+        for (index, ordinal) in [1_i16, -1, -2, 2, 0].into_iter().enumerate() {
+            let offset = entries_start + index * C3D_GROUP1_ENTRY24_LEN + 8;
+            input[offset..offset + 2].copy_from_slice(&ordinal.to_le_bytes());
+        }
+        let second_blob = write_blob_record(&mut input, 200, *b"GROUP2-ZERO!", &[0xa0]);
+        assert_eq!(second_blob, 217);
+        assert_eq!(
+            write_blob_record(&mut input, second_blob, *b"GROUP2-ONE!!", &[0xb0, 0xb1]),
+            235
+        );
+
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        let raw_first = parsed
+            .group1_records()
+            .next()
+            .unwrap()
+            .entries_24()
+            .next()
+            .unwrap();
+        assert_eq!(&raw_first[8..10], &[1, 0]);
+
+        let mut references = parsed.resolve_group2_references();
+        let first = references.next().unwrap().unwrap();
+        assert_eq!(first.group1_record_index(), 0);
+        assert_eq!(first.entry24_index(), 0);
+        assert_eq!(first.source_offset(), 88);
+        assert_eq!(first.ordinal(), 1);
+        let target = first.target().unwrap();
+        assert!(std::ptr::eq(target.blob(), &parsed.bytes()[233..235]));
+
+        let sentinel = references.next().unwrap().unwrap();
+        assert_eq!(sentinel.entry24_index(), 1);
+        assert_eq!(sentinel.source_offset(), 112);
+        assert_eq!(sentinel.ordinal(), -1);
+        assert_eq!(sentinel.target(), None);
+
+        assert_eq!(
+            references.next().unwrap(),
+            Err(C3dReferenceError::InvalidNegativeGroup2Ordinal {
+                group1_record_index: 0,
+                entry24_index: 2,
+                source_offset: 136,
+                ordinal: -2,
+            })
+        );
+        assert_eq!(
+            references.next().unwrap(),
+            Err(C3dReferenceError::Group2OrdinalOutOfBounds {
+                group1_record_index: 0,
+                entry24_index: 3,
+                source_offset: 160,
+                ordinal: 2,
+                record_count: 2,
+            })
+        );
+
+        let after_errors = references.next().unwrap().unwrap();
+        assert_eq!(after_errors.entry24_index(), 4);
+        assert_eq!(after_errors.source_offset(), 184);
+        assert_eq!(after_errors.ordinal(), 0);
+        assert!(std::ptr::eq(
+            after_errors.target().unwrap().blob(),
+            &parsed.bytes()[216..217]
+        ));
+        assert!(references.next().is_none());
+    }
+
+    #[test]
+    fn reports_relocated_extreme_and_empty_target_references_without_rejecting_the_file() {
+        let mut input = fixture([1, 1, 0], [64, 200, 400], 420);
+        assert_eq!(
+            write_group0_record(&mut input, 64, &[u16::MAX, 0], &[]),
+            148
+        );
+        assert_eq!(
+            write_group1_record(&mut input, 200, *b"GROUP1-EDGE!", 0, 3, 0),
+            320
+        );
+        let entries_start = 200 + C3D_GROUP1_FIXED_LEN;
+        for (index, ordinal) in [i16::MIN, 0, -1].into_iter().enumerate() {
+            let source_offset = entries_start + index * C3D_GROUP1_ENTRY24_LEN + 8;
+            input[source_offset..source_offset + 2].copy_from_slice(&ordinal.to_le_bytes());
+        }
+
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        assert_eq!(parsed.bytes(), input);
+
+        let mut group1_references = parsed.resolve_group1_references();
+        assert_eq!(
+            group1_references.next().unwrap(),
+            Err(C3dReferenceError::Group1OrdinalOutOfBounds {
+                group0_record_index: 0,
+                value_index: 0,
+                source_offset: 144,
+                ordinal: u16::MAX,
+                record_count: 1,
+            })
+        );
+        let later_group1 = group1_references.next().unwrap().unwrap();
+        assert_eq!(later_group1.source_offset(), 146);
+        assert_eq!(later_group1.ordinal(), 0);
+        assert!(group1_references.next().is_none());
+
+        let mut group2_references = parsed.resolve_group2_references();
+        assert_eq!(
+            group2_references.next().unwrap(),
+            Err(C3dReferenceError::InvalidNegativeGroup2Ordinal {
+                group1_record_index: 0,
+                entry24_index: 0,
+                source_offset: 256,
+                ordinal: i16::MIN,
+            })
+        );
+        assert_eq!(
+            group2_references.next().unwrap(),
+            Err(C3dReferenceError::Group2OrdinalOutOfBounds {
+                group1_record_index: 0,
+                entry24_index: 1,
+                source_offset: 280,
+                ordinal: 0,
+                record_count: 0,
+            })
+        );
+        let sentinel_after_errors = group2_references.next().unwrap().unwrap();
+        assert_eq!(sentinel_after_errors.source_offset(), 304);
+        assert_eq!(sentinel_after_errors.ordinal(), -1);
+        assert_eq!(sentinel_after_errors.target(), None);
+        assert!(group2_references.next().is_none());
     }
 
     #[test]
