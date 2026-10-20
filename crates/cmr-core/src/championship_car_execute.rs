@@ -9,6 +9,10 @@ use std::fmt;
 
 use crate::{
     c3d_batch::{C3dDrawCommand, C3dDrawOrdinal},
+    c3d_type2_fog::{
+        C3dType2FogError, C3dType2FogState, C3dType2PreDrawVertex,
+        prepare_c3d_type2_pre_draw_vertices,
+    },
     championship_car_frame_plan::{ChampionshipCarActorDraw, ChampionshipCarFramePlan},
     root_menu_c3d_execute::{
         C3dBatchPreflightError, C3dBindingCatalog, C3dPreflightBinding, C3dSelectorBindingCache,
@@ -32,7 +36,10 @@ pub trait ChampionshipCarBatchBackend<H> {
 
     /// Rejects backend-specific championship-car state before the surrounding
     /// scene performs depth, camera, or begin effects.
-    fn preflight_championship_car_scene(&mut self) -> Result<(), Self::Error> {
+    fn preflight_championship_car_scene(
+        &mut self,
+        _pre_draw_state: ChampionshipCarPreDrawState,
+    ) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -46,7 +53,11 @@ pub trait ChampionshipCarBatchBackend<H> {
 
     fn bind_championship_car_default(&mut self) -> Result<(), Self::Error>;
 
-    fn draw_championship_car_batch(&mut self, command: &C3dDrawCommand) -> Result<(), Self::Error>;
+    fn draw_championship_car_batch(
+        &mut self,
+        command: &C3dDrawCommand,
+        vertices: &[C3dType2PreDrawVertex],
+    ) -> Result<(), Self::Error>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,6 +106,12 @@ pub enum ChampionshipCarBatchPreflightError {
         resource_id: C3dPreparedResourceId,
         source: C3dPreparedResourceAccessError,
     },
+    Type2Fog {
+        actor_index: usize,
+        ordinal: C3dDrawOrdinal,
+        selector: C3dPreparedSelector,
+        source: C3dType2FogError,
+    },
 }
 
 impl fmt::Display for ChampionshipCarBatchPreflightError {
@@ -116,6 +133,16 @@ impl fmt::Display for ChampionshipCarBatchPreflightError {
                 "championship-car actor {actor_index} batch {} cannot access binding {}: {source}",
                 ordinal.batch_index(),
                 resource_id.index()
+            ),
+            Self::Type2Fog {
+                actor_index,
+                ordinal,
+                selector,
+                source,
+            } => write!(
+                formatter,
+                "championship-car actor {actor_index} batch {} selector {selector:?} cannot prepare Type-2 fog vertices: {source}",
+                ordinal.batch_index()
             ),
         }
     }
@@ -154,6 +181,19 @@ pub struct ChampionshipCarBatchOutcome {
     pub draws: usize,
 }
 
+/// Explicit retained renderer inputs applied to every Type-2 batch in one
+/// prepared car frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChampionshipCarPreDrawState {
+    pub type2_fog: C3dType2FogState,
+}
+
+impl ChampionshipCarPreDrawState {
+    pub const DISABLED: Self = Self {
+        type2_fog: C3dType2FogState::DISABLED,
+    };
+}
+
 /// Persistent selector-cache owner for championship-car C3D submission.
 #[derive(Debug)]
 pub struct ChampionshipCarBatchExecutor<'catalog, H> {
@@ -171,6 +211,8 @@ pub struct PreparedChampionshipCarFrame<'catalog, H> {
     catalog: &'catalog C3dBindingCatalog<H>,
     plan: ChampionshipCarFramePlan,
     bindings: Vec<C3dPreflightBinding<'catalog, H>>,
+    vertices: Vec<Box<[C3dType2PreDrawVertex]>>,
+    pre_draw_state: ChampionshipCarPreDrawState,
 }
 
 impl<H> PreparedChampionshipCarFrame<'_, H> {
@@ -187,6 +229,11 @@ impl<H> PreparedChampionshipCarFrame<'_, H> {
     #[must_use]
     pub const fn selected_parent_visible(&self) -> bool {
         self.plan.selected_parent_visible()
+    }
+
+    #[must_use]
+    pub const fn pre_draw_state(&self) -> ChampionshipCarPreDrawState {
+        self.pre_draw_state
     }
 }
 
@@ -210,10 +257,12 @@ impl<'catalog, H> ChampionshipCarBatchExecutor<'catalog, H> {
         self.cache.invalidate();
     }
 
-    /// Resolves every selector in `plan` without touching a scene backend.
+    /// Resolves every selector and explicit retained pre-draw state in `plan`
+    /// without touching a scene backend.
     pub fn prepare(
         &self,
         plan: ChampionshipCarFramePlan,
+        pre_draw_state: ChampionshipCarPreDrawState,
     ) -> Result<PreparedChampionshipCarFrame<'catalog, H>, ChampionshipCarBatchPreflightError> {
         let preflight = preflight_c3d_draw_commands(
             self.catalog,
@@ -221,10 +270,17 @@ impl<'catalog, H> ChampionshipCarBatchExecutor<'catalog, H> {
             plan.draws().iter().map(|draw| draw.command()),
         );
         let bindings = finish_preflight(plan.draws(), preflight)?;
+        let vertices = plan
+            .draws()
+            .iter()
+            .map(|draw| prepare_draw_vertices(draw, pre_draw_state))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(PreparedChampionshipCarFrame {
             catalog: self.catalog,
             plan,
             bindings,
+            vertices,
+            pre_draw_state,
         })
     }
 
@@ -256,6 +312,7 @@ impl<'catalog, H> ChampionshipCarBatchExecutor<'catalog, H> {
             &mut self.cache,
             prepared.plan.draws(),
             &prepared.bindings,
+            &prepared.vertices,
         )
     }
 
@@ -270,12 +327,13 @@ impl<'catalog, H> ChampionshipCarBatchExecutor<'catalog, H> {
         &mut self,
         backend: &mut B,
         plan: ChampionshipCarFramePlan,
+        pre_draw_state: ChampionshipCarPreDrawState,
     ) -> Result<ChampionshipCarBatchOutcome, ChampionshipCarExecuteError<B::Error>>
     where
         B: ChampionshipCarBatchBackend<H>,
     {
         let prepared = self
-            .prepare(plan)
+            .prepare(plan, pre_draw_state)
             .map_err(ChampionshipCarExecuteError::Preflight)?;
         self.execute_prepared(backend, prepared)
     }
@@ -318,7 +376,29 @@ fn map_preflight_error<D: ActorDrawAccess>(
 trait ActorDrawAccess {
     fn actor_index(&self) -> usize;
     fn actor_world(&self) -> C3dMatrixWords;
+    fn forces_per_vertex_type2_distance(&self) -> bool;
     fn command(&self) -> &C3dDrawCommand;
+}
+
+fn prepare_draw_vertices<D: ActorDrawAccess>(
+    draw: &D,
+    pre_draw_state: ChampionshipCarPreDrawState,
+) -> Result<Box<[C3dType2PreDrawVertex]>, ChampionshipCarBatchPreflightError> {
+    let command = draw.command();
+    let mut fog_state = pre_draw_state.type2_fog;
+    if draw.forces_per_vertex_type2_distance() {
+        fog_state.shared_distance_q16 = 0;
+    }
+    prepare_c3d_type2_pre_draw_vertices(
+        command.vertices().iter().map(|vertex| vertex.words()),
+        fog_state,
+    )
+    .map_err(|source| ChampionshipCarBatchPreflightError::Type2Fog {
+        actor_index: draw.actor_index(),
+        ordinal: command.ordinal(),
+        selector: command.selector(),
+        source,
+    })
 }
 
 impl ActorDrawAccess for ChampionshipCarActorDraw {
@@ -328,6 +408,10 @@ impl ActorDrawAccess for ChampionshipCarActorDraw {
 
     fn actor_world(&self) -> C3dMatrixWords {
         self.actor_world()
+    }
+
+    fn forces_per_vertex_type2_distance(&self) -> bool {
+        self.forces_per_vertex_type2_distance()
     }
 
     fn command(&self) -> &C3dDrawCommand {
@@ -340,12 +424,14 @@ fn execute_preflighted<B, H, D>(
     cache: &mut C3dSelectorBindingCache,
     draws: &[D],
     bindings: &[C3dPreflightBinding<'_, H>],
+    vertices: &[Box<[C3dType2PreDrawVertex]>],
 ) -> Result<ChampionshipCarBatchOutcome, ChampionshipCarExecuteError<B::Error>>
 where
     B: ChampionshipCarBatchBackend<H>,
     D: ActorDrawAccess,
 {
     debug_assert_eq!(draws.len(), bindings.len());
+    debug_assert_eq!(draws.len(), vertices.len());
     let mut outcome = ChampionshipCarBatchOutcome {
         actor_worlds: 0,
         bindings: 0,
@@ -353,7 +439,7 @@ where
     };
     let mut current_actor = None;
 
-    for (draw, binding) in draws.iter().zip(bindings) {
+    for ((draw, binding), vertices) in draws.iter().zip(bindings).zip(vertices) {
         let command = draw.command();
         let ordinal = command.ordinal();
         let actor_index = draw.actor_index();
@@ -413,7 +499,7 @@ where
         }
 
         backend
-            .draw_championship_car_batch(command)
+            .draw_championship_car_batch(command, vertices)
             .map_err(|source| {
                 backend_error(
                     actor_index,
@@ -496,6 +582,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingBackend {
         events: Vec<Event>,
+        submitted_vertices: Vec<Vec<[u32; 8]>>,
         current_actor: Option<usize>,
         fail: Option<TestError>,
     }
@@ -539,11 +626,19 @@ mod tests {
         fn draw_championship_car_batch(
             &mut self,
             command: &C3dDrawCommand,
+            vertices: &[C3dType2PreDrawVertex],
         ) -> Result<(), Self::Error> {
             if self.fail == Some(TestError::Draw) {
                 self.fail = None;
                 return Err(TestError::Draw);
             }
+            self.submitted_vertices.push(
+                vertices
+                    .iter()
+                    .copied()
+                    .map(C3dType2PreDrawVertex::words)
+                    .collect(),
+            );
             self.events.push(Event::Draw {
                 actor: self.current_actor.unwrap(),
                 batch: command.batch_index(),
@@ -558,6 +653,7 @@ mod tests {
     struct TestDraw {
         actor: usize,
         world: C3dMatrixWords,
+        force_per_vertex_type2_distance: bool,
         command: C3dDrawCommand,
     }
 
@@ -570,26 +666,62 @@ mod tests {
             self.world
         }
 
+        fn forces_per_vertex_type2_distance(&self) -> bool {
+            self.force_per_vertex_type2_distance
+        }
+
         fn command(&self) -> &C3dDrawCommand {
             &self.command
         }
     }
 
     fn command(actor: usize, batch: usize, selector: C3dPreparedSelector) -> TestDraw {
+        command_with_vertices(
+            actor,
+            batch,
+            selector,
+            Box::<[C3dMode2ResourceScaledVertex]>::default(),
+        )
+    }
+
+    fn command_with_vertices(
+        actor: usize,
+        batch: usize,
+        selector: C3dPreparedSelector,
+        vertices: impl Into<Box<[C3dMode2ResourceScaledVertex]>>,
+    ) -> TestDraw {
         let mut world = [0; 16];
         world[12] = (actor as f32 + 0.5).to_bits();
         TestDraw {
             actor,
             world: C3dMatrixWords::from_words(world),
+            force_per_vertex_type2_distance: false,
             command: C3dDrawCommand::new(
                 C3dDrawOrdinal::new(actor, 0, actor as u16, batch),
                 selector,
                 C3dVertexMutationBranch::Type2,
                 Box::<[u16]>::default(),
-                Box::<[C3dMode2ResourceScaledVertex]>::default(),
+                vertices,
                 Box::<[C3dOpaqueSideVector]>::default(),
                 Box::<[u16]>::default(),
             ),
+        }
+    }
+
+    fn vertex(words: [u32; 8]) -> C3dMode2ResourceScaledVertex {
+        C3dMode2ResourceScaledVertex::from_words_for_test(words)
+    }
+
+    fn enabled_fog(shared_distance_q16: i32) -> ChampionshipCarPreDrawState {
+        ChampionshipCarPreDrawState {
+            type2_fog: C3dType2FogState {
+                enabled: true,
+                near_q16: 10 << 16,
+                far_q16: 80 << 16,
+                far_level: 0x0033_0000,
+                shared_distance_q16,
+                center_q16: [0; 3],
+            },
         }
     }
 
@@ -606,6 +738,22 @@ mod tests {
         cache: &mut C3dSelectorBindingCache,
         draws: &[TestDraw],
         bindings: &[TestBinding<'_>],
+    ) -> Result<ChampionshipCarBatchOutcome, ChampionshipCarExecuteError<TestError>> {
+        run_with_state(
+            backend,
+            cache,
+            draws,
+            bindings,
+            ChampionshipCarPreDrawState::DISABLED,
+        )
+    }
+
+    fn run_with_state(
+        backend: &mut RecordingBackend,
+        cache: &mut C3dSelectorBindingCache,
+        draws: &[TestDraw],
+        bindings: &[TestBinding<'_>],
+        pre_draw_state: ChampionshipCarPreDrawState,
     ) -> Result<ChampionshipCarBatchOutcome, ChampionshipCarExecuteError<TestError>> {
         let bindings = bindings
             .iter()
@@ -625,7 +773,11 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        execute_preflighted(backend, cache, draws, &bindings)
+        let vertices = draws
+            .iter()
+            .map(|draw| prepare_draw_vertices(draw, pre_draw_state).unwrap())
+            .collect::<Vec<_>>();
+        execute_preflighted(backend, cache, draws, &bindings, &vertices)
     }
 
     #[test]
@@ -690,6 +842,160 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn enabled_type2_words_reach_every_draw_after_binding_including_cache_hits() {
+        let resource = C3dPreparedResourceId::new_for_test(0);
+        let source = [
+            1.0_f32.to_bits(),
+            2.0_f32.to_bits(),
+            3.0_f32.to_bits(),
+            0,
+            0x1122_3344,
+            0x5566_7788,
+            0.0_f32.to_bits(),
+            0.0_f32.to_bits(),
+        ];
+        let draws = [
+            command_with_vertices(
+                4,
+                10,
+                C3dPreparedSelector::Resource(resource),
+                [vertex(source)],
+            ),
+            command_with_vertices(
+                4,
+                11,
+                C3dPreparedSelector::Resource(resource),
+                [vertex(source)],
+            ),
+        ];
+        let handle = 91;
+        let bindings = [
+            TestBinding::Resource {
+                resource_id: resource,
+                binding: &handle,
+            },
+            TestBinding::Resource {
+                resource_id: resource,
+                binding: &handle,
+            },
+        ];
+        let mut backend = RecordingBackend::default();
+        run_with_state(
+            &mut backend,
+            &mut C3dSelectorBindingCache::new(),
+            &draws,
+            &bindings,
+            enabled_fog(9 << 16),
+        )
+        .unwrap();
+
+        assert_eq!(
+            backend.events,
+            [
+                Event::World(4, 4.5_f32.to_bits()),
+                Event::Resource(91),
+                Event::Draw {
+                    actor: 4,
+                    batch: 10,
+                    vertex_type: 2,
+                    primitive: 4,
+                    flags: 8,
+                },
+                Event::Draw {
+                    actor: 4,
+                    batch: 11,
+                    vertex_type: 2,
+                    primitive: 4,
+                    flags: 8,
+                },
+            ]
+        );
+        assert_eq!(backend.submitted_vertices.len(), 2);
+        for submitted in &backend.submitted_vertices {
+            let mut expected = source;
+            expected[5] = 0xff00_0000;
+            assert_eq!(submitted, &[expected]);
+        }
+        assert!(
+            draws
+                .iter()
+                .all(|draw| draw.command.vertices()[0].words() == source)
+        );
+    }
+
+    #[test]
+    fn type2_preparation_error_preserves_draw_context_before_backend_effects() {
+        let source = [
+            f32::NAN.to_bits(),
+            0,
+            0.0_f32.to_bits(),
+            0,
+            0,
+            0x1234_5678,
+            0,
+            0,
+        ];
+        let draw = command_with_vertices(7, 12, C3dPreparedSelector::Missing, [vertex(source)]);
+        assert_eq!(
+            prepare_draw_vertices(&draw, enabled_fog(0)),
+            Err(ChampionshipCarBatchPreflightError::Type2Fog {
+                actor_index: 7,
+                ordinal: draw.command.ordinal(),
+                selector: C3dPreparedSelector::Missing,
+                source: C3dType2FogError::CoordinateConversion {
+                    vertex_index: 0,
+                    word_index: 0,
+                    bits: f32::NAN.to_bits(),
+                },
+            })
+        );
+        assert_eq!(draw.command.vertices()[0].words(), source);
+        assert!(RecordingBackend::default().events.is_empty());
+    }
+
+    #[test]
+    fn repeated_type2_preparation_never_accumulates_into_source_words() {
+        let source = [
+            1.0_f32.to_bits(),
+            0,
+            2.0_f32.to_bits(),
+            0,
+            0,
+            0xaabb_ccdd,
+            0,
+            0,
+        ];
+        let draw = command_with_vertices(1, 3, C3dPreparedSelector::Missing, [vertex(source)]);
+        let near = prepare_draw_vertices(&draw, enabled_fog(9 << 16)).unwrap();
+        let far = prepare_draw_vertices(&draw, enabled_fog(81 << 16)).unwrap();
+
+        assert_eq!(near[0].word5(), 0xff00_0000);
+        assert_eq!(far[0].word5(), 0x3300_0000);
+        assert_eq!(draw.command.vertices()[0].words(), source);
+    }
+
+    #[test]
+    fn mesh_origin_sentinel_forces_per_vertex_distance_over_shared_distance() {
+        let source = [
+            81.0_f32.to_bits(),
+            0,
+            0.0_f32.to_bits(),
+            0,
+            0,
+            0xaabb_ccdd,
+            0,
+            0,
+        ];
+        let mut draw = command_with_vertices(1, 3, C3dPreparedSelector::Missing, [vertex(source)]);
+        draw.force_per_vertex_type2_distance = true;
+
+        let prepared = prepare_draw_vertices(&draw, enabled_fog(9 << 16)).unwrap();
+
+        assert_eq!(prepared[0].word5(), 0x3300_0000);
+        assert_eq!(draw.command.vertices()[0].words(), source);
     }
 
     #[test]

@@ -141,14 +141,15 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   Backend submission, palette transition, and pixels remain separate.
 - `cmr-core::c3d_type2_fog`: pure owned-copy pre-draw mutation for the optional
   Type-2 word-5 path. It explicitly carries the retained process-global gate,
-  thresholds, distance/center inputs, and x87 conversion mode; disabled state
+  thresholds, distance/center inputs, and x87 conversion contract; disabled state
   is caller-selected and is not inferred from frontend entry.
-- `cmr-video::c3d_software_raster` and `SoftwareIndexedBackend`: one explicit
-  mutation-disabled, actor-RGB-disabled, unified-indexed COPY/no-blend car
-  profile. It copies sampled indices directly, maps reviewed-car missing
+- `cmr-video::c3d_software_raster` and `SoftwareIndexedBackend`: explicit
+  mutation-disabled and mutation-enabled, actor-RGB-disabled, unified-indexed
+  COPY/no-blend car profiles. It consumes owned prepared Type-2 words, copies
+  sampled indices directly, maps reviewed-car missing
   selectors to index zero, rejects every unsupported runtime-state tuple, and
   preserves the root renderer's separate palette-quantizing policy. A
-  backend-neutral pre-scene hook rejects absent/unsupported car state before
+  backend-neutral pre-scene hook rejects absent, mismatched, or unsupported car state before
   depth clear, and the full terminal test covers draw, group-4 commit, and
   captured presentation.
 - `cmr-video::software_championship_session`: callback-scoped standalone

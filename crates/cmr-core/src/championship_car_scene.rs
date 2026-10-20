@@ -85,7 +85,7 @@ where
         return Err(ChampionshipCarSceneError::Preflight(source));
     }
     backend
-        .preflight_championship_car_scene()
+        .preflight_championship_car_scene(prepared.pre_draw_state())
         .map_err(|source| ChampionshipCarSceneError::BackendPreflight {
             stage: ChampionshipCarScenePreflightStage::BatchBackend,
             source,
@@ -156,7 +156,7 @@ where
         .validate_prepared(frame)
         .map_err(ChampionshipCarSceneError::Preflight)?;
     backend
-        .preflight_championship_car_scene()
+        .preflight_championship_car_scene(frame.pre_draw_state())
         .map_err(|source| ChampionshipCarSceneError::BackendPreflight {
             stage: ChampionshipCarScenePreflightStage::BatchBackend,
             source,
@@ -314,7 +314,10 @@ mod tests {
     impl ChampionshipCarBatchBackend<u8> for Backend {
         type Error = TestError;
 
-        fn preflight_championship_car_scene(&mut self) -> Result<(), Self::Error> {
+        fn preflight_championship_car_scene(
+            &mut self,
+            _: crate::championship_car_execute::ChampionshipCarPreDrawState,
+        ) -> Result<(), Self::Error> {
             self.events.push(Event::Preflight);
             if self.fail_preflight {
                 Err(TestError::Profile)
@@ -349,6 +352,7 @@ mod tests {
         fn draw_championship_car_batch(
             &mut self,
             command: &C3dDrawCommand,
+            _: &[crate::c3d_type2_fog::C3dType2PreDrawVertex],
         ) -> Result<(), Self::Error> {
             self.events
                 .push(Event::Draw(usize::from(command.ordinal().group1_ordinal())));
@@ -410,7 +414,12 @@ mod tests {
             })
             .unwrap();
         let mut executor = ChampionshipCarBatchExecutor::new(&catalog);
-        let prepared = executor.prepare(plan).unwrap();
+        let prepared = executor
+            .prepare(
+                plan,
+                crate::championship_car_execute::ChampionshipCarPreDrawState::DISABLED,
+            )
+            .unwrap();
         let mut backend = Backend {
             fail_preflight: true,
             ..Backend::default()
@@ -480,7 +489,12 @@ mod tests {
             })
             .unwrap();
         let mut executor = ChampionshipCarBatchExecutor::new(&catalog);
-        let prepared = executor.prepare(plan).unwrap();
+        let prepared = executor
+            .prepare(
+                plan,
+                crate::championship_car_execute::ChampionshipCarPreDrawState::DISABLED,
+            )
+            .unwrap();
         let mut backend = Backend::default();
 
         let outcome = execute_championship_car_scene(
@@ -531,7 +545,14 @@ mod tests {
         )
         .unwrap();
         let incomplete_executor = ChampionshipCarBatchExecutor::new(&incomplete);
-        assert!(incomplete_executor.prepare(plan).is_err());
+        assert!(
+            incomplete_executor
+                .prepare(
+                    plan,
+                    crate::championship_car_execute::ChampionshipCarPreDrawState::DISABLED,
+                )
+                .is_err()
+        );
 
         let (plan, arena) = scene_test_fixture();
         let first =
@@ -545,7 +566,10 @@ mod tests {
             })
             .unwrap();
         let prepared = ChampionshipCarBatchExecutor::new(&first)
-            .prepare(plan)
+            .prepare(
+                plan,
+                crate::championship_car_execute::ChampionshipCarPreDrawState::DISABLED,
+            )
             .unwrap();
         let mut second_executor = ChampionshipCarBatchExecutor::new(&second);
         let mut backend = Backend::default();
@@ -578,7 +602,14 @@ mod tests {
         let mut executor = ChampionshipCarBatchExecutor::new(&catalog);
         let mut prepared = plans
             .into_iter()
-            .map(|plan| executor.prepare(plan).unwrap())
+            .map(|plan| {
+                executor
+                    .prepare(
+                        plan,
+                        crate::championship_car_execute::ChampionshipCarPreDrawState::DISABLED,
+                    )
+                    .unwrap()
+            })
             .collect::<Vec<_>>()
             .into_iter();
         let mut backend = Backend::default();

@@ -104,34 +104,37 @@ pub fn prepare_c3d_type2_pre_draw_vertices(
         return Ok(vertices.into_boxed_slice());
     }
 
-    let mut slope = None;
+    // The recovered shared-distance branch maps its argument before checking
+    // the vertex count. Preserve that fault boundary even for an empty batch.
+    let shared_level = if state.shared_distance_q16 != 0 {
+        Some(fog_level(state, state.shared_distance_q16)?)
+    } else {
+        None
+    };
     for (vertex_index, vertex) in vertices.iter_mut().enumerate() {
-        let distance = if state.shared_distance_q16 != 0 {
-            state.shared_distance_q16
+        let level = if let Some(level) = shared_level {
+            level
         } else {
-            vertex_distance_q16(vertex.words, state.center_q16, vertex_index)?
-        };
-        let level = if distance < state.near_q16 {
-            0x00ff_0000
-        } else if distance > state.far_q16 {
-            state.far_level
-        } else {
-            let slope = match slope {
-                Some(slope) => slope,
-                None => {
-                    let computed = fog_slope(state)?;
-                    slope = Some(computed);
-                    computed
-                }
-            };
-            let remaining = state.far_q16.wrapping_sub(distance);
-            let candidate = ((i64::from(slope) * i64::from(remaining)) >> 16) as i32;
-            candidate.max(state.far_level)
+            let distance = vertex_distance_q16(vertex.words, state.center_q16, vertex_index)?;
+            fog_level(state, distance)?
         };
         vertex.words[5] = ((level as u32) & 0xffff_0000).wrapping_shl(8);
     }
 
     Ok(vertices.into_boxed_slice())
+}
+
+fn fog_level(state: C3dType2FogState, distance: i32) -> Result<i32, C3dType2FogError> {
+    if distance < state.near_q16 {
+        Ok(0x00ff_0000)
+    } else if distance > state.far_q16 {
+        Ok(state.far_level)
+    } else {
+        let slope = fog_slope(state)?;
+        let remaining = state.far_q16.wrapping_sub(distance);
+        let candidate = ((i64::from(slope) * i64::from(remaining)) >> 16) as i32;
+        Ok(candidate.max(state.far_level))
+    }
 }
 
 fn fog_slope(state: C3dType2FogState) -> Result<i32, C3dType2FogError> {
@@ -358,11 +361,26 @@ mod tests {
     }
 
     #[test]
-    fn empty_enabled_input_does_not_evaluate_an_unused_overflowing_slope() {
-        let prepared =
-            prepare_c3d_type2_pre_draw_vertices([], overflowing_slope_state(10 << 16)).unwrap();
+    fn empty_shared_distance_path_preserves_pre_count_slope_failure() {
+        let state = overflowing_slope_state(10 << 16);
+        assert_eq!(
+            prepare_c3d_type2_pre_draw_vertices([], state),
+            Err(C3dType2FogError::SlopeOverflow {
+                near_q16: state.near_q16,
+                far_q16: state.far_q16,
+            })
+        );
+    }
 
-        assert!(prepared.is_empty());
+    #[test]
+    fn empty_per_vertex_path_checks_count_before_coordinates_or_slope() {
+        let mut state = overflowing_slope_state(0);
+        state.center_q16 = [i32::MIN; 3];
+        assert!(
+            prepare_c3d_type2_pre_draw_vertices([], state)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

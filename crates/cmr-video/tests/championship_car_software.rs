@@ -6,10 +6,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cmr_assets::{
     AssetFile, AssetProfile, AssetStore, ReviewedProfile, StorageEncoding, import_source,
 };
+use cmr_core::c3d_type2_fog::{
+    C3dType2FogError, C3dType2FogState, prepare_c3d_type2_pre_draw_vertices,
+};
 use cmr_core::championship_assets::{
     CHAMPIONSHIP_CARS, MANUFACTURER_LOGOS, load_championship_assets,
 };
-use cmr_core::championship_car_execute::ChampionshipCarBatchExecutor;
+use cmr_core::championship_car_execute::{
+    ChampionshipCarBatchExecutor, ChampionshipCarBatchPreflightError, ChampionshipCarPreDrawState,
+};
 use cmr_core::championship_car_frame_plan::plan_championship_car_frame;
 use cmr_core::championship_car_scene::{
     ChampionshipCarSceneError, ChampionshipCarScenePreflightStage, execute_championship_car_scene,
@@ -33,9 +38,9 @@ use cmr_core::championship_setup_visual::{
     Q16Point, RowPresentation,
 };
 use cmr_core::championship_terminal_frame::{
-    ChampionshipCarFrameResources, ChampionshipTerminalFrameResources,
-    ChampionshipTerminalFrameState, ChampionshipTerminalPaletteResources,
-    execute_championship_terminal_frame,
+    ChampionshipCarFrameResources, ChampionshipTerminalFrameError,
+    ChampionshipTerminalFrameResources, ChampionshipTerminalFrameState,
+    ChampionshipTerminalPaletteResources, execute_championship_terminal_frame,
 };
 use cmr_core::deferred_palette::{
     DeferredPaletteCommitOutcome, DeferredPaletteState, PaletteArenaIndex, PaletteGroupBases,
@@ -53,6 +58,7 @@ use cmr_core::localization::{IndexedTextTable, Language};
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_c3d_assets::load_root_menu_c3d;
 use cmr_core::root_menu_c3d_resources::C3dPreparedSelector;
+use cmr_core::root_menu_c3d_transform::{ROOT_MENU_C3D_PROJECTION, ROOT_MENU_C3D_VIEW};
 use cmr_core::root_menu_c3d_visibility::RootMenuC3dVisibilityLatches;
 use cmr_core::source_store::UploadedSourceStore;
 use cmr_core::startup_display::StartupDisplay;
@@ -68,12 +74,13 @@ use cmr_formats::riff_palette::PaletteEntry;
 use cmr_formats::stored_asset::DecodeLimits;
 use cmr_video::c3d_software::prepare_software_frontend_c3d_bindings;
 use cmr_video::c3d_software_raster::{
-    SoftwareC3dRasterError, SoftwareChampionshipCarRasterProfile,
+    SoftwareC3dRasterError, SoftwareC3dTransformState, SoftwareChampionshipCarRasterProfile,
+    preflight_championship_car_indexed_copy_batch,
 };
 use cmr_video::software_championship_session::{
     SoftwareChampionshipFrameRequest, SoftwareChampionshipRasterSelection,
-    SoftwareChampionshipSessionBuildError, SoftwareChampionshipSessionRequest,
-    with_software_championship_session,
+    SoftwareChampionshipRenderError, SoftwareChampionshipSessionBuildError,
+    SoftwareChampionshipSessionRequest, with_software_championship_session,
 };
 use cmr_video::{SoftwareC3dBackendError, SoftwareIndexedBackend};
 use sha2::{Digest, Sha256};
@@ -147,7 +154,38 @@ fn prepared_type2_car_executes_resource_missing_resource_on_software_backend() {
             .collect::<Vec<_>>(),
         [false, true, false]
     );
-    let prepared = executor.prepare(visible).unwrap();
+    let first_draw = &visible.draws()[0];
+    let prepared_vertices = prepare_c3d_type2_pre_draw_vertices(
+        first_draw
+            .command()
+            .vertices()
+            .iter()
+            .map(|vertex| vertex.words()),
+        C3dType2FogState::DISABLED,
+    )
+    .unwrap();
+    assert!(!prepared_vertices.is_empty());
+    assert_eq!(
+        preflight_championship_car_indexed_copy_batch(
+            first_draw.command(),
+            &prepared_vertices[..prepared_vertices.len() - 1],
+            SoftwareC3dTransformState::new(
+                first_draw.actor_world(),
+                ROOT_MENU_C3D_VIEW,
+                ROOT_MENU_C3D_PROJECTION,
+                visible.viewport(),
+            ),
+            SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+        ),
+        Err(SoftwareC3dRasterError::PreparedVertexCountMismatch {
+            command: prepared_vertices.len(),
+            prepared: prepared_vertices.len() - 1,
+        })
+    );
+    let prepared = executor
+        .prepare(visible, ChampionshipCarPreDrawState::DISABLED)
+        .unwrap();
+    let mut enabled_car_state = car_state;
     let next_visible = plan_championship_car_frame(
         &topology,
         &runtime,
@@ -159,7 +197,9 @@ fn prepared_type2_car_executes_resource_missing_resource_on_software_backend() {
         EXTENT,
     )
     .unwrap();
-    let next_prepared = executor.prepare(next_visible).unwrap();
+    let next_prepared = executor
+        .prepare(next_visible, ChampionshipCarPreDrawState::DISABLED)
+        .unwrap();
 
     let (mut backend, surfaces) = initialized_backend();
     let before_pixels = backend.back_pixels().unwrap().to_vec();
@@ -204,6 +244,50 @@ fn prepared_type2_car_executes_resource_missing_resource_on_software_backend() {
     assert_eq!(depth[337].to_bits(), 0x3f43_d264);
     assert_eq!(pixels[0], 0);
     assert_eq!(depth[0], 1.0);
+    let disabled_pixels = pixels.to_vec();
+    let disabled_depth = depth.to_vec();
+
+    let enabled_visible = plan_championship_car_frame(
+        &topology,
+        &runtime,
+        &mut enabled_car_state,
+        CanonicalCar::Subaru,
+        input,
+        IDENTITY_BASIS,
+        logo_origin,
+        EXTENT,
+    )
+    .unwrap();
+    let enabled_state = ChampionshipCarPreDrawState {
+        type2_fog: C3dType2FogState {
+            enabled: true,
+            near_q16: 10 << 16,
+            far_q16: 80 << 16,
+            far_level: 0x0033_0000,
+            shared_distance_q16: 9 << 16,
+            center_q16: [0; 3],
+        },
+    };
+    let mut enabled_executor = ChampionshipCarBatchExecutor::new(&catalog);
+    let enabled_prepared = enabled_executor
+        .prepare(enabled_visible, enabled_state)
+        .unwrap();
+    let (mut enabled_backend, enabled_surfaces) = initialized_backend();
+    enabled_backend
+        .configure_championship_car_raster_profile(
+            SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+        )
+        .unwrap();
+    execute_championship_car_scene(
+        &mut enabled_executor,
+        &mut enabled_backend,
+        enabled_surfaces.back,
+        C3dDepthClear::Clear,
+        enabled_prepared,
+    )
+    .unwrap();
+    assert_eq!(enabled_backend.back_pixels().unwrap(), disabled_pixels);
+    assert_eq!(enabled_backend.c3d_depth_values().unwrap(), disabled_depth);
 }
 
 #[test]
@@ -212,7 +296,7 @@ fn unsupported_profile_configuration_is_effect_free() {
     let before_pixels = unconfigured.back_pixels().unwrap().to_vec();
     let before_depth = unconfigured.c3d_depth_values().unwrap().to_vec();
     let unsupported = SoftwareChampionshipCarRasterProfile {
-        fog_mutation: true,
+        actor_rgb_override: true,
         ..SoftwareChampionshipCarRasterProfile::
             MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND
     };
@@ -343,6 +427,8 @@ fn terminal_frame_presents_visible_car_indices_under_initial_group4_palette() {
                 topology: &topology,
                 runtime: &runtime,
                 base_basis: IDENTITY_BASIS,
+                pre_draw_state:
+                    cmr_core::championship_car_execute::ChampionshipCarPreDrawState::DISABLED,
             }),
         },
         ChampionshipTerminalFrameState {
@@ -578,7 +664,10 @@ fn championship_session_rejects_unsupported_profile_before_callback() {
     let request = SoftwareChampionshipSessionRequest::new(
         Language::English,
         VisualVariant::Normal,
-        SoftwareChampionshipRasterSelection::caller_asserted(unsupported),
+        SoftwareChampionshipRasterSelection::caller_asserted(
+            unsupported,
+            cmr_core::c3d_type2_fog::C3dType2FogState::DISABLED,
+        ),
         PaletteMapping::Identity,
         PaletteMapping::Identity,
     );
@@ -599,6 +688,167 @@ fn championship_session_rejects_unsupported_profile_before_callback() {
             SoftwareC3dRasterError::UnsupportedChampionshipCarProfile(_)
         ))
     ));
+}
+
+#[test]
+fn championship_session_rejects_fog_profile_state_mismatch_before_callback() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let request = SoftwareChampionshipSessionRequest::new(
+        Language::English,
+        VisualVariant::Normal,
+        SoftwareChampionshipRasterSelection::caller_asserted(
+            SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+            C3dType2FogState::DISABLED,
+        ),
+        PaletteMapping::Identity,
+        PaletteMapping::Identity,
+    );
+    let result = with_software_championship_session::<()>(
+        &store,
+        synthetic_startup(palette(BOOTSTRAP_RED)),
+        request,
+        |_| panic!("mismatched fog state must not enter the callback"),
+    );
+    assert!(matches!(
+        result,
+        Err(SoftwareChampionshipSessionBuildError::RasterProfile(
+            SoftwareC3dBackendError::ChampionshipCarFogStateMismatch {
+                profile_enabled: true,
+                prepared_enabled: false,
+            }
+        ))
+    ));
+}
+
+#[test]
+fn championship_session_carries_enabled_fog_state_to_visible_car_submission() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let fog = C3dType2FogState {
+        enabled: true,
+        near_q16: 10 << 16,
+        far_q16: 80 << 16,
+        far_level: 0x0033_0000,
+        shared_distance_q16: 9 << 16,
+        center_q16: [0; 3],
+    };
+    let request = SoftwareChampionshipSessionRequest::new(
+        Language::English,
+        VisualVariant::Normal,
+        SoftwareChampionshipRasterSelection::caller_asserted(
+            SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+            fog,
+        ),
+        PaletteMapping::Identity,
+        PaletteMapping::Identity,
+    );
+
+    let run = with_software_championship_session(
+        &store,
+        synthetic_startup(palette(BOOTSTRAP_RED)),
+        request,
+        |session| {
+            assert_eq!(session.request().raster_selection.type2_fog, fog);
+            let transcript = championship_transcript();
+            for expected_draws in [0, 3] {
+                let outcome = session
+                    .render(SoftwareChampionshipFrameRequest {
+                        visual: championship_input(&transcript),
+                        setup: ChampionshipSetupFrameState::default(),
+                        car_input: ChampionshipCarInput {
+                            f9: false,
+                            f10: false,
+                        },
+                        base_basis: IDENTITY_BASIS,
+                    })
+                    .unwrap();
+                assert_eq!(outcome.scene.submission.unwrap().draws, expected_draws);
+            }
+            assert!(
+                session
+                    .backend()
+                    .presented_frame()
+                    .unwrap()
+                    .pixels()
+                    .contains(&RESOURCE_INDEX)
+            );
+        },
+    )
+    .unwrap();
+    assert_eq!(run.backend.uploaded_source_count(), 0);
+}
+
+#[test]
+fn championship_session_carries_enabled_fog_parameters_to_car_preparation() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let fog = C3dType2FogState {
+        enabled: true,
+        near_q16: 0,
+        far_q16: 1,
+        far_level: 0x0033_0000,
+        shared_distance_q16: 1,
+        center_q16: [7, 8, 9],
+    };
+    let request = SoftwareChampionshipSessionRequest::new(
+        Language::English,
+        VisualVariant::Normal,
+        SoftwareChampionshipRasterSelection::caller_asserted(
+            SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+            fog,
+        ),
+        PaletteMapping::Identity,
+        PaletteMapping::Identity,
+    );
+
+    with_software_championship_session(
+        &store,
+        synthetic_startup(palette(BOOTSTRAP_RED)),
+        request,
+        |session| {
+            let transcript = championship_transcript();
+            let frame = || SoftwareChampionshipFrameRequest {
+                visual: championship_input(&transcript),
+                setup: ChampionshipSetupFrameState::default(),
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            };
+            assert_eq!(
+                session
+                    .render(frame())
+                    .unwrap()
+                    .scene
+                    .submission
+                    .unwrap()
+                    .draws,
+                0
+            );
+
+            let error = session.render(frame()).unwrap_err();
+            assert!(matches!(
+                error,
+                SoftwareChampionshipRenderError::Frame(source)
+                    if matches!(
+                        *source,
+                        ChampionshipTerminalFrameError::CarPrepare {
+                            source: ChampionshipCarBatchPreflightError::Type2Fog {
+                                source: C3dType2FogError::SlopeOverflow {
+                                    near_q16: 0,
+                                    far_q16: 1,
+                                },
+                                ..
+                            },
+                            ..
+                        }
+                    )
+            ));
+        },
+    )
+    .unwrap();
 }
 
 fn synthetic_startup(bootstrap: [PaletteEntry; 256]) -> StartupDisplay<SoftwareIndexedBackend> {

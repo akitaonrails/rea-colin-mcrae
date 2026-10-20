@@ -8,7 +8,8 @@ use std::fmt;
 
 use cmr_core::{
     c3d_batch::C3dDrawCommand,
-    championship_car_execute::ChampionshipCarBatchBackend,
+    c3d_type2_fog::C3dType2PreDrawVertex,
+    championship_car_execute::{ChampionshipCarBatchBackend, ChampionshipCarPreDrawState},
     display::DisplayExtent,
     frontend_c3d_scene::{C3dBindingState, FrontendC3dSceneBackend},
     root_menu_c3d_execute::RootMenuC3dBatchBackend,
@@ -52,6 +53,10 @@ pub enum SoftwareC3dBackendError {
     PaletteNotAttached,
     UnsupportedTextureColorKey(u8),
     ChampionshipCarProfileNotConfigured,
+    ChampionshipCarFogStateMismatch {
+        profile_enabled: bool,
+        prepared_enabled: bool,
+    },
     Raster(SoftwareC3dRasterError),
     Compose(SoftwareC3dComposeError),
 }
@@ -440,8 +445,18 @@ impl RootMenuC3dBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedBacke
 impl ChampionshipCarBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedBackend {
     type Error = SoftwareC3dBackendError;
 
-    fn preflight_championship_car_scene(&mut self) -> Result<(), Self::Error> {
-        self.validate_championship_car_raster_profile().map(drop)
+    fn preflight_championship_car_scene(
+        &mut self,
+        pre_draw_state: ChampionshipCarPreDrawState,
+    ) -> Result<(), Self::Error> {
+        let profile = self.validate_championship_car_raster_profile()?;
+        if profile.fog_mutation != pre_draw_state.type2_fog.enabled {
+            return Err(SoftwareC3dBackendError::ChampionshipCarFogStateMismatch {
+                profile_enabled: profile.fog_mutation,
+                prepared_enabled: pre_draw_state.type2_fog.enabled,
+            });
+        }
+        Ok(())
     }
 
     fn set_championship_car_actor_world(
@@ -473,7 +488,11 @@ impl ChampionshipCarBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedB
         Ok(())
     }
 
-    fn draw_championship_car_batch(&mut self, command: &C3dDrawCommand) -> Result<(), Self::Error> {
+    fn draw_championship_car_batch(
+        &mut self,
+        command: &C3dDrawCommand,
+        vertices: &[C3dType2PreDrawVertex],
+    ) -> Result<(), Self::Error> {
         let destination = self.c3d.require_active("draw_championship_car_batch")?;
         let profile = self.validate_championship_car_raster_profile()?;
         let world = self
@@ -504,6 +523,7 @@ impl ChampionshipCarBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedB
         let extent = self.checked_c3d_destination(destination)?;
         let prepared = preflight_championship_car_indexed_copy_batch(
             command,
+            vertices,
             SoftwareC3dTransformState::new(world, view, ROOT_MENU_C3D_PROJECTION, viewport),
             profile,
         )
@@ -762,7 +782,7 @@ mod tests {
         );
         let supported = SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND;
         let unsupported = SoftwareChampionshipCarRasterProfile {
-            fog_mutation: true,
+            actor_rgb_override: true,
             ..supported
         };
         assert!(matches!(
@@ -784,6 +804,26 @@ mod tests {
         assert_eq!(
             backend.validate_championship_car_raster_profile(),
             Ok(supported)
+        );
+        let enabled_state = ChampionshipCarPreDrawState {
+            type2_fog: cmr_core::c3d_type2_fog::C3dType2FogState {
+                enabled: true,
+                near_q16: 0,
+                far_q16: 1,
+                far_level: 0,
+                shared_distance_q16: 1,
+                center_q16: [0; 3],
+            },
+        };
+        assert_eq!(
+            ChampionshipCarBatchBackend::<SoftwareC3dSampledTexture>::preflight_championship_car_scene(
+                &mut backend,
+                enabled_state,
+            ),
+            Err(SoftwareC3dBackendError::ChampionshipCarFogStateMismatch {
+                profile_enabled: false,
+                prepared_enabled: true,
+            })
         );
         let before_color = backend.back_pixels().unwrap().to_vec();
         let before_depth = backend.c3d_depth_values().unwrap().to_vec();
@@ -824,6 +864,32 @@ mod tests {
             Err(SoftwareC3dBackendError::InvalidSequence(
                 "bind_championship_car_default"
             ))
+        );
+    }
+
+    #[test]
+    fn enabled_championship_copy_profile_accepts_enabled_pre_draw_state() {
+        let (mut backend, _) = initialized_backend();
+        let profile = SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND;
+        backend
+            .configure_championship_car_raster_profile(profile)
+            .unwrap();
+        let state = ChampionshipCarPreDrawState {
+            type2_fog: cmr_core::c3d_type2_fog::C3dType2FogState {
+                enabled: true,
+                near_q16: 10 << 16,
+                far_q16: 80 << 16,
+                far_level: 0x0033_0000,
+                shared_distance_q16: 9 << 16,
+                center_q16: [0; 3],
+            },
+        };
+        assert_eq!(
+            ChampionshipCarBatchBackend::<SoftwareC3dSampledTexture>::preflight_championship_car_scene(
+                &mut backend,
+                state,
+            ),
+            Ok(())
         );
     }
 }

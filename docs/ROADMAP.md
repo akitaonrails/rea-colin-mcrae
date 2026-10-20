@@ -245,9 +245,13 @@ palette, and presents last. Static recovery now separates the process-global
 optional Type-2 word-5 pre-draw mutation from caller flag `0x08`, which affects
 only a different world/spatial renderer in resolved code. A pure owned-copy
 mutation contract models the retained gate, thresholds, distance/center tuple,
-fixed truncating x87 qword conversion, and exact fixed-square-root lookup. The software backend now
-also admits one explicit mutation-disabled, actor-RGB-disabled,
-unified-indexed COPY/no-blend profile, copies texture indices directly, and
+fixed truncating x87 qword conversion, and exact fixed-square-root lookup.
+Each car frame now prepares fresh owned Type-2 words before terminal effects,
+submits them after the recovered selector-binding decision even on cache hits,
+routes the active mesh's exact all-`-0x10000` origin sentinel to the per-vertex
+distance arm, and rejects profile/state disagreement explicitly. The software backend admits
+the otherwise identical mutation-disabled and mutation-enabled,
+actor-RGB-disabled unified-indexed COPY/no-blend profiles, copies texture indices directly, and
 keeps missing selectors distinct as reviewed-car index zero. A public synthetic
 asset-to-scene test pins resource/default/resource execution and exact indexed
 color/depth output. Car-present scenes now invoke a backend-specific effect-free
@@ -259,7 +263,8 @@ pairs, explicit raster-profile provenance, compact car/FCHE palette layout,
 shared bindings, and frame state; synthetic and reviewed-import tests cover
 hidden-to-visible rendering, car switching, Next, presentation, and teardown.
 The original device branch, alpha, word-5 mutation, and actor-RGB gates are
-independent retained inputs. Enabled word-5 submission remains separate.
+independent retained inputs. Actor-RGB lifecycle/ownership and alternate
+split/modulate/linear profiles remain separate.
 
 Exit gate:
 

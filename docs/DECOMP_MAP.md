@@ -98,7 +98,7 @@ Status markers:
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
 - [x] `E15` Recover championship mode-8 C3D preparation and session ownership.
-- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone software session, and pure optional Type-2 word-5 mutation implemented; enabled mutation wiring and alternate profiles remain).
+- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone software session, and disabled/enabled Type-2 word-5 submission implemented; actor-RGB state and alternate raster profiles remain).
 
 ## F. Menus, game state, and persistence
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T22:46:31Z
-milestone=correct-type2-ftol-contract
+updated_utc=2026-10-20T22:59:06Z
+milestone=submit-enabled-type2-word5
 completed=50
 partial=20
 not_started=47
 blocked=0
 total=117
-current_focus=E16-enabled-type2-word5-submission
-next_exit_gate=wire-explicit-enabled-mutation-state-through-car-batches
+current_focus=E16-actor-rgb-lifecycle
+next_exit_gate=recover-and-wire-explicit-actor-rgb-state-after-word5
 <!-- PROGRESS-TAIL-END -->

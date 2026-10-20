@@ -13,7 +13,7 @@ use crate::{
     c3d_topology::C3dObjectTopology,
     championship_car_execute::{
         ChampionshipCarBatchBackend, ChampionshipCarBatchExecutor,
-        ChampionshipCarBatchPreflightError,
+        ChampionshipCarBatchPreflightError, ChampionshipCarPreDrawState,
     },
     championship_car_frame_plan::{ChampionshipCarFramePlanError, plan_championship_car_frame},
     championship_car_scene::{
@@ -53,6 +53,7 @@ pub struct ChampionshipCarFrameResources<'a> {
     pub topology: &'a C3dObjectTopology<'a>,
     pub runtime: &'a C3dResourceScaledObject,
     pub base_basis: [i32; 9],
+    pub pre_draw_state: ChampionshipCarPreDrawState,
 }
 
 pub struct ChampionshipTerminalPaletteResources<'a> {
@@ -132,7 +133,7 @@ pub enum ChampionshipTerminalFrameError<E, S, P> {
         command_index: usize,
         source: ChampionshipCarFramePlanError,
     },
-    CarCatalog {
+    CarPrepare {
         command_index: usize,
         source: ChampionshipCarBatchPreflightError,
     },
@@ -167,12 +168,12 @@ impl<E: fmt::Display, S: fmt::Display, P: fmt::Display> fmt::Display
                 f,
                 "championship car plan at command {command_index} failed: {source}"
             ),
-            Self::CarCatalog {
+            Self::CarPrepare {
                 command_index,
                 source,
             } => write!(
                 f,
-                "championship car catalog at command {command_index} failed: {source}"
+                "championship car preparation at command {command_index} failed: {source}"
             ),
             Self::Scene {
                 terminal_index,
@@ -212,7 +213,7 @@ where
             Self::SetupSource(source) | Self::SetupExecution(source) => Some(source),
             Self::CarContract(source) => Some(source),
             Self::CarPlan { source, .. } => Some(source),
-            Self::CarCatalog { source, .. } => Some(source),
+            Self::CarPrepare { source, .. } => Some(source),
             Self::Scene { source, .. } => Some(source),
             Self::Palette { source, .. } => Some(source),
             Self::Presentation { source, .. } => Some(source),
@@ -293,12 +294,14 @@ where
                 command_index: contract.command_index,
                 source,
             })?;
-            Some(executor.prepare(plan).map_err(|source| {
-                ChampionshipTerminalFrameError::CarCatalog {
-                    command_index: contract.command_index,
-                    source,
-                }
-            })?)
+            Some(
+                executor
+                    .prepare(plan, car.pre_draw_state)
+                    .map_err(|source| ChampionshipTerminalFrameError::CarPrepare {
+                        command_index: contract.command_index,
+                        source,
+                    })?,
+            )
         }
         (None, None) => None,
         _ => unreachable!("contract scan reconciles car resources"),
@@ -753,7 +756,10 @@ mod tests {
     }
     impl ChampionshipCarBatchBackend<u8> for Backend {
         type Error = Error;
-        fn preflight_championship_car_scene(&mut self) -> Result<(), Error> {
+        fn preflight_championship_car_scene(
+            &mut self,
+            _: ChampionshipCarPreDrawState,
+        ) -> Result<(), Error> {
             self.preflight_attempts += 1;
             if self.fail_preflight {
                 Err(Error::Profile)
@@ -780,6 +786,7 @@ mod tests {
         fn draw_championship_car_batch(
             &mut self,
             _: &crate::c3d_batch::C3dDrawCommand,
+            _: &[crate::c3d_type2_fog::C3dType2PreDrawVertex],
         ) -> Result<(), Error> {
             self.events.borrow_mut().push(Event::Draw);
             Ok(())
@@ -971,6 +978,7 @@ mod tests {
                         topology: &fixture.topology,
                         runtime: &fixture.runtime,
                         base_basis: [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x10000],
+                        pre_draw_state: ChampionshipCarPreDrawState::DISABLED,
                     }),
                 },
                 ChampionshipTerminalFrameState {
@@ -1460,6 +1468,7 @@ mod tests {
                     topology: &fixture.topology,
                     runtime: &fixture.runtime,
                     base_basis: [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x10000],
+                    pre_draw_state: ChampionshipCarPreDrawState::DISABLED,
                 }),
             },
             ChampionshipTerminalFrameState {
@@ -1506,6 +1515,166 @@ mod tests {
         assert_eq!(car_latches, before_car_latches);
         assert_eq!(root_latches, before_root_latches);
         assert_eq!(route.active(), None);
+        assert_eq!(pal, before_palette);
+        assert_eq!(rcache, before_renderer);
+        assert_eq!(gcache, before_global);
+    }
+
+    #[test]
+    fn type2_preparation_failure_precedes_all_terminal_effects_and_state_changes() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut backend = Backend::new(Rc::clone(&events));
+        let mut h = Harness::new(&mut backend);
+        let fixture = terminal_scene_test_fixture();
+        let catalog = bind_prepared_c3d_resources(
+            fixture.arena.provenance(),
+            fixture.arena.resources(),
+            &mut |id, _| Ok::<_, std::convert::Infallible>(id.index() as u8),
+        )
+        .unwrap();
+        let mut executor = ChampionshipCarBatchExecutor::new(&catalog);
+        let mut preview = ChampionshipPreviewCache::new();
+        let mut car_state = ChampionshipCarState::new();
+        let mut car_latches = ChampionshipCarVisibilityLatches::new();
+        let mut root_latches = RootMenuC3dVisibilityLatches::new();
+        let route = FrontendC3dRouteState::new();
+        let mut pal = DeferredPaletteState::new();
+        let zero = PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        };
+        let palette_arena = [[zero; 256]];
+        let mut rcache = [zero; 256];
+        let mut gcache = [zero; 256];
+        let t = transcript(0);
+
+        let mut run = |pre_draw_state,
+                       preview: &mut ChampionshipPreviewCache,
+                       car_state: &mut ChampionshipCarState,
+                       car_latches: &mut ChampionshipCarVisibilityLatches,
+                       root_latches: &mut RootMenuC3dVisibilityLatches,
+                       pal: &mut DeferredPaletteState,
+                       rcache: &mut [PaletteEntry; 256],
+                       gcache: &mut [PaletteEntry; 256]| {
+            execute_championship_terminal_frame(
+                input(&t),
+                ChampionshipSetupFrameState::default(),
+                ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                ChampionshipTerminalFrameResources {
+                    setup: ChampionshipSetupFrameResources {
+                        text: &h.text,
+                        fonts: &h.fonts,
+                        selection: Some(h.selection),
+                        logos: &h.logos,
+                        frames: &h.frames,
+                    },
+                    car: Some(ChampionshipCarFrameResources {
+                        car: CanonicalCar::Subaru,
+                        topology: &fixture.topology,
+                        runtime: &fixture.runtime,
+                        base_basis: [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x10000],
+                        pre_draw_state,
+                    }),
+                },
+                ChampionshipTerminalFrameState {
+                    preview_cache: preview,
+                    car_transform: car_state,
+                    car_visibility: car_latches,
+                    root_visibility: root_latches,
+                    route: &route,
+                },
+                ChampionshipTerminalPaletteResources {
+                    bits_per_pixel: 8,
+                    group_bases: PaletteGroupBases {
+                        group_1: 0,
+                        group_2: 0,
+                        group_3: 0,
+                        group_4: 0,
+                        group_5: 0,
+                    },
+                    arena: &palette_arena,
+                    state: pal,
+                    renderer_cache: rcache,
+                    global_cache: gcache,
+                },
+                &mut executor,
+                &mut h.store,
+                999,
+                TextLayoutLimits::default(),
+                C3dDepthClear::Clear,
+            )
+        };
+
+        let hidden = run(
+            ChampionshipCarPreDrawState::DISABLED,
+            &mut preview,
+            &mut car_state,
+            &mut car_latches,
+            &mut root_latches,
+            &mut pal,
+            &mut rcache,
+            &mut gcache,
+        )
+        .unwrap();
+        assert_eq!(hidden.scene.submission.unwrap().draws, 0);
+
+        car_latches.show_all_layers(CanonicalCar::Escort);
+        root_latches.show_all_layers(crate::root_menu_c3d_assets::RootMenuC3dSlot::Options);
+        pal.request(crate::deferred_palette::PaletteArenaIndex::new(0));
+        let before_preview = preview;
+        let before_car = car_state;
+        let before_car_latches = car_latches.clone();
+        let before_root_latches = root_latches.clone();
+        let before_route = route.active();
+        let before_palette = pal;
+        let before_renderer = rcache;
+        let before_global = gcache;
+        events.borrow_mut().clear();
+
+        let result = run(
+            ChampionshipCarPreDrawState {
+                type2_fog: crate::c3d_type2_fog::C3dType2FogState {
+                    enabled: true,
+                    near_q16: 0,
+                    far_q16: 1,
+                    far_level: 0x0033_0000,
+                    shared_distance_q16: 1,
+                    center_q16: [7, 8, 9],
+                },
+            },
+            &mut preview,
+            &mut car_state,
+            &mut car_latches,
+            &mut root_latches,
+            &mut pal,
+            &mut rcache,
+            &mut gcache,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ChampionshipTerminalFrameError::CarPrepare {
+                source: ChampionshipCarBatchPreflightError::Type2Fog {
+                    source: crate::c3d_type2_fog::C3dType2FogError::SlopeOverflow {
+                        near_q16: 0,
+                        far_q16: 1,
+                    },
+                    ..
+                },
+                ..
+            })
+        ));
+        assert!(events.borrow().is_empty());
+        assert_eq!(preview, before_preview);
+        assert_eq!(car_state, before_car);
+        assert_eq!(car_latches, before_car_latches);
+        assert_eq!(root_latches, before_root_latches);
+        assert_eq!(route.active(), before_route);
         assert_eq!(pal, before_palette);
         assert_eq!(rcache, before_renderer);
         assert_eq!(gcache, before_global);
@@ -1651,6 +1820,7 @@ mod tests {
                         topology: &fixture.topology,
                         runtime: &fixture.runtime,
                         base_basis: [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x10000],
+                        pre_draw_state: ChampionshipCarPreDrawState::DISABLED,
                     }),
                 },
                 ChampionshipTerminalFrameState {

@@ -11,6 +11,7 @@ use std::fmt;
 
 use cmr_core::{
     c3d_batch::C3dDrawCommand,
+    c3d_type2_fog::C3dType2PreDrawVertex,
     root_menu_c3d_frame_plan::RootMenuC3dDrawCommand,
     root_menu_c3d_resources::C3dVertexMutationBranch,
     root_menu_c3d_runtime::{
@@ -150,6 +151,10 @@ pub enum SoftwareC3dRasterError {
     InvalidPreparedTriangle {
         triangle: usize,
     },
+    PreparedVertexCountMismatch {
+        command: usize,
+        prepared: usize,
+    },
 }
 
 /// Orthogonal runtime state controlling championship-car raster behavior.
@@ -167,7 +172,7 @@ pub struct SoftwareChampionshipCarRasterProfile {
 }
 
 impl SoftwareChampionshipCarRasterProfile {
-    /// The sole deterministic software subset currently implemented.
+    /// The default mutation-disabled deterministic software subset.
     pub const MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND: Self = Self {
         unified_indexed: true,
         texture_copy: true,
@@ -175,6 +180,13 @@ impl SoftwareChampionshipCarRasterProfile {
         alpha_blend: false,
         fog_mutation: false,
         actor_rgb_override: false,
+    };
+
+    /// The same deterministic COPY subset with the recovered CPU-side Type-2
+    /// word-5 mutation enabled. COPY intentionally does not consume word 5.
+    pub const MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND: Self = Self {
+        fog_mutation: true,
+        ..Self::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND
     };
 }
 
@@ -487,12 +499,14 @@ pub fn preflight_root_c3d_copy_batch(
         .map(SoftwareC3dPreparedCopyBatch)
 }
 
-/// Preflights a car batch only for the bounded mutation-disabled COPY profile.
+/// Preflights a car batch for the bounded COPY profile using already-prepared
+/// Type-2 words from the explicit retained mutation state.
 ///
 /// Profile and Type-2 checks precede geometry work, making unsupported state
 /// rejection effect-free for callers that preflight before composition.
 pub fn preflight_championship_car_indexed_copy_batch(
     command: &C3dDrawCommand,
+    prepared_vertices: &[C3dType2PreDrawVertex],
     transforms: SoftwareC3dTransformState,
     profile: SoftwareChampionshipCarRasterProfile,
 ) -> Result<SoftwareC3dPreparedCopyBatch, SoftwareC3dRasterError> {
@@ -502,16 +516,16 @@ pub fn preflight_championship_car_indexed_copy_batch(
             vertex_type: command.vertex_type(),
         });
     }
-    let vertices = command
-        .vertices()
+    if command.vertices().len() != prepared_vertices.len() {
+        return Err(SoftwareC3dRasterError::PreparedVertexCountMismatch {
+            command: command.vertices().len(),
+            prepared: prepared_vertices.len(),
+        });
+    }
+    let vertices = prepared_vertices
         .iter()
         .copied()
-        .map(|vertex| {
-            RasterInputVertex::from_type2(
-                C3dType2ResourceScaledVertex::new(vertex, C3dVertexMutationBranch::Type2)
-                    .expect("the championship profile requires type-2 vertices"),
-            )
-        })
+        .map(RasterInputVertex::from_type2_pre_draw)
         .collect::<Vec<_>>();
     preflight_indexed_triangle_list(&vertices, command.indices(), transforms)
         .map(SoftwareC3dPreparedCopyBatch)
@@ -522,6 +536,8 @@ pub fn validate_championship_car_raster_profile(
 ) -> Result<(), SoftwareC3dRasterError> {
     if profile
         == SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND
+        || profile
+            == SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND
     {
         Ok(())
     } else {
@@ -1281,6 +1297,16 @@ impl RasterInputVertex {
             diffuse: vertex.diffuse(),
             specular: vertex.specular(),
             uv: raw.adjusted_pair(),
+        }
+    }
+
+    fn from_type2_pre_draw(vertex: C3dType2PreDrawVertex) -> Self {
+        let words = vertex.words();
+        Self {
+            position: [words[0], words[1], words[2]].map(f32::from_bits),
+            diffuse: words[4],
+            specular: words[5],
+            uv: [words[6], words[7]].map(f32::from_bits),
         }
     }
 }
@@ -2308,10 +2334,6 @@ mod tests {
                 ..supported
             },
             SoftwareChampionshipCarRasterProfile {
-                fog_mutation: true,
-                ..supported
-            },
-            SoftwareChampionshipCarRasterProfile {
                 actor_rgb_override: true,
                 ..supported
             },
@@ -2335,6 +2357,12 @@ mod tests {
             assert_eq!(target, [44]);
             assert_eq!(depth.values(), before_depth);
         }
+        assert_eq!(
+            validate_championship_car_raster_profile(
+                SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+            ),
+            Ok(())
+        );
 
         let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
         let before_depth = depth.values().to_vec();

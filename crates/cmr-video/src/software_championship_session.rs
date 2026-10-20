@@ -11,6 +11,7 @@ use std::fmt;
 use cmr_assets::AssetStore;
 use cmr_core::{
     c3d_topology::{C3dObjectTopology, C3dObjectTopologyError},
+    c3d_type2_fog::C3dType2FogState,
     championship_assets::{
         CHAMPIONSHIP_CAR_COUNT, ChampionshipAssetLoadError, ChampionshipAssets,
         load_championship_assets,
@@ -19,7 +20,7 @@ use cmr_core::{
         ChampionshipLogoSurfaceError, ChampionshipLogoUploadError, UploadedChampionshipLogoPool,
         prepare_championship_logo_surfaces, upload_championship_logos,
     },
-    championship_car_execute::ChampionshipCarBatchExecutor,
+    championship_car_execute::{ChampionshipCarBatchExecutor, ChampionshipCarPreDrawState},
     championship_car_transform::{ChampionshipCarInput, ChampionshipCarState},
     championship_car_visibility::ChampionshipCarVisibilityLatches,
     championship_frame_assets::{
@@ -127,23 +128,29 @@ pub enum SoftwareChampionshipRasterSelectionProvenance {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SoftwareChampionshipRasterSelection {
     pub raster_profile: SoftwareChampionshipCarRasterProfile,
+    pub type2_fog: C3dType2FogState,
     pub provenance: SoftwareChampionshipRasterSelectionProvenance,
 }
 
 impl SoftwareChampionshipRasterSelection {
     #[must_use]
-    pub const fn caller_asserted(raster_profile: SoftwareChampionshipCarRasterProfile) -> Self {
+    pub const fn caller_asserted(
+        raster_profile: SoftwareChampionshipCarRasterProfile,
+        type2_fog: C3dType2FogState,
+    ) -> Self {
         Self {
             raster_profile,
+            type2_fog,
             provenance: SoftwareChampionshipRasterSelectionProvenance::CallerAssertedRasterProfile,
         }
     }
 
-    /// Selects the sole deterministic software tuple currently implemented.
+    /// Selects the default mutation-disabled deterministic software policy.
     #[must_use]
     pub const fn supported_software_oracle_policy() -> Self {
         Self {
             raster_profile: SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+            type2_fog: C3dType2FogState::DISABLED,
             provenance: SoftwareChampionshipRasterSelectionProvenance::SupportedSoftwareOraclePolicy,
         }
     }
@@ -377,6 +384,9 @@ impl SoftwareChampionshipSession<'_, '_, '_, '_> {
             topology: &self.topologies[car.index() as usize],
             runtime: &self.runtimes[car.index() as usize],
             base_basis: frame.base_basis,
+            pre_draw_state: ChampionshipCarPreDrawState {
+                type2_fog: self.request.raster_selection.type2_fog,
+            },
         });
 
         execute_championship_terminal_frame(
@@ -580,6 +590,16 @@ pub fn with_software_championship_session<R>(
         request.info_mapping,
     )
     .map_err(SoftwareChampionshipSessionBuildError::FrameSurfaces)?;
+    if request.raster_selection.raster_profile.fog_mutation
+        != request.raster_selection.type2_fog.enabled
+    {
+        return Err(SoftwareChampionshipSessionBuildError::RasterProfile(
+            SoftwareC3dBackendError::ChampionshipCarFogStateMismatch {
+                profile_enabled: request.raster_selection.raster_profile.fog_mutation,
+                prepared_enabled: request.raster_selection.type2_fog.enabled,
+            },
+        ));
+    }
     backend
         .configure_championship_car_raster_profile(request.raster_selection.raster_profile)
         .map_err(SoftwareChampionshipSessionBuildError::RasterProfile)?;
@@ -654,7 +674,10 @@ mod tests {
         let request = SoftwareChampionshipSessionRequest::new(
             Language::French,
             VisualVariant::GPrefixed,
-            SoftwareChampionshipRasterSelection::caller_asserted(SUPPORTED),
+            SoftwareChampionshipRasterSelection::caller_asserted(
+                SUPPORTED,
+                C3dType2FogState::DISABLED,
+            ),
             PaletteMapping::Identity,
             PaletteMapping::NearestNonzero,
         );

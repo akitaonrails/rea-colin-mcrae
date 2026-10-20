@@ -3,7 +3,7 @@
 //! Static analysis shows that a car C3D creates one actor per group-0 record.
 //! This planner preserves those actors and their source attachment order. It
 //! owns draw payloads but deliberately stops before binding, rasterization,
-//! palette application, or the unresolved pre-draw type-2 word mutation.
+//! palette application, or the downstream pre-draw type-2 word mutation.
 
 use std::fmt;
 
@@ -44,6 +44,7 @@ pub struct ChampionshipCarActorLevel {
     source_offset: usize,
     group1_ordinal: u16,
     flags: u32,
+    mesh_origin_q16: [i32; 3],
 }
 
 impl ChampionshipCarActorLevel {
@@ -67,6 +68,22 @@ impl ChampionshipCarActorLevel {
     #[must_use]
     pub const fn flags(self) -> u32 {
         self.flags
+    }
+
+    /// Exact group-1 little-endian signed words at `+0x18/+0x1c/+0x20`,
+    /// copied by the original loader to mesh fields `+0x84/+0x88/+0x8c`.
+    #[must_use]
+    pub const fn mesh_origin_q16(self) -> [i32; 3] {
+        self.mesh_origin_q16
+    }
+
+    /// The recovered renderer passes a literal zero fog distance when every
+    /// mesh-origin component is the `-1.0` Q16 sentinel.
+    #[must_use]
+    pub const fn forces_per_vertex_type2_distance(self) -> bool {
+        self.mesh_origin_q16[0] == -0x1_0000
+            && self.mesh_origin_q16[1] == -0x1_0000
+            && self.mesh_origin_q16[2] == -0x1_0000
     }
 }
 
@@ -133,6 +150,7 @@ pub struct ChampionshipCarActorDraw {
     actor_index: usize,
     actor_world_q16: [i32; 16],
     actor_world_f32_words: [u32; 16],
+    force_per_vertex_type2_distance: bool,
     command: C3dDrawCommand,
 }
 
@@ -155,6 +173,11 @@ impl ChampionshipCarActorDraw {
     #[must_use]
     pub const fn actor_world(&self) -> C3dMatrixWords {
         C3dMatrixWords::from_words(self.actor_world_f32_words)
+    }
+
+    #[must_use]
+    pub const fn forces_per_vertex_type2_distance(&self) -> bool {
+        self.force_per_vertex_type2_distance
     }
 
     #[must_use]
@@ -406,11 +429,16 @@ pub fn plan_championship_car_frame(
             let world_f32_words = nodes[actor_index]
                 .world_f32_words
                 .expect("visible actor has converted world words");
+            let force_per_vertex_type2_distance = nodes[actor_index]
+                .levels
+                .first()
+                .is_some_and(|level| level.forces_per_vertex_type2_distance());
             for command in std::mem::take(&mut actors[actor_index].commands) {
                 draws.push(ChampionshipCarActorDraw {
                     actor_index,
                     actor_world_q16: world_q16,
                     actor_world_f32_words: world_f32_words,
+                    force_per_vertex_type2_distance,
                     command,
                 });
             }
@@ -554,6 +582,13 @@ fn preflight_actors(
                         .try_into()
                         .expect("validated group-1 fixed prefix"),
                 ),
+                mesh_origin_q16: [0x18, 0x1c, 0x20].map(|offset| {
+                    i32::from_le_bytes(
+                        group.record().bytes()[offset..offset + 4]
+                            .try_into()
+                            .expect("validated group-1 fixed prefix"),
+                    )
+                }),
             });
 
             // The loader initializes the active mesh level to zero.  Preserve
@@ -824,6 +859,13 @@ pub(crate) mod tests {
         policy: C3dLoadPolicy,
     ) -> (C3dObjectTopology<'static>, C3dResourceScaledObject) {
         let bytes = fixture_bytes(group0, selectors);
+        inputs_from_bytes(bytes, policy)
+    }
+
+    fn inputs_from_bytes(
+        bytes: Vec<u8>,
+        policy: C3dLoadPolicy,
+    ) -> (C3dObjectTopology<'static>, C3dResourceScaledObject) {
         let file = Box::leak(Box::new(parse_c3d(&bytes, C3dLimits::default()).unwrap()));
         let mut builder = C3dPreparedArenaBuilder::new().unwrap();
         let prepared = builder
@@ -1191,6 +1233,54 @@ pub(crate) mod tests {
         assert_eq!(plan.draws().len(), 1);
         assert_eq!(plan.draws()[0].command().value_index(), 0);
         assert_eq!(plan.draws()[0].command().group1_ordinal(), 1);
+    }
+
+    #[test]
+    fn active_group_mesh_origin_alone_controls_each_draw_distance_route() {
+        let actors = [Group0 {
+            parent: -1,
+            matrix: translated(0, 0, 0),
+            references: vec![0, 1],
+        }];
+        let group1_start = C3D_HEADER_LEN + C3D_GROUP0_VALUES_OFFSET + 4;
+        let group1_len = C3D_GROUP1_FIXED_LEN + C3D_GROUP1_ENTRY32_LEN + C3D_GROUP1_ENTRY24_LEN;
+        for (active_origin, inactive_origin, expected_route) in [
+            (
+                [0x0102_0304, -0x0506_0708, 0x090a_0b0c],
+                [-Q16_ONE; 3],
+                false,
+            ),
+            ([-Q16_ONE; 3], [11, 12, 13], true),
+        ] {
+            let mut bytes = fixture_bytes(&actors, &[-1, -1]);
+            for (group, origin) in [active_origin, inactive_origin].into_iter().enumerate() {
+                for (component, offset) in [0x18, 0x1c, 0x20].into_iter().enumerate() {
+                    let start = group1_start + group * group1_len + offset;
+                    bytes[start..start + 4].copy_from_slice(&origin[component].to_le_bytes());
+                }
+            }
+            let (topology, runtime) =
+                inputs_from_bytes(bytes, expected_policy(CanonicalCar::Subaru));
+
+            let plan = stationary_plan(&topology, &runtime);
+
+            assert_eq!(
+                plan.actors()[0].levels()[0].mesh_origin_q16(),
+                active_origin
+            );
+            assert_eq!(
+                plan.actors()[0].levels()[1].mesh_origin_q16(),
+                inactive_origin
+            );
+            assert_eq!(
+                plan.actors()[0].levels()[0].forces_per_vertex_type2_distance(),
+                expected_route
+            );
+            assert_eq!(
+                plan.draws()[0].forces_per_vertex_type2_distance(),
+                expected_route
+            );
+        }
     }
 
     #[test]

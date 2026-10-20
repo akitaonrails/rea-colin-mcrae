@@ -317,6 +317,11 @@ pub struct C3dMode2ResourceScaledVertex {
 }
 
 impl C3dMode2ResourceScaledVertex {
+    #[cfg(test)]
+    pub(crate) const fn from_words_for_test(words: [u32; 8]) -> Self {
+        Self { words }
+    }
+
     #[must_use]
     pub const fn words(self) -> [u32; 8] {
         self.words
