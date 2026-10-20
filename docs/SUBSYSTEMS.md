@@ -164,8 +164,16 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   dithering, alpha, and backend presentation remain explicit boundaries.
 - `cmr-core::root_menu_c3d_render_state` decodes the game's `0x00008000`
   capability-derived alpha gate, including its inverse pre-scene depth-clear
-  decision and fixed source-alpha/inverse-source-alpha factors. Alpha testing
-  and alpha-enabled pixel composition remain unresolved and unintegrated.
+  decision and fixed source-alpha/inverse-source-alpha factors. It also records
+  whether the requested branch filter is submitted or suppressed by the cache,
+  preserving the distinction between a cached request and unknown effective
+  device state. Alpha testing and alpha-enabled pixel composition remain
+  unresolved and unintegrated.
+- `cmr-video::legacy_c3d_pixel_format`: exact eight-dword legacy descriptor
+  retention, evidence-bounded palette/RGB555/RGB565 candidacy, and separate
+  safe mask validation. Caller-supplied-mask pack/unpack is explicitly
+  source-owned policy; driver conversion, byte layout, pitch, and dithering are
+  not inferred.
 - `cmr-video::software_championship_session`: callback-scoped standalone
   assembly retaining all 14 prepared car topology/runtime pairs, one shared
   binding executor, explicit raster-selection, optional source-ordered per-car

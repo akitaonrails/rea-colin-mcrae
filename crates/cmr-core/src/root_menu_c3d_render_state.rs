@@ -133,6 +133,79 @@ pub const ROOT_MENU_C3D_RENDER_STATE_MAX_WRITE_COUNT: usize = 23;
 pub const ROOT_MENU_C3D_INITIAL_TEXTURE_HANDLE_CACHE: u32 = 0;
 pub const ROOT_MENU_C3D_INITIAL_FILTER_REQUEST_CACHE: u32 = 2;
 
+/// Observable device action selected by the legacy filter-request cache.
+///
+/// The cache retains the requested value rather than the value actually
+/// submitted after capability fallback. When the request already matches the
+/// cache, this path performs no device write and therefore cannot establish
+/// which filter value the device currently uses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dFilterDeviceAction {
+    /// Both texture magnification and minimization calls submit this value.
+    /// The legacy path does not establish that the driver accepts either call.
+    Submit { submitted_value: u32 },
+    /// No device call occurs; the effective device value is inherited or
+    /// otherwise unknown to this cache transition.
+    PreserveInheritedOrUnknown,
+}
+
+impl C3dFilterDeviceAction {
+    #[must_use]
+    pub const fn device_write_occurs(self) -> bool {
+        matches!(self, Self::Submit { .. })
+    }
+
+    #[must_use]
+    pub const fn submitted_value(self) -> Option<u32> {
+        match self {
+            Self::Submit { submitted_value } => Some(submitted_value),
+            Self::PreserveInheritedOrUnknown => None,
+        }
+    }
+}
+
+/// Result of applying one branch's filter request to the legacy request cache.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootMenuC3dFilterCacheOutcome {
+    pub requested_filter: u32,
+    pub device_action: C3dFilterDeviceAction,
+    pub resulting_filter_request_cache: u32,
+}
+
+/// Models the recovered filter helper independently from the surrounding
+/// render-state writes.
+///
+/// Capability fallback changes only the submitted value. The requested value
+/// is always what the cache retains, including when request 2 falls back to
+/// submitted value 1.
+#[must_use]
+pub const fn root_menu_c3d_filter_cache_outcome(
+    graphics_branch: C3dGraphicsBranch,
+    filter_capability_available: bool,
+    cached_filter_request: u32,
+) -> RootMenuC3dFilterCacheOutcome {
+    let requested_filter = match graphics_branch {
+        C3dGraphicsBranch::Indexed => 1,
+        C3dGraphicsBranch::Alternate => 2,
+    };
+    let device_action = if cached_filter_request == requested_filter {
+        C3dFilterDeviceAction::PreserveInheritedOrUnknown
+    } else {
+        C3dFilterDeviceAction::Submit {
+            submitted_value: if filter_capability_available {
+                requested_filter
+            } else {
+                1
+            },
+        }
+    };
+    RootMenuC3dFilterCacheOutcome {
+        requested_filter,
+        device_action,
+        resulting_filter_request_cache: requested_filter,
+    }
+}
+
 const fn write(state: C3dRenderState, value: u32) -> C3dRenderStateWrite {
     C3dRenderStateWrite { state, value }
 }
@@ -151,10 +224,15 @@ pub struct RootMenuC3dRenderStateProgram {
 pub fn root_menu_c3d_render_state_program(
     inputs: RootMenuC3dRenderStateInputs,
 ) -> RootMenuC3dRenderStateProgram {
-    let (shade_mode, texture_map_blend, branch_filter) = match inputs.graphics_branch {
-        C3dGraphicsBranch::Indexed => (1, 7, 1),
-        C3dGraphicsBranch::Alternate => (2, 2, 2),
+    let (shade_mode, texture_map_blend) = match inputs.graphics_branch {
+        C3dGraphicsBranch::Indexed => (1, 7),
+        C3dGraphicsBranch::Alternate => (2, 2),
     };
+    let filter_outcome = root_menu_c3d_filter_cache_outcome(
+        inputs.graphics_branch,
+        inputs.filter_capability_available,
+        inputs.cached_filter_request,
+    );
     let alpha_blend_enabled = inputs.alpha_blend_enabled as u32;
 
     use C3dRenderState as State;
@@ -189,25 +267,101 @@ pub fn root_menu_c3d_render_state_program(
     if inputs.cached_texture_handle != 0 {
         writes.push(write(State::TextureHandle, 0));
     }
-    if inputs.cached_filter_request != branch_filter {
-        let submitted_filter = if inputs.filter_capability_available {
-            branch_filter
-        } else {
-            1
-        };
-        writes.push(write(State::TextureMag, submitted_filter));
-        writes.push(write(State::TextureMin, submitted_filter));
+    if let C3dFilterDeviceAction::Submit { submitted_value } = filter_outcome.device_action {
+        writes.push(write(State::TextureMag, submitted_value));
+        writes.push(write(State::TextureMin, submitted_value));
     }
     RootMenuC3dRenderStateProgram {
         writes,
         resulting_texture_handle_cache: 0,
-        resulting_filter_request_cache: branch_filter,
+        resulting_filter_request_cache: filter_outcome.resulting_filter_request_cache,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_filter_request_from_fresh_cache_submits_point_filtering() {
+        let outcome = root_menu_c3d_filter_cache_outcome(
+            C3dGraphicsBranch::Indexed,
+            true,
+            ROOT_MENU_C3D_INITIAL_FILTER_REQUEST_CACHE,
+        );
+
+        assert_eq!(outcome.requested_filter, 1);
+        assert_eq!(
+            outcome.device_action,
+            C3dFilterDeviceAction::Submit { submitted_value: 1 }
+        );
+        assert!(outcome.device_action.device_write_occurs());
+        assert_eq!(outcome.device_action.submitted_value(), Some(1));
+        assert_eq!(outcome.resulting_filter_request_cache, 1);
+    }
+
+    #[test]
+    fn alternate_filter_request_from_fresh_cache_preserves_unknown_device_state() {
+        let outcome = root_menu_c3d_filter_cache_outcome(
+            C3dGraphicsBranch::Alternate,
+            true,
+            ROOT_MENU_C3D_INITIAL_FILTER_REQUEST_CACHE,
+        );
+
+        assert_eq!(outcome.requested_filter, 2);
+        assert_eq!(
+            outcome.device_action,
+            C3dFilterDeviceAction::PreserveInheritedOrUnknown
+        );
+        assert!(!outcome.device_action.device_write_occurs());
+        assert_eq!(outcome.device_action.submitted_value(), None);
+        assert_eq!(outcome.resulting_filter_request_cache, 2);
+    }
+
+    #[test]
+    fn disturbed_alternate_filter_cache_submits_requested_value_when_supported() {
+        let outcome = root_menu_c3d_filter_cache_outcome(C3dGraphicsBranch::Alternate, true, 1);
+
+        assert_eq!(outcome.requested_filter, 2);
+        assert_eq!(
+            outcome.device_action,
+            C3dFilterDeviceAction::Submit { submitted_value: 2 }
+        );
+        assert_eq!(outcome.device_action.submitted_value(), Some(2));
+        assert_eq!(outcome.resulting_filter_request_cache, 2);
+    }
+
+    #[test]
+    fn unsupported_alternate_filter_falls_back_but_caches_the_request() {
+        let outcome = root_menu_c3d_filter_cache_outcome(C3dGraphicsBranch::Alternate, false, 1);
+
+        assert_eq!(outcome.requested_filter, 2);
+        assert_eq!(
+            outcome.device_action,
+            C3dFilterDeviceAction::Submit { submitted_value: 1 }
+        );
+        assert_eq!(outcome.device_action.submitted_value(), Some(1));
+        assert_eq!(outcome.resulting_filter_request_cache, 2);
+    }
+
+    #[test]
+    fn repeated_filter_request_suppresses_write_and_cannot_recover_effective_value() {
+        let first = root_menu_c3d_filter_cache_outcome(C3dGraphicsBranch::Alternate, false, 1);
+        assert_eq!(first.device_action.submitted_value(), Some(1));
+
+        let repeated = root_menu_c3d_filter_cache_outcome(
+            C3dGraphicsBranch::Alternate,
+            true,
+            first.resulting_filter_request_cache,
+        );
+        assert_eq!(repeated.requested_filter, 2);
+        assert_eq!(
+            repeated.device_action,
+            C3dFilterDeviceAction::PreserveInheritedOrUnknown
+        );
+        assert_eq!(repeated.device_action.submitted_value(), None);
+        assert_eq!(repeated.resulting_filter_request_cache, 2);
+    }
 
     #[test]
     fn legacy_alpha_gate_couples_blending_and_pre_scene_depth_clear() {

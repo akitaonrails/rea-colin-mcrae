@@ -269,8 +269,10 @@ hidden-to-visible rendering, car switching, Next, presentation, and teardown.
 The original device branch, alpha, word-5 mutation, and actor-RGB gates are
 independent retained inputs. The alternate branch now has exact 16/24/32
 selection priority and a bounded canonical-RGB MODULATE oracle, while its
-runtime-selected texture format, framebuffer masks/packing, effective filter,
-dithering, alpha pixels, and backend integration remain separate.
+runtime texture descriptors and framebuffer masks now have exact raw retention,
+candidate classification, and safe source-owned mask utilities. Driver `Load`
+conversion, native packing/pitch, effective filter, dithering, alpha pixels,
+and backend integration remain separate.
 
 Exit gate:
 
