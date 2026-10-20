@@ -103,9 +103,11 @@ art and fixed-width frontend/game localization tables; configuration has an
 opaque exact-size load model and a tested caller-owned write boundary; indexed
 startup presentation runs against the deterministic software backend. The
 first/root frontend state, fixed-layout font parsing, byte-text layout, input,
-window-loop, and timing rules are pure tested contracts, and all 16 font styles
-load through the verified import. Host clock/input, native window execution,
-and pixel composition remain before the vertical-slice exit gate.
+window-loop, timing, and root-menu visual rules are pure tested contracts. All
+16 font styles and the four present root-menu artwork rows resolve through the
+verified import; the loader's distinct Italian row is explicitly absent from
+the reviewed corpus. Host clock/input, native window execution, asset decoding
+for the root menu, and pixel composition remain before the vertical-slice exit gate.
 
 Exit gate:
 

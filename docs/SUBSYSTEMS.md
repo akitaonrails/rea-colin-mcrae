@@ -77,7 +77,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::font_assets`: verified loading and stable style identity for the
   16 recovered frontend font atlases in original initialization order.
 - `cmr-core::frontend`: checked first/root-screen navigation, transitions,
-  idle/exit effects, and ordered rendering transcript over opaque target IDs.
+  idle/exit effects, and opaque target IDs.
+- `cmr-core::root_menu_assets`: typed, verified-profile paths for localized
+  root chrome, center icons, and normal/`g_` menu objects without asset bytes.
+- `cmr-core::root_menu_visual`: exact phase-gated root chrome geometry and an
+  ordered asset/object render transcript with an explicit viewport boundary.
 
 The canonical binary maps registry language values 0–4 to English, French,
 German, Spanish, and Italian startup paths. The supplied corpus has no Italian

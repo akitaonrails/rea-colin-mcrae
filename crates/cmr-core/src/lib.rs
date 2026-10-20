@@ -9,6 +9,8 @@ pub mod frontend;
 pub mod input;
 pub mod localization;
 pub mod localization_assets;
+pub mod root_menu_assets;
+pub mod root_menu_visual;
 pub mod startup;
 pub mod startup_display;
 pub mod startup_surface;

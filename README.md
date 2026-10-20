@@ -27,8 +27,9 @@ stretch and other color-key behavior.
 
 The first frontend foundation also includes bounded legacy configuration and
 localization models plus deterministic keyboard/joystick input rules. These
-now extend through the recovered root-screen state machine, timing plans, and
-bounded FON/text layout. These are platform-neutral contracts backed by
+now extend through the recovered root-screen state machine, exact menu visual
+transcripts, timing plans, and bounded FON/text layout. These are
+platform-neutral contracts backed by
 synthetic tests; registry, host clock/input, native window, pixel-composition,
 audio, and gameplay integrations are not yet complete.
 
