@@ -82,9 +82,9 @@ Status markers:
 - [~] `E01` Recover bitmap/palette/surface rules used outside startup/root UI.
 - [~] `E02` Recover C3D 32-byte and 24-byte entry field semantics.
 - [~] `E03` Recover group-2 resource variants and binding rules.
-- [ ] `E04` Recover object transforms, hierarchy, animation, and dirty state.
-- [ ] `E05` Recover camera, projection, viewport, clipping, and culling.
-- [ ] `E06` Recover primitive ordering, depth, transparency, and blending.
+- [~] `E04` Recover object transforms, hierarchy, animation, and dirty state.
+- [~] `E05` Recover camera, projection, viewport, clipping, and culling.
+- [~] `E06` Recover primitive ordering, depth, transparency, and blending.
 - [ ] `E07` Implement a deterministic compatibility 3D renderer/oracle.
 - [ ] `E08` Parse stage/track bundle and cross-file reference formats.
 - [ ] `E09` Parse car models, liveries, wheels, and damage resources.
@@ -152,11 +152,11 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T18:32:59Z
-milestone=correct-root-c3d-transparency-contract
+updated_utc=2026-10-20T18:44:12Z
+milestone=implement-root-c3d-transform-oracle
 completed=38
-partial=12
-not_started=54
+partial=15
+not_started=51
 blocked=0
 total=104
 current_focus=D14-implement-root-c3d-frame-command-planner

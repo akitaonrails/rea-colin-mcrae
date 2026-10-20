@@ -136,6 +136,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   first-usable-resource visitation, and compact batches. The generic checked
   path retains raw 16-bit wrapping and one-store f64→f32 arithmetic; backend
   resources, palette/material binding, and rasterization remain separate.
+- `cmr-core::root_menu_c3d_transform`: deterministic root-only fixed-point
+  transform words with source-owned quarter-wave trigonometry, integer-derived
+  square-root normalization, exact raw-angle branch behavior, persistent Q16
+  placement, f32 world/view/projection words, and checked viewport construction.
+  Scene traversal, binding, drawing, and rasterization remain separate.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes, plus explicit selection-slot mapping and six independent wrapping

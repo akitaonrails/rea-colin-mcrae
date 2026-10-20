@@ -111,8 +111,9 @@ backend mutation, and both persistent font and root-bitmap pools now use a
 tested shared source store without monopolizing the backend. Transaction,
 fixed-slot, and mixed-pool tests cover 33 coexisting sources, optional upload
 holes, isolated required rollback, repeated-frame reuse, and global teardown.
-Host clock/input, native window execution, C3D geometry/rendering, and concrete
-composition/presentation remain before the vertical-slice exit gate.
+Host clock/input, native window execution, C3D frame-command execution and
+rasterization, and concrete composition/presentation remain before the
+vertical-slice exit gate.
 Root-footer text reaches a tested software back-buffer pixel through
 localization, the shared store, and the persistent font pool. Root visual
 transcripts name fixed bitmap slots directly, and the bitmap executor now
@@ -179,6 +180,16 @@ has square resources and therefore takes the proven zero-padding/no-multiply
 case under normal or quarter preparation. Palette/material binding, backend
 upload, rasterization, and the unresolved tuple-source gate are the next C3D
 boundaries.
+The root transform oracle is now portable and deterministic. A source-owned
+quarter-wave table reconstructs the exact 4,096-entry legacy trig table, while
+square-root values use equivalent integer arithmetic. The fixed-point row
+normalizer preserves wrapping sums, low-word products, signed shifts, the
+complete-raw-angle zero branch, and the distinction between raw angles `0` and
+`0x1000`. Root world matrices retain the recovered Q16 translation and convert
+to exact f32 words; identity view, frontend projection, and checked viewport
+words are available without a platform graphics dependency. This defines
+transform values for the frame-command planner but does not yet perform scene
+traversal, resource binding, rasterization, or final composition.
 
 Exit gate:
 
