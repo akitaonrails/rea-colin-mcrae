@@ -16,7 +16,9 @@ started with bounded parsers for the observed asset storage and indexed startup
 art, strict asset import/runtime loading, and recovered startup-art selection
 and surface contracts. A backend-neutral indexed display contract now preserves
 the recovered device, surface, shared-palette, and front/back startup-copy
-ordering. No gameplay subsystem is yet claimed compatible.
+ordering. A pure window-loop reducer also captures activation pause/restore,
+message dispatch, and steady-frame presentation decisions for future Win32 and
+SDL backends. No gameplay subsystem is yet claimed compatible.
 
 Known artifacts from the initial local installation:
 

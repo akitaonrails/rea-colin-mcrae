@@ -51,6 +51,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::display`: backend-neutral indexed display initialization with
   typed windowed/fullscreen topology, shared front/back palette ownership, and
   the recovered visible-front-then-back startup copy transaction.
+- `cmr-core::window`: pure compatibility reducer for recovered Win32 message
+  handling, activation-driven pause/restore state, queue dispatch decisions,
+  and fullscreen-flip versus windowed-vblank presentation planning.
 
 The canonical binary maps registry language values 0–4 to English, French,
 German, Spanish, and Italian startup paths. The supplied corpus has no Italian

@@ -6,3 +6,4 @@ pub mod startup;
 pub mod startup_display;
 pub mod startup_surface;
 pub mod surface;
+pub mod window;
