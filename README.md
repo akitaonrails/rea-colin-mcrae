@@ -66,6 +66,7 @@ Run source-owned checks with:
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+./scripts/check-portability.sh
 ```
 
 Verify the currently cataloged source corpus, then import exact asset bytes into
