@@ -28,7 +28,6 @@ use crate::{
 };
 
 pub const ROOT_MENU_C3D_RESOURCE_CAPACITY: usize = 2048;
-pub const ROOT_MENU_C3D_COLOR_KEY_INDEX: u8 = 0;
 
 static NEXT_RESOURCE_ARENA_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -140,9 +139,10 @@ impl C3dPreparedResource {
         &self.bitmap
     }
 
+    /// The recovered root mode-2 path does not install a surface color key.
     #[must_use]
-    pub const fn color_key_index(&self) -> u8 {
-        ROOT_MENU_C3D_COLOR_KEY_INDEX
+    pub const fn surface_color_key_index(&self) -> Option<u8> {
+        None
     }
 }
 
@@ -706,7 +706,7 @@ mod tests {
         assert_eq!(retained.source_dib_extent_low16(), [1, 1]);
         assert_eq!(retained.bitmap().palette[0].blue, 10);
         assert_eq!(retained.bitmap().pixels, [1]);
-        assert_eq!(retained.color_key_index(), 0);
+        assert_eq!(retained.surface_color_key_index(), None);
         assert_eq!(prepared.resources().len(), 3);
     }
 

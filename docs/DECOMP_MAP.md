@@ -152,13 +152,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T18:26:08Z
-milestone=scale-root-c3d-runtime-coordinates
+updated_utc=2026-10-20T18:32:59Z
+milestone=correct-root-c3d-transparency-contract
 completed=38
 partial=12
 not_started=54
 blocked=0
 total=104
-current_focus=D14-recover-material-palette-and-raster-contract
+current_focus=D14-implement-root-c3d-frame-command-planner
 next_exit_gate=native-root-menu-vertical-slice
 <!-- PROGRESS-TAIL-END -->

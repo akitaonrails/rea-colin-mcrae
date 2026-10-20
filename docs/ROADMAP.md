@@ -151,7 +151,7 @@ invalid frame remains a typed result and does not hide later frames.
 For the root-only corpus-backed subset, all six objects of either visual variant
 can now prepare into an owned fixed-slot resource set. Every embedded bitmap is
 strictly decoded while preserving source indices and its full embedded palette;
-index zero remains the recovered color key. Bounded-label/dimensions/pixels
+the exact mode-2 path installs no surface color key. Bounded-label/dimensions/pixels
 matches share arena-scoped stable prepared IDs, entry24 selectors retain source
 order and `-1` remains an explicit missing selector, and one bad optional object
 rolls back only its new resources before later slots continue. Palette
