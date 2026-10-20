@@ -122,8 +122,11 @@ pub struct FontSet {
 }
 
 impl FontSet {
-    #[cfg(test)]
-    pub(crate) fn from_ordered_fonts(fonts: [BitmapFont; FONT_COUNT]) -> Self {
+    /// Associates parsed fonts with styles in [`FontStyle::ALL`] executable
+    /// load order. Runtime asset loading and synthetic backend fixtures share
+    /// this constructor so style-to-handle indexing cannot diverge.
+    #[must_use]
+    pub fn from_ordered_fonts(fonts: [BitmapFont; FONT_COUNT]) -> Self {
         let mut fonts = fonts.into_iter();
         Self {
             fonts: std::array::from_fn(|index| FontAsset {

@@ -29,10 +29,11 @@ The first frontend foundation also includes bounded legacy configuration and
 localization models plus deterministic keyboard/joystick input rules. These
 now extend through the recovered root-screen state machine, exact menu visual
 and animation transcripts, verified root-bitmap loading, timing plans, and
-bounded FON/text layout plus persistent keyed-glyph resources. These are
+bounded FON/text layout plus persistent keyed-glyph resources. The localized
+root footer now renders into a tested software back buffer. These are
 platform-neutral contracts backed by synthetic tests; registry, host
-clock/input, native window, pixel-composition, audio, and gameplay integrations
-are not yet complete.
+clock/input, native window, complete frame composition, audio, and gameplay
+integrations are not yet complete.
 
 Known artifacts from the initial local installation:
 

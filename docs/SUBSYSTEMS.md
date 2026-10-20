@@ -79,6 +79,8 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::font_raster`: backend-neutral indexed atlas conversion and
   index-zero keyed execution of precomputed glyph plans with diagnostics, plus
   transactional lifetime ownership for the persistent 16-font upload pool.
+- `cmr-core::root_menu_footer`: phase-gated localized footer layout and indexed
+  execution into the caller-selected active frame target.
 - `cmr-core::frontend`: checked first/root-screen navigation, transitions,
   idle/exit effects, and opaque target IDs.
 - `cmr-core::root_menu_assets`: typed, verified-profile paths for localized

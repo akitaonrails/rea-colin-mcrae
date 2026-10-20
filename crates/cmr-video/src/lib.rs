@@ -378,6 +378,12 @@ mod tests {
     use super::*;
     use cmr_core::display::{DisplayExtent, IndexedDisplay};
     use cmr_core::display_contract::check_indexed_video_backend;
+    use cmr_core::font_assets::{FONT_COUNT, FontSet};
+    use cmr_core::font_raster::UploadedFontPool;
+    use cmr_core::frontend::{FrontendPhase, ROOT_FOOTER_TEXT_INDEX};
+    use cmr_core::localization::IndexedTextTable;
+    use cmr_core::root_menu_footer::{RootFooterOutcome, render_root_footer};
+    use cmr_formats::font::{FontLimits, TextLayoutLimits, parse_legacy_font};
 
     fn palette(red: u8) -> [PaletteEntry; 256] {
         [PaletteEntry {
@@ -396,6 +402,95 @@ mod tests {
             pixels,
             palette: palette(7),
         }
+    }
+
+    #[test]
+    fn persistent_pool_renders_root_footer_pixel_into_active_back_surface() {
+        let mode = IndexedMode {
+            extent: DisplayExtent {
+                width: 640,
+                height: 480,
+            },
+            bits_per_pixel: 8,
+        };
+        let mut backend = SoftwareIndexedBackend::default();
+        backend.create_device().unwrap();
+        backend
+            .set_cooperative_mode(CooperativeMode::Windowed)
+            .unwrap();
+        let surfaces = backend
+            .create_surfaces(SurfaceTopology::PrimaryAndOffscreen, mode)
+            .unwrap();
+        let palette_handle = backend.create_palette(&palette(0)).unwrap();
+        backend
+            .attach_palette(surfaces.visible_front, palette_handle)
+            .unwrap();
+        backend
+            .attach_palette(surfaces.back, palette_handle)
+            .unwrap();
+        backend.upload_palette(palette_handle, &palette(0)).unwrap();
+
+        {
+            let mut fonts = UploadedFontPool::upload(&mut backend, font_set()).unwrap();
+            let outcome = render_root_footer(
+                FrontendPhase::Interactive,
+                &footer_table(),
+                &mut fonts,
+                surfaces.back,
+                mode.extent,
+                TextLayoutLimits::default(),
+            )
+            .unwrap();
+            assert!(matches!(outcome, RootFooterOutcome::Rendered { .. }));
+            assert_eq!(fonts.backend_mut().uploaded_source_count(), FONT_COUNT);
+        }
+
+        assert_eq!(backend.uploaded_source_count(), 0);
+        let footer_pixel = 470 * 640 + 320;
+        assert_eq!(backend.back_pixels().unwrap()[footer_pixel], 8);
+        assert_eq!(backend.visible_pixels().unwrap()[footer_pixel], 0);
+    }
+
+    fn footer_table() -> IndexedTextTable {
+        let mut bytes = Vec::new();
+        for index in 0..=ROOT_FOOTER_TEXT_INDEX {
+            bytes.extend_from_slice(if index == ROOT_FOOTER_TEXT_INDEX {
+                b"A"
+            } else {
+                b"unused"
+            });
+            if index != ROOT_FOOTER_TEXT_INDEX {
+                bytes.push(b'\n');
+            }
+        }
+        IndexedTextTable::parse(&bytes, ROOT_FOOTER_TEXT_INDEX + 1).unwrap()
+    }
+
+    fn font_set() -> FontSet {
+        FontSet::from_ordered_fonts(std::array::from_fn(|index| {
+            parse_legacy_font(&synthetic_font(index as u8), FontLimits::default()).unwrap()
+        }))
+    }
+
+    fn synthetic_font(identity: u8) -> Vec<u8> {
+        const PIXEL_OFFSET: usize = 0x436;
+        const FONT_HEADER_SIZE: usize = 24;
+        const GLYPH_SIZE: usize = 16;
+        let trailer = PIXEL_OFFSET + 4;
+        let mut input = vec![0; trailer + FONT_HEADER_SIZE + GLYPH_SIZE];
+        input[0..2].copy_from_slice(b"BM");
+        input[18..22].copy_from_slice(&1i32.to_le_bytes());
+        input[22..26].copy_from_slice(&1i32.to_le_bytes());
+        input[28..30].copy_from_slice(&8u16.to_le_bytes());
+        input[PIXEL_OFFSET] = identity + 1;
+        input[trailer] = identity;
+        input[trailer + 1] = 1;
+        input[trailer + 4..trailer + 8].copy_from_slice(&1u32.to_le_bytes());
+        let glyph = trailer + FONT_HEADER_SIZE;
+        input[glyph] = b'A';
+        input[glyph + 6..glyph + 8].copy_from_slice(&1i16.to_le_bytes());
+        input[glyph + 8..glyph + 10].copy_from_slice(&1i16.to_le_bytes());
+        input
     }
 
     #[test]
