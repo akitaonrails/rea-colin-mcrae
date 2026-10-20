@@ -9,6 +9,7 @@ use cmr_core::surface::IndexedSurface;
 use cmr_formats::riff_palette::PaletteEntry;
 
 pub mod c3d_software;
+pub mod c3d_software_raster;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceHandle(usize);

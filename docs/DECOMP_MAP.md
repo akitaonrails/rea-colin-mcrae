@@ -73,7 +73,7 @@ Status markers:
 - [x] `D12` Resolve entry24 `+2/+4/+6` references to 32-byte entries.
 - [x] `D13` Bind parsed C3D slots and per-object angle state to root frames.
 - [~] `D14` Decode the root C3D geometry/material/resource contract.
-- [ ] `D15` Render root C3D pixels in the compatibility renderer.
+- [~] `D15` Render root C3D pixels in the compatibility renderer.
 - [~] `D16` Recover and implement final compose/present ownership.
 - [ ] `D17` Run the complete root menu interactively in a native window.
 
@@ -85,7 +85,7 @@ Status markers:
 - [~] `E04` Recover object transforms, hierarchy, animation, and dirty state.
 - [~] `E05` Recover camera, projection, viewport, clipping, and culling.
 - [~] `E06` Recover primitive ordering, depth, transparency, and blending.
-- [ ] `E07` Implement a deterministic compatibility 3D renderer/oracle.
+- [~] `E07` Implement a deterministic compatibility 3D renderer/oracle.
 - [ ] `E08` Parse stage/track bundle and cross-file reference formats.
 - [ ] `E09` Parse car models, liveries, wheels, and damage resources.
 - [ ] `E10` Parse weather, particles, shadows, and environmental effects.
@@ -152,11 +152,11 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T19:21:47Z
-milestone=bind-sampled-root-c3d-textures
+updated_utc=2026-10-20T19:26:57Z
+milestone=preflight-software-c3d-raster
 completed=38
-partial=16
-not_started=50
+partial=18
+not_started=48
 blocked=0
 total=104
 current_focus=D15-render-root-c3d-pixels
