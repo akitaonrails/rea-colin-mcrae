@@ -53,7 +53,8 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   the recovered visible-front-then-back startup copy transaction.
 - `cmr-core::source_store`: shared checked ownership for persistent indexed
   sources, including append-only logical keys, transactional upload rollback,
-  explicit release, unwind cleanup, and reverse-order teardown.
+  explicit release, unwind cleanup, and reverse-order teardown; the font pool
+  is its first persistent resource client.
 - `cmr-core::window`: pure compatibility reducer for recovered Win32 message
   handling, activation-driven pause/restore state, queue dispatch decisions,
   and fullscreen-flip versus windowed-vblank presentation planning.

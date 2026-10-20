@@ -383,6 +383,7 @@ mod tests {
     use cmr_core::frontend::{FrontendPhase, ROOT_FOOTER_TEXT_INDEX};
     use cmr_core::localization::IndexedTextTable;
     use cmr_core::root_menu_footer::{RootFooterOutcome, render_root_footer};
+    use cmr_core::source_store::UploadedSourceStore;
     use cmr_formats::font::{FontLimits, TextLayoutLimits, parse_legacy_font};
 
     fn palette(red: u8) -> [PaletteEntry; 256] {
@@ -431,18 +432,20 @@ mod tests {
         backend.upload_palette(palette_handle, &palette(0)).unwrap();
 
         {
-            let mut fonts = UploadedFontPool::upload(&mut backend, font_set()).unwrap();
+            let mut sources = UploadedSourceStore::new(&mut backend);
+            let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
             let outcome = render_root_footer(
                 FrontendPhase::Interactive,
                 &footer_table(),
-                &mut fonts,
+                &fonts,
+                &mut sources,
                 surfaces.back,
                 mode.extent,
                 TextLayoutLimits::default(),
             )
             .unwrap();
             assert!(matches!(outcome, RootFooterOutcome::Rendered { .. }));
-            assert_eq!(fonts.backend_mut().uploaded_source_count(), FONT_COUNT);
+            assert_eq!(sources.backend().uploaded_source_count(), FONT_COUNT);
         }
 
         assert_eq!(backend.uploaded_source_count(), 0);

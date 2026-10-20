@@ -11,6 +11,7 @@ use crate::font_raster::{FontRasterError, FontRasterOutcome, UploadedFontPool};
 use crate::frontend::{FrontendPhase, ROOT_FOOTER_TEXT_INDEX};
 use crate::localization::IndexedTextTable;
 use crate::root_menu_visual::{ROOT_FOOTER_FLAGS, ROOT_FOOTER_FONT_STYLE, ROOT_FOOTER_POSITION};
+use crate::source_store::UploadedSourceStore;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum RootFooterError<E> {
@@ -53,7 +54,8 @@ pub enum RootFooterOutcome<E> {
 pub fn render_root_footer<B: IndexedVideoBackend>(
     phase: FrontendPhase,
     text: &IndexedTextTable,
-    fonts: &mut UploadedFontPool<'_, B>,
+    fonts: &UploadedFontPool,
+    sources: &mut UploadedSourceStore<'_, B>,
     destination: B::Surface,
     destination_extent: DisplayExtent,
     limits: TextLayoutLimits,
@@ -77,6 +79,7 @@ pub fn render_root_footer<B: IndexedVideoBackend>(
     .map_err(RootFooterError::Layout)?;
     let raster = fonts
         .execute(
+            sources,
             ROOT_FOOTER_FONT_STYLE,
             &plan,
             destination,
@@ -88,6 +91,8 @@ pub fn render_root_footer<B: IndexedVideoBackend>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use cmr_formats::font::{FontLimits, RectI32, parse_legacy_font};
     use cmr_formats::riff_palette::PaletteEntry;
 
@@ -115,7 +120,7 @@ mod tests {
         created: Vec<u8>,
         blits: Vec<(u8, u8, BlitPlan)>,
         destroyed: Vec<u8>,
-        fail_blit: bool,
+        fail_blits: BTreeSet<usize>,
     }
 
     impl IndexedVideoBackend for RecordingBackend {
@@ -181,8 +186,9 @@ mod tests {
             destination: Self::Surface,
             plan: BlitPlan,
         ) -> Result<(), Self::Error> {
+            let blit_index = self.blits.len();
             self.blits.push((source, destination, plan));
-            if self.fail_blit {
+            if self.fail_blits.contains(&blit_index) {
                 Err(BackendError::Blit)
             } else {
                 Ok(())
@@ -199,12 +205,14 @@ mod tests {
         let table = table_with_footer(b"AB");
         let mut backend = RecordingBackend::default();
         {
-            let mut fonts = UploadedFontPool::upload(&mut backend, font_set()).unwrap();
+            let mut sources = UploadedSourceStore::new(&mut backend);
+            let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
             for _ in 0..2 {
                 let outcome = render_root_footer(
                     FrontendPhase::Interactive,
                     &table,
-                    &mut fonts,
+                    &fonts,
+                    &mut sources,
                     99,
                     DisplayExtent {
                         width: 640,
@@ -243,13 +251,13 @@ mod tests {
                 assert_eq!(raster.successful_blits, 2);
                 assert!(raster.diagnostics.is_empty());
             }
-            assert_eq!(fonts.backend_mut().created.len(), FONT_COUNT);
-            assert_eq!(fonts.backend_mut().blits.len(), 4);
-            for (source, destination, plan) in &fonts.backend_mut().blits {
+            assert_eq!(sources.backend().created.len(), FONT_COUNT);
+            assert_eq!(sources.backend().blits.len(), 4);
+            for (source, destination, plan) in &sources.backend().blits {
                 assert_eq!((*source, *destination), (17, 99));
                 assert_eq!(plan.legacy_flags(), 0x11);
             }
-            assert!(fonts.backend_mut().destroyed.is_empty());
+            assert!(sources.backend().destroyed.is_empty());
         }
         assert_eq!(backend.destroyed.len(), FONT_COUNT);
     }
@@ -259,7 +267,8 @@ mod tests {
         let oversized = table_with_footer(b"AB");
         let mut backend = RecordingBackend::default();
         {
-            let mut fonts = UploadedFontPool::upload(&mut backend, font_set()).unwrap();
+            let mut sources = UploadedSourceStore::new(&mut backend);
+            let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
             for phase in [
                 FrontendPhase::AdvanceToPending,
                 FrontendPhase::AdvanceToInteractive,
@@ -269,7 +278,8 @@ mod tests {
                     render_root_footer(
                         phase,
                         &oversized,
-                        &mut fonts,
+                        &fonts,
+                        &mut sources,
                         99,
                         DisplayExtent {
                             width: 0,
@@ -284,21 +294,26 @@ mod tests {
                     RootFooterOutcome::Skipped
                 );
             }
-            assert!(fonts.backend_mut().blits.is_empty());
+            assert!(sources.backend().blits.is_empty());
         }
     }
 
     #[test]
     fn layout_and_blit_failures_are_typed_and_do_not_replace_later_frames() {
         let table = table_with_footer(b"AB");
-        let mut backend = RecordingBackend::default();
+        let mut backend = RecordingBackend {
+            fail_blits: [0, 1].into_iter().collect(),
+            ..RecordingBackend::default()
+        };
         {
-            let mut fonts = UploadedFontPool::upload(&mut backend, font_set()).unwrap();
+            let mut sources = UploadedSourceStore::new(&mut backend);
+            let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
             assert!(matches!(
                 render_root_footer(
                     FrontendPhase::Interactive,
                     &table,
-                    &mut fonts,
+                    &fonts,
+                    &mut sources,
                     99,
                     DisplayExtent {
                         width: 640,
@@ -316,13 +331,13 @@ mod tests {
                     }
                 ))
             ));
-            assert!(fonts.backend_mut().blits.is_empty());
+            assert!(sources.backend().blits.is_empty());
 
-            fonts.backend_mut().fail_blit = true;
             let RootFooterOutcome::Rendered { raster, .. } = render_root_footer(
                 FrontendPhase::Interactive,
                 &table,
-                &mut fonts,
+                &fonts,
+                &mut sources,
                 99,
                 DisplayExtent {
                     width: 640,
@@ -335,12 +350,12 @@ mod tests {
             };
             assert_eq!(raster.successful_blits, 0);
             assert_eq!(raster.diagnostics.len(), 2);
-            fonts.backend_mut().fail_blit = false;
             assert!(matches!(
                 render_root_footer(
                     FrontendPhase::Interactive,
                     &table,
-                    &mut fonts,
+                    &fonts,
+                    &mut sources,
                     99,
                     DisplayExtent {
                         width: 640,

@@ -107,12 +107,13 @@ window-loop, timing, and root-menu visual rules are pure tested contracts. All
 16 font styles and the four present root-menu artwork rows resolve through the
 verified import; the loader's distinct Italian row is explicitly absent from
 the reviewed corpus. Root bitmaps now reach fixed-slot indexed surfaces without
-backend mutation, and a tested shared source store now provides the transaction
-and lifetime boundary needed for fonts and bitmaps to coexist. Host clock/input,
-native window execution, persistent root bitmap upload, the rest of root-frame
-composition, and presentation remain before the vertical-slice exit gate.
-Root-footer text now reaches a tested software back-buffer pixel through
-localization and the persistent font pool.
+backend mutation, and the persistent font pool now uses a tested shared source
+store without monopolizing the backend. Transaction-isolation and mixed-source
+tests establish the lifetime boundary needed for fonts and root bitmaps to
+coexist. Host clock/input, native window execution, persistent root bitmap
+upload, the rest of root-frame composition, and presentation remain before the
+vertical-slice exit gate. Root-footer text reaches a tested software back-buffer
+pixel through localization, the shared store, and the persistent font pool.
 
 Exit gate:
 

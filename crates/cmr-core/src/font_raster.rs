@@ -8,6 +8,9 @@ use cmr_formats::riff_palette::PaletteEntry;
 use crate::blit::{BlitDecision, ColorKey, RectI16, plan_legacy_blit};
 use crate::display::{DisplayExtent, IndexedVideoBackend};
 use crate::font_assets::{FONT_COUNT, FontSet, FontStyle};
+use crate::source_store::{
+    SourceAccessError, SourceBlitError, SourceKey, SourceUploadError, UploadedSourceStore,
+};
 use crate::surface::IndexedSurface;
 
 const INDEX_ZERO_COLOR_KEY: ColorKey = ColorKey { low: 0, high: 0 };
@@ -121,6 +124,7 @@ pub enum FontRasterError<E> {
     Atlas(FontAtlasConversionError),
     Layout(FontRasterLayoutError),
     CreateSource(E),
+    SourceAccess(SourceAccessError),
 }
 
 impl<E: fmt::Display> fmt::Display for FontRasterError<E> {
@@ -131,6 +135,7 @@ impl<E: fmt::Display> fmt::Display for FontRasterError<E> {
             Self::CreateSource(error) => {
                 write!(formatter, "cannot create font atlas source: {error}")
             }
+            Self::SourceAccess(error) => write!(formatter, "cannot access font atlas: {error}"),
         }
     }
 }
@@ -141,6 +146,7 @@ impl<E: std::error::Error + 'static> std::error::Error for FontRasterError<E> {
             Self::Atlas(error) => Some(error),
             Self::Layout(error) => Some(error),
             Self::CreateSource(error) => Some(error),
+            Self::SourceAccess(error) => Some(error),
         }
     }
 }
@@ -167,6 +173,9 @@ pub enum FontPoolUploadError<E> {
         style: FontStyle,
         source: FontAtlasConversionError,
     },
+    Capacity {
+        style: FontStyle,
+    },
     CreateSource {
         style: FontStyle,
         source: E,
@@ -178,6 +187,12 @@ impl<E: fmt::Display> fmt::Display for FontPoolUploadError<E> {
         match self {
             Self::Atlas { style, source } => {
                 write!(formatter, "cannot convert {style:?} font atlas: {source}")
+            }
+            Self::Capacity { style } => {
+                write!(
+                    formatter,
+                    "cannot allocate a source key for {style:?} font atlas"
+                )
             }
             Self::CreateSource { style, source } => {
                 write!(formatter, "cannot upload {style:?} font atlas: {source}")
@@ -191,25 +206,25 @@ impl<E: std::error::Error + 'static> std::error::Error for FontPoolUploadError<E
         match self {
             Self::Atlas { source, .. } => Some(source),
             Self::CreateSource { source, .. } => Some(source),
+            Self::Capacity { .. } => None,
         }
     }
 }
 
 /// Persistent uploaded form of the 16-font frontend pool.
 ///
-/// Construction is transactional: every atlas is converted before backend
-/// mutation, and a failed upload releases all earlier handles in reverse order.
-/// The pool exclusively borrows its backend so its handles cannot outlive that
-/// backend. Dropping it releases every handle once, also in reverse order.
-pub struct UploadedFontPool<'a, B: IndexedVideoBackend> {
-    backend: &'a mut B,
+/// Construction is transactional: every atlas is converted before store
+/// mutation, and a failed upload releases only this pool's earlier sources in
+/// reverse order. The shared store owns source lifetimes so this pool can
+/// coexist with root-menu and later frontend resources.
+pub struct UploadedFontPool {
     fonts: FontSet,
-    sources: [B::Surface; FONT_COUNT],
+    sources: [SourceKey; FONT_COUNT],
 }
 
-impl<'a, B: IndexedVideoBackend> UploadedFontPool<'a, B> {
-    pub fn upload(
-        backend: &'a mut B,
+impl UploadedFontPool {
+    pub fn upload<B: IndexedVideoBackend>(
+        store: &mut UploadedSourceStore<'_, B>,
         fonts: FontSet,
     ) -> Result<Self, FontPoolUploadError<B::Error>> {
         let atlases = FontStyle::ALL
@@ -221,14 +236,15 @@ impl<'a, B: IndexedVideoBackend> UploadedFontPool<'a, B> {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        let mut transaction = store.transaction();
         let mut sources = Vec::with_capacity(FONT_COUNT);
         for (style, atlas) in &atlases {
-            match backend.create_source(atlas) {
+            match transaction.upload(atlas) {
                 Ok(source) => sources.push(source),
-                Err(source) => {
-                    for uploaded in sources.into_iter().rev() {
-                        backend.destroy_source(uploaded);
-                    }
+                Err(SourceUploadError::Capacity) => {
+                    return Err(FontPoolUploadError::Capacity { style: *style });
+                }
+                Err(SourceUploadError::Backend(source)) => {
                     return Err(FontPoolUploadError::CreateSource {
                         style: *style,
                         source,
@@ -239,23 +255,17 @@ impl<'a, B: IndexedVideoBackend> UploadedFontPool<'a, B> {
         let sources = sources
             .try_into()
             .unwrap_or_else(|_| unreachable!("one source was uploaded for every font style"));
-        Ok(Self {
-            backend,
-            fonts,
-            sources,
-        })
+        transaction.commit();
+        Ok(Self { fonts, sources })
     }
 
     pub fn font(&self, style: FontStyle) -> &BitmapFont {
         self.fonts.get(style)
     }
 
-    pub fn backend_mut(&mut self) -> &mut B {
-        self.backend
-    }
-
-    pub fn execute(
-        &mut self,
+    pub fn execute<B: IndexedVideoBackend>(
+        &self,
+        store: &mut UploadedSourceStore<'_, B>,
         style: FontStyle,
         plan: &TextPlan,
         destination: B::Surface,
@@ -265,22 +275,14 @@ impl<'a, B: IndexedVideoBackend> UploadedFontPool<'a, B> {
         let source = self.sources[style as usize];
         let (width, height) =
             validate_text_plan(font, plan, destination_extent).map_err(FontRasterError::Layout)?;
-        Ok(execute_validated_text_plan(
-            self.backend,
-            source,
-            plan,
-            destination,
-            width,
-            height,
-        ))
-    }
-}
-
-impl<B: IndexedVideoBackend> Drop for UploadedFontPool<'_, B> {
-    fn drop(&mut self) {
-        for source in self.sources.iter().rev().copied() {
-            self.backend.destroy_source(source);
-        }
+        execute_validated_text_plan_with(plan, width, height, |blit_plan| {
+            match store.blit(source, destination, blit_plan) {
+                Ok(()) => Ok(()),
+                Err(SourceBlitError::Backend(error)) => Err(BlitSubmissionError::Diagnostic(error)),
+                Err(SourceBlitError::Access(error)) => Err(BlitSubmissionError::Fatal(error)),
+            }
+        })
+        .map_err(FontRasterError::SourceAccess)
     }
 }
 
@@ -337,7 +339,12 @@ pub fn execute_text_plan<B: IndexedVideoBackend>(
     let source = backend
         .create_source(&atlas)
         .map_err(FontRasterError::CreateSource)?;
-    let outcome = execute_validated_text_plan(backend, source, plan, destination, width, height);
+    let outcome = execute_validated_text_plan_with(plan, width, height, |blit_plan| {
+        backend
+            .blit(source, destination, blit_plan)
+            .map_err(BlitSubmissionError::<B::Error, std::convert::Infallible>::Diagnostic)
+    })
+    .unwrap_or_else(|never| match never {});
     backend.destroy_source(source);
     Ok(outcome)
 }
@@ -360,14 +367,17 @@ fn validate_text_plan(
     Ok((width, height))
 }
 
-fn execute_validated_text_plan<B: IndexedVideoBackend>(
-    backend: &mut B,
-    source: B::Surface,
+enum BlitSubmissionError<E, F> {
+    Diagnostic(E),
+    Fatal(F),
+}
+
+fn execute_validated_text_plan_with<E, F>(
     plan: &TextPlan,
-    destination: B::Surface,
     width: i16,
     height: i16,
-) -> FontRasterOutcome<B::Error> {
+    mut blit: impl FnMut(crate::blit::BlitPlan) -> Result<(), BlitSubmissionError<E, F>>,
+) -> Result<FontRasterOutcome<E>, F> {
     let mut outcome = FontRasterOutcome {
         planned_glyphs: plan.blits.len(),
         no_ops: 0,
@@ -390,18 +400,21 @@ fn execute_validated_text_plan<B: IndexedVideoBackend>(
             Some(INDEX_ZERO_COLOR_KEY),
         ) {
             BlitDecision::NoOp => outcome.no_ops += 1,
-            BlitDecision::Blit(blit_plan) => match backend.blit(source, destination, blit_plan) {
+            BlitDecision::Blit(blit_plan) => match blit(blit_plan) {
                 Ok(()) => outcome.successful_blits += 1,
-                Err(error) => outcome.diagnostics.push(FontBlitDiagnostic {
-                    blit_index,
-                    code: glyph.code,
-                    glyph_index: glyph.glyph_index,
-                    source: error,
-                }),
+                Err(BlitSubmissionError::Diagnostic(error)) => {
+                    outcome.diagnostics.push(FontBlitDiagnostic {
+                        blit_index,
+                        code: glyph.code,
+                        glyph_index: glyph.glyph_index,
+                        source: error,
+                    })
+                }
+                Err(BlitSubmissionError::Fatal(error)) => return Err(error),
             },
         }
     }
-    outcome
+    Ok(outcome)
 }
 
 fn validate_glyph_source(
@@ -623,7 +636,8 @@ mod pool_tests {
     fn pool_uploads_in_executable_order_reuses_handles_and_drops_in_reverse() {
         let mut backend = RecordingBackend::default();
         {
-            let mut pool = UploadedFontPool::upload(&mut backend, font_set()).unwrap();
+            let mut store = UploadedSourceStore::new(&mut backend);
+            let pool = UploadedFontPool::upload(&mut store, font_set()).unwrap();
             for (index, style) in FontStyle::ALL.into_iter().enumerate() {
                 assert_eq!(pool.font(style).raw_header()[0], index as u8);
             }
@@ -632,6 +646,7 @@ mod pool_tests {
             for _ in 0..2 {
                 let outcome = pool
                     .execute(
+                        &mut store,
                         style,
                         &plan,
                         99,
@@ -643,9 +658,10 @@ mod pool_tests {
                     .unwrap();
                 assert_eq!(outcome.successful_blits, 1);
             }
-            assert_eq!(pool.backend_mut().create_attempts, FONT_COUNT);
+            assert_eq!(store.backend().create_attempts, FONT_COUNT);
             assert!(
-                pool.backend_mut()
+                store
+                    .backend()
                     .events
                     .iter()
                     .all(|event| !matches!(event, Event::Destroy(_)))
@@ -690,9 +706,12 @@ mod pool_tests {
                 fail_create_at: Some(failed_index),
                 ..RecordingBackend::default()
             };
-            let error = match UploadedFontPool::upload(&mut backend, font_set()) {
-                Err(error) => error,
-                Ok(_) => panic!("upload {failed_index} unexpectedly succeeded"),
+            let error = {
+                let mut store = UploadedSourceStore::new(&mut backend);
+                match UploadedFontPool::upload(&mut store, font_set()) {
+                    Err(error) => error,
+                    Ok(_) => panic!("upload {failed_index} unexpectedly succeeded"),
+                }
             };
             assert!(matches!(
                 error,
@@ -718,15 +737,189 @@ mod pool_tests {
     }
 
     #[test]
+    fn failed_font_transaction_preserves_existing_source_and_store_recovery() {
+        let mut backend = RecordingBackend {
+            fail_create_at: Some(3),
+            ..RecordingBackend::default()
+        };
+        {
+            let mut store = UploadedSourceStore::new(&mut backend);
+            store.upload(&marker_surface(90)).unwrap();
+            assert!(matches!(
+                UploadedFontPool::upload(&mut store, font_set()),
+                Err(FontPoolUploadError::CreateSource {
+                    style,
+                    source: BackendError::Create(3),
+                }) if style == FontStyle::ALL[2]
+            ));
+            assert_eq!(store.uploaded_source_count(), 1);
+            store.upload(&marker_surface(91)).unwrap();
+            assert_eq!(store.uploaded_source_count(), 2);
+        }
+        assert_eq!(
+            backend
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Destroy(handle) => Some(*handle),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [12, 11, 14, 10]
+        );
+    }
+
+    #[test]
+    fn font_pool_coexists_with_other_sources_without_owning_their_lifetimes() {
+        let mut backend = RecordingBackend::default();
+        {
+            let mut store = UploadedSourceStore::new(&mut backend);
+            store.upload(&marker_surface(90)).unwrap();
+            let pool = UploadedFontPool::upload(&mut store, font_set()).unwrap();
+            store.upload(&marker_surface(91)).unwrap();
+            let style = FontStyle::GreenInfo;
+            let outcome = pool
+                .execute(
+                    &mut store,
+                    style,
+                    &plan(pool.font(style)),
+                    99,
+                    DisplayExtent {
+                        width: 20,
+                        height: 10,
+                    },
+                )
+                .unwrap();
+            assert_eq!(outcome.successful_blits, 1);
+            assert_eq!(store.uploaded_source_count(), FONT_COUNT + 2);
+            drop(pool);
+            assert_eq!(store.uploaded_source_count(), FONT_COUNT + 2);
+            assert!(
+                store
+                    .backend()
+                    .events
+                    .iter()
+                    .all(|event| !matches!(event, Event::Destroy(_)))
+            );
+        }
+        assert_eq!(
+            backend
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Destroy(handle) => Some(*handle),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            (10..10 + FONT_COUNT as u8 + 2).rev().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pool_used_with_another_store_returns_typed_access_error_without_blitting() {
+        let mut first_backend = RecordingBackend::default();
+        let mut second_backend = RecordingBackend::default();
+        let mut first_store = UploadedSourceStore::new(&mut first_backend);
+        let pool = UploadedFontPool::upload(&mut first_store, font_set()).unwrap();
+        let style = FontStyle::Title;
+        let mut second_store = UploadedSourceStore::new(&mut second_backend);
+        assert!(matches!(
+            pool.execute(
+                &mut second_store,
+                style,
+                &plan(pool.font(style)),
+                99,
+                DisplayExtent {
+                    width: 20,
+                    height: 10,
+                },
+            ),
+            Err(FontRasterError::SourceAccess(
+                SourceAccessError::ForeignKey(_)
+            ))
+        ));
+        assert_eq!(second_store.backend().blit_attempts, 0);
+    }
+
+    #[test]
+    fn released_font_source_returns_typed_access_error_without_blitting() {
+        let mut backend = RecordingBackend::default();
+        let mut store = UploadedSourceStore::new(&mut backend);
+        let pool = UploadedFontPool::upload(&mut store, font_set()).unwrap();
+        let style = FontStyle::Title;
+        let released = pool.sources[style as usize];
+        store.release(released).unwrap();
+        assert!(matches!(
+            pool.execute(
+                &mut store,
+                style,
+                &plan(pool.font(style)),
+                99,
+                DisplayExtent {
+                    width: 20,
+                    height: 10,
+                },
+            ),
+            Err(FontRasterError::SourceAccess(
+                SourceAccessError::ReleasedKey(key)
+            )) if key == released
+        ));
+        assert_eq!(store.backend().blit_attempts, 0);
+    }
+
+    #[test]
+    fn backend_blit_diagnostics_do_not_stop_later_glyphs_or_frames() {
+        let mut backend = RecordingBackend {
+            fail_blits: [0].into_iter().collect(),
+            ..RecordingBackend::default()
+        };
+        let mut store = UploadedSourceStore::new(&mut backend);
+        let pool = UploadedFontPool::upload(&mut store, font_set()).unwrap();
+        let style = FontStyle::Title;
+        let mut two_glyphs = plan(pool.font(style));
+        two_glyphs.blits.push(two_glyphs.blits[0].clone());
+        let first = pool
+            .execute(
+                &mut store,
+                style,
+                &two_glyphs,
+                99,
+                DisplayExtent {
+                    width: 20,
+                    height: 10,
+                },
+            )
+            .unwrap();
+        assert_eq!(first.successful_blits, 1);
+        assert_eq!(first.diagnostics.len(), 1);
+        let second = pool
+            .execute(
+                &mut store,
+                style,
+                &two_glyphs,
+                99,
+                DisplayExtent {
+                    width: 20,
+                    height: 10,
+                },
+            )
+            .unwrap();
+        assert_eq!(second.successful_blits, 2);
+        assert!(second.diagnostics.is_empty());
+    }
+
+    #[test]
     fn invalid_plan_has_no_backend_effect_and_does_not_poison_the_pool() {
         let mut backend = RecordingBackend::default();
         {
-            let mut pool = UploadedFontPool::upload(&mut backend, font_set()).unwrap();
+            let mut store = UploadedSourceStore::new(&mut backend);
+            let pool = UploadedFontPool::upload(&mut store, font_set()).unwrap();
             let style = FontStyle::Title;
             let mut invalid = plan(pool.font(style));
             invalid.blits[0].glyph_index = 1;
             assert!(matches!(
                 pool.execute(
+                    &mut store,
                     style,
                     &invalid,
                     99,
@@ -739,11 +932,12 @@ mod pool_tests {
                     FontRasterLayoutError::GlyphDoesNotMatchFont { .. }
                 ))
             ));
-            assert_eq!(pool.backend_mut().blit_attempts, 0);
+            assert_eq!(store.backend().blit_attempts, 0);
 
             let valid = plan(pool.font(style));
             assert_eq!(
                 pool.execute(
+                    &mut store,
                     style,
                     &valid,
                     99,
@@ -764,7 +958,8 @@ mod pool_tests {
     fn unwind_drops_every_uploaded_handle_once() {
         let mut backend = RecordingBackend::default();
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _pool = UploadedFontPool::upload(&mut backend, font_set()).unwrap();
+            let mut store = UploadedSourceStore::new(&mut backend);
+            let _pool = UploadedFontPool::upload(&mut store, font_set()).unwrap();
             panic!("injected unwind");
         }));
         assert!(unwind.is_err());
@@ -782,6 +977,21 @@ mod pool_tests {
         FontSet::from_ordered_fonts(std::array::from_fn(|index| {
             parse_legacy_font(&synthetic_font(index as u8), FontLimits::default()).unwrap()
         }))
+    }
+
+    fn marker_surface(marker: u8) -> IndexedSurface {
+        IndexedSurface {
+            width: 1,
+            height: 1,
+            pitch: 1,
+            pixels: vec![marker],
+            palette: [PaletteEntry {
+                red: 0,
+                green: 0,
+                blue: 0,
+                flags: 0,
+            }; 256],
+        }
     }
 
     fn plan(font: &BitmapFont) -> TextPlan {
