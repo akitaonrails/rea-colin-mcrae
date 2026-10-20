@@ -74,8 +74,9 @@ use cmr_formats::riff_palette::PaletteEntry;
 use cmr_formats::stored_asset::DecodeLimits;
 use cmr_video::c3d_software::prepare_software_frontend_c3d_bindings;
 use cmr_video::c3d_software_raster::{
-    SoftwareC3dRasterError, SoftwareC3dTransformState, SoftwareChampionshipCarRasterProfile,
-    preflight_championship_car_indexed_copy_batch,
+    SoftwareC3dRasterError, SoftwareC3dSplitRenderDepth, SoftwareC3dTransformState,
+    SoftwareChampionshipCarRasterProfile, SoftwareChampionshipCarSplitOracleProfile,
+    preflight_championship_car_indexed_copy_batch, preflight_championship_car_split_modulate_batch,
 };
 use cmr_video::software_championship_session::{
     SoftwareChampionshipFrameRequest, SoftwareChampionshipRasterSelection,
@@ -181,6 +182,24 @@ fn prepared_type2_car_executes_resource_missing_resource_on_software_backend() {
             command: prepared_vertices.len(),
             prepared: prepared_vertices.len() - 1,
         })
+    );
+    assert!(
+        preflight_championship_car_split_modulate_batch(
+            first_draw.command(),
+            &prepared_vertices,
+            SoftwareC3dTransformState::new(
+                first_draw.actor_world(),
+                ROOT_MENU_C3D_VIEW,
+                ROOT_MENU_C3D_PROJECTION,
+                visible.viewport(),
+            ),
+            SoftwareChampionshipCarSplitOracleProfile::new(
+                SoftwareC3dSplitRenderDepth::Bits32,
+                false,
+                false,
+            ),
+        )
+        .is_ok()
     );
     let prepared = executor
         .prepare(visible, ChampionshipCarPreDrawState::DISABLED)

@@ -156,6 +156,16 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   backend-neutral pre-scene hook rejects absent, mismatched, or unsupported car state before
   depth clear, and the full terminal test covers draw, group-4 commit, and
   captured presentation.
+- `cmr-video::c3d_software_raster` also retains the exact alternate renderer
+  selection priority (`0x400`→16, `0x200`→24, `0x100`→32) and exposes a
+  deliberately unintegrated canonical-RGB Type-2 MODULATE oracle. Its bilinear
+  filter and pre-conversion RGB precision are named source-owned policies;
+  selected `DDPixelFormat`, driver `Load` conversion, framebuffer packing,
+  dithering, alpha, and backend presentation remain explicit boundaries.
+- `cmr-core::root_menu_c3d_render_state` decodes the game's `0x00008000`
+  capability-derived alpha gate, including its inverse pre-scene depth-clear
+  decision and fixed source-alpha/inverse-source-alpha factors. Alpha testing
+  and alpha-enabled pixel composition remain unresolved and unintegrated.
 - `cmr-video::software_championship_session`: callback-scoped standalone
   assembly retaining all 14 prepared car topology/runtime pairs, one shared
   binding executor, explicit raster-selection, optional source-ordered per-car

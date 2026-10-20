@@ -267,8 +267,10 @@ pairs, explicit raster-profile provenance, compact car/FCHE palette layout,
 shared bindings, and frame state; synthetic and reviewed-import tests cover
 hidden-to-visible rendering, car switching, Next, presentation, and teardown.
 The original device branch, alpha, word-5 mutation, and actor-RGB gates are
-independent retained inputs. Alternate split/modulate/linear and alpha-enabled
-profiles remain separate.
+independent retained inputs. The alternate branch now has exact 16/24/32
+selection priority and a bounded canonical-RGB MODULATE oracle, while its
+runtime-selected texture format, framebuffer masks/packing, effective filter,
+dithering, alpha pixels, and backend integration remain separate.
 
 Exit gate:
 

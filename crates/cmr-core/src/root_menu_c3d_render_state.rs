@@ -15,6 +15,57 @@ pub enum C3dGraphicsBranch {
     Alternate,
 }
 
+/// Bit sampled by the game from the legacy raster-capability word.
+///
+/// This name intentionally describes the recovered game gate, not an asserted
+/// meaning for the underlying Direct3D capability bit.
+pub const ROOT_MENU_C3D_LEGACY_ALPHA_GATE_BIT: u32 = 0x0000_8000;
+
+/// Blend-factor values submitted whenever the root C3D state is initialized.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum C3dBlendFactor {
+    SourceAlpha = 5,
+    InverseSourceAlpha = 6,
+}
+
+/// What this recovered gate establishes about alpha testing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dAlphaTestKnowledge {
+    /// The observed gate controls blending and depth-clear policy only; alpha
+    /// testing has not been recovered from this path.
+    NotRecoveredFromLegacyGate,
+}
+
+/// Coupled behavior selected by the game's legacy raster-capability gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootMenuC3dLegacyAlphaContract {
+    pub alpha_blend_enabled: bool,
+    pub clear_depth_before_scene: bool,
+    pub source_blend: C3dBlendFactor,
+    pub destination_blend: C3dBlendFactor,
+    pub alpha_test: C3dAlphaTestKnowledge,
+}
+
+/// Decodes the observed bit test in the game's legacy raster-capability word.
+///
+/// No claim is made that bit `0x0000_8000` is itself an alpha capability. It
+/// is only the bit the game uses to select these two coupled behaviors.
+#[must_use]
+pub const fn root_menu_c3d_legacy_alpha_contract(
+    legacy_raster_capability_bits: u32,
+) -> RootMenuC3dLegacyAlphaContract {
+    let alpha_blend_enabled =
+        legacy_raster_capability_bits & ROOT_MENU_C3D_LEGACY_ALPHA_GATE_BIT != 0;
+    RootMenuC3dLegacyAlphaContract {
+        alpha_blend_enabled,
+        clear_depth_before_scene: !alpha_blend_enabled,
+        source_blend: C3dBlendFactor::SourceAlpha,
+        destination_blend: C3dBlendFactor::InverseSourceAlpha,
+        alpha_test: C3dAlphaTestKnowledge::NotRecoveredFromLegacyGate,
+    }
+}
+
 /// Runtime inputs sampled by the recovered renderer initialization.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RootMenuC3dRenderStateInputs {
@@ -28,6 +79,18 @@ pub struct RootMenuC3dRenderStateInputs {
     pub cached_texture_handle: u32,
     /// Requested filter value retained by the legacy submission cache.
     pub cached_filter_request: u32,
+}
+
+impl RootMenuC3dRenderStateInputs {
+    /// Applies the recovered alpha gate while leaving unrelated inputs intact.
+    #[must_use]
+    pub const fn with_legacy_alpha_contract(
+        mut self,
+        contract: RootMenuC3dLegacyAlphaContract,
+    ) -> Self {
+        self.alpha_blend_enabled = contract.alpha_blend_enabled;
+        self
+    }
 }
 
 /// One ordered `SetRenderState(state, value)` submission.
@@ -105,8 +168,11 @@ pub fn root_menu_c3d_render_state_program(
         write(State::ColorKeyEnable, 1),
         write(State::TextureAddress, 3),
         write(State::StippledAlpha, 0),
-        write(State::SourceBlend, 5),
-        write(State::DestinationBlend, 6),
+        write(State::SourceBlend, C3dBlendFactor::SourceAlpha as u32),
+        write(
+            State::DestinationBlend,
+            C3dBlendFactor::InverseSourceAlpha as u32,
+        ),
         write(State::TexturePerspective, 1),
         write(State::ZEnable, 1),
         write(State::ZWriteEnable, 1),
@@ -142,6 +208,78 @@ pub fn root_menu_c3d_render_state_program(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_alpha_gate_couples_blending_and_pre_scene_depth_clear() {
+        let disabled = root_menu_c3d_legacy_alpha_contract(0);
+        assert!(!disabled.alpha_blend_enabled);
+        assert!(disabled.clear_depth_before_scene);
+
+        let enabled = root_menu_c3d_legacy_alpha_contract(ROOT_MENU_C3D_LEGACY_ALPHA_GATE_BIT);
+        assert!(enabled.alpha_blend_enabled);
+        assert!(!enabled.clear_depth_before_scene);
+    }
+
+    #[test]
+    fn legacy_alpha_gate_ignores_every_other_capability_bit() {
+        let all_other_bits = !ROOT_MENU_C3D_LEGACY_ALPHA_GATE_BIT;
+        assert_eq!(
+            root_menu_c3d_legacy_alpha_contract(all_other_bits),
+            root_menu_c3d_legacy_alpha_contract(0)
+        );
+        assert_eq!(
+            root_menu_c3d_legacy_alpha_contract(u32::MAX),
+            root_menu_c3d_legacy_alpha_contract(ROOT_MENU_C3D_LEGACY_ALPHA_GATE_BIT)
+        );
+    }
+
+    #[test]
+    fn legacy_alpha_contract_retains_fixed_blend_factors_and_unknown_test_boundary() {
+        for bits in [0, ROOT_MENU_C3D_LEGACY_ALPHA_GATE_BIT] {
+            let contract = root_menu_c3d_legacy_alpha_contract(bits);
+            assert_eq!(contract.source_blend, C3dBlendFactor::SourceAlpha);
+            assert_eq!(contract.source_blend as u32, 5);
+            assert_eq!(
+                contract.destination_blend,
+                C3dBlendFactor::InverseSourceAlpha
+            );
+            assert_eq!(contract.destination_blend as u32, 6);
+            assert_eq!(
+                contract.alpha_test,
+                C3dAlphaTestKnowledge::NotRecoveredFromLegacyGate
+            );
+        }
+    }
+
+    #[test]
+    fn render_state_inputs_can_consume_the_legacy_alpha_contract() {
+        let contract = root_menu_c3d_legacy_alpha_contract(ROOT_MENU_C3D_LEGACY_ALPHA_GATE_BIT);
+        let inputs = RootMenuC3dRenderStateInputs {
+            graphics_branch: C3dGraphicsBranch::Indexed,
+            alpha_blend_enabled: false,
+            filter_capability_available: true,
+            cached_texture_handle: 0,
+            cached_filter_request: 1,
+        }
+        .with_legacy_alpha_contract(contract);
+        let program = root_menu_c3d_render_state_program(inputs);
+
+        assert_eq!(
+            program.writes[2],
+            write(C3dRenderState::AlphaBlendEnable, 1)
+        );
+        assert_eq!(
+            program.writes[6],
+            write(C3dRenderState::SourceBlend, contract.source_blend as u32)
+        );
+        assert_eq!(
+            program.writes[7],
+            write(
+                C3dRenderState::DestinationBlend,
+                contract.destination_blend as u32
+            )
+        );
+    }
 
     #[test]
     fn indexed_branch_preserves_exact_write_order_and_values() {

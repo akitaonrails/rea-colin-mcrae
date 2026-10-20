@@ -155,6 +155,10 @@ pub enum SoftwareC3dRasterError {
         command: usize,
         prepared: usize,
     },
+    NonBlackAlternateDefaultDiffuse {
+        triangle: usize,
+        vertex: usize,
+    },
 }
 
 /// Orthogonal runtime state controlling championship-car raster behavior.
@@ -203,6 +207,90 @@ impl SoftwareChampionshipCarRasterProfile {
     };
 }
 
+/// Nonzero renderer `+0x28` value selecting an alternate render-depth branch.
+/// Exact native pixel masks and packing remain device-selected and unresolved.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum SoftwareC3dSplitRenderDepth {
+    Bits16 = 0x10,
+    Bits24 = 0x18,
+    Bits32 = 0x20,
+}
+
+/// Renderer branch selected from legacy device-record field `+0xa0`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SoftwareC3dRendererBranchSelection {
+    Indexed,
+    Split(SoftwareC3dSplitRenderDepth),
+}
+
+/// Decodes the observed priority order `0x400`, `0x200`, `0x100`, then zero.
+#[must_use]
+pub const fn decode_software_c3d_renderer_branch(
+    device_record_a0: u32,
+) -> SoftwareC3dRendererBranchSelection {
+    if device_record_a0 & 0x400 != 0 {
+        SoftwareC3dRendererBranchSelection::Split(SoftwareC3dSplitRenderDepth::Bits16)
+    } else if device_record_a0 & 0x200 != 0 {
+        SoftwareC3dRendererBranchSelection::Split(SoftwareC3dSplitRenderDepth::Bits24)
+    } else if device_record_a0 & 0x100 != 0 {
+        SoftwareC3dRendererBranchSelection::Split(SoftwareC3dSplitRenderDepth::Bits32)
+    } else {
+        SoftwareC3dRendererBranchSelection::Indexed
+    }
+}
+
+/// Numeric filter request retained by the alternate device branch.
+///
+/// Value 2 is observed as the request. Whether it becomes the effective device
+/// filter depends on cache and capability state and is not implied here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum SoftwareC3dAlternateFilterRequest {
+    Value2 = 2,
+}
+
+/// Source-owned filtering policy used by the canonical RGB oracle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SoftwareC3dOracleFilter {
+    BilinearClampedTexelCenter,
+}
+
+/// Candidate no-alpha alternate policy plus retained device-branch provenance.
+///
+/// `render_depth_provenance` does not select output packing. The compositor
+/// emits canonical unpacked RGB before unresolved device-format conversion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SoftwareChampionshipCarSplitOracleProfile {
+    pub raster: SoftwareChampionshipCarRasterProfile,
+    pub render_depth_provenance: SoftwareC3dSplitRenderDepth,
+    pub requested_filter: SoftwareC3dAlternateFilterRequest,
+    pub oracle_filter: SoftwareC3dOracleFilter,
+}
+
+impl SoftwareChampionshipCarSplitOracleProfile {
+    #[must_use]
+    pub const fn new(
+        render_depth: SoftwareC3dSplitRenderDepth,
+        fog_mutation: bool,
+        actor_rgb_override: bool,
+    ) -> Self {
+        Self {
+            raster: SoftwareChampionshipCarRasterProfile {
+                unified_indexed: false,
+                texture_copy: false,
+                point_filter: false,
+                alpha_blend: false,
+                fog_mutation,
+                actor_rgb_override,
+            },
+            render_depth_provenance: render_depth,
+            requested_filter: SoftwareC3dAlternateFilterRequest::Value2,
+            oracle_filter: SoftwareC3dOracleFilter::BilinearClampedTexelCenter,
+        }
+    }
+}
+
 /// Index source selected by the championship binding operation.
 #[derive(Clone, Copy, Debug)]
 pub enum SoftwareChampionshipCarIndexedSource<'a> {
@@ -211,6 +299,19 @@ pub enum SoftwareChampionshipCarIndexedSource<'a> {
     /// literal display index zero. This is deliberately not resource zero and
     /// does not validate an arbitrary current or pending palette.
     ReviewedCarPaletteMissingSelectorOpaqueBlackIndexZero,
+}
+
+/// Texture source for the bounded alternate championship compositor.
+#[derive(Clone, Copy, Debug)]
+pub enum SoftwareChampionshipCarSplitSource<'a> {
+    /// A split index plane plus its retained RGB palette. Interpreting that
+    /// palette directly is source-owned oracle policy; legacy driver conversion
+    /// into the selected device texture format remains unresolved.
+    Texture(&'a SoftwareC3dSampledTexture),
+    /// The recovered missing-selector path, accepted only when every prepared
+    /// vertex has black diffuse RGB. MODULATE is then black independently of
+    /// the unresolved texture-zero sample.
+    BlackDiffuseDefault,
 }
 
 impl fmt::Display for SoftwareC3dRasterError {
@@ -239,10 +340,7 @@ pub enum SoftwareC3dComposeError {
 
 impl fmt::Display for SoftwareC3dComposeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "software C3D indexed composition failed: {self:?}"
-        )
+        write!(formatter, "software C3D composition failed: {self:?}")
     }
 }
 
@@ -425,6 +523,10 @@ pub struct SoftwareC3dPreparedBatch {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SoftwareC3dPreparedCopyBatch(SoftwareC3dPreparedBatch);
 
+/// Type-2 lit geometry for the alternate Gouraud/MODULATE compositor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoftwareC3dPreparedLitBatch(SoftwareC3dPreparedBatch);
+
 impl SoftwareC3dPreparedBatch {
     #[must_use]
     pub fn triangles(&self) -> &[SoftwareC3dPreparedTriangle] {
@@ -524,14 +626,50 @@ pub fn preflight_championship_car_indexed_copy_batch(
     profile: SoftwareChampionshipCarRasterProfile,
 ) -> Result<SoftwareC3dPreparedCopyBatch, SoftwareC3dRasterError> {
     validate_championship_car_raster_profile(profile)?;
-    if command.vertex_mutation_branch() != C3dVertexMutationBranch::Type2 {
+    preflight_championship_car_prepared_type2_batch(
+        command.vertex_mutation_branch(),
+        command.vertices().len(),
+        command.indices(),
+        prepared_vertices,
+        transforms,
+    )
+    .map(SoftwareC3dPreparedCopyBatch)
+}
+
+/// Preflights a car batch for the candidate alternate
+/// split/Gouraud/MODULATE/no-alpha oracle policy.
+pub fn preflight_championship_car_split_modulate_batch(
+    command: &C3dDrawCommand,
+    prepared_vertices: &[C3dType2PreDrawVertex],
+    transforms: SoftwareC3dTransformState,
+    profile: SoftwareChampionshipCarSplitOracleProfile,
+) -> Result<SoftwareC3dPreparedLitBatch, SoftwareC3dRasterError> {
+    validate_championship_car_split_modulate_no_alpha_oracle_profile(profile)?;
+    preflight_championship_car_prepared_type2_batch(
+        command.vertex_mutation_branch(),
+        command.vertices().len(),
+        command.indices(),
+        prepared_vertices,
+        transforms,
+    )
+    .map(SoftwareC3dPreparedLitBatch)
+}
+
+fn preflight_championship_car_prepared_type2_batch(
+    branch: C3dVertexMutationBranch,
+    command_vertex_count: usize,
+    indices: &[u16],
+    prepared_vertices: &[C3dType2PreDrawVertex],
+    transforms: SoftwareC3dTransformState,
+) -> Result<SoftwareC3dPreparedBatch, SoftwareC3dRasterError> {
+    if branch != C3dVertexMutationBranch::Type2 {
         return Err(SoftwareC3dRasterError::UnsupportedVertexLayout {
-            vertex_type: command.vertex_type(),
+            vertex_type: branch.submitted_vertex_type(),
         });
     }
-    if command.vertices().len() != prepared_vertices.len() {
+    if command_vertex_count != prepared_vertices.len() {
         return Err(SoftwareC3dRasterError::PreparedVertexCountMismatch {
-            command: command.vertices().len(),
+            command: command_vertex_count,
             prepared: prepared_vertices.len(),
         });
     }
@@ -540,8 +678,7 @@ pub fn preflight_championship_car_indexed_copy_batch(
         .copied()
         .map(RasterInputVertex::from_type2_pre_draw)
         .collect::<Vec<_>>();
-    preflight_indexed_triangle_list(&vertices, command.indices(), transforms)
-        .map(SoftwareC3dPreparedCopyBatch)
+    preflight_indexed_triangle_list(&vertices, indices, transforms)
 }
 
 pub fn validate_championship_car_raster_profile(
@@ -556,6 +693,25 @@ pub fn validate_championship_car_raster_profile(
     } else {
         Err(SoftwareC3dRasterError::UnsupportedChampionshipCarProfile(
             profile,
+        ))
+    }
+}
+
+/// Accepts only the candidate no-alpha split/MODULATE oracle policy. The
+/// requested numeric filter and the explicitly chosen oracle filter remain
+/// separate; fog and actor-RGB may use any combination.
+pub fn validate_championship_car_split_modulate_no_alpha_oracle_profile(
+    profile: SoftwareChampionshipCarSplitOracleProfile,
+) -> Result<(), SoftwareC3dRasterError> {
+    if !profile.raster.unified_indexed
+        && !profile.raster.texture_copy
+        && !profile.raster.point_filter
+        && !profile.raster.alpha_blend
+    {
+        Ok(())
+    } else {
+        Err(SoftwareC3dRasterError::UnsupportedChampionshipCarProfile(
+            profile.raster,
         ))
     }
 }
@@ -657,6 +813,73 @@ pub fn compose_championship_car_indexed_copy_no_blend(
         target_pixels,
         profile,
     )
+}
+
+/// Composes a candidate alternate championship policy into canonical RGB.
+///
+/// The source index plane and retained palette are treated as split RGB texture
+/// data. The caller must explicitly select the source-owned bilinear policy;
+/// this is separate from the observed numeric filter request and makes no claim
+/// about the effective legacy device filter. Filtered RGB is multiplied by
+/// screen-affine Gouraud diffuse RGB. Output is one canonical `[R,G,B]` triplet
+/// per pixel before unresolved device-format conversion; retained 16/24/32-bit
+/// depth is provenance only and does not select packing here.
+pub fn compose_championship_car_split_modulate_canonical_rgb_oracle(
+    batch: &SoftwareC3dPreparedLitBatch,
+    source: SoftwareChampionshipCarSplitSource<'_>,
+    depth: &mut SoftwareC3dDepthBuffer,
+    target_extent: [u16; 2],
+    target_pixels: &mut [[u8; 3]],
+    profile: SoftwareChampionshipCarSplitOracleProfile,
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dComposeError> {
+    validate_championship_car_split_modulate_no_alpha_oracle_profile(profile)
+        .map_err(SoftwareC3dComposeError::Raster)?;
+    validate_rgb_target(target_extent, target_pixels, depth.extent())?;
+
+    let default_indices = [0u8];
+    let default_palette = [BitmapPaletteEntry {
+        red: 0,
+        green: 0,
+        blue: 0,
+        reserved: 0,
+    }];
+    let texture = match source {
+        SoftwareChampionshipCarSplitSource::Texture(texture) => IndexedTextureView {
+            raster: TextureView {
+                extent: texture.extent(),
+                indices: texture.indices(),
+                palette_len: texture.palette().len(),
+            },
+            palette: texture.palette(),
+        },
+        SoftwareChampionshipCarSplitSource::BlackDiffuseDefault => {
+            validate_black_alternate_default(&batch.0).map_err(SoftwareC3dComposeError::Raster)?;
+            IndexedTextureView {
+                raster: TextureView {
+                    extent: [1, 1],
+                    indices: &default_indices,
+                    palette_len: 1,
+                },
+                palette: &default_palette,
+            }
+        }
+    };
+    validate_texture(texture.raster).map_err(SoftwareC3dComposeError::Raster)?;
+    validate_prepared_triangles(&batch.0).map_err(SoftwareC3dComposeError::Raster)?;
+
+    let target_width = usize::from(target_extent[0]);
+    rasterize_fragments(&batch.0, texture.raster, depth, |fragment| {
+        let sampled = sample_bilinear_rgb_oracle_clamped(texture, fragment.uv());
+        let diffuse = fragment.diffuse_argb();
+        let modulated = std::array::from_fn(|channel| {
+            (sampled[channel] * f64::from(diffuse[channel + 1]))
+                .clamp(0.0, 255.0)
+                .round() as u8
+        });
+        let [x, y] = fragment.position();
+        target_pixels[usize::from(y) * target_width + usize::from(x)] = modulated;
+    })
+    .map_err(SoftwareC3dComposeError::Raster)
 }
 
 fn compose_championship_car_indexed_copy_view(
@@ -1014,6 +1237,30 @@ fn validate_indexed_target(
     Ok(())
 }
 
+fn validate_rgb_target(
+    extent: [u16; 2],
+    pixels: &[[u8; 3]],
+    depth_extent: [u16; 2],
+) -> Result<(), SoftwareC3dComposeError> {
+    if extent[0] == 0 || extent[1] == 0 {
+        return Err(SoftwareC3dComposeError::InvalidTargetExtent(extent));
+    }
+    let expected = usize::from(extent[0]) * usize::from(extent[1]);
+    if pixels.len() != expected {
+        return Err(SoftwareC3dComposeError::InvalidTargetLength {
+            expected,
+            actual: pixels.len(),
+        });
+    }
+    if extent != depth_extent {
+        return Err(SoftwareC3dComposeError::DepthTargetExtentMismatch {
+            depth: depth_extent,
+            target: extent,
+        });
+    }
+    Ok(())
+}
+
 fn full_palette_manhattan_map(
     texture_palette: &[BitmapPaletteEntry],
     active_palette: &[PaletteEntry; 256],
@@ -1038,6 +1285,57 @@ fn full_palette_manhattan_map(
             best_index
         })
         .collect()
+}
+
+fn validate_black_alternate_default(
+    batch: &SoftwareC3dPreparedBatch,
+) -> Result<(), SoftwareC3dRasterError> {
+    for (triangle, prepared) in batch.triangles.iter().enumerate() {
+        for (vertex, prepared) in prepared.vertices.iter().enumerate() {
+            if prepared.diffuse_argb[1..] != [0.0; 3] {
+                return Err(SoftwareC3dRasterError::NonBlackAlternateDefaultDiffuse {
+                    triangle,
+                    vertex,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Returns oracle-bilinear RGB in byte-channel space. Normalized coordinates
+/// address texel centers at `(n + 0.5) / extent`; clamp duplicates edge texels.
+fn sample_bilinear_rgb_oracle_clamped(texture: IndexedTextureView<'_>, uv: [f32; 2]) -> [f64; 3] {
+    let [width, height] = texture.raster.extent.map(usize::from);
+    let axis = |coordinate: f32, extent: usize| {
+        let position = f64::from(coordinate.clamp(0.0, 1.0)) * extent as f64 - 0.5;
+        let lower = position.floor();
+        let fraction = position - lower;
+        let lower_index = (lower as isize).clamp(0, extent as isize - 1) as usize;
+        let upper_index = (lower as isize + 1).clamp(0, extent as isize - 1) as usize;
+        (lower_index, upper_index, fraction)
+    };
+    let (left, right, horizontal) = axis(uv[0], width);
+    let (top, bottom, vertical) = axis(uv[1], height);
+    let palette_rgb = |x: usize, y: usize| {
+        let index = usize::from(texture.raster.indices[y * width + x]);
+        let entry = texture.palette[index];
+        [
+            f64::from(entry.red),
+            f64::from(entry.green),
+            f64::from(entry.blue),
+        ]
+    };
+    let top_left = palette_rgb(left, top);
+    let top_right = palette_rgb(right, top);
+    let bottom_left = palette_rgb(left, bottom);
+    let bottom_right = palette_rgb(right, bottom);
+    std::array::from_fn(|channel| {
+        let top_value = top_left[channel] + (top_right[channel] - top_left[channel]) * horizontal;
+        let bottom_value =
+            bottom_left[channel] + (bottom_right[channel] - bottom_left[channel]) * horizontal;
+        top_value + (bottom_value - top_value) * vertical
+    })
 }
 
 fn rasterize_fragments(
@@ -1383,6 +1681,7 @@ impl DecodedViewport {
 #[cfg(test)]
 mod tests {
     use cmr_core::{
+        c3d_type2_fog::{C3dType2FogState, prepare_c3d_type2_pre_draw_vertices},
         championship_setup::CanonicalCar,
         display::DisplayExtent,
         root_menu_c3d_resources::{
@@ -1479,6 +1778,13 @@ mod tests {
     }
 
     fn sampled_texture(fill: u8) -> SoftwareC3dSampledTexture {
+        sampled_texture_with_palette_entry(fill, [0; 3])
+    }
+
+    fn sampled_texture_with_palette_entry(
+        fill: u8,
+        [red, green, blue]: [u8; 3],
+    ) -> SoftwareC3dSampledTexture {
         const WIDTH: usize = 4;
         const HEIGHT: usize = 4;
         const PIXEL_OFFSET: usize = 14 + 40 + 256 * 4;
@@ -1494,6 +1800,8 @@ mod tests {
         bitmap[28..30].copy_from_slice(&8u16.to_le_bytes());
         bitmap[34..38].copy_from_slice(&((WIDTH * HEIGHT) as u32).to_le_bytes());
         bitmap[46..50].copy_from_slice(&256u32.to_le_bytes());
+        let palette_offset = 14 + 40 + usize::from(fill) * 4;
+        bitmap[palette_offset..palette_offset + 4].copy_from_slice(&[blue, green, red, 0]);
         bitmap[PIXEL_OFFSET..].fill(fill);
 
         let mut bytes = vec![0; 32 + 16 + bitmap.len()];
@@ -1534,6 +1842,84 @@ mod tests {
         SoftwareC3dSampledTexture::from_prepared_frontend(arena.resource(id).unwrap()).unwrap()
     }
 
+    fn sampled_varying_2x2_texture() -> SoftwareC3dSampledTexture {
+        const WIDTH: usize = 8;
+        const HEIGHT: usize = 8;
+        const PIXEL_OFFSET: usize = 14 + 40 + 256 * 4;
+        let mut bitmap = vec![0; PIXEL_OFFSET + WIDTH * HEIGHT];
+        let bitmap_len = bitmap.len() as u32;
+        bitmap[0..2].copy_from_slice(b"BM");
+        bitmap[2..6].copy_from_slice(&bitmap_len.to_le_bytes());
+        bitmap[10..14].copy_from_slice(&(PIXEL_OFFSET as u32).to_le_bytes());
+        bitmap[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bitmap[18..22].copy_from_slice(&(WIDTH as i32).to_le_bytes());
+        bitmap[22..26].copy_from_slice(&(HEIGHT as i32).to_le_bytes());
+        bitmap[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bitmap[28..30].copy_from_slice(&8u16.to_le_bytes());
+        bitmap[34..38].copy_from_slice(&((WIDTH * HEIGHT) as u32).to_le_bytes());
+        bitmap[46..50].copy_from_slice(&256u32.to_le_bytes());
+        for (index, [red, green, blue]) in [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]]
+            .into_iter()
+            .enumerate()
+        {
+            let offset = 14 + 40 + index * 4;
+            bitmap[offset..offset + 4].copy_from_slice(&[blue, green, red, 0]);
+        }
+        // BMP rows are bottom-up. The normalized top-left 4x4 quadrant uses
+        // index 0, top-right 1, bottom-left 2, and bottom-right 3.
+        for disk_y in 0..HEIGHT {
+            let normalized_y = HEIGHT - 1 - disk_y;
+            for x in 0..WIDTH {
+                let index = usize::from(normalized_y >= 4) * 2 + usize::from(x >= 4);
+                bitmap[PIXEL_OFFSET + disk_y * WIDTH + x] = index as u8;
+            }
+        }
+
+        let mut bytes = vec![0; 32 + 16 + bitmap.len()];
+        bytes[0..4].copy_from_slice(&C3D_MAGIC);
+        bytes[4..8].copy_from_slice(&C3D_FORMAT_VERSION.to_le_bytes());
+        bytes[16..18].copy_from_slice(&1u16.to_le_bytes());
+        for index in 0..3 {
+            bytes[20 + index * 4..24 + index * 4].copy_from_slice(&32u32.to_le_bytes());
+        }
+        bytes[32..44].copy_from_slice(b"TEST-ORACLE!");
+        bytes[44..48].copy_from_slice(&(bitmap.len() as u32).to_le_bytes());
+        bytes[48..].copy_from_slice(&bitmap);
+
+        let file = parse_c3d(&bytes, C3dLimits::default()).unwrap();
+        let mut builder = C3dPreparedArenaBuilder::new().unwrap();
+        let object = builder
+            .prepare_object(
+                C3dSourceIdentity {
+                    owner: FrontendC3dOwner::ChampionshipCar(CanonicalCar::Subaru),
+                    path: "synthetic-oracle-filter-texture.c3d".into(),
+                },
+                &file,
+                C3dLoadPolicy {
+                    mode: 8,
+                    caller_option: 1,
+                    caller_flags: 0x18,
+                    surface_constructor_flags: 0x15,
+                    entry_resource_count: 0,
+                    allocation: C3dResourceAllocationPolicy::AppendEveryResource,
+                    surface_layout: C3dSurfaceLayoutGates {
+                        force_quarter: true,
+                        ..C3dSurfaceLayoutGates::default()
+                    },
+                    material: C3dEntryMaterialPolicy::FixedUniformWord(0x9696_9696),
+                },
+                BitmapLimits::default(),
+            )
+            .unwrap();
+        let id = object.ordinal_resources()[0];
+        let arena = builder.finish();
+        let sampled =
+            SoftwareC3dSampledTexture::from_prepared_frontend(arena.resource(id).unwrap()).unwrap();
+        assert_eq!(sampled.extent(), [2, 2]);
+        assert_eq!(sampled.indices(), [0, 1, 2, 3]);
+        sampled
+    }
+
     fn identity() -> C3dMatrixWords {
         ROOT_MENU_C3D_VIEW
     }
@@ -1548,6 +1934,25 @@ mod tests {
 
     fn identity_state() -> SoftwareC3dTransformState {
         SoftwareC3dTransformState::new(identity(), identity(), identity(), viewport())
+    }
+
+    fn alternate_profile() -> SoftwareChampionshipCarSplitOracleProfile {
+        SoftwareChampionshipCarSplitOracleProfile::new(
+            SoftwareC3dSplitRenderDepth::Bits32,
+            false,
+            false,
+        )
+    }
+
+    fn lit_pixel_batch(diffuse: [[f32; 4]; 3]) -> SoftwareC3dPreparedLitBatch {
+        SoftwareC3dPreparedLitBatch(prepared_batch(vec![triangle(
+            [
+                screen([0.0, 0.0, 0.5], 1.0, [0.5, 0.5], diffuse[0]),
+                screen([2.0, 0.0, 0.5], 1.0, [0.5, 0.5], diffuse[1]),
+                screen([0.0, 2.0, 0.5], 1.0, [0.5, 0.5], diffuse[2]),
+            ],
+            0,
+        )]))
     }
 
     fn assert_near(actual: f32, expected: f32) {
@@ -1578,7 +1983,7 @@ mod tests {
 
     #[test]
     fn viewport_clip_y_extent_maps_to_top_and_bottom() {
-        let aspect = 640.0 / 480.0;
+        let aspect: f32 = 640.0 / 480.0;
         let top = transform_vertex(
             vertex([0.0, aspect, 0.5, 1.0], [0.0, 0.0]),
             identity(),
@@ -2396,6 +2801,391 @@ mod tests {
         ] {
             assert_eq!(validate_championship_car_raster_profile(profile), Ok(()));
         }
+    }
+
+    #[test]
+    fn alternate_validator_accepts_candidate_no_alpha_policy_and_exact_provenance() {
+        for (render_depth, raw) in [
+            (SoftwareC3dSplitRenderDepth::Bits16, 0x10),
+            (SoftwareC3dSplitRenderDepth::Bits24, 0x18),
+            (SoftwareC3dSplitRenderDepth::Bits32, 0x20),
+        ] {
+            assert_eq!(render_depth as u32, raw);
+            for (fog, actor_rgb) in [(false, false), (true, false), (false, true), (true, true)] {
+                let profile =
+                    SoftwareChampionshipCarSplitOracleProfile::new(render_depth, fog, actor_rgb);
+                assert_eq!(
+                    validate_championship_car_split_modulate_no_alpha_oracle_profile(profile),
+                    Ok(())
+                );
+                assert_eq!(profile.render_depth_provenance, render_depth);
+                assert_eq!(profile.requested_filter as u32, 2);
+                assert_eq!(
+                    profile.oracle_filter,
+                    SoftwareC3dOracleFilter::BilinearClampedTexelCenter
+                );
+                assert!(validate_championship_car_raster_profile(profile.raster).is_err());
+            }
+        }
+
+        let alternate = alternate_profile();
+        for raster in [
+            SoftwareChampionshipCarRasterProfile {
+                unified_indexed: true,
+                ..alternate.raster
+            },
+            SoftwareChampionshipCarRasterProfile {
+                texture_copy: true,
+                ..alternate.raster
+            },
+            SoftwareChampionshipCarRasterProfile {
+                point_filter: true,
+                ..alternate.raster
+            },
+            SoftwareChampionshipCarRasterProfile {
+                alpha_blend: true,
+                ..alternate.raster
+            },
+        ] {
+            let profile = SoftwareChampionshipCarSplitOracleProfile {
+                raster,
+                ..alternate
+            };
+            assert_eq!(
+                validate_championship_car_split_modulate_no_alpha_oracle_profile(profile),
+                Err(SoftwareC3dRasterError::UnsupportedChampionshipCarProfile(
+                    raster
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn renderer_branch_decoder_preserves_priority_and_indexed_zero() {
+        use SoftwareC3dRendererBranchSelection::{Indexed, Split};
+
+        assert_eq!(decode_software_c3d_renderer_branch(0), Indexed);
+        assert_eq!(decode_software_c3d_renderer_branch(0x80), Indexed);
+        assert_eq!(
+            decode_software_c3d_renderer_branch(0x100),
+            Split(SoftwareC3dSplitRenderDepth::Bits32)
+        );
+        assert_eq!(
+            decode_software_c3d_renderer_branch(0x200 | 0x100),
+            Split(SoftwareC3dSplitRenderDepth::Bits24)
+        );
+        assert_eq!(
+            decode_software_c3d_renderer_branch(0x400 | 0x200 | 0x100),
+            Split(SoftwareC3dSplitRenderDepth::Bits16)
+        );
+    }
+
+    #[test]
+    fn alternate_preflight_consumes_prepared_type2_words_and_checks_layout_and_count() {
+        let aspect: f32 = 640.0 / 480.0;
+        let words = [
+            [-0.5, -0.5 * aspect, 0.5],
+            [0.0, 0.5 * aspect, 0.5],
+            [0.5, -0.5 * aspect, 0.5],
+        ]
+        .map(|position| {
+            [
+                position[0].to_bits(),
+                position[1].to_bits(),
+                position[2].to_bits(),
+                0,
+                0xff12_3456,
+                0xffab_cdef,
+                0.5f32.to_bits(),
+                0.5f32.to_bits(),
+            ]
+        });
+        let prepared =
+            prepare_c3d_type2_pre_draw_vertices(words, C3dType2FogState::DISABLED).unwrap();
+        let batch = preflight_championship_car_prepared_type2_batch(
+            C3dVertexMutationBranch::Type2,
+            3,
+            &[0, 1, 2],
+            &prepared,
+            identity_state(),
+        )
+        .unwrap();
+
+        assert_eq!(batch.triangles().len(), 1);
+        for vertex in batch.triangles()[0].vertices() {
+            assert_eq!(vertex.diffuse_argb(), unpack_argb(0xff12_3456));
+            assert_eq!(vertex.specular_argb(), unpack_argb(0xffab_cdef));
+        }
+        assert_eq!(
+            preflight_championship_car_prepared_type2_batch(
+                C3dVertexMutationBranch::Type2,
+                4,
+                &[0, 1, 2],
+                &prepared,
+                identity_state(),
+            ),
+            Err(SoftwareC3dRasterError::PreparedVertexCountMismatch {
+                command: 4,
+                prepared: 3,
+            })
+        );
+        assert_eq!(
+            preflight_championship_car_prepared_type2_batch(
+                C3dVertexMutationBranch::Type1,
+                3,
+                &[0, 1, 2],
+                &prepared,
+                identity_state(),
+            ),
+            Err(SoftwareC3dRasterError::UnsupportedVertexLayout { vertex_type: 1 })
+        );
+    }
+
+    #[test]
+    fn explicit_oracle_bilinear_sampler_uses_clamped_texel_centers() {
+        let palette = [
+            BitmapPaletteEntry {
+                red: 255,
+                green: 0,
+                blue: 0,
+                reserved: 0,
+            },
+            BitmapPaletteEntry {
+                red: 0,
+                green: 255,
+                blue: 0,
+                reserved: 0,
+            },
+            BitmapPaletteEntry {
+                red: 0,
+                green: 0,
+                blue: 255,
+                reserved: 0,
+            },
+            BitmapPaletteEntry {
+                red: 255,
+                green: 255,
+                blue: 255,
+                reserved: 0,
+            },
+        ];
+        let texture = indexed_texture([2, 2], &[0, 1, 2, 3], &palette);
+
+        assert_eq!(
+            sample_bilinear_rgb_oracle_clamped(texture, [0.25, 0.25]),
+            [255.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            sample_bilinear_rgb_oracle_clamped(texture, [0.75, 0.25]),
+            [0.0, 255.0, 0.0]
+        );
+        assert_eq!(
+            sample_bilinear_rgb_oracle_clamped(texture, [0.25, 0.75]),
+            [0.0, 0.0, 255.0]
+        );
+        assert_eq!(
+            sample_bilinear_rgb_oracle_clamped(texture, [0.75, 0.75]),
+            [255.0; 3]
+        );
+        assert_eq!(
+            sample_bilinear_rgb_oracle_clamped(texture, [0.5, 0.5]),
+            [127.5; 3]
+        );
+        assert_eq!(
+            sample_bilinear_rgb_oracle_clamped(texture, [-1.0, 2.0]),
+            [0.0, 0.0, 255.0]
+        );
+        assert_eq!(sample_point_clamped(texture.raster, [0.5, 0.5]), 3);
+    }
+
+    #[test]
+    fn public_alternate_compositor_uses_explicit_oracle_filter_and_gouraud_modulate() {
+        let texture = sampled_varying_2x2_texture();
+        let batch = lit_pixel_batch([
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+        ]);
+        // The explicit oracle filter averages the four texels to 127.5 RGB;
+        // pixel-center Gouraud barycentrics produce diffuse red 0.25. Rounded
+        // MODULATE output is therefore red 32, unlike point sampling index 3.
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let mut target = [[200; 3]];
+        let outcome = compose_championship_car_split_modulate_canonical_rgb_oracle(
+            &batch,
+            SoftwareChampionshipCarSplitSource::Texture(&texture),
+            &mut depth,
+            [1, 1],
+            &mut target,
+            alternate_profile(),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.depth_passed(), 1);
+        assert_eq!(target, [[32, 0, 0]]);
+        assert_eq!(depth.values(), [0.5]);
+        assert_ne!(
+            target[0],
+            [64, 0, 0],
+            "oracle filter must differ from point"
+        );
+    }
+
+    #[test]
+    fn alternate_modulate_ignores_fog_specular_but_consumes_actor_rgb_diffuse() {
+        let texture = sampled_texture_with_palette_entry(1, [255; 3]);
+        let batch = |diffuse: [f32; 4], specular: [f32; 4]| {
+            let mut batch = lit_pixel_batch([diffuse; 3]);
+            for vertex in &mut batch.0.triangles[0].vertices {
+                vertex.specular_argb = specular;
+            }
+            batch
+        };
+        let render = |batch: &SoftwareC3dPreparedLitBatch| {
+            let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+            let mut target = [[99; 3]];
+            compose_championship_car_split_modulate_canonical_rgb_oracle(
+                batch,
+                SoftwareChampionshipCarSplitSource::Texture(&texture),
+                &mut depth,
+                [1, 1],
+                &mut target,
+                alternate_profile(),
+            )
+            .unwrap();
+            target[0]
+        };
+
+        let original = render(&batch([1.0, 128.0 / 255.0, 64.0 / 255.0, 0.0], [0.0; 4]));
+        let changed_fog = render(&batch(
+            [1.0, 128.0 / 255.0, 64.0 / 255.0, 0.0],
+            [1.0, 0.9, 0.1, 0.8],
+        ));
+        let actor_rgb = render(&batch(
+            [1.0, 64.0 / 255.0, 128.0 / 255.0, 0.0],
+            [1.0, 0.9, 0.1, 0.8],
+        ));
+        assert_eq!(
+            (original, changed_fog, actor_rgb),
+            ([128, 64, 0], [128, 64, 0], [64, 128, 0])
+        );
+    }
+
+    #[test]
+    fn alternate_default_is_bounded_to_black_diffuse_and_errors_are_effect_free() {
+        let black = lit_pixel_batch([[1.0, 0.0, 0.0, 0.0]; 3]);
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let mut target = [[44; 3]];
+        compose_championship_car_split_modulate_canonical_rgb_oracle(
+            &black,
+            SoftwareChampionshipCarSplitSource::BlackDiffuseDefault,
+            &mut depth,
+            [1, 1],
+            &mut target,
+            alternate_profile(),
+        )
+        .unwrap();
+        assert_eq!(target, [[0; 3]]);
+
+        let non_black = lit_pixel_batch([[1.0, 1.0, 0.0, 0.0]; 3]);
+        depth.clear_far();
+        target[0] = [44; 3];
+        let before_depth = depth.values().to_vec();
+        assert_eq!(
+            compose_championship_car_split_modulate_canonical_rgb_oracle(
+                &non_black,
+                SoftwareChampionshipCarSplitSource::BlackDiffuseDefault,
+                &mut depth,
+                [1, 1],
+                &mut target,
+                alternate_profile(),
+            ),
+            Err(SoftwareC3dComposeError::Raster(
+                SoftwareC3dRasterError::NonBlackAlternateDefaultDiffuse {
+                    triangle: 0,
+                    vertex: 0,
+                }
+            ))
+        );
+        assert_eq!(target, [[44; 3]]);
+        assert_eq!(depth.values(), before_depth);
+
+        assert_eq!(
+            compose_championship_car_split_modulate_canonical_rgb_oracle(
+                &black,
+                SoftwareChampionshipCarSplitSource::BlackDiffuseDefault,
+                &mut depth,
+                [2, 1],
+                &mut target,
+                alternate_profile(),
+            ),
+            Err(SoftwareC3dComposeError::InvalidTargetLength {
+                expected: 2,
+                actual: 1,
+            })
+        );
+        assert_eq!(target, [[44; 3]]);
+        assert_eq!(depth.values(), before_depth);
+
+        let mut mismatched_depth = SoftwareC3dDepthBuffer::new_far([2, 1]).unwrap();
+        let before_mismatched_depth = mismatched_depth.values().to_vec();
+        assert_eq!(
+            compose_championship_car_split_modulate_canonical_rgb_oracle(
+                &black,
+                SoftwareChampionshipCarSplitSource::BlackDiffuseDefault,
+                &mut mismatched_depth,
+                [1, 1],
+                &mut target,
+                alternate_profile(),
+            ),
+            Err(SoftwareC3dComposeError::DepthTargetExtentMismatch {
+                depth: [2, 1],
+                target: [1, 1],
+            })
+        );
+        assert_eq!(target, [[44; 3]]);
+        assert_eq!(mismatched_depth.values(), before_mismatched_depth);
+
+        let mut malformed = black.clone();
+        malformed.0.triangles[0].vertices[0].position[0] = f32::NAN;
+        assert_eq!(
+            compose_championship_car_split_modulate_canonical_rgb_oracle(
+                &malformed,
+                SoftwareChampionshipCarSplitSource::BlackDiffuseDefault,
+                &mut depth,
+                [1, 1],
+                &mut target,
+                alternate_profile(),
+            ),
+            Err(SoftwareC3dComposeError::Raster(
+                SoftwareC3dRasterError::InvalidPreparedTriangle { triangle: 0 }
+            ))
+        );
+        assert_eq!(target, [[44; 3]]);
+        assert_eq!(depth.values(), before_depth);
+
+        let unsupported = SoftwareChampionshipCarSplitOracleProfile {
+            raster: SoftwareChampionshipCarRasterProfile {
+                alpha_blend: true,
+                ..alternate_profile().raster
+            },
+            ..alternate_profile()
+        };
+        assert!(matches!(
+            compose_championship_car_split_modulate_canonical_rgb_oracle(
+                &black,
+                SoftwareChampionshipCarSplitSource::BlackDiffuseDefault,
+                &mut depth,
+                [1, 1],
+                &mut target,
+                unsupported,
+            ),
+            Err(SoftwareC3dComposeError::Raster(
+                SoftwareC3dRasterError::UnsupportedChampionshipCarProfile(_)
+            ))
+        ));
+        assert_eq!(target, [[44; 3]]);
+        assert_eq!(depth.values(), before_depth);
     }
 
     #[test]
