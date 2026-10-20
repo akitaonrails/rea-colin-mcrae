@@ -1,9 +1,10 @@
 {
   "schema_version": 1,
-  "id": "installed-eu-derived-assets-v1",
+  "id": "installed-eu-derived-assets-v2",
   "roots": [
     "Game",
-    "New_Fe"
+    "New_Fe",
+    "ini"
   ],
   "empty_directories": [
     "New_Fe/Images/flag/Monte"
@@ -30885,6 +30886,120 @@
       "path": "New_Fe/Sounds/secret_s.wav",
       "size": 67754,
       "sha256": "fd897bf6be1a25802a0b3b285336f5d038a1821703e0723c54c674d0c83223eb",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/English/ReadMe.txt",
+      "size": 20743,
+      "sha256": "d2b4c4712b02e1246b97e86d769b1dbc47e67c0271efe7f9a5611cca2f867fdd",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/English/legal.bmp",
+      "size": 308278,
+      "sha256": "4e505f39c3f0f5890b5fb0104deafe24ae5f0fb4ba01a1d661a737c7a51b123f",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/French/Legal.bmp",
+      "size": 308278,
+      "sha256": "82b66f28e2391decce0e98ff5fb768de7d69b856720594ee1d31638aff6f9256",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/French/ReadMe.txt",
+      "size": 13184,
+      "sha256": "a3753b62f4e7e34b4e39485ddad30e39db51b93fc3b88f9e35acf0f8a1ec186d",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/German/ReadMe.txt",
+      "size": 13184,
+      "sha256": "a3753b62f4e7e34b4e39485ddad30e39db51b93fc3b88f9e35acf0f8a1ec186d",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/German/legal.bmp",
+      "size": 308278,
+      "sha256": "2157803d77fccc156ccafdd0df5df003a0d88fb6531106f73763660465f8d67b",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/Spanish/Legal.bmp",
+      "size": 308278,
+      "sha256": "9c88044c16d19e5cc244277a55cc8aad8ebd6b1ce63063c086e836fd94b3dcaf",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/Spanish/ReadMe.txt",
+      "size": 13184,
+      "sha256": "a3753b62f4e7e34b4e39485ddad30e39db51b93fc3b88f9e35acf0f8a1ec186d",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/basepal.pal",
+      "size": 1052,
+      "sha256": "983b871ea5564bde73ffbf66ddb4efe45a043176a0ac20afe7a01f27b5e27e0f",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/cdFONT.BMP",
+      "size": 121078,
+      "sha256": "b025ba25717be0d2a7c88a26dab693c5a26aa9ccb1e0ab534f314632e304ae61",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/cdfont.fon",
+      "size": 18638,
+      "sha256": "5c837f27b055aa175b54e9bcc575afaec475e819b3af9ca048467f04ed4e4fd9",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/cdtemplate.BMP",
+      "size": 921656,
+      "sha256": "072cdf2f3ab7f58dd7b0aa14b298b2a6f473de42fd771df3cc18ded7290daeed",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/legal.pal",
+      "size": 1168,
+      "sha256": "0440c19b8512220b5de50972c7410901a6880de8ac3f73e754ffb6c038f4ba68",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/loaded.bmp",
+      "size": 308278,
+      "sha256": "fca367018171af25f073769e6a52c00f5d64e9b31e9daf01b5a77b7d3b2216dd",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/loading.bmp",
+      "size": 308278,
+      "sha256": "7562c6fe1529a4774424cab9b0f82bdabe64d959b626173e1c5b4dcae652ced5",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/loading.pal",
+      "size": 1168,
+      "sha256": "416633a6d0d398d7b6addadf4553e5cc2dc0ca53013488eebb59bd7cc88b0ff8",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/loadpal.pal",
+      "size": 1168,
+      "sha256": "5628b6a10868a48408446bb057d81b28a82370f6a80212d9b174e8446c12c57d",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/schlpal.pal",
+      "size": 1168,
+      "sha256": "9e0b3e8a78647ff4d3bf3a010c55eeeed2d2eedd129fb2d44a19082dac4f1e6c",
+      "encoding": "raw"
+    },
+    {
+      "path": "ini/setrpal.pal",
+      "size": 1052,
+      "sha256": "4e0c31ca5a5fb03398e4662432007127bc97d5554fcf6bcb58872fd409d04d9a",
       "encoding": "raw"
     }
   ]

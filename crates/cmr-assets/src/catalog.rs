@@ -6,7 +6,7 @@ use cmr_formats::stored_asset::{DecodeLimits, StoredAsset, decode_stored_asset};
 use crate::verify::{join_portable, portable_relative, require_real_directory, sha256};
 use crate::{AssetFile, AssetProfile, StorageEncoding, VerificationError};
 
-const ROOTS: [&str; 2] = ["Game", "New_Fe"];
+const ROOTS: [&str; 3] = ["Game", "New_Fe", "ini"];
 const SENTINELS: [&str; 3] = ["Game.exe", "Rally.exe", "qmixer.dll"];
 const MAX_DECODED_ASSET_BYTES: usize = 512 * 1024 * 1024;
 
@@ -162,6 +162,7 @@ mod tests {
                 std::env::temp_dir().join(format!("cmr-catalog-{}-{id}", std::process::id()));
             fs::create_dir_all(path.join("Game/empty")).unwrap();
             fs::create_dir_all(path.join("New_Fe")).unwrap();
+            fs::create_dir_all(path.join("ini")).unwrap();
             fs::write(path.join("Game/a.bin"), b"a").unwrap();
             fs::write(path.join("New_Fe/b.bin"), b"bb").unwrap();
             for sentinel in SENTINELS {
@@ -182,8 +183,8 @@ mod tests {
         let tree = TestTree::new();
         let profile = catalog_standard_source(&tree.0, "synthetic").unwrap();
         assert_eq!(profile.id, "synthetic");
-        assert_eq!(profile.roots, ["Game", "New_Fe"]);
-        assert_eq!(profile.empty_directories, ["Game/empty"]);
+        assert_eq!(profile.roots, ["Game", "New_Fe", "ini"]);
+        assert_eq!(profile.empty_directories, ["Game/empty", "ini"]);
         assert_eq!(
             profile
                 .files

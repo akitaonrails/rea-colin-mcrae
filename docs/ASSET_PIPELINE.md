@@ -23,11 +23,12 @@ untouched. A later opt-in link mode may be added only with explicit symlink and
 case-sensitivity rules.
 
 For the currently observed installation, the default immutable roots are
-`Game/**` and `New_Fe/**`. The importer must exclude executables, DLLs, patch
+`Game/**`, `New_Fe/**`, and `ini/**`. The importer must exclude executables, DLLs, patch
 archives, registry files, uninstall state, instructions, and `save/**`.
-Installer-only `ini/**` data may be supported later as an explicit preservation
-option, but it is not part of the runtime corpus until code references establish
-otherwise.
+
+Canonical-EU static evidence establishes that startup loads palettes and bitmaps
+from `ini/**`; treating it as installer-only would produce an incomplete runtime
+import.
 
 The importer must not recursively unpack the `patches-applied/` directory.
 
@@ -86,6 +87,12 @@ Runtime lookup will normalize backslashes to slashes, reject traversal, and
 resolve each component through a precomputed ASCII case-folded index. It will
 fail on ambiguity rather than pick a platform-dependent path.
 
+`cmr-assets::AssetIndex` implements the first profile-backed lookup contract.
+Its unit tests cover Windows separators/casing, missing entries, drive/absolute
+paths, traversal, repeated separators, NULs, and ambiguous components. This is
+a portability design backed by observed path mismatches; exact legacy Win32
+path failure behavior remains a separate recovery question.
+
 ## Manifest sketch
 
 ```json
@@ -126,10 +133,12 @@ paths, sentinels, original stored hashes/sizes, storage encoding (`raw` or
 `gzip-cmpr`), optional decoded payload hashes/sizes, and preserved empty
 directories. It must never record the user's absolute source path.
 
-The first reviewed manifest is
-`profiles/installed-eu-derived-assets-v1.json` (SHA-256
-`2b06a119e61d9ab32cc47ecd147f0c29ba961f6888de59138ad625ccde4011c8`).
-It contains metadata for 5,143 files and no payload bytes or absolute paths.
+The current reviewed manifest is
+`profiles/installed-eu-derived-assets-v2.json` (SHA-256
+`ae9db22479a0360b3e80a089afb02460b53b0b414c87cecba852b6dbcc3c25d7`).
+It contains metadata for 5,162 files across all three required roots and no
+payload bytes or absolute paths. V2 supersedes the incomplete V1 profile after
+static evidence established startup reads from `ini/**`.
 
 ## Safety and verification
 

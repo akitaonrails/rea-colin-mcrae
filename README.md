@@ -55,11 +55,11 @@ the ignored runtime directory:
 mkdir -p runtime-data
 cargo run -q -p cmr-assets -- verify \
   --source "$CMR_ORIGINAL_DIR" \
-  --profile profiles/installed-eu-derived-assets-v1.json
+  --profile profiles/installed-eu-derived-assets-v2.json
 cargo run -q -p cmr-assets -- import \
   --source "$CMR_ORIGINAL_DIR" \
-  --profile profiles/installed-eu-derived-assets-v1.json \
-  --output runtime-data/installed-eu-derived-assets-v1
+  --profile profiles/installed-eu-derived-assets-v2.json \
+  --output runtime-data/installed-eu-derived-assets-v2
 ```
 
 The profile accepts only the exact locally observed `Game/**` and `New_Fe/**`
