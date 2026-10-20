@@ -6,7 +6,7 @@ drift from recovered contracts.
 
 ## Recommendation
 
-Use three deliberately separate layers:
+Use four deliberately separate layers:
 
 1. Keep `cmr-core` platform-neutral and retain `cmr-video`'s deterministic
    software backend as the compatibility oracle and headless test target.
@@ -14,19 +14,36 @@ Use three deliberately separate layers:
    joystick sampling, and audio device/stream handling. Standardized gamepad
    mapping is an optional modern adapter, not a replacement for the recovered
    input contract.
-3. Use **wgpu for the modern GPU renderer**, hosted in the SDL window through
-   raw-window-handle. Keep SDL's GPU API as a fallback candidate until a small
-   representative benchmark has been run; do not build the game on SDL's 2D
-   renderer.
+3. For the first native compatibility executable, present the completed
+   software-rendered indexed framebuffer through **SDL_Renderer**. This keeps
+   recovered raster behavior in the oracle and gives Windows and Linux a broad
+   D3D/OpenGL/Vulkan/software presentation fallback without prematurely
+   reconstructing the 3D pipeline on a GPU API.
+4. For native 3D, keep **wgpu as the provisional default** and **SDL_GPU as the
+   mandatory comparison**. Select between them only after C3D contracts exist
+   and both pass the same correctness, recovery, packaging, and performance
+   bake-off.
 
-This is intentionally “SDL3 plus wgpu,” not “SDL for everything.” It gives the
-project SDL's unusually complete game-platform layer while keeping the renderer
-Rust-native, explicit, and suitable for the later 3D reconstruction.
+This is a staged choice, not “SDL for everything.” SDL3 minimizes platform,
+peripheral, and audio integration risk. SDL_Renderer gets the compatibility
+build on screen with the least semantic risk. The eventual GPU-native renderer
+remains reversible until measurements support a lock-in.
 
 ## Why this fits this game
 
 The compatibility renderer needs exact 8-bit index-zero transparency and
-palette changes. A modern GPU path can represent each source as an `R8Uint`
+palette changes. Initially, those rules remain in the software backend; the
+presenter consumes a completed 640x480 indexed frame plus its palette. Expanding
+and uploading that small frame avoids making SDL_Renderer reproduce keyed-blit
+semantics. SDL also supports logical presentation and selectable accelerated or
+software render drivers. SDL 3.4 adds palettized texture support, but the first
+implementation should retain a plain RGBA upload fallback so binding or driver
+support cannot block compatibility. See SDL's
+[logical presentation API](https://wiki.libsdl.org/SDL3/SDL_SetRenderLogicalPresentation),
+[renderer-driver selection](https://wiki.libsdl.org/SDL3/SDL_HINT_RENDER_DRIVER),
+and [texture palette API](https://wiki.libsdl.org/SDL3/SDL_SetTexturePalette).
+
+A later GPU-native path can represent each indexed source as an `R8Uint`
 texture and perform an integer texel load into a 256-entry RGBA palette. That
 keeps indices exact and avoids CPU re-expansion/re-upload when the active
 palette changes. wgpu exposes `R8Uint` without numeric conversion and supports
@@ -56,23 +73,25 @@ do not let FFI types escape the platform crate. See the
 
 ## Alternatives considered
 
-| Candidate | Strength | Reason not selected as the default |
+| Candidate | Strength | Role / disposition |
 | --- | --- | --- |
-| SDL3 platform + SDL_GPU | One C dependency provides the whole host layer; SDL_GPU supports modern Vulkan/D3D12/Metal-style rendering and universally sampleable `R8_UNORM`. | Attractive fallback, but its D3D12 backend requires Windows 10+, DX12 feature level 11_0, and Resource Binding Tier 2; Vulkan can also be used on Windows and is the Linux route. It lacks wgpu's secondary GL fallback, and current high-level Rust SDL3 coverage is still evolving. [SDL GPU requirements](https://wiki.libsdl.org/SDL3/CategoryGPU), [texture formats](https://wiki.libsdl.org/SDL3/SDL_GPUTextureFormat). |
+| SDL_Renderer presentation | Broad drivers, logical sizing, a software fallback, and little code between the exact software rasterizer and a native window. | Selected for the first compatibility executable, not for native C3D rendering. It presents completed frames and must not become a second implementation of recovered raster rules. [SDL render API](https://wiki.libsdl.org/SDL3/CategoryRender). |
+| SDL3 platform + SDL_GPU | One C dependency provides the whole host layer; SDL_GPU supports modern Vulkan/D3D12/Metal-style rendering and sampleable single-channel formats. | Mandatory native-3D contender, but its D3D12 backend requires Windows 10+, DX12 feature level 11_0, and normally Resource Binding Tier 2; Vulkan can also be used on Windows and is the Linux route. It lacks wgpu's secondary GL fallback, and current high-level Rust SDL3 coverage is still evolving. [SDL GPU requirements](https://wiki.libsdl.org/SDL3/CategoryGPU), [texture formats](https://wiki.libsdl.org/SDL3/SDL_GPUTextureFormat). |
 | winit + wgpu + cpal + gilrs | Mostly Rust-native, with explicit components and strong wgpu integration. | More independent lifecycle, hotplug, packaging, and platform abstractions to reconcile. winit intentionally covers only windows and input events, not rendering or the rest of a game platform. [winit scope](https://github.com/rust-windowing/winit/blob/master/FEATURES.md). |
 | SDL3 + bgfx | Mature multi-API renderer with threaded submission and broad backend selection. | Adds a large C++ build and separate shader toolchain to a Rust project while SDL is still needed for input/audio/windowing. bgfx explicitly positions itself as a renderer brought into another framework. [bgfx overview](https://bkaradzic.github.io/bgfx/), [shader tools](https://bkaradzic.github.io/bgfx/tools.html). |
-| SDL 2D renderer | Small API and adequate for simple textured quads. | SDL documents it as a 2D API and directs advanced/3D work to lower-level graphics APIs or engines; it would become a dead end once cars, tracks, lighting, and effects are reconstructed. [SDL render module](https://docs.rs/sdl3/latest/sdl3/render/). |
 
 ## Performance and compatibility policy
 
-No documentation comparison proves which abstraction is fastest for this game.
-Backend overhead should be small relative to rendering, but that remains an
-inference until measured. Before locking the modern renderer, first require both
-implementations to match the software oracle for index-zero transparency,
-clipping, draw order, palette changes, resize/fullscreen transitions, errors,
-and device recreation. Compare final RGBA pixels with an explicit swapchain
-color-space policy as well as the pre-palette index/blit trace. Only conforming
-implementations proceed to performance measurement on at least:
+No authoritative comparison proves which GPU abstraction is fastest for this
+game. Backend overhead should be small relative to rendering, but that remains
+an inference until measured. SDL_Renderer is therefore chosen for compatibility
+by simplicity and driver reach, not a performance claim. Before locking the
+native 3D renderer, first require the wgpu and SDL_GPU implementations to match
+the software oracle for index-zero transparency, clipping, draw order, palette
+changes, resize/fullscreen transitions, errors, and device recreation. Compare
+final RGBA pixels with an explicit swapchain color-space policy as well as the
+pre-palette index/blit trace. Only conforming implementations proceed to
+performance measurement on at least:
 
 - Windows with DX12 explicitly selected for each candidate, plus a same-machine
   Vulkan comparison where both support it;
@@ -95,14 +114,17 @@ fallback is a later product decision.
 
 ## Integration boundary
 
-Future platform crates should depend inward on recovered traits:
+Future platform crates should depend inward on recovered traits. The first
+native slice ends at the presenter; native GPU rasterization comes later:
 
 ```text
 cmr-core contracts
       ^
       |---- cmr-video-software  (oracle/headless)
       |---- cmr-platform-sdl3   (window, events, input, audio)
-      `---- cmr-video-wgpu      (modern GPU renderer)
+      |---- cmr-present-sdl3    (compatibility framebuffer presentation)
+      |---- cmr-video-wgpu      (provisional native GPU renderer)
+      `---- cmr-video-sdl-gpu   (native GPU comparison)
 ```
 
 Do not expose SDL or wgpu handles in game-domain modules. Palette-index surfaces,
@@ -114,10 +136,13 @@ the final renderer choice reversible.
 
 The provisional recommendation becomes final only when:
 
-- a pinned SDL3 Rust binding builds and opens a window on CI or controlled
-  Windows and Linux hosts;
-- wgpu displays a trace- and pixel-equivalent indexed/palette compatibility
-  frame on explicitly selected DX12 and Vulkan backends;
+- a pinned SDL3 binding builds and opens a window on controlled Windows and
+  Linux hosts;
+- SDL_Renderer presents an oracle-produced compatibility frame with exact RGBA
+  expansion, nearest/integer scaling policy, and stable resize/fullscreen
+  behavior;
+- wgpu and SDL_GPU display trace- and pixel-equivalent indexed/palette fixtures
+  on explicitly selected DX12 and Vulkan backends;
 - SDL input/gamepad/audio adapters pass shared contract tests;
 - the wgpu/SDL_GPU comparison above has evidence rather than estimates;
 - packaging succeeds without requiring users to install development libraries.

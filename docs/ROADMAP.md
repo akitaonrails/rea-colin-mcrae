@@ -19,8 +19,8 @@ formats/resources --> game simulation and state
                             |
               +-------------+-------------+
               |                           |
-      compatibility backend         modern backend
-      (recovery oracle)              (SDL3 platform + wgpu)
+      compatibility backend         native host / modern backend
+      (recovery oracle)              (SDL3; GPU choice benchmarked)
 ```
 
 The compatibility backend exists to establish the original contract. The
@@ -155,7 +155,7 @@ Replace legacy boundaries one at a time while retaining the compatibility lane:
 
 | Legacy boundary | Candidate modern backend |
 | --- | --- |
-| DirectDraw / GDI | Provisional: wgpu hosted in an SDL3 window; compare SDL_GPU before lock-in |
+| DirectDraw / GDI | First native slice: software oracle presented by SDL_Renderer; provisional native 3D: wgpu, benchmarked against SDL_GPU before lock-in |
 | DirectInput / WinMM joystick | Provisional: SDL3 keyboard/joystick; optional mapped gamepad after compatibility |
 | QMixer / WinMM audio | Provisional: SDL3 audio with a reconstruction-owned mixer |
 | Win32 timing/window loop | Provisional: SDL3 events plus a monotonic host clock |
@@ -163,8 +163,9 @@ Replace legacy boundaries one at a time while retaining the compatibility lane:
 | Registry/install paths | portable configuration and data discovery |
 
 The rationale, alternatives, compatibility constraints, and benchmark gates are
-tracked in [`MODERN_BACKEND_RESEARCH.md`](MODERN_BACKEND_RESEARCH.md). SDL is a
-platform-layer candidate, not a mandate that every subsystem use SDL APIs.
+tracked in [`MODERN_BACKEND_RESEARCH.md`](MODERN_BACKEND_RESEARCH.md). SDL3 is
+the selected host-layer direction; SDL_Renderer is only the first compatibility
+presenter, not a mandate that native 3D use SDL_GPU.
 
 An original-compatible audio lane can begin with a narrow shim for the 16
 `QSWaveMix*` APIs the game imports. The shipped DLL's complete 62-export surface
