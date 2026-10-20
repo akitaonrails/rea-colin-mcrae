@@ -39,6 +39,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   metadata.
 - `cmr-core::startup`: loading/legal palette and bitmap selection for the four
   language directories present in the observed corpus.
+- `cmr-formats::{bitmap,riff_palette}`: bounded decoding of the recovered
+  startup BMP/RIFF-PAL subset, plus the exact 256-entry legacy palette contract.
+- `cmr-core::surface`: backend-neutral indexed startup surfaces with unchanged
+  indices and a separately selected active palette.
 
 The canonical binary also contains an `ITALIAN` path literal near the four
 selected language paths, but the supplied corpus has no Italian directory and

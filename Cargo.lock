@@ -38,6 +38,7 @@ name = "cmr-core"
 version = "0.1.0"
 dependencies = [
  "cmr-assets",
+ "cmr-formats",
  "serde_json",
 ]
 

@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[dependencies]
+cmr-formats = { path = "../cmr-formats" }
+
 [dev-dependencies]
 cmr-assets = { path = "../cmr-assets" }
 serde_json.workspace = true

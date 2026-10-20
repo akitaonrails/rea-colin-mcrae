@@ -62,6 +62,22 @@ Every query should make one important unknown smaller. Negative searches are
 bounded to the provider's recovered inventory and must not be described as
 proof that bytes or runtime behavior are absent.
 
+## Checking startup artwork locally
+
+The repository does not contain original artwork. After supplying an original
+installation, parse the six startup bitmaps and six palettes without copying
+them into the worktree:
+
+```sh
+cargo run --locked -p cmr-formats --example inspect_startup_art -- \
+  "$CMR_ORIGINAL_DIR/ini"
+```
+
+This reports dimensions, row orientation, palette/chunk structure, and the
+RGB-entry agreement between each startup bitmap and its separately selected
+palette. It is an inspection aid, not a substitute for profile verification or
+a claim that the files were exercised by the original executable.
+
 The unbuilt source checkout can be used later after an explicitly authorized
 dependency install/build. Until then, commands in this document describe the
 installed 6.5.0 CLI and its recorded analysis profile.
