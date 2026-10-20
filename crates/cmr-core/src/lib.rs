@@ -1,6 +1,7 @@
 //! Recovered game-domain behavior independent of host platform backends.
 
 pub mod blit;
+pub mod c3d_batch;
 pub mod config;
 pub mod display;
 pub mod display_contract;

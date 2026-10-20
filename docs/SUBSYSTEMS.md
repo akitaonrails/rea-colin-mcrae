@@ -105,6 +105,12 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   plus checked borrowed group-0→group-1, entry24 `+2/+4/+6`→same-record entry32,
   and group-1-entry24→group-2 ordinal resolution without assigning target
   content semantics. Runtime conversion and batching remain separate.
+- `cmr-core::c3d_batch`: checked, backend-free topology planning over one
+  group-1 record and caller-prepared selectors. It preserves maximal
+  consecutive selector runs and source entry order, deduplicates local entry32
+  ordinals by first use within each run, and emits compact three-index streams
+  while retaining borrowed typed entries. It does not prepare selectors or
+  materialize runtime vertex/side-vector payloads.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes, plus explicit selection-slot mapping and six independent wrapping

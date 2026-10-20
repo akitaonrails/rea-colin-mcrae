@@ -133,8 +133,12 @@ ordinal, three byte-exact corner tuples, and two still-unknown scalars. Checked
 borrowed resolvers now implement the proven group-0→group-1, entry24
 `+2/+4/+6`→local entry32, and group-1-entry24→group-2 numeric joins, including
 the latter's `-1` sentinel, without making reference validity a structural
-parse requirement. Runtime affine conversion, consecutive resource batching,
-resource preparation, geometry/material execution, and pixels remain
+parse requirement. A separate checked topology planner now partitions only
+consecutive equal prepared selectors, deduplicates local entry ordinals in
+first-use order, and emits three compact indices per source entry. It retains
+borrowed typed source views rather than pretending to produce render-ready
+vertices. Runtime affine conversion, selector/resource preparation, associated
+side-vector materialization, geometry/material execution, and pixels remain
 unrecovered rather than inferred.
 
 Exit gate:
