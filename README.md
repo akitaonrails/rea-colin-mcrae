@@ -90,7 +90,9 @@ The execution plan and evidence policy live in [docs/ROADMAP.md](docs/ROADMAP.md
 and [docs/EVIDENCE.md](docs/EVIDENCE.md). The reproducible REA workflow is in
 [docs/ANALYSIS.md](docs/ANALYSIS.md), and the asset boundary is described in
 [docs/ASSET_PIPELINE.md](docs/ASSET_PIPELINE.md). The current recovery map is in
-[docs/SUBSYSTEMS.md](docs/SUBSYSTEMS.md).
+[docs/SUBSYSTEMS.md](docs/SUBSYSTEMS.md). The provisional Windows/Linux backend
+recommendation and its benchmark gates are in
+[docs/MODERN_BACKEND_RESEARCH.md](docs/MODERN_BACKEND_RESEARCH.md).
 
 ## Legal note
 

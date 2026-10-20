@@ -20,7 +20,7 @@ formats/resources --> game simulation and state
               +-------------+-------------+
               |                           |
       compatibility backend         modern backend
-      (recovery oracle)              (SDL family)
+      (recovery oracle)              (SDL3 platform + wgpu)
 ```
 
 The compatibility backend exists to establish the original contract. The
@@ -144,15 +144,16 @@ Replace legacy boundaries one at a time while retaining the compatibility lane:
 
 | Legacy boundary | Candidate modern backend |
 | --- | --- |
-| DirectDraw / GDI | SDL3 video plus a suitable renderer |
-| DirectInput / WinMM joystick | SDL3 input/gamepad |
-| QMixer / WinMM audio | SDL3 audio or a dedicated mixer |
-| Win32 timing/window loop | SDL3 events and high-resolution clock |
+| DirectDraw / GDI | Provisional: wgpu hosted in an SDL3 window; compare SDL_GPU before lock-in |
+| DirectInput / WinMM joystick | Provisional: SDL3 keyboard/joystick; optional mapped gamepad after compatibility |
+| QMixer / WinMM audio | Provisional: SDL3 audio with a reconstruction-owned mixer |
+| Win32 timing/window loop | Provisional: SDL3 events plus a monotonic host clock |
 | DirectPlay | explicitly designed transport after protocol recovery |
 | Registry/install paths | portable configuration and data discovery |
 
-The exact SDL-related crates/libraries remain a design decision until recovered
-rendering, palette, audio, and timing contracts are known.
+The rationale, alternatives, compatibility constraints, and benchmark gates are
+tracked in [`MODERN_BACKEND_RESEARCH.md`](MODERN_BACKEND_RESEARCH.md). SDL is a
+platform-layer candidate, not a mandate that every subsystem use SDL APIs.
 
 An original-compatible audio lane can begin with a narrow shim for the 16
 `QSWaveMix*` APIs the game imports. The shipped DLL's complete 62-export surface
