@@ -54,6 +54,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::window`: pure compatibility reducer for recovered Win32 message
   handling, activation-driven pause/restore state, queue dispatch decisions,
   and fullscreen-flip versus windowed-vblank presentation planning.
+- `cmr-video::SoftwareIndexedBackend`: deterministic source-owned front/back
+  framebuffers for exact-size indexed copies; unrecovered stretch and color-key
+  sampling are explicit errors rather than guessed behavior.
 
 The canonical binary maps registry language values 0–4 to English, French,
 German, Spanish, and Italian startup paths. The supplied corpus has no Italian

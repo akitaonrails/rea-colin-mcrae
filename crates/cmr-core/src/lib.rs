@@ -2,6 +2,7 @@
 
 pub mod blit;
 pub mod display;
+pub mod display_contract;
 pub mod startup;
 pub mod startup_display;
 pub mod startup_surface;

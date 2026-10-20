@@ -20,6 +20,10 @@ ordering. A pure window-loop reducer also captures activation pause/restore,
 message dispatch, and steady-frame presentation decisions for future Win32 and
 SDL backends. No gameplay subsystem is yet claimed compatible.
 
+`cmr-video` currently supplies a deterministic in-memory indexed framebuffer
+used as the first executable backend oracle. It supports the recovered
+exact-size startup copy and rejects unrecovered stretch/color-key behavior.
+
 Known artifacts from the initial local installation:
 
 | Role | Size | SHA-256 |
