@@ -339,8 +339,9 @@ impl<'a> C3dGroup0Record<'a> {
 
 /// One structurally recovered record from header group 1.
 ///
-/// The two nested arrays remain opaque fixed-size entries; their contents and
-/// the other fixed-prefix bytes intentionally have no inferred semantics.
+/// The two nested arrays expose the scalar fields read by recovered loader
+/// pseudocode. Their higher-level rendering semantics and the other
+/// fixed-prefix bytes remain intentionally unrecovered.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct C3dGroup1Record<'a> {
     offset: usize,
@@ -388,21 +389,144 @@ impl<'a> C3dGroup1Record<'a> {
         self.unknown
     }
 
-    pub fn entries_32(self) -> impl ExactSizeIterator<Item = &'a [u8; C3D_GROUP1_ENTRY32_LEN]> {
+    pub fn entries_32(self) -> impl ExactSizeIterator<Item = C3dEntry32<'a>> {
+        let entries_start = self.offset + C3D_GROUP1_FIXED_LEN;
         let (entries, remainder) = self.entries_32.as_chunks::<C3D_GROUP1_ENTRY32_LEN>();
         debug_assert!(remainder.is_empty());
-        entries.iter()
+        entries
+            .iter()
+            .enumerate()
+            .map(move |(index, bytes)| C3dEntry32 {
+                offset: entries_start + index * C3D_GROUP1_ENTRY32_LEN,
+                bytes,
+            })
     }
 
-    pub fn entries_24(self) -> impl ExactSizeIterator<Item = &'a [u8; C3D_GROUP1_ENTRY24_LEN]> {
+    pub fn entries_24(self) -> impl ExactSizeIterator<Item = C3dEntry24<'a>> {
+        let entries_start = self.offset + C3D_GROUP1_FIXED_LEN + self.entries_32.len();
         let (entries, remainder) = self.entries_24.as_chunks::<C3D_GROUP1_ENTRY24_LEN>();
         debug_assert!(remainder.is_empty());
-        entries.iter()
+        entries
+            .iter()
+            .enumerate()
+            .map(move |(index, bytes)| C3dEntry24 {
+                offset: entries_start + index * C3D_GROUP1_ENTRY24_LEN,
+                bytes,
+            })
     }
 
     #[must_use]
     pub const fn trailing_bytes(self) -> &'a [u8] {
         self.trailing
+    }
+}
+
+/// One borrowed 32-byte entry from a group-1 record.
+///
+/// Recovered loader pseudocode reads all eight fields as signed little-endian
+/// Q16.16 values. It places the first triplet in the first three runtime
+/// components, the final triplet in the next three, and the middle pair in the
+/// last two after additional adjustments. The grouped accessor names describe
+/// that observed placement and likely rendering roles; direct draw-submission
+/// semantics remain to be corroborated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dEntry32<'a> {
+    offset: usize,
+    bytes: &'a [u8; C3D_GROUP1_ENTRY32_LEN],
+}
+
+impl<'a> C3dEntry32<'a> {
+    /// Returns the absolute byte offset within the admitted C3D payload.
+    #[must_use]
+    pub const fn offset(self) -> usize {
+        self.offset
+    }
+
+    #[must_use]
+    pub const fn bytes(self) -> &'a [u8; C3D_GROUP1_ENTRY32_LEN] {
+        self.bytes
+    }
+
+    /// Returns all eight signed little-endian Q16.16 source components.
+    #[must_use]
+    pub fn components_q16(self) -> [i32; 8] {
+        std::array::from_fn(|index| read_i32(self.bytes, index * 4))
+    }
+
+    /// First source triplet, placed in the runtime coordinate slots by the
+    /// recovered loader. `position` is a semantic inference from that use.
+    #[must_use]
+    pub fn position_q16(self) -> [i32; 3] {
+        std::array::from_fn(|index| read_i32(self.bytes, index * 4))
+    }
+
+    /// Middle source pair, placed in the final two runtime slots after loader
+    /// adjustments. A texture-mapping role is inferred, not yet proven by a
+    /// recovered draw-submission contract.
+    #[must_use]
+    pub fn mapping_q16(self) -> [i32; 2] {
+        std::array::from_fn(|index| read_i32(self.bytes, (index + 3) * 4))
+    }
+
+    /// Final source triplet, placed in the middle three runtime slots by the
+    /// recovered loader. A direction/normal role remains an inference.
+    #[must_use]
+    pub fn direction_q16(self) -> [i32; 3] {
+        std::array::from_fn(|index| read_i32(self.bytes, (index + 5) * 4))
+    }
+}
+
+/// One borrowed 24-byte entry from a group-1 record.
+///
+/// The three entry ordinals and signed group-2 ordinal are proven consumers.
+/// The three four-byte tuples are kept byte-exact because their channel and
+/// material interpretation depends on loader mode and global state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dEntry24<'a> {
+    offset: usize,
+    bytes: &'a [u8; C3D_GROUP1_ENTRY24_LEN],
+}
+
+impl<'a> C3dEntry24<'a> {
+    /// Returns the absolute byte offset within the admitted C3D payload.
+    #[must_use]
+    pub const fn offset(self) -> usize {
+        self.offset
+    }
+
+    #[must_use]
+    pub const fn bytes(self) -> &'a [u8; C3D_GROUP1_ENTRY24_LEN] {
+        self.bytes
+    }
+
+    #[must_use]
+    pub fn field_00(self) -> u16 {
+        read_u16(self.bytes, 0)
+    }
+
+    #[must_use]
+    pub fn entry32_ordinals(self) -> [u16; 3] {
+        C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS.map(|offset| read_u16(self.bytes, offset))
+    }
+
+    #[must_use]
+    pub fn group2_ordinal(self) -> i16 {
+        read_i16(self.bytes, 8)
+    }
+
+    #[must_use]
+    pub fn corner_tuples(self) -> [[u8; 4]; 3] {
+        std::array::from_fn(|index| {
+            let start = 10 + index * 4;
+            self.bytes[start..start + 4]
+                .try_into()
+                .expect("fixed-size C3D entry tuple")
+        })
+    }
+
+    #[must_use]
+    pub fn field_22(self) -> u16 {
+        read_u16(self.bytes, 22)
     }
 }
 
@@ -519,6 +643,16 @@ impl<'a> C3dEntry32Reference<'a> {
     #[must_use]
     pub const fn target(self) -> &'a [u8; C3D_GROUP1_ENTRY32_LEN] {
         self.target
+    }
+
+    /// Returns the resolved target as a typed view while preserving the raw
+    /// `target` accessor for callers that need byte-exact compatibility.
+    #[must_use]
+    pub const fn target_entry(self) -> C3dEntry32<'a> {
+        C3dEntry32 {
+            offset: self.target_offset,
+            bytes: self.target,
+        }
     }
 }
 
@@ -1149,6 +1283,14 @@ fn read_i16(input: &[u8], offset: usize) -> i16 {
     )
 }
 
+fn read_i32(input: &[u8], offset: usize) -> i32 {
+    i32::from_le_bytes(
+        input[offset..offset + 4]
+            .try_into()
+            .expect("validated record"),
+    )
+}
+
 fn read_u32(input: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(
         input[offset..offset + 4]
@@ -1329,8 +1471,8 @@ mod tests {
         assert_eq!(group1[0].entry32_count(), 1);
         assert_eq!(group1[0].entry24_count(), 1);
         assert_eq!(group1[0].unknown_bytes()[0], 0x80);
-        assert_eq!(group1[0].entries_32().next().unwrap()[0], 0x20);
-        assert_eq!(group1[0].entries_24().next().unwrap()[0], 0x40);
+        assert_eq!(group1[0].entries_32().next().unwrap().bytes()[0], 0x20);
+        assert_eq!(group1[0].entries_24().next().unwrap().bytes()[0], 0x40);
         assert_eq!(group1[0].trailing_bytes(), [0xd0, 0xd1, 0xd2]);
         assert_eq!(group1[1].declared_len(), 48);
         assert_eq!(group1[1].entries_32().len(), 0);
@@ -1340,6 +1482,79 @@ mod tests {
         let blob = parsed.blob_records().next().unwrap();
         assert_eq!(blob.offset(), 351);
         assert_eq!(blob.blob(), [7, 8, 9, 10]);
+        assert_eq!(parsed.bytes(), input);
+    }
+
+    #[test]
+    fn typed_group1_entries_decode_exact_fields_and_borrow_relocated_bytes() {
+        let mut input = fixture([0, 1, 0], [32, 96, 300], 300);
+        assert_eq!(
+            write_group1_record(&mut input, 96, *b"GROUP1-TYPED", 2, 2, 0),
+            256
+        );
+
+        let entry32_offset = 96 + C3D_GROUP1_FIXED_LEN;
+        let components = [
+            i32::MIN,
+            -0x1_0000,
+            -1,
+            0,
+            0x1_0000,
+            0x1234_5678,
+            -0x0123_4567,
+            i32::MAX,
+        ];
+        for (index, component) in components.into_iter().enumerate() {
+            let start = entry32_offset + index * 4;
+            input[start..start + 4].copy_from_slice(&component.to_le_bytes());
+        }
+
+        let entry24_offset = entry32_offset + 2 * C3D_GROUP1_ENTRY32_LEN;
+        input[entry24_offset..entry24_offset + 2].copy_from_slice(&0x1234_u16.to_le_bytes());
+        for (index, ordinal) in [0x2345_u16, 0x4567, 0x6789].into_iter().enumerate() {
+            let start = entry24_offset + C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS[index];
+            input[start..start + 2].copy_from_slice(&ordinal.to_le_bytes());
+        }
+        input[entry24_offset + 8..entry24_offset + 10].copy_from_slice(&(-2_i16).to_le_bytes());
+        input[entry24_offset + 10..entry24_offset + 22]
+            .copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        input[entry24_offset + 22..entry24_offset + 24].copy_from_slice(&0xbeef_u16.to_le_bytes());
+
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        let record = parsed.group1_records().next().unwrap();
+        let entries32 = record.entries_32().collect::<Vec<_>>();
+        assert_eq!(entries32[0].offset(), entry32_offset);
+        assert_eq!(
+            entries32[1].offset(),
+            entry32_offset + C3D_GROUP1_ENTRY32_LEN
+        );
+        assert_eq!(entries32[0].components_q16(), components);
+        assert_eq!(entries32[0].position_q16(), components[0..3]);
+        assert_eq!(entries32[0].mapping_q16(), components[3..5]);
+        assert_eq!(entries32[0].direction_q16(), components[5..8]);
+        assert!(std::ptr::eq(
+            entries32[0].bytes().as_ptr(),
+            parsed.bytes()[entry32_offset..].as_ptr()
+        ));
+
+        let entries24 = record.entries_24().collect::<Vec<_>>();
+        assert_eq!(entries24[0].offset(), entry24_offset);
+        assert_eq!(
+            entries24[1].offset(),
+            entry24_offset + C3D_GROUP1_ENTRY24_LEN
+        );
+        assert_eq!(entries24[0].field_00(), 0x1234);
+        assert_eq!(entries24[0].entry32_ordinals(), [0x2345, 0x4567, 0x6789]);
+        assert_eq!(entries24[0].group2_ordinal(), -2);
+        assert_eq!(
+            entries24[0].corner_tuples(),
+            [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+        );
+        assert_eq!(entries24[0].field_22(), 0xbeef);
+        assert!(std::ptr::eq(
+            entries24[0].bytes().as_ptr(),
+            parsed.bytes()[entry24_offset..].as_ptr()
+        ));
         assert_eq!(parsed.bytes(), input);
     }
 
@@ -1429,7 +1644,7 @@ mod tests {
             .entries_24()
             .next()
             .unwrap();
-        assert_eq!(&raw_first[8..10], &[1, 0]);
+        assert_eq!(&raw_first.bytes()[8..10], &[1, 0]);
 
         let mut references = parsed.resolve_group2_references();
         let first = references.next().unwrap().unwrap();
@@ -1521,6 +1736,11 @@ mod tests {
             assert_eq!(reference.ordinal(), ordinal);
             assert_eq!(reference.target_offset(), target_offset);
             assert_eq!(reference.target()[0], 0xa0 + ordinal as u8);
+            assert_eq!(reference.target_entry().offset(), target_offset);
+            assert_eq!(
+                reference.target_entry().components_q16()[0],
+                0x2020_20a0 + i32::from(ordinal)
+            );
             assert!(std::ptr::eq(
                 reference.target().as_ptr(),
                 parsed.bytes()[target_offset..target_offset + C3D_GROUP1_ENTRY32_LEN].as_ptr()

@@ -124,14 +124,18 @@ skips missing optional objects without mutation, and passes a borrowed parsed-
 object binding to the still-injected renderer hook. Final `ComposeAndPresent`
 also remains an explicit unimplemented boundary.
 The six optional root-menu C3D files now load through fixed slots and a bounded,
-byte-preserving parser. All three counted groups now expose only proven framing:
-group 0's raw `u16` values, group 1's opaque 32/24-byte entry arrays, and group
-2's raw label fields plus opaque length-delimited blobs. Checked borrowed
-resolvers now implement the proven group-0→group-1, entry24 `+2/+4/+6`→local
-entry32, and group-1-entry24→group-2 numeric joins, including the latter's `-1`
-sentinel, without making reference validity a structural parse requirement.
-Entry/blob meanings, runtime-object construction, geometry/material execution,
-and pixels remain unrecovered rather than inferred.
+byte-preserving parser. All three counted groups expose proven framing: group
+0's raw `u16` values; group 1's typed, borrowed 32/24-byte entry views; and
+group 2's raw label fields plus opaque length-delimited blobs. The 32-byte view
+decodes eight signed little-endian Q16.16 components in their recovered groups.
+The 24-byte view exposes its three local entry ordinals, signed resource
+ordinal, three byte-exact corner tuples, and two still-unknown scalars. Checked
+borrowed resolvers now implement the proven group-0→group-1, entry24
+`+2/+4/+6`→local entry32, and group-1-entry24→group-2 numeric joins, including
+the latter's `-1` sentinel, without making reference validity a structural
+parse requirement. Runtime affine conversion, consecutive resource batching,
+resource preparation, geometry/material execution, and pixels remain
+unrecovered rather than inferred.
 
 Exit gate:
 

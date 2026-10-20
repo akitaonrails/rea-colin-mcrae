@@ -72,7 +72,7 @@ Status markers:
 - [x] `D11` Resolve group-0→group-1 and entry24→group-2 numeric references.
 - [x] `D12` Resolve entry24 `+2/+4/+6` references to 32-byte entries.
 - [x] `D13` Bind parsed C3D slots and per-object angle state to root frames.
-- [ ] `D14` Decode the root C3D geometry/material/resource contract.
+- [~] `D14` Decode the root C3D geometry/material/resource contract.
 - [ ] `D15` Render root C3D pixels in the compatibility renderer.
 - [ ] `D16` Recover and implement final compose/present ownership.
 - [ ] `D17` Run the complete root menu interactively in a native window.
@@ -152,13 +152,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T17:19:26Z
-milestone=bind-root-c3d-frame-state
+updated_utc=2026-10-20T17:28:08Z
+milestone=decode-c3d-entry-fields
 completed=38
-partial=11
-not_started=55
+partial=12
+not_started=54
 blocked=0
 total=104
-current_focus=D14-decode-root-c3d-geometry-material-resource-contract
+current_focus=D14-build-checked-consecutive-resource-batches
 next_exit_gate=native-root-menu-vertical-slice
 <!-- PROGRESS-TAIL-END -->

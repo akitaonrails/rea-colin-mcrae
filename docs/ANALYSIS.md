@@ -105,7 +105,10 @@ cargo run --locked -p cmr-formats --example inspect_c3d_tree -- \
 The first command establishes exact reviewed-corpus identity. The scanner then
 decodes supported raw or gzip/`CMPR` storage and validates the bounded C3D
 header, all three recovered record iterators, group 0's counted `u16` values,
-and group 1's opaque 32-byte and 24-byte entry arrays. It also exercises the
+and group 1's typed, byte-preserving 32-byte and 24-byte entry arrays. The
+32-byte view exposes the eight signed Q16.16 components; the 24-byte view
+exposes its three local entry ordinals, signed resource ordinal, three raw
+corner tuples, and two unknown scalar fields. The scanner also exercises the
 checked numeric joins from group 0 to group 1, from each 24-byte entry's three
 `u16` fields to the same record's 32-byte entries, and from 24-byte entries to
 group 2. The latter counts the observed `-1` sentinel separately from invalid

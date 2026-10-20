@@ -98,10 +98,13 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   root chrome, center icons, and normal/`g_` menu objects without asset bytes.
 - `cmr-formats::c3d`: bounded, byte-preserving admission of the observed
   `CM3D` header and all three proven counted layouts, including raw group-0
-  `u16` values, opaque group-1 32/24-byte entries, and group-2 label/blob pairs,
+  `u16` values, typed borrowed group-1 32/24-byte entries, and group-2
+  label/blob pairs. The typed entries preserve raw bytes/offsets while exposing
+  recovered signed Q16.16 component groups, local entry ordinals, the signed
+  resource ordinal, byte-exact corner tuples, and unknown scalar fields,
   plus checked borrowed group-0→group-1, entry24 `+2/+4/+6`→same-record entry32,
   and group-1-entry24→group-2 ordinal resolution without assigning target
-  content semantics.
+  content semantics. Runtime conversion and batching remain separate.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes, plus explicit selection-slot mapping and six independent wrapping
