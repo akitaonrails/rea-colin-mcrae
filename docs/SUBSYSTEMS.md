@@ -41,13 +41,17 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   language directories present in the observed corpus.
 - `cmr-formats::{bitmap,riff_palette}`: bounded decoding of the recovered
   startup BMP/RIFF-PAL subset, plus the exact 256-entry legacy palette contract.
-- `cmr-core::surface`: backend-neutral indexed startup surfaces with unchanged
-  indices and a separately selected active palette.
+- `cmr-core::surface`: backend-neutral indexed surfaces with explicit identity
+  or recovered nearest-color index mapping against the active palette.
+- `cmr-core::startup_surface`: end-to-end verified import, selected asset load,
+  bounded decode, and indexed-surface construction with contextual errors.
+- `cmr-core::blit`: recovered destination clipping, fast/stretch dispatch, and
+  color-key flag planning without a platform graphics dependency.
 
-The canonical binary also contains an `ITALIAN` path literal near the four
-selected language paths, but the supplied corpus has no Italian directory and
-the recovered language-index bounds are not yet established. Italian startup
-selection remains unknown rather than being fabricated or silently aliased.
+The canonical binary maps registry language values 0–4 to English, French,
+German, Spanish, and Italian startup paths. The supplied corpus has no Italian
+directory, so this profile intentionally exposes only its four present
+languages rather than fabricating or silently aliasing Italian assets.
 
 ## Binary roles and variants
 

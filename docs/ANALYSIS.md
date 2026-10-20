@@ -78,6 +78,17 @@ RGB-entry agreement between each startup bitmap and its separately selected
 palette. It is an inspection aid, not a substitute for profile verification or
 a claim that the files were exercised by the original executable.
 
+After running the verified importer, exercise the full runtime-store and
+startup decode path while comparing identity and nearest-color index modes:
+
+```sh
+cargo run --locked -p cmr-core --example inspect_startup_surface -- \
+  runtime-data/installed-eu-derived-assets-v2 \
+  profiles/installed-eu-derived-assets-v2.json legal english
+```
+
+The command reports counts only; it does not copy or export artwork.
+
 The unbuilt source checkout can be used later after an explicitly authorized
 dependency install/build. Until then, commands in this document describe the
 installed 6.5.0 CLI and its recorded analysis profile.
