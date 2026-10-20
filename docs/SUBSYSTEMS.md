@@ -143,6 +143,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   square-root normalization, exact raw-angle branch behavior, persistent Q16
   placement, f32 world/view/projection words, and checked viewport construction.
   Scene traversal, binding, drawing, and rasterization remain separate.
+- `cmr-core::root_menu_c3d_frame_plan`: transactional exact-root validation and
+  non-cloneable owned one-frame submission snapshots, retaining source batch
+  order, prepared-arena provenance, exact transforms, and numeric draw words.
+  Backend resource binding and terminal scene execution remain separate.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes, plus explicit selection-slot mapping and six independent wrapping

@@ -194,6 +194,12 @@ Topology and both materialized runtime stages now also carry the same opaque,
 unforgeable prepared-arena provenance. The planner can therefore reject data
 mixed across independent preparations even when no concrete resource ID is
 available to expose the mismatch.
+The root-only frame planner now performs that join transactionally. It checks
+the exact one-level root shape, resource selectors, compact batch payloads,
+viewport, slot presence, variant, and provenance before changing an angle, then
+owns source-ordered submission snapshots and the exact recovered transform and
+numeric draw words. Backend binding, depth/scene execution, visibility-latch
+consumption, rasterization, and terminal composition remain the next boundary.
 
 Exit gate:
 

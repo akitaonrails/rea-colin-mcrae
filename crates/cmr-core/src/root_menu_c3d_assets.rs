@@ -224,6 +224,13 @@ impl RootMenuC3dAngles {
         self.values[slot.index()]
     }
 
+    pub(crate) fn advance_loaded_slot(&mut self, slot: RootMenuC3dSlot, delta: u16) -> (u16, u16) {
+        let previous_angle = self.values[slot.index()];
+        let resulting_angle = previous_angle.wrapping_add(delta);
+        self.values[slot.index()] = resulting_angle;
+        (previous_angle, resulting_angle)
+    }
+
     /// Advances one loaded object's angle and returns its exact frame binding.
     /// An empty slot leaves every persistent angle unchanged.
     #[must_use]
@@ -234,9 +241,7 @@ impl RootMenuC3dAngles {
         delta: u16,
     ) -> Option<RootMenuC3dFrameObject<'asset>> {
         let asset = assets.get(slot)?;
-        let previous_angle = self.values[slot.index()];
-        let resulting_angle = previous_angle.wrapping_add(delta);
-        self.values[slot.index()] = resulting_angle;
+        let (previous_angle, resulting_angle) = self.advance_loaded_slot(slot, delta);
         Some(RootMenuC3dFrameObject {
             asset,
             slot,

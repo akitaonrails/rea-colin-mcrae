@@ -471,13 +471,22 @@ mod tests {
 
     use super::*;
     use crate::{
+        display::DisplayExtent,
         root_menu_assets::VisualVariant,
-        root_menu_c3d_assets::load_root_menu_c3d,
+        root_menu_c3d_assets::{RootMenuC3dAngles, load_root_menu_c3d},
+        root_menu_c3d_frame_plan::{
+            ROOT_MENU_C3D_DRAW_FLAGS, ROOT_MENU_C3D_PRIMITIVE_CODE, ROOT_MENU_C3D_VERTEX_TYPE,
+            RootMenuC3dFramePlanError, RootMenuC3dRootShapeIssue, plan_root_menu_c3d_frame,
+        },
         root_menu_c3d_resources::{C3dPreparedResourceAccessError, C3dResourcePreparationError},
         root_menu_c3d_runtime::{
             C3dMode2CornerSource, C3dMode2LoadState, C3dSurfaceLayoutAxis, C3dSurfaceLayoutGates,
             RootMenuC3dMode2LoadStates, RootMenuC3dMode2MaterializationError,
             materialize_root_menu_mode2_pre_scale, materialize_root_menu_mode2_resource_scaled,
+        },
+        root_menu_c3d_transform::{
+            ROOT_MENU_C3D_PROJECTION, ROOT_MENU_C3D_VIEW, root_menu_c3d_viewport,
+            root_menu_c3d_world,
         },
     };
 
@@ -618,6 +627,320 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(batch.selector(), C3dPreparedSelector::Missing);
+    }
+
+    #[test]
+    fn exact_root_frame_plan_owns_source_ordered_submission_snapshots() {
+        let slot = RootMenuC3dSlot::Rally;
+        let plan = {
+            let group = group(3, &[[2, 0, 2], [1, 1, 0], [0, 2, 1]], &[0, 1, 0]);
+            let blobs = [
+                (*b"PLAN-FIRST!!", indexed_bmp(1, 2, 8)),
+                (*b"PLAN-SECOND!", indexed_bmp(3, 4, 8)),
+            ];
+            let fixture = fixture_for(&[(slot, exact_root_c3d(&group, &blobs))]);
+            let assets = load(&fixture);
+            let topology =
+                prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+            let runtime = materialize_root_menu_mode2_resource_scaled(
+                &topology,
+                uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+            )
+            .unwrap();
+            let expected = runtime
+                .get(slot)
+                .unwrap()
+                .group0_records()
+                .next()
+                .unwrap()
+                .references()
+                .next()
+                .unwrap()
+                .batches()
+                .map(|batch| {
+                    (
+                        batch.selector(),
+                        batch.source_entry32_ordinals().to_vec(),
+                        batch.vertices().to_vec(),
+                        batch.side_vectors().to_vec(),
+                        batch.indices().to_vec(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let extent = DisplayExtent {
+                width: 640,
+                height: 480,
+            };
+            let mut angles = RootMenuC3dAngles::new();
+            let plan = plan_root_menu_c3d_frame(&topology, &runtime, &mut angles, slot, 8, extent)
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(plan.provenance(), topology.provenance());
+            assert_eq!(plan.variant(), VisualVariant::Normal);
+            assert_eq!(plan.slot(), slot);
+            assert_eq!(plan.identity(), slot.identity());
+            assert_eq!((plan.previous_angle(), plan.resulting_angle()), (0, 8));
+            assert_eq!(plan.delta(), 8);
+            assert_eq!(plan.effective_y_phase(), 8);
+            assert_eq!(plan.world(), root_menu_c3d_world(8));
+            assert_eq!(plan.view(), ROOT_MENU_C3D_VIEW);
+            assert_eq!(plan.projection(), ROOT_MENU_C3D_PROJECTION);
+            assert_eq!(plan.viewport(), root_menu_c3d_viewport(extent).unwrap());
+            assert_eq!(plan.commands().len(), expected.len());
+            for (index, (command, expected)) in plan.commands().iter().zip(expected).enumerate() {
+                assert_eq!(command.slot(), slot);
+                assert_eq!(command.group0_record_index(), 0);
+                assert_eq!(command.value_index(), 0);
+                assert_eq!(command.group1_ordinal(), 0);
+                assert_eq!(command.batch_index(), index);
+                assert_eq!(command.selector(), expected.0);
+                assert_eq!(command.source_entry32_ordinals(), expected.1);
+                assert_eq!(command.vertices(), expected.2);
+                assert_eq!(command.side_vectors(), expected.3);
+                assert_eq!(command.indices(), expected.4);
+                assert_eq!(command.vertex_type(), ROOT_MENU_C3D_VERTEX_TYPE);
+                assert_eq!(command.primitive_code(), ROOT_MENU_C3D_PRIMITIVE_CODE);
+                assert_eq!(command.draw_flags(), ROOT_MENU_C3D_DRAW_FLAGS);
+            }
+            assert_eq!(angles.angle(slot), 8);
+            plan
+        };
+
+        assert_eq!(plan.commands().len(), 3);
+        assert_eq!(plan.commands()[0].source_entry32_ordinals(), &[2, 0]);
+        assert_eq!(plan.commands()[0].indices(), &[0, 1, 0]);
+        assert_eq!(plan.commands()[1].source_entry32_ordinals(), &[1, 0]);
+        assert_eq!(plan.commands()[1].indices(), &[0, 0, 1]);
+        assert_eq!(plan.commands()[2].source_entry32_ordinals(), &[0, 2, 1]);
+        assert_eq!(plan.commands()[2].indices(), &[0, 1, 2]);
+    }
+
+    #[test]
+    fn frame_plan_errors_and_absent_slots_are_transactional() {
+        let slot = RootMenuC3dSlot::Options;
+        let group = group(1, &[[0, 0, 0]], &[0]);
+        let blobs = [(*b"TRANSACTION!", indexed_bmp(1, 2, 8))];
+        let fixture = fixture_for(&[(slot, exact_root_c3d(&group, &blobs))]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let runtime = materialize_root_menu_mode2_resource_scaled(
+            &topology,
+            uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+        )
+        .unwrap();
+        let mut angles = RootMenuC3dAngles::new();
+        let original = angles.clone();
+
+        assert!(matches!(
+            plan_root_menu_c3d_frame(
+                &topology,
+                &runtime,
+                &mut angles,
+                slot,
+                8,
+                DisplayExtent {
+                    width: 0,
+                    height: 480
+                },
+            ),
+            Err(RootMenuC3dFramePlanError::Viewport(_))
+        ));
+        assert_eq!(angles, original);
+        assert_eq!(
+            plan_root_menu_c3d_frame(
+                &topology,
+                &runtime,
+                &mut angles,
+                RootMenuC3dSlot::Load,
+                8,
+                DisplayExtent {
+                    width: 640,
+                    height: 480
+                },
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(angles, original);
+    }
+
+    #[test]
+    fn frame_plan_rejects_foreign_arenas_and_missing_root_resources_before_mutation() {
+        let slot = RootMenuC3dSlot::Load;
+        let group = group(1, &[[0, 0, 0]], &[-1]);
+        let fixture = fixture_for(&[(slot, exact_root_c3d(&group, &[]))]);
+        let assets = load(&fixture);
+        let first = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let second = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let states = uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults);
+        let first_runtime = materialize_root_menu_mode2_resource_scaled(&first, states).unwrap();
+        let second_runtime = materialize_root_menu_mode2_resource_scaled(&second, states).unwrap();
+        let extent = DisplayExtent {
+            width: 640,
+            height: 480,
+        };
+        let mut angles = RootMenuC3dAngles::new();
+
+        assert_eq!(
+            plan_root_menu_c3d_frame(&first, &second_runtime, &mut angles, slot, 8, extent,),
+            Err(RootMenuC3dFramePlanError::ProvenanceMismatch)
+        );
+        assert_eq!(angles.angle(slot), 0);
+        assert_eq!(
+            plan_root_menu_c3d_frame(&first, &first_runtime, &mut angles, slot, 8, extent,),
+            Err(RootMenuC3dFramePlanError::UnexpectedRootShape {
+                slot,
+                issue: RootMenuC3dRootShapeIssue::MissingSelector { batch_index: 0 },
+            })
+        );
+        assert_eq!(angles.angle(slot), 0);
+    }
+
+    #[test]
+    fn frame_plan_preserves_raw_wrapping_angle_state() {
+        let slot = RootMenuC3dSlot::Championship;
+        let group = group(1, &[[0, 0, 0]], &[0]);
+        let blobs = [(*b"ANGLE-WRAP!!", indexed_bmp(1, 2, 8))];
+        let fixture = fixture_for(&[(slot, exact_root_c3d(&group, &blobs))]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let runtime = materialize_root_menu_mode2_resource_scaled(
+            &topology,
+            uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+        )
+        .unwrap();
+        let extent = DisplayExtent {
+            width: 640,
+            height: 480,
+        };
+        let mut angles = RootMenuC3dAngles::new();
+
+        let near_wrap =
+            plan_root_menu_c3d_frame(&topology, &runtime, &mut angles, slot, 0xfff8, extent)
+                .unwrap()
+                .unwrap();
+        assert_eq!(near_wrap.resulting_angle(), 0xfff8);
+        assert_eq!(near_wrap.effective_y_phase(), 0x0ff8);
+        let wrapped = plan_root_menu_c3d_frame(&topology, &runtime, &mut angles, slot, 8, extent)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (wrapped.previous_angle(), wrapped.resulting_angle()),
+            (0xfff8, 0)
+        );
+        assert_eq!(wrapped.world(), root_menu_c3d_world(0));
+
+        let mut full_turn_angles = RootMenuC3dAngles::new();
+        let full_turn = plan_root_menu_c3d_frame(
+            &topology,
+            &runtime,
+            &mut full_turn_angles,
+            slot,
+            0x1000,
+            extent,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(full_turn.resulting_angle(), 0x1000);
+        assert_eq!(full_turn.effective_y_phase(), 0);
+        assert_eq!(full_turn.world(), root_menu_c3d_world(0x1000));
+    }
+
+    #[test]
+    fn frame_plan_rejects_reachable_non_root_shapes_without_mutating_angles() {
+        let slot = RootMenuC3dSlot::TimeTrial;
+        let root_group = group(1, &[[0, 0, 0]], &[0]);
+        let blobs = [(*b"SHAPE-CHECK!", indexed_bmp(1, 2, 8))];
+        let group0 = || Group0 {
+            field_04: -1,
+            matrix: identity_matrix(),
+            references: vec![0],
+        };
+        let mut nonzero_metadata = exact_root_c3d(&root_group, &blobs);
+        let group1_start = C3D_HEADER_LEN + C3D_GROUP0_VALUES_OFFSET + 2;
+        nonzero_metadata[group1_start + 20] = 1;
+        let cases = [
+            (
+                c3d(std::slice::from_ref(&root_group), &blobs),
+                RootMenuC3dRootShapeIssue::TopologyGroup0Count { actual: 0 },
+            ),
+            (
+                c3d_with_group0(
+                    &[group0(), group0()],
+                    std::slice::from_ref(&root_group),
+                    &blobs,
+                ),
+                RootMenuC3dRootShapeIssue::TopologyGroup0Count { actual: 2 },
+            ),
+            (
+                c3d_with_group0(
+                    &[Group0 {
+                        field_04: 0,
+                        ..group0()
+                    }],
+                    std::slice::from_ref(&root_group),
+                    &blobs,
+                ),
+                RootMenuC3dRootShapeIssue::Group0Metadata,
+            ),
+            (
+                c3d_with_group0(
+                    &[Group0 {
+                        references: vec![0, 0],
+                        ..group0()
+                    }],
+                    std::slice::from_ref(&root_group),
+                    &blobs,
+                ),
+                RootMenuC3dRootShapeIssue::Group0Metadata,
+            ),
+            (
+                c3d_with_group0(
+                    &[group0()],
+                    &[root_group.clone(), root_group.clone()],
+                    &blobs,
+                ),
+                RootMenuC3dRootShapeIssue::TopologyGroup1Count { actual: 2 },
+            ),
+            (
+                c3d_with_group0(&[group0()], &[group(0, &[], &[])], &[]),
+                RootMenuC3dRootShapeIssue::Group1Metadata,
+            ),
+            (nonzero_metadata, RootMenuC3dRootShapeIssue::Group1Metadata),
+        ];
+
+        for (bytes, expected_issue) in cases {
+            let fixture = fixture_for(&[(slot, bytes)]);
+            let assets = load(&fixture);
+            let topology =
+                prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+            let runtime = materialize_root_menu_mode2_resource_scaled(
+                &topology,
+                uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+            )
+            .unwrap();
+            let mut angles = RootMenuC3dAngles::new();
+
+            assert_eq!(
+                plan_root_menu_c3d_frame(
+                    &topology,
+                    &runtime,
+                    &mut angles,
+                    slot,
+                    8,
+                    DisplayExtent {
+                        width: 640,
+                        height: 480
+                    },
+                ),
+                Err(RootMenuC3dFramePlanError::UnexpectedRootShape {
+                    slot,
+                    issue: expected_issue,
+                })
+            );
+            assert_eq!(angles.angle(slot), 0);
+        }
     }
 
     #[test]
@@ -1423,6 +1746,18 @@ mod tests {
 
     fn c3d(groups: &[Group], blobs: &[([u8; 12], Vec<u8>)]) -> Vec<u8> {
         c3d_with_group0(&[], groups, blobs)
+    }
+
+    fn exact_root_c3d(group: &Group, blobs: &[([u8; 12], Vec<u8>)]) -> Vec<u8> {
+        c3d_with_group0(
+            &[Group0 {
+                field_04: -1,
+                matrix: identity_matrix(),
+                references: vec![0],
+            }],
+            std::slice::from_ref(group),
+            blobs,
+        )
     }
 
     fn c3d_with_group0(
