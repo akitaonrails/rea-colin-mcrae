@@ -106,8 +106,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   and group-1-entry24→group-2 ordinal resolution without assigning target
   content semantics. Group-2 resources may be classified on demand as opaque
   `BM` bytes, checked borrowed `ANIM` frame references/thresholds, or unknown
-  bytes without forcing universal bitmap decoding. Runtime conversion and
-  batching remain separate.
+  bytes without forcing universal bitmap decoding. A checked selected-record
+  iterator resolves animation frame ordinals to generic group-2 records while
+  preserving source offsets and later results after invalid ordinals. Runtime
+  conversion and batching remain separate.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one
   group-1 record and caller-prepared selectors. It preserves maximal
   consecutive selector runs and source entry order, deduplicates local entry32

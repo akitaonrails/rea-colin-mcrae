@@ -143,7 +143,10 @@ unrecovered rather than inferred. Group-2 records now also classify complete
 `BM` signatures as opaque bitmap bytes and expose strictly framed, borrowed
 `ANIM` entries with their resource ordinals, raw advance thresholds, and
 separate legacy low-byte behavior. Bitmap pixels remain undecoded here because
-the embedded resource set is not limited to the standalone 8-bit subset.
+the general embedded resource set is not limited to the standalone 8-bit
+subset. A selected animation record can now resolve each frame ordinal against
+the same file's group-2 table through an exact-size borrowed iterator; an
+invalid frame remains a typed result and does not hide later frames.
 
 Exit gate:
 

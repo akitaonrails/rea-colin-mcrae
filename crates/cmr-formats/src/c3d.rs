@@ -225,6 +225,50 @@ impl C3dFile {
             .map(|span| self.blob_record_view(span))
     }
 
+    /// Resolves every frame in one selected `ANIM` record against this file's
+    /// group-2 record table.
+    ///
+    /// Selecting and classifying the animation is checked before the iterator
+    /// is returned. Each frame is then resolved independently, so an invalid
+    /// ordinal does not hide later frames. This is only a numeric join: the
+    /// target remains a generic [`C3dBlobRecord`] and need not be a bitmap.
+    pub fn animation_frame_references(
+        &self,
+        animation_record_index: usize,
+    ) -> Result<C3dAnimationFrameReferences<'_>, C3dAnimationReferenceError> {
+        let span = self.blob_records.get(animation_record_index).ok_or(
+            C3dAnimationReferenceError::RecordOutOfBounds {
+                record_index: animation_record_index,
+                record_count: self.blob_records.len(),
+            },
+        )?;
+        let record = self.blob_record_view(span);
+        let animation = match record.classify_resource() {
+            Ok(C3dResourceView::Animation(animation)) => animation,
+            Ok(C3dResourceView::BitmapBytes(_) | C3dResourceView::Unknown(_)) => {
+                return Err(C3dAnimationReferenceError::NotAnimation {
+                    record_index: animation_record_index,
+                    resource_offset: span.blob_start,
+                });
+            }
+            Err(source) => {
+                return Err(C3dAnimationReferenceError::MalformedResource {
+                    record_index: animation_record_index,
+                    source,
+                });
+            }
+        };
+        let frame_bytes = &animation.bytes[C3D_ANIMATION_HEADER_LEN..];
+        let (frames, remainder) = frame_bytes.as_chunks::<C3D_ANIMATION_FRAME_LEN>();
+        debug_assert!(remainder.is_empty());
+        Ok(C3dAnimationFrameReferences {
+            file: self,
+            animation_record_index,
+            frames: frames.iter().enumerate(),
+            frames_offset: animation.offset + C3D_ANIMATION_HEADER_LEN,
+        })
+    }
+
     /// Resolves the signed little-endian ordinal at `+8` in every group-1
     /// 24-byte entry. `-1` is the observed no-record sentinel.
     ///
@@ -712,6 +756,179 @@ impl fmt::Display for C3dResourceError {
 }
 
 impl std::error::Error for C3dResourceError {}
+
+/// Checked references from one selected `ANIM` resource into the enclosing
+/// file's group-2 table.
+///
+/// The iterator has one result per source frame and retains later frames after
+/// an out-of-range ordinal.
+pub struct C3dAnimationFrameReferences<'a> {
+    file: &'a C3dFile,
+    animation_record_index: usize,
+    frames: std::iter::Enumerate<std::slice::Iter<'a, [u8; C3D_ANIMATION_FRAME_LEN]>>,
+    frames_offset: usize,
+}
+
+impl<'a> Iterator for C3dAnimationFrameReferences<'a> {
+    type Item = Result<C3dAnimationFrameReference<'a>, C3dAnimationReferenceError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (frame_index, bytes) = self.frames.next()?;
+        let source_offset = self.frames_offset + frame_index * C3D_ANIMATION_FRAME_LEN;
+        let frame = C3dAnimationFrame {
+            offset: source_offset,
+            bytes,
+        };
+        let ordinal = frame.resource_ordinal();
+        let target = match self.file.blob_records.get(usize::from(ordinal)) {
+            Some(span) => self.file.blob_record_view(span),
+            None => {
+                return Some(Err(C3dAnimationReferenceError::Group2OrdinalOutOfBounds {
+                    animation_record_index: self.animation_record_index,
+                    frame_index,
+                    source_offset,
+                    ordinal,
+                    record_count: self.file.blob_records.len(),
+                }));
+            }
+        };
+        Some(Ok(C3dAnimationFrameReference {
+            animation_record_index: self.animation_record_index,
+            frame_index,
+            source_offset,
+            frame,
+            target,
+        }))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.frames.size_hint()
+    }
+}
+
+impl ExactSizeIterator for C3dAnimationFrameReferences<'_> {
+    fn len(&self) -> usize {
+        self.frames.len()
+    }
+}
+
+impl std::iter::FusedIterator for C3dAnimationFrameReferences<'_> {}
+
+/// One successfully resolved `ANIM` frame and its borrowed group-2 target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dAnimationFrameReference<'a> {
+    animation_record_index: usize,
+    frame_index: usize,
+    source_offset: usize,
+    frame: C3dAnimationFrame<'a>,
+    target: C3dBlobRecord<'a>,
+}
+
+impl<'a> C3dAnimationFrameReference<'a> {
+    #[must_use]
+    pub const fn animation_record_index(self) -> usize {
+        self.animation_record_index
+    }
+
+    #[must_use]
+    pub const fn frame_index(self) -> usize {
+        self.frame_index
+    }
+
+    #[must_use]
+    pub const fn source_offset(self) -> usize {
+        self.source_offset
+    }
+
+    /// Returns the exact typed source frame, including its raw and legacy
+    /// threshold accessors.
+    #[must_use]
+    pub const fn frame(self) -> C3dAnimationFrame<'a> {
+        self.frame
+    }
+
+    #[must_use]
+    pub fn ordinal(self) -> u16 {
+        self.frame.resource_ordinal()
+    }
+
+    #[must_use]
+    pub const fn target(self) -> C3dBlobRecord<'a> {
+        self.target
+    }
+}
+
+/// Failure to select an animation resource or resolve one of its frame
+/// ordinals.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dAnimationReferenceError {
+    RecordOutOfBounds {
+        record_index: usize,
+        record_count: usize,
+    },
+    NotAnimation {
+        record_index: usize,
+        resource_offset: usize,
+    },
+    MalformedResource {
+        record_index: usize,
+        source: C3dResourceError,
+    },
+    Group2OrdinalOutOfBounds {
+        animation_record_index: usize,
+        frame_index: usize,
+        source_offset: usize,
+        ordinal: u16,
+        record_count: usize,
+    },
+}
+
+impl fmt::Display for C3dAnimationReferenceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RecordOutOfBounds {
+                record_index,
+                record_count,
+            } => write!(
+                formatter,
+                "C3D group-2 record {record_index} is outside {record_count} records"
+            ),
+            Self::NotAnimation {
+                record_index,
+                resource_offset,
+            } => write!(
+                formatter,
+                "C3D group-2 record {record_index} at resource offset {resource_offset} is not an ANIM resource"
+            ),
+            Self::MalformedResource {
+                record_index,
+                source,
+            } => write!(
+                formatter,
+                "C3D group-2 record {record_index} is a malformed ANIM resource: {source}"
+            ),
+            Self::Group2OrdinalOutOfBounds {
+                animation_record_index,
+                frame_index,
+                source_offset,
+                ordinal,
+                record_count,
+            } => write!(
+                formatter,
+                "C3D group-2 animation record {animation_record_index} frame {frame_index} at offset {source_offset} has group-2 ordinal {ordinal}, outside {record_count} records"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for C3dAnimationReferenceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MalformedResource { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
 
 /// One successfully resolved group-0 value and its borrowed group-1 target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2521,6 +2738,124 @@ mod tests {
     }
 
     #[test]
+    fn resolves_animation_frames_in_order_without_assigning_target_semantics() {
+        let animation = [
+            b'A', b'N', b'I', b'M', 3, 0, 0, 0, 3, 0, 0xcd, 0xab, 0, 0, 3, 2, 3, 0, 5, 4,
+        ];
+        let parsed = parsed_blob_file(&[
+            b"BM0",
+            &animation,
+            b"ANIX remains opaque",
+            b"arbitrary target bytes",
+        ]);
+
+        let mut references = parsed.animation_frame_references(1).unwrap();
+        assert_eq!(references.len(), 3);
+
+        let first = references.next().unwrap().unwrap();
+        assert_eq!(first.animation_record_index(), 1);
+        assert_eq!(first.frame_index(), 0);
+        assert_eq!(first.source_offset(), 83);
+        assert_eq!(first.ordinal(), 3);
+        assert_eq!(first.frame().bytes(), &[3, 0, 0xcd, 0xab]);
+        assert_eq!(first.frame().raw_advance_threshold(), 0xabcd);
+        assert_eq!(first.frame().legacy_advance_threshold(), 0xcd);
+        assert_eq!(first.target().blob(), b"arbitrary target bytes");
+
+        let second = references.next().unwrap().unwrap();
+        let third = references.next().unwrap().unwrap();
+        assert_eq!((second.frame_index(), second.ordinal()), (1, 0));
+        assert_eq!((third.frame_index(), third.ordinal()), (2, 3));
+        assert_eq!((second.source_offset(), third.source_offset()), (87, 91));
+        assert_eq!(second.target().blob(), b"BM0");
+        assert_eq!(first.target(), third.target());
+        assert!(std::ptr::eq(
+            first.frame().bytes().as_ptr(),
+            parsed.bytes()[83..].as_ptr()
+        ));
+        assert!(std::ptr::eq(
+            first.target().blob().as_ptr(),
+            parsed.bytes()[first.target().offset() + C3D_BLOB_RECORD_HEADER_LEN..].as_ptr()
+        ));
+        assert_eq!(references.len(), 0);
+        assert!(references.next().is_none());
+    }
+
+    #[test]
+    fn animation_selection_reports_record_kind_and_malformed_resource_errors() {
+        let malformed = [b'A', b'N', b'I', b'M', 2, 0, 0, 0, 1, 0, 2, 0];
+        let parsed = parsed_blob_file(&[b"BM", b"opaque", &malformed]);
+
+        assert!(matches!(
+            parsed.animation_frame_references(3),
+            Err(C3dAnimationReferenceError::RecordOutOfBounds {
+                record_index: 3,
+                record_count: 3,
+            })
+        ));
+        assert!(matches!(
+            parsed.animation_frame_references(0),
+            Err(C3dAnimationReferenceError::NotAnimation {
+                record_index: 0,
+                resource_offset: 56,
+            })
+        ));
+        assert!(matches!(
+            parsed.animation_frame_references(1),
+            Err(C3dAnimationReferenceError::NotAnimation {
+                record_index: 1,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parsed.animation_frame_references(2),
+            Err(C3dAnimationReferenceError::MalformedResource {
+                record_index: 2,
+                source: C3dResourceError::TruncatedAnimationFrames {
+                    frame_count: 2,
+                    expected_len: 16,
+                    actual_len: 12,
+                    ..
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn bad_animation_frame_ordinal_does_not_hide_a_later_valid_frame() {
+        let animation = [b'A', b'N', b'I', b'M', 2, 0, 0, 0, 2, 0, 2, 0, 1, 0, 3, 0];
+        let parsed = parsed_blob_file(&[&animation, b"BM target"]);
+        let mut references = parsed.animation_frame_references(0).unwrap();
+
+        assert_eq!(
+            references.next().unwrap(),
+            Err(C3dAnimationReferenceError::Group2OrdinalOutOfBounds {
+                animation_record_index: 0,
+                frame_index: 0,
+                source_offset: 64,
+                ordinal: 2,
+                record_count: 2,
+            })
+        );
+        let later = references.next().unwrap().unwrap();
+        assert_eq!((later.frame_index(), later.source_offset()), (1, 68));
+        assert_eq!(later.ordinal(), 1);
+        assert_eq!(later.target().blob(), b"BM target");
+        assert!(references.next().is_none());
+    }
+
+    #[test]
+    fn zero_frame_animation_returns_an_exact_empty_iterator() {
+        let parsed = parsed_blob_file(&[b"ANIM\0\0\0\0"]);
+        let mut references = parsed.animation_frame_references(0).unwrap();
+
+        assert_eq!(references.size_hint(), (0, Some(0)));
+        assert_eq!(references.len(), 0);
+        assert!(references.next().is_none());
+        assert!(references.next().is_none());
+    }
+
+    #[test]
     fn classifies_only_complete_known_magic_and_keeps_bitmaps_opaque() {
         for unknown in [b"".as_slice(), b"A", b"ANI", b"ANIX payload"] {
             assert_eq!(
@@ -2843,6 +3178,24 @@ mod tests {
             label: b"RESOURCE-VW!",
             blob,
         }
+    }
+
+    fn parsed_blob_file(blobs: &[&[u8]]) -> C3dFile {
+        let len = 40
+            + blobs
+                .iter()
+                .map(|blob| C3D_BLOB_RECORD_HEADER_LEN + blob.len())
+                .sum::<usize>();
+        let mut input = fixture([0, 0, blobs.len() as u16], [0, 0, 40], len);
+        let mut offset = 40;
+        for (index, blob) in blobs.iter().enumerate() {
+            let mut label = [0; C3D_BLOB_LABEL_LEN];
+            label[..8].copy_from_slice(b"RESOURCE");
+            label[8..12].copy_from_slice(&(index as u32).to_le_bytes());
+            offset = write_blob_record(&mut input, offset, label, blob);
+        }
+        debug_assert_eq!(offset, len);
+        parse_c3d(&input, LIMITS).expect("synthetic blob file must parse")
     }
 
     fn write_blob_record(

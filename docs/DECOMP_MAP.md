@@ -152,13 +152,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T17:36:15Z
-milestone=classify-c3d-group2-resources
+updated_utc=2026-10-20T17:41:27Z
+milestone=resolve-c3d-animation-frames
 completed=38
 partial=12
 not_started=54
 blocked=0
 total=104
-current_focus=D14-resolve-animation-frames-and-prepare-root-resources
+current_focus=D14-prepare-root-c3d-bitmap-resources
 next_exit_gate=native-root-menu-vertical-slice
 <!-- PROGRESS-TAIL-END -->
