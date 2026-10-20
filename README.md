@@ -45,7 +45,10 @@ An identity-neutral checked bitmap executor now supplies the shared safe blit
 boundary needed by selection, info-box, logo, and later frontend resources.
 The exact R_INFO bitmap, 15 Chequered preview frames, and FCHE palette now have
 a verified, transactional persistent asset boundary, while a generic prepared
-text path validates complete font work before issuing frame effects.
+text path validates complete font work before issuing frame effects. Available
+setup text and 2D bitmap commands now execute in their recovered order after
+whole-frame preflight; info formatting, car C3D, palette integration, and the
+animation timer remain explicit downstream work.
 These are platform-neutral compatibility contracts; registry, host clock/input,
 native window, audio, setup-screen pixel execution, later frontend screens, and
 gameplay integrations are not yet complete.

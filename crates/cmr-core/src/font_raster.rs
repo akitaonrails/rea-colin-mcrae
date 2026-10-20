@@ -275,6 +275,51 @@ impl PreparedPersistentText {
     pub const fn plan(&self) -> &TextPlan {
         &self.plan
     }
+
+    /// Returns whether execution will submit at least one glyph blit and
+    /// therefore observe the uploaded atlas source.
+    #[must_use]
+    pub fn requires_source_access(&self) -> bool {
+        let mut rejected_sources = self.validated.rejected_sources.iter().peekable();
+        for (blit_index, glyph) in self.plan.blits.iter().enumerate() {
+            if rejected_sources
+                .peek()
+                .is_some_and(|diagnostic| diagnostic_blit_index(diagnostic) == blit_index)
+            {
+                rejected_sources.next();
+                continue;
+            }
+            let destination = destination_rectangle(blit_index, glyph)
+                .expect("prepared glyph rectangles were already validated");
+            if matches!(
+                plan_legacy_blit(
+                    RectI16 {
+                        x: glyph.source.x,
+                        y: glyph.source.y,
+                        width: glyph.source.width,
+                        height: glyph.source.height,
+                    },
+                    destination,
+                    self.validated.width,
+                    self.validated.height,
+                    Some(INDEX_ZERO_COLOR_KEY),
+                ),
+                BlitDecision::Blit(_)
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Checks that the prepared atlas still belongs to `store` and remains
+    /// live, without submitting a glyph blit.
+    pub fn validate_source<B: IndexedVideoBackend>(
+        &self,
+        store: &UploadedSourceStore<'_, B>,
+    ) -> Result<(), SourceAccessError> {
+        store.validate_source(self.source)
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]

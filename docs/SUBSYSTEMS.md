@@ -131,6 +131,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::championship_setup_visual`: validated backend-neutral title/row/
   preview frame planning with exact recovered geometry, order, fonts, and
   paired visible-callback palette cache behavior.
+- `cmr-core::championship_setup_frame`: whole-frame preparation and ordered
+  execution for recovered setup text and 2D bitmaps, with source preflight,
+  success-only cache commit, and typed deferred unrecovered commands.
 - `cmr-core::championship_frame_assets`: verified bounded loading of R_INFO,
   the 15 ordered Chequered preview frames, and FCHE, with explicit R_INFO
   mapping and transactional shared-source upload.

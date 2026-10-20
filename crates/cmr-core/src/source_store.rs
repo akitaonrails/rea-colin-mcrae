@@ -59,6 +59,15 @@ impl UploadedIndexedBitmap {
         (self.width, self.height)
     }
 
+    /// Checks that this bitmap still belongs to `store` and remains live,
+    /// without submitting a backend operation.
+    pub fn validate_source<B: IndexedVideoBackend>(
+        self,
+        store: &UploadedSourceStore<'_, B>,
+    ) -> Result<(), SourceAccessError> {
+        store.validate_source(self.source)
+    }
+
     /// Submits an already-validated blit through the owning source store.
     ///
     /// Store identity and source lifetime remain checked by
@@ -218,6 +227,13 @@ impl<'backend, B: IndexedVideoBackend> UploadedSourceStore<'backend, B> {
         self.backend
             .blit(source, destination, plan)
             .map_err(SourceBlitError::Backend)
+    }
+
+    /// Validates a key's store identity and lifetime without touching the
+    /// backend. Frame executors use this to reject all stale resources before
+    /// beginning an otherwise ordered batch of effects.
+    pub fn validate_source(&self, key: SourceKey) -> Result<(), SourceAccessError> {
+        self.resolve(key).map(drop)
     }
 
     fn resolve(&self, key: SourceKey) -> Result<B::Surface, SourceAccessError> {

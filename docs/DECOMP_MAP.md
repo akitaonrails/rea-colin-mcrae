@@ -111,6 +111,7 @@ Status markers:
 - [x] `F08` Model championship car/gear setup, transitions, commits, and preview transcript.
 - [x] `F09` Admit all championship setup cars, palettes, and deduplicated logos from a verified user import.
 - [x] `F10` Plan the validated championship setup frame with exact recovered 2D geometry and preview order.
+- [x] `F11` Execute available championship 2D commands with typed deferred work.
 
 ## G. Driving simulation and race systems
 
@@ -163,13 +164,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T20:59:57Z
-milestone=recover-championship-mode8-c3d-contract
-completed=48
+updated_utc=2026-10-20T21:06:22Z
+milestone=execute-preflighted-championship-2d-frame
+completed=49
 partial=20
 not_started=47
 blocked=0
-total=115
+total=116
 current_focus=E15-F04-generic-mode8-car-preparation
 next_exit_gate=championship-setup-software-frame-execution
 <!-- PROGRESS-TAIL-END -->
