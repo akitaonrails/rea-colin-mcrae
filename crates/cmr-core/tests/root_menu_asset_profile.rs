@@ -1,8 +1,8 @@
 use cmr_assets::{AssetIndex, AssetProfile};
 use cmr_core::localization::Language;
 use cmr_core::root_menu_assets::{
-    CenterIconIdentity, ROOT_MENU_BACKDROP_PATH, RootMenuObjectIdentity, VisualVariant,
-    localized_root_menu_assets,
+    CenterIconIdentity, ROOT_MENU_BACKDROP_PATH, ROOT_MENU_SELECT_PATH, RootMenuObjectIdentity,
+    VisualVariant, localized_root_menu_assets,
 };
 
 const PROFILE: &str = include_str!("../../../profiles/installed-eu-derived-assets-v2.json");
@@ -13,6 +13,7 @@ fn present_root_menu_visuals_resolve_and_missing_italian_row_is_explicit() {
     let index = AssetIndex::from_profile(&profile).unwrap();
 
     index.resolve(ROOT_MENU_BACKDROP_PATH).unwrap();
+    index.resolve(ROOT_MENU_SELECT_PATH).unwrap();
 
     for language in [
         Language::English,

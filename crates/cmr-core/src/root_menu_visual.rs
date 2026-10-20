@@ -152,6 +152,8 @@ pub struct RootRenderInput {
     pub animation_position_q16: i32,
     pub language: Language,
     pub center_viewport_transform: ViewportTransformId,
+    /// Recovered entry-callback gate used during the enter transition.
+    pub entry_visuals_suppressed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -210,7 +212,7 @@ const fn chrome_source_rect(language: Language, index: usize) -> Rect {
 /// commands. Backdrop and center icons are required because their recovered
 /// loads are fatal. Chrome and footer drawing is restricted to numeric frontend
 /// phase 1; the selected center visual remains part of entry dispatch in other
-/// phases.
+/// phases unless the recovered transition-suppression gate is set.
 #[must_use]
 pub fn root_render_transcript(
     input: RootRenderInput,
@@ -261,22 +263,24 @@ pub fn root_render_transcript(
         });
     }
 
-    let selection = usize::from(input.selection.index());
-    let visual = CENTER_VISUAL_BY_SELECTION[selection];
-    commands.push(RenderCommand::CenterIcon {
-        asset: assets.center_icons[visual],
-        visual_index: visual as u8,
-        placement: ViewportRelativePlacement {
-            transform: input.center_viewport_transform,
-            offset: CENTER_ICON_OFFSET,
-        },
-    });
-    if let Some(object) = assets.c3d_objects.get(selection).copied().flatten() {
-        commands.push(RenderCommand::C3dObject {
-            object,
-            selection: selection as u8,
-            angle_delta: C3D_ANGLE_DELTA,
+    if !input.entry_visuals_suppressed {
+        let selection = usize::from(input.selection.index());
+        let visual = CENTER_VISUAL_BY_SELECTION[selection];
+        commands.push(RenderCommand::CenterIcon {
+            asset: assets.center_icons[visual],
+            visual_index: visual as u8,
+            placement: ViewportRelativePlacement {
+                transform: input.center_viewport_transform,
+                offset: CENTER_ICON_OFFSET,
+            },
         });
+        if let Some(object) = assets.c3d_objects.get(selection).copied().flatten() {
+            commands.push(RenderCommand::C3dObject {
+                object,
+                selection: selection as u8,
+                angle_delta: C3D_ANGLE_DELTA,
+            });
+        }
     }
 
     commands.push(RenderCommand::ComposeAndPresent);
@@ -316,6 +320,7 @@ mod tests {
             animation_position_q16: CHROME_SPECS[usize::from(selection)].gate_q16,
             language: Language::English,
             center_viewport_transform: TRANSFORM,
+            entry_visuals_suppressed: false,
         }
     }
 
@@ -512,6 +517,28 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, RenderCommand::C3dObject { .. }))
         );
+    }
+
+    #[test]
+    fn transition_suppression_omits_center_icon_and_c3d_only() {
+        let mut render_input = input(2);
+        render_input.entry_visuals_suppressed = true;
+        let commands = root_render_transcript(render_input, &complete_assets());
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, RenderCommand::SelectedChrome { entry: 2, .. }))
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, RenderCommand::FooterText { .. }))
+        );
+        assert!(!commands.iter().any(|command| matches!(
+            command,
+            RenderCommand::CenterIcon { .. } | RenderCommand::C3dObject { .. }
+        )));
+        assert_eq!(commands.last(), Some(&RenderCommand::ComposeAndPresent));
     }
 
     #[test]

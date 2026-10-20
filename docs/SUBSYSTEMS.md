@@ -82,6 +82,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   root chrome, center icons, and normal/`g_` menu objects without asset bytes.
 - `cmr-core::root_menu_visual`: exact phase-gated root chrome geometry and an
   ordered asset/object render transcript with an explicit viewport boundary.
+- `cmr-core::root_menu_animation`: pure activation, wrap, tween-schedule, and
+  transition-suppression state for the root screen.
+- `cmr-core::root_menu_bitmap_assets`: verified, bounded loading of required
+  and optional indexed root bitmaps with retained optional diagnostics.
 
 The canonical binary maps registry language values 0–4 to English, French,
 German, Spanish, and Italian startup paths. The supplied corpus has no Italian

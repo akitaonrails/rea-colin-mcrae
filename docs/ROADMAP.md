@@ -106,8 +106,8 @@ first/root frontend state, fixed-layout font parsing, byte-text layout, input,
 window-loop, timing, and root-menu visual rules are pure tested contracts. All
 16 font styles and the four present root-menu artwork rows resolve through the
 verified import; the loader's distinct Italian row is explicitly absent from
-the reviewed corpus. Host clock/input, native window execution, asset decoding
-for the root menu, and pixel composition remain before the vertical-slice exit gate.
+the reviewed corpus. Host clock/input, native window execution, root bitmap
+upload, and pixel composition remain before the vertical-slice exit gate.
 
 Exit gate:
 
