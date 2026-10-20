@@ -85,7 +85,7 @@ where
         return Err(ChampionshipCarSceneError::Preflight(source));
     }
     backend
-        .preflight_championship_car_scene(prepared.pre_draw_state())
+        .preflight_championship_car_scene(prepared.pre_draw_profile())
         .map_err(|source| ChampionshipCarSceneError::BackendPreflight {
             stage: ChampionshipCarScenePreflightStage::BatchBackend,
             source,
@@ -156,7 +156,7 @@ where
         .validate_prepared(frame)
         .map_err(ChampionshipCarSceneError::Preflight)?;
     backend
-        .preflight_championship_car_scene(frame.pre_draw_state())
+        .preflight_championship_car_scene(frame.pre_draw_profile())
         .map_err(|source| ChampionshipCarSceneError::BackendPreflight {
             stage: ChampionshipCarScenePreflightStage::BatchBackend,
             source,
@@ -316,7 +316,7 @@ mod tests {
 
         fn preflight_championship_car_scene(
             &mut self,
-            _: crate::championship_car_execute::ChampionshipCarPreDrawState,
+            _: crate::championship_car_execute::ChampionshipCarPreDrawProfile,
         ) -> Result<(), Self::Error> {
             self.events.push(Event::Preflight);
             if self.fail_preflight {

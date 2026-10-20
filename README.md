@@ -56,19 +56,21 @@ so championship mode 8 can append resources without being forced through the
 root menu's mode-2 slot types. A shared frontend-session arena now prepares the
 14 cars first as the exact 55-resource prefix, then the six root objects in the
 same provenance domain. Car actor traversal and backend-neutral Type-2 scene
-submission are integrated. The optional word-5 pre-draw mutation now has a
-pure retained-state contract. A caller-selected mutation-disabled,
-actor-RGB-disabled, unified-indexed COPY/no-blend software profile now produces
-tested car color/depth pixels without RGB quantization. An end-to-end software
-car/palette/presentation terminal test renders those indices, commits a
-discriminating group-4 palette, and captures presentation under that palette.
+submission are integrated. The optional word-5 fog mutation and actor-RGB
+word-4 override now have pure retained-state contracts. The software backend
+accepts all four fog/actor-RGB combinations for the unified-indexed
+COPY/no-blend profile and produces tested car color/depth pixels without RGB
+quantization. End-to-end software tests carry explicit per-car actor tables to
+visible submission, render the resulting indices, commit a discriminating
+group-4 palette, and capture presentation under that palette.
 A callback-scoped software championship session now owns all 14 car
 topology/runtime pairs, the shared binding catalog, explicit raster-profile
 provenance, compact palette policy, and retained frame state across car and
 Next previews, then releases every uploaded source. Static recovery shows that
 the original device branch, alpha, word-5 mutation, and actor-RGB gates were
-independently retained rather than selected by championship entry. Wiring the
-enabled mutation profiles remains the next C3D milestone.
+independently retained rather than selected by championship entry. Recovering
+and implementing the alternate split/modulate/linear/alpha raster profiles
+remains the next C3D milestone.
 These are platform-neutral compatibility contracts; registry, host clock/input,
 native window, audio, setup-screen pixel execution, later frontend screens, and
 gameplay integrations are not yet complete.

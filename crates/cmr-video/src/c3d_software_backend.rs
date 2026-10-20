@@ -9,7 +9,7 @@ use std::fmt;
 use cmr_core::{
     c3d_batch::C3dDrawCommand,
     c3d_type2_fog::C3dType2PreDrawVertex,
-    championship_car_execute::{ChampionshipCarBatchBackend, ChampionshipCarPreDrawState},
+    championship_car_execute::{ChampionshipCarBatchBackend, ChampionshipCarPreDrawProfile},
     display::DisplayExtent,
     frontend_c3d_scene::{C3dBindingState, FrontendC3dSceneBackend},
     root_menu_c3d_execute::RootMenuC3dBatchBackend,
@@ -54,6 +54,10 @@ pub enum SoftwareC3dBackendError {
     UnsupportedTextureColorKey(u8),
     ChampionshipCarProfileNotConfigured,
     ChampionshipCarFogStateMismatch {
+        profile_enabled: bool,
+        prepared_enabled: bool,
+    },
+    ChampionshipCarActorRgbStateMismatch {
         profile_enabled: bool,
         prepared_enabled: bool,
     },
@@ -447,14 +451,22 @@ impl ChampionshipCarBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedB
 
     fn preflight_championship_car_scene(
         &mut self,
-        pre_draw_state: ChampionshipCarPreDrawState,
+        pre_draw_profile: ChampionshipCarPreDrawProfile,
     ) -> Result<(), Self::Error> {
         let profile = self.validate_championship_car_raster_profile()?;
-        if profile.fog_mutation != pre_draw_state.type2_fog.enabled {
+        if profile.fog_mutation != pre_draw_profile.type2_fog_enabled {
             return Err(SoftwareC3dBackendError::ChampionshipCarFogStateMismatch {
                 profile_enabled: profile.fog_mutation,
-                prepared_enabled: pre_draw_state.type2_fog.enabled,
+                prepared_enabled: pre_draw_profile.type2_fog_enabled,
             });
+        }
+        if profile.actor_rgb_override != pre_draw_profile.actor_rgb_enabled {
+            return Err(
+                SoftwareC3dBackendError::ChampionshipCarActorRgbStateMismatch {
+                    profile_enabled: profile.actor_rgb_override,
+                    prepared_enabled: pre_draw_profile.actor_rgb_enabled,
+                },
+            );
         }
         Ok(())
     }
@@ -782,7 +794,7 @@ mod tests {
         );
         let supported = SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND;
         let unsupported = SoftwareChampionshipCarRasterProfile {
-            actor_rgb_override: true,
+            alpha_blend: true,
             ..supported
         };
         assert!(matches!(
@@ -805,15 +817,9 @@ mod tests {
             backend.validate_championship_car_raster_profile(),
             Ok(supported)
         );
-        let enabled_state = ChampionshipCarPreDrawState {
-            type2_fog: cmr_core::c3d_type2_fog::C3dType2FogState {
-                enabled: true,
-                near_q16: 0,
-                far_q16: 1,
-                far_level: 0,
-                shared_distance_q16: 1,
-                center_q16: [0; 3],
-            },
+        let enabled_state = ChampionshipCarPreDrawProfile {
+            type2_fog_enabled: true,
+            actor_rgb_enabled: false,
         };
         assert_eq!(
             ChampionshipCarBatchBackend::<SoftwareC3dSampledTexture>::preflight_championship_car_scene(
@@ -868,28 +874,88 @@ mod tests {
     }
 
     #[test]
-    fn enabled_championship_copy_profile_accepts_enabled_pre_draw_state() {
+    fn championship_copy_profiles_accept_matching_pre_draw_state() {
         let (mut backend, _) = initialized_backend();
-        let profile = SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND;
-        backend
-            .configure_championship_car_raster_profile(profile)
-            .unwrap();
-        let state = ChampionshipCarPreDrawState {
-            type2_fog: cmr_core::c3d_type2_fog::C3dType2FogState {
-                enabled: true,
-                near_q16: 10 << 16,
-                far_q16: 80 << 16,
-                far_level: 0x0033_0000,
-                shared_distance_q16: 9 << 16,
-                center_q16: [0; 3],
-            },
-        };
-        assert_eq!(
-            ChampionshipCarBatchBackend::<SoftwareC3dSampledTexture>::preflight_championship_car_scene(
-                &mut backend,
-                state,
+        for (profile, state) in [
+            (
+                SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+                ChampionshipCarPreDrawProfile {
+                    type2_fog_enabled: false,
+                    actor_rgb_enabled: false,
+                },
             ),
-            Ok(())
-        );
+            (
+                SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+                ChampionshipCarPreDrawProfile {
+                    type2_fog_enabled: true,
+                    actor_rgb_enabled: false,
+                },
+            ),
+            (
+                SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_ENABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+                ChampionshipCarPreDrawProfile {
+                    type2_fog_enabled: false,
+                    actor_rgb_enabled: true,
+                },
+            ),
+            (
+                SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_ENABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+                ChampionshipCarPreDrawProfile {
+                    type2_fog_enabled: true,
+                    actor_rgb_enabled: true,
+                },
+            ),
+        ] {
+            backend
+                .configure_championship_car_raster_profile(profile)
+                .unwrap();
+            assert_eq!(
+                ChampionshipCarBatchBackend::<SoftwareC3dSampledTexture>::preflight_championship_car_scene(
+                    &mut backend,
+                    state,
+                ),
+                Ok(())
+            );
+        }
+    }
+
+    #[test]
+    fn actor_rgb_profile_state_mismatches_are_effect_free() {
+        let (mut backend, _) = initialized_backend();
+        let before_color = backend.back_pixels().unwrap().to_vec();
+        let before_depth = backend.c3d_depth_values().unwrap().to_vec();
+
+        for (profile, prepared_enabled) in [
+            (
+                SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+                true,
+            ),
+            (
+                SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_ENABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+                false,
+            ),
+        ] {
+            backend
+                .configure_championship_car_raster_profile(profile)
+                .unwrap();
+            assert_eq!(
+                ChampionshipCarBatchBackend::<SoftwareC3dSampledTexture>::preflight_championship_car_scene(
+                    &mut backend,
+                    ChampionshipCarPreDrawProfile {
+                        type2_fog_enabled: false,
+                        actor_rgb_enabled: prepared_enabled,
+                    },
+                ),
+                Err(
+                    SoftwareC3dBackendError::ChampionshipCarActorRgbStateMismatch {
+                        profile_enabled: profile.actor_rgb_override,
+                        prepared_enabled,
+                    }
+                )
+            );
+            assert!(!backend.c3d.scene_is_active());
+            assert_eq!(backend.back_pixels().unwrap(), before_color);
+            assert_eq!(backend.c3d_depth_values().unwrap(), before_depth);
+        }
     }
 }

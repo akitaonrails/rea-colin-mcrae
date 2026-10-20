@@ -10,6 +10,7 @@ use std::fmt;
 
 use cmr_assets::AssetStore;
 use cmr_core::{
+    c3d_actor_rgb::C3dActorRgbState,
     c3d_topology::{C3dObjectTopology, C3dObjectTopologyError},
     c3d_type2_fog::C3dType2FogState,
     championship_assets::{
@@ -125,38 +126,84 @@ pub enum SoftwareChampionshipRasterSelectionProvenance {
     SupportedSoftwareOraclePolicy,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SoftwareChampionshipActorRgbSelection {
+    Disabled,
+    /// One source-ordered runtime actor RGB table for each canonical car.
+    Enabled(Box<[Box<[[u8; 3]]>; CHAMPIONSHIP_CAR_COUNT]>),
+}
+
+impl SoftwareChampionshipActorRgbSelection {
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        matches!(self, Self::Enabled(_))
+    }
+
+    #[must_use]
+    pub fn for_car(&self, car: CanonicalCar) -> C3dActorRgbState<'_> {
+        match self {
+            Self::Disabled => C3dActorRgbState::Disabled,
+            Self::Enabled(cars) => C3dActorRgbState::Enabled(&cars[car.index() as usize]),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SoftwareChampionshipRasterSelection {
     pub raster_profile: SoftwareChampionshipCarRasterProfile,
     pub type2_fog: C3dType2FogState,
+    pub actor_rgb: SoftwareChampionshipActorRgbSelection,
     pub provenance: SoftwareChampionshipRasterSelectionProvenance,
 }
 
 impl SoftwareChampionshipRasterSelection {
     #[must_use]
-    pub const fn caller_asserted(
+    pub fn caller_asserted(
         raster_profile: SoftwareChampionshipCarRasterProfile,
         type2_fog: C3dType2FogState,
     ) -> Self {
         Self {
             raster_profile,
             type2_fog,
+            actor_rgb: SoftwareChampionshipActorRgbSelection::Disabled,
+            provenance: SoftwareChampionshipRasterSelectionProvenance::CallerAssertedRasterProfile,
+        }
+    }
+
+    #[must_use]
+    pub fn caller_asserted_with_actor_rgb(
+        raster_profile: SoftwareChampionshipCarRasterProfile,
+        type2_fog: C3dType2FogState,
+        actor_rgb_by_car: [Box<[[u8; 3]]>; CHAMPIONSHIP_CAR_COUNT],
+    ) -> Self {
+        Self {
+            raster_profile,
+            type2_fog,
+            actor_rgb: SoftwareChampionshipActorRgbSelection::Enabled(Box::new(actor_rgb_by_car)),
             provenance: SoftwareChampionshipRasterSelectionProvenance::CallerAssertedRasterProfile,
         }
     }
 
     /// Selects the default mutation-disabled deterministic software policy.
     #[must_use]
-    pub const fn supported_software_oracle_policy() -> Self {
+    pub fn supported_software_oracle_policy() -> Self {
         Self {
             raster_profile: SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
             type2_fog: C3dType2FogState::DISABLED,
+            actor_rgb: SoftwareChampionshipActorRgbSelection::Disabled,
             provenance: SoftwareChampionshipRasterSelectionProvenance::SupportedSoftwareOraclePolicy,
+        }
+    }
+
+    fn pre_draw_state_for_car(&self, car: CanonicalCar) -> ChampionshipCarPreDrawState<'_> {
+        ChampionshipCarPreDrawState {
+            type2_fog: self.type2_fog,
+            actor_rgb: self.actor_rgb.for_car(car),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SoftwareChampionshipSessionRequest {
     pub language: Language,
     pub variant: VisualVariant,
@@ -209,6 +256,50 @@ pub struct SoftwareChampionshipFrameRequest<'a> {
     pub base_basis: [i32; 9],
 }
 
+fn validate_actor_rgb_counts(
+    selection: &SoftwareChampionshipActorRgbSelection,
+    expected_count: impl Fn(CanonicalCar) -> usize,
+) -> Result<(), SoftwareChampionshipSessionBuildError> {
+    let SoftwareChampionshipActorRgbSelection::Enabled(cars) = selection else {
+        return Ok(());
+    };
+
+    for car in CanonicalCar::ALL {
+        let expected = expected_count(car);
+        let actual = cars[car.index() as usize].len();
+        if actual != expected {
+            return Err(SoftwareChampionshipSessionBuildError::ActorRgbCount {
+                car,
+                expected,
+                actual,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_raster_selection(
+    selection: &SoftwareChampionshipRasterSelection,
+) -> Result<(), SoftwareChampionshipSessionBuildError> {
+    if selection.raster_profile.fog_mutation != selection.type2_fog.enabled {
+        return Err(SoftwareChampionshipSessionBuildError::RasterProfile(
+            SoftwareC3dBackendError::ChampionshipCarFogStateMismatch {
+                profile_enabled: selection.raster_profile.fog_mutation,
+                prepared_enabled: selection.type2_fog.enabled,
+            },
+        ));
+    }
+    if selection.raster_profile.actor_rgb_override != selection.actor_rgb.enabled() {
+        return Err(SoftwareChampionshipSessionBuildError::RasterProfile(
+            SoftwareC3dBackendError::ChampionshipCarActorRgbStateMismatch {
+                profile_enabled: selection.raster_profile.actor_rgb_override,
+                prepared_enabled: selection.actor_rgb.enabled(),
+            },
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub enum SoftwareChampionshipSessionBuildError {
     FrontendText(LocalizationLoadError),
@@ -223,6 +314,11 @@ pub enum SoftwareChampionshipSessionBuildError {
     CarRuntime {
         car: CanonicalCar,
         source: FrontendC3dCarMaterializationError,
+    },
+    ActorRgbCount {
+        car: CanonicalCar,
+        expected: usize,
+        actual: usize,
     },
     C3dBindings(C3dBindingBuildError<SoftwareC3dSamplingError>),
     LogoSurfaces(ChampionshipLogoSurfaceError),
@@ -254,6 +350,14 @@ impl fmt::Display for SoftwareChampionshipSessionBuildError {
                     "cannot materialize championship runtime for {car:?}: {source}"
                 )
             }
+            Self::ActorRgbCount {
+                car,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "actor-RGB state for {car:?} has {actual} actors; loaded topology requires {expected}"
+            ),
             Self::C3dBindings(source) => source.fmt(formatter),
             Self::LogoSurfaces(source) => source.fmt(formatter),
             Self::FrameSurfaces(source) => source.fmt(formatter),
@@ -283,6 +387,7 @@ impl std::error::Error for SoftwareChampionshipSessionBuildError {
             Self::FrontendC3d(source) => Some(source),
             Self::CarTopology { source, .. } => Some(source),
             Self::CarRuntime { source, .. } => Some(source),
+            Self::ActorRgbCount { .. } => None,
             Self::C3dBindings(source) => Some(source),
             Self::LogoSurfaces(source) => Some(source),
             Self::FrameSurfaces(source) => Some(source),
@@ -384,9 +489,7 @@ impl SoftwareChampionshipSession<'_, '_, '_, '_> {
             topology: &self.topologies[car.index() as usize],
             runtime: &self.runtimes[car.index() as usize],
             base_basis: frame.base_basis,
-            pre_draw_state: ChampionshipCarPreDrawState {
-                type2_fog: self.request.raster_selection.type2_fog,
-            },
+            pre_draw_state: self.request.raster_selection.pre_draw_state_for_car(car),
         });
 
         execute_championship_terminal_frame(
@@ -430,8 +533,8 @@ impl SoftwareChampionshipSession<'_, '_, '_, '_> {
     }
 
     #[must_use]
-    pub const fn request(&self) -> SoftwareChampionshipSessionRequest {
-        self.request
+    pub const fn request(&self) -> &SoftwareChampionshipSessionRequest {
+        &self.request
     }
 
     #[must_use]
@@ -548,6 +651,9 @@ pub fn with_software_championship_session<R>(
     let topologies: [C3dObjectTopology<'_>; CHAMPIONSHIP_CAR_COUNT] = topology_values
         .try_into()
         .expect("one topology was built for every canonical car");
+    validate_actor_rgb_counts(&request.raster_selection.actor_rgb, |car| {
+        topologies[car.index() as usize].group0_records().count()
+    })?;
     let mut runtime_values = Vec::with_capacity(CHAMPIONSHIP_CAR_COUNT);
     for car in CanonicalCar::ALL {
         runtime_values.push(
@@ -590,16 +696,7 @@ pub fn with_software_championship_session<R>(
         request.info_mapping,
     )
     .map_err(SoftwareChampionshipSessionBuildError::FrameSurfaces)?;
-    if request.raster_selection.raster_profile.fog_mutation
-        != request.raster_selection.type2_fog.enabled
-    {
-        return Err(SoftwareChampionshipSessionBuildError::RasterProfile(
-            SoftwareC3dBackendError::ChampionshipCarFogStateMismatch {
-                profile_enabled: request.raster_selection.raster_profile.fog_mutation,
-                prepared_enabled: request.raster_selection.type2_fog.enabled,
-            },
-        ));
-    }
+    validate_raster_selection(&request.raster_selection)?;
     backend
         .configure_championship_car_raster_profile(request.raster_selection.raster_profile)
         .map_err(SoftwareChampionshipSessionBuildError::RasterProfile)?;
@@ -668,6 +765,14 @@ mod tests {
 
     const SUPPORTED: SoftwareChampionshipCarRasterProfile =
         SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND;
+    const ACTOR_RGB_SUPPORTED: SoftwareChampionshipCarRasterProfile =
+        SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_ENABLED_UNIFIED_INDEXED_COPY_NO_BLEND;
+
+    fn one_actor_rgb_per_car() -> [Box<[[u8; 3]]>; CHAMPIONSHIP_CAR_COUNT] {
+        std::array::from_fn(|index| {
+            vec![[index as u8, index as u8 + 1, index as u8 + 2]].into_boxed_slice()
+        })
+    }
 
     #[test]
     fn request_retains_explicit_profile_and_source_owned_palette_provenance() {
@@ -696,6 +801,111 @@ mod tests {
             SoftwareChampionshipPaletteLayout::CanonicalCarsThenChequered
         );
         assert_eq!(request.palette_layout.palette_count(), 15);
+    }
+
+    #[test]
+    fn request_retains_explicit_per_car_actor_rgb_tables_and_provenance() {
+        let actor_rgb_by_car = one_actor_rgb_per_car();
+        let expected = actor_rgb_by_car.clone();
+        let request = SoftwareChampionshipSessionRequest::new(
+            Language::English,
+            VisualVariant::Normal,
+            SoftwareChampionshipRasterSelection::caller_asserted_with_actor_rgb(
+                ACTOR_RGB_SUPPORTED,
+                C3dType2FogState::DISABLED,
+                actor_rgb_by_car,
+            ),
+            PaletteMapping::Identity,
+            PaletteMapping::Identity,
+        );
+
+        assert_eq!(request.raster_selection.raster_profile, ACTOR_RGB_SUPPORTED);
+        assert_eq!(
+            request.raster_selection.provenance,
+            SoftwareChampionshipRasterSelectionProvenance::CallerAssertedRasterProfile
+        );
+        assert_eq!(
+            request.raster_selection.actor_rgb,
+            SoftwareChampionshipActorRgbSelection::Enabled(Box::new(expected))
+        );
+        assert_eq!(
+            request
+                .raster_selection
+                .actor_rgb
+                .for_car(CanonicalCar::Ibiza)
+                .rgb(0),
+            Some([1, 2, 3])
+        );
+        let selected = request
+            .raster_selection
+            .pre_draw_state_for_car(CanonicalCar::Ibiza);
+        assert_eq!(selected.type2_fog, C3dType2FogState::DISABLED);
+        assert_eq!(selected.actor_rgb.rgb(0), Some([1, 2, 3]));
+    }
+
+    #[test]
+    fn actor_rgb_count_validation_accepts_matching_tables_and_reports_first_car_mismatch() {
+        let matching =
+            SoftwareChampionshipActorRgbSelection::Enabled(Box::new(one_actor_rgb_per_car()));
+        assert!(validate_actor_rgb_counts(&matching, |_| 1).is_ok());
+
+        let mut mismatched = one_actor_rgb_per_car();
+        mismatched[CanonicalCar::Ibiza.index() as usize] = Vec::new().into_boxed_slice();
+        let error = validate_actor_rgb_counts(
+            &SoftwareChampionshipActorRgbSelection::Enabled(Box::new(mismatched)),
+            |_| 1,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            SoftwareChampionshipSessionBuildError::ActorRgbCount {
+                car: CanonicalCar::Ibiza,
+                expected: 1,
+                actual: 0,
+            }
+        ));
+    }
+
+    #[test]
+    fn raster_selection_validation_accepts_matching_actor_rgb_and_rejects_both_mismatch_directions()
+    {
+        let enabled = SoftwareChampionshipRasterSelection::caller_asserted_with_actor_rgb(
+            ACTOR_RGB_SUPPORTED,
+            C3dType2FogState::DISABLED,
+            one_actor_rgb_per_car(),
+        );
+        assert!(validate_raster_selection(&enabled).is_ok());
+
+        let profile_enabled_state_disabled = SoftwareChampionshipRasterSelection::caller_asserted(
+            ACTOR_RGB_SUPPORTED,
+            C3dType2FogState::DISABLED,
+        );
+        assert!(matches!(
+            validate_raster_selection(&profile_enabled_state_disabled),
+            Err(SoftwareChampionshipSessionBuildError::RasterProfile(
+                SoftwareC3dBackendError::ChampionshipCarActorRgbStateMismatch {
+                    profile_enabled: true,
+                    prepared_enabled: false,
+                }
+            ))
+        ));
+
+        let profile_disabled_state_enabled =
+            SoftwareChampionshipRasterSelection::caller_asserted_with_actor_rgb(
+                SUPPORTED,
+                C3dType2FogState::DISABLED,
+                one_actor_rgb_per_car(),
+            );
+        assert!(matches!(
+            validate_raster_selection(&profile_disabled_state_enabled),
+            Err(SoftwareChampionshipSessionBuildError::RasterProfile(
+                SoftwareC3dBackendError::ChampionshipCarActorRgbStateMismatch {
+                    profile_enabled: false,
+                    prepared_enabled: true,
+                }
+            ))
+        ));
     }
 
     #[test]

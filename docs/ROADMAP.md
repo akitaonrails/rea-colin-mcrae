@@ -249,10 +249,14 @@ fixed truncating x87 qword conversion, and exact fixed-square-root lookup.
 Each car frame now prepares fresh owned Type-2 words before terminal effects,
 submits them after the recovered selector-binding decision even on cache hits,
 routes the active mesh's exact all-`-0x10000` origin sentinel to the per-vertex
-distance arm, and rejects profile/state disagreement explicitly. The software backend admits
-the otherwise identical mutation-disabled and mutation-enabled,
-actor-RGB-disabled unified-indexed COPY/no-blend profiles, copies texture indices directly, and
-keeps missing selectors distinct as reviewed-car index zero. A public synthetic
+distance arm, then conditionally overwrites word-4 RGB while preserving alpha.
+Frame planning records the renderer's list-head RGB owner for each sibling list;
+the standalone session requires explicit source-ordered per-car actor tables
+because it cannot inherit arbitrary process state. Count, ownership, and
+profile/state disagreement are rejected before effects. The software backend
+admits all four word-5/actor-RGB gate combinations for the otherwise identical
+unified-indexed COPY/no-blend profile, copies texture indices directly, and keeps
+missing selectors distinct as reviewed-car index zero. A public synthetic
 asset-to-scene test pins resource/default/resource execution and exact indexed
 color/depth output. Car-present scenes now invoke a backend-specific effect-free
 preflight before any terminal pixel or state effect; an end-to-end software
@@ -263,8 +267,8 @@ pairs, explicit raster-profile provenance, compact car/FCHE palette layout,
 shared bindings, and frame state; synthetic and reviewed-import tests cover
 hidden-to-visible rendering, car switching, Next, presentation, and teardown.
 The original device branch, alpha, word-5 mutation, and actor-RGB gates are
-independent retained inputs. Actor-RGB lifecycle/ownership and alternate
-split/modulate/linear profiles remain separate.
+independent retained inputs. Alternate split/modulate/linear and alpha-enabled
+profiles remain separate.
 
 Exit gate:
 

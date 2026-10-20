@@ -267,6 +267,7 @@ fn prepared_type2_car_executes_resource_missing_resource_on_software_backend() {
             shared_distance_q16: 9 << 16,
             center_q16: [0; 3],
         },
+        actor_rgb: cmr_core::c3d_actor_rgb::C3dActorRgbState::Disabled,
     };
     let mut enabled_executor = ChampionshipCarBatchExecutor::new(&catalog);
     let enabled_prepared = enabled_executor
@@ -296,7 +297,7 @@ fn unsupported_profile_configuration_is_effect_free() {
     let before_pixels = unconfigured.back_pixels().unwrap().to_vec();
     let before_depth = unconfigured.c3d_depth_values().unwrap().to_vec();
     let unsupported = SoftwareChampionshipCarRasterProfile {
-        actor_rgb_override: true,
+        alpha_blend: true,
         ..SoftwareChampionshipCarRasterProfile::
             MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND
     };
@@ -718,6 +719,108 @@ fn championship_session_rejects_fog_profile_state_mismatch_before_callback() {
                 prepared_enabled: false,
             }
         ))
+    ));
+}
+
+#[test]
+fn championship_session_accepts_explicit_actor_rgb_and_renders_visible_car() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let actor_rgb_by_car = std::array::from_fn(|index| {
+        vec![[index as u8 + 1, index as u8 + 2, index as u8 + 3]].into_boxed_slice()
+    });
+    let request = SoftwareChampionshipSessionRequest::new(
+        Language::English,
+        VisualVariant::Normal,
+        SoftwareChampionshipRasterSelection::caller_asserted_with_actor_rgb(
+            SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_ENABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+            C3dType2FogState::DISABLED,
+            actor_rgb_by_car,
+        ),
+        PaletteMapping::Identity,
+        PaletteMapping::Identity,
+    );
+
+    let run = with_software_championship_session(
+        &store,
+        synthetic_startup(palette(BOOTSTRAP_RED)),
+        request,
+        |session| {
+            let transcript = championship_transcript();
+            let frame = || SoftwareChampionshipFrameRequest {
+                visual: championship_input(&transcript),
+                setup: ChampionshipSetupFrameState::default(),
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            };
+            assert_eq!(
+                session
+                    .render(frame())
+                    .unwrap()
+                    .scene
+                    .submission
+                    .unwrap()
+                    .draws,
+                0
+            );
+            assert_eq!(
+                session
+                    .render(frame())
+                    .unwrap()
+                    .scene
+                    .submission
+                    .unwrap()
+                    .draws,
+                3
+            );
+            assert!(
+                session
+                    .backend()
+                    .presented_frame()
+                    .unwrap()
+                    .pixels()
+                    .contains(&RESOURCE_INDEX)
+            );
+        },
+    )
+    .unwrap();
+    assert_eq!(run.backend.uploaded_source_count(), 0);
+}
+
+#[test]
+fn championship_session_rejects_actor_rgb_count_before_callback() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let mut actor_rgb_by_car = std::array::from_fn(|_| vec![[0x28; 3]].into_boxed_slice());
+    actor_rgb_by_car[CanonicalCar::Subaru.index() as usize] = Vec::new().into_boxed_slice();
+    let request = SoftwareChampionshipSessionRequest::new(
+        Language::English,
+        VisualVariant::Normal,
+        SoftwareChampionshipRasterSelection::caller_asserted_with_actor_rgb(
+            SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_ENABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+            C3dType2FogState::DISABLED,
+            actor_rgb_by_car,
+        ),
+        PaletteMapping::Identity,
+        PaletteMapping::Identity,
+    );
+
+    let result = with_software_championship_session::<()>(
+        &store,
+        synthetic_startup(palette(BOOTSTRAP_RED)),
+        request,
+        |_| panic!("bad actor-RGB cardinality must not enter the callback"),
+    );
+    assert!(matches!(
+        result,
+        Err(SoftwareChampionshipSessionBuildError::ActorRgbCount {
+            car: CanonicalCar::Subaru,
+            expected: 1,
+            actual: 0,
+        })
     ));
 }
 

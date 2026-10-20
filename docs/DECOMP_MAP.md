@@ -98,7 +98,7 @@ Status markers:
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
 - [x] `E15` Recover championship mode-8 C3D preparation and session ownership.
-- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone software session, and disabled/enabled Type-2 word-5 submission implemented; actor-RGB state and alternate raster profiles remain).
+- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone software session, and all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission implemented; alternate raster profiles remain).
 
 ## F. Menus, game state, and persistence
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T22:59:06Z
-milestone=submit-enabled-type2-word5
+updated_utc=2026-10-20T23:07:10Z
+milestone=submit-enabled-actor-rgb-word4
 completed=50
 partial=20
 not_started=47
 blocked=0
 total=117
-current_focus=E16-actor-rgb-lifecycle
-next_exit_gate=recover-and-wire-explicit-actor-rgb-state-after-word5
+current_focus=E16-raster-profile-selection
+next_exit_gate=recover-and-implement-split-modulate-linear-or-alpha-profile
 <!-- PROGRESS-TAIL-END -->

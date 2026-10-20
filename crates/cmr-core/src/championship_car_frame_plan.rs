@@ -30,6 +30,9 @@ use crate::{
     },
 };
 
+/// RGB bytes installed in every actor by the recovered constructor.
+pub const CHAMPIONSHIP_ACTOR_INITIAL_RGB: [u8; 3] = [0x28; 3];
+
 /// Recovered parent selected by one group-0 signed field at `+4`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChampionshipCarActorParent {
@@ -97,6 +100,7 @@ pub struct ChampionshipCarActorNode {
     world_f32_words: Option<[u32; 16]>,
     source_byte_77: u8,
     source_byte_78: u8,
+    initial_rgb: [u8; 3],
     levels: Box<[ChampionshipCarActorLevel]>,
 }
 
@@ -138,6 +142,13 @@ impl ChampionshipCarActorNode {
         self.source_byte_78
     }
 
+    /// Constructor-installed actor bytes at runtime offsets
+    /// `+0x18c/+0x18d/+0x18e`. Retained runtime state may later differ.
+    #[must_use]
+    pub const fn initial_rgb(&self) -> [u8; 3] {
+        self.initial_rgb
+    }
+
     #[must_use]
     pub fn levels(&self) -> &[ChampionshipCarActorLevel] {
         &self.levels
@@ -151,6 +162,7 @@ pub struct ChampionshipCarActorDraw {
     actor_world_q16: [i32; 16],
     actor_world_f32_words: [u32; 16],
     force_per_vertex_type2_distance: bool,
+    actor_rgb_owner_index: usize,
     command: C3dDrawCommand,
 }
 
@@ -178,6 +190,13 @@ impl ChampionshipCarActorDraw {
     #[must_use]
     pub const fn forces_per_vertex_type2_distance(&self) -> bool {
         self.force_per_vertex_type2_distance
+    }
+
+    /// Actor whose RGB bytes the recovered renderer uses for this draw. A
+    /// recursive sibling-list invocation retains the list head as owner.
+    #[must_use]
+    pub const fn actor_rgb_owner_index(&self) -> usize {
+        self.actor_rgb_owner_index
     }
 
     #[must_use]
@@ -405,6 +424,7 @@ pub fn plan_championship_car_frame(
             world_f32_words: world_q16.map(q16_to_f32_words),
             source_byte_77: actor.source_byte_77,
             source_byte_78: actor.source_byte_78,
+            initial_rgb: CHAMPIONSHIP_ACTOR_INITIAL_RGB,
             levels: actor.levels.clone(),
         });
     }
@@ -413,6 +433,17 @@ pub fn plan_championship_car_frame(
     for (index, actor) in actors.iter().enumerate() {
         if let ChampionshipCarActorParent::Actor(parent) = actor.parent {
             children[parent].push(index);
+        }
+    }
+    let mut actor_rgb_owner_indices = vec![0; actors.len()];
+    for &root in &root_children {
+        actor_rgb_owner_indices[root] = root;
+    }
+    for siblings in &children {
+        if let Some(&owner) = siblings.first() {
+            for &sibling in siblings {
+                actor_rgb_owner_indices[sibling] = owner;
+            }
         }
     }
     let mut traversal = Vec::with_capacity(actors.len());
@@ -439,6 +470,7 @@ pub fn plan_championship_car_frame(
                     actor_world_q16: world_q16,
                     actor_world_f32_words: world_f32_words,
                     force_per_vertex_type2_distance,
+                    actor_rgb_owner_index: actor_rgb_owner_indices[actor_index],
                     command,
                 });
             }
@@ -1107,6 +1139,18 @@ pub(crate) mod tests {
                 .map(|draw| draw.actor_index())
                 .collect::<Vec<_>>(),
             [1, 3, 2]
+        );
+        assert_eq!(
+            plan.draws()
+                .iter()
+                .map(|draw| draw.actor_rgb_owner_index())
+                .collect::<Vec<_>>(),
+            [1, 3, 1]
+        );
+        assert!(
+            plan.actors()
+                .iter()
+                .all(|actor| actor.initial_rgb() == CHAMPIONSHIP_ACTOR_INITIAL_RGB)
         );
         let preview = plan.selected_parent_local_q16();
         let root = compose_q16(translated(Q16_ONE, 0, 0), preview);

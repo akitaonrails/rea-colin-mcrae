@@ -40,6 +40,15 @@ pub struct C3dType2PreDrawVertex {
 }
 
 impl C3dType2PreDrawVertex {
+    #[cfg(test)]
+    pub(crate) const fn from_words_for_test(words: [u32; 8]) -> Self {
+        Self { words }
+    }
+
+    pub(crate) fn replace_word4_rgb(&mut self, packed_rgb: u32) {
+        self.words[4] = (self.words[4] & 0xff00_0000) | (packed_rgb & 0x00ff_ffff);
+    }
+
     #[must_use]
     pub const fn words(self) -> [u32; 8] {
         self.words

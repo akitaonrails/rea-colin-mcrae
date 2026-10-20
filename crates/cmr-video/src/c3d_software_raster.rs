@@ -188,6 +188,19 @@ impl SoftwareChampionshipCarRasterProfile {
         fog_mutation: true,
         ..Self::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND
     };
+
+    /// The same deterministic COPY subset with actor-RGB word-4 mutation.
+    pub const MUTATION_DISABLED_ACTOR_RGB_ENABLED_UNIFIED_INDEXED_COPY_NO_BLEND: Self = Self {
+        actor_rgb_override: true,
+        ..Self::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND
+    };
+
+    /// The deterministic COPY subset with both independent CPU-side mutations.
+    pub const MUTATION_ENABLED_ACTOR_RGB_ENABLED_UNIFIED_INDEXED_COPY_NO_BLEND: Self = Self {
+        fog_mutation: true,
+        actor_rgb_override: true,
+        ..Self::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND
+    };
 }
 
 /// Index source selected by the championship binding operation.
@@ -534,10 +547,10 @@ pub fn preflight_championship_car_indexed_copy_batch(
 pub fn validate_championship_car_raster_profile(
     profile: SoftwareChampionshipCarRasterProfile,
 ) -> Result<(), SoftwareC3dRasterError> {
-    if profile
-        == SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND
-        || profile
-            == SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND
+    if profile.unified_indexed
+        && profile.texture_copy
+        && profile.point_filter
+        && !profile.alpha_blend
     {
         Ok(())
     } else {
@@ -2333,10 +2346,6 @@ mod tests {
                 alpha_blend: true,
                 ..supported
             },
-            SoftwareChampionshipCarRasterProfile {
-                actor_rgb_override: true,
-                ..supported
-            },
         ] {
             let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
             let before_depth = depth.values().to_vec();
@@ -2357,13 +2366,6 @@ mod tests {
             assert_eq!(target, [44]);
             assert_eq!(depth.values(), before_depth);
         }
-        assert_eq!(
-            validate_championship_car_raster_profile(
-                SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
-            ),
-            Ok(())
-        );
-
         let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
         let before_depth = depth.values().to_vec();
         let mut target = [44];
@@ -2382,6 +2384,18 @@ mod tests {
         ));
         assert_eq!(target, [44]);
         assert_eq!(depth.values(), before_depth);
+    }
+
+    #[test]
+    fn championship_validator_accepts_all_copy_no_blend_mutation_profiles() {
+        for profile in [
+            SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+            SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+            SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_ENABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+            SoftwareChampionshipCarRasterProfile::MUTATION_ENABLED_ACTOR_RGB_ENABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+        ] {
+            assert_eq!(validate_championship_car_raster_profile(profile), Ok(()));
+        }
     }
 
     #[test]

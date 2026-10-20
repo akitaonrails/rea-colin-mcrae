@@ -48,12 +48,12 @@ use crate::{
     source_store::UploadedSourceStore,
 };
 
-pub struct ChampionshipCarFrameResources<'a> {
+pub struct ChampionshipCarFrameResources<'a, 'actors> {
     pub car: CanonicalCar,
     pub topology: &'a C3dObjectTopology<'a>,
     pub runtime: &'a C3dResourceScaledObject,
     pub base_basis: [i32; 9],
-    pub pre_draw_state: ChampionshipCarPreDrawState,
+    pub pre_draw_state: ChampionshipCarPreDrawState<'actors>,
 }
 
 pub struct ChampionshipTerminalPaletteResources<'a> {
@@ -73,10 +73,10 @@ pub struct ChampionshipTerminalFrameState<'a> {
     pub route: &'a FrontendC3dRouteState,
 }
 
-pub struct ChampionshipTerminalFrameResources<'a, 'car> {
+pub struct ChampionshipTerminalFrameResources<'a, 'car, 'actors> {
     pub setup: ChampionshipSetupFrameResources<'a>,
     /// Required exactly when the visual transcript contains a car preview.
-    pub car: Option<ChampionshipCarFrameResources<'car>>,
+    pub car: Option<ChampionshipCarFrameResources<'car, 'actors>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -244,7 +244,7 @@ pub fn execute_championship_terminal_frame<'catalog, B, H>(
     input: ChampionshipSetupVisualInput<'_>,
     setup_state: ChampionshipSetupFrameState,
     car_input: ChampionshipCarInput,
-    resources: ChampionshipTerminalFrameResources<'_, '_>,
+    resources: ChampionshipTerminalFrameResources<'_, '_, '_>,
     state: ChampionshipTerminalFrameState<'_>,
     palette: ChampionshipTerminalPaletteResources<'_>,
     executor: &mut ChampionshipCarBatchExecutor<'catalog, H>,
@@ -424,7 +424,7 @@ where
 
 fn scan_car_contract(
     prepared: &crate::championship_setup_frame::PreparedChampionshipSetupFrame,
-    resources: Option<&ChampionshipCarFrameResources<'_>>,
+    resources: Option<&ChampionshipCarFrameResources<'_, '_>>,
 ) -> Result<Option<CarDeferredContract>, ChampionshipCarContractError> {
     scan_deferred_car_contract(
         prepared.deferred_commands(),
@@ -758,7 +758,7 @@ mod tests {
         type Error = Error;
         fn preflight_championship_car_scene(
             &mut self,
-            _: ChampionshipCarPreDrawState,
+            _: crate::championship_car_execute::ChampionshipCarPreDrawProfile,
         ) -> Result<(), Error> {
             self.preflight_attempts += 1;
             if self.fail_preflight {
@@ -1521,7 +1521,7 @@ mod tests {
     }
 
     #[test]
-    fn type2_preparation_failure_precedes_all_terminal_effects_and_state_changes() {
+    fn pre_draw_preparation_failures_precede_all_terminal_effects_and_state_changes() {
         let events = Rc::new(RefCell::new(Vec::new()));
         let mut backend = Backend::new(Rc::clone(&events));
         let mut h = Harness::new(&mut backend);
@@ -1646,6 +1646,7 @@ mod tests {
                     shared_distance_q16: 1,
                     center_q16: [7, 8, 9],
                 },
+                actor_rgb: crate::c3d_actor_rgb::C3dActorRgbState::Disabled,
             },
             &mut preview,
             &mut car_state,
@@ -1665,6 +1666,40 @@ mod tests {
                         far_q16: 1,
                     },
                     ..
+                },
+                ..
+            })
+        ));
+        assert!(events.borrow().is_empty());
+        assert_eq!(preview, before_preview);
+        assert_eq!(car_state, before_car);
+        assert_eq!(car_latches, before_car_latches);
+        assert_eq!(root_latches, before_root_latches);
+        assert_eq!(route.active(), before_route);
+        assert_eq!(pal, before_palette);
+        assert_eq!(rcache, before_renderer);
+        assert_eq!(gcache, before_global);
+
+        let result = run(
+            ChampionshipCarPreDrawState {
+                type2_fog: crate::c3d_type2_fog::C3dType2FogState::DISABLED,
+                actor_rgb: crate::c3d_actor_rgb::C3dActorRgbState::Enabled(&[]),
+            },
+            &mut preview,
+            &mut car_state,
+            &mut car_latches,
+            &mut root_latches,
+            &mut pal,
+            &mut rcache,
+            &mut gcache,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ChampionshipTerminalFrameError::CarPrepare {
+                source: ChampionshipCarBatchPreflightError::ActorRgbCount {
+                    expected: _,
+                    actual: 0,
                 },
                 ..
             })

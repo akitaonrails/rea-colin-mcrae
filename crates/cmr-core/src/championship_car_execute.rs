@@ -8,6 +8,7 @@
 use std::fmt;
 
 use crate::{
+    c3d_actor_rgb::{C3dActorRgbState, apply_c3d_actor_rgb_override},
     c3d_batch::{C3dDrawCommand, C3dDrawOrdinal},
     c3d_type2_fog::{
         C3dType2FogError, C3dType2FogState, C3dType2PreDrawVertex,
@@ -38,7 +39,7 @@ pub trait ChampionshipCarBatchBackend<H> {
     /// scene performs depth, camera, or begin effects.
     fn preflight_championship_car_scene(
         &mut self,
-        _pre_draw_state: ChampionshipCarPreDrawState,
+        _pre_draw_profile: ChampionshipCarPreDrawProfile,
     ) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -100,6 +101,15 @@ impl<E: std::error::Error + 'static> std::error::Error for ChampionshipCarBatchE
 pub enum ChampionshipCarBatchPreflightError {
     CatalogProvenanceMismatch,
     CatalogIdentityMismatch,
+    ActorRgbCount {
+        expected: usize,
+        actual: usize,
+    },
+    ActorRgbOwner {
+        actor_index: usize,
+        owner_index: usize,
+        actor_count: usize,
+    },
     ResourceAccess {
         actor_index: usize,
         ordinal: C3dDrawOrdinal,
@@ -122,6 +132,18 @@ impl fmt::Display for ChampionshipCarBatchPreflightError {
             ),
             Self::CatalogIdentityMismatch => formatter.write_str(
                 "prepared championship-car frame belongs to a different binding catalog",
+            ),
+            Self::ActorRgbCount { expected, actual } => write!(
+                formatter,
+                "championship-car actor-RGB state has {actual} actors; frame plan requires {expected}"
+            ),
+            Self::ActorRgbOwner {
+                actor_index,
+                owner_index,
+                actor_count,
+            } => write!(
+                formatter,
+                "championship-car actor {actor_index} uses RGB owner {owner_index}, outside retained actor count {actor_count}"
             ),
             Self::ResourceAccess {
                 actor_index,
@@ -184,14 +206,34 @@ pub struct ChampionshipCarBatchOutcome {
 /// Explicit retained renderer inputs applied to every Type-2 batch in one
 /// prepared car frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ChampionshipCarPreDrawState {
+pub struct ChampionshipCarPreDrawState<'actors> {
     pub type2_fog: C3dType2FogState,
+    pub actor_rgb: C3dActorRgbState<'actors>,
 }
 
-impl ChampionshipCarPreDrawState {
+impl ChampionshipCarPreDrawState<'static> {
     pub const DISABLED: Self = Self {
         type2_fog: C3dType2FogState::DISABLED,
+        actor_rgb: C3dActorRgbState::Disabled,
     };
+}
+
+/// Gate-only summary retained after actor-owned RGB bytes have been consumed
+/// during effect-free preparation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChampionshipCarPreDrawProfile {
+    pub type2_fog_enabled: bool,
+    pub actor_rgb_enabled: bool,
+}
+
+impl ChampionshipCarPreDrawState<'_> {
+    #[must_use]
+    pub const fn profile(self) -> ChampionshipCarPreDrawProfile {
+        ChampionshipCarPreDrawProfile {
+            type2_fog_enabled: self.type2_fog.enabled,
+            actor_rgb_enabled: self.actor_rgb.enabled(),
+        }
+    }
 }
 
 /// Persistent selector-cache owner for championship-car C3D submission.
@@ -212,7 +254,7 @@ pub struct PreparedChampionshipCarFrame<'catalog, H> {
     plan: ChampionshipCarFramePlan,
     bindings: Vec<C3dPreflightBinding<'catalog, H>>,
     vertices: Vec<Box<[C3dType2PreDrawVertex]>>,
-    pre_draw_state: ChampionshipCarPreDrawState,
+    pre_draw_profile: ChampionshipCarPreDrawProfile,
 }
 
 impl<H> PreparedChampionshipCarFrame<'_, H> {
@@ -232,8 +274,8 @@ impl<H> PreparedChampionshipCarFrame<'_, H> {
     }
 
     #[must_use]
-    pub const fn pre_draw_state(&self) -> ChampionshipCarPreDrawState {
-        self.pre_draw_state
+    pub const fn pre_draw_profile(&self) -> ChampionshipCarPreDrawProfile {
+        self.pre_draw_profile
     }
 }
 
@@ -262,8 +304,16 @@ impl<'catalog, H> ChampionshipCarBatchExecutor<'catalog, H> {
     pub fn prepare(
         &self,
         plan: ChampionshipCarFramePlan,
-        pre_draw_state: ChampionshipCarPreDrawState,
+        pre_draw_state: ChampionshipCarPreDrawState<'_>,
     ) -> Result<PreparedChampionshipCarFrame<'catalog, H>, ChampionshipCarBatchPreflightError> {
+        if let Some(actual) = pre_draw_state.actor_rgb.actor_count()
+            && actual != plan.actors().len()
+        {
+            return Err(ChampionshipCarBatchPreflightError::ActorRgbCount {
+                expected: plan.actors().len(),
+                actual,
+            });
+        }
         let preflight = preflight_c3d_draw_commands(
             self.catalog,
             plan.provenance(),
@@ -280,7 +330,7 @@ impl<'catalog, H> ChampionshipCarBatchExecutor<'catalog, H> {
             plan,
             bindings,
             vertices,
-            pre_draw_state,
+            pre_draw_profile: pre_draw_state.profile(),
         })
     }
 
@@ -327,7 +377,7 @@ impl<'catalog, H> ChampionshipCarBatchExecutor<'catalog, H> {
         &mut self,
         backend: &mut B,
         plan: ChampionshipCarFramePlan,
-        pre_draw_state: ChampionshipCarPreDrawState,
+        pre_draw_state: ChampionshipCarPreDrawState<'_>,
     ) -> Result<ChampionshipCarBatchOutcome, ChampionshipCarExecuteError<B::Error>>
     where
         B: ChampionshipCarBatchBackend<H>,
@@ -377,19 +427,20 @@ trait ActorDrawAccess {
     fn actor_index(&self) -> usize;
     fn actor_world(&self) -> C3dMatrixWords;
     fn forces_per_vertex_type2_distance(&self) -> bool;
+    fn actor_rgb_owner_index(&self) -> usize;
     fn command(&self) -> &C3dDrawCommand;
 }
 
 fn prepare_draw_vertices<D: ActorDrawAccess>(
     draw: &D,
-    pre_draw_state: ChampionshipCarPreDrawState,
+    pre_draw_state: ChampionshipCarPreDrawState<'_>,
 ) -> Result<Box<[C3dType2PreDrawVertex]>, ChampionshipCarBatchPreflightError> {
     let command = draw.command();
     let mut fog_state = pre_draw_state.type2_fog;
     if draw.forces_per_vertex_type2_distance() {
         fog_state.shared_distance_q16 = 0;
     }
-    prepare_c3d_type2_pre_draw_vertices(
+    let mut vertices = prepare_c3d_type2_pre_draw_vertices(
         command.vertices().iter().map(|vertex| vertex.words()),
         fog_state,
     )
@@ -398,7 +449,21 @@ fn prepare_draw_vertices<D: ActorDrawAccess>(
         ordinal: command.ordinal(),
         selector: command.selector(),
         source,
-    })
+    })?;
+    if !draw.forces_per_vertex_type2_distance()
+        && let C3dActorRgbState::Enabled(actor_rgb) = pre_draw_state.actor_rgb
+    {
+        let owner_index = draw.actor_rgb_owner_index();
+        let rgb = actor_rgb.get(owner_index).copied().ok_or(
+            ChampionshipCarBatchPreflightError::ActorRgbOwner {
+                actor_index: draw.actor_index(),
+                owner_index,
+                actor_count: actor_rgb.len(),
+            },
+        )?;
+        apply_c3d_actor_rgb_override(&mut vertices, rgb);
+    }
+    Ok(vertices)
 }
 
 impl ActorDrawAccess for ChampionshipCarActorDraw {
@@ -412,6 +477,10 @@ impl ActorDrawAccess for ChampionshipCarActorDraw {
 
     fn forces_per_vertex_type2_distance(&self) -> bool {
         self.forces_per_vertex_type2_distance()
+    }
+
+    fn actor_rgb_owner_index(&self) -> usize {
+        self.actor_rgb_owner_index()
     }
 
     fn command(&self) -> &C3dDrawCommand {
@@ -652,6 +721,7 @@ mod tests {
 
     struct TestDraw {
         actor: usize,
+        rgb_owner: usize,
         world: C3dMatrixWords,
         force_per_vertex_type2_distance: bool,
         command: C3dDrawCommand,
@@ -668,6 +738,10 @@ mod tests {
 
         fn forces_per_vertex_type2_distance(&self) -> bool {
             self.force_per_vertex_type2_distance
+        }
+
+        fn actor_rgb_owner_index(&self) -> usize {
+            self.rgb_owner
         }
 
         fn command(&self) -> &C3dDrawCommand {
@@ -694,6 +768,7 @@ mod tests {
         world[12] = (actor as f32 + 0.5).to_bits();
         TestDraw {
             actor,
+            rgb_owner: actor,
             world: C3dMatrixWords::from_words(world),
             force_per_vertex_type2_distance: false,
             command: C3dDrawCommand::new(
@@ -712,7 +787,7 @@ mod tests {
         C3dMode2ResourceScaledVertex::from_words_for_test(words)
     }
 
-    fn enabled_fog(shared_distance_q16: i32) -> ChampionshipCarPreDrawState {
+    fn enabled_fog(shared_distance_q16: i32) -> ChampionshipCarPreDrawState<'static> {
         ChampionshipCarPreDrawState {
             type2_fog: C3dType2FogState {
                 enabled: true,
@@ -722,6 +797,7 @@ mod tests {
                 shared_distance_q16,
                 center_q16: [0; 3],
             },
+            actor_rgb: C3dActorRgbState::Disabled,
         }
     }
 
@@ -753,7 +829,7 @@ mod tests {
         cache: &mut C3dSelectorBindingCache,
         draws: &[TestDraw],
         bindings: &[TestBinding<'_>],
-        pre_draw_state: ChampionshipCarPreDrawState,
+        pre_draw_state: ChampionshipCarPreDrawState<'_>,
     ) -> Result<ChampionshipCarBatchOutcome, ChampionshipCarExecuteError<TestError>> {
         let bindings = bindings
             .iter()
@@ -995,6 +1071,120 @@ mod tests {
         let prepared = prepare_draw_vertices(&draw, enabled_fog(9 << 16)).unwrap();
 
         assert_eq!(prepared[0].word5(), 0x3300_0000);
+        assert_eq!(draw.command.vertices()[0].words(), source);
+    }
+
+    #[test]
+    fn actor_rgb_uses_list_head_after_fog_on_every_cache_hit() {
+        let resource = C3dPreparedResourceId::new_for_test(0);
+        let source = [
+            1.0_f32.to_bits(),
+            0,
+            2.0_f32.to_bits(),
+            0,
+            0xa1de_adbe,
+            0x5566_7788,
+            0,
+            0,
+        ];
+        let mut draws = [
+            command_with_vertices(
+                1,
+                10,
+                C3dPreparedSelector::Resource(resource),
+                [vertex(source)],
+            ),
+            command_with_vertices(
+                1,
+                11,
+                C3dPreparedSelector::Resource(resource),
+                [vertex(source)],
+            ),
+        ];
+        for draw in &mut draws {
+            draw.rgb_owner = 0;
+        }
+        let actor_rgb = [[0x12, 0x34, 0x56], [0xaa, 0xbb, 0xcc]];
+        let mut state = enabled_fog(9 << 16);
+        state.actor_rgb = C3dActorRgbState::Enabled(&actor_rgb);
+        let handle = 91;
+        let bindings = [
+            TestBinding::Resource {
+                resource_id: resource,
+                binding: &handle,
+            },
+            TestBinding::Resource {
+                resource_id: resource,
+                binding: &handle,
+            },
+        ];
+        let mut backend = RecordingBackend::default();
+
+        run_with_state(
+            &mut backend,
+            &mut C3dSelectorBindingCache::new(),
+            &draws,
+            &bindings,
+            state,
+        )
+        .unwrap();
+
+        assert_eq!(
+            backend
+                .events
+                .iter()
+                .filter(|event| matches!(event, Event::Resource(91)))
+                .count(),
+            1
+        );
+        for submitted in &backend.submitted_vertices {
+            let mut expected = source;
+            expected[4] = 0xa112_3456;
+            expected[5] = 0xff00_0000;
+            assert_eq!(submitted, &[expected]);
+        }
+        assert!(
+            draws
+                .iter()
+                .all(|draw| draw.command.vertices()[0].words() == source)
+        );
+    }
+
+    #[test]
+    fn actor_rgb_sentinel_skip_and_repeated_preparation_use_fresh_state() {
+        let source = [0, 0, 0, 0, 0xa1de_adbe, 0x5566_7788, 0, 0];
+        let mut draw = command_with_vertices(0, 3, C3dPreparedSelector::Missing, [vertex(source)]);
+        let first_rgb = [[1, 2, 3]];
+        let second_rgb = [[4, 5, 6]];
+        let first = prepare_draw_vertices(
+            &draw,
+            ChampionshipCarPreDrawState {
+                type2_fog: C3dType2FogState::DISABLED,
+                actor_rgb: C3dActorRgbState::Enabled(&first_rgb),
+            },
+        )
+        .unwrap();
+        let second = prepare_draw_vertices(
+            &draw,
+            ChampionshipCarPreDrawState {
+                type2_fog: C3dType2FogState::DISABLED,
+                actor_rgb: C3dActorRgbState::Enabled(&second_rgb),
+            },
+        )
+        .unwrap();
+        assert_eq!(first[0].words()[4], 0xa101_0203);
+        assert_eq!(second[0].words()[4], 0xa104_0506);
+
+        draw.force_per_vertex_type2_distance = true;
+        let sentinel = prepare_draw_vertices(
+            &draw,
+            ChampionshipCarPreDrawState {
+                type2_fog: C3dType2FogState::DISABLED,
+                actor_rgb: C3dActorRgbState::Enabled(&first_rgb),
+            },
+        )
+        .unwrap();
+        assert_eq!(sentinel[0].words(), source);
         assert_eq!(draw.command.vertices()[0].words(), source);
     }
 

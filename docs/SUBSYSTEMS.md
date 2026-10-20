@@ -143,10 +143,14 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   Type-2 word-5 path. It explicitly carries the retained process-global gate,
   thresholds, distance/center inputs, and x87 conversion contract; disabled state
   is caller-selected and is not inferred from frontend entry.
+- `cmr-core::c3d_actor_rgb`: pure word-4 RGB packing that preserves alpha. The
+  championship frame plan records the recovered recursive list-head owner for
+  every draw, and preparation applies RGB after word-5 mutation while skipping
+  the exact all-`-0x10000` origin sentinel path.
 - `cmr-video::c3d_software_raster` and `SoftwareIndexedBackend`: explicit
-  mutation-disabled and mutation-enabled, actor-RGB-disabled, unified-indexed
-  COPY/no-blend car profiles. It consumes owned prepared Type-2 words, copies
-  sampled indices directly, maps reviewed-car missing
+  unified-indexed COPY/no-blend car profiles for all four word-5/actor-RGB gate
+  combinations. It consumes owned prepared Type-2 words, copies sampled indices
+  directly, maps reviewed-car missing
   selectors to index zero, rejects every unsupported runtime-state tuple, and
   preserves the root renderer's separate palette-quantizing policy. A
   backend-neutral pre-scene hook rejects absent, mismatched, or unsupported car state before
@@ -154,10 +158,12 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   captured presentation.
 - `cmr-video::software_championship_session`: callback-scoped standalone
   assembly retaining all 14 prepared car topology/runtime pairs, one shared
-  binding executor, explicit raster-selection and 2D mapping policies, compact
-  car/FCHE palettes, preview/transform/route state, and persistent uploaded
-  sources. It selects car resources only from the validated transcript and
-  releases every upload before returning the backend. The compact palette
+  binding executor, explicit raster-selection, optional source-ordered per-car
+  actor-RGB tables, and 2D mapping policies, compact car/FCHE palettes,
+  preview/transform/route state, and persistent uploaded sources. It validates
+  every actor table against loaded topology, selects car resources only from
+  the validated transcript, and releases every upload before returning the
+  backend. The compact palette
   indices and supported software-oracle raster tuple are source-owned policy,
   not imported process-global state.
 - `cmr-core::frontend_c3d_resources`: one frontend-session prepared arena with
