@@ -134,6 +134,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::championship_setup_frame`: whole-frame preparation and ordered
   execution for recovered setup text and 2D bitmaps, with source preflight,
   success-only cache commit, and typed deferred unrecovered commands.
+- `cmr-core::frontend_c3d_resources`: one frontend-session prepared arena with
+  the exact 55-resource mode-8 car prefix followed by six fixed optional root
+  slots, preserving cross-domain IDs, aliases, rollback, and diagnostics.
 - `cmr-core::championship_frame_assets`: verified bounded loading of R_INFO,
   the 15 ordered Chequered preview frames, and FCHE, with explicit R_INFO
   mapping and transactional shared-source upload.

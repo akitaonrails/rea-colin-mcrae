@@ -283,6 +283,8 @@ pub struct RootMenuC3dPreparedObject {
     slot: RootMenuC3dSlot,
     identity: RootMenuObjectIdentity,
     path: &'static str,
+    source: C3dSourceIdentity,
+    policy: C3dLoadPolicy,
     ordinal_resources: Vec<C3dPreparedResourceId>,
     group1_selectors: Vec<C3dPreparedGroup1Selectors>,
 }
@@ -301,6 +303,19 @@ impl RootMenuC3dPreparedObject {
     #[must_use]
     pub const fn path(&self) -> &'static str {
         self.path
+    }
+
+    /// Owned source identity retained by the generic preparation boundary.
+    #[must_use]
+    pub const fn source(&self) -> &C3dSourceIdentity {
+        &self.source
+    }
+
+    /// Policy metadata used by this preparation pass. Runtime load state stays
+    /// authoritative where the compatibility runtime supplies it separately.
+    #[must_use]
+    pub const fn preparation_policy(&self) -> C3dLoadPolicy {
+        self.policy
     }
 
     /// Maps every source group-2 ordinal to its prepared arena resource.
@@ -658,6 +673,27 @@ fn prepare_slots(
     bitmap_limits: BitmapLimits,
 ) -> Result<RootMenuC3dResourceSet, C3dResourceArenaIdentityExhausted> {
     let mut builder = C3dPreparedArenaBuilder::new()?;
+    let (slots, diagnostics) =
+        prepare_root_menu_c3d_objects(&mut builder, source_slots, bitmap_limits);
+
+    Ok(RootMenuC3dResourceSet {
+        arena: builder.finish(),
+        variant,
+        slots,
+        diagnostics,
+    })
+}
+
+/// Prepares root objects into an existing frontend arena while retaining the
+/// root loader's fixed-slot, diagnostic-and-continue behavior.
+pub(crate) fn prepare_root_menu_c3d_objects(
+    builder: &mut C3dPreparedArenaBuilder,
+    source_slots: [Option<&RootMenuC3dAsset>; ROOT_MENU_C3D_REQUEST_COUNT],
+    bitmap_limits: BitmapLimits,
+) -> (
+    [Option<RootMenuC3dPreparedObject>; ROOT_MENU_C3D_REQUEST_COUNT],
+    Vec<RootMenuC3dResourceDiagnostic>,
+) {
     let mut slots = std::array::from_fn(|_| None);
     let mut diagnostics = Vec::new();
 
@@ -676,6 +712,8 @@ fn prepare_slots(
                     slot: asset.slot,
                     identity: asset.identity,
                     path: asset.path,
+                    source: prepared.source,
+                    policy: prepared.policy,
                     ordinal_resources: prepared.ordinal_resources,
                     group1_selectors: prepared.group1_selectors,
                 });
@@ -691,12 +729,7 @@ fn prepare_slots(
         }
     }
 
-    Ok(RootMenuC3dResourceSet {
-        arena: builder.finish(),
-        variant,
-        slots,
-        diagnostics,
-    })
+    (slots, diagnostics)
 }
 
 /// Compatibility metadata for preparation through the root-only wrapper.

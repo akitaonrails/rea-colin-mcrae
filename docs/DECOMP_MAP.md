@@ -97,7 +97,7 @@ Status markers:
 - [x] `E12` Prepare and transactionally upload deduplicated championship logo surfaces.
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
-- [~] `E15` Recover championship mode-8 C3D preparation and session ownership.
+- [x] `E15` Recover championship mode-8 C3D preparation and session ownership.
 
 ## F. Menus, game state, and persistence
 
@@ -164,13 +164,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T21:06:39Z
-milestone=extract-policy-driven-c3d-preparation-arena
-completed=49
-partial=20
+updated_utc=2026-10-20T21:11:05Z
+milestone=prepare-shared-frontend-c3d-arena
+completed=50
+partial=19
 not_started=47
 blocked=0
 total=116
-current_focus=E15-F04-generic-mode8-car-preparation
+current_focus=F04-E04-championship-car-transform-and-runtime
 next_exit_gate=championship-setup-software-frame-execution
 <!-- PROGRESS-TAIL-END -->
