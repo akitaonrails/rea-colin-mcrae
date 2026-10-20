@@ -211,6 +211,17 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   implements the recovered material/texture-zero operation. One frontend
   catalog can own car and root resources; scene/depth/latch/presentation
   orchestration remains separate.
+- `cmr-core::frontend_c3d_scene`: shared checked frontend C3D transaction for
+  optional depth clear, identity view, viewport, BeginScene, one owned
+  submission, identity-world reset, opaque tail, EndScene, and best-effort
+  post-Begin cleanup. The root API remains a compatibility adapter.
+- `cmr-core::championship_car_execute` and `championship_car_scene`: exact
+  actor-world/resource-or-default/draw submission for a preflighted car frame,
+  including explicit missing-selector material/texture-zero binding and a
+  persistent selector cache. Prepared frames are tied to the exact binding
+  catalog and their planned extent; uncertain scene completion invalidates the
+  cache. Cross-path invalidation remains the responsibility of the later
+  root/championship terminal-frame owner.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes, plus explicit selection-slot mapping and six independent wrapping

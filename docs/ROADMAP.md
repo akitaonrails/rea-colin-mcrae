@@ -235,6 +235,13 @@ the cache. The software backend implements the bounded branch-zero binding and
 headless frame capture and visibility-latch cleanup; native presentation
 adaptation, alternate profiles, and a portable GPU implementation remain
 separate.
+The championship-car path now preflights a single-use actor plan against the
+exact frontend binding catalog before any scene effect, then executes the
+shared terminal C3D bracket with actor-scoped worlds, resource/default-zero
+selector transitions, and Type-2 draw commands. Its next boundary is the full
+championship terminal-frame owner: car/root latch cleanup, group-4 deferred
+palette commit, and presentation. Type-2 raster pixels remain intentionally
+separate until the unresolved mutation and raster policy are recovered.
 
 Exit gate:
 

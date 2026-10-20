@@ -173,6 +173,7 @@ pub struct ChampionshipCarFramePlan {
     car: CanonicalCar,
     source_path: Box<str>,
     frame: ChampionshipCarFrame,
+    extent: DisplayExtent,
     viewport: C3dViewportWords,
     unknown_render_flag_08: bool,
     actors: Box<[ChampionshipCarActorNode]>,
@@ -223,6 +224,11 @@ impl ChampionshipCarFramePlan {
     #[must_use]
     pub const fn viewport(&self) -> C3dViewportWords {
         self.viewport
+    }
+
+    #[must_use]
+    pub const fn extent(&self) -> DisplayExtent {
+        self.extent
     }
 
     /// The unresolved caller-flag bit retained by the mode-8 load contract.
@@ -416,6 +422,7 @@ pub fn plan_championship_car_frame(
         car,
         source_path: topology.source().path.clone(),
         frame,
+        extent,
         viewport,
         unknown_render_flag_08: topology.policy().unknown_render_flag_08(),
         actors: nodes.into_boxed_slice(),
@@ -672,7 +679,7 @@ fn q16_to_f32_words(matrix: [i32; 16]) -> [u32; 16] {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use cmr_formats::{
         bitmap::BitmapLimits,
         c3d::{
@@ -882,6 +889,90 @@ mod tests {
                 .all(|actor| { actor.world_q16().is_some() && actor.world_f32_words().is_some() })
         );
         second
+    }
+
+    pub(crate) fn scene_test_fixture() -> (
+        ChampionshipCarFramePlan,
+        crate::root_menu_c3d_resources::C3dPreparedArena,
+    ) {
+        let (mut plans, arena) = scene_test_fixtures(1);
+        (plans.pop().unwrap(), arena)
+    }
+
+    pub(crate) fn scene_test_fixtures(
+        count: usize,
+    ) -> (
+        Vec<ChampionshipCarFramePlan>,
+        crate::root_menu_c3d_resources::C3dPreparedArena,
+    ) {
+        scene_test_fixtures_with_selectors(count, &[0, -1])
+    }
+
+    pub(crate) fn scene_test_fixtures_with_selectors(
+        count: usize,
+        selectors: &[i16],
+    ) -> (
+        Vec<ChampionshipCarFramePlan>,
+        crate::root_menu_c3d_resources::C3dPreparedArena,
+    ) {
+        let actors = (0..selectors.len())
+            .map(|index| Group0 {
+                parent: if index == 0 { -1 } else { 0 },
+                matrix: translated(0, 0, 0),
+                references: vec![u16::try_from(index).unwrap()],
+            })
+            .collect::<Vec<_>>();
+        let bytes = fixture_bytes(&actors, selectors);
+        let file = Box::leak(Box::new(parse_c3d(&bytes, C3dLimits::default()).unwrap()));
+        let policy = expected_policy(CanonicalCar::Subaru);
+        let mut builder = C3dPreparedArenaBuilder::new().unwrap();
+        let prepared = builder
+            .prepare_object(
+                C3dSourceIdentity {
+                    owner: FrontendC3dOwner::ChampionshipCar(CanonicalCar::Subaru),
+                    path: CHAMPIONSHIP_CARS[0].object_path.into(),
+                },
+                file,
+                policy,
+                BitmapLimits::default(),
+            )
+            .unwrap();
+        let arena = builder.finish();
+        let topology = build_c3d_object_topology(file, &prepared, arena.provenance()).unwrap();
+        let runtime =
+            materialize_c3d_resource_scaled(&topology, policy, arena.provenance(), |id| {
+                arena.resource(id)
+            })
+            .unwrap();
+        let mut state = ChampionshipCarState::new();
+        let hidden = plan_championship_car_frame(
+            &topology,
+            &runtime,
+            &mut state,
+            CanonicalCar::Subaru,
+            INPUT,
+            BASIS,
+            ORIGIN,
+            EXTENT,
+        )
+        .unwrap();
+        assert!(hidden.draws().is_empty());
+        let plans = (0..count)
+            .map(|_| {
+                plan_championship_car_frame(
+                    &topology,
+                    &runtime,
+                    &mut state,
+                    CanonicalCar::Subaru,
+                    INPUT,
+                    BASIS,
+                    ORIGIN,
+                    EXTENT,
+                )
+                .unwrap()
+            })
+            .collect();
+        (plans, arena)
     }
 
     #[test]

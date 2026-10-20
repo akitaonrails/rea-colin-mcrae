@@ -6,8 +6,15 @@
 
 use std::fmt;
 
+pub use crate::frontend_c3d_scene::{
+    C3dBindingState as RootMenuC3dBindingState, C3dDepthClear as RootMenuC3dDepthClear,
+    C3dSceneError as RootMenuC3dSceneError, C3dSceneOutcome as RootMenuC3dSceneOutcome,
+    C3dScenePrimaryError as RootMenuC3dScenePrimaryError, C3dSceneStage as RootMenuC3dSceneStage,
+};
+
 use crate::{
     display::{DisplayExtent, IndexedVideoBackend},
+    frontend_c3d_scene::{FrontendC3dSceneBackend, execute_frontend_c3d_scene},
     root_menu_assets::VisualVariant,
     root_menu_c3d_assets::{RootMenuC3dAngles, RootMenuC3dSlot},
     root_menu_c3d_execute::{
@@ -18,24 +25,9 @@ use crate::{
     },
     root_menu_c3d_runtime::RootMenuC3dMode2ResourceScaledRuntime,
     root_menu_c3d_topology::RootMenuC3dTopology,
-    root_menu_c3d_transform::{
-        C3dMatrixWords, C3dViewportWords, ROOT_MENU_C3D_VIEW, RootMenuC3dViewportError,
-        root_menu_c3d_viewport,
-    },
+    root_menu_c3d_transform::{C3dMatrixWords, C3dViewportWords},
     root_menu_c3d_visibility::{RootMenuC3dVisibilityLatches, RootMenuC3dVisibilityMask},
 };
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RootMenuC3dDepthClear {
-    Clear,
-    Skip,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RootMenuC3dBindingState {
-    Preserved,
-    Changed,
-}
 
 /// Scene operations whose placement is recovered but whose API is backend-owned.
 pub trait RootMenuC3dSceneBackend: IndexedVideoBackend {
@@ -63,90 +55,6 @@ pub trait RootMenuC3dSceneBackend: IndexedVideoBackend {
     fn end_root_c3d_scene(&mut self) -> Result<(), Self::SceneError>;
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RootMenuC3dSceneStage {
-    ClearDepth,
-    View,
-    Viewport,
-    Begin,
-    ResetWorld,
-    Tail,
-    End,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum RootMenuC3dScenePrimaryError<S, D> {
-    Viewport(RootMenuC3dViewportError),
-    Backend {
-        stage: RootMenuC3dSceneStage,
-        source: S,
-    },
-    Submit(D),
-}
-
-impl<S: fmt::Display, D: fmt::Display> fmt::Display for RootMenuC3dScenePrimaryError<S, D> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Viewport(source) => source.fmt(formatter),
-            Self::Backend { stage, source } => {
-                write!(
-                    formatter,
-                    "root-menu C3D scene {stage:?} stage failed: {source}"
-                )
-            }
-            Self::Submit(source) => source.fmt(formatter),
-        }
-    }
-}
-
-impl<S, D> std::error::Error for RootMenuC3dScenePrimaryError<S, D>
-where
-    S: std::error::Error + 'static,
-    D: std::error::Error + 'static,
-{
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Viewport(source) => Some(source),
-            Self::Backend { source, .. } => Some(source),
-            Self::Submit(source) => Some(source),
-        }
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub struct RootMenuC3dSceneError<S, D> {
-    pub primary: RootMenuC3dScenePrimaryError<S, D>,
-    /// Best-effort `EndScene` failure after a post-begin primary failure.
-    pub cleanup: Option<S>,
-}
-
-impl<S: fmt::Display, D: fmt::Display> fmt::Display for RootMenuC3dSceneError<S, D> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.primary.fmt(formatter)?;
-        if let Some(cleanup) = &self.cleanup {
-            write!(formatter, "; End cleanup also failed: {cleanup}")?;
-        }
-        Ok(())
-    }
-}
-
-impl<S, D> std::error::Error for RootMenuC3dSceneError<S, D>
-where
-    S: std::error::Error + 'static,
-    D: std::error::Error + 'static,
-{
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.primary)
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub struct RootMenuC3dSceneOutcome<O> {
-    pub depth_cleared: bool,
-    pub submission: Option<O>,
-    pub binding_state: RootMenuC3dBindingState,
-}
-
 /// Executes one complete terminal scene transaction.
 ///
 /// Viewport validation is effect-free. Once `Begin` succeeds, failures in the
@@ -163,88 +71,58 @@ pub fn execute_root_menu_c3d_scene<B, P, O, D>(
 where
     B: RootMenuC3dSceneBackend,
 {
-    let viewport = root_menu_c3d_viewport(extent).map_err(|source| RootMenuC3dSceneError {
-        primary: RootMenuC3dScenePrimaryError::Viewport(source),
-        cleanup: None,
-    })?;
-    if depth_clear == RootMenuC3dDepthClear::Clear {
-        backend
-            .clear_root_c3d_depth(destination, extent)
-            .map_err(|source| scene_backend_error(RootMenuC3dSceneStage::ClearDepth, source))?;
-    }
-    backend
-        .set_root_c3d_view(ROOT_MENU_C3D_VIEW)
-        .map_err(|source| scene_backend_error(RootMenuC3dSceneStage::View, source))?;
-    backend
-        .set_root_c3d_viewport(viewport)
-        .map_err(|source| scene_backend_error(RootMenuC3dSceneStage::Viewport, source))?;
-    backend
-        .begin_root_c3d_scene(destination)
-        .map_err(|source| scene_backend_error(RootMenuC3dSceneStage::Begin, source))?;
-
-    let submission = match plan {
-        Some(plan) => match submit(backend, plan) {
-            Ok(outcome) => Some(outcome),
-            Err(source) => {
-                return Err(post_begin_error(
-                    backend,
-                    RootMenuC3dScenePrimaryError::Submit(source),
-                ));
-            }
-        },
-        None => None,
-    };
-    if let Err(source) = backend.reset_root_c3d_world() {
-        return Err(post_begin_error(
-            backend,
-            RootMenuC3dScenePrimaryError::Backend {
-                stage: RootMenuC3dSceneStage::ResetWorld,
-                source,
-            },
-        ));
-    }
-    let binding_state = match backend.finish_root_c3d_scene_tail() {
-        Ok(state) => state,
-        Err(source) => {
-            return Err(post_begin_error(
-                backend,
-                RootMenuC3dScenePrimaryError::Backend {
-                    stage: RootMenuC3dSceneStage::Tail,
-                    source,
-                },
-            ));
-        }
-    };
-    backend
-        .end_root_c3d_scene()
-        .map_err(|source| scene_backend_error(RootMenuC3dSceneStage::End, source))?;
-    Ok(RootMenuC3dSceneOutcome {
-        depth_cleared: depth_clear == RootMenuC3dDepthClear::Clear,
-        submission,
-        binding_state,
-    })
+    let mut adapter = RootMenuSceneAdapter { backend };
+    execute_frontend_c3d_scene(
+        &mut adapter,
+        destination,
+        extent,
+        depth_clear,
+        plan,
+        |adapter, plan| submit(adapter.backend, plan),
+    )
 }
 
-fn scene_backend_error<S, D>(
-    stage: RootMenuC3dSceneStage,
-    source: S,
-) -> RootMenuC3dSceneError<S, D> {
-    RootMenuC3dSceneError {
-        primary: RootMenuC3dScenePrimaryError::Backend { stage, source },
-        cleanup: None,
-    }
+struct RootMenuSceneAdapter<'a, B> {
+    backend: &'a mut B,
 }
 
-fn post_begin_error<B, D>(
-    backend: &mut B,
-    primary: RootMenuC3dScenePrimaryError<B::SceneError, D>,
-) -> RootMenuC3dSceneError<B::SceneError, D>
+impl<B> FrontendC3dSceneBackend for RootMenuSceneAdapter<'_, B>
 where
     B: RootMenuC3dSceneBackend,
 {
-    RootMenuC3dSceneError {
-        primary,
-        cleanup: backend.end_root_c3d_scene().err(),
+    type Surface = B::Surface;
+    type SceneError = B::SceneError;
+
+    fn clear_c3d_depth(
+        &mut self,
+        destination: Self::Surface,
+        extent: DisplayExtent,
+    ) -> Result<(), Self::SceneError> {
+        self.backend.clear_root_c3d_depth(destination, extent)
+    }
+
+    fn set_c3d_view(&mut self, view: C3dMatrixWords) -> Result<(), Self::SceneError> {
+        self.backend.set_root_c3d_view(view)
+    }
+
+    fn set_c3d_viewport(&mut self, viewport: C3dViewportWords) -> Result<(), Self::SceneError> {
+        self.backend.set_root_c3d_viewport(viewport)
+    }
+
+    fn begin_c3d_scene(&mut self, destination: Self::Surface) -> Result<(), Self::SceneError> {
+        self.backend.begin_root_c3d_scene(destination)
+    }
+
+    fn reset_c3d_world(&mut self) -> Result<(), Self::SceneError> {
+        self.backend.reset_root_c3d_world()
+    }
+
+    fn finish_c3d_scene_tail(&mut self) -> Result<RootMenuC3dBindingState, Self::SceneError> {
+        self.backend.finish_root_c3d_scene_tail()
+    }
+
+    fn end_c3d_scene(&mut self) -> Result<(), Self::SceneError> {
+        self.backend.end_root_c3d_scene()
     }
 }
 
@@ -572,10 +450,109 @@ mod tests {
         }
     }
 
+    impl FrontendC3dSceneBackend for Backend {
+        type Surface = u8;
+        type SceneError = SceneFailure;
+
+        fn clear_c3d_depth(
+            &mut self,
+            destination: Self::Surface,
+            extent: DisplayExtent,
+        ) -> Result<(), Self::SceneError> {
+            self.clear_root_c3d_depth(destination, extent)
+        }
+
+        fn set_c3d_view(&mut self, view: C3dMatrixWords) -> Result<(), Self::SceneError> {
+            self.set_root_c3d_view(view)
+        }
+
+        fn set_c3d_viewport(&mut self, viewport: C3dViewportWords) -> Result<(), Self::SceneError> {
+            self.set_root_c3d_viewport(viewport)
+        }
+
+        fn begin_c3d_scene(&mut self, destination: Self::Surface) -> Result<(), Self::SceneError> {
+            self.begin_root_c3d_scene(destination)
+        }
+
+        fn reset_c3d_world(&mut self) -> Result<(), Self::SceneError> {
+            self.reset_root_c3d_world()
+        }
+
+        fn finish_c3d_scene_tail(&mut self) -> Result<RootMenuC3dBindingState, Self::SceneError> {
+            self.finish_root_c3d_scene_tail()
+        }
+
+        fn end_c3d_scene(&mut self) -> Result<(), Self::SceneError> {
+            self.end_root_c3d_scene()
+        }
+    }
+
     const EXTENT: DisplayExtent = DisplayExtent {
         width: 640,
         height: 480,
     };
+
+    #[test]
+    fn root_adapter_matches_domain_neutral_transaction_on_success_and_failure() {
+        let mut root_backend = Backend::new();
+        root_backend.tail_state = RootMenuC3dBindingState::Changed;
+        let mut generic_backend = Backend::new();
+        generic_backend.tail_state = RootMenuC3dBindingState::Changed;
+
+        let root_outcome = execute_root_menu_c3d_scene(
+            &mut root_backend,
+            7,
+            EXTENT,
+            RootMenuC3dDepthClear::Clear,
+            Some(4_u8),
+            |backend, plan| {
+                backend.events.push(Event::Submit(plan));
+                Ok::<_, SubmitFailure>(plan + 1)
+            },
+        );
+        let generic_outcome = execute_frontend_c3d_scene(
+            &mut generic_backend,
+            7,
+            EXTENT,
+            RootMenuC3dDepthClear::Clear,
+            Some(4_u8),
+            |backend, plan| {
+                backend.events.push(Event::Submit(plan));
+                Ok::<_, SubmitFailure>(plan + 1)
+            },
+        );
+        assert_eq!(root_outcome, generic_outcome);
+        assert_eq!(root_backend.events, generic_backend.events);
+
+        let mut root_backend = Backend::new();
+        root_backend
+            .failures
+            .extend([RootMenuC3dSceneStage::Tail, RootMenuC3dSceneStage::End]);
+        let mut generic_backend = Backend::new();
+        generic_backend
+            .failures
+            .extend([RootMenuC3dSceneStage::Tail, RootMenuC3dSceneStage::End]);
+        let root_error = execute_root_menu_c3d_scene(
+            &mut root_backend,
+            7,
+            EXTENT,
+            RootMenuC3dDepthClear::Skip,
+            None::<u8>,
+            |_, _| Ok::<_, SubmitFailure>(()),
+        )
+        .unwrap_err();
+        let generic_error = execute_frontend_c3d_scene(
+            &mut generic_backend,
+            7,
+            EXTENT,
+            RootMenuC3dDepthClear::Skip,
+            None::<u8>,
+            |_, _| Ok::<_, SubmitFailure>(()),
+        )
+        .unwrap_err();
+        assert_eq!(root_error, generic_error);
+        assert_eq!(root_backend.events, generic_backend.events);
+    }
 
     #[test]
     fn submitted_plan_runs_only_inside_complete_terminal_scene() {
