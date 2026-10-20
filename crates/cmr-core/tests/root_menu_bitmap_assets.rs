@@ -14,9 +14,11 @@ use cmr_core::root_menu_assets::{
 use cmr_core::root_menu_bitmap_assets::{
     ROOT_MENU_BITMAP_REQUEST_COUNT, ROOT_MENU_OPTIONAL_BITMAP_REQUEST_COUNT,
     ROOT_MENU_REQUIRED_BITMAP_REQUEST_COUNT, RootMenuBitmapIdentity, RootMenuBitmapLoadError,
-    load_root_menu_bitmaps,
+    RootMenuBitmapSlot, load_root_menu_bitmaps,
 };
+use cmr_core::root_menu_bitmap_raster::{RootMenuSurfaceDiagnostic, prepare_root_menu_surfaces};
 use cmr_formats::bitmap::{BitmapError, BitmapLimits};
+use cmr_formats::riff_palette::{LegacyPalette256, PaletteEntry};
 use cmr_formats::stored_asset::DecodeLimits;
 use sha2::{Digest, Sha256};
 
@@ -48,8 +50,8 @@ fn loads_all_seventeen_requests_in_recovered_order() {
 
     let loaded =
         load_root_menu_bitmaps(&fixture.store, language, variant, BitmapLimits::default()).unwrap();
-    assert_eq!(loaded.language, language);
-    assert_eq!(loaded.center_variant, variant);
+    assert_eq!(loaded.language(), language);
+    assert_eq!(loaded.center_variant(), variant);
     assert_eq!(loaded.loaded_len(), ROOT_MENU_BITMAP_REQUEST_COUNT);
     assert_eq!(loaded.optional_diagnostic_len(), 0);
 
@@ -80,6 +82,56 @@ fn loads_all_seventeen_requests_in_recovered_order() {
             .path,
         ROOT_MENU_SELECT_PATH
     );
+}
+
+#[test]
+fn preparation_keeps_load_and_conversion_holes_in_canonical_slot_order() {
+    let language = Language::English;
+    let variant = VisualVariant::Normal;
+    let localized = localized_root_menu_assets(language);
+    let mut files = complete_files(language, variant);
+    files.remove(localized.main_selected);
+    files.get_mut(localized.main_shadow).unwrap()[18..22].copy_from_slice(&3i32.to_le_bytes());
+    let fixture = Fixture::new(&files);
+    let loaded =
+        load_root_menu_bitmaps(&fixture.store, language, variant, BitmapLimits::default()).unwrap();
+
+    let prepared = prepare_root_menu_surfaces(
+        loaded,
+        &LegacyPalette256 {
+            entries: [PaletteEntry {
+                red: 1,
+                green: 2,
+                blue: 3,
+                flags: 4,
+            }; 256],
+        },
+    )
+    .unwrap();
+
+    assert_eq!(prepared.language(), language);
+    assert_eq!(prepared.center_variant(), variant);
+    let slots = prepared.slots().collect::<Vec<_>>();
+    assert_eq!(slots.len(), ROOT_MENU_BITMAP_REQUEST_COUNT);
+    assert_eq!(slots[0], (RootMenuBitmapSlot::MainSelected, None));
+    assert_eq!(slots[1], (RootMenuBitmapSlot::MainShadow, None));
+    assert!(slots[RootMenuBitmapSlot::Backdrop.index()].1.is_some());
+    let diagnostics = prepared.optional_diagnostics().collect::<Vec<_>>();
+    assert!(matches!(
+        diagnostics[0],
+        RootMenuSurfaceDiagnostic::Load(RootMenuBitmapLoadError::Asset {
+            identity: RootMenuBitmapIdentity::MainSelected,
+            ..
+        })
+    ));
+    assert!(matches!(
+        diagnostics[1],
+        RootMenuSurfaceDiagnostic::Surface {
+            slot: RootMenuBitmapSlot::MainShadow,
+            source: cmr_core::surface::SurfaceError::UnsupportedUnalignedWidth(3),
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -208,7 +260,7 @@ fn limits_skip_an_oversized_optional_with_exact_context_and_continue() {
     let variant = VisualVariant::Normal;
     let oversized_path = localized_root_menu_assets(language).main_selected;
     let mut files = complete_files(language, variant);
-    files.get_mut(oversized_path).unwrap()[18..22].copy_from_slice(&2i32.to_le_bytes());
+    files.get_mut(oversized_path).unwrap()[18..22].copy_from_slice(&8i32.to_le_bytes());
     let fixture = Fixture::new(&files);
 
     let loaded = load_root_menu_bitmaps(
@@ -216,7 +268,7 @@ fn limits_skip_an_oversized_optional_with_exact_context_and_continue() {
         language,
         variant,
         BitmapLimits {
-            max_width: 1,
+            max_width: 4,
             ..BitmapLimits::default()
         },
     )
@@ -332,7 +384,7 @@ fn set_compression(bitmap: &mut [u8], compression: u32) {
 }
 
 fn synthetic_bitmap(pixel: u8) -> Vec<u8> {
-    let palette_entries = usize::from(pixel) + 1;
+    let palette_entries = 256;
     let pixel_offset = 14 + 40 + palette_entries * 4;
     let file_size = pixel_offset + 4;
     let mut input = vec![0; file_size];
@@ -340,13 +392,13 @@ fn synthetic_bitmap(pixel: u8) -> Vec<u8> {
     input[2..6].copy_from_slice(&(file_size as u32).to_le_bytes());
     input[10..14].copy_from_slice(&(pixel_offset as u32).to_le_bytes());
     input[14..18].copy_from_slice(&40u32.to_le_bytes());
-    input[18..22].copy_from_slice(&1i32.to_le_bytes());
+    input[18..22].copy_from_slice(&4i32.to_le_bytes());
     input[22..26].copy_from_slice(&1i32.to_le_bytes());
     input[26..28].copy_from_slice(&1u16.to_le_bytes());
     input[28..30].copy_from_slice(&8u16.to_le_bytes());
     input[34..38].copy_from_slice(&4u32.to_le_bytes());
     input[46..50].copy_from_slice(&(palette_entries as u32).to_le_bytes());
-    input[pixel_offset] = pixel;
+    input[pixel_offset..pixel_offset + 4].fill(pixel);
     input
 }
 

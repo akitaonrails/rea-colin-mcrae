@@ -91,6 +91,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   transition-suppression state for the root screen.
 - `cmr-core::root_menu_bitmap_assets`: verified, bounded loading of required
   and optional indexed root bitmaps with retained optional diagnostics.
+- `cmr-core::root_menu_bitmap_raster`: fixed-slot identity preparation using
+  the active palette and unchanged indices, with typed optional/required
+  conversion policy and no backend side effects.
 
 The canonical binary maps registry language values 0–4 to English, French,
 German, Spanish, and Italian startup paths. The supplied corpus has no Italian

@@ -106,10 +106,11 @@ first/root frontend state, fixed-layout font parsing, byte-text layout, input,
 window-loop, timing, and root-menu visual rules are pure tested contracts. All
 16 font styles and the four present root-menu artwork rows resolve through the
 verified import; the loader's distinct Italian row is explicitly absent from
-the reviewed corpus. Host clock/input, native window execution, root bitmap
-upload, the rest of root-frame composition, and presentation remain before the
-vertical-slice exit gate. Root-footer text now reaches a tested software
-back-buffer pixel through localization and the persistent font pool.
+the reviewed corpus. Root bitmaps now reach fixed-slot indexed surfaces without
+backend mutation. Host clock/input, native window execution, persistent root
+bitmap upload, the rest of root-frame composition, and presentation remain
+before the vertical-slice exit gate. Root-footer text now reaches a tested
+software back-buffer pixel through localization and the persistent font pool.
 
 Exit gate:
 

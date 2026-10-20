@@ -13,6 +13,7 @@ pub mod localization_assets;
 pub mod root_menu_animation;
 pub mod root_menu_assets;
 pub mod root_menu_bitmap_assets;
+pub mod root_menu_bitmap_raster;
 pub mod root_menu_footer;
 pub mod root_menu_visual;
 pub mod startup;
