@@ -93,6 +93,7 @@ Status markers:
 - [ ] `E09` Parse car models, liveries, wheels, and damage resources.
 - [ ] `E10` Parse weather, particles, shadows, and environmental effects.
 - [ ] `E11` Produce representative image-comparison fixtures/tolerances.
+- [x] `E12` Prepare and transactionally upload deduplicated championship logo surfaces.
 
 ## F. Menus, game state, and persistence
 
@@ -105,6 +106,7 @@ Status markers:
 - [ ] `F07` Verify all persistence round trips and failure recovery.
 - [x] `F08` Model championship car/gear setup, transitions, commits, and preview transcript.
 - [x] `F09` Admit all championship setup cars, palettes, and deduplicated logos from a verified user import.
+- [x] `F10` Plan the validated championship setup frame with exact recovered 2D geometry and preview order.
 
 ## G. Driving simulation and race systems
 
@@ -157,13 +159,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T20:45:15Z
-milestone=admit-championship-setup-assets
-completed=43
+updated_utc=2026-10-20T20:50:06Z
+milestone=plan-championship-setup-frame-and-upload-logos
+completed=45
 partial=19
 not_started=47
 blocked=0
-total=109
-current_focus=F01-F04-championship-setup-frame
-next_exit_gate=championship-setup-frame-plan-and-asset-upload
+total=111
+current_focus=F04-E04-championship-setup-pixel-and-car-preview
+next_exit_gate=championship-setup-software-frame-execution
 <!-- PROGRESS-TAIL-END -->

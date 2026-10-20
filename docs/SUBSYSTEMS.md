@@ -123,6 +123,12 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::championship_assets`: verified-store admission of the 14 canonical
   car C3Ds and palettes plus 11 deduplicated manufacturer-logo bitmaps, with
   typed source-relative failures and no bundled payloads.
+- `cmr-core::championship_bitmap_raster`: explicit palette-mapped preparation
+  and transactional shared-store upload for the 11 unique aligned logo
+  surfaces, preserving manufacturer/car aliases.
+- `cmr-core::championship_setup_visual`: validated backend-neutral title/row/
+  preview frame planning with exact recovered geometry, order, fonts, and
+  paired visible-callback palette cache behavior.
 - `cmr-core::source_store::UploadedIndexedBitmap`: shared backend-neutral
   uploaded-bitmap identity and aligned extent used by root resources and ready
   for later frontend-specific pools.

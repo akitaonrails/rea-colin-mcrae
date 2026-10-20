@@ -3,7 +3,9 @@
 pub mod blit;
 pub mod c3d_batch;
 pub mod championship_assets;
+pub mod championship_bitmap_raster;
 pub mod championship_setup;
+pub mod championship_setup_visual;
 pub mod config;
 pub mod deferred_palette;
 pub mod display;

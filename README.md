@@ -38,9 +38,12 @@ car/gear filtering, navigation, preview identities, and the original commit-on-
 Escape behavior as a tested pure model. Its production asset boundary now
 admits all 14 car objects and palettes plus 11 deduplicated manufacturer logos
 from the caller-selected verified import; an opt-in reviewed-corpus test covers
-the complete set. These are platform-neutral compatibility contracts;
-registry, host clock/input, native window, audio, setup-screen pixel execution,
-later frontend screens, and gameplay integrations are not yet complete.
+the complete set. Logo surfaces now have a transactional shared-store upload
+path, and an exact backend-neutral setup-frame plan covers title/rows,
+selection geometry, active preview ordering, and paired palette-cache behavior.
+These are platform-neutral compatibility contracts; registry, host clock/input,
+native window, audio, setup-screen pixel execution, later frontend screens, and
+gameplay integrations are not yet complete.
 
 Known artifacts from the initial local installation:
 

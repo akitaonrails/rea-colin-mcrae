@@ -123,6 +123,27 @@ impl CanonicalCar {
         }
     }
 
+    /// Literal full model name used by the recovered setup-screen car row.
+    #[must_use]
+    pub const fn full_name(self) -> &'static str {
+        match self {
+            Self::Subaru => "SUBARU IMPREZA WRC",
+            Self::Ibiza => "SEAT IBIZA KIT CAR EVO2",
+            Self::Skoda => "SKODA FELICIA KIT CAR",
+            Self::Quattro => "AUDI QUATTRO",
+            Self::Rs200 => "FORD RS200",
+            Self::Mk2 => "FORD ESCORT MK II",
+            Self::Mitsubis => "MITSUBISHI LANCER E4",
+            Self::Golf => "VW GOLF GTI KIT CAR",
+            Self::Integral => "LANCIA DELTA INTEGRALE",
+            Self::Corolla => "TOYOTA COROLLA WRC",
+            Self::Escort => "FORD ESCORT WRC",
+            Self::Megane => "RENAULT MAXI MEGANE",
+            Self::M4r => "MILLENNIUM 4 RALLYE",
+            Self::Celica => "TOYOTA CELICA GT4 WRC",
+        }
+    }
+
     #[must_use]
     pub const fn logo_name(self) -> &'static str {
         match self {
@@ -259,7 +280,12 @@ pub enum ActivePreview {
         object_name: &'static str,
         logo_name: &'static str,
     },
-    Gear(GearChoice),
+    Gear {
+        gear: GearChoice,
+        canonical_car: CanonicalCar,
+        object_name: &'static str,
+        logo_name: &'static str,
+    },
     Next,
 }
 
@@ -269,7 +295,6 @@ pub struct ChampionshipSetupRenderTranscript {
     pub rows: [RenderRow; 3],
     pub highlight_row: usize,
     pub preview: ActivePreview,
-    pub palette_group_4_requested: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -281,7 +306,6 @@ pub struct ChampionshipSetupState {
     phase: SetupPhase,
     profile_byte: u8,
     exit_completed: bool,
-    last_previewed_car: Option<CanonicalCar>,
 }
 
 impl ChampionshipSetupState {
@@ -325,7 +349,6 @@ impl ChampionshipSetupState {
             phase: SetupPhase::Entering,
             profile_byte,
             exit_completed: false,
-            last_previewed_car: None,
         })
     }
 
@@ -453,7 +476,7 @@ impl ChampionshipSetupState {
     }
 
     #[must_use]
-    pub fn render_transcript(&mut self) -> ChampionshipSetupRenderTranscript {
+    pub fn render_transcript(&self) -> ChampionshipSetupRenderTranscript {
         let car = self.selected_car();
         let rows = [
             RenderRow {
@@ -476,21 +499,19 @@ impl ChampionshipSetupState {
             },
         ];
 
-        let (preview, palette_group_4_requested) = match self.selected_row {
-            0 => {
-                let changed = self.last_previewed_car != Some(car);
-                self.last_previewed_car = Some(car);
-                (
-                    ActivePreview::Car {
-                        canonical_car: car,
-                        object_name: car.object_name(),
-                        logo_name: car.logo_name(),
-                    },
-                    changed,
-                )
-            }
-            1 => (ActivePreview::Gear(self.gear), false),
-            _ => (ActivePreview::Next, false),
+        let preview = match self.selected_row {
+            0 => ActivePreview::Car {
+                canonical_car: car,
+                object_name: car.object_name(),
+                logo_name: car.logo_name(),
+            },
+            1 => ActivePreview::Gear {
+                gear: self.gear,
+                canonical_car: car,
+                object_name: car.object_name(),
+                logo_name: car.logo_name(),
+            },
+            _ => ActivePreview::Next,
         };
 
         ChampionshipSetupRenderTranscript {
@@ -498,7 +519,6 @@ impl ChampionshipSetupState {
             rows,
             highlight_row: self.selected_row,
             preview,
-            palette_group_4_requested,
         }
     }
 }
@@ -722,13 +742,12 @@ mod tests {
     }
 
     #[test]
-    fn render_transcript_tracks_each_active_row_mappings_and_palette_changes() {
+    fn render_transcript_tracks_each_active_row_mapping_without_mutation() {
         let mut state = interactive(1, ALL_ELIGIBLE, CanonicalCar::Subaru);
         let next = state.render_transcript();
         assert_eq!(next.title_text_index, 0x13);
         assert_eq!(next.highlight_row, 2);
         assert_eq!(next.preview, ActivePreview::Next);
-        assert!(!next.palette_group_4_requested);
         assert_eq!(
             next.rows.iter().map(|row| row.tag).collect::<Vec<_>>(),
             vec![2, 4, 7]
@@ -745,8 +764,7 @@ mod tests {
                 logo_name: "SEAT"
             }
         );
-        assert!(car.palette_group_4_requested);
-        assert!(!state.render_transcript().palette_group_4_requested);
+        assert_eq!(car, state.render_transcript());
 
         let _ = state.handle_action(SetupAction::Right);
         let changed = state.render_transcript();
@@ -758,12 +776,18 @@ mod tests {
                 logo_name: "SKODA"
             }
         );
-        assert!(changed.palette_group_4_requested);
 
         let _ = state.handle_action(SetupAction::Down);
         let gear = state.render_transcript();
-        assert_eq!(gear.preview, ActivePreview::Gear(GearChoice::BitClear));
-        assert!(!gear.palette_group_4_requested);
+        assert_eq!(
+            gear.preview,
+            ActivePreview::Gear {
+                gear: GearChoice::BitClear,
+                canonical_car: CanonicalCar::Skoda,
+                object_name: "SKODA",
+                logo_name: "SKODA",
+            }
+        );
         assert_eq!(gear.rows.iter().filter(|row| row.selected).count(), 1);
     }
 
