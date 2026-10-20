@@ -114,7 +114,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   index-zero keyed execution of precomputed glyph plans with diagnostics, plus
   transactional lifetime ownership for the persistent 16-font upload pool and
   an identity-neutral prepare/execute seam that rejects fatal text work before
-  backend effects.
+  backend effects. This is the direct indexed branch; the initialized
+  alternate `0x90` source preparation, queued primitive, and optional driver
+  `Load` path is now statically separated but not yet implemented.
 - `cmr-core::root_menu_footer`: phase-gated localized footer layout and indexed
   execution into the caller-selected active frame target.
 - `cmr-core::frontend`: checked first/root-screen navigation, transitions,
@@ -125,9 +127,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::championship_assets`: verified-store admission of the 14 canonical
   car C3Ds and palettes plus 11 deduplicated manufacturer-logo bitmaps, with
   typed source-relative failures and no bundled payloads.
-- `cmr-core::championship_bitmap_raster`: explicit palette-mapped preparation
-  and transactional shared-store upload for the 11 unique aligned logo
-  surfaces, preserving manufacturer/car aliases.
+- `cmr-core::championship_bitmap_raster`: explicit active-palette-mapped
+  preparation for the current 8-bit indexed output and transactional
+  shared-store upload for the 11 unique aligned logo surfaces, preserving
+  manufacturer/car aliases. This mapping is distinct from the recovered
+  16-bit per-source embedded-palette conversion.
 - `cmr-core::championship_setup_visual`: validated backend-neutral title/row/
   preview frame planning with exact recovered geometry, order, fonts, and
   paired visible-callback palette cache behavior.
@@ -180,18 +184,26 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   slots and applies the explicit recovered palette gate without depending on
   renderer depth. Caller-supplied-mask pack/unpack is explicitly source-owned
   policy; driver conversion, byte layout, pitch, and dithering are not inferred.
+- `cmr-video::ordinary_bitmap_rgb16`: the recovered ordinary `0x81` 8-bit-BMP
+  source conversion, retaining complete aligned stored rows and each bitmap's
+  embedded palette while packing exact discriminator-selected RGB555/RGB565
+  logical words and the packed palette-entry-zero key. It is nominally
+  separate from fonts, selected C3D textures, and framebuffer formats; native
+  storage, keyed stretch, driver pixels, and the 4-/24-bit branches remain open.
 - `cmr-video::packed_rgb_target`: a nominal runtime-framebuffer format and
   logical masked-word target kept type-distinct from selected texture formats.
   It retains the complete raw surface descriptor and converts canonical RGB
   or a completed indexed plane plus explicit palette under validated masks,
   without exposing or inferring native byte order, surface pitch, dithering,
-  palette provenance, or presentation.
+  palette provenance, or presentation. Completed-indexed-frame expansion is
+  an integration oracle, not the recovered per-source bitmap conversion.
 - `cmr-video::c3d_software_split_backend`: a standalone headless alternate
   backend that transactionally retains converted frontend bindings, owns an
   owner-scoped logical target plus depth buffer, preflights the complete frame
   including retained selector-cache coherence, and preserves color across
-  depth-only clears. Indexed 2D composition, full session ownership, native
-  storage, and presentation remain separate boundaries.
+  depth-only clears. The recovered ordinary-bitmap conversion is not yet
+  integrated as keyed 2D composition; full session ownership, native storage,
+  and presentation remain separate boundaries.
 - `cmr-video::software_championship_session`: callback-scoped standalone
   assembly retaining all 14 prepared car topology/runtime pairs, one shared
   binding executor, explicit raster-selection, optional source-ordered per-car

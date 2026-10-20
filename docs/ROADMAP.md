@@ -278,17 +278,27 @@ logical words before the alternate oracle filters and modulates them. Driver
 texture `Load` equivalence remains separate; a terminal oracle now packs only
 depth-passing results through independent logical framebuffer masks and leaves
 uncovered words unchanged. Native surface layout, effective filter, dithering,
-alpha pixels, full-session integration, and presentation remain separate. A standalone
-headless split backend now owns the logical target/depth lifecycle,
+alpha pixels, full-session integration, and presentation remain separate. A
+standalone headless split backend now owns the logical target/depth lifecycle,
 transactionally retains converted bindings, preflights every resolved batch
 before effects, validates retained-cache coherence, and executes repeated
 frames. Native layout, effective filter, dithering, alpha, indexed 2D
 composition, alternate-session ownership, and presentation remain open. A
 source-owned bridge can now expand a completed indexed frame through an
 explicit palette into that logical target without replaying keyed/clipped 2D
-work. It is a deterministic integration oracle only: recovered alternate
-per-source bitmap/font conversion, packed color keys, stretch behavior, and
-palette provenance still require focused evidence before session integration.
+work. It remains a deterministic integration oracle rather than a substitute
+for source-by-source conversion. Focused static evidence now establishes the
+ordinary `0x81` 8-bit-BMP path at a 16-bit destination: each source uses its
+own embedded palette, discriminator byte `5` selects RGB555 while every other
+value selects RGB565, the complete aligned stored rows are converted, and the
+source key is packed embedded-palette entry zero. A tested nominal
+`ordinary_bitmap_rgb16` implementation now preserves that complete logical
+result and rejects malformed source state before returning output. Keyed 2D
+execution, DirectDraw stretch, active-device format selection, and session
+integration remain open. Alternate fonts are explicitly separate: their
+initialized path prepares a `0x90` source, may invoke driver `Load`, and queues
+a colored primitive. Its driver conversion, tuple/blend semantics, and final
+pixels remain unresolved alongside native layout and dithering.
 
 Exit gate:
 
