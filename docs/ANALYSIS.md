@@ -89,6 +89,26 @@ cargo run --locked -p cmr-core --example inspect_startup_surface -- \
 
 The command reports counts only; it does not copy or export artwork.
 
+## Checking C3D record framing locally
+
+Inspect every user-owned C3D under one or more source roots without exporting
+labels or blob bytes:
+
+```sh
+cargo run --locked -q -p cmr-assets -- verify \
+  --source "$CMR_ORIGINAL_DIR" \
+  --profile profiles/installed-eu-derived-assets-v2.json
+cargo run --locked -p cmr-formats --example inspect_c3d_tree -- \
+  "$CMR_ORIGINAL_DIR/Game" "$CMR_ORIGINAL_DIR/New_Fe"
+```
+
+The first command establishes exact reviewed-corpus identity. The scanner then
+decodes supported raw or gzip/`CMPR` storage and validates the bounded C3D
+header and recovered third-group record iterator. By itself the scanner is an
+inspection aid, not provenance verification. It reports only aggregate file,
+record, byte, and payload-exhaustion counts. Payload exhaustion is diagnostic
+corpus evidence, not a format requirement.
+
 The unbuilt source checkout can be used later after an explicitly authorized
 dependency install/build. Until then, commands in this document describe the
 installed 6.5.0 CLI and its recorded analysis profile.

@@ -1,8 +1,8 @@
 //! Fixed-slot loading for the six optional root-menu C3D objects.
 //!
-//! This module stops at bounded header admission. Runtime object creation and
-//! rendering remain unrecovered boundaries and must not be represented by
-//! indexed-surface handles.
+//! This module stops at bounded file and opaque-blob admission. Runtime object
+//! creation and rendering remain unrecovered boundaries and must not be
+//! represented by indexed-surface handles.
 
 use std::fmt;
 

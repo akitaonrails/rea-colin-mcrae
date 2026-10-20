@@ -188,6 +188,7 @@ fn parser_limit_rejects_each_object_without_compacting_slots() {
         variant,
         C3dLimits {
             max_payload_bytes: C3D_HEADER_LEN - 1,
+            ..C3dLimits::default()
         },
     );
     assert_eq!(loaded.loaded_len(), 0);
