@@ -12,6 +12,7 @@ pub mod c3d_software;
 mod c3d_software_backend;
 pub mod c3d_software_raster;
 mod root_frame_software;
+pub mod software_root_menu_session;
 
 pub use c3d_software_backend::SoftwareC3dBackendError;
 pub use root_frame_software::{SoftwarePresentationError, SoftwarePresentedFrame};

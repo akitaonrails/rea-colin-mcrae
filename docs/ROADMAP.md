@@ -137,6 +137,12 @@ six after every terminal scene attempt. Native host adaptation remains a
 boundary. A bounded static search found no steady-frame windowed copy owner in
 the shipped build, so a working portable windowed copy must be explicit host
 policy rather than attributed legacy behavior.
+The software compatibility path now has a production, callback-scoped root-menu
+session assembler. It consumes an initialized startup display and verified
+import, applies the recovered zero-RGB then pending `disk.pal` bootstrap,
+retains every root resource and mutable frame state across repeated renders,
+and tears down persistent sources before returning the backend. Native window,
+event-loop, and host presentation integration remain separate later work.
 The six optional root-menu C3D files now load through fixed slots and a bounded,
 byte-preserving parser. All three counted groups expose proven framing: group
 0's raw `u16` values; group 1's typed, borrowed 32/24-byte entry views; and

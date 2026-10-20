@@ -75,7 +75,8 @@ Status markers:
 - [~] `D14` Decode the root C3D geometry/material/resource contract.
 - [~] `D15` Render root C3D pixels in the compatibility renderer.
 - [~] `D16` Recover and implement final compose/present ownership.
-- [ ] `D17` Run the complete root menu interactively in a native window.
+- [x] `D17` Assemble a production root-menu session from imported resources.
+- [ ] `D18` Run the complete root menu interactively in a native window.
 
 ## E. General renderer and scene data
 
@@ -152,13 +153,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T20:10:16Z
-milestone=bound-windowed-copy-negative-evidence
-completed=38
+updated_utc=2026-10-20T20:17:33Z
+milestone=assemble-production-root-menu-session
+completed=39
 partial=18
 not_started=48
 blocked=0
-total=104
-current_focus=D16-final-compose-present-ownership
-next_exit_gate=native-root-menu-vertical-slice
+total=105
+current_focus=D14-D16-root-compatibility-gaps
+next_exit_gate=reviewed-import-root-session-smoke
 <!-- PROGRESS-TAIL-END -->

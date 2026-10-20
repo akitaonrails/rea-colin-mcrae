@@ -36,6 +36,13 @@ pub struct DisplaySurfaces<S> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IndexedFrameTarget<S> {
+    pub mode: IndexedMode,
+    pub visible_front: S,
+    pub back: S,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DisplayStage {
     CreateDevice,
     SetCooperativeMode,
@@ -345,6 +352,14 @@ impl<B: IndexedVideoBackend> IndexedDisplay<B> {
         self.mode
     }
 
+    pub fn frame_target(&self) -> IndexedFrameTarget<B::Surface> {
+        IndexedFrameTarget {
+            mode: self.mode,
+            visible_front: self.front,
+            back: self.back,
+        }
+    }
+
     pub fn into_backend(self) -> B {
         self.backend
     }
@@ -584,6 +599,27 @@ mod tests {
                 mode(800, 600)
             )
         );
+    }
+
+    #[test]
+    fn frame_target_copies_exact_mode_and_surface_handles_without_backend_events() {
+        let display = IndexedDisplay::initialize(
+            RecordingBackend::default(),
+            mode(800, 600),
+            CooperativeMode::ExclusiveFullscreen,
+            &palette(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            display.frame_target(),
+            IndexedFrameTarget {
+                mode: mode(800, 600),
+                visible_front: 1,
+                back: 2,
+            }
+        );
+        assert_eq!(display.into_backend().events.len(), 8);
     }
 
     #[test]

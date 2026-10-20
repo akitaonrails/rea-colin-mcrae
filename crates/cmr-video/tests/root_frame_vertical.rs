@@ -6,46 +6,36 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cmr_assets::{
     AssetFile, AssetProfile, AssetStore, ReviewedProfile, StorageEncoding, import_source,
 };
-use cmr_core::deferred_palette::{
-    DeferredPaletteCommitOutcome, DeferredPaletteState, PaletteArenaIndex,
-};
-use cmr_core::display::{
-    CooperativeMode, DisplayExtent, IndexedMode, IndexedVideoBackend, SurfaceTopology,
-};
-use cmr_core::font_assets::{FONT_COUNT, FontSet, FontStyle};
-use cmr_core::font_raster::UploadedFontPool;
+use cmr_core::deferred_palette::{DeferredPaletteCommitOutcome, PaletteArenaIndex};
+use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
+use cmr_core::font_assets::{FONT_COUNT, FontStyle};
 use cmr_core::frontend::{FrontendPhase, ROOT_FOOTER_TEXT_INDEX, RootSelection};
-use cmr_core::localization::{IndexedTextTable, Language};
+use cmr_core::localization::Language;
 use cmr_core::root_menu_assets::VisualVariant;
-use cmr_core::root_menu_bitmap_assets::{RootMenuBitmapSlot, load_root_menu_bitmaps};
-use cmr_core::root_menu_bitmap_raster::{prepare_root_menu_surfaces, upload_root_menu_bitmaps};
-use cmr_core::root_menu_c3d_assets::{RootMenuC3dAngles, RootMenuC3dSlot, load_root_menu_c3d};
-use cmr_core::root_menu_c3d_execute::RootMenuC3dBatchExecutor;
+use cmr_core::root_menu_bitmap_assets::RootMenuBitmapSlot;
+use cmr_core::root_menu_c3d_assets::RootMenuC3dSlot;
 use cmr_core::root_menu_c3d_runtime::{
     C3dMode2CornerSource, C3dMode2LoadState, C3dSurfaceLayoutGates, RootMenuC3dMode2LoadStates,
-    materialize_root_menu_mode2_resource_scaled,
-};
-use cmr_core::root_menu_c3d_scene::{PreparedRootMenuC3dPipeline, RootMenuC3dDepthClear};
-use cmr_core::root_menu_c3d_topology::prepare_root_menu_c3d_topology;
-use cmr_core::root_menu_c3d_visibility::RootMenuC3dVisibilityLatches;
-use cmr_core::root_menu_frame::{
-    RootFramePaletteResources, RootFrameResources, execute_root_frame,
 };
 use cmr_core::root_menu_visual::{
     ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16, ROOT_INITIAL_VERTICAL_TRANSFORM_Q16, RootRenderInput,
 };
-use cmr_core::source_store::UploadedSourceStore;
+use cmr_core::startup::{StartupLanguage, StartupScreen};
+use cmr_core::startup_display::{StartupDisplayRequest, initialize_startup_display};
+use cmr_core::surface::PaletteMapping;
 use cmr_formats::bitmap::BitmapLimits;
 use cmr_formats::c3d::{
     C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS, C3D_FORMAT_VERSION, C3D_GROUP0_VALUES_OFFSET,
     C3D_GROUP1_ENTRY24_LEN, C3D_GROUP1_ENTRY32_LEN, C3D_GROUP1_FIXED_LEN, C3D_HEADER_LEN,
-    C3D_MAGIC, C3dLimits,
+    C3D_MAGIC,
 };
-use cmr_formats::font::{FontLimits, TextLayoutLimits, parse_legacy_font};
-use cmr_formats::riff_palette::{LegacyPalette256, PaletteEntry};
+use cmr_formats::riff_palette::PaletteEntry;
 use cmr_formats::stored_asset::DecodeLimits;
 use cmr_video::SoftwareIndexedBackend;
-use cmr_video::c3d_software::prepare_software_root_c3d_bindings;
+use cmr_video::software_root_menu_session::{
+    ROOT_MENU_DISK_PALETTE_INDEX, SoftwareRootMenuRenderError, SoftwareRootMenuSessionRequest,
+    with_software_root_menu_session,
+};
 use sha2::{Digest, Sha256};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -91,172 +81,142 @@ fn synthetic_root_frame_captures_representative_layers_twice_without_reuploading
     )
     .unwrap();
 
-    let palette = active_palette();
-    let initial_palette = std::array::from_fn(|index| PaletteEntry {
-        flags: palette[index].flags ^ 0xff,
-        ..palette[index]
+    let disk_palette = active_palette();
+    let bootstrap_palette = disk_palette.map(|_| PaletteEntry {
+        red: 0,
+        green: 0,
+        blue: 0,
+        flags: 0,
     });
-    let bitmaps = load_root_menu_bitmaps(
+    let startup = initialize_startup_display(
         &store,
-        Language::English,
-        VisualVariant::Normal,
-        BitmapLimits::default(),
+        SoftwareIndexedBackend::default(),
+        StartupDisplayRequest {
+            mode: IndexedMode {
+                extent: EXTENT,
+                bits_per_pixel: 8,
+            },
+            cooperative: CooperativeMode::ExclusiveFullscreen,
+            screen: StartupScreen::Loading,
+            language: StartupLanguage::English,
+            mapping: PaletteMapping::Identity,
+            bitmap_limits: BitmapLimits::default(),
+        },
     )
     .unwrap();
-    assert_eq!(bitmaps.loaded_len(), RootMenuBitmapSlot::ALL.len());
-    let prepared_bitmaps =
-        prepare_root_menu_surfaces(bitmaps, &LegacyPalette256 { entries: palette }).unwrap();
-
-    let c3d_assets = load_root_menu_c3d(&store, VisualVariant::Normal, C3dLimits::default());
-    assert_eq!(c3d_assets.loaded_len(), 1);
-    let topology = prepare_root_menu_c3d_topology(&c3d_assets, BitmapLimits::default()).unwrap();
     let load_states = RootMenuC3dMode2LoadStates::splat(C3dMode2LoadState {
         prepared_resource_count: 0,
         corner_source: C3dMode2CornerSource::OrdinaryDefaults,
         surface_layout: C3dSurfaceLayoutGates::default(),
     });
-    let runtime = materialize_root_menu_mode2_resource_scaled(&topology, load_states).unwrap();
-    let catalog = prepare_software_root_c3d_bindings(&topology, load_states).unwrap();
-    let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
-    let mut angles = RootMenuC3dAngles::new();
-    let mut visibility = RootMenuC3dVisibilityLatches::new();
-
-    let (mut backend, back) = initialized_backend(&initial_palette);
-    let mut sources = UploadedSourceStore::new(&mut backend);
-    let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
-    let uploaded_bitmaps = upload_root_menu_bitmaps(&mut sources, prepared_bitmaps)
-        .unwrap()
-        .pool;
-    let persistent_source_count = sources.uploaded_source_count();
-    assert_eq!(
-        persistent_source_count,
-        FONT_COUNT + RootMenuBitmapSlot::ALL.len()
-    );
-    let text = footer_table();
-    assert!(sources.backend().presented_frame().is_none());
-    let palette_arena = [palette];
-    let mut palette_state = DeferredPaletteState::new();
-    assert!(matches!(
-        palette_state.request(PaletteArenaIndex::new(0)),
-        cmr_core::deferred_palette::PaletteRequestOutcome::PendingUpdated
-    ));
-    let empty_entry = PaletteEntry {
-        red: 0,
-        green: 0,
-        blue: 0,
-        flags: 0,
-    };
-    let mut renderer_palette_cache = [empty_entry; 256];
-    let mut global_palette_cache = [empty_entry; 256];
-
-    for (expected_angle, expected_palette_commit) in [
-        (
-            8,
-            DeferredPaletteCommitOutcome::Committed(PaletteArenaIndex::new(0)),
-        ),
-        (16, DeferredPaletteCommitOutcome::NoPendingPalette),
-    ] {
-        let pipeline = PreparedRootMenuC3dPipeline::new(
-            &topology,
-            &runtime,
-            &mut angles,
-            &mut visibility,
-            &mut executor,
-            RootMenuC3dDepthClear::Clear,
-        )
-        .unwrap();
-        let outcome = execute_root_frame(
-            root_input(),
-            RootFrameResources {
-                text: &text,
-                fonts: &fonts,
-                bitmaps: &uploaded_bitmaps,
-                c3d: pipeline,
-            },
-            RootFramePaletteResources {
-                bits_per_pixel: 8,
-                arena: &palette_arena,
-                state: &mut palette_state,
-                renderer_cache: &mut renderer_palette_cache,
-                global_cache: &mut global_palette_cache,
-            },
-            &mut sources,
-            back,
-            TextLayoutLimits::default(),
-        )
-        .unwrap();
-
-        assert_eq!(outcome.bitmap_blits, 5);
-        assert_eq!(outcome.bitmap_no_ops, 0);
-        assert!(outcome.footer.is_some());
-        assert_eq!(outcome.c3d_commands, 1);
-        assert!(outcome.scene_completed);
-        assert_eq!(outcome.palette_commit, expected_palette_commit);
-        assert!(outcome.presentation_completed);
-        for slot in RootMenuC3dSlot::ALL {
-            assert_eq!(
-                visibility.mask(slot).raw(),
-                0x00,
-                "terminal scene must clear every root visibility latch"
-            );
-        }
-        assert_eq!(angles.angle(RootMenuC3dSlot::Championship), expected_angle);
-        assert_eq!(sources.uploaded_source_count(), persistent_source_count);
-
-        let backend = sources.backend();
-        let presented = backend.presented_frame().unwrap();
-        assert_eq!(presented.extent(), EXTENT);
-        assert_eq!(presented.palette(), &palette);
-        assert_ne!(presented.palette(), &initial_palette);
-        assert_eq!(renderer_palette_cache, palette);
-        assert_eq!(global_palette_cache, palette);
-        assert_eq!(presented.pixels(), backend.back_pixels().unwrap());
-        assert_eq!(presented.pixels()[0], marker(RootMenuBitmapSlot::Backdrop));
-        assert_eq!(presented.pixels()[124 * 640 + 232], expected_center_marker);
+    let request =
+        SoftwareRootMenuSessionRequest::new(Language::English, VisualVariant::Normal, load_states);
+    let run = with_software_root_menu_session(&store, startup, request, |session| {
+        let persistent_source_count = session.uploaded_source_count();
         assert_eq!(
-            presented.pixels()[470 * 640 + 320],
-            FontStyle::GreenInfo as u8 + 1
+            persistent_source_count,
+            FONT_COUNT + RootMenuBitmapSlot::ALL.len()
         );
-        assert!(presented.pixels().contains(&C3D_DISPLAY_INDEX));
-        let depth = backend.c3d_depth_values().unwrap();
-        assert!(depth.iter().any(|value| *value < 1.0));
-        assert!(depth.contains(&1.0));
-    }
+        assert!(session.bitmap_diagnostics().is_empty());
+        assert_eq!(session.c3d_load_diagnostics().len(), 5);
+        assert_eq!(session.c3d_preparation_diagnostic_count(), 0);
+        assert!(session.backend().presented_frame().is_none());
+        assert_eq!(session.backend().active_palette(), Some(&bootstrap_palette));
+        assert_eq!(session.palette_state().current(), None);
+        assert_eq!(
+            session.palette_state().pending(),
+            Some(ROOT_MENU_DISK_PALETTE_INDEX)
+        );
+        assert_eq!(session.renderer_palette_cache(), &bootstrap_palette);
+        assert_eq!(session.global_palette_cache(), &bootstrap_palette);
 
-    drop(sources);
-    assert_eq!(backend.uploaded_source_count(), 0);
-}
+        let mut wrong_language = root_input();
+        wrong_language.language = Language::French;
+        assert!(matches!(
+            session.render(wrong_language),
+            Err(SoftwareRootMenuRenderError::LanguageMismatch {
+                expected: Language::English,
+                actual: Language::French,
+            })
+        ));
+        let mut wrong_extent = root_input();
+        wrong_extent.viewport_extent.width -= 1;
+        assert!(matches!(
+            session.render(wrong_extent),
+            Err(SoftwareRootMenuRenderError::ExtentMismatch { .. })
+        ));
+        assert!(session.backend().presented_frame().is_none());
+        assert_eq!(session.uploaded_source_count(), persistent_source_count);
+        assert_eq!(session.palette_state().current(), None);
+        assert_eq!(
+            session.palette_state().pending(),
+            Some(ROOT_MENU_DISK_PALETTE_INDEX)
+        );
 
-fn initialized_backend(
-    entries: &[PaletteEntry; 256],
-) -> (SoftwareIndexedBackend, cmr_video::SurfaceHandle) {
-    let mut backend = SoftwareIndexedBackend::default();
-    backend.create_device().unwrap();
-    backend
-        .set_cooperative_mode(CooperativeMode::ExclusiveFullscreen)
-        .unwrap();
-    backend
-        .set_display_mode(IndexedMode {
-            extent: EXTENT,
-            bits_per_pixel: 8,
-        })
-        .unwrap();
-    let surfaces = backend
-        .create_surfaces(
-            SurfaceTopology::FlippingChainWithOneBackBuffer,
-            IndexedMode {
-                extent: EXTENT,
-                bits_per_pixel: 8,
-            },
-        )
-        .unwrap();
-    let palette = backend.create_palette(entries).unwrap();
-    backend
-        .attach_palette(surfaces.visible_front, palette)
-        .unwrap();
-    backend.attach_palette(surfaces.back, palette).unwrap();
-    backend.upload_palette(palette, entries).unwrap();
-    (backend, surfaces.back)
+        for (frame_index, expected_angle, expected_palette_commit) in [
+            (
+                0,
+                8,
+                DeferredPaletteCommitOutcome::Committed(PaletteArenaIndex::new(0)),
+            ),
+            (1, 16, DeferredPaletteCommitOutcome::NoPendingPalette),
+        ] {
+            let outcome = session.render(root_input()).unwrap();
+
+            assert_eq!(outcome.bitmap_blits, 5);
+            assert_eq!(outcome.bitmap_no_ops, 0);
+            assert!(outcome.footer.is_some());
+            assert_eq!(outcome.c3d_commands, 1);
+            assert!(outcome.scene_completed);
+            assert_eq!(outcome.palette_commit, expected_palette_commit);
+            assert!(outcome.presentation_completed);
+            for slot in RootMenuC3dSlot::ALL {
+                assert_eq!(
+                    session.visibility().mask(slot).raw(),
+                    0x00,
+                    "terminal scene must clear every root visibility latch"
+                );
+            }
+            assert_eq!(
+                session.angles().angle(RootMenuC3dSlot::Championship),
+                expected_angle
+            );
+            assert_eq!(session.uploaded_source_count(), persistent_source_count);
+
+            let backend = session.backend();
+            let presented = backend.presented_frame().unwrap();
+            assert_eq!(presented.extent(), EXTENT);
+            assert_eq!(presented.palette(), &disk_palette);
+            assert_ne!(presented.palette(), &bootstrap_palette);
+            assert_eq!(session.renderer_palette_cache(), &disk_palette);
+            assert_eq!(session.global_palette_cache(), &disk_palette);
+            assert_eq!(presented.pixels(), backend.back_pixels().unwrap());
+            assert_eq!(presented.pixels()[0], marker(RootMenuBitmapSlot::Backdrop));
+            assert_eq!(presented.pixels()[124 * 640 + 232], expected_center_marker);
+            assert_eq!(
+                presented.pixels()[470 * 640 + 320],
+                FontStyle::GreenInfo as u8 + 1
+            );
+            assert_eq!(
+                presented.pixels().contains(&C3D_DISPLAY_INDEX),
+                frame_index == 1,
+                "the first scene uses the zero-RGB bootstrap palette; later scenes use disk.pal"
+            );
+            let depth = backend.c3d_depth_values().unwrap();
+            assert!(depth.iter().any(|value| *value < 1.0));
+            assert!(depth.contains(&1.0));
+        }
+        assert_eq!(
+            session.palette_state().current(),
+            Some(ROOT_MENU_DISK_PALETTE_INDEX)
+        );
+        assert_eq!(session.palette_state().pending(), None);
+    })
+    .unwrap();
+
+    assert_eq!(run.startup_copy.front, Ok(()));
+    assert_eq!(run.startup_copy.back, Ok(()));
+    assert_eq!(run.backend.uploaded_source_count(), 0);
 }
 
 fn root_input() -> RootRenderInput {
@@ -290,6 +250,22 @@ fn active_palette() -> [PaletteEntry; 256] {
 
 fn write_reviewed_root_assets(source: &std::path::Path) -> (ReviewedProfile, u8) {
     let mut files = BTreeMap::<&'static str, Vec<u8>>::new();
+    let startup_palette = [PaletteEntry {
+        red: 3,
+        green: 2,
+        blue: 1,
+        flags: 0,
+    }; 256];
+    files.insert("ini/loading.bmp", indexed_bitmap(640, 480, 3));
+    files.insert("ini/loading.pal", riff_palette(&startup_palette));
+    files.insert(
+        cmr_video::software_root_menu_session::ROOT_MENU_DISK_PALETTE_PATH,
+        riff_palette(&active_palette()),
+    );
+    files.insert(Language::English.frontend_path(), footer_table_bytes());
+    for (index, style) in FontStyle::ALL.into_iter().enumerate() {
+        files.insert(style.path(), synthetic_font(index as u8));
+    }
     let mut center_marker = 0;
     for slot in RootMenuBitmapSlot::ALL {
         let path = slot.path(Language::English, VisualVariant::Normal);
@@ -334,7 +310,7 @@ fn write_reviewed_root_assets(source: &std::path::Path) -> (ReviewedProfile, u8)
     let profile = AssetProfile {
         schema_version: 1,
         id: "synthetic-root-frame-vertical".to_owned(),
-        roots: vec!["New_Fe".to_owned()],
+        roots: vec!["New_Fe".to_owned(), "ini".to_owned()],
         empty_directories: Vec::new(),
         sentinels: Vec::new(),
         files: profile_files,
@@ -377,12 +353,6 @@ fn indexed_bitmap(width: u32, height: u32, pixel: u8) -> Vec<u8> {
     bytes
 }
 
-fn font_set() -> FontSet {
-    FontSet::from_ordered_fonts(std::array::from_fn(|index| {
-        parse_legacy_font(&synthetic_font(index as u8), FontLimits::default()).unwrap()
-    }))
-}
-
 fn synthetic_font(identity: u8) -> Vec<u8> {
     const PIXEL_OFFSET: usize = 0x436;
     const FONT_HEADER_SIZE: usize = 24;
@@ -404,7 +374,7 @@ fn synthetic_font(identity: u8) -> Vec<u8> {
     input
 }
 
-fn footer_table() -> IndexedTextTable {
+fn footer_table_bytes() -> Vec<u8> {
     let mut bytes = Vec::new();
     for index in 0..=ROOT_FOOTER_TEXT_INDEX {
         bytes.extend_from_slice(if index == ROOT_FOOTER_TEXT_INDEX {
@@ -416,7 +386,24 @@ fn footer_table() -> IndexedTextTable {
             bytes.push(b'\n');
         }
     }
-    IndexedTextTable::parse(&bytes, ROOT_FOOTER_TEXT_INDEX + 1).unwrap()
+    bytes
+}
+
+fn riff_palette(entries: &[PaletteEntry; 256]) -> Vec<u8> {
+    let data_size = 4 + entries.len() * 4;
+    let riff_size = 4 + 8 + data_size;
+    let mut bytes = Vec::with_capacity(riff_size + 8);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(riff_size as u32).to_le_bytes());
+    bytes.extend_from_slice(b"PAL ");
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(data_size as u32).to_le_bytes());
+    bytes.extend_from_slice(&0x0300u16.to_le_bytes());
+    bytes.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    for entry in entries {
+        bytes.extend_from_slice(&[entry.red, entry.green, entry.blue, entry.flags]);
+    }
+    bytes
 }
 
 fn drawable_root_c3d(bitmap: &[u8]) -> Vec<u8> {

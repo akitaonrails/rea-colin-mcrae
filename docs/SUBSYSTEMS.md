@@ -88,6 +88,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   copies, and the bounded branch-zero root C3D software oracle; unrecovered
   stretch, alternate C3D profiles, and other color-key ranges are explicit
   boundaries rather than guessed behavior.
+- `cmr-video::software_root_menu_session`: callback-scoped production assembly
+  of the verified imported root resources, initialized software display,
+  recovered disk-palette bootstrap, persistent source pools, C3D runtime state,
+  and repeated complete headless root frames without a self-referential owner.
 - `cmr-core::config`: opaque exact-size legacy configuration admission,
   recovered volatile-byte clearing and save gate, plus safe registry-value
   parsing and caller-owned exact-record writing without assigning meaning to

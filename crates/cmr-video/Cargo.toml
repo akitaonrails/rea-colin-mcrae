@@ -6,10 +6,10 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+cmr-assets = { path = "../cmr-assets" }
 cmr-core = { path = "../cmr-core" }
 cmr-formats = { path = "../cmr-formats" }
 
 [dev-dependencies]
-cmr-assets = { path = "../cmr-assets" }
 serde_json.workspace = true
 sha2.workspace = true
