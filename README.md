@@ -56,8 +56,9 @@ so championship mode 8 can append resources without being forced through the
 root menu's mode-2 slot types. A shared frontend-session arena now prepares the
 14 cars first as the exact 55-resource prefix, then the six root objects in the
 same provenance domain. Car actor traversal and backend-neutral Type-2 scene
-submission are integrated; exact Type-2 mutation/raster behavior remains the
-next C3D milestone.
+submission are integrated. The optional word-5 pre-draw mutation now has a
+pure retained-state contract; connecting it to submission and producing the
+bounded unified-indexed software pixels remain the next C3D milestone.
 These are platform-neutral compatibility contracts; registry, host clock/input,
 native window, audio, setup-screen pixel execution, later frontend screens, and
 gameplay integrations are not yet complete.

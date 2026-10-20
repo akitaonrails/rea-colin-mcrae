@@ -139,6 +139,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   before advancing preview state, composes the recovered Q16 hierarchy only
   when visible, and owns active-level Type-2 batches in depth-first attachment order.
   Backend submission, palette transition, and pixels remain separate.
+- `cmr-core::c3d_type2_fog`: pure owned-copy pre-draw mutation for the optional
+  Type-2 word-5 path. It explicitly carries the retained process-global gate,
+  thresholds, distance/center inputs, and x87 conversion mode; disabled state
+  is caller-selected and is not inferred from frontend entry.
 - `cmr-core::frontend_c3d_resources`: one frontend-session prepared arena with
   the exact 55-resource mode-8 car prefix followed by six fixed optional root
   slots, preserving cross-domain IDs, aliases, rollback, and diagnostics.

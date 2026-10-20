@@ -3,6 +3,7 @@
 pub mod blit;
 pub mod c3d_batch;
 pub mod c3d_topology;
+pub mod c3d_type2_fog;
 pub mod championship_assets;
 pub mod championship_bitmap_raster;
 pub mod championship_car_execute;

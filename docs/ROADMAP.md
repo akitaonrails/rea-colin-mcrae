@@ -241,8 +241,13 @@ shared terminal C3D bracket with actor-scoped worlds, resource/default-zero
 selector transitions, and Type-2 draw commands. The full championship terminal
 owner now preserves inline callback order, coordinates root/car binding-cache
 ownership, clears all 20 frontend visibility latches, commits the requested
-palette, and presents last. Type-2 raster pixels remain intentionally separate
-until the unresolved mutation and raster policy are recovered.
+palette, and presents last. Static recovery now separates the process-global
+optional Type-2 word-5 pre-draw mutation from caller flag `0x08`, which affects
+only a different world/spatial renderer in resolved code. A pure owned-copy
+mutation contract models the retained gate, thresholds, distance/center tuple,
+x87 rounding mode, and exact fixed-square-root lookup. Wiring that retained
+state into submission and the bounded unified-indexed car pixel path remain
+separate work.
 
 Exit gate:
 

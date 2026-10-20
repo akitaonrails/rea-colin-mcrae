@@ -98,7 +98,7 @@ Status markers:
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
 - [x] `E15` Recover championship mode-8 C3D preparation and session ownership.
-- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, and full terminal-frame integration implemented; optional Type-2 mutation and final pixels remain).
+- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full terminal-frame integration, and the pure optional Type-2 word-5 mutation contract implemented; retained-state submission integration and final pixels remain).
 
 ## F. Menus, game state, and persistence
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T22:07:58Z
-milestone=integrate-championship-terminal-frame
+updated_utc=2026-10-20T22:15:38Z
+milestone=recover-championship-type2-predraw-state
 completed=50
 partial=20
 not_started=47
 blocked=0
 total=117
-current_focus=F04-E04-championship-car-transform-and-runtime
-next_exit_gate=recover-championship-type2-mutation-and-raster-policy
+current_focus=E07-championship-software-pixels
+next_exit_gate=render-unified-indexed-championship-car-batches
 <!-- PROGRESS-TAIL-END -->
