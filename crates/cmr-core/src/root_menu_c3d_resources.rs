@@ -34,6 +34,14 @@ static NEXT_RESOURCE_ARENA_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct C3dPreparedResourceArenaId(NonZeroU64);
 
+/// Opaque identity shared by products derived from one prepared resource arena.
+///
+/// The private payload prevents callers from forging a relationship between
+/// independently prepared C3D sets while allowing later backend catalogs to
+/// compare and retain the identity.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct C3dPreparedResourceProvenance(C3dPreparedResourceArenaId);
+
 /// Stable, arena-scoped index into one [`RootMenuC3dResourceSet`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct C3dPreparedResourceId {
@@ -360,6 +368,11 @@ impl RootMenuC3dResourceSet {
     #[must_use]
     pub const fn variant(&self) -> VisualVariant {
         self.variant
+    }
+
+    #[must_use]
+    pub const fn provenance(&self) -> C3dPreparedResourceProvenance {
+        C3dPreparedResourceProvenance(self.arena)
     }
 
     pub fn slots(

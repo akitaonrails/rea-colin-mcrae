@@ -19,8 +19,8 @@ use crate::{
     root_menu_c3d_assets::{ROOT_MENU_C3D_REQUEST_COUNT, RootMenuC3dSet, RootMenuC3dSlot},
     root_menu_c3d_resources::{
         C3dPreparedResource, C3dPreparedResourceAccessError, C3dPreparedResourceId,
-        C3dPreparedSelector, C3dResourceArenaIdentityExhausted, RootMenuC3dResourceDiagnostic,
-        RootMenuC3dResourceSet, prepare_root_menu_c3d_resources,
+        C3dPreparedResourceProvenance, C3dPreparedSelector, C3dResourceArenaIdentityExhausted,
+        RootMenuC3dResourceDiagnostic, RootMenuC3dResourceSet, prepare_root_menu_c3d_resources,
     },
 };
 
@@ -169,6 +169,11 @@ impl<'asset> RootMenuC3dTopology<'asset> {
     #[must_use]
     pub const fn variant(&self) -> VisualVariant {
         self.variant
+    }
+
+    #[must_use]
+    pub const fn provenance(&self) -> C3dPreparedResourceProvenance {
+        self.resources.provenance()
     }
 
     pub fn slots(
@@ -548,11 +553,71 @@ mod tests {
         let second_id = second.resources().next().unwrap().0;
 
         assert_ne!(first_id, second_id);
+        assert_ne!(first.provenance(), second.provenance());
         assert_eq!(
             second.resource(first_id),
             Err(C3dPreparedResourceAccessError::Foreign)
         );
         assert!(first.resource(first_id).is_ok());
+    }
+
+    #[test]
+    fn runtime_products_retain_their_topology_provenance() {
+        let groups = [group(1, &[[0, 0, 0]], &[0])];
+        let blobs = [(*b"PROVENANCE!!", indexed_bmp(1, 2, 8))];
+        let fixture = fixture_for(&[(RootMenuC3dSlot::Rally, c3d(&groups, &blobs))]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let states = uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults);
+
+        let pre_scale = materialize_root_menu_mode2_pre_scale(&topology, states).unwrap();
+        let scaled = materialize_root_menu_mode2_resource_scaled(&topology, states).unwrap();
+
+        assert_eq!(pre_scale.provenance(), topology.provenance());
+        assert_eq!(scaled.provenance(), topology.provenance());
+        assert_eq!(pre_scale.variant(), topology.variant());
+        assert_eq!(scaled.variant(), topology.variant());
+    }
+
+    #[test]
+    fn all_missing_runtimes_still_retain_distinct_arena_provenance() {
+        let groups = [group(1, &[[0, 0, 0]], &[-1])];
+        let bytes = c3d_with_group0(
+            &[Group0 {
+                field_04: -1,
+                matrix: identity_matrix(),
+                references: vec![0],
+            }],
+            &groups,
+            &[],
+        );
+        let fixture = fixture_for(&[(RootMenuC3dSlot::Load, bytes)]);
+        let assets = load(&fixture);
+        let first = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let second = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let states = uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults);
+        let first_runtime = materialize_root_menu_mode2_resource_scaled(&first, states).unwrap();
+        let second_runtime = materialize_root_menu_mode2_resource_scaled(&second, states).unwrap();
+
+        assert_eq!(first.resource_len(), 0);
+        assert_eq!(second.resource_len(), 0);
+        assert_eq!(first_runtime.provenance(), first.provenance());
+        assert_eq!(second_runtime.provenance(), second.provenance());
+        assert_ne!(first.provenance(), second.provenance());
+        assert_ne!(first_runtime.provenance(), second_runtime.provenance());
+
+        let object = first_runtime.get(RootMenuC3dSlot::Load).unwrap();
+        let batch = object
+            .group0_records()
+            .next()
+            .unwrap()
+            .references()
+            .next()
+            .unwrap()
+            .batches()
+            .next()
+            .unwrap();
+        assert_eq!(batch.selector(), C3dPreparedSelector::Missing);
     }
 
     #[test]

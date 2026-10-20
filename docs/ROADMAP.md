@@ -190,6 +190,10 @@ to exact f32 words; identity view, frontend projection, and checked viewport
 words are available without a platform graphics dependency. This defines
 transform values for the frame-command planner but does not yet perform scene
 traversal, resource binding, rasterization, or final composition.
+Topology and both materialized runtime stages now also carry the same opaque,
+unforgeable prepared-arena provenance. The planner can therefore reject data
+mixed across independent preparations even when no concrete resource ID is
+available to expose the mismatch.
 
 Exit gate:
 

@@ -15,7 +15,8 @@ use crate::{
     root_menu_assets::{RootMenuObjectIdentity, VisualVariant},
     root_menu_c3d_assets::{ROOT_MENU_C3D_REQUEST_COUNT, RootMenuC3dSlot},
     root_menu_c3d_resources::{
-        C3dPreparedResourceAccessError, C3dPreparedResourceId, C3dPreparedSelector,
+        C3dPreparedResourceAccessError, C3dPreparedResourceId, C3dPreparedResourceProvenance,
+        C3dPreparedSelector,
     },
     root_menu_c3d_topology::{
         RootMenuC3dGroup0Topology, RootMenuC3dGroup1Topology, RootMenuC3dObjectTopology,
@@ -248,6 +249,7 @@ impl RootMenuC3dMode2PreScaleObject {
 /// Fixed-slot mode-2 runtime data before resource-driven coordinate scaling.
 #[derive(Debug, Eq, PartialEq)]
 pub struct RootMenuC3dMode2PreScaleRuntime {
+    provenance: C3dPreparedResourceProvenance,
     variant: VisualVariant,
     slots: [Option<RootMenuC3dMode2PreScaleObject>; ROOT_MENU_C3D_REQUEST_COUNT],
 }
@@ -409,11 +411,17 @@ impl RootMenuC3dMode2ResourceScaledObject {
 /// render-ready.
 #[derive(Debug, Eq, PartialEq)]
 pub struct RootMenuC3dMode2ResourceScaledRuntime {
+    provenance: C3dPreparedResourceProvenance,
     variant: VisualVariant,
     slots: [Option<RootMenuC3dMode2ResourceScaledObject>; ROOT_MENU_C3D_REQUEST_COUNT],
 }
 
 impl RootMenuC3dMode2ResourceScaledRuntime {
+    #[must_use]
+    pub const fn provenance(&self) -> C3dPreparedResourceProvenance {
+        self.provenance
+    }
+
     #[must_use]
     pub const fn variant(&self) -> VisualVariant {
         self.variant
@@ -520,6 +528,11 @@ impl std::error::Error for RootMenuC3dMode2MaterializationError {
 
 impl RootMenuC3dMode2PreScaleRuntime {
     #[must_use]
+    pub const fn provenance(&self) -> C3dPreparedResourceProvenance {
+        self.provenance
+    }
+
+    #[must_use]
     pub const fn variant(&self) -> VisualVariant {
         self.variant
     }
@@ -541,6 +554,7 @@ pub fn materialize_root_menu_mode2_pre_scale(
         slots[slot.index()] = Some(materialize_object(object, load_states.get(slot))?);
     }
     Ok(RootMenuC3dMode2PreScaleRuntime {
+        provenance: topology.provenance(),
         variant: topology.variant(),
         slots,
     })
@@ -562,6 +576,7 @@ pub fn materialize_root_menu_mode2_resource_scaled(
         )?);
     }
     Ok(RootMenuC3dMode2ResourceScaledRuntime {
+        provenance: topology.provenance(),
         variant: topology.variant(),
         slots,
     })

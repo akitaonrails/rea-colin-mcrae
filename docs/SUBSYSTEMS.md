@@ -126,7 +126,8 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   separate.
 - `cmr-core::root_menu_c3d_topology`: combined fixed-slot resource preparation
   and borrowed topology planning tied to the exact source asset set. It joins
-  arena-scoped selectors to ordered group1 records, catalogs checked group0
+  arena-scoped selectors to ordered group1 records, exposes an opaque
+  unforgeable arena provenance for downstream joins, catalogs checked group0
   references, preserves consecutive runs and compact first-use ordinals, and
   returns no partial value on topology failure.
 - `cmr-core::root_menu_c3d_runtime`: fixed-slot, per-group0-reference mode-2
@@ -134,8 +135,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   per-load global-state inputs, pre-mutation opaque side capture, ordered corner
   mutation, resource-derived surface-layout and mapping-coordinate scaling,
   first-usable-resource visitation, and compact batches. The generic checked
-  path retains raw 16-bit wrapping and one-store f64→f32 arithmetic; backend
-  resources, palette/material binding, and rasterization remain separate.
+  path retains raw 16-bit wrapping and one-store f64→f32 arithmetic; both
+  runtime stages retain the originating arena provenance. Backend resources,
+  palette/material binding, and rasterization remain separate.
 - `cmr-core::root_menu_c3d_transform`: deterministic root-only fixed-point
   transform words with source-owned quarter-wave trigonometry, integer-derived
   square-root normalization, exact raw-angle branch behavior, persistent Q16
