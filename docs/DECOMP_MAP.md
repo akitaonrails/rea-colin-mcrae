@@ -152,8 +152,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T20:05:28Z
-milestone=integrate-terminal-palette-completion
+updated_utc=2026-10-20T20:10:16Z
+milestone=bound-windowed-copy-negative-evidence
 completed=38
 partial=18
 not_started=48

@@ -3,8 +3,9 @@
 //! This module executes only the operations established for the original
 //! steady-frame presentation routine. Fullscreen completion samples the back
 //! buffer and invokes Flip on the primary chain. Windowed completion resolves
-//! the client origin and synchronizes to vertical blank; the separate windowed
-//! copy owner is still unrecovered and is intentionally absent from this API.
+//! the client origin and synchronizes to vertical blank. A bounded static
+//! search found no separate steady-frame windowed copy owner, so no such
+//! operation is attributed to the shipped path or exposed by this API.
 //!
 //! This contract is also distinct from the software backend's headless frame
 //! capture. Capturing an owned frame neither performs these native operations
@@ -31,8 +32,9 @@ pub enum NativeVerticalBlankWait {
 
 /// Native operations used by the recovered frame-completion plan.
 ///
-/// There is intentionally no windowed back-to-front copy operation here. The
-/// retained evidence assigns that copy to another, still-unrecovered owner.
+/// There is intentionally no windowed back-to-front copy operation here. A
+/// bounded search of the shipped executable found no such steady-frame owner;
+/// a working host copy would therefore be explicit reconstruction policy.
 pub trait NativePresentationOps<S> {
     type Error;
 

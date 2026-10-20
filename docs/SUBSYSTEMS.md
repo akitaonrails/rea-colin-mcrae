@@ -76,8 +76,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::presentation`: platform-neutral execution of the recovered native
   presentation plan, including fullscreen sample-before-Flip invocation and
   windowed client-origin/vblank sequencing with subsequent-call VGA fallback;
-  native window creation and the separate windowed copy owner remain outside
-  this contract.
+  native window creation remains outside this contract. A bounded static
+  search found no separate steady-frame windowed copy owner; any portable copy
+  is therefore an explicit host policy rather than attributed legacy behavior.
 - `cmr-core::deferred_palette`: recovered runtime-base logical mapping and
   current/pending palette state, plus the depth-8-only 256-entry terminal
   commit into an adapter and both observed software caches, now joined to the
@@ -185,8 +186,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::root_menu_frame`: ordered bitmap/footer dispatch plus parsed C3D
   slot binding and angle advancement; the software backend now executes the
   bounded root C3D branch and captures the composed indexed frame through a
-  headless terminal hook. Native Flip/windowed copy and synchronization remain
-  host boundaries.
+  headless terminal hook. Native Flip and synchronization remain host
+  boundaries; a portable windowed copy is reconstruction policy because the
+  shipped steady-frame path exposes no observed copy owner.
 
 The canonical binary maps registry language values 0–4 to English, French,
 German, Spanish, and Italian startup paths. The supplied corpus has no Italian
