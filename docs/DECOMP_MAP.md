@@ -165,8 +165,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T22:38:19Z
-milestone=build-software-championship-session
+updated_utc=2026-10-20T22:46:31Z
+milestone=correct-type2-ftol-contract
 completed=50
 partial=20
 not_started=47

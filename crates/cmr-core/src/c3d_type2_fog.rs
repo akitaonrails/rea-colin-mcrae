@@ -33,18 +33,6 @@ impl C3dType2FogState {
     };
 }
 
-/// Explicit x87 integral-conversion mode for the per-vertex distance path.
-///
-/// The ordinary game startup uses round-to-nearest-even. Keeping the mode in
-/// the call makes the ambient x87 control-word boundary visible and testable.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum C3dType2FogRounding {
-    NearestEven,
-    Down,
-    Up,
-    TowardZero,
-}
-
 /// One backend-neutral, owned Type-2 vertex ready for a draw submission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct C3dType2PreDrawVertex {
@@ -86,7 +74,7 @@ impl fmt::Display for C3dType2FogError {
                 bits,
             } => write!(
                 formatter,
-                "Type-2 fog vertex {vertex_index} word {word_index} (f32 bits {bits:#010x}) cannot be represented by the selected x87 i32 conversion profile"
+                "Type-2 fog vertex {vertex_index} word {word_index} (f32 bits {bits:#010x}) cannot be represented by the recovered truncating x87 i64 conversion"
             ),
             Self::SlopeOverflow { near_q16, far_q16 } => write!(
                 formatter,
@@ -106,7 +94,6 @@ impl std::error::Error for C3dType2FogError {}
 pub fn prepare_c3d_type2_pre_draw_vertices(
     source_words: impl IntoIterator<Item = [u32; 8]>,
     state: C3dType2FogState,
-    rounding: C3dType2FogRounding,
 ) -> Result<Box<[C3dType2PreDrawVertex]>, C3dType2FogError> {
     let mut vertices = source_words
         .into_iter()
@@ -122,7 +109,7 @@ pub fn prepare_c3d_type2_pre_draw_vertices(
         let distance = if state.shared_distance_q16 != 0 {
             state.shared_distance_q16
         } else {
-            vertex_distance_q16(vertex.words, state.center_q16, rounding, vertex_index)?
+            vertex_distance_q16(vertex.words, state.center_q16, vertex_index)?
         };
         let level = if distance < state.near_q16 {
             0x00ff_0000
@@ -162,42 +149,38 @@ fn fog_slope(state: C3dType2FogState) -> Result<i32, C3dType2FogError> {
 fn vertex_distance_q16(
     words: [u32; 8],
     center: [i32; 3],
-    rounding: C3dType2FogRounding,
     vertex_index: usize,
 ) -> Result<i32, C3dType2FogError> {
-    let qx =
-        scaled_coordinate(words[0], rounding).ok_or(C3dType2FogError::CoordinateConversion {
-            vertex_index,
-            word_index: 0,
-            bits: words[0],
-        })?;
-    let qz =
-        scaled_coordinate(words[2], rounding).ok_or(C3dType2FogError::CoordinateConversion {
-            vertex_index,
-            word_index: 2,
-            bits: words[2],
-        })?;
+    let qx = scaled_coordinate(words[0]).ok_or(C3dType2FogError::CoordinateConversion {
+        vertex_index,
+        word_index: 0,
+        bits: words[0],
+    })?;
+    let qz = scaled_coordinate(words[2]).ok_or(C3dType2FogError::CoordinateConversion {
+        vertex_index,
+        word_index: 2,
+        bits: words[2],
+    })?;
     let dx = center[0].wrapping_neg().wrapping_sub(qx);
     let dz = center[2].wrapping_neg().wrapping_sub(qz);
     let sum = qmul_low(dx, dx).wrapping_add(qmul_low(dz, dz)) as u32;
     Ok(fixed_sqrt_q16(sum) as i32)
 }
 
-fn scaled_coordinate(bits: u32, rounding: C3dType2FogRounding) -> Option<i32> {
+fn scaled_coordinate(bits: u32) -> Option<i32> {
     let value = f64::from(f32::from_bits(bits)) * -65_536.0;
     if !value.is_finite() {
         return None;
     }
-    let integral = match rounding {
-        C3dType2FogRounding::NearestEven => value.round_ties_even(),
-        C3dType2FogRounding::Down => value.floor(),
-        C3dType2FogRounding::Up => value.ceil(),
-        C3dType2FogRounding::TowardZero => value.trunc(),
-    };
-    if integral < f64::from(i32::MIN) || integral > f64::from(i32::MAX) {
+    // The private legacy __ftol helper forces x87 RC=11, stores a signed
+    // qword, restores the caller's control word, and the caller consumes EAX.
+    let integral = value.trunc();
+    const I64_MIN_F64: f64 = -9_223_372_036_854_775_808.0;
+    const I64_END_F64: f64 = 9_223_372_036_854_775_808.0;
+    if !(I64_MIN_F64..I64_END_F64).contains(&integral) {
         None
     } else {
-        Some(integral as i32)
+        Some((integral as i64) as i32)
     }
 }
 
@@ -287,12 +270,8 @@ mod tests {
     #[test]
     fn disabled_state_copies_every_word_without_interpreting_coordinates() {
         let source = words(f32::NAN, f32::INFINITY, 0x1234_5678);
-        let prepared = prepare_c3d_type2_pre_draw_vertices(
-            [source],
-            C3dType2FogState::DISABLED,
-            C3dType2FogRounding::NearestEven,
-        )
-        .unwrap();
+        let prepared =
+            prepare_c3d_type2_pre_draw_vertices([source], C3dType2FogState::DISABLED).unwrap();
 
         assert_eq!(prepared[0].words(), source);
     }
@@ -312,7 +291,6 @@ mod tests {
             let prepared = prepare_c3d_type2_pre_draw_vertices(
                 [words(f32::NAN, f32::NAN, 0xdead_beef)],
                 state,
-                C3dType2FogRounding::NearestEven,
             )
             .unwrap();
             assert_eq!(prepared[0].word5(), expected, "distance {distance:#x}");
@@ -324,9 +302,7 @@ mod tests {
         let mut state = state();
         state.center_q16 = [-(3 << 16), i32::MAX, -(4 << 16)];
         let source = words(-6.0, -8.0, 0xdead_beef);
-        let prepared =
-            prepare_c3d_type2_pre_draw_vertices([source], state, C3dType2FogRounding::NearestEven)
-                .unwrap();
+        let prepared = prepare_c3d_type2_pre_draw_vertices([source], state).unwrap();
 
         // The recovered lookup samples the middle of a bin, so this is the
         // table's exact answer rather than a host square-root result.
@@ -338,12 +314,7 @@ mod tests {
     #[test]
     fn copies_are_independent_and_only_word5_changes() {
         let source = words(-45.0, 0.0, 0x0102_0304);
-        let prepared = prepare_c3d_type2_pre_draw_vertices(
-            [source, source],
-            state(),
-            C3dType2FogRounding::NearestEven,
-        )
-        .unwrap();
+        let prepared = prepare_c3d_type2_pre_draw_vertices([source, source], state()).unwrap();
 
         for vertex in prepared.iter() {
             let result = vertex.words();
@@ -355,28 +326,16 @@ mod tests {
     }
 
     #[test]
-    fn rounding_profile_is_explicit_at_half_integer_boundaries() {
+    fn recovered_ftol_truncates_and_returns_the_low_i32_word() {
         let bits = (-(1.5_f32 / 65_536.0)).to_bits();
-        assert_eq!(
-            scaled_coordinate(bits, C3dType2FogRounding::NearestEven),
-            Some(2)
-        );
-        assert_eq!(scaled_coordinate(bits, C3dType2FogRounding::Down), Some(1));
-        assert_eq!(scaled_coordinate(bits, C3dType2FogRounding::Up), Some(2));
-        assert_eq!(
-            scaled_coordinate(bits, C3dType2FogRounding::TowardZero),
-            Some(1)
-        );
+        assert_eq!(scaled_coordinate(bits), Some(1));
+        assert_eq!(scaled_coordinate((-65_536.0_f32).to_bits()), Some(0));
     }
 
     #[test]
     fn enabled_per_vertex_path_rejects_unmodelled_x87_invalid_conversion() {
-        let error = prepare_c3d_type2_pre_draw_vertices(
-            [words(f32::NAN, 0.0, 0)],
-            state(),
-            C3dType2FogRounding::NearestEven,
-        )
-        .unwrap_err();
+        let error =
+            prepare_c3d_type2_pre_draw_vertices([words(f32::NAN, 0.0, 0)], state()).unwrap_err();
         assert_eq!(
             error,
             C3dType2FogError::CoordinateConversion {
@@ -400,12 +359,8 @@ mod tests {
 
     #[test]
     fn empty_enabled_input_does_not_evaluate_an_unused_overflowing_slope() {
-        let prepared = prepare_c3d_type2_pre_draw_vertices(
-            [],
-            overflowing_slope_state(10 << 16),
-            C3dType2FogRounding::NearestEven,
-        )
-        .unwrap();
+        let prepared =
+            prepare_c3d_type2_pre_draw_vertices([], overflowing_slope_state(10 << 16)).unwrap();
 
         assert!(prepared.is_empty());
     }
@@ -418,7 +373,6 @@ mod tests {
             let prepared = prepare_c3d_type2_pre_draw_vertices(
                 [words(f32::NAN, f32::NAN, 0xdead_beef)],
                 overflowing_slope_state(distance),
-                C3dType2FogRounding::NearestEven,
             )
             .unwrap();
 
@@ -429,12 +383,9 @@ mod tests {
     #[test]
     fn interpolation_still_reports_an_overflowing_slope() {
         let state = overflowing_slope_state(10 << 16);
-        let error = prepare_c3d_type2_pre_draw_vertices(
-            [words(f32::NAN, f32::NAN, 0xdead_beef)],
-            state,
-            C3dType2FogRounding::NearestEven,
-        )
-        .unwrap_err();
+        let error =
+            prepare_c3d_type2_pre_draw_vertices([words(f32::NAN, f32::NAN, 0xdead_beef)], state)
+                .unwrap_err();
 
         assert_eq!(
             error,
@@ -455,12 +406,7 @@ mod tests {
             shared_distance_q16: 10 << 16,
             center_q16: [0; 3],
         };
-        let prepared = prepare_c3d_type2_pre_draw_vertices(
-            [words(0.0, 0.0, 0)],
-            state,
-            C3dType2FogRounding::NearestEven,
-        )
-        .unwrap();
+        let prepared = prepare_c3d_type2_pre_draw_vertices([words(0.0, 0.0, 0)], state).unwrap();
         assert_eq!(prepared[0].word5(), 0);
     }
 }
