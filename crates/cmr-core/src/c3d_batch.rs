@@ -1,17 +1,182 @@
-//! Checked topology planning for consecutive C3D resource runs.
+//! Backend-neutral C3D batch planning and owned draw commands.
 //!
 //! Resource preparation is deliberately outside this module. Callers provide
 //! one already-resolved selector per 24-byte entry, in source order. This
 //! planner only preserves consecutive runs, resolves the three local 32-byte
 //! entry ordinals, and compacts them in first-use order. The result still
-//! contains borrowed source-format views; it is not a render-ready vertex
-//! buffer.
+//! contains borrowed source-format views. Later materialization produces the
+//! owned draw command defined here without attaching a backend binding or
+//! inventing unresolved raster behavior.
 
 use std::{collections::HashMap, fmt};
 
 use cmr_formats::c3d::{
     C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS, C3dEntry24, C3dEntry32, C3dGroup1Record,
 };
+
+use crate::{
+    root_menu_c3d_resources::{C3dPreparedSelector, C3dVertexMutationBranch},
+    root_menu_c3d_runtime::{C3dMode2ResourceScaledVertex, C3dOpaqueSideVector},
+};
+
+pub const C3D_PRIMITIVE_CODE: u32 = 4;
+pub const C3D_DRAW_FLAGS: u32 = 8;
+
+/// Source location of one compact, consecutive C3D draw batch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dDrawOrdinal {
+    group0_record_index: usize,
+    value_index: usize,
+    group1_ordinal: u16,
+    batch_index: usize,
+}
+
+impl C3dDrawOrdinal {
+    #[must_use]
+    pub(crate) const fn new(
+        group0_record_index: usize,
+        value_index: usize,
+        group1_ordinal: u16,
+        batch_index: usize,
+    ) -> Self {
+        Self {
+            group0_record_index,
+            value_index,
+            group1_ordinal,
+            batch_index,
+        }
+    }
+
+    #[must_use]
+    pub const fn group0_record_index(self) -> usize {
+        self.group0_record_index
+    }
+
+    #[must_use]
+    pub const fn value_index(self) -> usize {
+        self.value_index
+    }
+
+    #[must_use]
+    pub const fn group1_ordinal(self) -> u16 {
+        self.group1_ordinal
+    }
+
+    #[must_use]
+    pub const fn batch_index(self) -> usize {
+        self.batch_index
+    }
+}
+
+/// Backend-neutral payload for one recovered C3D draw submission.
+///
+/// A missing selector is retained exactly. Resolving it to the recovered
+/// default material/texture-zero operation belongs to a later backend
+/// contract; this command never substitutes an arena resource for it.
+#[derive(Debug, Eq, PartialEq)]
+pub struct C3dDrawCommand {
+    ordinal: C3dDrawOrdinal,
+    selector: C3dPreparedSelector,
+    vertex_mutation_branch: C3dVertexMutationBranch,
+    source_entry32_ordinals: Box<[u16]>,
+    vertices: Box<[C3dMode2ResourceScaledVertex]>,
+    side_vectors: Box<[C3dOpaqueSideVector]>,
+    indices: Box<[u16]>,
+}
+
+impl C3dDrawCommand {
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub(crate) fn new(
+        ordinal: C3dDrawOrdinal,
+        selector: C3dPreparedSelector,
+        vertex_mutation_branch: C3dVertexMutationBranch,
+        source_entry32_ordinals: impl Into<Box<[u16]>>,
+        vertices: impl Into<Box<[C3dMode2ResourceScaledVertex]>>,
+        side_vectors: impl Into<Box<[C3dOpaqueSideVector]>>,
+        indices: impl Into<Box<[u16]>>,
+    ) -> Self {
+        Self {
+            ordinal,
+            selector,
+            vertex_mutation_branch,
+            source_entry32_ordinals: source_entry32_ordinals.into(),
+            vertices: vertices.into(),
+            side_vectors: side_vectors.into(),
+            indices: indices.into(),
+        }
+    }
+
+    #[must_use]
+    pub const fn ordinal(&self) -> C3dDrawOrdinal {
+        self.ordinal
+    }
+
+    #[must_use]
+    pub const fn group0_record_index(&self) -> usize {
+        self.ordinal.group0_record_index()
+    }
+
+    #[must_use]
+    pub const fn value_index(&self) -> usize {
+        self.ordinal.value_index()
+    }
+
+    #[must_use]
+    pub const fn group1_ordinal(&self) -> u16 {
+        self.ordinal.group1_ordinal()
+    }
+
+    #[must_use]
+    pub const fn batch_index(&self) -> usize {
+        self.ordinal.batch_index()
+    }
+
+    #[must_use]
+    pub const fn selector(&self) -> C3dPreparedSelector {
+        self.selector
+    }
+
+    #[must_use]
+    pub const fn vertex_mutation_branch(&self) -> C3dVertexMutationBranch {
+        self.vertex_mutation_branch
+    }
+
+    #[must_use]
+    pub const fn vertex_type(&self) -> u32 {
+        self.vertex_mutation_branch.submitted_vertex_type()
+    }
+
+    #[must_use]
+    pub fn source_entry32_ordinals(&self) -> &[u16] {
+        &self.source_entry32_ordinals
+    }
+
+    #[must_use]
+    pub fn vertices(&self) -> &[C3dMode2ResourceScaledVertex] {
+        &self.vertices
+    }
+
+    #[must_use]
+    pub fn side_vectors(&self) -> &[C3dOpaqueSideVector] {
+        &self.side_vectors
+    }
+
+    #[must_use]
+    pub fn indices(&self) -> &[u16] {
+        &self.indices
+    }
+
+    #[must_use]
+    pub const fn primitive_code(&self) -> u32 {
+        C3D_PRIMITIVE_CODE
+    }
+
+    #[must_use]
+    pub const fn draw_flags(&self) -> u32 {
+        C3D_DRAW_FLAGS
+    }
+}
 
 /// One consecutive run of 24-byte entries with the same resolved selector.
 ///
@@ -184,6 +349,38 @@ mod tests {
     enum Selector {
         A,
         B,
+    }
+
+    #[test]
+    fn draw_command_preserves_neutral_ordinal_branch_and_missing_selector() {
+        let ordinal = C3dDrawOrdinal::new(3, 4, 5, 6);
+        let command = C3dDrawCommand::new(
+            ordinal,
+            C3dPreparedSelector::Missing,
+            C3dVertexMutationBranch::Type2,
+            Box::<[u16]>::default(),
+            Box::<[C3dMode2ResourceScaledVertex]>::default(),
+            Box::<[C3dOpaqueSideVector]>::default(),
+            Box::<[u16]>::default(),
+        );
+
+        assert_eq!(command.ordinal(), ordinal);
+        assert_eq!(command.group0_record_index(), 3);
+        assert_eq!(command.value_index(), 4);
+        assert_eq!(command.group1_ordinal(), 5);
+        assert_eq!(command.batch_index(), 6);
+        assert_eq!(command.selector(), C3dPreparedSelector::Missing);
+        assert_eq!(
+            command.vertex_mutation_branch(),
+            C3dVertexMutationBranch::Type2
+        );
+        assert_eq!(command.vertex_type(), 2);
+        assert_eq!(command.primitive_code(), 4);
+        assert_eq!(command.draw_flags(), 8);
+        assert!(command.source_entry32_ordinals().is_empty());
+        assert!(command.vertices().is_empty());
+        assert!(command.side_vectors().is_empty());
+        assert!(command.indices().is_empty());
     }
 
     #[test]

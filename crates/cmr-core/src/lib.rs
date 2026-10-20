@@ -5,6 +5,7 @@ pub mod c3d_batch;
 pub mod c3d_topology;
 pub mod championship_assets;
 pub mod championship_bitmap_raster;
+pub mod championship_car_frame_plan;
 pub mod championship_car_transform;
 pub mod championship_frame_assets;
 pub mod championship_setup;

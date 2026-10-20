@@ -8,6 +8,7 @@
 use std::fmt;
 
 use crate::{
+    c3d_batch::{C3dDrawCommand, C3dDrawOrdinal},
     root_menu_c3d_frame_plan::{RootMenuC3dDrawCommand, RootMenuC3dFramePlan},
     root_menu_c3d_resources::{
         C3dPreparedResource, C3dPreparedResourceAccessError, C3dPreparedResourceId,
@@ -16,6 +17,119 @@ use crate::{
     root_menu_c3d_topology::RootMenuC3dTopology,
     root_menu_c3d_transform::C3dMatrixWords,
 };
+
+/// Catalog resolution for one backend-neutral draw command.
+///
+/// `Missing` preserves the source `-1` selector. It does not imply a binding:
+/// the recovered default material/texture-zero operation needs its own backend
+/// contract and cannot be represented by an arbitrary arena handle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dPreflightBinding<'catalog, H> {
+    Resource {
+        ordinal: C3dDrawOrdinal,
+        resource_id: C3dPreparedResourceId,
+        binding: &'catalog H,
+    },
+    Missing {
+        ordinal: C3dDrawOrdinal,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dBatchPreflightError {
+    CatalogProvenanceMismatch,
+    ResourceAccess {
+        ordinal: C3dDrawOrdinal,
+        resource_id: C3dPreparedResourceId,
+        source: C3dPreparedResourceAccessError,
+    },
+}
+
+impl fmt::Display for C3dBatchPreflightError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CatalogProvenanceMismatch => formatter
+                .write_str("C3D draw commands and binding catalog belong to different arenas"),
+            Self::ResourceAccess {
+                ordinal,
+                resource_id,
+                source,
+            } => write!(
+                formatter,
+                "C3D batch {} cannot access binding {}: {source}",
+                ordinal.batch_index(),
+                resource_id.index()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for C3dBatchPreflightError {}
+
+/// Resolves all resource selectors before any backend operation is attempted.
+///
+/// Missing selectors are retained for a caller with an explicit default
+/// binding operation; resource selectors must belong to this exact catalog.
+pub fn preflight_c3d_draw_commands<'catalog, 'command, H>(
+    catalog: &'catalog C3dBindingCatalog<H>,
+    provenance: C3dPreparedResourceProvenance,
+    commands: impl IntoIterator<Item = &'command C3dDrawCommand>,
+) -> Result<Vec<C3dPreflightBinding<'catalog, H>>, C3dBatchPreflightError> {
+    if provenance != catalog.provenance() {
+        return Err(C3dBatchPreflightError::CatalogProvenanceMismatch);
+    }
+    commands
+        .into_iter()
+        .map(|command| match command.selector() {
+            C3dPreparedSelector::Resource(resource_id) => catalog
+                .binding(resource_id)
+                .map(|binding| C3dPreflightBinding::Resource {
+                    ordinal: command.ordinal(),
+                    resource_id,
+                    binding,
+                })
+                .map_err(|source| C3dBatchPreflightError::ResourceAccess {
+                    ordinal: command.ordinal(),
+                    resource_id,
+                    source,
+                }),
+            C3dPreparedSelector::Missing => Ok(C3dPreflightBinding::Missing {
+                ordinal: command.ordinal(),
+            }),
+        })
+        .collect()
+}
+
+/// Persistent cache for the last completely bound selector state.
+///
+/// `Missing` represents the recovered material/texture-zero state. Keeping it
+/// distinct from both an uninitialized cache and every arena resource is
+/// required for `resource -> missing -> same resource` sequences.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct C3dSelectorBindingCache {
+    cached: Option<C3dPreparedSelector>,
+}
+
+impl C3dSelectorBindingCache {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { cached: None }
+    }
+
+    #[must_use]
+    pub fn needs_binding(self, selector: C3dPreparedSelector) -> bool {
+        self.cached != Some(selector)
+    }
+
+    /// Commits only after the backend has completed its full binding operation.
+    pub fn commit(&mut self, selector: C3dPreparedSelector) {
+        self.cached = Some(selector);
+    }
+
+    pub fn invalidate(&mut self) {
+        self.cached = None;
+    }
+}
 
 struct ReverseDropVec<T>(Vec<T>);
 
@@ -320,7 +434,7 @@ pub struct RootMenuC3dBatchExecutor<'catalog, H> {
     catalog: &'catalog RootMenuC3dBindingCatalog<H>,
     /// `None` is the exact-root equivalent of the legacy `-2` uninitialized
     /// cache. Source `-1` is not represented because the planner rejects it.
-    cached: Option<C3dPreparedResourceId>,
+    cache: C3dSelectorBindingCache,
 }
 
 impl<'catalog, H> RootMenuC3dBatchExecutor<'catalog, H> {
@@ -328,7 +442,7 @@ impl<'catalog, H> RootMenuC3dBatchExecutor<'catalog, H> {
     pub const fn new(catalog: &'catalog RootMenuC3dBindingCatalog<H>) -> Self {
         Self {
             catalog,
-            cached: None,
+            cache: C3dSelectorBindingCache::new(),
         }
     }
 
@@ -340,7 +454,7 @@ impl<'catalog, H> RootMenuC3dBatchExecutor<'catalog, H> {
     /// Invalidates the selector cache after another render path may have
     /// changed shared backend material or texture state.
     pub fn invalidate_bindings(&mut self) {
-        self.cached = None;
+        self.cache.invalidate();
     }
 
     /// Consumes one frame plan. The selector cache commits only after the
@@ -355,26 +469,35 @@ impl<'catalog, H> RootMenuC3dBatchExecutor<'catalog, H> {
     where
         B: RootMenuC3dBatchBackend<H>,
     {
-        if plan.provenance() != self.catalog.provenance() {
-            return Err(RootMenuC3dExecuteError::Preflight(
-                RootMenuC3dBatchPreflightError::CatalogProvenanceMismatch,
-            ));
-        }
-        for command in plan.commands() {
-            let C3dPreparedSelector::Resource(resource_id) = command.selector() else {
-                return Err(RootMenuC3dExecuteError::Preflight(
-                    RootMenuC3dBatchPreflightError::MissingSelector {
-                        batch_index: command.batch_index(),
-                    },
-                ));
-            };
-            self.catalog.binding(resource_id).map_err(|source| {
-                RootMenuC3dExecuteError::Preflight(RootMenuC3dBatchPreflightError::ResourceAccess {
-                    batch_index: command.batch_index(),
+        let bindings = preflight_c3d_draw_commands(
+            self.catalog,
+            plan.provenance(),
+            plan.commands().iter().map(RootMenuC3dDrawCommand::command),
+        )
+        .map_err(|error| {
+            RootMenuC3dExecuteError::Preflight(match error {
+                C3dBatchPreflightError::CatalogProvenanceMismatch => {
+                    RootMenuC3dBatchPreflightError::CatalogProvenanceMismatch
+                }
+                C3dBatchPreflightError::ResourceAccess {
+                    ordinal,
                     resource_id,
                     source,
-                })
-            })?;
+                } => RootMenuC3dBatchPreflightError::ResourceAccess {
+                    batch_index: ordinal.batch_index(),
+                    resource_id,
+                    source,
+                },
+            })
+        })?;
+        for binding in &bindings {
+            if let C3dPreflightBinding::Missing { ordinal } = binding {
+                return Err(RootMenuC3dExecuteError::Preflight(
+                    RootMenuC3dBatchPreflightError::MissingSelector {
+                        batch_index: ordinal.batch_index(),
+                    },
+                ));
+            }
         }
 
         backend
@@ -384,15 +507,17 @@ impl<'catalog, H> RootMenuC3dBatchExecutor<'catalog, H> {
             bindings: 0,
             draws: 0,
         };
-        for command in plan.commands() {
-            let C3dPreparedSelector::Resource(resource_id) = command.selector() else {
+        for (command, binding) in plan.commands().iter().zip(bindings) {
+            let C3dPreflightBinding::Resource {
+                resource_id,
+                binding,
+                ..
+            } = binding
+            else {
                 unreachable!("preflight rejected missing exact-root selector")
             };
-            let binding = self
-                .catalog
-                .binding(resource_id)
-                .expect("preflight resolved every exact-root binding");
-            if self.cached != Some(resource_id) {
+            let selector = C3dPreparedSelector::Resource(resource_id);
+            if self.cache.needs_binding(selector) {
                 backend.bind_root_c3d_resource(binding).map_err(|source| {
                     backend_error(
                         RootMenuC3dBatchStage::Binding,
@@ -401,7 +526,7 @@ impl<'catalog, H> RootMenuC3dBatchExecutor<'catalog, H> {
                         source,
                     )
                 })?;
-                self.cached = Some(resource_id);
+                self.cache.commit(selector);
                 outcome.bindings += 1;
             }
             backend.draw_root_c3d_batch(command).map_err(|source| {
@@ -435,6 +560,25 @@ fn backend_error<E>(
 #[cfg(test)]
 mod catalog_tests {
     use super::*;
+    use crate::{
+        c3d_batch::{C3dDrawCommand, C3dDrawOrdinal},
+        root_menu_c3d_resources::{
+            C3dPreparedArenaBuilder, C3dPreparedSelector, C3dVertexMutationBranch,
+        },
+        root_menu_c3d_runtime::{C3dMode2ResourceScaledVertex, C3dOpaqueSideVector},
+    };
+
+    fn command(batch_index: usize, selector: C3dPreparedSelector) -> C3dDrawCommand {
+        C3dDrawCommand::new(
+            C3dDrawOrdinal::new(0, 0, 0, batch_index),
+            selector,
+            C3dVertexMutationBranch::Type2,
+            Box::<[u16]>::default(),
+            Box::<[C3dMode2ResourceScaledVertex]>::default(),
+            Box::<[C3dOpaqueSideVector]>::default(),
+            Box::<[u16]>::default(),
+        )
+    }
 
     #[test]
     fn catalog_distinguishes_unknown_same_arena_ids_from_foreign_ids() {
@@ -454,5 +598,99 @@ mod catalog_tests {
                 resource_count: 1,
             })
         );
+    }
+
+    #[test]
+    fn neutral_preflight_resolves_resources_and_preserves_missing_selectors() {
+        let known = C3dPreparedResourceId::new_for_test(0);
+        let catalog = C3dBindingCatalog {
+            provenance: known.provenance(),
+            resource_ids: vec![known],
+            bindings: vec![7u8],
+        };
+        let commands = [
+            command(2, C3dPreparedSelector::Resource(known)),
+            command(3, C3dPreparedSelector::Missing),
+        ];
+
+        let bindings =
+            preflight_c3d_draw_commands(&catalog, known.provenance(), commands.iter()).unwrap();
+
+        assert_eq!(
+            bindings,
+            [
+                C3dPreflightBinding::Resource {
+                    ordinal: C3dDrawOrdinal::new(0, 0, 0, 2),
+                    resource_id: known,
+                    binding: &7,
+                },
+                C3dPreflightBinding::Missing {
+                    ordinal: C3dDrawOrdinal::new(0, 0, 0, 3),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn neutral_preflight_rejects_provenance_and_catalog_access_before_execution() {
+        let known = C3dPreparedResourceId::new_for_test(0);
+        let unknown = C3dPreparedResourceId::new_for_test(1);
+        let catalog = C3dBindingCatalog {
+            provenance: known.provenance(),
+            resource_ids: vec![known],
+            bindings: vec![7u8],
+        };
+        let first_allocated = C3dPreparedArenaBuilder::new().unwrap().finish();
+        let second_allocated = C3dPreparedArenaBuilder::new().unwrap().finish();
+        let foreign = if first_allocated.provenance() != known.provenance() {
+            first_allocated
+        } else {
+            second_allocated
+        };
+
+        assert_eq!(
+            preflight_c3d_draw_commands(
+                &catalog,
+                foreign.provenance(),
+                [command(0, C3dPreparedSelector::Resource(known))].iter(),
+            ),
+            Err(C3dBatchPreflightError::CatalogProvenanceMismatch)
+        );
+        assert_eq!(
+            preflight_c3d_draw_commands(
+                &catalog,
+                known.provenance(),
+                [command(4, C3dPreparedSelector::Resource(unknown))].iter(),
+            ),
+            Err(C3dBatchPreflightError::ResourceAccess {
+                ordinal: C3dDrawOrdinal::new(0, 0, 0, 4),
+                resource_id: unknown,
+                source: C3dPreparedResourceAccessError::Unknown {
+                    index: 1,
+                    resource_count: 1,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn neutral_binding_cache_commits_only_explicitly_and_invalidates() {
+        let first = C3dPreparedResourceId::new_for_test(0);
+        let second = C3dPreparedResourceId::new_for_test(1);
+        let mut cache = C3dSelectorBindingCache::new();
+
+        let first = C3dPreparedSelector::Resource(first);
+        let second = C3dPreparedSelector::Resource(second);
+        assert!(cache.needs_binding(first));
+        cache.commit(first);
+        assert!(!cache.needs_binding(first));
+        assert!(cache.needs_binding(C3dPreparedSelector::Missing));
+        cache.commit(C3dPreparedSelector::Missing);
+        assert!(!cache.needs_binding(C3dPreparedSelector::Missing));
+        assert!(cache.needs_binding(first));
+        cache.commit(first);
+        assert!(cache.needs_binding(second));
+        cache.invalidate();
+        assert!(cache.needs_binding(first));
     }
 }

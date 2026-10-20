@@ -14,7 +14,11 @@ use cmr_assets::{
 use cmr_core::{
     c3d_topology::C3dObjectTopologyError,
     championship_assets::{CHAMPIONSHIP_CARS, MANUFACTURER_LOGOS, load_championship_assets},
+    championship_car_frame_plan::{ChampionshipCarActorParent, plan_championship_car_frame},
+    championship_car_transform::{ChampionshipCarInput, ChampionshipCarState},
     championship_setup::CanonicalCar,
+    championship_setup_visual::PixelPoint,
+    display::DisplayExtent,
     frontend_c3d_resources::{
         CHAMPIONSHIP_C3D_ENTRY_RESOURCE_SNAPSHOTS, CHAMPIONSHIP_C3D_RESOURCE_PREFIX_LEN,
         FrontendC3dCarMaterializationError, FrontendC3dPreparationError,
@@ -101,6 +105,108 @@ fn reviewed_import_preserves_the_fresh_frontend_resource_snapshots() {
                 .collect::<Vec<_>>(),
             expected_ids
         );
+    }
+
+    const Q16_ONE: i32 = 0x1_0000;
+    const IDENTITY_BASIS: [i32; 9] = [Q16_ONE, 0, 0, 0, Q16_ONE, 0, 0, 0, Q16_ONE];
+    const EXTENT: DisplayExtent = DisplayExtent {
+        width: 640,
+        height: 480,
+    };
+    const ORIGIN: PixelPoint = PixelPoint { x: 100, y: 100 };
+    const INPUT: ChampionshipCarInput = ChampionshipCarInput {
+        f9: false,
+        f10: false,
+    };
+    const HIERARCHY_COUNTS: [(usize, usize, usize, usize); 14] = [
+        (17, 12, 15, 29),
+        (17, 12, 15, 23),
+        (17, 12, 15, 24),
+        (19, 14, 17, 28),
+        (17, 12, 15, 25),
+        (17, 12, 15, 24),
+        (17, 12, 15, 26),
+        (17, 12, 15, 26),
+        (18, 13, 16, 27),
+        (17, 12, 15, 25),
+        (17, 12, 15, 24),
+        (16, 11, 14, 24),
+        (19, 17, 17, 25),
+        (18, 13, 16, 33),
+    ];
+    for (car_index, car) in CanonicalCar::ALL.into_iter().enumerate() {
+        let topology = prepared.car_topology(&championship, car).unwrap();
+        let runtime = prepared.materialize_car(car, &topology).unwrap();
+        let mut state = ChampionshipCarState::new();
+        let first = plan_championship_car_frame(
+            &topology,
+            &runtime,
+            &mut state,
+            car,
+            INPUT,
+            IDENTITY_BASIS,
+            ORIGIN,
+            EXTENT,
+        )
+        .unwrap();
+        assert!(!first.selected_parent_visible());
+        assert!(first.draws().is_empty());
+        let second = plan_championship_car_frame(
+            &topology,
+            &runtime,
+            &mut state,
+            car,
+            INPUT,
+            IDENTITY_BASIS,
+            ORIGIN,
+            EXTENT,
+        )
+        .unwrap();
+        assert!(second.selected_parent_visible());
+        assert_eq!(
+            (
+                second.actors().len(),
+                topology.groups().len(),
+                second
+                    .actors()
+                    .iter()
+                    .filter(|actor| !actor.levels().is_empty())
+                    .count(),
+                second.draws().len(),
+            ),
+            HIERARCHY_COUNTS[car_index]
+        );
+        assert_eq!(
+            second.actors()[0].parent(),
+            ChampionshipCarActorParent::PreviewRoot
+        );
+        assert!(second.actors()[0].levels().is_empty());
+        for actor in &second.actors()[1..=4] {
+            assert_eq!(actor.parent(), ChampionshipCarActorParent::Actor(0));
+            assert_eq!(actor.levels().len(), 1);
+        }
+        assert_eq!(
+            second.actors()[5].parent(),
+            ChampionshipCarActorParent::Actor(0)
+        );
+        assert!(second.actors()[5].levels().is_empty());
+        for actor in &second.actors()[6..] {
+            assert_eq!(actor.parent(), ChampionshipCarActorParent::Actor(5));
+            assert_eq!(actor.levels().len(), 1);
+        }
+        assert!(
+            second
+                .actors()
+                .iter()
+                .flat_map(|actor| actor.levels())
+                .all(|level| level.flags() == 0)
+        );
+        assert!(!second.draws().is_empty());
+        assert!(second.draws().iter().all(|draw| {
+            draw.command().vertex_type() == 2
+                && draw.command().primitive_code() == 4
+                && draw.command().draw_flags() == 8
+        }));
     }
 }
 

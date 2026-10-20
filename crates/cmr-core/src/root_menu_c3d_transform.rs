@@ -23,6 +23,11 @@ pub struct C3dMatrixWords([u32; 16]);
 
 impl C3dMatrixWords {
     #[must_use]
+    pub(crate) const fn from_words(words: [u32; 16]) -> Self {
+        Self(words)
+    }
+
+    #[must_use]
     pub const fn words(self) -> [u32; 16] {
         self.0
     }

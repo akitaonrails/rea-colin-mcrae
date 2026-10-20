@@ -10,6 +10,7 @@ use std::fmt;
 use cmr_formats::c3d::C3D_GROUP0_VALUES_OFFSET;
 
 use crate::{
+    c3d_batch::{C3D_DRAW_FLAGS, C3D_PRIMITIVE_CODE, C3dDrawCommand, C3dDrawOrdinal},
     display::DisplayExtent,
     root_menu_assets::{RootMenuObjectIdentity, VisualVariant},
     root_menu_c3d_assets::{RootMenuC3dAngles, RootMenuC3dSlot},
@@ -17,9 +18,7 @@ use crate::{
         C3dPreparedResourceAccessError, C3dPreparedResourceId, C3dPreparedResourceProvenance,
         C3dPreparedSelector, C3dVertexMutationBranch,
     },
-    root_menu_c3d_runtime::{
-        C3dMode2ResourceScaledVertex, C3dOpaqueSideVector, RootMenuC3dMode2ResourceScaledRuntime,
-    },
+    root_menu_c3d_runtime::RootMenuC3dMode2ResourceScaledRuntime,
     root_menu_c3d_topology::RootMenuC3dTopology,
     root_menu_c3d_transform::{
         C3dMatrixWords, C3dViewportWords, ROOT_MENU_C3D_PROJECTION, ROOT_MENU_C3D_VIEW,
@@ -28,22 +27,14 @@ use crate::{
 };
 
 pub const ROOT_MENU_C3D_VERTEX_TYPE: u32 = C3dVertexMutationBranch::Type1.submitted_vertex_type();
-pub const ROOT_MENU_C3D_PRIMITIVE_CODE: u32 = 4;
-pub const ROOT_MENU_C3D_DRAW_FLAGS: u32 = 8;
+pub const ROOT_MENU_C3D_PRIMITIVE_CODE: u32 = C3D_PRIMITIVE_CODE;
+pub const ROOT_MENU_C3D_DRAW_FLAGS: u32 = C3D_DRAW_FLAGS;
 
 /// One source-ordered batch ready for a later compatibility executor.
 #[derive(Debug, Eq, PartialEq)]
 pub struct RootMenuC3dDrawCommand {
     slot: RootMenuC3dSlot,
-    group0_record_index: usize,
-    value_index: usize,
-    group1_ordinal: u16,
-    batch_index: usize,
-    selector: C3dPreparedSelector,
-    source_entry32_ordinals: Box<[u16]>,
-    vertices: Box<[C3dMode2ResourceScaledVertex]>,
-    side_vectors: Box<[C3dOpaqueSideVector]>,
-    indices: Box<[u16]>,
+    command: C3dDrawCommand,
 }
 
 impl RootMenuC3dDrawCommand {
@@ -54,67 +45,72 @@ impl RootMenuC3dDrawCommand {
 
     #[must_use]
     pub const fn group0_record_index(&self) -> usize {
-        self.group0_record_index
+        self.command.group0_record_index()
     }
 
     #[must_use]
     pub const fn value_index(&self) -> usize {
-        self.value_index
+        self.command.value_index()
     }
 
     #[must_use]
     pub const fn group1_ordinal(&self) -> u16 {
-        self.group1_ordinal
+        self.command.group1_ordinal()
     }
 
     #[must_use]
     pub const fn batch_index(&self) -> usize {
-        self.batch_index
+        self.command.batch_index()
     }
 
     #[must_use]
     pub const fn selector(&self) -> C3dPreparedSelector {
-        self.selector
+        self.command.selector()
     }
 
     #[must_use]
     pub fn source_entry32_ordinals(&self) -> &[u16] {
-        &self.source_entry32_ordinals
+        self.command.source_entry32_ordinals()
     }
 
     #[must_use]
-    pub fn vertices(&self) -> &[C3dMode2ResourceScaledVertex] {
-        &self.vertices
+    pub fn vertices(&self) -> &[crate::root_menu_c3d_runtime::C3dMode2ResourceScaledVertex] {
+        self.command.vertices()
     }
 
     #[must_use]
-    pub fn side_vectors(&self) -> &[C3dOpaqueSideVector] {
-        &self.side_vectors
+    pub fn side_vectors(&self) -> &[crate::root_menu_c3d_runtime::C3dOpaqueSideVector] {
+        self.command.side_vectors()
     }
 
     #[must_use]
     pub fn indices(&self) -> &[u16] {
-        &self.indices
+        self.command.indices()
     }
 
     #[must_use]
     pub const fn vertex_type(&self) -> u32 {
-        ROOT_MENU_C3D_VERTEX_TYPE
+        self.command.vertex_type()
     }
 
     #[must_use]
     pub const fn vertex_mutation_branch(&self) -> C3dVertexMutationBranch {
-        C3dVertexMutationBranch::Type1
+        self.command.vertex_mutation_branch()
     }
 
     #[must_use]
     pub const fn primitive_code(&self) -> u32 {
-        ROOT_MENU_C3D_PRIMITIVE_CODE
+        self.command.primitive_code()
     }
 
     #[must_use]
     pub const fn draw_flags(&self) -> u32 {
-        ROOT_MENU_C3D_DRAW_FLAGS
+        self.command.draw_flags()
+    }
+
+    #[must_use]
+    pub const fn command(&self) -> &C3dDrawCommand {
+        &self.command
     }
 }
 
@@ -555,16 +551,60 @@ fn preflight_root_commands(
         }
         commands.push(RootMenuC3dDrawCommand {
             slot,
-            group0_record_index: 0,
-            value_index: 0,
-            group1_ordinal: 0,
-            batch_index,
-            selector: runtime_batch.selector(),
-            source_entry32_ordinals: runtime_batch.source_entry32_ordinals().into(),
-            vertices: runtime_batch.vertices().into(),
-            side_vectors: runtime_batch.side_vectors().into(),
-            indices: runtime_batch.indices().into(),
+            command: C3dDrawCommand::new(
+                C3dDrawOrdinal::new(0, 0, 0, batch_index),
+                runtime_batch.selector(),
+                C3dVertexMutationBranch::Type1,
+                runtime_batch.source_entry32_ordinals(),
+                runtime_batch.vertices(),
+                runtime_batch.side_vectors(),
+                runtime_batch.indices(),
+            ),
         });
     }
     Ok(commands)
+}
+
+#[cfg(test)]
+mod adapter_tests {
+    use super::*;
+    use crate::root_menu_c3d_runtime::{C3dMode2ResourceScaledVertex, C3dOpaqueSideVector};
+
+    #[test]
+    fn root_draw_command_is_a_lossless_view_of_the_neutral_command() {
+        let command = RootMenuC3dDrawCommand {
+            slot: RootMenuC3dSlot::Options,
+            command: C3dDrawCommand::new(
+                C3dDrawOrdinal::new(1, 2, 3, 4),
+                C3dPreparedSelector::Missing,
+                C3dVertexMutationBranch::Type1,
+                Box::<[u16]>::default(),
+                Box::<[C3dMode2ResourceScaledVertex]>::default(),
+                Box::<[C3dOpaqueSideVector]>::default(),
+                Box::<[u16]>::default(),
+            ),
+        };
+        let neutral = command.command();
+
+        assert_eq!(command.slot(), RootMenuC3dSlot::Options);
+        assert_eq!(command.group0_record_index(), neutral.group0_record_index());
+        assert_eq!(command.value_index(), neutral.value_index());
+        assert_eq!(command.group1_ordinal(), neutral.group1_ordinal());
+        assert_eq!(command.batch_index(), neutral.batch_index());
+        assert_eq!(command.selector(), neutral.selector());
+        assert_eq!(
+            command.vertex_mutation_branch(),
+            neutral.vertex_mutation_branch()
+        );
+        assert_eq!(command.vertex_type(), neutral.vertex_type());
+        assert_eq!(
+            command.source_entry32_ordinals(),
+            neutral.source_entry32_ordinals()
+        );
+        assert_eq!(command.vertices(), neutral.vertices());
+        assert_eq!(command.side_vectors(), neutral.side_vectors());
+        assert_eq!(command.indices(), neutral.indices());
+        assert_eq!(command.primitive_code(), neutral.primitive_code());
+        assert_eq!(command.draw_flags(), neutral.draw_flags());
+    }
 }

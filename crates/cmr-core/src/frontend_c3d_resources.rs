@@ -325,7 +325,7 @@ pub fn prepare_frontend_c3d_resources(
     })
 }
 
-const fn championship_mode8_policy(entry_resource_count: u32) -> C3dLoadPolicy {
+pub(crate) const fn championship_mode8_policy(entry_resource_count: u32) -> C3dLoadPolicy {
     C3dLoadPolicy {
         mode: 8,
         caller_option: 1,
