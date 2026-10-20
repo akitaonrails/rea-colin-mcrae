@@ -330,7 +330,7 @@ fn synthetic_c3d(marker: u8) -> Vec<u8> {
     input[0..4].copy_from_slice(&C3D_MAGIC);
     input[4..8].copy_from_slice(&C3D_FORMAT_VERSION.to_le_bytes());
     input[8..12].copy_from_slice(&[marker, 0xa1, 0xb2, 0xc3]);
-    for (index, count) in [1u16, 1, 1].into_iter().enumerate() {
+    for (index, count) in [0u16, 0, 1].into_iter().enumerate() {
         let start = 12 + index * 2;
         input[start..start + 2].copy_from_slice(&count.to_le_bytes());
     }

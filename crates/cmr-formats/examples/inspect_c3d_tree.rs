@@ -4,7 +4,9 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cmr_formats::c3d::{C3D_BLOB_RECORD_HEADER_LEN, C3dError, C3dLimits, parse_c3d};
+use cmr_formats::c3d::{
+    C3D_BLOB_RECORD_HEADER_LEN, C3D_GROUP0_VALUES_OFFSET, C3dError, C3dLimits, parse_c3d,
+};
 use cmr_formats::stored_asset::{DecodeLimits, decode_stored_asset};
 
 const STORAGE_LIMITS: DecodeLimits = DecodeLimits {
@@ -25,10 +27,21 @@ fn main() -> ExitCode {
     match inspect_roots(&roots) {
         Ok(summary) => {
             println!(
-                "files={} blob_records={} blob_bytes={} records_exhaust_payload={}",
+                "files={} group0_records={} group0_bytes={} group0_values={} group1_records={} group1_bytes={} entries32={} entries24={} blob_records={} blob_bytes={} group0_reaches_group1={} group1_reaches_group2={} group0_exact_layout={} group1_exact_layout={} records_exhaust_payload={}",
                 summary.files,
+                summary.group0_records,
+                summary.group0_bytes,
+                summary.group0_values,
+                summary.group1_records,
+                summary.group1_bytes,
+                summary.entries32,
+                summary.entries24,
                 summary.blob_records,
                 summary.blob_bytes,
+                summary.group0_reaches_group1,
+                summary.group1_reaches_group2,
+                summary.group0_exact_layout,
+                summary.group1_exact_layout,
                 summary.records_exhaust_payload
             );
             ExitCode::SUCCESS
@@ -43,8 +56,19 @@ fn main() -> ExitCode {
 #[derive(Default)]
 struct Summary {
     files: u64,
+    group0_records: u64,
+    group0_bytes: u64,
+    group0_values: u64,
+    group1_records: u64,
+    group1_bytes: u64,
+    entries32: u64,
+    entries24: u64,
     blob_records: u64,
     blob_bytes: u64,
+    group0_reaches_group1: u64,
+    group1_reaches_group2: u64,
+    group0_exact_layout: u64,
+    group1_exact_layout: u64,
     records_exhaust_payload: u64,
 }
 
@@ -100,6 +124,41 @@ fn inspect_file(path: &Path, summary: &mut Summary) -> Result<(), String> {
         .files
         .checked_add(1)
         .ok_or_else(|| "C3D file count overflow".to_owned())?;
+    checked_accumulate(
+        &mut summary.group0_records,
+        file_summary.group0_records,
+        "C3D group-0 record count",
+    )?;
+    checked_accumulate(
+        &mut summary.group0_bytes,
+        file_summary.group0_bytes,
+        "C3D group-0 byte count",
+    )?;
+    checked_accumulate(
+        &mut summary.group0_values,
+        file_summary.group0_values,
+        "C3D group-0 value count",
+    )?;
+    checked_accumulate(
+        &mut summary.group1_records,
+        file_summary.group1_records,
+        "C3D group-1 record count",
+    )?;
+    checked_accumulate(
+        &mut summary.group1_bytes,
+        file_summary.group1_bytes,
+        "C3D group-1 byte count",
+    )?;
+    checked_accumulate(
+        &mut summary.entries32,
+        file_summary.entries32,
+        "C3D 32-byte entry count",
+    )?;
+    checked_accumulate(
+        &mut summary.entries24,
+        file_summary.entries24,
+        "C3D 24-byte entry count",
+    )?;
     summary.blob_records = summary
         .blob_records
         .checked_add(file_summary.blob_records)
@@ -108,12 +167,45 @@ fn inspect_file(path: &Path, summary: &mut Summary) -> Result<(), String> {
         .blob_bytes
         .checked_add(file_summary.blob_bytes)
         .ok_or_else(|| "C3D blob-byte count overflow".to_owned())?;
+    for (aggregate, present, name) in [
+        (
+            &mut summary.group0_reaches_group1,
+            file_summary.group0_reaches_group1,
+            "C3D group-0 boundary count",
+        ),
+        (
+            &mut summary.group1_reaches_group2,
+            file_summary.group1_reaches_group2,
+            "C3D group-1 boundary count",
+        ),
+    ] {
+        if present {
+            checked_accumulate(aggregate, 1, name)?;
+        }
+    }
+    checked_accumulate(
+        &mut summary.group0_exact_layout,
+        file_summary.group0_exact_layout,
+        "C3D group-0 exact-layout count",
+    )?;
+    checked_accumulate(
+        &mut summary.group1_exact_layout,
+        file_summary.group1_exact_layout,
+        "C3D group-1 exact-layout count",
+    )?;
     if file_summary.records_exhaust_payload {
         summary.records_exhaust_payload = summary
             .records_exhaust_payload
             .checked_add(1)
             .ok_or_else(|| "C3D exhaustion count overflow".to_owned())?;
     }
+    Ok(())
+}
+
+fn checked_accumulate(target: &mut u64, value: u64, name: &str) -> Result<(), String> {
+    *target = target
+        .checked_add(value)
+        .ok_or_else(|| format!("{name} overflow"))?;
     Ok(())
 }
 
@@ -147,13 +239,59 @@ fn read_bounded(reader: impl Read, limit: usize) -> io::Result<Vec<u8>> {
 
 #[derive(Debug, Eq, PartialEq)]
 struct FileSummary {
+    group0_records: u64,
+    group0_bytes: u64,
+    group0_values: u64,
+    group1_records: u64,
+    group1_bytes: u64,
+    entries32: u64,
+    entries24: u64,
     blob_records: u64,
     blob_bytes: u64,
+    group0_reaches_group1: bool,
+    group1_reaches_group2: bool,
+    group0_exact_layout: u64,
+    group1_exact_layout: u64,
     records_exhaust_payload: bool,
 }
 
 fn inspect_payload(payload: &[u8]) -> Result<FileSummary, C3dError> {
     let parsed = parse_c3d(payload, C3dLimits::default())?;
+    let mut group0_records = 0;
+    let mut group0_bytes = 0;
+    let mut group0_values = 0;
+    let mut group0_exact_layout = 0;
+    let mut group0_end = usize::try_from(parsed.header().section_offsets[0])
+        .expect("validated C3D position fits usize");
+    for record in parsed.group0_records() {
+        group0_records += 1;
+        group0_bytes += record.bytes().len() as u64;
+        group0_values += u64::from(record.value_count());
+        let used = C3D_GROUP0_VALUES_OFFSET + usize::from(record.value_count()) * 2;
+        if record.bytes().len() == ((used + 3) & !3) {
+            group0_exact_layout += 1;
+        }
+        group0_end = record.offset() + record.bytes().len();
+    }
+
+    let mut group1_records = 0;
+    let mut group1_bytes = 0;
+    let mut entries32 = 0;
+    let mut entries24 = 0;
+    let mut group1_exact_layout = 0;
+    let mut group1_end = usize::try_from(parsed.header().section_offsets[1])
+        .expect("validated C3D position fits usize");
+    for record in parsed.group1_records() {
+        group1_records += 1;
+        group1_bytes += record.bytes().len() as u64;
+        entries32 += u64::from(record.entry32_count());
+        entries24 += u64::from(record.entry24_count());
+        if record.trailing_bytes().is_empty() {
+            group1_exact_layout += 1;
+        }
+        group1_end = record.offset() + record.bytes().len();
+    }
+
     let mut blob_records = 0;
     let mut blob_bytes = 0;
     let mut end = usize::try_from(parsed.header().section_offsets[2])
@@ -168,8 +306,23 @@ fn inspect_payload(payload: &[u8]) -> Result<FileSummary, C3dError> {
         end = record.offset() + C3D_BLOB_RECORD_HEADER_LEN + record.blob().len();
     }
     Ok(FileSummary {
+        group0_records,
+        group0_bytes,
+        group0_values,
+        group1_records,
+        group1_bytes,
+        entries32,
+        entries24,
         blob_records,
         blob_bytes,
+        group0_reaches_group1: group0_end
+            == usize::try_from(parsed.header().section_offsets[1])
+                .expect("validated C3D position fits usize"),
+        group1_reaches_group2: group1_end
+            == usize::try_from(parsed.header().section_offsets[2])
+                .expect("validated C3D position fits usize"),
+        group0_exact_layout,
+        group1_exact_layout,
         records_exhaust_payload: end == parsed.bytes().len(),
     })
 }
@@ -202,6 +355,8 @@ mod tests {
         payload[0..4].copy_from_slice(&C3D_MAGIC);
         payload[4..8].copy_from_slice(&C3D_FORMAT_VERSION.to_le_bytes());
         payload[16..18].copy_from_slice(&1u16.to_le_bytes());
+        payload[20..24].copy_from_slice(&32u32.to_le_bytes());
+        payload[24..28].copy_from_slice(&32u32.to_le_bytes());
         payload[28..32].copy_from_slice(&32u32.to_le_bytes());
         payload[32..44].copy_from_slice(b"SYNTHETIC\0\0\0");
         payload[44..48].copy_from_slice(&3u32.to_le_bytes());
@@ -210,8 +365,19 @@ mod tests {
         assert_eq!(
             inspect_payload(&payload).unwrap(),
             FileSummary {
+                group0_records: 0,
+                group0_bytes: 0,
+                group0_values: 0,
+                group1_records: 0,
+                group1_bytes: 0,
+                entries32: 0,
+                entries24: 0,
                 blob_records: 1,
                 blob_bytes: 3,
+                group0_reaches_group1: true,
+                group1_reaches_group2: true,
+                group0_exact_layout: 0,
+                group1_exact_layout: 0,
                 records_exhaust_payload: false,
             }
         );
@@ -229,6 +395,37 @@ mod tests {
             !inspect_payload(&before_end)
                 .unwrap()
                 .records_exhaust_payload
+        );
+    }
+
+    #[test]
+    fn payload_summary_uses_all_three_production_iterators() {
+        let mut payload = c3d_header_with_blob_group(1, 160, 176);
+        payload[12..14].copy_from_slice(&1u16.to_le_bytes());
+        payload[14..16].copy_from_slice(&1u16.to_le_bytes());
+        payload[20..24].copy_from_slice(&32u32.to_le_bytes());
+        payload[24..28].copy_from_slice(&112u32.to_le_bytes());
+        payload[32..36].copy_from_slice(&80u32.to_le_bytes());
+        payload[124..128].copy_from_slice(&48u32.to_le_bytes());
+
+        assert_eq!(
+            inspect_payload(&payload).unwrap(),
+            FileSummary {
+                group0_records: 1,
+                group0_bytes: 80,
+                group0_values: 0,
+                group1_records: 1,
+                group1_bytes: 48,
+                entries32: 0,
+                entries24: 0,
+                blob_records: 1,
+                blob_bytes: 0,
+                group0_reaches_group1: true,
+                group1_reaches_group2: true,
+                group0_exact_layout: 1,
+                group1_exact_layout: 1,
+                records_exhaust_payload: true,
+            }
         );
     }
 

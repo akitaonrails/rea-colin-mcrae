@@ -122,10 +122,11 @@ final-boundary order and typed failure boundaries without pretending its
 injected C3D-command and final `ComposeAndPresent` hooks are implemented; opaque
 handles remain only for that still-unimplemented C3D path.
 The six optional root-menu C3D files now load through fixed slots and a bounded,
-byte-preserving parser. Its third counted group is decoded only as proven raw
-12-byte label fields plus opaque length-delimited blobs; the first two groups,
-blob formats, runtime-object construction, command execution, and pixels remain
-unrecovered rather than inferred.
+byte-preserving parser. All three counted groups now expose only proven framing:
+group 0's raw `u16` values, group 1's opaque 32/24-byte entry arrays, and group
+2's raw label fields plus opaque length-delimited blobs. Entry/blob meanings,
+runtime-object construction, command execution, and pixels remain unrecovered
+rather than inferred.
 
 Exit gate:
 

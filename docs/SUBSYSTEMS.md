@@ -97,8 +97,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::root_menu_assets`: typed, verified-profile paths for localized
   root chrome, center icons, and normal/`g_` menu objects without asset bytes.
 - `cmr-formats::c3d`: bounded, byte-preserving admission of the observed
-  `CM3D` header and the proven third counted group as opaque raw-label/blob
-  records, without assigning blob or first-two-group semantics.
+  `CM3D` header and all three proven counted layouts, including raw group-0
+  `u16` values, opaque group-1 32/24-byte entries, and group-2 label/blob pairs,
+  without assigning content semantics.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes.

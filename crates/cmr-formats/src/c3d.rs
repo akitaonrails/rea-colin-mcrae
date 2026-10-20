@@ -1,9 +1,9 @@
 //! Bounded parsing for the observed `CM3D` object header.
 //!
 //! The legacy loader reads three counts and three payload-relative offsets from
-//! a 32-byte prefix. Only the third count/position iterator is recovered so
-//! far; this module exposes its length-delimited blobs under neutral names,
-//! preserves the other groups, and retains the complete payload unchanged.
+//! a 32-byte prefix. This module reconstructs their proven record framing and
+//! counted subarrays under neutral names, preserves all unknown and trailing
+//! bytes, and retains the complete payload unchanged.
 
 use std::fmt;
 
@@ -11,12 +11,22 @@ pub const C3D_HEADER_LEN: usize = 32;
 pub const C3D_MAGIC: [u8; 4] = *b"CM3D";
 pub const C3D_FORMAT_VERSION: u32 = 100;
 pub const C3D_SECTION_COUNT: usize = 3;
+pub const C3D_GROUP0_FIXED_LEN: usize = 80;
+pub const C3D_GROUP0_VALUE_COUNT_OFFSET: usize = 76;
+pub const C3D_GROUP0_VALUES_OFFSET: usize = 80;
+pub const C3D_GROUP1_FIXED_LEN: usize = 48;
+pub const C3D_GROUP1_PREFIX_LEN: usize = 12;
+pub const C3D_GROUP1_UNKNOWN_LEN: usize = 28;
+pub const C3D_GROUP1_ENTRY32_LEN: usize = 32;
+pub const C3D_GROUP1_ENTRY24_LEN: usize = 24;
 pub const C3D_BLOB_RECORD_HEADER_LEN: usize = 16;
 pub const C3D_BLOB_LABEL_LEN: usize = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct C3dLimits {
     pub max_payload_bytes: usize,
+    pub max_group0_records: usize,
+    pub max_group1_records: usize,
     pub max_blob_records: usize,
 }
 
@@ -24,6 +34,8 @@ impl Default for C3dLimits {
     fn default() -> Self {
         Self {
             max_payload_bytes: 64 * 1024 * 1024,
+            max_group0_records: u16::MAX as usize,
+            max_group1_records: u16::MAX as usize,
             max_blob_records: u16::MAX as usize,
         }
     }
@@ -47,6 +59,8 @@ pub struct C3dHeader {
 pub struct C3dFile {
     header: C3dHeader,
     bytes: Vec<u8>,
+    group0_records: Vec<C3dGroup0RecordSpan>,
+    group1_records: Vec<C3dGroup1RecordSpan>,
     blob_records: Vec<C3dBlobRecordSpan>,
 }
 
@@ -66,6 +80,31 @@ impl C3dFile {
         self.bytes
     }
 
+    pub fn group0_records(&self) -> impl ExactSizeIterator<Item = C3dGroup0Record<'_>> {
+        self.group0_records.iter().map(|span| C3dGroup0Record {
+            offset: span.offset,
+            bytes: &self.bytes[span.offset..span.end],
+            values: &self.bytes[span.values_start..span.values_end],
+            trailing: &self.bytes[span.values_end..span.end],
+        })
+    }
+
+    pub fn group1_records(&self) -> impl ExactSizeIterator<Item = C3dGroup1Record<'_>> {
+        self.group1_records.iter().map(|span| C3dGroup1Record {
+            offset: span.offset,
+            bytes: &self.bytes[span.offset..span.end],
+            prefix: self.bytes[span.offset..span.offset + C3D_GROUP1_PREFIX_LEN]
+                .try_into()
+                .expect("validated C3D group-1 prefix"),
+            unknown: self.bytes[span.offset + 20..span.offset + C3D_GROUP1_FIXED_LEN]
+                .try_into()
+                .expect("validated C3D group-1 unknown region"),
+            entries_32: &self.bytes[span.entries_32_start..span.entries_32_end],
+            entries_24: &self.bytes[span.entries_32_end..span.entries_24_end],
+            trailing: &self.bytes[span.entries_24_end..span.end],
+        })
+    }
+
     pub fn blob_records(&self) -> impl ExactSizeIterator<Item = C3dBlobRecord<'_>> {
         self.blob_records.iter().map(|span| C3dBlobRecord {
             offset: span.offset,
@@ -74,6 +113,120 @@ impl C3dFile {
                 .expect("validated C3D blob label"),
             blob: &self.bytes[span.blob_start..span.blob_end],
         })
+    }
+}
+
+/// One structurally recovered record from header group 0.
+///
+/// Field meanings remain unknown. The executable uses byte `+76` as the count
+/// of little-endian `u16` values beginning at `+80`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dGroup0Record<'a> {
+    offset: usize,
+    bytes: &'a [u8],
+    values: &'a [u8],
+    trailing: &'a [u8],
+}
+
+impl<'a> C3dGroup0Record<'a> {
+    #[must_use]
+    pub const fn offset(self) -> usize {
+        self.offset
+    }
+
+    #[must_use]
+    pub fn declared_len(self) -> u32 {
+        read_u32(self.bytes, 0)
+    }
+
+    #[must_use]
+    pub const fn bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+
+    #[must_use]
+    pub const fn value_count(self) -> u8 {
+        self.bytes[C3D_GROUP0_VALUE_COUNT_OFFSET]
+    }
+
+    pub fn values(self) -> impl ExactSizeIterator<Item = u16> + 'a {
+        let (values, remainder) = self.values.as_chunks::<2>();
+        debug_assert!(remainder.is_empty());
+        values.iter().copied().map(u16::from_le_bytes)
+    }
+
+    #[must_use]
+    pub const fn trailing_bytes(self) -> &'a [u8] {
+        self.trailing
+    }
+}
+
+/// One structurally recovered record from header group 1.
+///
+/// The two nested arrays remain opaque fixed-size entries; their contents and
+/// the other fixed-prefix bytes intentionally have no inferred semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dGroup1Record<'a> {
+    offset: usize,
+    bytes: &'a [u8],
+    prefix: &'a [u8; C3D_GROUP1_PREFIX_LEN],
+    unknown: &'a [u8; C3D_GROUP1_UNKNOWN_LEN],
+    entries_32: &'a [u8],
+    entries_24: &'a [u8],
+    trailing: &'a [u8],
+}
+
+impl<'a> C3dGroup1Record<'a> {
+    #[must_use]
+    pub const fn offset(self) -> usize {
+        self.offset
+    }
+
+    #[must_use]
+    pub fn declared_len(self) -> u32 {
+        read_u32(self.bytes, 12)
+    }
+
+    #[must_use]
+    pub const fn bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+
+    #[must_use]
+    pub const fn prefix(self) -> &'a [u8; C3D_GROUP1_PREFIX_LEN] {
+        self.prefix
+    }
+
+    #[must_use]
+    pub fn entry32_count(self) -> u16 {
+        read_u16(self.bytes, 16)
+    }
+
+    #[must_use]
+    pub fn entry24_count(self) -> u16 {
+        read_u16(self.bytes, 18)
+    }
+
+    #[must_use]
+    pub const fn unknown_bytes(self) -> &'a [u8; C3D_GROUP1_UNKNOWN_LEN] {
+        self.unknown
+    }
+
+    pub fn entries_32(self) -> impl ExactSizeIterator<Item = &'a [u8; C3D_GROUP1_ENTRY32_LEN]> {
+        let (entries, remainder) = self.entries_32.as_chunks::<C3D_GROUP1_ENTRY32_LEN>();
+        debug_assert!(remainder.is_empty());
+        entries.iter()
+    }
+
+    pub fn entries_24(self) -> impl ExactSizeIterator<Item = &'a [u8; C3D_GROUP1_ENTRY24_LEN]> {
+        let (entries, remainder) = self.entries_24.as_chunks::<C3D_GROUP1_ENTRY24_LEN>();
+        debug_assert!(remainder.is_empty());
+        entries.iter()
+    }
+
+    #[must_use]
+    pub const fn trailing_bytes(self) -> &'a [u8] {
+        self.trailing
     }
 }
 
@@ -114,6 +267,23 @@ struct C3dBlobRecordSpan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct C3dGroup0RecordSpan {
+    offset: usize,
+    end: usize,
+    values_start: usize,
+    values_end: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct C3dGroup1RecordSpan {
+    offset: usize,
+    end: usize,
+    entries_32_start: usize,
+    entries_32_end: usize,
+    entries_24_end: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum C3dError {
     PayloadTooLarge {
         actual: usize,
@@ -125,6 +295,39 @@ pub enum C3dError {
     },
     InvalidMagic([u8; 4]),
     UnsupportedVersion(u32),
+    TooManyGroupRecords {
+        group: usize,
+        actual: usize,
+        limit: usize,
+    },
+    TruncatedGroupRecordHeader {
+        group: usize,
+        record: usize,
+        offset: usize,
+        available: usize,
+        required: usize,
+    },
+    GroupRecordTooShort {
+        group: usize,
+        record: usize,
+        offset: usize,
+        declared_record_len: u32,
+        minimum: usize,
+    },
+    GroupRecordOutOfBounds {
+        group: usize,
+        record: usize,
+        offset: usize,
+        declared_record_len: u32,
+        available_record_bytes: usize,
+    },
+    GroupRecordLayoutOutOfBounds {
+        group: usize,
+        record: usize,
+        offset: usize,
+        declared_record_len: u32,
+        required_record_len: usize,
+    },
     TooManyBlobRecords {
         actual: usize,
         limit: usize,
@@ -164,6 +367,54 @@ impl fmt::Display for C3dError {
             Self::UnsupportedVersion(version) => {
                 write!(formatter, "unsupported C3D format version {version}")
             }
+            Self::TooManyGroupRecords {
+                group,
+                actual,
+                limit,
+            } => write!(
+                formatter,
+                "C3D group {group} declares {actual} records; limit is {limit}"
+            ),
+            Self::TruncatedGroupRecordHeader {
+                group,
+                record,
+                offset,
+                available,
+                required,
+            } => write!(
+                formatter,
+                "C3D group {group} record {record} at {offset} needs {required} header bytes but {available} remain"
+            ),
+            Self::GroupRecordTooShort {
+                group,
+                record,
+                offset,
+                declared_record_len,
+                minimum,
+            } => write!(
+                formatter,
+                "C3D group {group} record {record} at {offset} declares {declared_record_len} bytes; minimum is {minimum}"
+            ),
+            Self::GroupRecordOutOfBounds {
+                group,
+                record,
+                offset,
+                declared_record_len,
+                available_record_bytes,
+            } => write!(
+                formatter,
+                "C3D group {group} record {record} at {offset} declares {declared_record_len} bytes but {available_record_bytes} remain"
+            ),
+            Self::GroupRecordLayoutOutOfBounds {
+                group,
+                record,
+                offset,
+                declared_record_len,
+                required_record_len,
+            } => write!(
+                formatter,
+                "C3D group {group} record {record} at {offset} declares {declared_record_len} bytes but its counted layout needs {required_record_len}"
+            ),
             Self::TooManyBlobRecords { actual, limit } => {
                 write!(
                     formatter,
@@ -247,6 +498,18 @@ pub fn parse_c3d(input: &[u8], limits: C3dLimits) -> Result<C3dFile, C3dError> {
         usize::try_from(section_offsets[2]).expect("validated C3D position fits usize"),
         limits.max_blob_records,
     )?;
+    let group1_records = parse_group1_record_spans(
+        input,
+        usize::from(section_counts[1]),
+        usize::try_from(section_offsets[1]).expect("validated C3D position fits usize"),
+        limits.max_group1_records,
+    )?;
+    let group0_records = parse_group0_record_spans(
+        input,
+        usize::from(section_counts[0]),
+        usize::try_from(section_offsets[0]).expect("validated C3D position fits usize"),
+        limits.max_group0_records,
+    )?;
 
     Ok(C3dFile {
         header: C3dHeader {
@@ -257,8 +520,163 @@ pub fn parse_c3d(input: &[u8], limits: C3dLimits) -> Result<C3dFile, C3dError> {
             section_offsets,
         },
         bytes: input.to_vec(),
+        group0_records,
+        group1_records,
         blob_records,
     })
+}
+
+fn parse_group0_record_spans(
+    input: &[u8],
+    count: usize,
+    mut offset: usize,
+    limit: usize,
+) -> Result<Vec<C3dGroup0RecordSpan>, C3dError> {
+    const GROUP: usize = 0;
+    const LENGTH_FIELD_END: usize = 4;
+
+    if count > limit {
+        return Err(C3dError::TooManyGroupRecords {
+            group: GROUP,
+            actual: count,
+            limit,
+        });
+    }
+
+    let mut records = Vec::with_capacity(count);
+    for record in 0..count {
+        let available = input.len().saturating_sub(offset);
+        if available < LENGTH_FIELD_END {
+            return Err(C3dError::TruncatedGroupRecordHeader {
+                group: GROUP,
+                record,
+                offset,
+                available,
+                required: LENGTH_FIELD_END,
+            });
+        }
+        let declared_record_len = read_u32(input, offset);
+        if declared_record_len < C3D_GROUP0_FIXED_LEN as u32 {
+            return Err(C3dError::GroupRecordTooShort {
+                group: GROUP,
+                record,
+                offset,
+                declared_record_len,
+                minimum: C3D_GROUP0_FIXED_LEN,
+            });
+        }
+        let record_len = usize::try_from(declared_record_len).unwrap_or(usize::MAX);
+        if record_len > available {
+            return Err(C3dError::GroupRecordOutOfBounds {
+                group: GROUP,
+                record,
+                offset,
+                declared_record_len,
+                available_record_bytes: available,
+            });
+        }
+        let end = offset + record_len;
+        let value_count = usize::from(input[offset + C3D_GROUP0_VALUE_COUNT_OFFSET]);
+        let required_record_len = C3D_GROUP0_VALUES_OFFSET + value_count * 2;
+        if required_record_len > record_len {
+            return Err(C3dError::GroupRecordLayoutOutOfBounds {
+                group: GROUP,
+                record,
+                offset,
+                declared_record_len,
+                required_record_len,
+            });
+        }
+        let values_start = offset + C3D_GROUP0_VALUES_OFFSET;
+        let values_end = values_start + value_count * 2;
+        records.push(C3dGroup0RecordSpan {
+            offset,
+            end,
+            values_start,
+            values_end,
+        });
+        offset = end;
+    }
+    Ok(records)
+}
+
+fn parse_group1_record_spans(
+    input: &[u8],
+    count: usize,
+    mut offset: usize,
+    limit: usize,
+) -> Result<Vec<C3dGroup1RecordSpan>, C3dError> {
+    const GROUP: usize = 1;
+    const LENGTH_FIELD_END: usize = 16;
+
+    if count > limit {
+        return Err(C3dError::TooManyGroupRecords {
+            group: GROUP,
+            actual: count,
+            limit,
+        });
+    }
+
+    let mut records = Vec::with_capacity(count);
+    for record in 0..count {
+        let available = input.len().saturating_sub(offset);
+        if available < LENGTH_FIELD_END {
+            return Err(C3dError::TruncatedGroupRecordHeader {
+                group: GROUP,
+                record,
+                offset,
+                available,
+                required: LENGTH_FIELD_END,
+            });
+        }
+        let declared_record_len = read_u32(input, offset + 12);
+        if declared_record_len < C3D_GROUP1_FIXED_LEN as u32 {
+            return Err(C3dError::GroupRecordTooShort {
+                group: GROUP,
+                record,
+                offset,
+                declared_record_len,
+                minimum: C3D_GROUP1_FIXED_LEN,
+            });
+        }
+        let record_len = usize::try_from(declared_record_len).unwrap_or(usize::MAX);
+        if record_len > available {
+            return Err(C3dError::GroupRecordOutOfBounds {
+                group: GROUP,
+                record,
+                offset,
+                declared_record_len,
+                available_record_bytes: available,
+            });
+        }
+        let end = offset + record_len;
+        let entry32_count = usize::from(read_u16(input, offset + 16));
+        let entry24_count = usize::from(read_u16(input, offset + 18));
+        let entries_32_bytes = entry32_count * C3D_GROUP1_ENTRY32_LEN;
+        let entries_24_bytes = entry24_count * C3D_GROUP1_ENTRY24_LEN;
+        let required_record_len = C3D_GROUP1_FIXED_LEN + entries_32_bytes + entries_24_bytes;
+        if required_record_len > record_len {
+            return Err(C3dError::GroupRecordLayoutOutOfBounds {
+                group: GROUP,
+                record,
+                offset,
+                declared_record_len,
+                required_record_len,
+            });
+        }
+        let entries_32_start = offset + C3D_GROUP1_FIXED_LEN;
+        let entries_32_end = entries_32_start + entries_32_bytes;
+        let entries_24_end = entries_32_end + entries_24_bytes;
+        records.push(C3dGroup1RecordSpan {
+            offset,
+            end,
+            entries_32_start,
+            entries_32_end,
+            entries_24_end,
+        });
+        offset = end;
+    }
+    Ok(records)
 }
 
 fn parse_blob_record_spans(
@@ -347,12 +765,14 @@ mod tests {
 
     const LIMITS: C3dLimits = C3dLimits {
         max_payload_bytes: 512,
+        max_group0_records: 8,
+        max_group1_records: 8,
         max_blob_records: 8,
     };
 
     #[test]
     fn parses_observed_fields_and_preserves_every_byte() {
-        let mut input = fixture([1, 2, 0], [32, 40, 48], 64);
+        let mut input = fixture([0, 0, 0], [32, 40, 48], 64);
         input[8..12].copy_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
         input[18..20].copy_from_slice(&[0x12, 0x34]);
         input[63] = 0xfe;
@@ -363,7 +783,7 @@ mod tests {
             &C3dHeader {
                 format_version: C3D_FORMAT_VERSION,
                 unknown_08: [0xaa, 0xbb, 0xcc, 0xdd],
-                section_counts: [1, 2, 0],
+                section_counts: [0, 0, 0],
                 unknown_18: [0x12, 0x34],
                 section_offsets: [32, 40, 48],
             }
@@ -429,8 +849,8 @@ mod tests {
 
     #[test]
     fn accepts_unordered_or_header_internal_positions_without_inventing_semantics() {
-        let parsed = parse_c3d(&fixture([7, 8, 0], [31, 0, 12], 64), LIMITS).unwrap();
-        assert_eq!(parsed.header().section_counts, [7, 8, 0]);
+        let parsed = parse_c3d(&fixture([0, 0, 0], [31, 0, 12], 64), LIMITS).unwrap();
+        assert_eq!(parsed.header().section_counts, [0, 0, 0]);
         assert_eq!(parsed.header().section_offsets, [31, 0, 12]);
     }
 
@@ -478,8 +898,344 @@ mod tests {
     }
 
     #[test]
+    fn parses_all_three_groups_without_assigning_payload_semantics() {
+        let mut input = fixture([2, 2, 1], [32, 196, 351], 373);
+        let group0_second = write_group0_record(&mut input, 32, &[0x1234], &[0xa1, 0xa2]);
+        assert_eq!(group0_second, 116);
+        let group1_start = write_group0_record(&mut input, group0_second, &[], &[]);
+        assert_eq!(group1_start, 196);
+
+        let first_prefix = *b"GROUP1-A\0XYZ";
+        let group1_second = write_group1_record(&mut input, group1_start, first_prefix, 1, 1, 3);
+        assert_eq!(group1_second, 303);
+        let blob_start = write_group1_record(&mut input, group1_second, *b"GROUP1-B\0XYZ", 0, 0, 0);
+        assert_eq!(blob_start, 351);
+        let blob_end = write_blob_record(&mut input, blob_start, *b"BLOB-GROUP-2", &[7, 8, 9, 10]);
+        input[blob_end..].copy_from_slice(&[0xe1, 0xe2]);
+
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        let group0 = parsed.group0_records().collect::<Vec<_>>();
+        assert_eq!(group0.len(), 2);
+        assert_eq!(group0[0].offset(), 32);
+        assert_eq!(group0[0].declared_len(), 84);
+        assert_eq!(group0[0].value_count(), 1);
+        assert_eq!(group0[0].values().collect::<Vec<_>>(), [0x1234]);
+        assert_eq!(group0[0].trailing_bytes(), [0xa1, 0xa2]);
+        assert_eq!(group0[1].offset(), 116);
+        assert_eq!(group0[1].bytes().len(), C3D_GROUP0_FIXED_LEN);
+
+        let group1 = parsed.group1_records().collect::<Vec<_>>();
+        assert_eq!(group1.len(), 2);
+        assert_eq!(group1[0].offset(), 196);
+        assert_eq!(group1[0].prefix(), &first_prefix);
+        assert_eq!(group1[0].entry32_count(), 1);
+        assert_eq!(group1[0].entry24_count(), 1);
+        assert_eq!(group1[0].unknown_bytes()[0], 0x80);
+        assert_eq!(group1[0].entries_32().next().unwrap()[0], 0x20);
+        assert_eq!(group1[0].entries_24().next().unwrap()[0], 0x40);
+        assert_eq!(group1[0].trailing_bytes(), [0xd0, 0xd1, 0xd2]);
+        assert_eq!(group1[1].declared_len(), 48);
+        assert_eq!(group1[1].entries_32().len(), 0);
+        assert_eq!(group1[1].entries_24().len(), 0);
+        assert!(group1[1].trailing_bytes().is_empty());
+
+        let blob = parsed.blob_records().next().unwrap();
+        assert_eq!(blob.offset(), 351);
+        assert_eq!(blob.blob(), [7, 8, 9, 10]);
+        assert_eq!(parsed.bytes(), input);
+    }
+
+    #[test]
+    fn rejects_every_truncated_group_record_length_field() {
+        for available in 0..4 {
+            let offset = 40;
+            let input = fixture([1, 0, 0], [offset as u32, 0, 0], offset + available);
+            assert_eq!(
+                parse_c3d(&input, LIMITS),
+                Err(C3dError::TruncatedGroupRecordHeader {
+                    group: 0,
+                    record: 0,
+                    offset,
+                    available,
+                    required: 4,
+                })
+            );
+        }
+        for available in 0..16 {
+            let offset = 40;
+            let input = fixture([0, 1, 0], [0, offset as u32, 0], offset + available);
+            assert_eq!(
+                parse_c3d(&input, LIMITS),
+                Err(C3dError::TruncatedGroupRecordHeader {
+                    group: 1,
+                    record: 0,
+                    offset,
+                    available,
+                    required: 16,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_every_declared_group_record_length_below_its_fixed_layout() {
+        for declared_record_len in 0..C3D_GROUP0_FIXED_LEN as u32 {
+            let mut input = fixture([1, 0, 0], [40, 0, 0], 128);
+            input[40..44].copy_from_slice(&declared_record_len.to_le_bytes());
+            assert_eq!(
+                parse_c3d(&input, LIMITS),
+                Err(C3dError::GroupRecordTooShort {
+                    group: 0,
+                    record: 0,
+                    offset: 40,
+                    declared_record_len,
+                    minimum: C3D_GROUP0_FIXED_LEN,
+                })
+            );
+        }
+        for declared_record_len in 0..C3D_GROUP1_FIXED_LEN as u32 {
+            let mut input = fixture([0, 1, 0], [0, 40, 0], 96);
+            input[52..56].copy_from_slice(&declared_record_len.to_le_bytes());
+            assert_eq!(
+                parse_c3d(&input, LIMITS),
+                Err(C3dError::GroupRecordTooShort {
+                    group: 1,
+                    record: 0,
+                    offset: 40,
+                    declared_record_len,
+                    minimum: C3D_GROUP1_FIXED_LEN,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_every_physically_truncated_group_fixed_prefix_after_its_length_field() {
+        for available_record_bytes in 4..C3D_GROUP0_FIXED_LEN {
+            let offset = 40;
+            let mut input = fixture(
+                [1, 0, 0],
+                [offset as u32, 0, 0],
+                offset + available_record_bytes,
+            );
+            input[offset..offset + 4].copy_from_slice(&(C3D_GROUP0_FIXED_LEN as u32).to_le_bytes());
+            assert_eq!(
+                parse_c3d(&input, LIMITS),
+                Err(C3dError::GroupRecordOutOfBounds {
+                    group: 0,
+                    record: 0,
+                    offset,
+                    declared_record_len: C3D_GROUP0_FIXED_LEN as u32,
+                    available_record_bytes,
+                })
+            );
+        }
+
+        for available_record_bytes in 16..C3D_GROUP1_FIXED_LEN {
+            let offset = 40;
+            let mut input = fixture(
+                [0, 1, 0],
+                [0, offset as u32, 0],
+                offset + available_record_bytes,
+            );
+            input[offset + 12..offset + 16]
+                .copy_from_slice(&(C3D_GROUP1_FIXED_LEN as u32).to_le_bytes());
+            assert_eq!(
+                parse_c3d(&input, LIMITS),
+                Err(C3dError::GroupRecordOutOfBounds {
+                    group: 1,
+                    record: 0,
+                    offset,
+                    declared_record_len: C3D_GROUP1_FIXED_LEN as u32,
+                    available_record_bytes,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_group_records_beyond_payload_and_counted_layout_beyond_record() {
+        for (group, length_offset, minimum) in [
+            (0usize, 40usize, C3D_GROUP0_FIXED_LEN),
+            (1, 52, C3D_GROUP1_FIXED_LEN),
+        ] {
+            for declared_record_len in [minimum as u32 + 1, u32::MAX] {
+                let counts = if group == 0 { [1, 0, 0] } else { [0, 1, 0] };
+                let offsets = if group == 0 { [40, 0, 0] } else { [0, 40, 0] };
+                let mut input = fixture(counts, offsets, 40 + minimum);
+                input[length_offset..length_offset + 4]
+                    .copy_from_slice(&declared_record_len.to_le_bytes());
+                assert_eq!(
+                    parse_c3d(&input, LIMITS),
+                    Err(C3dError::GroupRecordOutOfBounds {
+                        group,
+                        record: 0,
+                        offset: 40,
+                        declared_record_len,
+                        available_record_bytes: minimum,
+                    })
+                );
+            }
+        }
+
+        let mut group0 = fixture([1, 0, 0], [40, 0, 0], 120);
+        group0[40..44].copy_from_slice(&80u32.to_le_bytes());
+        group0[116] = 1;
+        assert_eq!(
+            parse_c3d(&group0, LIMITS),
+            Err(C3dError::GroupRecordLayoutOutOfBounds {
+                group: 0,
+                record: 0,
+                offset: 40,
+                declared_record_len: 80,
+                required_record_len: 82,
+            })
+        );
+
+        let mut group1 = fixture([0, 1, 0], [0, 40, 0], 88);
+        group1[52..56].copy_from_slice(&48u32.to_le_bytes());
+        group1[56..58].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(
+            parse_c3d(&group1, LIMITS),
+            Err(C3dError::GroupRecordLayoutOutOfBounds {
+                group: 1,
+                record: 0,
+                offset: 40,
+                declared_record_len: 48,
+                required_record_len: 80,
+            })
+        );
+    }
+
+    #[test]
+    fn group_count_limits_precede_record_reads_and_accept_exact_limits() {
+        let input = fixture([2, 2, 0], [128, 128, 0], 128);
+        assert_eq!(
+            parse_c3d(
+                &input,
+                C3dLimits {
+                    max_group1_records: 1,
+                    ..LIMITS
+                }
+            ),
+            Err(C3dError::TooManyGroupRecords {
+                group: 1,
+                actual: 2,
+                limit: 1,
+            })
+        );
+        let group0_only = fixture([2, 0, 0], [128, 0, 0], 128);
+        assert_eq!(
+            parse_c3d(
+                &group0_only,
+                C3dLimits {
+                    max_group0_records: 1,
+                    ..LIMITS
+                }
+            ),
+            Err(C3dError::TooManyGroupRecords {
+                group: 0,
+                actual: 2,
+                limit: 1,
+            })
+        );
+
+        let mut exact = fixture([1, 1, 0], [32, 112, 0], 160);
+        write_group0_record(&mut exact, 32, &[], &[]);
+        write_group1_record(&mut exact, 112, *b"EXACT-LIMIT!", 0, 0, 0);
+        assert!(
+            parse_c3d(
+                &exact,
+                C3dLimits {
+                    max_group0_records: 1,
+                    max_group1_records: 1,
+                    ..LIMITS
+                }
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn reports_exact_second_group_record_truncation() {
+        let mut group0 = fixture([2, 0, 0], [40, 0, 0], 123);
+        write_group0_record(&mut group0, 40, &[], &[]);
+        assert_eq!(
+            parse_c3d(&group0, LIMITS),
+            Err(C3dError::TruncatedGroupRecordHeader {
+                group: 0,
+                record: 1,
+                offset: 120,
+                available: 3,
+                required: 4,
+            })
+        );
+
+        let mut group1 = fixture([0, 2, 0], [0, 40, 0], 103);
+        write_group1_record(&mut group1, 40, *b"FIRST-REC!!!", 0, 0, 0);
+        assert_eq!(
+            parse_c3d(&group1, LIMITS),
+            Err(C3dError::TruncatedGroupRecordHeader {
+                group: 1,
+                record: 1,
+                offset: 88,
+                available: 15,
+                required: 16,
+            })
+        );
+    }
+
+    #[test]
+    fn extreme_nested_counts_return_layout_errors_without_allocation() {
+        let mut group0 = fixture([1, 0, 0], [40, 0, 0], 120);
+        group0[40..44].copy_from_slice(&80u32.to_le_bytes());
+        group0[116] = u8::MAX;
+        assert_eq!(
+            parse_c3d(&group0, LIMITS),
+            Err(C3dError::GroupRecordLayoutOutOfBounds {
+                group: 0,
+                record: 0,
+                offset: 40,
+                declared_record_len: 80,
+                required_record_len: C3D_GROUP0_VALUES_OFFSET + usize::from(u8::MAX) * 2,
+            })
+        );
+
+        let mut group1 = fixture([0, 1, 0], [0, 40, 0], 88);
+        group1[52..56].copy_from_slice(&48u32.to_le_bytes());
+        group1[56..58].copy_from_slice(&u16::MAX.to_le_bytes());
+        group1[58..60].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert_eq!(
+            parse_c3d(&group1, LIMITS),
+            Err(C3dError::GroupRecordLayoutOutOfBounds {
+                group: 1,
+                record: 0,
+                offset: 40,
+                declared_record_len: 48,
+                required_record_len: C3D_GROUP1_FIXED_LEN
+                    + usize::from(u16::MAX) * C3D_GROUP1_ENTRY32_LEN
+                    + usize::from(u16::MAX) * C3D_GROUP1_ENTRY24_LEN,
+            })
+        );
+    }
+
+    #[test]
+    fn blob_errors_precede_group_one_and_group_zero_errors() {
+        let input = fixture([1, 1, 1], [32, 32, 32], 32);
+        assert_eq!(
+            parse_c3d(&input, LIMITS),
+            Err(C3dError::TruncatedBlobRecordHeader {
+                record: 0,
+                offset: 32,
+                available: 0,
+                required: C3D_BLOB_RECORD_HEADER_LEN,
+            })
+        );
+    }
+
+    #[test]
     fn parses_counted_blob_records_and_preserves_labels_blobs_and_tail() {
-        let mut input = fixture([91, 73, 2], [7, 11, 40], 80);
+        let mut input = fixture([0, 0, 2], [7, 11, 40], 80);
         let first_label = *b"FIRST\0\xaa\xbb\xcc\xdd\xee\xff";
         let second_label = *b"SECOND-LABEL";
         let second_offset = write_blob_record(&mut input, 40, first_label, &[0x10, 0x20, 0x30]);
@@ -500,7 +1256,7 @@ mod tests {
 
     #[test]
     fn blob_iterator_uses_only_the_third_count_and_position() {
-        let mut input = fixture([u16::MAX, u16::MAX - 1, 1], [59, 58, 40], 60);
+        let mut input = fixture([0, 0, 1], [59, 58, 40], 60);
         let label = *b"THIRD-ONLY!!";
         write_blob_record(&mut input, 40, label, &[1, 2, 3, 4]);
 
@@ -724,6 +1480,58 @@ mod tests {
         input[offset + C3D_BLOB_LABEL_LEN..blob_start]
             .copy_from_slice(&(blob.len() as u32).to_le_bytes());
         input[blob_start..end].copy_from_slice(blob);
+        end
+    }
+
+    fn write_group0_record(
+        input: &mut [u8],
+        offset: usize,
+        values: &[u16],
+        trailing: &[u8],
+    ) -> usize {
+        let len = C3D_GROUP0_FIXED_LEN + values.len() * 2 + trailing.len();
+        let end = offset + len;
+        input[offset..end].fill(0x55);
+        input[offset..offset + 4].copy_from_slice(&(len as u32).to_le_bytes());
+        input[offset + C3D_GROUP0_VALUE_COUNT_OFFSET] = values.len() as u8;
+        for (index, value) in values.iter().enumerate() {
+            let start = offset + C3D_GROUP0_VALUES_OFFSET + index * 2;
+            input[start..start + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        input[end - trailing.len()..end].copy_from_slice(trailing);
+        end
+    }
+
+    fn write_group1_record(
+        input: &mut [u8],
+        offset: usize,
+        prefix: [u8; C3D_GROUP1_PREFIX_LEN],
+        entry32_count: u16,
+        entry24_count: u16,
+        trailing_len: usize,
+    ) -> usize {
+        let entries_32_bytes = usize::from(entry32_count) * C3D_GROUP1_ENTRY32_LEN;
+        let entries_24_bytes = usize::from(entry24_count) * C3D_GROUP1_ENTRY24_LEN;
+        let len = C3D_GROUP1_FIXED_LEN + entries_32_bytes + entries_24_bytes + trailing_len;
+        let end = offset + len;
+        input[offset..end].fill(0);
+        input[offset..offset + C3D_GROUP1_PREFIX_LEN].copy_from_slice(&prefix);
+        input[offset + 12..offset + 16].copy_from_slice(&(len as u32).to_le_bytes());
+        input[offset + 16..offset + 18].copy_from_slice(&entry32_count.to_le_bytes());
+        input[offset + 18..offset + 20].copy_from_slice(&entry24_count.to_le_bytes());
+        for (index, byte) in input[offset + 20..offset + C3D_GROUP1_FIXED_LEN]
+            .iter_mut()
+            .enumerate()
+        {
+            *byte = 0x80 + index as u8;
+        }
+        let entries_32_start = offset + C3D_GROUP1_FIXED_LEN;
+        input[entries_32_start..entries_32_start + entries_32_bytes].fill(0x20);
+        let entries_24_start = entries_32_start + entries_32_bytes;
+        input[entries_24_start..entries_24_start + entries_24_bytes].fill(0x40);
+        for (index, byte) in input[end - trailing_len..end].iter_mut().enumerate() {
+            *byte = 0xd0 + index as u8;
+        }
         end
     }
 }
