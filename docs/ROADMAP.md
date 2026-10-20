@@ -107,8 +107,8 @@ window-loop, timing, and root-menu visual rules are pure tested contracts. All
 16 font styles and the four present root-menu artwork rows resolve through the
 verified import; the loader's distinct Italian row is explicitly absent from
 the reviewed corpus. Host clock/input, native window execution, root bitmap
-upload, persistent font upload, and remaining pixel composition remain before
-the vertical-slice exit gate.
+upload, root-footer composition through the persistent font pool, and remaining
+pixel composition remain before the vertical-slice exit gate.
 
 Exit gate:
 

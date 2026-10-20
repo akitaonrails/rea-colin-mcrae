@@ -161,8 +161,10 @@ pub struct StartupCopyOutcome<E> {
 /// Platform implementation for the recovered indexed-display subset.
 ///
 /// The backend owns persistent device, surface, and palette resources and must
-/// release them when dropped. Temporary startup sources have an explicit
-/// release because their lifetime is part of the recovered transaction.
+/// release them when dropped. Uploaded indexed sources remain valid until
+/// [`IndexedVideoBackend::destroy_source`] or backend drop; callers use their
+/// explicit lifetime to model both temporary startup images and persistent
+/// frontend resources.
 pub trait IndexedVideoBackend {
     type Error;
     type Surface: Copy;

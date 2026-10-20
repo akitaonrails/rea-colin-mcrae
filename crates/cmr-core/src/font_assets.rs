@@ -122,6 +122,19 @@ pub struct FontSet {
 }
 
 impl FontSet {
+    #[cfg(test)]
+    pub(crate) fn from_ordered_fonts(fonts: [BitmapFont; FONT_COUNT]) -> Self {
+        let mut fonts = fonts.into_iter();
+        Self {
+            fonts: std::array::from_fn(|index| FontAsset {
+                style: FontStyle::ALL[index],
+                font: fonts
+                    .next()
+                    .expect("one parsed font was supplied for every style"),
+            }),
+        }
+    }
+
     pub fn get(&self, style: FontStyle) -> &BitmapFont {
         &self.fonts[style as usize].font
     }

@@ -62,7 +62,7 @@ struct SoftwareSurface {
     height: usize,
     pixels: Vec<u8>,
     palette: Option<PaletteHandle>,
-    temporary: bool,
+    uploaded_source: bool,
 }
 
 /// Deterministic source-owned framebuffer used as a compatibility oracle.
@@ -94,11 +94,11 @@ impl SoftwareIndexedBackend {
         self.palette.as_ref()
     }
 
-    pub fn temporary_surface_count(&self) -> usize {
+    pub fn uploaded_source_count(&self) -> usize {
         self.surfaces
             .iter()
             .flatten()
-            .filter(|surface| surface.temporary)
+            .filter(|surface| surface.uploaded_source)
             .count()
     }
 
@@ -137,7 +137,7 @@ impl IndexedVideoBackendProbe for SoftwareIndexedBackend {
     }
 
     fn probe_temporary_surface_count(&self) -> usize {
-        self.temporary_surface_count()
+        self.uploaded_source_count()
     }
 }
 
@@ -202,7 +202,7 @@ impl IndexedVideoBackend for SoftwareIndexedBackend {
             height,
             pixels: vec![0; width * height],
             palette: None,
-            temporary: false,
+            uploaded_source: false,
         };
         let visible_front = self.push_surface(make_surface());
         let back = self.push_surface(make_surface());
@@ -283,7 +283,7 @@ impl IndexedVideoBackend for SoftwareIndexedBackend {
             height: surface.height as usize,
             pixels: surface.pixels.clone(),
             palette: None,
-            temporary: true,
+            uploaded_source: true,
         }))
     }
 
@@ -366,7 +366,7 @@ impl IndexedVideoBackend for SoftwareIndexedBackend {
 
     fn destroy_source(&mut self, source: Self::Surface) {
         if let Some(slot) = self.surfaces.get_mut(source.0)
-            && slot.as_ref().is_some_and(|surface| surface.temporary)
+            && slot.as_ref().is_some_and(|surface| surface.uploaded_source)
         {
             *slot = None;
         }
@@ -423,7 +423,7 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.front, Err(SoftwareVideoError::UnsupportedStretch));
         assert_eq!(outcome.back, Err(SoftwareVideoError::UnsupportedStretch));
-        assert_eq!(display.into_backend().temporary_surface_count(), 0);
+        assert_eq!(display.into_backend().uploaded_source_count(), 0);
     }
 
     #[test]
