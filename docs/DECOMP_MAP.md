@@ -152,8 +152,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T19:39:14Z
-milestone=compose-software-c3d-indexed-copy-pixels
+updated_utc=2026-10-20T19:44:20Z
+milestone=integrate-software-c3d-scene-backend
 completed=38
 partial=18
 not_started=48

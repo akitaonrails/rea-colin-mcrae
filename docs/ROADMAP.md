@@ -111,9 +111,8 @@ backend mutation, and both persistent font and root-bitmap pools now use a
 tested shared source store without monopolizing the backend. Transaction,
 fixed-slot, and mixed-pool tests cover 33 coexisting sources, optional upload
 holes, isolated required rollback, repeated-frame reuse, and global teardown.
-Host clock/input, native window execution, C3D frame-command execution through
-the concrete backend, and concrete composition/presentation remain before the
-vertical-slice exit gate.
+Host clock/input, native window execution, complete frame-level composition,
+and concrete presentation remain before the vertical-slice exit gate.
 Root-footer text reaches a tested software back-buffer pixel through
 localization, the shared store, and the persistent font pool. Root visual
 transcripts name fixed bitmap slots directly, and the bitmap executor now
@@ -123,8 +122,10 @@ presentation order and typed failure boundaries. It stages one owned prepared
 C3D plan at the root command, then consumes it once inside the terminal scene.
 The scene runs even without a selected object and now owns checked viewport
 setup, conditional depth clear, Begin/End cleanup, world reset, and the opaque
-scene tail. Concrete C3D pixel-backend integration, latch cleanup, depth-8
-post-scene work, and host presentation remain unimplemented boundaries.
+scene tail. The software backend now executes the bounded branch-zero plan into
+the indexed back buffer with persistent bindings and depth. Latch-clearing
+integration, depth-8 post-scene work, and host presentation remain
+unimplemented boundaries.
 The six optional root-menu C3D files now load through fixed slots and a bounded,
 byte-preserving parser. All three counted groups expose proven framing: group
 0's raw `u16` values; group 1's typed, borrowed 32/24-byte entry views; and
@@ -158,7 +159,8 @@ the exact mode-2 path installs no surface color key. Bounded-label/dimensions/pi
 matches share arena-scoped stable prepared IDs, entry24 selectors retain source
 order and `-1` remains an explicit missing selector, and one bad optional object
 rolls back only its new resources before later slots continue. Palette
-attachment and backend upload remain later boundaries. The prepared resource
+attachment and backend upload remain boundaries for alternate hardware paths;
+the software root path retains its sampled bindings directly. The prepared resource
 also retains the raw low words of its originating DIB dimensions because the
 legacy surface-layout path consumes those words rather than normalized decoded
 extents.
@@ -179,9 +181,9 @@ horizontal mapping-coordinate factors with one f32 store, shares first-resource
 claims by source vertex ordinal across selector runs, preserves same-entry
 duplicate multiplication, and only then compacts batches. The exact root corpus
 has square resources and therefore takes the proven zero-padding/no-multiply
-case under normal or quarter preparation. Backend palette/material ownership,
-scene integration, and the unresolved tuple-source gate are the next C3D
-boundaries.
+case under normal or quarter preparation. The software branch-zero backend now
+owns sampled bindings and active-palette composition; alternate material
+profiles and the unresolved tuple-source gate remain C3D boundaries.
 The root transform oracle is now portable and deterministic. A source-owned
 quarter-wave table reconstructs the exact 4,096-entry legacy trig table, while
 square-root values use equivalent integer arithmetic. The fixed-point row
@@ -189,9 +191,9 @@ normalizer preserves wrapping sums, low-word products, signed shifts, the
 complete-raw-angle zero branch, and the distinction between raw angles `0` and
 `0x1000`. Root world matrices retain the recovered Q16 translation and convert
 to exact f32 words; identity view, frontend projection, and checked viewport
-words are available without a platform graphics dependency. This defines
-transform values for the frame-command planner but does not yet perform scene
-traversal, resource binding, rasterization, or final composition.
+words are available without a platform graphics dependency. The software root
+path now consumes them through scene traversal, resource binding, rasterization,
+and indexed back-buffer composition; other renderer paths remain separate.
 Topology and both materialized runtime stages now also carry the same opaque,
 unforgeable prepared-arena provenance. The planner can therefore reject data
 mixed across independent preparations even when no concrete resource ID is
@@ -200,17 +202,18 @@ The root-only frame planner now performs that join transactionally. It checks
 the exact one-level root shape, resource selectors, compact batch payloads,
 viewport, slot presence, variant, and provenance before changing an angle, then
 owns source-ordered submission snapshots and the exact recovered transform and
-numeric draw words. Concrete backend binding, depth/scene execution,
-visibility-latch consumption, pixel-oracle integration, and terminal composition
-remain the next boundary.
+numeric draw words. Concrete software binding, depth/scene execution, and the
+pixel oracle are now joined. Visibility-latch consumption and terminal
+composition remain the next boundary.
 Prepared resources now map once into an arena-scoped opaque binding catalog.
 The root batch executor consumes a plan, preflights the complete catalog join,
 sets world state, and preserves the recovered resource-binding and persistent
 selector-cache order across source batches and frames. Branch-specific
 material/texture work remains inside the opaque backend binding. Bindings are
 released in reverse order, and external render paths can explicitly invalidate
-the cache. Terminal depth/scene staging, latch cleanup, presentation, and a
-concrete software/GPU implementation remain separate.
+the cache. The software backend implements the bounded branch-zero binding;
+latch cleanup, presentation, alternate profiles, and a portable GPU
+implementation remain separate.
 
 Exit gate:
 

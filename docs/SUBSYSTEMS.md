@@ -70,9 +70,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   handling, activation-driven pause/restore state, queue dispatch decisions,
   and fullscreen-flip versus windowed-vblank presentation planning.
 - `cmr-video::SoftwareIndexedBackend`: deterministic source-owned front/back
-  framebuffers for exact-size indexed copies and recovered index-zero keyed
-  glyph copies; unrecovered stretch and other color-key ranges are explicit
-  errors rather than guessed behavior.
+  framebuffers for exact-size indexed copies, recovered index-zero keyed glyph
+  copies, and the bounded branch-zero root C3D software oracle; unrecovered
+  stretch, alternate C3D profiles, and other color-key ranges are explicit
+  boundaries rather than guessed behavior.
 - `cmr-core::config`: opaque exact-size legacy configuration admission,
   recovered volatile-byte clearing and save gate, plus safe registry-value
   parsing and caller-owned exact-record writing without assigning meaning to
@@ -169,8 +170,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   the active palette and unchanged indices, with typed optional/required
   conversion policy and no backend side effects.
 - `cmr-core::root_menu_frame`: ordered bitmap/footer dispatch plus parsed C3D
-  slot binding and angle advancement; C3D pixel rendering and final
-  composition remain backend boundaries.
+  slot binding and angle advancement; the software backend now executes the
+  bounded root C3D branch, while final composition/presentation remains a host
+  boundary.
 
 The canonical binary maps registry language values 0–4 to English, French,
 German, Spanish, and Italian startup paths. The supplied corpus has no Italian

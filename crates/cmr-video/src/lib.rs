@@ -9,7 +9,10 @@ use cmr_core::surface::IndexedSurface;
 use cmr_formats::riff_palette::PaletteEntry;
 
 pub mod c3d_software;
+mod c3d_software_backend;
 pub mod c3d_software_raster;
+
+pub use c3d_software_backend::SoftwareC3dBackendError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceHandle(usize);
@@ -69,8 +72,10 @@ struct SoftwareSurface {
 }
 
 /// Deterministic source-owned framebuffer used as a compatibility oracle.
-/// It implements exact-size indexed copies only; scaling remains unsupported
-/// until its DirectDraw sampling behavior is recovered.
+///
+/// It implements exact-size indexed copies and the bounded branch-zero root
+/// C3D software path. DirectDraw scaling and alternate C3D material profiles
+/// remain unsupported until their behavior is recovered.
 #[derive(Default)]
 pub struct SoftwareIndexedBackend {
     device_created: bool,
@@ -82,6 +87,7 @@ pub struct SoftwareIndexedBackend {
     back: Option<SurfaceHandle>,
     palette: Option<[PaletteEntry; 256]>,
     palette_uploaded: bool,
+    c3d: c3d_software_backend::SoftwareC3dBackendState,
 }
 
 impl SoftwareIndexedBackend {
@@ -211,6 +217,7 @@ impl IndexedVideoBackend for SoftwareIndexedBackend {
         let back = self.push_surface(make_surface());
         self.visible_front = Some(visible_front);
         self.back = Some(back);
+        self.c3d.configure_back_buffer(back, mode.extent);
         Ok(DisplaySurfaces {
             visible_front,
             back,
