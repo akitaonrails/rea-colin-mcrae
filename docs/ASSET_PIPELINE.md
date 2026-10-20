@@ -73,6 +73,15 @@ will sniff gzip, perform a bounded inflate with CRC validation, require the
 Non-gzip input passes through unchanged. A decoded cache may be added later but
 cannot become the canonical imported representation.
 
+The initial implementation is `cmr-formats::stored_asset`. Its source-owned
+tests cover successful raw/wrapped reads and malformed boundaries. A local
+corpus check can be reproduced without writing output:
+
+```sh
+cargo run -q -p cmr-formats --example validate_tree -- \
+  "$CMR_ORIGINAL_DIR/Game" "$CMR_ORIGINAL_DIR/New_Fe"
+```
+
 Runtime lookup will normalize backslashes to slashes, reject traversal, and
 resolve each component through a precomputed ASCII case-folded index. It will
 fail on ambiguity rather than pick a platform-dependent path.

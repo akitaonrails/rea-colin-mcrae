@@ -11,8 +11,9 @@ the source version and prepare a local, ignored `runtime-data/` tree.
 
 ## Current status
 
-Milestone 0 — provenance and reconstruction plan. No game code has yet been
-claimed compatible.
+Milestone 0 (provenance and reconstruction plan) is complete. Milestone 1 has
+started with a bounded parser for the observed raw/gzip-`CMPR` asset storage
+convention. No gameplay subsystem is yet claimed compatible.
 
 Known artifacts from the initial local installation:
 
@@ -39,6 +40,13 @@ export CMR_ORIGINAL_DIR=/path/to/your/CMRally
 
 All generated reverse-engineering state belongs in `.work/`, and all imported
 game data belongs in `runtime-data/`. Neither is versioned.
+
+Run source-owned checks with:
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
 
 The execution plan and evidence policy live in [docs/ROADMAP.md](docs/ROADMAP.md)
 and [docs/EVIDENCE.md](docs/EVIDENCE.md). The reproducible REA workflow is in
