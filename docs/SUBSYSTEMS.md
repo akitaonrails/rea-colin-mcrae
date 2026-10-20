@@ -57,6 +57,15 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-video::SoftwareIndexedBackend`: deterministic source-owned front/back
   framebuffers for exact-size indexed copies; unrecovered stretch and color-key
   sampling are explicit errors rather than guessed behavior.
+- `cmr-core::config`: opaque exact-size legacy configuration admission,
+  recovered volatile-byte clearing and save gate, plus safe registry-value
+  parsing without assigning meaning to unknown record bytes.
+- `cmr-core::localization`: shared five-language identity, distinct frontend
+  and in-game path policy, bounded byte-oriented table splitting, and safe
+  indexed lookup with the recovered diagnostic fallback.
+- `cmr-core::input`: platform-neutral keyboard and WinMM-compatible joystick
+  masks, rising-edge state, raw menu-key repeat, frontend combination policy,
+  and focus-gated sampling. OS polling and force feedback remain backend work.
 
 The canonical binary maps registry language values 0–4 to English, French,
 German, Spanish, and Italian startup paths. The supplied corpus has no Italian

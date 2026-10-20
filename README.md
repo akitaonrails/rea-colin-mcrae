@@ -24,6 +24,11 @@ SDL backends. No gameplay subsystem is yet claimed compatible.
 used as the first executable backend oracle. It supports the recovered
 exact-size startup copy and rejects unrecovered stretch/color-key behavior.
 
+The first frontend foundation also includes bounded legacy configuration and
+localization models plus deterministic keyboard/joystick input rules. These
+are platform-neutral contracts backed only by synthetic tests; registry, host
+input, native window, audio, and gameplay integrations are not yet complete.
+
 Known artifacts from the initial local installation:
 
 | Role | Size | SHA-256 |

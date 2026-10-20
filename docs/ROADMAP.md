@@ -93,6 +93,10 @@ Implement the smallest path that exercises real contracts end to end:
 Preferred implementation language is Rust unless recovered ABI/layout evidence
 makes a narrow C/C++ module materially safer. Do not translate entire decompiler
 listings mechanically; recover named domain behavior and explicit data layouts.
+Every completed recovered behavior lands with deterministic unit tests in the
+same milestone. Shared backend contracts supplement, rather than replace,
+focused boundary and failure tests; no later subsystem may depend on an
+untested compatibility rule.
 
 Exit gate:
 
