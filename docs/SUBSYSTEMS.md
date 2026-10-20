@@ -69,6 +69,12 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::input`: platform-neutral keyboard and WinMM-compatible joystick
   masks, rising-edge state, raw menu-key repeat, frontend combination policy,
   and focus-gated sampling. OS polling and force feedback remain backend work.
+- `cmr-core::timing`: validated pure plans for recovered logical rates, timer
+  startup/drift, compatibility buckets, focus gating, and unsigned deadlines.
+- `cmr-formats::font`: bounded fixed-layout indexed FON atlas/trailer decoding
+  plus byte-text measurement and backend-neutral glyph layout plans.
+- `cmr-core::frontend`: checked first/root-screen navigation, transitions,
+  idle/exit effects, and ordered rendering transcript over opaque target IDs.
 
 The canonical binary maps registry language values 0–4 to English, French,
 German, Spanish, and Italian startup paths. The supplied corpus has no Italian
