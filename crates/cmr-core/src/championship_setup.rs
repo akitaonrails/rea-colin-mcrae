@@ -135,8 +135,9 @@ impl CanonicalCar {
             Self::Golf => "VW",
             Self::Integral => "LANCIA",
             Self::Corolla => "TOYO",
-            Self::Megane | Self::Celica => "RENO",
+            Self::Megane => "RENO",
             Self::M4r => "M4R",
+            Self::Celica => "TOYO",
         }
     }
 
@@ -781,7 +782,7 @@ mod tests {
             logos,
             [
                 "SUBARU", "SEAT", "SKODA", "AUDI", "FORD", "FORD", "MITSU", "VW", "LANCIA", "TOYO",
-                "FORD", "RENO", "M4R", "RENO"
+                "FORD", "RENO", "M4R", "TOYO"
             ]
         );
     }
