@@ -104,19 +104,10 @@ pub const ROOT_MENU_C3D_PROJECTION: C3dMatrixWords = C3dMatrixWords([
 /// `0x1000` has lookup phase zero but still normalizes all three basis rows.
 #[must_use]
 pub fn root_menu_c3d_world_q16(raw_angle: u16) -> [i32; 16] {
-    let basis = if raw_angle == 0 {
-        [Q16_ONE, 0, 0, 0, Q16_ONE, 0, 0, 0, Q16_ONE]
-    } else {
-        let negative_sine = trig_lookup(0_u16.wrapping_sub(raw_angle));
-        let cosine = trig_lookup(TRIG_QUARTER_TURN.wrapping_sub(raw_angle));
-        let first = normalize_q16([cosine, 0, negative_sine]);
-        let second = normalize_q16([0, Q16_ONE, 0]);
-        let third = normalize_q16([negative_sine.wrapping_neg(), 0, cosine]);
-        [
-            first[0], first[1], first[2], second[0], second[1], second[2], third[0], third[1],
-            third[2],
-        ]
-    };
+    let basis = apply_c3d_angle_tuple_q16(
+        [Q16_ONE, 0, 0, 0, Q16_ONE, 0, 0, 0, Q16_ONE],
+        [0, raw_angle, 0],
+    );
 
     [
         basis[0],
@@ -135,6 +126,75 @@ pub fn root_menu_c3d_world_q16(raw_angle: u16) -> [i32; 16] {
         ROOT_TRANSLATION_Q16[1],
         ROOT_TRANSLATION_Q16[2],
         Q16_ONE,
+    ]
+}
+
+/// Applies the recovered actor angle primitive to a row-major Q16.16 basis.
+///
+/// Tuple words are visited in the original `1, 2, 0` order. Each nonzero
+/// word rotates around the corresponding current basis row and normalizes all
+/// three result rows using the same integer kernel as the shipped executable.
+pub(crate) fn apply_c3d_angle_tuple_q16(mut basis: [i32; 9], angles: [u16; 3]) -> [i32; 9] {
+    for axis_index in [1_usize, 2, 0] {
+        let angle = angles[axis_index];
+        if angle == 0 {
+            continue;
+        }
+
+        let axis = basis_row(basis, axis_index);
+        let rotation = axis_angle_rotation_q16(axis, angle);
+        let mut rotated = [0_i32; 9];
+        for row in 0..3 {
+            let source = basis_row(basis, row);
+            let result = [
+                qmul_low(source[0], rotation[0])
+                    .wrapping_add(qmul_low(source[1], rotation[3]))
+                    .wrapping_add(qmul_low(source[2], rotation[6])),
+                qmul_low(source[0], rotation[1])
+                    .wrapping_add(qmul_low(source[1], rotation[4]))
+                    .wrapping_add(qmul_low(source[2], rotation[7])),
+                qmul_low(source[0], rotation[2])
+                    .wrapping_add(qmul_low(source[1], rotation[5]))
+                    .wrapping_add(qmul_low(source[2], rotation[8])),
+            ];
+            rotated[row * 3..row * 3 + 3].copy_from_slice(&normalize_q16(result));
+        }
+        basis = rotated;
+    }
+    basis
+}
+
+fn basis_row(basis: [i32; 9], row: usize) -> [i32; 3] {
+    [basis[row * 3], basis[row * 3 + 1], basis[row * 3 + 2]]
+}
+
+fn axis_angle_rotation_q16(axis: [i32; 3], angle: u16) -> [i32; 9] {
+    let [x, y, z] = axis;
+    let negative_sine = trig_lookup(0_u16.wrapping_sub(angle));
+    let cosine = trig_lookup(TRIG_QUARTER_TURN.wrapping_sub(angle));
+    let one_minus_cosine = Q16_ONE.wrapping_sub(cosine);
+    let scaled_product = |left, right| qmul_low(qmul_low(left, right), one_minus_cosine);
+
+    let xx = scaled_product(x, x);
+    let xy = scaled_product(x, y);
+    let xz = scaled_product(x, z);
+    let yy = scaled_product(y, y);
+    let yz = scaled_product(y, z);
+    let zz = scaled_product(z, z);
+    let xs = qmul_low(x, negative_sine);
+    let ys = qmul_low(y, negative_sine);
+    let zs = qmul_low(z, negative_sine);
+
+    [
+        xx.wrapping_add(cosine),
+        xy.wrapping_sub(zs),
+        xz.wrapping_add(ys),
+        xy.wrapping_add(zs),
+        yy.wrapping_add(cosine),
+        yz.wrapping_sub(xs),
+        xz.wrapping_sub(ys),
+        yz.wrapping_add(xs),
+        zz.wrapping_add(cosine),
     ]
 }
 
