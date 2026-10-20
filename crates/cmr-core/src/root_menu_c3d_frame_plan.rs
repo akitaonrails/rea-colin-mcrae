@@ -15,7 +15,7 @@ use crate::{
     root_menu_c3d_assets::{RootMenuC3dAngles, RootMenuC3dSlot},
     root_menu_c3d_resources::{
         C3dPreparedResourceAccessError, C3dPreparedResourceId, C3dPreparedResourceProvenance,
-        C3dPreparedSelector,
+        C3dPreparedSelector, C3dVertexMutationBranch,
     },
     root_menu_c3d_runtime::{
         C3dMode2ResourceScaledVertex, C3dOpaqueSideVector, RootMenuC3dMode2ResourceScaledRuntime,
@@ -27,7 +27,7 @@ use crate::{
     },
 };
 
-pub const ROOT_MENU_C3D_VERTEX_TYPE: u32 = 2;
+pub const ROOT_MENU_C3D_VERTEX_TYPE: u32 = C3dVertexMutationBranch::Type1.submitted_vertex_type();
 pub const ROOT_MENU_C3D_PRIMITIVE_CODE: u32 = 4;
 pub const ROOT_MENU_C3D_DRAW_FLAGS: u32 = 8;
 
@@ -100,6 +100,11 @@ impl RootMenuC3dDrawCommand {
     #[must_use]
     pub const fn vertex_type(&self) -> u32 {
         ROOT_MENU_C3D_VERTEX_TYPE
+    }
+
+    #[must_use]
+    pub const fn vertex_mutation_branch(&self) -> C3dVertexMutationBranch {
+        C3dVertexMutationBranch::Type1
     }
 
     #[must_use]

@@ -1555,7 +1555,7 @@ mod tests {
                 BatchEvent::Draw {
                     batch_index: 0,
                     selector_index: 0,
-                    vertex_type: 2,
+                    vertex_type: 1,
                     primitive_code: 4,
                     draw_flags: 8,
                 },
@@ -1563,7 +1563,7 @@ mod tests {
                 BatchEvent::Draw {
                     batch_index: 1,
                     selector_index: 1,
-                    vertex_type: 2,
+                    vertex_type: 1,
                     primitive_code: 4,
                     draw_flags: 8,
                 },
@@ -1571,7 +1571,7 @@ mod tests {
                 BatchEvent::Draw {
                     batch_index: 2,
                     selector_index: 0,
-                    vertex_type: 2,
+                    vertex_type: 1,
                     primitive_code: 4,
                     draw_flags: 8,
                 },
@@ -1943,7 +1943,7 @@ mod tests {
     }
 
     #[test]
-    fn independent_slots_use_their_own_loader_count_and_corner_gate() {
+    fn independent_slots_use_their_own_loader_count_and_type1_ignores_corner_gate() {
         let groups = [runtime_group(
             &[[1 << 16, 2 << 16, 3 << 16, 0, 0, 0, 0, 0]],
             &[[0, 0, 0]],
@@ -2007,20 +2007,17 @@ mod tests {
         );
         assert_eq!(
             vertex(RootMenuC3dSlot::Championship).opaque_triplet_words()[1],
-            0xddaa_bbcc
+            0
         );
         assert_eq!(
             vertex(RootMenuC3dSlot::Rally).first_triplet(),
             [1.0, 2.0, 3.0]
         );
-        assert_eq!(
-            vertex(RootMenuC3dSlot::Rally).opaque_triplet_words()[1],
-            0x9600_0000
-        );
+        assert_eq!(vertex(RootMenuC3dSlot::Rally).opaque_triplet_words()[1], 0);
     }
 
     #[test]
-    fn mode2_mutation_is_global_last_writer_and_side_vectors_precede_it() {
+    fn type1_missing_write_persists_and_side_vectors_precede_it() {
         let entries = [[
             0,
             0,
@@ -2073,8 +2070,11 @@ mod tests {
             assert_eq!(batch.indices(), &[0, 0, 0]);
             assert_eq!(batch.source_entry32_ordinals(), &[0]);
             assert_eq!(batch.vertices().len(), 1);
-            assert_eq!(batch.vertices()[0].opaque_triplet_words()[1], 0xddaa_bbcc);
-            assert_eq!(batch.vertices()[0].opaque_triplet_words()[2], 0xff00_0000);
+            assert_eq!(batch.vertices()[0].opaque_triplet_words()[1], 0xff00_0000);
+            assert_eq!(
+                batch.vertices()[0].opaque_triplet_words()[2],
+                3.0f32.to_bits()
+            );
             assert_eq!(
                 batch.vertices()[0].opaque_triplet_words()[0],
                 1.0f32.to_bits()
@@ -2106,12 +2106,16 @@ mod tests {
             .unwrap()
             .batches()
         {
-            assert_eq!(batch.vertices()[0].opaque_triplet_words()[1], 0x9600_0000);
+            assert_eq!(batch.vertices()[0].opaque_triplet_words()[1], 0xff00_0000);
+            assert_eq!(
+                batch.vertices()[0].opaque_triplet_words()[2],
+                3.0f32.to_bits()
+            );
         }
     }
 
     #[test]
-    fn missing_last_writer_overrides_an_earlier_present_tuple() {
+    fn type1_missing_selector_overrides_only_word4() {
         let groups = [runtime_group(
             &[[0; 8]],
             &[[0, 0, 0], [0, 0, 0]],
@@ -2150,7 +2154,7 @@ mod tests {
         {
             assert_eq!(
                 batch.vertices()[0].opaque_triplet_words()[1..],
-                [0xff00_0000, 0xff00_0000]
+                [0xff00_0000, 0]
             );
         }
     }

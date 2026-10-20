@@ -17,7 +17,7 @@ use crate::{
     root_menu_c3d_resources::{
         C3dEntryMaterialPolicy, C3dLoadPolicy, C3dPreparedResourceAccessError,
         C3dPreparedResourceId, C3dPreparedResourceProvenance, C3dPreparedSelector,
-        C3dResourceAllocationPolicy,
+        C3dResourceAllocationPolicy, C3dVertexMutationBranch,
     },
     root_menu_c3d_topology::{
         RootMenuC3dGroup0Topology, RootMenuC3dGroup1Topology, RootMenuC3dObjectTopology,
@@ -130,11 +130,10 @@ impl RootMenuC3dMode2LoadStates {
     }
 }
 
-/// Exact Direct3D lit vertex before recovered resource-driven UV scaling.
+/// Exact eight-word runtime vertex before recovered resource-driven UV scaling.
 ///
-/// The eight words match the legacy `D3DLVERTEX` consumer ABI: XYZ,
-/// `dwReserved`, packed diffuse, packed specular, and UV. The source-side
-/// meaning of word 3 remains unknown. Mode 2 replaces the two packed colors.
+/// Words 4 and 5 are layout-dependent: type 1 preserves source values for
+/// present selectors, while type 2 interprets them as packed colors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct C3dMode2PreScaleVertex {
     words: [u32; 8],
@@ -154,16 +153,6 @@ impl C3dMode2PreScaleVertex {
     #[must_use]
     pub const fn reserved_word(self) -> u32 {
         self.words[3]
-    }
-
-    #[must_use]
-    pub const fn diffuse(self) -> u32 {
-        self.words[4]
-    }
-
-    #[must_use]
-    pub const fn specular(self) -> u32 {
-        self.words[5]
     }
 
     #[must_use]
@@ -318,10 +307,9 @@ pub struct RootMenuC3dMode2PreScaleRuntime {
     slots: [Option<RootMenuC3dMode2PreScaleObject>; ROOT_MENU_C3D_REQUEST_COUNT],
 }
 
-/// Exact Direct3D lit vertex after resource-derived UV scaling.
+/// Exact eight-word runtime vertex after resource-derived UV scaling.
 ///
-/// This is loader-materialized CPU data in the legacy `D3DLVERTEX` consumer
-/// ABI; the source-side meaning of its `dwReserved` word remains unknown.
+/// The submitted vertex type determines the meaning of words 3 through 5.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct C3dMode2ResourceScaledVertex {
     words: [u32; 8],
@@ -344,16 +332,6 @@ impl C3dMode2ResourceScaledVertex {
     }
 
     #[must_use]
-    pub const fn diffuse(self) -> u32 {
-        self.words[4]
-    }
-
-    #[must_use]
-    pub const fn specular(self) -> u32 {
-        self.words[5]
-    }
-
-    #[must_use]
     pub const fn opaque_triplet_words(self) -> [u32; 3] {
         [self.words[3], self.words[4], self.words[5]]
     }
@@ -361,6 +339,70 @@ impl C3dMode2ResourceScaledVertex {
     #[must_use]
     pub fn adjusted_pair(self) -> [f32; 2] {
         [f32::from_bits(self.words[6]), f32::from_bits(self.words[7])]
+    }
+}
+
+/// Type-2-only view exposing the packed diffuse/specular layout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dType2ResourceScaledVertex(C3dMode2ResourceScaledVertex);
+
+/// Type-1-only view exposing position, normal, and texture coordinates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dType1ResourceScaledVertex(C3dMode2ResourceScaledVertex);
+
+impl C3dType1ResourceScaledVertex {
+    #[must_use]
+    pub const fn new(
+        vertex: C3dMode2ResourceScaledVertex,
+        branch: C3dVertexMutationBranch,
+    ) -> Option<Self> {
+        match branch {
+            C3dVertexMutationBranch::Type1 => Some(Self(vertex)),
+            C3dVertexMutationBranch::Type2 => None,
+        }
+    }
+
+    #[must_use]
+    pub fn position(self) -> [f32; 3] {
+        self.0.first_triplet()
+    }
+
+    #[must_use]
+    pub fn normal(self) -> [f32; 3] {
+        self.0.opaque_triplet_words().map(f32::from_bits)
+    }
+
+    #[must_use]
+    pub fn uv(self) -> [f32; 2] {
+        self.0.adjusted_pair()
+    }
+}
+
+impl C3dType2ResourceScaledVertex {
+    #[must_use]
+    pub const fn new(
+        vertex: C3dMode2ResourceScaledVertex,
+        branch: C3dVertexMutationBranch,
+    ) -> Option<Self> {
+        match branch {
+            C3dVertexMutationBranch::Type1 => None,
+            C3dVertexMutationBranch::Type2 => Some(Self(vertex)),
+        }
+    }
+
+    #[must_use]
+    pub const fn vertex(self) -> C3dMode2ResourceScaledVertex {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn diffuse(self) -> u32 {
+        self.0.words[4]
+    }
+
+    #[must_use]
+    pub const fn specular(self) -> u32 {
+        self.0.words[5]
     }
 }
 
@@ -702,7 +744,6 @@ fn materialize_resource_scaled_object(
                     group0.record(),
                     group1,
                     transform,
-                    load_state.corner_source,
                     context,
                 )?;
                 Ok(RootMenuC3dMode2ResourceScaledReference {
@@ -741,7 +782,6 @@ fn materialize_resource_scaled_reference(
     group0: C3dGroup0Record<'_>,
     group1: &RootMenuC3dGroup1Topology<'_>,
     transform: bool,
-    corner_source: C3dMode2CornerSource,
     context: ResourceScaleContext,
 ) -> Result<Vec<RootMenuC3dMode2ResourceScaledBatch>, RootMenuC3dMode2MaterializationError> {
     let matrix = group0.affine_matrix_q16();
@@ -755,7 +795,13 @@ fn materialize_resource_scaled_reference(
         .map(|vertex| C3dOpaqueSideVector(vertex.opaque_triplet_words()))
         .collect::<Vec<_>>();
 
-    apply_mode2_mutation(&mut vertices, group1, corner_source);
+    let load_state = load_states.get(context.slot);
+    apply_vertex_mutation(
+        &mut vertices,
+        group1,
+        C3dLoadPolicy::root_mode2(load_state).vertex_mutation_branch(),
+        load_state.corner_source,
+    );
     apply_resource_scaling(topology, load_states, &mut vertices, group1, context)?;
 
     Ok(group1
@@ -781,29 +827,63 @@ fn materialize_resource_scaled_reference(
         .collect())
 }
 
-fn apply_mode2_mutation(
+fn apply_vertex_mutation(
     vertices: &mut [C3dMode2PreScaleVertex],
     group1: &RootMenuC3dGroup1Topology<'_>,
+    branch: C3dVertexMutationBranch,
     corner_source: C3dMode2CornerSource,
 ) {
     for batch in group1.batches() {
         for entry in batch.entries_24() {
-            let tuples = match corner_source {
-                C3dMode2CornerSource::OrdinaryDefaults => [ORDINARY_MODE2_CORNER; 3],
-                C3dMode2CornerSource::SourceEntryTuples => entry.corner_tuples(),
-            };
-            for (ordinal, tuple) in entry.entry32_ordinals().into_iter().zip(tuples) {
-                let vertex = &mut vertices[usize::from(ordinal)];
-                match batch.selector() {
-                    C3dPreparedSelector::Resource(_) => {
-                        vertex.words[4] = pack_mode2_tuple(tuple);
-                        vertex.words[5] = MODE2_OPAQUE_WORD;
-                    }
-                    C3dPreparedSelector::Missing => {
-                        vertex.words[4] = MODE2_OPAQUE_WORD;
-                        vertex.words[5] = MODE2_OPAQUE_WORD;
-                    }
+            match branch {
+                C3dVertexMutationBranch::Type1 => {
+                    apply_type1_entry_mutation(vertices, entry.entry32_ordinals(), batch.selector())
                 }
+                C3dVertexMutationBranch::Type2 => {
+                    let tuples = match corner_source {
+                        C3dMode2CornerSource::OrdinaryDefaults => [ORDINARY_MODE2_CORNER; 3],
+                        C3dMode2CornerSource::SourceEntryTuples => entry.corner_tuples(),
+                    };
+                    apply_type2_entry_mutation(
+                        vertices,
+                        entry.entry32_ordinals(),
+                        tuples,
+                        batch.selector(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn apply_type1_entry_mutation(
+    vertices: &mut [C3dMode2PreScaleVertex],
+    ordinals: [u16; 3],
+    selector: C3dPreparedSelector,
+) {
+    if selector == C3dPreparedSelector::Missing {
+        for ordinal in ordinals {
+            vertices[usize::from(ordinal)].words[4] = MODE2_OPAQUE_WORD;
+        }
+    }
+}
+
+fn apply_type2_entry_mutation(
+    vertices: &mut [C3dMode2PreScaleVertex],
+    ordinals: [u16; 3],
+    tuples: [[u8; 4]; 3],
+    selector: C3dPreparedSelector,
+) {
+    for (ordinal, tuple) in ordinals.into_iter().zip(tuples) {
+        let vertex = &mut vertices[usize::from(ordinal)];
+        match selector {
+            C3dPreparedSelector::Resource(_) => {
+                vertex.words[4] = pack_mode2_tuple(tuple);
+                vertex.words[5] = MODE2_OPAQUE_WORD;
+            }
+            C3dPreparedSelector::Missing => {
+                vertex.words[4] = MODE2_OPAQUE_WORD;
+                vertex.words[5] = MODE2_OPAQUE_WORD;
             }
         }
     }
@@ -1046,6 +1126,7 @@ fn materialize_object(
     load_state: C3dMode2LoadState,
 ) -> Result<RootMenuC3dMode2PreScaleObject, RootMenuC3dMode2MaterializationError> {
     let mut pass_through = load_state.prepared_resource_count != 0;
+    let mutation_branch = C3dLoadPolicy::root_mode2(load_state).vertex_mutation_branch();
     let mut group0_records = Vec::new();
     for group0 in object.group0_records() {
         if group0.record().field_04_i16() == -1 {
@@ -1055,6 +1136,7 @@ fn materialize_object(
             object,
             group0,
             !pass_through,
+            mutation_branch,
             load_state.corner_source,
         )?);
     }
@@ -1070,6 +1152,7 @@ fn materialize_group0(
     object: &RootMenuC3dObjectTopology<'_>,
     group0: &RootMenuC3dGroup0Topology<'_>,
     transform: bool,
+    mutation_branch: C3dVertexMutationBranch,
     corner_source: C3dMode2CornerSource,
 ) -> Result<RootMenuC3dMode2PreScaleGroup0, RootMenuC3dMode2MaterializationError> {
     let group1_count = object.groups().len();
@@ -1087,7 +1170,13 @@ fn materialize_group0(
                         group1_count,
                     },
                 )?;
-            let batches = materialize_reference(group0.record(), group1, transform, corner_source);
+            let batches = materialize_reference(
+                group0.record(),
+                group1,
+                transform,
+                mutation_branch,
+                corner_source,
+            );
             Ok(RootMenuC3dMode2PreScaleReference {
                 value_index: reference.value_index(),
                 source_offset: reference.source_offset(),
@@ -1107,6 +1196,7 @@ fn materialize_reference(
     group0: C3dGroup0Record<'_>,
     group1: &RootMenuC3dGroup1Topology<'_>,
     transform: bool,
+    mutation_branch: C3dVertexMutationBranch,
     corner_source: C3dMode2CornerSource,
 ) -> Vec<RootMenuC3dMode2PreScaleBatch> {
     let matrix = group0.affine_matrix_q16();
@@ -1120,7 +1210,7 @@ fn materialize_reference(
         .map(|vertex| C3dOpaqueSideVector(vertex.opaque_triplet_words()))
         .collect::<Vec<_>>();
 
-    apply_mode2_mutation(&mut vertices, group1, corner_source);
+    apply_vertex_mutation(&mut vertices, group1, mutation_branch, corner_source);
 
     group1
         .batches()
@@ -1232,7 +1322,7 @@ mod tests {
     }
 
     #[test]
-    fn lit_vertex_accessors_preserve_the_exact_eight_word_abi() {
+    fn layout_neutral_vertex_accessors_preserve_the_exact_eight_words() {
         let words = [
             1.25_f32.to_bits(),
             (-2.5_f32).to_bits(),
@@ -1253,12 +1343,88 @@ mod tests {
         assert_eq!(scaled.first_triplet(), [1.25, -2.5, 3.75]);
         assert_eq!(pre_scale.reserved_word(), 0x1234_5678);
         assert_eq!(scaled.reserved_word(), 0x1234_5678);
-        assert_eq!(pre_scale.diffuse(), 0x96aa_bbcc);
-        assert_eq!(scaled.diffuse(), 0x96aa_bbcc);
-        assert_eq!(pre_scale.specular(), 0xff11_2233);
-        assert_eq!(scaled.specular(), 0xff11_2233);
+        assert_eq!(
+            pre_scale.opaque_triplet_words(),
+            [0x1234_5678, 0x96aa_bbcc, 0xff11_2233]
+        );
+        assert_eq!(
+            scaled.opaque_triplet_words(),
+            [0x1234_5678, 0x96aa_bbcc, 0xff11_2233]
+        );
+        assert_eq!(
+            C3dType2ResourceScaledVertex::new(scaled, C3dVertexMutationBranch::Type1),
+            None
+        );
+        let type2 =
+            C3dType2ResourceScaledVertex::new(scaled, C3dVertexMutationBranch::Type2).unwrap();
+        assert_eq!(type2.diffuse(), 0x96aa_bbcc);
+        assert_eq!(type2.specular(), 0xff11_2233);
         assert_eq!(pre_scale.adjusted_pair(), [0.25, 0.75]);
         assert_eq!(scaled.adjusted_pair(), [0.25, 0.75]);
+
+        let type1 =
+            C3dType1ResourceScaledVertex::new(scaled, C3dVertexMutationBranch::Type1).unwrap();
+        assert_eq!(type1.position(), [1.25, -2.5, 3.75]);
+        assert_eq!(type1.normal().map(f32::to_bits), words[3..6]);
+        assert_eq!(type1.uv(), [0.25, 0.75]);
+        assert_eq!(
+            C3dType1ResourceScaledVertex::new(scaled, C3dVertexMutationBranch::Type2),
+            None
+        );
+    }
+
+    #[test]
+    fn type1_preserves_present_words_and_missing_writes_only_word4() {
+        let original = C3dMode2PreScaleVertex {
+            words: [0, 0, 0, 0x1111_1111, 0x2222_2222, 0x3333_3333, 0, 0],
+        };
+        let mut vertices = [original];
+        apply_type1_entry_mutation(
+            &mut vertices,
+            [0, 0, 0],
+            C3dPreparedSelector::Resource(C3dPreparedResourceId::new_for_test(0)),
+        );
+        assert_eq!(vertices, [original]);
+
+        apply_type1_entry_mutation(&mut vertices, [0, 0, 0], C3dPreparedSelector::Missing);
+        assert_eq!(
+            vertices[0].words,
+            [0, 0, 0, 0x1111_1111, MODE2_OPAQUE_WORD, 0x3333_3333, 0, 0,]
+        );
+        apply_type1_entry_mutation(
+            &mut vertices,
+            [0, 0, 0],
+            C3dPreparedSelector::Resource(C3dPreparedResourceId::new_for_test(0)),
+        );
+        assert_eq!(
+            vertices[0].words,
+            [0, 0, 0, 0x1111_1111, MODE2_OPAQUE_WORD, 0x3333_3333, 0, 0,]
+        );
+    }
+
+    #[test]
+    fn type2_retains_present_missing_and_fixed_uniform_mutation() {
+        let original = C3dMode2PreScaleVertex {
+            words: [0, 0, 0, 0x1111_1111, 0x2222_2222, 0x3333_3333, 0, 0],
+        };
+        let mut vertices = [original, original];
+        apply_type2_entry_mutation(
+            &mut vertices,
+            [0, 0, 0],
+            [[0x96; 4]; 3],
+            C3dPreparedSelector::Resource(C3dPreparedResourceId::new_for_test(0)),
+        );
+        assert_eq!(vertices[0].words[4], 0x9696_9696);
+        assert_eq!(vertices[0].words[5], MODE2_OPAQUE_WORD);
+
+        apply_type2_entry_mutation(
+            &mut vertices,
+            [1, 1, 1],
+            [[1, 2, 3, 4]; 3],
+            C3dPreparedSelector::Missing,
+        );
+        assert_eq!(vertices[1].words[4], MODE2_OPAQUE_WORD);
+        assert_eq!(vertices[1].words[5], MODE2_OPAQUE_WORD);
     }
 
     #[test]

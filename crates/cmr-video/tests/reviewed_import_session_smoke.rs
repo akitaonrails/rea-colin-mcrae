@@ -39,7 +39,7 @@ const EXTENT: DisplayExtent = DisplayExtent {
 
 #[test]
 #[ignore = "requires a user-owned import selected with CMR_RUNTIME_DATA"]
-fn reviewed_import_renders_two_root_frames_and_releases_uploaded_sources() {
+fn reviewed_import_renders_two_type1_copy_root_frames_and_releases_uploaded_sources() {
     let runtime_root = std::env::var_os("CMR_RUNTIME_DATA")
         .map(PathBuf::from)
         .expect("CMR_RUNTIME_DATA must name an imported runtime-data directory");

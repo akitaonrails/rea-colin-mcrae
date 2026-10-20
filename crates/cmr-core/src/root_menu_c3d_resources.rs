@@ -57,6 +57,34 @@ pub enum C3dEntryMaterialPolicy {
     FixedUniformWord(u32),
 }
 
+/// Vertex mutation/layout selected by bit 0 of the loader caller flags.
+///
+/// This is independent of the loader's `mode` argument. The numeric values are
+/// the exact values retained in the level record and later submitted as the
+/// legacy vertex type.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dVertexMutationBranch {
+    Type1 = 1,
+    Type2 = 2,
+}
+
+impl C3dVertexMutationBranch {
+    #[must_use]
+    pub const fn from_caller_flags(caller_flags: u16) -> Self {
+        if caller_flags & 1 != 0 {
+            Self::Type1
+        } else {
+            Self::Type2
+        }
+    }
+
+    #[must_use]
+    pub const fn submitted_vertex_type(self) -> u32 {
+        self as u32
+    }
+}
+
 /// Explicit inputs and policies supplied to one C3D preparation pass.
 ///
 /// Whether these values represent a recovered loader call depends on the
@@ -78,6 +106,11 @@ impl C3dLoadPolicy {
     #[must_use]
     pub const fn unknown_render_flag_08(self) -> bool {
         self.caller_flags & 0x08 != 0
+    }
+
+    #[must_use]
+    pub const fn vertex_mutation_branch(self) -> C3dVertexMutationBranch {
+        C3dVertexMutationBranch::from_caller_flags(self.caller_flags)
     }
 }
 
@@ -145,6 +178,14 @@ impl C3dPreparedResourceId {
 
     pub(crate) const fn provenance(self) -> C3dPreparedResourceProvenance {
         C3dPreparedResourceProvenance(self.arena)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn new_for_test(index: u16) -> Self {
+        Self {
+            arena: C3dPreparedResourceArenaId(NonZeroU64::new(1).unwrap()),
+            index,
+        }
     }
 }
 
@@ -984,6 +1025,20 @@ fn intern_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caller_flags_select_vertex_mutation_independently_of_loader_mode() {
+        assert_eq!(
+            C3dVertexMutationBranch::from_caller_flags(0x11),
+            C3dVertexMutationBranch::Type1
+        );
+        assert_eq!(
+            C3dVertexMutationBranch::from_caller_flags(0x18),
+            C3dVertexMutationBranch::Type2
+        );
+        assert_eq!(C3dVertexMutationBranch::Type1.submitted_vertex_type(), 1);
+        assert_eq!(C3dVertexMutationBranch::Type2.submitted_vertex_type(), 2);
+    }
     use cmr_formats::{
         bitmap::{BitmapMetadata, BitmapPaletteEntry},
         c3d::{C3D_FORMAT_VERSION, C3D_MAGIC, C3dLimits, parse_c3d},

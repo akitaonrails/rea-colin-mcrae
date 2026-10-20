@@ -11,7 +11,10 @@ use std::fmt;
 
 use cmr_core::{
     root_menu_c3d_frame_plan::RootMenuC3dDrawCommand,
-    root_menu_c3d_runtime::C3dMode2ResourceScaledVertex,
+    root_menu_c3d_resources::C3dVertexMutationBranch,
+    root_menu_c3d_runtime::{
+        C3dMode2ResourceScaledVertex, C3dType1ResourceScaledVertex, C3dType2ResourceScaledVertex,
+    },
     root_menu_c3d_transform::{C3dMatrixWords, C3dViewportWords},
 };
 use cmr_formats::{bitmap::BitmapPaletteEntry, riff_palette::PaletteEntry};
@@ -116,6 +119,9 @@ impl SoftwareC3dScreenVertex {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SoftwareC3dRasterError {
+    UnsupportedVertexLayout {
+        vertex_type: u32,
+    },
     IncompleteIndexTriplet {
         index_count: usize,
     },
@@ -349,6 +355,13 @@ pub struct SoftwareC3dPreparedBatch {
     degenerate_triangle_count: usize,
 }
 
+/// Geometry-only prepared batch for the branch-zero texture-COPY profile.
+///
+/// Its private inner batch prevents type-1 normal words from being exposed as
+/// synthetic lit colors through the generic fragment API.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoftwareC3dPreparedCopyBatch(SoftwareC3dPreparedBatch);
+
 impl SoftwareC3dPreparedBatch {
     #[must_use]
     pub fn triangles(&self) -> &[SoftwareC3dPreparedTriangle] {
@@ -384,13 +397,56 @@ pub fn preflight_root_c3d_batch(
     command: &RootMenuC3dDrawCommand,
     transforms: SoftwareC3dTransformState,
 ) -> Result<SoftwareC3dPreparedBatch, SoftwareC3dRasterError> {
+    let branch = command.vertex_mutation_branch();
+    if branch != C3dVertexMutationBranch::Type2 {
+        return Err(SoftwareC3dRasterError::UnsupportedVertexLayout {
+            vertex_type: command.vertex_type(),
+        });
+    }
     let vertices = command
         .vertices()
         .iter()
         .copied()
-        .map(RasterInputVertex::from)
+        .map(|vertex| {
+            RasterInputVertex::from_type2(
+                C3dType2ResourceScaledVertex::new(vertex, branch)
+                    .expect("type-2 branch was checked before conversion"),
+            )
+        })
         .collect::<Vec<_>>();
     preflight_indexed_triangle_list(&vertices, command.indices(), transforms)
+}
+
+/// Preflights either recovered 32-byte vertex layout for texture COPY/no-blend.
+///
+/// Type 1 contributes XYZ/UV and is checked for finite normals, but those
+/// normals do not enter the COPY combiner. Type 2 retains its packed-color
+/// path internally; neither layout's lighting payload is exposed by the
+/// returned geometry-only wrapper.
+pub fn preflight_root_c3d_copy_batch(
+    command: &RootMenuC3dDrawCommand,
+    transforms: SoftwareC3dTransformState,
+) -> Result<SoftwareC3dPreparedCopyBatch, SoftwareC3dRasterError> {
+    let branch = command.vertex_mutation_branch();
+    let vertices = command
+        .vertices()
+        .iter()
+        .copied()
+        .map(|vertex| match branch {
+            C3dVertexMutationBranch::Type1 => {
+                let vertex = C3dType1ResourceScaledVertex::new(vertex, branch)
+                    .expect("type-1 branch supplies the type-1 layout");
+                RasterInputVertex::from_type1_copy(vertex)
+            }
+            C3dVertexMutationBranch::Type2 => {
+                let vertex = C3dType2ResourceScaledVertex::new(vertex, branch)
+                    .expect("type-2 branch supplies the type-2 layout");
+                Ok(RasterInputVertex::from_type2(vertex))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    preflight_indexed_triangle_list(&vertices, command.indices(), transforms)
+        .map(SoftwareC3dPreparedCopyBatch)
 }
 
 /// Visits depth-passing fragments for one prepared batch in triangle/scanline
@@ -426,7 +482,7 @@ pub fn rasterize_root_c3d_fragments(
 /// Target validation and the fragment rasterizer's complete validation happen
 /// before either the target or depth buffer is mutated.
 pub fn compose_root_c3d_indexed_copy_no_blend(
-    batch: &SoftwareC3dPreparedBatch,
+    batch: &SoftwareC3dPreparedCopyBatch,
     texture: &SoftwareC3dSampledTexture,
     depth: &mut SoftwareC3dDepthBuffer,
     target_extent: [u16; 2],
@@ -435,7 +491,7 @@ pub fn compose_root_c3d_indexed_copy_no_blend(
     quantization: SoftwareC3dIndexedQuantization,
 ) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dComposeError> {
     compose_indexed_copy_no_blend(
-        batch,
+        &batch.0,
         IndexedTextureView {
             raster: TextureView {
                 extent: texture.extent(),
@@ -454,14 +510,16 @@ pub fn compose_root_c3d_indexed_copy_no_blend(
 
 /// Applies the recovered row-vector transform chain and `D3DVIEWPORT2` clip
 /// volume to one untransformed lit vertex.
-pub fn transform_root_c3d_vertex(
+pub fn transform_type2_c3d_vertex(
     vertex: C3dMode2ResourceScaledVertex,
     world: C3dMatrixWords,
     view: C3dMatrixWords,
     projection: C3dMatrixWords,
     viewport: C3dViewportWords,
 ) -> Result<SoftwareC3dClipVertex, SoftwareC3dRasterError> {
-    let input = RasterInputVertex::from(vertex).into_clip_vertex();
+    let vertex = C3dType2ResourceScaledVertex::new(vertex, C3dVertexMutationBranch::Type2)
+        .expect("the type-2 transform entry point supplies the type-2 layout");
+    let input = RasterInputVertex::from_type2(vertex).into_clip_vertex();
     transform_vertex(input, world, view, projection, viewport)
 }
 
@@ -1059,13 +1117,30 @@ impl RasterInputVertex {
     }
 }
 
-impl From<C3dMode2ResourceScaledVertex> for RasterInputVertex {
-    fn from(vertex: C3dMode2ResourceScaledVertex) -> Self {
+impl RasterInputVertex {
+    fn from_type1_copy(
+        vertex: C3dType1ResourceScaledVertex,
+    ) -> Result<Self, SoftwareC3dRasterError> {
+        if !vertex.normal().into_iter().all(f32::is_finite) {
+            return Err(SoftwareC3dRasterError::NonFiniteInput);
+        }
+        Ok(Self {
+            position: vertex.position(),
+            // The geometry-only copy wrapper never exposes these carrier
+            // values. Texture COPY ignores the lighting payload entirely.
+            diffuse: 0,
+            specular: 0,
+            uv: vertex.uv(),
+        })
+    }
+
+    fn from_type2(vertex: C3dType2ResourceScaledVertex) -> Self {
+        let raw = vertex.vertex();
         Self {
-            position: vertex.first_triplet(),
+            position: raw.first_triplet(),
             diffuse: vertex.diffuse(),
             specular: vertex.specular(),
-            uv: vertex.adjusted_pair(),
+            uv: raw.adjusted_pair(),
         }
     }
 }

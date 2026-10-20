@@ -22,7 +22,7 @@ use crate::{
     c3d_software_raster::{
         SoftwareC3dComposeError, SoftwareC3dDepthBuffer, SoftwareC3dIndexedQuantization,
         SoftwareC3dRasterError, SoftwareC3dTransformState, compose_root_c3d_indexed_copy_no_blend,
-        preflight_root_c3d_batch,
+        preflight_root_c3d_copy_batch,
     },
 };
 
@@ -323,7 +323,7 @@ impl RootMenuC3dBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedBacke
                 ))?;
         let extent = self.checked_c3d_destination(destination)?;
         let palette = self.require_c3d_palette(destination)?;
-        let prepared = preflight_root_c3d_batch(
+        let prepared = preflight_root_c3d_copy_batch(
             command,
             SoftwareC3dTransformState::new(world, view, ROOT_MENU_C3D_PROJECTION, viewport),
         )

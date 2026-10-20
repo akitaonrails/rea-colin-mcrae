@@ -74,8 +74,8 @@ Status markers:
 - [x] `D11` Resolve group-0→group-1 and entry24→group-2 numeric references.
 - [x] `D12` Resolve entry24 `+2/+4/+6` references to 32-byte entries.
 - [x] `D13` Bind parsed C3D slots and per-object angle state to root frames.
-- [~] `D14` Decode the root C3D geometry/material/resource contract.
-- [~] `D15` Render root C3D pixels in the compatibility renderer.
+- [~] `D14` Decode root C3D geometry/resources and the type-1 lighting/material contract.
+- [~] `D15` Render root type-1 C3D in the recovered branch-zero COPY profile; alternate Gouraud/modulate lighting remains open.
 - [~] `D16` Recover and implement final compose/present ownership.
 - [x] `D17` Assemble a production root-menu session from imported resources.
 - [ ] `D18` Run the complete root menu interactively in a native window.
@@ -98,6 +98,7 @@ Status markers:
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
 - [x] `E15` Recover championship mode-8 C3D preparation and session ownership.
+- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation.
 
 ## F. Menus, game state, and persistence
 
@@ -164,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T21:11:05Z
-milestone=prepare-shared-frontend-c3d-arena
+updated_utc=2026-10-20T21:21:19Z
+milestone=correct-root-c3d-vertex-mutation-branch
 completed=50
-partial=19
+partial=20
 not_started=47
 blocked=0
-total=116
+total=117
 current_focus=F04-E04-championship-car-transform-and-runtime
 next_exit_gate=championship-setup-software-frame-execution
 <!-- PROGRESS-TAIL-END -->

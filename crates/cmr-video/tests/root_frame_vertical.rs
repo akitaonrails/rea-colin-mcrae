@@ -65,7 +65,7 @@ impl Drop for TestDirectory {
 }
 
 #[test]
-fn synthetic_root_frame_captures_representative_layers_twice_without_reuploading() {
+fn synthetic_root_frame_captures_type1_copy_layers_twice_without_reuploading() {
     let temporary = TestDirectory::new();
     let source = temporary.0.join("source");
     let (reviewed, expected_center_marker) = write_reviewed_root_assets(&source);
@@ -162,7 +162,6 @@ fn synthetic_root_frame_captures_representative_layers_twice_without_reuploading
             (1, 16, DeferredPaletteCommitOutcome::NoPendingPalette),
         ] {
             let outcome = session.render(root_input()).unwrap();
-
             assert_eq!(outcome.bitmap_blits, 5);
             assert_eq!(outcome.bitmap_no_ops, 0);
             assert!(outcome.footer.is_some());

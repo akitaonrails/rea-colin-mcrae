@@ -30,6 +30,9 @@ use cmr_formats::riff_palette::PaletteEntry;
 use cmr_formats::stored_asset::DecodeLimits;
 use cmr_video::SoftwareIndexedBackend;
 use cmr_video::c3d_software::prepare_software_root_c3d_bindings;
+use cmr_video::c3d_software_raster::{
+    SoftwareC3dRasterError, SoftwareC3dTransformState, preflight_root_c3d_batch,
+};
 use sha2::{Digest, Sha256};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -140,15 +143,20 @@ fn real_preparation_binding_owns_normalized_source_after_inputs_drop() {
 }
 
 #[test]
-fn imported_root_c3d_scene_writes_back_buffer_and_reuses_retained_binding() {
+fn imported_root_type1_copy_ignores_normals_and_reuses_retained_binding() {
     let temporary = TestDirectory::new();
     let source = temporary.0.join("source");
     let slot = RootMenuC3dSlot::Championship;
     let path = slot.path(VisualVariant::Normal);
-    let bytes = drawable_root_c3d(&indexed_bitmap_4x4_constant(9));
+    let alternate_slot = RootMenuC3dSlot::Rally;
+    let alternate_path = alternate_slot.path(VisualVariant::Normal);
+    let bitmap = indexed_bitmap_4x4();
+    let bytes = drawable_root_c3d(&bitmap, [0, -(1 << 16), 0]);
+    let alternate_bytes = drawable_root_c3d(&bitmap, [3 << 16, 4 << 16, -(5 << 16)]);
     let source_file = source.join(path);
     fs::create_dir_all(source_file.parent().unwrap()).unwrap();
     fs::write(&source_file, &bytes).unwrap();
+    fs::write(source.join(alternate_path), &alternate_bytes).unwrap();
 
     let profile = AssetProfile {
         schema_version: 1,
@@ -156,12 +164,20 @@ fn imported_root_c3d_scene_writes_back_buffer_and_reuses_retained_binding() {
         roots: vec!["New_Fe".to_owned()],
         empty_directories: Vec::new(),
         sentinels: Vec::new(),
-        files: vec![AssetFile {
-            path: path.to_owned(),
-            size: bytes.len() as u64,
-            sha256: hex_sha256(&bytes),
-            encoding: StorageEncoding::Raw,
-        }],
+        files: vec![
+            AssetFile {
+                path: path.to_owned(),
+                size: bytes.len() as u64,
+                sha256: hex_sha256(&bytes),
+                encoding: StorageEncoding::Raw,
+            },
+            AssetFile {
+                path: alternate_path.to_owned(),
+                size: alternate_bytes.len() as u64,
+                sha256: hex_sha256(&alternate_bytes),
+                encoding: StorageEncoding::Raw,
+            },
+        ],
     };
     let reviewed = ReviewedProfile::from_json(&serde_json::to_vec(&profile).unwrap()).unwrap();
     let imported = temporary.0.join("runtime-data");
@@ -207,12 +223,14 @@ fn imported_root_c3d_scene_writes_back_buffer_and_reuses_retained_binding() {
         blue: 255,
         flags: 0,
     }; 256];
-    active_palette[37] = PaletteEntry {
-        red: 11,
-        green: 10,
-        blue: 9,
-        flags: 0xa5,
-    };
+    for (index, entry) in active_palette.iter_mut().take(16).enumerate() {
+        *entry = PaletteEntry {
+            red: index as u8 + 2,
+            green: index as u8 + 1,
+            blue: index as u8,
+            flags: 0xa5,
+        };
+    }
     let mut backend = SoftwareIndexedBackend::default();
     backend.create_device().unwrap();
     backend
@@ -235,12 +253,26 @@ fn imported_root_c3d_scene_writes_back_buffer_and_reuses_retained_binding() {
     backend.upload_palette(palette, &active_palette).unwrap();
 
     let first = pipeline.plan_frame(slot, 0, extent).unwrap();
+    let first_plan = first.as_ref().unwrap();
+    assert_eq!(first_plan.commands().len(), 1);
+    assert_eq!(
+        preflight_root_c3d_batch(
+            &first_plan.commands()[0],
+            SoftwareC3dTransformState::new(
+                first_plan.world(),
+                first_plan.view(),
+                first_plan.projection(),
+                first_plan.viewport(),
+            ),
+        ),
+        Err(SoftwareC3dRasterError::UnsupportedVertexLayout { vertex_type: 1 })
+    );
     pipeline
         .execute_terminal_scene(&mut backend, surfaces.back, extent, first)
         .unwrap();
 
     let back = backend.back_pixels().unwrap();
-    assert!(back.contains(&37));
+    assert!(back.iter().any(|pixel| (1..=15).contains(pixel)));
     assert!(back.contains(&0));
     assert!(
         backend
@@ -252,22 +284,21 @@ fn imported_root_c3d_scene_writes_back_buffer_and_reuses_retained_binding() {
     let depth = backend.c3d_depth_values().unwrap();
     assert!(depth.iter().any(|value| *value < 1.0));
     assert!(depth.contains(&1.0));
+    let first_pixels = back.to_vec();
+    let first_depth = depth.to_vec();
 
-    // The executor suppresses a same-selector bind on the second frame. A
-    // successful draw therefore proves the backend retained its Arc-backed
-    // texture binding across EndScene.
-    let second = pipeline.plan_frame(slot, 0, extent).unwrap();
+    let second = pipeline.plan_frame(alternate_slot, 0, extent).unwrap();
     pipeline
         .execute_terminal_scene(&mut backend, surfaces.back, extent, second)
         .unwrap();
-    assert!(backend.back_pixels().unwrap().contains(&37));
-    assert!(
-        backend
-            .c3d_depth_values()
-            .unwrap()
-            .iter()
-            .any(|value| *value < 1.0)
-    );
+    assert_eq!(backend.back_pixels().unwrap(), first_pixels);
+    assert_eq!(backend.c3d_depth_values().unwrap(), first_depth);
+
+    let third = pipeline.plan_frame(slot, 0, extent).unwrap();
+    pipeline
+        .execute_terminal_scene(&mut backend, surfaces.back, extent, third)
+        .unwrap();
+    assert_eq!(backend.back_pixels().unwrap(), first_pixels);
 }
 
 fn one_resource_c3d(bitmap: &[u8]) -> Vec<u8> {
@@ -284,7 +315,7 @@ fn one_resource_c3d(bitmap: &[u8]) -> Vec<u8> {
     input
 }
 
-fn drawable_root_c3d(bitmap: &[u8]) -> Vec<u8> {
+fn drawable_root_c3d(bitmap: &[u8], normal_q16: [i32; 3]) -> Vec<u8> {
     let group0_len = C3D_GROUP0_VALUES_OFFSET + 2;
     let group1_len = C3D_GROUP1_FIXED_LEN + 3 * C3D_GROUP1_ENTRY32_LEN + C3D_GROUP1_ENTRY24_LEN;
     let group1_start = C3D_HEADER_LEN + group0_len;
@@ -318,10 +349,29 @@ fn drawable_root_c3d(bitmap: &[u8]) -> Vec<u8> {
     input[group1 + 12..group1 + 16].copy_from_slice(&(group1_len as u32).to_le_bytes());
     input[group1 + 16..group1 + 18].copy_from_slice(&3u16.to_le_bytes());
     input[group1 + 18..group1 + 20].copy_from_slice(&1u16.to_le_bytes());
+    let [normal_x, normal_y, normal_z] = normal_q16;
     let vertices: [[i32; 8]; 3] = [
-        [-(4 << 16), -(3 << 16), 0, 0, -(1 << 16), 0, 0, 0],
-        [-(4 << 16), 3 << 16, 0, 0, -(1 << 16), 0, 0, 0],
-        [4 << 16, -(3 << 16), 0, 0, -(1 << 16), 0, 0, 0],
+        [
+            -(4 << 16),
+            -(3 << 16),
+            0,
+            0,
+            -(1 << 16),
+            normal_x,
+            normal_y,
+            normal_z,
+        ],
+        [-(4 << 16), 3 << 16, 0, 0, 0, normal_x, normal_y, normal_z],
+        [
+            4 << 16,
+            -(3 << 16),
+            0,
+            1 << 16,
+            -(1 << 16),
+            normal_x,
+            normal_y,
+            normal_z,
+        ],
     ];
     for (vertex_index, vertex) in vertices.iter().enumerate() {
         let start = group1 + C3D_GROUP1_FIXED_LEN + vertex_index * C3D_GROUP1_ENTRY32_LEN;
@@ -372,13 +422,6 @@ fn indexed_bitmap_4x4() -> Vec<u8> {
     input[PIXEL_OFFSET + 4..PIXEL_OFFSET + 8].copy_from_slice(&[8, 9, 10, 11]);
     input[PIXEL_OFFSET + 8..PIXEL_OFFSET + 12].copy_from_slice(&[4, 5, 6, 7]);
     input[PIXEL_OFFSET + 12..PIXEL_OFFSET + 16].copy_from_slice(&[0, 1, 2, 3]);
-    input
-}
-
-fn indexed_bitmap_4x4_constant(index: u8) -> Vec<u8> {
-    let mut input = indexed_bitmap_4x4();
-    const PIXEL_OFFSET: usize = 14 + 40 + 256 * 4;
-    input[PIXEL_OFFSET..].fill(index);
     input
 }
 
