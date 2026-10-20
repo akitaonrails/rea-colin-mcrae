@@ -143,6 +143,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   Type-2 word-5 path. It explicitly carries the retained process-global gate,
   thresholds, distance/center inputs, and x87 conversion mode; disabled state
   is caller-selected and is not inferred from frontend entry.
+- `cmr-video::c3d_software_raster` and `SoftwareIndexedBackend`: one explicit
+  mutation-disabled, actor-RGB-disabled, unified-indexed COPY/no-blend car
+  profile. It copies sampled indices directly, maps reviewed-car missing
+  selectors to index zero, rejects every unsupported runtime-state tuple, and
+  preserves the root renderer's separate palette-quantizing policy.
 - `cmr-core::frontend_c3d_resources`: one frontend-session prepared arena with
   the exact 55-resource mode-8 car prefix followed by six fixed optional root
   slots, preserving cross-domain IDs, aliases, rollback, and diagnostics.

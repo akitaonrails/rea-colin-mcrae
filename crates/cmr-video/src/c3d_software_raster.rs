@@ -10,6 +10,7 @@
 use std::fmt;
 
 use cmr_core::{
+    c3d_batch::C3dDrawCommand,
     root_menu_c3d_frame_plan::RootMenuC3dDrawCommand,
     root_menu_c3d_resources::C3dVertexMutationBranch,
     root_menu_c3d_runtime::{
@@ -119,6 +120,7 @@ impl SoftwareC3dScreenVertex {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SoftwareC3dRasterError {
+    UnsupportedChampionshipCarProfile(SoftwareChampionshipCarRasterProfile),
     UnsupportedVertexLayout {
         vertex_type: u32,
     },
@@ -148,6 +150,42 @@ pub enum SoftwareC3dRasterError {
     InvalidPreparedTriangle {
         triangle: usize,
     },
+}
+
+/// Orthogonal runtime state controlling championship-car raster behavior.
+///
+/// The caller must populate every field from recovered runtime state; frontend
+/// entry alone does not prove that fog mutation or alpha blending is disabled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SoftwareChampionshipCarRasterProfile {
+    pub unified_indexed: bool,
+    pub texture_copy: bool,
+    pub point_filter: bool,
+    pub alpha_blend: bool,
+    pub fog_mutation: bool,
+    pub actor_rgb_override: bool,
+}
+
+impl SoftwareChampionshipCarRasterProfile {
+    /// The sole deterministic software subset currently implemented.
+    pub const MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND: Self = Self {
+        unified_indexed: true,
+        texture_copy: true,
+        point_filter: true,
+        alpha_blend: false,
+        fog_mutation: false,
+        actor_rgb_override: false,
+    };
+}
+
+/// Index source selected by the championship binding operation.
+#[derive(Clone, Copy, Debug)]
+pub enum SoftwareChampionshipCarIndexedSource<'a> {
+    UnifiedTexture(&'a SoftwareC3dSampledTexture),
+    /// The reviewed car corpus maps the recovered opaque-black default to
+    /// literal display index zero. This is deliberately not resource zero and
+    /// does not validate an arbitrary current or pending palette.
+    ReviewedCarPaletteMissingSelectorOpaqueBlackIndexZero,
 }
 
 impl fmt::Display for SoftwareC3dRasterError {
@@ -449,6 +487,50 @@ pub fn preflight_root_c3d_copy_batch(
         .map(SoftwareC3dPreparedCopyBatch)
 }
 
+/// Preflights a car batch only for the bounded mutation-disabled COPY profile.
+///
+/// Profile and Type-2 checks precede geometry work, making unsupported state
+/// rejection effect-free for callers that preflight before composition.
+pub fn preflight_championship_car_indexed_copy_batch(
+    command: &C3dDrawCommand,
+    transforms: SoftwareC3dTransformState,
+    profile: SoftwareChampionshipCarRasterProfile,
+) -> Result<SoftwareC3dPreparedCopyBatch, SoftwareC3dRasterError> {
+    validate_championship_car_raster_profile(profile)?;
+    if command.vertex_mutation_branch() != C3dVertexMutationBranch::Type2 {
+        return Err(SoftwareC3dRasterError::UnsupportedVertexLayout {
+            vertex_type: command.vertex_type(),
+        });
+    }
+    let vertices = command
+        .vertices()
+        .iter()
+        .copied()
+        .map(|vertex| {
+            RasterInputVertex::from_type2(
+                C3dType2ResourceScaledVertex::new(vertex, C3dVertexMutationBranch::Type2)
+                    .expect("the championship profile requires type-2 vertices"),
+            )
+        })
+        .collect::<Vec<_>>();
+    preflight_indexed_triangle_list(&vertices, command.indices(), transforms)
+        .map(SoftwareC3dPreparedCopyBatch)
+}
+
+pub fn validate_championship_car_raster_profile(
+    profile: SoftwareChampionshipCarRasterProfile,
+) -> Result<(), SoftwareC3dRasterError> {
+    if profile
+        == SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND
+    {
+        Ok(())
+    } else {
+        Err(SoftwareC3dRasterError::UnsupportedChampionshipCarProfile(
+            profile,
+        ))
+    }
+}
+
 /// Visits depth-passing fragments for one prepared batch in triangle/scanline
 /// order using the deterministic point-filter compatibility policy.
 ///
@@ -506,6 +588,64 @@ pub fn compose_root_c3d_indexed_copy_no_blend(
         active_palette,
         quantization,
     )
+}
+
+/// Copies sampled source indices directly into the indexed championship target.
+///
+/// No palette lookup or RGB quantization occurs. The terminal owner may commit
+/// the pending car palette after this call, preserving the recovered ordering.
+/// Target, source, and prepared geometry are fully validated before color or
+/// depth is changed.
+pub fn compose_championship_car_indexed_copy_no_blend(
+    batch: &SoftwareC3dPreparedCopyBatch,
+    source: SoftwareChampionshipCarIndexedSource<'_>,
+    depth: &mut SoftwareC3dDepthBuffer,
+    target_extent: [u16; 2],
+    target_pixels: &mut [u8],
+    profile: SoftwareChampionshipCarRasterProfile,
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dComposeError> {
+    let default_index = [0u8];
+    let texture = match source {
+        SoftwareChampionshipCarIndexedSource::UnifiedTexture(texture) => TextureView {
+            extent: texture.extent(),
+            indices: texture.indices(),
+            // The COPY profile consumes source indices, not retained palette
+            // entries. Every u8 index is valid even when BMP metadata carries
+            // fewer than 256 palette records.
+            palette_len: 256,
+        },
+        SoftwareChampionshipCarIndexedSource::ReviewedCarPaletteMissingSelectorOpaqueBlackIndexZero => TextureView {
+            extent: [1, 1],
+            indices: &default_index,
+            palette_len: 1,
+        },
+    };
+    compose_championship_car_indexed_copy_view(
+        &batch.0,
+        texture,
+        depth,
+        target_extent,
+        target_pixels,
+        profile,
+    )
+}
+
+fn compose_championship_car_indexed_copy_view(
+    batch: &SoftwareC3dPreparedBatch,
+    texture: TextureView<'_>,
+    depth: &mut SoftwareC3dDepthBuffer,
+    target_extent: [u16; 2],
+    target_pixels: &mut [u8],
+    profile: SoftwareChampionshipCarRasterProfile,
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dComposeError> {
+    validate_championship_car_raster_profile(profile).map_err(SoftwareC3dComposeError::Raster)?;
+    validate_indexed_target(target_extent, target_pixels, depth.extent())?;
+    let target_width = usize::from(target_extent[0]);
+    rasterize_fragments(batch, texture, depth, |fragment| {
+        let [x, y] = fragment.position();
+        target_pixels[usize::from(y) * target_width + usize::from(x)] = fragment.texture_index();
+    })
+    .map_err(SoftwareC3dComposeError::Raster)
 }
 
 /// Applies the recovered row-vector transform chain and `D3DVIEWPORT2` clip
@@ -1904,6 +2044,168 @@ mod tests {
         )
         .unwrap();
         assert_eq!(target, [99, 99, 99, 99, 0, 99, 99, 99, 99]);
+    }
+
+    #[test]
+    fn championship_copy_preserves_texture_index_without_palette_quantization() {
+        let color = [0.1, 0.2, 0.3, 0.4];
+        let batch = prepared_batch(vec![triangle(
+            [
+                screen([0.0, 0.0, 0.5], 1.0, [0.0, 0.0], color),
+                screen([2.0, 0.0, 0.5], 1.0, [0.0, 0.0], color),
+                screen([0.0, 2.0, 0.5], 1.0, [0.0, 0.0], color),
+            ],
+            0x9696_9696,
+        )]);
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let mut target = [3];
+
+        let outcome = compose_championship_car_indexed_copy_view(
+            &batch,
+            texture([1, 1], &[217]),
+            &mut depth,
+            [1, 1],
+            &mut target,
+            SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.depth_passed(), 1);
+        assert_eq!(target, [217]);
+        assert_eq!(depth.values(), [0.5]);
+    }
+
+    #[test]
+    fn public_championship_missing_source_writes_zero_ignores_diffuse_and_obeys_depth() {
+        let batch_at = |depth_value, diffuse| {
+            prepared_batch(vec![triangle(
+                [
+                    screen([0.0, 0.0, depth_value], 1.0, [0.0, 0.0], diffuse),
+                    screen([2.0, 0.0, depth_value], 1.0, [0.0, 0.0], diffuse),
+                    screen([0.0, 2.0, depth_value], 1.0, [0.0, 0.0], diffuse),
+                ],
+                0xff00_0000,
+            )])
+        };
+        let profile = SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND;
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let mut target = [91];
+
+        compose_championship_car_indexed_copy_no_blend(
+            &SoftwareC3dPreparedCopyBatch(batch_at(0.25, [0.0; 4])),
+            SoftwareChampionshipCarIndexedSource::ReviewedCarPaletteMissingSelectorOpaqueBlackIndexZero,
+            &mut depth,
+            [1, 1],
+            &mut target,
+            profile,
+        )
+        .unwrap();
+        assert_eq!(target, [0]);
+
+        depth.clear_far();
+        target[0] = 91;
+        compose_championship_car_indexed_copy_no_blend(
+            &SoftwareC3dPreparedCopyBatch(batch_at(0.25, [1.0; 4])),
+            SoftwareChampionshipCarIndexedSource::ReviewedCarPaletteMissingSelectorOpaqueBlackIndexZero,
+            &mut depth,
+            [1, 1],
+            &mut target,
+            profile,
+        )
+        .unwrap();
+        assert_eq!(target, [0]);
+
+        target[0] = 77;
+        let outcome = compose_championship_car_indexed_copy_no_blend(
+            &SoftwareC3dPreparedCopyBatch(batch_at(0.75, [1.0; 4])),
+            SoftwareChampionshipCarIndexedSource::ReviewedCarPaletteMissingSelectorOpaqueBlackIndexZero,
+            &mut depth,
+            [1, 1],
+            &mut target,
+            profile,
+        )
+        .unwrap();
+        assert_eq!(outcome.depth_rejected(), 1);
+        assert_eq!(target, [77]);
+        assert_eq!(depth.values(), [0.25]);
+    }
+
+    #[test]
+    fn unsupported_championship_profiles_and_invalid_sources_are_effect_free() {
+        let batch = prepared_batch(vec![triangle(
+            [
+                screen([0.0, 0.0, 0.5], 1.0, [0.0, 0.0], [0.0; 4]),
+                screen([2.0, 0.0, 0.5], 1.0, [0.0, 0.0], [0.0; 4]),
+                screen([0.0, 2.0, 0.5], 1.0, [0.0, 0.0], [0.0; 4]),
+            ],
+            0,
+        )]);
+
+        let supported = SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND;
+        for profile in [
+            SoftwareChampionshipCarRasterProfile {
+                unified_indexed: false,
+                ..supported
+            },
+            SoftwareChampionshipCarRasterProfile {
+                texture_copy: false,
+                ..supported
+            },
+            SoftwareChampionshipCarRasterProfile {
+                point_filter: false,
+                ..supported
+            },
+            SoftwareChampionshipCarRasterProfile {
+                alpha_blend: true,
+                ..supported
+            },
+            SoftwareChampionshipCarRasterProfile {
+                fog_mutation: true,
+                ..supported
+            },
+            SoftwareChampionshipCarRasterProfile {
+                actor_rgb_override: true,
+                ..supported
+            },
+        ] {
+            let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+            let before_depth = depth.values().to_vec();
+            let mut target = [44];
+            assert_eq!(
+                compose_championship_car_indexed_copy_view(
+                    &batch,
+                    texture([1, 1], &[9]),
+                    &mut depth,
+                    [1, 1],
+                    &mut target,
+                    profile,
+                ),
+                Err(SoftwareC3dComposeError::Raster(
+                    SoftwareC3dRasterError::UnsupportedChampionshipCarProfile(profile)
+                ))
+            );
+            assert_eq!(target, [44]);
+            assert_eq!(depth.values(), before_depth);
+        }
+
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let before_depth = depth.values().to_vec();
+        let mut target = [44];
+        assert!(matches!(
+            compose_championship_car_indexed_copy_view(
+                &batch,
+                texture([2, 1], &[9]),
+                &mut depth,
+                [1, 1],
+                &mut target,
+                SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+            ),
+            Err(SoftwareC3dComposeError::Raster(
+                SoftwareC3dRasterError::InvalidTextureIndexLength { .. }
+            ))
+        ));
+        assert_eq!(target, [44]);
+        assert_eq!(depth.values(), before_depth);
     }
 
     #[test]

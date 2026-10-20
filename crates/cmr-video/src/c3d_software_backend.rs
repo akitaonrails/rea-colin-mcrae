@@ -7,7 +7,10 @@
 use std::fmt;
 
 use cmr_core::{
+    c3d_batch::C3dDrawCommand,
+    championship_car_execute::ChampionshipCarBatchBackend,
     display::DisplayExtent,
+    frontend_c3d_scene::{C3dBindingState, FrontendC3dSceneBackend},
     root_menu_c3d_execute::RootMenuC3dBatchBackend,
     root_menu_c3d_frame_plan::RootMenuC3dDrawCommand,
     root_menu_c3d_scene::{RootMenuC3dBindingState, RootMenuC3dSceneBackend},
@@ -21,8 +24,11 @@ use crate::{
     c3d_software::SoftwareC3dSampledTexture,
     c3d_software_raster::{
         SoftwareC3dComposeError, SoftwareC3dDepthBuffer, SoftwareC3dIndexedQuantization,
-        SoftwareC3dRasterError, SoftwareC3dTransformState, compose_root_c3d_indexed_copy_no_blend,
+        SoftwareC3dRasterError, SoftwareC3dTransformState, SoftwareChampionshipCarIndexedSource,
+        SoftwareChampionshipCarRasterProfile, compose_championship_car_indexed_copy_no_blend,
+        compose_root_c3d_indexed_copy_no_blend, preflight_championship_car_indexed_copy_batch,
         preflight_root_c3d_copy_batch,
+        validate_championship_car_raster_profile as validate_championship_car_profile_tuple,
     },
 };
 
@@ -45,6 +51,7 @@ pub enum SoftwareC3dBackendError {
     MissingActivePalette,
     PaletteNotAttached,
     UnsupportedTextureColorKey(u8),
+    ChampionshipCarProfileNotConfigured,
     Raster(SoftwareC3dRasterError),
     Compose(SoftwareC3dComposeError),
 }
@@ -74,7 +81,14 @@ pub(crate) struct SoftwareC3dBackendState {
     viewport: Option<C3dViewportWords>,
     world: Option<C3dMatrixWords>,
     scene_destination: Option<SurfaceHandle>,
-    bound_texture: Option<SoftwareC3dSampledTexture>,
+    binding: Option<SoftwareC3dBinding>,
+    championship_car_profile: Option<SoftwareChampionshipCarRasterProfile>,
+}
+
+#[derive(Clone)]
+enum SoftwareC3dBinding {
+    Resource(SoftwareC3dSampledTexture),
+    ChampionshipDefault,
 }
 
 impl SoftwareC3dBackendState {
@@ -89,7 +103,8 @@ impl SoftwareC3dBackendState {
         self.viewport = None;
         self.world = None;
         self.scene_destination = None;
-        self.bound_texture = None;
+        self.binding = None;
+        self.championship_car_profile = None;
     }
 
     fn require_inactive(&self, operation: &'static str) -> Result<(), SoftwareC3dBackendError> {
@@ -118,6 +133,21 @@ impl SoftwareIndexedBackend {
     #[must_use]
     pub fn c3d_depth_values(&self) -> Option<&[f32]> {
         self.c3d.depth.as_ref().map(SoftwareC3dDepthBuffer::values)
+    }
+
+    /// Selects the championship raster contract from caller-owned runtime
+    /// state. Frontend entry does not itself prove whether legacy fog mutation
+    /// remains enabled, so the backend deliberately has no implicit profile.
+    pub fn configure_championship_car_raster_profile(
+        &mut self,
+        profile: SoftwareChampionshipCarRasterProfile,
+    ) -> Result<(), SoftwareC3dBackendError> {
+        self.c3d
+            .require_inactive("configure_championship_car_raster_profile")?;
+        validate_championship_car_profile_tuple(profile)
+            .map_err(SoftwareC3dBackendError::Raster)?;
+        self.c3d.championship_car_profile = Some(profile);
+        Ok(())
     }
 
     fn checked_c3d_destination(
@@ -151,6 +181,20 @@ impl SoftwareIndexedBackend {
         }
         self.palette
             .ok_or(SoftwareC3dBackendError::MissingActivePalette)
+    }
+
+    /// Effect-free guard for terminal owners to call before depth clear or
+    /// `BeginScene`.
+    pub fn validate_championship_car_raster_profile(
+        &self,
+    ) -> Result<SoftwareChampionshipCarRasterProfile, SoftwareC3dBackendError> {
+        let profile = self
+            .c3d
+            .championship_car_profile
+            .ok_or(SoftwareC3dBackendError::ChampionshipCarProfileNotConfigured)?;
+        validate_championship_car_profile_tuple(profile)
+            .map_err(SoftwareC3dBackendError::Raster)?;
+        Ok(profile)
     }
 }
 
@@ -273,6 +317,43 @@ impl RootMenuC3dSceneBackend for SoftwareIndexedBackend {
     }
 }
 
+impl FrontendC3dSceneBackend for SoftwareIndexedBackend {
+    type Surface = SurfaceHandle;
+    type SceneError = SoftwareC3dBackendError;
+
+    fn clear_c3d_depth(
+        &mut self,
+        destination: Self::Surface,
+        extent: DisplayExtent,
+    ) -> Result<(), Self::SceneError> {
+        self.clear_root_c3d_depth(destination, extent)
+    }
+
+    fn set_c3d_view(&mut self, view: C3dMatrixWords) -> Result<(), Self::SceneError> {
+        self.set_root_c3d_view(view)
+    }
+
+    fn set_c3d_viewport(&mut self, viewport: C3dViewportWords) -> Result<(), Self::SceneError> {
+        self.set_root_c3d_viewport(viewport)
+    }
+
+    fn begin_c3d_scene(&mut self, destination: Self::Surface) -> Result<(), Self::SceneError> {
+        self.begin_root_c3d_scene(destination)
+    }
+
+    fn reset_c3d_world(&mut self) -> Result<(), Self::SceneError> {
+        self.reset_root_c3d_world()
+    }
+
+    fn finish_c3d_scene_tail(&mut self) -> Result<C3dBindingState, Self::SceneError> {
+        self.finish_root_c3d_scene_tail()
+    }
+
+    fn end_c3d_scene(&mut self) -> Result<(), Self::SceneError> {
+        self.end_root_c3d_scene()
+    }
+}
+
 impl RootMenuC3dBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedBackend {
     type Error = SoftwareC3dBackendError;
 
@@ -290,7 +371,7 @@ impl RootMenuC3dBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedBacke
         if let Some(index) = binding.color_key_index() {
             return Err(SoftwareC3dBackendError::UnsupportedTextureColorKey(index));
         }
-        self.c3d.bound_texture = Some(binding.clone());
+        self.c3d.binding = Some(SoftwareC3dBinding::Resource(binding.clone()));
         Ok(())
     }
 
@@ -314,13 +395,14 @@ impl RootMenuC3dBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedBacke
             .ok_or(SoftwareC3dBackendError::InvalidSequence(
                 "draw_root_c3d_batch without viewport",
             ))?;
-        let texture =
-            self.c3d
-                .bound_texture
-                .clone()
-                .ok_or(SoftwareC3dBackendError::InvalidSequence(
-                    "draw_root_c3d_batch without binding",
-                ))?;
+        let texture = match self.c3d.binding.clone() {
+            Some(SoftwareC3dBinding::Resource(texture)) => texture,
+            _ => {
+                return Err(SoftwareC3dBackendError::InvalidSequence(
+                    "draw_root_c3d_batch without resource binding",
+                ));
+            }
+        };
         let extent = self.checked_c3d_destination(destination)?;
         let palette = self.require_c3d_palette(destination)?;
         let prepared = preflight_root_c3d_copy_batch(
@@ -355,12 +437,115 @@ impl RootMenuC3dBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedBacke
     }
 }
 
+impl ChampionshipCarBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedBackend {
+    type Error = SoftwareC3dBackendError;
+
+    fn set_championship_car_actor_world(
+        &mut self,
+        _actor_index: usize,
+        world: C3dMatrixWords,
+    ) -> Result<(), Self::Error> {
+        self.c3d
+            .require_active("set_championship_car_actor_world")?;
+        self.c3d.world = Some(world);
+        Ok(())
+    }
+
+    fn bind_championship_car_resource(
+        &mut self,
+        binding: &SoftwareC3dSampledTexture,
+    ) -> Result<(), Self::Error> {
+        self.c3d.require_active("bind_championship_car_resource")?;
+        if let Some(index) = binding.color_key_index() {
+            return Err(SoftwareC3dBackendError::UnsupportedTextureColorKey(index));
+        }
+        self.c3d.binding = Some(SoftwareC3dBinding::Resource(binding.clone()));
+        Ok(())
+    }
+
+    fn bind_championship_car_default(&mut self) -> Result<(), Self::Error> {
+        self.c3d.require_active("bind_championship_car_default")?;
+        self.c3d.binding = Some(SoftwareC3dBinding::ChampionshipDefault);
+        Ok(())
+    }
+
+    fn draw_championship_car_batch(&mut self, command: &C3dDrawCommand) -> Result<(), Self::Error> {
+        let destination = self.c3d.require_active("draw_championship_car_batch")?;
+        let profile = self.validate_championship_car_raster_profile()?;
+        let world = self
+            .c3d
+            .world
+            .ok_or(SoftwareC3dBackendError::InvalidSequence(
+                "draw_championship_car_batch without actor world",
+            ))?;
+        let view = self
+            .c3d
+            .view
+            .ok_or(SoftwareC3dBackendError::InvalidSequence(
+                "draw_championship_car_batch without view",
+            ))?;
+        let viewport = self
+            .c3d
+            .viewport
+            .ok_or(SoftwareC3dBackendError::InvalidSequence(
+                "draw_championship_car_batch without viewport",
+            ))?;
+        let binding = self
+            .c3d
+            .binding
+            .clone()
+            .ok_or(SoftwareC3dBackendError::InvalidSequence(
+                "draw_championship_car_batch without binding",
+            ))?;
+        let extent = self.checked_c3d_destination(destination)?;
+        let prepared = preflight_championship_car_indexed_copy_batch(
+            command,
+            SoftwareC3dTransformState::new(world, view, ROOT_MENU_C3D_PROJECTION, viewport),
+            profile,
+        )
+        .map_err(SoftwareC3dBackendError::Raster)?;
+
+        let depth = self
+            .c3d
+            .depth
+            .as_mut()
+            .ok_or(SoftwareC3dBackendError::MissingDepthBuffer)?;
+        let target = self
+            .surfaces
+            .get_mut(destination.0)
+            .and_then(Option::as_mut)
+            .ok_or(SoftwareC3dBackendError::Video(
+                SoftwareVideoError::InvalidSurface(destination),
+            ))?;
+        let source = match &binding {
+            SoftwareC3dBinding::Resource(texture) => {
+                SoftwareChampionshipCarIndexedSource::UnifiedTexture(texture)
+            }
+            SoftwareC3dBinding::ChampionshipDefault => {
+                SoftwareChampionshipCarIndexedSource::ReviewedCarPaletteMissingSelectorOpaqueBlackIndexZero
+            }
+        };
+        compose_championship_car_indexed_copy_no_blend(
+            &prepared,
+            source,
+            depth,
+            [extent.width, extent.height],
+            &mut target.pixels,
+            profile,
+        )
+        .map_err(SoftwareC3dBackendError::Compose)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
 
     use cmr_core::{
+        championship_car_execute::ChampionshipCarBatchBackend,
         display::{CooperativeMode, IndexedMode, IndexedVideoBackend, SurfaceTopology},
+        frontend_c3d_scene::{C3dDepthClear, execute_frontend_c3d_scene},
         root_menu_c3d_scene::{RootMenuC3dDepthClear, execute_root_menu_c3d_scene},
         root_menu_c3d_transform::{ROOT_MENU_C3D_VIEW, root_menu_c3d_viewport},
     };
@@ -560,5 +745,81 @@ mod tests {
             |_, ()| Ok::<(), Infallible>(()),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn championship_default_binding_is_distinct_and_scene_scoped() {
+        let (mut backend, surfaces) = initialized_backend();
+        let initial_color = backend.back_pixels().unwrap().to_vec();
+        let initial_depth = backend.c3d_depth_values().unwrap().to_vec();
+        assert_eq!(
+            backend.validate_championship_car_raster_profile(),
+            Err(SoftwareC3dBackendError::ChampionshipCarProfileNotConfigured)
+        );
+        let supported = SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND;
+        let unsupported = SoftwareChampionshipCarRasterProfile {
+            fog_mutation: true,
+            ..supported
+        };
+        assert!(matches!(
+            backend.configure_championship_car_raster_profile(unsupported),
+            Err(SoftwareC3dBackendError::Raster(
+                SoftwareC3dRasterError::UnsupportedChampionshipCarProfile(profile)
+            )) if profile == unsupported
+        ));
+        assert_eq!(
+            backend.validate_championship_car_raster_profile(),
+            Err(SoftwareC3dBackendError::ChampionshipCarProfileNotConfigured)
+        );
+        assert!(!backend.c3d.scene_is_active());
+        assert_eq!(backend.back_pixels().unwrap(), initial_color);
+        assert_eq!(backend.c3d_depth_values().unwrap(), initial_depth);
+        backend
+            .configure_championship_car_raster_profile(supported)
+            .unwrap();
+        assert_eq!(
+            backend.validate_championship_car_raster_profile(),
+            Ok(supported)
+        );
+        let before_color = backend.back_pixels().unwrap().to_vec();
+        let before_depth = backend.c3d_depth_values().unwrap().to_vec();
+
+        execute_frontend_c3d_scene(
+            &mut backend,
+            surfaces.back,
+            EXTENT,
+            C3dDepthClear::Skip,
+            Some(()),
+            |backend, ()| {
+                assert_eq!(
+                    backend.configure_championship_car_raster_profile(
+                        unsupported,
+                    ),
+                    Err(SoftwareC3dBackendError::InvalidSequence(
+                        "configure_championship_car_raster_profile"
+                    ))
+                );
+                ChampionshipCarBatchBackend::<SoftwareC3dSampledTexture>::bind_championship_car_default(
+                    backend,
+                )?;
+                assert!(matches!(
+                    backend.c3d.binding,
+                    Some(SoftwareC3dBinding::ChampionshipDefault)
+                ));
+                Ok::<(), SoftwareC3dBackendError>(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(backend.back_pixels().unwrap(), before_color);
+        assert_eq!(backend.c3d_depth_values().unwrap(), before_depth);
+        assert_eq!(
+            ChampionshipCarBatchBackend::<SoftwareC3dSampledTexture>::bind_championship_car_default(
+                &mut backend,
+            ),
+            Err(SoftwareC3dBackendError::InvalidSequence(
+                "bind_championship_car_default"
+            ))
+        );
     }
 }

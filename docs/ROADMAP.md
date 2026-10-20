@@ -245,9 +245,13 @@ palette, and presents last. Static recovery now separates the process-global
 optional Type-2 word-5 pre-draw mutation from caller flag `0x08`, which affects
 only a different world/spatial renderer in resolved code. A pure owned-copy
 mutation contract models the retained gate, thresholds, distance/center tuple,
-x87 rounding mode, and exact fixed-square-root lookup. Wiring that retained
-state into submission and the bounded unified-indexed car pixel path remain
-separate work.
+x87 rounding mode, and exact fixed-square-root lookup. The software backend now
+also admits one explicit mutation-disabled, actor-RGB-disabled,
+unified-indexed COPY/no-blend profile, copies texture indices directly, and
+keeps missing selectors distinct as reviewed-car index zero. A public synthetic
+asset-to-scene test pins resource/default/resource execution and exact indexed
+color/depth output. Wiring recovered retained state plus deferred palette and
+presentation ownership into a production championship session remains separate.
 
 Exit gate:
 

@@ -50,15 +50,18 @@ setup text and 2D bitmap commands now execute in their recovered order after
 whole-frame preflight. The selected car's transform, actor scene, visibility
 latches, logical palette request/commit, and final presentation are integrated
 at the terminal frame boundary; info formatting, the animation timer, and
-Type-2 final pixels remain explicit downstream work.
+alternate Type-2 render profiles remain explicit downstream work.
 The C3D resource-preparation kernel now has explicit domain and mode policies,
 so championship mode 8 can append resources without being forced through the
 root menu's mode-2 slot types. A shared frontend-session arena now prepares the
 14 cars first as the exact 55-resource prefix, then the six root objects in the
 same provenance domain. Car actor traversal and backend-neutral Type-2 scene
 submission are integrated. The optional word-5 pre-draw mutation now has a
-pure retained-state contract; connecting it to submission and producing the
-bounded unified-indexed software pixels remain the next C3D milestone.
+pure retained-state contract. A caller-selected mutation-disabled,
+actor-RGB-disabled, unified-indexed COPY/no-blend software profile now produces
+tested car color/depth pixels without RGB quantization. Connecting recovered
+retained state and palette/presentation order at the terminal owner remains the
+next C3D milestone.
 These are platform-neutral compatibility contracts; registry, host clock/input,
 native window, audio, setup-screen pixel execution, later frontend screens, and
 gameplay integrations are not yet complete.
