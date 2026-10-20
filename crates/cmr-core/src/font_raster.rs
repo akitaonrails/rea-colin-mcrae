@@ -2,7 +2,10 @@
 
 use std::fmt;
 
-use cmr_formats::font::{BitmapFont, GlyphBlit, RectI32, TextPlan};
+use cmr_formats::font::{
+    BitmapFont, GlyphBlit, PointI32, RectI32, TextAlignment, TextLayoutError, TextLayoutLimits,
+    TextPlan, layout_text,
+};
 use cmr_formats::riff_palette::PaletteEntry;
 
 use crate::blit::{BlitDecision, ColorKey, RectI16, plan_legacy_blit};
@@ -226,6 +229,60 @@ pub struct UploadedFontPool {
     sources: [SourceKey; FONT_COUNT],
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PersistentTextPrepareError {
+    Layout(TextLayoutError),
+    Raster(FontRasterLayoutError),
+}
+
+impl fmt::Display for PersistentTextPrepareError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Layout(source) => source.fmt(formatter),
+            Self::Raster(source) => source.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for PersistentTextPrepareError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Layout(source) => Some(source),
+            Self::Raster(source) => Some(source),
+        }
+    }
+}
+
+/// Fully laid-out and fatally validated persistent-font work.
+///
+/// Fields remain private so execution cannot observe a plan different from the
+/// one validated during the effect-free preparation phase.
+#[derive(Debug)]
+pub struct PreparedPersistentText {
+    style: FontStyle,
+    source: SourceKey,
+    plan: TextPlan,
+    validated: ValidatedTextPlan,
+}
+
+impl PreparedPersistentText {
+    #[must_use]
+    pub const fn style(&self) -> FontStyle {
+        self.style
+    }
+
+    #[must_use]
+    pub const fn plan(&self) -> &TextPlan {
+        &self.plan
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct PersistentTextOutcome<E> {
+    pub plan: TextPlan,
+    pub raster: FontRasterOutcome<E>,
+}
+
 impl UploadedFontPool {
     pub fn upload<B: IndexedVideoBackend>(
         store: &mut UploadedSourceStore<'_, B>,
@@ -288,6 +345,62 @@ impl UploadedFontPool {
         })
         .map_err(FontRasterError::SourceAccess)
     }
+}
+
+/// Lays out raw bytes and validates every fatal glyph, source-geometry, and
+/// destination invariant without touching the source store or backend.
+pub fn prepare_persistent_text(
+    fonts: &UploadedFontPool,
+    text: &[u8],
+    style: FontStyle,
+    position: PointI32,
+    legacy_flags: u8,
+    destination_extent: DisplayExtent,
+    limits: TextLayoutLimits,
+) -> Result<PreparedPersistentText, PersistentTextPrepareError> {
+    let font = fonts.font(style);
+    let plan = layout_text(
+        font,
+        text,
+        position,
+        i32::from(destination_extent.width),
+        TextAlignment::from_legacy_flags(legacy_flags),
+        limits,
+    )
+    .map_err(PersistentTextPrepareError::Layout)?;
+    let validated = validate_text_plan(font, &plan, destination_extent)
+        .map_err(PersistentTextPrepareError::Raster)?;
+    Ok(PreparedPersistentText {
+        style,
+        source: fonts.sources[style as usize],
+        plan,
+        validated,
+    })
+}
+
+/// Executes one previously prepared plan through its persistent uploaded font.
+///
+/// Deferred out-of-atlas glyphs and backend blit failures remain ordered
+/// diagnostics. Store provenance/lifetime failures remain fatal.
+pub fn execute_prepared_persistent_text<B: IndexedVideoBackend>(
+    store: &mut UploadedSourceStore<'_, B>,
+    prepared: PreparedPersistentText,
+    destination: B::Surface,
+) -> Result<PersistentTextOutcome<B::Error>, SourceAccessError> {
+    let PreparedPersistentText {
+        style: _,
+        source,
+        plan,
+        validated,
+    } = prepared;
+    let raster = execute_validated_text_plan_with(&plan, validated, |blit_plan| {
+        match store.blit(source, destination, blit_plan) {
+            Ok(()) => Ok(()),
+            Err(SourceBlitError::Backend(error)) => Err(BlitSubmissionError::Diagnostic(error)),
+            Err(SourceBlitError::Access(error)) => Err(BlitSubmissionError::Fatal(error)),
+        }
+    })?;
+    Ok(PersistentTextOutcome { plan, raster })
 }
 
 /// Converts a parsed font atlas without remapping its indices or palette.
@@ -378,6 +491,7 @@ fn validate_text_plan(
     })
 }
 
+#[derive(Debug)]
 struct ValidatedTextPlan {
     width: i16,
     height: i16,
@@ -664,6 +778,212 @@ mod pool_tests {
         fn destroy_source(&mut self, source: Self::Surface) {
             self.events.push(Event::Destroy(source));
         }
+    }
+
+    #[test]
+    fn persistent_text_preparation_preserves_raw_bytes_and_legacy_alignment_without_effects() {
+        let mut backend = RecordingBackend::default();
+        let mut store = UploadedSourceStore::new(&mut backend);
+        let pool = UploadedFontPool::upload(&mut store, font_set()).unwrap();
+        let effects_before = store.backend().events.len();
+        let raw = [b'A', 0xff, b'A'];
+
+        let prepared = prepare_persistent_text(
+            &pool,
+            &raw,
+            FontStyle::GreenInfo,
+            PointI32 { x: 10, y: 10 },
+            0x33,
+            DisplayExtent {
+                width: 20,
+                height: 10,
+            },
+            TextLayoutLimits::default(),
+        )
+        .unwrap();
+
+        assert_eq!(prepared.style(), FontStyle::GreenInfo);
+        assert_eq!(prepared.plan().lines[0].bytes, raw);
+        assert_eq!(prepared.plan().lines[0].measured_width, 2);
+        assert_eq!(prepared.plan().lines[0].origin, PointI32 { x: 8, y: 10 });
+        assert_eq!(
+            prepared
+                .plan()
+                .blits
+                .iter()
+                .map(|glyph| glyph.destination.x)
+                .collect::<Vec<_>>(),
+            [8, 9]
+        );
+        assert_eq!(store.backend().events.len(), effects_before);
+        assert_eq!(store.backend().blit_attempts, 0);
+    }
+
+    #[test]
+    fn early_and_late_fatal_glyphs_are_rejected_before_any_backend_effect() {
+        let mut backend = RecordingBackend::default();
+        let mut store = UploadedSourceStore::new(&mut backend);
+        let pool = UploadedFontPool::upload(&mut store, font_set()).unwrap();
+        let extent = DisplayExtent {
+            width: 20,
+            height: 10,
+        };
+
+        for (x, expected_index) in [(i32::from(i16::MAX) + 1, 0), (i32::from(i16::MAX), 1)] {
+            let error = prepare_persistent_text(
+                &pool,
+                b"AA",
+                FontStyle::Title,
+                PointI32 { x, y: 1 },
+                0,
+                extent,
+                TextLayoutLimits::default(),
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                PersistentTextPrepareError::Raster(
+                    FontRasterLayoutError::GlyphDestinationOutOfRange { blit_index, .. }
+                ) if blit_index == expected_index
+            ));
+        }
+        assert_eq!(store.backend().blit_attempts, 0);
+        assert!(matches!(
+            prepare_persistent_text(
+                &pool,
+                b"A",
+                FontStyle::Title,
+                PointI32 { x: 1, y: 1 },
+                0,
+                DisplayExtent {
+                    width: 0,
+                    height: 10,
+                },
+                TextLayoutLimits::default(),
+            ),
+            Err(PersistentTextPrepareError::Layout(
+                TextLayoutError::InvalidViewportWidth(0)
+            ))
+        ));
+        assert_eq!(store.backend().blit_attempts, 0);
+        for invalid_extent in [
+            DisplayExtent {
+                width: 20,
+                height: 0,
+            },
+            DisplayExtent {
+                width: i16::MAX as u16 + 1,
+                height: 10,
+            },
+        ] {
+            assert!(matches!(
+                prepare_persistent_text(
+                    &pool,
+                    b"A",
+                    FontStyle::Title,
+                    PointI32 { x: 1, y: 1 },
+                    0,
+                    invalid_extent,
+                    TextLayoutLimits::default(),
+                ),
+                Err(PersistentTextPrepareError::Raster(
+                    FontRasterLayoutError::InvalidDestinationExtent(extent)
+                )) if extent == invalid_extent
+            ));
+        }
+        assert_eq!(store.backend().blit_attempts, 0);
+    }
+
+    #[test]
+    fn prepared_text_rejects_foreign_and_released_font_sources_without_blitting() {
+        let extent = DisplayExtent {
+            width: 20,
+            height: 10,
+        };
+        let mut first_backend = RecordingBackend::default();
+        let mut first_store = UploadedSourceStore::new(&mut first_backend);
+        let pool = UploadedFontPool::upload(&mut first_store, font_set()).unwrap();
+        let prepared = prepare_persistent_text(
+            &pool,
+            b"A",
+            FontStyle::Title,
+            PointI32 { x: 1, y: 1 },
+            0,
+            extent,
+            TextLayoutLimits::default(),
+        )
+        .unwrap();
+        let mut foreign_backend = RecordingBackend::default();
+        let mut foreign_store = UploadedSourceStore::new(&mut foreign_backend);
+        assert!(matches!(
+            execute_prepared_persistent_text(&mut foreign_store, prepared, 99),
+            Err(SourceAccessError::ForeignKey(_))
+        ));
+        assert_eq!(foreign_store.backend().blit_attempts, 0);
+
+        let prepared = prepare_persistent_text(
+            &pool,
+            b"A",
+            FontStyle::Title,
+            PointI32 { x: 1, y: 1 },
+            0,
+            extent,
+            TextLayoutLimits::default(),
+        )
+        .unwrap();
+        let released = pool.sources[FontStyle::Title as usize];
+        first_store.release(released).unwrap();
+        assert!(matches!(
+            execute_prepared_persistent_text(&mut first_store, prepared, 99),
+            Err(SourceAccessError::ReleasedKey(key)) if key == released
+        ));
+        assert_eq!(first_store.backend().blit_attempts, 0);
+    }
+
+    #[test]
+    fn prepared_text_keeps_recoverable_glyph_and_backend_diagnostics_in_order() {
+        let mut backend = RecordingBackend {
+            fail_blits: [0].into_iter().collect(),
+            ..RecordingBackend::default()
+        };
+        let mut store = UploadedSourceStore::new(&mut backend);
+        let pool = UploadedFontPool::upload(&mut store, font_set_with_out_of_bounds_white_search())
+            .unwrap();
+        let prepared = prepare_persistent_text(
+            &pool,
+            b"WAA",
+            FontStyle::WhiteSearch,
+            PointI32 { x: 1, y: 1 },
+            0,
+            DisplayExtent {
+                width: 20,
+                height: 10,
+            },
+            TextLayoutLimits::default(),
+        )
+        .unwrap();
+
+        let rendered = execute_prepared_persistent_text(&mut store, prepared, 99).unwrap();
+        assert!(matches!(
+            rendered.raster.layout_diagnostics.as_slice(),
+            [FontRasterLayoutError::GlyphSourceOutOfRange {
+                blit_index: 0,
+                code: b'W',
+                ..
+            }]
+        ));
+        assert!(matches!(
+            rendered.raster.diagnostics.as_slice(),
+            [FontBlitDiagnostic {
+                blit_index: 1,
+                code: b'A',
+                source: BackendError::Blit(0),
+                ..
+            }]
+        ));
+        assert_eq!(rendered.raster.planned_glyphs, 3);
+        assert_eq!(rendered.raster.successful_blits, 1);
+        assert_eq!(store.backend().blit_attempts, 2);
     }
 
     #[test]

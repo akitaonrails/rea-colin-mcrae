@@ -2,12 +2,13 @@
 
 use std::fmt;
 
-use cmr_formats::font::{
-    PointI32, TextAlignment, TextLayoutError, TextLayoutLimits, TextPlan, layout_text,
-};
+use cmr_formats::font::{PointI32, TextLayoutError, TextLayoutLimits, TextPlan};
 
 use crate::display::{DisplayExtent, IndexedVideoBackend};
-use crate::font_raster::{FontRasterError, FontRasterOutcome, UploadedFontPool};
+use crate::font_raster::{
+    FontRasterError, FontRasterOutcome, PersistentTextPrepareError, UploadedFontPool,
+    execute_prepared_persistent_text, prepare_persistent_text,
+};
 use crate::frontend::{FrontendPhase, ROOT_FOOTER_TEXT_INDEX};
 use crate::localization::IndexedTextTable;
 use crate::root_menu_visual::{ROOT_FOOTER_FLAGS, ROOT_FOOTER_FONT_STYLE, ROOT_FOOTER_POSITION};
@@ -64,29 +65,30 @@ pub fn render_root_footer<B: IndexedVideoBackend>(
         return Ok(RootFooterOutcome::Skipped);
     }
 
-    let font = fonts.font(ROOT_FOOTER_FONT_STYLE);
-    let plan = layout_text(
-        font,
+    let prepared = prepare_persistent_text(
+        fonts,
         text.lookup(ROOT_FOOTER_TEXT_INDEX),
+        ROOT_FOOTER_FONT_STYLE,
         PointI32 {
             x: ROOT_FOOTER_POSITION.x,
             y: ROOT_FOOTER_POSITION.y,
         },
-        i32::from(destination_extent.width),
-        TextAlignment::from_legacy_flags(ROOT_FOOTER_FLAGS),
+        ROOT_FOOTER_FLAGS,
+        destination_extent,
         limits,
     )
-    .map_err(RootFooterError::Layout)?;
-    let raster = fonts
-        .execute(
-            sources,
-            ROOT_FOOTER_FONT_STYLE,
-            &plan,
-            destination,
-            destination_extent,
-        )
-        .map_err(RootFooterError::Raster)?;
-    Ok(RootFooterOutcome::Rendered { plan, raster })
+    .map_err(|error| match error {
+        PersistentTextPrepareError::Layout(source) => RootFooterError::Layout(source),
+        PersistentTextPrepareError::Raster(source) => {
+            RootFooterError::Raster(FontRasterError::Layout(source))
+        }
+    })?;
+    let rendered = execute_prepared_persistent_text(sources, prepared, destination)
+        .map_err(|source| RootFooterError::Raster(FontRasterError::SourceAccess(source)))?;
+    Ok(RootFooterOutcome::Rendered {
+        plan: rendered.plan,
+        raster: rendered.raster,
+    })
 }
 
 #[cfg(test)]
@@ -426,6 +428,50 @@ mod tests {
         input[offset + 2..offset + 4].copy_from_slice(&x.to_le_bytes());
         input[offset + 6..offset + 8].copy_from_slice(&2i16.to_le_bytes());
         input[offset + 8..offset + 10].copy_from_slice(&1i16.to_le_bytes());
+    }
+
+    #[test]
+    fn footer_wrapper_matches_the_generic_persistent_text_seam() {
+        let table = table_with_footer(b"AB");
+        let extent = DisplayExtent {
+            width: 640,
+            height: 480,
+        };
+        let mut backend = RecordingBackend::default();
+        let mut sources = UploadedSourceStore::new(&mut backend);
+        let fonts = UploadedFontPool::upload(&mut sources, font_set()).unwrap();
+        let prepared = prepare_persistent_text(
+            &fonts,
+            table.lookup(ROOT_FOOTER_TEXT_INDEX),
+            ROOT_FOOTER_FONT_STYLE,
+            PointI32 {
+                x: ROOT_FOOTER_POSITION.x,
+                y: ROOT_FOOTER_POSITION.y,
+            },
+            ROOT_FOOTER_FLAGS,
+            extent,
+            TextLayoutLimits::default(),
+        )
+        .unwrap();
+        let generic = execute_prepared_persistent_text(&mut sources, prepared, 99).unwrap();
+
+        let wrapped = render_root_footer(
+            FrontendPhase::Interactive,
+            &table,
+            &fonts,
+            &mut sources,
+            99,
+            extent,
+            TextLayoutLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            wrapped,
+            RootFooterOutcome::Rendered {
+                plan: generic.plan,
+                raster: generic.raster,
+            }
+        );
     }
 
     #[test]

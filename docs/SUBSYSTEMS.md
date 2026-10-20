@@ -112,7 +112,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   16 recovered frontend font atlases in original initialization order.
 - `cmr-core::font_raster`: backend-neutral indexed atlas conversion and
   index-zero keyed execution of precomputed glyph plans with diagnostics, plus
-  transactional lifetime ownership for the persistent 16-font upload pool.
+  transactional lifetime ownership for the persistent 16-font upload pool and
+  an identity-neutral prepare/execute seam that rejects fatal text work before
+  backend effects.
 - `cmr-core::root_menu_footer`: phase-gated localized footer layout and indexed
   execution into the caller-selected active frame target.
 - `cmr-core::frontend`: checked first/root-screen navigation, transitions,
@@ -129,6 +131,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::championship_setup_visual`: validated backend-neutral title/row/
   preview frame planning with exact recovered geometry, order, fonts, and
   paired visible-callback palette cache behavior.
+- `cmr-core::championship_frame_assets`: verified bounded loading of R_INFO,
+  the 15 ordered Chequered preview frames, and FCHE, with explicit R_INFO
+  mapping and transactional shared-source upload.
 - `cmr-core::source_store::UploadedIndexedBitmap`: shared backend-neutral
   uploaded-bitmap identity and aligned extent used by root resources and ready
   for later frontend-specific pools.

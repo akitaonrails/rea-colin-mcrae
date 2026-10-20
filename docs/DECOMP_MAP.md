@@ -57,6 +57,7 @@ Status markers:
 - [x] `C12` Recover startup art/palette selection and indexed presentation.
 - [ ] `C13` Run startup through a native executable and window.
 - [x] `C14` Preserve unsafe shipped glyph metadata with safe per-glyph continuation.
+- [x] `C15` Preflight and execute identity-neutral persistent-font text safely.
 
 ## D. Root-menu vertical slice
 
@@ -95,6 +96,7 @@ Status markers:
 - [ ] `E11` Produce representative image-comparison fixtures/tolerances.
 - [x] `E12` Prepare and transactionally upload deduplicated championship logo surfaces.
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
+- [x] `E14` Admit and transactionally upload championship frame 2D assets.
 
 ## F. Menus, game state, and persistence
 
@@ -160,13 +162,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T20:54:06Z
-milestone=add-checked-generic-indexed-bitmap-execution
-completed=46
+updated_utc=2026-10-20T20:57:32Z
+milestone=admit-championship-frame-assets-and-persistent-text
+completed=48
 partial=19
 not_started=47
 blocked=0
-total=112
+total=114
 current_focus=F04-E04-championship-setup-pixel-and-car-preview
 next_exit_gate=championship-setup-software-frame-execution
 <!-- PROGRESS-TAIL-END -->
