@@ -96,6 +96,12 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   idle/exit effects, and opaque target IDs.
 - `cmr-core::root_menu_assets`: typed, verified-profile paths for localized
   root chrome, center icons, and normal/`g_` menu objects without asset bytes.
+- `cmr-formats::c3d`: bounded, byte-preserving admission of the observed
+  `CM3D` header with neutral count/position fields and no speculative record
+  slicing.
+- `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
+  or `g_` root-menu objects with ordered asset/header diagnostics and stable
+  holes.
 - `cmr-core::root_menu_visual`: exact phase-gated root chrome geometry, Q16
   backdrop crop and center placement, and an ordered asset/object transcript.
 - `cmr-core::root_menu_animation`: pure activation, wrap, tween-schedule, and
