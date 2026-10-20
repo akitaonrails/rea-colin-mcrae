@@ -58,6 +58,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::root_menu_bitmap_raster`: fixed-slot surface preparation,
   transactional persistent upload, pool-to-visual binding, and checked
   per-command bitmap submission without reordering non-bitmap frame work.
+- `cmr-core::root_menu_frame`: canonical transcript generation and strict
+  sequential routing through recovered bitmap/footer executors, with typed
+  injected boundaries for still-unrecovered C3D command handling and the final
+  `ComposeAndPresent` tail.
 - `cmr-core::window`: pure compatibility reducer for recovered Win32 message
   handling, activation-driven pause/restore state, queue dispatch decisions,
   and fullscreen-flip versus windowed-vblank presentation planning.

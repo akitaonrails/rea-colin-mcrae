@@ -202,6 +202,13 @@ impl<'backend, B: IndexedVideoBackend> UploadedSourceStore<'backend, B> {
         self.backend
     }
 
+    /// Temporarily exposes the backend to another compatibility interface.
+    ///
+    /// Callers must not invalidate source surfaces owned by this store.
+    pub(crate) fn backend_mut(&mut self) -> &mut B {
+        self.backend
+    }
+
     fn upload_inner(
         &mut self,
         surface: &IndexedSurface,

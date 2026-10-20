@@ -845,7 +845,7 @@ pub fn prepare_root_menu_surfaces(
     prepare_parts(bitmaps.into_parts(), active_palette)
 }
 
-fn prepare_parts(
+pub(crate) fn prepare_parts(
     parts: RootMenuBitmapParts,
     active_palette: &LegacyPalette256,
 ) -> Result<RootMenuSurfaceSet, RootMenuSurfaceError> {
