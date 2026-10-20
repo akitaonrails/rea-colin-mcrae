@@ -21,7 +21,10 @@ use cmr_core::{
 };
 use cmr_formats::{bitmap::BitmapPaletteEntry, riff_palette::PaletteEntry};
 
-use crate::c3d_software::SoftwareC3dSampledTexture;
+use crate::{
+    c3d_software::SoftwareC3dSampledTexture,
+    selected_texture_conversion_oracle::SourceOwnedLogicalSelectedTexture,
+};
 
 const CLIP_PLANE_COUNT: usize = 6;
 
@@ -304,10 +307,18 @@ pub enum SoftwareChampionshipCarIndexedSource<'a> {
 /// Texture source for the bounded alternate championship compositor.
 #[derive(Clone, Copy, Debug)]
 pub enum SoftwareChampionshipCarSplitSource<'a> {
-    /// A split index plane plus its retained RGB palette. Interpreting that
-    /// palette directly is source-owned oracle policy; legacy driver conversion
-    /// into the selected device texture format remains unresolved.
-    Texture(&'a SoftwareC3dSampledTexture),
+    /// A source-owned selected-format plane. The nominal type forces explicit
+    /// conversion before this compositor can apply its oracle filter; legacy
+    /// driver `Load` behavior remains unresolved.
+    ///
+    /// ```compile_fail
+    /// use cmr_video::c3d_software::SoftwareC3dSampledTexture;
+    /// use cmr_video::c3d_software_raster::SoftwareChampionshipCarSplitSource;
+    /// fn bypass_conversion(source: &SoftwareC3dSampledTexture) {
+    ///     let _ = SoftwareChampionshipCarSplitSource::ConvertedTexture(source);
+    /// }
+    /// ```
+    ConvertedTexture(&'a SourceOwnedLogicalSelectedTexture),
     /// The recovered missing-selector path, accepted only when every prepared
     /// vertex has black diffuse RGB. MODULATE is then black independently of
     /// the unresolved texture-zero sample.
@@ -817,10 +828,10 @@ pub fn compose_championship_car_indexed_copy_no_blend(
 
 /// Composes a candidate alternate championship policy into canonical RGB.
 ///
-/// The source index plane and retained palette are treated as split RGB texture
-/// data. The caller must explicitly select the source-owned bilinear policy;
-/// this is separate from the observed numeric filter request and makes no claim
-/// about the effective legacy device filter. Filtered RGB is multiplied by
+/// The caller supplies a source-owned selected-format materialization, so mask
+/// quantization (when selected) necessarily precedes the explicit oracle
+/// bilinear policy. This is separate from the observed numeric filter request
+/// and makes no claim about the effective legacy device filter. Filtered RGB is multiplied by
 /// screen-affine Gouraud diffuse RGB. Output is one canonical `[R,G,B]` triplet
 /// per pixel before unresolved device-format conversion; retained 16/24/32-bit
 /// depth is provenance only and does not select packing here.
@@ -836,40 +847,26 @@ pub fn compose_championship_car_split_modulate_canonical_rgb_oracle(
         .map_err(SoftwareC3dComposeError::Raster)?;
     validate_rgb_target(target_extent, target_pixels, depth.extent())?;
 
-    let default_indices = [0u8];
-    let default_palette = [BitmapPaletteEntry {
-        red: 0,
-        green: 0,
-        blue: 0,
-        reserved: 0,
-    }];
-    let texture = match source {
-        SoftwareChampionshipCarSplitSource::Texture(texture) => IndexedTextureView {
-            raster: TextureView {
-                extent: texture.extent(),
-                indices: texture.indices(),
-                palette_len: texture.palette().len(),
-            },
-            palette: texture.palette(),
-        },
+    let (texture, black_default) = match source {
+        SoftwareChampionshipCarSplitSource::ConvertedTexture(texture) => (Some(texture), false),
         SoftwareChampionshipCarSplitSource::BlackDiffuseDefault => {
             validate_black_alternate_default(&batch.0).map_err(SoftwareC3dComposeError::Raster)?;
-            IndexedTextureView {
-                raster: TextureView {
-                    extent: [1, 1],
-                    indices: &default_indices,
-                    palette_len: 1,
-                },
-                palette: &default_palette,
-            }
+            (None, true)
         }
     };
-    validate_texture(texture.raster).map_err(SoftwareC3dComposeError::Raster)?;
     validate_prepared_triangles(&batch.0).map_err(SoftwareC3dComposeError::Raster)?;
 
     let target_width = usize::from(target_extent[0]);
-    rasterize_fragments(&batch.0, texture.raster, depth, |fragment| {
-        let sampled = sample_bilinear_rgb_oracle_clamped(texture, fragment.uv());
+    let texture_extent = texture.map_or([1, 1], SourceOwnedLogicalSelectedTexture::extent);
+    rasterize_fragments_extent_only(&batch.0, texture_extent, depth, |fragment| {
+        let sampled = if black_default {
+            [0.0; 3]
+        } else {
+            sample_bilinear_converted_rgb_oracle_clamped(
+                texture.expect("non-default source retains a converted texture"),
+                fragment.uv(),
+            )
+        };
         let diffuse = fragment.diffuse_argb();
         let modulated = std::array::from_fn(|channel| {
             (sampled[channel] * f64::from(diffuse[channel + 1]))
@@ -1303,10 +1300,12 @@ fn validate_black_alternate_default(
     Ok(())
 }
 
-/// Returns oracle-bilinear RGB in byte-channel space. Normalized coordinates
-/// address texel centers at `(n + 0.5) / extent`; clamp duplicates edge texels.
-fn sample_bilinear_rgb_oracle_clamped(texture: IndexedTextureView<'_>, uv: [f32; 2]) -> [f64; 3] {
-    let [width, height] = texture.raster.extent.map(usize::from);
+/// Filters only texels already materialized in the selected texture format.
+fn sample_bilinear_converted_rgb_oracle_clamped(
+    texture: &SourceOwnedLogicalSelectedTexture,
+    uv: [f32; 2],
+) -> [f64; 3] {
+    let [width, height] = texture.extent().map(usize::from);
     let axis = |coordinate: f32, extent: usize| {
         let position = f64::from(coordinate.clamp(0.0, 1.0)) * extent as f64 - 0.5;
         let lower = position.floor();
@@ -1317,19 +1316,16 @@ fn sample_bilinear_rgb_oracle_clamped(texture: IndexedTextureView<'_>, uv: [f32;
     };
     let (left, right, horizontal) = axis(uv[0], width);
     let (top, bottom, vertical) = axis(uv[1], height);
-    let palette_rgb = |x: usize, y: usize| {
-        let index = usize::from(texture.raster.indices[y * width + x]);
-        let entry = texture.palette[index];
-        [
-            f64::from(entry.red),
-            f64::from(entry.green),
-            f64::from(entry.blue),
-        ]
+    let texel_rgb = |x: usize, y: usize| {
+        texture
+            .texel_rgb8_source_owned_oracle(y * width + x)
+            .expect("converted texture length matches its retained extent")
+            .map(f64::from)
     };
-    let top_left = palette_rgb(left, top);
-    let top_right = palette_rgb(right, top);
-    let bottom_left = palette_rgb(left, bottom);
-    let bottom_right = palette_rgb(right, bottom);
+    let top_left = texel_rgb(left, top);
+    let top_right = texel_rgb(right, top);
+    let bottom_left = texel_rgb(left, bottom);
+    let bottom_right = texel_rgb(right, bottom);
     std::array::from_fn(|channel| {
         let top_value = top_left[channel] + (top_right[channel] - top_left[channel]) * horizontal;
         let bottom_value =
@@ -1342,9 +1338,30 @@ fn rasterize_fragments(
     batch: &SoftwareC3dPreparedBatch,
     texture: TextureView<'_>,
     depth: &mut SoftwareC3dDepthBuffer,
-    mut visit: impl FnMut(SoftwareC3dFragment),
+    visit: impl FnMut(SoftwareC3dFragment),
 ) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dRasterError> {
     validate_texture(texture)?;
+    rasterize_fragments_with_optional_index(batch, Some(texture), depth, visit)
+}
+
+fn rasterize_fragments_extent_only(
+    batch: &SoftwareC3dPreparedBatch,
+    texture_extent: [u16; 2],
+    depth: &mut SoftwareC3dDepthBuffer,
+    visit: impl FnMut(SoftwareC3dFragment),
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dRasterError> {
+    if texture_extent[0] == 0 || texture_extent[1] == 0 {
+        return Err(SoftwareC3dRasterError::InvalidTextureExtent(texture_extent));
+    }
+    rasterize_fragments_with_optional_index(batch, None, depth, visit)
+}
+
+fn rasterize_fragments_with_optional_index(
+    batch: &SoftwareC3dPreparedBatch,
+    indexed_texture: Option<TextureView<'_>>,
+    depth: &mut SoftwareC3dDepthBuffer,
+    mut visit: impl FnMut(SoftwareC3dFragment),
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dRasterError> {
     validate_prepared_triangles(batch)?;
 
     let [target_width, target_height] = depth.extent;
@@ -1408,7 +1425,9 @@ fn rasterize_fragments(
                     triangle.vertices.map(SoftwareC3dScreenVertex::diffuse_argb),
                 )
                 .map(|component| component.clamp(0.0, 1.0) as f32);
-                let texture_index = sample_point_clamped(texture, uv);
+                let texture_index = indexed_texture
+                    .map(|texture| sample_point_clamped(texture, uv))
+                    .unwrap_or(0);
 
                 depth.values[target_index] = interpolated_depth;
                 outcome.depth_passed += 1;
@@ -1700,6 +1719,17 @@ mod tests {
     };
 
     use super::*;
+    use crate::{
+        legacy_c3d_pixel_format::{
+            KnownRgbLayout, RawDdPixelFormat, SelectedNonAlphaTextureFormat,
+        },
+        selected_texture_conversion_oracle::{
+            SourceOwnedTextureConversionOraclePolicy, convert_selected_texture_source_owned_oracle,
+        },
+    };
+
+    const TEXTURE_CONVERSION_POLICY: SourceOwnedTextureConversionOraclePolicy =
+        SourceOwnedTextureConversionOraclePolicy::ExactPaletteOrNearestMaskNoDither;
 
     fn vertex(position: [f32; 4], uv: [f32; 2]) -> SoftwareC3dClipVertex {
         SoftwareC3dClipVertex {
@@ -1781,6 +1811,34 @@ mod tests {
         sampled_texture_with_palette_entry(fill, [0; 3])
     }
 
+    fn convert_palette_texture(
+        source: &SoftwareC3dSampledTexture,
+    ) -> SourceOwnedLogicalSelectedTexture {
+        let descriptor = RawDdPixelFormat::from_dwords([32, 0x20, 0, 8, 0, 0, 0, 0]);
+        convert_selected_texture_source_owned_oracle(
+            source,
+            SelectedNonAlphaTextureFormat::Palette8(descriptor),
+            TEXTURE_CONVERSION_POLICY,
+        )
+        .unwrap()
+    }
+
+    fn convert_rgb555_texture(
+        source: &SoftwareC3dSampledTexture,
+    ) -> SourceOwnedLogicalSelectedTexture {
+        let descriptor =
+            RawDdPixelFormat::from_dwords([32, 0x40, 0, 16, 0x7c00, 0x03e0, 0x001f, 0]);
+        convert_selected_texture_source_owned_oracle(
+            source,
+            SelectedNonAlphaTextureFormat::OpaqueRgb16 {
+                descriptor,
+                layout: KnownRgbLayout::Rgb555,
+            },
+            TEXTURE_CONVERSION_POLICY,
+        )
+        .unwrap()
+    }
+
     fn sampled_texture_with_palette_entry(
         fill: u8,
         [red, green, blue]: [u8; 3],
@@ -1843,6 +1901,10 @@ mod tests {
     }
 
     fn sampled_varying_2x2_texture() -> SoftwareC3dSampledTexture {
+        sampled_quadrant_texture([[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]])
+    }
+
+    fn sampled_quadrant_texture(palette: [[u8; 3]; 4]) -> SoftwareC3dSampledTexture {
         const WIDTH: usize = 8;
         const HEIGHT: usize = 8;
         const PIXEL_OFFSET: usize = 14 + 40 + 256 * 4;
@@ -1858,10 +1920,7 @@ mod tests {
         bitmap[28..30].copy_from_slice(&8u16.to_le_bytes());
         bitmap[34..38].copy_from_slice(&((WIDTH * HEIGHT) as u32).to_le_bytes());
         bitmap[46..50].copy_from_slice(&256u32.to_le_bytes());
-        for (index, [red, green, blue]) in [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]]
-            .into_iter()
-            .enumerate()
-        {
+        for (index, [red, green, blue]) in palette.into_iter().enumerate() {
             let offset = 14 + 40 + index * 4;
             bitmap[offset..offset + 4].copy_from_slice(&[blue, green, red, 0]);
         }
@@ -2970,29 +3029,31 @@ mod tests {
             },
         ];
         let texture = indexed_texture([2, 2], &[0, 1, 2, 3], &palette);
+        let source = sampled_varying_2x2_texture();
+        let converted = convert_palette_texture(&source);
 
         assert_eq!(
-            sample_bilinear_rgb_oracle_clamped(texture, [0.25, 0.25]),
+            sample_bilinear_converted_rgb_oracle_clamped(&converted, [0.25, 0.25]),
             [255.0, 0.0, 0.0]
         );
         assert_eq!(
-            sample_bilinear_rgb_oracle_clamped(texture, [0.75, 0.25]),
+            sample_bilinear_converted_rgb_oracle_clamped(&converted, [0.75, 0.25]),
             [0.0, 255.0, 0.0]
         );
         assert_eq!(
-            sample_bilinear_rgb_oracle_clamped(texture, [0.25, 0.75]),
+            sample_bilinear_converted_rgb_oracle_clamped(&converted, [0.25, 0.75]),
             [0.0, 0.0, 255.0]
         );
         assert_eq!(
-            sample_bilinear_rgb_oracle_clamped(texture, [0.75, 0.75]),
+            sample_bilinear_converted_rgb_oracle_clamped(&converted, [0.75, 0.75]),
             [255.0; 3]
         );
         assert_eq!(
-            sample_bilinear_rgb_oracle_clamped(texture, [0.5, 0.5]),
+            sample_bilinear_converted_rgb_oracle_clamped(&converted, [0.5, 0.5]),
             [127.5; 3]
         );
         assert_eq!(
-            sample_bilinear_rgb_oracle_clamped(texture, [-1.0, 2.0]),
+            sample_bilinear_converted_rgb_oracle_clamped(&converted, [-1.0, 2.0]),
             [0.0, 0.0, 255.0]
         );
         assert_eq!(sample_point_clamped(texture.raster, [0.5, 0.5]), 3);
@@ -3001,6 +3062,7 @@ mod tests {
     #[test]
     fn public_alternate_compositor_uses_explicit_oracle_filter_and_gouraud_modulate() {
         let texture = sampled_varying_2x2_texture();
+        let converted = convert_palette_texture(&texture);
         let batch = lit_pixel_batch([
             [1.0, 0.0, 0.0, 0.0],
             [1.0, 1.0, 0.0, 0.0],
@@ -3013,7 +3075,7 @@ mod tests {
         let mut target = [[200; 3]];
         let outcome = compose_championship_car_split_modulate_canonical_rgb_oracle(
             &batch,
-            SoftwareChampionshipCarSplitSource::Texture(&texture),
+            SoftwareChampionshipCarSplitSource::ConvertedTexture(&converted),
             &mut depth,
             [1, 1],
             &mut target,
@@ -3032,8 +3094,31 @@ mod tests {
     }
 
     #[test]
+    fn selected_rgb_quantization_precedes_bilinear_filtering() {
+        let source = sampled_quadrant_texture([[0, 0, 0], [5, 0, 0], [0, 0, 0], [5, 0, 0]]);
+        let converted = convert_rgb555_texture(&source);
+        let batch = lit_pixel_batch([[1.0; 4]; 3]);
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let mut target = [[200; 3]];
+
+        compose_championship_car_split_modulate_canonical_rgb_oracle(
+            &batch,
+            SoftwareChampionshipCarSplitSource::ConvertedTexture(&converted),
+            &mut depth,
+            [1, 1],
+            &mut target,
+            alternate_profile(),
+        )
+        .unwrap();
+
+        assert_eq!(target, [[4, 0, 0]]);
+        assert_ne!(target, [[3, 0, 0]], "raw-RGB filtering would occur first");
+    }
+
+    #[test]
     fn alternate_modulate_ignores_fog_specular_but_consumes_actor_rgb_diffuse() {
         let texture = sampled_texture_with_palette_entry(1, [255; 3]);
+        let converted = convert_palette_texture(&texture);
         let batch = |diffuse: [f32; 4], specular: [f32; 4]| {
             let mut batch = lit_pixel_batch([diffuse; 3]);
             for vertex in &mut batch.0.triangles[0].vertices {
@@ -3046,7 +3131,7 @@ mod tests {
             let mut target = [[99; 3]];
             compose_championship_car_split_modulate_canonical_rgb_oracle(
                 batch,
-                SoftwareChampionshipCarSplitSource::Texture(&texture),
+                SoftwareChampionshipCarSplitSource::ConvertedTexture(&converted),
                 &mut depth,
                 [1, 1],
                 &mut target,

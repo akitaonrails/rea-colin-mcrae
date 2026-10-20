@@ -158,9 +158,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   captured presentation.
 - `cmr-video::c3d_software_raster` also retains the exact alternate renderer
   selection priority (`0x400`→16, `0x200`→24, `0x100`→32) and exposes a
-  deliberately unintegrated canonical-RGB Type-2 MODULATE oracle. Its bilinear
-  filter and pre-conversion RGB precision are named source-owned policies;
-  selected-format texture conversion, driver `Load` behavior, native
+  deliberately unintegrated canonical-RGB Type-2 MODULATE oracle. The
+  `selected_texture_conversion_oracle` first materializes a nominal Palette8,
+  RGB555, or RGB565 plane under an explicit no-dither policy; the compositor's
+  type boundary requires that conversion before its named bilinear policy.
+  Driver `Load` behavior, native
   framebuffer layout, dithering, alpha, and backend presentation remain
   explicit boundaries.
 - `cmr-core::root_menu_c3d_render_state` decodes the game's `0x00008000`

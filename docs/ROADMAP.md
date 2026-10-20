@@ -272,9 +272,11 @@ selection priority and a bounded canonical-RGB MODULATE oracle, while its
 runtime texture descriptors and framebuffer masks now have exact raw retention,
 candidate classification, retained non-alpha selection, and separate role-safe
 source-owned mask utilities. Canonical RGB can be converted into logical masked
-framebuffer words without asserting byte order or pitch. Driver texture `Load`
-conversion, native surface layout, effective filter, dithering, alpha pixels,
-and backend integration remain separate.
+framebuffer words without asserting byte order or pitch. A nominal source-owned
+conversion stage now retains Palette8 storage or materializes RGB555/RGB565
+logical words before the alternate oracle filters and modulates them. Driver
+texture `Load` equivalence, native surface layout, effective filter, dithering,
+alpha pixels, and backend integration remain separate.
 
 Exit gate:
 
