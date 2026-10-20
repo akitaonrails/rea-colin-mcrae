@@ -9,11 +9,16 @@ use std::fmt;
 
 use cmr_formats::riff_palette::LegacyPalette256;
 
+use crate::blit::BlitPlan;
+use crate::display::IndexedVideoBackend;
 use crate::localization::Language;
 use crate::root_menu_assets::VisualVariant;
 use crate::root_menu_bitmap_assets::{
     ROOT_MENU_BITMAP_REQUEST_COUNT, RootMenuBitmapIdentity, RootMenuBitmapLoadError,
     RootMenuBitmapParts, RootMenuBitmapSet, RootMenuBitmapSlot,
+};
+use crate::source_store::{
+    SourceAccessError, SourceBlitError, SourceKey, SourceUploadError, UploadedSourceStore,
 };
 use crate::surface::{IndexedSurface, PaletteMapping, SurfaceError, indexed_surface};
 
@@ -164,6 +169,255 @@ impl RootMenuSurfaceSet {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct UploadedRootMenuBitmap {
+    source: SourceKey,
+    width: u32,
+    height: u32,
+}
+
+/// Backend-free descriptor for the fixed 17-slot root-menu bitmap batch.
+///
+/// Optional slots remain holes and never shift later identities. The shared
+/// source store owns every live backend resource and global teardown order.
+#[derive(Debug)]
+pub struct UploadedRootMenuBitmapPool {
+    language: Language,
+    center_variant: VisualVariant,
+    slots: [Option<UploadedRootMenuBitmap>; ROOT_MENU_BITMAP_REQUEST_COUNT],
+}
+
+impl UploadedRootMenuBitmapPool {
+    #[must_use]
+    pub const fn language(&self) -> Language {
+        self.language
+    }
+
+    #[must_use]
+    pub const fn center_variant(&self) -> VisualVariant {
+        self.center_variant
+    }
+
+    #[must_use]
+    pub fn is_loaded(&self, slot: RootMenuBitmapSlot) -> bool {
+        self.slots[slot.index()].is_some()
+    }
+
+    #[must_use]
+    pub fn extent(&self, slot: RootMenuBitmapSlot) -> Option<(u32, u32)> {
+        self.slots[slot.index()].map(|bitmap| (bitmap.width, bitmap.height))
+    }
+
+    pub fn blit<B: IndexedVideoBackend>(
+        &self,
+        store: &mut UploadedSourceStore<'_, B>,
+        slot: RootMenuBitmapSlot,
+        destination: B::Surface,
+        plan: BlitPlan,
+    ) -> Result<(), RootMenuBitmapBlitError<B::Error>> {
+        let bitmap =
+            self.slots[slot.index()].ok_or(RootMenuBitmapBlitError::MissingOptionalSlot(slot))?;
+        store
+            .blit(bitmap.source, destination, plan)
+            .map_err(|error| match error {
+                SourceBlitError::Access(source) => RootMenuBitmapBlitError::Access { slot, source },
+                SourceBlitError::Backend(source) => {
+                    RootMenuBitmapBlitError::Backend { slot, source }
+                }
+            })
+    }
+}
+
+#[derive(Debug)]
+pub enum RootMenuBitmapUploadDiagnostic<E> {
+    Preparation {
+        slot: RootMenuBitmapSlot,
+        source: RootMenuSurfaceDiagnostic,
+    },
+    Upload {
+        slot: RootMenuBitmapSlot,
+        identity: RootMenuBitmapIdentity,
+        path: &'static str,
+        source: SourceUploadError<E>,
+    },
+}
+
+impl<E> RootMenuBitmapUploadDiagnostic<E> {
+    #[must_use]
+    pub const fn slot(&self) -> RootMenuBitmapSlot {
+        match self {
+            Self::Preparation { slot, .. } | Self::Upload { slot, .. } => *slot,
+        }
+    }
+
+    #[must_use]
+    pub const fn identity(&self) -> RootMenuBitmapIdentity {
+        match self {
+            Self::Preparation { source, .. } => source.identity(),
+            Self::Upload { identity, .. } => *identity,
+        }
+    }
+
+    #[must_use]
+    pub const fn path(&self) -> &'static str {
+        match self {
+            Self::Preparation { source, .. } => source.path(),
+            Self::Upload { path, .. } => path,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RootMenuBitmapUploadOutcome<E> {
+    pub pool: UploadedRootMenuBitmapPool,
+    pub optional_diagnostics: Vec<RootMenuBitmapUploadDiagnostic<E>>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct RootMenuBitmapUploadError<E> {
+    pub slot: RootMenuBitmapSlot,
+    pub identity: RootMenuBitmapIdentity,
+    pub path: &'static str,
+    pub source: SourceUploadError<E>,
+}
+
+impl<E: fmt::Display> fmt::Display for RootMenuBitmapUploadError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "cannot upload required root-menu bitmap {:?} at {}: {}",
+            self.identity, self.path, self.source
+        )
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for RootMenuBitmapUploadError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum RootMenuBitmapBlitError<E> {
+    MissingOptionalSlot(RootMenuBitmapSlot),
+    Access {
+        slot: RootMenuBitmapSlot,
+        source: SourceAccessError,
+    },
+    Backend {
+        slot: RootMenuBitmapSlot,
+        source: E,
+    },
+}
+
+impl<E: fmt::Display> fmt::Display for RootMenuBitmapBlitError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingOptionalSlot(slot) => {
+                write!(formatter, "root-menu bitmap slot {slot:?} is not loaded")
+            }
+            Self::Access { slot, source } => {
+                write!(
+                    formatter,
+                    "cannot access root-menu bitmap slot {slot:?}: {source}"
+                )
+            }
+            Self::Backend { slot, source } => {
+                write!(
+                    formatter,
+                    "cannot blit root-menu bitmap slot {slot:?}: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for RootMenuBitmapBlitError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MissingOptionalSlot(_) => None,
+            Self::Access { source, .. } => Some(source),
+            Self::Backend { source, .. } => Some(source),
+        }
+    }
+}
+
+/// Uploads prepared root-menu surfaces into one shared transaction.
+///
+/// Optional upload failures remain fixed-slot diagnostics and upload continues.
+/// A required failure rolls back every source created by this batch while
+/// leaving resources committed before the transaction untouched.
+pub fn upload_root_menu_bitmaps<B: IndexedVideoBackend>(
+    store: &mut UploadedSourceStore<'_, B>,
+    surfaces: RootMenuSurfaceSet,
+) -> Result<RootMenuBitmapUploadOutcome<B::Error>, RootMenuBitmapUploadError<B::Error>> {
+    let RootMenuSurfaceSet {
+        language,
+        center_variant,
+        slots: prepared_slots,
+        optional_diagnostics: preparation_diagnostics,
+    } = surfaces;
+    let mut diagnostics = preparation_diagnostics
+        .into_iter()
+        .map(|source| {
+            let slot = RootMenuBitmapSlot::from_identity(source.identity())
+                .expect("prepared diagnostics have checked root-menu identities");
+            (
+                slot.index(),
+                RootMenuBitmapUploadDiagnostic::Preparation { slot, source },
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut transaction = store.transaction();
+    let mut slots = [None; ROOT_MENU_BITMAP_REQUEST_COUNT];
+
+    for slot in RootMenuBitmapSlot::ALL {
+        let Some(asset) = prepared_slots[slot.index()].as_ref() else {
+            continue;
+        };
+        match transaction.upload(&asset.surface) {
+            Ok(source) => {
+                slots[slot.index()] = Some(UploadedRootMenuBitmap {
+                    source,
+                    width: asset.surface.width,
+                    height: asset.surface.height,
+                });
+            }
+            Err(source) if slot.is_optional() => diagnostics.push((
+                slot.index(),
+                RootMenuBitmapUploadDiagnostic::Upload {
+                    slot,
+                    identity: asset.identity,
+                    path: asset.path,
+                    source,
+                },
+            )),
+            Err(source) => {
+                return Err(RootMenuBitmapUploadError {
+                    slot,
+                    identity: asset.identity,
+                    path: asset.path,
+                    source,
+                });
+            }
+        }
+    }
+
+    diagnostics.sort_by_key(|(index, _)| *index);
+    transaction.commit();
+    Ok(RootMenuBitmapUploadOutcome {
+        pool: UploadedRootMenuBitmapPool {
+            language,
+            center_variant,
+            slots,
+        },
+        optional_diagnostics: diagnostics
+            .into_iter()
+            .map(|(_, diagnostic)| diagnostic)
+            .collect(),
+    })
+}
+
 /// Converts every decoded root-menu bitmap without remapping palette indices.
 ///
 /// Optional request failures remain ordered diagnostics and fixed-slot holes.
@@ -271,11 +525,137 @@ fn checked_slot(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use cmr_formats::bitmap::{BitmapError, BitmapMetadata, BitmapPaletteEntry, IndexedBitmap};
+    use cmr_formats::font::{
+        FontLimits, HorizontalAlignment, PointI32, TextAlignment, TextLayoutLimits, layout_text,
+        parse_legacy_font,
+    };
     use cmr_formats::riff_palette::PaletteEntry;
 
     use super::*;
+    use crate::blit::{BlitDecision, RectI16, plan_legacy_blit};
+    use crate::display::{CooperativeMode, DisplaySurfaces, IndexedMode, SurfaceTopology};
+    use crate::font_assets::{FONT_COUNT, FontSet, FontStyle};
+    use crate::font_raster::UploadedFontPool;
     use crate::root_menu_bitmap_assets::RootMenuBitmapAsset;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum BackendError {
+        Create(usize),
+        Blit,
+    }
+
+    impl fmt::Display for BackendError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(formatter, "{self:?}")
+        }
+    }
+
+    impl std::error::Error for BackendError {}
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum Event {
+        Create { marker: u8, handle: u8 },
+        Blit { source: u8, destination: u8 },
+        Destroy(u8),
+    }
+
+    #[derive(Default)]
+    struct RecordingBackend {
+        events: Vec<Event>,
+        create_attempts: usize,
+        fail_create_at: Option<usize>,
+        fail_blit: Cell<bool>,
+    }
+
+    impl IndexedVideoBackend for RecordingBackend {
+        type Error = BackendError;
+        type Surface = u8;
+        type Palette = u8;
+
+        fn create_device(&mut self) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        fn set_cooperative_mode(&mut self, _mode: CooperativeMode) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        fn set_display_mode(&mut self, _mode: IndexedMode) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        fn create_surfaces(
+            &mut self,
+            _topology: SurfaceTopology,
+            _mode: IndexedMode,
+        ) -> Result<DisplaySurfaces<Self::Surface>, Self::Error> {
+            unreachable!()
+        }
+
+        fn create_palette(
+            &mut self,
+            _entries: &[PaletteEntry; 256],
+        ) -> Result<Self::Palette, Self::Error> {
+            unreachable!()
+        }
+
+        fn attach_palette(
+            &mut self,
+            _surface: Self::Surface,
+            _palette: Self::Palette,
+        ) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        fn upload_palette(
+            &mut self,
+            _palette: Self::Palette,
+            _entries: &[PaletteEntry; 256],
+        ) -> Result<(), Self::Error> {
+            unreachable!()
+        }
+
+        fn create_source(
+            &mut self,
+            surface: &IndexedSurface,
+        ) -> Result<Self::Surface, Self::Error> {
+            let index = self.create_attempts;
+            self.create_attempts += 1;
+            if self.fail_create_at == Some(index) {
+                return Err(BackendError::Create(index));
+            }
+            let handle = 10 + index as u8;
+            self.events.push(Event::Create {
+                marker: surface.pixels[0],
+                handle,
+            });
+            Ok(handle)
+        }
+
+        fn blit(
+            &mut self,
+            source: Self::Surface,
+            destination: Self::Surface,
+            _plan: BlitPlan,
+        ) -> Result<(), Self::Error> {
+            self.events.push(Event::Blit {
+                source,
+                destination,
+            });
+            if self.fail_blit.get() {
+                Err(BackendError::Blit)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn destroy_source(&mut self, source: Self::Surface) {
+            self.events.push(Event::Destroy(source));
+        }
+    }
 
     fn palette() -> LegacyPalette256 {
         LegacyPalette256 {
@@ -476,5 +856,353 @@ mod tests {
                 RootMenuBitmapSlot::Backdrop
             ))
         ));
+    }
+
+    #[test]
+    fn complete_upload_preserves_all_fixed_slots_and_global_store_lifetime() {
+        let prepared = prepare_parts(complete_parts(VisualVariant::GPrefixed), &palette()).unwrap();
+        let mut backend = RecordingBackend::default();
+        {
+            let mut store = UploadedSourceStore::new(&mut backend);
+            let uploaded = upload_root_menu_bitmaps(&mut store, prepared).unwrap();
+            assert!(uploaded.optional_diagnostics.is_empty());
+            assert_eq!(uploaded.pool.language(), Language::English);
+            assert_eq!(uploaded.pool.center_variant(), VisualVariant::GPrefixed);
+            for slot in RootMenuBitmapSlot::ALL {
+                assert!(uploaded.pool.is_loaded(slot));
+                assert_eq!(uploaded.pool.extent(slot), Some((4, 1)));
+            }
+            uploaded
+                .pool
+                .blit(
+                    &mut store,
+                    RootMenuBitmapSlot::ChampionshipGlobe,
+                    99,
+                    one_pixel_blit(),
+                )
+                .unwrap();
+            uploaded
+                .pool
+                .blit(
+                    &mut store,
+                    RootMenuBitmapSlot::TimeTrialGlobe,
+                    99,
+                    one_pixel_blit(),
+                )
+                .unwrap();
+            assert_eq!(
+                store.uploaded_source_count(),
+                ROOT_MENU_BITMAP_REQUEST_COUNT
+            );
+            assert_eq!(
+                &store.backend().events[ROOT_MENU_BITMAP_REQUEST_COUNT..],
+                &[
+                    Event::Blit {
+                        source: 21,
+                        destination: 99,
+                    },
+                    Event::Blit {
+                        source: 22,
+                        destination: 99,
+                    },
+                ]
+            );
+            discard_root_pool(uploaded.pool);
+            assert_eq!(
+                store.uploaded_source_count(),
+                ROOT_MENU_BITMAP_REQUEST_COUNT
+            );
+        }
+        assert_eq!(
+            backend
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Destroy(handle) => Some(*handle),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            (10..10 + ROOT_MENU_BITMAP_REQUEST_COUNT as u8)
+                .rev()
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn preparation_and_upload_failures_are_ordered_optional_holes() {
+        let mut parts = complete_parts(VisualVariant::Normal);
+        parts.assets[RootMenuBitmapSlot::MainSelected.index()]
+            .bitmap
+            .palette
+            .pop();
+        let prepared = prepare_parts(parts, &palette()).unwrap();
+        let mut backend = RecordingBackend {
+            fail_create_at: Some(1),
+            ..RecordingBackend::default()
+        };
+        let mut store = UploadedSourceStore::new(&mut backend);
+        let uploaded = upload_root_menu_bitmaps(&mut store, prepared).unwrap();
+
+        assert!(!uploaded.pool.is_loaded(RootMenuBitmapSlot::MainSelected));
+        assert!(uploaded.pool.is_loaded(RootMenuBitmapSlot::MainShadow));
+        assert!(!uploaded.pool.is_loaded(RootMenuBitmapSlot::Animation0));
+        assert!(uploaded.pool.is_loaded(RootMenuBitmapSlot::Animation1));
+        assert_eq!(
+            store.uploaded_source_count(),
+            ROOT_MENU_BITMAP_REQUEST_COUNT - 2
+        );
+        assert_eq!(
+            uploaded
+                .optional_diagnostics
+                .iter()
+                .map(RootMenuBitmapUploadDiagnostic::slot)
+                .collect::<Vec<_>>(),
+            [
+                RootMenuBitmapSlot::MainSelected,
+                RootMenuBitmapSlot::Animation0,
+            ]
+        );
+        assert!(matches!(
+            &uploaded.optional_diagnostics[0],
+            RootMenuBitmapUploadDiagnostic::Preparation {
+                slot: RootMenuBitmapSlot::MainSelected,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &uploaded.optional_diagnostics[1],
+            RootMenuBitmapUploadDiagnostic::Upload {
+                slot: RootMenuBitmapSlot::Animation0,
+                identity: RootMenuBitmapIdentity::AnimationFrame(0),
+                source: SourceUploadError::Backend(BackendError::Create(1)),
+                ..
+            }
+        ));
+        assert_eq!(
+            uploaded.pool.blit(
+                &mut store,
+                RootMenuBitmapSlot::Animation0,
+                99,
+                one_pixel_blit(),
+            ),
+            Err(RootMenuBitmapBlitError::MissingOptionalSlot(
+                RootMenuBitmapSlot::Animation0
+            ))
+        );
+    }
+
+    #[test]
+    fn required_upload_failure_rolls_back_only_root_batch_and_store_recovers() {
+        let prepared = prepare_parts(complete_parts(VisualVariant::Normal), &palette()).unwrap();
+        let mut backend = RecordingBackend {
+            fail_create_at: Some(11),
+            ..RecordingBackend::default()
+        };
+        {
+            let mut store = UploadedSourceStore::new(&mut backend);
+            store.upload(&marker_surface(90)).unwrap();
+            assert!(matches!(
+                upload_root_menu_bitmaps(&mut store, prepared),
+                Err(RootMenuBitmapUploadError {
+                    slot: RootMenuBitmapSlot::Selection,
+                    identity: RootMenuBitmapIdentity::Selection,
+                    source: SourceUploadError::Backend(BackendError::Create(11)),
+                    ..
+                })
+            ));
+            assert_eq!(store.uploaded_source_count(), 1);
+            store.upload(&marker_surface(91)).unwrap();
+            assert_eq!(store.uploaded_source_count(), 2);
+        }
+        assert_eq!(
+            backend
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Destroy(handle) => Some(*handle),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            (11..=20).rev().chain([22, 10]).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn wrong_store_and_backend_blit_errors_remain_typed() {
+        let prepared = prepare_parts(complete_parts(VisualVariant::Normal), &palette()).unwrap();
+        let mut first_backend = RecordingBackend::default();
+        let mut first_store = UploadedSourceStore::new(&mut first_backend);
+        let uploaded = upload_root_menu_bitmaps(&mut first_store, prepared).unwrap();
+        let mut second_backend = RecordingBackend {
+            fail_blit: Cell::new(true),
+            ..RecordingBackend::default()
+        };
+        let mut second_store = UploadedSourceStore::new(&mut second_backend);
+        assert!(matches!(
+            uploaded.pool.blit(
+                &mut second_store,
+                RootMenuBitmapSlot::Backdrop,
+                99,
+                one_pixel_blit(),
+            ),
+            Err(RootMenuBitmapBlitError::Access {
+                slot: RootMenuBitmapSlot::Backdrop,
+                source: SourceAccessError::ForeignKey(_),
+            })
+        ));
+        assert!(second_store.backend().events.is_empty());
+
+        first_store.backend().fail_blit.set(true);
+        assert_eq!(
+            uploaded.pool.blit(
+                &mut first_store,
+                RootMenuBitmapSlot::Backdrop,
+                99,
+                one_pixel_blit(),
+            ),
+            Err(RootMenuBitmapBlitError::Backend {
+                slot: RootMenuBitmapSlot::Backdrop,
+                source: BackendError::Blit,
+            })
+        );
+    }
+
+    #[test]
+    fn font_and_root_pools_coexist_and_reuse_one_store_across_frames() {
+        let prepared = prepare_parts(complete_parts(VisualVariant::Normal), &palette()).unwrap();
+        let mut backend = RecordingBackend::default();
+        {
+            let mut store = UploadedSourceStore::new(&mut backend);
+            let fonts = UploadedFontPool::upload(&mut store, font_set()).unwrap();
+            let root = upload_root_menu_bitmaps(&mut store, prepared).unwrap().pool;
+            assert_eq!(
+                store.uploaded_source_count(),
+                FONT_COUNT + ROOT_MENU_BITMAP_REQUEST_COUNT
+            );
+
+            let style = FontStyle::Title;
+            let plan = layout_text(
+                fonts.font(style),
+                b"A",
+                PointI32 { x: 0, y: 0 },
+                4,
+                TextAlignment {
+                    horizontal: HorizontalAlignment::Left,
+                    vertical: cmr_formats::font::VerticalAlignment::Top,
+                },
+                TextLayoutLimits::default(),
+            )
+            .unwrap();
+            for _ in 0..2 {
+                assert_eq!(
+                    fonts
+                        .execute(
+                            &mut store,
+                            style,
+                            &plan,
+                            99,
+                            crate::display::DisplayExtent {
+                                width: 4,
+                                height: 1,
+                            },
+                        )
+                        .unwrap()
+                        .successful_blits,
+                    1
+                );
+                root.blit(
+                    &mut store,
+                    RootMenuBitmapSlot::Backdrop,
+                    99,
+                    one_pixel_blit(),
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                store.backend().create_attempts,
+                FONT_COUNT + ROOT_MENU_BITMAP_REQUEST_COUNT
+            );
+            discard_pools(fonts, root);
+            assert_eq!(
+                store.uploaded_source_count(),
+                FONT_COUNT + ROOT_MENU_BITMAP_REQUEST_COUNT
+            );
+        }
+        assert_eq!(
+            backend
+                .events
+                .iter()
+                .filter(|event| matches!(event, Event::Destroy(_)))
+                .count(),
+            FONT_COUNT + ROOT_MENU_BITMAP_REQUEST_COUNT
+        );
+    }
+
+    fn marker_surface(marker: u8) -> IndexedSurface {
+        IndexedSurface {
+            width: 1,
+            height: 1,
+            pitch: 1,
+            pixels: vec![marker],
+            palette: [PaletteEntry {
+                red: 0,
+                green: 0,
+                blue: 0,
+                flags: 0,
+            }; 256],
+        }
+    }
+
+    fn discard_root_pool(_pool: UploadedRootMenuBitmapPool) {}
+
+    fn discard_pools(_fonts: UploadedFontPool, _root: UploadedRootMenuBitmapPool) {}
+
+    fn font_set() -> FontSet {
+        let font = parse_legacy_font(&synthetic_font(), FontLimits::default()).unwrap();
+        FontSet::from_ordered_fonts(std::array::from_fn(|_| font.clone()))
+    }
+
+    fn synthetic_font() -> Vec<u8> {
+        const PIXEL_OFFSET: usize = 0x436;
+        const FONT_HEADER_SIZE: usize = 24;
+        const GLYPH_SIZE: usize = 16;
+        let trailer = PIXEL_OFFSET + 4;
+        let mut input = vec![0; trailer + FONT_HEADER_SIZE + GLYPH_SIZE];
+        input[0..2].copy_from_slice(b"BM");
+        input[18..22].copy_from_slice(&4i32.to_le_bytes());
+        input[22..26].copy_from_slice(&1i32.to_le_bytes());
+        input[28..30].copy_from_slice(&8u16.to_le_bytes());
+        input[PIXEL_OFFSET..PIXEL_OFFSET + 4].fill(7);
+        input[trailer + 1] = 1;
+        input[trailer + 4..trailer + 8].copy_from_slice(&4u32.to_le_bytes());
+        input[trailer + 12..trailer + 16].copy_from_slice(&1u32.to_le_bytes());
+        let glyph = trailer + FONT_HEADER_SIZE;
+        input[glyph] = b'A';
+        input[glyph + 6..glyph + 8].copy_from_slice(&1i16.to_le_bytes());
+        input[glyph + 8..glyph + 10].copy_from_slice(&1i16.to_le_bytes());
+        input
+    }
+
+    fn one_pixel_blit() -> BlitPlan {
+        let BlitDecision::Blit(plan) = plan_legacy_blit(
+            RectI16 {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            RectI16 {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            1,
+            1,
+            None,
+        ) else {
+            unreachable!()
+        };
+        plan
     }
 }
