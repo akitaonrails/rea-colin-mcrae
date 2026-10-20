@@ -97,6 +97,7 @@ Status markers:
 - [x] `E12` Prepare and transactionally upload deduplicated championship logo surfaces.
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
+- [~] `E15` Recover championship mode-8 C3D preparation and session ownership.
 
 ## F. Menus, game state, and persistence
 
@@ -162,13 +163,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T20:57:32Z
-milestone=admit-championship-frame-assets-and-persistent-text
+updated_utc=2026-10-20T20:59:57Z
+milestone=recover-championship-mode8-c3d-contract
 completed=48
-partial=19
+partial=20
 not_started=47
 blocked=0
-total=114
-current_focus=F04-E04-championship-setup-pixel-and-car-preview
+total=115
+current_focus=E15-F04-generic-mode8-car-preparation
 next_exit_gate=championship-setup-software-frame-execution
 <!-- PROGRESS-TAIL-END -->
