@@ -177,6 +177,11 @@ impl<H> PreparedChampionshipCarFrame<'_, H> {
     pub const fn viewport(&self) -> C3dViewportWords {
         self.plan.viewport()
     }
+
+    #[must_use]
+    pub const fn selected_parent_visible(&self) -> bool {
+        self.plan.selected_parent_visible()
+    }
 }
 
 impl<'catalog, H> ChampionshipCarBatchExecutor<'catalog, H> {

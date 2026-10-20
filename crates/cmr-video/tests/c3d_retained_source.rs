@@ -8,6 +8,7 @@ use cmr_assets::{
 use cmr_core::display::{
     CooperativeMode, DisplayExtent, IndexedMode, IndexedVideoBackend, SurfaceTopology,
 };
+use cmr_core::frontend_c3d_route::FrontendC3dRouteState;
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_c3d_assets::{RootMenuC3dAngles, RootMenuC3dSlot, load_root_menu_c3d};
 use cmr_core::root_menu_c3d_execute::RootMenuC3dBatchExecutor;
@@ -203,12 +204,14 @@ fn imported_root_type1_copy_ignores_normals_and_reuses_retained_binding() {
     let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
     let mut angles = RootMenuC3dAngles::new();
     let mut visibility = RootMenuC3dVisibilityLatches::new();
+    let route_state = FrontendC3dRouteState::new();
     let mut pipeline = PreparedRootMenuC3dPipeline::new(
         &topology,
         &runtime,
         &mut angles,
         &mut visibility,
         &mut executor,
+        &route_state,
         RootMenuC3dDepthClear::Clear,
     )
     .unwrap();

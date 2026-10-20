@@ -388,6 +388,7 @@ mod tests {
             CooperativeMode, DisplayExtent, DisplaySurfaces, IndexedMode, IndexedVideoBackend,
             SurfaceTopology,
         },
+        frontend_c3d_route::{FrontendC3dRoute, FrontendC3dRouteState},
         root_menu_assets::VisualVariant,
         root_menu_c3d_assets::{RootMenuC3dAngles, load_root_menu_c3d},
         root_menu_c3d_execute::{
@@ -918,6 +919,7 @@ mod tests {
         let mut second_executor = RootMenuC3dBatchExecutor::new(&second_catalog);
         let mut angles = RootMenuC3dAngles::new();
         let mut visibility = RootMenuC3dVisibilityLatches::new();
+        let route_state = FrontendC3dRouteState::new();
 
         assert!(
             PreparedRootMenuC3dPipeline::new(
@@ -926,6 +928,7 @@ mod tests {
                 &mut angles,
                 &mut visibility,
                 &mut first_executor,
+                &route_state,
                 RootMenuC3dDepthClear::Clear,
             )
             .is_ok()
@@ -937,6 +940,7 @@ mod tests {
                 &mut angles,
                 &mut visibility,
                 &mut first_executor,
+                &route_state,
                 RootMenuC3dDepthClear::Clear,
             ),
             Err(PreparedRootMenuC3dPipelineError::RuntimeProvenanceMismatch)
@@ -948,6 +952,7 @@ mod tests {
                 &mut angles,
                 &mut visibility,
                 &mut second_executor,
+                &route_state,
                 RootMenuC3dDepthClear::Clear,
             ),
             Err(PreparedRootMenuC3dPipelineError::BindingProvenanceMismatch)
@@ -974,12 +979,14 @@ mod tests {
         let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
         let mut angles = RootMenuC3dAngles::new();
         let mut visibility = RootMenuC3dVisibilityLatches::new();
+        let route_state = FrontendC3dRouteState::new();
         let mut pipeline = PreparedRootMenuC3dPipeline::new(
             &topology,
             &runtime,
             &mut angles,
             &mut visibility,
             &mut executor,
+            &route_state,
             RootMenuC3dDepthClear::Clear,
         )
         .unwrap();
@@ -1023,6 +1030,29 @@ mod tests {
             0x00
         );
         assert_eq!(backend.binding_count(), 1);
+
+        backend.batch.events.clear();
+        let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
+        pipeline
+            .execute_terminal_scene(&mut backend, 7, extent, plan)
+            .unwrap();
+        assert_eq!(
+            backend.binding_count(),
+            0,
+            "repeated root frames retain the selector cache"
+        );
+
+        assert!(route_state.enter(FrontendC3dRoute::ChampionshipCar));
+        backend.batch.events.clear();
+        let plan = pipeline.plan_frame(slot, 8, extent).unwrap();
+        pipeline
+            .execute_terminal_scene(&mut backend, 7, extent, plan)
+            .unwrap();
+        assert_eq!(
+            backend.binding_count(),
+            1,
+            "returning from the championship route invalidates root bindings"
+        );
 
         backend.batch.events.clear();
         backend.tail_state = RootMenuC3dBindingState::Changed;

@@ -14,6 +14,7 @@ pub use crate::frontend_c3d_scene::{
 
 use crate::{
     display::{DisplayExtent, IndexedVideoBackend},
+    frontend_c3d_route::{FrontendC3dRoute, FrontendC3dRouteState},
     frontend_c3d_scene::{FrontendC3dSceneBackend, execute_frontend_c3d_scene},
     root_menu_assets::VisualVariant,
     root_menu_c3d_assets::{RootMenuC3dAngles, RootMenuC3dSlot},
@@ -158,6 +159,7 @@ pub struct PreparedRootMenuC3dPipeline<'a, 'asset, 'catalog, H> {
     angles: &'a mut RootMenuC3dAngles,
     visibility: &'a mut RootMenuC3dVisibilityLatches,
     batches: &'a mut RootMenuC3dBatchExecutor<'catalog, H>,
+    route_state: &'a FrontendC3dRouteState,
     depth_clear: RootMenuC3dDepthClear,
 }
 
@@ -191,6 +193,7 @@ impl<'a, 'asset, 'catalog, H> PreparedRootMenuC3dPipeline<'a, 'asset, 'catalog, 
         angles: &'a mut RootMenuC3dAngles,
         visibility: &'a mut RootMenuC3dVisibilityLatches,
         batches: &'a mut RootMenuC3dBatchExecutor<'catalog, H>,
+        route_state: &'a FrontendC3dRouteState,
         depth_clear: RootMenuC3dDepthClear,
     ) -> Result<Self, PreparedRootMenuC3dPipelineError> {
         if topology.variant() != runtime.variant() {
@@ -208,6 +211,7 @@ impl<'a, 'asset, 'catalog, H> PreparedRootMenuC3dPipeline<'a, 'asset, 'catalog, 
             angles,
             visibility,
             batches,
+            route_state,
             depth_clear,
         })
     }
@@ -269,6 +273,9 @@ where
         extent: DisplayExtent,
         plan: Option<Self::Plan>,
     ) -> Result<(), Self::SceneError> {
+        if self.route_state.enter(FrontendC3dRoute::RootMenu) {
+            self.batches.invalidate_bindings();
+        }
         let result = execute_root_menu_c3d_scene(
             backend,
             destination,

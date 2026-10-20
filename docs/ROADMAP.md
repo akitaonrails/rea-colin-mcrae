@@ -238,10 +238,11 @@ separate.
 The championship-car path now preflights a single-use actor plan against the
 exact frontend binding catalog before any scene effect, then executes the
 shared terminal C3D bracket with actor-scoped worlds, resource/default-zero
-selector transitions, and Type-2 draw commands. Its next boundary is the full
-championship terminal-frame owner: car/root latch cleanup, group-4 deferred
-palette commit, and presentation. Type-2 raster pixels remain intentionally
-separate until the unresolved mutation and raster policy are recovered.
+selector transitions, and Type-2 draw commands. The full championship terminal
+owner now preserves inline callback order, coordinates root/car binding-cache
+ownership, clears all 20 frontend visibility latches, commits the requested
+palette, and presents last. Type-2 raster pixels remain intentionally separate
+until the unresolved mutation and raster policy are recovered.
 
 Exit gate:
 

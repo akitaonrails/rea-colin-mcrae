@@ -104,6 +104,12 @@ pub struct UploadedChampionshipLogoPool {
 }
 
 impl UploadedChampionshipLogoPool {
+    #[cfg(test)]
+    pub(crate) const fn test_repeated(bitmap: UploadedIndexedBitmap) -> Self {
+        Self {
+            logos: [bitmap; MANUFACTURER_LOGO_COUNT],
+        }
+    }
     #[must_use]
     pub const fn logo(&self, logo: ManufacturerLogo) -> UploadedIndexedBitmap {
         self.logos[logo.index()]

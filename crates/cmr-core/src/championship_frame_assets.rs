@@ -424,6 +424,13 @@ pub struct UploadedChampionshipFramePool {
 }
 
 impl UploadedChampionshipFramePool {
+    #[cfg(test)]
+    pub(crate) const fn test_repeated(bitmap: UploadedIndexedBitmap) -> Self {
+        Self {
+            info_box: bitmap,
+            frames: [bitmap; CHEQUERED_FRAME_COUNT],
+        }
+    }
     #[must_use]
     pub const fn info_box(&self) -> UploadedIndexedBitmap {
         self.info_box

@@ -83,6 +83,44 @@ where
     result.map_err(ChampionshipCarSceneError::Scene)
 }
 
+/// Executes the terminal championship scene even when the current setup
+/// preview has no car.  The empty case still performs the recovered common
+/// scene bracket and tail, preventing a previous car frame from remaining on
+/// screen when the selection moves to `Next`.
+pub fn execute_optional_championship_car_scene<'catalog, B, H>(
+    executor: &mut ChampionshipCarBatchExecutor<'catalog, H>,
+    backend: &mut B,
+    destination: B::Surface,
+    extent: DisplayExtent,
+    depth_clear: C3dDepthClear,
+    prepared: Option<PreparedChampionshipCarFrame<'catalog, H>>,
+) -> Result<ChampionshipCarSceneOutcome, ChampionshipCarSceneError<B::SceneError>>
+where
+    B: FrontendC3dSceneBackend
+        + ChampionshipCarBatchBackend<H, Error = <B as FrontendC3dSceneBackend>::SceneError>,
+{
+    let scene_extent = if let Some(frame) = prepared.as_ref() {
+        executor
+            .validate_prepared(frame)
+            .map_err(ChampionshipCarSceneError::Preflight)?;
+        frame.extent()
+    } else {
+        extent
+    };
+    let result = execute_frontend_c3d_scene(
+        backend,
+        destination,
+        scene_extent,
+        depth_clear,
+        prepared,
+        |backend, prepared| executor.execute_prepared(backend, prepared),
+    );
+    if invalidates_selector_cache(&result) {
+        executor.invalidate_bindings();
+    }
+    result.map_err(ChampionshipCarSceneError::Scene)
+}
+
 fn execute_terminal_scene<B, P, O, D>(
     backend: &mut B,
     destination: B::Surface,
@@ -306,6 +344,42 @@ mod tests {
         );
         assert_eq!(outcome.unwrap().submission, Some(2));
         assert!(!invalidate);
+    }
+
+    #[test]
+    fn optional_empty_car_scene_still_runs_the_complete_terminal_bracket() {
+        let (_, arena) = scene_test_fixture();
+        let catalog =
+            bind_prepared_c3d_resources(arena.provenance(), arena.resources(), &mut |_, _| {
+                Ok::<_, Infallible>(7_u8)
+            })
+            .unwrap();
+        let mut executor = ChampionshipCarBatchExecutor::new(&catalog);
+        let mut backend = Backend::default();
+
+        let outcome = execute_optional_championship_car_scene(
+            &mut executor,
+            &mut backend,
+            4,
+            EXTENT,
+            C3dDepthClear::Clear,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            backend.events,
+            [
+                Event::Clear,
+                Event::View,
+                Event::Viewport,
+                Event::Begin,
+                Event::ResetWorld,
+                Event::Tail,
+                Event::End,
+            ]
+        );
+        assert_eq!(outcome.submission, None);
     }
 
     #[test]

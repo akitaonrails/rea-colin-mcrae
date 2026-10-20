@@ -220,8 +220,17 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   including explicit missing-selector material/texture-zero binding and a
   persistent selector cache. Prepared frames are tied to the exact binding
   catalog and their planned extent; uncertain scene completion invalidates the
-  cache. Cross-path invalidation remains the responsibility of the later
-  root/championship terminal-frame owner.
+  cache.
+- `cmr-core::frontend_c3d_route`: session-scoped ownership of the shared C3D
+  backend binding state. Root and championship terminal owners invalidate the
+  executor they enter only on first use or a route switch, while same-route
+  frames retain the recovered selector cache.
+- `cmr-core::championship_terminal_frame`: complete preflighted championship
+  setup boundary. It executes deferred transform/latch/palette callbacks inline
+  with 2D work, always runs the common scene (including an empty Next preview),
+  clears all 14 car then six root latches, commits the deferred palette, and
+  presents. Typed failures preserve the exact completed prefix and suppress
+  later terminal work.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes, plus explicit selection-slot mapping and six independent wrapping

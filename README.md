@@ -47,14 +47,17 @@ The exact R_INFO bitmap, 15 Chequered preview frames, and FCHE palette now have
 a verified, transactional persistent asset boundary, while a generic prepared
 text path validates complete font work before issuing frame effects. Available
 setup text and 2D bitmap commands now execute in their recovered order after
-whole-frame preflight; info formatting, car C3D, palette integration, and the
-animation timer remain explicit downstream work.
+whole-frame preflight. The selected car's transform, actor scene, visibility
+latches, logical palette request/commit, and final presentation are integrated
+at the terminal frame boundary; info formatting, the animation timer, and
+Type-2 final pixels remain explicit downstream work.
 The C3D resource-preparation kernel now has explicit domain and mode policies,
 so championship mode 8 can append resources without being forced through the
 root menu's mode-2 slot types. A shared frontend-session arena now prepares the
 14 cars first as the exact 55-resource prefix, then the six root objects in the
-same provenance domain. Car vertex/transform execution remains the next C3D
-milestone.
+same provenance domain. Car actor traversal and backend-neutral Type-2 scene
+submission are integrated; exact Type-2 mutation/raster behavior remains the
+next C3D milestone.
 These are platform-neutral compatibility contracts; registry, host clock/input,
 native window, audio, setup-screen pixel execution, later frontend screens, and
 gameplay integrations are not yet complete.

@@ -245,9 +245,53 @@ enum PreparedCommand {
     },
 }
 
-struct PreparedFrame {
+pub(crate) struct PreparedChampionshipSetupFrame {
     commands: Vec<PreparedCommand>,
     next_cache: ChampionshipPreviewCache,
+}
+
+impl PreparedChampionshipSetupFrame {
+    pub(crate) fn command_len(&self) -> usize {
+        self.commands.len()
+    }
+
+    /// Deferred work in exact visual-command order. This lets an enclosing
+    /// terminal executor preflight its own command families before the first
+    /// destination effect without exposing the prepared text/bitmap details.
+    pub(crate) fn deferred_commands(
+        &self,
+    ) -> impl Iterator<Item = (usize, DeferredChampionshipCommand)> + '_ {
+        self.commands.iter().filter_map(|command| match command {
+            PreparedCommand::Deferred {
+                command_index,
+                command,
+            } => Some((*command_index, *command)),
+            PreparedCommand::Text { .. } | PreparedCommand::Bitmap { .. } => None,
+        })
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum PreparedChampionshipSetupFrameExecutionError<E, D> {
+    Frame(ChampionshipSetupFrameExecutionError<E>),
+    Deferred { command_index: usize, source: D },
+}
+
+impl<E: fmt::Display, D: fmt::Display> fmt::Display
+    for PreparedChampionshipSetupFrameExecutionError<E, D>
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Frame(source) => source.fmt(formatter),
+            Self::Deferred {
+                command_index,
+                source,
+            } => write!(
+                formatter,
+                "championship frame deferred command {command_index} failed: {source}"
+            ),
+        }
+    }
 }
 
 /// Preflights and executes one setup frame, committing the preview cache only
@@ -266,20 +310,43 @@ pub fn execute_championship_setup_frame<B: IndexedVideoBackend>(
     text_limits: TextLayoutLimits,
 ) -> Result<ChampionshipSetupFrameOutcome<B::Error>, ChampionshipSetupFrameExecutionError<B::Error>>
 {
-    execute_frame_with_bitmaps(
+    let prepared =
+        prepare_championship_setup_frame(input, state, resources, *preview_cache, text_limits)
+            .map_err(ChampionshipSetupFrameExecutionError::Prepare)?;
+    validate_championship_setup_frame_sources(&prepared, sources)?;
+    execute_prepared_championship_setup_frame(
+        prepared,
+        preview_cache,
+        sources,
+        destination,
+        |_, _| Ok::<_, std::convert::Infallible>(()),
+    )
+    .map_err(|error| match error {
+        PreparedChampionshipSetupFrameExecutionError::Frame(source) => source,
+        PreparedChampionshipSetupFrameExecutionError::Deferred { source, .. } => match source {},
+    })
+}
+
+pub(crate) fn prepare_championship_setup_frame(
+    input: ChampionshipSetupVisualInput<'_>,
+    state: ChampionshipSetupFrameState,
+    resources: ChampionshipSetupFrameResources<'_>,
+    preview_cache: ChampionshipPreviewCache,
+    text_limits: TextLayoutLimits,
+) -> Result<PreparedChampionshipSetupFrame, ChampionshipSetupFramePrepareError> {
+    prepare_frame_with_bitmaps(
         input,
         state,
         resources.text,
         resources.fonts,
         &resources,
         preview_cache,
-        sources,
-        destination,
         text_limits,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn execute_frame_with_bitmaps<B: IndexedVideoBackend, R: ChampionshipBitmapResources>(
     input: ChampionshipSetupVisualInput<'_>,
     state: ChampionshipSetupFrameState,
@@ -302,7 +369,34 @@ fn execute_frame_with_bitmaps<B: IndexedVideoBackend, R: ChampionshipBitmapResou
         text_limits,
     )
     .map_err(ChampionshipSetupFrameExecutionError::Prepare)?;
-    validate_prepared_sources(&prepared, sources)?;
+    validate_championship_setup_frame_sources(&prepared, sources)?;
+    execute_prepared_championship_setup_frame(
+        prepared,
+        preview_cache,
+        sources,
+        destination,
+        |_, _| Ok::<_, std::convert::Infallible>(()),
+    )
+    .map_err(|error| match error {
+        PreparedChampionshipSetupFrameExecutionError::Frame(source) => source,
+        PreparedChampionshipSetupFrameExecutionError::Deferred { source, .. } => match source {},
+    })
+}
+
+pub(crate) fn execute_prepared_championship_setup_frame<B, F, D>(
+    prepared: PreparedChampionshipSetupFrame,
+    preview_cache: &mut ChampionshipPreviewCache,
+    sources: &mut UploadedSourceStore<'_, B>,
+    destination: B::Surface,
+    mut execute_deferred: F,
+) -> Result<
+    ChampionshipSetupFrameOutcome<B::Error>,
+    PreparedChampionshipSetupFrameExecutionError<B::Error, D>,
+>
+where
+    B: IndexedVideoBackend,
+    F: FnMut(usize, DeferredChampionshipCommand) -> Result<(), D>,
+{
     let mut outcomes = Vec::with_capacity(prepared.commands.len());
     for command in prepared.commands {
         match command {
@@ -312,10 +406,14 @@ fn execute_frame_with_bitmaps<B: IndexedVideoBackend, R: ChampionshipBitmapResou
                 text,
             } => {
                 let rendered = execute_prepared_persistent_text(sources, text, destination)
-                    .map_err(|source| ChampionshipSetupFrameExecutionError::TextAccess {
-                        command_index,
-                        role,
-                        source,
+                    .map_err(|source| {
+                        PreparedChampionshipSetupFrameExecutionError::Frame(
+                            ChampionshipSetupFrameExecutionError::TextAccess {
+                                command_index,
+                                role,
+                                source,
+                            },
+                        )
                     })?;
                 outcomes.push(ChampionshipSetupCommandOutcome::Text {
                     command_index,
@@ -332,9 +430,8 @@ fn execute_frame_with_bitmaps<B: IndexedVideoBackend, R: ChampionshipBitmapResou
                 let outcome = match decision {
                     BlitDecision::NoOp => IndexedBitmapBlitOutcome::NoOp,
                     BlitDecision::Blit(plan) => {
-                        bitmap
-                            .blit(sources, destination, plan)
-                            .map_err(|source| match source {
+                        bitmap.blit(sources, destination, plan).map_err(|source| {
+                            PreparedChampionshipSetupFrameExecutionError::Frame(match source {
                                 SourceBlitError::Access(source) => {
                                     ChampionshipSetupFrameExecutionError::BitmapAccess {
                                         command_index,
@@ -349,7 +446,8 @@ fn execute_frame_with_bitmaps<B: IndexedVideoBackend, R: ChampionshipBitmapResou
                                         source,
                                     }
                                 }
-                            })?;
+                            })
+                        })?;
                         IndexedBitmapBlitOutcome::Blitted
                     }
                 };
@@ -362,18 +460,26 @@ fn execute_frame_with_bitmaps<B: IndexedVideoBackend, R: ChampionshipBitmapResou
             PreparedCommand::Deferred {
                 command_index,
                 command,
-            } => outcomes.push(ChampionshipSetupCommandOutcome::Deferred {
-                command_index,
-                command,
-            }),
+            } => {
+                execute_deferred(command_index, command).map_err(|source| {
+                    PreparedChampionshipSetupFrameExecutionError::Deferred {
+                        command_index,
+                        source,
+                    }
+                })?;
+                outcomes.push(ChampionshipSetupCommandOutcome::Deferred {
+                    command_index,
+                    command,
+                });
+            }
         }
     }
     *preview_cache = prepared.next_cache;
     Ok(ChampionshipSetupFrameOutcome { commands: outcomes })
 }
 
-fn validate_prepared_sources<B: IndexedVideoBackend>(
-    prepared: &PreparedFrame,
+pub(crate) fn validate_championship_setup_frame_sources<B: IndexedVideoBackend>(
+    prepared: &PreparedChampionshipSetupFrame,
     sources: &UploadedSourceStore<'_, B>,
 ) -> Result<(), ChampionshipSetupFrameExecutionError<B::Error>> {
     for command in &prepared.commands {
@@ -423,7 +529,7 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
     resources: &R,
     mut next_cache: ChampionshipPreviewCache,
     text_limits: TextLayoutLimits,
-) -> Result<PreparedFrame, ChampionshipSetupFramePrepareError> {
+) -> Result<PreparedChampionshipSetupFrame, ChampionshipSetupFramePrepareError> {
     let extent = input.viewport;
     let visual = plan_championship_setup_frame(input, &mut next_cache)
         .map_err(ChampionshipSetupFramePrepareError::Visual)?;
@@ -529,7 +635,7 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
             }
         }
     }
-    Ok(PreparedFrame {
+    Ok(PreparedChampionshipSetupFrame {
         commands,
         next_cache,
     })
@@ -608,6 +714,8 @@ const fn indexed_rect(rectangle: PixelRect) -> IndexedBitmapRect {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
     use cmr_formats::font::{FontLimits, parse_legacy_font};
     use cmr_formats::riff_palette::PaletteEntry;
 
@@ -635,11 +743,18 @@ mod tests {
 
     impl std::error::Error for BackendError {}
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ExecutionEvent {
+        Blit(u16),
+        Deferred(usize),
+    }
+
     #[derive(Default)]
     struct RecordingBackend {
         next_source: u16,
         blits: Vec<u16>,
         fail_source: Option<u16>,
+        events: Rc<RefCell<Vec<ExecutionEvent>>>,
     }
 
     impl IndexedVideoBackend for RecordingBackend {
@@ -703,6 +818,7 @@ mod tests {
             _: BlitPlan,
         ) -> Result<(), Self::Error> {
             self.blits.push(source);
+            self.events.borrow_mut().push(ExecutionEvent::Blit(source));
             if self.fail_source == Some(source) {
                 Err(BackendError::Blit(source))
             } else {
@@ -815,6 +931,180 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn prepared_deferred_callback_runs_inline_between_bitmap_commands() {
+        let transcript = transcript(2);
+        let mut fixture = Fixture::new(true);
+        let selection = fixture.bitmaps.selection.unwrap().source_key().slot() as u16;
+        let info = fixture.bitmaps.info.source_key().slot() as u16;
+        let frame = fixture.bitmaps.frame.source_key().slot() as u16;
+        let mut cache = ChampionshipPreviewCache::new();
+        let prepared = prepare_frame_with_bitmaps(
+            input(&transcript),
+            ChampionshipSetupFrameState {
+                chequered_frame: Some(ChequeredFrame::Frame04),
+            },
+            &fixture.text,
+            &fixture.fonts,
+            &fixture.bitmaps,
+            cache,
+            TextLayoutLimits::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            prepared
+                .deferred_commands()
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>(),
+            [6, 7]
+        );
+        validate_championship_setup_frame_sources(&prepared, &fixture.store).unwrap();
+
+        let events = Rc::clone(&fixture.store.backend().events);
+        let mut callbacks = Vec::new();
+        execute_prepared_championship_setup_frame(
+            prepared,
+            &mut cache,
+            &mut fixture.store,
+            999,
+            |command_index, command| {
+                events
+                    .borrow_mut()
+                    .push(ExecutionEvent::Deferred(command_index));
+                callbacks.push((command_index, command));
+                Ok::<_, std::convert::Infallible>(())
+            },
+        )
+        .unwrap();
+
+        assert!(fixture.store.backend().blits.contains(&selection));
+        assert!(fixture.store.backend().blits.contains(&info));
+        assert!(fixture.store.backend().blits.contains(&frame));
+        assert!(matches!(
+            callbacks.as_slice(),
+            [
+                (6, DeferredChampionshipCommand::InfoText(_)),
+                (
+                    7,
+                    DeferredChampionshipCommand::PaletteRequest { group: 1, item: 9 }
+                )
+            ]
+        ));
+        let events = fixture.store.backend().events.borrow();
+        let event_position = |needle| events.iter().position(|event| *event == needle).unwrap();
+        assert!(
+            event_position(ExecutionEvent::Blit(selection))
+                < event_position(ExecutionEvent::Deferred(6))
+        );
+        assert!(
+            event_position(ExecutionEvent::Blit(info))
+                < event_position(ExecutionEvent::Deferred(6))
+        );
+        assert!(
+            event_position(ExecutionEvent::Deferred(6))
+                < event_position(ExecutionEvent::Deferred(7))
+        );
+        assert!(
+            event_position(ExecutionEvent::Deferred(7))
+                < event_position(ExecutionEvent::Blit(frame))
+        );
+    }
+
+    #[test]
+    fn deferred_callback_failure_stops_later_bitmap_and_cache_commit() {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        struct DeferredFailure;
+
+        let transcript = transcript(2);
+        let mut fixture = Fixture::new(true);
+        let frame = fixture.bitmaps.frame.source_key().slot() as u16;
+        let mut cache = ChampionshipPreviewCache::new();
+        let prepared = prepare_frame_with_bitmaps(
+            input(&transcript),
+            ChampionshipSetupFrameState {
+                chequered_frame: Some(ChequeredFrame::Frame04),
+            },
+            &fixture.text,
+            &fixture.fonts,
+            &fixture.bitmaps,
+            cache,
+            TextLayoutLimits::default(),
+        )
+        .unwrap();
+        validate_championship_setup_frame_sources(&prepared, &fixture.store).unwrap();
+
+        let error = execute_prepared_championship_setup_frame(
+            prepared,
+            &mut cache,
+            &mut fixture.store,
+            999,
+            |command_index, _| {
+                if command_index == 6 {
+                    Err(DeferredFailure)
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            PreparedChampionshipSetupFrameExecutionError::Deferred {
+                command_index: 6,
+                source: DeferredFailure,
+            }
+        );
+        assert!(!fixture.store.backend().blits.contains(&frame));
+        assert_eq!(cache, ChampionshipPreviewCache::new());
+    }
+
+    #[test]
+    fn compatibility_wrapper_matches_prepared_execution_with_noop_callback() {
+        let transcript = transcript(2);
+        let mut wrapper_fixture = Fixture::new(true);
+        let mut prepared_fixture = Fixture::new(true);
+        let mut wrapper_cache = ChampionshipPreviewCache::new();
+        let mut prepared_cache = ChampionshipPreviewCache::new();
+
+        let wrapper_outcome = wrapper_fixture
+            .execute(
+                input(&transcript),
+                Some(ChequeredFrame::Frame04),
+                &mut wrapper_cache,
+            )
+            .unwrap();
+        let prepared = prepare_frame_with_bitmaps(
+            input(&transcript),
+            ChampionshipSetupFrameState {
+                chequered_frame: Some(ChequeredFrame::Frame04),
+            },
+            &prepared_fixture.text,
+            &prepared_fixture.fonts,
+            &prepared_fixture.bitmaps,
+            prepared_cache,
+            TextLayoutLimits::default(),
+        )
+        .unwrap();
+        validate_championship_setup_frame_sources(&prepared, &prepared_fixture.store).unwrap();
+        let prepared_outcome = execute_prepared_championship_setup_frame(
+            prepared,
+            &mut prepared_cache,
+            &mut prepared_fixture.store,
+            999,
+            |_, _| Ok::<_, std::convert::Infallible>(()),
+        )
+        .unwrap();
+
+        assert_eq!(prepared_outcome, wrapper_outcome);
+        assert_eq!(prepared_cache, wrapper_cache);
+        assert_eq!(
+            prepared_fixture.store.backend().blits,
+            wrapper_fixture.store.backend().blits
+        );
     }
 
     #[test]

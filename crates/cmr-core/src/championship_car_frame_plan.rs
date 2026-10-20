@@ -899,6 +899,57 @@ pub(crate) mod tests {
         (plans.pop().unwrap(), arena)
     }
 
+    pub(crate) struct TerminalSceneTestFixture {
+        pub topology: C3dObjectTopology<'static>,
+        pub runtime: C3dResourceScaledObject,
+        pub arena: crate::root_menu_c3d_resources::C3dPreparedArena,
+    }
+
+    pub(crate) fn terminal_scene_test_fixture() -> TerminalSceneTestFixture {
+        terminal_scene_test_fixture_with_selectors(&[0, -1])
+    }
+
+    pub(crate) fn terminal_scene_test_fixture_with_selectors(
+        selectors: &[i16],
+    ) -> TerminalSceneTestFixture {
+        let actors = selectors
+            .iter()
+            .enumerate()
+            .map(|(index, _)| Group0 {
+                parent: if index == 0 { -1 } else { 0 },
+                matrix: translated(0, 0, 0),
+                references: vec![u16::try_from(index).unwrap()],
+            })
+            .collect::<Vec<_>>();
+        let bytes = fixture_bytes(&actors, selectors);
+        let file = Box::leak(Box::new(parse_c3d(&bytes, C3dLimits::default()).unwrap()));
+        let policy = expected_policy(CanonicalCar::Subaru);
+        let mut builder = C3dPreparedArenaBuilder::new().unwrap();
+        let prepared = builder
+            .prepare_object(
+                C3dSourceIdentity {
+                    owner: FrontendC3dOwner::ChampionshipCar(CanonicalCar::Subaru),
+                    path: CHAMPIONSHIP_CARS[0].object_path.into(),
+                },
+                file,
+                policy,
+                BitmapLimits::default(),
+            )
+            .unwrap();
+        let arena = builder.finish();
+        let topology = build_c3d_object_topology(file, &prepared, arena.provenance()).unwrap();
+        let runtime =
+            materialize_c3d_resource_scaled(&topology, policy, arena.provenance(), |id| {
+                arena.resource(id)
+            })
+            .unwrap();
+        TerminalSceneTestFixture {
+            topology,
+            runtime,
+            arena,
+        }
+    }
+
     pub(crate) fn scene_test_fixtures(
         count: usize,
     ) -> (

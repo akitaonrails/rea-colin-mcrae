@@ -12,6 +12,7 @@ use cmr_core::deferred_palette::{DeferredPaletteState, PaletteArenaIndex, Palett
 use cmr_core::display::{BackendFailure, IndexedFrameTarget};
 use cmr_core::font_assets::{FontLoadError, load_font_set};
 use cmr_core::font_raster::{FontPoolUploadError, UploadedFontPool};
+use cmr_core::frontend_c3d_route::FrontendC3dRouteState;
 use cmr_core::localization::Language;
 use cmr_core::localization_assets::{LocalizationLoadError, load_frontend_text_table};
 use cmr_core::root_menu_assets::VisualVariant;
@@ -272,6 +273,7 @@ pub struct SoftwareRootMenuSession<'session, 'asset, 'catalog, 'backend> {
     angles: &'session mut RootMenuC3dAngles,
     visibility: &'session mut RootMenuC3dVisibilityLatches,
     executor: &'session mut RootMenuC3dBatchExecutor<'catalog, SoftwareC3dSampledTexture>,
+    route_state: &'session FrontendC3dRouteState,
     palette_arena: &'session [[PaletteEntry; 256]; 1],
     palette_state: &'session mut DeferredPaletteState,
     renderer_palette_cache: &'session mut [PaletteEntry; 256],
@@ -301,6 +303,7 @@ impl SoftwareRootMenuSession<'_, '_, '_, '_> {
             self.angles,
             self.visibility,
             self.executor,
+            self.route_state,
             self.depth_clear,
         )
         .map_err(SoftwareRootMenuRenderError::Pipeline)?;
@@ -435,6 +438,7 @@ pub fn with_software_root_menu_session<R>(
     let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
     let mut angles = RootMenuC3dAngles::new();
     let mut visibility = RootMenuC3dVisibilityLatches::new();
+    let route_state = FrontendC3dRouteState::new();
 
     let StartupDisplay {
         mut display,
@@ -477,6 +481,7 @@ pub fn with_software_root_menu_session<R>(
             angles: &mut angles,
             visibility: &mut visibility,
             executor: &mut executor,
+            route_state: &route_state,
             palette_arena: &palette_arena,
             palette_state: &mut palette_state,
             renderer_palette_cache: &mut renderer_palette_cache,
