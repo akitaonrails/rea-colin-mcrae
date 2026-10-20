@@ -117,7 +117,7 @@ pub fn prepare_c3d_type2_pre_draw_vertices(
         return Ok(vertices.into_boxed_slice());
     }
 
-    let slope = fog_slope(state)?;
+    let mut slope = None;
     for (vertex_index, vertex) in vertices.iter_mut().enumerate() {
         let distance = if state.shared_distance_q16 != 0 {
             state.shared_distance_q16
@@ -129,6 +129,14 @@ pub fn prepare_c3d_type2_pre_draw_vertices(
         } else if distance > state.far_q16 {
             state.far_level
         } else {
+            let slope = match slope {
+                Some(slope) => slope,
+                None => {
+                    let computed = fog_slope(state)?;
+                    slope = Some(computed);
+                    computed
+                }
+            };
             let remaining = state.far_q16.wrapping_sub(distance);
             let candidate = ((i64::from(slope) * i64::from(remaining)) >> 16) as i32;
             candidate.max(state.far_level)
@@ -375,6 +383,64 @@ mod tests {
                 vertex_index: 0,
                 word_index: 0,
                 bits: f32::NAN.to_bits(),
+            }
+        );
+    }
+
+    fn overflowing_slope_state(distance: i32) -> C3dType2FogState {
+        C3dType2FogState {
+            enabled: true,
+            near_q16: 10 << 16,
+            far_q16: (10 << 16) + 1,
+            far_level: 0x0033_0000,
+            shared_distance_q16: distance,
+            center_q16: [0; 3],
+        }
+    }
+
+    #[test]
+    fn empty_enabled_input_does_not_evaluate_an_unused_overflowing_slope() {
+        let prepared = prepare_c3d_type2_pre_draw_vertices(
+            [],
+            overflowing_slope_state(10 << 16),
+            C3dType2FogRounding::NearestEven,
+        )
+        .unwrap();
+
+        assert!(prepared.is_empty());
+    }
+
+    #[test]
+    fn outside_threshold_paths_do_not_evaluate_an_unused_overflowing_slope() {
+        for (distance, expected_word5) in
+            [((10 << 16) - 1, 0xff00_0000), ((10 << 16) + 2, 0x3300_0000)]
+        {
+            let prepared = prepare_c3d_type2_pre_draw_vertices(
+                [words(f32::NAN, f32::NAN, 0xdead_beef)],
+                overflowing_slope_state(distance),
+                C3dType2FogRounding::NearestEven,
+            )
+            .unwrap();
+
+            assert_eq!(prepared[0].word5(), expected_word5);
+        }
+    }
+
+    #[test]
+    fn interpolation_still_reports_an_overflowing_slope() {
+        let state = overflowing_slope_state(10 << 16);
+        let error = prepare_c3d_type2_pre_draw_vertices(
+            [words(f32::NAN, f32::NAN, 0xdead_beef)],
+            state,
+            C3dType2FogRounding::NearestEven,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            C3dType2FogError::SlopeOverflow {
+                near_q16: state.near_q16,
+                far_q16: state.far_q16,
             }
         );
     }

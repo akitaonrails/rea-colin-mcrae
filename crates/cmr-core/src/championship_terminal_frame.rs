@@ -18,7 +18,7 @@ use crate::{
     championship_car_frame_plan::{ChampionshipCarFramePlanError, plan_championship_car_frame},
     championship_car_scene::{
         ChampionshipCarSceneError, ChampionshipCarSceneOutcome,
-        execute_optional_championship_car_scene,
+        execute_optional_championship_car_scene, preflight_optional_championship_car_scene,
     },
     championship_car_transform::{ChampionshipCarInput, ChampionshipCarState},
     championship_car_visibility::ChampionshipCarVisibilityLatches,
@@ -309,6 +309,15 @@ where
         .is_some_and(|prepared| prepared.selected_parent_visible());
     let selected_car = contract.as_ref().map(|c| c.car);
     let terminal_index = prepared_setup.command_len();
+    preflight_optional_championship_car_scene(
+        executor,
+        sources.backend_mut(),
+        prepared_car.as_ref(),
+    )
+    .map_err(|source| ChampionshipTerminalFrameError::Scene {
+        terminal_index,
+        source,
+    })?;
     let mut transform_committed = false;
     let setup_result = execute_prepared_championship_setup_frame(
         prepared_setup,
@@ -365,6 +374,9 @@ where
     if state.route.enter(FrontendC3dRoute::ChampionshipCar) {
         executor.invalidate_bindings();
     }
+    // Validate again at the immediate scene boundary because setup operations
+    // are allowed to mutate an arbitrary backend after the early transaction
+    // preflight above.
     let scene_result = execute_optional_championship_car_scene(
         executor,
         sources.backend_mut(),
@@ -593,6 +605,7 @@ mod tests {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Error {
         Blit,
+        Profile,
         Scene,
         Palette,
         Present,
@@ -609,6 +622,9 @@ mod tests {
         next: u16,
         blit_attempts: usize,
         fail_blit_at: Option<usize>,
+        invalidate_profile_on_blit: bool,
+        preflight_attempts: usize,
+        fail_preflight: bool,
         fail_scene: bool,
         fail_palette: bool,
         fail_present: bool,
@@ -620,6 +636,9 @@ mod tests {
                 next: 1,
                 blit_attempts: 0,
                 fail_blit_at: None,
+                invalidate_profile_on_blit: false,
+                preflight_attempts: 0,
+                fail_preflight: false,
                 fail_scene: false,
                 fail_palette: false,
                 fail_present: false,
@@ -663,6 +682,9 @@ mod tests {
         fn blit(&mut self, _: u16, _: u16, _: BlitPlan) -> Result<(), Error> {
             self.blit_attempts += 1;
             self.events.borrow_mut().push(Event::Blit);
+            if self.invalidate_profile_on_blit {
+                self.fail_preflight = true;
+            }
             if self.fail_blit_at == Some(self.blit_attempts) {
                 Err(Error::Blit)
             } else {
@@ -731,6 +753,14 @@ mod tests {
     }
     impl ChampionshipCarBatchBackend<u8> for Backend {
         type Error = Error;
+        fn preflight_championship_car_scene(&mut self) -> Result<(), Error> {
+            self.preflight_attempts += 1;
+            if self.fail_preflight {
+                Err(Error::Profile)
+            } else {
+                Ok(())
+            }
+        }
         fn set_championship_car_actor_world(
             &mut self,
             index: usize,
@@ -1031,6 +1061,50 @@ mod tests {
         );
         drop(e);
 
+        // A generic backend may invalidate its own C3D profile while setup
+        // pixels execute. The second guard must stop before depth or scene
+        // effects even though the early transaction preflight succeeded.
+        {
+            let backend = h.store.backend_mut();
+            backend.preflight_attempts = 0;
+            backend.fail_preflight = false;
+            backend.invalidate_profile_on_blit = true;
+        }
+        events.borrow_mut().clear();
+        let stale_profile = run(
+            &mut h,
+            &mut executor,
+            &mut preview,
+            &mut car_state,
+            &mut car_latches,
+            &mut root_latches,
+            &mut pal,
+            &mut rcache,
+            &mut gcache,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            stale_profile,
+            ChampionshipTerminalFrameError::Scene {
+                source: ChampionshipCarSceneError::BackendPreflight {
+                    source: Error::Profile,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert_eq!(h.store.backend_mut().preflight_attempts, 2);
+        let stale_events = events.borrow();
+        assert!(stale_events.contains(&Event::Blit));
+        assert!(!stale_events.contains(&Event::Clear));
+        assert!(!stale_events.contains(&Event::Begin));
+        drop(stale_events);
+        {
+            let backend = h.store.backend_mut();
+            backend.invalidate_profile_on_blit = false;
+            backend.fail_preflight = false;
+        }
+
         // Moving to Next still submits the common empty scene so a prior car
         // cannot remain displayed.
         h.store.backend_mut().fail_blit_at = None;
@@ -1322,6 +1396,119 @@ mod tests {
         assert_eq!(car_latches, before_car_latches);
         assert_eq!(root_latches, before_root_latches);
         assert_eq!(pal, before_palette);
+    }
+
+    #[test]
+    fn backend_profile_rejection_precedes_terminal_pixels_and_state_changes() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut backend = Backend::new(Rc::clone(&events));
+        let mut h = Harness::new(&mut backend);
+        let fixture = terminal_scene_test_fixture();
+        let catalog = bind_prepared_c3d_resources(
+            fixture.arena.provenance(),
+            fixture.arena.resources(),
+            &mut |id, _| Ok::<_, std::convert::Infallible>(id.index() as u8),
+        )
+        .unwrap();
+        let mut executor = ChampionshipCarBatchExecutor::new(&catalog);
+        let mut preview = ChampionshipPreviewCache::new();
+        let mut car_state = ChampionshipCarState::new();
+        let mut car_latches = ChampionshipCarVisibilityLatches::new();
+        car_latches.show_all_layers(CanonicalCar::Escort);
+        let mut root_latches = RootMenuC3dVisibilityLatches::new();
+        root_latches.show_all_layers(crate::root_menu_c3d_assets::RootMenuC3dSlot::Options);
+        let route = FrontendC3dRouteState::new();
+        let mut pal = DeferredPaletteState::new();
+        pal.request(crate::deferred_palette::PaletteArenaIndex::new(0));
+        let zero = PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        };
+        let palette_arena = [[zero; 256]];
+        let mut rcache = [PaletteEntry { red: 3, ..zero }; 256];
+        let mut gcache = [PaletteEntry { red: 5, ..zero }; 256];
+        let before_preview = preview;
+        let before_car = car_state;
+        let before_car_latches = car_latches.clone();
+        let before_root_latches = root_latches.clone();
+        let before_palette = pal;
+        let before_renderer = rcache;
+        let before_global = gcache;
+        h.store.backend_mut().fail_preflight = true;
+        events.borrow_mut().clear();
+        let t = transcript(0);
+
+        let result = execute_championship_terminal_frame(
+            input(&t),
+            ChampionshipSetupFrameState::default(),
+            ChampionshipCarInput {
+                f9: false,
+                f10: false,
+            },
+            ChampionshipTerminalFrameResources {
+                setup: ChampionshipSetupFrameResources {
+                    text: &h.text,
+                    fonts: &h.fonts,
+                    selection: Some(h.selection),
+                    logos: &h.logos,
+                    frames: &h.frames,
+                },
+                car: Some(ChampionshipCarFrameResources {
+                    car: CanonicalCar::Subaru,
+                    topology: &fixture.topology,
+                    runtime: &fixture.runtime,
+                    base_basis: [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x10000],
+                }),
+            },
+            ChampionshipTerminalFrameState {
+                preview_cache: &mut preview,
+                car_transform: &mut car_state,
+                car_visibility: &mut car_latches,
+                root_visibility: &mut root_latches,
+                route: &route,
+            },
+            ChampionshipTerminalPaletteResources {
+                bits_per_pixel: 8,
+                group_bases: PaletteGroupBases {
+                    group_1: 0,
+                    group_2: 0,
+                    group_3: 0,
+                    group_4: 0,
+                    group_5: 0,
+                },
+                arena: &palette_arena,
+                state: &mut pal,
+                renderer_cache: &mut rcache,
+                global_cache: &mut gcache,
+            },
+            &mut executor,
+            &mut h.store,
+            999,
+            TextLayoutLimits::default(),
+            C3dDepthClear::Clear,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ChampionshipTerminalFrameError::Scene {
+                source: ChampionshipCarSceneError::BackendPreflight {
+                    source: Error::Profile,
+                    ..
+                },
+                ..
+            })
+        ));
+        assert!(events.borrow().is_empty());
+        assert_eq!(preview, before_preview);
+        assert_eq!(car_state, before_car);
+        assert_eq!(car_latches, before_car_latches);
+        assert_eq!(root_latches, before_root_latches);
+        assert_eq!(route.active(), None);
+        assert_eq!(pal, before_palette);
+        assert_eq!(rcache, before_renderer);
+        assert_eq!(gcache, before_global);
     }
 
     fn transform(car: CanonicalCar) -> DeferredChampionshipCommand {

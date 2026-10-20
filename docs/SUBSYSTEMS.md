@@ -147,7 +147,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   mutation-disabled, actor-RGB-disabled, unified-indexed COPY/no-blend car
   profile. It copies sampled indices directly, maps reviewed-car missing
   selectors to index zero, rejects every unsupported runtime-state tuple, and
-  preserves the root renderer's separate palette-quantizing policy.
+  preserves the root renderer's separate palette-quantizing policy. A
+  backend-neutral pre-scene hook rejects absent/unsupported car state before
+  depth clear, and the full terminal test covers draw, group-4 commit, and
+  captured presentation.
 - `cmr-core::frontend_c3d_resources`: one frontend-session prepared arena with
   the exact 55-resource mode-8 car prefix followed by six fixed optional root
   slots, preserving cross-domain IDs, aliases, rollback, and diagnostics.

@@ -21,10 +21,20 @@ use crate::{
 
 pub type ChampionshipCarSceneOutcome = C3dSceneOutcome<ChampionshipCarBatchOutcome>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChampionshipCarScenePreflightStage {
+    BatchBackend,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum ChampionshipCarSceneError<E> {
     /// Effect-free rejection before depth clear or any other scene operation.
     Preflight(ChampionshipCarBatchPreflightError),
+    /// Backend-specific runtime state rejected before any scene effect.
+    BackendPreflight {
+        stage: ChampionshipCarScenePreflightStage,
+        source: E,
+    },
     Scene(C3dSceneError<E, ChampionshipCarExecuteError<E>>),
 }
 
@@ -32,6 +42,12 @@ impl<E: fmt::Display> fmt::Display for ChampionshipCarSceneError<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Preflight(source) => source.fmt(formatter),
+            Self::BackendPreflight { stage, source } => {
+                write!(
+                    formatter,
+                    "championship-car {stage:?} preflight failed: {source}"
+                )
+            }
             Self::Scene(source) => source.fmt(formatter),
         }
     }
@@ -41,6 +57,7 @@ impl<E: std::error::Error + 'static> std::error::Error for ChampionshipCarSceneE
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Preflight(source) => Some(source),
+            Self::BackendPreflight { source, .. } => Some(source),
             Self::Scene(source) => Some(source),
         }
     }
@@ -67,6 +84,12 @@ where
     if let Err(source) = executor.validate_prepared(&prepared) {
         return Err(ChampionshipCarSceneError::Preflight(source));
     }
+    backend
+        .preflight_championship_car_scene()
+        .map_err(|source| ChampionshipCarSceneError::BackendPreflight {
+            stage: ChampionshipCarScenePreflightStage::BatchBackend,
+            source,
+        })?;
     let extent = prepared.extent();
     let (result, invalidate) = execute_terminal_scene(
         backend,
@@ -99,14 +122,10 @@ where
     B: FrontendC3dSceneBackend
         + ChampionshipCarBatchBackend<H, Error = <B as FrontendC3dSceneBackend>::SceneError>,
 {
-    let scene_extent = if let Some(frame) = prepared.as_ref() {
-        executor
-            .validate_prepared(frame)
-            .map_err(ChampionshipCarSceneError::Preflight)?;
-        frame.extent()
-    } else {
-        extent
-    };
+    preflight_optional_championship_car_scene(executor, backend, prepared.as_ref())?;
+    let scene_extent = prepared
+        .as_ref()
+        .map_or(extent, PreparedChampionshipCarFrame::extent);
     let result = execute_frontend_c3d_scene(
         backend,
         destination,
@@ -119,6 +138,29 @@ where
         executor.invalidate_bindings();
     }
     result.map_err(ChampionshipCarSceneError::Scene)
+}
+
+pub(crate) fn preflight_optional_championship_car_scene<'catalog, B, H>(
+    executor: &ChampionshipCarBatchExecutor<'catalog, H>,
+    backend: &mut B,
+    prepared: Option<&PreparedChampionshipCarFrame<'catalog, H>>,
+) -> Result<(), ChampionshipCarSceneError<B::SceneError>>
+where
+    B: FrontendC3dSceneBackend
+        + ChampionshipCarBatchBackend<H, Error = <B as FrontendC3dSceneBackend>::SceneError>,
+{
+    let Some(frame) = prepared else {
+        return Ok(());
+    };
+    executor
+        .validate_prepared(frame)
+        .map_err(ChampionshipCarSceneError::Preflight)?;
+    backend
+        .preflight_championship_car_scene()
+        .map_err(|source| ChampionshipCarSceneError::BackendPreflight {
+            stage: ChampionshipCarScenePreflightStage::BatchBackend,
+            source,
+        })
 }
 
 fn execute_terminal_scene<B, P, O, D>(
@@ -179,6 +221,7 @@ mod tests {
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Event {
+        Preflight,
         Clear,
         View,
         Viewport,
@@ -194,6 +237,7 @@ mod tests {
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum TestError {
+        Profile,
         Resource,
     }
 
@@ -207,6 +251,7 @@ mod tests {
 
     struct Backend {
         events: Vec<Event>,
+        fail_preflight: bool,
         fail_resource: bool,
         tail_state: C3dBindingState,
     }
@@ -215,6 +260,7 @@ mod tests {
         fn default() -> Self {
             Self {
                 events: Vec::new(),
+                fail_preflight: false,
                 fail_resource: false,
                 tail_state: C3dBindingState::Preserved,
             }
@@ -267,6 +313,15 @@ mod tests {
 
     impl ChampionshipCarBatchBackend<u8> for Backend {
         type Error = TestError;
+
+        fn preflight_championship_car_scene(&mut self) -> Result<(), Self::Error> {
+            self.events.push(Event::Preflight);
+            if self.fail_preflight {
+                Err(TestError::Profile)
+            } else {
+                Ok(())
+            }
+        }
 
         fn set_championship_car_actor_world(
             &mut self,
@@ -347,6 +402,40 @@ mod tests {
     }
 
     #[test]
+    fn backend_preflight_rejection_is_typed_and_precedes_all_scene_effects() {
+        let (plan, arena) = scene_test_fixture();
+        let catalog =
+            bind_prepared_c3d_resources(arena.provenance(), arena.resources(), &mut |_, _| {
+                Ok::<_, Infallible>(7_u8)
+            })
+            .unwrap();
+        let mut executor = ChampionshipCarBatchExecutor::new(&catalog);
+        let prepared = executor.prepare(plan).unwrap();
+        let mut backend = Backend {
+            fail_preflight: true,
+            ..Backend::default()
+        };
+
+        let error = execute_championship_car_scene(
+            &mut executor,
+            &mut backend,
+            4,
+            C3dDepthClear::Clear,
+            prepared,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            ChampionshipCarSceneError::BackendPreflight {
+                stage: ChampionshipCarScenePreflightStage::BatchBackend,
+                source: TestError::Profile,
+            }
+        );
+        assert_eq!(backend.events, [Event::Preflight]);
+    }
+
+    #[test]
     fn optional_empty_car_scene_still_runs_the_complete_terminal_bracket() {
         let (_, arena) = scene_test_fixture();
         let catalog =
@@ -406,6 +495,7 @@ mod tests {
         assert_eq!(
             backend.events,
             [
+                Event::Preflight,
                 Event::Clear,
                 Event::View,
                 Event::Viewport,

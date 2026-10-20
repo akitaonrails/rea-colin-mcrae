@@ -1344,11 +1344,21 @@ impl DecodedViewport {
 #[cfg(test)]
 mod tests {
     use cmr_core::{
+        championship_setup::CanonicalCar,
         display::DisplayExtent,
+        root_menu_c3d_resources::{
+            C3dEntryMaterialPolicy, C3dLoadPolicy, C3dPreparedArenaBuilder,
+            C3dResourceAllocationPolicy, C3dSourceIdentity, C3dSurfaceLayoutGates,
+            FrontendC3dOwner,
+        },
         root_menu_c3d_transform::{
             ROOT_MENU_C3D_PROJECTION, ROOT_MENU_C3D_VIEW, root_menu_c3d_viewport,
             root_menu_c3d_world,
         },
+    };
+    use cmr_formats::{
+        bitmap::BitmapLimits,
+        c3d::{C3D_FORMAT_VERSION, C3D_MAGIC, C3dLimits, parse_c3d},
     };
 
     use super::*;
@@ -1427,6 +1437,62 @@ mod tests {
             },
             palette,
         }
+    }
+
+    fn sampled_texture(fill: u8) -> SoftwareC3dSampledTexture {
+        const WIDTH: usize = 4;
+        const HEIGHT: usize = 4;
+        const PIXEL_OFFSET: usize = 14 + 40 + 256 * 4;
+        let mut bitmap = vec![0; PIXEL_OFFSET + WIDTH * HEIGHT];
+        let bitmap_len = bitmap.len() as u32;
+        bitmap[0..2].copy_from_slice(b"BM");
+        bitmap[2..6].copy_from_slice(&bitmap_len.to_le_bytes());
+        bitmap[10..14].copy_from_slice(&(PIXEL_OFFSET as u32).to_le_bytes());
+        bitmap[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bitmap[18..22].copy_from_slice(&(WIDTH as i32).to_le_bytes());
+        bitmap[22..26].copy_from_slice(&(HEIGHT as i32).to_le_bytes());
+        bitmap[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bitmap[28..30].copy_from_slice(&8u16.to_le_bytes());
+        bitmap[34..38].copy_from_slice(&((WIDTH * HEIGHT) as u32).to_le_bytes());
+        bitmap[46..50].copy_from_slice(&256u32.to_le_bytes());
+        bitmap[PIXEL_OFFSET..].fill(fill);
+
+        let mut bytes = vec![0; 32 + 16 + bitmap.len()];
+        bytes[0..4].copy_from_slice(&C3D_MAGIC);
+        bytes[4..8].copy_from_slice(&C3D_FORMAT_VERSION.to_le_bytes());
+        bytes[16..18].copy_from_slice(&1u16.to_le_bytes());
+        for index in 0..3 {
+            bytes[20 + index * 4..24 + index * 4].copy_from_slice(&32u32.to_le_bytes());
+        }
+        bytes[32..44].copy_from_slice(b"TEST-TEXTURE");
+        bytes[44..48].copy_from_slice(&(bitmap.len() as u32).to_le_bytes());
+        bytes[48..].copy_from_slice(&bitmap);
+
+        let file = parse_c3d(&bytes, C3dLimits::default()).unwrap();
+        let mut builder = C3dPreparedArenaBuilder::new().unwrap();
+        let object = builder
+            .prepare_object(
+                C3dSourceIdentity {
+                    owner: FrontendC3dOwner::ChampionshipCar(CanonicalCar::Subaru),
+                    path: "synthetic-copy-texture.c3d".into(),
+                },
+                &file,
+                C3dLoadPolicy {
+                    mode: 8,
+                    caller_option: 1,
+                    caller_flags: 0x18,
+                    surface_constructor_flags: 0x15,
+                    entry_resource_count: 0,
+                    allocation: C3dResourceAllocationPolicy::AppendEveryResource,
+                    surface_layout: C3dSurfaceLayoutGates::default(),
+                    material: C3dEntryMaterialPolicy::FixedUniformWord(0x9696_9696),
+                },
+                BitmapLimits::default(),
+            )
+            .unwrap();
+        let id = object.ordinal_resources()[0];
+        let arena = builder.finish();
+        SoftwareC3dSampledTexture::from_prepared_frontend(arena.resource(id).unwrap()).unwrap()
     }
 
     fn identity() -> C3dMatrixWords {
@@ -2073,6 +2139,88 @@ mod tests {
         assert_eq!(outcome.depth_passed(), 1);
         assert_eq!(target, [217]);
         assert_eq!(depth.values(), [0.5]);
+    }
+
+    #[test]
+    fn public_championship_present_resource_copies_index_zero_as_ordinary_data() {
+        let batch = SoftwareC3dPreparedCopyBatch(prepared_batch(vec![triangle(
+            [
+                screen([0.0, 0.0, 0.5], 1.0, [0.0, 0.0], [0.0; 4]),
+                screen([2.0, 0.0, 0.5], 1.0, [0.0, 0.0], [0.0; 4]),
+                screen([0.0, 2.0, 0.5], 1.0, [0.0, 0.0], [0.0; 4]),
+            ],
+            0,
+        )]));
+        let texture = sampled_texture(0);
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let mut target = [91];
+
+        let outcome = compose_championship_car_indexed_copy_no_blend(
+            &batch,
+            SoftwareChampionshipCarIndexedSource::UnifiedTexture(&texture),
+            &mut depth,
+            [1, 1],
+            &mut target,
+            SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.depth_passed(), 1);
+        assert_eq!(target, [0]);
+        assert_eq!(depth.values(), [0.5]);
+    }
+
+    #[test]
+    fn public_championship_copy_ignores_type2_diffuse_and_specular_payloads() {
+        let aspect = 640.0 / 480.0;
+        let batch = |diffuse, specular| {
+            let vertices = [
+                RasterInputVertex {
+                    specular,
+                    ..raw([-0.5, -0.5 * aspect, 0.5], diffuse, [0.0, 0.0])
+                },
+                RasterInputVertex {
+                    specular,
+                    ..raw([0.0, 0.5 * aspect, 0.5], diffuse, [0.0, 0.0])
+                },
+                RasterInputVertex {
+                    specular,
+                    ..raw([0.5, -0.5 * aspect, 0.5], diffuse, [0.0, 0.0])
+                },
+            ];
+            SoftwareC3dPreparedCopyBatch(
+                preflight_indexed_triangle_list(&vertices, &[0, 1, 2], identity_state()).unwrap(),
+            )
+        };
+        let texture = sampled_texture(217);
+        let profile = SoftwareChampionshipCarRasterProfile::MUTATION_DISABLED_ACTOR_RGB_DISABLED_UNIFIED_INDEXED_COPY_NO_BLEND;
+        let mut first_depth = SoftwareC3dDepthBuffer::new_far([640, 480]).unwrap();
+        let mut second_depth = SoftwareC3dDepthBuffer::new_far([640, 480]).unwrap();
+        let mut first_target = vec![11; 640 * 480];
+        let mut second_target = first_target.clone();
+
+        compose_championship_car_indexed_copy_no_blend(
+            &batch(0x0000_0000, 0xffff_ffff),
+            SoftwareChampionshipCarIndexedSource::UnifiedTexture(&texture),
+            &mut first_depth,
+            [640, 480],
+            &mut first_target,
+            profile,
+        )
+        .unwrap();
+        compose_championship_car_indexed_copy_no_blend(
+            &batch(0xffff_ffff, 0x0000_0000),
+            SoftwareChampionshipCarIndexedSource::UnifiedTexture(&texture),
+            &mut second_depth,
+            [640, 480],
+            &mut second_target,
+            profile,
+        )
+        .unwrap();
+
+        assert!(first_target.contains(&217));
+        assert_eq!(first_target, second_target);
+        assert_eq!(first_depth.values(), second_depth.values());
     }
 
     #[test]

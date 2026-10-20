@@ -250,8 +250,12 @@ also admits one explicit mutation-disabled, actor-RGB-disabled,
 unified-indexed COPY/no-blend profile, copies texture indices directly, and
 keeps missing selectors distinct as reviewed-car index zero. A public synthetic
 asset-to-scene test pins resource/default/resource execution and exact indexed
-color/depth output. Wiring recovered retained state plus deferred palette and
-presentation ownership into a production championship session remains separate.
+color/depth output. Car-present scenes now invoke a backend-specific effect-free
+preflight before any terminal pixel or state effect; an end-to-end software
+car/palette/presentation test renders the car, commits a discriminating group-4
+request, and captures the same indices under the new palette. Building
+a production championship session that selects recovered retained state and
+wires enabled word-5 mutation remains separate.
 
 Exit gate:
 

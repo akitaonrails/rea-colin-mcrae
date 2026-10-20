@@ -440,6 +440,10 @@ impl RootMenuC3dBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedBacke
 impl ChampionshipCarBatchBackend<SoftwareC3dSampledTexture> for SoftwareIndexedBackend {
     type Error = SoftwareC3dBackendError;
 
+    fn preflight_championship_car_scene(&mut self) -> Result<(), Self::Error> {
+        self.validate_championship_car_raster_profile().map(drop)
+    }
+
     fn set_championship_car_actor_world(
         &mut self,
         _actor_index: usize,

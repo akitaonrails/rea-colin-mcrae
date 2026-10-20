@@ -98,7 +98,7 @@ Status markers:
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
 - [x] `E15` Recover championship mode-8 C3D preparation and session ownership.
-- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full terminal-frame integration, pure optional Type-2 word-5 mutation, and a bounded software indexed-COPY pixel path implemented; retained-state terminal integration and alternate profiles remain).
+- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, and pure optional Type-2 word-5 mutation implemented; recovered profile selection, enabled mutation wiring, and alternate profiles remain).
 
 ## F. Menus, game state, and persistence
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T22:22:20Z
-milestone=render-championship-unified-indexed-batches
+updated_utc=2026-10-20T22:30:11Z
+milestone=integrate-championship-software-terminal-pixels
 completed=50
 partial=20
 not_started=47
 blocked=0
 total=117
-current_focus=E16-championship-retained-render-state
-next_exit_gate=integrate-type2-state-and-software-pixels-at-terminal-owner
+current_focus=E16-championship-runtime-profile-selection
+next_exit_gate=build-software-championship-session-with-explicit-retained-state
 <!-- PROGRESS-TAIL-END -->

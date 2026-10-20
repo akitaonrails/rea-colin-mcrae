@@ -59,9 +59,11 @@ same provenance domain. Car actor traversal and backend-neutral Type-2 scene
 submission are integrated. The optional word-5 pre-draw mutation now has a
 pure retained-state contract. A caller-selected mutation-disabled,
 actor-RGB-disabled, unified-indexed COPY/no-blend software profile now produces
-tested car color/depth pixels without RGB quantization. Connecting recovered
-retained state and palette/presentation order at the terminal owner remains the
-next C3D milestone.
+tested car color/depth pixels without RGB quantization. An end-to-end software
+car/palette/presentation terminal test renders those indices, commits a
+discriminating group-4 palette, and captures presentation under that palette.
+Selecting recovered retained state and wiring enabled mutation remain the next
+C3D milestone.
 These are platform-neutral compatibility contracts; registry, host clock/input,
 native window, audio, setup-screen pixel execution, later frontend screens, and
 gameplay integrations are not yet complete.

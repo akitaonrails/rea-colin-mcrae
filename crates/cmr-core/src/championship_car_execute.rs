@@ -30,6 +30,12 @@ use crate::{
 pub trait ChampionshipCarBatchBackend<H> {
     type Error;
 
+    /// Rejects backend-specific championship-car state before the surrounding
+    /// scene performs depth, camera, or begin effects.
+    fn preflight_championship_car_scene(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     fn set_championship_car_actor_world(
         &mut self,
         actor_index: usize,
