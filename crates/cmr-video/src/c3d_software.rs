@@ -8,11 +8,15 @@
 use std::{fmt, sync::Arc};
 
 use cmr_core::root_menu_c3d_assets::RootMenuC3dSlot;
+use cmr_core::root_menu_c3d_execute::{
+    RootMenuC3dBindingBuildError, RootMenuC3dBindingCatalog, bind_root_menu_c3d_resources,
+};
 use cmr_core::root_menu_c3d_resources::C3dPreparedResource;
 use cmr_core::root_menu_c3d_runtime::{
     C3dSurfaceLayoutError, ResolvedC3dSurfaceLayout, RootMenuC3dMode2LoadStates,
     resolve_c3d_surface_layout,
 };
+use cmr_core::root_menu_c3d_topology::RootMenuC3dTopology;
 use cmr_formats::bitmap::{BitmapPaletteEntry, IndexedBitmap};
 
 #[derive(Debug, Eq, PartialEq)]
@@ -42,7 +46,7 @@ pub struct SoftwareC3dRetainedSource(Arc<RetainedC3dSourceInner>);
 pub struct SoftwareC3dSampledTexture {
     source: SoftwareC3dRetainedSource,
     layout: ResolvedC3dSurfaceLayout,
-    indices: Box<[u8]>,
+    indices: Arc<[u8]>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,7 +215,7 @@ impl SoftwareC3dSampledTexture {
         Ok(Self {
             source,
             layout,
-            indices: indices.into_boxed_slice(),
+            indices: indices.into(),
         })
     }
 
@@ -244,6 +248,25 @@ impl SoftwareC3dSampledTexture {
     pub const fn source(&self) -> &SoftwareC3dRetainedSource {
         &self.source
     }
+}
+
+/// Builds one sampled software texture for every interned root C3D resource.
+///
+/// The returned catalog keeps the topology arena identity, so a frame plan
+/// cannot accidentally bind textures prepared from another asset set.
+pub fn prepare_software_root_c3d_bindings(
+    topology: &RootMenuC3dTopology<'_>,
+    load_states: RootMenuC3dMode2LoadStates,
+) -> Result<
+    RootMenuC3dBindingCatalog<SoftwareC3dSampledTexture>,
+    RootMenuC3dBindingBuildError<SoftwareC3dSamplingError>,
+> {
+    bind_root_menu_c3d_resources(topology, |_, resource| {
+        SoftwareC3dSampledTexture::from_retained_root(
+            SoftwareC3dRetainedSource::from_prepared(resource),
+            load_states,
+        )
+    })
 }
 
 impl fmt::Display for SoftwareC3dSamplingError {
@@ -374,6 +397,7 @@ mod tests {
         let states = RootMenuC3dMode2LoadStates::new(slots);
 
         let sampled = SoftwareC3dSampledTexture::from_retained_root(retained, states).unwrap();
+        let shared = sampled.clone();
 
         assert_eq!(sampled.extent(), [2, 2]);
         assert_eq!(sampled.layout().reduction(), C3dSurfaceReduction::Quarter);
@@ -381,6 +405,7 @@ mod tests {
         assert_eq!(sampled.palette()[0].reserved, 0);
         assert_eq!(sampled.color_key_index(), None);
         assert_eq!(sampled.source().indices().len(), 64);
+        assert!(Arc::ptr_eq(&sampled.indices, &shared.indices));
     }
 
     #[test]

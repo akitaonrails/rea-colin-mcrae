@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,7 +7,6 @@ use cmr_assets::{
 };
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_c3d_assets::{RootMenuC3dSlot, load_root_menu_c3d};
-use cmr_core::root_menu_c3d_execute::bind_root_menu_c3d_resources;
 use cmr_core::root_menu_c3d_runtime::{
     C3dMode2CornerSource, C3dMode2LoadState, C3dSurfaceLayoutGates, RootMenuC3dMode2LoadStates,
 };
@@ -16,7 +14,7 @@ use cmr_core::root_menu_c3d_topology::prepare_root_menu_c3d_topology;
 use cmr_formats::bitmap::{BitmapLimits, BitmapPaletteEntry};
 use cmr_formats::c3d::{C3D_FORMAT_VERSION, C3D_MAGIC, C3dLimits};
 use cmr_formats::stored_asset::DecodeLimits;
-use cmr_video::c3d_software::{SoftwareC3dRetainedSource, SoftwareC3dSampledTexture};
+use cmr_video::c3d_software::prepare_software_root_c3d_bindings;
 use sha2::{Digest, Sha256};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -79,17 +77,22 @@ fn real_preparation_binding_owns_normalized_source_after_inputs_drop() {
         assert_eq!(assets.loaded_len(), 1);
         let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
         assert_eq!(topology.resource_len(), 1);
-        let mut resource_id = None;
-        let catalog = bind_root_menu_c3d_resources(&topology, |id, resource| {
-            assert!(resource_id.replace(id).is_none());
-            Ok::<_, Infallible>(SoftwareC3dRetainedSource::from_prepared(resource))
-        })
+        let resource_id = topology.resources().next().unwrap().0;
+        let catalog = prepare_software_root_c3d_bindings(
+            &topology,
+            RootMenuC3dMode2LoadStates::splat(C3dMode2LoadState {
+                prepared_resource_count: 0,
+                corner_source: C3dMode2CornerSource::OrdinaryDefaults,
+                surface_layout: C3dSurfaceLayoutGates::default(),
+            }),
+        )
         .unwrap();
-        (catalog, resource_id.unwrap())
+        (catalog, resource_id)
     };
 
     assert_eq!(catalog.len(), 1);
-    let retained = catalog.binding(resource_id).unwrap();
+    let sampled = catalog.binding(resource_id).unwrap();
+    let retained = sampled.source();
     assert_eq!(retained.first_slot(), RootMenuC3dSlot::Championship);
     assert_eq!(retained.extent(), [4, 4]);
     assert_eq!(retained.source_dib_extent_low16(), [4, 4]);
@@ -116,15 +119,6 @@ fn real_preparation_binding_owns_normalized_source_after_inputs_drop() {
     assert_eq!(retained.color_key_index(), None);
     assert_eq!(retained.indices()[0], 0);
 
-    let sampled = SoftwareC3dSampledTexture::from_retained_root(
-        retained.clone(),
-        RootMenuC3dMode2LoadStates::splat(C3dMode2LoadState {
-            prepared_resource_count: 0,
-            corner_source: C3dMode2CornerSource::OrdinaryDefaults,
-            surface_layout: C3dSurfaceLayoutGates::default(),
-        }),
-    )
-    .unwrap();
     assert_eq!(sampled.extent(), [4, 4]);
     assert_eq!(sampled.indices(), (0..16).collect::<Vec<_>>());
     assert_eq!(sampled.palette(), retained.palette());
