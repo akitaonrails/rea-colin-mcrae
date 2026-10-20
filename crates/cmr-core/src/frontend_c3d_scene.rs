@@ -34,6 +34,20 @@ pub trait FrontendC3dSceneBackend {
     type Surface: Copy;
     type SceneError;
 
+    /// Rejects destination, extent, or depth-policy state before the common
+    /// scene transaction performs its first backend effect.
+    ///
+    /// This hook may retain diagnostics, but must be idempotent and must not
+    /// produce externally observable render, binding, or selector-cache effects.
+    fn preflight_c3d_scene(
+        &mut self,
+        _destination: Self::Surface,
+        _extent: DisplayExtent,
+        _depth_clear: C3dDepthClear,
+    ) -> Result<(), Self::SceneError> {
+        Ok(())
+    }
+
     fn clear_c3d_depth(
         &mut self,
         destination: Self::Surface,
@@ -57,6 +71,7 @@ pub trait FrontendC3dSceneBackend {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum C3dSceneStage {
+    Preflight,
     ClearDepth,
     View,
     Viewport,
@@ -156,6 +171,9 @@ where
         primary: C3dScenePrimaryError::Viewport(source),
         cleanup: None,
     })?;
+    backend
+        .preflight_c3d_scene(destination, extent, depth_clear)
+        .map_err(|source| scene_backend_error(C3dSceneStage::Preflight, source))?;
     if depth_clear == C3dDepthClear::Clear {
         backend
             .clear_c3d_depth(destination, extent)
@@ -262,6 +280,7 @@ mod tests {
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Event {
+        Preflight,
         Clear,
         View,
         Viewport,
@@ -304,6 +323,15 @@ mod tests {
     impl FrontendC3dSceneBackend for Backend {
         type Surface = u8;
         type SceneError = Failure;
+
+        fn preflight_c3d_scene(
+            &mut self,
+            _: Self::Surface,
+            _: DisplayExtent,
+            _: C3dDepthClear,
+        ) -> Result<(), Self::SceneError> {
+            self.effect(C3dSceneStage::Preflight, Event::Preflight)
+        }
 
         fn clear_c3d_depth(
             &mut self,
@@ -375,6 +403,7 @@ mod tests {
         assert_eq!(
             backend.events,
             [
+                Event::Preflight,
                 Event::Clear,
                 Event::View,
                 Event::Viewport,
@@ -405,6 +434,7 @@ mod tests {
         assert_eq!(
             backend.events,
             [
+                Event::Preflight,
                 Event::View,
                 Event::Viewport,
                 Event::Begin,
@@ -437,8 +467,37 @@ mod tests {
     }
 
     #[test]
+    fn preflight_rejection_precedes_skip_empty_scene_effects() {
+        let mut backend = Backend::new();
+        backend.failures.push(C3dSceneStage::Preflight);
+
+        let error = execute_frontend_c3d_scene(
+            &mut backend,
+            7,
+            EXTENT,
+            C3dDepthClear::Skip,
+            None::<u8>,
+            |_, _| Ok::<_, SubmitFailure>(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.primary,
+            C3dScenePrimaryError::Backend {
+                stage: C3dSceneStage::Preflight,
+                source: Failure(C3dSceneStage::Preflight),
+            }
+        );
+        assert!(error.cleanup.is_none());
+        assert_eq!(backend.events, [Event::Preflight]);
+        assert!(backend.view.is_none());
+        assert!(backend.viewport.is_none());
+    }
+
+    #[test]
     fn injected_failures_preserve_begin_boundary_and_cleanup_contract() {
         for stage in [
+            C3dSceneStage::Preflight,
             C3dSceneStage::ClearDepth,
             C3dSceneStage::View,
             C3dSceneStage::Viewport,

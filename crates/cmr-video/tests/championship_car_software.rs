@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cmr_assets::{
     AssetFile, AssetProfile, AssetStore, ReviewedProfile, StorageEncoding, import_source,
 };
+use cmr_core::c3d_actor_rgb::C3dActorRgbState;
 use cmr_core::c3d_type2_fog::{
     C3dType2FogError, C3dType2FogState, prepare_c3d_type2_pre_draw_vertices,
 };
@@ -53,10 +54,16 @@ use cmr_core::font_assets::{FONT_COUNT, FontSet, FontStyle};
 use cmr_core::font_raster::UploadedFontPool;
 use cmr_core::frontend_c3d_resources::prepare_frontend_c3d_resources;
 use cmr_core::frontend_c3d_route::FrontendC3dRouteState;
-use cmr_core::frontend_c3d_scene::C3dDepthClear;
+use cmr_core::frontend_c3d_scene::{
+    C3dDepthClear, C3dScenePrimaryError, C3dSceneStage, execute_frontend_c3d_scene,
+};
 use cmr_core::localization::{IndexedTextTable, Language};
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_c3d_assets::load_root_menu_c3d;
+use cmr_core::root_menu_c3d_render_state::{
+    C3dGraphicsBranch, ROOT_MENU_C3D_INITIAL_FILTER_REQUEST_CACHE,
+    root_menu_c3d_filter_cache_outcome, root_menu_c3d_legacy_alpha_contract,
+};
 use cmr_core::root_menu_c3d_resources::C3dPreparedSelector;
 use cmr_core::root_menu_c3d_transform::{ROOT_MENU_C3D_PROJECTION, ROOT_MENU_C3D_VIEW};
 use cmr_core::root_menu_c3d_visibility::RootMenuC3dVisibilityLatches;
@@ -78,6 +85,16 @@ use cmr_video::c3d_software_raster::{
     SoftwareChampionshipCarRasterProfile, SoftwareChampionshipCarSplitOracleProfile,
     preflight_championship_car_indexed_copy_batch, preflight_championship_car_split_modulate_batch,
 };
+use cmr_video::c3d_software_split_backend::{
+    SoftwareSplitC3dBackendError, SoftwareSplitC3dBindingExpectation,
+    SoftwareSplitC3dOracleBackend, SoftwareSplitC3dOracleConfiguration,
+    SoftwareSplitC3dRetainedBindingKind, prepare_software_split_frontend_c3d_bindings,
+};
+use cmr_video::legacy_c3d_pixel_format::{
+    KnownRgbLayout, RawDdPixelFormat, SelectedNonAlphaTextureFormat,
+};
+use cmr_video::packed_rgb_target::FramebufferRgbFormat;
+use cmr_video::selected_texture_conversion_oracle::SourceOwnedTextureConversionOraclePolicy;
 use cmr_video::software_championship_session::{
     SoftwareChampionshipFrameRequest, SoftwareChampionshipRasterSelection,
     SoftwareChampionshipRenderError, SoftwareChampionshipSessionBuildError,
@@ -308,6 +325,290 @@ fn prepared_type2_car_executes_resource_missing_resource_on_software_backend() {
     .unwrap();
     assert_eq!(enabled_backend.back_pixels().unwrap(), disabled_pixels);
     assert_eq!(enabled_backend.c3d_depth_values().unwrap(), disabled_depth);
+}
+
+#[test]
+fn split_oracle_backend_preflights_and_owns_a_reusable_logical_frame() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let championship =
+        load_championship_assets(&store, C3dLimits::default(), BitmapLimits::default()).unwrap();
+    let root = load_root_menu_c3d(&store, VisualVariant::Normal, C3dLimits::default());
+    let frontend =
+        prepare_frontend_c3d_resources(&championship, &root, BitmapLimits::default()).unwrap();
+    let topology = frontend
+        .car_topology(&championship, CanonicalCar::Subaru)
+        .unwrap();
+    let runtime = frontend
+        .materialize_car(CanonicalCar::Subaru, &topology)
+        .unwrap();
+
+    let texture_descriptor =
+        RawDdPixelFormat::from_dwords([32, 0x40, 0, 16, 0x7c00, 0x03e0, 0x001f, 0]);
+    let catalog = prepare_software_split_frontend_c3d_bindings(
+        &frontend,
+        SelectedNonAlphaTextureFormat::OpaqueRgb16 {
+            descriptor: texture_descriptor,
+            layout: KnownRgbLayout::Rgb555,
+        },
+        SourceOwnedTextureConversionOraclePolicy::ExactPaletteOrNearestMaskNoDither,
+    )
+    .unwrap();
+    let mut executor = ChampionshipCarBatchExecutor::new(&catalog);
+    let mut car_state = ChampionshipCarState::new();
+    let input = ChampionshipCarInput {
+        f9: false,
+        f10: false,
+    };
+    let logo_origin = PixelPoint::new(8, 8);
+    let hidden = plan_championship_car_frame(
+        &topology,
+        &runtime,
+        &mut car_state,
+        CanonicalCar::Subaru,
+        input,
+        IDENTITY_BASIS,
+        logo_origin,
+        EXTENT,
+    )
+    .unwrap();
+    assert!(hidden.draws().is_empty());
+    let visible = plan_championship_car_frame(
+        &topology,
+        &runtime,
+        &mut car_state,
+        CanonicalCar::Subaru,
+        input,
+        IDENTITY_BASIS,
+        logo_origin,
+        EXTENT,
+    )
+    .unwrap();
+    let bad_actor_rgb = [[255, 0, 0]];
+    let bad_prepared = executor
+        .prepare(
+            visible,
+            ChampionshipCarPreDrawState {
+                type2_fog: C3dType2FogState::DISABLED,
+                actor_rgb: C3dActorRgbState::Enabled(&bad_actor_rgb),
+            },
+        )
+        .unwrap();
+    let good_visible = plan_championship_car_frame(
+        &topology,
+        &runtime,
+        &mut car_state,
+        CanonicalCar::Subaru,
+        input,
+        IDENTITY_BASIS,
+        logo_origin,
+        EXTENT,
+    )
+    .unwrap();
+    let prepared = executor
+        .prepare(good_visible, ChampionshipCarPreDrawState::DISABLED)
+        .unwrap();
+
+    let framebuffer =
+        FramebufferRgbFormat::from_runtime_surface_descriptor(RawDdPixelFormat::from_dwords([
+            32, 0x40, 0, 16, 0xf800, 0x07e0, 0x001f, 0,
+        ]))
+        .unwrap();
+    let profile = SoftwareChampionshipCarSplitOracleProfile::new(
+        SoftwareC3dSplitRenderDepth::Bits32,
+        false,
+        false,
+    );
+    let bad_profile = SoftwareChampionshipCarSplitOracleProfile::new(
+        SoftwareC3dSplitRenderDepth::Bits32,
+        false,
+        true,
+    );
+    let mut bad_backend = SoftwareSplitC3dOracleBackend::new(
+        EXTENT,
+        framebuffer,
+        SoftwareSplitC3dOracleConfiguration {
+            profile: bad_profile,
+            alpha_contract: root_menu_c3d_legacy_alpha_contract(0),
+            filter_cache_outcome: root_menu_c3d_filter_cache_outcome(
+                C3dGraphicsBranch::Alternate,
+                true,
+                ROOT_MENU_C3D_INITIAL_FILTER_REQUEST_CACHE,
+            ),
+        },
+    )
+    .unwrap();
+    let bad_handle = bad_backend.target_handle();
+    let bad_words_before = bad_backend.logical_target().words().to_vec();
+    let bad_depth_before = bad_backend.depth_values().to_vec();
+    assert!(matches!(
+        execute_championship_car_scene(
+            &mut executor,
+            &mut bad_backend,
+            bad_handle,
+            C3dDepthClear::Clear,
+            bad_prepared,
+        ),
+        Err(ChampionshipCarSceneError::BackendPreflight {
+            stage: ChampionshipCarScenePreflightStage::Batch { .. },
+            source: cmr_video::c3d_software_split_backend::SoftwareSplitC3dBackendError::Compose(
+                cmr_video::c3d_software_raster::SoftwareC3dComposeError::Raster(
+                    SoftwareC3dRasterError::NonBlackAlternateDefaultDiffuse { .. }
+                )
+            ),
+        })
+    ));
+    assert_eq!(bad_backend.logical_target().words(), bad_words_before);
+    assert_eq!(bad_backend.depth_values(), bad_depth_before);
+
+    let mut backend = SoftwareSplitC3dOracleBackend::new(
+        EXTENT,
+        framebuffer,
+        SoftwareSplitC3dOracleConfiguration {
+            profile,
+            alpha_contract: root_menu_c3d_legacy_alpha_contract(0),
+            filter_cache_outcome: root_menu_c3d_filter_cache_outcome(
+                C3dGraphicsBranch::Alternate,
+                true,
+                ROOT_MENU_C3D_INITIAL_FILTER_REQUEST_CACHE,
+            ),
+        },
+    )
+    .unwrap();
+    let handle = backend.target_handle();
+    let initial_rgb = [200, 100, 50];
+    backend
+        .replace_logical_target_from_canonical_rgb(
+            [EXTENT.width, EXTENT.height],
+            &vec![initial_rgb; usize::from(EXTENT.width) * usize::from(EXTENT.height)],
+        )
+        .unwrap();
+    let before_words = backend.logical_target().words().to_vec();
+    let before_depth = backend.depth_values().to_vec();
+
+    let outcome = execute_championship_car_scene(
+        &mut executor,
+        &mut backend,
+        handle,
+        C3dDepthClear::Clear,
+        prepared,
+    )
+    .unwrap();
+
+    let submission = outcome.submission.unwrap();
+    assert_eq!(submission.actor_worlds, 1);
+    assert_eq!(submission.bindings, 3);
+    assert_eq!(submission.draws, 3);
+    assert_ne!(backend.logical_target().words(), before_words);
+    assert_ne!(backend.depth_values(), before_depth);
+    assert_eq!(backend.logical_target().format(), framebuffer);
+    assert_eq!(backend.configuration().profile, profile);
+    // The embedded source palette provides green 129. RGB555 conversion first
+    // decodes that as 132, the retained 0x96 diffuse material modulates it to
+    // 78, and independent RGB565 framebuffer packing yields 0x260.
+    assert_eq!(backend.logical_target().words()[337], 0x0260);
+    assert_eq!(
+        backend.logical_target().words()[0],
+        framebuffer.layout().pack_rgb8(initial_rgb)
+    );
+    assert_eq!(backend.depth_values()[337].to_bits(), 0x3f44_4536);
+    let rendered_words = backend.logical_target().words().to_vec();
+    let rendered_depth = backend.depth_values().to_vec();
+    let skipped = execute_frontend_c3d_scene(
+        &mut backend,
+        handle,
+        EXTENT,
+        C3dDepthClear::Skip,
+        None::<()>,
+        |_, ()| Ok::<(), std::convert::Infallible>(()),
+    )
+    .unwrap_err();
+    assert_eq!(
+        skipped.primary,
+        C3dScenePrimaryError::Backend {
+            stage: C3dSceneStage::Preflight,
+            source: SoftwareSplitC3dBackendError::DepthClearRequired,
+        }
+    );
+    assert_eq!(backend.logical_target().words(), rendered_words);
+    assert_eq!(backend.depth_values(), rendered_depth);
+
+    let empty = execute_frontend_c3d_scene(
+        &mut backend,
+        handle,
+        EXTENT,
+        C3dDepthClear::Clear,
+        None::<()>,
+        |_, ()| Ok::<(), std::convert::Infallible>(()),
+    )
+    .unwrap();
+    assert!(empty.depth_cleared);
+    assert_eq!(backend.logical_target().words(), rendered_words);
+    assert!(backend.depth_values().iter().all(|depth| *depth == 1.0));
+
+    let mismatch_plan = plan_championship_car_frame(
+        &topology,
+        &runtime,
+        &mut car_state,
+        CanonicalCar::Subaru,
+        input,
+        IDENTITY_BASIS,
+        logo_origin,
+        EXTENT,
+    )
+    .unwrap();
+    let mismatch_prepared = executor
+        .prepare(mismatch_plan, ChampionshipCarPreDrawState::DISABLED)
+        .unwrap();
+    let mut fresh_backend =
+        SoftwareSplitC3dOracleBackend::new(EXTENT, framebuffer, backend.configuration()).unwrap();
+    let fresh_handle = fresh_backend.target_handle();
+    let fresh_words = fresh_backend.logical_target().words().to_vec();
+    let fresh_depth = fresh_backend.depth_values().to_vec();
+    assert!(matches!(
+        execute_championship_car_scene(
+            &mut executor,
+            &mut fresh_backend,
+            fresh_handle,
+            C3dDepthClear::Clear,
+            mismatch_prepared,
+        ),
+        Err(ChampionshipCarSceneError::BackendPreflight {
+            stage: ChampionshipCarScenePreflightStage::Batch { .. },
+            source: SoftwareSplitC3dBackendError::RetainedBindingMismatch {
+                expected: SoftwareSplitC3dBindingExpectation::Resource(_),
+                retained: SoftwareSplitC3dRetainedBindingKind::None,
+            },
+        })
+    ));
+    assert_eq!(fresh_backend.logical_target().words(), fresh_words);
+    assert_eq!(fresh_backend.depth_values(), fresh_depth);
+
+    let reuse_plan = plan_championship_car_frame(
+        &topology,
+        &runtime,
+        &mut car_state,
+        CanonicalCar::Subaru,
+        input,
+        IDENTITY_BASIS,
+        logo_origin,
+        EXTENT,
+    )
+    .unwrap();
+    let reuse_prepared = executor
+        .prepare(reuse_plan, ChampionshipCarPreDrawState::DISABLED)
+        .unwrap();
+    let reused = execute_championship_car_scene(
+        &mut executor,
+        &mut backend,
+        handle,
+        C3dDepthClear::Clear,
+        reuse_prepared,
+    )
+    .unwrap();
+    let reused_submission = reused.submission.unwrap();
+    assert_eq!(reused_submission.bindings, 2);
+    assert_eq!(reused_submission.draws, 3);
 }
 
 #[test]
@@ -1259,12 +1560,21 @@ fn type2_car_c3d(selectors: &[i16], resource_count: usize) -> Vec<u8> {
         [-Q16_ONE, Q16_ONE, 0, 0, 0, 0, 0, 0],
         [Q16_ONE, -Q16_ONE, 0, Q16_ONE, -Q16_ONE, 0, 0, 0],
     ];
-    for selector_index in 0..selectors.len() {
+    for (selector_index, selector) in selectors.iter().enumerate() {
         for (corner, vertex) in triangle.iter().enumerate() {
             let vertex_index = selector_index * 3 + corner;
             let start = group1 + C3D_GROUP1_FIXED_LEN + vertex_index * C3D_GROUP1_ENTRY32_LEN;
             for (component_index, component) in vertex.iter().enumerate() {
                 let field = start + component_index * 4;
+                let component = if component_index == 4 {
+                    if *selector >= 0 {
+                        u32::MAX as i32
+                    } else {
+                        0xff00_0000_u32 as i32
+                    }
+                } else {
+                    *component
+                };
                 bytes[field..field + 4].copy_from_slice(&component.to_le_bytes());
             }
         }
@@ -1294,7 +1604,10 @@ fn type2_car_c3d(selectors: &[i16], resource_count: usize) -> Vec<u8> {
 }
 
 fn indexed_bitmap_4x4(pixel: u8) -> Vec<u8> {
-    indexed_bitmap(4, 4, pixel)
+    let mut bitmap = indexed_bitmap(4, 4, pixel);
+    let palette_entry = 14 + 40 + usize::from(pixel) * 4;
+    bitmap[palette_entry..palette_entry + 4].copy_from_slice(&[0, 129, 0, 0]);
+    bitmap
 }
 
 fn indexed_bitmap(width: usize, height: usize, pixel: u8) -> Vec<u8> {

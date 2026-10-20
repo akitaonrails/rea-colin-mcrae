@@ -98,7 +98,7 @@ Status markers:
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
 - [x] `E15` Recover championship mode-8 C3D preparation and session ownership.
-- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone software session, all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission, exact alternate render-depth selection, capability-derived alpha/depth-clear contract, filter-request cache outcomes, raw/validated legacy pixel-format masks, retained non-alpha texture selection, source-owned selected-format conversion-before-filtering, and independent logical-framebuffer composition implemented; driver `Load` equivalence, effective alternate filtering, native byte layout/pitch, alpha pixels, and alternate backend/session integration remain).
+- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone indexed session, all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission, exact alternate render-depth selection, capability-derived alpha/depth-clear contract, filter-request cache outcomes, raw/validated legacy pixel-format masks, retained non-alpha texture selection, source-owned selected-format conversion-before-filtering, independent logical-framebuffer composition, effect-free whole-frame backend preflight, and a standalone owned split/logical-RGB backend implemented; driver `Load` equivalence, effective alternate filtering, indexed-2D-to-RGB composition, native byte layout/pitch, alpha pixels, alternate session integration, and presentation remain).
 
 ## F. Menus, game state, and persistence
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T23:31:50Z
-milestone=compose-alternate-output-into-logical-framebuffer
+updated_utc=2026-10-20T23:46:57Z
+milestone=own-and-transact-alternate-logical-backend
 completed=50
 partial=20
 not_started=47
 blocked=0
 total=117
-current_focus=E16-alternate-backend-transaction-boundary
-next_exit_gate=design-effect-free-alternate-backend-preflight-and-owned-target-lifecycle
+current_focus=E16-alternate-2d-composition-boundary
+next_exit_gate=model-indexed-2d-to-logical-rgb-composition-before-session-integration
 <!-- PROGRESS-TAIL-END -->

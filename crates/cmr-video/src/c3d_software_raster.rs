@@ -877,11 +877,11 @@ pub fn compose_championship_car_split_modulate_logical_masked_rgb_oracle(
     target: &mut LogicalMaskedRgbTarget,
     profile: SoftwareChampionshipCarSplitOracleProfile,
 ) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dComposeError> {
-    validate_championship_car_split_modulate_no_alpha_oracle_profile(profile)
-        .map_err(SoftwareC3dComposeError::Raster)?;
-    let target_extent = target.extent();
-    validate_target_shape(target_extent, target.words().len(), depth.extent())?;
+    preflight_championship_car_split_modulate_logical_masked_rgb_oracle(
+        batch, source, depth, target, profile,
+    )?;
 
+    let target_extent = target.extent();
     let target_width = usize::from(target_extent[0]);
     compose_championship_car_split_modulate_validated_target(
         batch,
@@ -895,6 +895,40 @@ pub fn compose_championship_car_split_modulate_logical_masked_rgb_oracle(
             );
         },
     )
+}
+
+/// Validates one alternate logical-word composition without changing depth or
+/// target storage.
+///
+/// Backends use this after transform/clipping preflight and before the common
+/// scene transaction performs depth clear, camera, or `BeginScene` effects.
+/// Converted textures already retain checked storage lengths; this boundary
+/// additionally checks the selected source extent, the black-default guard,
+/// prepared triangles, target shape, depth extent, and profile tuple.
+pub fn preflight_championship_car_split_modulate_logical_masked_rgb_oracle(
+    batch: &SoftwareC3dPreparedLitBatch,
+    source: SoftwareChampionshipCarSplitSource<'_>,
+    depth: &SoftwareC3dDepthBuffer,
+    target: &LogicalMaskedRgbTarget,
+    profile: SoftwareChampionshipCarSplitOracleProfile,
+) -> Result<(), SoftwareC3dComposeError> {
+    validate_championship_car_split_modulate_no_alpha_oracle_profile(profile)
+        .map_err(SoftwareC3dComposeError::Raster)?;
+    validate_target_shape(target.extent(), target.words().len(), depth.extent())?;
+    match source {
+        SoftwareChampionshipCarSplitSource::ConvertedTexture(texture) => {
+            let extent = texture.extent();
+            if extent[0] == 0 || extent[1] == 0 {
+                return Err(SoftwareC3dComposeError::Raster(
+                    SoftwareC3dRasterError::InvalidTextureExtent(extent),
+                ));
+            }
+        }
+        SoftwareChampionshipCarSplitSource::BlackDiffuseDefault => {
+            validate_black_alternate_default(&batch.0).map_err(SoftwareC3dComposeError::Raster)?;
+        }
+    }
+    validate_prepared_triangles(&batch.0).map_err(SoftwareC3dComposeError::Raster)
 }
 
 fn compose_championship_car_split_modulate_validated_target(

@@ -11,6 +11,7 @@ use cmr_formats::riff_palette::PaletteEntry;
 pub mod c3d_software;
 mod c3d_software_backend;
 pub mod c3d_software_raster;
+pub mod c3d_software_split_backend;
 pub mod legacy_c3d_pixel_format;
 pub mod packed_rgb_target;
 mod root_frame_software;

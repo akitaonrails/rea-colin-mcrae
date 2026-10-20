@@ -185,6 +185,12 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   It retains the complete raw surface descriptor and converts canonical RGB
   under validated masks, without exposing or inferring native byte order,
   surface pitch, dithering, or presentation.
+- `cmr-video::c3d_software_split_backend`: a standalone headless alternate
+  backend that transactionally retains converted frontend bindings, owns an
+  owner-scoped logical target plus depth buffer, preflights the complete frame
+  including retained selector-cache coherence, and preserves color across
+  depth-only clears. Indexed 2D composition, full session ownership, native
+  storage, and presentation remain separate boundaries.
 - `cmr-video::software_championship_session`: callback-scoped standalone
   assembly retaining all 14 prepared car topology/runtime pairs, one shared
   binding executor, explicit raster-selection, optional source-ordered per-car

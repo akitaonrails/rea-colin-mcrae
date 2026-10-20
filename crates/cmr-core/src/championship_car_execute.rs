@@ -37,9 +37,28 @@ pub trait ChampionshipCarBatchBackend<H> {
 
     /// Rejects backend-specific championship-car state before the surrounding
     /// scene performs depth, camera, or begin effects.
+    ///
+    /// This hook may retain diagnostics, but must be idempotent and must not
+    /// produce externally observable render, binding, or selector-cache effects.
     fn preflight_championship_car_scene(
         &mut self,
         _pre_draw_profile: ChampionshipCarPreDrawProfile,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Validates one fully resolved batch without externally observable render,
+    /// binding, or selector-cache effects.
+    ///
+    /// The scene owner invokes this hook for every batch before depth clear,
+    /// camera setup, or `BeginScene`. Implementations can therefore reject
+    /// backend-specific geometry, texture, or missing-selector constraints
+    /// before the common scene transaction performs its first effect. Diagnostic
+    /// recording is allowed, but repeated validation of the same batch and
+    /// backend state must be idempotent.
+    fn preflight_championship_car_batch(
+        &mut self,
+        _batch: ChampionshipCarBatchPreflight<'_, '_, H>,
     ) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -61,8 +80,47 @@ pub trait ChampionshipCarBatchBackend<H> {
     ) -> Result<(), Self::Error>;
 }
 
+/// Borrowed resolved binding supplied to backend-specific batch preflight.
+///
+/// `Missing` is the recovered default-material/texture-zero selector, not an
+/// alias for any resource in the prepared arena.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChampionshipCarResolvedBinding<'catalog, H> {
+    Resource {
+        resource_id: C3dPreparedResourceId,
+        binding: &'catalog H,
+    },
+    Missing,
+}
+
+/// Planned selector-state relationship at one prepared batch boundary.
+///
+/// `ReuseRetained` is the only variant that relies on selector state retained
+/// from an earlier frame. `ReuseEarlierBatch` instead relies on a binding that
+/// this prepared frame will establish before reaching the batch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChampionshipCarBindingPlan {
+    BindBeforeDraw,
+    ReuseEarlierBatch,
+    ReuseRetained,
+}
+
+/// Effect-free backend view of one completely prepared championship-car batch.
+#[derive(Clone, Copy, Debug)]
+pub struct ChampionshipCarBatchPreflight<'frame, 'catalog, H> {
+    pub actor_index: usize,
+    pub actor_world: C3dMatrixWords,
+    pub command: &'frame C3dDrawCommand,
+    pub vertices: &'frame [C3dType2PreDrawVertex],
+    pub binding: ChampionshipCarResolvedBinding<'catalog, H>,
+    /// Whether execution binds before this draw, reuses an earlier planned
+    /// bind, or relies on backend state retained from an earlier frame.
+    pub binding_plan: ChampionshipCarBindingPlan,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChampionshipCarBatchStage {
+    Preflight,
     ActorWorld,
     ResourceBinding,
     DefaultBinding,
@@ -346,6 +404,72 @@ impl<'catalog, H> ChampionshipCarBatchExecutor<'catalog, H> {
         }
     }
 
+    /// Applies backend-specific validation to every resolved batch without
+    /// executing bindings, draws, or selector-cache transitions.
+    pub(crate) fn preflight_prepared_backend<B>(
+        &self,
+        backend: &mut B,
+        prepared: &PreparedChampionshipCarFrame<'catalog, H>,
+    ) -> Result<(), ChampionshipCarBatchExecutionError<B::Error>>
+    where
+        B: ChampionshipCarBatchBackend<H>,
+    {
+        debug_assert_eq!(prepared.plan.draws().len(), prepared.bindings.len());
+        debug_assert_eq!(prepared.plan.draws().len(), prepared.vertices.len());
+
+        let mut predicted_cache = self.cache;
+        let mut established_in_frame = false;
+        for ((draw, binding), vertices) in prepared
+            .plan
+            .draws()
+            .iter()
+            .zip(&prepared.bindings)
+            .zip(&prepared.vertices)
+        {
+            let command = draw.command();
+            let selector = command.selector();
+            let binding_plan = if predicted_cache.needs_binding(selector) {
+                ChampionshipCarBindingPlan::BindBeforeDraw
+            } else if established_in_frame {
+                ChampionshipCarBindingPlan::ReuseEarlierBatch
+            } else {
+                ChampionshipCarBindingPlan::ReuseRetained
+            };
+            let resolved = match binding {
+                C3dPreflightBinding::Resource {
+                    resource_id,
+                    binding,
+                    ..
+                } => ChampionshipCarResolvedBinding::Resource {
+                    resource_id: *resource_id,
+                    binding: *binding,
+                },
+                C3dPreflightBinding::Missing { .. } => ChampionshipCarResolvedBinding::Missing,
+            };
+            backend
+                .preflight_championship_car_batch(ChampionshipCarBatchPreflight {
+                    actor_index: draw.actor_index(),
+                    actor_world: draw.actor_world(),
+                    command,
+                    vertices,
+                    binding: resolved,
+                    binding_plan,
+                })
+                .map_err(|source| ChampionshipCarBatchExecutionError {
+                    actor_index: draw.actor_index(),
+                    ordinal: command.ordinal(),
+                    stage: ChampionshipCarBatchStage::Preflight,
+                    selector,
+                    source,
+                })?;
+            if binding_plan == ChampionshipCarBindingPlan::BindBeforeDraw {
+                predicted_cache.commit(selector);
+                established_in_frame = true;
+            }
+        }
+        Ok(())
+    }
+
     /// Submits one frame that has already passed the complete catalog join.
     pub fn execute_prepared<B>(
         &mut self,
@@ -610,6 +734,7 @@ mod tests {
     use super::*;
     use crate::{
         c3d_batch::C3dDrawOrdinal,
+        championship_car_frame_plan::tests::scene_test_fixtures_with_selectors,
         frontend_c3d_resources::championship_mode8_policy,
         root_menu_c3d_execute::bind_prepared_c3d_resources,
         root_menu_c3d_resources::{
@@ -651,6 +776,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingBackend {
         events: Vec<Event>,
+        preflight_plans: Vec<(C3dPreparedSelector, ChampionshipCarBindingPlan)>,
         submitted_vertices: Vec<Vec<[u32; 8]>>,
         current_actor: Option<usize>,
         fail: Option<TestError>,
@@ -658,6 +784,15 @@ mod tests {
 
     impl ChampionshipCarBatchBackend<u8> for RecordingBackend {
         type Error = TestError;
+
+        fn preflight_championship_car_batch(
+            &mut self,
+            batch: ChampionshipCarBatchPreflight<'_, '_, u8>,
+        ) -> Result<(), Self::Error> {
+            self.preflight_plans
+                .push((batch.command.selector(), batch.binding_plan));
+            Ok(())
+        }
 
         fn set_championship_car_actor_world(
             &mut self,
@@ -854,6 +989,61 @@ mod tests {
             .map(|draw| prepare_draw_vertices(draw, pre_draw_state).unwrap())
             .collect::<Vec<_>>();
         execute_preflighted(backend, cache, draws, &bindings, &vertices)
+    }
+
+    #[test]
+    fn backend_preflight_distinguishes_retained_and_same_frame_binding_reuse() {
+        let (mut plans, arena) = scene_test_fixtures_with_selectors(1, &[0, -1, -1]);
+        let catalog =
+            bind_prepared_c3d_resources(arena.provenance(), arena.resources(), &mut |_, _| {
+                Ok::<_, std::convert::Infallible>(91_u8)
+            })
+            .unwrap();
+        let mut executor = ChampionshipCarBatchExecutor::new(&catalog);
+        let retained = plans[0].draws()[0].command().selector();
+        executor.cache.commit(retained);
+        let prepared = executor
+            .prepare(plans.remove(0), ChampionshipCarPreDrawState::DISABLED)
+            .unwrap();
+        let mut backend = RecordingBackend::default();
+
+        executor
+            .preflight_prepared_backend(&mut backend, &prepared)
+            .unwrap();
+
+        assert_eq!(
+            backend.preflight_plans,
+            [
+                (retained, ChampionshipCarBindingPlan::ReuseRetained),
+                (
+                    C3dPreparedSelector::Missing,
+                    ChampionshipCarBindingPlan::BindBeforeDraw,
+                ),
+                (
+                    C3dPreparedSelector::Missing,
+                    ChampionshipCarBindingPlan::ReuseEarlierBatch,
+                ),
+            ]
+        );
+
+        backend.preflight_plans.clear();
+        executor
+            .preflight_prepared_backend(&mut backend, &prepared)
+            .unwrap();
+        assert_eq!(
+            backend.preflight_plans,
+            [
+                (retained, ChampionshipCarBindingPlan::ReuseRetained),
+                (
+                    C3dPreparedSelector::Missing,
+                    ChampionshipCarBindingPlan::BindBeforeDraw,
+                ),
+                (
+                    C3dPreparedSelector::Missing,
+                    ChampionshipCarBindingPlan::ReuseEarlierBatch,
+                ),
+            ]
+        );
     }
 
     #[test]

@@ -278,7 +278,12 @@ logical words before the alternate oracle filters and modulates them. Driver
 texture `Load` equivalence remains separate; a terminal oracle now packs only
 depth-passing results through independent logical framebuffer masks and leaves
 uncovered words unchanged. Native surface layout, effective filter, dithering,
-alpha pixels, and backend/session integration remain separate.
+alpha pixels, full-session integration, and presentation remain separate. A standalone
+headless split backend now owns the logical target/depth lifecycle,
+transactionally retains converted bindings, preflights every resolved batch
+before effects, validates retained-cache coherence, and executes repeated
+frames. Native layout, effective filter, dithering, alpha, indexed 2D
+composition, alternate-session ownership, and presentation remain open.
 
 Exit gate:
 

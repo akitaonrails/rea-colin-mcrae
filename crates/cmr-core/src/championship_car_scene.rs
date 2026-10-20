@@ -8,7 +8,8 @@ use std::fmt;
 
 use crate::{
     championship_car_execute::{
-        ChampionshipCarBatchBackend, ChampionshipCarBatchExecutor, ChampionshipCarBatchOutcome,
+        ChampionshipCarBatchBackend, ChampionshipCarBatchExecutionError,
+        ChampionshipCarBatchExecutor, ChampionshipCarBatchOutcome,
         ChampionshipCarBatchPreflightError, ChampionshipCarExecuteError,
         PreparedChampionshipCarFrame,
     },
@@ -24,6 +25,11 @@ pub type ChampionshipCarSceneOutcome = C3dSceneOutcome<ChampionshipCarBatchOutco
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChampionshipCarScenePreflightStage {
     BatchBackend,
+    Batch {
+        actor_index: usize,
+        ordinal: crate::c3d_batch::C3dDrawOrdinal,
+        selector: crate::root_menu_c3d_resources::C3dPreparedSelector,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -90,6 +96,7 @@ where
             stage: ChampionshipCarScenePreflightStage::BatchBackend,
             source,
         })?;
+    preflight_batches(executor, backend, &prepared)?;
     let extent = prepared.extent();
     let (result, invalidate) = execute_terminal_scene(
         backend,
@@ -160,7 +167,37 @@ where
         .map_err(|source| ChampionshipCarSceneError::BackendPreflight {
             stage: ChampionshipCarScenePreflightStage::BatchBackend,
             source,
-        })
+        })?;
+    preflight_batches(executor, backend, frame)
+}
+
+fn preflight_batches<'catalog, B, H>(
+    executor: &ChampionshipCarBatchExecutor<'catalog, H>,
+    backend: &mut B,
+    prepared: &PreparedChampionshipCarFrame<'catalog, H>,
+) -> Result<(), ChampionshipCarSceneError<B::SceneError>>
+where
+    B: FrontendC3dSceneBackend
+        + ChampionshipCarBatchBackend<H, Error = <B as FrontendC3dSceneBackend>::SceneError>,
+{
+    executor
+        .preflight_prepared_backend(backend, prepared)
+        .map_err(
+            |ChampionshipCarBatchExecutionError {
+                 actor_index,
+                 ordinal,
+                 selector,
+                 source,
+                 ..
+             }| ChampionshipCarSceneError::BackendPreflight {
+                stage: ChampionshipCarScenePreflightStage::Batch {
+                    actor_index,
+                    ordinal,
+                    selector,
+                },
+                source,
+            },
+        )
 }
 
 fn execute_terminal_scene<B, P, O, D>(
@@ -195,7 +232,8 @@ fn invalidates_selector_cache<S, D, O>(
             C3dScenePrimaryError::Viewport(_) => false,
             C3dScenePrimaryError::Backend { stage, .. } => !matches!(
                 stage,
-                C3dSceneStage::ClearDepth
+                C3dSceneStage::Preflight
+                    | C3dSceneStage::ClearDepth
                     | C3dSceneStage::View
                     | C3dSceneStage::Viewport
                     | C3dSceneStage::Begin
@@ -212,6 +250,7 @@ mod tests {
     use super::*;
     use crate::{
         c3d_batch::C3dDrawCommand,
+        championship_car_execute::ChampionshipCarBindingPlan,
         championship_car_frame_plan::tests::{
             scene_test_fixture, scene_test_fixtures_with_selectors,
         },
@@ -238,6 +277,7 @@ mod tests {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum TestError {
         Profile,
+        Batch(usize),
         Resource,
     }
 
@@ -252,6 +292,8 @@ mod tests {
     struct Backend {
         events: Vec<Event>,
         fail_preflight: bool,
+        fail_batch_preflight: Option<usize>,
+        preflighted_batches: Vec<(usize, ChampionshipCarBindingPlan)>,
         fail_resource: bool,
         tail_state: C3dBindingState,
     }
@@ -261,6 +303,8 @@ mod tests {
             Self {
                 events: Vec::new(),
                 fail_preflight: false,
+                fail_batch_preflight: None,
+                preflighted_batches: Vec::new(),
                 fail_resource: false,
                 tail_state: C3dBindingState::Preserved,
             }
@@ -321,6 +365,24 @@ mod tests {
             self.events.push(Event::Preflight);
             if self.fail_preflight {
                 Err(TestError::Profile)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn preflight_championship_car_batch(
+            &mut self,
+            batch: crate::championship_car_execute::ChampionshipCarBatchPreflight<'_, '_, u8>,
+        ) -> Result<(), Self::Error> {
+            let ordinal = usize::from(batch.command.ordinal().group1_ordinal());
+            self.preflighted_batches.push((ordinal, batch.binding_plan));
+            if self.fail_batch_preflight == Some(ordinal)
+                && matches!(
+                    batch.binding,
+                    crate::championship_car_execute::ChampionshipCarResolvedBinding::Missing
+                )
+            {
+                Err(TestError::Batch(ordinal))
             } else {
                 Ok(())
             }
@@ -442,6 +504,96 @@ mod tests {
             }
         );
         assert_eq!(backend.events, [Event::Preflight]);
+        assert!(backend.preflighted_batches.is_empty());
+    }
+
+    #[test]
+    fn later_batch_preflight_rejects_before_scene_and_leaves_selector_cache_recoverable() {
+        let (plans, arena) = scene_test_fixtures_with_selectors(2, &[0, 0, -1, -1]);
+        let catalog =
+            bind_prepared_c3d_resources(arena.provenance(), arena.resources(), &mut |_, _| {
+                Ok::<_, Infallible>(7_u8)
+            })
+            .unwrap();
+        let mut executor = ChampionshipCarBatchExecutor::new(&catalog);
+        let mut prepared = plans
+            .into_iter()
+            .map(|plan| {
+                executor
+                    .prepare(
+                        plan,
+                        crate::championship_car_execute::ChampionshipCarPreDrawState::DISABLED,
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
+        let mut backend = Backend {
+            fail_batch_preflight: Some(3),
+            ..Backend::default()
+        };
+
+        let error = execute_championship_car_scene(
+            &mut executor,
+            &mut backend,
+            4,
+            C3dDepthClear::Clear,
+            prepared.next().unwrap(),
+        )
+        .unwrap_err();
+
+        let second = match &error {
+            ChampionshipCarSceneError::BackendPreflight {
+                stage:
+                    ChampionshipCarScenePreflightStage::Batch {
+                        actor_index,
+                        ordinal,
+                        selector,
+                    },
+                source: TestError::Batch(3),
+            } => (*actor_index, *ordinal, *selector),
+            other => panic!("unexpected preflight error: {other:?}"),
+        };
+        assert_eq!(second.0, 3);
+        assert_eq!(usize::from(second.1.group1_ordinal()), 3);
+        assert_eq!(
+            second.2,
+            crate::root_menu_c3d_resources::C3dPreparedSelector::Missing
+        );
+        assert_eq!(
+            backend.preflighted_batches,
+            [
+                (0, ChampionshipCarBindingPlan::BindBeforeDraw),
+                (1, ChampionshipCarBindingPlan::ReuseEarlierBatch),
+                (2, ChampionshipCarBindingPlan::BindBeforeDraw),
+                (3, ChampionshipCarBindingPlan::ReuseEarlierBatch),
+            ]
+        );
+        assert_eq!(backend.events, [Event::Preflight]);
+
+        backend.fail_batch_preflight = None;
+        backend.preflighted_batches.clear();
+        backend.events.clear();
+        execute_championship_car_scene(
+            &mut executor,
+            &mut backend,
+            4,
+            C3dDepthClear::Clear,
+            prepared.next().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            backend.preflighted_batches,
+            [
+                (0, ChampionshipCarBindingPlan::BindBeforeDraw),
+                (1, ChampionshipCarBindingPlan::ReuseEarlierBatch),
+                (2, ChampionshipCarBindingPlan::BindBeforeDraw),
+                (3, ChampionshipCarBindingPlan::ReuseEarlierBatch),
+            ]
+        );
+        assert!(backend.events.contains(&Event::Resource));
+        assert!(backend.events.contains(&Event::Default));
     }
 
     #[test]
@@ -623,6 +775,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
+            backend.preflighted_batches,
+            [(0, ChampionshipCarBindingPlan::BindBeforeDraw)]
+        );
+        assert_eq!(
             backend
                 .events
                 .iter()
@@ -632,6 +788,7 @@ mod tests {
         );
 
         backend.events.clear();
+        backend.preflighted_batches.clear();
         backend.tail_state = C3dBindingState::Changed;
         execute_championship_car_scene(
             &mut executor,
@@ -641,9 +798,14 @@ mod tests {
             prepared.next().unwrap(),
         )
         .unwrap();
+        assert_eq!(
+            backend.preflighted_batches,
+            [(0, ChampionshipCarBindingPlan::ReuseRetained)]
+        );
         assert!(!backend.events.contains(&Event::Resource));
 
         backend.events.clear();
+        backend.preflighted_batches.clear();
         backend.tail_state = C3dBindingState::Preserved;
         backend.fail_resource = true;
         assert!(
@@ -656,9 +818,14 @@ mod tests {
             )
             .is_err()
         );
+        assert_eq!(
+            backend.preflighted_batches,
+            [(0, ChampionshipCarBindingPlan::BindBeforeDraw)]
+        );
         assert!(backend.events.contains(&Event::Resource));
 
         backend.events.clear();
+        backend.preflighted_batches.clear();
         execute_championship_car_scene(
             &mut executor,
             &mut backend,
@@ -667,6 +834,10 @@ mod tests {
             prepared.next().unwrap(),
         )
         .unwrap();
+        assert_eq!(
+            backend.preflighted_batches,
+            [(0, ChampionshipCarBindingPlan::BindBeforeDraw)]
+        );
         assert!(backend.events.contains(&Event::Resource));
     }
 
@@ -695,6 +866,7 @@ mod tests {
         )));
 
         for stage in [
+            C3dSceneStage::Preflight,
             C3dSceneStage::ClearDepth,
             C3dSceneStage::View,
             C3dSceneStage::Viewport,
