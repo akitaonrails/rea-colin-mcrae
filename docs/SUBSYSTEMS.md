@@ -171,8 +171,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   conversion policy and no backend side effects.
 - `cmr-core::root_menu_frame`: ordered bitmap/footer dispatch plus parsed C3D
   slot binding and angle advancement; the software backend now executes the
-  bounded root C3D branch, while final composition/presentation remains a host
-  boundary.
+  bounded root C3D branch and captures the composed indexed frame through a
+  headless terminal hook. Native Flip/windowed copy and synchronization remain
+  host boundaries.
 
 The canonical binary maps registry language values 0–4 to English, French,
 German, Spanish, and Italian startup paths. The supplied corpus has no Italian

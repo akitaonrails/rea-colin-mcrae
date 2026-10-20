@@ -107,6 +107,10 @@ impl SoftwareC3dBackendState {
         self.scene_destination
             .ok_or(SoftwareC3dBackendError::InvalidSequence(operation))
     }
+
+    pub(crate) const fn scene_is_active(&self) -> bool {
+        self.scene_destination.is_some()
+    }
 }
 
 impl SoftwareIndexedBackend {

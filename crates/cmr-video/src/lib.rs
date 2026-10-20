@@ -11,8 +11,10 @@ use cmr_formats::riff_palette::PaletteEntry;
 pub mod c3d_software;
 mod c3d_software_backend;
 pub mod c3d_software_raster;
+mod root_frame_software;
 
 pub use c3d_software_backend::SoftwareC3dBackendError;
+pub use root_frame_software::{SoftwarePresentationError, SoftwarePresentedFrame};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceHandle(usize);
@@ -88,6 +90,7 @@ pub struct SoftwareIndexedBackend {
     palette: Option<[PaletteEntry; 256]>,
     palette_uploaded: bool,
     c3d: c3d_software_backend::SoftwareC3dBackendState,
+    presented_frame: Option<SoftwarePresentedFrame>,
 }
 
 impl SoftwareIndexedBackend {
@@ -109,6 +112,12 @@ impl SoftwareIndexedBackend {
             .flatten()
             .filter(|surface| surface.uploaded_source)
             .count()
+    }
+
+    /// Most recent frame captured by the headless presentation boundary.
+    #[must_use]
+    pub const fn presented_frame(&self) -> Option<&SoftwarePresentedFrame> {
+        self.presented_frame.as_ref()
     }
 
     fn pixels(&self, handle: SurfaceHandle) -> Option<&[u8]> {
