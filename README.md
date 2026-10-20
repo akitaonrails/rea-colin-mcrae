@@ -14,7 +14,9 @@ the source version and prepare a local, ignored `runtime-data/` tree.
 Milestone 0 (provenance and reconstruction plan) is complete. Milestone 1 has
 started with bounded parsers for the observed asset storage and indexed startup
 art, strict asset import/runtime loading, and recovered startup-art selection
-and surface contracts. No gameplay subsystem is yet claimed compatible.
+and surface contracts. A backend-neutral indexed display contract now preserves
+the recovered device, surface, shared-palette, and front/back startup-copy
+ordering. No gameplay subsystem is yet claimed compatible.
 
 Known artifacts from the initial local installation:
 

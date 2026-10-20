@@ -26,7 +26,8 @@ define a clean compatibility interface.
 2. Trace `Rally.exe` entry and `HDPath`/`CDPath` references to recover source-root
    selection and path normalization.
 3. Trace zlib wrapper entry points and one representative `CMPR` consumer.
-4. Trace DirectDraw creation and the first image/surface loader call chain.
+4. Resolve mode-enumeration ordering, failure cleanup, and the later DirectDraw
+   flip cadence now that creation and the first image/surface chain are mapped.
 5. Trace QMixer initialization and one sound-load/play path.
 
 Each result should update [EVIDENCE.md](EVIDENCE.md) and create or refine one
@@ -47,6 +48,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   bounded decode, and indexed-surface construction with contextual errors.
 - `cmr-core::blit`: recovered destination clipping, fast/stretch dispatch, and
   color-key flag planning without a platform graphics dependency.
+- `cmr-core::display`: backend-neutral indexed display initialization with
+  typed windowed/fullscreen topology, shared front/back palette ownership, and
+  the recovered visible-front-then-back startup copy transaction.
 
 The canonical binary maps registry language values 0–4 to English, French,
 German, Spanish, and Italian startup paths. The supplied corpus has no Italian

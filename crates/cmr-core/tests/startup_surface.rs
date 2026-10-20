@@ -5,7 +5,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cmr_assets::{
     AssetFile, AssetProfile, AssetStore, ReviewedProfile, StorageEncoding, import_source,
 };
+use cmr_core::blit::BlitPlan;
+use cmr_core::display::{
+    CooperativeMode, DisplayExtent, DisplaySurfaces, IndexedMode, IndexedVideoBackend,
+    SurfaceTopology,
+};
 use cmr_core::startup::{Language, StartupScreen};
+use cmr_core::startup_display::{
+    StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
+};
 use cmr_core::startup_surface::{StartupSurfaceError, load_startup_surface};
 use cmr_core::surface::PaletteMapping;
 use cmr_formats::bitmap::BitmapLimits;
@@ -109,6 +117,173 @@ fn verified_import_decodes_and_maps_a_startup_surface_end_to_end() {
         ),
         Err(StartupSurfaceError::Palette { path, .. }) if path == "ini/legal.pal"
     ));
+
+    let startup = initialize_startup_display(
+        &store,
+        RecordingBackend::default(),
+        StartupDisplayRequest {
+            mode: IndexedMode {
+                extent: DisplayExtent {
+                    width: 4,
+                    height: 1,
+                },
+                bits_per_pixel: 8,
+            },
+            cooperative: CooperativeMode::Windowed,
+            screen: StartupScreen::Loading,
+            language: Language::English,
+            mapping: PaletteMapping::NearestNonzero,
+            bitmap_limits: BitmapLimits::default(),
+        },
+    )
+    .unwrap();
+    assert_eq!(startup.copy.front, Ok(()));
+    assert_eq!(startup.copy.back, Ok(()));
+    assert_eq!(
+        startup.display.into_backend().events,
+        [
+            "device",
+            "cooperative",
+            "surfaces",
+            "create-palette",
+            "attach-front",
+            "attach-back",
+            "upload",
+            "upload",
+            "source",
+            "blit-front",
+            "blit-back",
+            "destroy-source",
+        ]
+    );
+
+    fs::remove_file(imported.join("ini/loading.bmp")).unwrap();
+    let error = match initialize_startup_display(
+        &store,
+        RecordingBackend {
+            fail_second_upload: true,
+            ..RecordingBackend::default()
+        },
+        StartupDisplayRequest {
+            mode: IndexedMode {
+                extent: DisplayExtent {
+                    width: 4,
+                    height: 1,
+                },
+                bits_per_pixel: 8,
+            },
+            cooperative: CooperativeMode::Windowed,
+            screen: StartupScreen::Loading,
+            language: Language::English,
+            mapping: PaletteMapping::NearestNonzero,
+            bitmap_limits: BitmapLimits::default(),
+        },
+    ) {
+        Ok(_) => panic!("expected second palette upload to fail"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, StartupDisplayError::ApplyPalette(_)));
+}
+
+#[derive(Default)]
+struct RecordingBackend {
+    events: Vec<&'static str>,
+    uploads: usize,
+    fail_second_upload: bool,
+}
+
+impl IndexedVideoBackend for RecordingBackend {
+    type Error = &'static str;
+    type Surface = u8;
+    type Palette = u8;
+
+    fn create_device(&mut self) -> Result<(), Self::Error> {
+        self.events.push("device");
+        Ok(())
+    }
+
+    fn set_cooperative_mode(&mut self, _mode: CooperativeMode) -> Result<(), Self::Error> {
+        self.events.push("cooperative");
+        Ok(())
+    }
+
+    fn set_display_mode(&mut self, _mode: IndexedMode) -> Result<(), Self::Error> {
+        self.events.push("mode");
+        Ok(())
+    }
+
+    fn create_surfaces(
+        &mut self,
+        _topology: SurfaceTopology,
+        _mode: IndexedMode,
+    ) -> Result<DisplaySurfaces<Self::Surface>, Self::Error> {
+        self.events.push("surfaces");
+        Ok(DisplaySurfaces {
+            visible_front: 1,
+            back: 2,
+        })
+    }
+
+    fn create_palette(
+        &mut self,
+        _entries: &[cmr_formats::riff_palette::PaletteEntry; 256],
+    ) -> Result<Self::Palette, Self::Error> {
+        self.events.push("create-palette");
+        Ok(9)
+    }
+
+    fn attach_palette(
+        &mut self,
+        surface: Self::Surface,
+        _palette: Self::Palette,
+    ) -> Result<(), Self::Error> {
+        self.events.push(if surface == 1 {
+            "attach-front"
+        } else {
+            "attach-back"
+        });
+        Ok(())
+    }
+
+    fn upload_palette(
+        &mut self,
+        _palette: Self::Palette,
+        _entries: &[cmr_formats::riff_palette::PaletteEntry; 256],
+    ) -> Result<(), Self::Error> {
+        self.events.push("upload");
+        self.uploads += 1;
+        if self.fail_second_upload && self.uploads == 2 {
+            Err("second upload failed")
+        } else {
+            Ok(())
+        }
+    }
+
+    fn create_source(
+        &mut self,
+        _surface: &cmr_core::surface::IndexedSurface,
+    ) -> Result<Self::Surface, Self::Error> {
+        self.events.push("source");
+        Ok(3)
+    }
+
+    fn blit(
+        &mut self,
+        _source: Self::Surface,
+        destination: Self::Surface,
+        _plan: BlitPlan,
+    ) -> Result<(), Self::Error> {
+        self.events.push(if destination == 1 {
+            "blit-front"
+        } else {
+            "blit-back"
+        });
+        Ok(())
+    }
+
+    fn destroy_source(&mut self, _source: Self::Surface) {
+        self.events.push("destroy-source");
+    }
 }
 
 fn asset(path: &str, bytes: &[u8]) -> AssetFile {
