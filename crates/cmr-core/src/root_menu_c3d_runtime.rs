@@ -1,10 +1,11 @@
-//! Pre-resource-scaling runtime vertices for root-menu mode-2 C3D objects.
+//! Runtime vertices for root-menu mode-2 C3D objects.
 //!
 //! The original loader converts one independent vertex array for every
 //! group-0 value that references a group-1 record. This module preserves that
 //! ownership, captures the opaque three-word side vector before mode-specific
 //! mutation, and only then compacts vertices through the checked batch plan.
-//! Resource-driven mapping-coordinate scaling remains a later boundary.
+//! The resource-scaled output remains backend-neutral: palette attachment,
+//! upload, rendering, and presentation are later boundaries.
 
 use std::fmt;
 
@@ -13,7 +14,9 @@ use cmr_formats::c3d::{C3dEntry32, C3dGroup0Record};
 use crate::{
     root_menu_assets::{RootMenuObjectIdentity, VisualVariant},
     root_menu_c3d_assets::{ROOT_MENU_C3D_REQUEST_COUNT, RootMenuC3dSlot},
-    root_menu_c3d_resources::C3dPreparedSelector,
+    root_menu_c3d_resources::{
+        C3dPreparedResourceAccessError, C3dPreparedResourceId, C3dPreparedSelector,
+    },
     root_menu_c3d_topology::{
         RootMenuC3dGroup0Topology, RootMenuC3dGroup1Topology, RootMenuC3dObjectTopology,
         RootMenuC3dTopology,
@@ -33,6 +36,15 @@ pub enum C3dMode2CornerSource {
     SourceEntryTuples,
 }
 
+/// Recovered gates controlling the resource surface layout used by mode 2.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct C3dSurfaceLayoutGates {
+    pub quarter_if_large: bool,
+    pub force_quarter: bool,
+    pub half_if_large: bool,
+    pub expand_width_dominant: bool,
+}
+
 /// State supplied independently to one root-menu C3D loader call.
 ///
 /// `prepared_resource_count` is the count sampled at that loader entry. It is
@@ -41,6 +53,7 @@ pub enum C3dMode2CornerSource {
 pub struct C3dMode2LoadState {
     pub prepared_resource_count: u32,
     pub corner_source: C3dMode2CornerSource,
+    pub surface_layout: C3dSurfaceLayoutGates,
 }
 
 /// Fixed per-slot loader-entry states for the six independent root calls.
@@ -239,6 +252,185 @@ pub struct RootMenuC3dMode2PreScaleRuntime {
     slots: [Option<RootMenuC3dMode2PreScaleObject>; ROOT_MENU_C3D_REQUEST_COUNT],
 }
 
+/// Exact eight-word runtime vertex after resource-derived coordinate scaling.
+///
+/// This is loader-materialized CPU data, not a backend-ready vertex.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dMode2ResourceScaledVertex {
+    words: [u32; 8],
+}
+
+impl C3dMode2ResourceScaledVertex {
+    #[must_use]
+    pub const fn words(self) -> [u32; 8] {
+        self.words
+    }
+
+    #[must_use]
+    pub fn first_triplet(self) -> [f32; 3] {
+        std::array::from_fn(|index| f32::from_bits(self.words[index]))
+    }
+
+    #[must_use]
+    pub const fn opaque_triplet_words(self) -> [u32; 3] {
+        [self.words[3], self.words[4], self.words[5]]
+    }
+
+    #[must_use]
+    pub fn adjusted_pair(self) -> [f32; 2] {
+        [f32::from_bits(self.words[6]), f32::from_bits(self.words[7])]
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct RootMenuC3dMode2ResourceScaledBatch {
+    selector: C3dPreparedSelector,
+    source_entry32_ordinals: Vec<u16>,
+    vertices: Vec<C3dMode2ResourceScaledVertex>,
+    side_vectors: Vec<C3dOpaqueSideVector>,
+    indices: Vec<u16>,
+}
+
+impl RootMenuC3dMode2ResourceScaledBatch {
+    #[must_use]
+    pub const fn selector(&self) -> C3dPreparedSelector {
+        self.selector
+    }
+
+    #[must_use]
+    pub fn source_entry32_ordinals(&self) -> &[u16] {
+        &self.source_entry32_ordinals
+    }
+
+    #[must_use]
+    pub fn vertices(&self) -> &[C3dMode2ResourceScaledVertex] {
+        &self.vertices
+    }
+
+    #[must_use]
+    pub fn side_vectors(&self) -> &[C3dOpaqueSideVector] {
+        &self.side_vectors
+    }
+
+    #[must_use]
+    pub fn indices(&self) -> &[u16] {
+        &self.indices
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct RootMenuC3dMode2ResourceScaledReference {
+    value_index: usize,
+    source_offset: usize,
+    group1_ordinal: u16,
+    batches: Vec<RootMenuC3dMode2ResourceScaledBatch>,
+}
+
+impl RootMenuC3dMode2ResourceScaledReference {
+    #[must_use]
+    pub const fn value_index(&self) -> usize {
+        self.value_index
+    }
+
+    #[must_use]
+    pub const fn source_offset(&self) -> usize {
+        self.source_offset
+    }
+
+    #[must_use]
+    pub const fn group1_ordinal(&self) -> u16 {
+        self.group1_ordinal
+    }
+
+    pub fn batches(&self) -> impl ExactSizeIterator<Item = &RootMenuC3dMode2ResourceScaledBatch> {
+        self.batches.iter()
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct RootMenuC3dMode2ResourceScaledGroup0 {
+    record_index: usize,
+    record_offset: usize,
+    references: Vec<RootMenuC3dMode2ResourceScaledReference>,
+}
+
+impl RootMenuC3dMode2ResourceScaledGroup0 {
+    #[must_use]
+    pub const fn record_index(&self) -> usize {
+        self.record_index
+    }
+
+    #[must_use]
+    pub const fn record_offset(&self) -> usize {
+        self.record_offset
+    }
+
+    pub fn references(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &RootMenuC3dMode2ResourceScaledReference> {
+        self.references.iter()
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct RootMenuC3dMode2ResourceScaledObject {
+    slot: RootMenuC3dSlot,
+    identity: RootMenuObjectIdentity,
+    path: &'static str,
+    group0_records: Vec<RootMenuC3dMode2ResourceScaledGroup0>,
+}
+
+impl RootMenuC3dMode2ResourceScaledObject {
+    #[must_use]
+    pub const fn slot(&self) -> RootMenuC3dSlot {
+        self.slot
+    }
+
+    #[must_use]
+    pub const fn identity(&self) -> RootMenuObjectIdentity {
+        self.identity
+    }
+
+    #[must_use]
+    pub const fn path(&self) -> &'static str {
+        self.path
+    }
+
+    pub fn group0_records(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &RootMenuC3dMode2ResourceScaledGroup0> {
+        self.group0_records.iter()
+    }
+}
+
+/// Fixed-slot, resource-scaled mode-2 CPU runtime data.
+///
+/// Resource selectors remain backend-neutral. This value is therefore not
+/// render-ready.
+#[derive(Debug, Eq, PartialEq)]
+pub struct RootMenuC3dMode2ResourceScaledRuntime {
+    variant: VisualVariant,
+    slots: [Option<RootMenuC3dMode2ResourceScaledObject>; ROOT_MENU_C3D_REQUEST_COUNT],
+}
+
+impl RootMenuC3dMode2ResourceScaledRuntime {
+    #[must_use]
+    pub const fn variant(&self) -> VisualVariant {
+        self.variant
+    }
+
+    #[must_use]
+    pub fn get(&self, slot: RootMenuC3dSlot) -> Option<&RootMenuC3dMode2ResourceScaledObject> {
+        self.slots[slot.index()].as_ref()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dSurfaceLayoutAxis {
+    Horizontal,
+    Vertical,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RootMenuC3dMode2MaterializationError {
     MissingGroup1Topology {
@@ -247,6 +439,28 @@ pub enum RootMenuC3dMode2MaterializationError {
         value_index: usize,
         group1_ordinal: u16,
         group1_count: usize,
+    },
+    ResourceAccess {
+        slot: RootMenuC3dSlot,
+        group0_record_index: usize,
+        value_index: usize,
+        group1_ordinal: u16,
+        entry24_index: usize,
+        entry24_offset: usize,
+        resource_id: C3dPreparedResourceId,
+        source: C3dPreparedResourceAccessError,
+    },
+    UnusableSurfaceExtent {
+        slot: RootMenuC3dSlot,
+        group0_record_index: usize,
+        value_index: usize,
+        group1_ordinal: u16,
+        entry24_index: usize,
+        entry24_offset: usize,
+        resource_id: C3dPreparedResourceId,
+        first_slot: RootMenuC3dSlot,
+        axis: C3dSurfaceLayoutAxis,
+        extent_bits: u16,
     },
 }
 
@@ -263,11 +477,46 @@ impl fmt::Display for RootMenuC3dMode2MaterializationError {
                 formatter,
                 "root-menu C3D slot {slot:?} group-0 record {group0_record_index} value {value_index} references missing group-1 topology {group1_ordinal} of {group1_count}"
             ),
+            Self::ResourceAccess {
+                slot,
+                group0_record_index,
+                value_index,
+                group1_ordinal,
+                entry24_index,
+                entry24_offset,
+                resource_id,
+                source,
+            } => write!(
+                formatter,
+                "root-menu C3D slot {slot:?} group-0 record {group0_record_index} value {value_index} group-1 {group1_ordinal} entry24 {entry24_index} at offset {entry24_offset} cannot resolve prepared resource {resource_id:?}: {source}"
+            ),
+            Self::UnusableSurfaceExtent {
+                slot,
+                group0_record_index,
+                value_index,
+                group1_ordinal,
+                entry24_index,
+                entry24_offset,
+                resource_id,
+                first_slot,
+                axis,
+                extent_bits,
+            } => write!(
+                formatter,
+                "root-menu C3D slot {slot:?} group-0 record {group0_record_index} value {value_index} group-1 {group1_ordinal} entry24 {entry24_index} at offset {entry24_offset} resource {resource_id:?} first prepared in {first_slot:?} has unusable {axis:?} surface extent bits {extent_bits:#06x}"
+            ),
         }
     }
 }
 
-impl std::error::Error for RootMenuC3dMode2MaterializationError {}
+impl std::error::Error for RootMenuC3dMode2MaterializationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ResourceAccess { source, .. } => Some(source),
+            Self::MissingGroup1Topology { .. } | Self::UnusableSurfaceExtent { .. } => None,
+        }
+    }
+}
 
 impl RootMenuC3dMode2PreScaleRuntime {
     #[must_use]
@@ -295,6 +544,326 @@ pub fn materialize_root_menu_mode2_pre_scale(
         variant: topology.variant(),
         slots,
     })
+}
+
+/// Materializes mode-2 CPU geometry and applies recovered resource-derived
+/// coordinate scaling before compacting selector runs.
+pub fn materialize_root_menu_mode2_resource_scaled(
+    topology: &RootMenuC3dTopology<'_>,
+    load_states: RootMenuC3dMode2LoadStates,
+) -> Result<RootMenuC3dMode2ResourceScaledRuntime, RootMenuC3dMode2MaterializationError> {
+    let mut slots = std::array::from_fn(|_| None);
+    for (slot, object) in topology.slots() {
+        let Some(object) = object else { continue };
+        slots[slot.index()] = Some(materialize_resource_scaled_object(
+            topology,
+            object,
+            load_states,
+        )?);
+    }
+    Ok(RootMenuC3dMode2ResourceScaledRuntime {
+        variant: topology.variant(),
+        slots,
+    })
+}
+
+fn materialize_resource_scaled_object(
+    topology: &RootMenuC3dTopology<'_>,
+    object: &RootMenuC3dObjectTopology<'_>,
+    load_states: RootMenuC3dMode2LoadStates,
+) -> Result<RootMenuC3dMode2ResourceScaledObject, RootMenuC3dMode2MaterializationError> {
+    let load_state = load_states.get(object.slot());
+    let mut pass_through = load_state.prepared_resource_count != 0;
+    let mut group0_records = Vec::new();
+    for group0 in object.group0_records() {
+        if group0.record().field_04_i16() == -1 {
+            pass_through = true;
+        }
+        let transform = !pass_through;
+        let group1_count = object.groups().len();
+        let references = group0
+            .references()
+            .map(|reference| {
+                let group1 = object
+                    .group(usize::from(reference.group1_ordinal()))
+                    .ok_or(
+                        RootMenuC3dMode2MaterializationError::MissingGroup1Topology {
+                            slot: object.slot(),
+                            group0_record_index: group0.record_index(),
+                            value_index: reference.value_index(),
+                            group1_ordinal: reference.group1_ordinal(),
+                            group1_count,
+                        },
+                    )?;
+                let context = ResourceScaleContext {
+                    slot: object.slot(),
+                    group0_record_index: group0.record_index(),
+                    value_index: reference.value_index(),
+                    group1_ordinal: reference.group1_ordinal(),
+                };
+                let batches = materialize_resource_scaled_reference(
+                    topology,
+                    load_states,
+                    group0.record(),
+                    group1,
+                    transform,
+                    load_state.corner_source,
+                    context,
+                )?;
+                Ok(RootMenuC3dMode2ResourceScaledReference {
+                    value_index: reference.value_index(),
+                    source_offset: reference.source_offset(),
+                    group1_ordinal: reference.group1_ordinal(),
+                    batches,
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        group0_records.push(RootMenuC3dMode2ResourceScaledGroup0 {
+            record_index: group0.record_index(),
+            record_offset: group0.record_offset(),
+            references,
+        });
+    }
+    Ok(RootMenuC3dMode2ResourceScaledObject {
+        slot: object.slot(),
+        identity: object.identity(),
+        path: object.path(),
+        group0_records,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct ResourceScaleContext {
+    slot: RootMenuC3dSlot,
+    group0_record_index: usize,
+    value_index: usize,
+    group1_ordinal: u16,
+}
+
+fn materialize_resource_scaled_reference(
+    topology: &RootMenuC3dTopology<'_>,
+    load_states: RootMenuC3dMode2LoadStates,
+    group0: C3dGroup0Record<'_>,
+    group1: &RootMenuC3dGroup1Topology<'_>,
+    transform: bool,
+    corner_source: C3dMode2CornerSource,
+    context: ResourceScaleContext,
+) -> Result<Vec<RootMenuC3dMode2ResourceScaledBatch>, RootMenuC3dMode2MaterializationError> {
+    let matrix = group0.affine_matrix_q16();
+    let mut vertices = group1
+        .record()
+        .entries_32()
+        .map(|entry| convert_entry(entry, transform.then_some(&matrix)))
+        .collect::<Vec<_>>();
+    let side_vectors = vertices
+        .iter()
+        .map(|vertex| C3dOpaqueSideVector(vertex.opaque_triplet_words()))
+        .collect::<Vec<_>>();
+
+    apply_mode2_mutation(&mut vertices, group1, corner_source);
+    apply_resource_scaling(topology, load_states, &mut vertices, group1, context)?;
+
+    Ok(group1
+        .batches()
+        .iter()
+        .map(|batch| RootMenuC3dMode2ResourceScaledBatch {
+            selector: batch.selector(),
+            source_entry32_ordinals: batch.unique_entry32_ordinals().to_vec(),
+            vertices: batch
+                .unique_entry32_ordinals()
+                .iter()
+                .map(|ordinal| C3dMode2ResourceScaledVertex {
+                    words: vertices[usize::from(*ordinal)].words,
+                })
+                .collect(),
+            side_vectors: batch
+                .unique_entry32_ordinals()
+                .iter()
+                .map(|ordinal| side_vectors[usize::from(*ordinal)])
+                .collect(),
+            indices: batch.indices().to_vec(),
+        })
+        .collect())
+}
+
+fn apply_mode2_mutation(
+    vertices: &mut [C3dMode2PreScaleVertex],
+    group1: &RootMenuC3dGroup1Topology<'_>,
+    corner_source: C3dMode2CornerSource,
+) {
+    for batch in group1.batches() {
+        for entry in batch.entries_24() {
+            let tuples = match corner_source {
+                C3dMode2CornerSource::OrdinaryDefaults => [ORDINARY_MODE2_CORNER; 3],
+                C3dMode2CornerSource::SourceEntryTuples => entry.corner_tuples(),
+            };
+            for (ordinal, tuple) in entry.entry32_ordinals().into_iter().zip(tuples) {
+                let vertex = &mut vertices[usize::from(ordinal)];
+                match batch.selector() {
+                    C3dPreparedSelector::Resource(_) => {
+                        vertex.words[4] = pack_mode2_tuple(tuple);
+                        vertex.words[5] = MODE2_OPAQUE_WORD;
+                    }
+                    C3dPreparedSelector::Missing => {
+                        vertex.words[4] = MODE2_OPAQUE_WORD;
+                        vertex.words[5] = MODE2_OPAQUE_WORD;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn apply_resource_scaling(
+    topology: &RootMenuC3dTopology<'_>,
+    load_states: RootMenuC3dMode2LoadStates,
+    vertices: &mut [C3dMode2PreScaleVertex],
+    group1: &RootMenuC3dGroup1Topology<'_>,
+    context: ResourceScaleContext,
+) -> Result<(), RootMenuC3dMode2MaterializationError> {
+    let mut visited = vec![false; vertices.len()];
+    let mut entry24_index = 0;
+    for batch in group1.batches() {
+        for entry in batch.entries_24() {
+            let current_index = entry24_index;
+            entry24_index += 1;
+            let C3dPreparedSelector::Resource(resource_id) = batch.selector() else {
+                continue;
+            };
+            let resource = topology.resource(resource_id).map_err(|source| {
+                RootMenuC3dMode2MaterializationError::ResourceAccess {
+                    slot: context.slot,
+                    group0_record_index: context.group0_record_index,
+                    value_index: context.value_index,
+                    group1_ordinal: context.group1_ordinal,
+                    entry24_index: current_index,
+                    entry24_offset: entry.offset(),
+                    resource_id,
+                    source,
+                }
+            })?;
+            let first_slot = resource.first_slot();
+            let [source_width, source_height] = resource.source_dib_extent_low16();
+            let layout = derive_surface_layout(
+                source_width,
+                source_height,
+                load_states.get(first_slot).surface_layout,
+            )
+            .map_err(|issue| {
+                RootMenuC3dMode2MaterializationError::UnusableSurfaceExtent {
+                    slot: context.slot,
+                    group0_record_index: context.group0_record_index,
+                    value_index: context.value_index,
+                    group1_ordinal: context.group1_ordinal,
+                    entry24_index: current_index,
+                    entry24_offset: entry.offset(),
+                    resource_id,
+                    first_slot,
+                    axis: issue.axis,
+                    extent_bits: issue.extent_bits,
+                }
+            })?;
+            let ordinals = entry.entry32_ordinals();
+            if layout.vertical_padding != 0 {
+                for ordinal in ordinals {
+                    if !visited[usize::from(ordinal)] {
+                        scale_runtime_word(
+                            &mut vertices[usize::from(ordinal)].words[7],
+                            layout.height,
+                            layout.vertical_padding,
+                        );
+                    }
+                }
+            }
+            if layout.horizontal_padding != 0 {
+                for ordinal in ordinals {
+                    if !visited[usize::from(ordinal)] {
+                        scale_runtime_word(
+                            &mut vertices[usize::from(ordinal)].words[6],
+                            layout.width,
+                            layout.horizontal_padding,
+                        );
+                    }
+                }
+            }
+            // The original marks after both three-corner loops. Repeated
+            // ordinals within this entry therefore receive repeated products.
+            for ordinal in ordinals {
+                visited[usize::from(ordinal)] = true;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SurfaceLayout {
+    width: i16,
+    height: i16,
+    horizontal_padding: i32,
+    vertical_padding: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SurfaceLayoutIssue {
+    axis: C3dSurfaceLayoutAxis,
+    extent_bits: u16,
+}
+
+fn derive_surface_layout(
+    original_width: u16,
+    original_height: u16,
+    gates: C3dSurfaceLayoutGates,
+) -> Result<SurfaceLayout, SurfaceLayoutIssue> {
+    let mut width = original_width.wrapping_add(3) & !3;
+    let mut height = original_height;
+    let large = width >= 64 && height >= 64;
+    if (gates.quarter_if_large && large) || gates.force_quarter {
+        width /= 4;
+        height /= 4;
+    } else if gates.half_if_large && large {
+        width /= 2;
+        height /= 2;
+    }
+
+    let mut horizontal_padding = 0;
+    let mut vertical_padding = 0;
+    if height > width {
+        horizontal_padding = i32::from(height) - i32::from(width) + 1;
+        width = height;
+    }
+    if gates.expand_width_dominant && width > height {
+        vertical_padding = i32::from(width) - i32::from(height) + 1;
+        height = width;
+    }
+
+    let signed_width = width as i16;
+    if horizontal_padding != 0 && signed_width <= 0 {
+        return Err(SurfaceLayoutIssue {
+            axis: C3dSurfaceLayoutAxis::Horizontal,
+            extent_bits: width,
+        });
+    }
+    let signed_height = height as i16;
+    if vertical_padding != 0 && signed_height <= 0 {
+        return Err(SurfaceLayoutIssue {
+            axis: C3dSurfaceLayoutAxis::Vertical,
+            extent_bits: height,
+        });
+    }
+    Ok(SurfaceLayout {
+        width: signed_width,
+        height: signed_height,
+        horizontal_padding,
+        vertical_padding,
+    })
+}
+
+fn scale_runtime_word(word: &mut u32, extent: i16, padding: i32) {
+    let extent = f64::from(extent);
+    let factor = (extent - f64::from(padding)) / extent;
+    let scaled = factor * f64::from(f32::from_bits(*word));
+    *word = (scaled as f32).to_bits();
 }
 
 fn materialize_object(
@@ -376,27 +945,7 @@ fn materialize_reference(
         .map(|vertex| C3dOpaqueSideVector(vertex.opaque_triplet_words()))
         .collect::<Vec<_>>();
 
-    for batch in group1.batches() {
-        for entry in batch.entries_24() {
-            let tuples = match corner_source {
-                C3dMode2CornerSource::OrdinaryDefaults => [ORDINARY_MODE2_CORNER; 3],
-                C3dMode2CornerSource::SourceEntryTuples => entry.corner_tuples(),
-            };
-            for (ordinal, tuple) in entry.entry32_ordinals().into_iter().zip(tuples) {
-                let vertex = &mut vertices[usize::from(ordinal)];
-                match batch.selector() {
-                    C3dPreparedSelector::Resource(_) => {
-                        vertex.words[4] = pack_mode2_tuple(tuple);
-                        vertex.words[5] = MODE2_OPAQUE_WORD;
-                    }
-                    C3dPreparedSelector::Missing => {
-                        vertex.words[4] = MODE2_OPAQUE_WORD;
-                        vertex.words[5] = MODE2_OPAQUE_WORD;
-                    }
-                }
-            }
-        }
-    }
+    apply_mode2_mutation(&mut vertices, group1, corner_source);
 
     group1
         .batches()
@@ -565,6 +1114,161 @@ mod tests {
         assert_eq!(
             adjust_first_mapping_component(3 * 65_536).to_bits(),
             2.0f32.to_bits()
+        );
+    }
+
+    #[test]
+    fn surface_layout_aligns_scales_and_expands_in_recovered_order() {
+        assert_eq!(
+            derive_surface_layout(5, 3, C3dSurfaceLayoutGates::default()),
+            Ok(SurfaceLayout {
+                width: 8,
+                height: 3,
+                horizontal_padding: 0,
+                vertical_padding: 0,
+            })
+        );
+        assert_eq!(
+            derive_surface_layout(5, 10, C3dSurfaceLayoutGates::default()),
+            Ok(SurfaceLayout {
+                width: 10,
+                height: 10,
+                horizontal_padding: 3,
+                vertical_padding: 0,
+            })
+        );
+        assert_eq!(
+            derive_surface_layout(
+                5,
+                3,
+                C3dSurfaceLayoutGates {
+                    expand_width_dominant: true,
+                    ..C3dSurfaceLayoutGates::default()
+                },
+            ),
+            Ok(SurfaceLayout {
+                width: 8,
+                height: 8,
+                horizontal_padding: 0,
+                vertical_padding: 6,
+            })
+        );
+    }
+
+    #[test]
+    fn quarter_precedes_half_and_force_quarter_ignores_large_gate() {
+        let both = C3dSurfaceLayoutGates {
+            quarter_if_large: true,
+            half_if_large: true,
+            ..C3dSurfaceLayoutGates::default()
+        };
+        assert_eq!(
+            derive_surface_layout(128, 64, both),
+            Ok(SurfaceLayout {
+                width: 32,
+                height: 16,
+                horizontal_padding: 0,
+                vertical_padding: 0,
+            })
+        );
+        assert_eq!(
+            derive_surface_layout(
+                128,
+                64,
+                C3dSurfaceLayoutGates {
+                    half_if_large: true,
+                    ..C3dSurfaceLayoutGates::default()
+                },
+            ),
+            Ok(SurfaceLayout {
+                width: 64,
+                height: 32,
+                horizontal_padding: 0,
+                vertical_padding: 0,
+            })
+        );
+        assert_eq!(
+            derive_surface_layout(
+                8,
+                8,
+                C3dSurfaceLayoutGates {
+                    force_quarter: true,
+                    ..C3dSurfaceLayoutGates::default()
+                },
+            ),
+            Ok(SurfaceLayout {
+                width: 2,
+                height: 2,
+                horizontal_padding: 0,
+                vertical_padding: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn surface_layout_preserves_wrapping_and_rejects_only_used_negative_extents() {
+        assert_eq!(
+            derive_surface_layout(65_535, 1, C3dSurfaceLayoutGates::default()),
+            Ok(SurfaceLayout {
+                width: 1,
+                height: 1,
+                horizontal_padding: 2,
+                vertical_padding: 0,
+            })
+        );
+        assert_eq!(
+            derive_surface_layout(65_535, 0, C3dSurfaceLayoutGates::default()),
+            Ok(SurfaceLayout {
+                width: 0,
+                height: 0,
+                horizontal_padding: 0,
+                vertical_padding: 0,
+            })
+        );
+        assert_eq!(
+            derive_surface_layout(
+                1,
+                1,
+                C3dSurfaceLayoutGates {
+                    force_quarter: true,
+                    ..C3dSurfaceLayoutGates::default()
+                },
+            ),
+            Ok(SurfaceLayout {
+                width: 1,
+                height: 0,
+                horizontal_padding: 0,
+                vertical_padding: 0,
+            })
+        );
+        assert_eq!(
+            derive_surface_layout(
+                40_000,
+                1,
+                C3dSurfaceLayoutGates {
+                    expand_width_dominant: true,
+                    ..C3dSurfaceLayoutGates::default()
+                },
+            ),
+            Err(SurfaceLayoutIssue {
+                axis: C3dSurfaceLayoutAxis::Vertical,
+                extent_bits: 40_000,
+            })
+        );
+    }
+
+    #[test]
+    fn resource_scaling_uses_f64_intermediate_and_one_f32_store() {
+        let mut word = 1.25f32.to_bits();
+        scale_runtime_word(&mut word, 10, 3);
+        assert_eq!(word, 0.875f32.to_bits());
+
+        let mut discriminator = 0x03a6_fc54;
+        scale_runtime_word(&mut discriminator, 3, 2);
+        assert_eq!(discriminator, 0x02de_a5c5);
+        assert_eq!(
+            ((1.0f32 / 3.0) * f32::from_bits(0x03a6_fc54)).to_bits(),
+            0x02de_a5c6
         );
     }
 }

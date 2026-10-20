@@ -138,8 +138,9 @@ consecutive equal prepared selectors, deduplicates local entry ordinals in
 first-use order, and emits three compact indices per source entry. It retains
 borrowed typed source views rather than pretending to produce render-ready
 vertices. Runtime affine conversion, selector/resource preparation, associated
-side-vector materialization, geometry/material execution, and pixels remain
-unrecovered rather than inferred. Group-2 records now also classify complete
+side-vector materialization, and resource-derived mapping-coordinate scaling
+are now recovered below; material execution and pixels remain unrecovered.
+Group-2 records now also classify complete
 `BM` signatures as opaque bitmap bytes and expose strictly framed, borrowed
 `ANIM` entries with their resource ordinals, raw advance thresholds, and
 separate legacy low-byte behavior. Bitmap pixels remain undecoded here because
@@ -154,8 +155,10 @@ index zero remains the recovered color key. Bounded-label/dimensions/pixels
 matches share arena-scoped stable prepared IDs, entry24 selectors retain source
 order and `-1` remains an explicit missing selector, and one bad optional object
 rolls back only its new resources before later slots continue. Palette
-attachment, legacy conditional quarter-resolution, backend upload, and runtime
-vertices remain later boundaries.
+attachment and backend upload remain later boundaries. The prepared resource
+also retains the raw low words of its originating DIB dimensions because the
+legacy surface-layout path consumes those words rather than normalized decoded
+extents.
 Prepared selectors now feed the checked consecutive-run topology planner through
 a combined constructor tied to the exact borrowed asset set. The resulting
 fixed-slot plans preserve group order, source views, missing selectors, compact
@@ -166,8 +169,16 @@ reproduces wrapping Q16 affine arithmetic, f32 field layout, the persistent
 pass-through latch, opaque pre-mutation side vectors, source-order last-writer
 corner mutation, missing selectors, and batch compaction. All reviewed root
 records force pass-through. Per-slot loader state keeps the unresolved tuple
-gate explicit. Resource-driven one-time coordinate scaling remains the next
-boundary.
+gate explicit. A second materializer derives the legacy surface layout from the
+first interned resource occurrence, including wrapping width alignment,
+quarter/half gates, and asymmetric square expansion. It applies vertical then
+horizontal mapping-coordinate factors with one f32 store, shares first-resource
+claims by source vertex ordinal across selector runs, preserves same-entry
+duplicate multiplication, and only then compacts batches. The exact root corpus
+has square resources and therefore takes the proven zero-padding/no-multiply
+case under normal or quarter preparation. Palette/material binding, backend
+upload, rasterization, and the unresolved tuple-source gate are the next C3D
+boundaries.
 
 Exit gate:
 

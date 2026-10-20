@@ -470,8 +470,9 @@ mod tests {
         root_menu_c3d_assets::load_root_menu_c3d,
         root_menu_c3d_resources::{C3dPreparedResourceAccessError, C3dResourcePreparationError},
         root_menu_c3d_runtime::{
-            C3dMode2CornerSource, C3dMode2LoadState, RootMenuC3dMode2LoadStates,
-            materialize_root_menu_mode2_pre_scale,
+            C3dMode2CornerSource, C3dMode2LoadState, C3dSurfaceLayoutAxis, C3dSurfaceLayoutGates,
+            RootMenuC3dMode2LoadStates, RootMenuC3dMode2MaterializationError,
+            materialize_root_menu_mode2_pre_scale, materialize_root_menu_mode2_resource_scaled,
         },
     };
 
@@ -828,10 +829,12 @@ mod tests {
         let mut states = [C3dMode2LoadState {
             prepared_resource_count: 1,
             corner_source: C3dMode2CornerSource::OrdinaryDefaults,
+            surface_layout: Default::default(),
         }; ROOT_MENU_C3D_REQUEST_COUNT];
         states[RootMenuC3dSlot::Championship.index()] = C3dMode2LoadState {
             prepared_resource_count: 0,
             corner_source: C3dMode2CornerSource::SourceEntryTuples,
+            surface_layout: Default::default(),
         };
 
         let runtime = materialize_root_menu_mode2_pre_scale(
@@ -1009,6 +1012,290 @@ mod tests {
         }
     }
 
+    #[test]
+    fn resource_scaling_is_source_ordinal_global_across_runs_and_missing() {
+        let entry = [
+            1 << 16,
+            2 << 16,
+            3 << 16,
+            32_768,
+            0,
+            4 << 16,
+            5 << 16,
+            6 << 16,
+        ];
+        let entries = [entry; 3];
+        let corners = [0, 1, 2];
+        let groups = [
+            runtime_group(
+                &entries,
+                &[corners, corners, corners],
+                &[1, 0, 1],
+                &[[[0; 4]; 3]; 3],
+            ),
+            runtime_group(&entries, &[corners, corners], &[-1, 1], &[[[0; 4]; 3]; 2]),
+            runtime_group(&entries, &[corners, corners], &[0, 1], &[[[0; 4]; 3]; 2]),
+        ];
+        let fixture = fixture_for(&[(
+            RootMenuC3dSlot::Championship,
+            c3d_with_group0(
+                &[Group0 {
+                    field_04: -1,
+                    matrix: identity_matrix(),
+                    references: vec![0, 1, 2],
+                }],
+                &groups,
+                &[
+                    (*b"SQUARE!!!!!!", indexed_bmp_dimensions(1, 2, 8, 4, 4)),
+                    (*b"TALL!!!!!!!!", indexed_bmp_dimensions(1, 2, 8, 4, 8)),
+                ],
+            ),
+        )]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let states = uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults);
+        let pre_scale = materialize_root_menu_mode2_pre_scale(&topology, states).unwrap();
+        let scaled = materialize_root_menu_mode2_resource_scaled(&topology, states).unwrap();
+        let pre_reference = pre_scale
+            .get(RootMenuC3dSlot::Championship)
+            .unwrap()
+            .group0_records()
+            .next()
+            .unwrap()
+            .references()
+            .next()
+            .unwrap();
+        let references = scaled
+            .get(RootMenuC3dSlot::Championship)
+            .unwrap()
+            .group0_records()
+            .next()
+            .unwrap()
+            .references()
+            .collect::<Vec<_>>();
+
+        for batch in references[0].batches() {
+            assert_eq!(batch.vertices()[0].adjusted_pair()[0], 0.1875);
+        }
+        for batch in references[1].batches() {
+            assert_eq!(batch.vertices()[0].adjusted_pair()[0], 0.1875);
+        }
+        for batch in references[2].batches() {
+            assert_eq!(batch.vertices()[0].adjusted_pair()[0], 0.5);
+        }
+
+        let before = pre_reference.batches().next().unwrap();
+        let after = references[0].batches().next().unwrap();
+        assert_eq!(after.selector(), before.selector());
+        assert_eq!(
+            after.source_entry32_ordinals(),
+            before.source_entry32_ordinals()
+        );
+        assert_eq!(after.side_vectors(), before.side_vectors());
+        assert_eq!(after.indices(), before.indices());
+        let before_words = before.vertices()[0].words();
+        let after_words = after.vertices()[0].words();
+        assert_eq!(&after_words[..6], &before_words[..6]);
+        assert_eq!(after_words[7], before_words[7]);
+    }
+
+    #[test]
+    fn scaling_repeats_duplicate_corners_but_resets_for_each_reference() {
+        let groups = [runtime_group(
+            &[[0, 0, 0, 32_768, 0, 0, 0, 0]],
+            &[[0, 0, 0]],
+            &[0],
+            &[[[0; 4]; 3]],
+        )];
+        let fixture = fixture_for(&[(
+            RootMenuC3dSlot::Rally,
+            c3d_with_group0(
+                &[Group0 {
+                    field_04: -1,
+                    matrix: identity_matrix(),
+                    references: vec![0, 0],
+                }],
+                &groups,
+                &[(*b"DUPLICATE!!!", indexed_bmp_dimensions(1, 2, 8, 4, 8))],
+            ),
+        )]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let runtime = materialize_root_menu_mode2_resource_scaled(
+            &topology,
+            uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+        )
+        .unwrap();
+        let references = runtime
+            .get(RootMenuC3dSlot::Rally)
+            .unwrap()
+            .group0_records()
+            .next()
+            .unwrap()
+            .references()
+            .collect::<Vec<_>>();
+
+        assert_eq!(references.len(), 2);
+        for reference in references {
+            assert_eq!(
+                reference.batches().next().unwrap().vertices()[0].adjusted_pair()[0],
+                27.0 / 1024.0
+            );
+        }
+    }
+
+    #[test]
+    fn scaling_visited_storage_is_not_limited_to_legacy_1024_entries() {
+        let mut entries = vec![[0; 8]; 1_025];
+        entries[1_024][3] = 32_768;
+        let groups = [runtime_group(
+            &entries,
+            &[[1_024, 1_024, 1_024]],
+            &[0],
+            &[[[0; 4]; 3]],
+        )];
+        let fixture = fixture_for(&[(
+            RootMenuC3dSlot::TimeTrial,
+            c3d_with_group0(
+                &[Group0 {
+                    field_04: -1,
+                    matrix: identity_matrix(),
+                    references: vec![0],
+                }],
+                &groups,
+                &[(*b"OVER-1024!!!", indexed_bmp_dimensions(1, 2, 8, 4, 8))],
+            ),
+        )]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let runtime = materialize_root_menu_mode2_resource_scaled(
+            &topology,
+            uniform_load_states(0, C3dMode2CornerSource::OrdinaryDefaults),
+        )
+        .unwrap();
+        let batch = runtime
+            .get(RootMenuC3dSlot::TimeTrial)
+            .unwrap()
+            .group0_records()
+            .next()
+            .unwrap()
+            .references()
+            .next()
+            .unwrap()
+            .batches()
+            .next()
+            .unwrap();
+        assert_eq!(batch.source_entry32_ordinals(), &[1_024]);
+        assert_eq!(batch.vertices()[0].adjusted_pair()[0], 27.0 / 1024.0);
+    }
+
+    #[test]
+    fn aliased_resource_uses_the_first_creating_slots_layout_policy() {
+        let entries = [[0, 0, 0, 0, 0, 0, 0, 0]; 3];
+        let groups = [runtime_group(&entries, &[[0, 1, 2]], &[0], &[[[0; 4]; 3]])];
+        let object = || {
+            c3d_with_group0(
+                &[Group0 {
+                    field_04: -1,
+                    matrix: identity_matrix(),
+                    references: vec![0],
+                }],
+                &groups,
+                &[(*b"ALIAS-SCALE!", indexed_bmp_dimensions(1, 2, 8, 8, 4))],
+            )
+        };
+        let fixture = fixture_for(&[
+            (RootMenuC3dSlot::Championship, object()),
+            (RootMenuC3dSlot::Rally, object()),
+        ]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        assert_eq!(topology.resource_len(), 1);
+        let mut states = [C3dMode2LoadState {
+            prepared_resource_count: 0,
+            corner_source: C3dMode2CornerSource::OrdinaryDefaults,
+            surface_layout: C3dSurfaceLayoutGates::default(),
+        }; ROOT_MENU_C3D_REQUEST_COUNT];
+        states[RootMenuC3dSlot::Championship.index()]
+            .surface_layout
+            .expand_width_dominant = true;
+        let runtime = materialize_root_menu_mode2_resource_scaled(
+            &topology,
+            RootMenuC3dMode2LoadStates::new(states),
+        )
+        .unwrap();
+
+        for slot in [RootMenuC3dSlot::Championship, RootMenuC3dSlot::Rally] {
+            assert_eq!(
+                runtime
+                    .get(slot)
+                    .unwrap()
+                    .group0_records()
+                    .next()
+                    .unwrap()
+                    .references()
+                    .next()
+                    .unwrap()
+                    .batches()
+                    .next()
+                    .unwrap()
+                    .vertices()[0]
+                    .adjusted_pair()[1],
+                0.375
+            );
+        }
+    }
+
+    #[test]
+    fn unusable_surface_extent_is_contextual_and_transactional() {
+        let groups = [runtime_group(&[[0; 8]], &[[0, 0, 0]], &[0], &[[[0; 4]; 3]])];
+        let mut bitmap = indexed_bmp(1, 2, 8);
+        bitmap[22..26].copy_from_slice(&(-1i32).to_le_bytes());
+        let fixture = fixture_for(&[(
+            RootMenuC3dSlot::Options,
+            c3d_with_group0(
+                &[Group0 {
+                    field_04: -1,
+                    matrix: identity_matrix(),
+                    references: vec![0],
+                }],
+                &groups,
+                &[(*b"BAD-EXTENT!!", bitmap)],
+            ),
+        )]);
+        let assets = load(&fixture);
+        let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+        let resource_id = topology.resources().next().unwrap().0;
+        let object = topology.get(RootMenuC3dSlot::Options).unwrap();
+        let entry = object.group(0).unwrap().batches()[0].entries_24()[0];
+        let states = [C3dMode2LoadState {
+            prepared_resource_count: 0,
+            corner_source: C3dMode2CornerSource::OrdinaryDefaults,
+            surface_layout: C3dSurfaceLayoutGates::default(),
+        }; ROOT_MENU_C3D_REQUEST_COUNT];
+
+        assert_eq!(
+            materialize_root_menu_mode2_resource_scaled(
+                &topology,
+                RootMenuC3dMode2LoadStates::new(states),
+            ),
+            Err(
+                RootMenuC3dMode2MaterializationError::UnusableSurfaceExtent {
+                    slot: RootMenuC3dSlot::Options,
+                    group0_record_index: 0,
+                    value_index: 0,
+                    group1_ordinal: 0,
+                    entry24_index: 0,
+                    entry24_offset: entry.offset(),
+                    resource_id,
+                    first_slot: RootMenuC3dSlot::Options,
+                    axis: C3dSurfaceLayoutAxis::Horizontal,
+                    extent_bits: u16::MAX,
+                }
+            )
+        );
+    }
+
     fn identity_matrix() -> [i32; 16] {
         let mut matrix = [0; 16];
         matrix[0] = 1 << 16;
@@ -1025,6 +1312,7 @@ mod tests {
         RootMenuC3dMode2LoadStates::splat(C3dMode2LoadState {
             prepared_resource_count,
             corner_source,
+            surface_layout: Default::default(),
         })
     }
 
@@ -1171,25 +1459,43 @@ mod tests {
     }
 
     fn indexed_bmp(pixel: u8, palette_blue: u8, depth: u16) -> Vec<u8> {
+        indexed_bmp_dimensions(pixel, palette_blue, depth, 1, 1)
+    }
+
+    fn indexed_bmp_dimensions(
+        pixel: u8,
+        palette_blue: u8,
+        depth: u16,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
         let palette_len = 256 * 4;
         let pixel_offset = 14 + 40 + palette_len;
-        let stride = usize::from(depth).div_ceil(32) * 4;
-        let file_len = pixel_offset + stride;
+        let stride = (width as usize * usize::from(depth)).div_ceil(32) * 4;
+        let image_len = stride * height as usize;
+        let file_len = pixel_offset + image_len;
         let mut bytes = vec![0; file_len];
         bytes[0..2].copy_from_slice(b"BM");
         bytes[2..6].copy_from_slice(&(file_len as u32).to_le_bytes());
         bytes[10..14].copy_from_slice(&(pixel_offset as u32).to_le_bytes());
         bytes[14..18].copy_from_slice(&40u32.to_le_bytes());
-        bytes[18..22].copy_from_slice(&1i32.to_le_bytes());
-        bytes[22..26].copy_from_slice(&1i32.to_le_bytes());
+        bytes[18..22].copy_from_slice(&(width as i32).to_le_bytes());
+        bytes[22..26].copy_from_slice(&(height as i32).to_le_bytes());
         bytes[26..28].copy_from_slice(&1u16.to_le_bytes());
         bytes[28..30].copy_from_slice(&depth.to_le_bytes());
-        bytes[34..38].copy_from_slice(&(stride as u32).to_le_bytes());
+        bytes[34..38].copy_from_slice(&(image_len as u32).to_le_bytes());
         bytes[46..50].copy_from_slice(&256u32.to_le_bytes());
         for index in 0..256 {
             bytes[54 + index * 4] = palette_blue.wrapping_add(index as u8);
         }
-        bytes[pixel_offset] = pixel;
+        if depth == 8 {
+            for row in 0..height as usize {
+                bytes[pixel_offset + row * stride..pixel_offset + row * stride + width as usize]
+                    .fill(pixel);
+            }
+        } else {
+            bytes[pixel_offset] = pixel;
+        }
         bytes
     }
 

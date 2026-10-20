@@ -103,6 +103,7 @@ pub struct C3dPreparedResource {
     first_path: &'static str,
     first_resource_ordinal: u16,
     source_label: [u8; C3D_BLOB_LABEL_LEN],
+    source_dib_extent_low16: [u16; 2],
     bitmap: IndexedBitmap,
 }
 
@@ -125,6 +126,13 @@ impl C3dPreparedResource {
     #[must_use]
     pub const fn source_label(&self) -> &[u8; C3D_BLOB_LABEL_LEN] {
         &self.source_label
+    }
+
+    /// Raw low words read by the legacy surface constructor from the embedded
+    /// BMP's signed 32-bit DIB width and height fields.
+    #[must_use]
+    pub const fn source_dib_extent_low16(&self) -> [u16; 2] {
+        self.source_dib_extent_low16
     }
 
     #[must_use]
@@ -503,14 +511,22 @@ fn prepare_object(
                 source,
             }
         })?;
+        let source_dib_extent_low16 = [
+            u16::from_le_bytes([bitmap_bytes[18], bitmap_bytes[19]]),
+            u16::from_le_bytes([bitmap_bytes[22], bitmap_bytes[23]]),
+        ];
+        let source = DecodedC3dResource {
+            label: *record.label(),
+            dib_extent_low16: source_dib_extent_low16,
+            bitmap,
+        };
         let id = intern_resource(
             resources,
             arena,
             asset,
             resource_ordinal,
             resource_offset,
-            *record.label(),
-            bitmap,
+            source,
         )?;
         ordinal_resources.push(id);
     }
@@ -549,20 +565,25 @@ fn prepare_object(
     })
 }
 
+struct DecodedC3dResource {
+    label: [u8; C3D_BLOB_LABEL_LEN],
+    dib_extent_low16: [u16; 2],
+    bitmap: IndexedBitmap,
+}
+
 fn intern_resource(
     resources: &mut Vec<C3dPreparedResource>,
     arena: C3dPreparedResourceArenaId,
     asset: &RootMenuC3dAsset,
     resource_ordinal: u16,
     resource_offset: usize,
-    source_label: [u8; C3D_BLOB_LABEL_LEN],
-    bitmap: IndexedBitmap,
+    source: DecodedC3dResource,
 ) -> Result<C3dPreparedResourceId, C3dResourcePreparationError> {
     if let Some(index) = resources.iter().position(|resource| {
-        bounded_c_label_eq(&resource.source_label, &source_label)
-            && resource.bitmap.width == bitmap.width
-            && resource.bitmap.height == bitmap.height
-            && resource.bitmap.pixels == bitmap.pixels
+        bounded_c_label_eq(&resource.source_label, &source.label)
+            && resource.bitmap.width == source.bitmap.width
+            && resource.bitmap.height == source.bitmap.height
+            && resource.bitmap.pixels == source.bitmap.pixels
     }) {
         return Ok(resource_id(arena, index));
     }
@@ -578,8 +599,9 @@ fn intern_resource(
         first_slot: asset.slot,
         first_path: asset.path,
         first_resource_ordinal: resource_ordinal,
-        source_label,
-        bitmap,
+        source_label: source.label,
+        source_dib_extent_low16: source.dib_extent_low16,
+        bitmap: source.bitmap,
     });
     Ok(id)
 }
@@ -681,10 +703,33 @@ mod tests {
         assert_eq!(retained.first_slot(), RootMenuC3dSlot::Championship);
         assert_eq!(retained.first_resource_ordinal(), 0);
         assert_eq!(retained.source_label(), &label_a);
+        assert_eq!(retained.source_dib_extent_low16(), [1, 1]);
         assert_eq!(retained.bitmap().palette[0].blue, 10);
         assert_eq!(retained.bitmap().pixels, [1]);
         assert_eq!(retained.color_key_index(), 0);
         assert_eq!(prepared.resources().len(), 3);
+    }
+
+    #[test]
+    fn retains_raw_dib_extent_words_before_bitmap_normalization() {
+        let mut bitmap = indexed_bmp(1, 10, 1, 8);
+        bitmap[22..26].copy_from_slice(&(-1i32).to_le_bytes());
+        let asset = object(
+            RootMenuC3dSlot::Championship,
+            &[vec![0]],
+            &[(*b"RAW-DIB-WORD", bitmap)],
+        );
+        let prepared = prepare_slots(
+            VisualVariant::Normal,
+            slot_refs([Some(&asset), None, None, None, None, None]),
+            BitmapLimits::default(),
+        )
+        .unwrap();
+        let resource = prepared.resources().next().unwrap().1;
+
+        assert_eq!(resource.source_dib_extent_low16(), [1, u16::MAX]);
+        assert_eq!(resource.bitmap().height, 1);
+        assert!(resource.bitmap().source_was_top_down);
     }
 
     #[test]
@@ -785,8 +830,11 @@ mod tests {
             &asset,
             0,
             100,
-            *b"DIMENSIONS!!",
-            tall,
+            DecodedC3dResource {
+                label: *b"DIMENSIONS!!",
+                dib_extent_low16: [1, 2],
+                bitmap: tall,
+            },
         )
         .unwrap();
         let wide_id = intern_resource(
@@ -795,8 +843,11 @@ mod tests {
             &asset,
             1,
             200,
-            *b"DIMENSIONS!!",
-            wide,
+            DecodedC3dResource {
+                label: *b"DIMENSIONS!!",
+                dib_extent_low16: [2, 1],
+                bitmap: wide,
+            },
         )
         .unwrap();
 
@@ -1051,8 +1102,11 @@ mod tests {
                 &asset,
                 index as u16,
                 100 + index,
-                label,
-                bitmap.clone(),
+                DecodedC3dResource {
+                    label,
+                    dib_extent_low16: [1, 1],
+                    bitmap: bitmap.clone(),
+                },
             )
             .unwrap();
         }
@@ -1064,8 +1118,11 @@ mod tests {
             &asset,
             ROOT_MENU_C3D_RESOURCE_CAPACITY as u16,
             9000,
-            [0xff; 12],
-            bitmap,
+            DecodedC3dResource {
+                label: [0xff; 12],
+                dib_extent_low16: [1, 1],
+                bitmap,
+            },
         )
         .unwrap_err();
         assert_eq!(

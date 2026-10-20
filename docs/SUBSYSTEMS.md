@@ -120,9 +120,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   of embedded C3D bitmaps into an owned 2,048-entry arena and six fixed object
   slots. It preserves source indices, embedded palettes, index-zero color key,
   label/content aliasing, source-ordered prepared selectors, exact `-1`
-  missing selectors, typed failures, and transactional per-object rollback.
-  Palette attachment, conditional downsampling, upload, and vertex conversion
-  remain separate.
+  missing selectors, raw DIB dimension low words, typed failures, and
+  transactional per-object rollback. Palette attachment and upload remain
+  separate.
 - `cmr-core::root_menu_c3d_topology`: combined fixed-slot resource preparation
   and borrowed topology planning tied to the exact source asset set. It joins
   arena-scoped selectors to ordered group1 records, catalogs checked group0
@@ -131,8 +131,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::root_menu_c3d_runtime`: fixed-slot, per-group0-reference mode-2
   materialization through the recovered wrapping Q16/f32 conversion, explicit
   per-load global-state inputs, pre-mutation opaque side capture, ordered corner
-  mutation, and compact batches. Resource-derived coordinate scaling and
-  backend resources remain separate.
+  mutation, resource-derived surface-layout and mapping-coordinate scaling,
+  first-usable-resource visitation, and compact batches. The generic checked
+  path retains raw 16-bit wrapping and one-store f64→f32 arithmetic; backend
+  resources, palette/material binding, and rasterization remain separate.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes, plus explicit selection-slot mapping and six independent wrapping
