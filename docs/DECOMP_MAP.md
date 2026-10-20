@@ -152,8 +152,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T19:03:35Z
-milestone=stage-root-c3d-terminal-scene
+updated_utc=2026-10-20T19:10:24Z
+milestone=recover-root-c3d-render-state
 completed=38
 partial=16
 not_started=50

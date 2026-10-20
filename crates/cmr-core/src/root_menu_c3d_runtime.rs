@@ -82,10 +82,11 @@ impl RootMenuC3dMode2LoadStates {
     }
 }
 
-/// Exact eight-word runtime vertex before unrecovered resource-driven scaling.
+/// Exact Direct3D lit vertex before recovered resource-driven UV scaling.
 ///
-/// Words 0..=2 and 6..=7 contain f32 bits. Mode 2 leaves word 3 as f32 bits
-/// but replaces words 4 and 5 with packed opaque values.
+/// The eight words match the legacy `D3DLVERTEX` consumer ABI: XYZ,
+/// `dwReserved`, packed diffuse, packed specular, and UV. The source-side
+/// meaning of word 3 remains unknown. Mode 2 replaces the two packed colors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct C3dMode2PreScaleVertex {
     words: [u32; 8],
@@ -100,6 +101,21 @@ impl C3dMode2PreScaleVertex {
     #[must_use]
     pub fn first_triplet(self) -> [f32; 3] {
         std::array::from_fn(|index| f32::from_bits(self.words[index]))
+    }
+
+    #[must_use]
+    pub const fn reserved_word(self) -> u32 {
+        self.words[3]
+    }
+
+    #[must_use]
+    pub const fn diffuse(self) -> u32 {
+        self.words[4]
+    }
+
+    #[must_use]
+    pub const fn specular(self) -> u32 {
+        self.words[5]
     }
 
     #[must_use]
@@ -254,9 +270,10 @@ pub struct RootMenuC3dMode2PreScaleRuntime {
     slots: [Option<RootMenuC3dMode2PreScaleObject>; ROOT_MENU_C3D_REQUEST_COUNT],
 }
 
-/// Exact eight-word runtime vertex after resource-derived coordinate scaling.
+/// Exact Direct3D lit vertex after resource-derived UV scaling.
 ///
-/// This is loader-materialized CPU data, not a backend-ready vertex.
+/// This is loader-materialized CPU data in the legacy `D3DLVERTEX` consumer
+/// ABI; the source-side meaning of its `dwReserved` word remains unknown.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct C3dMode2ResourceScaledVertex {
     words: [u32; 8],
@@ -271,6 +288,21 @@ impl C3dMode2ResourceScaledVertex {
     #[must_use]
     pub fn first_triplet(self) -> [f32; 3] {
         std::array::from_fn(|index| f32::from_bits(self.words[index]))
+    }
+
+    #[must_use]
+    pub const fn reserved_word(self) -> u32 {
+        self.words[3]
+    }
+
+    #[must_use]
+    pub const fn diffuse(self) -> u32 {
+        self.words[4]
+    }
+
+    #[must_use]
+    pub const fn specular(self) -> u32 {
+        self.words[5]
     }
 
     #[must_use]
@@ -1039,6 +1071,36 @@ fn pack_mode2_tuple([t0, t1, t2, t3]: [u8; 4]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lit_vertex_accessors_preserve_the_exact_eight_word_abi() {
+        let words = [
+            1.25_f32.to_bits(),
+            (-2.5_f32).to_bits(),
+            3.75_f32.to_bits(),
+            0x1234_5678,
+            0x96aa_bbcc,
+            0xff11_2233,
+            0.25_f32.to_bits(),
+            0.75_f32.to_bits(),
+        ];
+        let pre_scale = C3dMode2PreScaleVertex { words };
+        let scaled = C3dMode2ResourceScaledVertex { words };
+
+        for vertex in [pre_scale.words(), scaled.words()] {
+            assert_eq!(vertex, words);
+        }
+        assert_eq!(pre_scale.first_triplet(), [1.25, -2.5, 3.75]);
+        assert_eq!(scaled.first_triplet(), [1.25, -2.5, 3.75]);
+        assert_eq!(pre_scale.reserved_word(), 0x1234_5678);
+        assert_eq!(scaled.reserved_word(), 0x1234_5678);
+        assert_eq!(pre_scale.diffuse(), 0x96aa_bbcc);
+        assert_eq!(scaled.diffuse(), 0x96aa_bbcc);
+        assert_eq!(pre_scale.specular(), 0xff11_2233);
+        assert_eq!(scaled.specular(), 0xff11_2233);
+        assert_eq!(pre_scale.adjusted_pair(), [0.25, 0.75]);
+        assert_eq!(scaled.adjusted_pair(), [0.25, 0.75]);
+    }
 
     #[test]
     fn q16_multiply_uses_signed_shift_and_retains_low_32_bits() {

@@ -18,6 +18,7 @@ pub mod root_menu_bitmap_raster;
 pub mod root_menu_c3d_assets;
 pub mod root_menu_c3d_execute;
 pub mod root_menu_c3d_frame_plan;
+pub mod root_menu_c3d_render_state;
 pub mod root_menu_c3d_resources;
 pub mod root_menu_c3d_runtime;
 pub mod root_menu_c3d_scene;
