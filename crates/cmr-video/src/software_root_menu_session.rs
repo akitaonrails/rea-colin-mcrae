@@ -15,7 +15,9 @@ use cmr_core::font_raster::{FontPoolUploadError, UploadedFontPool};
 use cmr_core::localization::Language;
 use cmr_core::localization_assets::{LocalizationLoadError, load_frontend_text_table};
 use cmr_core::root_menu_assets::VisualVariant;
-use cmr_core::root_menu_bitmap_assets::{RootMenuBitmapLoadError, load_root_menu_bitmaps};
+use cmr_core::root_menu_bitmap_assets::{
+    RootMenuBitmapLoadError, RootMenuBitmapSlot, load_root_menu_bitmaps,
+};
 use cmr_core::root_menu_bitmap_raster::{
     RootMenuBitmapUploadDiagnostic, RootMenuBitmapUploadError, RootMenuSurfaceError,
     UploadedRootMenuBitmapPool, prepare_root_menu_surfaces, upload_root_menu_bitmaps,
@@ -299,6 +301,11 @@ impl SoftwareRootMenuSession<'_, '_, '_, '_> {
     #[must_use]
     pub fn bitmap_diagnostics(&self) -> &[RootMenuBitmapUploadDiagnostic<SoftwareVideoError>] {
         self.bitmap_diagnostics
+    }
+
+    #[must_use]
+    pub fn bitmap_extent(&self, slot: RootMenuBitmapSlot) -> Option<(u32, u32)> {
+        self.bitmaps.extent(slot)
     }
 
     pub fn c3d_load_diagnostics(&self) -> impl ExactSizeIterator<Item = &RootMenuC3dLoadError> {

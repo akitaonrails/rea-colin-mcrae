@@ -306,19 +306,20 @@ fn invalid_extent_and_glyph_ranges_fail_before_backend_creation() {
 }
 
 #[test]
-fn rejects_nonpositive_and_out_of_atlas_sources_before_backend_creation() {
-    let font = font();
-    for invalid in [
-        glyph(0, b'A', 0, 0, 0, 1, 0, 0),
-        glyph(0, b'A', -1, 0, 2, 1, 0, 0),
-        glyph(0, b'A', 3, 0, 2, 1, 0, 0),
-    ] {
+fn rejects_canonical_nonpositive_sources_before_backend_creation() {
+    const FIRST_GLYPH: usize = 0x436 + 4 * 2 + 24;
+    for (field_offset, value) in [(2, -1i16), (4, -1), (6, 0), (6, -1), (8, 0)] {
+        let mut input = synthetic_font();
+        input[FIRST_GLYPH + field_offset..FIRST_GLYPH + field_offset + 2]
+            .copy_from_slice(&value.to_le_bytes());
+        let font = parse_legacy_font(&input, FontLimits::default()).unwrap();
+        let invalid = text_plan(&font, b"A", PointI32 { x: 0, y: 0 });
         let mut backend = RecordingBackend::default();
         assert!(matches!(
             execute_text_plan(
                 &mut backend,
                 &font,
-                &manual_plan(vec![invalid]),
+                &invalid,
                 1,
                 DisplayExtent {
                     width: 10,
@@ -338,6 +339,40 @@ fn rejects_nonpositive_and_out_of_atlas_sources_before_backend_creation() {
         assert!(backend.created.is_empty());
         assert!(backend.blits.is_empty());
     }
+}
+
+#[test]
+fn parsed_out_of_atlas_glyph_fails_safely_without_poisoning_later_draws() {
+    let mut input = synthetic_font();
+    const SECOND_GLYPH_Y: usize = 0x436 + 4 * 2 + 24 + 16 + 4;
+    input[SECOND_GLYPH_Y..SECOND_GLYPH_Y + 2].copy_from_slice(&2i16.to_le_bytes());
+    let font = parse_legacy_font(&input, FontLimits::default()).unwrap();
+    let plan = text_plan(&font, b"BA", PointI32 { x: 0, y: 0 });
+    let extent = DisplayExtent {
+        width: 10,
+        height: 5,
+    };
+    let mut backend = RecordingBackend::default();
+
+    let outcome = execute_text_plan(&mut backend, &font, &plan, 1, extent).unwrap();
+    assert_eq!(outcome.planned_glyphs, 2);
+    assert_eq!(outcome.successful_blits, 1);
+    assert_eq!(outcome.layout_diagnostics.len(), 1);
+    assert!(matches!(
+        outcome.layout_diagnostics[0],
+        FontRasterLayoutError::GlyphSourceOutOfRange {
+            blit_index: 0,
+            code: b'B',
+            atlas_width: 4,
+            atlas_height: 2,
+            ..
+        }
+    ));
+    assert_eq!(backend.created.len(), 1);
+    assert_eq!(backend.blits.len(), 1);
+    assert_eq!(backend.blits[0].2.source, edges(0, 0, 2, 1));
+    assert_eq!(backend.blits[0].2.destination, edges(2, 0, 4, 1));
+    assert_eq!(backend.destroyed, [7]);
 }
 
 #[test]

@@ -1565,6 +1565,7 @@ mod tests {
             | RootMenuBitmapSlot::Animation6 => (400, 400),
             _ => (4, 1),
         };
+        let row_stride = (width + 3) & !3;
         IndexedBitmap {
             width,
             height,
@@ -1579,6 +1580,8 @@ mod tests {
                 256
             ],
             pixels: vec![root_marker(slot); (width * height) as usize],
+            row_stride,
+            stored_pixels: vec![root_marker(slot); (row_stride * height) as usize],
             metadata: BitmapMetadata {
                 reserved_1: 0,
                 reserved_2: 0,

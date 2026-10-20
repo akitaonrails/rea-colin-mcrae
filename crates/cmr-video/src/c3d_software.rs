@@ -314,6 +314,8 @@ mod tests {
                 },
             ],
             pixels: vec![0, 1, 1, 0],
+            row_stride: 4,
+            stored_pixels: vec![0, 1, 0, 0, 1, 0, 0, 0],
             metadata: BitmapMetadata {
                 reserved_1: 7,
                 reserved_2: 8,
@@ -371,6 +373,8 @@ mod tests {
                 reserved: 4,
             }],
             pixels: (0..64).collect(),
+            row_stride: 8,
+            stored_pixels: (0..64).collect(),
             metadata: BitmapMetadata {
                 reserved_1: 0,
                 reserved_2: 0,
@@ -416,6 +420,8 @@ mod tests {
             source_was_top_down: false,
             palette: Vec::new(),
             pixels: (0..4096).map(|value| value as u8).collect(),
+            row_stride: 64,
+            stored_pixels: (0..4096).map(|value| value as u8).collect(),
             metadata: BitmapMetadata {
                 reserved_1: 0,
                 reserved_2: 0,
@@ -461,6 +467,8 @@ mod tests {
             source_was_top_down: false,
             palette: Vec::new(),
             pixels: vec![0; 32],
+            row_stride: 4,
+            stored_pixels: vec![0; 32],
             metadata: BitmapMetadata {
                 reserved_1: 0,
                 reserved_2: 0,

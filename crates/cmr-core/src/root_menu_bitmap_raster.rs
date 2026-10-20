@@ -1102,6 +1102,8 @@ mod tests {
                 256
             ],
             pixels: vec![marker; 4],
+            row_stride: 4,
+            stored_pixels: vec![marker; 4],
             metadata: BitmapMetadata {
                 reserved_1: 0,
                 reserved_2: 0,
@@ -1201,11 +1203,11 @@ mod tests {
         let mut parts = complete_parts(VisualVariant::Normal);
         parts.assets[RootMenuBitmapSlot::Backdrop.index()]
             .bitmap
-            .width = 3;
+            .stored_pixels
+            .pop();
         parts.assets[RootMenuBitmapSlot::Backdrop.index()]
             .bitmap
-            .pixels
-            .pop();
+            .row_stride = 3;
 
         assert!(matches!(
             prepare_parts(parts, &palette()),
@@ -1213,7 +1215,10 @@ mod tests {
                 slot: RootMenuBitmapSlot::Backdrop,
                 identity: RootMenuBitmapIdentity::Backdrop,
                 path: crate::root_menu_assets::ROOT_MENU_BACKDROP_PATH,
-                source: SurfaceError::UnsupportedUnalignedWidth(3),
+                source: SurfaceError::StoredRowStride {
+                    expected: 4,
+                    actual: 3,
+                },
             })
         ));
     }
@@ -1344,6 +1349,34 @@ mod tests {
             (10..10 + ROOT_MENU_BITMAP_REQUEST_COUNT as u8)
                 .rev()
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn center_icon_pool_uses_full_aligned_surface_extent() {
+        let mut parts = complete_parts(VisualVariant::Normal);
+        let center = &mut parts.assets[RootMenuBitmapSlot::ChampionshipGlobe.index()].bitmap;
+        center.width = 3;
+        center.height = 2;
+        center.pixels = vec![1, 2, 3, 4, 5, 6];
+        center.row_stride = 4;
+        center.stored_pixels = vec![1, 2, 3, 0, 4, 5, 6, 0];
+
+        let prepared = prepare_parts(parts, &palette()).unwrap();
+        let surface = &prepared
+            .get(RootMenuBitmapSlot::ChampionshipGlobe)
+            .unwrap()
+            .surface;
+        assert_eq!((surface.width, surface.height, surface.pitch), (4, 2, 4));
+        assert_eq!(surface.pixels, [1, 2, 3, 0, 4, 5, 6, 0]);
+
+        let mut backend = RecordingBackend::default();
+        let mut store = UploadedSourceStore::new(&mut backend);
+        let uploaded = upload_root_menu_bitmaps(&mut store, prepared).unwrap();
+
+        assert_eq!(
+            uploaded.pool.extent(RootMenuBitmapSlot::ChampionshipGlobe),
+            Some((4, 2))
         );
     }
 

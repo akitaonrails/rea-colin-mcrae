@@ -51,11 +51,12 @@ Status markers:
 - [~] `C06` Recover complete profile/save formats beyond known config fields.
 - [x] `C07` Parse frontend and game localization tables.
 - [x] `C08` Load localization through the verified asset store.
-- [x] `C09` Parse legacy font atlases, metrics, and glyph records.
+- [x] `C09` Parse legacy font atlases, metrics, and raw signed glyph records.
 - [x] `C10` Implement byte-text measurement, wrapping, and glyph layout.
-- [x] `C11` Upload/rasterize all 16 frontend fonts through shared sources.
+- [x] `C11` Upload and retain all 16 frontend fonts through shared sources.
 - [x] `C12` Recover startup art/palette selection and indexed presentation.
 - [ ] `C13` Run startup through a native executable and window.
+- [x] `C14` Preserve unsafe shipped glyph metadata with safe per-glyph continuation.
 
 ## D. Root-menu vertical slice
 
@@ -153,13 +154,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T20:17:33Z
-milestone=assemble-production-root-menu-session
-completed=39
+updated_utc=2026-10-20T20:28:30Z
+milestone=pass-reviewed-import-root-session-smoke
+completed=40
 partial=18
 not_started=48
 blocked=0
-total=105
+total=106
 current_focus=D14-D16-root-compatibility-gaps
-next_exit_gate=reviewed-import-root-session-smoke
+next_exit_gate=native-host-shell-and-root-presentation
 <!-- PROGRESS-TAIL-END -->

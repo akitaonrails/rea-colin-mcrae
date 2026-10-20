@@ -21,18 +21,20 @@ message dispatch, and steady-frame presentation decisions for future Win32 and
 SDL backends. No gameplay subsystem is yet claimed compatible.
 
 `cmr-video` currently supplies a deterministic in-memory indexed framebuffer
-used as the first executable backend oracle. It supports the recovered
-exact-size startup and index-zero keyed copies while rejecting unrecovered
-stretch and other color-key behavior.
+used as the first executable backend oracle. It supports startup, persistent
+font/root resources, recovered aligned BMP surfaces, bounded root C3D drawing,
+palette commit, and complete headless root-frame capture. Native window, input,
+clock, and audio hosts remain separate work.
 
 The first frontend foundation also includes bounded legacy configuration and
 localization models plus deterministic keyboard/joystick input rules. These
 now extend through the recovered root-screen state machine, exact menu visual
 and animation transcripts, verified root-bitmap loading, timing plans, and
-bounded FON/text layout plus persistent keyed-glyph resources. The localized
-root footer now renders into a tested software back buffer. These are
-platform-neutral contracts backed by synthetic tests; registry, host
-clock/input, native window, complete frame composition, audio, and gameplay
+bounded FON/text layout plus persistent keyed-glyph resources. A production
+software session now assembles the verified user import and renders repeated
+complete root frames; an opt-in reviewed-corpus smoke test covers two frames
+and teardown. These are platform-neutral compatibility contracts; registry,
+host clock/input, native window, audio, later frontend screens, and gameplay
 integrations are not yet complete.
 
 Known artifacts from the initial local installation:
@@ -83,6 +85,14 @@ cargo run -q -p cmr-assets -- import \
   --output runtime-data/installed-eu-derived-assets-v2
 ```
 
+Run the opt-in reviewed-import root-session smoke with:
+
+```sh
+CMR_RUNTIME_DATA="$PWD/runtime-data/installed-eu-derived-assets-v2" \
+  cargo test --locked -p cmr-video --test reviewed_import_session_smoke \
+  -- --ignored --nocapture
+```
+
 The profile accepts only the exact locally observed `Game/**`, `New_Fe/**`, and
 `ini/**` corpus. Other legitimate releases need reviewed metadata profiles;
 the importer intentionally has no `--ignore-hash` escape hatch.
@@ -95,6 +105,12 @@ progress footer are in [docs/DECOMP_MAP.md](docs/DECOMP_MAP.md), while recovered
 subsystem boundaries are in [docs/SUBSYSTEMS.md](docs/SUBSYSTEMS.md). The
 provisional Windows/Linux backend recommendation and its benchmark gates are in
 [docs/MODERN_BACKEND_RESEARCH.md](docs/MODERN_BACKEND_RESEARCH.md).
+
+From the repository root, watch the compact progress footer with:
+
+```sh
+watch -n 2 'tail -n 10 docs/DECOMP_MAP.md'
+```
 
 ## Legal note
 

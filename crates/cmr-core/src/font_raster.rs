@@ -164,6 +164,10 @@ pub struct FontRasterOutcome<E> {
     pub planned_glyphs: usize,
     pub no_ops: usize,
     pub successful_blits: usize,
+    /// Safe, per-glyph rejections discovered after the plan's fatal
+    /// invariants were validated. Entries retain plan order.
+    pub layout_diagnostics: Vec<FontRasterLayoutError>,
+    /// Backend submission failures, retained separately for API compatibility.
     pub diagnostics: Vec<FontBlitDiagnostic<E>>,
 }
 
@@ -273,9 +277,9 @@ impl UploadedFontPool {
     ) -> Result<FontRasterOutcome<B::Error>, FontRasterError<B::Error>> {
         let font = self.fonts.get(style);
         let source = self.sources[style as usize];
-        let (width, height) =
+        let validated =
             validate_text_plan(font, plan, destination_extent).map_err(FontRasterError::Layout)?;
-        execute_validated_text_plan_with(plan, width, height, |blit_plan| {
+        execute_validated_text_plan_with(plan, validated, |blit_plan| {
             match store.blit(source, destination, blit_plan) {
                 Ok(()) => Ok(()),
                 Err(SourceBlitError::Backend(error)) => Err(BlitSubmissionError::Diagnostic(error)),
@@ -333,13 +337,13 @@ pub fn execute_text_plan<B: IndexedVideoBackend>(
     destination: B::Surface,
     destination_extent: DisplayExtent,
 ) -> Result<FontRasterOutcome<B::Error>, FontRasterError<B::Error>> {
-    let (width, height) =
+    let validated =
         validate_text_plan(font, plan, destination_extent).map_err(FontRasterError::Layout)?;
     let atlas = font_atlas_surface(font).map_err(FontRasterError::Atlas)?;
     let source = backend
         .create_source(&atlas)
         .map_err(FontRasterError::CreateSource)?;
-    let outcome = execute_validated_text_plan_with(plan, width, height, |blit_plan| {
+    let outcome = execute_validated_text_plan_with(plan, validated, |blit_plan| {
         backend
             .blit(source, destination, blit_plan)
             .map_err(BlitSubmissionError::<B::Error, std::convert::Infallible>::Diagnostic)
@@ -353,18 +357,31 @@ fn validate_text_plan(
     font: &BitmapFont,
     plan: &TextPlan,
     destination_extent: DisplayExtent,
-) -> Result<(i16, i16), FontRasterLayoutError> {
+) -> Result<ValidatedTextPlan, FontRasterLayoutError> {
     let width = positive_i16(destination_extent.width).ok_or(
         FontRasterLayoutError::InvalidDestinationExtent(destination_extent),
     )?;
     let height = positive_i16(destination_extent.height).ok_or(
         FontRasterLayoutError::InvalidDestinationExtent(destination_extent),
     )?;
+    let mut rejected_sources = Vec::new();
     for (blit_index, glyph) in plan.blits.iter().enumerate() {
-        validate_glyph_source(font, blit_index, glyph)?;
+        if let Some(diagnostic) = validate_glyph_source(font, blit_index, glyph)? {
+            rejected_sources.push(diagnostic);
+        }
         destination_rectangle(blit_index, glyph)?;
     }
-    Ok((width, height))
+    Ok(ValidatedTextPlan {
+        width,
+        height,
+        rejected_sources,
+    })
+}
+
+struct ValidatedTextPlan {
+    width: i16,
+    height: i16,
+    rejected_sources: Vec<FontRasterLayoutError>,
 }
 
 enum BlitSubmissionError<E, F> {
@@ -374,17 +391,29 @@ enum BlitSubmissionError<E, F> {
 
 fn execute_validated_text_plan_with<E, F>(
     plan: &TextPlan,
-    width: i16,
-    height: i16,
+    validated: ValidatedTextPlan,
     mut blit: impl FnMut(crate::blit::BlitPlan) -> Result<(), BlitSubmissionError<E, F>>,
 ) -> Result<FontRasterOutcome<E>, F> {
     let mut outcome = FontRasterOutcome {
         planned_glyphs: plan.blits.len(),
         no_ops: 0,
         successful_blits: 0,
+        layout_diagnostics: Vec::new(),
         diagnostics: Vec::new(),
     };
+    let mut rejected_sources = validated.rejected_sources.into_iter().peekable();
     for (blit_index, glyph) in plan.blits.iter().enumerate() {
+        if rejected_sources
+            .peek()
+            .is_some_and(|diagnostic| diagnostic_blit_index(diagnostic) == blit_index)
+        {
+            outcome.layout_diagnostics.push(
+                rejected_sources
+                    .next()
+                    .expect("the rejected source was just inspected"),
+            );
+            continue;
+        }
         let destination_rectangle = destination_rectangle(blit_index, glyph)
             .expect("all glyph rectangles were validated before source creation");
         match plan_legacy_blit(
@@ -395,8 +424,8 @@ fn execute_validated_text_plan_with<E, F>(
                 height: glyph.source.height,
             },
             destination_rectangle,
-            width,
-            height,
+            validated.width,
+            validated.height,
             Some(INDEX_ZERO_COLOR_KEY),
         ) {
             BlitDecision::NoOp => outcome.no_ops += 1,
@@ -421,26 +450,9 @@ fn validate_glyph_source(
     font: &BitmapFont,
     blit_index: usize,
     glyph: &GlyphBlit,
-) -> Result<(), FontRasterLayoutError> {
+) -> Result<Option<FontRasterLayoutError>, FontRasterLayoutError> {
     let source = glyph.source;
     let atlas = font.atlas();
-    let source_right = i64::from(source.x) + i64::from(source.width);
-    let source_bottom = i64::from(source.y) + i64::from(source.height);
-    if source.x < 0
-        || source.y < 0
-        || source.width <= 0
-        || source.height <= 0
-        || source_right > i64::from(atlas.width)
-        || source_bottom > i64::from(atlas.height)
-    {
-        return Err(FontRasterLayoutError::GlyphSourceOutOfRange {
-            blit_index,
-            code: glyph.code,
-            source,
-            atlas_width: atlas.width,
-            atlas_height: atlas.height,
-        });
-    }
     if i32::from(source.width) != glyph.destination.width
         || i32::from(source.height) != glyph.destination.height
     {
@@ -468,7 +480,29 @@ fn validate_glyph_source(
             source,
         });
     }
-    Ok(())
+    let out_of_range = FontRasterLayoutError::GlyphSourceOutOfRange {
+        blit_index,
+        code: glyph.code,
+        source,
+        atlas_width: atlas.width,
+        atlas_height: atlas.height,
+    };
+    if source.x < 0 || source.y < 0 || source.width <= 0 || source.height <= 0 {
+        return Err(out_of_range);
+    }
+    let source_right = i64::from(source.x) + i64::from(source.width);
+    let source_bottom = i64::from(source.y) + i64::from(source.height);
+    if source_right > i64::from(atlas.width) || source_bottom > i64::from(atlas.height) {
+        return Ok(Some(out_of_range));
+    }
+    Ok(None)
+}
+
+fn diagnostic_blit_index(diagnostic: &FontRasterLayoutError) -> usize {
+    match diagnostic {
+        FontRasterLayoutError::GlyphSourceOutOfRange { blit_index, .. } => *blit_index,
+        _ => unreachable!("only source-containment failures are deferred"),
+    }
 }
 
 fn positive_i16(value: u16) -> Option<i16> {
@@ -955,6 +989,45 @@ mod pool_tests {
     }
 
     #[test]
+    fn pool_admits_unused_out_of_atlas_metadata_and_guards_it_when_selected() {
+        let mut backend = RecordingBackend::default();
+        {
+            let mut store = UploadedSourceStore::new(&mut backend);
+            let pool =
+                UploadedFontPool::upload(&mut store, font_set_with_out_of_bounds_white_search())
+                    .unwrap();
+            assert_eq!(store.backend().create_attempts, FONT_COUNT);
+
+            let style = FontStyle::WhiteSearch;
+            let outcome = pool
+                .execute(
+                    &mut store,
+                    style,
+                    &plan_text(pool.font(style), b"WA"),
+                    99,
+                    DisplayExtent {
+                        width: 20,
+                        height: 10,
+                    },
+                )
+                .unwrap();
+            assert_eq!(outcome.successful_blits, 1);
+            assert!(matches!(
+                outcome.layout_diagnostics.as_slice(),
+                [FontRasterLayoutError::GlyphSourceOutOfRange {
+                    blit_index: 0,
+                    code: b'W',
+                    atlas_width: 1,
+                    atlas_height: 1,
+                    ..
+                }]
+            ));
+            assert_eq!(store.backend().blit_attempts, 1);
+        }
+        assert_eq!(backend.blit_attempts, 1);
+    }
+
+    #[test]
     fn unwind_drops_every_uploaded_handle_once() {
         let mut backend = RecordingBackend::default();
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -979,6 +1052,17 @@ mod pool_tests {
         }))
     }
 
+    fn font_set_with_out_of_bounds_white_search() -> FontSet {
+        FontSet::from_ordered_fonts(std::array::from_fn(|index| {
+            let input = if FontStyle::ALL[index] == FontStyle::WhiteSearch {
+                synthetic_font_with_out_of_bounds_glyph(index as u8)
+            } else {
+                synthetic_font(index as u8)
+            };
+            parse_legacy_font(&input, FontLimits::default()).unwrap()
+        }))
+    }
+
     fn marker_surface(marker: u8) -> IndexedSurface {
         IndexedSurface {
             width: 1,
@@ -995,9 +1079,13 @@ mod pool_tests {
     }
 
     fn plan(font: &BitmapFont) -> TextPlan {
+        plan_text(font, b"A")
+    }
+
+    fn plan_text(font: &BitmapFont, text: &[u8]) -> TextPlan {
         layout_text(
             font,
-            b"A",
+            text,
             PointI32 { x: 1, y: 1 },
             20,
             TextAlignment {
@@ -1024,6 +1112,22 @@ mod pool_tests {
         input[trailer + 1] = 1;
         let glyph = trailer + FONT_HEADER_SIZE;
         input[glyph] = b'A';
+        input[glyph + 6..glyph + 8].copy_from_slice(&1i16.to_le_bytes());
+        input[glyph + 8..glyph + 10].copy_from_slice(&1i16.to_le_bytes());
+        input
+    }
+
+    fn synthetic_font_with_out_of_bounds_glyph(identity: u8) -> Vec<u8> {
+        const PIXEL_OFFSET: usize = 0x436;
+        const FONT_HEADER_SIZE: usize = 24;
+        const GLYPH_SIZE: usize = 16;
+        let trailer = PIXEL_OFFSET + 4;
+        let mut input = synthetic_font(identity);
+        input.resize(input.len() + GLYPH_SIZE, 0);
+        input[trailer + 1] = 2;
+        let glyph = trailer + FONT_HEADER_SIZE + GLYPH_SIZE;
+        input[glyph] = b'W';
+        input[glyph + 4..glyph + 6].copy_from_slice(&1i16.to_le_bytes());
         input[glyph + 6..glyph + 8].copy_from_slice(&1i16.to_le_bytes());
         input[glyph + 8..glyph + 10].copy_from_slice(&1i16.to_le_bytes());
         input

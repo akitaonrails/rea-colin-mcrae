@@ -91,7 +91,7 @@ fn preparation_keeps_load_and_conversion_holes_in_canonical_slot_order() {
     let localized = localized_root_menu_assets(language);
     let mut files = complete_files(language, variant);
     files.remove(localized.main_selected);
-    files.get_mut(localized.main_shadow).unwrap()[18..22].copy_from_slice(&3i32.to_le_bytes());
+    files.get_mut(localized.main_shadow).unwrap()[46..50].copy_from_slice(&16u32.to_le_bytes());
     let fixture = Fixture::new(&files);
     let loaded =
         load_root_menu_bitmaps(&fixture.store, language, variant, BitmapLimits::default()).unwrap();
@@ -128,7 +128,7 @@ fn preparation_keeps_load_and_conversion_holes_in_canonical_slot_order() {
         diagnostics[1],
         RootMenuSurfaceDiagnostic::Surface {
             slot: RootMenuBitmapSlot::MainShadow,
-            source: cmr_core::surface::SurfaceError::UnsupportedUnalignedWidth(3),
+            source: cmr_core::surface::SurfaceError::EmbeddedPaletteEntryCount(16),
             ..
         }
     ));

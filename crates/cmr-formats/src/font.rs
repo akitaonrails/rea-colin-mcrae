@@ -89,33 +89,14 @@ impl BitmapFont {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FontError {
-    FileLimitExceeded {
-        actual: usize,
-        limit: usize,
-    },
-    Truncated {
-        offset: usize,
-        needed: usize,
-    },
-    InvalidDimensions {
-        width: i32,
-        height: i32,
-    },
+    FileLimitExceeded { actual: usize, limit: usize },
+    Truncated { offset: usize, needed: usize },
+    InvalidDimensions { width: i32, height: i32 },
     DimensionLimitExceeded,
     UnsupportedBitDepth(u16),
     UnsupportedCompression(u32),
     NegativeGlyphCount(i8),
-    GlyphLimitExceeded {
-        count: usize,
-        limit: usize,
-    },
-    InvalidGlyphGeometry {
-        glyph_index: usize,
-        record_offset: usize,
-        source: RectI16,
-        atlas_width: u32,
-        atlas_height: u32,
-    },
+    GlyphLimitExceeded { count: usize, limit: usize },
     ArithmeticOverflow,
 }
 
@@ -150,16 +131,6 @@ impl fmt::Display for FontError {
             Self::GlyphLimitExceeded { count, limit } => {
                 write!(formatter, "font has {count} glyphs; limit is {limit}")
             }
-            Self::InvalidGlyphGeometry {
-                glyph_index,
-                record_offset,
-                source,
-                atlas_width,
-                atlas_height,
-            } => write!(
-                formatter,
-                "glyph {glyph_index} at offset {record_offset:#x} has source rectangle {source:?} outside the positive {atlas_width}x{atlas_height} atlas"
-            ),
             Self::ArithmeticOverflow => write!(formatter, "font offset arithmetic overflowed"),
         }
     }
@@ -172,8 +143,10 @@ impl std::error::Error for FontError {}
 /// The observed compatibility checks require an 8-bit, uncompressed atlas and
 /// locate the font trailer after `0x436 + aligned_stride * height`, without
 /// consulting other BMP header fields. Positive dimensions, checked spans,
-/// resource limits, and contained positive glyph rectangles are reconstruction
-/// safety policy. Bytes after the glyph table are ignored.
+/// resource limits are reconstruction safety policy. Glyph rectangles are
+/// preserved as signed metadata even when they are not valid atlas sources;
+/// render backends validate a selected glyph before submitting it. Bytes after
+/// the glyph table are ignored.
 pub fn parse_legacy_font(input: &[u8], limits: FontLimits) -> Result<BitmapFont, FontError> {
     if input.len() > limits.max_file_bytes {
         return Err(FontError::FileLimitExceeded {
@@ -268,10 +241,12 @@ pub fn parse_legacy_font(input: &[u8], limits: FontLimits) -> Result<BitmapFont,
     let normalized_size =
         usize::try_from(pixel_count).map_err(|_| FontError::ArithmeticOverflow)?;
     let mut pixels = Vec::with_capacity(normalized_size);
+    let mut stored_pixels = Vec::with_capacity(pixel_bytes);
     for output_y in 0..height_usize {
         let source_y = height_usize - 1 - output_y;
         let row = FIXED_PIXEL_OFFSET + source_y * stride;
         pixels.extend_from_slice(&input[row..row + width_usize]);
+        stored_pixels.extend_from_slice(&input[row..row + stride]);
     }
 
     let mut lookup = [None; 256];
@@ -288,15 +263,6 @@ pub fn parse_legacy_font(input: &[u8], limits: FontLimits) -> Result<BitmapFont,
             width: i16::from_le_bytes([raw_record[6], raw_record[7]]),
             height: i16::from_le_bytes([raw_record[8], raw_record[9]]),
         };
-        if !glyph_rectangle_is_safe(source, width, height) {
-            return Err(FontError::InvalidGlyphGeometry {
-                glyph_index: index,
-                record_offset: offset,
-                source,
-                atlas_width: width,
-                atlas_height: height,
-            });
-        }
         glyphs.push(FontGlyph {
             code,
             source,
@@ -312,6 +278,8 @@ pub fn parse_legacy_font(input: &[u8], limits: FontLimits) -> Result<BitmapFont,
             source_was_top_down: false,
             palette,
             pixels,
+            row_stride: stride as u32,
+            stored_pixels,
             metadata: BitmapMetadata {
                 reserved_1: read_u16(input, 6)?,
                 reserved_2: read_u16(input, 8)?,
@@ -332,15 +300,6 @@ pub fn parse_legacy_font(input: &[u8], limits: FontLimits) -> Result<BitmapFont,
         glyphs,
         lookup,
     })
-}
-
-fn glyph_rectangle_is_safe(source: RectI16, atlas_width: u32, atlas_height: u32) -> bool {
-    if source.x < 0 || source.y < 0 || source.width <= 0 || source.height <= 0 {
-        return false;
-    }
-    let right = i32::from(source.x) + i32::from(source.width);
-    let bottom = i32::from(source.y) + i32::from(source.height);
-    right <= atlas_width as i32 && bottom <= atlas_height as i32
 }
 
 fn require(input: &[u8], offset: usize, needed: usize) -> Result<(), FontError> {
@@ -933,35 +892,44 @@ mod tests {
     }
 
     #[test]
-    fn enforces_safe_positive_glyph_rectangles_inside_the_atlas() {
+    fn preserves_signed_glyph_rectangles_for_deferred_render_validation() {
         let boundary = parsed_font(&[glyph(b'A', 0, 0, 32, 16, 0), glyph(b'B', 31, 15, 1, 1, 0)]);
         assert_eq!(boundary.glyphs.len(), 2);
 
-        let invalid = [
-            glyph(b'A', -1, 0, 1, 1, 0),
-            glyph(b'A', 0, -1, 1, 1, 0),
-            glyph(b'A', 0, 0, 0, 1, 0),
-            glyph(b'A', 0, 0, 1, 0, 0),
-            glyph(b'A', 31, 0, 2, 1, 0),
-            glyph(b'A', 0, 15, 1, 2, 0),
+        let records = [
+            glyph(b'W', 0, 116, 27, 29, 0x11),
+            glyph(b'X', -1, -2, 3, 4, 0x22),
+            glyph(b'Y', 5, 6, 0, 0, 0x33),
         ];
-        let record_offset = FIXED_PIXEL_OFFSET + 32 * 16 + FONT_HEADER_SIZE;
-        for record in invalid {
-            let error = parse_legacy_font(
-                &font_file(32, 16, header(1), &[record]),
-                FontLimits::default(),
-            )
-            .unwrap_err();
-            assert!(matches!(
-                error,
-                FontError::InvalidGlyphGeometry {
-                    glyph_index: 0,
-                    record_offset: offset,
-                    atlas_width: 32,
-                    atlas_height: 16,
-                    ..
-                } if offset == record_offset
-            ));
+        let font = parse_legacy_font(
+            &font_file(128, 128, header(records.len() as u8), &records),
+            FontLimits::default(),
+        )
+        .unwrap();
+        let expected = [
+            RectI16 {
+                x: 0,
+                y: 116,
+                width: 27,
+                height: 29,
+            },
+            RectI16 {
+                x: -1,
+                y: -2,
+                width: 3,
+                height: 4,
+            },
+            RectI16 {
+                x: 5,
+                y: 6,
+                width: 0,
+                height: 0,
+            },
+        ];
+        for ((glyph, raw), source) in font.glyphs().iter().zip(records).zip(expected) {
+            assert_eq!(glyph.source, source);
+            assert_eq!(glyph.raw_record, raw);
+            assert!(std::ptr::eq(font.glyph(glyph.code).unwrap(), glyph));
         }
     }
 

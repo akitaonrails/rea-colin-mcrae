@@ -1354,6 +1354,8 @@ mod tests {
                 256
             ],
             pixels: vec![pixel],
+            row_stride: 4,
+            stored_pixels: vec![pixel, 0, 0, 0],
             metadata: BitmapMetadata {
                 reserved_1: 0,
                 reserved_2: 0,

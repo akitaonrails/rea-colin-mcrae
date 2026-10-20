@@ -47,6 +47,11 @@ pub struct IndexedBitmap {
     pub palette: Vec<BitmapPaletteEntry>,
     /// One palette index per pixel, normalized to top-to-bottom row order.
     pub pixels: Vec<u8>,
+    /// Bytes in each stored DIB row, including its four-byte alignment padding.
+    pub row_stride: u32,
+    /// Complete stored DIB rows, normalized to top-to-bottom row order. Unlike
+    /// `pixels`, this preserves padding bytes exactly.
+    pub stored_pixels: Vec<u8>,
     pub metadata: BitmapMetadata,
 }
 
@@ -264,6 +269,7 @@ pub fn parse_indexed_bitmap(
     let height_usize = height as usize;
     let source_was_top_down = signed_height < 0;
     let mut normalized = Vec::with_capacity(width * height_usize);
+    let mut normalized_stored = Vec::with_capacity(stride * height_usize);
     for output_y in 0..height_usize {
         let source_y = if source_was_top_down {
             output_y
@@ -271,7 +277,8 @@ pub fn parse_indexed_bitmap(
             height_usize - 1 - output_y
         };
         let row_start = pixel_offset + source_y * stride;
-        let row = &input[row_start..row_start + width];
+        let stored_row = &input[row_start..row_start + stride];
+        let row = &stored_row[..width];
         if let Some(index) = row
             .iter()
             .copied()
@@ -283,6 +290,7 @@ pub fn parse_indexed_bitmap(
             });
         }
         normalized.extend_from_slice(row);
+        normalized_stored.extend_from_slice(stored_row);
     }
 
     Ok(IndexedBitmap {
@@ -291,6 +299,8 @@ pub fn parse_indexed_bitmap(
         source_was_top_down,
         palette,
         pixels: normalized,
+        row_stride: stride as u32,
+        stored_pixels: normalized_stored,
         metadata: BitmapMetadata {
             reserved_1: read_u16(input, 6)?,
             reserved_2: read_u16(input, 8)?,
@@ -348,7 +358,7 @@ mod tests {
     const COLORS: [[u8; 4]; 4] = [[3, 2, 1, 0], [6, 5, 4, 0], [9, 8, 7, 0], [12, 11, 10, 13]];
 
     #[test]
-    fn parses_bottom_up_rows_and_removes_padding() {
+    fn parses_bottom_up_rows_and_preserves_normalized_stored_padding() {
         let mut input = bitmap(3, 2, &COLORS, &[2, 3, 1, 99, 0, 1, 2, 88]);
         input[6..8].copy_from_slice(&7u16.to_le_bytes());
         input[8..10].copy_from_slice(&8u16.to_le_bytes());
@@ -360,6 +370,8 @@ mod tests {
         assert_eq!(parsed.height, 2);
         assert!(!parsed.source_was_top_down);
         assert_eq!(parsed.pixels, [0, 1, 2, 2, 3, 1]);
+        assert_eq!(parsed.row_stride, 4);
+        assert_eq!(parsed.stored_pixels, [0, 1, 2, 88, 2, 3, 1, 99]);
         assert_eq!(
             parsed.palette[0],
             BitmapPaletteEntry {
@@ -384,6 +396,7 @@ mod tests {
         let parsed = parse_indexed_bitmap(&input, BitmapLimits::default()).unwrap();
         assert!(parsed.source_was_top_down);
         assert_eq!(parsed.pixels, [0, 1, 2, 2, 3, 1]);
+        assert_eq!(parsed.stored_pixels, [0, 1, 2, 88, 2, 3, 1, 99]);
     }
 
     #[test]
