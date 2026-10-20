@@ -67,8 +67,8 @@ pub fn render_root_footer<B: IndexedVideoBackend>(
         font,
         text.lookup(ROOT_FOOTER_TEXT_INDEX),
         PointI32 {
-            x: i32::from(ROOT_FOOTER_POSITION.x),
-            y: i32::from(ROOT_FOOTER_POSITION.y),
+            x: ROOT_FOOTER_POSITION.x,
+            y: ROOT_FOOTER_POSITION.y,
         },
         i32::from(destination_extent.width),
         TextAlignment::from_legacy_flags(ROOT_FOOTER_FLAGS),
