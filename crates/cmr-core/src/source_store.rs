@@ -35,6 +35,46 @@ pub struct SourceKey {
     slot: NonZeroUsize,
 }
 
+/// Backend-neutral reference to one indexed bitmap uploaded into a source
+/// store.
+///
+/// The store owns the backend resource. This copyable value retains only the
+/// store-scoped source key and the exact uploaded surface extent, so it can be
+/// shared by screen-specific resource pools without exposing a backend handle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UploadedIndexedBitmap {
+    source: SourceKey,
+    width: u32,
+    height: u32,
+}
+
+impl UploadedIndexedBitmap {
+    #[must_use]
+    pub const fn source_key(self) -> SourceKey {
+        self.source
+    }
+
+    #[must_use]
+    pub const fn extent(self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Submits an already-validated blit through the owning source store.
+    ///
+    /// Store identity and source lifetime remain checked by
+    /// [`UploadedSourceStore::blit`]. Geometry validation is intentionally the
+    /// caller's responsibility because different screens recover different
+    /// clipping and color-key policies.
+    pub fn blit<B: IndexedVideoBackend>(
+        self,
+        store: &mut UploadedSourceStore<'_, B>,
+        destination: B::Surface,
+        plan: BlitPlan,
+    ) -> Result<(), SourceBlitError<B::Error>> {
+        store.blit(self.source, destination, plan)
+    }
+}
+
 impl SourceKey {
     #[must_use]
     pub const fn slot(self) -> usize {
@@ -142,6 +182,20 @@ impl<'backend, B: IndexedVideoBackend> UploadedSourceStore<'backend, B> {
         surface: &IndexedSurface,
     ) -> Result<SourceKey, SourceUploadError<B::Error>> {
         self.upload_inner(surface)
+    }
+
+    /// Uploads an indexed surface and retains its exact extent beside the
+    /// resulting store-scoped key.
+    pub fn upload_bitmap(
+        &mut self,
+        surface: &IndexedSurface,
+    ) -> Result<UploadedIndexedBitmap, SourceUploadError<B::Error>> {
+        let source = self.upload_inner(surface)?;
+        Ok(UploadedIndexedBitmap {
+            source,
+            width: surface.width,
+            height: surface.height,
+        })
     }
 
     #[must_use]
@@ -265,6 +319,19 @@ impl<B: IndexedVideoBackend> SourceUploadTransaction<'_, '_, B> {
         surface: &IndexedSurface,
     ) -> Result<SourceKey, SourceUploadError<B::Error>> {
         self.store.upload_inner(surface)
+    }
+
+    /// Transactional counterpart to [`UploadedSourceStore::upload_bitmap`].
+    pub fn upload_bitmap(
+        &mut self,
+        surface: &IndexedSurface,
+    ) -> Result<UploadedIndexedBitmap, SourceUploadError<B::Error>> {
+        let source = self.store.upload_inner(surface)?;
+        Ok(UploadedIndexedBitmap {
+            source,
+            width: surface.width,
+            height: surface.height,
+        })
     }
 
     pub fn commit(mut self) {
@@ -421,6 +488,80 @@ mod tests {
                 flags: 0,
             }; 256],
         }
+    }
+
+    fn one_pixel_blit() -> BlitPlan {
+        let crate::blit::BlitDecision::Blit(plan) = crate::blit::plan_legacy_blit(
+            crate::blit::RectI16 {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            crate::blit::RectI16 {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            1,
+            1,
+            None,
+        ) else {
+            unreachable!()
+        };
+        plan
+    }
+
+    #[test]
+    fn uploaded_bitmap_retains_exact_extent_and_submits_through_store() {
+        let mut backend = RecordingBackend::default();
+        {
+            let mut store = UploadedSourceStore::new(&mut backend);
+            let mut source = surface(7);
+            source.width = 4;
+            source.height = 2;
+            source.pitch = 4;
+            source.pixels = vec![7; 8];
+            let bitmap = store.upload_bitmap(&source).unwrap();
+
+            assert_eq!(bitmap.extent(), (4, 2));
+            assert_eq!(bitmap.source_key().slot(), 0);
+            assert_eq!(bitmap.blit(&mut store, 99, one_pixel_blit()), Ok(()));
+            assert_eq!(store.backend().events, [Event::Create(10), Event::Blit(10)]);
+        }
+        assert_eq!(backend.events.last(), Some(&Event::Destroy(10)));
+    }
+
+    #[test]
+    fn uploaded_bitmap_reports_foreign_and_released_source_keys() {
+        let mut first_backend = RecordingBackend::default();
+        let foreign = {
+            let mut first = UploadedSourceStore::new(&mut first_backend);
+            first.upload_bitmap(&surface(1)).unwrap()
+        };
+        let mut second_backend = RecordingBackend::default();
+        let mut second = UploadedSourceStore::new(&mut second_backend);
+        assert_eq!(
+            foreign.blit(&mut second, 99, one_pixel_blit()),
+            Err(SourceBlitError::Access(SourceAccessError::ForeignKey(
+                foreign.source_key()
+            )))
+        );
+        assert!(second.backend().events.is_empty());
+
+        let released = second.upload_bitmap(&surface(2)).unwrap();
+        assert_eq!(second.release(released.source_key()), Ok(()));
+        assert_eq!(
+            released.blit(&mut second, 99, one_pixel_blit()),
+            Err(SourceBlitError::Access(SourceAccessError::ReleasedKey(
+                released.source_key()
+            )))
+        );
+        assert_eq!(
+            second.backend().events,
+            [Event::Create(10), Event::Destroy(10)]
+        );
     }
 
     #[test]

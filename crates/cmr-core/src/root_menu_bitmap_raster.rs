@@ -21,7 +21,8 @@ use crate::root_menu_visual::{
     ANIMATION_BITMAP_SLOTS, CENTER_BITMAP_SLOTS, Point, ROOT_ENTRY_COUNT, Rect, RenderCommand,
 };
 use crate::source_store::{
-    SourceAccessError, SourceBlitError, SourceKey, SourceUploadError, UploadedSourceStore,
+    SourceAccessError, SourceBlitError, SourceUploadError, UploadedIndexedBitmap,
+    UploadedSourceStore,
 };
 use crate::surface::{IndexedSurface, PaletteMapping, SurfaceError, indexed_surface};
 
@@ -172,13 +173,6 @@ impl RootMenuSurfaceSet {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct UploadedRootMenuBitmap {
-    source: SourceKey,
-    width: u32,
-    height: u32,
-}
-
 /// Backend-free descriptor for the fixed 17-slot root-menu bitmap batch.
 ///
 /// Optional slots remain holes and never shift later identities. The shared
@@ -187,7 +181,7 @@ struct UploadedRootMenuBitmap {
 pub struct UploadedRootMenuBitmapPool {
     language: Language,
     center_variant: VisualVariant,
-    slots: [Option<UploadedRootMenuBitmap>; ROOT_MENU_BITMAP_REQUEST_COUNT],
+    slots: [Option<UploadedIndexedBitmap>; ROOT_MENU_BITMAP_REQUEST_COUNT],
 }
 
 impl UploadedRootMenuBitmapPool {
@@ -208,7 +202,16 @@ impl UploadedRootMenuBitmapPool {
 
     #[must_use]
     pub fn extent(&self, slot: RootMenuBitmapSlot) -> Option<(u32, u32)> {
-        self.slots[slot.index()].map(|bitmap| (bitmap.width, bitmap.height))
+        self.bitmap(slot).map(|bitmap| bitmap.extent())
+    }
+
+    /// Returns the identity-neutral uploaded bitmap for one fixed root slot.
+    ///
+    /// Callers can pass this value to shared frontend rendering code without
+    /// teaching that code about root-menu slot identities.
+    #[must_use]
+    pub fn bitmap(&self, slot: RootMenuBitmapSlot) -> Option<UploadedIndexedBitmap> {
+        self.slots[slot.index()]
     }
 
     pub fn blit<B: IndexedVideoBackend>(
@@ -220,8 +223,8 @@ impl UploadedRootMenuBitmapPool {
     ) -> Result<(), RootMenuBitmapBlitError<B::Error>> {
         let bitmap =
             self.slots[slot.index()].ok_or(RootMenuBitmapBlitError::MissingOptionalSlot(slot))?;
-        store
-            .blit(bitmap.source, destination, plan)
+        bitmap
+            .blit(store, destination, plan)
             .map_err(|error| match error {
                 SourceBlitError::Access(source) => RootMenuBitmapBlitError::Access { slot, source },
                 SourceBlitError::Backend(source) => {
@@ -790,14 +793,8 @@ pub fn upload_root_menu_bitmaps<B: IndexedVideoBackend>(
         let Some(asset) = prepared_slots[slot.index()].as_ref() else {
             continue;
         };
-        match transaction.upload(&asset.surface) {
-            Ok(source) => {
-                slots[slot.index()] = Some(UploadedRootMenuBitmap {
-                    source,
-                    width: asset.surface.width,
-                    height: asset.surface.height,
-                });
-            }
+        match transaction.upload_bitmap(&asset.surface) {
+            Ok(bitmap) => slots[slot.index()] = Some(bitmap),
             Err(source) if slot.is_optional() => diagnostics.push((
                 slot.index(),
                 RootMenuBitmapUploadDiagnostic::Upload {
@@ -1295,7 +1292,16 @@ mod tests {
             for slot in RootMenuBitmapSlot::ALL {
                 assert!(uploaded.pool.is_loaded(slot));
                 assert_eq!(uploaded.pool.extent(slot), Some((4, 1)));
+                assert_eq!(
+                    uploaded.pool.bitmap(slot).map(|bitmap| bitmap.extent()),
+                    uploaded.pool.extent(slot)
+                );
             }
+            let championship = uploaded
+                .pool
+                .bitmap(RootMenuBitmapSlot::ChampionshipGlobe)
+                .unwrap();
+            championship.blit(&mut store, 99, one_pixel_blit()).unwrap();
             uploaded
                 .pool
                 .blit(
@@ -1321,6 +1327,10 @@ mod tests {
             assert_eq!(
                 &store.backend().events[ROOT_MENU_BITMAP_REQUEST_COUNT..],
                 &[
+                    Event::Blit {
+                        source: 21,
+                        destination: 99,
+                    },
                     Event::Blit {
                         source: 21,
                         destination: 99,
