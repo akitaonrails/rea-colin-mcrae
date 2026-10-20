@@ -156,6 +156,16 @@ order and `-1` remains an explicit missing selector, and one bad optional object
 rolls back only its new resources before later slots continue. Palette
 attachment, legacy conditional quarter-resolution, backend upload, and runtime
 vertices remain later boundaries.
+Prepared selectors now feed the checked consecutive-run topology planner through
+a combined constructor tied to the exact borrowed asset set. The resulting
+fixed-slot plans preserve group order, source views, missing selectors, compact
+first-use vertex ordinals, and preparation diagnostics without exposing an
+unsafe arbitrary source/preparation join. Runtime vertex conversion remains the
+next boundary. Static evidence now fixes its wrapping Q16 affine arithmetic,
+f32 field layout, opaque pre-mutation side-vector capture, and mode-2 packed
+corner mutation. The affine/pass-through choice depends on the loader-entry
+prepared-resource-count snapshot; root call ordering and that global's lifetime
+remain unresolved, as does resource-driven one-time coordinate scaling.
 
 Exit gate:
 

@@ -123,6 +123,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   missing selectors, typed failures, and transactional per-object rollback.
   Palette attachment, conditional downsampling, upload, and vertex conversion
   remain separate.
+- `cmr-core::root_menu_c3d_topology`: combined fixed-slot resource preparation
+  and borrowed topology planning tied to the exact source asset set. It joins
+  arena-scoped selectors to ordered group1 records, preserves consecutive runs
+  and compact first-use ordinals, and returns no partial value on topology
+  failure. Runtime vertex conversion and backend resources remain separate.
 - `cmr-core::root_menu_c3d_assets`: exact six-slot optional loading of normal
   or `g_` root-menu objects with ordered asset/header diagnostics and stable
   holes, plus explicit selection-slot mapping and six independent wrapping
