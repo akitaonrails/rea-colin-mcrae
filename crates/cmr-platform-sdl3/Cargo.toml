@@ -9,3 +9,9 @@ publish = false
 cmr-core = { path = "../cmr-core" }
 cmr-video = { path = "../cmr-video" }
 sdl3 = "=0.20.0"
+
+[features]
+# Build and statically link SDL3 from source (via sdl3-sys) instead of linking a
+# system-provided SDL3. Lets CI and a Windows build be self-contained - needs a C
+# toolchain and CMake, but no pre-installed SDL3. The default links system SDL3.
+bundled-sdl3 = ["sdl3/build-from-source"]

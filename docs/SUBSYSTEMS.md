@@ -1103,6 +1103,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   host crates (`cmr-platform-sdl3`, `cmr-app`) require native SDL3 provisioning to
   build for Windows (gated with the Linux displayed run under I07). See evidence
   `impl.windows-portability`.
+- CI (`.github/workflows/ci.yml`, I05) runs three jobs on push/PR to `main`: a
+  portable gate (fmt + clippy `-D warnings` + test over the SDL-free slice), a
+  Windows cross-check (the I04 `cargo check --target x86_64-pc-windows-gnu`), and
+  a full-workspace clippy+test on an ubuntu/windows matrix that builds SDL3 from
+  source via the `cmr-platform-sdl3` `bundled-sdl3` feature (a passthrough to
+  `sdl3/build-from-source`, so no system SDL3 is needed). The first two jobs'
+  commands are locally verified; the SDL source-build jobs are authored but not
+  yet run under Actions. See evidence `impl.ci-workflow`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
