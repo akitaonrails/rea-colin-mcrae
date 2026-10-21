@@ -443,6 +443,23 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   `field_22`/`prim+0x00` word is confirmed render-irrelevant (the batch builder
   keys on the texture handle). See evidence `rea.official-eu.c3d-rasterizer` and
   `impl.c3d-render`.
+- `cmr-core::c3d_camera`: the backend-neutral view/projection stage (E05) that
+  feeds the E06 submission. Projection is a left-handed `D3DMATRIX`
+  (`perspective_lh`) built from a hardcoded FOV/aspect baseline (`2.0, 2.4, 1.0,
+  250.0`), with a parallel sparse Q16.16 coefficient copy (`projection_coeffs_q16`)
+  and a mirror view that negates the projection width; aspect enters only through
+  the `Viewport` clip rectangle, never the FOV. Clipping is D3D hardware clipping
+  with no manual near-clip. Culling is a 2D top-down XZ frustum
+  (`point_in_triangle_xz` over three edge cross-products) with near/far extents
+  and a near-list split, plus a terrain-cell radius cull; back-face culling
+  defaults to CCW so front faces are clockwise, switching to `CULL_NONE` for a
+  two-sided record. LOD selects one of several stride-`0x18` draw-group records
+  under a global detail cap, with a `-1.0` sentinel triple marking a billboard.
+  The camera VIEW matrix is the affine inverse of the camera-world matrix (not a
+  look-at and not a BAM-angle composition); its fixed-point `2^32/det` reciprocal
+  is left to the deterministic renderer (E07) because byte-exact parity needs a
+  differential fixture. See evidence `rea.official-eu.c3d-camera` and
+  `impl.c3d-camera`.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one
   group-1 record and caller-prepared selectors. It preserves maximal
   consecutive selector runs and source entry order, deduplicates local entry32

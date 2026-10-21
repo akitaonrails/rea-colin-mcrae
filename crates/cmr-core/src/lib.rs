@@ -14,6 +14,7 @@ pub mod audio_weather_assets;
 pub mod blit;
 pub mod c3d_actor_rgb;
 pub mod c3d_batch;
+pub mod c3d_camera;
 pub mod c3d_render;
 pub mod c3d_topology;
 pub mod c3d_type2_fog;
