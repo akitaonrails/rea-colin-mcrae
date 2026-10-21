@@ -45,6 +45,7 @@ pub mod indexed_bitmap_raster;
 pub mod input;
 pub mod localization;
 pub mod localization_assets;
+pub mod pacenote_schedule;
 pub mod presentation;
 pub mod root_menu_animation;
 pub mod root_menu_assets;

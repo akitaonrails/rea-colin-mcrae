@@ -697,6 +697,26 @@ languages rather than fabricating or silently aliasing Italian assets.
   and the finish constants in `cmr-core::stage_timing`. The reference-split
   comparison, the best-time persistence, and the per-driver results record
   remain. See evidence `rea.official-eu.sim-stage-timing`.
+- Co-driver call scheduling has two queues: an 8-entry audio ring
+  (`DAT_005590c8`, one packed note-id per entry, head/tail mod 8) and a depth-2
+  interleaved visual FIFO (`DAT_004f2120`) that drives the on-screen pacenote
+  strip (`DAT_0057c178`, stride 0x14, 0x12/track). Submit (`0x444380`, called
+  only from the trigger walker `0x403a00` on a type-0 volume, de-duplicated per
+  player) optionally swaps the direction modifier (bits 7-8, mirror stages), then
+  enqueues the whole id into the ring (blind, no full check) or routes it to the
+  visual FIFO. The sequencer (`0x444450`, once per frame before Mechanics, gated
+  by `QSWaveMixIsChannelDone` on the single shared speech channel) plays one
+  bitfield group per tick - lowest field first via the `audio_pacenote`
+  field table - clearing it and writing the remainder back, advancing only when
+  the entry hits 0; a following word field (`& 0x78`) inserts the INTO link
+  (slot 0x27) for the "corner-A into corner-B" cadence. Scheduling is
+  event-driven off checkpoint crossings and channel-free status, with no
+  clock/distance sampling (look-ahead is authored into trigger placement); the
+  resolved `9*(mod-1)` is a display-row bump, not an audio stride. Reconstructed
+  the ring, the incremental sequencer, the modifier swap, the into-link test, the
+  routing, and the display arithmetic in `cmr-core::pacenote_schedule`. The
+  display-record layout and the mode-gate semantics remain. See evidence
+  `rea.official-eu.sim-pacenote-schedule`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
