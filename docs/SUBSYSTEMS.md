@@ -633,6 +633,20 @@ languages rather than fabricating or silently aliasing Italian assets.
   the game's table values not copied). Primary car state base `DAT_00700300`
   (stride 0x768); control/telemetry base `DAT_005fffc8` (stride 0x464). See
   evidence `rea.official-eu.sim-fixed-step`.
+- The per-car vehicle dynamics run from the dispatcher `0x407690` (current-car
+  globals `DAT_0050c604`/`DAT_0050c5b4`): input smoother `0x4088c0`, gearbox
+  `0x41b5b0` (auto `0x41b810` / sequential `0x41bb30` / mode-2 `0x41bf00`), RPM +
+  rev limiter `0x40d0c0`, torque `0x40ce40`, and the force/velocity integrators.
+  Gear is a signed byte (`0..=6` forward, `7` reverse; zero ratio = neutral);
+  auto-shift compares RPM against per-gear `ratio*redline` thresholds; the rev
+  limiter clamps `[0,redline]` with a `min(margin,1.0)*0x51eb` cut; engine torque
+  is `throttle*maxTorque - engBrake*rpm^2`, delivered as `torque*ratio*finalDrive`
+  split across the wheels; the tachometer/engine-audio RPM is `norm*6500+2000`
+  clamped `[2000,8500]`. Reconstructed in `cmr-core::drivetrain` (all Q16.16).
+  Per-car-type params live at `~0x50e170` (stride 0xcd0), selected by the
+  car-type byte `car+0x738`. The actuator element order, the torque->velocity
+  integrators, and the ratio-table loader remain. See evidence
+  `rea.official-eu.sim-drivetrain`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

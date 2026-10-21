@@ -32,6 +32,7 @@ pub mod config;
 pub mod deferred_palette;
 pub mod display;
 pub mod display_contract;
+pub mod drivetrain;
 pub mod fixed_point;
 pub mod font_assets;
 pub mod font_raster;

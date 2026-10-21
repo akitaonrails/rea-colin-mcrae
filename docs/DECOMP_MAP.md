@@ -117,7 +117,7 @@ Status markers:
 ## G. Driving simulation and race systems
 
 - [~] `G01` Recover fixed-step world update and numeric representations (the main loop `FUN_0049db00` WinMain -> `FUN_004c1e00` frame driver -> `FUN_00443e90` HighLevelTimer tick driver -> `FUN_00443db0` state-machine tick is recovered; the FSM current-state enum `DAT_005590a8` dispatches a handler proc table at `0x4ee830`/`0x4ee840` (ids 2..0xc), with in-race/gameplay states `5..=10` gated by `4 < state && state < 0xb`; the fixed step is 25 Hz / 40 ms via `timeGetTime` integer-millisecond bucketing (`FUN_00443e30` = `before/0x28 != after/0x28`, `FUN_00443e60` spins to the next 0x28 bucket) with catch-up and render decoupled, no float dt accumulator; the in-race update is `FUN_0043afd0` "Mechanics" over `DAT_00550e90` active cars; numeric representation is signed 32-bit Q16.16 fixed-point (`0x10000`=1.0, canonical `(i64)a*(i64)b>>0x10` multiply, dt coefficient `0xa3d`~0.04) with 16-bit BAM angles into a 4096-entry trig table `DAT_0082d380` (`sin=table[a&0xfff]`, `cos=table[(a+0x400)&0xfff]`), floats only at `__ftol` input boundaries; primary car state base `DAT_00700300` stride 0x768, control/telemetry base `DAT_005fffc8` stride 0x464. Reconstructed the step constants/bucket/boundary/in-race gate in `cmr-core::sim_clock` and the Q16.16 type + BAM trig in `cmr-core::fixed_point`. The per-car physics substeps, exact struct field semantics, state-id names, and the float->fixed input scaling remain for G02/G03).
-- [ ] `G02` Recover vehicle controls, drivetrain, gears, and engine model.
+- [~] `G02` Recover vehicle controls, drivetrain, gears, and engine model (the vehicle-dynamics dispatcher `FUN_00407690` (called from Mechanics `0x43afd0`) sets current-car globals `DAT_0050c604`/`DAT_0050c5b4` and runs the callees: input smoother `FUN_004088c0`, gearbox `FUN_0041b5b0` -> auto `FUN_0041b810`/sequential `FUN_0041bb30`/mode-2 `FUN_0041bf00`, RPM+limiter `FUN_0040d0c0`, torque `FUN_0040ce40`, and the force/velocity integrators `FUN_0040a4a0`/`FUN_00409f90`/`FUN_0040d740`. Drivetrain state lives in the 0x464 control struct: gear s8 `+0x43a` (0..=6 fwd, 7 reverse), per-gear ratio `+0x1d0[g]` (0=neutral), inverse ratio `+0x1f0[g]`, upshift `+0x190[g]`/downshift `+0x1b0[g]` thresholds, final drive `+0x158`, redline `+0x15c`, engine-brake coef `+0x144`, throttle demand `+0x2d8`, RPM `+0x2e0`, limiter flag/cut `+0x444`/`+0x448`, trans mode `+0x3f0`, actuators `+0x2b8[4]`; car-physics torque at `car+0x530` split to wheels `+0x534..+0x540`, car-type byte `car+0x738` selecting the per-type param region `~0x50e170` (stride 0xcd0; max-torque `DAT_0050e1ac[type*0x334]`). Recovered formulas - auto-shift `rpm vs ratio*redline>>16`, rev limiter `clamp[0,redline]` + cut `min(margin,1)*0x51eb`, torque `throttle*maxTorque - engBrake*rpm^2`, drive `torque*ratio*finalDrive`, actuator dead-zone `0x7ae`/unit slew, display RPM `norm*6500+2000` clamped `[2000,0x2134]` - are reconstructed in `cmr-core::drivetrain`. The actuator element order, the torque->velocity integrators, and the ratio-table loader remain (G03)).
 - [ ] `G03` Recover suspension, tyres, grip, and surface response.
 - [ ] `G04` Recover collision, damage, reset, and out-of-bounds behavior.
 - [ ] `G05` Recover track checkpoints, timing, penalties, and finish rules.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T16:05:24Z
-milestone=reconstruct-the-fixed-step-clock-and-q16-16-numeric-core
+updated_utc=2026-10-21T16:21:20Z
+milestone=reconstruct-the-drivetrain-and-engine-model
 completed=52
-partial=25
-not_started=40
+partial=26
+not_started=39
 blocked=0
 total=117
-current_focus=G02-recover-vehicle-controls-drivetrain-gears-and-engine-model
-next_exit_gate=recover-the-per-car-mechanics-substeps-and-the-car-state-struct-fields
+current_focus=G03-recover-suspension-tyres-grip-and-surface-response
+next_exit_gate=recover-the-wheel-force-and-torque-to-velocity-integrators-and-the-grip-model
 <!-- PROGRESS-TAIL-END -->
