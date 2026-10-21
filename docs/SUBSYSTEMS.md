@@ -497,6 +497,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   slot `DAT_0057d88c`), inferred frontend navigation sounds. The separate
   `BACK`/`SELECT`/… strings are not this loader's waves. See evidence
   `rea.official-eu.audio-menu-loader`.
+- The menu play helpers (`0x467ef0`, `0x467dd0`, siblings) each set full volume,
+  stop the menu channel, and play `base+offset` one-shot: offset 0 `FORWARD`
+  (confirm, carved) and offset 3 `UPDOWN` (vertical nav, carved); offsets 1
+  `BACKWARD` and 2 `LEFTRIGH` by slot order. Reconstructed in
+  `cmr-core::audio_menu::play_menu_sound`. See evidence
+  `rea.official-eu.audio-menu-play`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
