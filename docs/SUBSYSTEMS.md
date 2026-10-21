@@ -497,6 +497,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   slot `DAT_0057d88c`), inferred frontend navigation sounds. The separate
   `BACK`/`SELECT`/… strings are not this loader's waves. See evidence
   `rea.official-eu.audio-menu-loader`.
+- The complete bare wave-filename inventory is recovered (string table): the
+  car engine model (twelve cars × six `{RT,FT,RM,FM,RS,FS}` loops + shared
+  gear/ignition/pop/chatter/whine, loaded by `0x4872b0`), the co-driver pacenote
+  call corpus, the surface/collision material set, extra menu waves, tutorial
+  numbers, and per-language cheat/secret sounds. The structured car model is in
+  `cmr-core::audio_car_assets`. See evidence `rea.official-eu.audio-wave-inventory`.
 - The menu play helpers (`0x467ef0`, `0x467dd0`, siblings) each set full volume,
   stop the menu channel, and play `base+offset` one-shot: offset 0 `FORWARD`
   (confirm, carved) and offset 3 `UPDOWN` (vertical nav, carved); offsets 1
