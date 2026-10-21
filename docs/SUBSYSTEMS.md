@@ -442,7 +442,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   diffuse `d3dcolor_argb` bake with the untextured/transparent constants (the
   runtime prim, stride `0x1c`, holds each per-vertex color as ascending
   `[R,G,B,A]` bytes at `+0x08`/`+0x0c`/`+0x10`, repacked to `0xAARRGGBB` by
-  `diffuse_from_rgba_bytes`; `FUN_004b1e10`), the
+  `diffuse_from_rgba_bytes`; `FUN_004b1e10`), the batch-builder key
+  (`prim_joins_batch` + the runtime-prim field offsets: texture handle `+0x04`,
+  ordinals `+0x14`/`+0x16`/`+0x18`; `FUN_004b2340` groups consecutive prims
+  sharing a handle, the topology `c3d_batch::plan_consecutive_batches`
+  reconstructs), the
   `Pass` Z-write model, and the squared-XZ-distance `object_sort_key`, so the
   software oracle (E07) and a modern backend share one contract. The E02
   `field_22`/`prim+0x00` word is confirmed render-irrelevant (the batch builder

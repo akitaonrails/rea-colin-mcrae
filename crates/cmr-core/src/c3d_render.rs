@@ -101,10 +101,28 @@ pub fn d3dcolor_argb(a: u8, r: u8, g: u8, b: u8) -> u32 {
 /// Byte offsets of the three per-vertex colors within a runtime primitive record
 /// (stride [`RUNTIME_PRIM_STRIDE`]), as read by the finalizer `FUN_004b1e10`.
 pub const PRIM_VERTEX_COLOR_OFFSETS: [usize; 3] = [0x08, 0x0c, 0x10];
+/// Byte offsets of the three LVERTEX vertex ordinals (`u16`) within a runtime
+/// primitive record, as read by `FUN_004b1e10` and the batch builder
+/// `FUN_004b2340`. Each ordinal indexes the LVERTEX array (stride `0x20`).
+pub const PRIM_VERTEX_ORDINAL_OFFSETS: [usize; 3] = [0x14, 0x16, 0x18];
+/// Byte offset of the texture handle within a runtime primitive record - the
+/// sole batch key (`FUN_004b2340` starts a new batch when it changes).
+pub const PRIM_TEXTURE_HANDLE_OFFSET: usize = 0x04;
 /// Stride of one runtime primitive record (the stride-`0x1c` prim the finalizer
 /// walks and the batch builder `FUN_004b2340` groups). This is the per-frame
 /// runtime record, distinct from the on-disk 24-byte C3D face entry (E02).
 pub const RUNTIME_PRIM_STRIDE: usize = 0x1c;
+
+/// Whether the batch builder `FUN_004b2340` keeps a primitive with texture
+/// handle `prim_handle` in the batch currently keyed on `batch_handle`, or must
+/// flush and open a new batch. Grouping is by **consecutive run**: prims are
+/// walked in array order and a handle change closes the batch (it is not a
+/// global group-by-handle). Within a run, vertices are deduplicated by LVERTEX
+/// ordinal (first use) with three local indices per triangle - the topology
+/// [`crate::c3d_batch::plan_consecutive_batches`] reconstructs.
+pub fn prim_joins_batch(prim_handle: i32, batch_handle: i32) -> bool {
+    prim_handle == batch_handle
+}
 
 /// Packs a runtime per-vertex color into the LVERTEX diffuse. The finalizer
 /// `FUN_004b1e10` reads the 4 source bytes in ascending order as `[R, G, B, A]`
@@ -298,6 +316,15 @@ mod tests {
         assert_eq!(diffuse_from_rgba_bytes([0x96, 0, 0, 0x80]), 0x8096_0000);
         assert_eq!(PRIM_VERTEX_COLOR_OFFSETS, [0x08, 0x0c, 0x10]);
         assert_eq!(RUNTIME_PRIM_STRIDE, 0x1c);
+    }
+
+    #[test]
+    fn batch_groups_consecutive_runs_by_texture_handle() {
+        assert_eq!(PRIM_VERTEX_ORDINAL_OFFSETS, [0x14, 0x16, 0x18]);
+        assert_eq!(PRIM_TEXTURE_HANDLE_OFFSET, 0x04);
+        // Same handle stays in the batch; a change opens a new one.
+        assert!(prim_joins_batch(7, 7));
+        assert!(!prim_joins_batch(9, 7));
     }
 
     #[test]
