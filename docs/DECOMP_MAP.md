@@ -145,7 +145,7 @@ Status markers:
 - [~] `I01` Maintain a clean Rust workspace and source-owned test fixtures.
 - [x] `I02` Add the native application executable and runtime-data discovery.
 - [~] `I03` Build and run the compatibility slice on Linux (headless synthetic complete-root-frame application tests pass and an interactive `--windowed-root-frame` SDL3 host loop is implemented; a displayed native-window run on the real user corpus and reviewed-import runs remain).
-- [ ] `I04` Build and run the compatibility slice on modern Windows.
+- [~] `I04` Build and run the compatibility slice on modern Windows (the portable compatibility slice - `cmr-core`, `cmr-formats`, `cmr-test-support`, `cmr-assets`, `cmr-video` - type-checks cleanly for the `x86_64-pc-windows-gnu` target including all test targets (`cargo check --target x86_64-pc-windows-gnu -p cmr-core -p cmr-formats -p cmr-test-support -p cmr-assets -p cmr-video --all-targets`), confirming the slice has no Linux-only source assumptions: production code uses only cross-platform `std::fs::symlink_metadata`, and every `#[cfg(unix)]` block is a symlink-creating test helper or the non-UTF-8-path test that Windows simply skips. The security-critical path-safety rejection (`FileWaveSource::safe_path`, `cmr-assets::resolver::normalize_request`) is Windows-correct by construction - it rejects leading `/`/`\` (absolute/UNC), drive-qualified `C:` names, and normalizes `\`->`/` before rejecting `.`/`..`/empty components - and both reject-tests are now hardened with the Windows-shaped vectors that only matter on a Windows build: backslash-form traversal (`sounds\..\..\x`, the realistic vector since game wave names use backslashes), UNC (`\\server\share`), and drive-relative (`C:x`) names. I04 -> partial; the SDL host crates (`cmr-platform-sdl3`, `cmr-app`) require native SDL3 provisioning to build/link for Windows (gated like the Linux displayed run under `I07`), and a displayed end-to-end run on real Windows against the user corpus remains. CI automation of the cross-check is `I05`.)
 - [ ] `I05` Add CI for formatting, clippy, tests, Linux, and Windows builds.
 - [x] `I06` Research and select SDL3 for portable host integration.
 - [~] `I07` Implement SDL3 host window/input/audio/presentation boundaries (resizable window, integer-scaled nearest streaming presentation of one completed software frame, startup gamepad enumeration with idempotent hotplug tracking, renderer-reset/redraw handling, and an edge-triggered keyboard/gamepad input mapper that drives the recovered `FrontendInput` contract implemented behind `cmr-platform-sdl3`; the pure interactive controller (`cmr-core::root_menu_interactive` plus the `steady_root_render_input` bridge) composes `FrontendState` into per-tick render inputs with a minimal root/exit transition driver; and the SDL interactive loop (`run_interactive_root_frame`, exposed through the app's `--windowed-root-frame` via `run_windowed_root_frame`) feeds live input into the controller and re-presents each distinct session-rendered frame. The audio host is now implemented (`cmr-platform-sdl3::audio::AudioHost` opens a 22050 Hz/stereo/s16 SDL3 playback stream and pumps the shared `SoftwareMixer<FileWaveSource>` from the audio callback, with the game driving the recovered subsystems against the shared mixer handle). All four SDL3 host boundaries (window/input/audio/presentation) now exist; a displayed end-to-end run on the real user corpus is gated under `I03`/`I04`).
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-22T00:08:00Z
-milestone=reconstruct-options-control-binding-and-calibration-structure
+updated_utc=2026-10-22T00:36:00Z
+milestone=verify-windows-portability-of-the-compatibility-slice
 completed=52
-partial=54
-not_started=11
+partial=55
+not_started=10
 blocked=0
 total=117
-current_focus=I04-provide-a-reproducible-windows-build-of-the-compatibility-target
-next_exit_gate=advance-the-platform-build-and-packaging-track
+current_focus=I05-add-ci-for-formatting-clippy-tests-and-windows-cross-check
+next_exit_gate=automate-the-portable-gate-and-windows-cross-check-in-ci
 <!-- PROGRESS-TAIL-END -->

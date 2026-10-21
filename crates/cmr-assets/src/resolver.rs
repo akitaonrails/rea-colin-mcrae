@@ -127,6 +127,11 @@ mod tests {
             "Game//file",
             "Game/file/",
             "Game\0file",
+            // Windows-shaped variants (game paths use backslashes): backslash
+            // traversal, UNC, and a drive-relative name.
+            "Game\\..\\file",
+            "\\\\server\\share\\file",
+            "C:file",
         ] {
             assert!(matches!(
                 index.resolve(invalid),

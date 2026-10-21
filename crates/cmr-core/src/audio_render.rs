@@ -626,6 +626,13 @@ mod tests {
             "a//b.wav",
             "dir/",
             "a\0b",
+            // Windows-shaped variants that only matter on a Windows build: the
+            // game's real wave names use backslashes, so backslash-form
+            // traversal is the realistic vector, alongside UNC and
+            // drive-relative names.
+            r"sounds\..\..\windows\x.wav",
+            r"\\server\share\x.wav",
+            r"C:x.wav",
         ] {
             assert!(
                 source.fetch(unsafe_name).is_none(),

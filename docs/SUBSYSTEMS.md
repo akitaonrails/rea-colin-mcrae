@@ -1090,6 +1090,19 @@ languages rather than fabricating or silently aliasing Italian assets.
   formula. See evidence `rea.official-eu.options-screen`/`impl.options-screen`,
   `rea.official-eu.control-bindings`/`impl.control-bindings`, and
   `rea.official-eu.input-calibration`/`impl.input-calibration`.
+- The portable compatibility slice (`cmr-core`, `cmr-formats`,
+  `cmr-test-support`, `cmr-assets`, `cmr-video`) is verified Windows-portable at
+  the source level: it type-checks for `x86_64-pc-windows-gnu`
+  (`cargo check --target x86_64-pc-windows-gnu -p cmr-core -p cmr-formats
+  -p cmr-test-support -p cmr-assets -p cmr-video --all-targets`) with no
+  Linux-only assumptions - production code uses cross-platform
+  `std::fs::symlink_metadata` and the only platform-gated code is `#[cfg(unix)]`
+  test helpers Windows skips. The path-safety rejection in
+  `FileWaveSource::safe_path` and `cmr-assets::resolver` handles Windows path
+  shapes (backslash traversal, UNC, drive-qualified), covered by tests. The SDL
+  host crates (`cmr-platform-sdl3`, `cmr-app`) require native SDL3 provisioning to
+  build for Windows (gated with the Linux displayed run under I07). See evidence
+  `impl.windows-portability`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
