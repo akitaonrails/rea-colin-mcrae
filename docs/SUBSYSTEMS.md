@@ -192,6 +192,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   aligned padding, before any write. It is nominally separate from fonts,
   selected C3D textures, and framebuffer formats; native storage, stretch,
   driver pixels, session ordering, and the 4-/24-bit branches remain open.
+- `cmr-video::software_championship_ordinary_rgb16`: transactional fixed-shape
+  ownership of converted R_INFO, 11 unique logo, and 15 Chequered sources,
+  keyed by stable media-relative identities and retaining only contextual
+  relative paths on failure. Selection Stretch and alternate fonts remain
+  deliberately outside this pool.
 - `cmr-video::packed_rgb_target`: a nominal runtime-framebuffer format and
   logical masked-word target kept type-distinct from selected texture formats.
   It retains the complete raw surface descriptor and converts canonical RGB

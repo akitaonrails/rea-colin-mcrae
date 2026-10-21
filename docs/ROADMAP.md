@@ -301,7 +301,11 @@ aligned-row bounds, and owner-scoped inactive-backend execution. Source-ordered
 alternate-session integration remains separate. Alternate fonts are explicitly separate: their
 initialized path prepares a `0x90` source, may invoke driver `Load`, and queues
 a colored primitive. Its driver conversion, tuple/blend semantics, and final
-pixels remain unresolved alongside native layout and dithering.
+pixels remain unresolved alongside native layout and dithering. R_INFO, the 11
+unique logo assets, and all 15 Chequered frames now also have one transactional
+27-source logical-RGB16 owner built directly from decoded user assets. Stable
+identity/path diagnostics and per-bitmap palette provenance are pinned; setup
+command identity and source-ordered execution are the next integration seam.
 
 Exit gate:
 
