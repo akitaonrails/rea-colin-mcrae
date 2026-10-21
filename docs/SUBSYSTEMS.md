@@ -131,6 +131,24 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   WinMM/Win32 acquisition is SDL-backend glue; the dead-zone source and the
   `+0x2b8[4]` slot order (a drivetrain question) remain. See evidence
   `rea.official-eu.host-input-mapping`.
+- `cmr-core::force_feedback`: the DirectInput force-feedback effect transforms.
+  The shipped game drives FFB through DirectInput and that is the sole purpose of
+  the `DINPUT.dll` import (resolving the B10 unknown): in-race input is WinMM,
+  DirectInput is only the FFB output path (device `FUN_004aba70` ->
+  `DirectInputCreateA`/`CreateDevice`/`SetDataFormat`/`SetCooperativeLevel`/
+  `Acquire`; six effects created once, updated per frame via `SetParameters`
+  only on changed fields from the double-buffered per-car block `DAT_00550040`).
+  Reconstructs the magnitude rescale (`*0x2710>>16`, game `0..0x10000` -> DI
+  `0..10000`), the collision peak+decay-step accumulator (copy-then-decay,
+  clamp 0), the digital-wheel direction snaps (9000/27000) and the analog polar
+  conversion, the rumble sample-period floor (`1000`us), the self-centring `/2`
+  clamp, the cornering pre-shift clamp (`0x27100000>>16`), the `DICONDITION`
+  build, the `DIEP_*` change-diff flag sets, the effect slot/kind table, and the
+  enable gate (device && session && per-player bit `0x08`). DirectInput ABI
+  constants are reproduced as public SDK values; effect GUIDs are represented as
+  kinds, not vendored. The device/effect lifecycle is backend glue; the decay
+  step source and per-source raw sums are G02/G03 force-wiring unknowns. See
+  evidence `rea.official-eu.force-feedback`.
 - `cmr-core::timing`: validated pure plans for recovered logical rates, timer
   startup/drift, compatibility buckets, focus gating, and unsigned deadlines.
 - `cmr-core::host_loop`: the recovered native host clock and main-loop pacing as

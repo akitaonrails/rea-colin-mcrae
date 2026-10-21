@@ -37,6 +37,7 @@ pub mod drivetrain;
 pub mod fixed_point;
 pub mod font_assets;
 pub mod font_raster;
+pub mod force_feedback;
 pub mod frontend;
 pub mod frontend_c3d_resources;
 pub mod frontend_c3d_route;

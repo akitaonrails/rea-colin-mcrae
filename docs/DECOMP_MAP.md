@@ -136,7 +136,7 @@ Status markers:
 - [ ] `H05` Recover music/CD/MCI selection and lifecycle.
 - [ ] `H06` Recover intro-video selection/playback/skip and launcher handoff.
 - [ ] `H07` Implement portable music and video backends.
-- [ ] `H08` Recover force-feedback effect semantics.
+- [~] `H08` Recover force-feedback effect semantics (**the shipped game drives force feedback through DirectInput, and that is the sole purpose of the `DINPUT.dll` import** - resolving the B10 unknown: in-race *input* is WinMM/`GetAsyncKeyState`, DirectInput is instantiated only as the FFB *output* path). Device bring-up `FUN_004aba70` runs `DirectInputCreateA` -> `EnumDevices(DIDEVTYPE_JOYSTICK)` -> `CreateDevice` -> `SetDataFormat(c_dfDIJoystick)` -> `SetCooperativeLevel(EXCLUSIVE|BACKGROUND=9)` -> `Acquire`, stored by `FUN_004ab920` behind the device-present flag `DAT_00bb95a8`; six effects (two periodic sine, two constant force, two conditions) are created once by `FUN_00432ce0` into `DAT_00bb9578[]` (DX7 `DIEFFECT` size `0x38`) and thereafter only updated via `IDirectInputEffect::SetParameters`. The per-car effect-parameter block is `DAT_00550040` (stride `0x88`), double-buffered (`FUN_004335d0` snapshots current->previous) so the per-frame commit `FUN_00433620` pushes a `SetParameters` call **only for changed fields**. Confidently-recovered Q16.16/integer transforms: the magnitude rescale `value*0x2710>>16` mapping game `0..=0x10000` onto DirectInput `0..=10000` (`DI_FFNOMINALMAX`, so the G04 collision impact becomes a constant-force gain); the collision peak+decay-step accumulator seeded by `FUN_004330c0`/`FUN_004331b0` and played-then-decayed (clamp 0) each frame by `FUN_00433ac0`; the digital-wheel direction snaps `9000`/`27000` and the analog polar conversion from the `atan2` LUT (full circle `0x400`); the surface-rumble sample-period floor `1000`us (`FUN_00432e00`); the self-centring `/2` clamp (`FUN_00433800`); the cornering pre-shift clamp `0x27100000>>16` (`FUN_00433b30`); the `DICONDITION` build (symmetric coeff, full saturation, no dead-band; `FUN_004ac840`); the `DIEP_*`/`DIEFF_*` change-diff flag sets; and the enable gate (device-present `DAT_00bb95a8` && session `DAT_00550484` && per-player config bit `0x08` at stride `0x9c`, else every wrapper no-ops with `E_INVALIDARG`). Reconstructed in `cmr-core::force_feedback` (DirectInput ABI constants reproduced as public SDK values; effect GUIDs represented only as kinds; the per-surface rumble table is runtime game data and not vendored). The effect sources are collision (sine+constant), tyre/surface rumble (periodic), cornering/lateral load (constant), self-centring/road-feel (damper condition), and engine/gear vibration (spring condition). **Correction to the prior premise**: the `DAT_0050d87c`/`0x880` table (your G04 FFB anchor) is actually consumed by `FUN_0041d790` to drive a decaying *visual* car-body mesh shudder, not DirectInput. Unknowns: the collision decay-step source and the per-source raw-sum derivations (fed by the G02/G03 force-production wiring), the exact analog-direction LUT unit (only the boundary mapping is asserted), `FUN_0049d650` (likely `SetProperty DIPROP_FFGAIN`/`AUTOCENTER`), the `EnumDevices` capability-filter callback `0x4abc00`, and the `DAT_00551af0` global FFB-strength multiplier.
 - [ ] `H09` Recover reachable DirectPlay session/protocol behavior safely.
 - [ ] `H10` Design and implement an optional modern network transport.
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T18:17:47Z
-milestone=reconstruct-the-in-race-input-acquisition-and-mapping
+updated_utc=2026-10-21T18:34:57Z
+milestone=reconstruct-the-directinput-force-feedback-effect-semantics
 completed=52
-partial=36
-not_started=29
+partial=37
+not_started=28
 blocked=0
 total=117
 current_focus=B11-implement-native-window-creation-and-presentation
-next_exit_gate=implement-the-sdl-host-clock-input-and-window-backends-behind-the-contracts
+next_exit_gate=implement-the-sdl-host-clock-input-window-and-force-feedback-backends-behind-the-contracts
 <!-- PROGRESS-TAIL-END -->
