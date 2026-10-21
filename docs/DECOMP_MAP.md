@@ -153,7 +153,7 @@ Status markers:
 - [ ] `I09` Implement the selected portable GPU backend behind shared contracts.
 - [ ] `I10` Remove requirements for original DirectX/QMixer/WinMM DLLs.
 - [ ] `I11` Package binaries without copyrighted game payloads.
-- [ ] `I12` Document a controlled original-vs-reconstruction comparison.
+- [~] `I12` Document a controlled original-vs-reconstruction comparison ([docs/COMPARISON.md](COMPARISON.md) defines the comparison methodology and status map across five levels matching the reconstruction order: (1) artifact identity by SHA-256 against the recorded hashes; (2) format parity via synthetic differential fixtures + the malformed-input rejection boundary, with an optional owned-media byte-exact re-encode; (3) behavioral parity using the recovered constants/formulas encoded in pure Rust as standing oracles (the unit suite IS the comparison), recording unknowns rather than fabricating formulas; (4) persistence byte-exact round-trips gated on an owned original save (F07); (5) observational runtime parity as a scoped/opt-in procedure over the shared `image_compare` tolerance harness and the same backend contract tests. Documents the exact repeatable command (`cargo test --workspace`, extended by the I04 cross-check and I05 CI) and what each optional level needs, and explicitly separates gated comparisons from the intentional permanent deviations (portable paths vs registry, SDL vs DirectX, software mixer vs QMixer, no CD/MCI music) which are deferred to the I13 matrix. Linked from the README doc index. I12 -> partial; the gated/opt-in levels (owned-media differential fixtures, displayed runs, frame-level 3D parity) are procedures pending the media and the GPU backend.)
 - [ ] `I13` Publish a supported-edition and known-deviation matrix.
 
 ## Update rules
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-22T01:04:00Z
-milestone=add-ci-workflow-for-the-portable-gate-and-windows-builds
+updated_utc=2026-10-22T01:32:00Z
+milestone=document-the-controlled-original-vs-reconstruction-comparison
 completed=52
-partial=56
-not_started=9
+partial=57
+not_started=8
 blocked=0
 total=117
-current_focus=I12-document-a-controlled-original-vs-reconstruction-comparison
-next_exit_gate=document-the-comparison-and-deviation-matrix
+current_focus=I13-publish-a-supported-edition-and-known-deviation-matrix
+next_exit_gate=publish-the-supported-edition-and-deviation-matrix
 <!-- PROGRESS-TAIL-END -->

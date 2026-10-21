@@ -157,7 +157,9 @@ and [docs/EVIDENCE.md](docs/EVIDENCE.md). The reproducible REA workflow is in
 progress footer are in [docs/DECOMP_MAP.md](docs/DECOMP_MAP.md), while recovered
 subsystem boundaries are in [docs/SUBSYSTEMS.md](docs/SUBSYSTEMS.md). The
 provisional Windows/Linux backend recommendation and its benchmark gates are in
-[docs/MODERN_BACKEND_RESEARCH.md](docs/MODERN_BACKEND_RESEARCH.md).
+[docs/MODERN_BACKEND_RESEARCH.md](docs/MODERN_BACKEND_RESEARCH.md). How the
+reconstruction is checked against the original is in
+[docs/COMPARISON.md](docs/COMPARISON.md).
 
 From the repository root, watch the compact progress footer with:
 
