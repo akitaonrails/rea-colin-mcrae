@@ -32,10 +32,42 @@
 //! 11025/16/mono format, one-shot play of slot `base+index`, and the `intro2\`
 //! tutorial set. Inferences: `DAT_00d3ca88` is the sound-disabled gate; the two
 //! music instances are the attract/menu variants. Unknowns (not reproduced):
-//! the music/fade volume scaling (literal constants only, units unknown), the
-//! countdown index->value slot mapping and the `FUN_00439b10` tick cadence, and
-//! the replay/SETUP control flow (their enclosing functions were not bound by
-//! the decompiler). See evidence `rea.official-eu.audio-music-countdown`.
+//! the countdown index->value slot mapping and the `FUN_00439b10` tick cadence,
+//! and the replay/SETUP control flow (their enclosing functions were not bound
+//! by the decompiler). See evidence `rea.official-eu.audio-music-countdown`.
+//!
+//! # Music selection and lifecycle (H05)
+//!
+//! **Recorded decisive negative result: the retail EU build plays no
+//! CD / Redbook / MCI music whatsoever.** `WINMM.dll` is imported and its MCI
+//! interface (`mciSendCommandA`/`mciGetDeviceIDA`) is used, but every MCI call
+//! targets the `avivideo` device for full-motion video (see
+//! [`crate::intro_video`]), never a `cdaudio` device; there is no
+//! `mciSendStringA`, no `auxGetNumDevs`/`auxSetVolume` CD-volume control, and no
+//! `cdaudio`/`mci`/`music` command strings. Game music is exclusively the QSound
+//! PCM `.wav` path (the two [`MusicTrack`]s). A faithful reconstruction must not
+//! implement any CD/MCI music subsystem.
+//!
+//! "Which music plays" is therefore not a PCM-vs-CD choice but a pure context
+//! choice. The global context flag `DAT_00d3ca88` (frontend-vs-in-race) gates
+//! playback: frontend music (`FUN_00443b20`) and the stage countdown
+//! (`FUN_0046a740`) start **only when it is `0`** ([`FRONTEND_CONTEXT`] /
+//! [`frontend_music_active`]); the frontend context loops `frontend.wav`, the
+//! replay context loops `replay.wav`, and in-stage there is no background music.
+//! Start (`FUN_00443b20`) loads the whole wave, sets the volume from the config
+//! byte `DAT_00d3ca80 + 7` ([`music_volume`]: `(byte & 0x7f) * 400000 / 100`),
+//! and plays looping (loop count `0xffffffff`). The per-frame keep-alive
+//! `FUN_004c9d70` ([`music_keepalive`]) performs a fade-in ramp toward a target
+//! derived from a second config block (`0x00d3ac60 + 0xf`, [`music_fade_target`]:
+//! `(byte & 0x7f) * 0x14`) while the voice plays, and reloads + restarts the
+//! loop when the voice drains. This resolves the H02 "volume scaling units
+//! unknown" note (the scaling is recovered; the absolute QMixer units it feeds
+//! remain a mixer-backend policy). The replay-context start site itself was not
+//! bound by the decompiler, so [`frontend_music_active`] models only the
+//! recovered frontend gate.
+//!
+//! The config byte offsets are source-root-independent structural metadata; no
+//! CD subsystem, no MCI music path, and no payload bytes are reproduced.
 
 use crate::audio_mixer::{PLAY_LOOPING, PLAY_ONE_SHOT};
 use crate::audio_pacenote::SpeechLanguage;
@@ -60,6 +92,76 @@ impl MusicTrack {
             MusicTrack::Frontend => crate::audio_assets::FRONTEND_MUSIC,
             MusicTrack::Replay => crate::audio_assets::REPLAY_MUSIC,
         }
+    }
+}
+
+/// Loop count passed to the play call for music (`0xffffffff` = play forever).
+pub const MUSIC_LOOP_COUNT: u32 = 0xffff_ffff;
+
+/// Value of the context flag `DAT_00d3ca88` in which frontend music and the
+/// stage countdown start (frontend / menu / replay context).
+pub const FRONTEND_CONTEXT: u32 = 0;
+
+/// Config byte offset (into `DAT_00d3ca80`) holding the music volume setting.
+pub const MUSIC_VOLUME_CONFIG_OFFSET: usize = 7;
+
+/// Config byte offset (into the second config block at `0x00d3ac60`) holding the
+/// fade-in target level.
+pub const MUSIC_FADE_CONFIG_OFFSET: usize = 0xf;
+
+/// Mask applied to both the volume and fade config bytes (`0..=127`).
+pub const MUSIC_CONFIG_MASK: u8 = 0x7f;
+
+/// Numerator of the recovered music-volume scaling (`FUN_00443b20`).
+pub const MUSIC_VOLUME_NUMERATOR: i32 = 400_000;
+
+/// Denominator of the recovered music-volume scaling.
+pub const MUSIC_VOLUME_DENOMINATOR: i32 = 100;
+
+/// Per-step scale of the fade-in target level (`FUN_004c9d70`).
+pub const MUSIC_FADE_TARGET_SCALE: i32 = 0x14;
+
+/// Whether frontend music / the stage countdown is active for a context flag
+/// value, reproducing the `DAT_00d3ca88 == 0` gate.
+pub fn frontend_music_active(context: u32) -> bool {
+    context == FRONTEND_CONTEXT
+}
+
+/// Scale a music-volume config byte to the value passed to the mixer, exactly as
+/// `FUN_00443b20` does: `(byte & 0x7f) * 400000 / 100`. The absolute QMixer
+/// units this feeds are a mixer-backend policy.
+pub fn music_volume(config_byte: u8) -> i32 {
+    ((config_byte & MUSIC_CONFIG_MASK) as i32 * MUSIC_VOLUME_NUMERATOR) / MUSIC_VOLUME_DENOMINATOR
+}
+
+/// The fade-in target level the keep-alive ramps toward, from the second config
+/// block's byte (`FUN_004c9d70`): `(byte & 0x7f) * 0x14`.
+pub fn music_fade_target(config_byte: u8) -> i32 {
+    (config_byte & MUSIC_CONFIG_MASK) as i32 * MUSIC_FADE_TARGET_SCALE
+}
+
+/// What the per-frame music keep-alive (`FUN_004c9d70`) does this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MusicKeepAlive {
+    /// The loop is playing and has reached the fade target: hold steady.
+    HoldFadedIn,
+    /// The loop is playing but below the fade target: advance the fade-in ramp.
+    FadeIn,
+    /// The loop has drained: reload the wave and restart it looping (and reset
+    /// the fade ramp).
+    Restart,
+}
+
+/// Decide one keep-alive step, reproducing `FUN_004c9d70`'s branches: a drained
+/// voice restarts the loop; a playing voice below the fade target advances the
+/// ramp; otherwise the volume holds.
+pub fn music_keepalive(voice_playing: bool, fade_elapsed: i32, fade_target: i32) -> MusicKeepAlive {
+    if !voice_playing {
+        MusicKeepAlive::Restart
+    } else if fade_elapsed < fade_target {
+        MusicKeepAlive::FadeIn
+    } else {
+        MusicKeepAlive::HoldFadedIn
     }
 }
 
@@ -114,6 +216,53 @@ mod tests {
         // Music loops; countdown is one-shot.
         assert_eq!(MUSIC_PLAY_FLAGS, PLAY_LOOPING);
         assert_eq!(COUNTDOWN_PLAY_FLAGS, PLAY_ONE_SHOT);
+    }
+
+    #[test]
+    fn frontend_music_gate_is_context_zero() {
+        assert!(frontend_music_active(FRONTEND_CONTEXT));
+        assert!(frontend_music_active(0));
+        assert!(!frontend_music_active(1));
+        assert!(!frontend_music_active(0xffff_ffff));
+    }
+
+    #[test]
+    fn music_volume_scales_the_config_byte() {
+        // 0 -> 0; full 127 -> 127*400000/100 = 508000.
+        assert_eq!(music_volume(0), 0);
+        assert_eq!(
+            music_volume(0x7f),
+            127 * MUSIC_VOLUME_NUMERATOR / MUSIC_VOLUME_DENOMINATOR
+        );
+        assert_eq!(music_volume(0x7f), 508_000);
+        // The high bit is masked off (0xff -> 0x7f).
+        assert_eq!(music_volume(0xff), music_volume(0x7f));
+        // A mid value.
+        assert_eq!(music_volume(50), 200_000);
+    }
+
+    #[test]
+    fn music_fade_target_scales_the_second_config_byte() {
+        assert_eq!(music_fade_target(0), 0);
+        assert_eq!(music_fade_target(0x7f), 127 * 0x14);
+        assert_eq!(music_fade_target(0x80), 0); // only the low 7 bits select
+        assert_eq!(music_fade_target(10), 10 * 0x14);
+    }
+
+    #[test]
+    fn keepalive_restarts_when_drained_and_fades_otherwise() {
+        // Drained voice -> reload + restart (regardless of the fade numbers).
+        assert_eq!(music_keepalive(false, 0, 100), MusicKeepAlive::Restart);
+        assert_eq!(music_keepalive(false, 500, 100), MusicKeepAlive::Restart);
+        // Playing but below target -> ramp.
+        assert_eq!(music_keepalive(true, 40, 100), MusicKeepAlive::FadeIn);
+        // Playing at/above target -> hold.
+        assert_eq!(music_keepalive(true, 100, 100), MusicKeepAlive::HoldFadedIn);
+        assert_eq!(music_keepalive(true, 200, 100), MusicKeepAlive::HoldFadedIn);
+        // A zero target holds immediately.
+        assert_eq!(music_keepalive(true, 0, 0), MusicKeepAlive::HoldFadedIn);
+        // Music loops forever.
+        assert_eq!(MUSIC_LOOP_COUNT, 0xffff_ffff);
     }
 
     #[test]

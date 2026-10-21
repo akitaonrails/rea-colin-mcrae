@@ -619,9 +619,22 @@ languages rather than fabricating or silently aliasing Italian assets.
   enable) is shared by 15 call sites across every audio bank, and `0x47eba0` is
   a second master-volume bus beside the known `0x47eb70`. Reconstructed in
   `cmr-core::audio_music_cues` (music tracks/flags, countdown set/format/path);
-  the volume scaling, countdown slot ordering/cadence, and replay/SETUP control
-  flow are left in the ledger. See evidence
-  `rea.official-eu.audio-music-countdown`.
+  the countdown slot ordering/cadence and replay/SETUP control flow are left in
+  the ledger. See evidence `rea.official-eu.audio-music-countdown`.
+- Music selection and lifecycle (H05), in the same `cmr-core::audio_music_cues`.
+  **Decisive negative result: the retail EU build plays no CD / Redbook / MCI
+  music** - the WINMM MCI import drives only the `avivideo` FMV device, never a
+  `cdaudio` device; music is exclusively the QSound PCM path (`frontend.wav`,
+  `replay.wav`). Selection is context-driven, not a table: `DAT_00d3ca88 == 0`
+  (frontend context) gates frontend music and the countdown
+  (`frontend_music_active`); the frontend context loops `frontend.wav`, replay
+  loops `replay.wav`, in-stage has no music. Start sets the volume from config
+  `DAT_00d3ca80+7` (`music_volume`: `(byte&0x7f)*400000/100`) and plays with loop
+  count `0xffffffff`; the keep-alive `FUN_004c9d70` (`music_keepalive`) fades in
+  toward `(cfg2[0xf]&0x7f)*0x14` while playing and reloads+restarts on drain.
+  This resolves the earlier "volume scaling units unknown" note (the scaling is
+  recovered; absolute QMixer units stay mixer-backend policy). No CD subsystem is
+  implemented. See evidence `rea.official-eu.music-lifecycle`.
 - The first concrete audio backend `cmr-core::audio_render::SoftwareMixer`
   implements the recovered `AudioMixer` contract as a portable, I/O-free PCM
   mixer: it renders per-channel voices (one-shot/loop, linear volume gain,
