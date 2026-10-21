@@ -996,6 +996,23 @@ languages rather than fabricating or silently aliasing Italian assets.
   on a close request alongside the controller's Escape/exit. The reducer is pure
   and tested without a display server; the SDL window/event loop around it is
   glue. See evidence `impl.interactive-native-root-lifecycle`.
+- `cmr-core::profile_store` is the save-slot/profile record model (F03). A save
+  game is one `0x6ac`-byte record written whole to `SAVE\SAVESLOT<n>.cms` (12
+  slots): a header - seed cookie, magic `0x12348765`, format marker `0x690` -
+  wrapping a `0x690`-byte championship-state payload with an always-zeroed
+  volatile window, a 2-bit mode byte, and a `~seed` complement check. A slot is
+  valid/occupied when the magic, format, and complement match, and the loader
+  additionally requires an exact-length file; the triple is an anti-tamper gate
+  over the seed, not a payload checksum. Creating a profile is the same path as
+  saving (a fresh record serialized over any slot). There is no delete
+  primitive in the shipped build - a slot becomes empty only by failing the
+  validity/size gate - so a portable host deletes by removing the file. The
+  module reconstructs the structural header (`make_seed`/`seed_complement`,
+  `slot_is_valid`, `classify_slot`, `slot_mode`, `finalize_slot_for_save`)
+  while treating the `0x690` payload as opaque game state (offset/length only,
+  not vendored). It builds on `settings_store`'s slot length/count and pairs
+  with the `DataPaths::save_slot` path builder. See evidence
+  `rea.official-eu.save-slots` and `impl.profile-store`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

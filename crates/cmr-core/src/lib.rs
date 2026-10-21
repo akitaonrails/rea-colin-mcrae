@@ -55,6 +55,7 @@ pub mod music_player;
 pub mod pacenote_schedule;
 pub mod present_scaling;
 pub mod presentation;
+pub mod profile_store;
 pub mod race_participants;
 pub mod race_state;
 pub mod replay;

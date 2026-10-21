@@ -104,7 +104,7 @@ Status markers:
 
 - [~] `F01` Recover remaining frontend screen graph and callbacks.
 - [ ] `F02` Implement options, controller setup, and calibration screens.
-- [ ] `F03` Implement profile creation/load/save/delete flows.
+- [~] `F03` Implement profile creation/load/save/delete flows (recovered: a save game is a single fixed `0x6ac`-byte record written whole (truncate+overwrite via `FUN_0044ef50` -> `FUN_00496580` `OpenFile OF_CREATE`/`WriteFile`) to `SAVE\SAVESLOT<n>.cms`, 12 slots. The record is a header wrapping a `0x690`-byte championship-state payload copied from the live game struct (`DAT_00d3ca80+0x2c`): seed cookie at `+0x00` (generated `((r0<<10)^r1)<<10 ^ r2 | 0xAA000000`), magic `0x12348765` at `+0x04`, format marker `0x690` at `+0x08` (= payload length / version), payload at `+0x0c` with an always-zeroed volatile window at `+0x1c`/`0x54`, trailing scalars at `+0x69c`/`+0x6a0`/`+0x6a4`, a 2-bit mode byte at `+0x6a6`, and a `~seed` complement at `+0x6a8`. Occupancy/validity (`FUN_0044eed0`) = magic && format && complement==~seed; the loader `FUN_0044ed90` additionally requires the file to be exactly `0x6ac` bytes (else the slot is empty). The validity triple is an anti-tamper gate over the seed, NOT a payload checksum. **Create = save**: a fresh record is serialized over any slot (the menu confirms an overwrite only when the target is occupied). **Decisive negative result: there is no delete primitive** - no `DeleteFileA`/`_unlink`/`remove` and no zero-then-rewrite; a slot becomes empty only by failing the validity/size gate (absent file). Reconstructed the structural model in `cmr-core::profile_store`: the record offsets/magic/format/tag constants, `make_seed`/`seed_complement`, `slot_is_valid`, `classify_slot` (`SlotState::Empty`/`Occupied` over `Option<&[u8]>`), `slot_mode`, and `finalize_slot_for_save` (zero the volatile window + stamp seed/magic/format/complement so a filled payload becomes a valid record). 8 tests. The `0x690` payload is live championship state (game data) and its field semantics are NOT modeled or vendored - only its offset/length are structural; "delete" in a portable host is removing the file (app-layer I/O), after which `classify_slot` reports Empty. In-memory tables (raw copies `DAT_0055d74c`, flags `DAT_0055c248`, display lines `DAT_0055c298` stride `0x104`) and the load-apply direction (slot -> runtime, dispatched indirectly) remain.)
 - [~] `F04` Implement championship, rally, time trial, and school menus.
 - [ ] `F05` Recover event, country, stage, car, and difficulty data models.
 - [ ] `F06` Implement results, records, unlocks, and championship progression.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T22:00:00Z
-milestone=wire-the-host-lifecycle-into-the-interactive-native-root-menu
+updated_utc=2026-10-21T22:18:00Z
+milestone=reconstruct-the-save-slot-profile-record-model-and-flows
 completed=52
-partial=49
-not_started=16
+partial=50
+not_started=15
 blocked=0
 total=117
-current_focus=F03-implement-profile-creation-load-save-delete-flows
-next_exit_gate=recover-and-round-trip-the-frontend-persistence-model
+current_focus=F07-verify-all-persistence-round-trips-and-failure-recovery
+next_exit_gate=round-trip-and-recover-the-settings-and-save-slot-persistence
 <!-- PROGRESS-TAIL-END -->
