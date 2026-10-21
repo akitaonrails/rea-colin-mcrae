@@ -953,6 +953,24 @@ languages rather than fabricating or silently aliasing Italian assets.
   contract). This completes the native host window/focus/presentation exit gate
   (B09-B12); the live game loop consumes `HostLifecycle` once the full loop is
   SDL-driven. See evidence `impl.host-lifecycle`.
+- `cmr-core::settings_store` is the portable settings/path backend (C05). The
+  shipped game loads a single fixed `0x1e20`-byte options blob from
+  `save\cmRally.cfg` under a registry-configured writable base, validates it by
+  an exact-length gate alone (no header/magic/version/checksum), zeroes a
+  runtime region after load, and gates saving on a do-not-save flag; save games
+  are twelve `0x6ac`-byte `SAVE\SAVESLOT<n>.cms` slots, a wrong-sized slot
+  treated as empty. The original resolves its HD/CD base paths from
+  `HKLM\SOFTWARE\Codemasters\Rally\1.00` with absolute fallbacks and fixed
+  `new_fe`/`game` subdirs. Per AGENTS.md that registry + absolute-path strategy
+  is deliberately not reproduced: `DataPaths` takes an explicit writable
+  user-data root and an explicit `--source`/`CMR_ORIGINAL_DIR` media root and
+  builds every path with `std::path`, preserving the recovered layout, while
+  `SettingsImage` reproduces the exact-length gate, the do-not-save flag, and
+  the runtime-zero region, and `save_slot_is_occupied` the slot size gate. The
+  shipped `.data` default blob is game data and is not vendored (a caller
+  supplies its own default image). This unblocks native startup (C13), the
+  interactive native menu (D18), and the profile/persistence flows (F03/F07).
+  See evidence `rea.official-eu.settings-paths` and `impl.settings-store`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

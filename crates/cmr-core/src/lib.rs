@@ -76,6 +76,7 @@ pub mod root_menu_footer;
 pub mod root_menu_frame;
 pub mod root_menu_interactive;
 pub mod root_menu_visual;
+pub mod settings_store;
 pub mod sim_clock;
 pub mod source_store;
 pub mod stage_timing;
