@@ -36,9 +36,11 @@ use cmr_core::{
         DeferredPaletteCommitOutcome, DeferredPaletteState, PaletteArenaIndex, PaletteGroupBases,
     },
     display::DisplayExtent,
+    font_assets::FontStyle,
     frontend_c3d_resources::prepare_frontend_c3d_resources,
     frontend_c3d_route::{FrontendC3dRoute, FrontendC3dRouteState},
     frontend_c3d_scene::C3dDepthClear,
+    localization::{FRONTEND_TEXT_COUNT, Language},
     root_menu_assets::{ROOT_MENU_SELECT_PATH, VisualVariant},
     root_menu_c3d_assets::load_root_menu_c3d,
     root_menu_c3d_render_state::{
@@ -87,6 +89,7 @@ use cmr_video::{
         SoftwareChampionshipSetupDeferredCommand,
         prepare_software_championship_alternate_setup_frame,
     },
+    software_queued_font_glyphs::SoftwareQueuedFontTerminal,
 };
 use sha2::{Digest, Sha256};
 
@@ -107,6 +110,8 @@ fn alternate_session_repeats_car_and_next_frames_without_indexed_ownership() {
 
     let run = with_software_championship_alternate_session(&store, request, |session| {
         assert_eq!(session.ordinary_source_count(), 27);
+        assert_eq!(session.frontend_text_count(), FRONTEND_TEXT_COUNT);
+        assert_eq!(session.queued_font_source_count(), FontStyle::ALL.len());
         assert!(session.selection_is_loaded());
         assert!(!session.selection_is_deferred());
         let initial_preview = session.preview_cache();
@@ -151,6 +156,32 @@ fn alternate_session_repeats_car_and_next_frames_without_indexed_ownership() {
                 base_basis: IDENTITY_BASIS,
             })
             .unwrap();
+        let first_text_commands = first
+            .queued_text
+            .texts()
+            .iter()
+            .map(|text| text.command_index())
+            .collect::<Vec<_>>();
+        assert_eq!(first_text_commands, [0, 2, 9, 10]);
+        let mut first_record_commands = first
+            .queued_text
+            .records()
+            .map(|record| record.command_index)
+            .collect::<Vec<_>>();
+        first_record_commands.dedup();
+        assert_eq!(first_record_commands, [0, 2, 9, 10]);
+        assert!(
+            first
+                .queued_text
+                .records()
+                .all(|record| { record.terminal == SoftwareQueuedFontTerminal::TexturedQuad })
+        );
+        let first_title_source = first
+            .queued_text
+            .records()
+            .next()
+            .unwrap()
+            .source_owner(session.queued_font_pool()) as *const _;
         assert_eq!(first.scene.submission.unwrap().draws, 0);
         assert!(first.setup.commands.iter().any(is_selection_bitmap));
         assert_eq!(
@@ -171,6 +202,14 @@ fn alternate_session_repeats_car_and_next_frames_without_indexed_ownership() {
                 base_basis: IDENTITY_BASIS,
             })
             .unwrap();
+        let second_title_source = second
+            .queued_text
+            .records()
+            .next()
+            .unwrap()
+            .source_owner(session.queued_font_pool()) as *const _;
+        assert_eq!(second_title_source, first_title_source);
+        assert_eq!(second.queued_text.texts().len(), 4);
         let second_submission = second.scene.submission.unwrap();
         assert_eq!(second_submission.draws, 3);
         assert_eq!(second_submission.bindings, 3);
@@ -187,6 +226,7 @@ fn alternate_session_repeats_car_and_next_frames_without_indexed_ownership() {
                 base_basis: IDENTITY_BASIS,
             })
             .unwrap();
+        assert_eq!(repeated.queued_text.texts().len(), 4);
         let repeated_submission = repeated.scene.submission.unwrap();
         assert_eq!(repeated_submission.draws, 3);
         assert_eq!(repeated_submission.bindings, 2);
@@ -206,6 +246,15 @@ fn alternate_session_repeats_car_and_next_frames_without_indexed_ownership() {
                 base_basis: IDENTITY_BASIS,
             })
             .unwrap();
+        assert_eq!(
+            next_outcome
+                .queued_text
+                .texts()
+                .iter()
+                .map(|text| text.command_index())
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 4]
+        );
         assert_eq!(next_outcome.scene.submission, None);
         assert_eq!(session.car_transform(), before_next_transform);
         assert_eq!(
@@ -265,10 +314,111 @@ fn alternate_session_rejects_ordinary_framebuffer_layout_before_callback() {
 }
 
 #[test]
+fn alternate_session_queued_text_failure_has_no_frame_effects() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let mut request = alternate_session_request(5, KnownRgbLayout::Rgb555);
+    request.text_layout_limits.max_input_bytes = 1;
+
+    with_software_championship_alternate_session(&store, request, |session| {
+        let initial_preview = session.preview_cache();
+        let initial_transform = session.car_transform();
+        let initial_palette = session.palette_state();
+        let initial_route = session.active_c3d_route();
+        let initial_car_visibility =
+            CanonicalCar::ALL.map(|car| session.car_visibility().mask(car));
+        let initial_root_visibility = cmr_core::root_menu_c3d_assets::RootMenuC3dSlot::ALL
+            .map(|slot| session.root_visibility().mask(slot));
+        let initial_words = session.backend().logical_target().words().to_vec();
+        let initial_depth = session.backend().depth_values().to_vec();
+
+        let car = car_transcript();
+        let error = session
+            .render(SoftwareChampionshipAlternateFrameRequest {
+                visual: visual_input(&car),
+                setup: ChampionshipSetupFrameState::default(),
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            SoftwareChampionshipAlternateRenderError::QueuedText(source)
+                if source.command_index == 2
+        ));
+        assert_eq!(session.preview_cache(), initial_preview);
+        assert_eq!(session.car_transform(), initial_transform);
+        assert_eq!(session.palette_state(), initial_palette);
+        assert_eq!(session.active_c3d_route(), initial_route);
+        assert_eq!(
+            CanonicalCar::ALL.map(|car| session.car_visibility().mask(car)),
+            initial_car_visibility
+        );
+        assert_eq!(
+            cmr_core::root_menu_c3d_assets::RootMenuC3dSlot::ALL
+                .map(|slot| session.root_visibility().mask(slot)),
+            initial_root_visibility
+        );
+        assert_eq!(session.backend().logical_target().words(), initial_words);
+        assert_eq!(session.backend().depth_values(), initial_depth);
+    })
+    .unwrap();
+}
+
+#[test]
+fn alternate_session_reports_missing_frontend_text_before_callback() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store_with_options(&temporary, false, true);
+    let request = alternate_session_request(5, KnownRgbLayout::Rgb555);
+    let mut entered = false;
+
+    let result = with_software_championship_alternate_session(&store, request, |_| {
+        entered = true;
+    });
+
+    assert!(!entered);
+    assert!(matches!(
+        result,
+        Err(SoftwareChampionshipAlternateSessionBuildError::FrontendText(
+            cmr_core::localization_assets::LocalizationLoadError::Asset { path, .. }
+        )) if path == Language::English.frontend_path()
+    ));
+}
+
+#[test]
+fn alternate_session_reports_missing_font_before_callback() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store_with_options(&temporary, true, false);
+    let request = alternate_session_request(5, KnownRgbLayout::Rgb555);
+    let mut entered = false;
+
+    let result = with_software_championship_alternate_session(&store, request, |_| {
+        entered = true;
+    });
+
+    assert!(!entered);
+    assert!(matches!(
+        result,
+        Err(SoftwareChampionshipAlternateSessionBuildError::Fonts(
+            cmr_core::font_assets::FontLoadError::Asset {
+                style,
+                path,
+                ..
+            }
+        )) if style == FontStyle::ALL[0] && path == FontStyle::ALL[0].path()
+    ));
+}
+
+#[test]
 fn alternate_session_builds_and_renders_rgb565_sources_into_rgb565_target() {
     let temporary = TestDirectory::new();
     let store = synthetic_store(&temporary);
-    let request = alternate_session_request(6, KnownRgbLayout::Rgb565);
+    let mut request = alternate_session_request(6, KnownRgbLayout::Rgb565);
+    request.queued_font_terminal = SoftwareQueuedFontTerminal::FallbackBlitter;
 
     let run = with_software_championship_alternate_session(&store, request, |session| {
         let next = next_transcript();
@@ -287,6 +437,12 @@ fn alternate_session_builds_and_renders_rgb565_sources_into_rgb565_target() {
             .unwrap();
 
         assert_eq!(outcome.scene.submission, None);
+        assert!(
+            outcome
+                .queued_text
+                .records()
+                .all(|record| { record.terminal == SoftwareQueuedFontTerminal::FallbackBlitter })
+        );
         assert_eq!(
             outcome.palette_commit,
             DeferredPaletteCommitOutcome::SkippedNonIndexedDepth
@@ -360,6 +516,7 @@ fn alternate_session_request(
         false,
     );
     SoftwareChampionshipAlternateSessionRequest::new(
+        Language::English,
         VisualVariant::Normal,
         EXTENT,
         framebuffer_format,
@@ -378,6 +535,7 @@ fn alternate_session_request(
             ),
         },
         SoftwareChampionshipAlternateRasterState::disabled(),
+        SoftwareQueuedFontTerminal::TexturedQuad,
     )
 }
 
@@ -1811,8 +1969,27 @@ fn next_transcript() -> ChampionshipSetupRenderTranscript {
 }
 
 fn synthetic_store(temporary: &TestDirectory) -> AssetStore {
+    synthetic_store_with_options(temporary, true, true)
+}
+
+fn synthetic_store_with_options(
+    temporary: &TestDirectory,
+    include_frontend_text: bool,
+    include_fonts: bool,
+) -> AssetStore {
     let source = temporary.0.join("source");
     let mut files = BTreeMap::new();
+    if include_frontend_text {
+        files.insert(
+            Language::English.frontend_path(),
+            b"A\n".repeat(FRONTEND_TEXT_COUNT),
+        );
+    }
+    if include_fonts {
+        for style in FontStyle::ALL {
+            files.insert(style.path(), synthetic_font());
+        }
+    }
     for descriptor in CHAMPIONSHIP_CARS {
         let resource_count = if descriptor.car == CanonicalCar::M4r {
             3
@@ -1870,6 +2047,31 @@ fn synthetic_store(temporary: &TestDirectory) -> AssetStore {
         },
     )
     .unwrap()
+}
+
+fn synthetic_font() -> Vec<u8> {
+    const PIXEL_OFFSET: usize = 0x436;
+    const FONT_HEADER_SIZE: usize = 24;
+    const GLYPH_SIZE: usize = 16;
+    let trailer = PIXEL_OFFSET + 4;
+    let mut bytes = vec![0; trailer + FONT_HEADER_SIZE + GLYPH_SIZE];
+    bytes[0..2].copy_from_slice(b"BM");
+    bytes[18..22].copy_from_slice(&1i32.to_le_bytes());
+    bytes[22..26].copy_from_slice(&1i32.to_le_bytes());
+    bytes[28..30].copy_from_slice(&8u16.to_le_bytes());
+    for index in 0..256usize {
+        let offset = 14 + 40 + index * 4;
+        bytes[offset..offset + 4].copy_from_slice(&[index as u8, index as u8, index as u8, 0]);
+    }
+    bytes[PIXEL_OFFSET] = 1;
+    bytes[trailer + 1] = 1;
+    bytes[trailer + 4..trailer + 8].copy_from_slice(&1u32.to_le_bytes());
+    bytes[trailer + 8..trailer + 12].copy_from_slice(&1u32.to_le_bytes());
+    let glyph = trailer + FONT_HEADER_SIZE;
+    bytes[glyph] = b'A';
+    bytes[glyph + 6..glyph + 8].copy_from_slice(&1i16.to_le_bytes());
+    bytes[glyph + 8..glyph + 10].copy_from_slice(&1i16.to_le_bytes());
+    bytes
 }
 
 fn type2_car_c3d(selectors: &[i16], resource_count: usize) -> Vec<u8> {

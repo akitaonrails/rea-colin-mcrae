@@ -98,7 +98,7 @@ Status markers:
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
 - [x] `E15` Recover championship mode-8 C3D preparation and session ownership.
-- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone indexed session, all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission, exact alternate render-depth selection, capability-derived alpha/depth-clear contract, filter-request cache outcomes, raw/validated legacy pixel-format masks, retained non-alpha texture selection, source-owned selected-format conversion-before-filtering, independent logical-framebuffer composition, effect-free whole-frame backend preflight, a standalone owned split/logical-RGB backend, an explicit-palette completed-indexed-frame bridge, ordinary non-font embedded-palette RGB555/RGB565 source conversion, matching-format fast keyed/opaque logical composition, a transactional 27-source R_INFO/logo/Chequered RGB16 pool, exact effect-free setup-command identities/order shared with indexed execution, indexed-upload-free alternate setup preparation, source-owned Selection conversion and center-nearest Stretch execution at the recovered call boundary, two-pass stale-safe source-ordered alternate bitmap execution, combined same-target setup plus selected-car/empty-scene terminal ordering with coordinated state and non-indexed palette skip, verified-import standalone alternate session ownership with repeated-frame state retention, persistent 16-style ARGB4444 alternate-font source ownership, exact queue capacity/record/flush plus championship tuple/fade behavior recovered, and effect-free lane-neutral semantic queued-glyph producer inputs in setup/glyph order; alternate-session text ownership, byte-3 producer policy, atomic queue publication, lane selection, native record packing, driver `Load` equivalence, effective filtering/blending, driver-exact Stretch sampling, native byte layout/pitch, final alpha pixels, presentation remain).
+- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone indexed session, all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission, exact alternate render-depth selection, capability-derived alpha/depth-clear contract, filter-request cache outcomes, raw/validated legacy pixel-format masks, retained non-alpha texture selection, source-owned selected-format conversion-before-filtering, independent logical-framebuffer composition, effect-free whole-frame backend preflight, a standalone owned split/logical-RGB backend, an explicit-palette completed-indexed-frame bridge, ordinary non-font embedded-palette RGB555/RGB565 source conversion, matching-format fast keyed/opaque logical composition, a transactional 27-source R_INFO/logo/Chequered RGB16 pool, exact effect-free setup-command identities/order shared with indexed execution, indexed-upload-free alternate setup preparation, source-owned Selection conversion and center-nearest Stretch execution at the recovered call boundary, two-pass stale-safe source-ordered alternate bitmap execution, combined same-target setup plus selected-car/empty-scene terminal ordering with coordinated state and non-indexed palette skip, verified-import standalone alternate session ownership with repeated-frame state retention, persistent 16-style ARGB4444 alternate-font source ownership, exact queue capacity/record/flush plus championship tuple/fade behavior recovered, effect-free lane-neutral semantic queued-glyph producer inputs in setup/glyph order, and alternate-session localization/font ownership with success-only complete transcript publication; byte-3 producer policy, lane selection/capacity, native record packing and queue publication/flush, driver `Load` equivalence, effective filtering/blending, driver-exact Stretch sampling, native byte layout/pitch, final alpha pixels, presentation remain).
 
 ## F. Menus, game state, and persistence
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T01:45:12Z
-milestone=prepare-lane-neutral-alternate-font-glyph-inputs
+updated_utc=2026-10-21T03:07:52Z
+milestone=publish-alternate-session-glyph-inputs
 completed=50
 partial=20
 not_started=47
 blocked=0
 total=117
-current_focus=E16-alternate-font-session-and-queue-publication
-next_exit_gate=own-localization-and-font-pool-in-alternate-session-and-publish-records-atomically
+current_focus=E16-alternate-font-producer-byte3-and-lane-routing
+next_exit_gate=recover-byte3-selector-and-route-semantic-inputs-to-bounded-lanes
 <!-- PROGRESS-TAIL-END -->

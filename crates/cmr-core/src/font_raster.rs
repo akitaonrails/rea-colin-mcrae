@@ -334,7 +334,7 @@ pub struct PreparedFontGlyph {
 /// order. Out-of-atlas glyphs are safe rejections retained separately, also
 /// in source plan order. Invalid dimensions, forged glyph identity, invalid
 /// destination rectangles, and invalid destination extents remain fatal.
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct PreparedFontText {
     plan: TextPlan,
     glyphs: Vec<PreparedFontGlyph>,

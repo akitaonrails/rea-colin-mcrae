@@ -321,9 +321,9 @@ identity/path diagnostics and per-bitmap palette provenance are pinned. One
 shared ordered kernel now prepares either rich indexed payloads or a
 lightweight alternate transcript from exact source extents, with tests proving
 full public-command parity across car, gear, and Next cold/warm frames. The
-alternate adapter derives aligned extents from the 27-source RGB16 pool and an
-optional nominal converted Selection source without indexed uploads, font
-atlases, or a text table. A two-pass alternate executor rejects stale cache
+The alternate adapter derives aligned extents from the 27-source RGB16 pool and
+an optional nominal converted Selection source without indexed uploads. A
+two-pass alternate executor rejects stale cache
 snapshots, preflights every supported Fast bitmap plus Selection Stretch before
 effects, and composes them in transcript order while returning text, NoOp, and
 other deferred boundaries as exact typed outcomes. Selection uses the recovered
@@ -339,10 +339,15 @@ from a verified user import without an indexed backend or uploaded sources. It
 loads and converts Selection once, executes it through the named source-owned
 Stretch policy, validates caller-explicit RGB and raster policies before
 callback entry, and preserves target/depth, binding cache, preview/transform/
-latch/route/palette state across repeated car and Next frames. Alternate-session
-ownership of localization/fonts plus atomic publication and routing of the
-prepared glyph transcript, driver-exact Stretch comparison, native
-presentation, and the other deferred pixels are the next integration seams.
+latch/route/palette state across repeated car and Next frames. The session now
+also loads and owns the selected frontend table and all 16 ARGB4444 font
+sources, prepares every non-deferred setup Text command before terminal
+effects, and attaches the complete lane-neutral transcript only to successful
+outcomes. That publication guarantee covers the transcript value, not rollback
+of setup or scene effects after a later failure. Conditional byte-3 producer
+policy, lane routing/capacity, native record packing and queue flushing,
+driver-exact Stretch comparison, native presentation, and the other deferred
+pixels are the next integration seams.
 
 Exit gate:
 

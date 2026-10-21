@@ -245,13 +245,16 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   reports the non-indexed palette skip while retaining the pending request.
 - `cmr-video::software_championship_alternate_session`: callback-scoped owner
   built directly from a verified `AssetStore`. It loads championship/frame/C3D
-  assets plus the exact common Selection bitmap, retains the 27-source RGB16
-  pool, converted split bindings, logical target/depth, executor cache, and all
+  assets, the selected frontend localization table, all 16 fonts, and the exact
+  common Selection bitmap. It retains the font and 27-source RGB16 pools,
+  converted split bindings, logical target/depth, executor cache, and all
   terminal state across repeated frames, and returns the owned headless backend
-  after the callback. RGB555/RGB565 source-target and raster-state mismatches
-  fail before callback entry. It creates no indexed backend, uploaded source,
-  font pool, localization table, or native presentation surface. Selection is
-  converted once and executed by the named source-owned Stretch policy; text,
+  after the callback. Each frame prepares every non-deferred setup Text command
+  before terminal effects and publishes the complete lane-neutral transcript
+  only in a successful outcome. RGB555/RGB565 source-target and raster-state
+  mismatches fail before callback entry. It creates no indexed backend, uploaded
+  source, or native presentation surface. Selection is converted once and
+  executed by the named source-owned Stretch policy; lane routing, glyph pixels,
   info text, and next-preview pixels remain deferred.
 - `cmr-video::packed_rgb_target`: a nominal runtime-framebuffer format and
   logical masked-word target kept type-distinct from selected texture formats.

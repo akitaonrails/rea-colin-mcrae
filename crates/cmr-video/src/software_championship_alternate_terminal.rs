@@ -53,6 +53,7 @@ use crate::{
         execute_preflighted_software_championship_setup_frame,
         preflight_software_championship_setup_frame,
     },
+    software_queued_font_glyphs::LaneNeutralChampionshipQueuedText,
 };
 
 pub struct SoftwareChampionshipAlternateCarResources<'a, 'actors> {
@@ -74,12 +75,14 @@ pub struct SoftwareChampionshipAlternateTerminalState<'a> {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub struct SoftwareChampionshipAlternateTerminalOutcome {
+pub struct SoftwareChampionshipAlternateTerminalOutcome<Q = ()> {
     pub setup: SoftwareChampionshipSetupFrameOutcome,
     pub scene: ChampionshipCarSceneOutcome,
     /// The alternate RGB16 terminal reaches the recovered palette boundary,
     /// where non-indexed depth skips upload and preserves any pending request.
     pub palette_commit: DeferredPaletteCommitOutcome,
+    /// Complete caller-owned publication attached only after terminal success.
+    pub queued_text: Q,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -170,6 +173,77 @@ pub fn execute_software_championship_alternate_terminal_frame<'catalog>(
     depth_clear: C3dDepthClear,
 ) -> Result<SoftwareChampionshipAlternateTerminalOutcome, SoftwareChampionshipAlternateTerminalError>
 {
+    execute_software_championship_alternate_terminal_frame_with_publication(
+        prepared_setup,
+        extent,
+        car_input,
+        car_resources,
+        state,
+        executor,
+        sources,
+        selection,
+        backend,
+        destination,
+        depth_clear,
+        (),
+    )
+}
+
+/// Session-only boundary which publishes a complete queued-text value iff the
+/// terminal frame succeeds. A later terminal failure drops the unpublished
+/// value; it does not make existing bitmap/scene effects transactional.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_software_championship_alternate_terminal_frame_with_queued_text<'catalog>(
+    prepared_setup: PreparedChampionshipAlternateSetupFrame,
+    extent: DisplayExtent,
+    car_input: ChampionshipCarInput,
+    car_resources: Option<SoftwareChampionshipAlternateCarResources<'_, '_>>,
+    state: SoftwareChampionshipAlternateTerminalState<'_>,
+    executor: &mut ChampionshipCarBatchExecutor<'catalog, SoftwareSplitC3dBinding>,
+    sources: &SoftwareChampionshipOrdinaryRgb16Pool,
+    selection: Option<&SoftwareChampionshipSelectionRgb16Source>,
+    backend: &mut SoftwareSplitC3dOracleBackend,
+    destination: SoftwareSplitC3dTargetHandle,
+    depth_clear: C3dDepthClear,
+    queued_text: LaneNeutralChampionshipQueuedText,
+) -> Result<
+    SoftwareChampionshipAlternateTerminalOutcome<LaneNeutralChampionshipQueuedText>,
+    SoftwareChampionshipAlternateTerminalError,
+> {
+    execute_software_championship_alternate_terminal_frame_with_publication(
+        prepared_setup,
+        extent,
+        car_input,
+        car_resources,
+        state,
+        executor,
+        sources,
+        selection,
+        backend,
+        destination,
+        depth_clear,
+        queued_text,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_software_championship_alternate_terminal_frame_with_publication<'catalog, Q>(
+    prepared_setup: PreparedChampionshipAlternateSetupFrame,
+    extent: DisplayExtent,
+    car_input: ChampionshipCarInput,
+    car_resources: Option<SoftwareChampionshipAlternateCarResources<'_, '_>>,
+    state: SoftwareChampionshipAlternateTerminalState<'_>,
+    executor: &mut ChampionshipCarBatchExecutor<'catalog, SoftwareSplitC3dBinding>,
+    sources: &SoftwareChampionshipOrdinaryRgb16Pool,
+    selection: Option<&SoftwareChampionshipSelectionRgb16Source>,
+    backend: &mut SoftwareSplitC3dOracleBackend,
+    destination: SoftwareSplitC3dTargetHandle,
+    depth_clear: C3dDepthClear,
+    publication: Q,
+) -> Result<
+    SoftwareChampionshipAlternateTerminalOutcome<Q>,
+    SoftwareChampionshipAlternateTerminalError,
+> {
     prepared_setup
         .validate_preview_cache(state.preview_cache)
         .map_err(|stale| {
@@ -344,5 +418,6 @@ pub fn execute_software_championship_alternate_terminal_frame<'catalog>(
         },
         scene,
         palette_commit: DeferredPaletteCommitOutcome::SkippedNonIndexedDepth,
+        queued_text: publication,
     })
 }

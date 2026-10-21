@@ -4,8 +4,9 @@
 //! import and retains source-owned logical RGB resources. Selection is decoded
 //! and converted once, then sampled by an explicitly source-owned Stretch
 //! policy. The session deliberately does not create an indexed backend,
-//! upload surfaces, load fonts or localization, or claim native presentation
-//! behavior.
+//! upload indexed surfaces or claim native presentation behavior. It owns the
+//! selected frontend localization table and persistent ARGB4444 font sources
+//! so each frame can publish a complete lane-neutral glyph-input transcript.
 
 use std::fmt;
 
@@ -27,12 +28,15 @@ use cmr_core::{
     championship_setup_visual::{ChampionshipPreviewCache, ChampionshipSetupVisualInput},
     deferred_palette::DeferredPaletteState,
     display::DisplayExtent,
+    font_assets::{FontLoadError, load_font_set},
     frontend_c3d_resources::{
         FrontendC3dCarMaterializationError, FrontendC3dPreparationError, FrontendC3dPrepared,
         prepare_frontend_c3d_resources,
     },
     frontend_c3d_route::FrontendC3dRouteState,
     frontend_c3d_scene::C3dDepthClear,
+    localization::{IndexedTextTable, Language},
+    localization_assets::{LocalizationLoadError, load_frontend_text_table},
     root_menu_assets::VisualVariant,
     root_menu_bitmap_assets::{RootMenuBitmapLoadError, load_root_menu_selection_bitmap},
     root_menu_c3d_assets::{RootMenuC3dLoadError, RootMenuC3dSet, load_root_menu_c3d},
@@ -41,7 +45,11 @@ use cmr_core::{
     root_menu_c3d_runtime::C3dResourceScaledObject,
     root_menu_c3d_visibility::RootMenuC3dVisibilityLatches,
 };
-use cmr_formats::{bitmap::BitmapLimits, c3d::C3dLimits};
+use cmr_formats::{
+    bitmap::BitmapLimits,
+    c3d::C3dLimits,
+    font::{FontLimits, TextLayoutLimits},
+};
 
 use crate::{
     c3d_software_raster::SoftwareChampionshipCarSplitOracleProfile,
@@ -56,7 +64,7 @@ use crate::{
     software_championship_alternate_terminal::{
         SoftwareChampionshipAlternateCarResources, SoftwareChampionshipAlternateTerminalError,
         SoftwareChampionshipAlternateTerminalOutcome, SoftwareChampionshipAlternateTerminalState,
-        execute_software_championship_alternate_terminal_frame,
+        execute_software_championship_alternate_terminal_frame_with_queued_text,
     },
     software_championship_ordinary_rgb16::{
         SoftwareChampionshipOrdinaryRgb16Pool, SoftwareChampionshipOrdinaryRgb16PoolError,
@@ -70,6 +78,14 @@ use crate::{
         SoftwareChampionshipActorRgbSelection, SoftwareChampionshipPaletteLayout,
     },
     software_championship_setup_frame::prepare_software_championship_alternate_setup_frame,
+    software_queued_font_argb4444::{
+        SoftwareQueuedFontArgb4444Pool, SoftwareQueuedFontArgb4444PoolError,
+        prepare_software_queued_font_argb4444_pool,
+    },
+    software_queued_font_glyphs::{
+        LaneNeutralChampionshipQueuedText, LaneNeutralChampionshipQueuedTextError,
+        SoftwareQueuedFontTerminal, prepare_lane_neutral_championship_queued_text,
+    },
 };
 
 /// Retained pre-draw state paired with the split raster profile.
@@ -99,9 +115,12 @@ impl SoftwareChampionshipAlternateRasterState {
 /// Explicit source-owned choices needed to assemble the alternate session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SoftwareChampionshipAlternateSessionRequest {
+    pub language: Language,
     pub variant: VisualVariant,
     pub bitmap_limits: BitmapLimits,
+    pub font_limits: FontLimits,
     pub c3d_limits: C3dLimits,
+    pub text_layout_limits: TextLayoutLimits,
     pub extent: DisplayExtent,
     pub framebuffer_format: FramebufferRgbFormat,
     pub display_format_discriminator: u8,
@@ -111,11 +130,16 @@ pub struct SoftwareChampionshipAlternateSessionRequest {
     pub raster_state: SoftwareChampionshipAlternateRasterState,
     pub depth_clear: C3dDepthClear,
     pub palette_layout: SoftwareChampionshipPaletteLayout,
+    /// Explicit device-branch result; it is not inferred from host backend
+    /// naming or framebuffer depth.
+    pub queued_font_terminal: SoftwareQueuedFontTerminal,
 }
 
 impl SoftwareChampionshipAlternateSessionRequest {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        language: Language,
         variant: VisualVariant,
         extent: DisplayExtent,
         framebuffer_format: FramebufferRgbFormat,
@@ -123,11 +147,15 @@ impl SoftwareChampionshipAlternateSessionRequest {
         selected_texture_format: SelectedNonAlphaTextureFormat,
         backend_configuration: SoftwareSplitC3dOracleConfiguration,
         raster_state: SoftwareChampionshipAlternateRasterState,
+        queued_font_terminal: SoftwareQueuedFontTerminal,
     ) -> Self {
         Self {
+            language,
             variant,
             bitmap_limits: BitmapLimits::default(),
+            font_limits: FontLimits::default(),
             c3d_limits: C3dLimits::default(),
+            text_layout_limits: TextLayoutLimits::default(),
             extent,
             framebuffer_format,
             display_format_discriminator,
@@ -138,6 +166,7 @@ impl SoftwareChampionshipAlternateSessionRequest {
             raster_state,
             depth_clear: C3dDepthClear::Clear,
             palette_layout: SoftwareChampionshipPaletteLayout::CanonicalCarsThenChequered,
+            queued_font_terminal,
         }
     }
 }
@@ -152,6 +181,9 @@ pub struct SoftwareChampionshipAlternateFrameRequest<'a> {
 
 #[derive(Debug)]
 pub enum SoftwareChampionshipAlternateSessionBuildError {
+    FrontendText(LocalizationLoadError),
+    Fonts(FontLoadError),
+    QueuedFontSources(SoftwareQueuedFontArgb4444PoolError),
     ChampionshipAssets(ChampionshipAssetLoadError),
     FrameAssets(ChampionshipFrameAssetLoadError),
     Selection(RootMenuBitmapLoadError),
@@ -183,6 +215,9 @@ pub enum SoftwareChampionshipAlternateSessionBuildError {
 impl fmt::Display for SoftwareChampionshipAlternateSessionBuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::FrontendText(source) => source.fmt(formatter),
+            Self::Fonts(source) => source.fmt(formatter),
+            Self::QueuedFontSources(source) => source.fmt(formatter),
             Self::ChampionshipAssets(source) => source.fmt(formatter),
             Self::FrameAssets(source) => source.fmt(formatter),
             Self::Selection(source) => source.fmt(formatter),
@@ -228,6 +263,9 @@ impl fmt::Display for SoftwareChampionshipAlternateSessionBuildError {
 impl std::error::Error for SoftwareChampionshipAlternateSessionBuildError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::FrontendText(source) => Some(source),
+            Self::Fonts(source) => Some(source),
+            Self::QueuedFontSources(source) => Some(source),
             Self::ChampionshipAssets(source) => Some(source),
             Self::FrameAssets(source) => Some(source),
             Self::Selection(source) => Some(source),
@@ -250,6 +288,7 @@ pub enum SoftwareChampionshipAlternateRenderError {
         actual: DisplayExtent,
     },
     Prepare(ChampionshipSetupFramePrepareError),
+    QueuedText(LaneNeutralChampionshipQueuedTextError),
     Frame(Box<SoftwareChampionshipAlternateTerminalError>),
 }
 
@@ -261,6 +300,7 @@ impl fmt::Display for SoftwareChampionshipAlternateRenderError {
                 "alternate championship frame extent {actual:?} does not match session extent {expected:?}"
             ),
             Self::Prepare(source) => source.fmt(formatter),
+            Self::QueuedText(source) => source.fmt(formatter),
             Self::Frame(source) => source.fmt(formatter),
         }
     }
@@ -271,6 +311,7 @@ impl std::error::Error for SoftwareChampionshipAlternateRenderError {
         match self {
             Self::ExtentMismatch { .. } => None,
             Self::Prepare(source) => Some(source),
+            Self::QueuedText(source) => Some(source),
             Self::Frame(source) => Some(source),
         }
     }
@@ -283,6 +324,8 @@ pub struct SoftwareChampionshipAlternateSessionRun<R> {
 
 pub struct SoftwareChampionshipAlternateSession<'session, 'asset, 'catalog> {
     request: SoftwareChampionshipAlternateSessionRequest,
+    text: &'session IndexedTextTable,
+    queued_fonts: &'session SoftwareQueuedFontArgb4444Pool,
     championship: &'session ChampionshipAssets,
     root: &'session RootMenuC3dSet,
     frontend: &'session FrontendC3dPrepared,
@@ -305,7 +348,7 @@ impl SoftwareChampionshipAlternateSession<'_, '_, '_> {
         &mut self,
         frame: SoftwareChampionshipAlternateFrameRequest<'_>,
     ) -> Result<
-        SoftwareChampionshipAlternateTerminalOutcome,
+        SoftwareChampionshipAlternateTerminalOutcome<LaneNeutralChampionshipQueuedText>,
         SoftwareChampionshipAlternateRenderError,
     > {
         if frame.visual.viewport != self.request.extent {
@@ -323,6 +366,15 @@ impl SoftwareChampionshipAlternateSession<'_, '_, '_> {
             Some(self.selection),
         )
         .map_err(SoftwareChampionshipAlternateRenderError::Prepare)?;
+        let queued_text = prepare_lane_neutral_championship_queued_text(
+            &prepared,
+            self.text,
+            self.queued_fonts,
+            self.request.extent,
+            self.request.text_layout_limits,
+            self.request.queued_font_terminal,
+        )
+        .map_err(SoftwareChampionshipAlternateRenderError::QueuedText)?;
         let selected = match frame.visual.transcript.preview {
             ActivePreview::Car { canonical_car, .. }
             | ActivePreview::Gear { canonical_car, .. } => Some(canonical_car),
@@ -337,7 +389,7 @@ impl SoftwareChampionshipAlternateSession<'_, '_, '_> {
         });
         let destination = self.backend.target_handle();
 
-        execute_software_championship_alternate_terminal_frame(
+        execute_software_championship_alternate_terminal_frame_with_queued_text(
             prepared,
             self.request.extent,
             frame.car_input,
@@ -357,6 +409,7 @@ impl SoftwareChampionshipAlternateSession<'_, '_, '_> {
             self.backend,
             destination,
             self.request.depth_clear,
+            queued_text,
         )
         .map_err(|source| SoftwareChampionshipAlternateRenderError::Frame(Box::new(source)))
     }
@@ -409,6 +462,21 @@ impl SoftwareChampionshipAlternateSession<'_, '_, '_> {
     #[must_use]
     pub const fn ordinary_source_count(&self) -> usize {
         self.sources.len()
+    }
+
+    #[must_use]
+    pub const fn queued_font_source_count(&self) -> usize {
+        self.queued_fonts.len()
+    }
+
+    #[must_use]
+    pub fn frontend_text_count(&self) -> usize {
+        self.text.len()
+    }
+
+    #[must_use]
+    pub const fn queued_font_pool(&self) -> &SoftwareQueuedFontArgb4444Pool {
+        self.queued_fonts
     }
 
     #[must_use]
@@ -532,6 +600,12 @@ pub fn with_software_championship_alternate_session<R>(
     )?;
     validate_raster_state(request.backend_configuration.profile, &request.raster_state)?;
 
+    let text = load_frontend_text_table(store, request.language)
+        .map_err(SoftwareChampionshipAlternateSessionBuildError::FrontendText)?;
+    let fonts = load_font_set(store, request.font_limits)
+        .map_err(SoftwareChampionshipAlternateSessionBuildError::Fonts)?;
+    let queued_fonts = prepare_software_queued_font_argb4444_pool(fonts)
+        .map_err(SoftwareChampionshipAlternateSessionBuildError::QueuedFontSources)?;
     let championship =
         load_championship_assets(store, request.c3d_limits, request.bitmap_limits)
             .map_err(SoftwareChampionshipAlternateSessionBuildError::ChampionshipAssets)?;
@@ -613,6 +687,8 @@ pub fn with_software_championship_alternate_session<R>(
     let output = {
         let mut session = SoftwareChampionshipAlternateSession {
             request,
+            text: &text,
+            queued_fonts: &queued_fonts,
             championship: &championship,
             root: &root,
             frontend: &frontend,

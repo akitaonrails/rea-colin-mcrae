@@ -75,7 +75,7 @@ impl LaneNeutralQueuedFontGlyph {
 }
 
 /// One complete text command prepared without mutating a native queue.
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct LaneNeutralQueuedFontText {
     command_index: usize,
     command: SetupTextCommand,
@@ -118,7 +118,7 @@ impl LaneNeutralQueuedFontText {
 }
 
 /// Complete effect-free queued text subset of one setup transcript.
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct LaneNeutralChampionshipQueuedText {
     texts: Vec<LaneNeutralQueuedFontText>,
 }
