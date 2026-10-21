@@ -32,7 +32,8 @@ touched. Per-commit granularity for the full history is recoverable with
 | 2026-10-21T04:50Z | 14h32m | compose-pure-interactive-root-menu-controller | `927504f` | I07 | Pure `RootInteraction` controller + `steady_root_render_input` bridge (snap to recovered endpoints, minimal root/exit transition driver); SDL loop wiring and audio host remain. |
 | 2026-10-21T04:58Z | 14h40m | wire-sdl-interactive-root-menu-loop | `e0db2e6` | I03, I07 | SDL interactive loop + `--windowed-root-frame` wiring (live input → controller → re-presented frames); only the audio host remains for I07, displayed run gated. |
 | 2026-10-21T05:05Z | 14h47m | recover-qmixer-wave-load-and-play-path | `82eef5b` | H02 | REA recovery of the QSound init (22050 Hz / 30 channels) + wave load (`QSWaveMixOpenWave`) + play (`QSWaveMixPlayEx`) path; docs-only recovery milestone (no code yet). |
-| 2026-10-21T05:07Z | 14h49m | recover-qmixer-mixer-control-surface | _(latest)_ | H03 | REA recovery of per-channel volume/frequency/3D-position controls, stop, and channel-busy query; docs-only recovery milestone. |
+| 2026-10-21T05:07Z | 14h49m | recover-qmixer-mixer-control-surface | `8426edb` | H03 | REA recovery of per-channel volume/frequency/3D-position controls, stop, and channel-busy query; docs-only recovery milestone. |
+| 2026-10-21T14:03Z | 23h45m | define-reconstruction-owned-audio-mixer-contract | _(latest)_ | H04 | `cmr-core::audio_mixer`: backend-agnostic `AudioMixer` trait + deterministic `MixerSessionState` reproducing the recovered init guard / 22050 Hz / 30-channel cap / wave-slot table / PCM `WAVEFORMATEX` / per-channel controls, with a shared `check_audio_mixer_contract` (12 tests). First audio *code* milestone; H04 → partial. |
 
 > A commit cannot embed its own final hash, so the most recent row is marked
 > _(latest)_; the next milestone update pins its hash from `git log`.

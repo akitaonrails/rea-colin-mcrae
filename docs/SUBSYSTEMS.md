@@ -450,6 +450,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   `0x495b10`/`0x495b30` (stop), and `0x495d10` (channel-busy query); panning is
   3D-position based over the 30 channels. See evidence
   `rea.official-eu.audio-wave-path` and `rea.official-eu.audio-mixer-controls`.
+- The reconstruction-owned mixer interface for this surface is
+  `cmr-core::audio_mixer`: a backend-agnostic `AudioMixer` trait plus a pure
+  deterministic `MixerSessionState` that reproduces the recovered init guard,
+  the 22050 Hz/30-channel cap, the incrementing wave-slot table, the PCM
+  `WAVEFORMATEX` build, and the per-channel volume/frequency/3D-position/stop
+  records as emitted `MixerCommand`s, all checked by a shared
+  `check_audio_mixer_contract`. A QMixer-faithful backend and a portable/SDL
+  audio backend both remain to be implemented against this interface. See
+  evidence `impl.audio-mixer-contract`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

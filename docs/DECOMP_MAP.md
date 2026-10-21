@@ -132,7 +132,7 @@ Status markers:
 - [~] `H01` Identify the 16 reachable `QSWaveMix*` imports and DLL exports.
 - [~] `H02` Recover WAV/sample loading, channels, priority, and lifetime (official-EU QSound init at `0x4957d0` recovers a 22050 Hz, 30-channel `QSWaveMixInitEx`/`Activate` session and a fixed wave-slot table; the load path `0x4958e0` builds a PCM `WAVEFORMATEX` from name/rate/bits/stereo and registers it with `QSWaveMixOpenWave`, and the play path `0x495a30` dispatches a slot/channel through `QSWaveMixPlayEx`; priority/lifetime flags, memory-vs-file payload source, and the load/play wrapper variants remain).
 - [~] `H03` Recover volume, pan, frequency, spatialization, and mixing rules (per-channel `QSWaveMixSetVolume` `0x495b70`, `QSWaveMixSetFrequency` `0x495bd0`, and 3D `QSWaveMixSetPosition` `0x495c30` wrappers recovered, with stop `0x495b10`/`0x495b30` and a channel-busy `IsChannelDone` predicate `0x495d10`; panning is 3D-position based over 30 channels; QMixer unit ranges/scales and the position coordinate space remain).
-- [ ] `H04` Implement a deterministic reconstruction-owned audio mixer.
+- [~] `H04` Implement a deterministic reconstruction-owned audio mixer (`cmr-core::audio_mixer` defines the backend-agnostic `AudioMixer` compatibility interface and a pure deterministic `MixerSessionState` reproducing the recovered init guard, 22050 Hz/30-channel cap, incrementing wave-slot table, PCM `WAVEFORMATEX` build, missing-handle play no-op, and per-channel volume/frequency/3D-position/stop records as emitted `MixerCommand`s; a shared `check_audio_mixer_contract` is passed by an in-crate backend. A concrete QMixer-faithful backend and the modern portable/SDL audio device backend remain, both to implement this same interface and pass the contract).
 - [ ] `H05` Recover music/CD/MCI selection and lifecycle.
 - [ ] `H06` Recover intro-video selection/playback/skip and launcher handoff.
 - [ ] `H07` Implement portable music and video backends.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T05:07:15Z
-milestone=recover-qmixer-mixer-control-surface
+updated_utc=2026-10-21T14:03:00Z
+milestone=define-reconstruction-owned-audio-mixer-contract
 completed=51
-partial=24
-not_started=42
+partial=25
+not_started=41
 blocked=0
 total=117
-current_focus=H04-define-reconstruction-owned-audio-mixer-contract
-next_exit_gate=specify-the-recovered-channel-session-and-wave-slot-contract-for-a-portable-mixer
+current_focus=H04-implement-a-mixer-backend-behind-the-audio-mixer-contract
+next_exit_gate=land-a-concrete-audiomixer-backend-that-passes-check-audio-mixer-contract
 <!-- PROGRESS-TAIL-END -->

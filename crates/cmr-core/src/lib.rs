@@ -1,5 +1,6 @@
 //! Recovered game-domain behavior independent of host platform backends.
 
+pub mod audio_mixer;
 pub mod blit;
 pub mod c3d_actor_rgb;
 pub mod c3d_batch;
