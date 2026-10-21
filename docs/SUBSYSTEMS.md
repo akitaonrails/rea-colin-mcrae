@@ -875,6 +875,32 @@ languages rather than fabricating or silently aliasing Italian assets.
   forward-force channel serialized (the exact replay record byte layout is a G08
   unknown); byte-exact trajectory fidelity is gated on the G02/G03 force
   production. See evidence `impl.sim-vertical-path`.
+- `cmr-core::weather` reconstructs the weather / particle / shadow / fog
+  environmental behavior (E10). Weather is not a top-level enum at the particle
+  layer: the stage's country/surface index (config byte `+0x168 & 0xf`, 0-8,
+  forced 7 for the special stage) and the surface-material ids present on the
+  stage drive per-effect capability tables (`FUN_00424a40`) that decide which
+  effects spawn - reconstructed as `accumulate_effect_enable`, which sums a
+  caller-supplied capability table over the distinct present surface ids (the
+  tables themselves are game data and not vendored). A scalar weather-type
+  (`3`/`4` = rain/wet, matching the H03 thunder/wet audio) and an intensity
+  drive the sky/fog and the full-screen precipitation overlay; the detail-level
+  `8` disables shadows and floors particle alpha. The `particles` submodule
+  carries the pool/record layout constants, the `particle_effect` type dispatch,
+  the spawn-frame average (or `0x32` low-detail floor), the `3.0 < dist < 100.0`
+  cull window, `follow_size` growth+clamp, and `particle_alpha`
+  saturate+low-detail floor; `tuning` holds the named text-overridable defaults
+  (`Track_Decay_Life`/`RATE`, dust sizes, per-class alpha deltas). The `shadow`
+  submodule has the grey `(100,100,100,170)` blob color, the soft-edge per-vertex
+  alpha ramp, the ground-plane flatten, `fixed_to_float`, and the
+  `ShadowPrimitive` geometry (4-vertex strip / 11- / 15-index). The `sky`
+  submodule has the fog color/density/far constant sets and the `.hzn`
+  horizon-skip gate. Fog is software distance-haze - the engine-level analog of
+  the C3D type-2 per-vertex fog - with no DirectX fog render-state path; the
+  exact weather/intensity -> fog-value selection and the `Max_dust_size`
+  comparison scale are recorded as unknowns rather than invented. No rendering
+  path yet: this is domain behavior consumed later by the C3D raster / modern
+  backend. See evidence `impl.weather-effects`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
