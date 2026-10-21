@@ -116,7 +116,7 @@ Status markers:
 
 ## G. Driving simulation and race systems
 
-- [ ] `G01` Recover fixed-step world update and numeric representations.
+- [~] `G01` Recover fixed-step world update and numeric representations (the main loop `FUN_0049db00` WinMain -> `FUN_004c1e00` frame driver -> `FUN_00443e90` HighLevelTimer tick driver -> `FUN_00443db0` state-machine tick is recovered; the FSM current-state enum `DAT_005590a8` dispatches a handler proc table at `0x4ee830`/`0x4ee840` (ids 2..0xc), with in-race/gameplay states `5..=10` gated by `4 < state && state < 0xb`; the fixed step is 25 Hz / 40 ms via `timeGetTime` integer-millisecond bucketing (`FUN_00443e30` = `before/0x28 != after/0x28`, `FUN_00443e60` spins to the next 0x28 bucket) with catch-up and render decoupled, no float dt accumulator; the in-race update is `FUN_0043afd0` "Mechanics" over `DAT_00550e90` active cars; numeric representation is signed 32-bit Q16.16 fixed-point (`0x10000`=1.0, canonical `(i64)a*(i64)b>>0x10` multiply, dt coefficient `0xa3d`~0.04) with 16-bit BAM angles into a 4096-entry trig table `DAT_0082d380` (`sin=table[a&0xfff]`, `cos=table[(a+0x400)&0xfff]`), floats only at `__ftol` input boundaries; primary car state base `DAT_00700300` stride 0x768, control/telemetry base `DAT_005fffc8` stride 0x464. Reconstructed the step constants/bucket/boundary/in-race gate in `cmr-core::sim_clock` and the Q16.16 type + BAM trig in `cmr-core::fixed_point`. The per-car physics substeps, exact struct field semantics, state-id names, and the float->fixed input scaling remain for G02/G03).
 - [ ] `G02` Recover vehicle controls, drivetrain, gears, and engine model.
 - [ ] `G03` Recover suspension, tyres, grip, and surface response.
 - [ ] `G04` Recover collision, damage, reset, and out-of-bounds behavior.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T15:52:30Z
-milestone=note-the-sdl-audio-host-completes-the-i07-boundaries
+updated_utc=2026-10-21T16:05:24Z
+milestone=reconstruct-the-fixed-step-clock-and-q16-16-numeric-core
 completed=52
-partial=24
-not_started=41
+partial=25
+not_started=40
 blocked=0
 total=117
-current_focus=G01-recover-the-fixed-step-world-update-and-numeric-representations
-next_exit_gate=recover-the-driving-simulation-tick-entry-and-its-fixed-timestep-and-number-formats
+current_focus=G02-recover-vehicle-controls-drivetrain-gears-and-engine-model
+next_exit_gate=recover-the-per-car-mechanics-substeps-and-the-car-state-struct-fields
 <!-- PROGRESS-TAIL-END -->

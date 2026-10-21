@@ -614,6 +614,25 @@ languages rather than fabricating or silently aliasing Italian assets.
   shared-channel behaviour produces the expected samples. This is the seam that
   lets the game's recovered audio logic play through the software/SDL backend.
   See evidence `impl.audio-command-bridge`.
+- The driving simulation runs on a fixed 25 Hz / 40 ms step. WinMain
+  `0x49db00` pumps Windows messages and calls the frame driver `0x4c1e00` ->
+  HighLevelTimer tick driver `0x443e90` -> FSM tick `0x443db0`, a
+  return-next-state machine on enum `DAT_005590a8` over a handler table at
+  `0x4ee830`/`0x4ee840` (ids 2..0xc; in-race states `5..=10`). The step is
+  `timeGetTime` integer-millisecond bucketing (`t/0x28`, 0x28 = 40 ms) with
+  catch-up and a decoupled present pump - no float dt accumulator. The in-race
+  update `0x43afd0` ("Mechanics") loops the active cars (`DAT_00550e90`).
+  Reconstructed in `cmr-core::sim_clock` (step constants, bucket/boundary
+  predicates, in-race gate). See evidence `rea.official-eu.sim-fixed-step`.
+- The simulation's numbers are signed 32-bit Q16.16 fixed-point (`0x10000`=1.0;
+  canonical `(i64)a*(i64)b>>16` multiply; dt coefficient `0xa3d`~0.04) with
+  16-bit BAM angles into a 4096-entry trig table `DAT_0082d380`
+  (`sin=table[a&0xfff]`, `cos=table[(a+0x400)&0xfff]`); floats appear only at
+  `__ftol` input boundaries. Reconstructed in `cmr-core::fixed_point` (`Fixed16`
+  with the recovered multiply/units and BAM trig over a reconstructed sine LUT,
+  the game's table values not copied). Primary car state base `DAT_00700300`
+  (stride 0x768); control/telemetry base `DAT_005fffc8` (stride 0x464). See
+  evidence `rea.official-eu.sim-fixed-step`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
