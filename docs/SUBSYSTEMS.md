@@ -1064,6 +1064,32 @@ languages rather than fabricating or silently aliasing Italian assets.
   dynamic over live standings); the post-finish stage-advance writer and the
   per-slot intra-element base remain open. See evidence
   `rea.official-eu.championship-progression` and `impl.championship-progression`.
+- The F02 frontend-configuration structure spans three modules.
+  `cmr-core::options_screen` models the settings-header encoding the options
+  screens edit (volume channels `0x0c..0x0f` 7-bit + master flag, display-flags
+  byte `0x10` with a 2-bit mode enum, detail bytes `0x11..0x18`, difficulty dword
+  `0x1c`, a 3-bit option enum at `0x20` with `4` folded to `0`, and assist flag
+  bytes `0x2b..0x30` mapping to the live sim struct `+0x23..0x28`) as bit-exact
+  get/set helpers that preserve unknown bits. `cmr-core::control_bindings` models
+  the per-player binding record (stride `0x9c`: 8 bindings of key-mask `u16` at
+  `+0x64` and physical code `u32` at `+0x78`, device index `+0x46`, device-type
+  enum `+0x48` mapping `{0,2,4}` to `{0,1,2}`, control bits `+0x44`), the
+  single-bit key-mask to live-slot key-code index mapping (`FUN_0049d3f0`), the
+  live input-slot array (stride `0x8c`, 18 slots), and the action bitfield (4
+  directions, 12 buttons, any-button `0x10000`). `cmr-core::input_calibration`
+  models the fixed-dead-zone analog scaling (`FUN_0049cdf0`: center `0x8000`,
+  dead-zones X=2000/Y=2300, rescale and double, half-deflection registering as a
+  digital direction) as the compatibility baseline with the dead-zone
+  parameterized. The game has **no interactive calibration screen** and **no
+  per-action key-rebind UI**: calibration is two fixed `.data` constants and the
+  keyboard map is built-in code defaults persisted through the blob->live fixup.
+  The default `VK_*` key tables, the device backends (keyboard `GetAsyncKeyState`,
+  WinMM `joyGetPosEx`, DirectInput used only for joystick enumeration), the menu
+  render engine, and the unlabeled feature meaning of individual flag bits are
+  not vendored - only offsets, strides, bit layouts, enum ranges, and the scaling
+  formula. See evidence `rea.official-eu.options-screen`/`impl.options-screen`,
+  `rea.official-eu.control-bindings`/`impl.control-bindings`, and
+  `rea.official-eu.input-calibration`/`impl.input-calibration`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
