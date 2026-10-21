@@ -137,7 +137,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   paired visible-callback palette cache behavior.
 - `cmr-core::championship_setup_frame`: whole-frame preparation and ordered
   execution for recovered setup text and 2D bitmaps, with source preflight,
-  success-only cache commit, and typed deferred unrecovered commands.
+  success-only cache commit, and typed deferred unrecovered commands. Its
+  public effect-free prepared view preserves full text commands, exact bitmap
+  source identities and blit decisions, and every deferred boundary without
+  exposing indexed handles or pending cache state.
 - `cmr-core::championship_car_frame_plan`: exact-source, actor-scoped planning
   for one selected mode-8 car. It validates the complete topology/runtime join
   before advancing preview state, composes the recovered Q16 hierarchy only

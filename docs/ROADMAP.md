@@ -305,7 +305,11 @@ pixels remain unresolved alongside native layout and dithering. R_INFO, the 11
 unique logo assets, and all 15 Chequered frames now also have one transactional
 27-source logical-RGB16 owner built directly from decoded user assets. Stable
 identity/path diagnostics and per-bitmap palette provenance are pinned; setup
-command identity and source-ordered execution are the next integration seam.
+commands now expose one exact effect-free ordered view with full text payloads,
+source-specific bitmap identities and decisions, and typed deferred work. The
+same records still drive indexed execution and commit preview-cache changes
+only after complete success. Source resolution, complete preflight, and
+source-ordered alternate execution are the next integration seam.
 
 Exit gate:
 

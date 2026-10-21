@@ -16,8 +16,8 @@ use crate::championship_bitmap_raster::UploadedChampionshipLogoPool;
 use crate::championship_frame_assets::{ChequeredFrame, UploadedChampionshipFramePool};
 use crate::championship_setup_visual::{
     ChampionshipPreviewCache, ChampionshipSetupVisualCommand, ChampionshipSetupVisualError,
-    ChampionshipSetupVisualInput, DeferredInfoText, PixelRect, SetupTextIdentity, SetupTextRole,
-    plan_championship_setup_frame,
+    ChampionshipSetupVisualInput, DeferredInfoText, PixelRect, SetupTextCommand, SetupTextIdentity,
+    SetupTextRole, plan_championship_setup_frame,
 };
 use crate::display::{DisplayExtent, IndexedVideoBackend};
 use crate::font_raster::{
@@ -74,11 +74,16 @@ pub struct ChampionshipSetupFrameState {
     pub chequered_frame: Option<ChequeredFrame>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ChampionshipBitmapRole {
+/// Stable source identity for a prepared championship bitmap command.
+///
+/// This is deliberately independent of uploaded indexed-surface handles. A
+/// second executor can use the identity to resolve the same source from its
+/// own catalog while sharing the recovered command order and blit decision.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ChampionshipBitmapIdentity {
     Selection,
     InfoBox,
-    ManufacturerLogo,
+    ManufacturerLogo(ManufacturerLogo),
     ChequeredFrame(ChequeredFrame),
 }
 
@@ -102,7 +107,7 @@ pub enum ChampionshipSetupFramePrepareError {
     },
     Bitmap {
         command_index: usize,
-        role: ChampionshipBitmapRole,
+        identity: ChampionshipBitmapIdentity,
         source: IndexedBitmapPlanError,
     },
 }
@@ -121,11 +126,11 @@ impl fmt::Display for ChampionshipSetupFramePrepareError {
             ),
             Self::Bitmap {
                 command_index,
-                role,
+                identity,
                 source,
             } => write!(
                 formatter,
-                "championship frame bitmap {role:?} at command {command_index} failed preflight: {source}"
+                "championship frame bitmap {identity:?} at command {command_index} failed preflight: {source}"
             ),
         }
     }
@@ -151,12 +156,12 @@ pub enum ChampionshipSetupFrameExecutionError<E> {
     },
     BitmapAccess {
         command_index: usize,
-        role: ChampionshipBitmapRole,
+        identity: ChampionshipBitmapIdentity,
         source: SourceAccessError,
     },
     BitmapBackend {
         command_index: usize,
-        role: ChampionshipBitmapRole,
+        identity: ChampionshipBitmapIdentity,
         source: E,
     },
 }
@@ -175,19 +180,19 @@ impl<E: fmt::Display> fmt::Display for ChampionshipSetupFrameExecutionError<E> {
             ),
             Self::BitmapAccess {
                 command_index,
-                role,
+                identity,
                 source,
             } => write!(
                 formatter,
-                "championship frame bitmap {role:?} at command {command_index} cannot access its source: {source}"
+                "championship frame bitmap {identity:?} at command {command_index} cannot access its source: {source}"
             ),
             Self::BitmapBackend {
                 command_index,
-                role,
+                identity,
                 source,
             } => write!(
                 formatter,
-                "championship frame bitmap {role:?} at command {command_index} failed: {source}"
+                "championship frame bitmap {identity:?} at command {command_index} failed: {source}"
             ),
         }
     }
@@ -212,7 +217,7 @@ pub enum ChampionshipSetupCommandOutcome<E> {
     },
     Bitmap {
         command_index: usize,
-        role: ChampionshipBitmapRole,
+        identity: ChampionshipBitmapIdentity,
         outcome: IndexedBitmapBlitOutcome,
     },
     Deferred {
@@ -230,12 +235,12 @@ pub struct ChampionshipSetupFrameOutcome<E> {
 enum PreparedCommand {
     Text {
         command_index: usize,
-        role: SetupTextRole,
+        command: SetupTextCommand,
         text: PreparedPersistentText,
     },
     Bitmap {
         command_index: usize,
-        role: ChampionshipBitmapRole,
+        identity: ChampionshipBitmapIdentity,
         bitmap: UploadedIndexedBitmap,
         decision: BlitDecision,
     },
@@ -245,14 +250,74 @@ enum PreparedCommand {
     },
 }
 
-pub(crate) struct PreparedChampionshipSetupFrame {
+/// Opaque, effect-free plan for one complete championship setup transcript.
+///
+/// Call [`Self::commands`] to inspect its exact order without gaining access
+/// to uploaded indexed handles or mutable planner state.
+pub struct PreparedChampionshipSetupFrame {
     commands: Vec<PreparedCommand>,
     next_cache: ChampionshipPreviewCache,
 }
 
+/// Read-only public view of one prepared command.
+///
+/// Prepared glyph data and uploaded bitmap handles remain private. The exposed
+/// data is the shared transcript contract needed by alternate executors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreparedChampionshipSetupCommand {
+    Text {
+        command_index: usize,
+        command: SetupTextCommand,
+    },
+    Bitmap {
+        command_index: usize,
+        identity: ChampionshipBitmapIdentity,
+        decision: BlitDecision,
+    },
+    Deferred {
+        command_index: usize,
+        command: DeferredChampionshipCommand,
+    },
+}
+
 impl PreparedChampionshipSetupFrame {
-    pub(crate) fn command_len(&self) -> usize {
+    #[must_use]
+    pub fn command_len(&self) -> usize {
         self.commands.len()
+    }
+
+    /// Iterates over every prepared command in exact visual-transcript order.
+    ///
+    /// The returned values are copies of immutable command metadata; iterating
+    /// cannot submit rendering effects or alter the pending preview cache.
+    pub fn commands(&self) -> impl ExactSizeIterator<Item = PreparedChampionshipSetupCommand> + '_ {
+        self.commands.iter().map(|command| match command {
+            PreparedCommand::Text {
+                command_index,
+                command,
+                ..
+            } => PreparedChampionshipSetupCommand::Text {
+                command_index: *command_index,
+                command: *command,
+            },
+            PreparedCommand::Bitmap {
+                command_index,
+                identity,
+                decision,
+                ..
+            } => PreparedChampionshipSetupCommand::Bitmap {
+                command_index: *command_index,
+                identity: *identity,
+                decision: *decision,
+            },
+            PreparedCommand::Deferred {
+                command_index,
+                command,
+            } => PreparedChampionshipSetupCommand::Deferred {
+                command_index: *command_index,
+                command: *command,
+            },
+        })
     }
 
     /// Deferred work in exact visual-command order. This lets an enclosing
@@ -261,12 +326,13 @@ impl PreparedChampionshipSetupFrame {
     pub(crate) fn deferred_commands(
         &self,
     ) -> impl Iterator<Item = (usize, DeferredChampionshipCommand)> + '_ {
-        self.commands.iter().filter_map(|command| match command {
-            PreparedCommand::Deferred {
+        self.commands().filter_map(|command| match command {
+            PreparedChampionshipSetupCommand::Deferred {
                 command_index,
                 command,
-            } => Some((*command_index, *command)),
-            PreparedCommand::Text { .. } | PreparedCommand::Bitmap { .. } => None,
+            } => Some((command_index, command)),
+            PreparedChampionshipSetupCommand::Text { .. }
+            | PreparedChampionshipSetupCommand::Bitmap { .. } => None,
         })
     }
 }
@@ -327,7 +393,12 @@ pub fn execute_championship_setup_frame<B: IndexedVideoBackend>(
     })
 }
 
-pub(crate) fn prepare_championship_setup_frame(
+/// Prepares a complete setup-frame transcript without rendering effects.
+///
+/// Uploaded source ownership is validated separately by the indexed executor;
+/// alternate executors can first inspect [`PreparedChampionshipSetupFrame::commands`]
+/// and resolve bitmap identities against their own source catalog.
+pub fn prepare_championship_setup_frame(
     input: ChampionshipSetupVisualInput<'_>,
     state: ChampionshipSetupFrameState,
     resources: ChampionshipSetupFrameResources<'_>,
@@ -402,9 +473,10 @@ where
         match command {
             PreparedCommand::Text {
                 command_index,
-                role,
+                command,
                 text,
             } => {
+                let role = command.role;
                 let rendered = execute_prepared_persistent_text(sources, text, destination)
                     .map_err(|source| {
                         PreparedChampionshipSetupFrameExecutionError::Frame(
@@ -423,7 +495,7 @@ where
             }
             PreparedCommand::Bitmap {
                 command_index,
-                role,
+                identity,
                 bitmap,
                 decision,
             } => {
@@ -435,14 +507,14 @@ where
                                 SourceBlitError::Access(source) => {
                                     ChampionshipSetupFrameExecutionError::BitmapAccess {
                                         command_index,
-                                        role,
+                                        identity,
                                         source,
                                     }
                                 }
                                 SourceBlitError::Backend(source) => {
                                     ChampionshipSetupFrameExecutionError::BitmapBackend {
                                         command_index,
-                                        role,
+                                        identity,
                                         source,
                                     }
                                 }
@@ -453,7 +525,7 @@ where
                 };
                 outcomes.push(ChampionshipSetupCommandOutcome::Bitmap {
                     command_index,
-                    role,
+                    identity,
                     outcome,
                 });
             }
@@ -486,14 +558,14 @@ pub(crate) fn validate_championship_setup_frame_sources<B: IndexedVideoBackend>(
         match command {
             PreparedCommand::Text {
                 command_index,
-                role,
+                command,
                 text,
             } => {
                 if text.requires_source_access() {
                     text.validate_source(sources).map_err(|source| {
                         ChampionshipSetupFrameExecutionError::TextAccess {
                             command_index: *command_index,
-                            role: *role,
+                            role: command.role,
                             source,
                         }
                     })?;
@@ -501,7 +573,7 @@ pub(crate) fn validate_championship_setup_frame_sources<B: IndexedVideoBackend>(
             }
             PreparedCommand::Bitmap {
                 command_index,
-                role,
+                identity,
                 bitmap,
                 decision,
             } => {
@@ -509,7 +581,7 @@ pub(crate) fn validate_championship_setup_frame_sources<B: IndexedVideoBackend>(
                     bitmap.validate_source(sources).map_err(|source| {
                         ChampionshipSetupFrameExecutionError::BitmapAccess {
                             command_index: *command_index,
-                            role: *role,
+                            identity: *identity,
                             source,
                         }
                     })?;
@@ -536,28 +608,28 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
     let mut commands = Vec::with_capacity(visual.len());
     for (command_index, command) in visual.into_iter().enumerate() {
         match command {
-            ChampionshipSetupVisualCommand::Text(text) => {
-                let bytes = resolve_text(text_table, text.identity);
+            ChampionshipSetupVisualCommand::Text(command) => {
+                let bytes = resolve_text(text_table, command.identity);
                 let prepared = prepare_persistent_text(
                     fonts,
                     bytes,
-                    text.font,
+                    command.font,
                     PointI32 {
-                        x: text.position.x,
-                        y: text.position.y,
+                        x: command.position.x,
+                        y: command.position.y,
                     },
-                    text.flags,
+                    command.flags,
                     extent,
                     text_limits,
                 )
                 .map_err(|source| ChampionshipSetupFramePrepareError::Text {
                     command_index,
-                    role: text.role,
+                    role: command.role,
                     source,
                 })?;
                 commands.push(PreparedCommand::Text {
                     command_index,
-                    role: text.role,
+                    command,
                     text: prepared,
                 });
             }
@@ -565,7 +637,7 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
                 if let Some(bitmap) = resources.selection() {
                     commands.push(prepare_bitmap(
                         command_index,
-                        ChampionshipBitmapRole::Selection,
+                        ChampionshipBitmapIdentity::Selection,
                         bitmap,
                         command,
                         extent,
@@ -579,7 +651,7 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
             }
             ChampionshipSetupVisualCommand::InfoBox { .. } => commands.push(prepare_bitmap(
                 command_index,
-                ChampionshipBitmapRole::InfoBox,
+                ChampionshipBitmapIdentity::InfoBox,
                 resources.info_box(),
                 command,
                 extent,
@@ -587,7 +659,7 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
             ChampionshipSetupVisualCommand::ManufacturerLogo { logo, .. } => {
                 commands.push(prepare_bitmap(
                     command_index,
-                    ChampionshipBitmapRole::ManufacturerLogo,
+                    ChampionshipBitmapIdentity::ManufacturerLogo(logo),
                     resources.logo(logo),
                     command,
                     extent,
@@ -597,7 +669,7 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
                 if let Some(frame) = state.chequered_frame {
                     commands.push(prepare_bitmap(
                         command_index,
-                        ChampionshipBitmapRole::ChequeredFrame(frame),
+                        ChampionshipBitmapIdentity::ChequeredFrame(frame),
                         resources.frame(frame),
                         command,
                         extent,
@@ -653,7 +725,7 @@ fn resolve_text(table: &IndexedTextTable, identity: SetupTextIdentity) -> &[u8] 
 
 fn prepare_bitmap(
     command_index: usize,
-    role: ChampionshipBitmapRole,
+    identity: ChampionshipBitmapIdentity,
     bitmap: UploadedIndexedBitmap,
     command: ChampionshipSetupVisualCommand,
     extent: DisplayExtent,
@@ -697,12 +769,12 @@ fn prepare_bitmap(
     )
     .map_err(|source| ChampionshipSetupFramePrepareError::Bitmap {
         command_index,
-        role,
+        identity,
         source,
     })?;
     Ok(PreparedCommand::Bitmap {
         command_index,
-        role,
+        identity,
         bitmap,
         decision,
     })
@@ -720,7 +792,7 @@ mod tests {
     use cmr_formats::riff_palette::PaletteEntry;
 
     use super::*;
-    use crate::blit::BlitPlan;
+    use crate::blit::{BlitMethod, BlitPlan};
     use crate::championship_setup::{
         ActivePreview, CAR_ROW_TAG, CanonicalCar, ChampionshipSetupRenderTranscript, GEAR_ROW_TAG,
         GearChoice, NEXT_ROW_TAG, RenderRow, RowValue, SetupRowText,
@@ -860,7 +932,7 @@ mod tests {
         #[derive(Debug, Eq, PartialEq)]
         enum Observed {
             Text(SetupTextRole),
-            Bitmap(ChampionshipBitmapRole),
+            Bitmap(ChampionshipBitmapIdentity),
             InfoText,
             PaletteRequest,
         }
@@ -881,7 +953,9 @@ mod tests {
             .iter()
             .map(|outcome| match outcome {
                 ChampionshipSetupCommandOutcome::Text { role, .. } => Observed::Text(*role),
-                ChampionshipSetupCommandOutcome::Bitmap { role, .. } => Observed::Bitmap(*role),
+                ChampionshipSetupCommandOutcome::Bitmap { identity, .. } => {
+                    Observed::Bitmap(*identity)
+                }
                 ChampionshipSetupCommandOutcome::Deferred {
                     command: DeferredChampionshipCommand::InfoText(_),
                     ..
@@ -905,14 +979,14 @@ mod tests {
                 Observed::Text(SetupTextRole::Row(
                     crate::championship_setup::SetupRowKind::ChooseGear
                 )),
-                Observed::Bitmap(ChampionshipBitmapRole::Selection),
+                Observed::Bitmap(ChampionshipBitmapIdentity::Selection),
                 Observed::Text(SetupTextRole::Row(
                     crate::championship_setup::SetupRowKind::Next
                 )),
-                Observed::Bitmap(ChampionshipBitmapRole::InfoBox),
+                Observed::Bitmap(ChampionshipBitmapIdentity::InfoBox),
                 Observed::InfoText,
                 Observed::PaletteRequest,
-                Observed::Bitmap(ChampionshipBitmapRole::ChequeredFrame(
+                Observed::Bitmap(ChampionshipBitmapIdentity::ChequeredFrame(
                     ChequeredFrame::Frame04
                 )),
             ]
@@ -1154,7 +1228,7 @@ mod tests {
             ChampionshipSetupFrameExecutionError::Prepare(
                 ChampionshipSetupFramePrepareError::Bitmap {
                     command_index: 8,
-                    role: ChampionshipBitmapRole::ChequeredFrame(ChequeredFrame::Frame01),
+                    identity: ChampionshipBitmapIdentity::ChequeredFrame(ChequeredFrame::Frame01),
                     source: IndexedBitmapPlanError::SourceOutOfBounds { .. },
                 }
             )
@@ -1184,7 +1258,7 @@ mod tests {
             error,
             ChampionshipSetupFrameExecutionError::BitmapAccess {
                 command_index: 8,
-                role: ChampionshipBitmapRole::ChequeredFrame(ChequeredFrame::Frame15),
+                identity: ChampionshipBitmapIdentity::ChequeredFrame(ChequeredFrame::Frame15),
                 source: SourceAccessError::ForeignKey(_),
             }
         ));
@@ -1212,7 +1286,7 @@ mod tests {
             error,
             ChampionshipSetupFrameExecutionError::BitmapAccess {
                 command_index: 8,
-                role: ChampionshipBitmapRole::ChequeredFrame(ChequeredFrame::Frame15),
+                identity: ChampionshipBitmapIdentity::ChequeredFrame(ChequeredFrame::Frame15),
                 source: SourceAccessError::ReleasedKey(key),
             } if key == released
         ));
@@ -1237,7 +1311,7 @@ mod tests {
         assert!(matches!(
             outcome.commands[3],
             ChampionshipSetupCommandOutcome::Bitmap {
-                role: ChampionshipBitmapRole::Selection,
+                identity: ChampionshipBitmapIdentity::Selection,
                 outcome: IndexedBitmapBlitOutcome::NoOp,
                 ..
             }
@@ -1262,7 +1336,7 @@ mod tests {
         assert!(matches!(
             outcome.commands[8],
             ChampionshipSetupCommandOutcome::Bitmap {
-                role: ChampionshipBitmapRole::ChequeredFrame(ChequeredFrame::Frame15),
+                identity: ChampionshipBitmapIdentity::ChequeredFrame(ChequeredFrame::Frame15),
                 outcome: IndexedBitmapBlitOutcome::NoOp,
                 ..
             }
@@ -1326,7 +1400,7 @@ mod tests {
             error,
             ChampionshipSetupFrameExecutionError::BitmapBackend {
                 command_index: 3,
-                role: ChampionshipBitmapRole::Selection,
+                identity: ChampionshipBitmapIdentity::Selection,
                 source: BackendError::Blit(_),
             }
         ));
@@ -1387,7 +1461,7 @@ mod tests {
         assert!(matches!(
             second.commands.last(),
             Some(ChampionshipSetupCommandOutcome::Bitmap {
-                role: ChampionshipBitmapRole::ChequeredFrame(ChequeredFrame::Frame03),
+                identity: ChampionshipBitmapIdentity::ChequeredFrame(ChequeredFrame::Frame03),
                 ..
             })
         ));
@@ -1402,20 +1476,20 @@ mod tests {
             .execute(input(&transcript), None, &mut cache)
             .unwrap();
 
-        let roles = outcome
+        let identities = outcome
             .commands
             .iter()
             .filter_map(|outcome| match outcome {
-                ChampionshipSetupCommandOutcome::Bitmap { role, .. } => Some(*role),
+                ChampionshipSetupCommandOutcome::Bitmap { identity, .. } => Some(*identity),
                 _ => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(
-            roles,
+            identities,
             [
-                ChampionshipBitmapRole::Selection,
-                ChampionshipBitmapRole::InfoBox,
-                ChampionshipBitmapRole::ManufacturerLogo,
+                ChampionshipBitmapIdentity::Selection,
+                ChampionshipBitmapIdentity::InfoBox,
+                ChampionshipBitmapIdentity::ManufacturerLogo(ManufacturerLogo::Subaru),
             ]
         );
         assert!(outcome.commands.iter().any(|outcome| matches!(
@@ -1598,5 +1672,467 @@ mod tests {
                 flags: 0,
             }; 256],
         }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PreparedDecision {
+        NoOp,
+        Blit(BlitMethod),
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum DeferredKind {
+        Selection,
+        InfoText,
+        CarTransform(CanonicalCar),
+        CarVisibilityLatch(CanonicalCar),
+        PaletteRequest { group: u8, item: u8 },
+        NextPreview,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PreparedKind {
+        Text(SetupTextRole),
+        Bitmap(ChampionshipBitmapIdentity, PreparedDecision),
+        Deferred(DeferredKind),
+    }
+
+    fn prepared_kinds(prepared: &PreparedChampionshipSetupFrame) -> Vec<PreparedKind> {
+        assert_eq!(prepared.commands().len(), prepared.command_len());
+        prepared
+            .commands()
+            .enumerate()
+            .map(|(expected_index, command)| match command {
+                PreparedChampionshipSetupCommand::Text {
+                    command_index,
+                    command,
+                } => {
+                    assert_eq!(command_index, expected_index);
+                    PreparedKind::Text(command.role)
+                }
+                PreparedChampionshipSetupCommand::Bitmap {
+                    command_index,
+                    identity,
+                    decision,
+                } => {
+                    assert_eq!(command_index, expected_index);
+                    PreparedKind::Bitmap(
+                        identity,
+                        match decision {
+                            BlitDecision::NoOp => PreparedDecision::NoOp,
+                            BlitDecision::Blit(plan) => PreparedDecision::Blit(plan.method),
+                        },
+                    )
+                }
+                PreparedChampionshipSetupCommand::Deferred {
+                    command_index,
+                    command,
+                } => {
+                    assert_eq!(command_index, expected_index);
+                    PreparedKind::Deferred(match command {
+                        DeferredChampionshipCommand::Selection(_) => DeferredKind::Selection,
+                        DeferredChampionshipCommand::InfoText(_) => DeferredKind::InfoText,
+                        DeferredChampionshipCommand::CarTransform(
+                            ChampionshipSetupVisualCommand::DeferredCarTransform { car, .. },
+                        ) => DeferredKind::CarTransform(car),
+                        DeferredChampionshipCommand::CarVisibilityLatch(
+                            ChampionshipSetupVisualCommand::DeferredCarVisibilityLatch {
+                                car, ..
+                            },
+                        ) => DeferredKind::CarVisibilityLatch(car),
+                        DeferredChampionshipCommand::PaletteRequest { group, item } => {
+                            DeferredKind::PaletteRequest { group, item }
+                        }
+                        DeferredChampionshipCommand::NextPreview(_) => DeferredKind::NextPreview,
+                        DeferredChampionshipCommand::CarTransform(command)
+                        | DeferredChampionshipCommand::CarVisibilityLatch(command) => {
+                            panic!("unexpected deferred command shape {command:?}")
+                        }
+                    })
+                }
+            })
+            .collect()
+    }
+
+    fn prepare_fixture_frame(
+        fixture: &Fixture<'_>,
+        transcript: &ChampionshipSetupRenderTranscript,
+        chequered_frame: Option<ChequeredFrame>,
+        cache: ChampionshipPreviewCache,
+    ) -> PreparedChampionshipSetupFrame {
+        prepare_frame_with_bitmaps(
+            input(transcript),
+            ChampionshipSetupFrameState { chequered_frame },
+            &fixture.text,
+            &fixture.fonts,
+            &fixture.bitmaps,
+            cache,
+            TextLayoutLimits::default(),
+        )
+        .unwrap()
+    }
+
+    fn commit_fixture_frame(
+        fixture: &mut Fixture<'_>,
+        prepared: PreparedChampionshipSetupFrame,
+        cache: &mut ChampionshipPreviewCache,
+    ) {
+        validate_championship_setup_frame_sources(&prepared, &fixture.store).unwrap();
+        execute_prepared_championship_setup_frame(
+            prepared,
+            cache,
+            &mut fixture.store,
+            999,
+            |_, _| Ok::<_, std::convert::Infallible>(()),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn public_prepared_transcript_has_exact_car_gear_and_next_cold_warm_order() {
+        use PreparedDecision::Blit;
+
+        let mut fixture = Fixture::new(true);
+        let subaru_logo = CanonicalCar::Subaru.championship_descriptor().logo;
+        let car_cold_expected = [
+            PreparedKind::Text(SetupTextRole::Title),
+            PreparedKind::Bitmap(
+                ChampionshipBitmapIdentity::Selection,
+                Blit(BlitMethod::Stretch),
+            ),
+            PreparedKind::Text(SetupTextRole::Row(
+                crate::championship_setup::SetupRowKind::ChooseCar,
+            )),
+            PreparedKind::Bitmap(ChampionshipBitmapIdentity::InfoBox, Blit(BlitMethod::Fast)),
+            PreparedKind::Deferred(DeferredKind::InfoText),
+            PreparedKind::Deferred(DeferredKind::CarTransform(CanonicalCar::Subaru)),
+            PreparedKind::Deferred(DeferredKind::CarVisibilityLatch(CanonicalCar::Subaru)),
+            PreparedKind::Bitmap(
+                ChampionshipBitmapIdentity::ManufacturerLogo(subaru_logo),
+                Blit(BlitMethod::Fast),
+            ),
+            PreparedKind::Deferred(DeferredKind::PaletteRequest { group: 4, item: 0 }),
+            PreparedKind::Text(SetupTextRole::Row(
+                crate::championship_setup::SetupRowKind::ChooseGear,
+            )),
+            PreparedKind::Text(SetupTextRole::Row(
+                crate::championship_setup::SetupRowKind::Next,
+            )),
+        ];
+        let car = transcript(0);
+        let mut car_cache = ChampionshipPreviewCache::new();
+        let car_cold = prepare_fixture_frame(&fixture, &car, None, car_cache);
+        assert_eq!(prepared_kinds(&car_cold), car_cold_expected);
+        commit_fixture_frame(&mut fixture, car_cold, &mut car_cache);
+        let car_warm = prepare_fixture_frame(&fixture, &car, None, car_cache);
+        let mut car_warm_expected = car_cold_expected.to_vec();
+        car_warm_expected.remove(8);
+        assert_eq!(prepared_kinds(&car_warm), car_warm_expected);
+
+        let gear_cold_expected = [
+            PreparedKind::Text(SetupTextRole::Title),
+            PreparedKind::Text(SetupTextRole::Row(
+                crate::championship_setup::SetupRowKind::ChooseCar,
+            )),
+            PreparedKind::Bitmap(
+                ChampionshipBitmapIdentity::Selection,
+                Blit(BlitMethod::Stretch),
+            ),
+            PreparedKind::Text(SetupTextRole::Row(
+                crate::championship_setup::SetupRowKind::ChooseGear,
+            )),
+            PreparedKind::Bitmap(ChampionshipBitmapIdentity::InfoBox, Blit(BlitMethod::Fast)),
+            PreparedKind::Deferred(DeferredKind::InfoText),
+            PreparedKind::Deferred(DeferredKind::CarTransform(CanonicalCar::Subaru)),
+            PreparedKind::Deferred(DeferredKind::CarVisibilityLatch(CanonicalCar::Subaru)),
+            PreparedKind::Bitmap(
+                ChampionshipBitmapIdentity::ManufacturerLogo(subaru_logo),
+                Blit(BlitMethod::Fast),
+            ),
+            PreparedKind::Deferred(DeferredKind::PaletteRequest { group: 4, item: 0 }),
+            PreparedKind::Text(SetupTextRole::Row(
+                crate::championship_setup::SetupRowKind::Next,
+            )),
+        ];
+        let gear = transcript(1);
+        let mut gear_cache = ChampionshipPreviewCache::new();
+        let gear_cold = prepare_fixture_frame(&fixture, &gear, None, gear_cache);
+        assert_eq!(prepared_kinds(&gear_cold), gear_cold_expected);
+        commit_fixture_frame(&mut fixture, gear_cold, &mut gear_cache);
+        let gear_warm = prepare_fixture_frame(&fixture, &gear, None, gear_cache);
+        let mut gear_warm_expected = gear_cold_expected.to_vec();
+        gear_warm_expected.remove(9);
+        assert_eq!(prepared_kinds(&gear_warm), gear_warm_expected);
+
+        let next_cold_expected = [
+            PreparedKind::Text(SetupTextRole::Title),
+            PreparedKind::Text(SetupTextRole::Row(
+                crate::championship_setup::SetupRowKind::ChooseCar,
+            )),
+            PreparedKind::Text(SetupTextRole::Row(
+                crate::championship_setup::SetupRowKind::ChooseGear,
+            )),
+            PreparedKind::Bitmap(
+                ChampionshipBitmapIdentity::Selection,
+                Blit(BlitMethod::Stretch),
+            ),
+            PreparedKind::Text(SetupTextRole::Row(
+                crate::championship_setup::SetupRowKind::Next,
+            )),
+            PreparedKind::Bitmap(ChampionshipBitmapIdentity::InfoBox, Blit(BlitMethod::Fast)),
+            PreparedKind::Deferred(DeferredKind::InfoText),
+            PreparedKind::Deferred(DeferredKind::PaletteRequest { group: 1, item: 9 }),
+            PreparedKind::Bitmap(
+                ChampionshipBitmapIdentity::ChequeredFrame(ChequeredFrame::Frame04),
+                Blit(BlitMethod::Fast),
+            ),
+        ];
+        let next = transcript(2);
+        let mut next_cache = ChampionshipPreviewCache::new();
+        let next_cold =
+            prepare_fixture_frame(&fixture, &next, Some(ChequeredFrame::Frame04), next_cache);
+        assert_eq!(prepared_kinds(&next_cold), next_cold_expected);
+        commit_fixture_frame(&mut fixture, next_cold, &mut next_cache);
+        let next_warm =
+            prepare_fixture_frame(&fixture, &next, Some(ChequeredFrame::Frame04), next_cache);
+        let mut next_warm_expected = next_cold_expected.to_vec();
+        next_warm_expected.remove(7);
+        assert_eq!(prepared_kinds(&next_warm), next_warm_expected);
+    }
+
+    #[test]
+    fn prepared_logo_identity_preserves_every_canonical_alias() {
+        let fixture = Fixture::new(true);
+        for car in CanonicalCar::ALL {
+            let mut car_transcript = transcript(0);
+            car_transcript.rows[0].value = RowValue::Car(car);
+            car_transcript.preview = ActivePreview::Car {
+                canonical_car: car,
+                object_name: car.object_name(),
+                logo_name: car.logo_name(),
+            };
+            let prepared = prepare_fixture_frame(
+                &fixture,
+                &car_transcript,
+                None,
+                ChampionshipPreviewCache::new(),
+            );
+            let logos = prepared
+                .commands()
+                .filter_map(|command| match command {
+                    PreparedChampionshipSetupCommand::Bitmap {
+                        identity: ChampionshipBitmapIdentity::ManufacturerLogo(logo),
+                        ..
+                    } => Some(logo),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(logos, [car.championship_descriptor().logo], "{car:?}");
+        }
+
+        assert_eq!(
+            CanonicalCar::Rs200.championship_descriptor().logo,
+            CanonicalCar::Mk2.championship_descriptor().logo
+        );
+        assert_eq!(
+            CanonicalCar::Mk2.championship_descriptor().logo,
+            CanonicalCar::Escort.championship_descriptor().logo
+        );
+        assert_eq!(
+            CanonicalCar::Corolla.championship_descriptor().logo,
+            CanonicalCar::Celica.championship_descriptor().logo
+        );
+    }
+
+    #[test]
+    fn public_text_commands_are_exact_and_inspection_is_effect_free() {
+        let transcript = transcript(0);
+        let fixture = Fixture::new(true);
+        let caller_cache = ChampionshipPreviewCache::new();
+        let cache_before = caller_cache;
+        let prepared = prepare_fixture_frame(&fixture, &transcript, None, caller_cache);
+
+        let first_pass = prepared.commands().collect::<Vec<_>>();
+        let second_pass = prepared.commands().collect::<Vec<_>>();
+        assert_eq!(first_pass, second_pass);
+        assert_eq!(caller_cache, cache_before);
+
+        let mut visual_cache = cache_before;
+        let expected_text = plan_championship_setup_frame(input(&transcript), &mut visual_cache)
+            .unwrap()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(command_index, command)| match command {
+                ChampionshipSetupVisualCommand::Text(command) => Some((command_index, command)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let public_text = first_pass
+            .into_iter()
+            .filter_map(|command| match command {
+                PreparedChampionshipSetupCommand::Text {
+                    command_index,
+                    command,
+                } => Some((command_index, command)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(public_text, expected_text);
+    }
+
+    #[test]
+    fn public_prepared_view_preserves_noop_identities_without_indexed_effects() {
+        let transcript = transcript(0);
+        let mut fixture = Fixture::new(true);
+        let mut offscreen = input(&transcript);
+        offscreen.frontend_offset_q16 = Q16Point::new(100 << 16, 100 << 16);
+        let prepared = prepare_frame_with_bitmaps(
+            offscreen,
+            ChampionshipSetupFrameState::default(),
+            &fixture.text,
+            &fixture.fonts,
+            &fixture.bitmaps,
+            ChampionshipPreviewCache::new(),
+            TextLayoutLimits::default(),
+        )
+        .unwrap();
+        let bitmap_identities = prepared
+            .commands()
+            .filter_map(|command| match command {
+                PreparedChampionshipSetupCommand::Bitmap {
+                    identity,
+                    decision: BlitDecision::NoOp,
+                    ..
+                } => Some(identity),
+                PreparedChampionshipSetupCommand::Bitmap { decision, .. } => {
+                    panic!("offscreen bitmap unexpectedly retained {decision:?}")
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bitmap_identities,
+            [
+                ChampionshipBitmapIdentity::Selection,
+                ChampionshipBitmapIdentity::InfoBox,
+                ChampionshipBitmapIdentity::ManufacturerLogo(
+                    CanonicalCar::Subaru.championship_descriptor().logo,
+                ),
+            ]
+        );
+
+        validate_championship_setup_frame_sources(&prepared, &fixture.store).unwrap();
+        let blits_before = fixture.store.backend().blits.len();
+        let mut cache = ChampionshipPreviewCache::new();
+        let outcome = execute_prepared_championship_setup_frame(
+            prepared,
+            &mut cache,
+            &mut fixture.store,
+            999,
+            |_, _| Ok::<_, std::convert::Infallible>(()),
+        )
+        .unwrap();
+        assert_eq!(fixture.store.backend().blits.len(), blits_before);
+        assert!(outcome.commands.iter().all(|command| match command {
+            ChampionshipSetupCommandOutcome::Bitmap { outcome, .. } => {
+                *outcome == IndexedBitmapBlitOutcome::NoOp
+            }
+            _ => true,
+        }));
+    }
+
+    #[test]
+    fn public_prepared_transcript_matches_indexed_execution_and_inline_deferred_visibility() {
+        let transcript = transcript(2);
+        let mut fixture = Fixture::new(true);
+        let prepared = prepare_fixture_frame(
+            &fixture,
+            &transcript,
+            Some(ChequeredFrame::Frame04),
+            ChampionshipPreviewCache::new(),
+        );
+        let public_commands = prepared.commands().collect::<Vec<_>>();
+        validate_championship_setup_frame_sources(&prepared, &fixture.store).unwrap();
+        let mut callbacks = Vec::new();
+        let mut cache = ChampionshipPreviewCache::new();
+        let outcome = execute_prepared_championship_setup_frame(
+            prepared,
+            &mut cache,
+            &mut fixture.store,
+            999,
+            |command_index, command| {
+                callbacks.push((command_index, command));
+                Ok::<_, std::convert::Infallible>(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(public_commands.len(), outcome.commands.len());
+        for (public, indexed) in public_commands.iter().zip(&outcome.commands) {
+            match (*public, indexed) {
+                (
+                    PreparedChampionshipSetupCommand::Text {
+                        command_index,
+                        command,
+                    },
+                    ChampionshipSetupCommandOutcome::Text {
+                        command_index: actual_index,
+                        role: actual_role,
+                        ..
+                    },
+                ) => {
+                    assert_eq!(command_index, *actual_index);
+                    assert_eq!(command.role, *actual_role);
+                }
+                (
+                    PreparedChampionshipSetupCommand::Bitmap {
+                        command_index,
+                        identity,
+                        decision,
+                    },
+                    ChampionshipSetupCommandOutcome::Bitmap {
+                        command_index: actual_index,
+                        identity: actual_identity,
+                        outcome,
+                    },
+                ) => {
+                    assert_eq!(command_index, *actual_index);
+                    assert_eq!(identity, *actual_identity);
+                    assert_eq!(
+                        *outcome,
+                        match decision {
+                            BlitDecision::NoOp => IndexedBitmapBlitOutcome::NoOp,
+                            BlitDecision::Blit(_) => IndexedBitmapBlitOutcome::Blitted,
+                        }
+                    );
+                }
+                (
+                    PreparedChampionshipSetupCommand::Deferred {
+                        command_index,
+                        command,
+                    },
+                    ChampionshipSetupCommandOutcome::Deferred {
+                        command_index: actual_index,
+                        command: actual_command,
+                    },
+                ) => {
+                    assert_eq!(command_index, *actual_index);
+                    assert_eq!(command, *actual_command);
+                }
+                pair => panic!("public/indexed command mismatch: {pair:?}"),
+            }
+        }
+
+        let publicly_deferred = public_commands
+            .iter()
+            .filter_map(|command| match command {
+                PreparedChampionshipSetupCommand::Deferred {
+                    command_index,
+                    command,
+                } => Some((*command_index, *command)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(callbacks, publicly_deferred);
     }
 }
