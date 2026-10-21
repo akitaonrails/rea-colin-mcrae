@@ -41,6 +41,26 @@ pub const MIXER_OUTPUT_RATE_HZ: u32 = 22_050;
 /// Maximum simultaneous mixing channels, from init field `+0x14 = 0x1e`.
 pub const MIXER_CHANNEL_CAPACITY: u32 = 30;
 
+/// Play flag for a looping voice, recovered from the ambience crowd-loop call
+/// `FUN_00495a30(slot, channel, 0xffffffff)` in `FUN_0041cfe0`.
+pub const PLAY_LOOPING: u32 = 0xffff_ffff;
+
+/// Play flag for a one-shot voice, recovered from the ambience thunder call
+/// `FUN_00495a30(slot, channel, 0)` in `FUN_0041cfe0`.
+pub const PLAY_ONE_SHOT: u32 = 0;
+
+/// Apply the recovered master-volume percentage layer that sits above the
+/// per-channel volume wrapper.
+///
+/// The ambience volume setter `FUN_0047eb70(channel, volume)` calls
+/// `QSWaveMixSetVolume(channel, DAT_004f653c * volume / 100)`, where
+/// `DAT_004f653c` is a 0..100 master-volume percentage. This reproduces that
+/// scaling with the recovered integer truncation; callers supply the current
+/// master percent.
+pub fn scale_volume_by_master_percent(master_percent: i32, volume: i32) -> i32 {
+    master_percent * volume / 100
+}
+
 /// A mixing channel index, validated against [`MIXER_CHANNEL_CAPACITY`].
 ///
 /// The recovered code indexes a per-channel "wave last played here" table and
@@ -477,6 +497,21 @@ pub fn check_audio_mixer_contract<M: AudioMixer + Default>() -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn master_volume_scaling_matches_the_recovered_formula() {
+        // DAT_004f653c * volume / 100 with integer truncation.
+        assert_eq!(scale_volume_by_master_percent(100, 32_000), 32_000);
+        assert_eq!(scale_volume_by_master_percent(50, 32_000), 16_000);
+        assert_eq!(scale_volume_by_master_percent(0, 32_000), 0);
+        assert_eq!(scale_volume_by_master_percent(75, 101), 75); // 7575 / 100
+    }
+
+    #[test]
+    fn play_flags_carry_the_recovered_loop_and_one_shot_values() {
+        assert_eq!(PLAY_LOOPING, 0xffff_ffff);
+        assert_eq!(PLAY_ONE_SHOT, 0);
+    }
 
     #[test]
     fn channel_ids_are_bounded_by_the_recovered_cap() {

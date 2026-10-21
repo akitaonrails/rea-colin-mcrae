@@ -131,7 +131,7 @@ Status markers:
 
 - [~] `H01` Identify the 16 reachable `QSWaveMix*` imports and DLL exports.
 - [~] `H02` Recover WAV/sample loading, channels, priority, and lifetime (official-EU QSound init at `0x4957d0` recovers a 22050 Hz, 30-channel `QSWaveMixInitEx`/`Activate` session and a fixed wave-slot table; the load path `0x4958e0` builds a PCM `WAVEFORMATEX` from name/rate/bits/stereo and registers it with `QSWaveMixOpenWave`, and the play path `0x495a30` dispatches a slot/channel through `QSWaveMixPlayEx`; the weather/crowd ambience loader `0x41cd30` is fully recovered - six 11025 Hz/16-bit waves (`crowd`, `abduct`, then storm-gated `clap1/clap2/rumble1/rumble2`), encoded as metadata in `cmr-core::audio_weather_assets`; priority/lifetime flags, memory-vs-file payload source, the load/play wrapper variants, and the other thirteen load-wrapper callers remain).
-- [~] `H03` Recover volume, pan, frequency, spatialization, and mixing rules (per-channel `QSWaveMixSetVolume` `0x495b70`, `QSWaveMixSetFrequency` `0x495bd0`, and 3D `QSWaveMixSetPosition` `0x495c30` wrappers recovered, with stop `0x495b10`/`0x495b30` and a channel-busy `IsChannelDone` predicate `0x495d10`; panning is 3D-position based over 30 channels; QMixer unit ranges/scales and the position coordinate space remain).
+- [~] `H03` Recover volume, pan, frequency, spatialization, and mixing rules (per-channel `QSWaveMixSetVolume` `0x495b70`, `QSWaveMixSetFrequency` `0x495bd0`, and 3D `QSWaveMixSetPosition` `0x495c30` wrappers recovered, with stop `0x495b10`/`0x495b30` and a channel-busy `IsChannelDone` predicate `0x495d10`; panning is 3D-position based over 30 channels; the ambience trigger `0x41cfe0` recovers the `QSWaveMixPlayEx` loop/one-shot flags (`0xffffffff`/`0`) and a 0..100 master-volume percentage layer (`0x47eb70` → `0x495b70`) with a crowd-volume clamp of 32000; the `FUN_0047f9c0` volume curve, the post-scale units, and the position coordinate space remain).
 - [~] `H04` Implement a deterministic reconstruction-owned audio mixer (`cmr-core::audio_mixer` defines the backend-agnostic `AudioMixer` compatibility interface and a pure deterministic `MixerSessionState` reproducing the recovered init guard, 22050 Hz/30-channel cap, incrementing wave-slot table, PCM `WAVEFORMATEX` build, missing-handle play no-op, and per-channel volume/frequency/3D-position/stop records as emitted `MixerCommand`s; a shared `check_audio_mixer_contract` is passed by an in-crate backend. A concrete QMixer-faithful backend and the modern portable/SDL audio device backend remain, both to implement this same interface and pass the contract).
 - [ ] `H05` Recover music/CD/MCI selection and lifecycle.
 - [ ] `H06` Recover intro-video selection/playback/skip and launcher handoff.
@@ -165,8 +165,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T14:09:14Z
-milestone=replay-recovered-ambience-load-sequence-through-the-mixer-contract
+updated_utc=2026-10-21T14:12:18Z
+milestone=recover-crowd-weather-ambience-trigger-and-volume-model
 completed=51
 partial=25
 not_started=41

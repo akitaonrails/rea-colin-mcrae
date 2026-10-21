@@ -96,6 +96,29 @@ pub const WEATHER_WAVES: [WeatherWave; 6] = [
     },
 ];
 
+/// Maximum crowd-ambience volume input before the master-volume scale and the
+/// volume curve, from the clamp in the trigger tick `FUN_0041cfe0` (`< 0x7d01`).
+pub const AMBIENCE_MAX_VOLUME_INPUT: i32 = 32_000;
+
+/// Clamp a crowd-ambience volume input the way `FUN_0041cfe0` does: values at or
+/// below [`AMBIENCE_MAX_VOLUME_INPUT`] pass through, larger ones saturate. The
+/// recovered input is a non-negative proximity sum, so no lower bound applies.
+pub fn clamp_ambience_volume_input(input: i32) -> i32 {
+    input.min(AMBIENCE_MAX_VOLUME_INPUT)
+}
+
+/// The thunder wave `FUN_0041cfe0` plays for a given selector.
+///
+/// The recovered one-shot call targets slot `base + 2 + (selector & 0xff)` on
+/// the shared ambience channel, i.e. [`WEATHER_WAVES`] index `2 + selector`,
+/// covering `clap1`/`clap2`/`rumble1`/`rumble2`. Returns `None` for a selector
+/// outside the four recovered storm variants.
+pub fn thunder_wave(selector: u8) -> Option<&'static WeatherWave> {
+    WEATHER_WAVES
+        .get(2 + selector as usize)
+        .filter(|wave| wave.storm_only)
+}
+
 /// The waves `FUN_0041cd30` loads at the given weather-detail level, in order.
 ///
 /// Mirrors the recovered control flow: the first two waves always load; the
@@ -184,6 +207,27 @@ mod tests {
             .collect();
         assert_eq!(loaded.len(), 6);
         assert_eq!(loaded[5], r"sounds\weather\rumble2.wav");
+    }
+
+    #[test]
+    fn ambience_volume_input_saturates_at_the_recovered_clamp() {
+        assert_eq!(clamp_ambience_volume_input(0), 0);
+        assert_eq!(clamp_ambience_volume_input(32_000), 32_000);
+        assert_eq!(clamp_ambience_volume_input(40_000), 32_000);
+    }
+
+    #[test]
+    fn thunder_selector_maps_to_the_storm_variants() {
+        assert_eq!(
+            thunder_wave(0).unwrap().relative_path,
+            r"sounds\weather\clap1.wav"
+        );
+        assert_eq!(
+            thunder_wave(3).unwrap().relative_path,
+            r"sounds\weather\rumble2.wav"
+        );
+        // Selector 4 would address index 6, past the four storm variants.
+        assert!(thunder_wave(4).is_none());
     }
 
     use crate::audio_mixer::{ChannelId, MixerSessionState, Position3d};

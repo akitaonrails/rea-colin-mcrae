@@ -467,6 +467,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   further load-wrapper callers (engine, surface, UI, …) remain to enumerate. See
   evidence `rea.official-eu.audio-weather-wave-inventory` and
   `impl.audio-weather-assets`.
+- The ambience trigger tick `0x41cfe0`/`FUN_0041cfe0` drives those waves on one
+  shared channel: a proximity-summed crowd volume (clamped to 32000) plays the
+  crowd slot looping (`QSWaveMixPlayEx` flag `0xffffffff`) while crowd objects are
+  in range, and a storm selector plays a one-shot thunder variant (flag `0`) at
+  `base+2+selector`. The volume setter `0x47eb70`/`FUN_0047eb70` applies a 0..100
+  master-volume percentage (`DAT_004f653c`) over the recovered `0x495b70`
+  wrapper. The recovered play flags, master-volume scale, volume clamp, and
+  thunder selector are encoded in `cmr-core::audio_mixer` and
+  `audio_weather_assets`. See evidence `rea.official-eu.audio-ambience-trigger`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
