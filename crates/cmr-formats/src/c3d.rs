@@ -495,14 +495,22 @@ impl<'a> C3dGroup1Record<'a> {
     }
 }
 
-/// One borrowed 32-byte entry from a group-1 record.
+/// Converts a raw Q16.16 component to `f32`, matching the recovered consumer's
+/// `(float)x * 1.5258789e-05` (= `x / 65536.0`).
+#[must_use]
+pub fn q16_to_f32(raw: i32) -> f32 {
+    raw as f32 / 65_536.0
+}
+
+/// One borrowed 32-byte entry from a group-1 record: a single mesh vertex.
 ///
-/// Recovered loader pseudocode reads all eight fields as signed little-endian
-/// Q16.16 values. It places the first triplet in the first three runtime
-/// components, the final triplet in the next three, and the middle pair in the
-/// last two after additional adjustments. The grouped accessor names describe
-/// that observed placement and likely rendering roles; direct draw-submission
-/// semantics remain to be corroborated.
+/// The eight signed little-endian Q16.16 components are consumed by the
+/// draw-submission builder `FUN_004a2b70`, which **proves** their roles: the
+/// first triplet is the model-space position (passed through the affine node
+/// transform `FUN_0048fa60`), the middle pair is the texture UV, and the final
+/// triplet is the lighting normal (fed to the per-node brightness/normalize
+/// computation). Earlier releases documented these roles as inferred; they are
+/// now corroborated by consumer use (reconstruction item E02).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct C3dEntry32<'a> {
     offset: usize,
@@ -527,34 +535,47 @@ impl<'a> C3dEntry32<'a> {
         std::array::from_fn(|index| read_i32(self.bytes, index * 4))
     }
 
-    /// First source triplet, placed in the runtime coordinate slots by the
-    /// recovered loader. `position` is a semantic inference from that use.
+    /// Model-space position (components 0-2). The consumer runs it through the
+    /// affine node transform, confirming the position role.
     #[must_use]
     pub fn position_q16(self) -> [i32; 3] {
         std::array::from_fn(|index| read_i32(self.bytes, index * 4))
     }
 
-    /// Middle source pair, placed in the final two runtime slots after loader
-    /// adjustments. A texture-mapping role is inferred, not yet proven by a
-    /// recovered draw-submission contract.
+    /// Texture coordinates `[u, v]` (components 3-4). The consumer applies a
+    /// draw-time `u > 1.0 -> u - 1.0` wrap and a `v + 1.0` bias; those are
+    /// render-time conventions, so the raw stored values are returned here.
     #[must_use]
-    pub fn mapping_q16(self) -> [i32; 2] {
+    pub fn uv_q16(self) -> [i32; 2] {
         std::array::from_fn(|index| read_i32(self.bytes, (index + 3) * 4))
     }
 
-    /// Final source triplet, placed in the middle three runtime slots by the
-    /// recovered loader. A direction/normal role remains an inference.
+    /// Lighting normal (components 5-7). The consumer normalizes it and folds it
+    /// into the per-node brightness, confirming the normal role.
     #[must_use]
-    pub fn direction_q16(self) -> [i32; 3] {
+    pub fn normal_q16(self) -> [i32; 3] {
         std::array::from_fn(|index| read_i32(self.bytes, (index + 5) * 4))
     }
 }
 
-/// One borrowed 24-byte entry from a group-1 record.
+/// The group-2 ordinal value meaning "no texture/material": the primitive is
+/// drawn with a flat per-vertex color instead (proven by `FUN_004a2b70`, which
+/// writes `0xFFFFFFFF` to the runtime primitive for this sentinel).
+pub const C3D_ENTRY24_MATERIAL_NONE: i16 = -1;
+
+/// One borrowed 24-byte entry from a group-1 record: a single textured or
+/// flat-colored triangle.
 ///
-/// The three entry ordinals and signed group-2 ordinal are proven consumers.
-/// The three four-byte tuples are kept byte-exact because their channel and
-/// material interpretation depends on loader mode and global state.
+/// The draw-submission builder `FUN_004a2b70` **proves** the layout: the three
+/// u16 ordinals at `+2/+4/+6` are the triangle's three vertex indices into the
+/// record's 32-byte entries; the signed ordinal at `+8` selects a group-2
+/// texture/material (or [`C3D_ENTRY24_MATERIAL_NONE`] for an untextured,
+/// flat-colored face); and the three four-byte tuples at `+0x0a/+0x0e/+0x12` are
+/// the per-vertex RGBA colors (byte 3 = alpha - the transparent render class
+/// overrides it to `0x96`). The word at `+0x16` is copied verbatim into the
+/// runtime primitive header for the opaque render classes, so it is a
+/// per-primitive attribute word; the word at `+0x00` is **not read** by the
+/// builder (an authoring tag or padding, preserved but unconsumed).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct C3dEntry24<'a> {
     offset: usize,
@@ -573,21 +594,36 @@ impl<'a> C3dEntry24<'a> {
         self.bytes
     }
 
+    /// The word at `+0x00`, which the draw-submission builder never reads
+    /// (preserved authoring tag or padding).
     #[must_use]
     pub fn field_00(self) -> u16 {
         read_u16(self.bytes, 0)
     }
 
+    /// The triangle's three vertex indices into the record's 32-byte entries
+    /// (`+2/+4/+6`).
     #[must_use]
     pub fn entry32_ordinals(self) -> [u16; 3] {
         C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS.map(|offset| read_u16(self.bytes, offset))
     }
 
+    /// The signed group-2 texture/material ordinal (`+8`);
+    /// [`C3D_ENTRY24_MATERIAL_NONE`] means an untextured flat-colored face.
     #[must_use]
     pub fn group2_ordinal(self) -> i16 {
         read_i16(self.bytes, 8)
     }
 
+    /// Whether this face references a group-2 texture/material (i.e. the ordinal
+    /// is not the untextured sentinel).
+    #[must_use]
+    pub fn is_textured(self) -> bool {
+        self.group2_ordinal() != C3D_ENTRY24_MATERIAL_NONE
+    }
+
+    /// The three per-vertex colors as raw 4-byte tuples (`+0x0a/+0x0e/+0x12`),
+    /// byte 3 being alpha. See [`Self::corner_colors`] for the packed view.
     #[must_use]
     pub fn corner_tuples(self) -> [[u8; 4]; 3] {
         std::array::from_fn(|index| {
@@ -598,6 +634,15 @@ impl<'a> C3dEntry24<'a> {
         })
     }
 
+    /// The three per-vertex colors as packed little-endian `u32`s. The channel
+    /// order of bytes 0-2 is not proven; byte 3 is alpha.
+    #[must_use]
+    pub fn corner_colors(self) -> [u32; 3] {
+        std::array::from_fn(|index| read_u32(self.bytes, 10 + index * 4))
+    }
+
+    /// The per-primitive attribute word at `+0x16` (copied into the runtime
+    /// primitive header for the opaque render classes).
     #[must_use]
     pub fn field_22(self) -> u16 {
         read_u16(self.bytes, 22)
@@ -2064,8 +2109,8 @@ mod tests {
         );
         assert_eq!(entries32[0].components_q16(), components);
         assert_eq!(entries32[0].position_q16(), components[0..3]);
-        assert_eq!(entries32[0].mapping_q16(), components[3..5]);
-        assert_eq!(entries32[0].direction_q16(), components[5..8]);
+        assert_eq!(entries32[0].uv_q16(), components[3..5]);
+        assert_eq!(entries32[0].normal_q16(), components[5..8]);
         assert!(std::ptr::eq(
             entries32[0].bytes().as_ptr(),
             parsed.bytes()[entry32_offset..].as_ptr()
@@ -2080,9 +2125,20 @@ mod tests {
         assert_eq!(entries24[0].field_00(), 0x1234);
         assert_eq!(entries24[0].entry32_ordinals(), [0x2345, 0x4567, 0x6789]);
         assert_eq!(entries24[0].group2_ordinal(), -2);
+        assert!(entries24[0].is_textured());
         assert_eq!(
             entries24[0].corner_tuples(),
             [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+        );
+        // The same per-vertex color bytes, viewed as packed little-endian u32s
+        // (byte 3 = alpha).
+        assert_eq!(
+            entries24[0].corner_colors(),
+            [
+                u32::from_le_bytes([1, 2, 3, 4]),
+                u32::from_le_bytes([5, 6, 7, 8]),
+                u32::from_le_bytes([9, 10, 11, 12]),
+            ]
         );
         assert_eq!(entries24[0].field_22(), 0xbeef);
         assert!(std::ptr::eq(
@@ -2090,6 +2146,17 @@ mod tests {
             parsed.bytes()[entry24_offset..].as_ptr()
         ));
         assert_eq!(parsed.bytes(), input);
+    }
+
+    #[test]
+    fn entry24_untextured_sentinel_and_q16_conversion() {
+        // The material-none sentinel is -1; any other ordinal is textured.
+        assert_eq!(C3D_ENTRY24_MATERIAL_NONE, -1);
+        // q16_to_f32 matches the recovered 1/65536 factor at representative points.
+        assert_eq!(q16_to_f32(0), 0.0);
+        assert_eq!(q16_to_f32(0x1_0000), 1.0);
+        assert_eq!(q16_to_f32(-0x1_0000), -1.0);
+        assert_eq!(q16_to_f32(0x8000), 0.5);
     }
 
     #[test]

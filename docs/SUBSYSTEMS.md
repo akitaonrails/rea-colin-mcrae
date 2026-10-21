@@ -411,11 +411,18 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   `CM3D` header and all three proven counted layouts, including raw group-0
   `u16` values, typed borrowed group-1 32/24-byte entries, and group-2
   label/blob pairs. The typed entries preserve raw bytes/offsets while exposing
-  recovered signed Q16.16 component groups, local entry ordinals, the signed
-  resource ordinal, byte-exact corner tuples, and unknown scalar fields,
-  plus checked borrowed group-0→group-1, entry24 `+2/+4/+6`→same-record entry32,
-  and group-1-entry24→group-2 ordinal resolution without assigning target
-  content semantics. Group-2 resources may be classified on demand as opaque
+  the field roles now **proven** by the draw-submission consumer `FUN_004a2b70`
+  (E02): a 32-byte entry is one vertex (`position_q16` comps 0-2, `uv_q16` comps
+  3-4, `normal_q16` comps 5-7, `q16_to_f32`) and a 24-byte entry is one triangle
+  (`entry32_ordinals` = its three vertex indices, `group2_ordinal` =
+  texture/material with the `C3D_ENTRY24_MATERIAL_NONE = -1` untextured sentinel
+  and `is_textured()`, `corner_tuples`/`corner_colors` = per-vertex RGBA with
+  byte 3 alpha, `field_22` = a per-primitive attribute word, `field_00`
+  preserved-but-unconsumed), plus checked borrowed group-0→group-1, entry24
+  `+2/+4/+6`→same-record entry32, and group-1-entry24→group-2 ordinal resolution.
+  The draw-time UV wrap/bias is a render-time convention and is not baked into
+  the parser. See evidence `rea.official-eu.c3d-entry-semantics` and
+  `impl.c3d-entry-semantics`. Group-2 resources may be classified on demand as opaque
   `BM` bytes, checked borrowed `ANIM` frame references/thresholds, or unknown
   bytes without forcing universal bitmap decoding. A checked selected-record
   iterator resolves animation frame ordinals to generic group-2 records while

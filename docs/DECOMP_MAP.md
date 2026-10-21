@@ -84,7 +84,7 @@ Status markers:
 ## E. General renderer and scene data
 
 - [~] `E01` Recover bitmap/palette/surface rules used outside startup/root UI (ordinary `0x81` embedded-palette 8-to-RGB555/RGB565 conversion, packed palette-entry-zero loader key, aligned stored-row handling, non-8-bit deferred-palette skip, matching-format fast keyed/opaque composition, the Selection-specific literal-zero keyed Stretch call contract plus an explicitly source-owned center-nearest oracle, and the exact no-driver-`Load` `0x90` ARGB4444 queued-font source conversion implemented; general/driver-exact stretch pixels, 4-/24-bit conversion, paletted/device-mask font branches, active-device format ownership, and alternate-font final pixels remain).
-- [~] `E02` Recover C3D 32-byte and 24-byte entry field semantics.
+- [~] `E02` Recover C3D 32-byte and 24-byte entry field semantics (field roles now **proven by the draw-submission consumer** `FUN_004a2b70` - the C3D retained-primitive builder - not merely inferred. A group-1 record is a mesh node: header `+0x10` u16 = 32-byte-entry (vertex) count, `+0x12` u16 = 24-byte-entry (face) count; 32-byte entries at `+0x30`, 24-byte entries at `+0x30 + count32*0x20`. **32-byte entry = one vertex**, eight Q16.16 i32 components: comps 0-2 = model-space position (run through the affine node transform `FUN_0048fa60`), comps 3-4 = texture UV (draw-time `u>1.0`->`-1.0` wrap and `v+1.0` bias applied by the consumer, so raw is stored), comps 5-7 = lighting normal (normalized into per-node brightness); conversion is `raw/65536.0`. **24-byte entry = one triangle**: `+2/+4/+6` u16 = the three vertex ordinals into this record's 32-byte entries, `+8` i16 = group-2 texture/material ordinal (`-1` = untextured flat-color sentinel), `+0x0a/+0x0e/+0x12` = three per-vertex RGBA colors (byte 3 = alpha; the transparent render-class forces alpha `0x96`), `+0x16` u16 = a per-primitive attribute word (copied into the runtime primitive header for opaque classes), `+0x00` u16 = **decisively not read** by the builder (authoring tag/padding). Primitive kind is triangle-only; the car render-class doubles the face array with swapped winding (two-sided), not a quad/line variant. Upgraded `cmr-formats::c3d` accordingly: `C3dEntry32::uv_q16`/`normal_q16` (renamed from the inferred `mapping_q16`/`direction_q16`, docs now proven) + `q16_to_f32`; `C3dEntry24::corner_colors() -> [u32;3]`, `is_textured()`, the `C3D_ENTRY24_MATERIAL_NONE = -1` sentinel, and proven docs on the existing ordinal/field accessors. 2 tests updated/added. **Faithfulness:** the per-render-class default color constants (`.data`) and real model payloads are not vendored - only field offsets/widths/roles. Remaining: `field_22`'s downstream meaning (needs the per-frame rasterizer that reads the primitive header, E06), the RGB channel order within the per-vertex color (byte 3 = alpha proven; bytes 0-2 order not), and the group-2 record `+2` handle layout (E03).)
 - [~] `E03` Recover group-2 resource variants and binding rules.
 - [~] `E04` Recover object transforms, hierarchy, animation, and dirty state.
 - [~] `E05` Recover camera, projection, viewport, clipping, and culling.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-22T02:00:00Z
-milestone=publish-the-supported-edition-and-known-deviation-matrix
+updated_utc=2026-10-22T02:32:00Z
+milestone=prove-c3d-entry-field-semantics-from-the-draw-consumer
 completed=52
 partial=58
 not_started=7
 blocked=0
 total=117
-current_focus=I08-benchmark-the-portable-gpu-backend-candidates
-next_exit_gate=select-and-implement-the-portable-gpu-backend
+current_focus=E06-recover-primitive-ordering-depth-transparency-and-blending
+next_exit_gate=recover-the-c3d-rasterizer-primitive-submission
 <!-- PROGRESS-TAIL-END -->
