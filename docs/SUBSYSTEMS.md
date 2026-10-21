@@ -486,6 +486,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   branch behavior (evidence `impl.audio-ambience-controller`). The per-frame
   scheduler that calls them, and the thirteen other wave loaders and their play
   trigger sites, remain to recover.
+- The full recovered sound namespace (string table) is catalogued in
+  `cmr-core::audio_assets`: explicit waves (crowd, six weather incl.
+  `wet_out`/`rain_in`), `frontend`/`replay` music, menu UI sounds
+  (`BACK`/`SELECT`/`TOGGLE`/`UPDOWN`/`WHEEL`), and the `car`/`accident`/`prangs`/
+  `newsurfs`/`speech`/`rallschl` directory groups. See evidence
+  `rea.official-eu.audio-sound-taxonomy`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

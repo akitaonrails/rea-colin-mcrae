@@ -1,6 +1,7 @@
 //! Recovered game-domain behavior independent of host platform backends.
 
 pub mod audio_ambience;
+pub mod audio_assets;
 pub mod audio_mixer;
 pub mod audio_weather_assets;
 pub mod blit;
