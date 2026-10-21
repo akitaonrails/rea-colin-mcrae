@@ -33,7 +33,10 @@ pub mod software_queued_font_queue;
 pub mod software_root_menu_session;
 
 pub use c3d_software_backend::SoftwareC3dBackendError;
-pub use root_frame_software::{SoftwarePresentationError, SoftwarePresentedFrame};
+pub use root_frame_software::{
+    SOFTWARE_PRESENTED_FRAME_DIGEST_FORMAT, SoftwarePresentationError, SoftwarePresentedFrame,
+    SoftwarePresentedFrameDigest,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceHandle(usize);

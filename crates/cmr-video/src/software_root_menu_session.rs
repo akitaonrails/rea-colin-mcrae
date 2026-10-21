@@ -15,6 +15,7 @@ use cmr_core::font_raster::{FontPoolUploadError, UploadedFontPool};
 use cmr_core::frontend_c3d_route::FrontendC3dRouteState;
 use cmr_core::localization::Language;
 use cmr_core::localization_assets::{LocalizationLoadError, load_frontend_text_table};
+pub use cmr_core::root_menu_assets::ROOT_MENU_DISK_PALETTE_PATH;
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_bitmap_assets::{
     RootMenuBitmapLoadError, RootMenuBitmapSlot, load_root_menu_bitmaps,
@@ -62,7 +63,6 @@ use crate::{
     SurfaceHandle,
 };
 
-pub const ROOT_MENU_DISK_PALETTE_PATH: &str = "New_Fe/Palettes/disk.pal";
 pub const ROOT_MENU_DISK_PALETTE_INDEX: PaletteArenaIndex = PaletteArenaIndex::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

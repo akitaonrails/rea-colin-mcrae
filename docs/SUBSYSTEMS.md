@@ -92,6 +92,23 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   of the verified imported root resources, initialized software display,
   recovered disk-palette bootstrap, persistent source pools, C3D runtime state,
   and repeated complete headless root frames without a self-referential owner.
+- `cmr-video::SoftwarePresentedFrame::digest_summary`: versioned canonical
+  checksums for a complete indexed frame. The stream binds `CMRFRM01`,
+  little-endian extent/pixel count, all 256 RGB-plus-flags palette entries, and
+  row-major indices; component digests keep palette and pixel differences
+  diagnosable. This identifies deterministic reconstruction output, not asset
+  provenance or native display pixels.
+- `cmr-app`: first native application boundary. It selects an external verified
+  import only from `--runtime-data` or `CMR_RUNTIME_DATA`, embeds reviewed
+  profile metadata but no payloads, initializes the software compatibility
+  display/session, renders one fixed official-EU English/Normal root frame, and
+  emits path-free counters and checksums. It is headless and one-shot; a shared
+  frame/presenter seam must precede the SDL interactive host so this orchestration
+  is reused rather than copied.
+- `cmr-test-support`: non-publish synthetic imported-root fixture shared by the
+  video vertical test and application integration test. It generates its own
+  BMP/font/palette/C3D bytes, owns temporary source/import directories, and has
+  no dependency on `cmr-video` or `cmr-app`.
 - `cmr-core::config`: opaque exact-size legacy configuration admission,
   recovered volatile-byte clearing and save gate, plus safe registry-value
   parsing and caller-owned exact-record writing without assigning meaning to

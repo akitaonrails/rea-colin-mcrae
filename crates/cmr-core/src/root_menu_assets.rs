@@ -8,6 +8,7 @@ use crate::localization::Language;
 
 pub const ROOT_MENU_BACKDROP_PATH: &str = "New_Fe/Images/Backdrop/Main.bmp";
 pub const ROOT_MENU_SELECT_PATH: &str = "New_Fe/Images/select/select.bmp";
+pub const ROOT_MENU_DISK_PALETTE_PATH: &str = "New_Fe/Palettes/disk.pal";
 pub const ROOT_MENU_ANIMATION_FRAMES: usize = 7;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

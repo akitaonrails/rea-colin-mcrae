@@ -22,6 +22,14 @@ The default import mode will copy data so the original installation remains
 untouched. A later opt-in link mode may be added only with explicit symlink and
 case-sensitivity rules.
 
+The application consumes only the completed import, never the original-media
+path. The first executable slice accepts `--runtime-data PATH` or the
+`CMR_RUNTIME_DATA` fallback and opens that directory against the embedded
+reviewed-profile metadata. It performs no current-directory probing or
+automatic import. Its headless root-frame command is therefore portable to any
+user-selected import location while keeping proprietary payloads outside the
+binary and repository.
+
 For the currently observed installation, the default immutable roots are
 `Game/**`, `New_Fe/**`, and `ini/**`. The importer must exclude executables, DLLs, patch
 archives, registry files, uninstall state, instructions, and `save/**`.

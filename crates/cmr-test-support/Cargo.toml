@@ -1,0 +1,13 @@
+[package]
+name = "cmr-test-support"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+cmr-assets = { path = "../cmr-assets" }
+cmr-core = { path = "../cmr-core" }
+cmr-formats = { path = "../cmr-formats" }
+serde_json.workspace = true
+sha2.workspace = true

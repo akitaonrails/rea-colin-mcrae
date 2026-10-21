@@ -24,6 +24,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "cmr-app"
+version = "0.1.0"
+dependencies = [
+ "cmr-assets",
+ "cmr-core",
+ "cmr-formats",
+ "cmr-test-support",
+ "cmr-video",
+]
+
+[[package]]
 name = "cmr-assets"
 version = "0.1.0"
 dependencies = [
@@ -52,12 +63,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmr-test-support"
+version = "0.1.0"
+dependencies = [
+ "cmr-assets",
+ "cmr-core",
+ "cmr-formats",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "cmr-video"
 version = "0.1.0"
 dependencies = [
  "cmr-assets",
  "cmr-core",
  "cmr-formats",
+ "cmr-test-support",
  "serde_json",
  "sha2",
 ]

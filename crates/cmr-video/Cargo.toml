@@ -9,7 +9,8 @@ publish = false
 cmr-assets = { path = "../cmr-assets" }
 cmr-core = { path = "../cmr-core" }
 cmr-formats = { path = "../cmr-formats" }
+sha2.workspace = true
 
 [dev-dependencies]
+cmr-test-support = { path = "../cmr-test-support" }
 serde_json.workspace = true
-sha2.workspace = true

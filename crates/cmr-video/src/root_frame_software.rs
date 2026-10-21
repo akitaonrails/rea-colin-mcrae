@@ -8,8 +8,28 @@ use std::fmt;
 
 use cmr_core::{display::DisplayExtent, root_menu_frame::RootFrameHooks};
 use cmr_formats::riff_palette::PaletteEntry;
+use sha2::{Digest, Sha256};
 
 use crate::{PaletteHandle, SoftwareIndexedBackend, SoftwareVideoError, SurfaceHandle};
+
+/// Version tag prepended to the canonical indexed-frame digest stream.
+pub const SOFTWARE_PRESENTED_FRAME_DIGEST_FORMAT: &[u8; 8] = b"CMRFRM01";
+
+/// Stable checksums for one complete indexed software frame.
+///
+/// The canonical stream consists of [`SOFTWARE_PRESENTED_FRAME_DIGEST_FORMAT`],
+/// little-endian `u16` width and height, little-endian `u32` pixel count, all
+/// 256 palette entries as red/green/blue/flags bytes, and the row-major indexed
+/// pixels. These checksums identify deterministic output; they do not
+/// authenticate the frame or its asset provenance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SoftwarePresentedFrameDigest {
+    pub extent: DisplayExtent,
+    pub indexed_pixel_count: u32,
+    pub indexed_pixels_sha256: String,
+    pub palette_rgb_flags_sha256: String,
+    pub canonical_frame_sha256: String,
+}
 
 /// One immutable indexed frame emitted by the headless software oracle.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,6 +54,48 @@ impl SoftwarePresentedFrame {
     pub fn palette(&self) -> &[PaletteEntry; 256] {
         &self.palette
     }
+
+    /// Computes stable component and canonical checksums for this frame.
+    #[must_use]
+    pub fn digest_summary(&self) -> SoftwarePresentedFrameDigest {
+        let indexed_pixel_count = u32::from(self.extent.width) * u32::from(self.extent.height);
+        debug_assert_eq!(self.pixels.len(), indexed_pixel_count as usize);
+
+        let mut palette_digest = Sha256::new();
+        for entry in self.palette.iter() {
+            palette_digest.update([entry.red, entry.green, entry.blue, entry.flags]);
+        }
+
+        let mut canonical_digest = Sha256::new();
+        canonical_digest.update(SOFTWARE_PRESENTED_FRAME_DIGEST_FORMAT);
+        canonical_digest.update(self.extent.width.to_le_bytes());
+        canonical_digest.update(self.extent.height.to_le_bytes());
+        canonical_digest.update(indexed_pixel_count.to_le_bytes());
+        for entry in self.palette.iter() {
+            canonical_digest.update([entry.red, entry.green, entry.blue, entry.flags]);
+        }
+        canonical_digest.update(&self.pixels);
+
+        SoftwarePresentedFrameDigest {
+            extent: self.extent,
+            indexed_pixel_count,
+            indexed_pixels_sha256: sha256_hex(Sha256::digest(&self.pixels)),
+            palette_rgb_flags_sha256: sha256_hex(palette_digest.finalize()),
+            canonical_frame_sha256: sha256_hex(canonical_digest.finalize()),
+        }
+    }
+}
+
+fn sha256_hex(digest: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let digest = digest.as_ref();
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for &byte in digest {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -300,5 +362,122 @@ mod tests {
             Err(SoftwarePresentationError::MissingActivePalette)
         );
         assert!(backend.presented_frame().is_none());
+    }
+
+    #[test]
+    fn digest_summary_matches_the_canonical_version_one_vector() {
+        let palette = std::array::from_fn(|index| {
+            let index = index as u8;
+            PaletteEntry {
+                red: index,
+                green: 255 - index,
+                blue: index ^ 0x5a,
+                flags: index.rotate_left(1),
+            }
+        });
+        let frame = SoftwarePresentedFrame {
+            extent: DisplayExtent {
+                width: 2,
+                height: 2,
+            },
+            pixels: Box::from([0, 1, 2, 255]),
+            palette: Box::new(palette),
+        };
+
+        assert_eq!(SOFTWARE_PRESENTED_FRAME_DIGEST_FORMAT, b"CMRFRM01");
+        assert_eq!(
+            frame.digest_summary(),
+            SoftwarePresentedFrameDigest {
+                extent: frame.extent(),
+                indexed_pixel_count: 4,
+                indexed_pixels_sha256:
+                    "3d1f57c984978ef98a18378c8166c1cb8ede02c03eeb6aee7e2f121dfeee3e56".to_owned(),
+                palette_rgb_flags_sha256:
+                    "b11f77b1394c63690850b4f92ae5dd451be670d81969e31508b834c434cdf88d".to_owned(),
+                canonical_frame_sha256:
+                    "3316bd72a0814a72a34076a21cfaf97b9ae5f47dc95e32e820f1cf84f087a154".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn digest_summary_matches_the_all_zero_boundary_vector() {
+        let frame = SoftwarePresentedFrame {
+            extent: DisplayExtent {
+                width: 1,
+                height: 1,
+            },
+            pixels: Box::from([0]),
+            palette: Box::new(
+                [PaletteEntry {
+                    red: 0,
+                    green: 0,
+                    blue: 0,
+                    flags: 0,
+                }; 256],
+            ),
+        };
+
+        assert_eq!(
+            frame.digest_summary().canonical_frame_sha256,
+            "fce9803d5b73c116ad1d6c650f2db4bd19aaea7285fe3f9355abaa9b5b07224c"
+        );
+    }
+
+    #[test]
+    fn canonical_digest_is_sensitive_to_extent_palette_and_pixels() {
+        let palette = [PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        }; 256];
+        let baseline = SoftwarePresentedFrame {
+            extent: DisplayExtent {
+                width: 2,
+                height: 2,
+            },
+            pixels: Box::from([0, 1, 2, 3]),
+            palette: Box::new(palette),
+        };
+        let mut changed_extent = baseline.clone();
+        changed_extent.extent = DisplayExtent {
+            width: 1,
+            height: 4,
+        };
+        let mut changed_palette = baseline.clone();
+        changed_palette.palette[0].flags = 1;
+        let mut changed_pixels = baseline.clone();
+        changed_pixels.pixels[0] = 1;
+
+        let baseline_digest = baseline.digest_summary();
+        let extent_digest = changed_extent.digest_summary();
+        let palette_digest = changed_palette.digest_summary();
+        let pixels_digest = changed_pixels.digest_summary();
+
+        assert_ne!(
+            extent_digest.canonical_frame_sha256,
+            baseline_digest.canonical_frame_sha256
+        );
+        assert_ne!(
+            palette_digest.canonical_frame_sha256,
+            baseline_digest.canonical_frame_sha256
+        );
+        assert_ne!(
+            pixels_digest.canonical_frame_sha256,
+            baseline_digest.canonical_frame_sha256
+        );
+        assert_eq!(
+            extent_digest.indexed_pixels_sha256,
+            baseline_digest.indexed_pixels_sha256
+        );
+        assert_eq!(
+            palette_digest.indexed_pixels_sha256,
+            baseline_digest.indexed_pixels_sha256
+        );
+        assert_eq!(
+            pixels_digest.palette_rgb_flags_sha256,
+            baseline_digest.palette_rgb_flags_sha256
+        );
     }
 }

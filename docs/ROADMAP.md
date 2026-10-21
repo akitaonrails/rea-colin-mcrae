@@ -367,6 +367,19 @@ state, filtering, blending, fallback pixels, driver-exact Stretch comparison,
 native presentation, and the other deferred pixels are the next integration
 seams.
 
+The workspace now also has its first application executable. `cmr-app`
+requires a caller-selected imported runtime tree, embeds only reviewed profile
+metadata, and renders one fixed official-EU English/Normal root frame through
+the production software session. A versioned digest contract binds the complete
+indexed plane and raw palette, while the CLI emits only path-free counters and
+checksums. The application, existing video vertical test, and their failure
+tests share one dependency-neutral generated import fixture. This completes
+runtime-data discovery and the headless executable part of the vertical slice;
+window creation, an event/input loop, SDL presentation, audio, and GPU work
+remain. Before the SDL step, expose the completed software frame through a
+narrow presenter consumer so the proven startup/session/render orchestration is
+reused rather than copied.
+
 Exit gate:
 
 - clean build from source on the declared toolchain;

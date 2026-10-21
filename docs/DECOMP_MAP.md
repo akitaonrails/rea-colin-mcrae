@@ -143,8 +143,8 @@ Status markers:
 ## I. Portable build and modernization
 
 - [~] `I01` Maintain a clean Rust workspace and source-owned test fixtures.
-- [ ] `I02` Add the native application executable and runtime-data discovery.
-- [ ] `I03` Build and run the compatibility slice on Linux.
+- [x] `I02` Add the native application executable and runtime-data discovery.
+- [~] `I03` Build and run the compatibility slice on Linux (headless synthetic complete-root-frame application tests pass; reviewed-import and native-window runs remain).
 - [ ] `I04` Build and run the compatibility slice on modern Windows.
 - [ ] `I05` Add CI for formatting, clippy, tests, Linux, and Windows builds.
 - [x] `I06` Research and select SDL3 for portable host integration.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T04:15:00Z
-milestone=execute-alternate-font-quad-terminal
-completed=50
-partial=20
-not_started=47
+updated_utc=2026-10-21T04:35:00Z
+milestone=add-portable-headless-root-application
+completed=51
+partial=21
+not_started=45
 blocked=0
 total=117
-current_focus=I02-portable-headless-root-frame-application
-next_exit_gate=add-runtime-data-discovery-and-render-one-complete-root-frame-from-a-native-cli
+current_focus=I07-sdl3-window-input-and-software-frame-presentation-host
+next_exit_gate=factor-a-frame-consumer-and-open-a-linux-window-with-gamepad-aware-event-loop
 <!-- PROGRESS-TAIL-END -->

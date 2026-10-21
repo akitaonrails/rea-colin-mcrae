@@ -123,6 +123,21 @@ cargo run -q -p cmr-assets -- import \
   --output runtime-data/installed-eu-derived-assets-v2
 ```
 
+Render one complete deterministic root-menu frame through the native
+application boundary (headless for now):
+
+```sh
+cargo run -q -p cmr-app -- \
+  --headless-root-frame \
+  --runtime-data runtime-data/installed-eu-derived-assets-v2
+```
+
+`--runtime-data` takes precedence over the optional `CMR_RUNTIME_DATA`
+fallback. The command prints only the reviewed profile ID, render counters,
+frame extent, and deterministic indexed-frame checksums; it never prints or
+embeds the selected local path. Native SDL window/input/audio presentation is
+the next host milestone.
+
 Run the opt-in reviewed-import root-session smoke with:
 
 ```sh
