@@ -9,6 +9,7 @@ publish = false
 cmr-assets = { path = "../cmr-assets" }
 cmr-core = { path = "../cmr-core" }
 cmr-formats = { path = "../cmr-formats" }
+cmr-platform-sdl3 = { path = "../cmr-platform-sdl3" }
 cmr-video = { path = "../cmr-video" }
 
 [dev-dependencies]

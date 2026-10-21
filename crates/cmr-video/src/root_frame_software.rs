@@ -15,6 +15,97 @@ use crate::{PaletteHandle, SoftwareIndexedBackend, SoftwareVideoError, SurfaceHa
 /// Version tag prepended to the canonical indexed-frame digest stream.
 pub const SOFTWARE_PRESENTED_FRAME_DIGEST_FORMAT: &[u8; 8] = b"CMRFRM01";
 
+/// Bytes per pixel in the native presentation adapter's packed RGBA8 output.
+pub const SOFTWARE_RGBA8_BYTES_PER_PIXEL: usize = 4;
+
+/// A tightly packed, row-major RGBA8 copy of an indexed compatibility frame.
+///
+/// There is no padding between rows. Each pixel is emitted as red, green,
+/// blue, then an opaque alpha byte. [`PaletteEntry::flags`] is deliberately
+/// not interpreted as alpha: RIFF PAL flags are control/reserved bits, not a
+/// recovered transparency channel.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SoftwareRgba8Frame {
+    extent: DisplayExtent,
+    pixels: Box<[u8]>,
+}
+
+impl SoftwareRgba8Frame {
+    #[must_use]
+    pub const fn extent(&self) -> DisplayExtent {
+        self.extent
+    }
+
+    /// Packed RGBA8 bytes in top-to-bottom, left-to-right pixel order.
+    #[must_use]
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    /// Number of bytes between the start of adjacent rows.
+    #[must_use]
+    pub const fn row_pitch(&self) -> usize {
+        self.extent.width as usize * SOFTWARE_RGBA8_BYTES_PER_PIXEL
+    }
+}
+
+/// Validation or allocation failure while adapting an indexed frame to RGBA8.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SoftwareRgba8Error {
+    InvalidExtent(DisplayExtent),
+    SizeOverflow(DisplayExtent),
+    InvalidIndexedPixelLength { expected: usize, actual: usize },
+    AllocationFailed { bytes: usize },
+}
+
+impl fmt::Display for SoftwareRgba8Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "software RGBA8 conversion failed: {self:?}")
+    }
+}
+
+impl std::error::Error for SoftwareRgba8Error {}
+
+/// Expands a tightly packed indexed frame into a tightly packed RGBA8 frame.
+///
+/// The input length must be exactly `width * height`. Palette indices preserve
+/// their row-major order. Output alpha is always 255; palette flags are ignored.
+pub fn expand_indexed_frame_rgba8(
+    extent: DisplayExtent,
+    indexed_pixels: &[u8],
+    palette: &[PaletteEntry; 256],
+) -> Result<SoftwareRgba8Frame, SoftwareRgba8Error> {
+    if extent.width == 0 || extent.height == 0 {
+        return Err(SoftwareRgba8Error::InvalidExtent(extent));
+    }
+
+    let indexed_len = usize::from(extent.width)
+        .checked_mul(usize::from(extent.height))
+        .ok_or(SoftwareRgba8Error::SizeOverflow(extent))?;
+    if indexed_pixels.len() != indexed_len {
+        return Err(SoftwareRgba8Error::InvalidIndexedPixelLength {
+            expected: indexed_len,
+            actual: indexed_pixels.len(),
+        });
+    }
+    let rgba_len = indexed_len
+        .checked_mul(SOFTWARE_RGBA8_BYTES_PER_PIXEL)
+        .ok_or(SoftwareRgba8Error::SizeOverflow(extent))?;
+    let mut rgba = Vec::new();
+    rgba.try_reserve_exact(rgba_len)
+        .map_err(|_| SoftwareRgba8Error::AllocationFailed { bytes: rgba_len })?;
+    for &index in indexed_pixels {
+        let entry = palette[usize::from(index)];
+        rgba.extend_from_slice(&[entry.red, entry.green, entry.blue, u8::MAX]);
+    }
+
+    debug_assert_eq!(rgba.len(), rgba_len);
+    Ok(SoftwareRgba8Frame {
+        extent,
+        pixels: rgba.into_boxed_slice(),
+    })
+}
+
 /// Stable checksums for one complete indexed software frame.
 ///
 /// The canonical stream consists of [`SOFTWARE_PRESENTED_FRAME_DIGEST_FORMAT`],
@@ -53,6 +144,13 @@ impl SoftwarePresentedFrame {
     #[must_use]
     pub fn palette(&self) -> &[PaletteEntry; 256] {
         &self.palette
+    }
+
+    /// Produces packed RGBA8 bytes suitable for a streaming texture upload.
+    ///
+    /// Alpha is always opaque; palette flags are not an alpha channel.
+    pub fn expand_rgba8(&self) -> Result<SoftwareRgba8Frame, SoftwareRgba8Error> {
+        expand_indexed_frame_rgba8(self.extent, &self.pixels, &self.palette)
     }
 
     /// Computes stable component and canonical checksums for this frame.
@@ -287,6 +385,29 @@ mod tests {
     }
 
     #[test]
+    fn completed_frame_can_be_taken_without_cloning_and_the_slot_is_cleared() {
+        let (mut backend, surfaces, _) = initialized_backend();
+        let first_pixels = [1, 2, 3, 4, 5, 6, 7, 8];
+        set_back_pixels(&mut backend, surfaces.back, &first_pixels);
+        backend.present_root_frame(surfaces.back, EXTENT).unwrap();
+
+        let taken = backend.take_presented_frame().unwrap();
+
+        assert_eq!(taken.extent(), EXTENT);
+        assert_eq!(taken.pixels(), first_pixels);
+        assert!(backend.presented_frame().is_none());
+        assert!(backend.take_presented_frame().is_none());
+
+        let second_pixels = [9, 10, 11, 12, 13, 14, 15, 16];
+        set_back_pixels(&mut backend, surfaces.back, &second_pixels);
+        backend.present_root_frame(surfaces.back, EXTENT).unwrap();
+        assert_eq!(
+            backend.take_presented_frame().unwrap().pixels(),
+            second_pixels
+        );
+    }
+
+    #[test]
     fn every_capture_validation_error_preserves_prior_snapshot_and_surfaces() {
         let (mut backend, surfaces, _) = initialized_backend();
         let baseline_pixels = [11, 12, 13, 14, 15, 16, 17, 18];
@@ -479,5 +600,156 @@ mod tests {
             pixels_digest.palette_rgb_flags_sha256,
             baseline_digest.palette_rgb_flags_sha256
         );
+    }
+
+    #[test]
+    fn rgba8_expansion_preserves_row_major_order_and_has_no_row_padding() {
+        let mut palette = [PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        }; 256];
+        palette[1] = PaletteEntry {
+            red: 10,
+            green: 11,
+            blue: 12,
+            flags: 0,
+        };
+        palette[2] = PaletteEntry {
+            red: 20,
+            green: 21,
+            blue: 22,
+            flags: 0,
+        };
+        palette[3] = PaletteEntry {
+            red: 30,
+            green: 31,
+            blue: 32,
+            flags: 0,
+        };
+        let extent = DisplayExtent {
+            width: 3,
+            height: 2,
+        };
+
+        let rgba = expand_indexed_frame_rgba8(extent, &[1, 2, 3, 3, 2, 1], &palette).unwrap();
+
+        assert_eq!(rgba.extent(), extent);
+        assert_eq!(rgba.row_pitch(), 12);
+        assert_eq!(rgba.pixels().len(), rgba.row_pitch() * 2);
+        assert_eq!(
+            rgba.pixels(),
+            &[
+                10, 11, 12, 255, 20, 21, 22, 255, 30, 31, 32, 255, 30, 31, 32, 255, 20, 21, 22,
+                255, 10, 11, 12, 255,
+            ]
+        );
+    }
+
+    #[test]
+    fn rgba8_expansion_uses_opaque_alpha_independently_of_palette_flags() {
+        let palette = std::array::from_fn(|index| PaletteEntry {
+            red: 7,
+            green: 8,
+            blue: 9,
+            flags: index as u8,
+        });
+
+        let rgba = expand_indexed_frame_rgba8(
+            DisplayExtent {
+                width: 4,
+                height: 1,
+            },
+            &[0, 1, 128, 255],
+            &palette,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rgba.pixels(),
+            &[7, 8, 9, 255, 7, 8, 9, 255, 7, 8, 9, 255, 7, 8, 9, 255]
+        );
+    }
+
+    #[test]
+    fn rgba8_expansion_rejects_short_and_long_index_buffers() {
+        let palette = [PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        }; 256];
+        let extent = DisplayExtent {
+            width: 2,
+            height: 2,
+        };
+
+        assert_eq!(
+            expand_indexed_frame_rgba8(extent, &[0; 3], &palette),
+            Err(SoftwareRgba8Error::InvalidIndexedPixelLength {
+                expected: 4,
+                actual: 3,
+            })
+        );
+        assert_eq!(
+            expand_indexed_frame_rgba8(extent, &[0; 5], &palette),
+            Err(SoftwareRgba8Error::InvalidIndexedPixelLength {
+                expected: 4,
+                actual: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn rgba8_expansion_rejects_zero_width_or_height() {
+        let palette = [PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        }; 256];
+
+        for extent in [
+            DisplayExtent {
+                width: 0,
+                height: 1,
+            },
+            DisplayExtent {
+                width: 1,
+                height: 0,
+            },
+        ] {
+            assert_eq!(
+                expand_indexed_frame_rgba8(extent, &[], &palette),
+                Err(SoftwareRgba8Error::InvalidExtent(extent))
+            );
+        }
+    }
+
+    #[test]
+    fn captured_frame_rgba8_method_uses_the_same_contract() {
+        let mut palette = [PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        }; 256];
+        palette[42] = PaletteEntry {
+            red: 1,
+            green: 2,
+            blue: 3,
+            flags: 254,
+        };
+        let frame = SoftwarePresentedFrame {
+            extent: DisplayExtent {
+                width: 1,
+                height: 1,
+            },
+            pixels: Box::from([42]),
+            palette: Box::new(palette),
+        };
+
+        assert_eq!(frame.expand_rgba8().unwrap().pixels(), &[1, 2, 3, 255]);
     }
 }

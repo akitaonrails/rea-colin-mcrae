@@ -144,11 +144,11 @@ Status markers:
 
 - [~] `I01` Maintain a clean Rust workspace and source-owned test fixtures.
 - [x] `I02` Add the native application executable and runtime-data discovery.
-- [~] `I03` Build and run the compatibility slice on Linux (headless synthetic complete-root-frame application tests pass; reviewed-import and native-window runs remain).
+- [~] `I03` Build and run the compatibility slice on Linux (headless synthetic complete-root-frame application tests pass and a `--windowed-root-frame` SDL3 host path is implemented; a displayed native-window run and reviewed-import runs remain).
 - [ ] `I04` Build and run the compatibility slice on modern Windows.
 - [ ] `I05` Add CI for formatting, clippy, tests, Linux, and Windows builds.
 - [x] `I06` Research and select SDL3 for portable host integration.
-- [ ] `I07` Implement SDL3 host window/input/audio/presentation boundaries.
+- [~] `I07` Implement SDL3 host window/input/audio/presentation boundaries (resizable window, integer-scaled nearest streaming presentation of one completed software frame, startup gamepad enumeration with idempotent hotplug tracking, and renderer-reset/redraw handling implemented behind `cmr-platform-sdl3`; the audio host and live input mapping remain).
 - [ ] `I08` Benchmark wgpu against SDL_GPU for the recovered 3D workload.
 - [ ] `I09` Implement the selected portable GPU backend behind shared contracts.
 - [ ] `I10` Remove requirements for original DirectX/QMixer/WinMM DLLs.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T04:35:00Z
-milestone=add-portable-headless-root-application
+updated_utc=2026-10-21T04:31:21Z
+milestone=implement-sdl3-software-frame-presentation-host
 completed=51
-partial=21
-not_started=45
+partial=22
+not_started=44
 blocked=0
 total=117
-current_focus=I07-sdl3-window-input-and-software-frame-presentation-host
-next_exit_gate=factor-a-frame-consumer-and-open-a-linux-window-with-gamepad-aware-event-loop
+current_focus=I07-audio-host-and-live-gamepad-input-mapping
+next_exit_gate=map-live-sdl-gamepad-and-keyboard-events-into-the-recovered-root-input-model
 <!-- PROGRESS-TAIL-END -->

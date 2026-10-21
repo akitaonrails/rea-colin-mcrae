@@ -29,7 +29,10 @@ use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
     with_software_root_menu_session,
 };
-use cmr_video::{SoftwareIndexedBackend, SoftwarePresentedFrameDigest, SoftwareVideoError};
+use cmr_video::{
+    SoftwareIndexedBackend, SoftwarePresentedFrame, SoftwarePresentedFrameDigest,
+    SoftwareVideoError,
+};
 
 /// Environment variable consumed by the `cmr-app` binary as a runtime-data
 /// fallback.
@@ -46,6 +49,7 @@ const ROOT_EXTENT: DisplayExtent = DisplayExtent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppCommand {
     HeadlessRootFrame,
+    WindowedRootFrame,
 }
 
 /// Parsed command-line options before environment fallback resolution.
@@ -69,6 +73,12 @@ impl AppOptions {
             if argument == OsStr::new("--headless-root-frame") {
                 if command.replace(AppCommand::HeadlessRootFrame).is_some() {
                     return Err(ConfigError::DuplicateOption("--headless-root-frame"));
+                }
+                continue;
+            }
+            if argument == OsStr::new("--windowed-root-frame") {
+                if command.replace(AppCommand::WindowedRootFrame).is_some() {
+                    return Err(ConfigError::DuplicateOption("--windowed-root-frame"));
                 }
                 continue;
             }
@@ -167,7 +177,10 @@ impl fmt::Display for ConfigError {
             }
             Self::DuplicateOption(option) => write!(formatter, "duplicate option {option}"),
             Self::MissingOptionValue(option) => write!(formatter, "missing value for {option}"),
-            Self::MissingCommand => write!(formatter, "missing required --headless-root-frame"),
+            Self::MissingCommand => write!(
+                formatter,
+                "missing command; pass --headless-root-frame or --windowed-root-frame"
+            ),
             Self::MissingRuntimeData => write!(
                 formatter,
                 "missing runtime data; pass --runtime-data PATH or set {RUNTIME_DATA_ENV}"
@@ -205,6 +218,51 @@ pub struct HeadlessRootFrameOutput {
     pub scene_completed: bool,
     pub palette_committed: bool,
     pub presentation_completed: bool,
+}
+
+/// One completed compatibility frame plus the recovered frame outcome.
+///
+/// Native hosts consume this owned value after the platform-neutral software
+/// session has finished. This keeps window-system code out of the recovered
+/// render path and gives headless and interactive presenters the same source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenderedRootFrameOutput {
+    pub profile_id: String,
+    pub frame: SoftwarePresentedFrame,
+    pub bitmap_blits: usize,
+    pub bitmap_no_ops: usize,
+    pub footer_rendered: bool,
+    pub c3d_commands: usize,
+    pub scene_completed: bool,
+    pub palette_committed: bool,
+    pub presentation_completed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RootFrameObservations {
+    bitmap_blits: usize,
+    bitmap_no_ops: usize,
+    footer_rendered: bool,
+    c3d_commands: usize,
+    scene_completed: bool,
+    palette_committed: bool,
+    presentation_completed: bool,
+}
+
+impl From<RenderedRootFrameOutput> for HeadlessRootFrameOutput {
+    fn from(rendered: RenderedRootFrameOutput) -> Self {
+        Self {
+            profile_id: rendered.profile_id,
+            frame_digest: rendered.frame.digest_summary(),
+            bitmap_blits: rendered.bitmap_blits,
+            bitmap_no_ops: rendered.bitmap_no_ops,
+            footer_rendered: rendered.footer_rendered,
+            c3d_commands: rendered.c3d_commands,
+            scene_completed: rendered.scene_completed,
+            palette_committed: rendered.palette_committed,
+            presentation_completed: rendered.presentation_completed,
+        }
+    }
 }
 
 impl HeadlessRootFrameOutput {
@@ -312,13 +370,21 @@ impl std::error::Error for HeadlessRootFrameError {
 pub fn run_headless_root_frame(
     runtime_data: &Path,
 ) -> Result<HeadlessRootFrameOutput, HeadlessRootFrameError> {
+    render_root_frame(runtime_data).map(HeadlessRootFrameOutput::from)
+}
+
+/// Renders the fixed official-EU, English, normal-variant initial root frame
+/// for a caller-owned presenter.
+pub fn render_root_frame(
+    runtime_data: &Path,
+) -> Result<RenderedRootFrameOutput, HeadlessRootFrameError> {
     let reviewed =
         ReviewedProfile::from_json(REVIEWED_PROFILE).map_err(HeadlessRootFrameError::Profile)?;
     let request = SoftwareRootMenuSessionRequest::official_eu_initial_software_default_config(
         Language::English,
         VisualVariant::Normal,
     );
-    run_headless_root_frame_with_profile(runtime_data, &reviewed, request)
+    render_root_frame_with_profile(runtime_data, &reviewed, request)
 }
 
 /// Test seam for an injected reviewed profile and compatible session request.
@@ -330,6 +396,16 @@ pub fn run_headless_root_frame_with_profile(
     reviewed: &ReviewedProfile,
     request: SoftwareRootMenuSessionRequest,
 ) -> Result<HeadlessRootFrameOutput, HeadlessRootFrameError> {
+    render_root_frame_with_profile(runtime_data, reviewed, request)
+        .map(HeadlessRootFrameOutput::from)
+}
+
+/// Test seam for producing an owned completed frame from an injected profile.
+pub fn render_root_frame_with_profile(
+    runtime_data: &Path,
+    reviewed: &ReviewedProfile,
+    request: SoftwareRootMenuSessionRequest,
+) -> Result<RenderedRootFrameOutput, HeadlessRootFrameError> {
     let profile_id = reviewed.profile().id.clone();
     let store = AssetStore::open(
         runtime_data,
@@ -369,18 +445,11 @@ pub fn run_headless_root_frame_with_profile(
         });
     }
 
-    let run = with_software_root_menu_session(&store, startup, request, |session| {
+    let mut run = with_software_root_menu_session(&store, startup, request, |session| {
         let outcome = session
             .render(initial_root_input())
             .map_err(HeadlessRootFrameError::Render)?;
-        let frame_digest = session
-            .backend()
-            .presented_frame()
-            .ok_or(HeadlessRootFrameError::MissingPresentedFrame)?
-            .digest_summary();
-        Ok(HeadlessRootFrameOutput {
-            profile_id,
-            frame_digest,
+        Ok(RootFrameObservations {
             bitmap_blits: outcome.bitmap_blits,
             bitmap_no_ops: outcome.bitmap_no_ops,
             footer_rendered: outcome.footer.is_some(),
@@ -395,7 +464,22 @@ pub fn run_headless_root_frame_with_profile(
     })
     .map_err(HeadlessRootFrameError::Session)?;
 
-    run.output
+    let observations = run.output?;
+    let frame = run
+        .backend
+        .take_presented_frame()
+        .ok_or(HeadlessRootFrameError::MissingPresentedFrame)?;
+    Ok(RenderedRootFrameOutput {
+        profile_id,
+        frame,
+        bitmap_blits: observations.bitmap_blits,
+        bitmap_no_ops: observations.bitmap_no_ops,
+        footer_rendered: observations.footer_rendered,
+        c3d_commands: observations.c3d_commands,
+        scene_completed: observations.scene_completed,
+        palette_committed: observations.palette_committed,
+        presentation_completed: observations.presentation_completed,
+    })
 }
 
 fn initial_root_input() -> RootRenderInput {
@@ -442,6 +526,18 @@ mod tests {
 
         assert_eq!(config.runtime_data(), Path::new("environment-data"));
         assert_eq!(config.runtime_data_source(), RuntimeDataSource::Environment);
+    }
+
+    #[test]
+    fn windowed_command_uses_the_same_explicit_runtime_data_contract() {
+        let config = runtime_config(
+            arguments(&["--windowed-root-frame", "--runtime-data", "native-data"]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(config.command(), AppCommand::WindowedRootFrame);
+        assert_eq!(config.runtime_data(), Path::new("native-data"));
     }
 
     #[test]
@@ -497,6 +593,13 @@ mod tests {
                 "--headless-root-frame",
             ])),
             Err(ConfigError::DuplicateOption("--headless-root-frame"))
+        );
+        assert_eq!(
+            AppOptions::parse(arguments(&[
+                "--headless-root-frame",
+                "--windowed-root-frame",
+            ])),
+            Err(ConfigError::DuplicateOption("--windowed-root-frame"))
         );
     }
 

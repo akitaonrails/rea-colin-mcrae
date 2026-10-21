@@ -34,8 +34,9 @@ pub mod software_root_menu_session;
 
 pub use c3d_software_backend::SoftwareC3dBackendError;
 pub use root_frame_software::{
-    SOFTWARE_PRESENTED_FRAME_DIGEST_FORMAT, SoftwarePresentationError, SoftwarePresentedFrame,
-    SoftwarePresentedFrameDigest,
+    SOFTWARE_PRESENTED_FRAME_DIGEST_FORMAT, SOFTWARE_RGBA8_BYTES_PER_PIXEL,
+    SoftwarePresentationError, SoftwarePresentedFrame, SoftwarePresentedFrameDigest,
+    SoftwareRgba8Error, SoftwareRgba8Frame, expand_indexed_frame_rgba8,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -140,6 +141,15 @@ impl SoftwareIndexedBackend {
     #[must_use]
     pub const fn presented_frame(&self) -> Option<&SoftwarePresentedFrame> {
         self.presented_frame.as_ref()
+    }
+
+    /// Takes ownership of the most recently completed presentation frame.
+    ///
+    /// Native hosts can use this handoff to convert and upload a frame without
+    /// cloning its indexed pixels or palette. The slot remains empty until a
+    /// later successful presentation completes.
+    pub fn take_presented_frame(&mut self) -> Option<SoftwarePresentedFrame> {
+        self.presented_frame.take()
     }
 
     fn pixels(&self, handle: SurfaceHandle) -> Option<&[u8]> {

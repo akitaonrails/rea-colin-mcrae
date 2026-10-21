@@ -9,6 +9,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "bitflags"
+version = "2.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
+
+[[package]]
 name = "block-buffer"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -30,6 +36,7 @@ dependencies = [
  "cmr-assets",
  "cmr-core",
  "cmr-formats",
+ "cmr-platform-sdl3",
  "cmr-test-support",
  "cmr-video",
 ]
@@ -60,6 +67,14 @@ name = "cmr-formats"
 version = "0.1.0"
 dependencies = [
  "flate2",
+]
+
+[[package]]
+name = "cmr-platform-sdl3"
+version = "0.1.0"
+dependencies = [
+ "cmr-video",
+ "sdl3",
 ]
 
 [[package]]
@@ -177,6 +192,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pkg-config"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -192,6 +213,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
+]
+
+[[package]]
+name = "sdl3"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f90c470b564b34e7f9ff0719ed7dc05ec71bc73fa4b28e0750a17b8987cf45f8"
+dependencies = [
+ "bitflags",
+ "libc",
+ "sdl3-sys",
+]
+
+[[package]]
+name = "sdl3-sys"
+version = "0.7.2+SDL-3.4.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b6a7f3cad40c5b318b3539bb4624389f4a03504cd5f4c65030787b962505ac"
+dependencies = [
+ "pkg-config",
+ "vcpkg",
 ]
 
 [[package]]
@@ -276,6 +318,12 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "zmij"
