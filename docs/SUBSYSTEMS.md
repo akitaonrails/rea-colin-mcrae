@@ -597,6 +597,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   the WAV -> `WaveSource` chain; only the SDL audio-device wrapper (opening a
   22050 Hz stereo device and pumping `render`) remains for live playback. See
   evidence `impl.audio-file-wave-source`.
+- `cmr-platform-sdl3::audio::AudioHost` is the SDL3 audio-device wrapper: it
+  opens a 22050 Hz/stereo/s16 playback stream and, in the SDL callback, locks a
+  shared `SoftwareMixer<FileWaveSource>` and pumps `render` into the device
+  buffer. The game drives the recovered subsystems against the shared mixer
+  handle (`AudioHost::mixer()`). This closes the audio chain end to end:
+  recovered trigger logic -> `AudioMixer` commands -> software mix -> WAV decode
+  -> SDL device. The device glue is runtime-only (not unit-tested); everything
+  it relies on is contract/unit-tested in `cmr-core`/`cmr-formats`. See evidence
+  `impl.audio-sdl-device`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
