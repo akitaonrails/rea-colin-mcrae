@@ -98,7 +98,7 @@ Status markers:
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
 - [x] `E15` Recover championship mode-8 C3D preparation and session ownership.
-- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone indexed session, all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission, exact alternate render-depth selection, capability-derived alpha/depth-clear contract, filter-request cache outcomes, raw/validated legacy pixel-format masks, retained non-alpha texture selection, source-owned selected-format conversion-before-filtering, independent logical-framebuffer composition, effect-free whole-frame backend preflight, a standalone owned split/logical-RGB backend, an explicit-palette completed-indexed-frame bridge, ordinary non-font embedded-palette RGB555/RGB565 source conversion, matching-format fast keyed/opaque logical composition, a transactional 27-source R_INFO/logo/Chequered RGB16 pool, and exact effect-free setup-command identities/order shared with indexed execution implemented; alternate source resolution/execution, ordinary stretch, owned alternate-session integration, alternate queued-font pixels and driver `Load` equivalence, effective alternate filtering, native byte layout/pitch, alpha pixels, presentation remain).
+- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone indexed session, all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission, exact alternate render-depth selection, capability-derived alpha/depth-clear contract, filter-request cache outcomes, raw/validated legacy pixel-format masks, retained non-alpha texture selection, source-owned selected-format conversion-before-filtering, independent logical-framebuffer composition, effect-free whole-frame backend preflight, a standalone owned split/logical-RGB backend, an explicit-palette completed-indexed-frame bridge, ordinary non-font embedded-palette RGB555/RGB565 source conversion, matching-format fast keyed/opaque logical composition, a transactional 27-source R_INFO/logo/Chequered RGB16 pool, exact effect-free setup-command identities/order shared with indexed execution, and two-pass stale-safe source-ordered alternate Fast-bitmap execution implemented; combined setup/C3D terminal ordering, ordinary stretch, standalone alternate preparation/session ownership, alternate queued-font pixels and driver `Load` equivalence, effective alternate filtering, native byte layout/pitch, alpha pixels, presentation remain).
 
 ## F. Menus, game state, and persistence
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T00:10:17Z
-milestone=expose-championship-setup-command-identities
+updated_utc=2026-10-21T00:14:27Z
+milestone=execute-championship-ordinary-rgb16-setup-stream
 completed=50
 partial=20
 not_started=47
 blocked=0
 total=117
-current_focus=E16-alternate-setup-command-execution
-next_exit_gate=resolve-preflight-and-execute-source-ordered-fast-bitmap-commands-with-success-only-cache-commit
+current_focus=E16-alternate-setup-c3d-terminal-order
+next_exit_gate=execute-setup-fast-bitmaps-and-selected-car-scene-on-one-owned-target-in-recovered-order
 <!-- PROGRESS-TAIL-END -->

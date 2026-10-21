@@ -256,7 +256,70 @@ enum PreparedCommand {
 /// to uploaded indexed handles or mutable planner state.
 pub struct PreparedChampionshipSetupFrame {
     commands: Vec<PreparedCommand>,
+    base_cache: ChampionshipPreviewCache,
     next_cache: ChampionshipPreviewCache,
+}
+
+/// Effect-free rejection of a prepared frame whose planning snapshot no
+/// longer matches the caller-owned preview cache.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChampionshipPreviewCacheMismatch {
+    pub expected: ChampionshipPreviewCache,
+    pub actual: ChampionshipPreviewCache,
+}
+
+impl fmt::Display for ChampionshipPreviewCacheMismatch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "championship prepared-frame preview cache is stale: expected {:?}, got {:?}",
+            self.expected, self.actual
+        )
+    }
+}
+
+impl std::error::Error for ChampionshipPreviewCacheMismatch {}
+
+/// Failure from a caller-owned execution pass over an opaque prepared frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PreparedChampionshipSetupExecutionError<E> {
+    /// The plan was prepared from a different preview-cache snapshot. No
+    /// callback was invoked.
+    StalePreviewCache {
+        expected: ChampionshipPreviewCache,
+        actual: ChampionshipPreviewCache,
+    },
+    /// The ordered callback failed. The preview cache was not committed.
+    Command { command_index: usize, source: E },
+}
+
+impl<E: fmt::Display> fmt::Display for PreparedChampionshipSetupExecutionError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StalePreviewCache { expected, actual } => write!(
+                formatter,
+                "championship prepared-frame preview cache is stale: expected {expected:?}, got {actual:?}"
+            ),
+            Self::Command {
+                command_index,
+                source,
+            } => write!(
+                formatter,
+                "championship prepared-frame command {command_index} failed: {source}"
+            ),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error
+    for PreparedChampionshipSetupExecutionError<E>
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::StalePreviewCache { .. } => None,
+            Self::Command { source, .. } => Some(source),
+        }
+    }
 }
 
 /// Read-only public view of one prepared command.
@@ -284,6 +347,22 @@ impl PreparedChampionshipSetupFrame {
     #[must_use]
     pub fn command_len(&self) -> usize {
         self.commands.len()
+    }
+
+    /// Checks the caller-owned cache snapshot before any alternate preflight
+    /// or execution work is attempted.
+    pub fn validate_preview_cache(
+        &self,
+        preview_cache: &ChampionshipPreviewCache,
+    ) -> Result<(), ChampionshipPreviewCacheMismatch> {
+        if *preview_cache == self.base_cache {
+            Ok(())
+        } else {
+            Err(ChampionshipPreviewCacheMismatch {
+                expected: self.base_cache,
+                actual: *preview_cache,
+            })
+        }
     }
 
     /// Iterates over every prepared command in exact visual-transcript order.
@@ -318,6 +397,42 @@ impl PreparedChampionshipSetupFrame {
                 command: *command,
             },
         })
+    }
+
+    /// Executes a caller-owned command family after its complete preflight.
+    ///
+    /// The callback receives every command exactly once in visual-transcript
+    /// order. The pending preview cache is committed only after every callback
+    /// succeeds. A callback failure leaves the caller's cache unchanged,
+    /// although effects already performed by earlier callbacks cannot be
+    /// rolled back by this core-owned ordering boundary.
+    pub fn execute_after_successful_preflight<E>(
+        self,
+        preview_cache: &mut ChampionshipPreviewCache,
+        mut execute: impl FnMut(PreparedChampionshipSetupCommand) -> Result<(), E>,
+    ) -> Result<(), PreparedChampionshipSetupExecutionError<E>> {
+        self.validate_preview_cache(preview_cache)
+            .map_err(
+                |stale| PreparedChampionshipSetupExecutionError::StalePreviewCache {
+                    expected: stale.expected,
+                    actual: stale.actual,
+                },
+            )?;
+        for command in self.commands() {
+            let command_index = match command {
+                PreparedChampionshipSetupCommand::Text { command_index, .. }
+                | PreparedChampionshipSetupCommand::Bitmap { command_index, .. }
+                | PreparedChampionshipSetupCommand::Deferred { command_index, .. } => command_index,
+            };
+            execute(command).map_err(|source| {
+                PreparedChampionshipSetupExecutionError::Command {
+                    command_index,
+                    source,
+                }
+            })?;
+        }
+        *preview_cache = self.next_cache;
+        Ok(())
     }
 
     /// Deferred work in exact visual-command order. This lets an enclosing
@@ -602,6 +717,7 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
     mut next_cache: ChampionshipPreviewCache,
     text_limits: TextLayoutLimits,
 ) -> Result<PreparedChampionshipSetupFrame, ChampionshipSetupFramePrepareError> {
+    let base_cache = next_cache;
     let extent = input.viewport;
     let visual = plan_championship_setup_frame(input, &mut next_cache)
         .map_err(ChampionshipSetupFramePrepareError::Visual)?;
@@ -709,6 +825,7 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
     }
     Ok(PreparedChampionshipSetupFrame {
         commands,
+        base_cache,
         next_cache,
     })
 }
@@ -2134,5 +2251,76 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(callbacks, publicly_deferred);
+    }
+
+    #[test]
+    fn public_prepared_runner_rejects_stale_cache_before_first_callback() {
+        let fixture = Fixture::new(true);
+        let transcript = transcript(0);
+        let prepared =
+            prepare_fixture_frame(&fixture, &transcript, None, ChampionshipPreviewCache::new());
+        let mut actual_cache = ChampionshipPreviewCache::new();
+        prepare_fixture_frame(&fixture, &transcript, None, ChampionshipPreviewCache::new())
+            .execute_after_successful_preflight(&mut actual_cache, |_| {
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .unwrap();
+        let preserved = actual_cache;
+        let mut callback_count = 0;
+
+        let error = prepared
+            .execute_after_successful_preflight(&mut actual_cache, |_| {
+                callback_count += 1;
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .unwrap_err();
+
+        assert_eq!(callback_count, 0);
+        assert_eq!(actual_cache, preserved);
+        assert_eq!(
+            error,
+            PreparedChampionshipSetupExecutionError::StalePreviewCache {
+                expected: ChampionshipPreviewCache::new(),
+                actual: preserved,
+            }
+        );
+    }
+
+    #[test]
+    fn public_prepared_runner_reports_callback_index_without_committing_cache() {
+        let fixture = Fixture::new(true);
+        let transcript = transcript(0);
+        let prepared =
+            prepare_fixture_frame(&fixture, &transcript, None, ChampionshipPreviewCache::new());
+        let mut cache = ChampionshipPreviewCache::new();
+        let mut visited = Vec::new();
+
+        let error = prepared
+            .execute_after_successful_preflight(&mut cache, |command| {
+                let command_index = match command {
+                    PreparedChampionshipSetupCommand::Text { command_index, .. }
+                    | PreparedChampionshipSetupCommand::Bitmap { command_index, .. }
+                    | PreparedChampionshipSetupCommand::Deferred { command_index, .. } => {
+                        command_index
+                    }
+                };
+                visited.push(command_index);
+                if command_index == 3 {
+                    Err("injected callback failure")
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+
+        assert_eq!(visited, [0, 1, 2, 3]);
+        assert_eq!(cache, ChampionshipPreviewCache::new());
+        assert_eq!(
+            error,
+            PreparedChampionshipSetupExecutionError::Command {
+                command_index: 3,
+                source: "injected callback failure",
+            }
+        );
     }
 }

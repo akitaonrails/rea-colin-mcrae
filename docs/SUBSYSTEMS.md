@@ -200,6 +200,12 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   keyed by stable media-relative identities and retaining only contextual
   relative paths on failure. Selection Stretch and alternate fonts remain
   deliberately outside this pool.
+- `cmr-video::software_championship_setup_frame`: two-pass execution of the
+  public prepared setup transcript. It rejects stale preview-cache snapshots,
+  preflights every supported effectful Fast bitmap before writes, composes
+  R_INFO/logo/Chequered sources in exact command order, and retains NoOp,
+  Stretch, text, and other deferred work as typed ordered outcomes. Cache
+  publication records completion of this bounded slice, not deferred pixels.
 - `cmr-video::packed_rgb_target`: a nominal runtime-framebuffer format and
   logical masked-word target kept type-distinct from selected texture formats.
   It retains the complete raw surface descriptor and converts canonical RGB
@@ -211,9 +217,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   backend that transactionally retains converted frontend bindings, owns an
   owner-scoped logical target plus depth buffer, preflights the complete frame
   including retained selector-cache coherence, and preserves color across
-  depth-only clears. The recovered ordinary-bitmap conversion is not yet
-  integrated as keyed 2D composition; full session ownership, native storage,
-  and presentation remain separate boundaries.
+  depth-only clears. Recovered ordinary Fast bitmaps can now be composed by the
+  separate championship setup executor while the scene is inactive; combined
+  setup/C3D terminal ordering, full session ownership, native storage, and
+  presentation remain separate boundaries.
 - `cmr-video::software_championship_session`: callback-scoped standalone
   assembly retaining all 14 prepared car topology/runtime pairs, one shared
   binding executor, explicit raster-selection, optional source-ordered per-car
