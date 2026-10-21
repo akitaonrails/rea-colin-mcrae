@@ -510,6 +510,16 @@ languages rather than fabricating or silently aliasing Italian assets.
   `FS,RS,FM,RM,WHINE,FT,RT,CHATTER,POPLOOP1-4,IGNITION,GEAR`. The format, load
   order, and selector remap are in `cmr-core::audio_car_assets`. See evidence
   `rea.official-eu.audio-car-loader`.
+- The engine tick `0x487e00`/`FUN_00487e00` (+ whine sub-tick `0x488ab0`) drives
+  the looping engine layers: each layer on its own channel
+  (`base + slot + player*8`), updated per frame in volume and pitch. Three rev
+  bands are stereo pairs (Slow 0/1, Mid 2/3, Top 5/6; WHINE 4, chatter 7), front
+  slot pans one way and rear the other. The band index is
+  `((RPM-lo)*count)/(hi-lo)` with out-of-window muting (pitch `0x2b11`) and
+  overlapping windows giving the crossfade; the Top band is throttle-gated
+  (`DAT_00829548`). Crossfade primitives are in `cmr-core::audio_engine`. F/R is
+  a stereo-pan split, not on/off power. See evidence
+  `rea.official-eu.audio-engine-crossfade`.
 - The menu play helpers (`0x467ef0`, `0x467dd0`, siblings) each set full volume,
   stop the menu channel, and play `base+offset` one-shot: offset 0 `FORWARD`
   (confirm, carved) and offset 3 `UPDOWN` (vertical nav, carved); offsets 1

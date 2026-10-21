@@ -3,6 +3,7 @@
 pub mod audio_ambience;
 pub mod audio_assets;
 pub mod audio_car_assets;
+pub mod audio_engine;
 pub mod audio_menu;
 pub mod audio_mixer;
 pub mod audio_weather_assets;

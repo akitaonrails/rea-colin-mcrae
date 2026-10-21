@@ -11,12 +11,13 @@
 //! records that structure as metadata (relative paths, original backslash form -
 //! never payload). See evidence `rea.official-eu.audio-wave-inventory`.
 //!
-//! Inferences: the `F`/`R` layer prefix is the on-power / off-power (overrun)
-//! engine state and the `T`/`M`/`S` suffix a rev band, the classic six-loop
-//! crossfaded engine model; the per-car `<ABBR>` is a three-ish-character model
-//! code. Unknowns: the exact crossfade/pitch rules (the play sites are not yet
-//! recovered), the sample rate/format of these waves, and the role of the shared
-//! `OP1..OP5`/`POP2` pops.
+//! Inferences: the `T`/`M`/`S` suffix is a rev band (top/mid/slow) and the
+//! `F`/`R` prefix is a stereo-pan pair (front/rear, i.e. left/right) within a
+//! band - not on/off power, which is a separate throttle gate (see
+//! [`crate::audio_engine`] and evidence `rea.official-eu.audio-engine-crossfade`);
+//! the per-car `<ABBR>` is a three-ish-character model code. The crossfade/pitch
+//! rules are recovered in `crate::audio_engine`; the role of the shared
+//! `OP1..OP5`/`POP2` pops remains unknown.
 
 /// One car's engine sound set: its directory name and the filename abbreviation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
