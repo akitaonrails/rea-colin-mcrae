@@ -456,10 +456,15 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   two-sided record. LOD selects one of several stride-`0x18` draw-group records
   under a global detail cap, with a `-1.0` sentinel triple marking a billboard.
   The camera VIEW matrix is the affine inverse of the camera-world matrix (not a
-  look-at and not a BAM-angle composition); its fixed-point `2^32/det` reciprocal
-  is left to the deterministic renderer (E07) because byte-exact parity needs a
-  differential fixture. See evidence `rea.official-eu.c3d-camera` and
-  `impl.c3d-camera`.
+  look-at and not a BAM-angle composition): `invert_affine_q16` reproduces the
+  shipped `FUN_0048f460` byte-exact (cofactor adjugate, integer `2^32/det`
+  reciprocal, identity fallback for a singular basis) and `apply_affine_q16`
+  reproduces the column-major affine transform. The routine is pure integer
+  arithmetic, so it reconstructs exactly with no driver-float dependency - in
+  contrast to the `cmr-video` pixel rasterizer, whose sequential-`f32` evaluation
+  is stated reconstruction policy. See evidence `rea.official-eu.c3d-camera`,
+  `impl.c3d-camera`, `rea.official-eu.c3d-view-inverse`, and
+  `impl.c3d-view-inverse`.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one
   group-1 record and caller-prepared selectors. It preserves maximal
   consecutive selector runs and source entry order, deduplicates local entry32

@@ -7,15 +7,20 @@
 //! that feeds the E06 submission: the perspective projection matrix builder
 //! (`FUN_004a71b0`) and its parallel Q16.16 coefficient set, the D3DVIEWPORT2
 //! clip volume (`FUN_004a6ed0`), the 2D top-down (XZ) frustum cull
-//! (`FUN_004a1c00`), the cull-mode / winding rule (`FUN_004a2460`), and the LOD
-//! record selection. All values are the recovered formulas/constants.
+//! (`FUN_004a1c00`), the cull-mode / winding rule (`FUN_004a2460`), the LOD
+//! record selection, and the camera VIEW matrix. All values are the recovered
+//! formulas/constants.
 //!
-//! The camera VIEW matrix is `inverse(camera-world)` (`FUN_0048f460`, a Q16.16
-//! affine matrix inverse - not a look-at and not a BAM-angle composition). Its
-//! structure is recovered and documented, but its fixed-point implementation
-//! (the `2^32 / det` reciprocal) is deferred because byte-exact parity cannot be
-//! verified here without a differential fixture; it is reconstructed with the
-//! deterministic renderer (E07).
+//! The camera VIEW matrix is `inverse(camera-world)` ([`invert_affine_q16`],
+//! `FUN_0048f460`) - a Q16.16 affine matrix inverse, not a look-at and not a
+//! BAM-angle composition. The recovered routine is pure integer arithmetic (an
+//! `i64` multiply reduced by `>> 16`, a `2^32 / det` integer reciprocal), so it
+//! reproduces byte-exact with no driver floating-point dependency.
+//!
+//! Matrices are `[i32; 16]` column-major Q16.16: the 3x3 basis occupies columns
+//! `0..=2`/`4..=6`/`8..=10`, the translation `12..=14`, and the homogeneous row
+//! `3`/`7`/`11 = 0`, `15 = 1.0`. This matches the affine transform `FUN_0048fa60`
+//! (`out[i] = m[12+i] + sum_j (m[4*j+i] * v[j])`).
 //!
 //! See evidence `rea.official-eu.c3d-camera`.
 
@@ -191,6 +196,72 @@ pub fn node_within_detail_cap(node_detail: u8) -> bool {
     node_detail <= DETAIL_CAP
 }
 
+// --- Camera VIEW matrix: Q16.16 affine inverse (FUN_0048f460) -----------------
+
+/// A Q16.16 column-major identity matrix (`FUN_0048ed80`), returned for a
+/// singular (zero-determinant) basis.
+pub const MATRIX_IDENTITY_Q16: [i32; 16] = [
+    0x1_0000, 0, 0, 0, //
+    0, 0x1_0000, 0, 0, //
+    0, 0, 0x1_0000, 0, //
+    0, 0, 0, 0x1_0000,
+];
+
+/// Q16.16 fixed-point multiply: `(a * b) >> 16` with an `i64` intermediate and
+/// truncation toward zero, matching the shipped `imul`/`shrd` sequence.
+fn fmul_q16(a: i32, b: i32) -> i32 {
+    ((a as i64 * b as i64) >> 16) as i32
+}
+
+/// Inverts a Q16.16 affine matrix (`FUN_0048f460`) to produce the camera VIEW
+/// matrix from the camera-world matrix. The 3x3 basis is inverted via the
+/// cofactor adjugate over the determinant (reciprocal `2^32 / det`), and the
+/// translation becomes `inverse_basis * (-translation)`. A singular basis
+/// (`det == 0`) yields [`MATRIX_IDENTITY_Q16`], exactly as the shipped routine.
+pub fn invert_affine_q16(m: &[i32; 16]) -> [i32; 16] {
+    // Cofactor row paired with basis column 0/1/2 for the determinant.
+    let cof0 = fmul_q16(m[5], m[10]) - fmul_q16(m[9], m[6]);
+    let cof1 = fmul_q16(m[9], m[2]) - fmul_q16(m[1], m[10]);
+    let cof2 = fmul_q16(m[1], m[6]) - fmul_q16(m[5], m[2]);
+    let det = fmul_q16(cof2, m[8]) + fmul_q16(cof1, m[4]) + fmul_q16(cof0, m[0]);
+    if det == 0 {
+        return MATRIX_IDENTITY_Q16;
+    }
+    let recip = (0x1_0000_0000_i64 / det as i64) as i32;
+
+    let mut out = [0_i32; 16];
+    // Inverse basis = adjugate (transposed cofactors) scaled by 1/det.
+    out[0] = fmul_q16(recip, cof0);
+    out[1] = fmul_q16(recip, cof1);
+    out[2] = fmul_q16(recip, cof2);
+    out[4] = fmul_q16(recip, fmul_q16(m[8], m[6]) - fmul_q16(m[4], m[10]));
+    out[5] = fmul_q16(recip, fmul_q16(m[0], m[10]) - fmul_q16(m[8], m[2]));
+    out[6] = fmul_q16(recip, fmul_q16(m[4], m[2]) - fmul_q16(m[0], m[6]));
+    out[8] = fmul_q16(recip, fmul_q16(m[4], m[9]) - fmul_q16(m[8], m[5]));
+    out[9] = fmul_q16(recip, fmul_q16(m[8], m[1]) - fmul_q16(m[0], m[9]));
+    out[10] = fmul_q16(recip, fmul_q16(m[0], m[5]) - fmul_q16(m[4], m[1]));
+    out[15] = 0x1_0000;
+
+    // Inverse translation = inverse_basis applied to the negated translation.
+    let neg = [-m[12], -m[13], -m[14]];
+    out[12] = fmul_q16(neg[2], out[8]) + fmul_q16(neg[1], out[4]) + fmul_q16(neg[0], out[0]);
+    out[13] = fmul_q16(neg[2], out[9]) + fmul_q16(neg[1], out[5]) + fmul_q16(neg[0], out[1]);
+    out[14] = fmul_q16(neg[2], out[10]) + fmul_q16(neg[1], out[6]) + fmul_q16(neg[0], out[2]);
+    out
+}
+
+/// Applies a Q16.16 column-major affine matrix to a point (`FUN_0048fa60`):
+/// `out[i] = m[12+i] + sum_j (m[4*j+i] * v[j])`. The companion to
+/// [`invert_affine_q16`], used to transform a point by the VIEW matrix.
+pub fn apply_affine_q16(m: &[i32; 16], v: [i32; 3]) -> [i32; 3] {
+    let mut out = [0_i32; 3];
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot =
+            m[12 + i] + fmul_q16(m[i], v[0]) + fmul_q16(m[4 + i], v[1]) + fmul_q16(m[8 + i], v[2]);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +338,63 @@ mod tests {
         ]));
         assert!(node_within_detail_cap(3));
         assert!(!node_within_detail_cap(4));
+    }
+
+    const ONE: i32 = 0x1_0000;
+
+    #[test]
+    fn inverse_of_identity_is_identity() {
+        assert_eq!(invert_affine_q16(&MATRIX_IDENTITY_Q16), MATRIX_IDENTITY_Q16);
+    }
+
+    #[test]
+    fn inverse_of_pure_translation_negates_it() {
+        let mut m = MATRIX_IDENTITY_Q16;
+        m[12] = 2 * ONE;
+        m[13] = -3 * ONE;
+        m[14] = 5 * ONE;
+        let inv = invert_affine_q16(&m);
+        // Basis stays identity; translation is negated.
+        assert_eq!(&inv[0..12], &MATRIX_IDENTITY_Q16[0..12]);
+        assert_eq!([inv[12], inv[13], inv[14]], [-2 * ONE, 3 * ONE, -5 * ONE]);
+    }
+
+    #[test]
+    fn inverse_of_uniform_scale_is_the_reciprocal_scale() {
+        let mut m = MATRIX_IDENTITY_Q16;
+        m[0] = 2 * ONE;
+        m[5] = 2 * ONE;
+        m[10] = 2 * ONE;
+        let inv = invert_affine_q16(&m);
+        assert_eq!([inv[0], inv[5], inv[10]], [ONE / 2, ONE / 2, ONE / 2]);
+    }
+
+    #[test]
+    fn singular_basis_falls_back_to_identity() {
+        let mut m = MATRIX_IDENTITY_Q16;
+        m[0] = 0; // zero the (0,0) basis entry -> det collapses to 0
+        m[5] = 0;
+        m[10] = 0;
+        assert_eq!(invert_affine_q16(&m), MATRIX_IDENTITY_Q16);
+    }
+
+    #[test]
+    fn inverse_undoes_a_rotation_and_translation_round_trip() {
+        // +90 degrees about Z (column-major basis), translated by (2, 3, 0).
+        let mut world = MATRIX_IDENTITY_Q16;
+        world[0] = 0;
+        world[1] = ONE; // col0 = (0, 1, 0)
+        world[4] = -ONE;
+        world[5] = 0; // col1 = (-1, 0, 0)
+        world[12] = 2 * ONE;
+        world[13] = 3 * ONE;
+
+        let view = invert_affine_q16(&world);
+        let point = [ONE, 0, 0];
+        let transformed = apply_affine_q16(&world, point);
+        // (1,0,0) rotated +90 about Z = (0,1,0), plus (2,3,0) = (2,4,0).
+        assert_eq!(transformed, [2 * ONE, 4 * ONE, 0]);
+        // The inverse VIEW returns it exactly (integer-exact for this matrix).
+        assert_eq!(apply_affine_q16(&view, transformed), point);
     }
 }
