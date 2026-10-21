@@ -459,6 +459,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   `check_audio_mixer_contract`. A QMixer-faithful backend and a portable/SDL
   audio backend both remain to be implemented against this interface. See
   evidence `impl.audio-mixer-contract`.
+- The weather/crowd ambience loader `0x41cd30`/`FUN_0041cd30` registers six
+  waves via the load wrapper at 11025 Hz / 16-bit: `sounds\crowd\crowd.wav` and
+  `sounds\weather\abduct.wav` unconditionally, then `clap1`/`clap2`/`rumble1`/
+  `rumble2` only at the storm weather level (`FUN_0046b230()==3`). This recovered
+  inventory is encoded as metadata in `cmr-core::audio_weather_assets`. Thirteen
+  further load-wrapper callers (engine, surface, UI, …) remain to enumerate. See
+  evidence `rea.official-eu.audio-weather-wave-inventory` and
+  `impl.audio-weather-assets`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
