@@ -503,6 +503,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   call corpus, the surface/collision material set, extra menu waves, tutorial
   numbers, and per-language cheat/secret sounds. The structured car model is in
   `cmr-core::audio_car_assets`. See evidence `rea.official-eu.audio-wave-inventory`.
+- The car loader body `0x4872b0`/`FUN_004872b0` is recovered: it selects the
+  player car from the low nibble of a config byte (`DAT_00d3ca80+0xb6`) via a
+  switch remap (row 0 = SUBARU), allocates slots `+0..+7` (and `+8..+0xf` when
+  `DAT_00550c08==2`), and loads 14 waves at 11025 Hz/16-bit/mono in order
+  `FS,RS,FM,RM,WHINE,FT,RT,CHATTER,POPLOOP1-4,IGNITION,GEAR`. The format, load
+  order, and selector remap are in `cmr-core::audio_car_assets`. See evidence
+  `rea.official-eu.audio-car-loader`.
 - The menu play helpers (`0x467ef0`, `0x467dd0`, siblings) each set full volume,
   stop the menu channel, and play `base+offset` one-shot: offset 0 `FORWARD`
   (confirm, carved) and offset 3 `UPDOWN` (vertical nav, carved); offsets 1

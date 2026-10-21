@@ -94,6 +94,42 @@ pub const SHARED_ENGINE_SOUNDS: [&str; 8] = [
     "WHINE.WAV",
 ];
 
+/// Recovered sample rate (`0x2b11` = 11025) and bit depth (`0x10` = 16, mono) of
+/// every car wave: the loader `FUN_004872b0` uses the identical
+/// `(path, 0x2b11, 0x10, 0)` tuple for all 14 loads.
+pub const CAR_WAVE_RATE_HZ: u32 = 11_025;
+pub const CAR_WAVE_BITS: u16 = 16;
+
+/// The 14 car waves in the recovered load order of `FUN_004872b0` (the index is
+/// the slot offset from the car base slot). The six per-car engine layers and
+/// `WHINE` interleave with the shared chatter/pop-loop/ignition/gear waves;
+/// slots 8..15 (the shared tail) load only when `DAT_00550c08 == 2`.
+pub const CAR_LOAD_SEQUENCE: [&str; 14] = [
+    "FS", "RS", "FM", "RM", "WHINE", "FT", "RT", "CHATTER", "POPLOOP1", "POPLOOP2", "POPLOOP3",
+    "POPLOOP4", "IGNITION", "GEAR",
+];
+
+/// Map the car-selection nibble - the low 4 bits of the config byte at
+/// `DAT_00d3ca80 + 0xb6` - to the loader's per-car row index, reproducing the
+/// recovered `switch` in `FUN_004872b0`. Unlisted values (0 and 12..15) select
+/// row 0 (the loader's default, whose base symbols are SUBARU).
+pub fn car_row_index_for_selector(selector_nibble: u8) -> u32 {
+    match selector_nibble & 0x0f {
+        1 => 8,
+        2 => 7,
+        3 => 6,
+        4 => 4,
+        5 => 0xb,
+        6 => 1,
+        7 => 9,
+        8 => 5,
+        9 => 3,
+        0xa => 2,
+        0xb => 10,
+        _ => 0,
+    }
+}
+
 impl CarEngineSet {
     /// The recovered relative path of one engine layer, e.g.
     /// `ESCORT\RT-ESC.WAV`. `layer` is one of [`ENGINE_LAYERS`].
@@ -136,5 +172,34 @@ mod tests {
         assert!(SHARED_ENGINE_SOUNDS.contains(&"IGNITION.WAV"));
         assert!(SHARED_ENGINE_SOUNDS.contains(&"GEAR.WAV"));
         assert_eq!(SHARED_ENGINE_SOUNDS.len(), 8);
+    }
+
+    #[test]
+    fn car_waves_are_11025_hz_16_bit() {
+        assert_eq!(CAR_WAVE_RATE_HZ, 11_025);
+        assert_eq!(CAR_WAVE_BITS, 16);
+    }
+
+    #[test]
+    fn load_sequence_matches_the_recovered_order() {
+        assert_eq!(CAR_LOAD_SEQUENCE.len(), 14);
+        assert_eq!(CAR_LOAD_SEQUENCE[0], "FS");
+        assert_eq!(CAR_LOAD_SEQUENCE[4], "WHINE");
+        assert_eq!(CAR_LOAD_SEQUENCE[7], "CHATTER");
+        assert_eq!(CAR_LOAD_SEQUENCE[13], "GEAR");
+    }
+
+    #[test]
+    fn selector_remap_matches_the_recovered_switch() {
+        // Listed cases.
+        assert_eq!(car_row_index_for_selector(1), 8);
+        assert_eq!(car_row_index_for_selector(5), 0xb);
+        assert_eq!(car_row_index_for_selector(0xb), 10);
+        assert_eq!(car_row_index_for_selector(0xa), 2);
+        // Default (0 and 12..15, plus the high nibble ignored).
+        assert_eq!(car_row_index_for_selector(0), 0);
+        assert_eq!(car_row_index_for_selector(12), 0);
+        assert_eq!(car_row_index_for_selector(0xf), 0);
+        assert_eq!(car_row_index_for_selector(0x31), 8); // high nibble masked off
     }
 }
