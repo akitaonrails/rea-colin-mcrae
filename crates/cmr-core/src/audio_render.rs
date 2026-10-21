@@ -30,6 +30,7 @@
 //! 16-bit at [`MIXER_OUTPUT_RATE_HZ`].
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::audio_mixer::{
     AudioMixer, ChannelId, MIXER_CHANNEL_CAPACITY, MIXER_OUTPUT_RATE_HZ, MixerError,
@@ -346,6 +347,71 @@ impl<B: WaveSource> AudioMixer for SoftwareMixer<B> {
 /// A [`SoftwareMixer`] over an in-memory name->wave map.
 pub type MapMixer = SoftwareMixer<HashMap<String, PcmWave>>;
 
+/// A [`WaveSource`] that reads and decodes WAV files from under a source root.
+///
+/// The root is the user-selected original-media directory (passed as
+/// `--source` or the documented `CMR_ORIGINAL_DIR` example variable - never a
+/// committed absolute path). A requested game wave name (e.g.
+/// `sounds\car\ESCORT\FS-ESC.WAV`) is mapped to a relative path under the root:
+/// backslashes become path separators and unsafe requests are refused, matching
+/// the path rules enforced by `cmr-assets::resolver` (no absolute or drive
+/// paths, no `.`/`..`/empty components, no NUL). Media is read in place; the
+/// target must be a regular file (symlinks and special files are refused).
+#[derive(Debug, Clone)]
+pub struct FileWaveSource {
+    root: PathBuf,
+}
+
+impl FileWaveSource {
+    /// Build a source rooted at the user's original-media directory.
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// Map a game wave name to a safe path under the root, or `None` if the name
+    /// is absolute, drive-qualified, contains `.`/`..`/empty components or NUL,
+    /// or is otherwise not a plain relative path.
+    fn safe_path(&self, name: &str) -> Option<PathBuf> {
+        if name.is_empty()
+            || name.contains('\0')
+            || name.starts_with(['/', '\\'])
+            || name.as_bytes().get(1) == Some(&b':')
+        {
+            return None;
+        }
+        let normalized = name.replace('\\', "/");
+        if normalized.ends_with('/')
+            || normalized
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return None;
+        }
+        let mut path = self.root.clone();
+        for part in normalized.split('/') {
+            path.push(part);
+        }
+        Some(path)
+    }
+
+    /// Read and decode the wave at a resolved path, refusing non-regular files.
+    fn read_regular(path: &Path) -> Option<PcmWave> {
+        let metadata = std::fs::symlink_metadata(path).ok()?;
+        if !metadata.file_type().is_file() {
+            return None;
+        }
+        let bytes = std::fs::read(path).ok()?;
+        PcmWave::from_wav_bytes(&bytes).ok()
+    }
+}
+
+impl WaveSource for FileWaveSource {
+    fn fetch(&self, name: &str) -> Option<PcmWave> {
+        let path = self.safe_path(name)?;
+        Self::read_regular(&path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,6 +580,74 @@ mod tests {
         let mut out = [0i16; 8];
         mixer.render(&mut out);
         assert_eq!(out, [100, 100, 200, 200, 300, 300, 0, 0]);
+    }
+
+    fn unique_temp_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("cmr-wavsrc-{}-{}-{tag}", std::process::id(), n));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn file_wave_source_reads_and_decodes_under_the_root() {
+        let root = unique_temp_dir("read");
+        std::fs::create_dir_all(root.join("sounds/car")).unwrap();
+        std::fs::write(
+            root.join("sounds/car/FS.WAV"),
+            mono_wav_bytes(&[7, 8, 9], 11_025),
+        )
+        .unwrap();
+
+        let source = FileWaveSource::new(&root);
+        // Backslash request resolves to the file under the root.
+        let wave = source.fetch(r"sounds\car\FS.WAV").unwrap();
+        assert_eq!(wave.samples, vec![7, 8, 9]);
+        assert_eq!(wave.format.sample_rate, 11_025);
+        // Missing file is a silent miss, not an error.
+        assert!(source.fetch(r"sounds\car\NOPE.WAV").is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn file_wave_source_refuses_unsafe_names() {
+        let source = FileWaveSource::new(std::env::temp_dir());
+        for unsafe_name in [
+            "",
+            "/etc/passwd",
+            r"\windows\system",
+            "C:\\x.wav",
+            "a/../b.wav",
+            "a/./b.wav",
+            "a//b.wav",
+            "dir/",
+            "a\0b",
+        ] {
+            assert!(
+                source.fetch(unsafe_name).is_none(),
+                "unsafe name was not refused: {unsafe_name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn file_wave_source_drives_the_mixer() {
+        let root = unique_temp_dir("drive");
+        std::fs::write(root.join("beep.wav"), mono_wav_bytes(&[500, 600], 22_050)).unwrap();
+
+        let mut mixer = SoftwareMixer::with_source(FileWaveSource::new(&root));
+        mixer.initialize().unwrap();
+        let slot = mixer.load_wave("beep.wav", 22_050, 16, false).unwrap();
+        mixer.play(slot, ch(0), PLAY_ONE_SHOT).unwrap();
+        let mut out = [0i16; 6];
+        mixer.render(&mut out);
+        assert_eq!(out, [500, 500, 600, 600, 0, 0]);
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

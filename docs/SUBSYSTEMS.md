@@ -590,6 +590,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   WAV -> `WaveSource` -> `render` playback chain; the remaining half is the
   file/directory wave source and the SDL audio-device wrapper. See evidence
   `impl.audio-wav`.
+- `cmr-core::audio_render::FileWaveSource` is the directory-backed `WaveSource`:
+  it maps a game wave name to a safe relative path under the user's source root
+  (backslash-normalised, traversal/absolute/drive/NUL refused, regular-file
+  only), reads the WAV in place and decodes it with the PCM parser. It completes
+  the WAV -> `WaveSource` chain; only the SDL audio-device wrapper (opening a
+  22050 Hz stereo device and pumping `render`) remains for live playback. See
+  evidence `impl.audio-file-wave-source`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
