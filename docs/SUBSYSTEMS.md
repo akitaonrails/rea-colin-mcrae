@@ -749,6 +749,18 @@ languages rather than fabricating or silently aliasing Italian assets.
   indexing/compression/interpolation in `cmr-core::replay`. The per-byte actuator
   bit assignment, the Region-A layout, the save path, and the wire framing
   remain. See evidence `rea.official-eu.sim-replay`.
+- `cmr-core::race_state` composes the recovered fixed-step pieces (`fixed_point`
+  BAM trig + `Vec3`, `vehicle_dynamics` lateral-grip/net-accel/drag/integration,
+  and the `stage_timing` stage clock) into a deterministic offline race-state
+  trace: one `step` advances a 40 ms / 25 Hz tick in the observed order (steer ->
+  forward vector -> net force = drive force minus recovered drag -> integrate ->
+  lateral grip -> `position += velocity*dt` -> advance clock), and all-integer
+  `Fixed16` state makes the trace bit-for-bit reproducible. This is a
+  composition/determinism harness, not trajectory-accurate: the drive force,
+  mass and gravity are explicit parameters because the drive-torque->force wiring
+  and the position-update half-accel term are still-unrecovered G02/G03 unknowns,
+  so a byte-exact differential fixture is gated on recovering the force
+  production. See evidence `impl.sim-race-state-trace`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
