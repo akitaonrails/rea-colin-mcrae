@@ -8,10 +8,13 @@
 //! device via `DrawIndexedPrimitive` (`D3DPT_TRIANGLELIST`, `D3DFVF`-less
 //! `D3DLVERTEX`). Depth is a **hardware 16-bit Z-buffer** with `ZFUNC`
 //! `LESSEQUAL`; there is **no CPU span-filler and no painter's triangle sort**.
-//! Ordering is a per-object distance painter sort plus scene-graph / world-section
-//! submission order: the opaque pass draws with Z-write enabled, then deferred
-//! transparent batches draw with Z-write disabled (and are *not* back-to-front
-//! sorted - unsorted transparent blends are original behavior).
+//! Ordering is a per-object **back-to-front** distance sort (farthest object
+//! first, by 2D top-down XZ distance; `FUN_004a2070`) plus scene-graph /
+//! world-section submission order: the opaque pass draws with Z-write enabled,
+//! then deferred transparent batches draw with Z-write disabled. Triangles
+//! within an object and the transparent prims themselves are *not* individually
+//! back-to-front sorted - unsorted transparent blends are original behavior,
+//! relying on the object-level order and the Z-buffer.
 //!
 //! This module models the backend-neutral submission contract recovered from the
 //! dispatcher `FUN_004a07d0`, the mesh emitters `FUN_004a2700`/`FUN_004a28a0`, the
@@ -186,11 +189,23 @@ impl Pass {
     }
 }
 
-/// Squared camera-space distance used as the per-object painter-sort key
-/// (`FUN_004a2070`), in whatever consistent units the caller supplies. Objects
-/// are ordered by this key; depth within an object is the hardware Z-buffer.
-pub fn object_sort_key(dx: i64, dy: i64, dz: i64) -> i64 {
-    dx * dx + dy * dy + dz * dz
+/// Squared top-down (XZ-plane) distance from the camera to an object, the
+/// per-object painter-sort key (`FUN_004a2070`). The sort is **2D**: the object
+/// position supplies only X (`obj+0x104`) and Z (`obj+0x10c`); the vertical (Y)
+/// delta is not part of the key, matching the 2D frustum cull. The shipped
+/// routine takes the fixed-point square root (LUT `DAT_0082b380`) before
+/// comparing, but the square root is monotonic, so comparing this squared key
+/// yields the identical order. Depth within an object is the hardware Z-buffer.
+pub fn object_sort_key(dx: i64, dz: i64) -> i64 {
+    dx * dx + dz * dz
+}
+
+/// Whether an object with sort key `nearer_or_farther` is drawn before one with
+/// key `other`. The shipped sort relinks the scene list so a **farther** object
+/// precedes a nearer one, i.e. objects draw **back-to-front** (descending
+/// distance); equal keys keep their submission order.
+pub fn object_drawn_before(a: i64, b: i64) -> bool {
+    a > b
 }
 
 #[cfg(test)]
@@ -261,10 +276,21 @@ mod tests {
     }
 
     #[test]
-    fn object_sort_key_is_squared_distance() {
-        assert_eq!(object_sort_key(3, 4, 0), 25);
-        assert_eq!(object_sort_key(-2, 0, 0), 4);
+    fn object_sort_key_is_squared_xz_distance() {
+        assert_eq!(object_sort_key(3, 4), 25);
+        assert_eq!(object_sort_key(-2, 0), 4);
         // Farther objects yield larger keys, the ordering basis.
-        assert!(object_sort_key(10, 0, 0) > object_sort_key(1, 1, 1));
+        assert!(object_sort_key(10, 0) > object_sort_key(1, 1));
+    }
+
+    #[test]
+    fn objects_draw_back_to_front() {
+        let near = object_sort_key(1, 0);
+        let far = object_sort_key(10, 0);
+        // The farther object is drawn first.
+        assert!(object_drawn_before(far, near));
+        assert!(!object_drawn_before(near, far));
+        // Equal distance keeps submission order (no reorder).
+        assert!(!object_drawn_before(near, near));
     }
 }

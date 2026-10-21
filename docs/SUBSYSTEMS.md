@@ -431,9 +431,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::c3d_render`: the backend-neutral Direct3D-IM submission contract
   (E06). The shipped game renders through Direct3D Immediate Mode on
   `IDirect3DDevice2` (DirectX 5) with a hardware 16-bit Z-buffer - no software
-  span-filler and no painter's triangle sort; ordering is a per-object distance
-  painter sort plus scene-graph order, opaque pass (Z-write on) then deferred
-  transparent batches (Z-write off). The module encodes the public DX5
+  span-filler and no painter's triangle sort; ordering is a per-object
+  **back-to-front** distance sort (farthest first, by 2D top-down XZ distance -
+  `object_sort_key`/`object_drawn_before`, `FUN_004a2070`) plus scene-graph
+  order, opaque pass (Z-write on) then deferred transparent batches (Z-write
+  off). The module encodes the public DX5
   render-state codes/values, the four-way `BlendMode`/`BlendConfig`
   (opaque/color-keyed/alpha/additive) from `FUN_004a2540`, the
   `ALPHABLENDENABLE`/`STIPPLEDALPHA` capability fallback, the `D3DLVERTEX`
