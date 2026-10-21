@@ -462,9 +462,14 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   reproduces the column-major affine transform. The routine is pure integer
   arithmetic, so it reconstructs exactly with no driver-float dependency - in
   contrast to the `cmr-video` pixel rasterizer, whose sequential-`f32` evaluation
-  is stated reconstruction policy. See evidence `rea.official-eu.c3d-camera`,
-  `impl.c3d-camera`, `rea.official-eu.c3d-view-inverse`, and
-  `impl.c3d-view-inverse`.
+  is stated reconstruction policy. The per-frame setup inverts the camera
+  object's world matrix, converts it to a float `D3DMATRIX` (`matrix_q16_to_f32`,
+  each word times `2^-16`), and submits it with `SetTransform(VIEW=2)`;
+  `TRANSFORMSTATE_WORLD`/`VIEW`/`PROJECTION` = 1/2/3. WORLD * VIEW * PROJECTION is
+  concatenated by Direct3D per vertex (no CPU matrix-matrix multiply), so the
+  software oracle must perform that concatenation itself. See evidence
+  `rea.official-eu.c3d-camera`, `impl.c3d-camera`,
+  `rea.official-eu.c3d-view-inverse`, and `impl.c3d-view-inverse`.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one
   group-1 record and caller-prepared selectors. It preserves maximal
   consecutive selector runs and source entry order, deduplicates local entry32

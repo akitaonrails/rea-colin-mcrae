@@ -262,6 +262,28 @@ pub fn apply_affine_q16(m: &[i32; 16], v: [i32; 3]) -> [i32; 3] {
     out
 }
 
+// --- Transform-state submission (FUN_004a7d70, FUN_004a71b0) -------------------
+
+/// `D3DTRANSFORMSTATE_WORLD` - the per-node model matrix (`SetTransform(1)`).
+pub const TRANSFORMSTATE_WORLD: u32 = 1;
+/// `D3DTRANSFORMSTATE_VIEW` - the camera VIEW matrix (`SetTransform(2)`).
+pub const TRANSFORMSTATE_VIEW: u32 = 2;
+/// `D3DTRANSFORMSTATE_PROJECTION` - the projection matrix (`SetTransform(3)`).
+pub const TRANSFORMSTATE_PROJECTION: u32 = 3;
+
+/// Converts a Q16.16 matrix to the float `D3DMATRIX` the engine submits
+/// (`FUN_004a7d70`: each word times `1.5258789e-05`, i.e. `2^-16`). The VIEW
+/// matrix is computed as [`invert_affine_q16`] of the camera-world matrix, then
+/// converted and handed to `SetTransform(VIEW)`; D3D - not the CPU -
+/// concatenates WORLD * VIEW * PROJECTION per vertex.
+pub fn matrix_q16_to_f32(m: &[i32; 16]) -> [f32; 16] {
+    let mut out = [0.0_f32; 16];
+    for (slot, &word) in out.iter_mut().zip(m.iter()) {
+        *slot = word as f32 / 65_536.0;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +418,27 @@ mod tests {
         assert_eq!(transformed, [2 * ONE, 4 * ONE, 0]);
         // The inverse VIEW returns it exactly (integer-exact for this matrix).
         assert_eq!(apply_affine_q16(&view, transformed), point);
+    }
+
+    #[test]
+    fn view_matrix_converts_to_float_via_2_pow_neg16() {
+        let mut m = MATRIX_IDENTITY_Q16;
+        m[12] = 3 * ONE; // +3.0 translation
+        m[1] = ONE / 2; // +0.5
+        let f = matrix_q16_to_f32(&m);
+        assert_eq!(f[0], 1.0);
+        assert_eq!(f[1], 0.5);
+        assert_eq!(f[12], 3.0);
+        assert_eq!(f[15], 1.0);
+        assert_eq!(f[3], 0.0);
+        // Transform states match the D3DTRANSFORMSTATETYPE enum.
+        assert_eq!(
+            [
+                TRANSFORMSTATE_WORLD,
+                TRANSFORMSTATE_VIEW,
+                TRANSFORMSTATE_PROJECTION
+            ],
+            [1, 2, 3]
+        );
     }
 }
