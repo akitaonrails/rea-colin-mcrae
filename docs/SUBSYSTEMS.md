@@ -571,6 +571,17 @@ languages rather than fabricating or silently aliasing Italian assets.
   the volume scaling, countdown slot ordering/cadence, and replay/SETUP control
   flow are left in the ledger. See evidence
   `rea.official-eu.audio-music-countdown`.
+- The first concrete audio backend `cmr-core::audio_render::SoftwareMixer`
+  implements the recovered `AudioMixer` contract as a portable, I/O-free PCM
+  mixer: it renders per-channel voices (one-shot/loop, linear volume gain,
+  `frequency/output_rate` playback step, nearest-neighbour resample, mono/stereo)
+  into an interleaved stereo buffer at 22050 Hz, drawing decoded waves from a
+  `WaveSource`, and passes the shared `check_audio_mixer_contract`. Volume/
+  frequency/position realisation is a documented design decision (the QMixer
+  scales are unknown); 3D position is recorded but not yet spatialised. A later
+  platform/SDL device backend wraps it by decoding the user's WAVs into the
+  `WaveSource` and pumping `render` into the device. See evidence
+  `impl.audio-render`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

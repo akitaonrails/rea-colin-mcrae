@@ -8,6 +8,7 @@ pub mod audio_menu;
 pub mod audio_mixer;
 pub mod audio_music_cues;
 pub mod audio_pacenote;
+pub mod audio_render;
 pub mod audio_surface;
 pub mod audio_weather_assets;
 pub mod blit;
