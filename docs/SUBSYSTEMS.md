@@ -476,9 +476,15 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   each word times `2^-16`), and submits it with `SetTransform(VIEW=2)`;
   `TRANSFORMSTATE_WORLD`/`VIEW`/`PROJECTION` = 1/2/3. WORLD * VIEW * PROJECTION is
   concatenated by Direct3D per vertex (no CPU matrix-matrix multiply), so the
-  software oracle must perform that concatenation itself. See evidence
-  `rea.official-eu.c3d-camera`, `impl.c3d-camera`,
-  `rea.official-eu.c3d-view-inverse`, and `impl.c3d-view-inverse`.
+  software oracle must perform that concatenation itself. The gameplay-scene
+  submission builders `projection_matrix_words`/`world_matrix_words`/
+  `view_matrix_words`/`viewport_words` emit the f32 `C3dMatrixWords`/
+  `C3dViewportWords` the `cmr-video` software transform path consumes (row-major,
+  row-vector, matching `multiply_row_vector`); the D3DVIEWPORT2 clip volume is
+  scene-independent, so `viewport_words` reuses the shared `root_menu_c3d_viewport`
+  builder (gameplay == menu viewport). See evidence `rea.official-eu.c3d-camera`,
+  `impl.c3d-camera`, `rea.official-eu.c3d-view-inverse`, `impl.c3d-view-inverse`,
+  and `impl.c3d-scene-matrices`.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one
   group-1 record and caller-prepared selectors. It preserves maximal
   consecutive selector runs and source entry order, deduplicates local entry32

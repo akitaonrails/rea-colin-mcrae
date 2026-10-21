@@ -24,6 +24,11 @@
 //!
 //! See evidence `rea.official-eu.c3d-camera`.
 
+use crate::display::DisplayExtent;
+use crate::root_menu_c3d_transform::{
+    C3dMatrixWords, C3dViewportWords, RootMenuC3dViewportError, root_menu_c3d_viewport,
+};
+
 // --- Perspective projection (FUN_004a71b0) ------------------------------------
 
 /// Baseline projection inputs `(w, h, z_near, z_far)` the D3D init sets
@@ -284,6 +289,47 @@ pub fn matrix_q16_to_f32(m: &[i32; 16]) -> [f32; 16] {
     out
 }
 
+// --- Gameplay-scene matrix bridge ---------------------------------------------
+
+/// Wraps a row-major `[f32; 16]` as the `C3dMatrixWords` the software transform
+/// path consumes (it stores each slot as f32 bits and reads it back with
+/// `f32::from_bits`). The row-vector convention matches [`apply_affine_q16`] and
+/// [`perspective_lh`], so these matrices feed the per-vertex transform directly.
+fn matrix_words_from_f32(m: [f32; 16]) -> C3dMatrixWords {
+    C3dMatrixWords::from_words(m.map(f32::to_bits))
+}
+
+/// The gameplay-scene PROJECTION matrix as submission words (see
+/// [`perspective_lh`]).
+pub fn projection_matrix_words(w: f32, h: f32, z_near: f32, z_far: f32) -> C3dMatrixWords {
+    matrix_words_from_f32(perspective_lh(w, h, z_near, z_far))
+}
+
+/// A node's WORLD matrix as submission words, from its Q16.16 world transform
+/// (node `+0x114`).
+pub fn world_matrix_words(world_q16: &[i32; 16]) -> C3dMatrixWords {
+    matrix_words_from_f32(matrix_q16_to_f32(world_q16))
+}
+
+/// The camera VIEW matrix as submission words: the affine inverse of the
+/// camera-world matrix ([`invert_affine_q16`]) converted to float. This is the
+/// matrix `FUN_004a7d70` builds and submits with `SetTransform(VIEW)`.
+pub fn view_matrix_words(camera_world_q16: &[i32; 16]) -> C3dMatrixWords {
+    matrix_words_from_f32(matrix_q16_to_f32(&invert_affine_q16(camera_world_q16)))
+}
+
+/// The gameplay-scene D3DVIEWPORT2 as submission words. The clip volume is
+/// scene-independent - it is the same full-back-buffer viewport the menu path
+/// submits (`{clipX=-1, clipW=2, clipY=W/H, clipH=2*(W/H), minZ=0, maxZ=1}`,
+/// matching [`viewport`]) - so this reuses the shared builder rather than
+/// defining a second representation.
+pub fn viewport_words(
+    width: u16,
+    height: u16,
+) -> Result<C3dViewportWords, RootMenuC3dViewportError> {
+    root_menu_c3d_viewport(DisplayExtent { width, height })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +464,72 @@ mod tests {
         assert_eq!(transformed, [2 * ONE, 4 * ONE, 0]);
         // The inverse VIEW returns it exactly (integer-exact for this matrix).
         assert_eq!(apply_affine_q16(&view, transformed), point);
+    }
+
+    /// The exact row-vector multiply the software raster applies
+    /// (`multiply_row_vector`): `out[c] = sum_r v[r] * m[4*r + c]`.
+    fn row_vector_mul(v: [f32; 4], words: C3dMatrixWords) -> [f32; 4] {
+        let m = words.words().map(f32::from_bits);
+        std::array::from_fn(|c| v[0] * m[c] + v[1] * m[4 + c] + v[2] * m[8 + c] + v[3] * m[12 + c])
+    }
+
+    #[test]
+    fn projection_words_map_near_to_zero_and_far_to_one() {
+        let (w, h, zn, zf) = PROJECTION_BASELINE;
+        let proj = projection_matrix_words(w, h, zn, zf);
+        // A point on the near plane maps to NDC z = 0, the far plane to z = 1.
+        let near = row_vector_mul([0.0, 0.0, zn, 1.0], proj);
+        let far = row_vector_mul([0.0, 0.0, zf, 1.0], proj);
+        assert!((near[2] / near[3]).abs() < 1e-5); // zn -> 0
+        assert!((far[2] / far[3] - 1.0).abs() < 1e-5); // zf -> 1
+        // w' carries z (the LH perspective divide).
+        assert!((far[3] - zf).abs() < 1e-3);
+    }
+
+    #[test]
+    fn view_words_move_the_world_into_camera_space() {
+        // Camera translated to (2, 3, 5), identity orientation.
+        let mut camera_world = MATRIX_IDENTITY_Q16;
+        camera_world[12] = 2 * ONE;
+        camera_world[13] = 3 * ONE;
+        camera_world[14] = 5 * ONE;
+        let view = view_matrix_words(&camera_world);
+        // A world point at the camera origin lands at the view-space origin.
+        let at_camera = row_vector_mul([2.0, 3.0, 5.0, 1.0], view);
+        assert!(at_camera[0].abs() < 1e-3);
+        assert!(at_camera[1].abs() < 1e-3);
+        assert!(at_camera[2].abs() < 1e-3);
+        // A world point one unit ahead (+Z) stays one unit ahead in view space.
+        let ahead = row_vector_mul([2.0, 3.0, 6.0, 1.0], view);
+        assert!((ahead[2] - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn viewport_words_match_the_e05_clip_volume() {
+        let v = viewport(640, 480);
+        let words = viewport_words(640, 480).unwrap().words();
+        assert_eq!(words[0], 44); // dwSize
+        assert_eq!((words[1], words[2]), (0, 0)); // origin
+        assert_eq!((words[3], words[4]), (640, 480)); // width, height
+        assert_eq!(f32::from_bits(words[5]), v.clip_x);
+        assert_eq!(f32::from_bits(words[6]), v.clip_y);
+        assert_eq!(f32::from_bits(words[7]), v.clip_width);
+        assert_eq!(f32::from_bits(words[8]), v.clip_height);
+        assert_eq!(f32::from_bits(words[9]), v.min_z);
+        assert_eq!(f32::from_bits(words[10]), v.max_z);
+        // A zero or oversized extent is rejected.
+        assert!(viewport_words(0, 480).is_err());
+        assert!(viewport_words(640, 0).is_err());
+    }
+
+    #[test]
+    fn world_words_round_trip_the_q16_matrix() {
+        let mut world = MATRIX_IDENTITY_Q16;
+        world[12] = -4 * ONE;
+        let words = world_matrix_words(&world);
+        // Translation survives the Q16 -> f32 -> bits wrapping.
+        let moved = row_vector_mul([1.0, 0.0, 0.0, 1.0], words);
+        assert!((moved[0] - (1.0 - 4.0)).abs() < 1e-3);
     }
 
     #[test]
