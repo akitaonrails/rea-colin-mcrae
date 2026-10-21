@@ -19,10 +19,11 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use cmr_core::frontend::FrontendInput;
-use cmr_core::host_lifecycle::PlatformLifecycleEvent;
+use cmr_core::host_lifecycle::{HostLifecycle, PlatformLifecycleEvent};
 use cmr_core::present_scaling::{DEFAULT_SCALING, PresentationScaling};
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::RootRenderInput;
+use cmr_core::window::{WindowEffect, WindowMode};
 use cmr_video::{SoftwarePresentedFrame, SoftwareRgba8Error, SoftwareRgba8Frame};
 use sdl3::event::{Event, WindowEvent};
 use sdl3::keyboard::Keycode;
@@ -529,6 +530,10 @@ pub fn run_interactive_root_frame<E>(
         }
     }
     let mut host_state = HostEventState::with_connected_gamepads(open_gamepads.keys().copied());
+    // The window is created focused; drive focus/pause/restore/shutdown through
+    // the recovered host lifecycle (B12) as SDL reports focus and close events.
+    let mut lifecycle = HostLifecycle::new(WindowMode::Windowed);
+    lifecycle.apply(PlatformLifecycleEvent::FocusGained);
     let mut mapper = FrontendInputMapper::new();
     let mut events = sdl
         .event_pump()
@@ -540,9 +545,12 @@ pub fn run_interactive_root_frame<E>(
             pending.push(event);
             pending.extend(events.poll_iter());
         }
+        let mut host_events = Vec::with_capacity(pending.len());
         for event in pending {
             feed_input_event(&event, &mut mapper);
-            match map_event(&event) {
+            let host_event = map_event(&event);
+            host_events.push(host_event);
+            match host_event {
                 HostEvent::GamepadAdded(id) => {
                     if let Ok(handle) = gamepad.open(id.into()) {
                         open_gamepads.insert(id, handle);
@@ -573,8 +581,16 @@ pub fn run_interactive_root_frame<E>(
                 other => host_state.apply(other),
             }
         }
-        if host_state.exit_requested() {
+        let decision = advance_root_lifecycle(&host_events, &mut lifecycle);
+        if host_state.exit_requested() || decision.quit {
             break;
+        }
+        if decision.restore_surfaces {
+            redraw_present(&mut canvas, &texture).map_err(InteractiveRootError::Host)?;
+        }
+        if !decision.active {
+            // Unfocused: pause ticking and rendering; block on the next event.
+            continue;
         }
 
         let tick = interaction.tick(mapper.poll(), elapsed_ms(clock), save_allowed);
@@ -592,6 +608,46 @@ pub fn run_interactive_root_frame<E>(
     }
 
     Ok(())
+}
+
+/// What the interactive loop should do after a batch of host events.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootLoopDecision {
+    /// A shutdown was requested (window close / quit).
+    pub quit: bool,
+    /// The window is focused and the loop should tick and render.
+    pub active: bool,
+    /// A focus gain restored lost surfaces; the frame must be re-presented.
+    pub restore_surfaces: bool,
+}
+
+/// Fold the lifecycle-relevant host events in a batch through the recovered
+/// host lifecycle ([`cmr_core::host_lifecycle`]) and summarize what the
+/// interactive native loop should do: quit, pause (when unfocused), or
+/// re-present after a focus gain restored surfaces. Non-lifecycle events
+/// (input, gamepad, redraw) are ignored here and handled by the loop directly.
+pub fn advance_root_lifecycle(
+    events: &[HostEvent],
+    lifecycle: &mut HostLifecycle,
+) -> RootLoopDecision {
+    let mut restore_surfaces = false;
+    for event in events {
+        if let Some(lifecycle_event) = event.as_lifecycle() {
+            let transition = lifecycle.apply(lifecycle_event);
+            if transition
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, WindowEffect::RestoreLostSurfaces))
+            {
+                restore_surfaces = true;
+            }
+        }
+    }
+    RootLoopDecision {
+        quit: lifecycle.is_shutting_down(),
+        active: lifecycle.is_active(),
+        restore_surfaces,
+    }
 }
 
 fn feed_input_event(event: &Event, mapper: &mut FrontendInputMapper) {
@@ -614,6 +670,40 @@ fn feed_input_event(event: &Event, mapper: &mut FrontendInputMapper) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interactive_lifecycle_pauses_on_focus_loss_and_resumes_on_gain() {
+        let mut lifecycle = HostLifecycle::new(WindowMode::Windowed);
+        lifecycle.apply(PlatformLifecycleEvent::FocusGained);
+
+        // Non-lifecycle events leave the loop active and rendering.
+        let decision = advance_root_lifecycle(
+            &[HostEvent::RedrawRequested, HostEvent::GamepadAdded(1)],
+            &mut lifecycle,
+        );
+        assert_eq!(
+            decision,
+            RootLoopDecision {
+                quit: false,
+                active: true,
+                restore_surfaces: false,
+            }
+        );
+
+        // Focus loss pauses the loop.
+        let decision = advance_root_lifecycle(&[HostEvent::FocusLost], &mut lifecycle);
+        assert!(!decision.active);
+        assert!(!decision.quit);
+
+        // Focus gain resumes and restores the surfaces owed by the loss.
+        let decision = advance_root_lifecycle(&[HostEvent::FocusGained], &mut lifecycle);
+        assert!(decision.active);
+        assert!(decision.restore_surfaces);
+
+        // A close request quits regardless of focus.
+        let decision = advance_root_lifecycle(&[HostEvent::QuitRequested], &mut lifecycle);
+        assert!(decision.quit);
+    }
 
     #[test]
     fn host_events_bridge_to_backend_neutral_lifecycle_events() {

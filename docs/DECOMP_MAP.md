@@ -78,7 +78,7 @@ Status markers:
 - [~] `D15` Render root type-1 C3D in the recovered branch-zero COPY profile; alternate Gouraud/modulate lighting remains open.
 - [~] `D16` Recover and implement final compose/present ownership.
 - [x] `D17` Assemble a production root-menu session from imported resources.
-- [ ] `D18` Run the complete root menu interactively in a native window.
+- [~] `D18` Run the complete root menu interactively in a native window (the `cmr-platform-sdl3` interactive presenter already drives the recovered `RootInteraction` controller in a resizable SDL window - settling the controller, opening the window, mapping keyboard/gamepad input through `FrontendInputMapper`, re-rendering only on a changed render input, and handling gamepad hotplug / renderer-reset / redraw; D18 wires the B12 host lifecycle into that loop so focus/pause/restore/shutdown behave end to end. The pure reducer `advance_root_lifecycle(events, &mut HostLifecycle)` folds the lifecycle-relevant host events (focus gained/lost, close) through `cmr-core::host_lifecycle` and returns a `RootLoopDecision { quit, active, restore_surfaces }`; the loop now pauses ticking/rendering while unfocused (blocking on the next event), re-presents the frame when a focus gain restored surfaces, and quits on a close request (in addition to the controller's own Escape/exit). A `HostLifecycle` is seeded focused at window creation. 1 reducer contract test (non-lifecycle events stay active; focus loss pauses; focus gain resumes + restores; close quits). D18 -> partial; the live window loop itself remains display-server glue, and the complete-menu transitions beyond the recovered `RootInteraction` states are future frontend work (F-series).)
 - [x] `D19` Bind the reviewed initial root C3D loader state without caller guesses.
 
 ## E. General renderer and scene data
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T21:42:00Z
-milestone=thread-the-portable-settings-and-source-root-through-native-startup
+updated_utc=2026-10-21T22:00:00Z
+milestone=wire-the-host-lifecycle-into-the-interactive-native-root-menu
 completed=52
-partial=48
-not_started=17
+partial=49
+not_started=16
 blocked=0
 total=117
-current_focus=D18-run-the-complete-root-menu-interactively-in-a-native-window
-next_exit_gate=run-the-interactive-native-root-menu-end-to-end
+current_focus=F03-implement-profile-creation-load-save-delete-flows
+next_exit_gate=recover-and-round-trip-the-frontend-persistence-model
 <!-- PROGRESS-TAIL-END -->

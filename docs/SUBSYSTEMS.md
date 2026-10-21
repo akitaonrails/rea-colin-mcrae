@@ -986,6 +986,16 @@ languages rather than fabricating or silently aliasing Italian assets.
   bytes, and the live game loop consumes the resolved paths with the B12
   `HostLifecycle` once the full loop is SDL-driven. See evidence
   `impl.native-startup-config`.
+- `cmr-platform-sdl3::advance_root_lifecycle` wires the B12 host lifecycle into
+  the interactive native root menu (D18). The presenter already drives the
+  recovered `RootInteraction` controller in a resizable SDL window; this reducer
+  folds focus/close host events through `cmr-core::host_lifecycle` into a
+  `RootLoopDecision { quit, active, restore_surfaces }`, and the loop now pauses
+  ticking and rendering while the window is unfocused (blocking on the next
+  event), re-presents the frame when a focus gain restored surfaces, and quits
+  on a close request alongside the controller's Escape/exit. The reducer is pure
+  and tested without a display server; the SDL window/event loop around it is
+  glue. See evidence `impl.interactive-native-root-lifecycle`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
