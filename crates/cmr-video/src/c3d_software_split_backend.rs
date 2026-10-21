@@ -55,6 +55,11 @@ use crate::{
         OrdinaryBitmapRgb16BlitError, compose_ordinary_bitmap_logical_rgb16_fast_blit,
         preflight_ordinary_bitmap_logical_rgb16_fast_blit,
     },
+    ordinary_bitmap_rgb16_stretch::{
+        OrdinaryBitmapRgb16StretchError,
+        compose_ordinary_bitmap_logical_rgb16_center_nearest_stretch,
+        preflight_ordinary_bitmap_logical_rgb16_center_nearest_stretch,
+    },
     packed_rgb_target::{
         FramebufferRgbFormat, LogicalMaskedRgbTarget, LogicalMaskedRgbTargetError,
     },
@@ -197,6 +202,7 @@ pub enum SoftwareSplitC3dBackendError {
         prepared_enabled: bool,
     },
     OrdinaryBitmapBlit(OrdinaryBitmapRgb16BlitError),
+    OrdinaryBitmapStretch(OrdinaryBitmapRgb16StretchError),
     Target(LogicalMaskedRgbTargetError),
     Viewport(RootMenuC3dViewportError),
     Raster(SoftwareC3dRasterError),
@@ -230,6 +236,7 @@ impl std::error::Error for SoftwareSplitC3dBackendError {
         match self {
             Self::Target(source) => Some(source),
             Self::OrdinaryBitmapBlit(source) => Some(source),
+            Self::OrdinaryBitmapStretch(source) => Some(source),
             Self::Viewport(source) => Some(source),
             Self::Raster(source) => Some(source),
             Self::Compose(source) => Some(source),
@@ -374,6 +381,36 @@ impl SoftwareSplitC3dOracleBackend {
         self.validate_target(destination)?;
         compose_ordinary_bitmap_logical_rgb16_fast_blit(source, &mut self.target, plan)
             .map_err(SoftwareSplitC3dBackendError::OrdinaryBitmapBlit)
+    }
+
+    /// Effect-free validation for the bounded Selection Stretch primitive.
+    ///
+    /// The application-side rectangles and numeric-zero request key are
+    /// recovered. Center-nearest sampling is an explicitly source-owned
+    /// deterministic policy and does not claim DirectDraw driver pixel parity.
+    pub fn preflight_ordinary_bitmap_logical_rgb16_center_nearest_stretch(
+        &self,
+        destination: SoftwareSplitC3dTargetHandle,
+        source: &OrdinaryBitmapLogicalRgb16Source,
+        plan: BlitPlan,
+    ) -> Result<(), SoftwareSplitC3dBackendError> {
+        self.require_inactive("preflight_ordinary_bitmap_logical_rgb16_center_nearest_stretch")?;
+        self.validate_target(destination)?;
+        preflight_ordinary_bitmap_logical_rgb16_center_nearest_stretch(source, &self.target, plan)
+            .map_err(SoftwareSplitC3dBackendError::OrdinaryBitmapStretch)
+    }
+
+    /// Composes one preflight-valid Selection Stretch into the owned target.
+    pub fn compose_ordinary_bitmap_logical_rgb16_center_nearest_stretch(
+        &mut self,
+        destination: SoftwareSplitC3dTargetHandle,
+        source: &OrdinaryBitmapLogicalRgb16Source,
+        plan: BlitPlan,
+    ) -> Result<(), SoftwareSplitC3dBackendError> {
+        self.require_inactive("compose_ordinary_bitmap_logical_rgb16_center_nearest_stretch")?;
+        self.validate_target(destination)?;
+        compose_ordinary_bitmap_logical_rgb16_center_nearest_stretch(source, &mut self.target, plan)
+            .map_err(SoftwareSplitC3dBackendError::OrdinaryBitmapStretch)
     }
 
     /// Replaces the owned logical color target while no scene is active.

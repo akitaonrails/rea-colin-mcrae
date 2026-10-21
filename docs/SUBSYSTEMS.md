@@ -194,9 +194,17 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   embedded palette while packing exact discriminator-selected RGB555/RGB565
   logical words and the packed palette-entry-zero key. Its companion fast-blit
   module preflights matching-layout opaque/keyed logical copies, including
-  aligned padding, before any write. It is nominally separate from fonts,
-  selected C3D textures, and framebuffer formats; native storage, stretch,
-  driver pixels, session ordering, and the 4-/24-bit branches remain open.
+  aligned padding, before any write. A separate Stretch module preserves the
+  recovered Selection rectangles, literal-zero key request, and layout checks,
+  then applies an explicitly source-owned destination-cell-center nearest
+  policy because DirectDraw sampling remains outside the executable. It is
+  nominally separate from fonts, selected C3D textures, and framebuffer
+  formats; native storage, driver-exact Stretch pixels, and the 4-/24-bit
+  branches remain open.
+- `cmr-video::software_championship_selection_rgb16`: nominal one-source owner
+  that converts the exact common Selection bitmap once, retains its stable
+  identity and media-relative path on failure, and prevents an ordinary
+  info/logo/frame source from satisfying the Selection slot accidentally.
 - `cmr-video::software_championship_ordinary_rgb16`: transactional fixed-shape
   ownership of converted R_INFO, 11 unique logo, and 15 Chequered sources,
   keyed by stable media-relative identities and retaining only contextual
@@ -204,13 +212,14 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   deliberately outside this pool.
 - `cmr-video::software_championship_setup_frame`: two-pass execution of the
   lightweight prepared setup transcript. Its standalone preparation derives
-  exact aligned extents directly from the owned RGB16 pool and optional
-  decoded Selection bitmap, with no indexed backend, uploads, fonts, or text
+  exact aligned extents from the owned RGB16 pool and optional nominal
+  converted Selection source, with no indexed backend, uploads, fonts, or text
   table. Execution rejects stale preview-cache snapshots, preflights every
-  supported effectful Fast bitmap before writes, composes R_INFO/logo/Chequered
-  sources in exact command order, and retains NoOp, Stretch, text, and other
-  deferred work as typed ordered outcomes. Cache publication records
-  completion of this bounded slice, not deferred pixels.
+  effectful Fast bitmap and supported Selection Stretch before writes, and
+  composes them in exact command order. Missing Selection at preparation stays
+  typed deferred; losing the source after a Stretch was prepared is a typed
+  preflight failure. Cache publication records completion of this bounded
+  slice, not unresolved text/info/next-preview pixels.
 - `cmr-video::software_championship_alternate_terminal`: whole-frame owner for
   the prepared RGB16 setup stream and optional selected-car scene on one split
   target. It preflights ordinary bitmaps plus the common scene and every car
@@ -224,8 +233,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   terminal state across repeated frames, and returns the owned headless backend
   after the callback. RGB555/RGB565 source-target and raster-state mismatches
   fail before callback entry. It creates no indexed backend, uploaded source,
-  font pool, localization table, or native presentation surface; Selection
-  Stretch and text pixels remain deferred.
+  font pool, localization table, or native presentation surface. Selection is
+  converted once and executed by the named source-owned Stretch policy; text,
+  info text, and next-preview pixels remain deferred.
 - `cmr-video::packed_rgb_target`: a nominal runtime-framebuffer format and
   logical masked-word target kept type-distinct from selected texture formats.
   It retains the complete raw surface descriptor and converts canonical RGB

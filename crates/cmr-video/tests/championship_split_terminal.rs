@@ -48,7 +48,7 @@ use cmr_core::{
     root_menu_c3d_visibility::RootMenuC3dVisibilityLatches,
 };
 use cmr_formats::{
-    bitmap::{BitmapLimits, IndexedBitmap, parse_indexed_bitmap},
+    bitmap::{BitmapLimits, parse_indexed_bitmap},
     c3d::{
         C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS, C3D_FORMAT_VERSION, C3D_GROUP0_VALUES_OFFSET,
         C3D_GROUP1_ENTRY24_LEN, C3D_GROUP1_ENTRY32_LEN, C3D_GROUP1_FIXED_LEN, C3D_HEADER_LEN,
@@ -78,6 +78,10 @@ use cmr_video::{
     software_championship_ordinary_rgb16::{
         SoftwareChampionshipOrdinaryRgb16Pool, prepare_software_championship_ordinary_rgb16_pool,
     },
+    software_championship_selection_rgb16::{
+        SoftwareChampionshipSelectionRgb16Source,
+        prepare_software_championship_selection_rgb16_source,
+    },
     software_championship_setup_frame::{
         SoftwareChampionshipBitmapOutcome, SoftwareChampionshipSetupCommandOutcome,
         SoftwareChampionshipSetupDeferredCommand,
@@ -104,7 +108,7 @@ fn alternate_session_repeats_car_and_next_frames_without_indexed_ownership() {
     let run = with_software_championship_alternate_session(&store, request, |session| {
         assert_eq!(session.ordinary_source_count(), 27);
         assert!(session.selection_is_loaded());
-        assert!(session.selection_is_deferred());
+        assert!(!session.selection_is_deferred());
         let initial_preview = session.preview_cache();
         let initial_transform = session.car_transform();
         let initial_words = session.backend().logical_target().words().to_vec();
@@ -148,7 +152,7 @@ fn alternate_session_repeats_car_and_next_frames_without_indexed_ownership() {
             })
             .unwrap();
         assert_eq!(first.scene.submission.unwrap().draws, 0);
-        assert!(first.setup.commands.iter().any(is_stretch));
+        assert!(first.setup.commands.iter().any(is_selection_bitmap));
         assert_eq!(
             first.palette_commit,
             DeferredPaletteCommitOutcome::SkippedNonIndexedDepth
@@ -554,8 +558,9 @@ fn alternate_preparation_uses_aligned_pool_extents_and_keeps_opaque_keys_unset()
                 ChampionshipBitmapIdentity::Selection => {
                     assert_eq!(plan.method, BlitMethod::Stretch);
                     assert_eq!(plan.color_key, Some(ColorKey { low: 0, high: 0 }));
-                    assert!(plan.source.right <= i32::try_from(selection.row_stride).unwrap());
-                    assert!(plan.source.bottom <= i32::try_from(selection.height).unwrap());
+                    let extent = selection.aligned_surface_extent();
+                    assert!(plan.source.right <= i32::try_from(extent[0]).unwrap());
+                    assert!(plan.source.bottom <= i32::try_from(extent[1]).unwrap());
                 }
                 ChampionshipBitmapIdentity::InfoBox => {
                     assert_eq!(plan.method, BlitMethod::Fast);
@@ -663,7 +668,7 @@ fn assert_preparation_parity(
     state: ChampionshipSetupFrameState,
     cache: ChampionshipPreviewCache,
     pool: &SoftwareChampionshipOrdinaryRgb16Pool,
-    selection: &IndexedBitmap,
+    selection: &SoftwareChampionshipSelectionRgb16Source,
     expected: &[PreparedKind],
 ) {
     let alternate = prepare_software_championship_alternate_setup_frame(
@@ -679,7 +684,10 @@ fn assert_preparation_parity(
         state,
         cache,
         |identity| match identity {
-            ChampionshipBitmapIdentity::Selection => Some((selection.row_stride, selection.height)),
+            ChampionshipBitmapIdentity::Selection => {
+                let [width, height] = selection.aligned_surface_extent();
+                Some((width, height))
+            }
             ChampionshipBitmapIdentity::InfoBox => {
                 let [width, height] = pool.info_box().aligned_surface_extent();
                 Some((width, height))
@@ -818,7 +826,7 @@ fn combined_terminal_preserves_setup_order_and_composes_visible_car_on_the_same_
             trace,
             [
                 TraceEvent::Deferred(0),
-                TraceEvent::Deferred(1),
+                TraceEvent::Bitmap(1, ChampionshipBitmapIdentity::Selection),
                 TraceEvent::Deferred(2),
                 TraceEvent::Bitmap(3, ChampionshipBitmapIdentity::InfoBox),
                 TraceEvent::Deferred(4),
@@ -901,7 +909,7 @@ fn combined_terminal_hidden_then_repeated_visible_frames_keep_cache_and_binding_
                 .iter()
                 .all(|depth| *depth == 1.0)
         );
-        assert!(hidden.setup.commands.iter().any(is_stretch));
+        assert!(hidden.setup.commands.iter().any(is_selection_bitmap));
         assert!(hidden.setup.commands.iter().any(is_info_text));
         assert!(hidden.setup.commands.iter().any(is_palette_request));
 
@@ -998,6 +1006,125 @@ fn complete_preflight_failure_is_effect_free_and_a_valid_frame_recovers() {
             )
             .unwrap();
         assert_ne!(fixture.backend.logical_target().words(), words_before);
+    });
+}
+
+#[test]
+fn combined_terminal_missing_selection_source_precedes_every_terminal_effect() {
+    with_fixture(|fixture| {
+        let transcript = car_transcript();
+        let mut preview_cache = ChampionshipPreviewCache::new();
+        let mut transform = ChampionshipCarState::new();
+        let mut car_visibility = ChampionshipCarVisibilityLatches::new();
+        let mut root_visibility = RootMenuC3dVisibilityLatches::new();
+        let mut palette_state = DeferredPaletteState::new();
+        let retained_route = FrontendC3dRouteState::new();
+
+        // Establish the executor's visible-car retained bindings. The first
+        // recovered frame is hidden and the second binds all three selectors.
+        fixture
+            .execute(
+                fixture.prepare_setup(&transcript, preview_cache),
+                &mut preview_cache,
+                &mut transform,
+                &mut car_visibility,
+                &mut root_visibility,
+                &mut palette_state,
+                &retained_route,
+            )
+            .unwrap();
+        let visible = fixture
+            .execute(
+                fixture.prepare_setup(&transcript, preview_cache),
+                &mut preview_cache,
+                &mut transform,
+                &mut car_visibility,
+                &mut root_visibility,
+                &mut palette_state,
+                &retained_route,
+            )
+            .unwrap();
+        assert_eq!(visible.scene.submission.unwrap().bindings, 3);
+
+        let prepared = fixture.prepare_setup(&transcript, preview_cache);
+        let cache_before = preview_cache;
+        let transform_before = transform;
+        let car_visibility_before = car_visibility.clone();
+        let root_visibility_before = root_visibility.clone();
+        let palette_before = palette_state;
+        let words_before = fixture.backend.logical_target().words().to_vec();
+        let depth_before = fixture.backend.depth_values().to_vec();
+        let rejected_route = FrontendC3dRouteState::new();
+
+        let error = execute_software_championship_alternate_terminal_frame(
+            prepared,
+            EXTENT,
+            ChampionshipCarInput {
+                f9: false,
+                f10: false,
+            },
+            Some(SoftwareChampionshipAlternateCarResources {
+                car: CanonicalCar::Subaru,
+                topology: fixture.topology,
+                runtime: fixture.runtime,
+                base_basis: IDENTITY_BASIS,
+                pre_draw_state: ChampionshipCarPreDrawState::DISABLED,
+            }),
+            SoftwareChampionshipAlternateTerminalState {
+                preview_cache: &mut preview_cache,
+                car_transform: &mut transform,
+                car_visibility: &mut car_visibility,
+                root_visibility: &mut root_visibility,
+                palette_state: &mut palette_state,
+                palette_group_bases: PaletteGroupBases {
+                    group_1: 1,
+                    group_2: 2,
+                    group_3: 3,
+                    group_4: 0,
+                    group_5: 4,
+                },
+                route: &rejected_route,
+            },
+            &mut fixture.executor,
+            fixture.pool,
+            None,
+            &mut fixture.backend,
+            fixture.destination,
+            C3dDepthClear::Clear,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            SoftwareChampionshipAlternateTerminalError::Setup(
+                cmr_video::software_championship_setup_frame::SoftwareChampionshipSetupFrameError::MissingSelectionSource {
+                    command_index: 1,
+                },
+            )
+        );
+        assert_eq!(rejected_route.active(), None);
+        assert_eq!(preview_cache, cache_before);
+        assert_eq!(transform, transform_before);
+        assert_eq!(car_visibility, car_visibility_before);
+        assert_eq!(root_visibility, root_visibility_before);
+        assert_eq!(palette_state, palette_before);
+        assert_eq!(fixture.backend.logical_target().words(), words_before);
+        assert_eq!(fixture.backend.depth_values(), depth_before);
+
+        // The rejected route did not invalidate the executor's retained
+        // bindings: the already-active route reuses two selectors as before.
+        let repeated = fixture
+            .execute(
+                fixture.prepare_setup(&transcript, preview_cache),
+                &mut preview_cache,
+                &mut transform,
+                &mut car_visibility,
+                &mut root_visibility,
+                &mut palette_state,
+                &retained_route,
+            )
+            .unwrap();
+        assert_eq!(repeated.scene.submission.unwrap().bindings, 2);
     });
 }
 
@@ -1127,7 +1254,7 @@ fn next_preview_blits_chequered_frame_then_runs_empty_common_scene_and_skips_pal
                 TraceEvent::Deferred(0),
                 TraceEvent::Deferred(1),
                 TraceEvent::Deferred(2),
-                TraceEvent::Deferred(3),
+                TraceEvent::Bitmap(3, ChampionshipBitmapIdentity::Selection),
                 TraceEvent::Deferred(4),
                 TraceEvent::Bitmap(5, ChampionshipBitmapIdentity::InfoBox),
                 TraceEvent::Deferred(6),
@@ -1160,7 +1287,7 @@ fn next_preview_blits_chequered_frame_then_runs_empty_common_scene_and_skips_pal
             cmr_core::deferred_palette::DeferredPaletteCommitOutcome::SkippedNonIndexedDepth
         );
         assert_eq!(palette_state.pending(), Some(PaletteArenaIndex::new(10)));
-        assert!(outcome.setup.commands.iter().any(is_stretch));
+        assert!(outcome.setup.commands.iter().any(is_selection_bitmap));
         assert!(outcome.setup.commands.iter().any(is_info_text));
         assert!(outcome.setup.commands.iter().any(is_palette_request));
     });
@@ -1197,14 +1324,12 @@ fn trace_setup(command: &SoftwareChampionshipSetupCommandOutcome) -> TraceEvent 
     }
 }
 
-fn is_stretch(command: &SoftwareChampionshipSetupCommandOutcome) -> bool {
+fn is_selection_bitmap(command: &SoftwareChampionshipSetupCommandOutcome) -> bool {
     matches!(
         command,
-        SoftwareChampionshipSetupCommandOutcome::Deferred {
-            command: SoftwareChampionshipSetupDeferredCommand::Bitmap {
-                identity: ChampionshipBitmapIdentity::Selection,
-                ..
-            },
+        SoftwareChampionshipSetupCommandOutcome::ExecutedBitmap {
+            identity: ChampionshipBitmapIdentity::Selection,
+            outcome: SoftwareChampionshipBitmapOutcome::Blitted,
             ..
         }
     )
@@ -1235,7 +1360,7 @@ fn is_palette_request(command: &SoftwareChampionshipSetupCommandOutcome) -> bool
 struct Fixture<'a> {
     topology: &'a cmr_core::c3d_topology::C3dObjectTopology<'a>,
     runtime: &'a cmr_core::root_menu_c3d_runtime::C3dResourceScaledObject,
-    selection: IndexedBitmap,
+    selection: SoftwareChampionshipSelectionRgb16Source,
     pool: &'a SoftwareChampionshipOrdinaryRgb16Pool,
     executor: ChampionshipCarBatchExecutor<
         'a,
@@ -1369,6 +1494,7 @@ impl Fixture<'_> {
             },
             &mut self.executor,
             self.pool,
+            Some(&self.selection),
             &mut self.backend,
             destination,
             depth_clear,
@@ -1471,6 +1597,7 @@ impl Fixture<'_> {
             },
             &mut self.executor,
             self.pool,
+            Some(&self.selection),
             &mut self.backend,
             destination,
             depth_clear,
@@ -1521,7 +1648,7 @@ fn with_source_fixture(
         &cmr_core::championship_assets::ChampionshipAssets,
         &cmr_core::championship_frame_assets::ChampionshipFrameAssets,
         &SoftwareChampionshipOrdinaryRgb16Pool,
-        &IndexedBitmap,
+        &SoftwareChampionshipSelectionRgb16Source,
     ),
 ) {
     let temporary = TestDirectory::new();
@@ -1533,6 +1660,7 @@ fn with_source_fixture(
         prepare_software_championship_ordinary_rgb16_pool(&championship, &frame_assets, 5).unwrap();
     let selection =
         parse_indexed_bitmap(&indexed_bitmap(256, 256, 1), BitmapLimits::default()).unwrap();
+    let selection = prepare_software_championship_selection_rgb16_source(&selection, 5).unwrap();
     run(&store, &championship, &frame_assets, &pool, &selection);
 }
 

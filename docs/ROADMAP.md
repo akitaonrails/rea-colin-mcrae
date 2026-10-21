@@ -309,23 +309,26 @@ shared ordered kernel now prepares either rich indexed payloads or a
 lightweight alternate transcript from exact source extents, with tests proving
 full public-command parity across car, gear, and Next cold/warm frames. The
 alternate adapter derives aligned extents from the 27-source RGB16 pool and an
-optional decoded Selection bitmap without indexed uploads, font atlases, or a
-text table. A two-pass alternate executor rejects stale cache snapshots,
-resolves the pool, preflights every supported Fast bitmap before effects,
-composes eligible sources in transcript order, and returns text, Stretch,
-NoOp, and existing deferred boundaries as exact typed outcomes. Its cache
-commit proves only that bounded ordinary-bitmap pass;
+optional nominal converted Selection source without indexed uploads, font
+atlases, or a text table. A two-pass alternate executor rejects stale cache
+snapshots, preflights every supported Fast bitmap plus Selection Stretch before
+effects, and composes them in transcript order while returning text, NoOp, and
+other deferred boundaries as exact typed outcomes. Selection uses the recovered
+literal-zero key/call geometry and an explicitly source-owned center-nearest
+policy because the legacy DirectDraw sampling kernel is not present in the
+executable. The cache commit proves only that bounded ordinary-bitmap pass;
 the alternate terminal now adds complete common-scene/car-batch preflight,
 coordinates transform/latch/palette state inline, and runs the selected-car or
 empty Next scene after setup on the same target. It explicitly skips the
 non-indexed palette commit while preserving the pending request. Standalone
 alternate session ownership now builds this complete retained slice directly
 from a verified user import without an indexed backend or uploaded sources. It
-loads exact Selection geometry, validates caller-explicit RGB and raster
-policies before callback entry, and preserves target/depth, binding cache,
-preview/transform/latch/route/palette state across repeated car and Next
-frames. Selection Stretch, alternate queued-font pixels, native presentation,
-and the other deferred pixels are the next integration seams.
+loads and converts Selection once, executes it through the named source-owned
+Stretch policy, validates caller-explicit RGB and raster policies before
+callback entry, and preserves target/depth, binding cache, preview/transform/
+latch/route/palette state across repeated car and Next frames. Driver-exact
+Stretch comparison, alternate queued-font pixels, native
+presentation, and the other deferred pixels are the next integration seams.
 
 Exit gate:
 

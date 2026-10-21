@@ -1,12 +1,11 @@
 //! Ordered alternate-RGB16 execution of a prepared championship setup frame.
 //!
 //! Every supported ordinary-bitmap `Fast` command is validated before the
-//! first target write. Text, recovered deferred commands, and bitmap stretching
-//! remain typed ordered work; this module does not guess their execution.
+//! first target write. The recovered Selection Stretch request uses an
+//! explicitly source-owned center-nearest policy. Text and other unresolved
+//! commands remain typed ordered work.
 
 use std::fmt;
-
-use cmr_formats::bitmap::IndexedBitmap;
 
 use cmr_core::{
     blit::{BlitDecision, BlitMethod},
@@ -29,6 +28,7 @@ use crate::{
     software_championship_ordinary_rgb16::{
         ChampionshipOrdinaryRgb16Identity, SoftwareChampionshipOrdinaryRgb16Pool,
     },
+    software_championship_selection_rgb16::SoftwareChampionshipSelectionRgb16Source,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,22 +77,21 @@ pub struct SoftwareChampionshipSetupFrameOutcome {
 /// assets, localization bytes, glyph layout, or an indexed backend.
 ///
 /// Ordinary bitmap extents come from the retained RGB16 pool. Selection is
-/// optional because it is outside that pool; callers may supply its decoded
-/// bitmap so aligned row width is derived here, or leave it as typed deferred
-/// Stretch work. Its numeric entry-zero key belongs only to this unresolved
-/// Selection plan and is not treated as an RGB16 packed key.
+/// optional because it is outside that pool; callers may supply its converted
+/// logical source so aligned row width is derived from the exact source that
+/// execution will sample, or omit it to prepare typed deferred work.
 pub fn prepare_software_championship_alternate_setup_frame(
     input: ChampionshipSetupVisualInput<'_>,
     state: ChampionshipSetupFrameState,
     preview_cache: ChampionshipPreviewCache,
     sources: &SoftwareChampionshipOrdinaryRgb16Pool,
-    selection: Option<&IndexedBitmap>,
+    selection: Option<&SoftwareChampionshipSelectionRgb16Source>,
 ) -> Result<PreparedChampionshipAlternateSetupFrame, ChampionshipSetupFramePrepareError> {
     prepare_championship_setup_frame_from_source_extents(input, state, preview_cache, |identity| {
         let extent = match identity {
             ChampionshipBitmapIdentity::Selection => {
                 let selection = selection?;
-                [selection.row_stride, selection.height]
+                selection.aligned_surface_extent()
             }
             ChampionshipBitmapIdentity::InfoBox => sources.info_box().aligned_surface_extent(),
             ChampionshipBitmapIdentity::ManufacturerLogo(logo) => {
@@ -115,6 +114,9 @@ pub enum SoftwareChampionshipSetupFrameError {
     UnsupportedFastBitmapIdentity {
         command_index: usize,
         identity: ChampionshipBitmapIdentity,
+    },
+    MissingSelectionSource {
+        command_index: usize,
     },
     BitmapPreflight {
         command_index: usize,
@@ -142,6 +144,10 @@ impl fmt::Display for SoftwareChampionshipSetupFrameError {
                 formatter,
                 "championship alternate bitmap {identity:?} at command {command_index} has no ordinary RGB16 source"
             ),
+            Self::MissingSelectionSource { command_index } => write!(
+                formatter,
+                "championship Selection Stretch at command {command_index} has no converted Selection source"
+            ),
             Self::BitmapPreflight {
                 command_index,
                 identity,
@@ -168,7 +174,9 @@ impl std::error::Error for SoftwareChampionshipSetupFrameError {
             Self::BitmapPreflight { source, .. } | Self::BitmapExecution { source, .. } => {
                 Some(source)
             }
-            Self::StalePreviewCache { .. } | Self::UnsupportedFastBitmapIdentity { .. } => None,
+            Self::StalePreviewCache { .. }
+            | Self::UnsupportedFastBitmapIdentity { .. }
+            | Self::MissingSelectionSource { .. } => None,
         }
     }
 }
@@ -176,12 +184,13 @@ impl std::error::Error for SoftwareChampionshipSetupFrameError {
 /// Executes every currently supported ordinary-bitmap command in exact source
 /// order and returns every unresolved command as a typed ordered outcome.
 ///
-/// Every supported effectful `Fast` bitmap in the complete command stream is
-/// preflighted before the first backend effect. `NoOp` and deferred `Stretch`
-/// commands do not resolve an ordinary source. The core-owned pending preview
+/// Every supported effectful `Fast` bitmap and supplied Selection `Stretch` in
+/// the complete command stream is preflighted before the first backend effect.
+/// `NoOp` and typed unresolved commands do not resolve an ordinary source. The
+/// core-owned pending preview
 /// cache is committed only after the ordered ordinary-bitmap slice succeeds;
-/// emitting typed unresolved work does not claim that text, stretching, or
-/// other deferred visuals rendered. An unexpected compose-time failure cannot
+/// emitting typed unresolved work does not claim that text or other deferred
+/// visuals rendered. An unexpected compose-time failure cannot
 /// roll back bitmap writes from earlier commands, but it suppresses the
 /// outcome and cache commit.
 /// The accepted prepared type contains no indexed handles or glyph payloads.
@@ -189,6 +198,7 @@ pub fn execute_software_championship_setup_frame(
     prepared: PreparedChampionshipAlternateSetupFrame,
     preview_cache: &mut ChampionshipPreviewCache,
     sources: &SoftwareChampionshipOrdinaryRgb16Pool,
+    selection: Option<&SoftwareChampionshipSelectionRgb16Source>,
     backend: &mut SoftwareSplitC3dOracleBackend,
     destination: SoftwareSplitC3dTargetHandle,
 ) -> Result<SoftwareChampionshipSetupFrameOutcome, SoftwareChampionshipSetupFrameError> {
@@ -201,12 +211,19 @@ pub fn execute_software_championship_setup_frame(
             },
         )?;
 
-    preflight_software_championship_setup_frame(&prepared, sources, backend, destination)?;
+    preflight_software_championship_setup_frame(
+        &prepared,
+        sources,
+        selection,
+        backend,
+        destination,
+    )?;
 
     let commands = execute_preflighted_software_championship_setup_frame(
         prepared,
         preview_cache,
         sources,
+        selection,
         backend,
         destination,
         |command_index, command| {
@@ -223,6 +240,7 @@ pub fn execute_software_championship_setup_frame(
 pub(crate) fn preflight_software_championship_setup_frame<T, B>(
     prepared: &PreparedChampionshipSetupFrame<T, B>,
     sources: &SoftwareChampionshipOrdinaryRgb16Pool,
+    selection: Option<&SoftwareChampionshipSelectionRgb16Source>,
     backend: &SoftwareSplitC3dOracleBackend,
     destination: SoftwareSplitC3dTargetHandle,
 ) -> Result<(), SoftwareChampionshipSetupFrameError> {
@@ -236,6 +254,24 @@ pub(crate) fn preflight_software_championship_setup_frame<T, B>(
             continue;
         };
         if plan.method == BlitMethod::Stretch {
+            if identity == ChampionshipBitmapIdentity::Selection {
+                let selection = selection.ok_or(
+                    SoftwareChampionshipSetupFrameError::MissingSelectionSource { command_index },
+                )?;
+                backend
+                    .preflight_ordinary_bitmap_logical_rgb16_center_nearest_stretch(
+                        destination,
+                        selection.logical_source(),
+                        plan,
+                    )
+                    .map_err(
+                        |source| SoftwareChampionshipSetupFrameError::BitmapPreflight {
+                            command_index,
+                            identity,
+                            source,
+                        },
+                    )?;
+            }
             continue;
         }
         let source = resolve_fast_source(sources, command_index, identity)?;
@@ -256,6 +292,7 @@ pub(crate) fn execute_preflighted_software_championship_setup_frame<T, B>(
     prepared: PreparedChampionshipSetupFrame<T, B>,
     preview_cache: &mut ChampionshipPreviewCache,
     sources: &SoftwareChampionshipOrdinaryRgb16Pool,
+    selection: Option<&SoftwareChampionshipSelectionRgb16Source>,
     backend: &mut SoftwareSplitC3dOracleBackend,
     destination: SoftwareSplitC3dTargetHandle,
     mut execute_championship: impl FnMut(
@@ -290,6 +327,34 @@ pub(crate) fn execute_preflighted_software_championship_setup_frame<T, B>(
                     identity,
                     outcome: SoftwareChampionshipBitmapOutcome::NoOp,
                 }),
+                PreparedChampionshipSetupCommand::Bitmap {
+                    command_index,
+                    identity,
+                    decision: BlitDecision::Blit(plan),
+                } if plan.method == BlitMethod::Stretch
+                    && identity == ChampionshipBitmapIdentity::Selection
+                    && selection.is_some() =>
+                {
+                    let selection = selection.expect("guard established a Selection source");
+                    backend
+                        .compose_ordinary_bitmap_logical_rgb16_center_nearest_stretch(
+                            destination,
+                            selection.logical_source(),
+                            plan,
+                        )
+                        .map_err(
+                            |source| SoftwareChampionshipSetupFrameError::BitmapExecution {
+                                command_index,
+                                identity,
+                                source,
+                            },
+                        )?;
+                    commands.push(SoftwareChampionshipSetupCommandOutcome::ExecutedBitmap {
+                        command_index,
+                        identity,
+                        outcome: SoftwareChampionshipBitmapOutcome::Blitted,
+                    });
+                }
                 PreparedChampionshipSetupCommand::Bitmap {
                     command_index,
                     identity,
@@ -358,6 +423,9 @@ pub(crate) fn execute_preflighted_software_championship_setup_frame<T, B>(
                 },
                 SoftwareChampionshipSetupFrameError::StalePreviewCache { expected, actual } => {
                     SoftwareChampionshipSetupFrameError::StalePreviewCache { expected, actual }
+                }
+                SoftwareChampionshipSetupFrameError::MissingSelectionSource { .. } => {
+                    SoftwareChampionshipSetupFrameError::MissingSelectionSource { command_index }
                 }
             },
         })?;

@@ -46,6 +46,7 @@ use crate::{
         SoftwareSplitC3dTargetHandle,
     },
     software_championship_ordinary_rgb16::SoftwareChampionshipOrdinaryRgb16Pool,
+    software_championship_selection_rgb16::SoftwareChampionshipSelectionRgb16Source,
     software_championship_setup_frame::{
         SoftwareChampionshipSetupCommandOutcome, SoftwareChampionshipSetupDeferredCommand,
         SoftwareChampionshipSetupFrameError, SoftwareChampionshipSetupFrameOutcome,
@@ -144,8 +145,12 @@ impl std::error::Error for SoftwareChampionshipAlternateTerminalError {
 /// Executes one prepared setup stream and its selected-car terminal scene on
 /// the same owner-scoped logical target.
 ///
-/// Text, Selection stretching, info text, and next-preview work remain typed
-/// deferred commands. Palette requests, car transforms, and visibility latches
+/// Text, info text, and next-preview work remain typed deferred commands.
+/// A supplied converted Selection executes through the bounded source-owned
+/// Stretch policy. Selection omitted during preparation and future unsupported
+/// Stretch identities remain deferred; a prepared Selection bitmap with a
+/// missing execution source is rejected during whole-frame preflight.
+/// Palette requests, car transforms, and visibility latches
 /// are coordinated inline; the terminal reports the non-indexed palette skip
 /// while retaining any pending request. Setup cache, transform, and pending
 /// palette state remain committed if the later scene fails, matching the
@@ -159,6 +164,7 @@ pub fn execute_software_championship_alternate_terminal_frame<'catalog>(
     state: SoftwareChampionshipAlternateTerminalState<'_>,
     executor: &mut ChampionshipCarBatchExecutor<'catalog, SoftwareSplitC3dBinding>,
     sources: &SoftwareChampionshipOrdinaryRgb16Pool,
+    selection: Option<&SoftwareChampionshipSelectionRgb16Source>,
     backend: &mut SoftwareSplitC3dOracleBackend,
     destination: SoftwareSplitC3dTargetHandle,
     depth_clear: C3dDepthClear,
@@ -216,8 +222,14 @@ pub fn execute_software_championship_alternate_terminal_frame<'catalog>(
         .as_ref()
         .is_some_and(|prepared| prepared.selected_parent_visible());
 
-    preflight_software_championship_setup_frame(&prepared_setup, sources, backend, destination)
-        .map_err(SoftwareChampionshipAlternateTerminalError::Setup)?;
+    preflight_software_championship_setup_frame(
+        &prepared_setup,
+        sources,
+        selection,
+        backend,
+        destination,
+    )
+    .map_err(SoftwareChampionshipAlternateTerminalError::Setup)?;
 
     // Route entry precedes whole-frame C3D preflight so retained-binding plans
     // exactly match the subsequent terminal execution.
@@ -243,6 +255,7 @@ pub fn execute_software_championship_alternate_terminal_frame<'catalog>(
         prepared_setup,
         state.preview_cache,
         sources,
+        selection,
         backend,
         destination,
         |command_index, command| match command {

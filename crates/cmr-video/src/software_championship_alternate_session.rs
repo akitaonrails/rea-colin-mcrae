@@ -1,9 +1,9 @@
 //! Scoped standalone ownership for the alternate championship oracle.
 //!
 //! This assembler consumes decoded assets from a caller-selected verified
-//! import and retains source-owned logical RGB resources. Selection is kept
-//! only as a decoded indexed source so its unresolved Stretch plan has exact
-//! geometry. The session deliberately does not create an indexed backend,
+//! import and retains source-owned logical RGB resources. Selection is decoded
+//! and converted once, then sampled by an explicitly source-owned Stretch
+//! policy. The session deliberately does not create an indexed backend,
 //! upload surfaces, load fonts or localization, or claim native presentation
 //! behavior.
 
@@ -61,6 +61,10 @@ use crate::{
     software_championship_ordinary_rgb16::{
         SoftwareChampionshipOrdinaryRgb16Pool, SoftwareChampionshipOrdinaryRgb16PoolError,
         prepare_software_championship_ordinary_rgb16_pool,
+    },
+    software_championship_selection_rgb16::{
+        SoftwareChampionshipSelectionRgb16Error, SoftwareChampionshipSelectionRgb16Source,
+        prepare_software_championship_selection_rgb16_source,
     },
     software_championship_session::{
         SoftwareChampionshipActorRgbSelection, SoftwareChampionshipPaletteLayout,
@@ -151,6 +155,7 @@ pub enum SoftwareChampionshipAlternateSessionBuildError {
     ChampionshipAssets(ChampionshipAssetLoadError),
     FrameAssets(ChampionshipFrameAssetLoadError),
     Selection(RootMenuBitmapLoadError),
+    SelectionRgb16(SoftwareChampionshipSelectionRgb16Error),
     FrontendC3d(FrontendC3dPreparationError),
     CarTopology {
         car: CanonicalCar,
@@ -181,6 +186,7 @@ impl fmt::Display for SoftwareChampionshipAlternateSessionBuildError {
             Self::ChampionshipAssets(source) => source.fmt(formatter),
             Self::FrameAssets(source) => source.fmt(formatter),
             Self::Selection(source) => source.fmt(formatter),
+            Self::SelectionRgb16(source) => source.fmt(formatter),
             Self::FrontendC3d(source) => source.fmt(formatter),
             Self::CarTopology { car, source } => {
                 write!(
@@ -225,6 +231,7 @@ impl std::error::Error for SoftwareChampionshipAlternateSessionBuildError {
             Self::ChampionshipAssets(source) => Some(source),
             Self::FrameAssets(source) => Some(source),
             Self::Selection(source) => Some(source),
+            Self::SelectionRgb16(source) => Some(source),
             Self::FrontendC3d(source) => Some(source),
             Self::CarTopology { source, .. } => Some(source),
             Self::CarRuntime { source, .. } => Some(source),
@@ -282,7 +289,7 @@ pub struct SoftwareChampionshipAlternateSession<'session, 'asset, 'catalog> {
     topologies: &'session [C3dObjectTopology<'asset>; CHAMPIONSHIP_CAR_COUNT],
     runtimes: &'session [C3dResourceScaledObject; CHAMPIONSHIP_CAR_COUNT],
     sources: &'session SoftwareChampionshipOrdinaryRgb16Pool,
-    selection: &'session cmr_formats::bitmap::IndexedBitmap,
+    selection: &'session SoftwareChampionshipSelectionRgb16Source,
     executor: &'session mut ChampionshipCarBatchExecutor<'catalog, SoftwareSplitC3dBinding>,
     backend: &'session mut SoftwareSplitC3dOracleBackend,
     preview_cache: &'session mut ChampionshipPreviewCache,
@@ -346,6 +353,7 @@ impl SoftwareChampionshipAlternateSession<'_, '_, '_> {
             },
             self.executor,
             self.sources,
+            Some(self.selection),
             self.backend,
             destination,
             self.request.depth_clear,
@@ -404,8 +412,10 @@ impl SoftwareChampionshipAlternateSession<'_, '_, '_> {
     }
 
     #[must_use]
+    /// Returns false because the retained converted Selection now executes at
+    /// its recovered bitmap position through the source-owned Stretch policy.
     pub const fn selection_is_deferred(&self) -> bool {
-        true
+        false
     }
 
     #[must_use]
@@ -529,6 +539,11 @@ pub fn with_software_championship_alternate_session<R>(
         .map_err(SoftwareChampionshipAlternateSessionBuildError::FrameAssets)?;
     let selection = load_root_menu_selection_bitmap(store, request.bitmap_limits)
         .map_err(SoftwareChampionshipAlternateSessionBuildError::Selection)?;
+    let selection = prepare_software_championship_selection_rgb16_source(
+        &selection.bitmap,
+        request.display_format_discriminator,
+    )
+    .map_err(SoftwareChampionshipAlternateSessionBuildError::SelectionRgb16)?;
     let root = load_root_menu_c3d(store, request.variant, request.c3d_limits);
     let frontend = prepare_frontend_c3d_resources(&championship, &root, request.bitmap_limits)
         .map_err(SoftwareChampionshipAlternateSessionBuildError::FrontendC3d)?;
@@ -604,7 +619,7 @@ pub fn with_software_championship_alternate_session<R>(
             topologies: &topologies,
             runtimes: &runtimes,
             sources: &sources,
-            selection: &selection.bitmap,
+            selection: &selection,
             executor: &mut executor,
             backend: &mut backend,
             preview_cache: &mut preview_cache,

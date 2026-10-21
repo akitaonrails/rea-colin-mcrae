@@ -97,6 +97,9 @@ use cmr_video::legacy_c3d_pixel_format::{
 use cmr_video::packed_rgb_target::FramebufferRgbFormat;
 use cmr_video::selected_texture_conversion_oracle::SourceOwnedTextureConversionOraclePolicy;
 use cmr_video::software_championship_ordinary_rgb16::prepare_software_championship_ordinary_rgb16_pool;
+use cmr_video::software_championship_selection_rgb16::{
+    SoftwareChampionshipSelectionRgb16Source, prepare_software_championship_selection_rgb16_source,
+};
 use cmr_video::software_championship_session::{
     SoftwareChampionshipFrameRequest, SoftwareChampionshipRasterSelection,
     SoftwareChampionshipRenderError, SoftwareChampionshipSessionBuildError,
@@ -835,6 +838,7 @@ fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
             prepared,
             &mut cache,
             pool,
+            Some(selection),
             &mut backend,
             destination,
         )
@@ -844,7 +848,10 @@ fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
             alternate_setup_kinds(&outcome.commands),
             [
                 AlternateSetupKind::Text(SetupTextRole::Title),
-                AlternateSetupKind::Stretch(ChampionshipBitmapIdentity::Selection),
+                AlternateSetupKind::Bitmap(
+                    ChampionshipBitmapIdentity::Selection,
+                    SoftwareChampionshipBitmapOutcome::Blitted,
+                ),
                 AlternateSetupKind::Text(SetupTextRole::Row(
                     cmr_core::championship_setup::SetupRowKind::ChooseCar,
                 )),
@@ -878,6 +885,7 @@ fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
             warm,
             &mut cache,
             pool,
+            Some(selection),
             &mut backend,
             destination,
         )
@@ -900,6 +908,7 @@ fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
             gear_prepared,
             &mut gear_cache,
             pool,
+            Some(selection),
             &mut gear_backend,
             gear_destination,
         )
@@ -909,7 +918,7 @@ fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
             [
                 AlternateSetupKind::Text(SetupTextRole::Title),
                 AlternateSetupKind::Text(SetupTextRole::Row(_)),
-                AlternateSetupKind::Stretch(ChampionshipBitmapIdentity::Selection),
+                AlternateSetupKind::Bitmap(ChampionshipBitmapIdentity::Selection, _),
                 AlternateSetupKind::Text(SetupTextRole::Row(_)),
                 AlternateSetupKind::Bitmap(ChampionshipBitmapIdentity::InfoBox, _),
                 AlternateSetupKind::Championship(DeferredChampionshipCommand::InfoText(_)),
@@ -944,6 +953,7 @@ fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
             next_prepared,
             &mut next_cache,
             pool,
+            Some(selection),
             &mut next_backend,
             next_destination,
         )
@@ -955,7 +965,7 @@ fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
                 AlternateSetupKind::Text(SetupTextRole::Title),
                 AlternateSetupKind::Text(SetupTextRole::Row(_)),
                 AlternateSetupKind::Text(SetupTextRole::Row(_)),
-                AlternateSetupKind::Stretch(ChampionshipBitmapIdentity::Selection),
+                AlternateSetupKind::Bitmap(ChampionshipBitmapIdentity::Selection, _),
                 AlternateSetupKind::Text(SetupTextRole::Row(_)),
                 AlternateSetupKind::Bitmap(ChampionshipBitmapIdentity::InfoBox, _),
                 AlternateSetupKind::Championship(DeferredChampionshipCommand::InfoText(_)),
@@ -977,6 +987,54 @@ fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
 fn alternate_setup_noops_skip_target_access_and_preflight_failures_are_atomic() {
     with_alternate_setup_fixture(|selection, pool| {
         let transcript = championship_transcript();
+        let mut missing_cache = ChampionshipPreviewCache::new();
+        let prepared_with_selection =
+            prepare_alternate_setup(&transcript, None, missing_cache, selection, pool);
+        let (mut missing_backend, missing_destination) = split_setup_backend(false);
+        let missing_before = missing_backend.logical_target().words().to_vec();
+        assert_eq!(
+            execute_software_championship_setup_frame(
+                prepared_with_selection,
+                &mut missing_cache,
+                pool,
+                None,
+                &mut missing_backend,
+                missing_destination,
+            ),
+            Err(SoftwareChampionshipSetupFrameError::MissingSelectionSource { command_index: 1 })
+        );
+        assert_eq!(missing_cache, ChampionshipPreviewCache::new());
+        assert_eq!(missing_backend.logical_target().words(), missing_before);
+
+        let mut deferred_cache = ChampionshipPreviewCache::new();
+        let deferred_prepared = prepare_software_championship_alternate_setup_frame(
+            alternate_setup_input(&transcript),
+            ChampionshipSetupFrameState::default(),
+            deferred_cache,
+            pool,
+            None,
+        )
+        .unwrap();
+        let (mut deferred_backend, deferred_destination) = split_setup_backend(false);
+        let deferred = execute_software_championship_setup_frame(
+            deferred_prepared,
+            &mut deferred_cache,
+            pool,
+            None,
+            &mut deferred_backend,
+            deferred_destination,
+        )
+        .unwrap();
+        assert!(deferred.commands.iter().any(|command| matches!(
+            command,
+            SoftwareChampionshipSetupCommandOutcome::Deferred {
+                command: SoftwareChampionshipSetupDeferredCommand::Championship(
+                    DeferredChampionshipCommand::Selection(_)
+                ),
+                ..
+            }
+        )));
+
         let mut offscreen = alternate_setup_input(&transcript);
         offscreen.frontend_offset_q16 = Q16Point::new(100 << 16, 100 << 16);
         let mut noop_cache = ChampionshipPreviewCache::new();
@@ -1010,6 +1068,7 @@ fn alternate_setup_noops_skip_target_access_and_preflight_failures_are_atomic() 
             prepared,
             &mut noop_cache,
             pool,
+            Some(selection),
             &mut owner,
             foreign_handle,
         )
@@ -1045,6 +1104,7 @@ fn alternate_setup_noops_skip_target_access_and_preflight_failures_are_atomic() 
                 prepared,
                 &mut cache,
                 pool,
+                Some(selection),
                 &mut backend,
                 destination,
             )
@@ -1064,6 +1124,7 @@ fn alternate_setup_noops_skip_target_access_and_preflight_failures_are_atomic() 
             recovery,
             &mut recovery_cache,
             pool,
+            Some(selection),
             &mut recovered_backend,
             recovered_destination,
         )
@@ -1680,7 +1741,7 @@ fn synthetic_fonts() -> FontSet {
 
 fn with_alternate_setup_fixture<T>(
     run: impl FnOnce(
-        &cmr_formats::bitmap::IndexedBitmap,
+        &SoftwareChampionshipSelectionRgb16Source,
         &cmr_video::software_championship_ordinary_rgb16::SoftwareChampionshipOrdinaryRgb16Pool,
     ) -> T,
 ) -> T {
@@ -1696,6 +1757,7 @@ fn with_alternate_setup_fixture<T>(
         BitmapLimits::default(),
     )
     .unwrap();
+    let selection = prepare_software_championship_selection_rgb16_source(&selection, 5).unwrap();
     run(&selection, &pool)
 }
 
@@ -1703,7 +1765,7 @@ fn prepare_alternate_setup(
     transcript: &ChampionshipSetupRenderTranscript,
     chequered_frame: Option<ChequeredFrame>,
     cache: ChampionshipPreviewCache,
-    selection: &cmr_formats::bitmap::IndexedBitmap,
+    selection: &SoftwareChampionshipSelectionRgb16Source,
     pool: &cmr_video::software_championship_ordinary_rgb16::SoftwareChampionshipOrdinaryRgb16Pool,
 ) -> cmr_core::championship_setup_frame::PreparedChampionshipAlternateSetupFrame {
     prepare_software_championship_alternate_setup_frame(
