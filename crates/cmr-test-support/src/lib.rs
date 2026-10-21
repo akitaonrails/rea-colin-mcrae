@@ -1,5 +1,7 @@
 //! Source-owned synthetic fixtures shared by integration tests.
 
+pub mod image_compare;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

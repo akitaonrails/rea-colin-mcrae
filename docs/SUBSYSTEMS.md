@@ -901,6 +901,23 @@ languages rather than fabricating or silently aliasing Italian assets.
   comparison scale are recorded as unknowns rather than invented. No rendering
   path yet: this is domain behavior consumed later by the C3D raster / modern
   backend. See evidence `impl.weather-effects`.
+- `cmr-test-support::image_compare` is the differential-verification primitive
+  (E11) that closes the recovered format work. The reconstruction order ends
+  each subsystem by verifying behavior against a differential fixture; the
+  software raster emits canonical 8-bit RGB and, after the framebuffer
+  conversion, packed 16-bit words, so a faithful check cannot demand
+  bit-exactness through 5-6-5/5-5-5 quantization or the documented
+  bilinear/dither noise. The module supplies an `Rgb888Image` holder, a
+  `Tolerance` model (per-channel delta + accepted outlier fraction, with `EXACT`,
+  `RGB565_ROUNDTRIP`, and `dithered` presets), `compare_rgb888` (reporting max
+  channel delta, outlier count, first-outlier coordinate, and the verdict), the
+  `expand_channel`/`rgb565_to_canonical` bit-replication used to diff a packed
+  framebuffer against an 8-bit oracle, and source-owned synthetic fixtures. It
+  is deliberately independent of `cmr-video` so the compatibility software
+  raster and the later modern GPU backend are checked against the same metric;
+  concrete per-subsystem reference captures and their accepted tolerances are
+  produced as each render path is converted. See evidence
+  `impl.image-comparison-harness`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
