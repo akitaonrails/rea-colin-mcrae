@@ -1043,6 +1043,27 @@ languages rather than fabricating or silently aliasing Italian assets.
   vendored - only the offsets, strides, bit layouts, and string-id bases. The
   event-progress write path and the full payload semantics (F06) remain. See
   evidence `rea.official-eu.championship-model` and `impl.championship-model`.
+- `cmr-core::championship_progression` recovers the progression/standings/records
+  structure over that model (F06). The live struct holds a 16-slot, `0x10`-stride
+  results table keyed by car-type slot - cumulative time at `+0x16c + slot*0x10`,
+  per-stage finishing positions at `+0x170 + slot*0x10`, and a state flag at
+  `+0x178 + slot*0x10` (bit `0x10` = entered the current stage, low nibble =
+  provisional order). **Standings are by elapsed time, not points** - there is no
+  points table in the game (the module ranks by ascending cumulative time and by
+  an accumulated-position score `Σ positions * 10 + tiebreak`, each with a
+  rank->slot inverse). Best/record times live in the mutable data image
+  `PTR_DAT_0050622c` at `(country*7 + stage)*0x1e + 0xffc` (championship) or
+  `stage*0x1e + 0x175e` (alt), stride `0x1e`, 7 stages/country - not in the save
+  payload and with no standalone record file. Mode/flags decode over `+0x166`
+  (game-mode enum `& 0x1c`, championship-type flag `0x40`, sub-flag `0x20`,
+  record sub-mode `& 3 == 2`) and `+0x168` (country `& 0xf`, stage `>> 4`), with
+  the `is_championship` and two-player head-to-head predicates. The opponent AI
+  time tables (procedurally generated per stage), record times, and stage names
+  are game data and are not vendored - only the offsets, strides, ranking
+  formulas, and predicates. No persisted unlock bitfield exists (gating is
+  dynamic over live standings); the post-finish stage-advance writer and the
+  per-slot intra-element base remain open. See evidence
+  `rea.official-eu.championship-progression` and `impl.championship-progression`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

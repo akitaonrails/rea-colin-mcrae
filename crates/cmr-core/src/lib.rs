@@ -26,6 +26,7 @@ pub mod championship_car_transform;
 pub mod championship_car_visibility;
 pub mod championship_frame_assets;
 pub mod championship_model;
+pub mod championship_progression;
 pub mod championship_setup;
 pub mod championship_setup_frame;
 pub mod championship_setup_visual;
