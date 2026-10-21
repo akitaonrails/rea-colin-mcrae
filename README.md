@@ -159,7 +159,8 @@ subsystem boundaries are in [docs/SUBSYSTEMS.md](docs/SUBSYSTEMS.md). The
 provisional Windows/Linux backend recommendation and its benchmark gates are in
 [docs/MODERN_BACKEND_RESEARCH.md](docs/MODERN_BACKEND_RESEARCH.md). How the
 reconstruction is checked against the original is in
-[docs/COMPARISON.md](docs/COMPARISON.md).
+[docs/COMPARISON.md](docs/COMPARISON.md), and the supported editions and
+intentional differences are in [docs/DEVIATIONS.md](docs/DEVIATIONS.md).
 
 From the repository root, watch the compact progress footer with:
 
