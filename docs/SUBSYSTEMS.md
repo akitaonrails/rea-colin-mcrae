@@ -526,6 +526,19 @@ languages rather than fabricating or silently aliasing Italian assets.
   `BACKWARD` and 2 `LEFTRIGH` by slot order. Reconstructed in
   `cmr-core::audio_menu::play_menu_sound`. See evidence
   `rea.official-eu.audio-menu-play`.
+- The surface and collision sounds are two further banks, each with its own
+  slot/channel base. The collision/prang loader `0x469ac0` reserves 5 channels at
+  full volume `0x7d00` and loads 48 named `prangs`/`accident` waves; impacts play
+  one-shot via `0x469e80` (speed picks a sub-wave and scales volume, a named
+  material wave layering on `channel+1` for hard objects `0 < objType < 0x11`).
+  The surface/skid loader `0x4892b0` (`newsurfs`) reserves 4 looping channels and
+  loads per-object-type variant waves named `<type>_o/i/sko/ski<n>.wav` (surface
+  outer/inner, skid outer/inner); roll play `0x46a030` ramps volume
+  `base/3 + (count-5)*base/0x2d` to full at `count>=0x24`. Both banks are
+  11025 Hz/16-bit mono. The roll ramp, variant naming, and bank constants are in
+  `cmr-core::audio_surface`; the impact sub-wave/volume bit-expression is left in
+  the evidence ledger pending a confident transcription. See evidence
+  `rea.official-eu.audio-surface-collision`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
