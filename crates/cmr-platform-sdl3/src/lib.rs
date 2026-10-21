@@ -19,6 +19,7 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use cmr_core::frontend::FrontendInput;
+use cmr_core::host_lifecycle::PlatformLifecycleEvent;
 use cmr_core::present_scaling::{DEFAULT_SCALING, PresentationScaling};
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::RootRenderInput;
@@ -58,22 +59,52 @@ pub enum HostEvent {
     GamepadRemoved(u32),
     RedrawRequested,
     RendererReset,
+    FocusGained,
+    FocusLost,
     Ignored,
 }
 
+impl HostEvent {
+    /// The backend-neutral [`PlatformLifecycleEvent`] this event drives, if any.
+    /// This is how the SDL adapter feeds the recovered host lifecycle
+    /// ([`cmr_core::host_lifecycle`]): a close/quit shuts down, focus changes
+    /// pause and resume. Input and redraw events are not lifecycle events.
+    pub fn as_lifecycle(self) -> Option<PlatformLifecycleEvent> {
+        match self {
+            HostEvent::QuitRequested => Some(PlatformLifecycleEvent::CloseRequested),
+            HostEvent::FocusGained => Some(PlatformLifecycleEvent::FocusGained),
+            HostEvent::FocusLost => Some(PlatformLifecycleEvent::FocusLost),
+            _ => None,
+        }
+    }
+}
+
 /// Testable lifecycle state mirrored by the SDL event adapter.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostEventState {
     exit_requested: bool,
+    focused: bool,
     connected_gamepads: BTreeSet<u32>,
+}
+
+impl Default for HostEventState {
+    fn default() -> Self {
+        Self {
+            exit_requested: false,
+            // The window starts focused once SDL creates it; a later FocusLost
+            // parks the loop and a FocusGained resumes it.
+            focused: true,
+            connected_gamepads: BTreeSet::new(),
+        }
+    }
 }
 
 impl HostEventState {
     #[must_use]
     pub fn with_connected_gamepads(ids: impl IntoIterator<Item = u32>) -> Self {
         Self {
-            exit_requested: false,
             connected_gamepads: ids.into_iter().collect(),
+            ..Self::default()
         }
     }
 
@@ -86,8 +117,15 @@ impl HostEventState {
             HostEvent::GamepadRemoved(id) => {
                 self.connected_gamepads.remove(&id);
             }
+            HostEvent::FocusGained => self.focused = true,
+            HostEvent::FocusLost => self.focused = false,
             HostEvent::RedrawRequested | HostEvent::RendererReset | HostEvent::Ignored => {}
         }
+    }
+
+    /// Whether the window currently holds input focus.
+    pub fn focused(&self) -> bool {
+        self.focused
     }
 
     #[must_use]
@@ -322,6 +360,14 @@ fn map_event(event: &Event) -> HostEvent {
         } => HostEvent::EscapePressed,
         Event::GamepadAdded { which, .. } => HostEvent::GamepadAdded(which.raw()),
         Event::GamepadRemoved { which, .. } => HostEvent::GamepadRemoved(which.raw()),
+        Event::Window {
+            win_event: WindowEvent::FocusGained,
+            ..
+        } => HostEvent::FocusGained,
+        Event::Window {
+            win_event: WindowEvent::FocusLost | WindowEvent::Minimized,
+            ..
+        } => HostEvent::FocusLost,
         Event::Window {
             win_event:
                 WindowEvent::Exposed
@@ -568,6 +614,44 @@ fn feed_input_event(event: &Event, mapper: &mut FrontendInputMapper) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_events_bridge_to_backend_neutral_lifecycle_events() {
+        assert_eq!(
+            HostEvent::QuitRequested.as_lifecycle(),
+            Some(PlatformLifecycleEvent::CloseRequested)
+        );
+        assert_eq!(
+            HostEvent::FocusGained.as_lifecycle(),
+            Some(PlatformLifecycleEvent::FocusGained)
+        );
+        assert_eq!(
+            HostEvent::FocusLost.as_lifecycle(),
+            Some(PlatformLifecycleEvent::FocusLost)
+        );
+        // Input and redraw events are not lifecycle events.
+        for event in [
+            HostEvent::EscapePressed,
+            HostEvent::GamepadAdded(1),
+            HostEvent::RedrawRequested,
+            HostEvent::RendererReset,
+            HostEvent::Ignored,
+        ] {
+            assert_eq!(event.as_lifecycle(), None);
+        }
+    }
+
+    #[test]
+    fn focus_events_track_window_focus_without_requesting_exit() {
+        let mut state = HostEventState::default();
+        assert!(state.focused());
+        state.apply(HostEvent::FocusLost);
+        assert!(!state.focused());
+        assert!(!state.exit_requested());
+        state.apply(HostEvent::FocusGained);
+        assert!(state.focused());
+        assert!(!state.exit_requested());
+    }
 
     #[test]
     fn presentation_scaling_maps_to_sdl_logical_presentation() {

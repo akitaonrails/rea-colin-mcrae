@@ -935,6 +935,24 @@ languages rather than fabricating or silently aliasing Italian assets.
   gamepad hotplug, and frame upload already live in `cmr-platform-sdl3`
   (`present_software_frame`, `run_interactive_root_frame`); focus/pause/restore/
   shutdown wiring is B12. See evidence `impl.present-scaling`.
+- `cmr-core::host_lifecycle::HostLifecycle` is the end-to-end native host
+  lifecycle (B12), composing the recovered host loop (`host_loop`, B09) and the
+  recovered window procedure (`window`) into the single lifecycle a modern
+  backend drives. A backend-neutral `PlatformLifecycleEvent`
+  (`FocusGained`/`FocusLost`/`CloseRequested`) is applied to both recovered
+  state machines at once: a focus gain resumes the loop and emits the recovered
+  `RestoreLostSurfaces` effect, a focus loss parks the loop and latches an owed
+  surface rebuild, and a close request sets the loop quit flag - the recovered
+  shutdown path, since the window procedure swallows `WM_CLOSE`. The returned
+  `LifecycleTransition` tells the backend what to do (effects, paused,
+  shutting_down, surface_rebuild_owed); `next_action` runs frames or parks,
+  `take_surface_rebuild` consumes the restore latch, and quit wins over an
+  inactive window. The `cmr-platform-sdl3` adapter surfaces the events from SDL
+  (`HostEvent::FocusGained`/`FocusLost` from `WindowEvent::FocusGained`/
+  `FocusLost`/`Minimized`, `HostEvent::as_lifecycle` bridging quit/focus to the
+  contract). This completes the native host window/focus/presentation exit gate
+  (B09-B12); the live game loop consumes `HostLifecycle` once the full loop is
+  SDL-driven. See evidence `impl.host-lifecycle`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
