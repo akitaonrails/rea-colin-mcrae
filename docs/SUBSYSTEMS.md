@@ -717,6 +717,19 @@ languages rather than fabricating or silently aliasing Italian assets.
   routing, and the display arithmetic in `cmr-core::pacenote_schedule`. The
   display-record layout and the mode-gate semantics remain. See evidence
   `rea.official-eu.sim-pacenote-schedule`.
+- There is no on-track AI opponent and no single-player ghost: the mechanics
+  loop simulates exactly `DAT_00550e90` cars, which the race setup (`0x481350`)
+  never sets above 2, and the only second car is a second *human* (split-screen
+  `0x485bb0` or network `0x401060`; replay forces 1). No code steers a second car
+  from a racing line - the node array `DAT_0057ae6c` is a timing spline read to
+  record times (G05), not a driving line. Rival WRC drivers are a name roster
+  (`0x507300`, 8 records) feeding the standings UI; their times are authored data
+  outside the executable. Car-vs-car collision (`0x442740` -> `0x441f30`) runs
+  only when two cars are present, not in replay, and split or network.
+  Reconstructed the participant-count model, the dispatcher count, and the
+  collision gate in `cmr-core::race_participants` (record strides as format
+  metadata; name strings not vendored). See evidence
+  `rea.official-eu.sim-race-participants`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
