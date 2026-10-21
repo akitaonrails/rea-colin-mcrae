@@ -372,21 +372,9 @@ impl FileWaveSource {
     /// is absolute, drive-qualified, contains `.`/`..`/empty components or NUL,
     /// or is otherwise not a plain relative path.
     fn safe_path(&self, name: &str) -> Option<PathBuf> {
-        if name.is_empty()
-            || name.contains('\0')
-            || name.starts_with(['/', '\\'])
-            || name.as_bytes().get(1) == Some(&b':')
-        {
-            return None;
-        }
-        let normalized = name.replace('\\', "/");
-        if normalized.ends_with('/')
-            || normalized
-                .split('/')
-                .any(|part| part.is_empty() || part == "." || part == "..")
-        {
-            return None;
-        }
+        // Shared single-source-of-truth path-safety rule (see
+        // `cmr_assets::normalize_relative_path`).
+        let normalized = cmr_assets::normalize_relative_path(name)?;
         let mut path = self.root.clone();
         for part in normalized.split('/') {
             path.push(part);

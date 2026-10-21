@@ -65,23 +65,8 @@ impl AssetIndex {
 }
 
 fn normalize_request(requested: &str) -> Result<String, ResolveError> {
-    if requested.is_empty()
-        || requested.contains('\0')
-        || requested.starts_with(['/', '\\'])
-        || requested.as_bytes().get(1) == Some(&b':')
-    {
-        return Err(ResolveError::InvalidPath(requested.to_owned()));
-    }
-
-    let normalized = requested.replace('\\', "/");
-    if normalized.ends_with('/')
-        || normalized
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-    {
-        return Err(ResolveError::InvalidPath(requested.to_owned()));
-    }
-    Ok(normalized)
+    crate::path::normalize_relative_path(requested)
+        .ok_or_else(|| ResolveError::InvalidPath(requested.to_owned()))
 }
 
 #[cfg(test)]

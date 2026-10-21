@@ -2,6 +2,7 @@
 
 mod catalog;
 mod import;
+mod path;
 mod profile;
 mod resolver;
 mod store;
@@ -9,6 +10,7 @@ mod verify;
 
 pub use catalog::catalog_standard_source;
 pub use import::{ImportError, ImportSummary, import_source};
+pub use path::normalize_relative_path;
 pub use profile::{
     AssetFile, AssetProfile, ProfileError, ReviewedProfile, ReviewedProfileError, StorageEncoding,
 };
