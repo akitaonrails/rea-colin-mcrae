@@ -149,6 +149,20 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   kinds, not vendored. The device/effect lifecycle is backend glue; the decay
   step source and per-source raw sums are G02/G03 force-wiring unknowns. See
   evidence `rea.official-eu.force-feedback`.
+- `cmr-core::intro_video`: the intro / cut-scene FMV selection and playback-loop
+  logic. The retail EU build plays video through Windows MCI (`avivideo` device,
+  VfW `.avi`) - no DirectShow/Smacker/Bink, and the logos are static `.bmp`s.
+  Reconstructs the MCI command/flag constants and composites (`OPEN_ELEMENT`
+  0x30200, `WINDOW` 0x50000, `MM_MCINOTIFY` 0x3B9), the difficulty selector
+  (`(cfg[+0x6c0]&0x18)>>3` -> EASY/MEDIUM/HARD/null) and language selector
+  (`cfg[+0x18]&7`, reusing `localization::Language`) with the `avi_*` path
+  components, the intro-script game-mode gate (`< 2`), and the `playback_step`
+  state machine (`PumpMode` passive/interactive; `PlaybackStep` Continue/
+  TogglePause/Finished/Aborted; `MM_MCINOTIFY` -> finished, ENTER/ESC -> abort,
+  SPACE -> pause). Recorded negative result: `Rally.exe` does no command-line
+  parsing (no skip-intro flag in this binary). The MCI device/window I/O and the
+  `.rsp` interpreter are backend glue (H07). See evidence
+  `rea.official-eu.intro-video`.
 - `cmr-core::timing`: validated pure plans for recovered logical rates, timer
   startup/drift, compatibility buckets, focus gating, and unsigned deadlines.
 - `cmr-core::host_loop`: the recovered native host clock and main-loop pacing as
