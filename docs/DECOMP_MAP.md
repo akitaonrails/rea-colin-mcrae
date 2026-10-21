@@ -148,7 +148,7 @@ Status markers:
 - [ ] `I04` Build and run the compatibility slice on modern Windows.
 - [ ] `I05` Add CI for formatting, clippy, tests, Linux, and Windows builds.
 - [x] `I06` Research and select SDL3 for portable host integration.
-- [~] `I07` Implement SDL3 host window/input/audio/presentation boundaries (resizable window, integer-scaled nearest streaming presentation of one completed software frame, startup gamepad enumeration with idempotent hotplug tracking, renderer-reset/redraw handling, and an edge-triggered keyboard/gamepad input mapper that drives the recovered `FrontendInput` contract implemented behind `cmr-platform-sdl3`; the pure interactive controller (`cmr-core::root_menu_interactive` plus the `steady_root_render_input` bridge) composes `FrontendState` into per-tick render inputs with a minimal root/exit transition driver; and the SDL interactive loop (`run_interactive_root_frame`, exposed through the app's `--windowed-root-frame` via `run_windowed_root_frame`) feeds live input into the controller and re-presents each distinct session-rendered frame. Only the audio host remains for `I07`; a displayed end-to-end run on the real user corpus is gated under `I03`/`I04`).
+- [~] `I07` Implement SDL3 host window/input/audio/presentation boundaries (resizable window, integer-scaled nearest streaming presentation of one completed software frame, startup gamepad enumeration with idempotent hotplug tracking, renderer-reset/redraw handling, and an edge-triggered keyboard/gamepad input mapper that drives the recovered `FrontendInput` contract implemented behind `cmr-platform-sdl3`; the pure interactive controller (`cmr-core::root_menu_interactive` plus the `steady_root_render_input` bridge) composes `FrontendState` into per-tick render inputs with a minimal root/exit transition driver; and the SDL interactive loop (`run_interactive_root_frame`, exposed through the app's `--windowed-root-frame` via `run_windowed_root_frame`) feeds live input into the controller and re-presents each distinct session-rendered frame. The audio host is now implemented (`cmr-platform-sdl3::audio::AudioHost` opens a 22050 Hz/stereo/s16 SDL3 playback stream and pumps the shared `SoftwareMixer<FileWaveSource>` from the audio callback, with the game driving the recovered subsystems against the shared mixer handle). All four SDL3 host boundaries (window/input/audio/presentation) now exist; a displayed end-to-end run on the real user corpus is gated under `I03`/`I04`).
 - [ ] `I08` Benchmark wgpu against SDL_GPU for the recovered 3D workload.
 - [ ] `I09` Implement the selected portable GPU backend behind shared contracts.
 - [ ] `I10` Remove requirements for original DirectX/QMixer/WinMM DLLs.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T15:51:07Z
-milestone=bridge-emitted-mixercommands-to-the-audiomixer-backend
+updated_utc=2026-10-21T15:52:30Z
+milestone=note-the-sdl-audio-host-completes-the-i07-boundaries
 completed=52
 partial=24
 not_started=41
 blocked=0
 total=117
-current_focus=drive-all-recovered-audio-controllers-through-the-host-mixer-each-frame
-next_exit_gate=wire-the-sdl-host-to-load-and-tick-the-recovered-audio-subsystems-against-the-shared-mixer
+current_focus=G01-recover-the-fixed-step-world-update-and-numeric-representations
+next_exit_gate=recover-the-driving-simulation-tick-entry-and-its-fixed-timestep-and-number-formats
 <!-- PROGRESS-TAIL-END -->
