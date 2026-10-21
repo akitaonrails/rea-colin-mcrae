@@ -445,7 +445,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   session via `QSWaveMixInitEx`/`QSWaveMixActivate`; `0x4958e0` builds a PCM
   `WAVEFORMATEX` from (name, rate, bits, stereo) and registers it with
   `QSWaveMixOpenWave` into a fixed wave-slot table; `0x495a30` plays a slot on a
-  channel through `QSWaveMixPlayEx`. See evidence `rea.official-eu.audio-wave-path`.
+  channel through `QSWaveMixPlayEx`. Per-channel control wrappers follow at
+  `0x495b70` (volume), `0x495bd0` (frequency), `0x495c30` (3D position),
+  `0x495b10`/`0x495b30` (stop), and `0x495d10` (channel-busy query); panning is
+  3D-position based over the 30 channels. See evidence
+  `rea.official-eu.audio-wave-path` and `rea.official-eu.audio-mixer-controls`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
