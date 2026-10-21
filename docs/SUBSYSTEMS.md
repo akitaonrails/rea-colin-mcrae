@@ -635,6 +635,19 @@ languages rather than fabricating or silently aliasing Italian assets.
   This resolves the earlier "volume scaling units unknown" note (the scaling is
   recovered; absolute QMixer units stay mixer-backend policy). No CD subsystem is
   implemented. See evidence `rea.official-eu.music-lifecycle`.
+- `cmr-core::music_player::MusicController` (H07, music backend): drives the H05
+  lifecycle as `MixerCommand`s over the `audio_mixer` contract, so the software
+  mixer / SDL audio device play looping frontend/replay music with no new device
+  code. `on_context` starts frontend music on the gate (SetVolume + Play loop),
+  `keepalive` restarts on drain / advances the fade ramp / holds, `stop` tears
+  down. The fade curve and replay trigger are H05 unknowns. See evidence
+  `impl.music-backend`.
+- `cmr-core::video_player` (H07, video backend): the `VideoBackend` compatibility
+  interface (open/set_bounds/play/toggle_pause/close, mirroring the MCI
+  `avivideo` calls), `apply_step` (PlaybackStep -> backend action), and
+  `run_movie` (open/play then fold `intro_video::playback_step` over an input
+  sequence -> Completed/Skipped). The real MCI/decoder and the live input poll
+  are runtime glue. See evidence `impl.video-backend`.
 - The first concrete audio backend `cmr-core::audio_render::SoftwareMixer`
   implements the recovered `AudioMixer` contract as a portable, I/O-free PCM
   mixer: it renders per-channel voices (one-shot/loop, linear volume gain,
