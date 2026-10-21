@@ -678,6 +678,25 @@ languages rather than fabricating or silently aliasing Italian assets.
   intersection, the re-righting blend, the reset trigger (`ctrl+0x3ec` only read,
   no position-snap/penalty confirmed), the damage->performance read site, and the
   `car+0x75c` countdown remain. See evidence `rea.official-eu.sim-collision`.
+- Stage timing uses the global clock `DAT_005ffc00`, a Q16.16 value in seconds
+  advanced once per physics tick (step `2^32/(rate*0x10000)` = `0xa3d`~0.04 s at
+  25 Hz, the same dt as `sim_clock`; `0x51e` at 50 Hz), saturating at
+  `0xe100000` = 3600.0 s. It is a deterministic tick accumulator, not a
+  `timeGetTime` wall clock, so a reset or off-course costs real time implicitly.
+  A per-car start timestamp is latched once (`0x47fc50`); elapsed time is read as
+  whole seconds (`(now-start)>>16`, `0x47fcf0`) or centiseconds
+  (`sec*100 + frac*100>>16`, `0x47fd20` - the stored/displayed unit). Checkpoints
+  are type-0 trigger volumes de-duplicated per car by a passed-bitmask
+  (`volume+0x2e |= 1<<(car&0x1f)`, `0x403ee0`) that also enqueues the pacenote
+  callout; finish (type 1) freezes the player time `DAT_00573a80` and per-car
+  time `DAT_005ffbf0[car]` and moves the FSM from in-race state 5 to the
+  stage-results state 8. There is **no additive time-penalty system** (no
+  false-start/jump/missed-checkpoint/off-course surcharge; the clock never
+  pauses) - a recorded negative result. Reconstructed the clock step/advance/cap,
+  the seconds/centisecond readouts, the start latch, the checkpoint passed-bits,
+  and the finish constants in `cmr-core::stage_timing`. The reference-split
+  comparison, the best-time persistence, and the per-driver results record
+  remain. See evidence `rea.official-eu.sim-stage-timing`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

@@ -66,6 +66,7 @@ pub mod root_menu_interactive;
 pub mod root_menu_visual;
 pub mod sim_clock;
 pub mod source_store;
+pub mod stage_timing;
 pub mod startup;
 pub mod startup_display;
 pub mod startup_surface;
