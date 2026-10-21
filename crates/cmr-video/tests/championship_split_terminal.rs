@@ -182,6 +182,12 @@ fn alternate_session_repeats_car_and_next_frames_without_indexed_ownership() {
         );
         assert_eq!(first.queued_text.lane(), SoftwareQueuedFontLane::Two);
         assert_eq!(
+            first.font_dispatch.submitted,
+            first.queued_text.source().record_len()
+        );
+        assert_eq!(first.font_dispatch.textured, first.font_dispatch.submitted);
+        assert_eq!(first.font_dispatch.fallback, 0);
+        assert_eq!(
             first
                 .queued_text
                 .queues()
@@ -247,6 +253,14 @@ fn alternate_session_repeats_car_and_next_frames_without_indexed_ownership() {
             .source_owner(session.queued_font_pool()) as *const _;
         assert_eq!(second_title_source, first_title_source);
         assert_eq!(second.queued_text.source().texts().len(), 4);
+        assert_eq!(
+            second.font_dispatch.submitted,
+            second.queued_text.source().record_len()
+        );
+        assert_eq!(
+            second.font_dispatch.textured,
+            second.font_dispatch.submitted
+        );
         let second_submission = second.scene.submission.unwrap();
         assert_eq!(second_submission.draws, 3);
         assert_eq!(second_submission.bindings, 3);
@@ -264,6 +278,10 @@ fn alternate_session_repeats_car_and_next_frames_without_indexed_ownership() {
             })
             .unwrap();
         assert_eq!(repeated.queued_text.source().texts().len(), 4);
+        assert_eq!(
+            repeated.font_dispatch.submitted,
+            repeated.queued_text.source().record_len()
+        );
         let repeated_submission = repeated.scene.submission.unwrap();
         assert_eq!(repeated_submission.draws, 3);
         assert_eq!(repeated_submission.bindings, 2);
@@ -294,6 +312,14 @@ fn alternate_session_repeats_car_and_next_frames_without_indexed_ownership() {
             [0, 1, 2, 4]
         );
         assert_eq!(next_outcome.scene.submission, None);
+        assert_eq!(
+            next_outcome.font_dispatch.submitted,
+            next_outcome.queued_text.source().record_len()
+        );
+        assert_eq!(
+            next_outcome.font_dispatch.textured,
+            next_outcome.font_dispatch.submitted
+        );
         assert_eq!(session.car_transform(), before_next_transform);
         assert_eq!(
             session.palette_state().pending(),
@@ -482,6 +508,15 @@ fn alternate_session_builds_and_renders_rgb565_sources_into_rgb565_target() {
                     record.terminal == SoftwareQueuedFontTerminal::FallbackBlitter
                 })
             );
+            assert_eq!(
+                outcome.font_dispatch.submitted,
+                outcome.queued_text.source().record_len()
+            );
+            assert_eq!(outcome.font_dispatch.textured, 0);
+            assert_eq!(
+                outcome.font_dispatch.fallback,
+                outcome.font_dispatch.submitted
+            );
             assert!(
                 outcome
                     .queued_text
@@ -585,6 +620,7 @@ fn alternate_session_request(
         SoftwareQueuedFontTerminal::TexturedQuad,
         SoftwareQueuedFontLane::Two,
         SoftwareQueuedFontByte3Policy::ForceFf,
+        0,
     )
 }
 

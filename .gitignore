@@ -6,6 +6,9 @@
 /original-data/
 /assets/
 
+# Local deep-work orchestration state.
+/.slim/deepwork/
+
 # Build output.
 /target/
 /build/

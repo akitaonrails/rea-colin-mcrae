@@ -82,6 +82,10 @@ use crate::{
         SoftwareQueuedFontArgb4444Pool, SoftwareQueuedFontArgb4444PoolError,
         prepare_software_queued_font_argb4444_pool,
     },
+    software_queued_font_flush::{
+        SoftwareQueuedFontFlushError, SoftwareQueuedFontFlushPlan,
+        preflight_software_queued_font_flush_plan,
+    },
     software_queued_font_glyphs::{
         LaneNeutralChampionshipQueuedTextError, SoftwareQueuedFontTerminal,
         prepare_lane_neutral_championship_queued_text,
@@ -142,6 +146,9 @@ pub struct SoftwareChampionshipAlternateSessionRequest {
     pub queued_font_lane: SoftwareQueuedFontLane,
     /// Resolved result of the recovered renderer-mode/capability gate.
     pub queued_font_byte3_policy: SoftwareQueuedFontByte3Policy,
+    /// Effective legacy renderer mode used independently by quad UV
+    /// preparation. This is not inferred from the byte-3 policy.
+    pub queued_font_effective_renderer_mode: u8,
 }
 
 impl SoftwareChampionshipAlternateSessionRequest {
@@ -159,6 +166,7 @@ impl SoftwareChampionshipAlternateSessionRequest {
         queued_font_terminal: SoftwareQueuedFontTerminal,
         queued_font_lane: SoftwareQueuedFontLane,
         queued_font_byte3_policy: SoftwareQueuedFontByte3Policy,
+        queued_font_effective_renderer_mode: u8,
     ) -> Self {
         Self {
             language,
@@ -180,6 +188,7 @@ impl SoftwareChampionshipAlternateSessionRequest {
             queued_font_terminal,
             queued_font_lane,
             queued_font_byte3_policy,
+            queued_font_effective_renderer_mode,
         }
     }
 }
@@ -302,6 +311,7 @@ pub enum SoftwareChampionshipAlternateRenderError {
     },
     Prepare(ChampionshipSetupFramePrepareError),
     QueuedText(LaneNeutralChampionshipQueuedTextError),
+    QueuedFontPreflight(SoftwareQueuedFontFlushError),
     Frame(Box<SoftwareChampionshipAlternateTerminalError>),
 }
 
@@ -314,6 +324,7 @@ impl fmt::Display for SoftwareChampionshipAlternateRenderError {
             ),
             Self::Prepare(source) => source.fmt(formatter),
             Self::QueuedText(source) => source.fmt(formatter),
+            Self::QueuedFontPreflight(source) => source.fmt(formatter),
             Self::Frame(source) => source.fmt(formatter),
         }
     }
@@ -325,6 +336,7 @@ impl std::error::Error for SoftwareChampionshipAlternateRenderError {
             Self::ExtentMismatch { .. } => None,
             Self::Prepare(source) => Some(source),
             Self::QueuedText(source) => Some(source),
+            Self::QueuedFontPreflight(source) => Some(source),
             Self::Frame(source) => Some(source),
         }
     }
@@ -393,6 +405,11 @@ impl SoftwareChampionshipAlternateSession<'_, '_, '_> {
             self.request.queued_font_lane,
             self.request.queued_font_byte3_policy,
         );
+        let font_plan = preflight_software_queued_font_flush_plan(
+            SoftwareQueuedFontFlushPlan::from_queues(queued_text.queues(), self.queued_fonts),
+            self.request.queued_font_effective_renderer_mode,
+        )
+        .map_err(SoftwareChampionshipAlternateRenderError::QueuedFontPreflight)?;
         let selected = match frame.visual.transcript.preview {
             ActivePreview::Car { canonical_car, .. }
             | ActivePreview::Gear { canonical_car, .. } => Some(canonical_car),
@@ -406,6 +423,7 @@ impl SoftwareChampionshipAlternateSession<'_, '_, '_> {
             pre_draw_state: self.request.raster_state.pre_draw_state_for_car(car),
         });
         let destination = self.backend.target_handle();
+        let mut font_sink = ();
 
         execute_software_championship_alternate_terminal_frame_with_queued_text(
             prepared,
@@ -428,6 +446,8 @@ impl SoftwareChampionshipAlternateSession<'_, '_, '_> {
             destination,
             self.request.depth_clear,
             queued_text,
+            font_plan,
+            &mut font_sink,
         )
         .map_err(|source| SoftwareChampionshipAlternateRenderError::Frame(Box::new(source)))
     }

@@ -28,6 +28,7 @@ pub mod software_championship_setup_frame;
 pub mod software_queued_font_argb4444;
 pub mod software_queued_font_flush;
 pub mod software_queued_font_glyphs;
+pub mod software_queued_font_quad;
 pub mod software_queued_font_queue;
 pub mod software_root_menu_session;
 

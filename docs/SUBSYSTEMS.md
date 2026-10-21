@@ -235,9 +235,15 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   for the current zero-rotation/no-viewport championship subset. It snapshots
   accepted records in recovered lane order 3, 2, 1 and per-lane FIFO order,
   attaches exact depths `0.999999`, `0.5`, and `0.0`, preserves the terminal
-  split, and preflights every command before dispatch to a typed sink. This is
-  orchestration only: native packing/count clearing, quad/UV construction,
-  device states, blending, fallback blitting, and pixels remain outside it.
+  split, resolves source owners, prepares exact bounded quad geometry, and can
+  run a backend-specific validation pass before dispatch to an infallible
+  typed sink. `software_queued_font_quad` supplies TL/TR/BL/BR corners, RHW,
+  diffuse/specular carriers, and explicit renderer-mode UVs normalized against
+  the aligned wrapper extent. The alternate terminal dispatches the prepared
+  lanes after identity-world reset and before the common scene tail, including
+  empty/Next scenes, and reports semantic counts. Native packing/count
+  clearing, optional transforms/UV swaps, device states, blending, fallback
+  pixels, and textured pixels remain outside this boundary.
 - `cmr-video::software_championship_setup_frame`: two-pass execution of the
   lightweight prepared setup transcript. Its standalone preparation derives
   exact aligned extents from the owned RGB16 pool and optional nominal

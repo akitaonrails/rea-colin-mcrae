@@ -354,12 +354,18 @@ scene effects after a later failure. Static follow-up now also resolves the
 native record's optional viewport, angle/pivot, lane, tuple, and terminal fields;
 the current championship producer supplies zero angle/pivots and no viewport.
 A backend-neutral flush plan orders accepted records by lanes 3, 2, 1 with exact
-lane depths and per-record textured/fallback dispatch, and applies whole-plan
-preflight before effects. It deliberately stops before recovered quad/UV and
-device-state execution because filtering, blending, fallback conversion, and
-final pixels remain unresolved. Native record packing, world-owner interleave,
-driver-exact Stretch comparison, native presentation, and the other deferred
-pixels are the next integration seams.
+lane depths and per-record textured/fallback dispatch. Pure preflight now
+resolves every source and constructs the bounded zero-transform/no-viewport
+quad with exact corner order, depth, RHW, diffuse/specular carriers, and
+renderer-mode UV rule; optional backend validation still completes before any
+frame effect. Fresh owner evidence places the unconditional dispatch inside the
+common scene after identity-world reset and before its opaque tail/EndScene,
+including an empty Next scene. The alternate terminal executes that semantic
+dispatch and reports per-terminal counts, but no font pixel backend exists yet.
+Native record packing/count clearing, optional transforms/UV swaps, device
+state, filtering, blending, fallback pixels, driver-exact Stretch comparison,
+native presentation, and the other deferred pixels are the next integration
+seams.
 
 Exit gate:
 

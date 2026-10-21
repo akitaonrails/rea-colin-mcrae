@@ -3,14 +3,20 @@
 //!
 //! Current championship glyph production has zero rotation and no viewport
 //! override. This module preserves recovered lane/depth/terminal ordering for
-//! that subset, but deliberately stops before quad geometry, render states,
-//! filtering, blending, fallback blitting, and pixels.
+//! that subset, prepares source-safe textured-quad geometry, and separates
+//! effect-free validation from infallible terminal dispatch. It deliberately
+//! stops before render states, filtering, blending, fallback pixels, and
+//! framebuffer composition.
 
 use crate::{
     software_queued_font_argb4444::{
         SoftwareQueuedFontArgb4444Pool, SoftwareQueuedFontArgb4444Source,
     },
     software_queued_font_glyphs::SoftwareQueuedFontTerminal,
+    software_queued_font_quad::{
+        SoftwareQueuedFontQuad, SoftwareQueuedFontQuadError, prepare_software_queued_font_quad,
+        validate_software_queued_font_source,
+    },
     software_queued_font_queue::{
         RoutedSoftwareQueuedFontGlyph, SoftwareQueuedFontLane, SoftwareQueuedFontLaneQueues,
     },
@@ -109,22 +115,14 @@ pub const fn lane_depth(lane: SoftwareQueuedFontLane) -> f32 {
     }
 }
 
-/// A backend boundary for the recovered terminal split. `preflight` must not
-/// produce rendering effects; implementations should validate every command
-/// before the first submission.
+/// An infallible backend boundary for an already preflighted terminal split.
+/// Implementations receive only source-owner-bound, source-safe commands.
 pub trait SoftwareQueuedFontFlushSink {
-    type Error;
-
-    fn preflight(
-        &mut self,
-        command: &SoftwareQueuedFontFlushCommand,
-        source: &SoftwareQueuedFontArgb4444Source,
-    ) -> Result<(), Self::Error>;
-
     fn submit_textured_quad(
         &mut self,
         command: SoftwareQueuedFontFlushCommand,
         source: &SoftwareQueuedFontArgb4444Source,
+        quad: SoftwareQueuedFontQuad,
     );
 
     fn submit_fallback_blitter(
@@ -134,54 +132,218 @@ pub trait SoftwareQueuedFontFlushSink {
     );
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SoftwareQueuedFontFlushPhase {
-    Preflight,
+impl SoftwareQueuedFontFlushSink for () {
+    fn submit_textured_quad(
+        &mut self,
+        _command: SoftwareQueuedFontFlushCommand,
+        _source: &SoftwareQueuedFontArgb4444Source,
+        _quad: SoftwareQueuedFontQuad,
+    ) {
+    }
+
+    fn submit_fallback_blitter(
+        &mut self,
+        _command: SoftwareQueuedFontFlushCommand,
+        _source: &SoftwareQueuedFontArgb4444Source,
+    ) {
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub struct SoftwareQueuedFontFlushError<E> {
-    pub phase: SoftwareQueuedFontFlushPhase,
+pub struct SoftwareQueuedFontFlushError {
+    pub lane: SoftwareQueuedFontLane,
+    pub slot: usize,
+    pub source: SoftwareQueuedFontQuadError,
+}
+
+impl std::fmt::Display for SoftwareQueuedFontFlushError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "queued-font preflight failed in lane {:?} slot {}: {}",
+            self.lane, self.slot, self.source
+        )
+    }
+}
+
+impl std::error::Error for SoftwareQueuedFontFlushError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PreflightedSoftwareQueuedFontTerminal {
+    TexturedQuad(SoftwareQueuedFontQuad),
+    FallbackBlitter,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PreflightedSoftwareQueuedFontCommand {
+    command: SoftwareQueuedFontFlushCommand,
+    terminal: PreflightedSoftwareQueuedFontTerminal,
+}
+
+/// Complete, effect-free validation product which retains the source pool for
+/// the whole interval between preflight and later dispatch.
+pub struct PreflightedSoftwareQueuedFontFlushPlan<'pool> {
+    commands: Vec<PreflightedSoftwareQueuedFontCommand>,
+    pool: &'pool SoftwareQueuedFontArgb4444Pool,
+}
+
+impl std::fmt::Debug for PreflightedSoftwareQueuedFontFlushPlan<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreflightedSoftwareQueuedFontFlushPlan")
+            .field("command_len", &self.commands.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Optional backend-specific validation after pure geometry/source preflight.
+/// Implementations must be idempotent and effect-free. The mutable borrow ends
+/// before the caller performs setup or scene effects.
+pub trait SoftwareQueuedFontFlushValidator {
+    type Error;
+
+    fn validate(
+        &mut self,
+        command: &SoftwareQueuedFontFlushCommand,
+        source: &SoftwareQueuedFontArgb4444Source,
+        textured_quad: Option<&SoftwareQueuedFontQuad>,
+    ) -> Result<(), Self::Error>;
+}
+
+impl SoftwareQueuedFontFlushValidator for () {
+    type Error = std::convert::Infallible;
+
+    fn validate(
+        &mut self,
+        _command: &SoftwareQueuedFontFlushCommand,
+        _source: &SoftwareQueuedFontArgb4444Source,
+        _textured_quad: Option<&SoftwareQueuedFontQuad>,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct SoftwareQueuedFontBackendValidationError<E> {
     pub lane: SoftwareQueuedFontLane,
     pub slot: usize,
     pub source: E,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SoftwareQueuedFontFlushOutcome {
-    pub submitted: usize,
+impl<E: std::fmt::Display> std::fmt::Display for SoftwareQueuedFontBackendValidationError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "queued-font backend validation failed in lane {:?} slot {}: {}",
+            self.lane, self.slot, self.source
+        )
+    }
 }
 
-pub fn execute_software_queued_font_flush_plan<S: SoftwareQueuedFontFlushSink>(
-    plan: SoftwareQueuedFontFlushPlan<'_>,
-    sink: &mut S,
-) -> Result<SoftwareQueuedFontFlushOutcome, SoftwareQueuedFontFlushError<S::Error>> {
-    for command in &plan.commands {
-        sink.preflight(command, plan.source_owner(command))
-            .map_err(|source| SoftwareQueuedFontFlushError {
-                phase: SoftwareQueuedFontFlushPhase::Preflight,
+impl<E: std::error::Error + 'static> std::error::Error
+    for SoftwareQueuedFontBackendValidationError<E>
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// Runs an optional backend/resource validation pass without consuming the
+/// owner-bound plan, allowing later dispatch after unrelated scene work.
+pub fn validate_preflighted_software_queued_font_flush_plan<V: SoftwareQueuedFontFlushValidator>(
+    plan: &PreflightedSoftwareQueuedFontFlushPlan<'_>,
+    validator: &mut V,
+) -> Result<(), SoftwareQueuedFontBackendValidationError<V::Error>> {
+    for prepared in &plan.commands {
+        let command = &prepared.command;
+        let source = command.record.producer.source_owner(plan.pool);
+        let quad = match &prepared.terminal {
+            PreflightedSoftwareQueuedFontTerminal::TexturedQuad(quad) => Some(quad),
+            PreflightedSoftwareQueuedFontTerminal::FallbackBlitter => None,
+        };
+        validator
+            .validate(command, source, quad)
+            .map_err(|source| SoftwareQueuedFontBackendValidationError {
                 lane: command.lane,
                 slot: command.slot,
                 source,
             })?;
     }
+    Ok(())
+}
 
-    let mut completed = 0;
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SoftwareQueuedFontFlushOutcome {
+    pub submitted: usize,
+    pub textured: usize,
+    pub fallback: usize,
+}
+
+/// Validates every command and prepares textured geometry without borrowing a
+/// mutable backend or producing effects.
+pub fn preflight_software_queued_font_flush_plan<'pool>(
+    plan: SoftwareQueuedFontFlushPlan<'pool>,
+    effective_renderer_mode: u8,
+) -> Result<PreflightedSoftwareQueuedFontFlushPlan<'pool>, SoftwareQueuedFontFlushError> {
+    let mut commands = Vec::with_capacity(plan.commands.len());
     for command in plan.commands {
         let source = command.record.producer.source_owner(plan.pool);
-        match command.terminal {
+        let terminal = match command.terminal {
             SoftwareQueuedFontFlushTerminal::TexturedQuad => {
-                sink.submit_textured_quad(command, source);
+                PreflightedSoftwareQueuedFontTerminal::TexturedQuad(
+                    prepare_software_queued_font_quad(&command, source, effective_renderer_mode)
+                        .map_err(|source| SoftwareQueuedFontFlushError {
+                            lane: command.lane,
+                            slot: command.slot,
+                            source,
+                        })?,
+                )
             }
             SoftwareQueuedFontFlushTerminal::FallbackBlitter => {
-                sink.submit_fallback_blitter(command, source);
+                validate_software_queued_font_source(&command, source).map_err(|source| {
+                    SoftwareQueuedFontFlushError {
+                        lane: command.lane,
+                        slot: command.slot,
+                        source,
+                    }
+                })?;
+                PreflightedSoftwareQueuedFontTerminal::FallbackBlitter
+            }
+        };
+        commands.push(PreflightedSoftwareQueuedFontCommand { command, terminal });
+    }
+    Ok(PreflightedSoftwareQueuedFontFlushPlan {
+        commands,
+        pool: plan.pool,
+    })
+}
+
+/// Dispatches a previously validated plan. This boundary is deliberately
+/// infallible, preventing a partial-retry contract after setup/scene effects.
+pub fn dispatch_preflighted_software_queued_font_flush_plan<S: SoftwareQueuedFontFlushSink>(
+    plan: PreflightedSoftwareQueuedFontFlushPlan<'_>,
+    sink: &mut S,
+) -> SoftwareQueuedFontFlushOutcome {
+    let mut outcome = SoftwareQueuedFontFlushOutcome::default();
+    for command in plan.commands {
+        let source = command.command.record.producer.source_owner(plan.pool);
+        match command.terminal {
+            PreflightedSoftwareQueuedFontTerminal::TexturedQuad(quad) => {
+                sink.submit_textured_quad(command.command, source, quad);
+                outcome.textured += 1;
+            }
+            PreflightedSoftwareQueuedFontTerminal::FallbackBlitter => {
+                sink.submit_fallback_blitter(command.command, source);
+                outcome.fallback += 1;
             }
         }
-        completed += 1;
+        outcome.submitted += 1;
     }
-    Ok(SoftwareQueuedFontFlushOutcome {
-        submitted: completed,
-    })
+    outcome
 }
 
 #[cfg(test)]
@@ -252,35 +414,106 @@ mod tests {
         push(&mut queues, SoftwareQueuedFontLane::One, 10, true);
         push(&mut queues, SoftwareQueuedFontLane::Three, 30, false);
         push(&mut queues, SoftwareQueuedFontLane::Two, 20, true);
-        let plan = SoftwareQueuedFontFlushPlan::from_queues(&queues, &pool);
         let mut sink = RecordingSink::default();
+        let plan = preflight_software_queued_font_flush_plan(
+            SoftwareQueuedFontFlushPlan::from_queues(&queues, &pool),
+            0,
+        )
+        .unwrap();
+        assert!(sink.events.is_empty());
 
-        let outcome = execute_software_queued_font_flush_plan(plan, &mut sink).unwrap();
-        assert_eq!(outcome.submitted, 3);
-        assert_eq!(sink.events, ["p30", "p20", "p10", "t30", "f20", "f10"]);
+        let outcome = dispatch_preflighted_software_queued_font_flush_plan(plan, &mut sink);
+        assert_eq!(
+            outcome,
+            SoftwareQueuedFontFlushOutcome {
+                submitted: 3,
+                textured: 1,
+                fallback: 2,
+            }
+        );
+        assert_eq!(sink.events, ["t30", "f20", "f10"]);
     }
 
     #[test]
-    fn preflight_failure_has_no_submission_and_reports_exact_command() {
+    fn preflight_failure_is_effect_free_and_a_valid_same_owner_plan_retries() {
+        let pool = pool();
+        let mut queues = SoftwareQueuedFontLaneQueues::new();
+        let mut invalid = glyph(30, false);
+        invalid.source.x = 4;
+        assert!(matches!(
+            queues.push(
+                SoftwareQueuedFontLane::Three,
+                SoftwareQueuedFontByte3Policy::PreserveCaller,
+                invalid,
+            ),
+            SoftwareQueuedFontPushOutcome::Accepted { slot: 0 }
+        ));
+        let Err(error) = preflight_software_queued_font_flush_plan(
+            SoftwareQueuedFontFlushPlan::from_queues(&queues, &pool),
+            0,
+        ) else {
+            panic!("out-of-source command unexpectedly passed preflight");
+        };
+        assert_eq!(error.lane, SoftwareQueuedFontLane::Three);
+        assert_eq!(error.slot, 0);
+        assert!(matches!(
+            error.source,
+            SoftwareQueuedFontQuadError::InvalidSourceRectangle { .. }
+        ));
+
+        let mut valid = SoftwareQueuedFontLaneQueues::new();
+        push(&mut valid, SoftwareQueuedFontLane::Three, 30, false);
+        let plan = preflight_software_queued_font_flush_plan(
+            SoftwareQueuedFontFlushPlan::from_queues(&valid, &pool),
+            0,
+        )
+        .unwrap();
+        let mut sink = RecordingSink::default();
+        assert_eq!(
+            dispatch_preflighted_software_queued_font_flush_plan(plan, &mut sink),
+            SoftwareQueuedFontFlushOutcome {
+                submitted: 1,
+                textured: 1,
+                fallback: 0,
+            }
+        );
+        assert_eq!(sink.events, ["t30"]);
+    }
+
+    #[test]
+    fn backend_validation_second_command_failure_has_no_dispatch_and_retries_same_plan() {
         let pool = pool();
         let mut queues = SoftwareQueuedFontLaneQueues::new();
         push(&mut queues, SoftwareQueuedFontLane::Three, 30, false);
-        push(&mut queues, SoftwareQueuedFontLane::Two, 20, false);
-
-        let mut preflight = RecordingSink {
-            fail_preflight: Some(20),
-            ..RecordingSink::default()
-        };
-        let error = execute_software_queued_font_flush_plan(
+        push(&mut queues, SoftwareQueuedFontLane::Two, 20, true);
+        push(&mut queues, SoftwareQueuedFontLane::One, 10, false);
+        let plan = preflight_software_queued_font_flush_plan(
             SoftwareQueuedFontFlushPlan::from_queues(&queues, &pool),
-            &mut preflight,
+            0,
         )
-        .unwrap_err();
-        assert_eq!(error.phase, SoftwareQueuedFontFlushPhase::Preflight);
+        .unwrap();
+        let mut validator = RecordingValidator {
+            fail: Some(20),
+            ..RecordingValidator::default()
+        };
+
+        let error = validate_preflighted_software_queued_font_flush_plan(&plan, &mut validator)
+            .unwrap_err();
         assert_eq!(error.lane, SoftwareQueuedFontLane::Two);
         assert_eq!(error.slot, 0);
         assert_eq!(error.source, 20);
-        assert_eq!(preflight.events, ["p30", "p20"]);
+        assert_eq!(validator.codes, [30, 20]);
+
+        validator.fail = None;
+        validator.codes.clear();
+        validate_preflighted_software_queued_font_flush_plan(&plan, &mut validator).unwrap();
+        assert_eq!(validator.codes, [30, 20, 10]);
+        let mut sink = RecordingSink::default();
+        assert_eq!(
+            dispatch_preflighted_software_queued_font_flush_plan(plan, &mut sink).submitted,
+            3
+        );
+        assert_eq!(sink.events, ["t30", "f20", "t10"]);
     }
 
     #[test]
@@ -318,30 +551,42 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         events: Vec<String>,
-        fail_preflight: Option<u8>,
     }
 
-    impl SoftwareQueuedFontFlushSink for RecordingSink {
+    #[derive(Default)]
+    struct RecordingValidator {
+        codes: Vec<u8>,
+        fail: Option<u8>,
+    }
+
+    impl SoftwareQueuedFontFlushValidator for RecordingValidator {
         type Error = u8;
 
-        fn preflight(
+        fn validate(
             &mut self,
             command: &SoftwareQueuedFontFlushCommand,
             source: &SoftwareQueuedFontArgb4444Source,
+            textured_quad: Option<&SoftwareQueuedFontQuad>,
         ) -> Result<(), Self::Error> {
             assert_eq!(source.style(), command.record.producer.style);
+            assert_eq!(
+                textured_quad.is_some(),
+                command.terminal == SoftwareQueuedFontFlushTerminal::TexturedQuad
+            );
             let code = command.record.producer.code;
-            self.events.push(format!("p{code}"));
-            (self.fail_preflight != Some(code))
-                .then_some(())
-                .ok_or(code)
+            self.codes.push(code);
+            (self.fail != Some(code)).then_some(()).ok_or(code)
         }
+    }
 
+    impl SoftwareQueuedFontFlushSink for RecordingSink {
         fn submit_textured_quad(
             &mut self,
             command: SoftwareQueuedFontFlushCommand,
             source: &SoftwareQueuedFontArgb4444Source,
+            quad: SoftwareQueuedFontQuad,
         ) {
+            assert_eq!(quad.vertices[0].z.to_bits(), command.depth().to_bits());
             self.submit("t", command, source);
         }
 

@@ -167,6 +167,33 @@ pub fn execute_frontend_c3d_scene<B, P, O, D>(
 where
     B: FrontendC3dSceneBackend,
 {
+    execute_frontend_c3d_scene_with_post_reset(
+        backend,
+        destination,
+        extent,
+        depth_clear,
+        plan,
+        submit,
+        |_| {},
+    )
+}
+
+/// Executes the common scene with one infallible owner hook after the world
+/// reset and before the opaque common tail. The hook is also reached for an
+/// empty scene, matching owners that flush queued overlays on `Next` frames.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_frontend_c3d_scene_with_post_reset<B, P, O, D>(
+    backend: &mut B,
+    destination: B::Surface,
+    extent: DisplayExtent,
+    depth_clear: C3dDepthClear,
+    plan: Option<P>,
+    submit: impl FnOnce(&mut B, P) -> Result<O, D>,
+    post_reset: impl FnOnce(&mut B),
+) -> Result<C3dSceneOutcome<O>, C3dSceneError<B::SceneError, D>>
+where
+    B: FrontendC3dSceneBackend,
+{
     let viewport = root_menu_c3d_viewport(extent).map_err(|source| C3dSceneError {
         primary: C3dScenePrimaryError::Viewport(source),
         cleanup: None,
@@ -210,6 +237,7 @@ where
             },
         ));
     }
+    post_reset(backend);
     let binding_state = match backend.finish_c3d_scene_tail() {
         Ok(state) => state,
         Err(source) => {
@@ -287,6 +315,7 @@ mod tests {
         Begin,
         Submit(u8),
         ResetWorld,
+        PostReset,
         Tail,
         End,
     }
@@ -443,6 +472,34 @@ mod tests {
                 Event::End,
             ]
         );
+    }
+
+    #[test]
+    fn post_reset_hook_is_inside_scene_before_tail_for_drawn_and_empty_plans() {
+        for plan in [Some(42_u8), None] {
+            let mut backend = Backend::new();
+            let outcome = execute_frontend_c3d_scene_with_post_reset(
+                &mut backend,
+                7,
+                EXTENT,
+                C3dDepthClear::Skip,
+                plan,
+                |backend, plan| {
+                    backend.events.push(Event::Submit(plan));
+                    Ok::<_, SubmitFailure>(())
+                },
+                |backend| backend.events.push(Event::PostReset),
+            )
+            .unwrap();
+
+            assert_eq!(outcome.submission.is_some(), plan.is_some());
+            let mut expected = vec![Event::Preflight, Event::View, Event::Viewport, Event::Begin];
+            if let Some(plan) = plan {
+                expected.push(Event::Submit(plan));
+            }
+            expected.extend([Event::ResetWorld, Event::PostReset, Event::Tail, Event::End]);
+            assert_eq!(backend.events, expected);
+        }
     }
 
     #[test]

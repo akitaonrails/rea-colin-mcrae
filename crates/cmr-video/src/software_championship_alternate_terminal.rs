@@ -16,7 +16,7 @@ use cmr_core::{
     championship_car_frame_plan::{ChampionshipCarFramePlanError, plan_championship_car_frame},
     championship_car_scene::{
         ChampionshipCarSceneError, ChampionshipCarSceneOutcome,
-        execute_optional_championship_car_scene,
+        execute_optional_championship_car_scene_with_post_reset,
         preflight_optional_championship_car_terminal_scene,
     },
     championship_car_transform::{ChampionshipCarInput, ChampionshipCarState},
@@ -53,6 +53,10 @@ use crate::{
         execute_preflighted_software_championship_setup_frame,
         preflight_software_championship_setup_frame,
     },
+    software_queued_font_flush::{
+        PreflightedSoftwareQueuedFontFlushPlan, SoftwareQueuedFontFlushOutcome,
+        SoftwareQueuedFontFlushSink, dispatch_preflighted_software_queued_font_flush_plan,
+    },
     software_queued_font_queue::RoutedChampionshipQueuedText,
 };
 
@@ -81,6 +85,10 @@ pub struct SoftwareChampionshipAlternateTerminalOutcome<Q = ()> {
     /// The alternate RGB16 terminal reaches the recovered palette boundary,
     /// where non-indexed depth skips upload and preserves any pending request.
     pub palette_commit: DeferredPaletteCommitOutcome,
+    /// Semantic queued-font submissions performed inside the common C3D scene
+    /// after world reset and before its opaque tail. These counts do not claim
+    /// rasterized pixels.
+    pub font_dispatch: SoftwareQueuedFontFlushOutcome,
     /// Complete caller-owned publication attached only after terminal success.
     pub queued_text: Q,
 }
@@ -173,6 +181,7 @@ pub fn execute_software_championship_alternate_terminal_frame<'catalog>(
     depth_clear: C3dDepthClear,
 ) -> Result<SoftwareChampionshipAlternateTerminalOutcome, SoftwareChampionshipAlternateTerminalError>
 {
+    let mut font_sink = ();
     execute_software_championship_alternate_terminal_frame_with_publication(
         prepared_setup,
         extent,
@@ -186,6 +195,8 @@ pub fn execute_software_championship_alternate_terminal_frame<'catalog>(
         destination,
         depth_clear,
         (),
+        None,
+        &mut font_sink,
     )
 }
 
@@ -193,7 +204,10 @@ pub fn execute_software_championship_alternate_terminal_frame<'catalog>(
 /// terminal frame succeeds. A later terminal failure drops the unpublished
 /// value; it does not make existing bitmap/scene effects transactional.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn execute_software_championship_alternate_terminal_frame_with_queued_text<'catalog>(
+pub(crate) fn execute_software_championship_alternate_terminal_frame_with_queued_text<
+    'catalog,
+    S: SoftwareQueuedFontFlushSink,
+>(
     prepared_setup: PreparedChampionshipAlternateSetupFrame,
     extent: DisplayExtent,
     car_input: ChampionshipCarInput,
@@ -206,6 +220,8 @@ pub(crate) fn execute_software_championship_alternate_terminal_frame_with_queued
     destination: SoftwareSplitC3dTargetHandle,
     depth_clear: C3dDepthClear,
     queued_text: RoutedChampionshipQueuedText,
+    font_plan: PreflightedSoftwareQueuedFontFlushPlan<'_>,
+    font_sink: &mut S,
 ) -> Result<
     SoftwareChampionshipAlternateTerminalOutcome<RoutedChampionshipQueuedText>,
     SoftwareChampionshipAlternateTerminalError,
@@ -223,11 +239,17 @@ pub(crate) fn execute_software_championship_alternate_terminal_frame_with_queued
         destination,
         depth_clear,
         queued_text,
+        Some(font_plan),
+        font_sink,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_software_championship_alternate_terminal_frame_with_publication<'catalog, Q>(
+fn execute_software_championship_alternate_terminal_frame_with_publication<
+    'catalog,
+    Q,
+    S: SoftwareQueuedFontFlushSink,
+>(
     prepared_setup: PreparedChampionshipAlternateSetupFrame,
     extent: DisplayExtent,
     car_input: ChampionshipCarInput,
@@ -240,6 +262,8 @@ fn execute_software_championship_alternate_terminal_frame_with_publication<'cata
     destination: SoftwareSplitC3dTargetHandle,
     depth_clear: C3dDepthClear,
     publication: Q,
+    font_plan: Option<PreflightedSoftwareQueuedFontFlushPlan<'_>>,
+    font_sink: &mut S,
 ) -> Result<
     SoftwareChampionshipAlternateTerminalOutcome<Q>,
     SoftwareChampionshipAlternateTerminalError,
@@ -392,14 +416,19 @@ fn execute_software_championship_alternate_terminal_frame_with_publication<'cata
         }
     };
 
-    let scene = execute_optional_championship_car_scene(
-        executor,
-        backend,
-        destination,
-        extent,
-        depth_clear,
-        prepared_car,
-    );
+    let (scene, font_dispatch) =
+        execute_scene_with_font_dispatch(font_plan, font_sink, |dispatch| {
+            execute_optional_championship_car_scene_with_post_reset(
+                executor,
+                backend,
+                destination,
+                extent,
+                depth_clear,
+                prepared_car,
+                |_| dispatch(),
+            )
+            .map_err(Box::new)
+        });
     state.car_visibility.clear_all();
     state.root_visibility.clear_all();
     let scene = match scene {
@@ -407,7 +436,7 @@ fn execute_software_championship_alternate_terminal_frame_with_publication<'cata
         Err(source) => {
             return Err(SoftwareChampionshipAlternateTerminalError::Scene {
                 terminal_index,
-                source: Box::new(source),
+                source,
             });
         }
     };
@@ -418,6 +447,359 @@ fn execute_software_championship_alternate_terminal_frame_with_publication<'cata
         },
         scene,
         palette_commit: DeferredPaletteCommitOutcome::SkippedNonIndexedDepth,
+        font_dispatch,
         queued_text: publication,
     })
+}
+
+/// Sole placement seam for alternate-terminal font dispatch.
+///
+/// The production terminal calls this boundary exactly once around its scene
+/// transaction. This owner retains and consumes the preflighted plan only when
+/// that transaction reaches its post-world-reset hook.
+fn execute_scene_with_font_dispatch<T, E, S: SoftwareQueuedFontFlushSink>(
+    mut font_plan: Option<PreflightedSoftwareQueuedFontFlushPlan<'_>>,
+    font_sink: &mut S,
+    execute_scene: impl FnOnce(&mut dyn FnMut()) -> Result<T, E>,
+) -> (Result<T, E>, SoftwareQueuedFontFlushOutcome) {
+    let mut outcome = SoftwareQueuedFontFlushOutcome::default();
+    let mut dispatch = || {
+        if let Some(plan) = font_plan.take() {
+            outcome = dispatch_preflighted_software_queued_font_flush_plan(plan, font_sink);
+        }
+    };
+    let scene = execute_scene(&mut dispatch);
+    (scene, outcome)
+}
+
+#[cfg(test)]
+mod font_terminal_wiring_tests {
+    use std::{cell::RefCell, rc::Rc};
+
+    use cmr_core::{
+        display::DisplayExtent,
+        font_assets::{FontSet, FontStyle},
+        frontend_c3d_scene::{
+            C3dBindingState, C3dDepthClear, C3dMatrixWords, C3dSceneStage, C3dViewportWords,
+            FrontendC3dSceneBackend, execute_frontend_c3d_scene_with_post_reset,
+        },
+    };
+    use cmr_formats::font::{FontLimits, RectI16, RectI32, parse_legacy_font};
+
+    use super::*;
+    use crate::{
+        software_queued_font_argb4444::{
+            SoftwareQueuedFontArgb4444Source, prepare_software_queued_font_argb4444_pool,
+        },
+        software_queued_font_flush::{
+            SoftwareQueuedFontFlushCommand, SoftwareQueuedFontFlushPlan,
+            preflight_software_queued_font_flush_plan,
+        },
+        software_queued_font_glyphs::{LaneNeutralQueuedFontGlyph, SoftwareQueuedFontTerminal},
+        software_queued_font_quad::SoftwareQueuedFontQuad,
+        software_queued_font_queue::{
+            SoftwareQueuedFontByte3Policy, SoftwareQueuedFontLane, SoftwareQueuedFontLaneQueues,
+        },
+    };
+
+    #[test]
+    fn actual_terminal_font_wrapper_places_car_and_empty_dispatch_inside_scene() {
+        for car in [Some(7_u8), None] {
+            let pool = pool();
+            let plan = plan(&pool);
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let mut backend = Backend::new(Rc::clone(&events), None);
+            let mut sink = Sink(Rc::clone(&events));
+
+            let (scene, outcome) =
+                execute_scene_with_font_dispatch(Some(plan), &mut sink, |dispatch| {
+                    execute_frontend_c3d_scene_with_post_reset(
+                        &mut backend,
+                        1,
+                        EXTENT,
+                        C3dDepthClear::Skip,
+                        car,
+                        |backend, marker| {
+                            backend.event(format!("car-{marker}"));
+                            Ok::<_, SubmitError>(())
+                        },
+                        |_| dispatch(),
+                    )
+                });
+
+            assert!(scene.is_ok());
+            assert_eq!(outcome.submitted, 1);
+            let mut expected = vec!["preflight", "view", "viewport", "begin"];
+            if car.is_some() {
+                expected.push("car-7");
+            }
+            expected.extend(["reset", "font-30", "tail", "end"]);
+            assert_eq!(*events.borrow(), expected);
+        }
+    }
+
+    #[test]
+    fn actual_terminal_font_wrapper_obeys_scene_failure_boundaries() {
+        for (failure, dispatched) in [
+            (Failure::Submit, false),
+            (Failure::Backend(C3dSceneStage::ResetWorld), false),
+            (Failure::Backend(C3dSceneStage::Tail), true),
+            (Failure::Backend(C3dSceneStage::End), true),
+        ] {
+            let pool = pool();
+            let plan = plan(&pool);
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let backend_failure = match failure {
+                Failure::Submit => None,
+                Failure::Backend(stage) => Some(stage),
+            };
+            let mut backend = Backend::new(Rc::clone(&events), backend_failure);
+            let mut sink = Sink(Rc::clone(&events));
+
+            let (scene, outcome) =
+                execute_scene_with_font_dispatch(Some(plan), &mut sink, |dispatch| {
+                    execute_frontend_c3d_scene_with_post_reset(
+                        &mut backend,
+                        1,
+                        EXTENT,
+                        C3dDepthClear::Skip,
+                        Some(7_u8),
+                        |backend, marker| {
+                            backend.event(format!("car-{marker}"));
+                            if failure == Failure::Submit {
+                                Err(SubmitError)
+                            } else {
+                                Ok(())
+                            }
+                        },
+                        |_| dispatch(),
+                    )
+                });
+
+            assert!(scene.is_err());
+            assert_eq!(outcome.submitted, usize::from(dispatched));
+            assert_eq!(
+                events.borrow().iter().any(|event| event == "font-30"),
+                dispatched,
+                "{failure:?}"
+            );
+            let expected = match failure {
+                Failure::Submit => {
+                    vec!["preflight", "view", "viewport", "begin", "car-7", "end"]
+                }
+                Failure::Backend(C3dSceneStage::ResetWorld) => vec![
+                    "preflight",
+                    "view",
+                    "viewport",
+                    "begin",
+                    "car-7",
+                    "reset",
+                    "end",
+                ],
+                Failure::Backend(C3dSceneStage::Tail) => vec![
+                    "preflight",
+                    "view",
+                    "viewport",
+                    "begin",
+                    "car-7",
+                    "reset",
+                    "font-30",
+                    "tail",
+                    "end",
+                ],
+                Failure::Backend(C3dSceneStage::End) => vec![
+                    "preflight",
+                    "view",
+                    "viewport",
+                    "begin",
+                    "car-7",
+                    "reset",
+                    "font-30",
+                    "tail",
+                    "end",
+                ],
+                Failure::Backend(stage) => panic!("uncovered failure stage {stage:?}"),
+            };
+            assert_eq!(*events.borrow(), expected, "{failure:?}");
+        }
+    }
+
+    const EXTENT: DisplayExtent = DisplayExtent {
+        width: 640,
+        height: 480,
+    };
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Failure {
+        Submit,
+        Backend(C3dSceneStage),
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct BackendError(C3dSceneStage);
+
+    impl std::fmt::Display for BackendError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:?}", self.0)
+        }
+    }
+    impl std::error::Error for BackendError {}
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct SubmitError;
+
+    impl std::fmt::Display for SubmitError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("submit")
+        }
+    }
+    impl std::error::Error for SubmitError {}
+
+    struct Backend {
+        events: Rc<RefCell<Vec<String>>>,
+        failure: Option<C3dSceneStage>,
+    }
+
+    impl Backend {
+        fn new(events: Rc<RefCell<Vec<String>>>, failure: Option<C3dSceneStage>) -> Self {
+            Self { events, failure }
+        }
+        fn event(&mut self, event: impl Into<String>) {
+            self.events.borrow_mut().push(event.into());
+        }
+        fn effect(
+            &mut self,
+            stage: C3dSceneStage,
+            event: &'static str,
+        ) -> Result<(), BackendError> {
+            self.event(event);
+            (self.failure != Some(stage))
+                .then_some(())
+                .ok_or(BackendError(stage))
+        }
+    }
+
+    impl FrontendC3dSceneBackend for Backend {
+        type Surface = u8;
+        type SceneError = BackendError;
+        fn preflight_c3d_scene(
+            &mut self,
+            _: u8,
+            _: DisplayExtent,
+            _: C3dDepthClear,
+        ) -> Result<(), BackendError> {
+            self.effect(C3dSceneStage::Preflight, "preflight")
+        }
+        fn clear_c3d_depth(&mut self, _: u8, _: DisplayExtent) -> Result<(), BackendError> {
+            self.effect(C3dSceneStage::ClearDepth, "clear")
+        }
+        fn set_c3d_view(&mut self, _: C3dMatrixWords) -> Result<(), BackendError> {
+            self.effect(C3dSceneStage::View, "view")
+        }
+        fn set_c3d_viewport(&mut self, _: C3dViewportWords) -> Result<(), BackendError> {
+            self.effect(C3dSceneStage::Viewport, "viewport")
+        }
+        fn begin_c3d_scene(&mut self, _: u8) -> Result<(), BackendError> {
+            self.effect(C3dSceneStage::Begin, "begin")
+        }
+        fn reset_c3d_world(&mut self) -> Result<(), BackendError> {
+            self.effect(C3dSceneStage::ResetWorld, "reset")
+        }
+        fn finish_c3d_scene_tail(&mut self) -> Result<C3dBindingState, BackendError> {
+            self.effect(C3dSceneStage::Tail, "tail")?;
+            Ok(C3dBindingState::Preserved)
+        }
+        fn end_c3d_scene(&mut self) -> Result<(), BackendError> {
+            self.effect(C3dSceneStage::End, "end")
+        }
+    }
+
+    struct Sink(Rc<RefCell<Vec<String>>>);
+    impl SoftwareQueuedFontFlushSink for Sink {
+        fn submit_textured_quad(
+            &mut self,
+            command: SoftwareQueuedFontFlushCommand,
+            _: &SoftwareQueuedFontArgb4444Source,
+            _: SoftwareQueuedFontQuad,
+        ) {
+            self.0
+                .borrow_mut()
+                .push(format!("font-{}", command.record.producer.code));
+        }
+        fn submit_fallback_blitter(
+            &mut self,
+            command: SoftwareQueuedFontFlushCommand,
+            _: &SoftwareQueuedFontArgb4444Source,
+        ) {
+            self.0
+                .borrow_mut()
+                .push(format!("fallback-{}", command.record.producer.code));
+        }
+    }
+
+    fn plan(
+        pool: &crate::software_queued_font_argb4444::SoftwareQueuedFontArgb4444Pool,
+    ) -> PreflightedSoftwareQueuedFontFlushPlan<'_> {
+        let mut queues = SoftwareQueuedFontLaneQueues::new();
+        let glyph = LaneNeutralQueuedFontGlyph {
+            command_index: 0,
+            blit_index: 0,
+            code: 30,
+            glyph_index: 0,
+            style: FontStyle::Title,
+            source: RectI16 {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            destination: RectI32 {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            caller_tuple: [1, 2, 3, 4],
+            terminal: SoftwareQueuedFontTerminal::TexturedQuad,
+        };
+        assert!(matches!(
+            queues.push(
+                SoftwareQueuedFontLane::Three,
+                SoftwareQueuedFontByte3Policy::PreserveCaller,
+                glyph,
+            ),
+            crate::software_queued_font_queue::SoftwareQueuedFontPushOutcome::Accepted { .. }
+        ));
+        preflight_software_queued_font_flush_plan(
+            SoftwareQueuedFontFlushPlan::from_queues(&queues, pool),
+            0,
+        )
+        .unwrap()
+    }
+
+    fn pool() -> crate::software_queued_font_argb4444::SoftwareQueuedFontArgb4444Pool {
+        const PIXEL_OFFSET: usize = 0x436;
+        let trailer = PIXEL_OFFSET + 4;
+        let mut bytes = vec![0; trailer + 24 + 16];
+        bytes[0..2].copy_from_slice(b"BM");
+        bytes[18..22].copy_from_slice(&1i32.to_le_bytes());
+        bytes[22..26].copy_from_slice(&1i32.to_le_bytes());
+        bytes[28..30].copy_from_slice(&8u16.to_le_bytes());
+        for index in 0..256usize {
+            let offset = 54 + index * 4;
+            bytes[offset..offset + 4].copy_from_slice(&[index as u8, index as u8, index as u8, 0]);
+        }
+        bytes[PIXEL_OFFSET] = 1;
+        bytes[trailer + 1] = 1;
+        bytes[trailer + 4..trailer + 8].copy_from_slice(&1u32.to_le_bytes());
+        bytes[trailer + 8..trailer + 12].copy_from_slice(&1u32.to_le_bytes());
+        let glyph = trailer + 24;
+        bytes[glyph] = b'A';
+        bytes[glyph + 6..glyph + 8].copy_from_slice(&1i16.to_le_bytes());
+        bytes[glyph + 8..glyph + 10].copy_from_slice(&1i16.to_le_bytes());
+        let fonts = FontSet::from_ordered_fonts(std::array::from_fn(|_| {
+            parse_legacy_font(&bytes, FontLimits::default()).unwrap()
+        }));
+        prepare_software_queued_font_argb4444_pool(fonts).unwrap()
+    }
 }

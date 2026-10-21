@@ -17,6 +17,7 @@ use crate::{
     frontend_c3d_scene::{
         C3dBindingState, C3dDepthClear, C3dSceneError, C3dSceneOutcome, C3dScenePrimaryError,
         C3dSceneStage, FrontendC3dSceneBackend, execute_frontend_c3d_scene,
+        execute_frontend_c3d_scene_with_post_reset,
     },
     root_menu_c3d_transform::root_menu_c3d_viewport,
 };
@@ -130,6 +131,33 @@ where
     B: FrontendC3dSceneBackend
         + ChampionshipCarBatchBackend<H, Error = <B as FrontendC3dSceneBackend>::SceneError>,
 {
+    execute_optional_championship_car_scene_with_post_reset(
+        executor,
+        backend,
+        destination,
+        extent,
+        depth_clear,
+        prepared,
+        |_| {},
+    )
+}
+
+/// Executes the optional car scene with one infallible owner hook after the
+/// recovered world reset and before the common scene tail.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_optional_championship_car_scene_with_post_reset<'catalog, B, H>(
+    executor: &mut ChampionshipCarBatchExecutor<'catalog, H>,
+    backend: &mut B,
+    destination: B::Surface,
+    extent: DisplayExtent,
+    depth_clear: C3dDepthClear,
+    prepared: Option<PreparedChampionshipCarFrame<'catalog, H>>,
+    post_reset: impl FnOnce(&mut B),
+) -> Result<ChampionshipCarSceneOutcome, ChampionshipCarSceneError<B::SceneError>>
+where
+    B: FrontendC3dSceneBackend
+        + ChampionshipCarBatchBackend<H, Error = <B as FrontendC3dSceneBackend>::SceneError>,
+{
     preflight_optional_championship_car_terminal_scene(
         executor,
         backend,
@@ -141,13 +169,14 @@ where
     let scene_extent = prepared
         .as_ref()
         .map_or(extent, PreparedChampionshipCarFrame::extent);
-    let result = execute_frontend_c3d_scene(
+    let result = execute_frontend_c3d_scene_with_post_reset(
         backend,
         destination,
         scene_extent,
         depth_clear,
         prepared,
         |backend, prepared| executor.execute_prepared(backend, prepared),
+        post_reset,
     );
     if invalidates_selector_cache(&result) {
         executor.invalidate_bindings();
