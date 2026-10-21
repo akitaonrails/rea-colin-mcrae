@@ -94,9 +94,20 @@ impl ChannelId {
 pub struct WaveSlotId(u32);
 
 impl WaveSlotId {
+    /// Construct a slot id from its load-sequence ordinal.
+    pub fn from_ordinal(ordinal: u32) -> Self {
+        Self(ordinal)
+    }
+
     /// The slot's ordinal within the session's load sequence.
     pub fn ordinal(self) -> u32 {
         self.0
+    }
+
+    /// The slot `n` positions after this one, as the recovered ambience triggers
+    /// address `base_slot + offset`.
+    pub fn with_offset(self, n: u32) -> Self {
+        Self(self.0 + n)
     }
 }
 

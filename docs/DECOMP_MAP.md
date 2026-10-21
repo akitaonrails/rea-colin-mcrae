@@ -165,8 +165,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T14:14:27Z
-milestone=recover-abduct-ambience-trigger-and-shared-channel-arbitration
+updated_utc=2026-10-21T14:18:30Z
+milestone=reconstruct-ambience-trigger-ticks-as-pure-command-emitters
 completed=51
 partial=25
 not_started=41

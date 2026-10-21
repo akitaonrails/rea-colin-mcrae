@@ -481,6 +481,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   the looped crowd voice while it holds the shared channel (crowd plays only when
   `DAT_0050d868==0 && DAT_0050d860==0`). Only the crowd slot loops. See evidence
   `rea.official-eu.audio-abduct-trigger`.
+- Both ambience ticks are reconstructed as pure command-emitting functions in
+  `cmr-core::audio_ambience::AmbienceController`, checked against the recovered
+  branch behavior (evidence `impl.audio-ambience-controller`). The per-frame
+  scheduler that calls them, and the thirteen other wave loaders and their play
+  trigger sites, remain to recover.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
