@@ -144,11 +144,11 @@ Status markers:
 
 - [~] `I01` Maintain a clean Rust workspace and source-owned test fixtures.
 - [x] `I02` Add the native application executable and runtime-data discovery.
-- [~] `I03` Build and run the compatibility slice on Linux (headless synthetic complete-root-frame application tests pass and a `--windowed-root-frame` SDL3 host path is implemented; a displayed native-window run and reviewed-import runs remain).
+- [~] `I03` Build and run the compatibility slice on Linux (headless synthetic complete-root-frame application tests pass and an interactive `--windowed-root-frame` SDL3 host loop is implemented; a displayed native-window run on the real user corpus and reviewed-import runs remain).
 - [ ] `I04` Build and run the compatibility slice on modern Windows.
 - [ ] `I05` Add CI for formatting, clippy, tests, Linux, and Windows builds.
 - [x] `I06` Research and select SDL3 for portable host integration.
-- [~] `I07` Implement SDL3 host window/input/audio/presentation boundaries (resizable window, integer-scaled nearest streaming presentation of one completed software frame, startup gamepad enumeration with idempotent hotplug tracking, renderer-reset/redraw handling, and an edge-triggered keyboard/gamepad input mapper that drives the recovered `FrontendInput` contract implemented behind `cmr-platform-sdl3`; the pure interactive controller (`cmr-core::root_menu_interactive` plus the `steady_root_render_input` bridge) composes `FrontendState` into per-tick render inputs with a minimal root/exit transition driver; the audio host and the SDL loop that feeds the mapper into this controller and re-presents each session-rendered frame remain).
+- [~] `I07` Implement SDL3 host window/input/audio/presentation boundaries (resizable window, integer-scaled nearest streaming presentation of one completed software frame, startup gamepad enumeration with idempotent hotplug tracking, renderer-reset/redraw handling, and an edge-triggered keyboard/gamepad input mapper that drives the recovered `FrontendInput` contract implemented behind `cmr-platform-sdl3`; the pure interactive controller (`cmr-core::root_menu_interactive` plus the `steady_root_render_input` bridge) composes `FrontendState` into per-tick render inputs with a minimal root/exit transition driver; and the SDL interactive loop (`run_interactive_root_frame`, exposed through the app's `--windowed-root-frame` via `run_windowed_root_frame`) feeds live input into the controller and re-presents each distinct session-rendered frame. Only the audio host remains for `I07`; a displayed end-to-end run on the real user corpus is gated under `I03`/`I04`).
 - [ ] `I08` Benchmark wgpu against SDL_GPU for the recovered 3D workload.
 - [ ] `I09` Implement the selected portable GPU backend behind shared contracts.
 - [ ] `I10` Remove requirements for original DirectX/QMixer/WinMM DLLs.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T04:50:29Z
-milestone=compose-pure-interactive-root-menu-controller
+updated_utc=2026-10-21T04:58:45Z
+milestone=wire-sdl-interactive-root-menu-loop
 completed=51
 partial=22
 not_started=44
 blocked=0
 total=117
-current_focus=I07-sdl-interactive-loop-wiring-and-audio-host
-next_exit_gate=wire-presenter-primitives-and-a-session-re-render-loop-to-the-interactive-controller
+current_focus=I07-portable-audio-host
+next_exit_gate=implement-a-portable-audio-host-behind-a-recovered-qmixer-winmm-mixer-contract
 <!-- PROGRESS-TAIL-END -->

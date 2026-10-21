@@ -14,13 +14,20 @@ pub use input::{
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::time::{Duration, Instant};
 
+use cmr_core::frontend::FrontendInput;
+use cmr_core::root_menu_interactive::RootInteraction;
+use cmr_core::root_menu_visual::RootRenderInput;
 use cmr_video::{SoftwarePresentedFrame, SoftwareRgba8Error, SoftwareRgba8Frame};
 use sdl3::event::{Event, WindowEvent};
 use sdl3::keyboard::Keycode;
 use sdl3::pixels::PixelFormat;
 use sdl3::render::{Canvas, ScaleMode, Texture};
 use sdl3::video::Window;
+
+/// Target frame interval for the interactive loop's event wait (~60 Hz).
+const INTERACTIVE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 /// Platform-neutral events relevant to the first native host loop.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -335,6 +342,207 @@ fn copy_packed_rows(
             .copy_from_slice(&source[source_start..source_start + source_pitch]);
     }
     Ok(())
+}
+
+/// A failure while running the interactive root-menu loop.
+#[derive(Debug)]
+pub enum InteractiveRootError<E> {
+    /// A host (SDL) presentation or window-system failure.
+    Host(SdlHostError),
+    /// A failure returned by the caller's frame-render callback.
+    Render(E),
+}
+
+impl<E: fmt::Display> fmt::Display for InteractiveRootError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Host(source) => source.fmt(formatter),
+            Self::Render(source) => write!(formatter, "interactive render failed: {source}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for InteractiveRootError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Host(source) => Some(source),
+            Self::Render(source) => Some(source),
+        }
+    }
+}
+
+fn elapsed_ms(clock: Instant) -> u32 {
+    clock.elapsed().as_millis() as u32
+}
+
+fn rendered_rgba<E>(
+    frame: SoftwarePresentedFrame,
+) -> Result<SoftwareRgba8Frame, InteractiveRootError<E>> {
+    frame
+        .expand_rgba8()
+        .map_err(|error| InteractiveRootError::Host(SdlHostError::FrameConversion(error)))
+}
+
+/// Runs the interactive root-menu loop until the user exits.
+///
+/// SDL owns the window, event queue, gamepads, and presentation. Navigation
+/// and exit come from the recovered [`RootInteraction`]; the `render` callback
+/// turns each distinct recovered [`RootRenderInput`] into a completed software
+/// frame (typically by driving the compatibility session). The frame is only
+/// re-rendered when the controller's render input actually changes.
+///
+/// `Escape` and the window close button exit, as in the static presenter. The
+/// controller supplies a monotonic millisecond clock so its recovered idle and
+/// attract timing can elapse.
+pub fn run_interactive_root_frame<E>(
+    mut interaction: RootInteraction,
+    save_allowed: bool,
+    mut render: impl FnMut(&RootRenderInput) -> Result<SoftwarePresentedFrame, E>,
+) -> Result<(), InteractiveRootError<E>> {
+    let clock = Instant::now();
+
+    // Settle the recovered controller into the interactive root screen and
+    // render its first frame before opening a window.
+    let mut current_input = loop {
+        let tick = interaction.tick(FrontendInput::default(), elapsed_ms(clock), save_allowed);
+        if tick.exit_requested {
+            return Ok(());
+        }
+        if let Some(input) = tick.render_input {
+            break input;
+        }
+    };
+    let mut rgba = rendered_rgba(render(&current_input).map_err(InteractiveRootError::Render)?)?;
+    let extent = rgba.extent();
+
+    let host = InteractiveRootError::Host;
+    let sdl = sdl3::init().map_err(|error| host(SdlHostError::sdl("initialization", error)))?;
+    let video = sdl
+        .video()
+        .map_err(|error| host(SdlHostError::sdl("video initialization", error)))?;
+    let gamepad = sdl
+        .gamepad()
+        .map_err(|error| host(SdlHostError::sdl("gamepad initialization", error)))?;
+    let window = video
+        .window(
+            "Colin McRae Rally — reconstruction",
+            u32::from(extent.width),
+            u32::from(extent.height),
+        )
+        .position_centered()
+        .resizable()
+        .build()
+        .map_err(|error| host(SdlHostError::sdl("window creation", error)))?;
+    let mut canvas = window.into_canvas();
+    canvas
+        .set_logical_size(
+            u32::from(extent.width),
+            u32::from(extent.height),
+            sdl3::sys::render::SDL_LOGICAL_PRESENTATION_INTEGER_SCALE,
+        )
+        .map_err(|error| host(SdlHostError::sdl("logical presentation setup", error)))?;
+    let texture_creator = canvas.texture_creator();
+    let mut texture = texture_creator
+        .create_texture_streaming(
+            PixelFormat::RGBA32,
+            u32::from(extent.width),
+            u32::from(extent.height),
+        )
+        .map_err(|error| host(SdlHostError::sdl("streaming texture creation", error)))?;
+    texture.set_scale_mode(ScaleMode::Nearest);
+    upload_rgba_frame(&mut texture, &rgba).map_err(InteractiveRootError::Host)?;
+    redraw_present(&mut canvas, &texture).map_err(InteractiveRootError::Host)?;
+
+    let mut open_gamepads = BTreeMap::new();
+    for id in gamepad
+        .gamepads()
+        .map_err(|error| host(SdlHostError::sdl("gamepad enumeration", error)))?
+    {
+        if let Ok(handle) = gamepad.open(id) {
+            open_gamepads.insert(id.raw(), handle);
+        }
+    }
+    let mut host_state = HostEventState::with_connected_gamepads(open_gamepads.keys().copied());
+    let mut mapper = FrontendInputMapper::new();
+    let mut events = sdl
+        .event_pump()
+        .map_err(|error| host(SdlHostError::sdl("event pump creation", error)))?;
+
+    while !host_state.exit_requested() {
+        let mut pending = Vec::new();
+        if let Some(event) = events.wait_event_timeout(INTERACTIVE_FRAME_INTERVAL) {
+            pending.push(event);
+            pending.extend(events.poll_iter());
+        }
+        for event in pending {
+            feed_input_event(&event, &mut mapper);
+            match map_event(&event) {
+                HostEvent::GamepadAdded(id) => {
+                    if let Ok(handle) = gamepad.open(id.into()) {
+                        open_gamepads.insert(id, handle);
+                        host_state.apply(HostEvent::GamepadAdded(id));
+                    }
+                }
+                HostEvent::GamepadRemoved(id) => {
+                    open_gamepads.remove(&id);
+                    host_state.apply(HostEvent::GamepadRemoved(id));
+                }
+                HostEvent::RendererReset => {
+                    texture = texture_creator
+                        .create_texture_streaming(
+                            PixelFormat::RGBA32,
+                            u32::from(extent.width),
+                            u32::from(extent.height),
+                        )
+                        .map_err(|error| {
+                            host(SdlHostError::sdl("streaming texture recreation", error))
+                        })?;
+                    texture.set_scale_mode(ScaleMode::Nearest);
+                    upload_rgba_frame(&mut texture, &rgba).map_err(InteractiveRootError::Host)?;
+                    redraw_present(&mut canvas, &texture).map_err(InteractiveRootError::Host)?;
+                }
+                HostEvent::RedrawRequested => {
+                    redraw_present(&mut canvas, &texture).map_err(InteractiveRootError::Host)?;
+                }
+                other => host_state.apply(other),
+            }
+        }
+        if host_state.exit_requested() {
+            break;
+        }
+
+        let tick = interaction.tick(mapper.poll(), elapsed_ms(clock), save_allowed);
+        if tick.exit_requested {
+            break;
+        }
+        if let Some(render_input) = tick.render_input
+            && render_input != current_input
+        {
+            current_input = render_input;
+            rgba = rendered_rgba(render(&current_input).map_err(InteractiveRootError::Render)?)?;
+            upload_rgba_frame(&mut texture, &rgba).map_err(InteractiveRootError::Host)?;
+            redraw_present(&mut canvas, &texture).map_err(InteractiveRootError::Host)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn feed_input_event(event: &Event, mapper: &mut FrontendInputMapper) {
+    match event {
+        Event::KeyDown {
+            keycode: Some(keycode),
+            ..
+        } => mapper.apply_key(*keycode, true),
+        Event::KeyUp {
+            keycode: Some(keycode),
+            ..
+        } => mapper.apply_key(*keycode, false),
+        Event::GamepadButtonDown { button, .. } => mapper.apply_button(*button, true),
+        Event::GamepadButtonUp { button, .. } => mapper.apply_button(*button, false),
+        Event::GamepadAxisMotion { axis, value, .. } => mapper.apply_axis(*axis, *value),
+        _ => {}
+    }
 }
 
 #[cfg(test)]

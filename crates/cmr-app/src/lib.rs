@@ -15,16 +15,18 @@ use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
 use cmr_core::frontend::{FrontendPhase, RootSelection};
 use cmr_core::localization::Language;
 use cmr_core::root_menu_assets::VisualVariant;
+use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::{
     ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16, ROOT_INITIAL_VERTICAL_TRANSFORM_Q16, RootRenderInput,
 };
 use cmr_core::startup::{StartupLanguage, StartupScreen};
 use cmr_core::startup_display::{
-    StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
+    StartupDisplay, StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
 };
 use cmr_core::surface::PaletteMapping;
 use cmr_formats::bitmap::BitmapLimits;
 use cmr_formats::stored_asset::DecodeLimits;
+use cmr_platform_sdl3::{InteractiveRootError, run_interactive_root_frame};
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
     with_software_root_menu_session,
@@ -366,6 +368,51 @@ impl std::error::Error for HeadlessRootFrameError {
     }
 }
 
+/// A failure while running the native windowed root menu.
+#[derive(Debug)]
+pub enum WindowedRootFrameError {
+    /// Session setup (profile, store, startup display, or session build).
+    Setup(HeadlessRootFrameError),
+    /// A failure from the interactive host loop (SDL host or per-frame render).
+    Interactive(InteractiveRootError<HeadlessRootFrameError>),
+}
+
+impl WindowedRootFrameError {
+    /// Stable error category for path-free process diagnostics.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Setup(source) => source.kind(),
+            Self::Interactive(InteractiveRootError::Host(_)) => "host",
+            Self::Interactive(InteractiveRootError::Render(source)) => source.kind(),
+        }
+    }
+}
+
+impl From<HeadlessRootFrameError> for WindowedRootFrameError {
+    fn from(source: HeadlessRootFrameError) -> Self {
+        Self::Setup(source)
+    }
+}
+
+impl fmt::Display for WindowedRootFrameError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Setup(source) => source.fmt(formatter),
+            Self::Interactive(source) => source.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for WindowedRootFrameError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Setup(source) => Some(source),
+            Self::Interactive(source) => Some(source),
+        }
+    }
+}
+
 /// Runs the fixed official-EU, English, normal-variant initial root frame.
 pub fn run_headless_root_frame(
     runtime_data: &Path,
@@ -407,6 +454,52 @@ pub fn render_root_frame_with_profile(
     request: SoftwareRootMenuSessionRequest,
 ) -> Result<RenderedRootFrameOutput, HeadlessRootFrameError> {
     let profile_id = reviewed.profile().id.clone();
+    let (store, startup) = open_root_session_inputs(runtime_data, reviewed)?;
+
+    let mut run = with_software_root_menu_session(&store, startup, request, |session| {
+        let outcome = session
+            .render(initial_root_input())
+            .map_err(HeadlessRootFrameError::Render)?;
+        Ok(RootFrameObservations {
+            bitmap_blits: outcome.bitmap_blits,
+            bitmap_no_ops: outcome.bitmap_no_ops,
+            footer_rendered: outcome.footer.is_some(),
+            c3d_commands: outcome.c3d_commands,
+            scene_completed: outcome.scene_completed,
+            palette_committed: matches!(
+                outcome.palette_commit,
+                DeferredPaletteCommitOutcome::Committed(_)
+            ),
+            presentation_completed: outcome.presentation_completed,
+        })
+    })
+    .map_err(HeadlessRootFrameError::Session)?;
+
+    let observations = run.output?;
+    let frame = run
+        .backend
+        .take_presented_frame()
+        .ok_or(HeadlessRootFrameError::MissingPresentedFrame)?;
+    Ok(RenderedRootFrameOutput {
+        profile_id,
+        frame,
+        bitmap_blits: observations.bitmap_blits,
+        bitmap_no_ops: observations.bitmap_no_ops,
+        footer_rendered: observations.footer_rendered,
+        c3d_commands: observations.c3d_commands,
+        scene_completed: observations.scene_completed,
+        palette_committed: observations.palette_committed,
+        presentation_completed: observations.presentation_completed,
+    })
+}
+
+/// Opens the verified asset store and the initialized loading display shared by
+/// the headless and interactive root runners, rejecting either startup-copy
+/// failure with a path-free boundary error.
+fn open_root_session_inputs(
+    runtime_data: &Path,
+    reviewed: &ReviewedProfile,
+) -> Result<(AssetStore, StartupDisplay<SoftwareIndexedBackend>), HeadlessRootFrameError> {
     let store = AssetStore::open(
         runtime_data,
         reviewed,
@@ -444,42 +537,42 @@ pub fn render_root_frame_with_profile(
             source: source.clone(),
         });
     }
+    Ok((store, startup))
+}
 
-    let mut run = with_software_root_menu_session(&store, startup, request, |session| {
-        let outcome = session
-            .render(initial_root_input())
-            .map_err(HeadlessRootFrameError::Render)?;
-        Ok(RootFrameObservations {
-            bitmap_blits: outcome.bitmap_blits,
-            bitmap_no_ops: outcome.bitmap_no_ops,
-            footer_rendered: outcome.footer.is_some(),
-            c3d_commands: outcome.c3d_commands,
-            scene_completed: outcome.scene_completed,
-            palette_committed: matches!(
-                outcome.palette_commit,
-                DeferredPaletteCommitOutcome::Committed(_)
-            ),
-            presentation_completed: outcome.presentation_completed,
+/// Runs the native, windowed, interactive root menu for the fixed official-EU,
+/// English, normal-variant initial state.
+///
+/// The compatibility session stays live for the whole loop: each distinct
+/// recovered render input is drawn by the software path and presented by the
+/// SDL host, which owns the window, input, and gamepads.
+pub fn run_windowed_root_frame(runtime_data: &Path) -> Result<(), WindowedRootFrameError> {
+    let reviewed =
+        ReviewedProfile::from_json(REVIEWED_PROFILE).map_err(HeadlessRootFrameError::Profile)?;
+    let request = SoftwareRootMenuSessionRequest::official_eu_initial_software_default_config(
+        Language::English,
+        VisualVariant::Normal,
+    );
+    let (store, startup) = open_root_session_inputs(runtime_data, &reviewed)?;
+
+    let run = with_software_root_menu_session(&store, startup, request, |session| {
+        let interaction =
+            RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0)
+                .expect("zero is a valid recovered root selection");
+        run_interactive_root_frame(interaction, true, |input| {
+            session
+                .render(*input)
+                .map_err(HeadlessRootFrameError::Render)?;
+            session
+                .backend()
+                .presented_frame()
+                .cloned()
+                .ok_or(HeadlessRootFrameError::MissingPresentedFrame)
         })
     })
-    .map_err(HeadlessRootFrameError::Session)?;
+    .map_err(|source| WindowedRootFrameError::Setup(HeadlessRootFrameError::Session(source)))?;
 
-    let observations = run.output?;
-    let frame = run
-        .backend
-        .take_presented_frame()
-        .ok_or(HeadlessRootFrameError::MissingPresentedFrame)?;
-    Ok(RenderedRootFrameOutput {
-        profile_id,
-        frame,
-        bitmap_blits: observations.bitmap_blits,
-        bitmap_no_ops: observations.bitmap_no_ops,
-        footer_rendered: observations.footer_rendered,
-        c3d_commands: observations.c3d_commands,
-        scene_completed: observations.scene_completed,
-        palette_committed: observations.palette_committed,
-        presentation_completed: observations.presentation_completed,
-    })
+    run.output.map_err(WindowedRootFrameError::Interactive)
 }
 
 fn initial_root_input() -> RootRenderInput {
