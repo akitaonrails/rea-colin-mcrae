@@ -123,6 +123,15 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   and focus-gated sampling. OS polling and force feedback remain backend work.
 - `cmr-core::timing`: validated pure plans for recovered logical rates, timer
   startup/drift, compatibility buckets, focus gating, and unsigned deadlines.
+- `cmr-core::host_loop`: the recovered native host clock and main-loop pacing as
+  portable logic over a `HostClock` trait. Reconstructs the loop gating
+  (`HostLoopState`/`HostAction`: active/quit/one-shot flags + the
+  `WM_ACTIVATEAPP` focus-pause hinge), the self-limiting uncapped catch-up
+  (`run_catch_up_ticks`: `do { tick } while (step_boundary_crossed)`, reusing
+  `sim_clock`), and the one-frame render-skip gate (`RenderGate`, the
+  `DAT_004ee900` 2<->1 toggle). Lock-step 25 Hz with decoupled render. The
+  busy-wait spin and the Win32 message pump remain SDL-backend glue (B10-B12).
+  See evidence `rea.official-eu.host-main-loop`.
 - `cmr-formats::font`: bounded fixed-layout indexed FON atlas/trailer decoding
   plus byte-text measurement and backend-neutral glyph layout plans.
 - `cmr-core::font_assets`: verified loading and stable style identity for the
