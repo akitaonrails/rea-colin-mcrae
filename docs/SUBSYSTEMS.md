@@ -659,6 +659,25 @@ languages rather than fabricating or silently aliasing Italian assets.
   `cmr-core::fixed_point::Vec3`. The slip-angle tyre saturation `0x40d810`, the
   position update, the damper source, and the runtime-loaded per-surface/per-car
   table values remain. See evidence `rea.official-eu.sim-grip`.
+- Collision/damage runs from `0x410a60` (Mechanics callee), which delegates the
+  crash path to `0x4115d0` once the out-of-control flag `car+0x680` is set. The
+  contact impulse accumulates into `car+0x3cc..`; its magnitude feeds the impact
+  computer `0x41f630` (threshold `0x2624`, slope `0xf536`, clamp 1.0), and the
+  same 0..1 impact drives the pitched impact sound (`0x469e80`), force feedback,
+  and damage. Damage is tracked twice: a coarse crash counter `car+0x678` (+1 per
+  contacting tick, clamp 100, totalled latch `car+0x67c`) and a fine per-region
+  mesh accumulator `DAT_0050e0d8` (`w = (1-dist^2)*impact`, clamp 1.0), with body
+  panels shed at region-damage `0x3333` / `0x6666` (`0x44a770`). Crash reactions
+  (`0x4756f0`) pick a sound bank by severity (tier-1 max `0x4ccc`) and material
+  (5=METAL/8=HAY_BALE/0xd=PLASTIC/0x10=RUBBER). Out-of-bounds is handled by
+  node-keyed stage trigger volumes (`0x403a00` on `car+0x750`): type 6 kills
+  (`car+0x67c`), 0x15 arms the `car+0x75c` countdown, 7..=0xB switch surfaces.
+  Reconstructed the impact, crash counter, deform/region accumulate, damage
+  level, materials, and trigger types in `cmr-core::collision` (with
+  `Fixed16::sqrt`/`Vec3::length` added to `fixed_point`). The geometry
+  intersection, the re-righting blend, the reset trigger (`ctrl+0x3ec` only read,
+  no position-snap/penalty confirmed), the damage->performance read site, and the
+  `car+0x75c` countdown remain. See evidence `rea.official-eu.sim-collision`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

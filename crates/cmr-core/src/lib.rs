@@ -28,6 +28,7 @@ pub mod championship_setup;
 pub mod championship_setup_frame;
 pub mod championship_setup_visual;
 pub mod championship_terminal_frame;
+pub mod collision;
 pub mod config;
 pub mod deferred_palette;
 pub mod display;

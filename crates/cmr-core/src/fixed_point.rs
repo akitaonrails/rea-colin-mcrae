@@ -80,6 +80,19 @@ impl Fixed16 {
     pub const fn neg(self) -> Fixed16 {
         Fixed16(self.0.wrapping_neg())
     }
+
+    /// Non-negative square root in Q16.16 (negative inputs yield `0`).
+    ///
+    /// The shipped code reads a reciprocal-sqrt lookup table (`DAT_0082b380`) to
+    /// form vector magnitudes; its values are game data and are NOT copied here.
+    /// This reconstructs the same magnitude with an integer square root:
+    /// `sqrt(r / 2^16) * 2^16 == isqrt(r << 16)`.
+    pub const fn sqrt(self) -> Fixed16 {
+        if self.0 <= 0 {
+            return Fixed16::ZERO;
+        }
+        Fixed16(((self.0 as u64) << FIXED_SHIFT).isqrt() as i32)
+    }
 }
 
 impl std::ops::Add for Fixed16 {
@@ -187,6 +200,12 @@ impl Vec3 {
             .add(self.y.mul(rhs.y))
             .add(self.z.mul(rhs.z))
     }
+
+    /// Euclidean length `sqrt(x^2 + y^2 + z^2)` (the magnitude the shipped code
+    /// forms via its reciprocal-sqrt table; see [`Fixed16::sqrt`]).
+    pub const fn length(self) -> Fixed16 {
+        self.dot(self).sqrt()
+    }
 }
 
 impl std::ops::Add for Vec3 {
@@ -270,6 +289,20 @@ mod tests {
         );
         // dot = 1*3 + 2*1 + 0*1 = 5.
         assert_eq!(a.dot(b), Fixed16::from_int(5));
+    }
+
+    #[test]
+    fn sqrt_and_length() {
+        // sqrt of perfect squares is exact.
+        assert_eq!(Fixed16::from_int(4).sqrt(), Fixed16::from_int(2));
+        assert_eq!(Fixed16::from_int(100).sqrt(), Fixed16::from_int(10));
+        // sqrt(0.25) = 0.5.
+        assert_eq!(Fixed16::from_raw(0x4000).sqrt(), Fixed16::from_raw(0x8000));
+        // Negatives clamp to zero (no panic).
+        assert_eq!(Fixed16::from_int(-9).sqrt(), Fixed16::ZERO);
+        // A 3-4-5 right triangle: length is exactly 5.
+        let v = Vec3::new(Fixed16::from_int(3), Fixed16::from_int(4), Fixed16::ZERO);
+        assert_eq!(v.length(), Fixed16::from_int(5));
     }
 
     #[test]
