@@ -350,10 +350,16 @@ effects, routes that slice from initially empty lanes through caller-explicit
 lane and resolved byte-3 policy, and attaches the result only to successful
 outcomes. It does not yet merge later deferred info/next-preview producers.
 The publication guarantee covers the returned value, not rollback of setup or
-scene effects after a later failure. Native record packing, optional transform
-fields and lane-ordered flush execution, driver-exact Stretch comparison,
-native presentation, and the other deferred pixels are the next integration
-seams.
+scene effects after a later failure. Static follow-up now also resolves the
+native record's optional viewport, angle/pivot, lane, tuple, and terminal fields;
+the current championship producer supplies zero angle/pivots and no viewport.
+A backend-neutral flush plan orders accepted records by lanes 3, 2, 1 with exact
+lane depths and per-record textured/fallback dispatch, and applies whole-plan
+preflight before effects. It deliberately stops before recovered quad/UV and
+device-state execution because filtering, blending, fallback conversion, and
+final pixels remain unresolved. Native record packing, world-owner interleave,
+driver-exact Stretch comparison, native presentation, and the other deferred
+pixels are the next integration seams.
 
 Exit gate:
 

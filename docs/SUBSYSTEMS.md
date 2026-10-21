@@ -231,6 +231,13 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   capability bit is set, otherwise force `0xff`. Safe out-of-atlas rejection
   remains a reconstruction policy. Native 52-byte packing, optional transform
   data, flush execution, filtering/blending, and pixels remain open.
+- `cmr-video::software_queued_font_flush`: backend-neutral semantic flush plan
+  for the current zero-rotation/no-viewport championship subset. It snapshots
+  accepted records in recovered lane order 3, 2, 1 and per-lane FIFO order,
+  attaches exact depths `0.999999`, `0.5`, and `0.0`, preserves the terminal
+  split, and preflights every command before dispatch to a typed sink. This is
+  orchestration only: native packing/count clearing, quad/UV construction,
+  device states, blending, fallback blitting, and pixels remain outside it.
 - `cmr-video::software_championship_setup_frame`: two-pass execution of the
   lightweight prepared setup transcript. Its standalone preparation derives
   exact aligned extents from the owned RGB16 pool and optional nominal
