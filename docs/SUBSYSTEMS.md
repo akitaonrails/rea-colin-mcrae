@@ -488,10 +488,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   trigger sites, remain to recover.
 - The full recovered sound namespace (string table) is catalogued in
   `cmr-core::audio_assets`: explicit waves (crowd, six weather incl.
-  `wet_out`/`rain_in`), `frontend`/`replay` music, menu UI sounds
-  (`BACK`/`SELECT`/`TOGGLE`/`UPDOWN`/`WHEEL`), and the `car`/`accident`/`prangs`/
-  `newsurfs`/`speech`/`rallschl` directory groups. See evidence
-  `rea.official-eu.audio-sound-taxonomy`.
+  `wet_out`/`rain_in`), `frontend`/`replay` music, menu sounds, and the
+  `car`/`accident`/`prangs`/`newsurfs`/`speech`/`rallschl` directory groups. See
+  evidence `rea.official-eu.audio-sound-taxonomy`.
+- The menu UI sound loader `0x468f50`/`FUN_00468f50` registers four 22050 Hz /
+  16-bit mono waves - `FORWARD`/`BACKWARD`/`LEFTRIGH`/`UPDOWN.WAV` under
+  `sounds\menu\` - on a dedicated full-volume menu channel (`DAT_0057c608`, base
+  slot `DAT_0057d88c`), inferred frontend navigation sounds. The separate
+  `BACK`/`SELECT`/… strings are not this loader's waves. See evidence
+  `rea.official-eu.audio-menu-loader`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

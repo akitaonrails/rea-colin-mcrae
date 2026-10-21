@@ -41,12 +41,32 @@ pub mod dirs {
     pub const WEATHER: &str = r"sounds\weather\";
 }
 
-/// The recovered frontend menu UI sound base paths (no extension in the binary).
+/// Recovered sample rate (`0x5622` = 22050) and bit depth (`0x10` = 16, mono) of
+/// the menu UI waves loaded by `FUN_00468f50`.
+pub const MENU_WAVE_RATE_HZ: u32 = 22_050;
+pub const MENU_WAVE_BITS: u16 = 16;
+
+/// The four menu UI waves the loader `FUN_00468f50` registers, in load order
+/// (which fixes their slot offsets). Each is `sounds\menu\<name>`, 22050 Hz /
+/// 16-bit mono, played on a dedicated menu channel.
 ///
-/// Order as stored: `BACK`, `SELECT`, `TOGGLE`, `UPDOWN`, `WHEEL`. These are the
-/// UI event sounds for the frontend the reconstruction already models; the exact
-/// action-to-sound mapping needs the play sites and is not yet recovered.
-pub const MENU_SOUNDS: [&str; 5] = [
+/// Inferred association with the reconstructed frontend actions: `UPDOWN`
+/// vertical navigation, `LEFTRIGH` horizontal navigation/toggle, `FORWARD`
+/// confirm, `BACKWARD` cancel. The exact action-to-slot mapping needs the play
+/// sites and is not yet recovered.
+pub const MENU_WAVE_FILES: [&str; 4] = [
+    r"sounds\menu\FORWARD.WAV",
+    r"sounds\menu\BACKWARD.WAV",
+    r"sounds\menu\LEFTRIGH.WAV",
+    r"sounds\menu\UPDOWN.WAV",
+];
+
+/// A separate set of `sounds\menu\` event-name strings present in the binary
+/// (`BACK`, `SELECT`, `TOGGLE`, `UPDOWN`, `WHEEL`). These are observed as string
+/// literals only; they are not the waves the recovered loader `FUN_00468f50`
+/// registers (those are [`MENU_WAVE_FILES`]), and the loader/role that consumes
+/// them is not yet established.
+pub const MENU_EVENT_SOUND_NAMES: [&str; 5] = [
     r"sounds\menu\BACK",
     r"sounds\menu\SELECT",
     r"sounds\menu\TOGGLE",
@@ -79,15 +99,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn menu_sounds_are_five_distinct_names_under_the_menu_dir() {
-        assert_eq!(MENU_SOUNDS.len(), 5);
-        for name in MENU_SOUNDS {
+    fn loaded_menu_waves_are_four_mono_files_under_the_menu_dir() {
+        assert_eq!(MENU_WAVE_FILES.len(), 4);
+        assert_eq!(MENU_WAVE_FILES[0], r"sounds\menu\FORWARD.WAV");
+        assert_eq!(MENU_WAVE_FILES[3], r"sounds\menu\UPDOWN.WAV");
+        for file in MENU_WAVE_FILES {
+            assert!(file.starts_with(dirs::MENU));
+            assert!(file.ends_with(".WAV"));
+        }
+        assert_eq!(MENU_WAVE_RATE_HZ, 22_050);
+        assert_eq!(MENU_WAVE_BITS, 16);
+    }
+
+    #[test]
+    fn menu_event_names_are_a_distinct_five_string_set() {
+        assert_eq!(MENU_EVENT_SOUND_NAMES.len(), 5);
+        for name in MENU_EVENT_SOUND_NAMES {
             assert!(name.starts_with(dirs::MENU));
         }
-        let mut sorted = MENU_SOUNDS.to_vec();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), 5);
+        // They are not the loaded waves.
+        for name in MENU_EVENT_SOUND_NAMES {
+            assert!(!MENU_WAVE_FILES.contains(&name));
+        }
     }
 
     #[test]
