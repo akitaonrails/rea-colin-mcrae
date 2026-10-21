@@ -539,6 +539,21 @@ languages rather than fabricating or silently aliasing Italian assets.
   `cmr-core::audio_surface`; the impact sub-wave/volume bit-expression is left in
   the evidence ledger pending a confident transcription. See evidence
   `rea.official-eu.audio-surface-collision`.
+- The co-driver pacenotes (speech) are a 40-wave bank loaded once by
+  `0x444160` ("CoDriver_Create") at 11025 Hz/16-bit/mono, slot offset == load
+  index (slot 0 `CAUTION` ... 0x27 `INTO`, with the number calls `1..5` at
+  3..7). Each path is `<root>` + `<language dir>` + `codriver\` + filename; the
+  language is `cfg[0x18] & 7` over `english/french/german/spanish/italian/helium`
+  (`helium` is the forced pitched-up developer voice). Calls play one component
+  at a time, one-shot, on a single shared speech channel gated by
+  `IsChannelDone`; a packed "pacenote word" carries several fields the sequencer
+  `0x444450` extracts (direction 1=RIGHT/2=LEFT, a number, and higher fields of
+  unknown meaning), linking consecutive queued notes with `INTO`. An 8-entry
+  event ring feeds a depth-2 per-track FIFO with eviction-cancel. Reconstructed
+  in `cmr-core::audio_pacenote` (inventory, format/channel constants, language
+  gate, `codriver\` path, and the observed field-extraction arithmetic); the
+  higher-field semantics and FIFO accumulation are left in the ledger. See
+  evidence `rea.official-eu.audio-pacenote`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
