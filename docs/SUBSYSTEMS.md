@@ -1023,6 +1023,26 @@ languages rather than fabricating or silently aliasing Italian assets.
   are synthetic and source-owned; byte-exact differential round-trips against an
   original-written save and the championship payload semantics (F05/F06) remain.
   See evidence `impl.persistence-round-trip`.
+- `cmr-core::championship_model` recovers the championship content addressing
+  structure (F05) that the `0x690` save payload and the live struct share - not
+  the content itself. Dimensions: 9 countries (live `+0x168 & 0xf`, each a `.TIM`
+  file via a pointer table), 14 cars (a 4-bit nibble over five parallel 14-entry
+  tables, with a numeric stats entry of stride `0x0c`: primary/"BHP",
+  secondary/"MM", a 3-way class enum), and 3 difficulties. The save record
+  mirrors the live struct by `record_off = live_off - 0x20` /
+  `payload_off = live_off - 0x2c` (verified against the car nibble, country
+  index, and the event-progress array). Event progress is a `0x10`-stride array
+  (<=16 events) whose element flag byte `+0x08` carries a started bit (`0x10`)
+  and a low-nibble completed-stage count; the current-event cursor is the first
+  started-but-incomplete element. The per-slot display descriptor packs
+  `(country&7) | ((stage&7)<<3) | (mode<<6)` and maps localized string ids
+  (location base `0x3c`, mode base `0x2f`); the Rally-School selector `cfg[0x6c0]`
+  packs task (`>>5`) and difficulty (`(>>3)&3`), and the persisted mode proxy is
+  live `+0x18 (>>3)&3`. The country/car/stage names, car codes, stat figures,
+  difficulty labels, and `.TIM` stage tables are game data and are not modeled or
+  vendored - only the offsets, strides, bit layouts, and string-id bases. The
+  event-progress write path and the full payload semantics (F06) remain. See
+  evidence `rea.official-eu.championship-model` and `impl.championship-model`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
