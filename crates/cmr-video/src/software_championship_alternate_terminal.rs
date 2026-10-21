@@ -22,7 +22,9 @@ use cmr_core::{
     championship_car_transform::{ChampionshipCarInput, ChampionshipCarState},
     championship_car_visibility::ChampionshipCarVisibilityLatches,
     championship_setup::CanonicalCar,
-    championship_setup_frame::{DeferredChampionshipCommand, PreparedChampionshipSetupFrame},
+    championship_setup_frame::{
+        DeferredChampionshipCommand, PreparedChampionshipAlternateSetupFrame,
+    },
     championship_setup_visual::ChampionshipPreviewCache,
     championship_terminal_frame::{
         ChampionshipCarContractError, scan_championship_car_contract_for_resource,
@@ -150,7 +152,7 @@ impl std::error::Error for SoftwareChampionshipAlternateTerminalError {
 /// indexed terminal owner; all latches are consumed after every scene attempt.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_software_championship_alternate_terminal_frame<'catalog>(
-    prepared_setup: PreparedChampionshipSetupFrame,
+    prepared_setup: PreparedChampionshipAlternateSetupFrame,
     extent: DisplayExtent,
     car_input: ChampionshipCarInput,
     car_resources: Option<SoftwareChampionshipAlternateCarResources<'_, '_>>,

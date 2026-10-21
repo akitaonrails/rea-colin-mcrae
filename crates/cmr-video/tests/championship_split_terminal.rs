@@ -9,41 +9,34 @@ use cmr_assets::{
     AssetFile, AssetProfile, AssetStore, ReviewedProfile, StorageEncoding, import_source,
 };
 use cmr_core::{
-    blit::BlitDecision,
+    blit::{BlitDecision, BlitMethod, ColorKey},
     championship_assets::{CHAMPIONSHIP_CARS, MANUFACTURER_LOGOS, load_championship_assets},
-    championship_bitmap_raster::{
-        UploadedChampionshipLogoPool, prepare_championship_logo_surfaces, upload_championship_logos,
-    },
     championship_car_execute::{ChampionshipCarBatchExecutor, ChampionshipCarPreDrawState},
     championship_car_transform::{ChampionshipCarInput, ChampionshipCarState},
     championship_car_visibility::ChampionshipCarVisibilityLatches,
     championship_frame_assets::{
         CHEQUERED_FRAME_DESCRIPTORS, CHEQUERED_PALETTE_DESCRIPTOR, ChequeredFrame,
-        INFO_BOX_DESCRIPTOR, UploadedChampionshipFramePool, load_championship_frame_assets,
-        prepare_championship_frame_surfaces, upload_championship_frame_surfaces,
+        INFO_BOX_DESCRIPTOR, load_championship_frame_assets,
     },
     championship_setup::{
         ActivePreview, CAR_ROW_TAG, CanonicalCar, ChampionshipSetupRenderTranscript, GEAR_ROW_TAG,
         GearChoice, NEXT_ROW_TAG, RenderRow, RowValue, SetupRowText,
     },
     championship_setup_frame::{
-        ChampionshipBitmapIdentity, ChampionshipSetupFrameResources, ChampionshipSetupFrameState,
-        DeferredChampionshipCommand, PreparedChampionshipSetupCommand,
-        prepare_championship_setup_frame,
+        ChampionshipBitmapIdentity, ChampionshipSetupFrameState, DeferredChampionshipCommand,
+        PreparedChampionshipAlternateSetupFrame, PreparedChampionshipSetupCommand,
+        prepare_championship_setup_frame_from_source_extents,
     },
     championship_setup_visual::{
         ChampionshipPreviewCache, ChampionshipSetupVisualInput, NextPreviewContext, Q16Point,
-        RowPresentation,
+        RowPresentation, SetupTextRole,
     },
     championship_terminal_frame::scan_championship_car_contract_for_resource,
     deferred_palette::{DeferredPaletteState, PaletteArenaIndex, PaletteGroupBases},
-    display::{CooperativeMode, DisplayExtent, IndexedMode, IndexedVideoBackend, SurfaceTopology},
-    font_assets::FontSet,
-    font_raster::UploadedFontPool,
+    display::DisplayExtent,
     frontend_c3d_resources::prepare_frontend_c3d_resources,
     frontend_c3d_route::{FrontendC3dRoute, FrontendC3dRouteState},
     frontend_c3d_scene::C3dDepthClear,
-    localization::IndexedTextTable,
     root_menu_assets::VisualVariant,
     root_menu_c3d_assets::load_root_menu_c3d,
     root_menu_c3d_render_state::{
@@ -51,22 +44,17 @@ use cmr_core::{
         root_menu_c3d_filter_cache_outcome, root_menu_c3d_legacy_alpha_contract,
     },
     root_menu_c3d_visibility::RootMenuC3dVisibilityLatches,
-    source_store::{UploadedIndexedBitmap, UploadedSourceStore},
-    surface::{IndexedSurface, PaletteMapping},
 };
 use cmr_formats::{
-    bitmap::BitmapLimits,
+    bitmap::{BitmapLimits, IndexedBitmap, parse_indexed_bitmap},
     c3d::{
         C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS, C3D_FORMAT_VERSION, C3D_GROUP0_VALUES_OFFSET,
         C3D_GROUP1_ENTRY24_LEN, C3D_GROUP1_ENTRY32_LEN, C3D_GROUP1_FIXED_LEN, C3D_HEADER_LEN,
         C3D_MAGIC, C3dLimits,
     },
-    font::{FontLimits, TextLayoutLimits, parse_legacy_font},
-    riff_palette::PaletteEntry,
     stored_asset::DecodeLimits,
 };
 use cmr_video::{
-    SoftwareIndexedBackend,
     c3d_software_raster::{SoftwareC3dSplitRenderDepth, SoftwareChampionshipCarSplitOracleProfile},
     c3d_software_split_backend::{
         SoftwareSplitC3dOracleBackend, SoftwareSplitC3dOracleConfiguration,
@@ -86,6 +74,7 @@ use cmr_video::{
     software_championship_setup_frame::{
         SoftwareChampionshipBitmapOutcome, SoftwareChampionshipSetupCommandOutcome,
         SoftwareChampionshipSetupDeferredCommand,
+        prepare_software_championship_alternate_setup_frame,
     },
 };
 use sha2::{Digest, Sha256};
@@ -112,6 +101,361 @@ enum DeferredKind {
     Transform,
     Latch,
     Palette,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreparedKind {
+    Text(SetupTextRole),
+    Bitmap(ChampionshipBitmapIdentity, BlitMethod, Option<ColorKey>),
+    NoOp(ChampionshipBitmapIdentity),
+    InfoText,
+    Transform,
+    Latch,
+    Palette(u8, u8),
+    NextPreview,
+    SelectionDeferred,
+}
+
+#[test]
+fn alternate_preparation_matches_shared_indexed_kernel_for_cold_and_warm_transcripts() {
+    with_source_fixture(|_, _, _, pool, selection| {
+        for (transcript, state, expected_cold, expected_warm) in [
+            (
+                car_transcript(),
+                ChampionshipSetupFrameState::default(),
+                vec![
+                    PreparedKind::Text(SetupTextRole::Title),
+                    selection_kind(),
+                    row_text(cmr_core::championship_setup::SetupRowKind::ChooseCar),
+                    opaque_fast(ChampionshipBitmapIdentity::InfoBox),
+                    PreparedKind::InfoText,
+                    PreparedKind::Transform,
+                    PreparedKind::Latch,
+                    opaque_fast(ChampionshipBitmapIdentity::ManufacturerLogo(
+                        cmr_core::championship_assets::ManufacturerLogo::Subaru,
+                    )),
+                    PreparedKind::Palette(4, 0),
+                    row_text(cmr_core::championship_setup::SetupRowKind::ChooseGear),
+                    row_text(cmr_core::championship_setup::SetupRowKind::Next),
+                ],
+                vec![
+                    PreparedKind::Text(SetupTextRole::Title),
+                    selection_kind(),
+                    row_text(cmr_core::championship_setup::SetupRowKind::ChooseCar),
+                    opaque_fast(ChampionshipBitmapIdentity::InfoBox),
+                    PreparedKind::InfoText,
+                    PreparedKind::Transform,
+                    PreparedKind::Latch,
+                    opaque_fast(ChampionshipBitmapIdentity::ManufacturerLogo(
+                        cmr_core::championship_assets::ManufacturerLogo::Subaru,
+                    )),
+                    row_text(cmr_core::championship_setup::SetupRowKind::ChooseGear),
+                    row_text(cmr_core::championship_setup::SetupRowKind::Next),
+                ],
+            ),
+            (
+                gear_transcript(),
+                ChampionshipSetupFrameState::default(),
+                vec![
+                    PreparedKind::Text(SetupTextRole::Title),
+                    row_text(cmr_core::championship_setup::SetupRowKind::ChooseCar),
+                    selection_kind(),
+                    row_text(cmr_core::championship_setup::SetupRowKind::ChooseGear),
+                    opaque_fast(ChampionshipBitmapIdentity::InfoBox),
+                    PreparedKind::InfoText,
+                    PreparedKind::Transform,
+                    PreparedKind::Latch,
+                    opaque_fast(ChampionshipBitmapIdentity::ManufacturerLogo(
+                        cmr_core::championship_assets::ManufacturerLogo::Subaru,
+                    )),
+                    PreparedKind::Palette(4, 0),
+                    row_text(cmr_core::championship_setup::SetupRowKind::Next),
+                ],
+                vec![
+                    PreparedKind::Text(SetupTextRole::Title),
+                    row_text(cmr_core::championship_setup::SetupRowKind::ChooseCar),
+                    selection_kind(),
+                    row_text(cmr_core::championship_setup::SetupRowKind::ChooseGear),
+                    opaque_fast(ChampionshipBitmapIdentity::InfoBox),
+                    PreparedKind::InfoText,
+                    PreparedKind::Transform,
+                    PreparedKind::Latch,
+                    opaque_fast(ChampionshipBitmapIdentity::ManufacturerLogo(
+                        cmr_core::championship_assets::ManufacturerLogo::Subaru,
+                    )),
+                    row_text(cmr_core::championship_setup::SetupRowKind::Next),
+                ],
+            ),
+            (
+                next_transcript(),
+                ChampionshipSetupFrameState {
+                    chequered_frame: Some(ChequeredFrame::Frame04),
+                },
+                vec![
+                    PreparedKind::Text(SetupTextRole::Title),
+                    row_text(cmr_core::championship_setup::SetupRowKind::ChooseCar),
+                    row_text(cmr_core::championship_setup::SetupRowKind::ChooseGear),
+                    selection_kind(),
+                    row_text(cmr_core::championship_setup::SetupRowKind::Next),
+                    opaque_fast(ChampionshipBitmapIdentity::InfoBox),
+                    PreparedKind::InfoText,
+                    PreparedKind::Palette(1, 9),
+                    opaque_fast(ChampionshipBitmapIdentity::ChequeredFrame(
+                        ChequeredFrame::Frame04,
+                    )),
+                ],
+                vec![
+                    PreparedKind::Text(SetupTextRole::Title),
+                    row_text(cmr_core::championship_setup::SetupRowKind::ChooseCar),
+                    row_text(cmr_core::championship_setup::SetupRowKind::ChooseGear),
+                    selection_kind(),
+                    row_text(cmr_core::championship_setup::SetupRowKind::Next),
+                    opaque_fast(ChampionshipBitmapIdentity::InfoBox),
+                    PreparedKind::InfoText,
+                    opaque_fast(ChampionshipBitmapIdentity::ChequeredFrame(
+                        ChequeredFrame::Frame04,
+                    )),
+                ],
+            ),
+        ] {
+            let mut cache = ChampionshipPreviewCache::new();
+            assert_preparation_parity(&transcript, state, cache, pool, selection, &expected_cold);
+
+            prepare_software_championship_alternate_setup_frame(
+                visual_input(&transcript),
+                state,
+                cache,
+                pool,
+                Some(selection),
+            )
+            .unwrap()
+            .execute_after_successful_preflight(&mut cache, |_| {
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .unwrap();
+
+            assert_preparation_parity(&transcript, state, cache, pool, selection, &expected_warm);
+        }
+    });
+}
+
+#[test]
+fn alternate_preparation_uses_aligned_pool_extents_and_keeps_opaque_keys_unset() {
+    with_source_fixture(|_, _, _, pool, selection| {
+        assert_ne!(pool.info_box().packed_color_key(), 0);
+        assert!(pool.info_box().aligned_surface_extent()[0] > pool.info_box().dib_extent()[0]);
+        let prepared = prepare_software_championship_alternate_setup_frame(
+            visual_input(&car_transcript()),
+            ChampionshipSetupFrameState::default(),
+            ChampionshipPreviewCache::new(),
+            pool,
+            Some(selection),
+        )
+        .unwrap();
+        for command in prepared.commands() {
+            let PreparedChampionshipSetupCommand::Bitmap {
+                identity,
+                decision: BlitDecision::Blit(plan),
+                ..
+            } = command
+            else {
+                continue;
+            };
+            match identity {
+                ChampionshipBitmapIdentity::Selection => {
+                    assert_eq!(plan.method, BlitMethod::Stretch);
+                    assert_eq!(plan.color_key, Some(ColorKey { low: 0, high: 0 }));
+                    assert!(plan.source.right <= i32::try_from(selection.row_stride).unwrap());
+                    assert!(plan.source.bottom <= i32::try_from(selection.height).unwrap());
+                }
+                ChampionshipBitmapIdentity::InfoBox => {
+                    assert_eq!(plan.method, BlitMethod::Fast);
+                    assert_eq!(plan.color_key, None);
+                    let extent = pool.info_box().aligned_surface_extent();
+                    assert!(plan.source.right <= i32::try_from(extent[0]).unwrap());
+                    assert!(plan.source.bottom <= i32::try_from(extent[1]).unwrap());
+                }
+                ChampionshipBitmapIdentity::ManufacturerLogo(logo) => {
+                    assert_eq!(plan.method, BlitMethod::Fast);
+                    assert_eq!(plan.color_key, None);
+                    let extent = pool.logo(logo).aligned_surface_extent();
+                    assert!(plan.source.right <= i32::try_from(extent[0]).unwrap());
+                    assert!(plan.source.bottom <= i32::try_from(extent[1]).unwrap());
+                }
+                ChampionshipBitmapIdentity::ChequeredFrame(_) => unreachable!(),
+            }
+        }
+    });
+}
+
+#[test]
+fn alternate_preparation_preserves_clipping_noop_and_deferred_selection_without_effects() {
+    with_source_fixture(|_, _, _, pool, selection| {
+        let transcript = car_transcript();
+        let cache = ChampionshipPreviewCache::new();
+        let mut clipped_input = visual_input(&transcript);
+        clipped_input.frontend_offset_q16 = Q16Point::new(-0x2000, -0x2000);
+        let clipped = prepare_software_championship_alternate_setup_frame(
+            clipped_input,
+            ChampionshipSetupFrameState::default(),
+            cache,
+            pool,
+            Some(selection),
+        )
+        .unwrap();
+        assert!(clipped.commands().any(|command| matches!(
+            command,
+            PreparedChampionshipSetupCommand::Bitmap {
+                decision: BlitDecision::Blit(plan),
+                ..
+            } if plan.destination.left == 0 || plan.destination.top == 0
+        )));
+
+        let mut offscreen_input = visual_input(&transcript);
+        offscreen_input.frontend_offset_q16 = Q16Point::new(1000 << 16, 1000 << 16);
+        let offscreen = prepare_software_championship_alternate_setup_frame(
+            offscreen_input,
+            ChampionshipSetupFrameState::default(),
+            cache,
+            pool,
+            Some(selection),
+        )
+        .unwrap();
+        assert_eq!(
+            offscreen
+                .commands()
+                .filter(|command| matches!(
+                    command,
+                    PreparedChampionshipSetupCommand::Bitmap {
+                        decision: BlitDecision::NoOp,
+                        ..
+                    }
+                ))
+                .count(),
+            3
+        );
+
+        let deferred = prepare_software_championship_alternate_setup_frame(
+            visual_input(&transcript),
+            ChampionshipSetupFrameState::default(),
+            cache,
+            pool,
+            None,
+        )
+        .unwrap();
+        assert!(deferred.commands().any(|command| matches!(
+            command,
+            PreparedChampionshipSetupCommand::Deferred {
+                command: DeferredChampionshipCommand::Selection(_),
+                ..
+            }
+        )));
+    });
+}
+
+fn selection_kind() -> PreparedKind {
+    PreparedKind::Bitmap(
+        ChampionshipBitmapIdentity::Selection,
+        BlitMethod::Stretch,
+        Some(ColorKey { low: 0, high: 0 }),
+    )
+}
+
+fn opaque_fast(identity: ChampionshipBitmapIdentity) -> PreparedKind {
+    PreparedKind::Bitmap(identity, BlitMethod::Fast, None)
+}
+
+fn row_text(kind: cmr_core::championship_setup::SetupRowKind) -> PreparedKind {
+    PreparedKind::Text(SetupTextRole::Row(kind))
+}
+
+fn assert_preparation_parity(
+    transcript: &ChampionshipSetupRenderTranscript,
+    state: ChampionshipSetupFrameState,
+    cache: ChampionshipPreviewCache,
+    pool: &SoftwareChampionshipOrdinaryRgb16Pool,
+    selection: &IndexedBitmap,
+    expected: &[PreparedKind],
+) {
+    let alternate = prepare_software_championship_alternate_setup_frame(
+        visual_input(transcript),
+        state,
+        cache,
+        pool,
+        Some(selection),
+    )
+    .unwrap();
+    let shared = prepare_championship_setup_frame_from_source_extents(
+        visual_input(transcript),
+        state,
+        cache,
+        |identity| match identity {
+            ChampionshipBitmapIdentity::Selection => Some((selection.row_stride, selection.height)),
+            ChampionshipBitmapIdentity::InfoBox => {
+                let [width, height] = pool.info_box().aligned_surface_extent();
+                Some((width, height))
+            }
+            ChampionshipBitmapIdentity::ManufacturerLogo(logo) => {
+                let [width, height] = pool.logo(logo).aligned_surface_extent();
+                Some((width, height))
+            }
+            ChampionshipBitmapIdentity::ChequeredFrame(frame) => {
+                let [width, height] = pool.frame(frame).aligned_surface_extent();
+                Some((width, height))
+            }
+        },
+    )
+    .unwrap();
+
+    let alternate_commands = alternate.commands().collect::<Vec<_>>();
+    assert_eq!(alternate_commands, shared.commands().collect::<Vec<_>>());
+    assert_eq!(prepared_kinds(&alternate_commands), expected);
+}
+
+fn prepared_kinds(commands: &[PreparedChampionshipSetupCommand]) -> Vec<PreparedKind> {
+    commands
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(expected_index, command)| match command {
+            PreparedChampionshipSetupCommand::Text {
+                command_index,
+                command,
+            } => {
+                assert_eq!(command_index, expected_index);
+                PreparedKind::Text(command.role)
+            }
+            PreparedChampionshipSetupCommand::Bitmap {
+                command_index,
+                identity,
+                decision,
+            } => {
+                assert_eq!(command_index, expected_index);
+                match decision {
+                    BlitDecision::NoOp => PreparedKind::NoOp(identity),
+                    BlitDecision::Blit(plan) => {
+                        PreparedKind::Bitmap(identity, plan.method, plan.color_key)
+                    }
+                }
+            }
+            PreparedChampionshipSetupCommand::Deferred {
+                command_index,
+                command,
+            } => {
+                assert_eq!(command_index, expected_index);
+                match command {
+                    DeferredChampionshipCommand::Selection(_) => PreparedKind::SelectionDeferred,
+                    DeferredChampionshipCommand::InfoText(_) => PreparedKind::InfoText,
+                    DeferredChampionshipCommand::CarTransform(_) => PreparedKind::Transform,
+                    DeferredChampionshipCommand::CarVisibilityLatch(_) => PreparedKind::Latch,
+                    DeferredChampionshipCommand::PaletteRequest { group, item } => {
+                        PreparedKind::Palette(group, item)
+                    }
+                    DeferredChampionshipCommand::NextPreview(_) => PreparedKind::NextPreview,
+                }
+            }
+        })
+        .collect()
 }
 
 #[test]
@@ -602,11 +946,7 @@ fn is_palette_request(command: &SoftwareChampionshipSetupCommandOutcome) -> bool
 struct Fixture<'a> {
     topology: &'a cmr_core::c3d_topology::C3dObjectTopology<'a>,
     runtime: &'a cmr_core::root_menu_c3d_runtime::C3dResourceScaledObject,
-    fonts: &'a UploadedFontPool,
-    logos: &'a UploadedChampionshipLogoPool,
-    frames: &'a UploadedChampionshipFramePool,
-    selection: UploadedIndexedBitmap,
-    text: IndexedTextTable,
+    selection: IndexedBitmap,
     pool: &'a SoftwareChampionshipOrdinaryRgb16Pool,
     executor: ChampionshipCarBatchExecutor<
         'a,
@@ -621,19 +961,13 @@ impl Fixture<'_> {
         &self,
         transcript: &ChampionshipSetupRenderTranscript,
         cache: ChampionshipPreviewCache,
-    ) -> cmr_core::championship_setup_frame::PreparedChampionshipSetupFrame {
-        prepare_championship_setup_frame(
+    ) -> PreparedChampionshipAlternateSetupFrame {
+        prepare_software_championship_alternate_setup_frame(
             visual_input(transcript),
             ChampionshipSetupFrameState::default(),
-            ChampionshipSetupFrameResources {
-                text: &self.text,
-                fonts: self.fonts,
-                selection: Some(self.selection),
-                logos: self.logos,
-                frames: self.frames,
-            },
             cache,
-            TextLayoutLimits::default(),
+            self.pool,
+            Some(&self.selection),
         )
         .unwrap()
     }
@@ -642,7 +976,7 @@ impl Fixture<'_> {
         &self,
         transcript: &ChampionshipSetupRenderTranscript,
         cache: ChampionshipPreviewCache,
-    ) -> cmr_core::championship_setup_frame::PreparedChampionshipSetupFrame {
+    ) -> PreparedChampionshipAlternateSetupFrame {
         self.prepare_setup_from_input(
             visual_input(transcript),
             ChampionshipSetupFrameState {
@@ -656,7 +990,7 @@ impl Fixture<'_> {
         &self,
         transcript: &ChampionshipSetupRenderTranscript,
         cache: ChampionshipPreviewCache,
-    ) -> cmr_core::championship_setup_frame::PreparedChampionshipSetupFrame {
+    ) -> PreparedChampionshipAlternateSetupFrame {
         let mut input = visual_input(transcript);
         input.frontend_offset_q16 = Q16Point::new(1000 << 16, 1000 << 16);
         self.prepare_setup_from_input(input, ChampionshipSetupFrameState::default(), cache)
@@ -667,19 +1001,13 @@ impl Fixture<'_> {
         input: ChampionshipSetupVisualInput<'_>,
         state: ChampionshipSetupFrameState,
         cache: ChampionshipPreviewCache,
-    ) -> cmr_core::championship_setup_frame::PreparedChampionshipSetupFrame {
-        prepare_championship_setup_frame(
+    ) -> PreparedChampionshipAlternateSetupFrame {
+        prepare_software_championship_alternate_setup_frame(
             input,
             state,
-            ChampionshipSetupFrameResources {
-                text: &self.text,
-                fonts: self.fonts,
-                selection: Some(self.selection),
-                logos: self.logos,
-                frames: self.frames,
-            },
             cache,
-            TextLayoutLimits::default(),
+            self.pool,
+            Some(&self.selection),
         )
         .unwrap()
     }
@@ -687,7 +1015,7 @@ impl Fixture<'_> {
     #[allow(clippy::too_many_arguments)]
     fn execute_no_car(
         &mut self,
-        prepared: cmr_core::championship_setup_frame::PreparedChampionshipSetupFrame,
+        prepared: PreparedChampionshipAlternateSetupFrame,
         cache: &mut ChampionshipPreviewCache,
         transform: &mut ChampionshipCarState,
         car_visibility: &mut ChampionshipCarVisibilityLatches,
@@ -714,7 +1042,7 @@ impl Fixture<'_> {
     #[allow(clippy::too_many_arguments)]
     fn execute_no_car_with_options(
         &mut self,
-        prepared: cmr_core::championship_setup_frame::PreparedChampionshipSetupFrame,
+        prepared: PreparedChampionshipAlternateSetupFrame,
         destination: cmr_video::c3d_software_split_backend::SoftwareSplitC3dTargetHandle,
         depth_clear: C3dDepthClear,
         cache: &mut ChampionshipPreviewCache,
@@ -761,7 +1089,7 @@ impl Fixture<'_> {
     #[allow(clippy::too_many_arguments)]
     fn execute(
         &mut self,
-        prepared: cmr_core::championship_setup_frame::PreparedChampionshipSetupFrame,
+        prepared: PreparedChampionshipAlternateSetupFrame,
         cache: &mut ChampionshipPreviewCache,
         transform: &mut ChampionshipCarState,
         car_visibility: &mut ChampionshipCarVisibilityLatches,
@@ -785,7 +1113,7 @@ impl Fixture<'_> {
     #[allow(clippy::too_many_arguments)]
     fn execute_with_destination(
         &mut self,
-        prepared: cmr_core::championship_setup_frame::PreparedChampionshipSetupFrame,
+        prepared: PreparedChampionshipAlternateSetupFrame,
         destination: cmr_video::c3d_software_split_backend::SoftwareSplitC3dTargetHandle,
         cache: &mut ChampionshipPreviewCache,
         transform: &mut ChampionshipCarState,
@@ -810,7 +1138,7 @@ impl Fixture<'_> {
     #[allow(clippy::too_many_arguments)]
     fn execute_with_options(
         &mut self,
-        prepared: cmr_core::championship_setup_frame::PreparedChampionshipSetupFrame,
+        prepared: PreparedChampionshipAlternateSetupFrame,
         destination: cmr_video::c3d_software_split_backend::SoftwareSplitC3dTargetHandle,
         depth_clear: C3dDepthClear,
         cache: &mut ChampionshipPreviewCache,
@@ -862,6 +1190,51 @@ impl Fixture<'_> {
 }
 
 fn with_fixture(run: impl FnOnce(&mut Fixture<'_>)) {
+    with_source_fixture(|store, championship, _frame_assets, pool, selection| {
+        let root = load_root_menu_c3d(store, VisualVariant::Normal, C3dLimits::default());
+        let frontend =
+            prepare_frontend_c3d_resources(championship, &root, BitmapLimits::default()).unwrap();
+        let topology = frontend
+            .car_topology(championship, CanonicalCar::Subaru)
+            .unwrap();
+        let runtime = frontend
+            .materialize_car(CanonicalCar::Subaru, &topology)
+            .unwrap();
+        let descriptor =
+            RawDdPixelFormat::from_dwords([32, 0x40, 0, 16, 0x7c00, 0x03e0, 0x001f, 0]);
+        let catalog = prepare_software_split_frontend_c3d_bindings(
+            &frontend,
+            SelectedNonAlphaTextureFormat::OpaqueRgb16 {
+                descriptor,
+                layout: KnownRgbLayout::Rgb555,
+            },
+            SourceOwnedTextureConversionOraclePolicy::ExactPaletteOrNearestMaskNoDither,
+        )
+        .unwrap();
+        let executor = ChampionshipCarBatchExecutor::new(&catalog);
+        let (backend, destination) = split_backend(false);
+        let mut fixture = Fixture {
+            topology: &topology,
+            runtime: &runtime,
+            selection: selection.clone(),
+            pool,
+            executor,
+            backend,
+            destination,
+        };
+        run(&mut fixture);
+    });
+}
+
+fn with_source_fixture(
+    run: impl FnOnce(
+        &AssetStore,
+        &cmr_core::championship_assets::ChampionshipAssets,
+        &cmr_core::championship_frame_assets::ChampionshipFrameAssets,
+        &SoftwareChampionshipOrdinaryRgb16Pool,
+        &IndexedBitmap,
+    ),
+) {
     let temporary = TestDirectory::new();
     let store = synthetic_store(&temporary);
     let championship =
@@ -869,107 +1242,9 @@ fn with_fixture(run: impl FnOnce(&mut Fixture<'_>)) {
     let frame_assets = load_championship_frame_assets(&store, BitmapLimits::default()).unwrap();
     let pool =
         prepare_software_championship_ordinary_rgb16_pool(&championship, &frame_assets, 5).unwrap();
-    let root = load_root_menu_c3d(&store, VisualVariant::Normal, C3dLimits::default());
-    let frontend =
-        prepare_frontend_c3d_resources(&championship, &root, BitmapLimits::default()).unwrap();
-    let topology = frontend
-        .car_topology(&championship, CanonicalCar::Subaru)
-        .unwrap();
-    let runtime = frontend
-        .materialize_car(CanonicalCar::Subaru, &topology)
-        .unwrap();
-    let descriptor = RawDdPixelFormat::from_dwords([32, 0x40, 0, 16, 0x7c00, 0x03e0, 0x001f, 0]);
-    let catalog = prepare_software_split_frontend_c3d_bindings(
-        &frontend,
-        SelectedNonAlphaTextureFormat::OpaqueRgb16 {
-            descriptor,
-            layout: KnownRgbLayout::Rgb555,
-        },
-        SourceOwnedTextureConversionOraclePolicy::ExactPaletteOrNearestMaskNoDither,
-    )
-    .unwrap();
-    let executor = ChampionshipCarBatchExecutor::new(&catalog);
-
-    let active_palette = &championship.car(CanonicalCar::Subaru).palette;
-    let (mut indexed, _surfaces) = initialized_indexed_backend();
-    let mut uploaded = UploadedSourceStore::new(&mut indexed);
-    let fonts = UploadedFontPool::upload(&mut uploaded, synthetic_fonts()).unwrap();
-    let logos = upload_championship_logos(
-        &mut uploaded,
-        prepare_championship_logo_surfaces(&championship, active_palette, PaletteMapping::Identity)
-            .unwrap(),
-    )
-    .unwrap();
-    let frames = upload_championship_frame_surfaces(
-        &mut uploaded,
-        prepare_championship_frame_surfaces(
-            &frame_assets,
-            active_palette,
-            PaletteMapping::Identity,
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let selection = uploaded
-        .upload_bitmap(&IndexedSurface {
-            width: 256,
-            height: 256,
-            pitch: 256,
-            pixels: vec![1; 256 * 256],
-            palette: active_palette.entries,
-        })
-        .unwrap();
-    let text = IndexedTextTable::parse(&b"A\n".repeat(0xfe), 0xfe).unwrap();
-    let (backend, destination) = split_backend(false);
-    let mut fixture = Fixture {
-        topology: &topology,
-        runtime: &runtime,
-        fonts: &fonts,
-        logos: &logos,
-        frames: &frames,
-        selection,
-        text,
-        pool: &pool,
-        executor,
-        backend,
-        destination,
-    };
-    run(&mut fixture);
-    drop(fixture);
-    drop(uploaded);
-}
-
-fn initialized_indexed_backend() -> (
-    SoftwareIndexedBackend,
-    cmr_core::display::DisplaySurfaces<cmr_video::SurfaceHandle>,
-) {
-    let mut backend = SoftwareIndexedBackend::default();
-    backend.create_device().unwrap();
-    backend
-        .set_cooperative_mode(CooperativeMode::Windowed)
-        .unwrap();
-    let surfaces = backend
-        .create_surfaces(
-            SurfaceTopology::PrimaryAndOffscreen,
-            IndexedMode {
-                extent: EXTENT,
-                bits_per_pixel: 8,
-            },
-        )
-        .unwrap();
-    let entries = [PaletteEntry {
-        red: 0,
-        green: 0,
-        blue: 0,
-        flags: 0,
-    }; 256];
-    let palette = backend.create_palette(&entries).unwrap();
-    backend
-        .attach_palette(surfaces.visible_front, palette)
-        .unwrap();
-    backend.attach_palette(surfaces.back, palette).unwrap();
-    backend.upload_palette(palette, &entries).unwrap();
-    (backend, surfaces)
+    let selection =
+        parse_indexed_bitmap(&indexed_bitmap(256, 256, 1), BitmapLimits::default()).unwrap();
+    run(&store, &championship, &frame_assets, &pool, &selection);
 }
 
 fn split_backend(
@@ -1068,6 +1343,20 @@ fn car_transcript() -> ChampionshipSetupRenderTranscript {
     }
 }
 
+fn gear_transcript() -> ChampionshipSetupRenderTranscript {
+    let mut transcript = car_transcript();
+    transcript.rows[0].selected = false;
+    transcript.rows[1].selected = true;
+    transcript.highlight_row = 1;
+    transcript.preview = ActivePreview::Gear {
+        gear: GearChoice::BitClear,
+        canonical_car: CanonicalCar::Subaru,
+        object_name: CanonicalCar::Subaru.object_name(),
+        logo_name: CanonicalCar::Subaru.logo_name(),
+    };
+    transcript
+}
+
 fn next_transcript() -> ChampionshipSetupRenderTranscript {
     ChampionshipSetupRenderTranscript {
         title_text_index: 0x13,
@@ -1096,32 +1385,6 @@ fn next_transcript() -> ChampionshipSetupRenderTranscript {
     }
 }
 
-fn synthetic_fonts() -> FontSet {
-    FontSet::from_ordered_fonts(std::array::from_fn(|index| {
-        parse_legacy_font(&synthetic_font(index as u8), FontLimits::default()).unwrap()
-    }))
-}
-
-fn synthetic_font(identity: u8) -> Vec<u8> {
-    const TABLE_OFFSET: usize = 0x436;
-    const HEADER_LEN: usize = 24;
-    let mut bytes = vec![0; TABLE_OFFSET + 4 + HEADER_LEN + 16];
-    bytes[0..2].copy_from_slice(b"BM");
-    bytes[18..22].copy_from_slice(&1i32.to_le_bytes());
-    bytes[22..26].copy_from_slice(&1i32.to_le_bytes());
-    bytes[28..30].copy_from_slice(&8u16.to_le_bytes());
-    bytes[TABLE_OFFSET] = identity + 1;
-    let table = TABLE_OFFSET + 4;
-    bytes[table] = identity;
-    bytes[table + 1] = 1;
-    bytes[table + 4..table + 8].copy_from_slice(&1u32.to_le_bytes());
-    bytes[table + 12..table + 16].copy_from_slice(&1u32.to_le_bytes());
-    bytes[table + HEADER_LEN] = b'A';
-    bytes[table + HEADER_LEN + 6..table + HEADER_LEN + 8].copy_from_slice(&1i16.to_le_bytes());
-    bytes[table + HEADER_LEN + 8..table + HEADER_LEN + 10].copy_from_slice(&1i16.to_le_bytes());
-    bytes
-}
-
 fn synthetic_store(temporary: &TestDirectory) -> AssetStore {
     let source = temporary.0.join("source");
     let mut files = BTreeMap::new();
@@ -1138,12 +1401,12 @@ fn synthetic_store(temporary: &TestDirectory) -> AssetStore {
         files.insert(descriptor.palette_path, synthetic_palette());
     }
     for descriptor in MANUFACTURER_LOGOS {
-        files.insert(descriptor.path, indexed_bitmap(320, 256, 3));
+        files.insert(descriptor.path, indexed_bitmap(321, 256, 3));
     }
-    files.insert(INFO_BOX_DESCRIPTOR.path, indexed_bitmap(320, 132, 2));
+    files.insert(INFO_BOX_DESCRIPTOR.path, indexed_bitmap(321, 132, 2));
     files.insert(CHEQUERED_PALETTE_DESCRIPTOR.path, synthetic_palette());
     for descriptor in CHEQUERED_FRAME_DESCRIPTORS {
-        files.insert(descriptor.path, indexed_bitmap(182, 128, 4));
+        files.insert(descriptor.path, indexed_bitmap(183, 128, 4));
     }
     let mut profile_files = Vec::new();
     for (path, bytes) in files {
@@ -1286,6 +1549,7 @@ fn indexed_bitmap(width: usize, height: usize, pixel: u8) -> Vec<u8> {
             0,
         ]);
     }
+    bytes[54..58].copy_from_slice(&[9, 17, 25, 0]);
     bytes[PIXEL_OFFSET..].fill(pixel);
     bytes
 }

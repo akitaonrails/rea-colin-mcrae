@@ -6,13 +6,20 @@
 
 use std::fmt;
 
+use cmr_formats::bitmap::IndexedBitmap;
+
 use cmr_core::{
     blit::{BlitDecision, BlitMethod},
     championship_setup_frame::{
-        ChampionshipBitmapIdentity, DeferredChampionshipCommand, PreparedChampionshipSetupCommand,
+        ChampionshipBitmapIdentity, ChampionshipSetupFramePrepareError,
+        ChampionshipSetupFrameState, DeferredChampionshipCommand,
+        PreparedChampionshipAlternateSetupFrame, PreparedChampionshipSetupCommand,
         PreparedChampionshipSetupExecutionError, PreparedChampionshipSetupFrame,
+        prepare_championship_setup_frame_from_source_extents,
     },
-    championship_setup_visual::{ChampionshipPreviewCache, SetupTextCommand},
+    championship_setup_visual::{
+        ChampionshipPreviewCache, ChampionshipSetupVisualInput, SetupTextCommand,
+    },
 };
 
 use crate::{
@@ -64,6 +71,39 @@ pub enum SoftwareChampionshipSetupCommandOutcome {
 pub struct SoftwareChampionshipSetupFrameOutcome {
     /// One entry per prepared command, in exact visual-transcript order.
     pub commands: Vec<SoftwareChampionshipSetupCommandOutcome>,
+}
+
+/// Prepares a complete alternate setup stream without indexed uploads, font
+/// assets, localization bytes, glyph layout, or an indexed backend.
+///
+/// Ordinary bitmap extents come from the retained RGB16 pool. Selection is
+/// optional because it is outside that pool; callers may supply its decoded
+/// bitmap so aligned row width is derived here, or leave it as typed deferred
+/// Stretch work. Its numeric entry-zero key belongs only to this unresolved
+/// Selection plan and is not treated as an RGB16 packed key.
+pub fn prepare_software_championship_alternate_setup_frame(
+    input: ChampionshipSetupVisualInput<'_>,
+    state: ChampionshipSetupFrameState,
+    preview_cache: ChampionshipPreviewCache,
+    sources: &SoftwareChampionshipOrdinaryRgb16Pool,
+    selection: Option<&IndexedBitmap>,
+) -> Result<PreparedChampionshipAlternateSetupFrame, ChampionshipSetupFramePrepareError> {
+    prepare_championship_setup_frame_from_source_extents(input, state, preview_cache, |identity| {
+        let extent = match identity {
+            ChampionshipBitmapIdentity::Selection => {
+                let selection = selection?;
+                [selection.row_stride, selection.height]
+            }
+            ChampionshipBitmapIdentity::InfoBox => sources.info_box().aligned_surface_extent(),
+            ChampionshipBitmapIdentity::ManufacturerLogo(logo) => {
+                sources.logo(logo).aligned_surface_extent()
+            }
+            ChampionshipBitmapIdentity::ChequeredFrame(frame) => {
+                sources.frame(frame).aligned_surface_extent()
+            }
+        };
+        Some((extent[0], extent[1]))
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -144,10 +184,9 @@ impl std::error::Error for SoftwareChampionshipSetupFrameError {
 /// other deferred visuals rendered. An unexpected compose-time failure cannot
 /// roll back bitmap writes from earlier commands, but it suppresses the
 /// outcome and cache commit.
-/// Preparation still owns indexed uploaded resources until a standalone
-/// alternate preparation boundary is recovered.
+/// The accepted prepared type contains no indexed handles or glyph payloads.
 pub fn execute_software_championship_setup_frame(
-    prepared: PreparedChampionshipSetupFrame,
+    prepared: PreparedChampionshipAlternateSetupFrame,
     preview_cache: &mut ChampionshipPreviewCache,
     sources: &SoftwareChampionshipOrdinaryRgb16Pool,
     backend: &mut SoftwareSplitC3dOracleBackend,
@@ -181,8 +220,8 @@ pub fn execute_software_championship_setup_frame(
     Ok(SoftwareChampionshipSetupFrameOutcome { commands })
 }
 
-pub(crate) fn preflight_software_championship_setup_frame(
-    prepared: &PreparedChampionshipSetupFrame,
+pub(crate) fn preflight_software_championship_setup_frame<T, B>(
+    prepared: &PreparedChampionshipSetupFrame<T, B>,
     sources: &SoftwareChampionshipOrdinaryRgb16Pool,
     backend: &SoftwareSplitC3dOracleBackend,
     destination: SoftwareSplitC3dTargetHandle,
@@ -213,8 +252,8 @@ pub(crate) fn preflight_software_championship_setup_frame(
     Ok(())
 }
 
-pub(crate) fn execute_preflighted_software_championship_setup_frame(
-    prepared: PreparedChampionshipSetupFrame,
+pub(crate) fn execute_preflighted_software_championship_setup_frame<T, B>(
+    prepared: PreparedChampionshipSetupFrame<T, B>,
     preview_cache: &mut ChampionshipPreviewCache,
     sources: &SoftwareChampionshipOrdinaryRgb16Pool,
     backend: &mut SoftwareSplitC3dOracleBackend,

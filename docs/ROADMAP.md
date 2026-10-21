@@ -304,21 +304,23 @@ a colored primitive. Its driver conversion, tuple/blend semantics, and final
 pixels remain unresolved alongside native layout and dithering. R_INFO, the 11
 unique logo assets, and all 15 Chequered frames now also have one transactional
 27-source logical-RGB16 owner built directly from decoded user assets. Stable
-identity/path diagnostics and per-bitmap palette provenance are pinned; setup
-commands now expose one exact effect-free ordered view with full text payloads,
-source-specific bitmap identities and decisions, and typed deferred work. The
-same records still drive indexed execution and commit preview-cache changes
-only after complete success. A two-pass alternate executor now rejects stale
-cache snapshots, resolves the 27-source pool, preflights every supported Fast
-bitmap before effects, composes eligible sources in transcript order, and
-returns text, Stretch, NoOp, and existing deferred boundaries as exact typed
-outcomes. Its cache commit proves only that bounded ordinary-bitmap pass;
+identity/path diagnostics and per-bitmap palette provenance are pinned. One
+shared ordered kernel now prepares either rich indexed payloads or a
+lightweight alternate transcript from exact source extents, with tests proving
+full public-command parity across car, gear, and Next cold/warm frames. The
+alternate adapter derives aligned extents from the 27-source RGB16 pool and an
+optional decoded Selection bitmap without indexed uploads, font atlases, or a
+text table. A two-pass alternate executor rejects stale cache snapshots,
+resolves the pool, preflights every supported Fast bitmap before effects,
+composes eligible sources in transcript order, and returns text, Stretch,
+NoOp, and existing deferred boundaries as exact typed outcomes. Its cache
+commit proves only that bounded ordinary-bitmap pass;
 the alternate terminal now adds complete common-scene/car-batch preflight,
 coordinates transform/latch/palette state inline, and runs the selected-car or
 empty Next scene after setup on the same target. It explicitly skips the
 non-indexed palette commit while preserving the pending request. Standalone
-alternate preparation/session ownership and remaining deferred pixels are the
-next integration seam.
+alternate session ownership and remaining deferred pixels are the next
+integration seam.
 
 Exit gate:
 

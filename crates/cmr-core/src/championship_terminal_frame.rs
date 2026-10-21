@@ -442,8 +442,8 @@ fn scan_championship_car_contract(
 ///
 /// Alternate terminal owners use this effect-free contract scan before any
 /// target write without depending on indexed setup resources.
-pub fn scan_championship_car_contract_for_resource(
-    prepared: &crate::championship_setup_frame::PreparedChampionshipSetupFrame,
+pub fn scan_championship_car_contract_for_resource<T, B>(
+    prepared: &crate::championship_setup_frame::PreparedChampionshipSetupFrame<T, B>,
     resource_car: Option<CanonicalCar>,
 ) -> Result<Option<ChampionshipCarDeferredContract>, ChampionshipCarContractError> {
     scan_deferred_car_contract(prepared.deferred_commands(), resource_car)

@@ -34,7 +34,6 @@ use cmr_core::championship_setup::{
 use cmr_core::championship_setup_frame::{
     ChampionshipBitmapIdentity, ChampionshipSetupFrameResources, ChampionshipSetupFrameState,
     DeferredChampionshipCommand, PreparedChampionshipSetupExecutionError,
-    prepare_championship_setup_frame,
 };
 use cmr_core::championship_setup_visual::{
     ChampionshipPreviewCache, ChampionshipSetupVisualInput, NextPreviewContext, PixelPoint,
@@ -71,7 +70,6 @@ use cmr_core::root_menu_c3d_transform::{ROOT_MENU_C3D_PROJECTION, ROOT_MENU_C3D_
 use cmr_core::root_menu_c3d_visibility::RootMenuC3dVisibilityLatches;
 use cmr_core::source_store::UploadedSourceStore;
 use cmr_core::startup_display::StartupDisplay;
-use cmr_core::surface::IndexedSurface;
 use cmr_core::surface::PaletteMapping;
 use cmr_formats::bitmap::BitmapLimits;
 use cmr_formats::c3d::{
@@ -107,7 +105,7 @@ use cmr_video::software_championship_session::{
 use cmr_video::software_championship_setup_frame::{
     SoftwareChampionshipBitmapOutcome, SoftwareChampionshipSetupCommandOutcome,
     SoftwareChampionshipSetupDeferredCommand, SoftwareChampionshipSetupFrameError,
-    execute_software_championship_setup_frame,
+    execute_software_championship_setup_frame, prepare_software_championship_alternate_setup_frame,
 };
 use cmr_video::{SoftwareC3dBackendError, SoftwareIndexedBackend};
 use sha2::{Digest, Sha256};
@@ -827,10 +825,10 @@ enum AlternateSetupKind {
 
 #[test]
 fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
-    with_alternate_setup_fixture(|fonts, logos, frames, selection, pool| {
+    with_alternate_setup_fixture(|selection, pool| {
         let car = championship_transcript();
         let mut cache = ChampionshipPreviewCache::new();
-        let prepared = prepare_alternate_setup(&car, None, cache, fonts, logos, frames, selection);
+        let prepared = prepare_alternate_setup(&car, None, cache, selection, pool);
         let (mut backend, destination) = split_setup_backend(false);
         let before = backend.logical_target().words().to_vec();
         let outcome = execute_software_championship_setup_frame(
@@ -875,7 +873,7 @@ fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
         );
         assert_ne!(backend.logical_target().words(), before);
 
-        let warm = prepare_alternate_setup(&car, None, cache, fonts, logos, frames, selection);
+        let warm = prepare_alternate_setup(&car, None, cache, selection, pool);
         let warm_outcome = execute_software_championship_setup_frame(
             warm,
             &mut cache,
@@ -896,8 +894,7 @@ fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
 
         let gear = championship_gear_transcript();
         let mut gear_cache = ChampionshipPreviewCache::new();
-        let gear_prepared =
-            prepare_alternate_setup(&gear, None, gear_cache, fonts, logos, frames, selection);
+        let gear_prepared = prepare_alternate_setup(&gear, None, gear_cache, selection, pool);
         let (mut gear_backend, gear_destination) = split_setup_backend(false);
         let gear_outcome = execute_software_championship_setup_frame(
             gear_prepared,
@@ -938,10 +935,8 @@ fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
             &next,
             Some(ChequeredFrame::Frame04),
             next_cache,
-            fonts,
-            logos,
-            frames,
             selection,
+            pool,
         );
         let (mut next_backend, next_destination) = split_setup_backend(false);
         let next_before = next_backend.logical_target().words().to_vec();
@@ -980,23 +975,17 @@ fn alternate_setup_executes_fast_bitmaps_and_preserves_exact_deferred_order() {
 
 #[test]
 fn alternate_setup_noops_skip_target_access_and_preflight_failures_are_atomic() {
-    with_alternate_setup_fixture(|fonts, logos, frames, selection, pool| {
+    with_alternate_setup_fixture(|selection, pool| {
         let transcript = championship_transcript();
         let mut offscreen = alternate_setup_input(&transcript);
         offscreen.frontend_offset_q16 = Q16Point::new(100 << 16, 100 << 16);
         let mut noop_cache = ChampionshipPreviewCache::new();
-        let prepared = prepare_championship_setup_frame(
+        let prepared = prepare_software_championship_alternate_setup_frame(
             offscreen,
             ChampionshipSetupFrameState::default(),
-            ChampionshipSetupFrameResources {
-                text: &IndexedTextTable::parse(&b"A\n".repeat(0xfe), 0xfe).unwrap(),
-                fonts,
-                selection: Some(selection),
-                logos,
-                frames,
-            },
             noop_cache,
-            TextLayoutLimits::default(),
+            pool,
+            Some(selection),
         )
         .unwrap();
         let expected_noops = prepared
@@ -1044,8 +1033,7 @@ fn alternate_setup_noops_skip_target_access_and_preflight_failures_are_atomic() 
 
         for (layout_mismatch, foreign_destination) in [(true, false), (false, true)] {
             let mut cache = ChampionshipPreviewCache::new();
-            let prepared =
-                prepare_alternate_setup(&transcript, None, cache, fonts, logos, frames, selection);
+            let prepared = prepare_alternate_setup(&transcript, None, cache, selection, pool);
             let (mut backend, own_destination) = split_setup_backend(layout_mismatch);
             let destination = if foreign_destination {
                 split_setup_backend(layout_mismatch).1
@@ -1070,15 +1058,7 @@ fn alternate_setup_noops_skip_target_access_and_preflight_failures_are_atomic() 
         }
 
         let mut recovery_cache = ChampionshipPreviewCache::new();
-        let recovery = prepare_alternate_setup(
-            &transcript,
-            None,
-            recovery_cache,
-            fonts,
-            logos,
-            frames,
-            selection,
-        );
+        let recovery = prepare_alternate_setup(&transcript, None, recovery_cache, selection, pool);
         let (mut recovered_backend, recovered_destination) = split_setup_backend(false);
         execute_software_championship_setup_frame(
             recovery,
@@ -1100,15 +1080,13 @@ fn alternate_setup_noops_skip_target_access_and_preflight_failures_are_atomic() 
 
 #[test]
 fn prepared_runner_rejects_stale_cache_and_reports_callback_index_without_commit() {
-    with_alternate_setup_fixture(|fonts, logos, frames, selection, _| {
+    with_alternate_setup_fixture(|selection, pool| {
         let transcript = championship_transcript();
         let original = ChampionshipPreviewCache::new();
-        let stale_prepared =
-            prepare_alternate_setup(&transcript, None, original, fonts, logos, frames, selection);
+        let stale_prepared = prepare_alternate_setup(&transcript, None, original, selection, pool);
 
         let next = championship_next_transcript();
-        let cache_changer =
-            prepare_alternate_setup(&next, None, original, fonts, logos, frames, selection);
+        let cache_changer = prepare_alternate_setup(&next, None, original, selection, pool);
         let mut changed = original;
         cache_changer
             .execute_after_successful_preflight(&mut changed, |_| Ok::<_, &'static str>(()))
@@ -1129,8 +1107,7 @@ fn prepared_runner_rejects_stale_cache_and_reports_callback_index_without_commit
         assert_eq!(callbacks, 0);
         assert_eq!(changed, changed_before);
 
-        let prepared =
-            prepare_alternate_setup(&transcript, None, original, fonts, logos, frames, selection);
+        let prepared = prepare_alternate_setup(&transcript, None, original, selection, pool);
         let mut cache = original;
         let mut visited = Vec::new();
         let error = prepared
@@ -1703,10 +1680,7 @@ fn synthetic_fonts() -> FontSet {
 
 fn with_alternate_setup_fixture<T>(
     run: impl FnOnce(
-        &UploadedFontPool,
-        &cmr_core::championship_bitmap_raster::UploadedChampionshipLogoPool,
-        &cmr_core::championship_frame_assets::UploadedChampionshipFramePool,
-        cmr_core::source_store::UploadedIndexedBitmap,
+        &cmr_formats::bitmap::IndexedBitmap,
         &cmr_video::software_championship_ordinary_rgb16::SoftwareChampionshipOrdinaryRgb16Pool,
     ) -> T,
 ) -> T {
@@ -1717,64 +1691,27 @@ fn with_alternate_setup_fixture<T>(
     let frame_assets = load_championship_frame_assets(&store, BitmapLimits::default()).unwrap();
     let pool =
         prepare_software_championship_ordinary_rgb16_pool(&championship, &frame_assets, 5).unwrap();
-    let active_palette = &championship.car(CanonicalCar::Subaru).palette;
-    let (mut indexed, _) = initialized_backend();
-    let mut sources = UploadedSourceStore::new(&mut indexed);
-    let fonts = UploadedFontPool::upload(&mut sources, synthetic_fonts()).unwrap();
-    let logos = cmr_core::championship_bitmap_raster::upload_championship_logos(
-        &mut sources,
-        cmr_core::championship_bitmap_raster::prepare_championship_logo_surfaces(
-            &championship,
-            active_palette,
-            PaletteMapping::Identity,
-        )
-        .unwrap(),
+    let selection = cmr_formats::bitmap::parse_indexed_bitmap(
+        &indexed_bitmap(256, 256, 1),
+        BitmapLimits::default(),
     )
     .unwrap();
-    let frames = upload_championship_frame_surfaces(
-        &mut sources,
-        prepare_championship_frame_surfaces(
-            &frame_assets,
-            active_palette,
-            PaletteMapping::Identity,
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let selection = sources
-        .upload_bitmap(&IndexedSurface {
-            width: 256,
-            height: 256,
-            pitch: 256,
-            pixels: vec![1; 256 * 256],
-            palette: active_palette.entries,
-        })
-        .unwrap();
-    run(&fonts, &logos, &frames, selection, &pool)
+    run(&selection, &pool)
 }
 
 fn prepare_alternate_setup(
     transcript: &ChampionshipSetupRenderTranscript,
     chequered_frame: Option<ChequeredFrame>,
     cache: ChampionshipPreviewCache,
-    fonts: &UploadedFontPool,
-    logos: &cmr_core::championship_bitmap_raster::UploadedChampionshipLogoPool,
-    frames: &cmr_core::championship_frame_assets::UploadedChampionshipFramePool,
-    selection: cmr_core::source_store::UploadedIndexedBitmap,
-) -> cmr_core::championship_setup_frame::PreparedChampionshipSetupFrame {
-    let text = IndexedTextTable::parse(&b"A\n".repeat(0xfe), 0xfe).unwrap();
-    prepare_championship_setup_frame(
+    selection: &cmr_formats::bitmap::IndexedBitmap,
+    pool: &cmr_video::software_championship_ordinary_rgb16::SoftwareChampionshipOrdinaryRgb16Pool,
+) -> cmr_core::championship_setup_frame::PreparedChampionshipAlternateSetupFrame {
+    prepare_software_championship_alternate_setup_frame(
         alternate_setup_input(transcript),
         ChampionshipSetupFrameState { chequered_frame },
-        ChampionshipSetupFrameResources {
-            text: &text,
-            fonts,
-            selection: Some(selection),
-            logos,
-            frames,
-        },
         cache,
-        TextLayoutLimits::default(),
+        pool,
+        Some(selection),
     )
     .unwrap()
 }

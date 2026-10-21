@@ -25,7 +25,8 @@ use crate::font_raster::{
     execute_prepared_persistent_text, prepare_persistent_text,
 };
 use crate::indexed_bitmap_raster::{
-    IndexedBitmapBlitOutcome, IndexedBitmapPlanError, IndexedBitmapRect, plan_indexed_bitmap_blit,
+    IndexedBitmapBlitOutcome, IndexedBitmapPlanError, IndexedBitmapRect,
+    plan_indexed_bitmap_blit_for_extent,
 };
 use crate::localization::IndexedTextTable;
 use crate::source_store::{
@@ -110,6 +111,10 @@ pub enum ChampionshipSetupFramePrepareError {
         identity: ChampionshipBitmapIdentity,
         source: IndexedBitmapPlanError,
     },
+    MissingBitmapExtent {
+        command_index: usize,
+        identity: ChampionshipBitmapIdentity,
+    },
 }
 
 impl fmt::Display for ChampionshipSetupFramePrepareError {
@@ -132,6 +137,13 @@ impl fmt::Display for ChampionshipSetupFramePrepareError {
                 formatter,
                 "championship frame bitmap {identity:?} at command {command_index} failed preflight: {source}"
             ),
+            Self::MissingBitmapExtent {
+                command_index,
+                identity,
+            } => write!(
+                formatter,
+                "championship frame bitmap {identity:?} at command {command_index} has no source extent"
+            ),
         }
     }
 }
@@ -142,6 +154,7 @@ impl std::error::Error for ChampionshipSetupFramePrepareError {
             Self::Visual(source) => Some(source),
             Self::Text { source, .. } => Some(source),
             Self::Bitmap { source, .. } => Some(source),
+            Self::MissingBitmapExtent { .. } => None,
         }
     }
 }
@@ -232,16 +245,16 @@ pub struct ChampionshipSetupFrameOutcome<E> {
     pub commands: Vec<ChampionshipSetupCommandOutcome<E>>,
 }
 
-enum PreparedCommand {
+enum PreparedCommand<T, B> {
     Text {
         command_index: usize,
         command: SetupTextCommand,
-        text: PreparedPersistentText,
+        text: T,
     },
     Bitmap {
         command_index: usize,
         identity: ChampionshipBitmapIdentity,
-        bitmap: UploadedIndexedBitmap,
+        bitmap: B,
         decision: BlitDecision,
     },
     Deferred {
@@ -254,8 +267,8 @@ enum PreparedCommand {
 ///
 /// Call [`Self::commands`] to inspect its exact order without gaining access
 /// to uploaded indexed handles or mutable planner state.
-pub struct PreparedChampionshipSetupFrame {
-    commands: Vec<PreparedCommand>,
+pub struct PreparedChampionshipSetupFrame<T = PreparedPersistentText, B = UploadedIndexedBitmap> {
+    commands: Vec<PreparedCommand<T, B>>,
     base_cache: ChampionshipPreviewCache,
     next_cache: ChampionshipPreviewCache,
 }
@@ -343,7 +356,7 @@ pub enum PreparedChampionshipSetupCommand {
     },
 }
 
-impl PreparedChampionshipSetupFrame {
+impl<T, B> PreparedChampionshipSetupFrame<T, B> {
     #[must_use]
     pub fn command_len(&self) -> usize {
         self.commands.len()
@@ -531,6 +544,31 @@ pub fn prepare_championship_setup_frame(
     )
 }
 
+/// Lightweight prepared setup stream with no glyph payloads or indexed
+/// source handles.
+pub type PreparedChampionshipAlternateSetupFrame = PreparedChampionshipSetupFrame<(), ()>;
+
+/// Prepares the exact setup transcript from source extents alone.
+///
+/// The visual planner and bitmap geometry kernel are shared with indexed
+/// preparation. Text commands retain their complete public command payload but
+/// perform no glyph lookup or layout. Returning `None` for Selection preserves
+/// it as typed deferred work; every other requested identity must resolve.
+pub fn prepare_championship_setup_frame_from_source_extents(
+    input: ChampionshipSetupVisualInput<'_>,
+    state: ChampionshipSetupFrameState,
+    preview_cache: ChampionshipPreviewCache,
+    mut source_extent: impl FnMut(ChampionshipBitmapIdentity) -> Option<(u32, u32)>,
+) -> Result<PreparedChampionshipAlternateSetupFrame, ChampionshipSetupFramePrepareError> {
+    prepare_frame_kernel(
+        input,
+        state,
+        preview_cache,
+        |_, _| Ok(()),
+        |identity| Ok(source_extent(identity).map(|extent| ((), extent))),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 fn execute_frame_with_bitmaps<B: IndexedVideoBackend, R: ChampionshipBitmapResources>(
@@ -714,9 +752,64 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
     text_table: &IndexedTextTable,
     fonts: &UploadedFontPool,
     resources: &R,
-    mut next_cache: ChampionshipPreviewCache,
+    next_cache: ChampionshipPreviewCache,
     text_limits: TextLayoutLimits,
 ) -> Result<PreparedChampionshipSetupFrame, ChampionshipSetupFramePrepareError> {
+    let extent = input.viewport;
+    prepare_frame_kernel(
+        input,
+        state,
+        next_cache,
+        |command_index, command| {
+            let bytes = resolve_text(text_table, command.identity);
+            prepare_persistent_text(
+                fonts,
+                bytes,
+                command.font,
+                PointI32 {
+                    x: command.position.x,
+                    y: command.position.y,
+                },
+                command.flags,
+                extent,
+                text_limits,
+            )
+            .map_err(|source| ChampionshipSetupFramePrepareError::Text {
+                command_index,
+                role: command.role,
+                source,
+            })
+        },
+        |identity| {
+            let bitmap = match identity {
+                ChampionshipBitmapIdentity::Selection => match resources.selection() {
+                    Some(bitmap) => bitmap,
+                    None => return Ok(None),
+                },
+                ChampionshipBitmapIdentity::InfoBox => resources.info_box(),
+                ChampionshipBitmapIdentity::ManufacturerLogo(logo) => resources.logo(logo),
+                ChampionshipBitmapIdentity::ChequeredFrame(frame) => resources.frame(frame),
+            };
+            Ok(Some((bitmap, bitmap.extent())))
+        },
+    )
+}
+
+fn prepare_frame_kernel<T, B>(
+    input: ChampionshipSetupVisualInput<'_>,
+    state: ChampionshipSetupFrameState,
+    mut next_cache: ChampionshipPreviewCache,
+    mut prepare_text: impl FnMut(
+        usize,
+        SetupTextCommand,
+    ) -> Result<T, ChampionshipSetupFramePrepareError>,
+    mut resolve_bitmap: impl FnMut(
+        ChampionshipBitmapIdentity,
+    ) -> Result<
+        Option<(B, (u32, u32))>,
+        ChampionshipSetupFramePrepareError,
+    >,
+) -> Result<PreparedChampionshipSetupFrame<T, B>, ChampionshipSetupFramePrepareError> {
     let base_cache = next_cache;
     let extent = input.viewport;
     let visual = plan_championship_setup_frame(input, &mut next_cache)
@@ -725,36 +818,22 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
     for (command_index, command) in visual.into_iter().enumerate() {
         match command {
             ChampionshipSetupVisualCommand::Text(command) => {
-                let bytes = resolve_text(text_table, command.identity);
-                let prepared = prepare_persistent_text(
-                    fonts,
-                    bytes,
-                    command.font,
-                    PointI32 {
-                        x: command.position.x,
-                        y: command.position.y,
-                    },
-                    command.flags,
-                    extent,
-                    text_limits,
-                )
-                .map_err(|source| ChampionshipSetupFramePrepareError::Text {
-                    command_index,
-                    role: command.role,
-                    source,
-                })?;
+                let text = prepare_text(command_index, command)?;
                 commands.push(PreparedCommand::Text {
                     command_index,
                     command,
-                    text: prepared,
+                    text,
                 });
             }
             ChampionshipSetupVisualCommand::Selection { .. } => {
-                if let Some(bitmap) = resources.selection() {
-                    commands.push(prepare_bitmap(
+                if let Some((bitmap, source_extent)) =
+                    resolve_bitmap(ChampionshipBitmapIdentity::Selection)?
+                {
+                    commands.push(prepare_bitmap_payload(
                         command_index,
                         ChampionshipBitmapIdentity::Selection,
                         bitmap,
+                        source_extent,
                         command,
                         extent,
                     )?);
@@ -765,28 +844,42 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
                     });
                 }
             }
-            ChampionshipSetupVisualCommand::InfoBox { .. } => commands.push(prepare_bitmap(
-                command_index,
-                ChampionshipBitmapIdentity::InfoBox,
-                resources.info_box(),
-                command,
-                extent,
-            )?),
-            ChampionshipSetupVisualCommand::ManufacturerLogo { logo, .. } => {
-                commands.push(prepare_bitmap(
+            ChampionshipSetupVisualCommand::InfoBox { .. } => {
+                let identity = ChampionshipBitmapIdentity::InfoBox;
+                let (bitmap, source_extent) =
+                    required_bitmap(command_index, identity, resolve_bitmap(identity)?)?;
+                commands.push(prepare_bitmap_payload(
                     command_index,
-                    ChampionshipBitmapIdentity::ManufacturerLogo(logo),
-                    resources.logo(logo),
+                    identity,
+                    bitmap,
+                    source_extent,
+                    command,
+                    extent,
+                )?);
+            }
+            ChampionshipSetupVisualCommand::ManufacturerLogo { logo, .. } => {
+                let identity = ChampionshipBitmapIdentity::ManufacturerLogo(logo);
+                let (bitmap, source_extent) =
+                    required_bitmap(command_index, identity, resolve_bitmap(identity)?)?;
+                commands.push(prepare_bitmap_payload(
+                    command_index,
+                    identity,
+                    bitmap,
+                    source_extent,
                     command,
                     extent,
                 )?);
             }
             ChampionshipSetupVisualCommand::DeferredNextPreview { .. } => {
                 if let Some(frame) = state.chequered_frame {
-                    commands.push(prepare_bitmap(
+                    let identity = ChampionshipBitmapIdentity::ChequeredFrame(frame);
+                    let (bitmap, source_extent) =
+                        required_bitmap(command_index, identity, resolve_bitmap(identity)?)?;
+                    commands.push(prepare_bitmap_payload(
                         command_index,
-                        ChampionshipBitmapIdentity::ChequeredFrame(frame),
-                        resources.frame(frame),
+                        identity,
+                        bitmap,
+                        source_extent,
                         command,
                         extent,
                     )?);
@@ -801,25 +894,25 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
                 commands.push(PreparedCommand::Deferred {
                     command_index,
                     command: DeferredChampionshipCommand::InfoText(info),
-                });
+                })
             }
             ChampionshipSetupVisualCommand::DeferredCarTransform { .. } => {
                 commands.push(PreparedCommand::Deferred {
                     command_index,
                     command: DeferredChampionshipCommand::CarTransform(command),
-                });
+                })
             }
             ChampionshipSetupVisualCommand::DeferredCarVisibilityLatch { .. } => {
                 commands.push(PreparedCommand::Deferred {
                     command_index,
                     command: DeferredChampionshipCommand::CarVisibilityLatch(command),
-                });
+                })
             }
             ChampionshipSetupVisualCommand::PaletteRequest { group, item } => {
                 commands.push(PreparedCommand::Deferred {
                     command_index,
                     command: DeferredChampionshipCommand::PaletteRequest { group, item },
-                });
+                })
             }
         }
     }
@@ -827,6 +920,17 @@ fn prepare_frame_with_bitmaps<R: ChampionshipBitmapResources>(
         commands,
         base_cache,
         next_cache,
+    })
+}
+
+fn required_bitmap<B>(
+    command_index: usize,
+    identity: ChampionshipBitmapIdentity,
+    resolved: Option<(B, (u32, u32))>,
+) -> Result<(B, (u32, u32)), ChampionshipSetupFramePrepareError> {
+    resolved.ok_or(ChampionshipSetupFramePrepareError::MissingBitmapExtent {
+        command_index,
+        identity,
     })
 }
 
@@ -840,13 +944,14 @@ fn resolve_text(table: &IndexedTextTable, identity: SetupTextIdentity) -> &[u8] 
     }
 }
 
-fn prepare_bitmap(
+fn prepare_bitmap_payload<T, B>(
     command_index: usize,
     identity: ChampionshipBitmapIdentity,
-    bitmap: UploadedIndexedBitmap,
+    bitmap: B,
+    source_extent: (u32, u32),
     command: ChampionshipSetupVisualCommand,
     extent: DisplayExtent,
-) -> Result<PreparedCommand, ChampionshipSetupFramePrepareError> {
+) -> Result<PreparedCommand<T, B>, ChampionshipSetupFramePrepareError> {
     let (source, destination, color_key) = match command {
         ChampionshipSetupVisualCommand::Selection {
             source,
@@ -877,8 +982,8 @@ fn prepare_bitmap(
         } => (source, destination, None),
         _ => unreachable!("only bitmap visual commands are prepared as bitmaps"),
     };
-    let decision = plan_indexed_bitmap_blit(
-        bitmap,
+    let decision = plan_indexed_bitmap_blit_for_extent(
+        source_extent,
         indexed_rect(source),
         indexed_rect(destination),
         extent,
@@ -1889,6 +1994,47 @@ mod tests {
         .unwrap()
     }
 
+    fn prepare_fixture_frame_from_extents(
+        fixture: &Fixture<'_>,
+        transcript: &ChampionshipSetupRenderTranscript,
+        chequered_frame: Option<ChequeredFrame>,
+        cache: ChampionshipPreviewCache,
+    ) -> PreparedChampionshipAlternateSetupFrame {
+        prepare_championship_setup_frame_from_source_extents(
+            input(transcript),
+            ChampionshipSetupFrameState { chequered_frame },
+            cache,
+            |identity| match identity {
+                ChampionshipBitmapIdentity::Selection => {
+                    fixture.bitmaps.selection.map(UploadedIndexedBitmap::extent)
+                }
+                ChampionshipBitmapIdentity::InfoBox => Some(fixture.bitmaps.info.extent()),
+                ChampionshipBitmapIdentity::ManufacturerLogo(_) => {
+                    Some(fixture.bitmaps.logo.extent())
+                }
+                ChampionshipBitmapIdentity::ChequeredFrame(_) => {
+                    Some(fixture.bitmaps.frame.extent())
+                }
+            },
+        )
+        .unwrap()
+    }
+
+    fn assert_rich_and_extent_preparation_match(
+        fixture: &Fixture<'_>,
+        transcript: &ChampionshipSetupRenderTranscript,
+        chequered_frame: Option<ChequeredFrame>,
+        cache: ChampionshipPreviewCache,
+    ) {
+        let rich = prepare_fixture_frame(fixture, transcript, chequered_frame, cache);
+        let extent_only =
+            prepare_fixture_frame_from_extents(fixture, transcript, chequered_frame, cache);
+        assert_eq!(
+            rich.commands().collect::<Vec<_>>(),
+            extent_only.commands().collect::<Vec<_>>()
+        );
+    }
+
     fn commit_fixture_frame(
         fixture: &mut Fixture<'_>,
         prepared: PreparedChampionshipSetupFrame,
@@ -2015,6 +2161,69 @@ mod tests {
         let mut next_warm_expected = next_cold_expected.to_vec();
         next_warm_expected.remove(7);
         assert_eq!(prepared_kinds(&next_warm), next_warm_expected);
+    }
+
+    #[test]
+    fn extent_only_preparation_exactly_matches_rich_indexed_commands() {
+        let mut fixture = Fixture::new(true);
+        for (selected, chequered_frame) in
+            [(0, None), (1, None), (2, Some(ChequeredFrame::Frame04))]
+        {
+            let transcript = transcript(selected);
+            let mut cache = ChampionshipPreviewCache::new();
+
+            assert_rich_and_extent_preparation_match(&fixture, &transcript, chequered_frame, cache);
+
+            let prepared = prepare_fixture_frame(&fixture, &transcript, chequered_frame, cache);
+            commit_fixture_frame(&mut fixture, prepared, &mut cache);
+
+            assert_rich_and_extent_preparation_match(&fixture, &transcript, chequered_frame, cache);
+        }
+    }
+
+    #[test]
+    fn extent_only_preparation_defers_missing_selection_but_requires_other_extents() {
+        let transcript = transcript(0);
+        let prepared = prepare_championship_setup_frame_from_source_extents(
+            input(&transcript),
+            ChampionshipSetupFrameState::default(),
+            ChampionshipPreviewCache::new(),
+            |identity| match identity {
+                ChampionshipBitmapIdentity::Selection => None,
+                ChampionshipBitmapIdentity::InfoBox => Some((320, 132)),
+                ChampionshipBitmapIdentity::ManufacturerLogo(_) => Some((184, 128)),
+                ChampionshipBitmapIdentity::ChequeredFrame(_) => Some((184, 128)),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            prepared.commands().nth(1),
+            Some(PreparedChampionshipSetupCommand::Deferred {
+                command_index: 1,
+                command: DeferredChampionshipCommand::Selection(_),
+            })
+        ));
+
+        let error = match prepare_championship_setup_frame_from_source_extents(
+            input(&transcript),
+            ChampionshipSetupFrameState::default(),
+            ChampionshipPreviewCache::new(),
+            |identity| match identity {
+                ChampionshipBitmapIdentity::Selection | ChampionshipBitmapIdentity::InfoBox => None,
+                ChampionshipBitmapIdentity::ManufacturerLogo(_) => Some((184, 128)),
+                ChampionshipBitmapIdentity::ChequeredFrame(_) => Some((184, 128)),
+            },
+        ) {
+            Ok(_) => panic!("missing required InfoBox extent unexpectedly prepared"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            ChampionshipSetupFramePrepareError::MissingBitmapExtent {
+                command_index: 3,
+                identity: ChampionshipBitmapIdentity::InfoBox,
+            }
+        );
     }
 
     #[test]

@@ -138,9 +138,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::championship_setup_frame`: whole-frame preparation and ordered
   execution for recovered setup text and 2D bitmaps, with source preflight,
   success-only cache commit, and typed deferred unrecovered commands. Its
-  public effect-free prepared view preserves full text commands, exact bitmap
-  source identities and blit decisions, and every deferred boundary without
-  exposing indexed handles or pending cache state.
+  single ordered kernel now prepares either rich indexed payloads or a
+  lightweight extent-only alternate stream. The public effect-free view
+  preserves full text commands, exact bitmap source identities and blit
+  decisions, and every deferred boundary without exposing indexed handles or
+  pending cache state; exact-command parity tests bind both adapters.
 - `cmr-core::championship_car_frame_plan`: exact-source, actor-scoped planning
   for one selected mode-8 car. It validates the complete topology/runtime join
   before advancing preview state, composes the recovered Q16 hierarchy only
@@ -201,11 +203,14 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   relative paths on failure. Selection Stretch and alternate fonts remain
   deliberately outside this pool.
 - `cmr-video::software_championship_setup_frame`: two-pass execution of the
-  public prepared setup transcript. It rejects stale preview-cache snapshots,
-  preflights every supported effectful Fast bitmap before writes, composes
-  R_INFO/logo/Chequered sources in exact command order, and retains NoOp,
-  Stretch, text, and other deferred work as typed ordered outcomes. Cache
-  publication records completion of this bounded slice, not deferred pixels.
+  lightweight prepared setup transcript. Its standalone preparation derives
+  exact aligned extents directly from the owned RGB16 pool and optional
+  decoded Selection bitmap, with no indexed backend, uploads, fonts, or text
+  table. Execution rejects stale preview-cache snapshots, preflights every
+  supported effectful Fast bitmap before writes, composes R_INFO/logo/Chequered
+  sources in exact command order, and retains NoOp, Stretch, text, and other
+  deferred work as typed ordered outcomes. Cache publication records
+  completion of this bounded slice, not deferred pixels.
 - `cmr-video::software_championship_alternate_terminal`: whole-frame owner for
   the prepared RGB16 setup stream and optional selected-car scene on one split
   target. It preflights ordinary bitmaps plus the common scene and every car

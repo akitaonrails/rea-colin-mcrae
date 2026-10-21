@@ -132,6 +132,27 @@ pub fn plan_indexed_bitmap_blit(
     destination_extent: DisplayExtent,
     color_key: Option<ColorKey>,
 ) -> Result<BlitDecision, IndexedBitmapPlanError> {
+    plan_indexed_bitmap_blit_for_extent(
+        bitmap.extent(),
+        source,
+        destination,
+        destination_extent,
+        color_key,
+    )
+}
+
+/// Validates and plans one legacy bitmap blit from a nominal source extent.
+///
+/// This source-independent kernel lets preparation retain the same clipping,
+/// dispatch, and bounds policy before either an indexed handle or an alternate
+/// logical-RGB source is attached.
+pub fn plan_indexed_bitmap_blit_for_extent(
+    source_extent: (u32, u32),
+    source: IndexedBitmapRect,
+    destination: IndexedBitmapRect,
+    destination_extent: DisplayExtent,
+    color_key: Option<ColorKey>,
+) -> Result<BlitDecision, IndexedBitmapPlanError> {
     let destination_width = positive_i16(destination_extent.width).ok_or(
         IndexedBitmapPlanError::InvalidDestinationExtent(destination_extent),
     )?;
@@ -140,7 +161,7 @@ pub fn plan_indexed_bitmap_blit(
     )?;
     let source_i16 = checked_rectangle(IndexedBitmapGeometryRole::Source, source)?;
     let destination_i16 = checked_rectangle(IndexedBitmapGeometryRole::Destination, destination)?;
-    validate_source_bounds(source, bitmap.extent())?;
+    validate_source_bounds(source, source_extent)?;
 
     let decision = plan_legacy_blit(
         source_i16,
@@ -150,7 +171,7 @@ pub fn plan_indexed_bitmap_blit(
         color_key,
     );
     if let BlitDecision::Blit(plan) = decision {
-        validate_clipped_source(plan.source, bitmap.extent())?;
+        validate_clipped_source(plan.source, source_extent)?;
     }
     Ok(decision)
 }
