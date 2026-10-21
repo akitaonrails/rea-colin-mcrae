@@ -52,6 +52,7 @@ pub mod localization;
 pub mod localization_assets;
 pub mod music_player;
 pub mod pacenote_schedule;
+pub mod present_scaling;
 pub mod presentation;
 pub mod race_participants;
 pub mod race_state;

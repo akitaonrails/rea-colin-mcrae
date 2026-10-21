@@ -19,6 +19,7 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use cmr_core::frontend::FrontendInput;
+use cmr_core::present_scaling::{DEFAULT_SCALING, PresentationScaling};
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::RootRenderInput;
 use cmr_video::{SoftwarePresentedFrame, SoftwareRgba8Error, SoftwareRgba8Frame};
@@ -30,6 +31,23 @@ use sdl3::video::Window;
 
 /// Target frame interval for the interactive loop's event wait (~60 Hz).
 const INTERACTIVE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Map the project's backend-neutral presentation scaling
+/// ([`cmr_core::present_scaling`]) onto the SDL logical-presentation mode. This
+/// is how the SDL backend implements that contract; a later GPU backend instead
+/// computes its viewport from `cmr_core::present_scaling::fit_viewport`. The two
+/// must agree, which is why the geometry is defined once in `cmr-core`.
+fn logical_presentation(
+    scaling: PresentationScaling,
+) -> sdl3::sys::render::SDL_RendererLogicalPresentation {
+    match scaling {
+        PresentationScaling::Stretch => sdl3::sys::render::SDL_LOGICAL_PRESENTATION_STRETCH,
+        PresentationScaling::Letterbox => sdl3::sys::render::SDL_LOGICAL_PRESENTATION_LETTERBOX,
+        PresentationScaling::IntegerScale => {
+            sdl3::sys::render::SDL_LOGICAL_PRESENTATION_INTEGER_SCALE
+        }
+    }
+}
 
 /// Platform-neutral events relevant to the first native host loop.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,7 +202,7 @@ fn present_software_frame_impl(
         .set_logical_size(
             u32::from(extent.width),
             u32::from(extent.height),
-            sdl3::sys::render::SDL_LOGICAL_PRESENTATION_INTEGER_SCALE,
+            logical_presentation(DEFAULT_SCALING),
         )
         .map_err(|error| SdlHostError::sdl("logical presentation setup", error))?;
     let texture_creator = canvas.texture_creator();
@@ -440,7 +458,7 @@ pub fn run_interactive_root_frame<E>(
         .set_logical_size(
             u32::from(extent.width),
             u32::from(extent.height),
-            sdl3::sys::render::SDL_LOGICAL_PRESENTATION_INTEGER_SCALE,
+            logical_presentation(DEFAULT_SCALING),
         )
         .map_err(|error| host(SdlHostError::sdl("logical presentation setup", error)))?;
     let texture_creator = canvas.texture_creator();
@@ -550,6 +568,31 @@ fn feed_input_event(event: &Event, mapper: &mut FrontendInputMapper) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presentation_scaling_maps_to_sdl_logical_presentation() {
+        use sdl3::sys::render::{
+            SDL_LOGICAL_PRESENTATION_INTEGER_SCALE, SDL_LOGICAL_PRESENTATION_LETTERBOX,
+            SDL_LOGICAL_PRESENTATION_STRETCH,
+        };
+        assert_eq!(
+            logical_presentation(PresentationScaling::Stretch),
+            SDL_LOGICAL_PRESENTATION_STRETCH
+        );
+        assert_eq!(
+            logical_presentation(PresentationScaling::Letterbox),
+            SDL_LOGICAL_PRESENTATION_LETTERBOX
+        );
+        assert_eq!(
+            logical_presentation(PresentationScaling::IntegerScale),
+            SDL_LOGICAL_PRESENTATION_INTEGER_SCALE
+        );
+        // The backend presents with the project-default scaling.
+        assert_eq!(
+            logical_presentation(DEFAULT_SCALING),
+            SDL_LOGICAL_PRESENTATION_INTEGER_SCALE
+        );
+    }
 
     #[test]
     fn quit_and_escape_are_terminal_host_events() {

@@ -918,6 +918,23 @@ languages rather than fabricating or silently aliasing Italian assets.
   concrete per-subsystem reference captures and their accepted tolerances are
   produced as each render path is converted. See evidence
   `impl.image-comparison-harness`.
+- `cmr-core::present_scaling` is the backend-neutral presentation-scaling
+  contract (B11), the start of the modern-backend phase. The recovered
+  DirectDraw frame-completion ops (`cmr-core::presentation`) flip a back buffer
+  that is already the game's logical resolution, so the original did no window
+  scaling; a modern backend owns a resizable window whose drawable size rarely
+  matches that resolution and must decide how the logical frame is placed.
+  `fit_viewport` defines that placement once - aspect-preserving integer or
+  fractional scaling (or stretch), centered with letterbox/pillarbox bars, a 1x
+  clamp with centered overflow for an undersized surface - so the SDL backend
+  and a later GPU backend agree pixel-for-pixel. The `cmr-platform-sdl3`
+  presenter selects its SDL logical-presentation mode through
+  `logical_presentation(DEFAULT_SCALING)` (`IntegerScale`), implementing the
+  project interface rather than a hardcoded constant; the GPU backend will set
+  its viewport from `fit_viewport`. Window/renderer creation, the event queue,
+  gamepad hotplug, and frame upload already live in `cmr-platform-sdl3`
+  (`present_software_frame`, `run_interactive_root_frame`); focus/pause/restore/
+  shutdown wiring is B12. See evidence `impl.present-scaling`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
