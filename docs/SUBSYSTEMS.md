@@ -121,6 +121,16 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::input`: platform-neutral keyboard and WinMM-compatible joystick
   masks, rising-edge state, raw menu-key repeat, frontend combination policy,
   and focus-gated sampling. OS polling and force feedback remain backend work.
+- `cmr-core::input_device`: the in-race driving-input transforms recovered from
+  the WinMM `joyGetPosEx` + `GetAsyncKeyState` poll (no DirectInput on this
+  path). Reconstructs the device-record types, the rising-edge mask, the 8-way
+  digital direction from axis thresholds (`0x2710`/`0xd8f0`), the centred analog
+  dead-zone rescale, the command quantize/saturate (`& 0xfffffc00` / `0xffbe`),
+  and the analog axis -> demand split into the `+0x2fc` command region (steer
+  left/right, throttle, brake); with the caps/offset/default-mask constants. The
+  WinMM/Win32 acquisition is SDL-backend glue; the dead-zone source and the
+  `+0x2b8[4]` slot order (a drivetrain question) remain. See evidence
+  `rea.official-eu.host-input-mapping`.
 - `cmr-core::timing`: validated pure plans for recovered logical rates, timer
   startup/drift, compatibility buckets, focus gating, and unsigned deadlines.
 - `cmr-core::host_loop`: the recovered native host clock and main-loop pacing as

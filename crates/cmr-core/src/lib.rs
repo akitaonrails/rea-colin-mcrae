@@ -44,6 +44,7 @@ pub mod frontend_c3d_scene;
 pub mod host_loop;
 pub mod indexed_bitmap_raster;
 pub mod input;
+pub mod input_device;
 pub mod localization;
 pub mod localization_assets;
 pub mod pacenote_schedule;

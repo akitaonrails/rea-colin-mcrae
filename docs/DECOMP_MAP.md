@@ -37,7 +37,7 @@ Status markers:
 - [x] `B07` Define indexed display/backend contracts and shared contract tests.
 - [x] `B08` Implement the deterministic software indexed-video oracle.
 - [~] `B09` Implement a native host clock and main event loop (recovered the shipped main loop `FUN_0049db00` WinMain -> `FUN_004c1e00` frame driver -> `FUN_00443e90` tick driver with the `FUN_00443e30`/`FUN_00443e60` pacing primitives: **lock-step 25 Hz** (40 ms `timeGetTime` buckets) with an **uncapped self-limiting catch-up** (`do { one tick } while (FUN_00443e30`, i.e. the tick crossed a 40 ms bucket`)`), a busy-wait to the next boundary (`FUN_00443e60`), **decoupled render** reached through the per-state frame proc once per pass, and a **one-frame render-skip** (`DAT_004ee900` toggling 2<->1 when a render overruns 40 ms). Host loop gated by the active flag `DAT_0096efcc` (blocking `WaitMessage` when inactive) and the quit flag `DAT_0096efe8`; focus via `WM_ACTIVATEAPP` (WndProc `LAB_0049dcf0`) writing the active flag; regime-A menu timer period `((double_rate)+1)*0x19` = 25/50 ms. Reconstructed the portable, backend-independent decision logic in `cmr-core::host_loop`: the `HostClock` trait, the `HostLoopState`/`HostAction` loop gating (active/quit/one-shot + the `WM_ACTIVATEAPP` pause hinge), `run_catch_up_ticks` (the self-limiting catch-up over a clock), and the `RenderGate` one-frame skip; reusing `sim_clock::step_boundary_crossed`. The busy-wait spin and the Win32 message pump remain host glue for the SDL backend (B10/B11/B12); the regime-A 25/50 ms vs 40 ms cadence interaction is recorded as an unknown).
-- [ ] `B10` Implement native keyboard/joystick polling.
+- [~] `B10` Implement native keyboard/joystick polling (in-race driving input is **WinMM `joyGetPosEx` + raw `GetAsyncKeyState`** - DirectInput is NOT on this path. Per frame `FUN_0049d180` polls 18 device records (`DAT_00b62b48`, stride `0x8c`; type `+0x00` = 0 digital-joy / 1 keyboard / 2,4 analog / 0xffffffff inactive; level mask `+0x04`, edge mask `+0x08` = `(prev^cur)&cur`, joy id `+0x10`, VK codes / analog axes at `+0x78..`). Readers: `FUN_0049cca0` (8-way digital from axis thresholds `0x2710`/`0xd8f0`), `FUN_0049cfb0` (16 VK keys), `FUN_0049cdf0` (analog: centred dead-zone `DAT_00504cc0/cc4` rescale `((dx∓dz)*0x8000)/(0x8000-dz)*2`). `FUN_00449580(control, deviceId, player)` maps the record into the `+0x2fc` command region (resolved order: `+0x2fc` steer-left / `+0x300` steer-right / `+0x304` brake / `+0x308` throttle / `+0x30c` handbrake / `+0x310` handbrake-alt / `+0x314` reverse), quantizing `& 0xfffffc00` and saturating at `0xffbe`, gated by analog-caps `config[player*0x9c+0x3c]` (`&4` steer/`&2` brake/`&1` throttle) with default button masks `0x80004`/`0x2000100`. The drivetrain ramp stage (`FUN_0041b5b0` -> `FUN_0041c9b0`/`cb40`/`cc20`/`c3f0`) turns those demands into the scalar actuators `+0x2d8`/`+0x2ec`/`+0x2f4`/`+0x318`. Reconstructed the pure transforms in `cmr-core::input_device`: `DeviceType`, `rising_edge`, `digital_direction_bits`, `apply_axis_deadzone`, `clamp_demand`, `map_analog_axes`, + the record/offset/caps/default-mask constants. Device acquisition (the WinMM/Win32 calls) is SDL-backend glue; the `DAT_00504cc0/cc4` source, the `DINPUT.dll` string's purpose, and the `+0x2b8[4]` slot order (a drivetrain question) remain).
 - [ ] `B11` Implement native window creation and presentation.
 - [ ] `B12` Integrate focus, pause, restore, and shutdown end to end.
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T18:04:40Z
-milestone=reconstruct-the-native-host-clock-and-main-loop-pacing
+updated_utc=2026-10-21T18:17:47Z
+milestone=reconstruct-the-in-race-input-acquisition-and-mapping
 completed=52
-partial=35
-not_started=30
+partial=36
+not_started=29
 blocked=0
 total=117
-current_focus=B10-implement-native-keyboard-joystick-polling
-next_exit_gate=recover-the-directinput-polling-and-control-mapping-to-the-actuators
+current_focus=B11-implement-native-window-creation-and-presentation
+next_exit_gate=implement-the-sdl-host-clock-input-and-window-backends-behind-the-contracts
 <!-- PROGRESS-TAIL-END -->
