@@ -188,6 +188,19 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   with length+stride; the raw trigger type is classified by
   `cmr-core::collision::TriggerType`. The other 12 section interiors and the
   runtime fix-up/relocation remain. See evidence `rea.official-eu.stage-bundle`.
+- `cmr-core::car_resources`: the car-resource composition (E09). A car is a set
+  of sibling `.C3D` resources under `OBJECTS\CARS\` (body `<code><DAY|NIGHT>.C3D`,
+  reflection `<code><tag>ref.c3d`, shared `ref_map.bmp`, low-detail `med`/
+  `daymed`), loaded through the same CMPR loader as stages. Reconstructs model
+  selection (low-nibble index of `DAT_00d3ca80+0xb6+player*0x9c`, 14 models), the
+  path builders, the scene node-id contract (`CarSceneNode` + `find_node_by_id`/
+  `find_wheels` masked pre-order search = `FUN_00495050`; wheels are nodes 1-4,
+  radius from node 6), the `wheel_radius` Q16.16 formula, and the damage
+  addressing (`car_type_param_base` 0xcd0 / `damage_region_base` 0x334 /
+  `nearest_unshed_panel`, reusing the G04 thresholds). Liveries = palette +
+  DAY/NIGHT variant; damage = vertex deformation + panel-shed flags (no extra
+  files). The car-code/make-name tables are game data, not vendored. See
+  evidence `rea.official-eu.car-resources`.
 - `cmr-core::font_assets`: verified loading and stable style identity for the
   16 recovered frontend font atlases in original initialization order.
 - `cmr-core::font_raster`: backend-neutral indexed atlas conversion and
