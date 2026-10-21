@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T15:48:26Z
-milestone=implement-the-sdl-audio-device-backend
+updated_utc=2026-10-21T15:51:07Z
+milestone=bridge-emitted-mixercommands-to-the-audiomixer-backend
 completed=52
 partial=24
 not_started=41
 blocked=0
 total=117
-current_focus=wire-the-recovered-audio-controllers-to-the-mixer-backend
-next_exit_gate=bridge-emitted-mixercommands-to-the-audiomixer-and-drive-a-recovered-controller-end-to-end
+current_focus=drive-all-recovered-audio-controllers-through-the-host-mixer-each-frame
+next_exit_gate=wire-the-sdl-host-to-load-and-tick-the-recovered-audio-subsystems-against-the-shared-mixer
 <!-- PROGRESS-TAIL-END -->

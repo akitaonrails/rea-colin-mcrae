@@ -651,6 +651,44 @@ mod tests {
     }
 
     #[test]
+    fn recovered_menu_controller_drives_the_mixer_end_to_end() {
+        use crate::audio_menu::{MenuChannel, MenuSound, play_menu_sound};
+        use crate::audio_mixer::{WaveSlotId, apply_commands};
+
+        // Load the four menu waves into slots 0..3, each a distinct sample.
+        let mut mixer = SoftwareMixer::with_source(bank(&[
+            ("FORWARD", mono(&[11], 22_050)),
+            ("BACKWARD", mono(&[22], 22_050)),
+            ("LEFTRIGH", mono(&[33], 22_050)),
+            ("UPDOWN", mono(&[44], 22_050)),
+        ]));
+        mixer.initialize().unwrap();
+        mixer.load_wave("FORWARD", 22_050, 16, false).unwrap();
+        mixer.load_wave("BACKWARD", 22_050, 16, false).unwrap();
+        mixer.load_wave("LEFTRIGH", 22_050, 16, false).unwrap();
+        mixer.load_wave("UPDOWN", 22_050, 16, false).unwrap();
+
+        let menu = MenuChannel {
+            channel: ch(7),
+            base_slot: WaveSlotId::from_ordinal(0),
+        };
+
+        // Playing UPDOWN drives slot 3 (sample 44) onto the menu channel.
+        apply_commands(&mut mixer, &play_menu_sound(menu, MenuSound::UpDown, 100)).unwrap();
+        assert!(mixer.is_channel_busy(ch(7)));
+        let mut out = [0i16; 2];
+        mixer.render(&mut out);
+        assert_eq!(out, [44, 44]);
+
+        // A new UI sound (FORWARD, slot 0) interrupts the previous one on the
+        // shared channel via the recovered stop-then-play sequence.
+        apply_commands(&mut mixer, &play_menu_sound(menu, MenuSound::Forward, 100)).unwrap();
+        let mut out = [0i16; 2];
+        mixer.render(&mut out);
+        assert_eq!(out, [11, 11]);
+    }
+
+    #[test]
     fn stereo_waves_keep_their_channels() {
         let mut mixer = SoftwareMixer::with_source(bank(&[(
             "st",

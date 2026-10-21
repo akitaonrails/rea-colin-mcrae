@@ -606,6 +606,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   -> SDL device. The device glue is runtime-only (not unit-tested); everything
   it relies on is contract/unit-tested in `cmr-core`/`cmr-formats`. See evidence
   `impl.audio-sdl-device`.
+- `cmr-core::audio_mixer::apply_command`/`apply_commands` bridge the recovered
+  command-emitting controllers to any `AudioMixer` backend by dispatching each
+  `MixerCommand` to the matching method (`OpenWave` rejected - loads go through
+  `load_wave`). An end-to-end test drives `audio_menu::play_menu_sound` through
+  the bridge into the `SoftwareMixer`, confirming the recovered stop-then-play
+  shared-channel behaviour produces the expected samples. This is the seam that
+  lets the game's recovered audio logic play through the software/SDL backend.
+  See evidence `impl.audio-command-bridge`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

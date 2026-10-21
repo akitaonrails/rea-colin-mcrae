@@ -505,6 +505,63 @@ pub fn check_audio_mixer_contract<M: AudioMixer + Default>() -> Result<(), Strin
     Ok(())
 }
 
+/// Error from applying an emitted [`MixerCommand`] to an [`AudioMixer`] backend.
+#[derive(Debug)]
+pub enum ApplyError<E> {
+    /// The backend rejected the operation.
+    Backend(E),
+    /// An [`MixerCommand::OpenWave`] cannot be applied through the trait: waves
+    /// are registered via [`AudioMixer::load_wave`] (which needs the source
+    /// name), not replayed as commands. The recovered *trigger* controllers
+    /// (menu/ambience/engine/pacenote) emit only control commands, never
+    /// `OpenWave`, so this never arises when driving them.
+    OpenWaveNotApplicable,
+}
+
+/// Apply one emitted [`MixerCommand`] to a backend by dispatching to the
+/// matching [`AudioMixer`] method.
+///
+/// This bridges the two halves of the reconstruction: the pure command-emitting
+/// controllers produce `MixerCommand`s, and any backend (the software mixer, a
+/// device wrapper) executes them. `OpenWave` is rejected (see [`ApplyError`]).
+pub fn apply_command<M: AudioMixer>(
+    mixer: &mut M,
+    command: &MixerCommand,
+) -> Result<(), ApplyError<M::Error>> {
+    match *command {
+        MixerCommand::Initialize { .. } => mixer.initialize().map_err(ApplyError::Backend),
+        MixerCommand::OpenWave { .. } => Err(ApplyError::OpenWaveNotApplicable),
+        MixerCommand::Play {
+            slot,
+            channel,
+            flags,
+        } => mixer
+            .play(slot, channel, flags)
+            .map_err(ApplyError::Backend),
+        MixerCommand::SetVolume { channel, volume } => mixer
+            .set_volume(channel, volume)
+            .map_err(ApplyError::Backend),
+        MixerCommand::SetFrequency { channel, frequency } => mixer
+            .set_frequency(channel, frequency)
+            .map_err(ApplyError::Backend),
+        MixerCommand::SetPosition { channel, position } => mixer
+            .set_position(channel, position)
+            .map_err(ApplyError::Backend),
+        MixerCommand::StopChannel { channel } => mixer.stop(channel).map_err(ApplyError::Backend),
+    }
+}
+
+/// Apply a sequence of emitted commands in order, stopping at the first error.
+pub fn apply_commands<M: AudioMixer>(
+    mixer: &mut M,
+    commands: &[MixerCommand],
+) -> Result<(), ApplyError<M::Error>> {
+    for command in commands {
+        apply_command(mixer, command)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,5 +824,55 @@ mod tests {
     #[test]
     fn fake_backend_satisfies_the_shared_contract() {
         check_audio_mixer_contract::<FakeMixer>().unwrap();
+    }
+
+    #[test]
+    fn apply_commands_dispatches_control_commands_to_the_backend() {
+        let mut mixer = FakeMixer::default();
+        apply_command(
+            &mut mixer,
+            &MixerCommand::Initialize {
+                output_rate_hz: MIXER_OUTPUT_RATE_HZ,
+                channel_capacity: MIXER_CHANNEL_CAPACITY,
+            },
+        )
+        .unwrap();
+        let slot = mixer
+            .load_wave("beep", MIXER_OUTPUT_RATE_HZ, 16, false)
+            .unwrap();
+        let channel = ChannelId::new(4).unwrap();
+
+        // A menu-style sequence drives the backend: volume, stop, one-shot play.
+        apply_commands(
+            &mut mixer,
+            &[
+                MixerCommand::SetVolume {
+                    channel,
+                    volume: 0x7fff,
+                },
+                MixerCommand::StopChannel { channel },
+                MixerCommand::Play {
+                    slot,
+                    channel,
+                    flags: PLAY_ONE_SHOT,
+                },
+            ],
+        )
+        .unwrap();
+        assert!(mixer.is_channel_busy(channel));
+    }
+
+    #[test]
+    fn apply_command_rejects_open_wave() {
+        let mut mixer = FakeMixer::default();
+        mixer.initialize().unwrap();
+        let command = MixerCommand::OpenWave {
+            slot: WaveSlotId::from_ordinal(0),
+            format: WaveFormat::pcm(22_050, 16, false).unwrap(),
+        };
+        assert!(matches!(
+            apply_command(&mut mixer, &command),
+            Err(ApplyError::OpenWaveNotApplicable)
+        ));
     }
 }
