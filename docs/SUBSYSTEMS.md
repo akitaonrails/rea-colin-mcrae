@@ -176,6 +176,18 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   See evidence `rea.official-eu.host-main-loop`.
 - `cmr-formats::font`: bounded fixed-layout indexed FON atlas/trailer decoding
   plus byte-text measurement and backend-neutral glyph layout plans.
+- `cmr-formats::stage`: the stage/track bundle (E08). A stage is a set of sibling
+  files sharing a base path and differing only by extension (the 14-entry table
+  `.c3d`..`.fuz`), each loaded through the shared CMPR-capable loader - no
+  stage-level header. Decodes the recovered section payloads: the header-less
+  `.cat` node spline (`0x1C`-byte records, count = filesize/0x1C; position /
+  direction / split flag / seq index), the recovered mirror/reverse transform,
+  the `{e,i,n}.cjp` per-difficulty split-time table (13 dwords), and the
+  trigger-volume record (`0x30`: geometry / payload / node index / raw type /
+  flag / passed-bits). Pure, bounds-checked, rejects misaligned/truncated input
+  with length+stride; the raw trigger type is classified by
+  `cmr-core::collision::TriggerType`. The other 12 section interiors and the
+  runtime fix-up/relocation remain. See evidence `rea.official-eu.stage-bundle`.
 - `cmr-core::font_assets`: verified loading and stable style identity for the
   16 recovered frontend font atlases in original initialization order.
 - `cmr-core::font_raster`: backend-neutral indexed atlas conversion and

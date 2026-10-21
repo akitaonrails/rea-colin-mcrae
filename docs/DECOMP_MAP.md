@@ -90,7 +90,7 @@ Status markers:
 - [~] `E05` Recover camera, projection, viewport, clipping, and culling.
 - [~] `E06` Recover primitive ordering, depth, transparency, and blending.
 - [~] `E07` Implement a deterministic compatibility 3D renderer/oracle.
-- [ ] `E08` Parse stage/track bundle and cross-file reference formats.
+- [~] `E08` Parse stage/track bundle and cross-file reference formats (**a stage is not a single container and not a CMPR bundle - it is a set of sibling files sharing one base path and differing only by extension**). The master loader `FUN_004228d0` ("Stage Data Destructor") walks a 14-entry extension table at `0x4eb92c` (`.c3d .dat .obj .moj .sht .ars .hzn .tsc .csp .cat .spl .anm .rsf .fuz`) and loads `<stagebase><ext>` for each through the shared CMPR-capable loader `FUN_00495ed0` (G08); there is no stage-level magic/header/offset directory - the "directory" is the filesystem dir plus the extension convention, and each section file may independently be CMPR-wrapped. Stage naming is `RALLSCHL\TRACKS\%s\TASK%d\` (`0x4f0fa0`); mirror/reverse is a load-time transform (config `DAT_00d3ca80+0x25 & 8`), not a separate file. Confidently-recovered decodable payloads, reconstructed in `cmr-formats::stage`: the **`.cat` node spline** (`FUN_00466350` -> `DAT_0057ae6c`), a header-less flat array of `0x1C`-byte records (count = filesize/`0x1C`) - position `+0x00/04/08`, direction `+0x0C/10/14`, split flag `+0x18`, seq index `+0x1A` - with the recovered mirror transform (reverse + negate direction + renumber `count-1-i`) and the split-node count (expected 7); the **`{e,i,n}.cjp`** per-difficulty split-time reference (13 dwords: two references + split times); and the **trigger-volume record** (`0x30`: geometry `+0x00..+0x24` preserved raw, payload `+0x24`, on-disk node index `+0x28`, type `+0x2C`, flag `+0x2D`, passed-bits `+0x2E`) whose type byte is classified by the existing `cmr-core::collision::TriggerType`. All parsers are pure, bounds-checked, and reject misaligned/truncated input with length+stride; only format metadata is encoded (synthetic fixtures; no payload bytes). At runtime the fix-up `FUN_004904e0` ("Track Destructor") spatially binds world objects/resources/volumes into a per-section table (stride `0x8C`, base `DAT_008697a0`), rewriting on-disk node-index fields to list pointers. Unknowns: the interior layouts of the other 12 sections (`.dat/.obj/.moj/.sht/.ars/.hzn/.tsc/.csp/.spl/.anm/.rsf/.fuz` - not decompiled), the trigger geometry `+0x00..+0x24` field split, the `.cat` byte `+0x19`, which section file carries the trigger-volume array, and whether the `0x8C` section table is loaded or built wholly at runtime.
 - [ ] `E09` Parse car models, liveries, wheels, and damage resources.
 - [ ] `E10` Parse weather, particles, shadows, and environmental effects.
 - [ ] `E11` Produce representative image-comparison fixtures/tolerances.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T19:12:00Z
-milestone=implement-the-portable-music-and-video-backends
+updated_utc=2026-10-21T19:24:00Z
+milestone=parse-the-stage-track-bundle-and-cat-node-spline
 completed=52
-partial=40
-not_started=25
+partial=41
+not_started=24
 blocked=0
 total=117
-current_focus=B11-implement-native-window-creation-and-presentation
-next_exit_gate=implement-the-sdl-host-clock-input-window-force-feedback-and-media-backends-behind-the-contracts
+current_focus=E09-parse-car-models-liveries-wheels-and-damage-resources
+next_exit_gate=parse-the-remaining-stage-section-and-car-resource-formats
 <!-- PROGRESS-TAIL-END -->
