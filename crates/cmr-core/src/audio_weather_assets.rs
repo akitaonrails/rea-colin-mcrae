@@ -29,7 +29,7 @@
 //! `FUN_0046b230` (assumed weather level); the remaining thirteen load-callers'
 //! wave groups (engine, surface, UI, etc.) are not yet enumerated.
 
-use crate::audio_mixer::{MixerError, WaveFormat};
+use crate::audio_mixer::{AudioMixer, MixerError, WaveFormat, WaveSlotId};
 
 /// Recovered mixer wave sample rate for the ambience group (`0x2b11`).
 pub const AMBIENCE_WAVE_RATE_HZ: u32 = 11_025;
@@ -107,6 +107,34 @@ pub fn waves_for_weather_detail(level: i32) -> impl Iterator<Item = &'static Wea
         .filter(move |wave| storm || !wave.storm_only)
 }
 
+/// Replay the recovered `FUN_0041cd30` load sequence through a mixer backend.
+///
+/// For the given weather-detail level, this loads each selected wave in the
+/// recovered order, returning the assigned slot ids. It reproduces the recovered
+/// path construction - the base sound directory (`FUN_00496730`, supplied here as
+/// `base_path`) concatenated with each wave's stored relative name - without
+/// imposing any host path semantics; `base_path` is joined exactly as the
+/// recovered `strcpy`+`strcat` does. The mixer must already be initialized; a
+/// load before init surfaces as the backend's error.
+pub fn load_weather_ambience<M: AudioMixer>(
+    mixer: &mut M,
+    base_path: &str,
+    weather_detail: i32,
+) -> Result<Vec<WaveSlotId>, M::Error> {
+    let mut slots = Vec::new();
+    for wave in waves_for_weather_detail(weather_detail) {
+        let name = format!("{base_path}{}", wave.relative_path);
+        let slot = mixer.load_wave(
+            &name,
+            AMBIENCE_WAVE_RATE_HZ,
+            AMBIENCE_WAVE_BITS,
+            wave.stereo,
+        )?;
+        slots.push(slot);
+    }
+    Ok(slots)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +184,120 @@ mod tests {
             .collect();
         assert_eq!(loaded.len(), 6);
         assert_eq!(loaded[5], r"sounds\weather\rumble2.wav");
+    }
+
+    use crate::audio_mixer::{ChannelId, MixerSessionState, Position3d};
+
+    /// A mixer backend that records each load's resolved name and parameters,
+    /// backed by the recovered session bookkeeping for slot ids.
+    #[derive(Default)]
+    struct RecordingMixer {
+        state: MixerSessionState,
+        loads: Vec<(String, u32, u16, bool)>,
+    }
+
+    impl AudioMixer for RecordingMixer {
+        type Error = MixerError;
+
+        fn initialize(&mut self) -> Result<(), Self::Error> {
+            self.state.initialize();
+            Ok(())
+        }
+
+        fn load_wave(
+            &mut self,
+            name: &str,
+            sample_rate: u32,
+            bits_per_sample: u16,
+            stereo: bool,
+        ) -> Result<WaveSlotId, Self::Error> {
+            let (slot, _) = self
+                .state
+                .load_wave(name, sample_rate, bits_per_sample, stereo)?;
+            self.loads
+                .push((name.to_owned(), sample_rate, bits_per_sample, stereo));
+            Ok(slot)
+        }
+
+        fn play(
+            &mut self,
+            slot: WaveSlotId,
+            channel: ChannelId,
+            flags: u32,
+        ) -> Result<(), Self::Error> {
+            self.state.play(slot, channel, flags).map(drop)
+        }
+        fn set_volume(&mut self, channel: ChannelId, volume: i32) -> Result<(), Self::Error> {
+            self.state.set_volume(channel, volume).map(drop)
+        }
+        fn set_frequency(&mut self, channel: ChannelId, frequency: u32) -> Result<(), Self::Error> {
+            self.state.set_frequency(channel, frequency).map(drop)
+        }
+        fn set_position(
+            &mut self,
+            channel: ChannelId,
+            position: Position3d,
+        ) -> Result<(), Self::Error> {
+            self.state.set_position(channel, position).map(drop)
+        }
+        fn stop(&mut self, channel: ChannelId) -> Result<(), Self::Error> {
+            self.state.stop(channel).map(drop)
+        }
+        fn is_channel_busy(&self, _channel: ChannelId) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn driver_replays_the_recovered_storm_sequence_with_concatenated_paths() {
+        let mut mixer = RecordingMixer::default();
+        mixer.initialize().unwrap();
+        let slots =
+            load_weather_ambience(&mut mixer, r"C:\game\", WEATHER_DETAIL_WITH_STORM).unwrap();
+        // Sequential slot ids from zero, one per selected wave.
+        assert_eq!(
+            slots.iter().map(|s| s.ordinal()).collect::<Vec<_>>(),
+            [0, 1, 2, 3, 4, 5]
+        );
+        // The recovered base+relative concatenation and per-wave parameters.
+        assert_eq!(
+            mixer.loads[0],
+            (r"C:\game\sounds\crowd\crowd.wav".into(), 11_025, 16, false)
+        );
+        assert_eq!(
+            mixer.loads[1],
+            (
+                r"C:\game\sounds\weather\abduct.wav".into(),
+                11_025,
+                16,
+                true
+            )
+        );
+        assert_eq!(
+            mixer.loads[5],
+            (
+                r"C:\game\sounds\weather\rumble2.wav".into(),
+                11_025,
+                16,
+                false
+            )
+        );
+    }
+
+    #[test]
+    fn driver_loads_only_the_pair_below_the_storm_level() {
+        let mut mixer = RecordingMixer::default();
+        mixer.initialize().unwrap();
+        let slots = load_weather_ambience(&mut mixer, "", 1).unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(mixer.loads.len(), 2);
+    }
+
+    #[test]
+    fn driver_surfaces_a_load_before_init() {
+        let mut mixer = RecordingMixer::default();
+        let error = load_weather_ambience(&mut mixer, "", 0).unwrap_err();
+        assert_eq!(error, MixerError::NotInitialized);
+        assert!(mixer.loads.is_empty());
     }
 }

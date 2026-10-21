@@ -165,8 +165,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T14:06:42Z
-milestone=recover-weather-crowd-ambience-wave-inventory
+updated_utc=2026-10-21T14:09:14Z
+milestone=replay-recovered-ambience-load-sequence-through-the-mixer-contract
 completed=51
 partial=25
 not_started=41
