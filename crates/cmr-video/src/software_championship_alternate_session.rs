@@ -83,8 +83,12 @@ use crate::{
         prepare_software_queued_font_argb4444_pool,
     },
     software_queued_font_glyphs::{
-        LaneNeutralChampionshipQueuedText, LaneNeutralChampionshipQueuedTextError,
-        SoftwareQueuedFontTerminal, prepare_lane_neutral_championship_queued_text,
+        LaneNeutralChampionshipQueuedTextError, SoftwareQueuedFontTerminal,
+        prepare_lane_neutral_championship_queued_text,
+    },
+    software_queued_font_queue::{
+        RoutedChampionshipQueuedText, SoftwareQueuedFontByte3Policy, SoftwareQueuedFontLane,
+        route_lane_neutral_championship_queued_text,
     },
 };
 
@@ -133,6 +137,11 @@ pub struct SoftwareChampionshipAlternateSessionRequest {
     /// Explicit device-branch result; it is not inferred from host backend
     /// naming or framebuffer depth.
     pub queued_font_terminal: SoftwareQueuedFontTerminal,
+    /// Caller-selected lane. Lane 2 is strongly inferred for ordinary
+    /// championship dispatch, but is not a recovered invariant.
+    pub queued_font_lane: SoftwareQueuedFontLane,
+    /// Resolved result of the recovered renderer-mode/capability gate.
+    pub queued_font_byte3_policy: SoftwareQueuedFontByte3Policy,
 }
 
 impl SoftwareChampionshipAlternateSessionRequest {
@@ -148,6 +157,8 @@ impl SoftwareChampionshipAlternateSessionRequest {
         backend_configuration: SoftwareSplitC3dOracleConfiguration,
         raster_state: SoftwareChampionshipAlternateRasterState,
         queued_font_terminal: SoftwareQueuedFontTerminal,
+        queued_font_lane: SoftwareQueuedFontLane,
+        queued_font_byte3_policy: SoftwareQueuedFontByte3Policy,
     ) -> Self {
         Self {
             language,
@@ -167,6 +178,8 @@ impl SoftwareChampionshipAlternateSessionRequest {
             depth_clear: C3dDepthClear::Clear,
             palette_layout: SoftwareChampionshipPaletteLayout::CanonicalCarsThenChequered,
             queued_font_terminal,
+            queued_font_lane,
+            queued_font_byte3_policy,
         }
     }
 }
@@ -348,7 +361,7 @@ impl SoftwareChampionshipAlternateSession<'_, '_, '_> {
         &mut self,
         frame: SoftwareChampionshipAlternateFrameRequest<'_>,
     ) -> Result<
-        SoftwareChampionshipAlternateTerminalOutcome<LaneNeutralChampionshipQueuedText>,
+        SoftwareChampionshipAlternateTerminalOutcome<RoutedChampionshipQueuedText>,
         SoftwareChampionshipAlternateRenderError,
     > {
         if frame.visual.viewport != self.request.extent {
@@ -375,6 +388,11 @@ impl SoftwareChampionshipAlternateSession<'_, '_, '_> {
             self.request.queued_font_terminal,
         )
         .map_err(SoftwareChampionshipAlternateRenderError::QueuedText)?;
+        let queued_text = route_lane_neutral_championship_queued_text(
+            queued_text,
+            self.request.queued_font_lane,
+            self.request.queued_font_byte3_policy,
+        );
         let selected = match frame.visual.transcript.preview {
             ActivePreview::Car { canonical_car, .. }
             | ActivePreview::Gear { canonical_car, .. } => Some(canonical_car),

@@ -1,10 +1,9 @@
 //! Lane-neutral queued-font records for the alternate championship path.
 //!
-//! This module stops before native queue routing and rendering. It preserves
-//! recovered text-command and glyph order, but stops before the producer's
-//! conditional byte-3 rewrite. It does not claim the native 52-byte record
-//! layout, select one of the three lanes, apply a lane capacity, flush
-//! commands, or compose final pixels.
+//! This module stops before queue routing and rendering. It preserves recovered
+//! text-command and glyph order as the source for the separate bounded semantic
+//! router. It does not claim the native 52-byte record layout, flush commands,
+//! or compose final pixels.
 
 use std::fmt;
 
@@ -46,7 +45,7 @@ impl SoftwareQueuedFontTerminal {
 }
 
 /// Semantic queued-glyph producer input, deliberately independent of the
-/// native record packing and unresolved lane assignment.
+/// native record packing and caller-selected lane assignment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LaneNeutralQueuedFontGlyph {
     pub command_index: usize,
@@ -57,7 +56,7 @@ pub struct LaneNeutralQueuedFontGlyph {
     pub source: RectI16,
     pub destination: RectI32,
     /// Tuple after the recovered caller-side Q16 operation and before the
-    /// producer's unresolved conditional byte-3 rewrite.
+    /// producer's runtime-gated byte-3 rewrite.
     pub caller_tuple: [u8; 4],
     pub terminal: SoftwareQueuedFontTerminal,
 }
@@ -280,6 +279,10 @@ mod tests {
 
     use super::*;
     use crate::software_queued_font_argb4444::prepare_software_queued_font_argb4444_pool;
+    use crate::software_queued_font_queue::{
+        SOFTWARE_QUEUED_FONT_LANE_CAPACITY, SoftwareQueuedFontByte3Policy, SoftwareQueuedFontLane,
+        route_lane_neutral_championship_queued_text,
+    };
 
     #[test]
     fn records_retain_plan_order_effective_tuple_terminal_and_persistent_source() {
@@ -378,6 +381,24 @@ mod tests {
         assert_eq!(prepared.records().len(), 2_048);
         assert_eq!(prepared.records()[2_047].blit_index, 2_047);
         assert_eq!(prepared.records()[2_047].destination.x, 2_057);
+
+        let routed = route_lane_neutral_championship_queued_text(
+            LaneNeutralChampionshipQueuedText {
+                texts: vec![prepared],
+            },
+            SoftwareQueuedFontLane::Three,
+            SoftwareQueuedFontByte3Policy::ForceFf,
+        );
+        assert_eq!(routed.source().record_len(), 2_048);
+        assert_eq!(routed.source().records().last().unwrap().blit_index, 2_047);
+        assert_eq!(
+            routed.queues().records(SoftwareQueuedFontLane::Three).len(),
+            SOFTWARE_QUEUED_FONT_LANE_CAPACITY
+        );
+        assert_eq!(
+            routed.queues().dropped_len(SoftwareQueuedFontLane::Three),
+            1
+        );
     }
 
     #[test]

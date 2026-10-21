@@ -309,22 +309,26 @@ bit-`0x40` fallback, and the championship tuple/fade arithmetic. The setup
 model now retains the raw four-byte source tuple and signed Q16 fade, including
 the recovered terminal/inactive/active row selection, and a source-neutral
 font preflight emits lane-neutral semantic glyph-producer inputs in
-command/glyph order against the persistent ARGB4444 owner. It deliberately
-does not assign
-the strongly inferred championship lane 2 or truncate at a per-lane capacity;
-native queue packing, the producer's conditional byte-3 rewrite, lane routing,
-driver conversion, tuple channel meanings, blend semantics, and final pixels
-remain unresolved alongside native layout and dithering. R_INFO, the 11
+command/glyph order against the persistent ARGB4444 owner. A separate semantic
+router now owns three independent typed lanes, accepts exactly 2,047 records
+per lane, accounts for later silent drops, retains FIFO order, and applies the
+recovered byte-3 gate after acceptance. That gate preserves the caller byte
+only when effective renderer mode is not 7 and the recovered alpha-texture
+capability bit is present; otherwise it forces `0xff`. Session callers select
+the lane explicitly because ordinary championship lane 2 remains a strong
+inference. Native queue packing/flush execution, driver conversion, tuple
+channel meanings, blend semantics, and final pixels remain unresolved
+alongside native layout and dithering. R_INFO, the 11
 unique logo assets, and all 15 Chequered frames now also have one transactional
 27-source logical-RGB16 owner built directly from decoded user assets. Stable
 identity/path diagnostics and per-bitmap palette provenance are pinned. One
 shared ordered kernel now prepares either rich indexed payloads or a
 lightweight alternate transcript from exact source extents, with tests proving
 full public-command parity across car, gear, and Next cold/warm frames. The
-The alternate adapter derives aligned extents from the 27-source RGB16 pool and
-an optional nominal converted Selection source without indexed uploads. A
-two-pass alternate executor rejects stale cache
-snapshots, preflights every supported Fast bitmap plus Selection Stretch before
+alternate adapter derives aligned extents from the 27-source RGB16 pool and an
+optional nominal converted Selection source without indexed uploads. A
+two-pass alternate executor rejects stale cache snapshots, preflights every
+supported Fast bitmap plus Selection Stretch before
 effects, and composes them in transcript order while returning text, NoOp, and
 other deferred boundaries as exact typed outcomes. Selection uses the recovered
 literal-zero key/call geometry and an explicitly source-owned center-nearest
@@ -342,12 +346,14 @@ callback entry, and preserves target/depth, binding cache, preview/transform/
 latch/route/palette state across repeated car and Next frames. The session now
 also loads and owns the selected frontend table and all 16 ARGB4444 font
 sources, prepares every non-deferred setup Text command before terminal
-effects, and attaches the complete lane-neutral transcript only to successful
-outcomes. That publication guarantee covers the transcript value, not rollback
-of setup or scene effects after a later failure. Conditional byte-3 producer
-policy, lane routing/capacity, native record packing and queue flushing,
-driver-exact Stretch comparison, native presentation, and the other deferred
-pixels are the next integration seams.
+effects, routes that slice from initially empty lanes through caller-explicit
+lane and resolved byte-3 policy, and attaches the result only to successful
+outcomes. It does not yet merge later deferred info/next-preview producers.
+The publication guarantee covers the returned value, not rollback of setup or
+scene effects after a later failure. Native record packing, optional transform
+fields and lane-ordered flush execution, driver-exact Stretch comparison,
+native presentation, and the other deferred pixels are the next integration
+seams.
 
 Exit gate:
 

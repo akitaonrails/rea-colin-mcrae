@@ -224,9 +224,13 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   retain the exact caller-side post-fade bytes, font style, source/destination
   rectangles, terminal `8` or `0x48`, command order, and glyph order without
   copying atlas ownership.
-  Safe out-of-atlas rejection remains a reconstruction policy. Native 52-byte
-  packing, conditional byte-3 rewrite, optional transform data, lane
-  selection/capacity, flushing, filtering/blending, and pixels remain open.
+  `cmr-video::software_queued_font_queue` routes those inputs to a
+  caller-selected typed lane, admits exactly 2,047 records independently per
+  lane, tracks later silent drops, and applies the recovered byte-3 gate:
+  preserve only when effective renderer mode is not 7 and the alpha-texture
+  capability bit is set, otherwise force `0xff`. Safe out-of-atlas rejection
+  remains a reconstruction policy. Native 52-byte packing, optional transform
+  data, flush execution, filtering/blending, and pixels remain open.
 - `cmr-video::software_championship_setup_frame`: two-pass execution of the
   lightweight prepared setup transcript. Its standalone preparation derives
   exact aligned extents from the owned RGB16 pool and optional nominal
@@ -250,12 +254,14 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   converted split bindings, logical target/depth, executor cache, and all
   terminal state across repeated frames, and returns the owned headless backend
   after the callback. Each frame prepares every non-deferred setup Text command
-  before terminal effects and publishes the complete lane-neutral transcript
-  only in a successful outcome. RGB555/RGB565 source-target and raster-state
+  before terminal effects, routes it through caller-explicit lane/byte-3
+  choices, and publishes the complete initially-empty bounded route for that
+  non-deferred setup-text slice only in a successful outcome. RGB555/RGB565
+  source-target and raster-state
   mismatches fail before callback entry. It creates no indexed backend, uploaded
   source, or native presentation surface. Selection is converted once and
-  executed by the named source-owned Stretch policy; lane routing, glyph pixels,
-  info text, and next-preview pixels remain deferred.
+  executed by the named source-owned Stretch policy; native queue flushing,
+  glyph pixels, info text, and next-preview pixels remain deferred.
 - `cmr-video::packed_rgb_target`: a nominal runtime-framebuffer format and
   logical masked-word target kept type-distinct from selected texture formats.
   It retains the complete raw surface descriptor and converts canonical RGB

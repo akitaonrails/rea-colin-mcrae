@@ -53,7 +53,7 @@ use crate::{
         execute_preflighted_software_championship_setup_frame,
         preflight_software_championship_setup_frame,
     },
-    software_queued_font_glyphs::LaneNeutralChampionshipQueuedText,
+    software_queued_font_queue::RoutedChampionshipQueuedText,
 };
 
 pub struct SoftwareChampionshipAlternateCarResources<'a, 'actors> {
@@ -205,9 +205,9 @@ pub(crate) fn execute_software_championship_alternate_terminal_frame_with_queued
     backend: &mut SoftwareSplitC3dOracleBackend,
     destination: SoftwareSplitC3dTargetHandle,
     depth_clear: C3dDepthClear,
-    queued_text: LaneNeutralChampionshipQueuedText,
+    queued_text: RoutedChampionshipQueuedText,
 ) -> Result<
-    SoftwareChampionshipAlternateTerminalOutcome<LaneNeutralChampionshipQueuedText>,
+    SoftwareChampionshipAlternateTerminalOutcome<RoutedChampionshipQueuedText>,
     SoftwareChampionshipAlternateTerminalError,
 > {
     execute_software_championship_alternate_terminal_frame_with_publication(
