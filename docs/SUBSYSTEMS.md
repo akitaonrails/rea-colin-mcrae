@@ -476,6 +476,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   wrapper. The recovered play flags, master-volume scale, volume clamp, and
   thunder selector are encoded in `cmr-core::audio_mixer` and
   `audio_weather_assets`. See evidence `rea.official-eu.audio-ambience-trigger`.
+  A third source, the abduct trigger `0x41d270`/`FUN_0041d270`, plays slot
+  `base+1` one-shot at fixed volume `0x7fff` and, with the storm flag, suppresses
+  the looped crowd voice while it holds the shared channel (crowd plays only when
+  `DAT_0050d868==0 && DAT_0050d860==0`). Only the crowd slot loops. See evidence
+  `rea.official-eu.audio-abduct-trigger`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

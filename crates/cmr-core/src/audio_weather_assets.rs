@@ -107,6 +107,22 @@ pub fn clamp_ambience_volume_input(input: i32) -> i32 {
     input.min(AMBIENCE_MAX_VOLUME_INPUT)
 }
 
+/// Fixed volume input the abduct trigger `FUN_0041d270` sets before playing the
+/// abduct voice one-shot (`0x7fff`). Unlike the crowd volume it is a literal,
+/// not a proximity-clamped value.
+pub const ABDUCT_VOLUME: i32 = 0x7fff;
+
+/// Whether the ambience voice at the given slot offset plays looping.
+///
+/// Recovered from the trigger ticks: only the crowd voice (offset 0) loops
+/// (`FUN_0041cfe0` plays it with `PLAY_LOOPING`); abduct (offset 1,
+/// `FUN_0041d270`) and the thunder variants (offsets 2..5, `FUN_0041cfe0`) are
+/// one-shot. All three sources share the one ambience channel, so a looping
+/// crowd voice is suppressed while a one-shot is active.
+pub fn is_looping_ambience_slot(offset: usize) -> bool {
+    offset == 0
+}
+
 /// The thunder wave `FUN_0041cfe0` plays for a given selector.
 ///
 /// The recovered one-shot call targets slot `base + 2 + (selector & 0xff)` on
@@ -214,6 +230,15 @@ mod tests {
         assert_eq!(clamp_ambience_volume_input(0), 0);
         assert_eq!(clamp_ambience_volume_input(32_000), 32_000);
         assert_eq!(clamp_ambience_volume_input(40_000), 32_000);
+    }
+
+    #[test]
+    fn only_the_crowd_slot_loops() {
+        assert!(is_looping_ambience_slot(0));
+        for offset in 1..WEATHER_WAVES.len() {
+            assert!(!is_looping_ambience_slot(offset));
+        }
+        assert_eq!(ABDUCT_VOLUME, 0x7fff);
     }
 
     #[test]
