@@ -70,4 +70,5 @@ pub mod startup_display;
 pub mod startup_surface;
 pub mod surface;
 pub mod timing;
+pub mod vehicle_dynamics;
 pub mod window;

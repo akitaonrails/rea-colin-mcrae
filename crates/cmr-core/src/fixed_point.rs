@@ -143,6 +143,66 @@ pub fn cos_bam(table: &[i32; TRIG_TABLE_LEN], angle: u16) -> Fixed16 {
     sin_bam(table, angle.wrapping_add(BAM_QUARTER_TURN))
 }
 
+/// A 3-component vector of Q16.16 scalars, the shape of the recovered world
+/// vectors (velocity, orientation axis, gravity, contact forces).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Vec3 {
+    pub x: Fixed16,
+    pub y: Fixed16,
+    pub z: Fixed16,
+}
+
+impl Vec3 {
+    /// The zero vector.
+    pub const ZERO: Vec3 = Vec3 {
+        x: Fixed16::ZERO,
+        y: Fixed16::ZERO,
+        z: Fixed16::ZERO,
+    };
+
+    /// Construct from components.
+    pub const fn new(x: Fixed16, y: Fixed16, z: Fixed16) -> Self {
+        Vec3 { x, y, z }
+    }
+
+    /// Component-wise addition.
+    pub const fn add(self, rhs: Vec3) -> Vec3 {
+        Vec3::new(self.x.add(rhs.x), self.y.add(rhs.y), self.z.add(rhs.z))
+    }
+
+    /// Component-wise subtraction.
+    pub const fn sub(self, rhs: Vec3) -> Vec3 {
+        Vec3::new(self.x.sub(rhs.x), self.y.sub(rhs.y), self.z.sub(rhs.z))
+    }
+
+    /// Scale every component by a scalar (the recovered per-axis `v_i * s >> 16`).
+    pub const fn scale(self, s: Fixed16) -> Vec3 {
+        Vec3::new(self.x.mul(s), self.y.mul(s), self.z.mul(s))
+    }
+
+    /// Dot product `x*x' + y*y' + z*z'`.
+    pub const fn dot(self, rhs: Vec3) -> Fixed16 {
+        self.x
+            .mul(rhs.x)
+            .add(self.y.mul(rhs.y))
+            .add(self.z.mul(rhs.z))
+    }
+}
+
+impl std::ops::Add for Vec3 {
+    type Output = Vec3;
+    fn add(self, rhs: Vec3) -> Vec3 {
+        Vec3::add(self, rhs)
+    }
+}
+
+impl std::ops::Sub for Vec3 {
+    type Output = Vec3;
+    fn sub(self, rhs: Vec3) -> Vec3 {
+        Vec3::sub(self, rhs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +249,27 @@ mod tests {
             Fixed16::from_raw(i32::MAX) + Fixed16::from_raw(1),
             Fixed16::from_raw(i32::MIN)
         );
+    }
+
+    #[test]
+    fn vec3_arithmetic() {
+        let a = Vec3::new(Fixed16::ONE, Fixed16::from_int(2), Fixed16::ZERO);
+        let b = Vec3::new(Fixed16::from_int(3), Fixed16::ONE, Fixed16::ONE);
+        assert_eq!(
+            a.add(b),
+            Vec3::new(Fixed16::from_int(4), Fixed16::from_int(3), Fixed16::ONE)
+        );
+        assert_eq!(
+            a.sub(b),
+            Vec3::new(Fixed16::from_int(-2), Fixed16::ONE, -Fixed16::ONE)
+        );
+        // Scale by 0.5.
+        assert_eq!(
+            a.scale(Fixed16::from_raw(0x8000)),
+            Vec3::new(Fixed16::from_raw(0x8000), Fixed16::ONE, Fixed16::ZERO)
+        );
+        // dot = 1*3 + 2*1 + 0*1 = 5.
+        assert_eq!(a.dot(b), Fixed16::from_int(5));
     }
 
     #[test]

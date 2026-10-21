@@ -647,6 +647,18 @@ languages rather than fabricating or silently aliasing Italian assets.
   car-type byte `car+0x738`. The actuator element order, the torque->velocity
   integrators, and the ratio-table loader remain. See evidence
   `rea.official-eu.sim-drivetrain`.
+- The grip/surface response and velocity integration run as later passes of the
+  same `0x407690` solver chain. The lateral-grip constraint `0x41b270` strips the
+  sideways velocity component each step (`v -= (v - fwd*dot(fwd,v))*K`, `K`~0.02
+  normal / ~0.01 handbrake); the slope-grip loss `0x408f50` ramps grip loss from
+  tilt ~0.70 up to a ~0.90 cap; the integrator `0x40a4a0` computes
+  `accel = force*invMass + gravity`, quadratic drag `v*speed`, and
+  `v += accel*0.2` (the 40 ms step folded into the gain). Per-wheel surface id
+  `ctrl[0x42a+k*2]` indexes 8-byte grip records with ~0.24 (high) / ~0.15 (low)
+  tiers. Reconstructed in `cmr-core::vehicle_dynamics` over a new Q16.16
+  `cmr-core::fixed_point::Vec3`. The slip-angle tyre saturation `0x40d810`, the
+  position update, the damper source, and the runtime-loaded per-surface/per-car
+  table values remain. See evidence `rea.official-eu.sim-grip`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
