@@ -8,3 +8,4 @@ pub mod c3d;
 pub mod font;
 pub mod riff_palette;
 pub mod stored_asset;
+pub mod wav;

@@ -582,6 +582,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   platform/SDL device backend wraps it by decoding the user's WAVs into the
   `WaveSource` and pumping `render` into the device. See evidence
   `impl.audio-render`.
+- `cmr-formats::wav::parse_wav_pcm` decodes the game's PCM `WAVE` files (RIFF,
+  PCM mono/stereo at 8/16-bit) to interleaved `i16`, bounds-checked and
+  rejecting malformed/truncated input with field-specific errors while retaining
+  unknown chunks and trailing bytes; `cmr-core::audio_render::PcmWave::from_wav`
+  bridges a decoded wave into the software mixer. This is the decode half of the
+  WAV -> `WaveSource` -> `render` playback chain; the remaining half is the
+  file/directory wave source and the SDL audio-device wrapper. See evidence
+  `impl.audio-wav`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

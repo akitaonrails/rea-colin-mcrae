@@ -51,6 +51,27 @@ pub struct PcmWave {
 }
 
 impl PcmWave {
+    /// Build a mixer wave from an already-parsed PCM `WAVE`
+    /// ([`cmr_formats::wav::WavPcm`]), carrying its interleaved samples and
+    /// rebuilding the mixer [`WaveFormat`]. Infallible: the parser has already
+    /// validated the format the mixer needs (PCM, 8/16-bit, non-zero rate).
+    pub fn from_wav(wav: &cmr_formats::wav::WavPcm) -> Self {
+        let stereo = wav.format.channels >= 2;
+        // The parser guarantees a valid PCM WAVEFORMATEX here; mixer bit depth
+        // is always 16 after decoding, regardless of the source bit depth.
+        let format = WaveFormat::pcm(wav.format.sample_rate, 16, stereo)
+            .expect("parsed PCM WAVE has a valid mixer format");
+        Self {
+            format,
+            samples: wav.samples.clone(),
+        }
+    }
+
+    /// Parse PCM `WAVE` bytes and build a mixer wave in one step.
+    pub fn from_wav_bytes(bytes: &[u8]) -> Result<Self, cmr_formats::wav::WavError> {
+        Ok(Self::from_wav(&cmr_formats::wav::parse_wav_pcm(bytes)?))
+    }
+
     /// Number of sample frames (samples divided by channel count).
     pub fn frame_count(&self) -> usize {
         let channels = self.format.channels.max(1) as usize;
@@ -454,6 +475,45 @@ mod tests {
         let mut out = [0i16; 4];
         mixer.render(&mut out);
         assert_eq!(out, [0, 0, 0, 0]);
+    }
+
+    /// Build a minimal mono 16-bit PCM WAVE byte buffer.
+    fn mono_wav_bytes(samples: &[i16], rate: u32) -> Vec<u8> {
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        fmt.extend_from_slice(&1u16.to_le_bytes()); // mono
+        fmt.extend_from_slice(&rate.to_le_bytes());
+        fmt.extend_from_slice(&(rate * 2).to_le_bytes()); // avg bytes/sec
+        fmt.extend_from_slice(&2u16.to_le_bytes()); // block align
+        fmt.extend_from_slice(&16u16.to_le_bytes()); // bits
+        let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+
+        let mut body = Vec::from(b"WAVE".as_slice());
+        for (id, chunk) in [(b"fmt ", &fmt), (b"data", &data)] {
+            body.extend_from_slice(id);
+            body.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+            body.extend_from_slice(chunk);
+        }
+        let mut out = Vec::from(b"RIFF".as_slice());
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    #[test]
+    fn decoded_wav_bytes_play_through_the_mixer() {
+        let wav = mono_wav_bytes(&[100, 200, 300], 22_050);
+        let pcm = PcmWave::from_wav_bytes(&wav).unwrap();
+        assert_eq!(pcm.samples, vec![100, 200, 300]);
+        assert_eq!(pcm.format.channels, 1);
+
+        let mut mixer = SoftwareMixer::with_source(bank(&[("engine", pcm)]));
+        mixer.initialize().unwrap();
+        let slot = mixer.load_wave("engine", 22_050, 16, false).unwrap();
+        mixer.play(slot, ch(0), PLAY_ONE_SHOT).unwrap();
+        let mut out = [0i16; 8];
+        mixer.render(&mut out);
+        assert_eq!(out, [100, 100, 200, 200, 300, 300, 0, 0]);
     }
 
     #[test]
