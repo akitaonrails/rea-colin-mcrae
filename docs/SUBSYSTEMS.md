@@ -554,6 +554,23 @@ languages rather than fabricating or silently aliasing Italian assets.
   gate, `codriver\` path, and the observed field-extraction arithmetic); the
   higher-field semantics and FIFO accumulation are left in the ledger. See
   evidence `rea.official-eu.audio-pacenote`.
+- Music (`frontend.wav`, `replay.wav`) is loaded whole - not streamed - through
+  a second loader variant `0x4959f0` (managed handle table, fixed format args,
+  vs. the base `0x4958e0` rate/bits/stereo loader) and played looping; the
+  frontend start `0x443b20` plays once and the keep-alive `0x4c9d70` re-starts
+  the loop when the channel reports done and fades it in. All music is gated by
+  the sound-disabled flag `DAT_00d3ca88`. The start-of-stage countdown
+  (`5-4-3-2-1-GO`) is six `countdwn\` waves preloaded by `0x46a740` ("PreSnd")
+  into consecutive slots at 11025 Hz/16-bit/mono under `<speech base>` +
+  `<language dir>` + `countdwn\`, played one-shot as slot `base+index` by
+  `0x46af10` on a shared SFX channel (cadence driver `0x439b10`); rally-school
+  mode adds the `intro2\` set. The channel-setup helper `0x4958a0` (open +
+  enable) is shared by 15 call sites across every audio bank, and `0x47eba0` is
+  a second master-volume bus beside the known `0x47eb70`. Reconstructed in
+  `cmr-core::audio_music_cues` (music tracks/flags, countdown set/format/path);
+  the volume scaling, countdown slot ordering/cadence, and replay/SETUP control
+  flow are left in the ledger. See evidence
+  `rea.official-eu.audio-music-countdown`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
