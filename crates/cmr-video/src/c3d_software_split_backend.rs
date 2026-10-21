@@ -15,6 +15,7 @@ use std::{
 };
 
 use cmr_core::{
+    blit::BlitPlan,
     c3d_batch::C3dDrawCommand,
     c3d_type2_fog::C3dType2PreDrawVertex,
     championship_car_execute::{
@@ -49,6 +50,11 @@ use crate::{
         validate_championship_car_split_modulate_no_alpha_oracle_profile,
     },
     legacy_c3d_pixel_format::SelectedNonAlphaTextureFormat,
+    ordinary_bitmap_rgb16::OrdinaryBitmapLogicalRgb16Source,
+    ordinary_bitmap_rgb16_blit::{
+        OrdinaryBitmapRgb16BlitError, compose_ordinary_bitmap_logical_rgb16_fast_blit,
+        preflight_ordinary_bitmap_logical_rgb16_fast_blit,
+    },
     packed_rgb_target::{
         FramebufferRgbFormat, LogicalMaskedRgbTarget, LogicalMaskedRgbTargetError,
     },
@@ -190,6 +196,7 @@ pub enum SoftwareSplitC3dBackendError {
         profile_enabled: bool,
         prepared_enabled: bool,
     },
+    OrdinaryBitmapBlit(OrdinaryBitmapRgb16BlitError),
     Target(LogicalMaskedRgbTargetError),
     Viewport(RootMenuC3dViewportError),
     Raster(SoftwareC3dRasterError),
@@ -222,6 +229,7 @@ impl std::error::Error for SoftwareSplitC3dBackendError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Target(source) => Some(source),
+            Self::OrdinaryBitmapBlit(source) => Some(source),
             Self::Viewport(source) => Some(source),
             Self::Raster(source) => Some(source),
             Self::Compose(source) => Some(source),
@@ -330,6 +338,42 @@ impl SoftwareSplitC3dOracleBackend {
     #[must_use]
     pub const fn configuration(&self) -> SoftwareSplitC3dOracleConfiguration {
         self.configuration
+    }
+
+    /// Effect-free validation for an ordinary-bitmap logical RGB16 blit into
+    /// this backend's owned target.
+    ///
+    /// The nominal handle is owner-scoped, and composition is available only
+    /// while no C3D scene is active. The underlying validator additionally
+    /// requires an exact-size `Fast` plan, in-bounds rectangles, a matching
+    /// RGB555/RGB565 layout, and either no key or the recovered packed key.
+    pub fn preflight_ordinary_bitmap_logical_rgb16_fast_blit(
+        &self,
+        destination: SoftwareSplitC3dTargetHandle,
+        source: &OrdinaryBitmapLogicalRgb16Source,
+        plan: BlitPlan,
+    ) -> Result<(), SoftwareSplitC3dBackendError> {
+        self.require_inactive("preflight_ordinary_bitmap_logical_rgb16_fast_blit")?;
+        self.validate_target(destination)?;
+        preflight_ordinary_bitmap_logical_rgb16_fast_blit(source, &self.target, plan)
+            .map_err(SoftwareSplitC3dBackendError::OrdinaryBitmapBlit)
+    }
+
+    /// Composes one validated ordinary-bitmap logical RGB16 blit into the
+    /// owned target while no C3D scene is active.
+    ///
+    /// All owner, sequence, layout, key, and rectangle checks complete before
+    /// the first target word changes.
+    pub fn compose_ordinary_bitmap_logical_rgb16_fast_blit(
+        &mut self,
+        destination: SoftwareSplitC3dTargetHandle,
+        source: &OrdinaryBitmapLogicalRgb16Source,
+        plan: BlitPlan,
+    ) -> Result<(), SoftwareSplitC3dBackendError> {
+        self.require_inactive("compose_ordinary_bitmap_logical_rgb16_fast_blit")?;
+        self.validate_target(destination)?;
+        compose_ordinary_bitmap_logical_rgb16_fast_blit(source, &mut self.target, plan)
+            .map_err(SoftwareSplitC3dBackendError::OrdinaryBitmapBlit)
     }
 
     /// Replaces the owned logical color target while no scene is active.

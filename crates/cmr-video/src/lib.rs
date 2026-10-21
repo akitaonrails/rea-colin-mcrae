@@ -14,6 +14,7 @@ pub mod c3d_software_raster;
 pub mod c3d_software_split_backend;
 pub mod legacy_c3d_pixel_format;
 pub mod ordinary_bitmap_rgb16;
+pub mod ordinary_bitmap_rgb16_blit;
 pub mod packed_rgb_target;
 mod root_frame_software;
 pub mod selected_texture_conversion_oracle;

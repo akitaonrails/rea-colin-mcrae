@@ -293,9 +293,12 @@ own embedded palette, discriminator byte `5` selects RGB555 while every other
 value selects RGB565, the complete aligned stored rows are converted, and the
 source key is packed embedded-palette entry zero. A tested nominal
 `ordinary_bitmap_rgb16` implementation now preserves that complete logical
-result and rejects malformed source state before returning output. Keyed 2D
-execution, DirectDraw stretch, active-device format selection, and session
-integration remain open. Alternate fonts are explicitly separate: their
+result and rejects malformed source state before returning output. DirectDraw
+stretch, active-device format selection, and full source-ordered session
+integration remain open. Matching-format fast opaque/keyed logical blits now
+have effect-free preflight, bit-exact word copy, nonzero packed-key handling,
+aligned-row bounds, and owner-scoped inactive-backend execution. Source-ordered
+alternate-session integration remains separate. Alternate fonts are explicitly separate: their
 initialized path prepares a `0x90` source, may invoke driver `Load`, and queues
 a colored primitive. Its driver conversion, tuple/blend semantics, and final
 pixels remain unresolved alongside native layout and dithering.

@@ -83,7 +83,7 @@ Status markers:
 
 ## E. General renderer and scene data
 
-- [~] `E01` Recover bitmap/palette/surface rules used outside startup/root UI (ordinary `0x81` embedded-palette 8-to-RGB555/RGB565 conversion, packed palette-entry-zero key, aligned stored-row handling, and the non-8-bit deferred-palette skip recovered and conversion implemented; keyed/stretch execution, 4-/24-bit conversion, active-device format ownership, and alternate-font final pixels remain).
+- [~] `E01` Recover bitmap/palette/surface rules used outside startup/root UI (ordinary `0x81` embedded-palette 8-to-RGB555/RGB565 conversion, packed palette-entry-zero key, aligned stored-row handling, non-8-bit deferred-palette skip, and matching-format fast keyed/opaque logical composition implemented; keyed stretch, 4-/24-bit conversion, active-device format ownership, and alternate-font final pixels remain).
 - [~] `E02` Recover C3D 32-byte and 24-byte entry field semantics.
 - [~] `E03` Recover group-2 resource variants and binding rules.
 - [~] `E04` Recover object transforms, hierarchy, animation, and dirty state.
@@ -98,7 +98,7 @@ Status markers:
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
 - [x] `E15` Recover championship mode-8 C3D preparation and session ownership.
-- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone indexed session, all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission, exact alternate render-depth selection, capability-derived alpha/depth-clear contract, filter-request cache outcomes, raw/validated legacy pixel-format masks, retained non-alpha texture selection, source-owned selected-format conversion-before-filtering, independent logical-framebuffer composition, effect-free whole-frame backend preflight, a standalone owned split/logical-RGB backend, an explicit-palette completed-indexed-frame bridge, and ordinary non-font embedded-palette RGB555/RGB565 source conversion implemented; keyed 2D composition/stretch, alternate queued-font pixels and driver `Load` equivalence, effective alternate filtering, native byte layout/pitch, alpha pixels, alternate session integration, and presentation remain).
+- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone indexed session, all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission, exact alternate render-depth selection, capability-derived alpha/depth-clear contract, filter-request cache outcomes, raw/validated legacy pixel-format masks, retained non-alpha texture selection, source-owned selected-format conversion-before-filtering, independent logical-framebuffer composition, effect-free whole-frame backend preflight, a standalone owned split/logical-RGB backend, an explicit-palette completed-indexed-frame bridge, ordinary non-font embedded-palette RGB555/RGB565 source conversion, and matching-format fast keyed/opaque logical composition implemented; ordinary stretch, owned alternate-session 2D integration, alternate queued-font pixels and driver `Load` equivalence, effective alternate filtering, native byte layout/pitch, alpha pixels, presentation remain).
 
 ## F. Menus, game state, and persistence
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-20T23:57:44Z
-milestone=implement-ordinary-bitmap-rgb16-conversion
+updated_utc=2026-10-21T00:01:36Z
+milestone=compose-ordinary-bitmap-logical-rgb16-fast-blits
 completed=50
 partial=20
 not_started=47
 blocked=0
 total=117
-current_focus=E16-integrate-keyed-ordinary-bitmap-rgb16-composition
-next_exit_gate=preflight-and-compose-recovered-packed-color-key-and-stretch-boundary
+current_focus=E16-integrate-ordinary-fast-blits-into-owned-alternate-frame
+next_exit_gate=execute-source-ordered-ordinary-fast-blits-against-owned-logical-target
 <!-- PROGRESS-TAIL-END -->

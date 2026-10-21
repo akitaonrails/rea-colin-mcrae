@@ -175,6 +175,19 @@ impl LogicalMaskedRgbTarget {
         self.words[index] = self.format.layout().pack_rgb8(rgb);
     }
 
+    /// Copies one already-packed logical word into this target.
+    ///
+    /// The caller must first prove that the source and destination use the
+    /// same logical mask layout. This deliberately says nothing about native
+    /// byte order, row pitch, a driver's blit implementation, or presentation.
+    pub(crate) fn copy_matching_rgb16_word_at_source_owned_oracle(
+        &mut self,
+        index: usize,
+        word: u16,
+    ) {
+        self.words[index] = u32::from(word);
+    }
+
     /// Replaces every target word from canonical `[red, green, blue]` pixels.
     ///
     /// All extent and length checks happen before the first write, so every

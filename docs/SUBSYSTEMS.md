@@ -187,9 +187,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-video::ordinary_bitmap_rgb16`: the recovered ordinary `0x81` 8-bit-BMP
   source conversion, retaining complete aligned stored rows and each bitmap's
   embedded palette while packing exact discriminator-selected RGB555/RGB565
-  logical words and the packed palette-entry-zero key. It is nominally
-  separate from fonts, selected C3D textures, and framebuffer formats; native
-  storage, keyed stretch, driver pixels, and the 4-/24-bit branches remain open.
+  logical words and the packed palette-entry-zero key. Its companion fast-blit
+  module preflights matching-layout opaque/keyed logical copies, including
+  aligned padding, before any write. It is nominally separate from fonts,
+  selected C3D textures, and framebuffer formats; native storage, stretch,
+  driver pixels, session ordering, and the 4-/24-bit branches remain open.
 - `cmr-video::packed_rgb_target`: a nominal runtime-framebuffer format and
   logical masked-word target kept type-distinct from selected texture formats.
   It retains the complete raw surface descriptor and converts canonical RGB
