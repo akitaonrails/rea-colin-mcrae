@@ -48,6 +48,7 @@ pub mod root_menu_c3d_transform;
 pub mod root_menu_c3d_visibility;
 pub mod root_menu_footer;
 pub mod root_menu_frame;
+pub mod root_menu_interactive;
 pub mod root_menu_visual;
 pub mod source_store;
 pub mod startup;

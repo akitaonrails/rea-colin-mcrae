@@ -204,6 +204,33 @@ pub struct RootRenderInput {
     pub entry_visuals_suppressed: bool,
 }
 
+/// Builds the steady-state render input for a settled root selection.
+///
+/// The primary chrome position is snapped to the recovered endpoint for that
+/// selection (`CHROME_SPECS[selection].gate_q16`); the two viewport transforms
+/// keep their recovered initial values, which do not vary with selection. This
+/// is the resting visual for a selection: the in-between tween motion is a
+/// separate, not-yet-recovered interpolation concern and is deliberately
+/// omitted here rather than approximated.
+#[must_use]
+pub fn steady_root_render_input(
+    selection: RootSelection,
+    language: Language,
+    viewport_extent: DisplayExtent,
+    entry_visuals_suppressed: bool,
+) -> RootRenderInput {
+    RootRenderInput {
+        phase: FrontendPhase::Interactive,
+        selection,
+        animation_position_q16: CHROME_SPECS[usize::from(selection.index())].gate_q16,
+        language,
+        viewport_extent,
+        horizontal_transform_q16: ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16,
+        vertical_transform_q16: ROOT_INITIAL_VERTICAL_TRANSFORM_Q16,
+        entry_visuals_suppressed,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RenderCommand {
     Backdrop {
@@ -437,6 +464,34 @@ mod tests {
             visual_index,
             destination: Point::new(232, 124),
         }
+    }
+
+    #[test]
+    fn steady_render_input_snaps_every_selection_to_its_recovered_endpoint() {
+        for selection in 0..ROOT_ENTRY_COUNT as u8 {
+            let root = RootSelection::new(selection).unwrap();
+            let built = steady_root_render_input(root, Language::English, EXTENT, false);
+
+            assert_eq!(built, input(selection));
+            assert_eq!(
+                built.animation_position_q16,
+                CHROME_SPECS[usize::from(selection)].gate_q16
+            );
+            assert_eq!(
+                built.horizontal_transform_q16,
+                ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16
+            );
+            assert_eq!(built.phase, FrontendPhase::Interactive);
+        }
+
+        // The suppression gate is carried through unchanged.
+        let suppressed = steady_root_render_input(
+            RootSelection::new(0).unwrap(),
+            Language::English,
+            EXTENT,
+            true,
+        );
+        assert!(suppressed.entry_visuals_suppressed);
     }
 
     #[test]
