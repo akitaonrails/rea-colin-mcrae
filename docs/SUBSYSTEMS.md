@@ -439,8 +439,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   render-state codes/values, the four-way `BlendMode`/`BlendConfig`
   (opaque/color-keyed/alpha/additive) from `FUN_004a2540`, the
   `ALPHABLENDENABLE`/`STIPPLEDALPHA` capability fallback, the `D3DLVERTEX`
-  diffuse `d3dcolor_argb` bake with the untextured/transparent constants, the
-  `Pass` Z-write model, and the squared-distance `object_sort_key`, so the
+  diffuse `d3dcolor_argb` bake with the untextured/transparent constants (the
+  runtime prim, stride `0x1c`, holds each per-vertex color as ascending
+  `[R,G,B,A]` bytes at `+0x08`/`+0x0c`/`+0x10`, repacked to `0xAARRGGBB` by
+  `diffuse_from_rgba_bytes`; `FUN_004b1e10`), the
+  `Pass` Z-write model, and the squared-XZ-distance `object_sort_key`, so the
   software oracle (E07) and a modern backend share one contract. The E02
   `field_22`/`prim+0x00` word is confirmed render-irrelevant (the batch builder
   keys on the texture handle). See evidence `rea.official-eu.c3d-rasterizer` and

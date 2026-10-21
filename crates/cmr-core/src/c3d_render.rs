@@ -98,6 +98,24 @@ pub fn d3dcolor_argb(a: u8, r: u8, g: u8, b: u8) -> u32 {
     (u32::from(a) << 24) | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
 }
 
+/// Byte offsets of the three per-vertex colors within a runtime primitive record
+/// (stride [`RUNTIME_PRIM_STRIDE`]), as read by the finalizer `FUN_004b1e10`.
+pub const PRIM_VERTEX_COLOR_OFFSETS: [usize; 3] = [0x08, 0x0c, 0x10];
+/// Stride of one runtime primitive record (the stride-`0x1c` prim the finalizer
+/// walks and the batch builder `FUN_004b2340` groups). This is the per-frame
+/// runtime record, distinct from the on-disk 24-byte C3D face entry (E02).
+pub const RUNTIME_PRIM_STRIDE: usize = 0x1c;
+
+/// Packs a runtime per-vertex color into the LVERTEX diffuse. The finalizer
+/// `FUN_004b1e10` reads the 4 source bytes in ascending order as `[R, G, B, A]`
+/// and repacks them into `0xAARRGGBB` (byte 0 -> red, byte 1 -> green, byte 2 ->
+/// blue, byte 3 -> alpha). This resolves the E02/E06 channel-order question: the
+/// stored bytes are RGBA, not BGRA. Faces with the untextured material sentinel
+/// instead get [`UNTEXTURED_DIFFUSE`].
+pub fn diffuse_from_rgba_bytes(rgba: [u8; 4]) -> u32 {
+    d3dcolor_argb(rgba[3], rgba[0], rgba[1], rgba[2])
+}
+
 // --- Transparency / blend selectors -------------------------------------------
 
 /// Whether hardware alpha blending is available; selects which enable state the
@@ -267,6 +285,19 @@ mod tests {
         assert_eq!(d3dcolor_argb(0xff, 0x11, 0x22, 0x33), 0xff11_2233);
         assert_eq!(UNTEXTURED_DIFFUSE, d3dcolor_argb(0xff, 0, 0, 0));
         assert_eq!(TRANSPARENT_ALPHA, 0x96);
+    }
+
+    #[test]
+    fn per_vertex_color_bytes_are_rgba() {
+        // Source bytes [R, G, B, A] -> D3DCOLOR 0xAARRGGBB.
+        assert_eq!(
+            diffuse_from_rgba_bytes([0x11, 0x22, 0x33, 0xff]),
+            0xff11_2233
+        );
+        // Alpha comes from byte 3, not byte 0 (would be BGRA otherwise).
+        assert_eq!(diffuse_from_rgba_bytes([0x96, 0, 0, 0x80]), 0x8096_0000);
+        assert_eq!(PRIM_VERTEX_COLOR_OFFSETS, [0x08, 0x0c, 0x10]);
+        assert_eq!(RUNTIME_PRIM_STRIDE, 0x1c);
     }
 
     #[test]
