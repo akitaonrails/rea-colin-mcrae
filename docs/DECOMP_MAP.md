@@ -108,7 +108,7 @@ Status markers:
 - [~] `F04` Implement championship, rally, time trial, and school menus.
 - [ ] `F05` Recover event, country, stage, car, and difficulty data models.
 - [ ] `F06` Implement results, records, unlocks, and championship progression.
-- [ ] `F07` Verify all persistence round trips and failure recovery.
+- [~] `F07` Verify all persistence round trips and failure recovery (a source-owned integration suite - `crates/cmr-core/tests/persistence_round_trip.rs` - exercises the two recovered persistence stores together, the options/config image (C05, `settings_store`) and the save-slot/profile record (F03, `profile_store`), proving a valid write survives a read back unchanged and that every corruption/truncation/absence recovers to the shipped-defaults / empty-slot behavior rather than loading garbage. Settings: load (exact-length gate + runtime-region clear) then persist is a stable fixed point; the do-not-save flag suppresses persistence (the on-disk file is kept); truncated/over-long/empty files are rejected so defaults stand. Save slots: the verbatim write round-trips through `slot_is_valid`/`classify_slot` to `Occupied`; all 12 slots finalize with distinct seeds -> distinct complements; corrupted magic, a tampered seed, truncation, and absence all classify `Empty`; overwriting an occupied slot replaces it in place (the recovered no-delete model); the 2-bit mode field survives. 8 integration tests; all fixtures synthetic/source-owned, no game payload. F07 -> partial; byte-exact round-trips against original-written files (differential fixtures) are gated on an owned original save, and the payload field semantics (F05/F06 championship progression) remain.)
 - [x] `F08` Model championship car/gear setup, transitions, commits, and preview transcript.
 - [x] `F09` Admit all championship setup cars, palettes, and deduplicated logos from a verified user import.
 - [x] `F10` Plan the validated championship setup frame with exact recovered 2D geometry and preview order.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T22:18:00Z
-milestone=reconstruct-the-save-slot-profile-record-model-and-flows
+updated_utc=2026-10-21T22:36:00Z
+milestone=verify-persistence-round-trips-and-failure-recovery
 completed=52
-partial=50
-not_started=15
+partial=51
+not_started=14
 blocked=0
 total=117
-current_focus=F07-verify-all-persistence-round-trips-and-failure-recovery
-next_exit_gate=round-trip-and-recover-the-settings-and-save-slot-persistence
+current_focus=F05-recover-event-country-stage-car-and-difficulty-data-models
+next_exit_gate=recover-the-championship-content-data-models
 <!-- PROGRESS-TAIL-END -->

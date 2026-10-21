@@ -1013,6 +1013,16 @@ languages rather than fabricating or silently aliasing Italian assets.
   not vendored). It builds on `settings_store`'s slot length/count and pairs
   with the `DataPaths::save_slot` path builder. See evidence
   `rea.official-eu.save-slots` and `impl.profile-store`.
+- The persistence round-trip suite
+  (`crates/cmr-core/tests/persistence_round_trip.rs`, F07) verifies the settings
+  image (C05) and the save-slot record (F03) together: a valid write survives a
+  read back unchanged, settings load-then-persist is a stable fixed point, the
+  do-not-save flag keeps the on-disk file, and every corruption, truncation, or
+  absence recovers to the shipped-defaults / empty-slot behavior rather than
+  loading garbage - including the recovered no-delete overwrite. All fixtures
+  are synthetic and source-owned; byte-exact differential round-trips against an
+  original-written save and the championship payload semantics (F05/F06) remain.
+  See evidence `impl.persistence-round-trip`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
