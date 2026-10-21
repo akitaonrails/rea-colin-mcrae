@@ -52,6 +52,12 @@ pub enum SoftwareChampionshipSetupCommandOutcome {
         command_index: usize,
         command: SoftwareChampionshipSetupDeferredCommand,
     },
+    /// A transcript boundary coordinated inline by an enclosing terminal
+    /// owner. Unlike `Deferred`, consumers must not replay this command.
+    CoordinatedChampionship {
+        command_index: usize,
+        command: DeferredChampionshipCommand,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -156,6 +162,31 @@ pub fn execute_software_championship_setup_frame(
             },
         )?;
 
+    preflight_software_championship_setup_frame(&prepared, sources, backend, destination)?;
+
+    let commands = execute_preflighted_software_championship_setup_frame(
+        prepared,
+        preview_cache,
+        sources,
+        backend,
+        destination,
+        |command_index, command| {
+            Ok(SoftwareChampionshipSetupCommandOutcome::Deferred {
+                command_index,
+                command: SoftwareChampionshipSetupDeferredCommand::Championship(command),
+            })
+        },
+    )?;
+
+    Ok(SoftwareChampionshipSetupFrameOutcome { commands })
+}
+
+pub(crate) fn preflight_software_championship_setup_frame(
+    prepared: &PreparedChampionshipSetupFrame,
+    sources: &SoftwareChampionshipOrdinaryRgb16Pool,
+    backend: &SoftwareSplitC3dOracleBackend,
+    destination: SoftwareSplitC3dTargetHandle,
+) -> Result<(), SoftwareChampionshipSetupFrameError> {
     for command in prepared.commands() {
         let PreparedChampionshipSetupCommand::Bitmap {
             command_index,
@@ -179,7 +210,23 @@ pub fn execute_software_championship_setup_frame(
                 },
             )?;
     }
+    Ok(())
+}
 
+pub(crate) fn execute_preflighted_software_championship_setup_frame(
+    prepared: PreparedChampionshipSetupFrame,
+    preview_cache: &mut ChampionshipPreviewCache,
+    sources: &SoftwareChampionshipOrdinaryRgb16Pool,
+    backend: &mut SoftwareSplitC3dOracleBackend,
+    destination: SoftwareSplitC3dTargetHandle,
+    mut execute_championship: impl FnMut(
+        usize,
+        DeferredChampionshipCommand,
+    ) -> Result<
+        SoftwareChampionshipSetupCommandOutcome,
+        SoftwareChampionshipSetupFrameError,
+    >,
+) -> Result<Vec<SoftwareChampionshipSetupCommandOutcome>, SoftwareChampionshipSetupFrameError> {
     let mut commands = Vec::with_capacity(prepared.command_len());
     prepared
         .execute_after_successful_preflight(preview_cache, |command| {
@@ -194,10 +241,7 @@ pub fn execute_software_championship_setup_frame(
                 PreparedChampionshipSetupCommand::Deferred {
                     command_index,
                     command,
-                } => commands.push(SoftwareChampionshipSetupCommandOutcome::Deferred {
-                    command_index,
-                    command: SoftwareChampionshipSetupDeferredCommand::Championship(command),
-                }),
+                } => commands.push(execute_championship(command_index, command)?),
                 PreparedChampionshipSetupCommand::Bitmap {
                     command_index,
                     identity,
@@ -279,10 +323,10 @@ pub fn execute_software_championship_setup_frame(
             },
         })?;
 
-    Ok(SoftwareChampionshipSetupFrameOutcome { commands })
+    Ok(commands)
 }
 
-fn resolve_fast_source(
+pub(crate) fn resolve_fast_source(
     sources: &SoftwareChampionshipOrdinaryRgb16Pool,
     command_index: usize,
     identity: ChampionshipBitmapIdentity,

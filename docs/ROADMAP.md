@@ -313,7 +313,11 @@ cache snapshots, resolves the 27-source pool, preflights every supported Fast
 bitmap before effects, composes eligible sources in transcript order, and
 returns text, Stretch, NoOp, and existing deferred boundaries as exact typed
 outcomes. Its cache commit proves only that bounded ordinary-bitmap pass;
-combined setup/C3D terminal ordering and remaining deferred pixels are the
+the alternate terminal now adds complete common-scene/car-batch preflight,
+coordinates transform/latch/palette state inline, and runs the selected-car or
+empty Next scene after setup on the same target. It explicitly skips the
+non-indexed palette commit while preserving the pending request. Standalone
+alternate preparation/session ownership and remaining deferred pixels are the
 next integration seam.
 
 Exit gate:

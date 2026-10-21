@@ -18,6 +18,7 @@ use crate::{
         C3dBindingState, C3dDepthClear, C3dSceneError, C3dSceneOutcome, C3dScenePrimaryError,
         C3dSceneStage, FrontendC3dSceneBackend, execute_frontend_c3d_scene,
     },
+    root_menu_c3d_transform::root_menu_c3d_viewport,
 };
 
 pub type ChampionshipCarSceneOutcome = C3dSceneOutcome<ChampionshipCarBatchOutcome>;
@@ -129,7 +130,14 @@ where
     B: FrontendC3dSceneBackend
         + ChampionshipCarBatchBackend<H, Error = <B as FrontendC3dSceneBackend>::SceneError>,
 {
-    preflight_optional_championship_car_scene(executor, backend, prepared.as_ref())?;
+    preflight_optional_championship_car_terminal_scene(
+        executor,
+        backend,
+        destination,
+        extent,
+        depth_clear,
+        prepared.as_ref(),
+    )?;
     let scene_extent = prepared
         .as_ref()
         .map_or(extent, PreparedChampionshipCarFrame::extent);
@@ -147,7 +155,12 @@ where
     result.map_err(ChampionshipCarSceneError::Scene)
 }
 
-pub(crate) fn preflight_optional_championship_car_scene<'catalog, B, H>(
+/// Effect-free car-specific preflight for the optional terminal car scene.
+///
+/// This validates the prepared car and its batches. A terminal owner must also
+/// call [`FrontendC3dSceneBackend::preflight_c3d_scene`] with its destination,
+/// extent, and depth-clear choice before its first effect.
+pub fn preflight_optional_championship_car_scene<'catalog, B, H>(
     executor: &ChampionshipCarBatchExecutor<'catalog, H>,
     backend: &mut B,
     prepared: Option<&PreparedChampionshipCarFrame<'catalog, H>>,
@@ -169,6 +182,44 @@ where
             source,
         })?;
     preflight_batches(executor, backend, frame)
+}
+
+/// Effect-free complete common-scene and optional-car preflight.
+///
+/// This validates viewport construction, destination/extent/depth policy, the
+/// prepared car identity, backend profile, and every resolved batch before an
+/// enclosing owner performs an earlier 2D effect.
+pub fn preflight_optional_championship_car_terminal_scene<'catalog, B, H>(
+    executor: &ChampionshipCarBatchExecutor<'catalog, H>,
+    backend: &mut B,
+    destination: B::Surface,
+    extent: DisplayExtent,
+    depth_clear: C3dDepthClear,
+    prepared: Option<&PreparedChampionshipCarFrame<'catalog, H>>,
+) -> Result<(), ChampionshipCarSceneError<B::SceneError>>
+where
+    B: FrontendC3dSceneBackend
+        + ChampionshipCarBatchBackend<H, Error = <B as FrontendC3dSceneBackend>::SceneError>,
+{
+    let scene_extent = prepared.map_or(extent, PreparedChampionshipCarFrame::extent);
+    root_menu_c3d_viewport(scene_extent).map_err(|source| {
+        ChampionshipCarSceneError::Scene(C3dSceneError {
+            primary: C3dScenePrimaryError::Viewport(source),
+            cleanup: None,
+        })
+    })?;
+    backend
+        .preflight_c3d_scene(destination, scene_extent, depth_clear)
+        .map_err(|source| {
+            ChampionshipCarSceneError::Scene(C3dSceneError {
+                primary: C3dScenePrimaryError::Backend {
+                    stage: C3dSceneStage::Preflight,
+                    source,
+                },
+                cleanup: None,
+            })
+        })?;
+    preflight_optional_championship_car_scene(executor, backend, prepared)
 }
 
 fn preflight_batches<'catalog, B, H>(

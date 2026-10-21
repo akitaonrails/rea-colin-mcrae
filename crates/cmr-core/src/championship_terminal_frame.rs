@@ -18,7 +18,8 @@ use crate::{
     championship_car_frame_plan::{ChampionshipCarFramePlanError, plan_championship_car_frame},
     championship_car_scene::{
         ChampionshipCarSceneError, ChampionshipCarSceneOutcome,
-        execute_optional_championship_car_scene, preflight_optional_championship_car_scene,
+        execute_optional_championship_car_scene,
+        preflight_optional_championship_car_terminal_scene,
     },
     championship_car_transform::{ChampionshipCarInput, ChampionshipCarState},
     championship_car_visibility::ChampionshipCarVisibilityLatches,
@@ -233,10 +234,10 @@ pub type ChampionshipTerminalFrameResult<E, S, P> =
     Result<ChampionshipTerminalFrameOutcome<E>, ChampionshipTerminalFrameError<E, S, P>>;
 
 #[derive(Debug)]
-struct CarDeferredContract {
-    command_index: usize,
-    car: CanonicalCar,
-    logo_origin: PixelPoint,
+pub struct ChampionshipCarDeferredContract {
+    pub command_index: usize,
+    pub car: CanonicalCar,
+    pub logo_origin: PixelPoint,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -275,7 +276,7 @@ where
     validate_championship_setup_frame_sources(&prepared_setup, sources)
         .map_err(ChampionshipTerminalFrameError::SetupSource)?;
 
-    let contract = scan_car_contract(&prepared_setup, resources.car.as_ref())
+    let contract = scan_championship_car_contract(&prepared_setup, resources.car.as_ref())
         .map_err(ChampionshipTerminalFrameError::CarContract)?;
     let mut next_car_state = *state.car_transform;
     let prepared_car = match (contract.as_ref(), resources.car.as_ref()) {
@@ -312,9 +313,19 @@ where
         .is_some_and(|prepared| prepared.selected_parent_visible());
     let selected_car = contract.as_ref().map(|c| c.car);
     let terminal_index = prepared_setup.command_len();
-    preflight_optional_championship_car_scene(
+    // Route ownership must be established before the whole-frame C3D
+    // preflight so retained-binding assumptions exactly match execution.
+    // A later preflight rejection conservatively keeps this route/cache
+    // transition even though no target effect occurred.
+    if state.route.enter(FrontendC3dRoute::ChampionshipCar) {
+        executor.invalidate_bindings();
+    }
+    preflight_optional_championship_car_terminal_scene(
         executor,
         sources.backend_mut(),
+        destination,
+        input.viewport,
+        depth_clear,
         prepared_car.as_ref(),
     )
     .map_err(|source| ChampionshipTerminalFrameError::Scene {
@@ -374,9 +385,6 @@ where
         }
     };
 
-    if state.route.enter(FrontendC3dRoute::ChampionshipCar) {
-        executor.invalidate_bindings();
-    }
     // Validate again at the immediate scene boundary because setup operations
     // are allowed to mutate an arbitrary backend after the early transaction
     // preflight above.
@@ -422,20 +430,29 @@ where
     })
 }
 
-fn scan_car_contract(
+fn scan_championship_car_contract(
     prepared: &crate::championship_setup_frame::PreparedChampionshipSetupFrame,
     resources: Option<&ChampionshipCarFrameResources<'_, '_>>,
-) -> Result<Option<CarDeferredContract>, ChampionshipCarContractError> {
-    scan_deferred_car_contract(
-        prepared.deferred_commands(),
-        resources.map(|resources| resources.car),
-    )
+) -> Result<Option<ChampionshipCarDeferredContract>, ChampionshipCarContractError> {
+    scan_championship_car_contract_for_resource(prepared, resources.map(|resources| resources.car))
+}
+
+/// Validates the exact transform/latch pair retained by a prepared setup
+/// transcript against an optional selected-car resource identity.
+///
+/// Alternate terminal owners use this effect-free contract scan before any
+/// target write without depending on indexed setup resources.
+pub fn scan_championship_car_contract_for_resource(
+    prepared: &crate::championship_setup_frame::PreparedChampionshipSetupFrame,
+    resource_car: Option<CanonicalCar>,
+) -> Result<Option<ChampionshipCarDeferredContract>, ChampionshipCarContractError> {
+    scan_deferred_car_contract(prepared.deferred_commands(), resource_car)
 }
 
 fn scan_deferred_car_contract(
     commands: impl IntoIterator<Item = (usize, DeferredChampionshipCommand)>,
     resource_car: Option<CanonicalCar>,
-) -> Result<Option<CarDeferredContract>, ChampionshipCarContractError> {
+) -> Result<Option<ChampionshipCarDeferredContract>, ChampionshipCarContractError> {
     let mut transform: Option<(usize, CanonicalCar)> = None;
     let mut contract = None;
     for (command_index, command) in commands {
@@ -495,7 +512,7 @@ fn scan_deferred_car_contract(
                         ChampionshipCarContractErrorKind::DuplicateLatch,
                     ));
                 }
-                contract = Some(CarDeferredContract {
+                contract = Some(ChampionshipCarDeferredContract {
                     command_index: transform_index,
                     car,
                     logo_origin: PixelPoint::new(tested_rectangle.x, tested_rectangle.y),
@@ -1514,7 +1531,9 @@ mod tests {
         assert_eq!(car_state, before_car);
         assert_eq!(car_latches, before_car_latches);
         assert_eq!(root_latches, before_root_latches);
-        assert_eq!(route.active(), None);
+        // Route/cache ownership is conservatively selected before backend
+        // preflight so the rejected binding plan is the execution plan.
+        assert_eq!(route.active(), Some(FrontendC3dRoute::ChampionshipCar));
         assert_eq!(pal, before_palette);
         assert_eq!(rcache, before_renderer);
         assert_eq!(gcache, before_global);

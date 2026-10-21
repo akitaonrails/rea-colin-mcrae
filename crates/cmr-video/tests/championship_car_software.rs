@@ -1839,9 +1839,11 @@ fn alternate_setup_kinds(
                 SoftwareChampionshipSetupCommandOutcome::ExecutedBitmap {
                     command_index, ..
                 }
-                | SoftwareChampionshipSetupCommandOutcome::Deferred { command_index, .. } => {
-                    command_index
-                }
+                | SoftwareChampionshipSetupCommandOutcome::Deferred { command_index, .. }
+                | SoftwareChampionshipSetupCommandOutcome::CoordinatedChampionship {
+                    command_index,
+                    ..
+                } => command_index,
             };
             assert_eq!(command_index, expected_index);
             match *command {
@@ -1860,6 +1862,10 @@ fn alternate_setup_kinds(
                 } => AlternateSetupKind::Stretch(identity),
                 SoftwareChampionshipSetupCommandOutcome::Deferred {
                     command: SoftwareChampionshipSetupDeferredCommand::Championship(command),
+                    ..
+                }
+                | SoftwareChampionshipSetupCommandOutcome::CoordinatedChampionship {
+                    command,
                     ..
                 } => AlternateSetupKind::Championship(command),
             }

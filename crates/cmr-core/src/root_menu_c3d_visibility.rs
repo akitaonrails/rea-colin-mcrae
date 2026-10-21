@@ -41,7 +41,9 @@ impl RootMenuC3dVisibilityLatches {
         self.values[slot.index()] = RootMenuC3dVisibilityMask::ALL_LAYERS;
     }
 
-    pub(crate) fn clear_all(&mut self) {
+    /// Consumes every one-frame root visibility latch after a terminal scene
+    /// attempt, including when an alternate scene owner shares the backend.
+    pub fn clear_all(&mut self) {
         self.values.fill(RootMenuC3dVisibilityMask::HIDDEN);
     }
 }

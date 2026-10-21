@@ -206,6 +206,12 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   R_INFO/logo/Chequered sources in exact command order, and retains NoOp,
   Stretch, text, and other deferred work as typed ordered outcomes. Cache
   publication records completion of this bounded slice, not deferred pixels.
+- `cmr-video::software_championship_alternate_terminal`: whole-frame owner for
+  the prepared RGB16 setup stream and optional selected-car scene on one split
+  target. It preflights ordinary bitmaps plus the common scene and every car
+  batch before writes, coordinates transform/latch/palette commands inline,
+  runs a car or empty Next scene after setup, consumes car/root latches, and
+  reports the non-indexed palette skip while retaining the pending request.
 - `cmr-video::packed_rgb_target`: a nominal runtime-framebuffer format and
   logical masked-word target kept type-distinct from selected texture formats.
   It retains the complete raw surface descriptor and converts canonical RGB
@@ -217,10 +223,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   backend that transactionally retains converted frontend bindings, owns an
   owner-scoped logical target plus depth buffer, preflights the complete frame
   including retained selector-cache coherence, and preserves color across
-  depth-only clears. Recovered ordinary Fast bitmaps can now be composed by the
-  separate championship setup executor while the scene is inactive; combined
-  setup/C3D terminal ordering, full session ownership, native storage, and
-  presentation remain separate boundaries.
+  depth-only clears. The championship alternate terminal now composes ordinary
+  Fast bitmaps and the selected-car or empty scene in recovered order on this
+  same target; full session ownership, native storage, and presentation remain
+  separate boundaries.
 - `cmr-video::software_championship_session`: callback-scoped standalone
   assembly retaining all 14 prepared car topology/runtime pairs, one shared
   binding executor, explicit raster-selection, optional source-ordered per-car

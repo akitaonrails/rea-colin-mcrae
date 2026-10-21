@@ -18,6 +18,7 @@ pub mod ordinary_bitmap_rgb16_blit;
 pub mod packed_rgb_target;
 mod root_frame_software;
 pub mod selected_texture_conversion_oracle;
+pub mod software_championship_alternate_terminal;
 pub mod software_championship_ordinary_rgb16;
 pub mod software_championship_session;
 pub mod software_championship_setup_frame;
