@@ -298,6 +298,14 @@ fn reviewed_championship_input<'a>(
             enabled: true,
         }; 3],
         selected_text_widths: [100, 80, 60],
+        title_text_tuple: [0; 4],
+        title_text_fade_q16: 0x1_0000,
+        row_text_tuples: cmr_core::championship_setup_visual::RowTextTupleBank {
+            terminal: [0; 4],
+            inactive: [0; 4],
+            active: [0; 4],
+        },
+        row_text_fade_q16: 0x1_0000,
         transcript,
         next_context: NextPreviewContext {
             state_byte: 0,

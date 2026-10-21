@@ -82,6 +82,14 @@ pub struct RowPresentation {
     pub enabled: bool,
 }
 
+/// The three raw four-byte values selected by the recovered row-text branch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RowTextTupleBank {
+    pub terminal: [u8; 4],
+    pub inactive: [u8; 4],
+    pub active: [u8; 4],
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NextPreviewContext {
     /// Raw byte whose low two bits are tested by the shipped callback.
@@ -100,6 +108,10 @@ pub struct ChampionshipSetupVisualInput<'a> {
     pub rows: [RowPresentation; 3],
     /// Font-measured selected-text width for each row.
     pub selected_text_widths: [u16; 3],
+    pub title_text_tuple: [u8; 4],
+    pub title_text_fade_q16: i32,
+    pub row_text_tuples: RowTextTupleBank,
+    pub row_text_fade_q16: i32,
     pub transcript: &'a ChampionshipSetupRenderTranscript,
     pub next_context: NextPreviewContext,
 }
@@ -229,6 +241,24 @@ pub struct SetupTextCommand {
     pub font: FontStyle,
     pub position: PixelPoint,
     pub flags: u8,
+    /// Raw four-byte value retained by the recovered text command.
+    pub source_tuple: [u8; 4],
+    /// Raw signed Q16 multiplier applied to the first three tuple bytes.
+    pub fade_q16: i32,
+}
+
+impl SetupTextCommand {
+    /// Applies the recovered signed Q16 arithmetic without saturation.
+    #[must_use]
+    pub fn effective_tuple(self) -> [u8; 4] {
+        let mut effective = self.source_tuple;
+        for component in &mut effective[..3] {
+            *component = i32::from(*component)
+                .wrapping_mul(self.fade_q16)
+                .wrapping_shr(16) as u8;
+        }
+        effective
+    }
 }
 
 /// Parameters retained for the exact recovered info-text helper.
@@ -318,6 +348,8 @@ pub fn plan_championship_setup_frame(
             TITLE_ANCHOR_Q16.wrapping_add(input.frontend_offset_q16),
         ),
         flags: TITLE_FLAGS,
+        source_tuple: input.title_text_tuple,
+        fade_q16: input.title_text_fade_q16,
     }));
 
     for index in 0..input.transcript.rows.len() {
@@ -348,6 +380,8 @@ pub fn plan_championship_setup_frame(
             font: row_font(row.selected, input.rows[index].enabled),
             position,
             flags: ROW_FLAGS,
+            source_tuple: row_text_tuple(kind, input.rows[index], input.row_text_tuples),
+            fade_q16: input.row_text_fade_q16,
         }));
 
         if row.selected {
@@ -355,6 +389,20 @@ pub fn plan_championship_setup_frame(
         }
     }
     Ok(commands)
+}
+
+fn row_text_tuple(
+    kind: SetupRowKind,
+    presentation: RowPresentation,
+    tuples: RowTextTupleBank,
+) -> [u8; 4] {
+    if kind == SetupRowKind::Next {
+        tuples.terminal
+    } else if !presentation.enabled {
+        tuples.inactive
+    } else {
+        tuples.active
+    }
 }
 
 fn append_preview(
@@ -725,6 +773,14 @@ mod tests {
                 enabled: true,
             }; 3],
             selected_text_widths: [100, 80, 60],
+            title_text_tuple: [1, 2, 3, 4],
+            title_text_fade_q16: 0x1_0000,
+            row_text_tuples: RowTextTupleBank {
+                terminal: [5, 6, 7, 8],
+                inactive: [9, 10, 11, 12],
+                active: [13, 14, 15, 16],
+            },
+            row_text_fade_q16: 0x1_0000,
             transcript,
             next_context: NextPreviewContext {
                 state_byte: 0,
@@ -787,6 +843,49 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn text_tuples_follow_terminal_then_inactive_then_active_mapping() {
+        let transcript = transcript(2, CanonicalCar::Subaru, GearChoice::BitClear);
+        let mut input = input(&transcript);
+        input.rows[0].enabled = true;
+        input.rows[1].enabled = false;
+        input.rows[2].enabled = false;
+        let commands = plan(input);
+        let texts = commands
+            .iter()
+            .filter_map(|command| match command {
+                ChampionshipSetupVisualCommand::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(texts[0].source_tuple, [1, 2, 3, 4]);
+        assert_eq!(texts[1].source_tuple, [13, 14, 15, 16]);
+        assert_eq!(texts[2].source_tuple, [9, 10, 11, 12]);
+        assert_eq!(texts[3].source_tuple, [5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn effective_tuple_uses_signed_q16_low_bytes_and_preserves_byte_three() {
+        let mut command = SetupTextCommand {
+            role: SetupTextRole::Title,
+            identity: SetupTextIdentity::Localized(TITLE_TEXT_INDEX),
+            font: FontStyle::Title,
+            position: PixelPoint::new(0, 0),
+            flags: TITLE_FLAGS,
+            source_tuple: [0x20, 0x80, 0xff, 0x7b],
+            fade_q16: 0x1_0000,
+        };
+        assert_eq!(command.effective_tuple(), [0x20, 0x80, 0xff, 0x7b]);
+
+        command.fade_q16 = 0x8000;
+        assert_eq!(command.effective_tuple(), [0x10, 0x40, 0x7f, 0x7b]);
+
+        command.source_tuple = [1, 2, 255, 0xa5];
+        command.fade_q16 = -0x1_0000;
+        assert_eq!(command.effective_tuple(), [0xff, 0xfe, 1, 0xa5]);
     }
 
     #[test]

@@ -230,12 +230,12 @@ pub struct UploadedFontPool {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PersistentTextPrepareError {
+pub enum FontTextPrepareError {
     Layout(TextLayoutError),
     Raster(FontRasterLayoutError),
 }
 
-impl fmt::Display for PersistentTextPrepareError {
+impl fmt::Display for FontTextPrepareError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Layout(source) => source.fmt(formatter),
@@ -244,7 +244,7 @@ impl fmt::Display for PersistentTextPrepareError {
     }
 }
 
-impl std::error::Error for PersistentTextPrepareError {
+impl std::error::Error for FontTextPrepareError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Layout(source) => Some(source),
@@ -252,6 +252,9 @@ impl std::error::Error for PersistentTextPrepareError {
         }
     }
 }
+
+/// Compatibility name retained for persistent-font callers.
+pub type PersistentTextPrepareError = FontTextPrepareError;
 
 /// Fully laid-out and fatally validated persistent-font work.
 ///
@@ -261,8 +264,7 @@ impl std::error::Error for PersistentTextPrepareError {
 pub struct PreparedPersistentText {
     style: FontStyle,
     source: SourceKey,
-    plan: TextPlan,
-    validated: ValidatedTextPlan,
+    prepared: PreparedFontText,
 }
 
 impl PreparedPersistentText {
@@ -273,24 +275,14 @@ impl PreparedPersistentText {
 
     #[must_use]
     pub const fn plan(&self) -> &TextPlan {
-        &self.plan
+        self.prepared.plan()
     }
 
     /// Returns whether execution will submit at least one glyph blit and
     /// therefore observe the uploaded atlas source.
     #[must_use]
     pub fn requires_source_access(&self) -> bool {
-        let mut rejected_sources = self.validated.rejected_sources.iter().peekable();
-        for (blit_index, glyph) in self.plan.blits.iter().enumerate() {
-            if rejected_sources
-                .peek()
-                .is_some_and(|diagnostic| diagnostic_blit_index(diagnostic) == blit_index)
-            {
-                rejected_sources.next();
-                continue;
-            }
-            let destination = destination_rectangle(blit_index, glyph)
-                .expect("prepared glyph rectangles were already validated");
+        for glyph in self.prepared.glyphs() {
             if matches!(
                 plan_legacy_blit(
                     RectI16 {
@@ -299,9 +291,9 @@ impl PreparedPersistentText {
                         width: glyph.source.width,
                         height: glyph.source.height,
                     },
-                    destination,
-                    self.validated.width,
-                    self.validated.height,
+                    prepared_destination_rectangle(glyph),
+                    self.prepared.width,
+                    self.prepared.height,
                     Some(INDEX_ZERO_COLOR_KEY),
                 ),
                 BlitDecision::Blit(_)
@@ -319,6 +311,52 @@ impl PreparedPersistentText {
         store: &UploadedSourceStore<'_, B>,
     ) -> Result<(), SourceAccessError> {
         store.validate_source(self.source)
+    }
+}
+
+/// One fatally validated glyph in its original text-plan order.
+///
+/// The rectangles are the unmodified layout result. In particular, this
+/// source-neutral representation does not apply indexed-surface clipping or
+/// create a backend-specific blit plan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreparedFontGlyph {
+    pub blit_index: usize,
+    pub code: u8,
+    pub glyph_index: u8,
+    pub source: cmr_formats::font::RectI16,
+    pub destination: RectI32,
+}
+
+/// Effect-free font text layout prepared for a later rendering path.
+///
+/// `glyphs` contains only atlas-contained glyphs and retains source plan
+/// order. Out-of-atlas glyphs are safe rejections retained separately, also
+/// in source plan order. Invalid dimensions, forged glyph identity, invalid
+/// destination rectangles, and invalid destination extents remain fatal.
+#[derive(Debug)]
+pub struct PreparedFontText {
+    plan: TextPlan,
+    glyphs: Vec<PreparedFontGlyph>,
+    layout_diagnostics: Vec<FontRasterLayoutError>,
+    width: i16,
+    height: i16,
+}
+
+impl PreparedFontText {
+    #[must_use]
+    pub const fn plan(&self) -> &TextPlan {
+        &self.plan
+    }
+
+    #[must_use]
+    pub fn glyphs(&self) -> &[PreparedFontGlyph] {
+        &self.glyphs
+    }
+
+    #[must_use]
+    pub fn layout_diagnostics(&self) -> &[FontRasterLayoutError] {
+        &self.layout_diagnostics
     }
 }
 
@@ -393,7 +431,36 @@ impl UploadedFontPool {
 }
 
 /// Lays out raw bytes and validates every fatal glyph, source-geometry, and
-/// destination invariant without touching the source store or backend.
+/// destination invariant without touching a source store or backend.
+pub fn prepare_font_text(
+    font: &BitmapFont,
+    text: &[u8],
+    position: PointI32,
+    legacy_flags: u8,
+    destination_extent: DisplayExtent,
+    limits: TextLayoutLimits,
+) -> Result<PreparedFontText, FontTextPrepareError> {
+    let plan = layout_text(
+        font,
+        text,
+        position,
+        i32::from(destination_extent.width),
+        TextAlignment::from_legacy_flags(legacy_flags),
+        limits,
+    )
+    .map_err(FontTextPrepareError::Layout)?;
+    let validated = validate_text_plan(font, &plan, destination_extent)
+        .map_err(FontTextPrepareError::Raster)?;
+    Ok(PreparedFontText {
+        plan,
+        glyphs: validated.glyphs,
+        layout_diagnostics: validated.rejected_sources,
+        width: validated.width,
+        height: validated.height,
+    })
+}
+
+/// Adapts source-neutral prepared text to one persistent uploaded font.
 pub fn prepare_persistent_text(
     fonts: &UploadedFontPool,
     text: &[u8],
@@ -403,23 +470,18 @@ pub fn prepare_persistent_text(
     destination_extent: DisplayExtent,
     limits: TextLayoutLimits,
 ) -> Result<PreparedPersistentText, PersistentTextPrepareError> {
-    let font = fonts.font(style);
-    let plan = layout_text(
-        font,
+    let prepared = prepare_font_text(
+        fonts.font(style),
         text,
         position,
-        i32::from(destination_extent.width),
-        TextAlignment::from_legacy_flags(legacy_flags),
+        legacy_flags,
+        destination_extent,
         limits,
-    )
-    .map_err(PersistentTextPrepareError::Layout)?;
-    let validated = validate_text_plan(font, &plan, destination_extent)
-        .map_err(PersistentTextPrepareError::Raster)?;
+    )?;
     Ok(PreparedPersistentText {
         style,
         source: fonts.sources[style as usize],
-        plan,
-        validated,
+        prepared,
     })
 }
 
@@ -435,9 +497,21 @@ pub fn execute_prepared_persistent_text<B: IndexedVideoBackend>(
     let PreparedPersistentText {
         style: _,
         source,
-        plan,
-        validated,
+        prepared,
     } = prepared;
+    let PreparedFontText {
+        plan,
+        glyphs,
+        layout_diagnostics,
+        width,
+        height,
+    } = prepared;
+    let validated = ValidatedTextPlan {
+        width,
+        height,
+        glyphs,
+        rejected_sources: layout_diagnostics,
+    };
     let raster = execute_validated_text_plan_with(&plan, validated, |blit_plan| {
         match store.blit(source, destination, blit_plan) {
             Ok(()) => Ok(()),
@@ -522,16 +596,27 @@ fn validate_text_plan(
     let height = positive_i16(destination_extent.height).ok_or(
         FontRasterLayoutError::InvalidDestinationExtent(destination_extent),
     )?;
+    let mut glyphs = Vec::with_capacity(plan.blits.len());
     let mut rejected_sources = Vec::new();
     for (blit_index, glyph) in plan.blits.iter().enumerate() {
-        if let Some(diagnostic) = validate_glyph_source(font, blit_index, glyph)? {
-            rejected_sources.push(diagnostic);
-        }
+        let diagnostic = validate_glyph_source(font, blit_index, glyph)?;
         destination_rectangle(blit_index, glyph)?;
+        if let Some(diagnostic) = diagnostic {
+            rejected_sources.push(diagnostic);
+        } else {
+            glyphs.push(PreparedFontGlyph {
+                blit_index,
+                code: glyph.code,
+                glyph_index: glyph.glyph_index,
+                source: glyph.source,
+                destination: glyph.destination,
+            });
+        }
     }
     Ok(ValidatedTextPlan {
         width,
         height,
+        glyphs,
         rejected_sources,
     })
 }
@@ -540,6 +625,7 @@ fn validate_text_plan(
 struct ValidatedTextPlan {
     width: i16,
     height: i16,
+    glyphs: Vec<PreparedFontGlyph>,
     rejected_sources: Vec<FontRasterLayoutError>,
 }
 
@@ -553,6 +639,12 @@ fn execute_validated_text_plan_with<E, F>(
     validated: ValidatedTextPlan,
     mut blit: impl FnMut(crate::blit::BlitPlan) -> Result<(), BlitSubmissionError<E, F>>,
 ) -> Result<FontRasterOutcome<E>, F> {
+    let ValidatedTextPlan {
+        width,
+        height,
+        glyphs: _,
+        rejected_sources,
+    } = validated;
     let mut outcome = FontRasterOutcome {
         planned_glyphs: plan.blits.len(),
         no_ops: 0,
@@ -560,7 +652,7 @@ fn execute_validated_text_plan_with<E, F>(
         layout_diagnostics: Vec::new(),
         diagnostics: Vec::new(),
     };
-    let mut rejected_sources = validated.rejected_sources.into_iter().peekable();
+    let mut rejected_sources = rejected_sources.into_iter().peekable();
     for (blit_index, glyph) in plan.blits.iter().enumerate() {
         if rejected_sources
             .peek()
@@ -583,8 +675,8 @@ fn execute_validated_text_plan_with<E, F>(
                 height: glyph.source.height,
             },
             destination_rectangle,
-            validated.width,
-            validated.height,
+            width,
+            height,
             Some(INDEX_ZERO_COLOR_KEY),
         ) {
             BlitDecision::NoOp => outcome.no_ops += 1,
@@ -684,6 +776,19 @@ fn destination_rectangle(
         return Err(layout_error(blit_index, glyph));
     }
     Ok(rectangle)
+}
+
+fn prepared_destination_rectangle(glyph: &PreparedFontGlyph) -> RectI16 {
+    RectI16 {
+        x: i16::try_from(glyph.destination.x)
+            .expect("prepared glyph destination x was already validated"),
+        y: i16::try_from(glyph.destination.y)
+            .expect("prepared glyph destination y was already validated"),
+        width: i16::try_from(glyph.destination.width)
+            .expect("prepared glyph destination width was already validated"),
+        height: i16::try_from(glyph.destination.height)
+            .expect("prepared glyph destination height was already validated"),
+    }
 }
 
 fn layout_error(blit_index: usize, glyph: &GlyphBlit) -> FontRasterLayoutError {
@@ -823,6 +928,118 @@ mod pool_tests {
         fn destroy_source(&mut self, source: Self::Surface) {
             self.events.push(Event::Destroy(source));
         }
+    }
+
+    #[test]
+    fn source_neutral_preparation_retains_order_raw_rectangles_and_safe_rejections() {
+        let fonts = font_set_with_out_of_bounds_white_search();
+        let prepared = prepare_font_text(
+            fonts.get(FontStyle::WhiteSearch),
+            b"WAWA",
+            PointI32 { x: -1, y: 2 },
+            0,
+            DisplayExtent {
+                width: 20,
+                height: 10,
+            },
+            TextLayoutLimits::default(),
+        )
+        .unwrap();
+
+        assert_eq!(prepared.plan().blits.len(), 4);
+        assert_eq!(
+            prepared
+                .glyphs()
+                .iter()
+                .map(|glyph| (
+                    glyph.blit_index,
+                    glyph.code,
+                    glyph.glyph_index,
+                    glyph.source,
+                    glyph.destination,
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    1,
+                    b'A',
+                    0,
+                    cmr_formats::font::RectI16 {
+                        x: 0,
+                        y: 0,
+                        width: 1,
+                        height: 1,
+                    },
+                    RectI32 {
+                        x: 0,
+                        y: 2,
+                        width: 1,
+                        height: 1,
+                    },
+                ),
+                (
+                    3,
+                    b'A',
+                    0,
+                    cmr_formats::font::RectI16 {
+                        x: 0,
+                        y: 0,
+                        width: 1,
+                        height: 1,
+                    },
+                    RectI32 {
+                        x: 2,
+                        y: 2,
+                        width: 1,
+                        height: 1,
+                    },
+                ),
+            ]
+        );
+        assert!(matches!(
+            prepared.layout_diagnostics(),
+            [
+                FontRasterLayoutError::GlyphSourceOutOfRange {
+                    blit_index: 0,
+                    code: b'W',
+                    ..
+                },
+                FontRasterLayoutError::GlyphSourceOutOfRange {
+                    blit_index: 2,
+                    code: b'W',
+                    ..
+                }
+            ]
+        ));
+    }
+
+    #[test]
+    fn source_neutral_preparation_does_not_clip_queue_rectangles() {
+        let fonts = font_set();
+        let prepared = prepare_font_text(
+            fonts.get(FontStyle::Title),
+            b"A",
+            PointI32 { x: -1, y: 2 },
+            0,
+            DisplayExtent {
+                width: 20,
+                height: 10,
+            },
+            TextLayoutLimits::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            prepared.glyphs()[0].destination,
+            RectI32 {
+                x: -1,
+                y: 2,
+                width: 1,
+                height: 1,
+            }
+        );
+        assert_eq!(prepared.glyphs()[0].source.x, 0);
+        assert!(prepared.layout_diagnostics().is_empty());
     }
 
     #[test]

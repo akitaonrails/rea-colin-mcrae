@@ -215,9 +215,18 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   the bounded `0x90` decoder branch before optional driver `Load`. Exact RGB
   black alone receives zero alpha; other RGB receives alpha `0xf`, palette
   reserved bytes are ignored, and the installed source key remains literal
-  numeric zero. This is source preparation only: queued glyph records,
-  tuple/fade state, driver conversion, blending, and final pixels stay outside
-  the module.
+  numeric zero. This remains source preparation only: driver conversion,
+  queue routing, blending, and final pixels stay outside the module.
+- `cmr-core::font_raster::PreparedFontText` and
+  `cmr-video::software_queued_font_glyphs`: source-neutral fatal validation
+  plus lane-neutral semantic producer inputs for the alternate font path.
+  Commands retain the raw four-byte tuple and signed Q16 fade; producer inputs
+  retain the exact caller-side post-fade bytes, font style, source/destination
+  rectangles, terminal `8` or `0x48`, command order, and glyph order without
+  copying atlas ownership.
+  Safe out-of-atlas rejection remains a reconstruction policy. Native 52-byte
+  packing, conditional byte-3 rewrite, optional transform data, lane
+  selection/capacity, flushing, filtering/blending, and pixels remain open.
 - `cmr-video::software_championship_setup_frame`: two-pass execution of the
   lightweight prepared setup transcript. Its standalone preparation derives
   exact aligned extents from the owned RGB16 pool and optional nominal

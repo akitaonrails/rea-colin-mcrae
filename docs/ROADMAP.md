@@ -305,10 +305,16 @@ decoder subset now has one persistent 16-style owner retaining aligned rows,
 palette provenance, parsed glyph metadata, literal-zero keying, and exact-black
 alpha selection. Queue-consumer inspection also pins three 2,047-entry lanes,
 52-byte records, ordered lane flushing, primitive submission versus terminal
-bit-`0x40` fallback, and the championship tuple/fade arithmetic. Queued glyph
-production still needs that tuple/fade state added to the setup model; driver
-conversion, tuple channel meanings, blend semantics, and final pixels remain
-unresolved alongside native layout and dithering. R_INFO, the 11
+bit-`0x40` fallback, and the championship tuple/fade arithmetic. The setup
+model now retains the raw four-byte source tuple and signed Q16 fade, including
+the recovered terminal/inactive/active row selection, and a source-neutral
+font preflight emits lane-neutral semantic glyph-producer inputs in
+command/glyph order against the persistent ARGB4444 owner. It deliberately
+does not assign
+the strongly inferred championship lane 2 or truncate at a per-lane capacity;
+native queue packing, the producer's conditional byte-3 rewrite, lane routing,
+driver conversion, tuple channel meanings, blend semantics, and final pixels
+remain unresolved alongside native layout and dithering. R_INFO, the 11
 unique logo assets, and all 15 Chequered frames now also have one transactional
 27-source logical-RGB16 owner built directly from decoded user assets. Stable
 identity/path diagnostics and per-bitmap palette provenance are pinned. One
@@ -333,10 +339,10 @@ from a verified user import without an indexed backend or uploaded sources. It
 loads and converts Selection once, executes it through the named source-owned
 Stretch policy, validates caller-explicit RGB and raster policies before
 callback entry, and preserves target/depth, binding cache, preview/transform/
-latch/route/palette state across repeated car and Next frames. Exact queued
-glyph planning with recovered tuple/fade inputs, driver-exact Stretch
-comparison, native presentation, and the other deferred pixels are the next
-integration seams.
+latch/route/palette state across repeated car and Next frames. Alternate-session
+ownership of localization/fonts plus atomic publication and routing of the
+prepared glyph transcript, driver-exact Stretch comparison, native
+presentation, and the other deferred pixels are the next integration seams.
 
 Exit gate:
 
