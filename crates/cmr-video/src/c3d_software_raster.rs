@@ -17,7 +17,7 @@ use cmr_core::{
     root_menu_c3d_runtime::{
         C3dMode2ResourceScaledVertex, C3dType1ResourceScaledVertex, C3dType2ResourceScaledVertex,
     },
-    root_menu_c3d_transform::{C3dMatrixWords, C3dViewportWords},
+    root_menu_c3d_transform::{C3dMatrixWords, C3dViewportWords, RootMenuC3dViewportError},
 };
 use cmr_formats::{bitmap::BitmapPaletteEntry, riff_palette::PaletteEntry};
 
@@ -493,6 +493,48 @@ impl SoftwareC3dTransformState {
             projection,
             viewport,
         }
+    }
+
+    /// Builds the transform state for a gameplay scene from the recovered E05
+    /// matrices (`cmr_core::c3d_camera`): the camera VIEW is the affine inverse
+    /// of `camera_world_q16`, the node WORLD is `node_world_q16`, the PROJECTION
+    /// is the baseline left-handed perspective, and the viewport is the
+    /// scene-independent D3DVIEWPORT2 for `width`x`height`. This is the public
+    /// entry that drives the software oracle (via `preflight_root_c3d_batch`)
+    /// with gameplay camera parameters instead of the fixed menu matrices.
+    pub fn for_gameplay_scene(
+        width: u16,
+        height: u16,
+        camera_world_q16: &[i32; 16],
+        node_world_q16: &[i32; 16],
+    ) -> Result<Self, RootMenuC3dViewportError> {
+        let (w, h, zn, zf) = cmr_core::c3d_camera::PROJECTION_BASELINE;
+        Ok(Self::new(
+            cmr_core::c3d_camera::world_matrix_words(node_world_q16),
+            cmr_core::c3d_camera::view_matrix_words(camera_world_q16),
+            cmr_core::c3d_camera::projection_matrix_words(w, h, zn, zf),
+            cmr_core::c3d_camera::viewport_words(width, height)?,
+        ))
+    }
+
+    #[must_use]
+    pub const fn world(&self) -> C3dMatrixWords {
+        self.world
+    }
+
+    #[must_use]
+    pub const fn view(&self) -> C3dMatrixWords {
+        self.view
+    }
+
+    #[must_use]
+    pub const fn projection(&self) -> C3dMatrixWords {
+        self.projection
+    }
+
+    #[must_use]
+    pub const fn viewport(&self) -> C3dViewportWords {
+        self.viewport
     }
 }
 
@@ -2084,6 +2126,41 @@ mod tests {
 
     fn identity_state() -> SoftwareC3dTransformState {
         SoftwareC3dTransformState::new(identity(), identity(), identity(), viewport())
+    }
+
+    #[test]
+    fn gameplay_transform_state_composes_the_recovered_matrices() {
+        let identity_q16 = cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
+        // A camera translated to (2, 3, 5), identity node.
+        let mut camera_world = identity_q16;
+        camera_world[12] = 2 << 16;
+        camera_world[13] = 3 << 16;
+        camera_world[14] = 5 << 16;
+        let state =
+            SoftwareC3dTransformState::for_gameplay_scene(640, 480, &camera_world, &identity_q16)
+                .unwrap();
+        let (w, h, zn, zf) = cmr_core::c3d_camera::PROJECTION_BASELINE;
+        assert_eq!(
+            state.world(),
+            cmr_core::c3d_camera::world_matrix_words(&identity_q16)
+        );
+        assert_eq!(
+            state.view(),
+            cmr_core::c3d_camera::view_matrix_words(&camera_world)
+        );
+        assert_eq!(
+            state.projection(),
+            cmr_core::c3d_camera::projection_matrix_words(w, h, zn, zf)
+        );
+        assert_eq!(
+            state.viewport(),
+            cmr_core::c3d_camera::viewport_words(640, 480).unwrap()
+        );
+        // An unrepresentable viewport extent is rejected.
+        assert!(
+            SoftwareC3dTransformState::for_gameplay_scene(0, 480, &identity_q16, &identity_q16)
+                .is_err()
+        );
     }
 
     fn alternate_profile() -> SoftwareChampionshipCarSplitOracleProfile {

@@ -482,9 +482,13 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   `C3dViewportWords` the `cmr-video` software transform path consumes (row-major,
   row-vector, matching `multiply_row_vector`); the D3DVIEWPORT2 clip volume is
   scene-independent, so `viewport_words` reuses the shared `root_menu_c3d_viewport`
-  builder (gameplay == menu viewport). See evidence `rea.official-eu.c3d-camera`,
+  builder (gameplay == menu viewport). `cmr-video`'s
+  `SoftwareC3dTransformState::for_gameplay_scene` composes these builders into
+  the raster's transform state, so a gameplay batch renders through the existing
+  `preflight_root_c3d_batch` pipeline with gameplay matrices in place of the
+  fixed menu matrices. See evidence `rea.official-eu.c3d-camera`,
   `impl.c3d-camera`, `rea.official-eu.c3d-view-inverse`, `impl.c3d-view-inverse`,
-  and `impl.c3d-scene-matrices`.
+  `impl.c3d-scene-matrices`, and `impl.c3d-scene-oracle`.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one
   group-1 record and caller-prepared selectors. It preserves maximal
   consecutive selector runs and source entry order, deduplicates local entry32
