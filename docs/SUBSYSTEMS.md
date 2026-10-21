@@ -761,6 +761,18 @@ languages rather than fabricating or silently aliasing Italian assets.
   and the position-update half-accel term are still-unrecovered G02/G03 unknowns,
   so a byte-exact differential fixture is gated on recovering the force
   production. See evidence `impl.sim-race-state-trace`.
+- `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
+  -> save-replay vertical path over the deterministic race state: it starts a
+  stage, drives a scripted control sequence at the fixed tick (crossing
+  checkpoints de-duplicated with `stage_timing`'s passed-bitmask and recording
+  each tick's actuator into the replay input trace via the recovered
+  quantize/XOR-delta codec), freezes the finish time in centiseconds on crossing
+  the line, and verifies that re-running the recorded inputs from the same start
+  reproduces the identical outcome - the input-based re-simulation guarantee.
+  Harness simplifications (documented): a 1-D +x gate line and only the
+  forward-force channel serialized (the exact replay record byte layout is a G08
+  unknown); byte-exact trajectory fidelity is gated on the G02/G03 force
+  production. See evidence `impl.sim-vertical-path`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
