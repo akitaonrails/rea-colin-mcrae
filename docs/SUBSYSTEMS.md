@@ -440,7 +440,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   `0x400000`, relocations stripped, Visual C++ 6-era linker.
 - `Game.exe` is a VC5-era DirectShow/COM intro-video launcher.
 - `qmixer.dll` is QSound 3D Audio Wave Mixer 3.00 middleware over waveOut and
-  optional DirectSound.
+  optional DirectSound. The official-EU `Rally.exe` audio module lives at
+  `0x4957d0`–`0x495a80`: `0x4957d0` initializes a 22050 Hz, 30-channel QSound
+  session via `QSWaveMixInitEx`/`QSWaveMixActivate`; `0x4958e0` builds a PCM
+  `WAVEFORMATEX` from (name, rate, bits, stereo) and registers it with
+  `QSWaveMixOpenWave` into a fixed wave-slot table; `0x495a30` plays a slot on a
+  channel through `QSWaveMixPlayEx`. See evidence `rea.official-eu.audio-wave-path`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

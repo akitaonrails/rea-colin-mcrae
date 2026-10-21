@@ -130,7 +130,7 @@ Status markers:
 ## H. Audio, music, video, and networking
 
 - [~] `H01` Identify the 16 reachable `QSWaveMix*` imports and DLL exports.
-- [ ] `H02` Recover WAV/sample loading, channels, priority, and lifetime.
+- [~] `H02` Recover WAV/sample loading, channels, priority, and lifetime (official-EU QSound init at `0x4957d0` recovers a 22050 Hz, 30-channel `QSWaveMixInitEx`/`Activate` session and a fixed wave-slot table; the load path `0x4958e0` builds a PCM `WAVEFORMATEX` from name/rate/bits/stereo and registers it with `QSWaveMixOpenWave`, and the play path `0x495a30` dispatches a slot/channel through `QSWaveMixPlayEx`; priority/lifetime flags, memory-vs-file payload source, and the load/play wrapper variants remain).
 - [ ] `H03` Recover volume, pan, frequency, spatialization, and mixing rules.
 - [ ] `H04` Implement a deterministic reconstruction-owned audio mixer.
 - [ ] `H05` Recover music/CD/MCI selection and lifecycle.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T04:58:45Z
-milestone=wire-sdl-interactive-root-menu-loop
+updated_utc=2026-10-21T05:05:21Z
+milestone=recover-qmixer-wave-load-and-play-path
 completed=51
-partial=22
-not_started=44
+partial=23
+not_started=43
 blocked=0
 total=117
-current_focus=I07-portable-audio-host
-next_exit_gate=implement-a-portable-audio-host-behind-a-recovered-qmixer-winmm-mixer-contract
+current_focus=H03-recover-volume-pan-frequency-mixing-rules
+next_exit_gate=trace-the-qswavemix-setvolume-setposition-setfrequency-and-channel-lifecycle-wrappers
 <!-- PROGRESS-TAIL-END -->
