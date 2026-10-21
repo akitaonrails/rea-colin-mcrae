@@ -398,6 +398,23 @@ pub fn load_root_menu_bitmaps(
     })
 }
 
+/// Loads only the common selection bitmap through the same verified-store and
+/// safe-decoder boundary used by the complete root-menu bitmap batch.
+///
+/// This is intended for owners that need the recovered Selection geometry but
+/// do not own the rest of the root-menu 2D resources.
+pub fn load_root_menu_selection_bitmap(
+    store: &AssetStore,
+    limits: BitmapLimits,
+) -> Result<RootMenuBitmapAsset, RootMenuBitmapLoadError> {
+    load_bitmap(
+        store,
+        RootMenuBitmapIdentity::Selection,
+        ROOT_MENU_SELECT_PATH,
+        limits,
+    )
+}
+
 fn load_bitmap(
     store: &AssetStore,
     identity: RootMenuBitmapIdentity,

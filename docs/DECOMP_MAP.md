@@ -98,7 +98,7 @@ Status markers:
 - [x] `E13` Preflight and execute identity-neutral indexed bitmap blits safely.
 - [x] `E14` Admit and transactionally upload championship frame 2D assets.
 - [x] `E15` Recover championship mode-8 C3D preparation and session ownership.
-- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone indexed session, all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission, exact alternate render-depth selection, capability-derived alpha/depth-clear contract, filter-request cache outcomes, raw/validated legacy pixel-format masks, retained non-alpha texture selection, source-owned selected-format conversion-before-filtering, independent logical-framebuffer composition, effect-free whole-frame backend preflight, a standalone owned split/logical-RGB backend, an explicit-palette completed-indexed-frame bridge, ordinary non-font embedded-palette RGB555/RGB565 source conversion, matching-format fast keyed/opaque logical composition, a transactional 27-source R_INFO/logo/Chequered RGB16 pool, exact effect-free setup-command identities/order shared with indexed execution, indexed-upload-free alternate setup preparation, two-pass stale-safe source-ordered alternate Fast-bitmap execution, and combined same-target setup plus selected-car/empty-scene terminal ordering with coordinated state and non-indexed palette skip implemented; ordinary stretch, standalone alternate session ownership, alternate queued-font pixels and driver `Load` equivalence, effective alternate filtering, native byte layout/pitch, alpha pixels, presentation remain).
+- [~] `E16` Recover and implement championship car transform, visibility, and runtime mutation (transform state, exact-source topology, mode-8 CPU geometry, actor hierarchy/frame planning, shared-arena bindings, full software terminal-frame indexed-COPY integration, explicit-profile standalone indexed session, all disabled/enabled combinations of Type-2 word-5 plus actor-RGB word-4 submission, exact alternate render-depth selection, capability-derived alpha/depth-clear contract, filter-request cache outcomes, raw/validated legacy pixel-format masks, retained non-alpha texture selection, source-owned selected-format conversion-before-filtering, independent logical-framebuffer composition, effect-free whole-frame backend preflight, a standalone owned split/logical-RGB backend, an explicit-palette completed-indexed-frame bridge, ordinary non-font embedded-palette RGB555/RGB565 source conversion, matching-format fast keyed/opaque logical composition, a transactional 27-source R_INFO/logo/Chequered RGB16 pool, exact effect-free setup-command identities/order shared with indexed execution, indexed-upload-free alternate setup preparation, two-pass stale-safe source-ordered alternate Fast-bitmap execution, combined same-target setup plus selected-car/empty-scene terminal ordering with coordinated state and non-indexed palette skip, and verified-import standalone alternate session ownership with repeated-frame state retention implemented; ordinary stretch, alternate queued-font pixels and driver `Load` equivalence, effective alternate filtering, native byte layout/pitch, alpha pixels, presentation remain).
 
 ## F. Menus, game state, and persistence
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T01:11:03Z
-milestone=prepare-championship-alternate-setup-without-indexed-uploads
+updated_utc=2026-10-21T01:17:41Z
+milestone=own-repeated-alternate-championship-session-from-verified-import
 completed=50
 partial=20
 not_started=47
 blocked=0
 total=117
-current_focus=E16-standalone-alternate-session-ownership
-next_exit_gate=construct-and-run-repeated-alternate-terminal-frames-from-verified-import
+current_focus=E16-selection-stretch-contract
+next_exit_gate=recover-and-implement-selection-stretch-conversion-and-sampling
 <!-- PROGRESS-TAIL-END -->

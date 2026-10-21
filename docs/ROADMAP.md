@@ -319,8 +319,13 @@ the alternate terminal now adds complete common-scene/car-batch preflight,
 coordinates transform/latch/palette state inline, and runs the selected-car or
 empty Next scene after setup on the same target. It explicitly skips the
 non-indexed palette commit while preserving the pending request. Standalone
-alternate session ownership and remaining deferred pixels are the next
-integration seam.
+alternate session ownership now builds this complete retained slice directly
+from a verified user import without an indexed backend or uploaded sources. It
+loads exact Selection geometry, validates caller-explicit RGB and raster
+policies before callback entry, and preserves target/depth, binding cache,
+preview/transform/latch/route/palette state across repeated car and Next
+frames. Selection Stretch, alternate queued-font pixels, native presentation,
+and the other deferred pixels are the next integration seams.
 
 Exit gate:
 

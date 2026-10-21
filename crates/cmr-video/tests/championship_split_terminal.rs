@@ -32,12 +32,14 @@ use cmr_core::{
         RowPresentation, SetupTextRole,
     },
     championship_terminal_frame::scan_championship_car_contract_for_resource,
-    deferred_palette::{DeferredPaletteState, PaletteArenaIndex, PaletteGroupBases},
+    deferred_palette::{
+        DeferredPaletteCommitOutcome, DeferredPaletteState, PaletteArenaIndex, PaletteGroupBases,
+    },
     display::DisplayExtent,
     frontend_c3d_resources::prepare_frontend_c3d_resources,
     frontend_c3d_route::{FrontendC3dRoute, FrontendC3dRouteState},
     frontend_c3d_scene::C3dDepthClear,
-    root_menu_assets::VisualVariant,
+    root_menu_assets::{ROOT_MENU_SELECT_PATH, VisualVariant},
     root_menu_c3d_assets::load_root_menu_c3d,
     root_menu_c3d_render_state::{
         C3dGraphicsBranch, ROOT_MENU_C3D_INITIAL_FILTER_REQUEST_CACHE,
@@ -63,6 +65,11 @@ use cmr_video::{
     legacy_c3d_pixel_format::{KnownRgbLayout, RawDdPixelFormat, SelectedNonAlphaTextureFormat},
     packed_rgb_target::FramebufferRgbFormat,
     selected_texture_conversion_oracle::SourceOwnedTextureConversionOraclePolicy,
+    software_championship_alternate_session::{
+        SoftwareChampionshipAlternateFrameRequest, SoftwareChampionshipAlternateRasterState,
+        SoftwareChampionshipAlternateRenderError, SoftwareChampionshipAlternateSessionBuildError,
+        SoftwareChampionshipAlternateSessionRequest, with_software_championship_alternate_session,
+    },
     software_championship_alternate_terminal::{
         SoftwareChampionshipAlternateCarResources, SoftwareChampionshipAlternateTerminalError,
         SoftwareChampionshipAlternateTerminalState,
@@ -87,6 +94,288 @@ const Q16_ONE: i32 = 1 << 16;
 const IDENTITY_BASIS: [i32; 9] = [Q16_ONE, 0, 0, 0, Q16_ONE, 0, 0, 0, Q16_ONE];
 const RESOURCE_INDEX: u8 = 217;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn alternate_session_repeats_car_and_next_frames_without_indexed_ownership() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let request = alternate_session_request(5, KnownRgbLayout::Rgb555);
+
+    let run = with_software_championship_alternate_session(&store, request, |session| {
+        assert_eq!(session.ordinary_source_count(), 27);
+        assert!(session.selection_is_loaded());
+        assert!(session.selection_is_deferred());
+        let initial_preview = session.preview_cache();
+        let initial_transform = session.car_transform();
+        let initial_words = session.backend().logical_target().words().to_vec();
+        let initial_depth = session.backend().depth_values().to_vec();
+
+        let car = car_transcript();
+        let mut wrong_extent = visual_input(&car);
+        wrong_extent.viewport.width -= 1;
+        assert!(matches!(
+            session.render(SoftwareChampionshipAlternateFrameRequest {
+                visual: wrong_extent,
+                setup: ChampionshipSetupFrameState::default(),
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            }),
+            Err(SoftwareChampionshipAlternateRenderError::ExtentMismatch {
+                expected: EXTENT,
+                actual: DisplayExtent {
+                    width: 639,
+                    height: 480,
+                },
+            })
+        ));
+        assert_eq!(session.preview_cache(), initial_preview);
+        assert_eq!(session.car_transform(), initial_transform);
+        assert_eq!(session.backend().logical_target().words(), initial_words);
+        assert_eq!(session.backend().depth_values(), initial_depth);
+
+        let first = session
+            .render(SoftwareChampionshipAlternateFrameRequest {
+                visual: visual_input(&car),
+                setup: ChampionshipSetupFrameState::default(),
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            })
+            .unwrap();
+        assert_eq!(first.scene.submission.unwrap().draws, 0);
+        assert!(first.setup.commands.iter().any(is_stretch));
+        assert_eq!(
+            first.palette_commit,
+            DeferredPaletteCommitOutcome::SkippedNonIndexedDepth
+        );
+        assert_ne!(session.preview_cache(), initial_preview);
+        assert_ne!(session.car_transform(), initial_transform);
+
+        let second = session
+            .render(SoftwareChampionshipAlternateFrameRequest {
+                visual: visual_input(&car),
+                setup: ChampionshipSetupFrameState::default(),
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            })
+            .unwrap();
+        let second_submission = second.scene.submission.unwrap();
+        assert_eq!(second_submission.draws, 3);
+        assert_eq!(second_submission.bindings, 3);
+        assert_eq!(session.ordinary_source_count(), 27);
+
+        let repeated = session
+            .render(SoftwareChampionshipAlternateFrameRequest {
+                visual: visual_input(&car),
+                setup: ChampionshipSetupFrameState::default(),
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            })
+            .unwrap();
+        let repeated_submission = repeated.scene.submission.unwrap();
+        assert_eq!(repeated_submission.draws, 3);
+        assert_eq!(repeated_submission.bindings, 2);
+
+        let before_next_transform = session.car_transform();
+        let next = next_transcript();
+        let next_outcome = session
+            .render(SoftwareChampionshipAlternateFrameRequest {
+                visual: visual_input(&next),
+                setup: ChampionshipSetupFrameState {
+                    chequered_frame: Some(ChequeredFrame::Frame04),
+                },
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            })
+            .unwrap();
+        assert_eq!(next_outcome.scene.submission, None);
+        assert_eq!(session.car_transform(), before_next_transform);
+        assert_eq!(
+            session.palette_state().pending(),
+            Some(PaletteArenaIndex::new(14))
+        );
+        assert_eq!(
+            session.active_c3d_route(),
+            Some(FrontendC3dRoute::ChampionshipCar)
+        );
+        assert!(
+            CanonicalCar::ALL
+                .into_iter()
+                .all(|car| session.car_visibility().mask(car).raw() == 0)
+        );
+        assert!(
+            cmr_core::root_menu_c3d_assets::RootMenuC3dSlot::ALL
+                .into_iter()
+                .all(|slot| session.root_visibility().mask(slot).raw() == 0)
+        );
+        session.ordinary_source_count()
+    })
+    .unwrap();
+
+    assert_eq!(run.output, 27);
+    assert!(
+        run.backend
+            .logical_target()
+            .words()
+            .iter()
+            .any(|word| *word != 0)
+    );
+    assert!(run.backend.depth_values().iter().all(|depth| *depth == 1.0));
+}
+
+#[test]
+fn alternate_session_rejects_ordinary_framebuffer_layout_before_callback() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let request = alternate_session_request(5, KnownRgbLayout::Rgb565);
+    let mut entered = false;
+
+    let result = with_software_championship_alternate_session(&store, request, |_| {
+        entered = true;
+    });
+
+    assert!(!entered);
+    assert!(matches!(
+        result,
+        Err(
+            SoftwareChampionshipAlternateSessionBuildError::OrdinaryFramebufferLayoutMismatch {
+                expected: KnownRgbLayout::Rgb555,
+                actual: Some(KnownRgbLayout::Rgb565),
+            }
+        )
+    ));
+}
+
+#[test]
+fn alternate_session_builds_and_renders_rgb565_sources_into_rgb565_target() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let request = alternate_session_request(6, KnownRgbLayout::Rgb565);
+
+    let run = with_software_championship_alternate_session(&store, request, |session| {
+        let next = next_transcript();
+        let outcome = session
+            .render(SoftwareChampionshipAlternateFrameRequest {
+                visual: visual_input(&next),
+                setup: ChampionshipSetupFrameState {
+                    chequered_frame: Some(ChequeredFrame::Frame04),
+                },
+                car_input: ChampionshipCarInput {
+                    f9: false,
+                    f10: false,
+                },
+                base_basis: IDENTITY_BASIS,
+            })
+            .unwrap();
+
+        assert_eq!(outcome.scene.submission, None);
+        assert_eq!(
+            outcome.palette_commit,
+            DeferredPaletteCommitOutcome::SkippedNonIndexedDepth
+        );
+        assert_eq!(session.ordinary_source_count(), 27);
+    })
+    .unwrap();
+
+    assert_eq!(
+        run.backend
+            .logical_target()
+            .format()
+            .layout()
+            .known_layout(),
+        Some(KnownRgbLayout::Rgb565)
+    );
+    assert!(
+        run.backend
+            .logical_target()
+            .words()
+            .iter()
+            .any(|word| *word != 0)
+    );
+}
+
+#[test]
+fn alternate_session_rejects_pre_draw_profile_mismatch_before_callback() {
+    let temporary = TestDirectory::new();
+    let store = synthetic_store(&temporary);
+    let mut request = alternate_session_request(5, KnownRgbLayout::Rgb555);
+    request.raster_state.type2_fog = cmr_core::c3d_type2_fog::C3dType2FogState {
+        enabled: true,
+        ..cmr_core::c3d_type2_fog::C3dType2FogState::DISABLED
+    };
+    let mut entered = false;
+
+    let result = with_software_championship_alternate_session(&store, request, |_| {
+        entered = true;
+    });
+
+    assert!(!entered);
+    assert!(matches!(
+        result,
+        Err(SoftwareChampionshipAlternateSessionBuildError::RasterProfile(
+            cmr_video::c3d_software_split_backend::SoftwareSplitC3dBackendError::ChampionshipCarFogStateMismatch {
+                profile_enabled: false,
+                prepared_enabled: true,
+            }
+        ))
+    ));
+}
+
+fn alternate_session_request(
+    discriminator: u8,
+    framebuffer_layout: KnownRgbLayout,
+) -> SoftwareChampionshipAlternateSessionRequest {
+    let masks = match framebuffer_layout {
+        KnownRgbLayout::Rgb555 => [0x7c00, 0x03e0, 0x001f],
+        KnownRgbLayout::Rgb565 => [0xf800, 0x07e0, 0x001f],
+    };
+    let framebuffer_format =
+        FramebufferRgbFormat::from_runtime_surface_descriptor(RawDdPixelFormat::from_dwords([
+            32, 0x40, 0, 16, masks[0], masks[1], masks[2], 0,
+        ]))
+        .unwrap();
+    let texture_descriptor =
+        RawDdPixelFormat::from_dwords([32, 0x40, 0, 16, 0x7c00, 0x03e0, 0x001f, 0]);
+    let profile = SoftwareChampionshipCarSplitOracleProfile::new(
+        SoftwareC3dSplitRenderDepth::Bits32,
+        false,
+        false,
+    );
+    SoftwareChampionshipAlternateSessionRequest::new(
+        VisualVariant::Normal,
+        EXTENT,
+        framebuffer_format,
+        discriminator,
+        SelectedNonAlphaTextureFormat::OpaqueRgb16 {
+            descriptor: texture_descriptor,
+            layout: KnownRgbLayout::Rgb555,
+        },
+        SoftwareSplitC3dOracleConfiguration {
+            profile,
+            alpha_contract: root_menu_c3d_legacy_alpha_contract(0),
+            filter_cache_outcome: root_menu_c3d_filter_cache_outcome(
+                C3dGraphicsBranch::Alternate,
+                true,
+                ROOT_MENU_C3D_INITIAL_FILTER_REQUEST_CACHE,
+            ),
+        },
+        SoftwareChampionshipAlternateRasterState::disabled(),
+    )
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TraceEvent {
@@ -1408,6 +1697,7 @@ fn synthetic_store(temporary: &TestDirectory) -> AssetStore {
     for descriptor in CHEQUERED_FRAME_DESCRIPTORS {
         files.insert(descriptor.path, indexed_bitmap(183, 128, 4));
     }
+    files.insert(ROOT_MENU_SELECT_PATH, indexed_bitmap(256, 256, 1));
     let mut profile_files = Vec::new();
     for (path, bytes) in files {
         let destination = source.join(path);

@@ -14,7 +14,7 @@ use cmr_core::root_menu_assets::{
 use cmr_core::root_menu_bitmap_assets::{
     ROOT_MENU_BITMAP_REQUEST_COUNT, ROOT_MENU_OPTIONAL_BITMAP_REQUEST_COUNT,
     ROOT_MENU_REQUIRED_BITMAP_REQUEST_COUNT, RootMenuBitmapIdentity, RootMenuBitmapLoadError,
-    RootMenuBitmapSlot, load_root_menu_bitmaps,
+    RootMenuBitmapSlot, load_root_menu_bitmaps, load_root_menu_selection_bitmap,
 };
 use cmr_core::root_menu_bitmap_raster::{RootMenuSurfaceDiagnostic, prepare_root_menu_surfaces};
 use cmr_formats::bitmap::{BitmapError, BitmapLimits};
@@ -40,6 +40,34 @@ impl Drop for TestDirectory {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.0).unwrap();
     }
+}
+
+#[test]
+fn selection_only_loader_uses_the_common_identity_path_and_aligned_extent() {
+    let fixture = Fixture::new(&files_for_paths(vec![ROOT_MENU_SELECT_PATH]));
+
+    let loaded = load_root_menu_selection_bitmap(&fixture.store, BitmapLimits::default()).unwrap();
+
+    assert_eq!(loaded.identity, RootMenuBitmapIdentity::Selection);
+    assert_eq!(loaded.path, ROOT_MENU_SELECT_PATH);
+    assert_eq!((loaded.bitmap.width, loaded.bitmap.height), (4, 1));
+    assert_eq!(loaded.bitmap.row_stride, 4);
+}
+
+#[test]
+fn selection_only_loader_preserves_decode_context() {
+    let mut files = files_for_paths(vec![ROOT_MENU_SELECT_PATH]);
+    set_compression(files.get_mut(ROOT_MENU_SELECT_PATH).unwrap(), 1);
+    let fixture = Fixture::new(&files);
+
+    assert!(matches!(
+        load_root_menu_selection_bitmap(&fixture.store, BitmapLimits::default()),
+        Err(RootMenuBitmapLoadError::Decode {
+            identity: RootMenuBitmapIdentity::Selection,
+            path: ROOT_MENU_SELECT_PATH,
+            source: BitmapError::UnsupportedCompression(1),
+        })
+    ));
 }
 
 #[test]
