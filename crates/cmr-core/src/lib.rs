@@ -48,6 +48,7 @@ pub mod localization_assets;
 pub mod pacenote_schedule;
 pub mod presentation;
 pub mod race_participants;
+pub mod replay;
 pub mod root_menu_animation;
 pub mod root_menu_assets;
 pub mod root_menu_bitmap_assets;

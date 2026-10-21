@@ -730,6 +730,25 @@ languages rather than fabricating or silently aliasing Italian assets.
   collision gate in `cmr-core::race_participants` (record strides as format
   metadata; name strings not vendored). See evidence
   `rea.official-eu.sim-race-participants`.
+- Replay has two subsystems. The authoritative trace (the "Replay" class,
+  `0x46d7b0`) is input-based re-simulation saved to `.SSR` files: a `0x40`-byte
+  header, a per-frame `0x151ec`-byte initial-state seed, then `nTicks` (7500 at
+  25 Hz = 300 s) 4-byte packed control records (actuators quantized `>>10` into
+  6-bit fields, XOR-delta coded, plus gear/flags). Playback decodes the inputs
+  back into the control struct and re-runs the normal physics (`0x43afd0`), with
+  collision suppressed and the `0x462ac0` tracker used under the playback flag;
+  the live frame driver `0x437690` bails and `0x437ef0` drives instead. Files go
+  through the shared loader `0x495ed0`, whose optional archive container carries
+  the `"CMPR"` magic + size. The same per-car input stream serves the local
+  action replay, the `.SSR` shadow, and the network replay car. A separate
+  render snapshot buffer (`0x46c7d0`, gated by the record flag) captures 24-byte
+  pos+compressed-orientation keyframes at 6.25 Hz (cap 0x8ca x 6 cars) and
+  interpolates them into the render transforms for smooth display only - it
+  never feeds physics. Reconstructed the object sizing/region layout, the
+  actuator quantize/XOR-delta codec, the CMPR header, and the snapshot
+  indexing/compression/interpolation in `cmr-core::replay`. The per-byte actuator
+  bit assignment, the Region-A layout, the save path, and the wire framing
+  remain. See evidence `rea.official-eu.sim-replay`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.
