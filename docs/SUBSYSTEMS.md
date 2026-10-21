@@ -210,6 +210,14 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   keyed by stable media-relative identities and retaining only contextual
   relative paths on failure. Selection Stretch and alternate fonts remain
   deliberately outside this pool.
+- `cmr-video::software_queued_font_argb4444`: nominal persistent ownership of
+  all 16 parsed fonts plus the exact aligned ARGB4444 source words produced by
+  the bounded `0x90` decoder branch before optional driver `Load`. Exact RGB
+  black alone receives zero alpha; other RGB receives alpha `0xf`, palette
+  reserved bytes are ignored, and the installed source key remains literal
+  numeric zero. This is source preparation only: queued glyph records,
+  tuple/fade state, driver conversion, blending, and final pixels stay outside
+  the module.
 - `cmr-video::software_championship_setup_frame`: two-pass execution of the
   lightweight prepared setup transcript. Its standalone preparation derives
   exact aligned extents from the owned RGB16 pool and optional nominal

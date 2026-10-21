@@ -25,6 +25,7 @@ pub mod software_championship_ordinary_rgb16;
 pub mod software_championship_selection_rgb16;
 pub mod software_championship_session;
 pub mod software_championship_setup_frame;
+pub mod software_queued_font_argb4444;
 pub mod software_root_menu_session;
 
 pub use c3d_software_backend::SoftwareC3dBackendError;
