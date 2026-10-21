@@ -148,7 +148,7 @@ Status markers:
 - [ ] `I04` Build and run the compatibility slice on modern Windows.
 - [ ] `I05` Add CI for formatting, clippy, tests, Linux, and Windows builds.
 - [x] `I06` Research and select SDL3 for portable host integration.
-- [~] `I07` Implement SDL3 host window/input/audio/presentation boundaries (resizable window, integer-scaled nearest streaming presentation of one completed software frame, startup gamepad enumeration with idempotent hotplug tracking, and renderer-reset/redraw handling implemented behind `cmr-platform-sdl3`; the audio host and live input mapping remain).
+- [~] `I07` Implement SDL3 host window/input/audio/presentation boundaries (resizable window, integer-scaled nearest streaming presentation of one completed software frame, startup gamepad enumeration with idempotent hotplug tracking, renderer-reset/redraw handling, and an edge-triggered keyboard/gamepad input mapper that drives the recovered `FrontendInput` contract implemented behind `cmr-platform-sdl3`; the audio host and the live interactive loop that feeds the mapper into a stepped `FrontendState` remain).
 - [ ] `I08` Benchmark wgpu against SDL_GPU for the recovered 3D workload.
 - [ ] `I09` Implement the selected portable GPU backend behind shared contracts.
 - [ ] `I10` Remove requirements for original DirectX/QMixer/WinMM DLLs.
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T04:31:21Z
-milestone=implement-sdl3-software-frame-presentation-host
+updated_utc=2026-10-21T04:42:26Z
+milestone=map-sdl-input-into-recovered-frontend-input
 completed=51
 partial=22
 not_started=44
 blocked=0
 total=117
-current_focus=I07-audio-host-and-live-gamepad-input-mapping
-next_exit_gate=map-live-sdl-gamepad-and-keyboard-events-into-the-recovered-root-input-model
+current_focus=I07-live-interactive-loop-and-audio-host
+next_exit_gate=drive-a-stepped-frontendstate-from-live-sdl-input-and-re-present-each-updated-root-frame
 <!-- PROGRESS-TAIL-END -->

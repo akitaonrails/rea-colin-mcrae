@@ -73,6 +73,7 @@ dependencies = [
 name = "cmr-platform-sdl3"
 version = "0.1.0"
 dependencies = [
+ "cmr-core",
  "cmr-video",
  "sdl3",
 ]

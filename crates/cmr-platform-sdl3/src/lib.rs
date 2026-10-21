@@ -5,6 +5,13 @@
 //! completed indexed software frame, which is expanded to opaque RGBA8 before
 //! upload to an SDL streaming texture.
 
+pub mod input;
+
+pub use input::{
+    AXIS_DEAD_ZONE, FrontendAction, FrontendInputMapper, action_for_button, action_for_key,
+    axis_action,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

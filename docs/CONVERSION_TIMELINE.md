@@ -27,7 +27,8 @@ touched. Per-commit granularity for the full history is recoverable with
 | 2026-10-20T14:18:12Z | 0h00m | (session start) | — | — | Conversion begins (codex). |
 | 2026-10-20T14:24:57Z | 0h07m | reconstruction-evidence-baseline | `eba3b40` | — | First commit; evidence/roadmap scaffolding. |
 | 2026-10-21T04:21:29Z | 14h03m | add-portable-headless-root-application | `cb92783` | I02, I03 | Headless root-frame application; end of codex session (113 commits total covering subsystems A–H recovery and I01–I06). |
-| 2026-10-21T04:33Z | 14h15m | implement-sdl3-software-frame-presentation-host | _(latest)_ | I03, I07 | SDL3 host window/input/presentation + indexed→RGBA8 expansion; audio host and live input mapping remain. |
+| 2026-10-21T04:33Z | 14h15m | implement-sdl3-software-frame-presentation-host | `5eb7d3c` | I03, I07 | SDL3 host window/input/presentation + indexed→RGBA8 expansion; audio host and live input mapping remain. |
+| 2026-10-21T04:42Z | 14h24m | map-sdl-input-into-recovered-frontend-input | _(latest)_ | I07 | Edge-triggered SDL keyboard/gamepad → recovered `FrontendInput` mapper, contract-tested against `FrontendState`; live interactive loop and audio host remain. |
 
 > A commit cannot embed its own final hash, so the most recent row is marked
 > _(latest)_; the next milestone update pins its hash from `git log`.

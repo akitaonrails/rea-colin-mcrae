@@ -6,5 +6,6 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+cmr-core = { path = "../cmr-core" }
 cmr-video = { path = "../cmr-video" }
 sdl3 = "=0.20.0"
