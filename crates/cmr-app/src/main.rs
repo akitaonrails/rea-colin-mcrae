@@ -1,13 +1,15 @@
 use std::process::ExitCode;
 
 use cmr_app::{
-    AppCommand, RUNTIME_DATA_ENV, run_headless_root_frame, run_windowed_root_frame, runtime_config,
+    AppCommand, RUNTIME_DATA_ENV, SOURCE_ENV, run_headless_root_frame, run_windowed_root_frame,
+    runtime_config,
 };
 
 fn main() -> ExitCode {
     match runtime_config(
         std::env::args_os().skip(1),
         std::env::var_os(RUNTIME_DATA_ENV),
+        std::env::var_os(SOURCE_ENV),
     ) {
         Ok(config) => match config.command() {
             AppCommand::HeadlessRootFrame => match run_headless_root_frame(config.runtime_data()) {

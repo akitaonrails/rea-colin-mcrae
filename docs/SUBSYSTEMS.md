@@ -971,6 +971,21 @@ languages rather than fabricating or silently aliasing Italian assets.
   supplies its own default image). This unblocks native startup (C13), the
   interactive native menu (D18), and the profile/persistence flows (F03/F07).
   See evidence `rea.official-eu.settings-paths` and `impl.settings-store`.
+- `cmr-app` threads the portable settings/path backend through native startup
+  (C13). The executable parses a command and a writable runtime-data root and
+  runs the root frame headless or windowed; C13 adds `--source <media root>`
+  with the `CMR_ORIGINAL_DIR` environment fallback - the portable replacement
+  for the shipped registry `CDPath`/`HDPath` lookup - resolved optionally so the
+  headless demo still runs without media while an empty value is a typed error.
+  `RuntimeConfig::data_paths()` pairs the two roots into a
+  `settings_store::DataPaths`, and `resolve_startup_settings` reproduces the
+  recovered load gate (absent -> defaults, exactly `0x1e20` -> loaded with the
+  runtime region cleared, wrong length -> rejected). This is reconstruction
+  policy, not a decompiled sequence: the registry/absolute-path startup is
+  replaced by explicit roots, the settings resolution is pure over injected
+  bytes, and the live game loop consumes the resolved paths with the B12
+  `HostLifecycle` once the full loop is SDL-driven. See evidence
+  `impl.native-startup-config`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

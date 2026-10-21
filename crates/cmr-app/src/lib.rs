@@ -19,6 +19,7 @@ use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::{
     ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16, ROOT_INITIAL_VERTICAL_TRANSFORM_Q16, RootRenderInput,
 };
+use cmr_core::settings_store::{DataPaths, SettingsError, SettingsImage};
 use cmr_core::startup::{StartupLanguage, StartupScreen};
 use cmr_core::startup_display::{
     StartupDisplay, StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
@@ -40,6 +41,10 @@ use cmr_video::{
 /// fallback.
 pub const RUNTIME_DATA_ENV: &str = "CMR_RUNTIME_DATA";
 
+/// Environment variable naming the read-only original-media (`--source`) root,
+/// the portable replacement for the shipped registry `CDPath`/`HDPath` lookup.
+pub const SOURCE_ENV: &str = "CMR_ORIGINAL_DIR";
+
 const REVIEWED_PROFILE: &[u8] =
     include_bytes!("../../../profiles/installed-eu-derived-assets-v2.json");
 const ROOT_EXTENT: DisplayExtent = DisplayExtent {
@@ -59,6 +64,7 @@ pub enum AppCommand {
 pub struct AppOptions {
     command: AppCommand,
     runtime_data: Option<PathBuf>,
+    source: Option<PathBuf>,
 }
 
 impl AppOptions {
@@ -70,6 +76,7 @@ impl AppOptions {
         let mut arguments = arguments.into_iter();
         let mut command = None;
         let mut runtime_data = None;
+        let mut source = None;
 
         while let Some(argument) = arguments.next() {
             if argument == OsStr::new("--headless-root-frame") {
@@ -94,12 +101,23 @@ impl AppOptions {
                 runtime_data = Some(PathBuf::from(value));
                 continue;
             }
+            if argument == OsStr::new("--source") {
+                if source.is_some() {
+                    return Err(ConfigError::DuplicateOption("--source"));
+                }
+                let value = arguments
+                    .next()
+                    .ok_or(ConfigError::MissingOptionValue("--source"))?;
+                source = Some(PathBuf::from(value));
+                continue;
+            }
             return Err(ConfigError::UnknownArgument(argument));
         }
 
         Ok(Self {
             command: command.ok_or(ConfigError::MissingCommand)?,
             runtime_data,
+            source,
         })
     }
 
@@ -110,6 +128,7 @@ impl AppOptions {
     pub fn resolve(
         self,
         runtime_data_environment: Option<OsString>,
+        source_environment: Option<OsString>,
     ) -> Result<RuntimeConfig, ConfigError> {
         let (runtime_data, source) = if let Some(path) = self.runtime_data {
             (path, RuntimeDataSource::CommandLine)
@@ -123,10 +142,25 @@ impl AppOptions {
             return Err(ConfigError::EmptyRuntimeData(source));
         }
 
+        // The media (original-data) root is optional: the headless root-frame
+        // demo does not need it. An explicit option wins over the environment.
+        let media = if let Some(path) = self.source {
+            Some((path, RuntimeDataSource::CommandLine))
+        } else {
+            source_environment.map(|path| (PathBuf::from(path), RuntimeDataSource::Environment))
+        };
+        let media = match media {
+            Some((path, media_source)) if path.as_os_str().is_empty() => {
+                return Err(ConfigError::EmptySource(media_source));
+            }
+            other => other,
+        };
+
         Ok(RuntimeConfig {
             command: self.command,
             runtime_data,
             source,
+            media,
         })
     }
 }
@@ -137,6 +171,7 @@ pub struct RuntimeConfig {
     command: AppCommand,
     runtime_data: PathBuf,
     source: RuntimeDataSource,
+    media: Option<(PathBuf, RuntimeDataSource)>,
 }
 
 impl RuntimeConfig {
@@ -150,6 +185,24 @@ impl RuntimeConfig {
 
     pub fn runtime_data_source(&self) -> RuntimeDataSource {
         self.source
+    }
+
+    /// The read-only original-media root, if one was supplied.
+    pub fn media_root(&self) -> Option<&Path> {
+        self.media.as_ref().map(|(path, _)| path.as_path())
+    }
+
+    /// Where the media root came from, if one was supplied.
+    pub fn media_source(&self) -> Option<RuntimeDataSource> {
+        self.media.as_ref().map(|(_, source)| *source)
+    }
+
+    /// Build the portable [`DataPaths`] when a media root is available, pairing
+    /// the writable runtime-data root with the read-only media root.
+    pub fn data_paths(&self) -> Option<DataPaths> {
+        self.media
+            .as_ref()
+            .map(|(media, _)| DataPaths::new(self.runtime_data.clone(), media.clone()))
     }
 }
 
@@ -169,6 +222,7 @@ pub enum ConfigError {
     MissingCommand,
     MissingRuntimeData,
     EmptyRuntimeData(RuntimeDataSource),
+    EmptySource(RuntimeDataSource),
 }
 
 impl fmt::Display for ConfigError {
@@ -193,6 +247,12 @@ impl fmt::Display for ConfigError {
             Self::EmptyRuntimeData(RuntimeDataSource::Environment) => {
                 write!(formatter, "{RUNTIME_DATA_ENV} must not be empty")
             }
+            Self::EmptySource(RuntimeDataSource::CommandLine) => {
+                write!(formatter, "--source must not be empty")
+            }
+            Self::EmptySource(RuntimeDataSource::Environment) => {
+                write!(formatter, "{SOURCE_ENV} must not be empty")
+            }
         }
     }
 }
@@ -204,8 +264,41 @@ impl std::error::Error for ConfigError {}
 pub fn runtime_config(
     arguments: impl IntoIterator<Item = OsString>,
     runtime_data_environment: Option<OsString>,
+    source_environment: Option<OsString>,
 ) -> Result<RuntimeConfig, ConfigError> {
-    AppOptions::parse(arguments)?.resolve(runtime_data_environment)
+    AppOptions::parse(arguments)?.resolve(runtime_data_environment, source_environment)
+}
+
+/// The outcome of the recovered startup settings-load gate.
+///
+/// The loader accepts `save/cmRally.cfg` only at exactly
+/// [`cmr_core::settings_store::SETTINGS_BLOB_LEN`] bytes; otherwise the shipped
+/// defaults stand. This reproduces that decision over injected file bytes (the
+/// actual read is the native host's), returning the validated image with its
+/// runtime region cleared, or the reason the defaults are used.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StartupSettings {
+    /// A valid settings image was loaded (runtime region already cleared).
+    Loaded(SettingsImage),
+    /// No settings file was present; the shipped defaults stand.
+    Defaults,
+    /// A settings file was present but rejected by the exact-length gate.
+    Rejected(SettingsError),
+}
+
+/// Apply the recovered startup settings-load gate to the bytes of the config
+/// file (`None` when the file is absent).
+pub fn resolve_startup_settings(settings_file_bytes: Option<&[u8]>) -> StartupSettings {
+    match settings_file_bytes {
+        None => StartupSettings::Defaults,
+        Some(bytes) => match SettingsImage::from_file_bytes(bytes) {
+            Ok(mut image) => {
+                image.clear_runtime_region();
+                StartupSettings::Loaded(image)
+            }
+            Err(error) => StartupSettings::Rejected(error),
+        },
+    }
 }
 
 /// Stable measurements from one complete headless root-menu frame.
@@ -601,6 +694,7 @@ mod tests {
         let config = runtime_config(
             arguments(&["--headless-root-frame", "--runtime-data", "explicit-data"]),
             Some(OsString::from("environment-data")),
+            None,
         )
         .unwrap();
 
@@ -614,6 +708,7 @@ mod tests {
         let config = runtime_config(
             arguments(&["--headless-root-frame"]),
             Some(OsString::from("environment-data")),
+            None,
         )
         .unwrap();
 
@@ -626,6 +721,7 @@ mod tests {
         let config = runtime_config(
             arguments(&["--windowed-root-frame", "--runtime-data", "native-data"]),
             None,
+            None,
         )
         .unwrap();
 
@@ -636,11 +732,15 @@ mod tests {
     #[test]
     fn missing_and_empty_runtime_data_are_distinct_errors() {
         assert_eq!(
-            runtime_config(arguments(&["--headless-root-frame"]), None),
+            runtime_config(arguments(&["--headless-root-frame"]), None, None),
             Err(ConfigError::MissingRuntimeData)
         );
         assert_eq!(
-            runtime_config(arguments(&["--headless-root-frame"]), Some(OsString::new())),
+            runtime_config(
+                arguments(&["--headless-root-frame"]),
+                Some(OsString::new()),
+                None,
+            ),
             Err(ConfigError::EmptyRuntimeData(
                 RuntimeDataSource::Environment
             ))
@@ -649,6 +749,7 @@ mod tests {
             runtime_config(
                 arguments(&["--headless-root-frame", "--runtime-data", ""]),
                 Some(OsString::from("valid-fallback")),
+                None,
             ),
             Err(ConfigError::EmptyRuntimeData(
                 RuntimeDataSource::CommandLine
@@ -709,9 +810,117 @@ mod tests {
                 path.clone(),
             ],
             None,
+            None,
         )
         .unwrap();
 
         assert_eq!(config.runtime_data().as_os_str(), path.as_os_str());
+    }
+
+    #[test]
+    fn source_option_wins_over_its_environment_fallback_and_builds_data_paths() {
+        let config = runtime_config(
+            arguments(&[
+                "--windowed-root-frame",
+                "--runtime-data",
+                "/user",
+                "--source",
+                "/media/explicit",
+            ]),
+            None,
+            Some(OsString::from("/media/env")),
+        )
+        .unwrap();
+
+        assert_eq!(config.media_root(), Some(Path::new("/media/explicit")));
+        assert_eq!(config.media_source(), Some(RuntimeDataSource::CommandLine));
+        let paths = config.data_paths().unwrap();
+        assert_eq!(paths.settings_file(), Path::new("/user/save/cmRally.cfg"));
+        assert_eq!(paths.game_root(), Path::new("/media/explicit/game"));
+    }
+
+    #[test]
+    fn source_environment_is_used_only_as_a_fallback() {
+        let config = runtime_config(
+            arguments(&["--windowed-root-frame", "--runtime-data", "/user"]),
+            None,
+            Some(OsString::from("/media/env")),
+        )
+        .unwrap();
+        assert_eq!(config.media_root(), Some(Path::new("/media/env")));
+        assert_eq!(config.media_source(), Some(RuntimeDataSource::Environment));
+    }
+
+    #[test]
+    fn media_root_is_optional_and_empty_source_is_rejected() {
+        // No source at all: data paths cannot be built, but config is valid.
+        let config = runtime_config(
+            arguments(&["--headless-root-frame", "--runtime-data", "/user"]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.media_root(), None);
+        assert!(config.data_paths().is_none());
+        // An explicitly empty source is an error.
+        assert_eq!(
+            runtime_config(
+                arguments(&[
+                    "--windowed-root-frame",
+                    "--runtime-data",
+                    "/user",
+                    "--source",
+                    "",
+                ]),
+                None,
+                None,
+            ),
+            Err(ConfigError::EmptySource(RuntimeDataSource::CommandLine))
+        );
+        assert_eq!(
+            runtime_config(
+                arguments(&["--windowed-root-frame", "--runtime-data", "/user"]),
+                None,
+                Some(OsString::new()),
+            ),
+            Err(ConfigError::EmptySource(RuntimeDataSource::Environment))
+        );
+    }
+
+    #[test]
+    fn duplicate_source_option_is_rejected() {
+        assert_eq!(
+            AppOptions::parse(arguments(&[
+                "--windowed-root-frame",
+                "--source",
+                "one",
+                "--source",
+                "two",
+            ])),
+            Err(ConfigError::DuplicateOption("--source"))
+        );
+    }
+
+    #[test]
+    fn startup_settings_gate_matches_the_recovered_loader() {
+        use cmr_core::settings_store::{SETTINGS_BLOB_LEN, SettingsError};
+
+        // Absent file -> shipped defaults.
+        assert_eq!(resolve_startup_settings(None), StartupSettings::Defaults);
+        // Exact length -> loaded, runtime region cleared.
+        let mut raw = vec![0xabu8; SETTINGS_BLOB_LEN];
+        raw[0x184] = 0x55;
+        match resolve_startup_settings(Some(&raw)) {
+            StartupSettings::Loaded(image) => assert_eq!(image.as_bytes()[0x184], 0),
+            other => panic!("expected Loaded, got {other:?}"),
+        }
+        // Wrong length -> rejected, defaults stand.
+        assert_eq!(
+            resolve_startup_settings(Some(&[0u8; 8])),
+            StartupSettings::Rejected(SettingsError::WrongLength {
+                expected: SETTINGS_BLOB_LEN,
+                actual: 8,
+            })
+        );
     }
 }

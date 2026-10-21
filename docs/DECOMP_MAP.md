@@ -55,7 +55,7 @@ Status markers:
 - [x] `C10` Implement byte-text measurement, wrapping, and glyph layout.
 - [x] `C11` Upload and retain all 16 frontend fonts through shared sources.
 - [x] `C12` Recover startup art/palette selection and indexed presentation.
-- [ ] `C13` Run startup through a native executable and window.
+- [~] `C13` Run startup through a native executable and window (the `cmr-app` executable already parses a command + writable runtime-data root and runs the root frame headless or windowed via `cmr-platform-sdl3`; C13 threads the C05 portable settings/path backend through startup. `AppOptions` gains `--source <media root>` with the `CMR_ORIGINAL_DIR` environment fallback (`SOURCE_ENV`) - the portable replacement for the shipped registry `CDPath`/`HDPath` lookup - resolved optionally (an explicit option wins, an empty value is the typed `EmptySource` error, absence is allowed since the headless demo needs no media). `RuntimeConfig` exposes `media_root`/`media_source` and `data_paths()`, which pairs the writable runtime-data root with the media root into a `settings_store::DataPaths`. `resolve_startup_settings(file_bytes)` reproduces the recovered load gate over injected bytes - absent -> `Defaults`, exactly `0x1e20` -> `Loaded` with the runtime region cleared, wrong length -> `Rejected` - so the shipped defaults stand on a missing/short file. 5 new app tests (source precedence/fallback, optional media + empty-source rejection, duplicate `--source`, the settings gate). C13 -> partial; the SDL window run already exists, and the live game loop consumes `DataPaths`/`StartupSettings` + the B12 `HostLifecycle` once the full game loop (not just the root-frame demo) is SDL-driven (I-series).)
 - [x] `C14` Preserve unsafe shipped glyph metadata with safe per-glyph continuation.
 - [x] `C15` Preflight and execute identity-neutral persistent-font text safely.
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-21T21:24:00Z
-milestone=provide-the-portable-settings-image-and-data-path-backend
+updated_utc=2026-10-21T21:42:00Z
+milestone=thread-the-portable-settings-and-source-root-through-native-startup
 completed=52
-partial=47
-not_started=18
+partial=48
+not_started=17
 blocked=0
 total=117
-current_focus=C13-run-startup-through-a-native-executable-and-window
-next_exit_gate=stand-up-portable-startup-settings-and-the-native-executable
+current_focus=D18-run-the-complete-root-menu-interactively-in-a-native-window
+next_exit_gate=run-the-interactive-native-root-menu-end-to-end
 <!-- PROGRESS-TAIL-END -->
