@@ -428,6 +428,21 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   iterator resolves animation frame ordinals to generic group-2 records while
   preserving source offsets and later results after invalid ordinals. Runtime
   conversion and batching remain separate.
+- `cmr-core::c3d_render`: the backend-neutral Direct3D-IM submission contract
+  (E06). The shipped game renders through Direct3D Immediate Mode on
+  `IDirect3DDevice2` (DirectX 5) with a hardware 16-bit Z-buffer - no software
+  span-filler and no painter's triangle sort; ordering is a per-object distance
+  painter sort plus scene-graph order, opaque pass (Z-write on) then deferred
+  transparent batches (Z-write off). The module encodes the public DX5
+  render-state codes/values, the four-way `BlendMode`/`BlendConfig`
+  (opaque/color-keyed/alpha/additive) from `FUN_004a2540`, the
+  `ALPHABLENDENABLE`/`STIPPLEDALPHA` capability fallback, the `D3DLVERTEX`
+  diffuse `d3dcolor_argb` bake with the untextured/transparent constants, the
+  `Pass` Z-write model, and the squared-distance `object_sort_key`, so the
+  software oracle (E07) and a modern backend share one contract. The E02
+  `field_22`/`prim+0x00` word is confirmed render-irrelevant (the batch builder
+  keys on the texture handle). See evidence `rea.official-eu.c3d-rasterizer` and
+  `impl.c3d-render`.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one
   group-1 record and caller-prepared selectors. It preserves maximal
   consecutive selector runs and source entry order, deduplicates local entry32
