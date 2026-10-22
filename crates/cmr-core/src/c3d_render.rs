@@ -31,6 +31,9 @@
 
 /// `D3DRENDERSTATE_TEXTUREHANDLE` - current texture bind.
 pub const RS_TEXTUREHANDLE: u32 = 1;
+/// `D3DRENDERSTATE_TEXTUREPERSPECTIVE` - perspective-correct texture mapping
+/// (default on). The dispatcher disables it (affine) around a far inline draw.
+pub const RS_TEXTUREPERSPECTIVE: u32 = 4;
 /// `D3DRENDERSTATE_ZENABLE` - depth test.
 pub const RS_ZENABLE: u32 = 7;
 /// `D3DRENDERSTATE_ZWRITEENABLE` - depth write.

@@ -166,6 +166,53 @@ pub fn entity_is_deferred(distance_metric: i32, near_threshold: i32, current_cou
     distance_metric < near_threshold && current_count < DEFERRED_NEAR_LIST_CAP
 }
 
+// --- Per-object render-state brackets -----------------------------------------
+//
+// Beyond the scene-wide `FOGENABLE` and the deferred alpha bracket, the
+// dispatcher toggles two render states around individual object draws. These
+// are the last `FUN_004a07d0` peripheral details; both are transcribed from the
+// shipped `SetRenderState` (device vtable `+0x5c`) call sites.
+
+/// The texture-mapping mode the dispatcher selects for an object's draw
+/// (`FUN_004a07d0`: `SetRenderState(TEXTUREPERSPECTIVE, 0)` before the inline
+/// draw, then `SetRenderState(TEXTUREPERSPECTIVE, *(renderer+0x34))` to restore
+/// the global default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TexturePerspective {
+    /// Perspective correction disabled (affine). Taken only by an inline draw -
+    /// an object the primary visibility test (`FUN_004a1c00`) returns `0` for,
+    /// i.e. one not held back for the near list. (Inference: these are the more
+    /// distant objects, where affine mapping is cheaper and imperceptible.)
+    Affine,
+    /// The engine's global default (`renderer+0x34`, perspective correction on).
+    /// A near object is deferred and drawn later at this default, so it never
+    /// takes the affine bracket.
+    GlobalDefault,
+}
+
+/// The `TEXTUREPERSPECTIVE` value for an object's draw: [`TexturePerspective::Affine`]
+/// for an inline (non-deferred) draw, restored to [`TexturePerspective::GlobalDefault`]
+/// afterward; a deferred near object draws at the default.
+pub fn draw_texture_perspective(is_inline_draw: bool) -> TexturePerspective {
+    if is_inline_draw {
+        TexturePerspective::Affine
+    } else {
+        TexturePerspective::GlobalDefault
+    }
+}
+
+/// Whether the dispatcher force-disables `COLORKEYENABLE` around a single
+/// object's draw (`FUN_004a07d0`: `SetRenderState(COLORKEYENABLE, 0)` before,
+/// `SetRenderState(COLORKEYENABLE, 1)` after). This per-object override fires
+/// only for the distinguished focus entity (`param_3`) at render-capability
+/// level [`RENDER_CAP_SORTED`]; every other object keeps the prevailing bracket
+/// value. (The focus entity's exact gameplay role - e.g. the viewed car - is
+/// not yet pinned; `param_2`/`param_3` are the dispatcher's two special
+/// entities.)
+pub fn object_colorkey_disabled(cap: u32, is_focus_entity: bool) -> bool {
+    cap == RENDER_CAP_SORTED && is_focus_entity
+}
+
 // --- Scene-graph traversal ----------------------------------------------------
 
 /// A gameplay scene-graph node - the fields the traversal reads. Pointers are
@@ -562,5 +609,25 @@ mod tests {
                 }, // B reprocessed
             ]
         );
+    }
+
+    #[test]
+    fn texture_perspective_is_affine_only_for_the_inline_draw() {
+        assert_eq!(draw_texture_perspective(true), TexturePerspective::Affine);
+        assert_eq!(
+            draw_texture_perspective(false),
+            TexturePerspective::GlobalDefault
+        );
+    }
+
+    #[test]
+    fn colorkey_is_disabled_only_for_the_focus_entity_at_the_sorted_cap() {
+        // Fires exactly when cap == RENDER_CAP_SORTED and the object is the focus.
+        assert!(object_colorkey_disabled(RENDER_CAP_SORTED, true));
+        // A non-focus object, any other cap, or both negated: left untouched.
+        assert!(!object_colorkey_disabled(RENDER_CAP_SORTED, false));
+        assert!(!object_colorkey_disabled(RENDER_CAP_MAX, true));
+        assert!(!object_colorkey_disabled(0, true));
+        assert!(!object_colorkey_disabled(0, false));
     }
 }

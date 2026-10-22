@@ -526,8 +526,15 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   always draws; translucent only when blending is enabled or the override is set),
   and `deferred_translucent_state` (additive vs enable). This resolves the
   render-capability globals (`DAT_00a23994` is the level `0..=7`) and corrects the
-  E06 Z-write inference. See evidence `rea.official-eu.c3d-scene-graph` and
-  `impl.c3d-scene-graph`.
+  E06 Z-write inference. The two per-object render-state brackets the dispatcher
+  applies are also captured: `draw_texture_perspective` returns
+  `TexturePerspective::Affine` for an inline (non-deferred) draw - restored to
+  `GlobalDefault` afterward, with near-deferred objects drawn at the default - and
+  `object_colorkey_disabled(cap, is_focus_entity)` force-disables `COLORKEYENABLE`
+  for the distinguished focus entity (`param_3`) at render-cap level
+  `RENDER_CAP_SORTED` only (the focus entity's gameplay role is not yet pinned);
+  the `RS_TEXTUREPERSPECTIVE` = 4 constant lives in `c3d_render`. See evidence
+  `rea.official-eu.c3d-scene-graph` and `impl.c3d-scene-graph`.
 - `cmr-core::c3d_terrain_cull`: the backend-neutral terrain-cell visibility grid
   cull (E05), from `FUN_00490040`/`FUN_00490af0`/`FUN_00490800`. The world is a
   rectangular grid of cells; each frame the cull rebuilds the visible-cell list
