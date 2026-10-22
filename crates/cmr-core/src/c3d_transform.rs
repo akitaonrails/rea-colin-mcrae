@@ -28,6 +28,7 @@
 //! See evidence `rea.official-eu.c3d-world-transform`.
 
 use crate::c3d_camera::{MATRIX_IDENTITY_Q16, matmul_q16};
+use cmr_formats::c3d::C3dGroup0Record;
 
 /// The parent class value (`node+0x2c == 1000`) marking a *world-root* parent:
 /// a child of such a parent takes its local matrix directly as its world matrix
@@ -123,6 +124,48 @@ pub fn propagate_world_transforms(
     world
 }
 
+/// Computes the world matrix of every node in a parsed C3D scene.
+///
+/// This bridges the on-disk group-0 node stream (as parsed by
+/// [`cmr_formats::c3d`]) to [`propagate_world_transforms`]: each record supplies
+/// its local matrix ([`C3dGroup0Record::affine_matrix_q16`]) and its parent link
+/// ([`C3dGroup0Record::parent_index`], an absolute backward index, `None` for a
+/// root). The `parent_is_world_root` short-circuit is derived here from the
+/// parent record's class ([`C3dGroup0Record::node_class`] `== `[`WORLD_ROOT_CLASS`]).
+///
+/// The runtime-only toggles are left at their defaults for a static scene
+/// snapshot: `inherit_parent_world` (node `+0x188`) and `is_focus`
+/// (`DAT_00b77f4c`) are per-frame animation state the loader does not record, so
+/// a freshly loaded scene composes `local * parent_world` everywhere except
+/// under a world-root parent. `root_world` is the external container the roots
+/// hang under (pass [`MATRIX_IDENTITY_Q16`] for a stage loaded at the origin).
+///
+/// Records must arrive in parent-before-child order (as the loader emits them);
+/// the returned vector is in the same order, so `world[i]` is node `i`'s matrix.
+pub fn scene_world_transforms<'a>(
+    records: impl IntoIterator<Item = C3dGroup0Record<'a>>,
+    root_world: &[i32; 16],
+) -> Vec<[i32; 16]> {
+    let records: Vec<C3dGroup0Record<'a>> = records.into_iter().collect();
+    let inputs: Vec<NodeWorldInput> = records
+        .iter()
+        .map(|record| {
+            let parent = record.parent_index();
+            let parent_is_world_root = parent
+                .and_then(|p| records.get(p))
+                .is_some_and(|p| p.node_class() == WORLD_ROOT_CLASS as u32);
+            NodeWorldInput {
+                parent,
+                local: record.affine_matrix_q16(),
+                parent_is_world_root,
+                inherit_parent_world: false,
+                is_focus: false,
+            }
+        })
+        .collect();
+    propagate_world_transforms(&inputs, root_world)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +258,74 @@ mod tests {
         let world =
             propagate_world_transforms(&[NodeWorldInput::new(None, local)], &MATRIX_IDENTITY_Q16);
         assert_eq!(world[0], local);
+    }
+
+    /// Minimal valid `CM3D` buffer whose Group0 table holds `records` as
+    /// `(field_04, node_class, local_matrix)` tuples (group1/blob empty, no
+    /// mesh-index values). Mirrors the scene-graph test fixture shape.
+    fn c3d_group0_matrix_bytes(records: &[(i16, u32, [i32; 16])]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for &(field_04, class, matrix) in records {
+            let declared = 80usize; // header only, value_count == 0
+            let mut record = vec![0u8; declared];
+            record[0..4].copy_from_slice(&(declared as u32).to_le_bytes());
+            record[4..6].copy_from_slice(&field_04.to_le_bytes());
+            for (index, component) in matrix.iter().enumerate() {
+                let start = 0x08 + index * 4;
+                record[start..start + 4].copy_from_slice(&component.to_le_bytes());
+            }
+            record[0x48..0x4c].copy_from_slice(&class.to_le_bytes());
+            body.extend_from_slice(&record);
+        }
+        let mut buf = vec![0u8; 32];
+        buf[0..4].copy_from_slice(b"CM3D");
+        buf[4..8].copy_from_slice(&100u32.to_le_bytes());
+        buf[12..14].copy_from_slice(&(records.len() as u16).to_le_bytes());
+        buf[20..24].copy_from_slice(&32u32.to_le_bytes()); // group0 at offset 32
+        let end = (32 + body.len()) as u32;
+        buf[24..28].copy_from_slice(&end.to_le_bytes()); // empty group1 at end
+        buf[28..32].copy_from_slice(&end.to_le_bytes()); // empty blob at end
+        buf.extend_from_slice(&body);
+        buf
+    }
+
+    fn parse_group0(bytes: &[u8]) -> cmr_formats::c3d::C3dFile {
+        use cmr_formats::c3d::{C3dLimits, parse_c3d};
+        parse_c3d(
+            bytes,
+            C3dLimits {
+                max_payload_bytes: 4096,
+                max_group0_records: 16,
+                max_group1_records: 16,
+                max_blob_records: 16,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn scene_world_transforms_composes_a_parsed_child_against_its_parent() {
+        // Root at +x=3 (plain class), child local +z=4 (plain class, parent 0).
+        let bytes = c3d_group0_matrix_bytes(&[
+            (-1, 0x10, translate(3 * ONE, 0, 0)),
+            (0, 0x20, translate(0, 0, 4 * ONE)),
+        ]);
+        let file = parse_group0(&bytes);
+        let world = scene_world_transforms(file.group0_records(), &MATRIX_IDENTITY_Q16);
+        assert_eq!(world[0], translate(3 * ONE, 0, 0));
+        assert_eq!(world[1], translate(3 * ONE, 0, 4 * ONE));
+    }
+
+    #[test]
+    fn scene_world_transforms_short_circuits_under_a_world_root_parent() {
+        // Parent carries WORLD_ROOT_CLASS, so the child takes its local matrix
+        // directly, ignoring the parent's +x=3 translation.
+        let bytes = c3d_group0_matrix_bytes(&[
+            (-1, WORLD_ROOT_CLASS as u32, translate(3 * ONE, 0, 0)),
+            (0, 0x20, translate(0, 0, 4 * ONE)),
+        ]);
+        let file = parse_group0(&bytes);
+        let world = scene_world_transforms(file.group0_records(), &MATRIX_IDENTITY_Q16);
+        assert_eq!(world[1], translate(0, 0, 4 * ONE));
     }
 }
