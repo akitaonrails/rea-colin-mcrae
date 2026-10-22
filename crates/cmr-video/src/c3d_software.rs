@@ -22,6 +22,7 @@ use cmr_core::root_menu_c3d_runtime::{
 };
 use cmr_core::root_menu_c3d_topology::RootMenuC3dTopology;
 use cmr_formats::bitmap::{BitmapPaletteEntry, IndexedBitmap};
+use cmr_formats::c3d::{C3dEngineBitmap, C3dPalettedBitmap};
 
 #[derive(Debug, Eq, PartialEq)]
 struct RetainedC3dSourceInner {
@@ -72,6 +73,12 @@ pub enum SoftwareC3dSamplingError {
     },
     EmptySampledExtent([u16; 2]),
     NonRootOwner(FrontendC3dOwner),
+    /// A paletted engine texture carried no inline palette (its palette comes
+    /// from a separate device palette resource, not yet recovered).
+    EnginePaletteMissing,
+    /// The engine texture layout is not yet decodable into an indexed source
+    /// (the truecolor layouts, pending their own sampler).
+    UnsupportedEngineTexture,
 }
 
 impl SoftwareC3dRetainedSource {
@@ -166,6 +173,28 @@ impl SoftwareC3dRetainedSource {
             color_key_index,
         }))
     }
+
+    /// Builds a retained source from an already-decoded indexed engine texture
+    /// (one palette index per pixel, top-to-bottom), using the image extent as
+    /// the raw DIB extent and installing no color key.
+    fn from_engine_indexed(
+        owner: FrontendC3dOwner,
+        width: u32,
+        height: u32,
+        indices: Vec<u8>,
+        palette: Vec<BitmapPaletteEntry>,
+    ) -> Self {
+        Self(Arc::new(RetainedC3dSourceInner {
+            owner,
+            width,
+            height,
+            source_was_top_down: false,
+            source_dib_extent_low16: [width as u16, height as u16],
+            indices: indices.into_boxed_slice(),
+            palette: palette.into_boxed_slice(),
+            color_key_index: None,
+        }))
+    }
 }
 
 impl SoftwareC3dSampledTexture {
@@ -179,6 +208,79 @@ impl SoftwareC3dSampledTexture {
             source,
             resource.origin().preparation_policy().surface_layout,
         )
+    }
+
+    /// Builds a sampled texture from a parsed C3D engine inline texture blob
+    /// (the real stage/car group-2 material format).
+    ///
+    /// Only the paletted layout carrying an inline palette is decoded here; the
+    /// truecolor layouts and palette-less paletted blobs (whose palette comes
+    /// from a separate device palette resource) are rejected with
+    /// [`SoftwareC3dSamplingError::UnsupportedEngineTexture`] /
+    /// [`SoftwareC3dSamplingError::EnginePaletteMissing`] rather than guessed.
+    pub fn from_engine_bitmap(
+        bitmap: &C3dEngineBitmap<'_>,
+        owner: FrontendC3dOwner,
+    ) -> Result<Self, SoftwareC3dSamplingError> {
+        match bitmap {
+            C3dEngineBitmap::Paletted(paletted) => Self::from_engine_paletted(paletted, owner),
+            C3dEngineBitmap::Truecolor(_) => {
+                Err(SoftwareC3dSamplingError::UnsupportedEngineTexture)
+            }
+        }
+    }
+
+    /// Decodes a paletted engine texture into an indexed sampled texture, scaling
+    /// its inline `X1R5G5B5` palette to RGB and unpacking the 16-colour
+    /// two-pixels-per-byte rows (low nibble first).
+    fn from_engine_paletted(
+        bitmap: &C3dPalettedBitmap<'_>,
+        owner: FrontendC3dOwner,
+    ) -> Result<Self, SoftwareC3dSamplingError> {
+        let width = bitmap.pixel_width();
+        let height = usize::from(bitmap.pixel_height());
+
+        let palette = (0..bitmap.palette_entry_count())
+            .map(|index| {
+                let [red, green, blue] = bitmap
+                    .inline_palette_entry(index)
+                    .ok_or(SoftwareC3dSamplingError::EnginePaletteMissing)?;
+                Ok(BitmapPaletteEntry {
+                    red,
+                    green,
+                    blue,
+                    reserved: 0,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let pixels = if bitmap.is_sixteen_colour() {
+            let mut expanded = Vec::with_capacity(width * height);
+            for &byte in bitmap.index_data() {
+                expanded.push(byte & 0x0f);
+                expanded.push(byte >> 4);
+            }
+            expanded
+        } else {
+            bitmap.index_data().to_vec()
+        };
+
+        let expected = width * height;
+        if pixels.len() != expected {
+            return Err(SoftwareC3dSamplingError::InvalidNormalizedIndexLength {
+                expected,
+                actual: pixels.len(),
+            });
+        }
+
+        let source = SoftwareC3dRetainedSource::from_engine_indexed(
+            owner,
+            width as u32,
+            height as u32,
+            pixels,
+            palette,
+        );
+        Self::from_retained(source, C3dSurfaceLayoutGates::default())
     }
 
     /// Builds only the statically proven square, aligned root texture subset.
@@ -357,6 +459,106 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn engine_paletted_blob_samples_into_an_indexed_texture() {
+        use cmr_formats::c3d::{C3D_ENGINE_PALETTED_TAG, C3dEngineBitmap, parse_c3d_engine_bitmap};
+
+        // 16-colour (mode & 3 == 0) with an inline palette (mode & 8).
+        let palette_entries = 16usize;
+        let descriptor = 0x14 + palette_entries * 2; // palette ends here
+        let data_start = descriptor + 0x0c;
+        // stored_width 1 -> pixel width 4 (4 * stored_width); stored_height 2.
+        let (stored_width, stored_height) = (1u16, 2u16);
+        let row_bytes = 2 * stored_width as usize;
+        let mut blob = vec![0u8; data_start + row_bytes * stored_height as usize];
+        blob[0] = C3D_ENGINE_PALETTED_TAG;
+        blob[0x04] = 0x08; // 16-colour + inline palette
+        // Palette entry 1 = red, entry 2 = green (X1R5G5B5), 2 bytes per entry.
+        blob[0x16..0x18].copy_from_slice(&0x001fu16.to_le_bytes());
+        blob[0x18..0x1a].copy_from_slice(&0x03e0u16.to_le_bytes());
+        blob[descriptor + 0x08..descriptor + 0x0a].copy_from_slice(&stored_width.to_le_bytes());
+        blob[descriptor + 0x0a..descriptor + 0x0c].copy_from_slice(&stored_height.to_le_bytes());
+        // Four bytes (2 per row), each two pixels low nibble first:
+        // row0 = [1,2,3,4], row1 = [5,6,7,8].
+        blob[data_start] = 0x21;
+        blob[data_start + 1] = 0x43;
+        blob[data_start + 2] = 0x65;
+        blob[data_start + 3] = 0x87;
+
+        let C3dEngineBitmap::Paletted(paletted) = parse_c3d_engine_bitmap(&blob).unwrap() else {
+            panic!("tag 0x10 must parse as paletted");
+        };
+        assert_eq!(paletted.pixel_width(), 4);
+        assert_eq!(paletted.pixel_height(), 2);
+
+        let texture = SoftwareC3dSampledTexture::from_engine_bitmap(
+            &C3dEngineBitmap::Paletted(paletted),
+            FrontendC3dOwner::Stage,
+        )
+        .unwrap();
+        // Default gates apply no reduction, so the sampled extent is the source.
+        assert_eq!(texture.extent(), [4, 2]);
+        // 16-colour rows unpack low nibble first.
+        assert_eq!(texture.indices(), [1, 2, 3, 4, 5, 6, 7, 8]);
+        // The inline X1R5G5B5 palette scaled each 5-bit channel to 8 bits.
+        assert_eq!(texture.palette().len(), 16);
+        assert_eq!(
+            texture.palette()[1],
+            BitmapPaletteEntry {
+                red: 248,
+                green: 0,
+                blue: 0,
+                reserved: 0,
+            }
+        );
+        assert_eq!(
+            texture.palette()[2],
+            BitmapPaletteEntry {
+                red: 0,
+                green: 248,
+                blue: 0,
+                reserved: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn engine_truecolor_and_palette_less_paletted_are_rejected_closed() {
+        use cmr_formats::c3d::{C3D_ENGINE_PALETTED_TAG, C3dEngineBitmap, parse_c3d_engine_bitmap};
+
+        // A truecolor blob (any non-0x10 tag) is not yet decodable here.
+        let mut truecolor = vec![0u8; 0x40];
+        truecolor[0] = 0x05;
+        truecolor[0x1c] = 0x18; // 24 bpp
+        let bitmap = parse_c3d_engine_bitmap(&truecolor).unwrap();
+        assert_eq!(
+            SoftwareC3dSampledTexture::from_engine_bitmap(&bitmap, FrontendC3dOwner::Stage),
+            Err(SoftwareC3dSamplingError::UnsupportedEngineTexture)
+        );
+
+        // A paletted blob without an inline palette (mode & 8 clear) has no
+        // self-contained palette to sample.
+        let descriptor = 0x08;
+        let data_start = descriptor + 0x0c;
+        // 256-colour, stored width 2 -> 4 bytes per row, one row.
+        let mut paletted = vec![0u8; data_start + 4];
+        paletted[0] = C3D_ENGINE_PALETTED_TAG;
+        paletted[0x04] = 0x01; // 256-colour, no inline palette
+        paletted[descriptor + 0x08..descriptor + 0x0a].copy_from_slice(&2u16.to_le_bytes());
+        paletted[descriptor + 0x0a..descriptor + 0x0c].copy_from_slice(&1u16.to_le_bytes());
+        let C3dEngineBitmap::Paletted(no_palette) = parse_c3d_engine_bitmap(&paletted).unwrap()
+        else {
+            panic!("tag 0x10 parses as paletted");
+        };
+        assert_eq!(
+            SoftwareC3dSampledTexture::from_engine_bitmap(
+                &C3dEngineBitmap::Paletted(no_palette),
+                FrontendC3dOwner::Stage,
+            ),
+            Err(SoftwareC3dSamplingError::EnginePaletteMissing)
+        );
+    }
 
     #[test]
     fn retained_source_owns_normalized_indices_and_rgbx_palette() {
