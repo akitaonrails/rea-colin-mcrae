@@ -20,6 +20,7 @@ pub mod c3d_render;
 pub mod c3d_scene_graph;
 pub mod c3d_terrain_cull;
 pub mod c3d_topology;
+pub mod c3d_transform;
 pub mod c3d_type2_fog;
 pub mod car_resources;
 pub mod championship_assets;

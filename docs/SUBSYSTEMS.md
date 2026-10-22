@@ -592,6 +592,19 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   is not reproduced: the UV helpers take an already-normalized normal, as the
   object-sort and terrain-cull recoveries take pre-scaled inputs. See evidence
   `rea.official-eu.c3d-reflection` and `impl.c3d-reflection`.
+- `cmr-core::c3d_transform`: the per-frame scene-graph world-transform
+  propagation (E07/E08), from `FUN_00492190`/`FUN_00492520`. The loader stores
+  only each node's local matrix; this pre-pass composes the world matrix down the
+  tree as `world = local * parent_world` (`c3d_camera::matmul_q16`, row-vector),
+  with two special cases - a world-root parent (`parent+0x2c == 1000`) makes the
+  child take its local matrix as world, and a node flagged at `+0x188` inherits
+  the parent world verbatim - and a focus-entity (`DAT_00b77f4c`) rotation-to-
+  identity reset (translation kept). `propagate_world_transforms(nodes,
+  root_world)` returns each node's world matrix; roots compose against the
+  external container world (identity by default). The draw walker submits a copy
+  of this matrix (node `+0x114`) as the Direct3D WORLD transform; the runtime
+  dirty-flag/`+0x180`-kind scheduling gates are left to the caller. See evidence
+  `rea.official-eu.c3d-world-transform` and `impl.c3d-world-transform`.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one
   group-1 record and caller-prepared selectors. It preserves maximal
   consecutive selector runs and source entry order, deduplicates local entry32
