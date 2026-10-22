@@ -8,9 +8,13 @@
 //!   fwd * dot(fwd, v)`, then `v -= perp * K`, with `K = 0x51e` (~0.02) normally
 //!   and `0x28f` (~0.01) while the handbrake flag is set (half lateral grip ->
 //!   slides).
-//! - **Slope-grip loss** (`FUN_00408f50`): available grip falls as the car tilts.
-//!   The loss is zero below tilt `0xb333` (0.70), then ramps linearly with slope
-//!   `0x42ab5` (~4.1667) up to a cap of `0xe666` (0.90).
+//! - **Slope grip** (`FUN_00408f50`): grip is a factor of the surface-normal Y
+//!   component (the slope cosine, `1.0` flat). Flat ground (`normal_y >= 0xf0a3`,
+//!   ~0.9399) grips at the ceiling `0xe666` (0.90); between `0xb333` (0.70) and
+//!   that ceiling it ramps linearly - `(normal_y - 0xb333) * 0x42ab5` (slope
+//!   ~4.1667), floored at 0, then *multiplied* by the `0xe666` ceiling; at or
+//!   below `0xb333` (steeper than ~45 degrees) grip is zero. The lateral slip a
+//!   surface *retains* is `1.0 - grip`.
 //! - **Integrator** (`FUN_0040a4a0`): `accel = force * invMass + gravity`;
 //!   quadratic drag `drag = v * speed` (drag coefficient `1.0`); velocity
 //!   integrates as `v += accel * 0x3333` (0.2 gain, the 40 ms step folded into
@@ -25,8 +29,9 @@
 //! `rea.official-eu.sim-grip`.
 //!
 //! Observations: the formulas and constants above, read from the solver passes.
-//! Inferences: the slope ramp reduces grip with tilt; the two grip tiers are
-//! high/low surfaces. Unknowns (not reproduced): the friction-circle/slip-angle
+//! Inferences: the slope ramp raises grip as the surface flattens (output is a
+//! grip factor, high on flat ground); the two surface tiers are high/low grip.
+//! Unknowns (not reproduced): the friction-circle/slip-angle
 //! tyre saturation in `FUN_0040d810`, the exact semi-implicit position update's
 //! half-accel term, the suspension damper magnitude source, and the numeric
 //! contents of the runtime-loaded per-surface and per-car tables.
@@ -44,14 +49,21 @@ pub const LATERAL_GRIP_K: Fixed16 = Fixed16::from_raw(0x51e);
 /// Lateral-grip strength while the handbrake is held (`0x28f` ~ 0.01, half grip).
 pub const LATERAL_GRIP_K_HANDBRAKE: Fixed16 = Fixed16::from_raw(0x28f);
 
-/// Tilt below which no slope-grip loss applies (`0xb333` ~ 0.70).
-pub const SLOPE_GRIP_MIN_TILT: Fixed16 = Fixed16::from_raw(0xb333);
+/// Surface-normal Y at and below which [`slope_grip`] yields zero grip (`0xb333`
+/// ~ 0.70, i.e. steeper than ~45 degrees).
+pub const SLOPE_NORMAL_Y_MIN: Fixed16 = Fixed16::from_raw(0xb333);
 
-/// Slope of the slope-grip loss ramp (`0x42ab5` ~ 4.1667).
+/// Surface-normal Y at and above which [`slope_grip`] saturates at the flat
+/// ceiling (`0xf0a3` ~ 0.9399).
+pub const SLOPE_NORMAL_Y_MAX: Fixed16 = Fixed16::from_raw(0xf0a3);
+
+/// Slope of the grip ramp (`0x42ab5` ~ 4.1667), mapping the normal-Y band onto
+/// `[0, ~1]` before the flat-grip scale.
 pub const SLOPE_GRIP_RAMP: Fixed16 = Fixed16::from_raw(0x42ab5);
 
-/// Maximum slope-grip loss (`0xe666` ~ 0.90).
-pub const SLOPE_GRIP_MAX_LOSS: Fixed16 = Fixed16::from_raw(0xe666);
+/// Grip factor on flat ground and the ceiling the ramp is scaled by (`0xe666`
+/// ~ 0.90).
+pub const SLOPE_GRIP_FLAT: Fixed16 = Fixed16::from_raw(0xe666);
 
 /// Recovered high-grip surface coefficient tier (`0x3d70` ~ 0.24).
 pub const SURFACE_GRIP_HIGH: Fixed16 = Fixed16::from_raw(0x3d70);
@@ -76,15 +88,20 @@ pub fn apply_lateral_grip(velocity: Vec3, forward_unit: Vec3, handbrake: bool) -
     velocity.sub(perpendicular.scale(k))
 }
 
-/// The slope-grip loss for a tilt value, reproducing `FUN_00408f50`: zero below
-/// [`SLOPE_GRIP_MIN_TILT`], then `(tilt - min) * ramp` capped at
-/// [`SLOPE_GRIP_MAX_LOSS`].
-pub fn slope_grip_loss(tilt: Fixed16) -> Fixed16 {
-    if tilt <= SLOPE_GRIP_MIN_TILT {
+/// The slope grip factor for a surface-normal Y component, reproducing
+/// `FUN_00408f50`: at or above [`SLOPE_NORMAL_Y_MAX`] it is the flat ceiling
+/// [`SLOPE_GRIP_FLAT`]; between [`SLOPE_NORMAL_Y_MIN`] and that limit it ramps as
+/// `(normal_y - min) * `[`SLOPE_GRIP_RAMP`] (floored at 0) scaled by the ceiling;
+/// at or below the min it is zero.
+pub fn slope_grip(surface_normal_y: Fixed16) -> Fixed16 {
+    if surface_normal_y >= SLOPE_NORMAL_Y_MAX {
+        return SLOPE_GRIP_FLAT;
+    }
+    let ramp = surface_normal_y.sub(SLOPE_NORMAL_Y_MIN).mul(SLOPE_GRIP_RAMP);
+    if ramp.raw() <= 0 {
         return Fixed16::ZERO;
     }
-    let loss = tilt.sub(SLOPE_GRIP_MIN_TILT).mul(SLOPE_GRIP_RAMP);
-    loss.min(SLOPE_GRIP_MAX_LOSS)
+    ramp.mul(SLOPE_GRIP_FLAT)
 }
 
 /// Net acceleration from the summed force, reproducing the integrator's
@@ -140,15 +157,19 @@ mod tests {
     }
 
     #[test]
-    fn slope_grip_loss_ramps_and_caps() {
-        // Below the tilt threshold: no loss.
-        assert_eq!(slope_grip_loss(Fixed16::from_raw(0x8000)), Fixed16::ZERO);
-        assert_eq!(slope_grip_loss(SLOPE_GRIP_MIN_TILT), Fixed16::ZERO);
-        // Well past the threshold: capped at the max loss.
-        assert_eq!(slope_grip_loss(Fixed16::ONE), SLOPE_GRIP_MAX_LOSS);
-        // Just past the threshold: a small positive loss below the cap.
-        let small = slope_grip_loss(Fixed16::from_raw(0xc000));
-        assert!(small.raw() > 0 && small.raw() < SLOPE_GRIP_MAX_LOSS.raw());
+    fn slope_grip_ramps_and_saturates() {
+        // Flat ground (normal straight up) saturates at the 0.9 ceiling.
+        assert_eq!(slope_grip(Fixed16::ONE), SLOPE_GRIP_FLAT);
+        // At and above the max normal-Y it is still the flat ceiling.
+        assert_eq!(slope_grip(SLOPE_NORMAL_Y_MAX), SLOPE_GRIP_FLAT);
+        // At and below the min (steeper than ~45 deg) grip is zero.
+        assert_eq!(slope_grip(SLOPE_NORMAL_Y_MIN), Fixed16::ZERO);
+        assert_eq!(slope_grip(Fixed16::from_raw(0x8000)), Fixed16::ZERO);
+        // Inside the band: positive, below the ceiling, and monotonic.
+        let mid = slope_grip(Fixed16::from_raw(0xe000)); // ~0.875
+        assert!(mid.raw() > 0 && mid.raw() < SLOPE_GRIP_FLAT.raw());
+        let higher = slope_grip(Fixed16::from_raw(0xf000)); // ~0.9375
+        assert!(higher.raw() > mid.raw());
     }
 
     #[test]
