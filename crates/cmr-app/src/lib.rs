@@ -18,8 +18,8 @@ use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
 use cmr_core::fixed_point::{Fixed16, Vec3};
 use cmr_core::frontend::{FrontendPhase, RootSelection};
 use cmr_core::game_menu_flow::MenuFlowInputs;
+use cmr_core::game_race_flow::{InRaceInputs, race_flow_next};
 use cmr_core::game_session::GameSession;
-use cmr_core::game_state::GameState;
 use cmr_core::host_loop::HostClock;
 use cmr_core::localization::Language;
 use cmr_core::race_state::{CarState, Controls, RaceState, SimParams};
@@ -29,6 +29,7 @@ use cmr_core::root_menu_visual::{
     ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16, ROOT_INITIAL_VERTICAL_TRANSFORM_Q16, RootRenderInput,
 };
 use cmr_core::settings_store::{DataPaths, SettingsError, SettingsImage};
+use cmr_core::stage_checkpoints::StageProgress;
 use cmr_core::startup::{StartupLanguage, StartupScreen};
 use cmr_core::startup_display::{
     StartupDisplay, StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
@@ -37,6 +38,7 @@ use cmr_core::surface::PaletteMapping;
 use cmr_formats::bitmap::BitmapLimits;
 use cmr_formats::c3d::C3dLimits;
 use cmr_formats::riff_palette::PaletteEntry;
+use cmr_formats::stage::CatNode;
 use cmr_formats::stage::{
     C3D_EXTENSION, CAT_EXTENSION, StageLoadError, StageSectionSource, load_stage,
 };
@@ -1147,12 +1149,30 @@ impl HostClock for StationaryClock {
 }
 
 /// The forward drive force (Q16.16) the headless session applies each in-race
-/// tick, and the +x finish-line coordinate it drives toward. These are
-/// **harness constants** for the demonstration drive, not recovered values.
+/// tick. A **harness constant** for the demonstration drive, not a recovered
+/// value.
 const GAME_SESSION_DRIVE_FORCE_Q16: i32 = 8 << 16;
-const GAME_SESSION_FINISH_X_Q16: i32 = 40 << 16;
 /// A safety cap on frames so a mis-tuned drive cannot loop forever.
 const GAME_SESSION_MAX_FRAMES: u32 = 100_000;
+
+/// The synthetic `.cat` checkpoint line the headless drive runs along: split
+/// nodes at +x = 10/20/40 world units (Q16.16), each facing +x. This is a
+/// **harness stand-in** for a real stage's `.cat` spline - the +x auto-drive
+/// follows this straight line, whereas a real 3D spline needs real steering
+/// (input/replay), a later milestone. The crossing predicate and the finish
+/// detection are the recovered [`StageProgress`] semantics, not a harness.
+fn headless_checkpoint_line() -> Vec<CatNode> {
+    [10i32, 20, 40]
+        .into_iter()
+        .map(|x| CatNode {
+            position: [x << 16, 0, 0],
+            direction: [1 << 16, 0, 0],
+            split_flag: 0b1, // a split for car 0
+            reserved: 0,
+            seq_index: 0,
+        })
+        .collect()
+}
 
 /// The result of a headless game-session run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1191,17 +1211,23 @@ impl HeadlessGameSessionOutput {
 }
 
 /// Runs the recovered top-level game FSM headless from boot to quit, driving the
-/// in-race band with the recovered deterministic race sim
-/// ([`cmr_core::race_state::RaceState`]).
+/// in-race band through the recovered in-race decision tables
+/// ([`race_flow_next`]) with the recovered checkpoint tracker
+/// ([`StageProgress`]) raising the finish.
 ///
-/// The menu band takes the direct (non-interactive) path
-/// ([`MenuFlowInputs::default`]): boot seeds state `1` and the FSM runs straight
-/// through `3 -> 4 -> 5` into the in-race band. In state `5` (the main driving
-/// tick) the race sim steps one fixed tick per frame under a stationary clock; a
-/// **harness** finish condition (the car reaching the +x finish line) routes the
-/// recovered graph `5 -> 9 -> 0xb -> 0xc -> 0`, draining to the stopped state.
-/// The choice of which in-race sub-states mean "finish" is a demonstration path
-/// through the recovered transition graph, not recovered sub-state semantics.
+/// The session runs in **front-end mode** (`frontend_active`) so the recovered
+/// graph terminates cleanly through the real tables: the menu band routes
+/// `1 -> 2 -> 3 -> 4 -> 7` (`frontend_loop` confirmed, `load_arm` -> entry `7`),
+/// then the gameplay band runs `7 -> 5 -> 9 -> 0xb -> 0xc -> 0`. In state `5`
+/// (the main driving tick) the deterministic race sim steps one fixed tick per
+/// frame under a stationary clock and feeds the car's world position to a
+/// [`StageProgress`] walking the synthetic [`headless_checkpoint_line`]; when
+/// the tracker crosses the final gate it raises `stage_finished`, and the
+/// recovered [`drive_next`](cmr_core::game_race_flow::drive_next) table hands off
+/// to the front-end finish-flyby (`9`). Every in-race transition is
+/// [`race_flow_next`], not an ad-hoc choice; the drive force, the synthetic
+/// checkpoint line, and the scripted front-end sequencer inputs (the replay/
+/// fade/quit flags) are documented **harness** stand-ins for the real subsystems.
 pub fn run_headless_game_session() -> HeadlessGameSessionOutput {
     let clock = StationaryClock;
     let mut session = GameSession::new();
@@ -1216,29 +1242,44 @@ pub fn run_headless_game_session() -> HeadlessGameSessionOutput {
         handbrake: false,
     };
 
+    // Front-end menu inputs route the menu band 1 -> 2 -> 3 -> 4 -> 7.
+    let menu_inputs = MenuFlowInputs {
+        frontend_active: true,
+        root_menu_ready: true,
+        screen_graph_ready: true,
+        ..MenuFlowInputs::default()
+    };
+
+    let nodes = headless_checkpoint_line();
+    let mut progress = StageProgress::new(&nodes, 0);
     let mut sim_ticks = 0u32;
-    let mut finished = false;
-    let mut finish_centiseconds = None;
-    let menu_inputs = MenuFlowInputs::default();
 
     let mut frames = 0u32;
     while !session.is_stopped() && frames < GAME_SESSION_MAX_FRAMES {
         frames += 1;
-        session.run_frame(&clock, menu_inputs, |state| match state.id() {
-            5 => {
+        session.run_frame(&clock, menu_inputs, |state| {
+            // State 5 is the main driving tick: advance the sim and the
+            // checkpoint tracker. Other in-race states are transitions/overlays.
+            if state.id() == 5 {
                 let sample = race.step(&controls, &params);
                 sim_ticks += 1;
-                if sample.car.position.x.raw() >= GAME_SESSION_FINISH_X_Q16 {
-                    finished = true;
-                    finish_centiseconds = Some(sample.centiseconds);
-                    GameState::new(9).expect("9 is a recovered state")
-                } else {
-                    state
-                }
+                progress.update(sample.car.position, sample.centiseconds);
             }
-            9 => GameState::new(0xB).expect("0xb is a recovered state"),
-            0xB => GameState::new(0xC).expect("0xc is a recovered state"),
-            _ => state,
+            // The recovered in-race inputs. In normal driving the finish flag is
+            // the tracker's; the front-end sequencer flags are scripted so the
+            // recovered front-end path (5 -> 9 -> 0xb -> 0xc) runs to completion.
+            let inputs = InRaceInputs {
+                frontend_active: true,
+                stage_world_ready: true,
+                stage_finished: progress.finished(),
+                replay_ready: true,
+                replay_intro_done: true,
+                flyby_cinematic_done: true,
+                quit_requested: true,
+                fade_done: true,
+                ..InRaceInputs::default()
+            };
+            race_flow_next(state, inputs).unwrap_or(state)
         });
     }
 
@@ -1246,8 +1287,8 @@ pub fn run_headless_game_session() -> HeadlessGameSessionOutput {
         frames,
         sim_ticks,
         final_state: session.current().id(),
-        finished,
-        finish_centiseconds,
+        finished: progress.finished(),
+        finish_centiseconds: progress.finish_centiseconds(),
         final_position_x_q16: race.car().position.x.raw(),
         stage_clock_q16: race.clock().raw(),
     }
@@ -1322,15 +1363,15 @@ mod tests {
         assert_eq!(first, second, "the session must be deterministic");
 
         // It drives the FSM to the terminal stopped state, having stepped the
-        // in-race sim and crossed the harness finish line.
+        // in-race sim and crossed the recovered checkpoint tracker's final gate.
         assert_eq!(first.final_state, 0);
         assert!(first.finished);
         assert!(first.finish_centiseconds.is_some());
         assert!(first.sim_ticks > 0);
         // It stopped well inside the safety cap (did not spin).
         assert!(first.frames < GAME_SESSION_MAX_FRAMES);
-        // The car reached at least the finish line on +x.
-        assert!(first.final_position_x_q16 >= GAME_SESSION_FINISH_X_Q16);
+        // The car reached at least the last checkpoint node on +x (40.0 Q16.16).
+        assert!(first.final_position_x_q16 >= 40 << 16);
         // The summary is a single path-free line.
         let summary = first.stable_summary();
         assert!(summary.starts_with("game-session frames="));
