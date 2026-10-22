@@ -21,7 +21,7 @@ use cmr_core::game_menu_flow::MenuFlowInputs;
 use cmr_core::gameplay_session::{GameplaySession, InRaceScript};
 use cmr_core::host_loop::HostClock;
 use cmr_core::localization::Language;
-use cmr_core::race_state::{CarState, Controls, SimParams};
+use cmr_core::race_state::{Controls, SimParams};
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::{
@@ -47,6 +47,7 @@ use cmr_platform_sdl3::{
     run_interactive_root_frame, run_windowed_game_session as run_windowed_game_session_loop,
 };
 use cmr_core::drive_controls::DriveResponse;
+use cmr_core::gameplay_camera::{ChasePreset, GameplayCamera};
 use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
 use cmr_core::render_route::{RenderRoute, composes_frontend_root, composes_world};
 use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
@@ -995,20 +996,6 @@ fn stage_placeholder_camera() -> [i32; 16] {
     camera
 }
 
-/// A follow camera for the windowed session: the placeholder camera translated
-/// by the car's world position so the car stays framed and the track scrolls as
-/// it drives. The camera-follow mapping is a **harness presentation** choice (the
-/// base camera is itself a placeholder); the recovered `.cat`-start gameplay
-/// camera is a later wire-up.
-fn follow_camera(car: &CarState) -> [i32; 16] {
-    let mut camera = stage_placeholder_camera();
-    // Translation lives in elements 12/13/14 (the recovered Q16.16 world basis).
-    camera[12] = camera[12].wrapping_add(car.position.x.raw());
-    camera[13] = camera[13].wrapping_add(car.position.y.raw());
-    camera[14] = camera[14].wrapping_add(car.position.z.raw());
-    camera
-}
-
 /// A deterministic grayscale display palette used as a placeholder until the
 /// recovered gameplay active palette is wired.
 fn stage_placeholder_palette() -> [PaletteEntry; 256] {
@@ -1249,6 +1236,7 @@ fn advance_game_frame<C: HostClock>(
     progress: &mut StageProgress,
     clock: &C,
     resources: &StageRenderResources,
+    camera: &mut GameplayCamera,
     input: WindowedInput,
 ) -> (Option<RenderRoute>, Option<SoftwarePresentedFrame>, bool) {
     let controls = if let Some(pad) = input.gamepad {
@@ -1262,8 +1250,13 @@ fn advance_game_frame<C: HostClock>(
     };
     let advanced = session.advance(clock, menu_inputs, controls, progress);
     let world = if advanced.route.is_some_and(composes_world) {
+        // The recovered in-race chase camera: place behind + above the car along
+        // its heading and ease the orientation (`gameplay_camera`), replacing the
+        // earlier placeholder follow camera. NTSC base rate (`pal = false`).
+        let car = session.car();
+        let camera_world = camera.update(car.position, car.heading, ChasePreset::Near, false);
         resources
-            .compose(&follow_camera(&session.car()))
+            .compose(camera_world)
             .ok()
             .map(|rendered| rendered.frame)
     } else {
@@ -1300,6 +1293,7 @@ pub fn run_windowed_game_session(
     let nodes = headless_checkpoint_line();
     let mut progress = StageProgress::new(&nodes, 0);
     let clock = WallClock::new();
+    let mut camera = GameplayCamera::new();
 
     // Best-effort: open the recovered front-end root-menu compositor from the
     // runtime-data root so the interactive front-end route (state 2) presents the
@@ -1326,6 +1320,7 @@ pub fn run_windowed_game_session(
                     &mut progress,
                     &clock,
                     &resources,
+                    &mut camera,
                     input,
                 );
                 // A composed world frame wins; otherwise the interactive front-end
@@ -1361,6 +1356,7 @@ pub fn run_windowed_game_session(
             &mut progress,
             &clock,
             &resources,
+            &mut camera,
             input,
         );
         WindowedGameFrame {
@@ -1886,24 +1882,6 @@ mod tests {
             ),
             Err(ConfigError::MissingSourceForStage)
         );
-    }
-
-    #[test]
-    fn follow_camera_tracks_the_car_world_position() {
-        use cmr_core::fixed_point::{Fixed16, Vec3};
-
-        let base = stage_placeholder_camera();
-        // At rest the follow camera is exactly the placeholder camera.
-        assert_eq!(follow_camera(&CarState::at_rest()), base);
-
-        // Driving +x shifts the camera's x-translation by the same raw amount,
-        // leaving the other axes at the placeholder values.
-        let mut car = CarState::at_rest();
-        car.position = Vec3::new(Fixed16::from_int(5), Fixed16::ZERO, Fixed16::ZERO);
-        let camera = follow_camera(&car);
-        assert_eq!(camera[12], base[12].wrapping_add(5 << 16));
-        assert_eq!(camera[13], base[13]);
-        assert_eq!(camera[14], base[14]);
     }
 
     #[test]

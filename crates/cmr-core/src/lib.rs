@@ -60,6 +60,7 @@ pub mod game_menu_flow;
 pub mod game_race_flow;
 pub mod game_session;
 pub mod game_state;
+pub mod gameplay_camera;
 pub mod gameplay_input;
 pub mod gameplay_session;
 pub mod host_lifecycle;
