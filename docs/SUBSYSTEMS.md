@@ -592,6 +592,18 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   is not reproduced: the UV helpers take an already-normalized normal, as the
   object-sort and terrain-cull recoveries take pre-scaled inputs. See evidence
   `rea.official-eu.c3d-reflection` and `impl.c3d-reflection`.
+- `cmr-core::c3d_mesh`: the runtime mesh layout and the per-node draw-call
+  expansion (E06/E07), from the draw walker `FUN_004a28a0`. A drawable node
+  selects its LOD (`mesh+0x80`), reads the draw-group header (`mesh+0x20 +
+  lod*0x18`, vertex type at `+0x10`) and the prim-list head (`mesh+0x34 +
+  lod*0x18`), and walks the singly linked prim records (ordinal/vcount/vbuf/
+  icount/ibuf, next at `+0x18`). `draw_call(vertex_type, prim)` yields the
+  `DrawIndexedPrimitive{ TRIANGLELIST, vertex_type, vbuf, vcount, ibuf, icount,
+  DONOTUPDATEEXTENTS }`, `PrimBatch::is_untextured` tests the `-1` ordinal, and
+  `prim_takes_fog` gates the per-prim fog bake (global flag on and vertex type
+  not `1`). The buffers are opaque handles from the batch builder (`c3d_batch`);
+  the per-prim translucent gate is `c3d_scene_graph::node_prims_draw`. See
+  evidence `rea.official-eu.c3d-rasterizer` and `impl.c3d-mesh-draw`.
 - `cmr-core::c3d_transform`: the per-frame scene-graph world-transform
   propagation (E07/E08), from `FUN_00492190`/`FUN_00492520`. The loader stores
   only each node's local matrix; this pre-pass composes the world matrix down the
