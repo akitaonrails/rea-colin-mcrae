@@ -32,8 +32,9 @@ use cmr_formats::stored_asset::DecodeLimits;
 use cmr_video::SoftwareIndexedBackend;
 use cmr_video::c3d_software::prepare_software_root_c3d_bindings;
 use cmr_video::c3d_software_raster::{
-    SoftwareC3dRasterError, SoftwareC3dTransformState, preflight_root_c3d_batch,
-    preflight_root_c3d_copy_batch,
+    SoftwareC3dDepthBuffer, SoftwareC3dIndexedQuantization, SoftwareC3dPreparedCopyBatch,
+    SoftwareC3dRasterError, SoftwareC3dTransformState, compose_root_c3d_indexed_copy_no_blend,
+    preflight_root_c3d_batch, preflight_root_c3d_copy_batch,
 };
 use sha2::{Digest, Sha256};
 
@@ -445,6 +446,215 @@ fn gameplay_camera_matrices_drive_the_real_scene_transform() {
         };
         assert!(span(&near) > span(&far));
     }
+}
+
+/// E07 Z-buffer oracle: two synthetic C3D objects at different scene depths are
+/// composited into one shared framebuffer + depth buffer through the real
+/// rasterizer (`compose_root_c3d_indexed_copy_no_blend`). The shipped renderer
+/// resolves occlusion with a hardware Z-buffer, **not** a painter's triangle
+/// sort (`rea.official-eu.c3d-rasterizer`/`c3d-scene-graph`), so the final image
+/// and depth must be **independent of submission order**, each pixel must retain
+/// the nearest surface (combined depth == elementwise `min` of each object's
+/// solo depth), and the nearer object must occlude the farther where they
+/// overlap. The two objects share one command but use node world matrices at
+/// different Z, so both project to nearly the same screen triangle at strictly
+/// different depths.
+#[test]
+fn gameplay_zbuffer_resolves_occlusion_independent_of_draw_order() {
+    let temporary = TestDirectory::new();
+    let source = temporary.0.join("source");
+    let slot = RootMenuC3dSlot::Championship;
+    let path = slot.path(VisualVariant::Normal);
+    let bitmap = indexed_bitmap_4x4();
+    let bytes = drawable_root_c3d(&bitmap, [0, 0, -(1 << 16)]);
+    let source_file = source.join(path);
+    fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+    fs::write(&source_file, &bytes).unwrap();
+
+    let profile = AssetProfile {
+        schema_version: 1,
+        id: "synthetic-video-c3d-zbuffer".to_owned(),
+        roots: vec!["New_Fe".to_owned()],
+        empty_directories: Vec::new(),
+        sentinels: Vec::new(),
+        files: vec![AssetFile {
+            path: path.to_owned(),
+            size: bytes.len() as u64,
+            sha256: hex_sha256(&bytes),
+            encoding: StorageEncoding::Raw,
+        }],
+    };
+    let reviewed = ReviewedProfile::from_json(&serde_json::to_vec(&profile).unwrap()).unwrap();
+    let imported = temporary.0.join("runtime-data");
+    import_source(&source, &imported, &reviewed).unwrap();
+    let store = AssetStore::open(
+        &imported,
+        &reviewed,
+        DecodeLimits {
+            max_stored_bytes: 64 * 1024,
+            max_payload_bytes: 64 * 1024,
+        },
+    )
+    .unwrap();
+    let assets = load_root_menu_c3d(&store, VisualVariant::Normal, C3dLimits::default());
+    let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+    let load_states = RootMenuC3dMode2LoadStates::splat(C3dMode2LoadState {
+        prepared_resource_count: 0,
+        corner_source: C3dMode2CornerSource::OrdinaryDefaults,
+        surface_layout: C3dSurfaceLayoutGates::default(),
+    });
+    let runtime = materialize_root_menu_mode2_resource_scaled(&topology, load_states).unwrap();
+    let catalog = prepare_software_root_c3d_bindings(&topology, load_states).unwrap();
+    let resource_id = topology.resources().next().unwrap().0;
+    let texture = catalog.binding(resource_id).unwrap();
+    let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
+    let mut angles = RootMenuC3dAngles::new();
+    let mut visibility = RootMenuC3dVisibilityLatches::new();
+    let route_state = FrontendC3dRouteState::new();
+    let mut pipeline = PreparedRootMenuC3dPipeline::new(
+        &topology,
+        &runtime,
+        &mut angles,
+        &mut visibility,
+        &mut executor,
+        &route_state,
+        RootMenuC3dDepthClear::Clear,
+    )
+    .unwrap();
+
+    let extent = DisplayExtent {
+        width: 64,
+        height: 48,
+    };
+    let plan = pipeline.plan_frame(slot, 0, extent).unwrap();
+    let plan = plan.as_ref().unwrap();
+    let command = &plan.commands()[0];
+
+    // One camera held back along -Z; the two objects differ only by a node
+    // world-matrix Z translation, so the far object is uniformly deeper and
+    // projects to nearly the same screen triangle (guaranteeing overlap).
+    let identity_q16 = cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
+    let camera = {
+        let mut m = identity_q16;
+        m[14] = -(6 << 16);
+        m
+    };
+    let node_at = |depth_units: i32| {
+        let mut m = identity_q16;
+        m[14] = depth_units << 16;
+        m
+    };
+    let state = |node: &[i32; 16]| {
+        SoftwareC3dTransformState::for_gameplay_scene(extent.width, extent.height, &camera, node)
+            .unwrap()
+    };
+    let near = preflight_root_c3d_copy_batch(command, state(&node_at(0))).unwrap();
+    let far = preflight_root_c3d_copy_batch(command, state(&node_at(8))).unwrap();
+
+    // Both objects are visible and front-facing.
+    assert_eq!(near.triangles().len(), 1);
+    assert_eq!(far.triangles().len(), 1);
+    assert_eq!(near.counter_clockwise_triangle_count(), 0);
+    assert_eq!(far.counter_clockwise_triangle_count(), 0);
+
+    let extent_arr = [extent.width, extent.height];
+    let pixel_count = usize::from(extent.width) * usize::from(extent.height);
+
+    // Composite a sequence of batches into a fresh shared framebuffer + depth
+    // buffer (no clear between draws), returning the pixels, the depth values,
+    // and the cumulative depth pass/reject counts.
+    let render = |order: &[&SoftwareC3dPreparedCopyBatch]| {
+        let mut depth = SoftwareC3dDepthBuffer::new_far(extent_arr).unwrap();
+        let mut target = vec![0u8; pixel_count];
+        let mut passed = 0usize;
+        let mut rejected = 0usize;
+        for batch in order {
+            let outcome = compose_root_c3d_indexed_copy_no_blend(
+                batch,
+                texture,
+                &mut depth,
+                extent_arr,
+                &mut target,
+                &active_palette_16(),
+                SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+            )
+            .unwrap();
+            passed += outcome.depth_passed();
+            rejected += outcome.depth_rejected();
+        }
+        (target, depth.values().to_vec(), passed, rejected)
+    };
+
+    let near_solo = render(&[&near]);
+    let far_solo = render(&[&far]);
+    let near_then_far = render(&[&near, &far]);
+    let far_then_near = render(&[&far, &near]);
+    let near_then_far_again = render(&[&near, &far]);
+
+    // Each object alone covers some pixels; the nearer one covers more (it is
+    // larger on screen) and leaves background.
+    assert!(near_solo.2 > 0 && far_solo.2 > 0);
+    assert!(near_solo.2 > far_solo.2);
+    assert!(near_then_far.1.iter().any(|&d| d < 1.0));
+    assert!(near_then_far.1.contains(&1.0));
+    // The two solo images genuinely differ (the far object is smaller).
+    assert_ne!(near_solo.0, far_solo.0);
+
+    // Z-buffer defining property: the final image and depth are identical
+    // regardless of submission order - a painter's sort would not guarantee it.
+    assert_eq!(near_then_far.0, far_then_near.0);
+    assert_eq!(near_then_far.1, far_then_near.1);
+
+    // Deterministic for identical input.
+    assert_eq!(near_then_far.0, near_then_far_again.0);
+    assert_eq!(near_then_far.1, near_then_far_again.1);
+
+    // Each pixel retains the nearest surface: the combined depth is the
+    // elementwise minimum of the two solo depth buffers.
+    for i in 0..pixel_count {
+        assert_eq!(near_then_far.1[i], near_solo.1[i].min(far_solo.1[i]));
+    }
+
+    // Where both objects cover a pixel, the near one is strictly in front and
+    // its texel wins in the combined image.
+    let mut overlap = 0usize;
+    for i in 0..pixel_count {
+        if near_solo.1[i] < 1.0 && far_solo.1[i] < 1.0 {
+            overlap += 1;
+            assert!(near_solo.1[i] < far_solo.1[i]);
+            assert_eq!(near_then_far.0[i], near_solo.0[i]);
+        }
+    }
+    assert!(
+        overlap > 0,
+        "the two objects must overlap for an occlusion test"
+    );
+
+    // Occlusion actually happened: drawing the far object after the near one
+    // rejects its occluded fragments, so fewer fragments pass than the two
+    // objects would pass independently.
+    assert!(near_then_far.3 > 0);
+    assert!(near_then_far.2 < near_solo.2 + far_solo.2);
+}
+
+/// A 16-entry indexed display palette (the rest white), matching the synthetic
+/// `indexed_bitmap_4x4` source colors used by the pixel-path tests.
+fn active_palette_16() -> [PaletteEntry; 256] {
+    let mut palette = [PaletteEntry {
+        red: 255,
+        green: 255,
+        blue: 255,
+        flags: 0,
+    }; 256];
+    for (index, entry) in palette.iter_mut().take(16).enumerate() {
+        *entry = PaletteEntry {
+            red: index as u8 + 2,
+            green: index as u8 + 1,
+            blue: index as u8,
+            flags: 0xa5,
+        };
+    }
+    palette
 }
 
 fn one_resource_c3d(bitmap: &[u8]) -> Vec<u8> {

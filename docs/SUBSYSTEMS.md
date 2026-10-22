@@ -489,10 +489,20 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   `preflight_root_c3d_batch` pipeline with gameplay matrices in place of the
   fixed menu matrices; an end-to-end test drives a synthetic C3D mesh through the
   real resource/frame pipeline and the gameplay matrices, asserting visibility,
-  determinism, and distance-correct projection. See evidence
+  determinism, and distance-correct projection. A further oracle composites two
+  objects at different node-Z depths into one shared framebuffer +
+  `SoftwareC3dDepthBuffer` through the real `compose_root_c3d_indexed_copy_no_blend`
+  and proves the hardware-Z-buffer contract: the final image and depth are
+  identical regardless of submission order, the combined depth is the elementwise
+  minimum of each object's solo depth, and the nearer object occludes the farther
+  (`impl.c3d-occlusion-oracle`) - closing the deterministic compatibility
+  renderer/oracle loop (transform, clip, 2D-XZ cull, Z-buffered raster,
+  multi-object occlusion); only true differential verification against the
+  shipped binary (a scoped runtime experiment) remains. See evidence
   `rea.official-eu.c3d-camera`,
   `impl.c3d-camera`, `rea.official-eu.c3d-view-inverse`, `impl.c3d-view-inverse`,
-  `impl.c3d-scene-matrices`, and `impl.c3d-scene-oracle`.
+  `impl.c3d-scene-matrices`, `impl.c3d-scene-oracle`, and
+  `impl.c3d-occlusion-oracle`.
 - `cmr-core::c3d_scene_graph`: the backend-neutral gameplay scene-graph traversal
   and per-frame draw orchestration (E07), from the dispatcher `FUN_004a07d0`, the
   root emitter `FUN_004a2700`, and the recursive walker `FUN_004a28a0` (the walker
