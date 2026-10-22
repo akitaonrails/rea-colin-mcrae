@@ -33,6 +33,7 @@ use cmr_video::SoftwareIndexedBackend;
 use cmr_video::c3d_software::prepare_software_root_c3d_bindings;
 use cmr_video::c3d_software_raster::{
     SoftwareC3dRasterError, SoftwareC3dTransformState, preflight_root_c3d_batch,
+    preflight_root_c3d_copy_batch,
 };
 use sha2::{Digest, Sha256};
 
@@ -302,6 +303,148 @@ fn imported_root_type1_copy_ignores_normals_and_reuses_retained_binding() {
         .execute_terminal_scene(&mut backend, surfaces.back, extent, third)
         .unwrap();
     assert_eq!(backend.back_pixels().unwrap(), first_pixels);
+}
+
+/// End-to-end: a synthetic C3D mesh goes through the real resource-preparation
+/// and frame pipeline, then the recovered gameplay-scene camera matrices
+/// (`SoftwareC3dTransformState::for_gameplay_scene`) drive the software
+/// transform/clip/cull instead of the fixed menu matrices. This is the E07
+/// gameplay oracle exercised over the actual command path, not a hand-built
+/// command.
+#[test]
+fn gameplay_camera_matrices_drive_the_real_scene_transform() {
+    let temporary = TestDirectory::new();
+    let source = temporary.0.join("source");
+    let slot = RootMenuC3dSlot::Championship;
+    let path = slot.path(VisualVariant::Normal);
+    let bitmap = indexed_bitmap_4x4();
+    // A single camera-facing triangle (normal toward -Z).
+    let bytes = drawable_root_c3d(&bitmap, [0, 0, -(1 << 16)]);
+    let source_file = source.join(path);
+    fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+    fs::write(&source_file, &bytes).unwrap();
+
+    let profile = AssetProfile {
+        schema_version: 1,
+        id: "synthetic-video-c3d-gameplay".to_owned(),
+        roots: vec!["New_Fe".to_owned()],
+        empty_directories: Vec::new(),
+        sentinels: Vec::new(),
+        files: vec![AssetFile {
+            path: path.to_owned(),
+            size: bytes.len() as u64,
+            sha256: hex_sha256(&bytes),
+            encoding: StorageEncoding::Raw,
+        }],
+    };
+    let reviewed = ReviewedProfile::from_json(&serde_json::to_vec(&profile).unwrap()).unwrap();
+    let imported = temporary.0.join("runtime-data");
+    import_source(&source, &imported, &reviewed).unwrap();
+    let store = AssetStore::open(
+        &imported,
+        &reviewed,
+        DecodeLimits {
+            max_stored_bytes: 64 * 1024,
+            max_payload_bytes: 64 * 1024,
+        },
+    )
+    .unwrap();
+    let assets = load_root_menu_c3d(&store, VisualVariant::Normal, C3dLimits::default());
+    let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+    let load_states = RootMenuC3dMode2LoadStates::splat(C3dMode2LoadState {
+        prepared_resource_count: 0,
+        corner_source: C3dMode2CornerSource::OrdinaryDefaults,
+        surface_layout: C3dSurfaceLayoutGates::default(),
+    });
+    let runtime = materialize_root_menu_mode2_resource_scaled(&topology, load_states).unwrap();
+    let catalog = prepare_software_root_c3d_bindings(&topology, load_states).unwrap();
+    let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
+    let mut angles = RootMenuC3dAngles::new();
+    let mut visibility = RootMenuC3dVisibilityLatches::new();
+    let route_state = FrontendC3dRouteState::new();
+    let mut pipeline = PreparedRootMenuC3dPipeline::new(
+        &topology,
+        &runtime,
+        &mut angles,
+        &mut visibility,
+        &mut executor,
+        &route_state,
+        RootMenuC3dDepthClear::Clear,
+    )
+    .unwrap();
+
+    let extent = DisplayExtent {
+        width: 64,
+        height: 48,
+    };
+    let plan = pipeline.plan_frame(slot, 0, extent).unwrap();
+    let plan = plan.as_ref().unwrap();
+    assert_eq!(plan.commands().len(), 1);
+    let command = &plan.commands()[0];
+
+    // Gameplay camera: identity node, camera translated back along -Z so the
+    // triangle (at model z = 0) sits at positive view-space depth.
+    let identity_q16 = cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
+    let camera_at = |world_z: i32| {
+        let mut m = identity_q16;
+        m[14] = world_z;
+        m
+    };
+    let gameplay_state = |camera_world: &[i32; 16]| {
+        SoftwareC3dTransformState::for_gameplay_scene(
+            extent.width,
+            extent.height,
+            camera_world,
+            &identity_q16,
+        )
+        .unwrap()
+    };
+
+    let near_camera = camera_at(-(6 << 16));
+    let far_camera = camera_at(-(60 << 16));
+
+    // Integration: the gameplay matrices drive the real transform/clip/cull.
+    let near = preflight_root_c3d_copy_batch(command, gameplay_state(&near_camera)).unwrap();
+    let near_again = preflight_root_c3d_copy_batch(command, gameplay_state(&near_camera)).unwrap();
+    let far = preflight_root_c3d_copy_batch(command, gameplay_state(&far_camera)).unwrap();
+
+    // The one source triangle is seen by the pipeline under both cameras.
+    assert_eq!(near.source_triangle_count(), 1);
+    assert_eq!(far.source_triangle_count(), 1);
+    // It is visible (survives clipping and the back-face cull) from the near camera.
+    assert_eq!(near.triangles().len(), 1);
+    assert_eq!(near.counter_clockwise_triangle_count(), 0);
+    assert_eq!(near.fully_clipped_source_triangle_count(), 0);
+
+    // Deterministic for identical input.
+    assert_eq!(near, near_again);
+    // The camera parameters actually drive the transform: a farther camera
+    // projects the same triangle smaller, so the prepared geometry differs.
+    assert_ne!(near, far);
+
+    // Every prepared screen vertex is finite and inside the back buffer.
+    for triangle in near.triangles() {
+        for vertex in triangle.vertices() {
+            let [x, y, z] = vertex.position();
+            assert!(x.is_finite() && y.is_finite() && z.is_finite());
+            assert!((0.0..=f32::from(extent.width)).contains(&x));
+            assert!((0.0..=f32::from(extent.height)).contains(&y));
+        }
+    }
+
+    // The near triangle's screen bounding box is larger than the far one (the
+    // perspective divide shrinks distant geometry), when the far triangle is
+    // also visible.
+    if far.triangles().len() == 1 {
+        let span = |batch: &cmr_video::c3d_software_raster::SoftwareC3dPreparedCopyBatch| {
+            let verts = batch.triangles()[0].vertices();
+            let xs = verts.iter().map(|v| v.position()[0]);
+            let max = xs.clone().fold(f32::MIN, f32::max);
+            let min = xs.fold(f32::MAX, f32::min);
+            max - min
+        };
+        assert!(span(&near) > span(&far));
+    }
 }
 
 fn one_resource_c3d(bitmap: &[u8]) -> Vec<u8> {

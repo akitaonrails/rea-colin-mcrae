@@ -486,7 +486,10 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   `SoftwareC3dTransformState::for_gameplay_scene` composes these builders into
   the raster's transform state, so a gameplay batch renders through the existing
   `preflight_root_c3d_batch` pipeline with gameplay matrices in place of the
-  fixed menu matrices. See evidence `rea.official-eu.c3d-camera`,
+  fixed menu matrices; an end-to-end test drives a synthetic C3D mesh through the
+  real resource/frame pipeline and the gameplay matrices, asserting visibility,
+  determinism, and distance-correct projection. See evidence
+  `rea.official-eu.c3d-camera`,
   `impl.c3d-camera`, `rea.official-eu.c3d-view-inverse`, `impl.c3d-view-inverse`,
   `impl.c3d-scene-matrices`, and `impl.c3d-scene-oracle`.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one

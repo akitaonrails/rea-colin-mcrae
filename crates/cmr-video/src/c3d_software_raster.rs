@@ -580,6 +580,33 @@ pub struct SoftwareC3dPreparedCopyBatch(SoftwareC3dPreparedBatch);
 #[derive(Clone, Debug, PartialEq)]
 pub struct SoftwareC3dPreparedLitBatch(SoftwareC3dPreparedBatch);
 
+impl SoftwareC3dPreparedCopyBatch {
+    /// The prepared screen triangles that survived clipping and the back-face
+    /// cull.
+    #[must_use]
+    pub fn triangles(&self) -> &[SoftwareC3dPreparedTriangle] {
+        self.0.triangles()
+    }
+
+    /// Source triangle count before clipping and culling.
+    #[must_use]
+    pub const fn source_triangle_count(&self) -> usize {
+        self.0.source_triangle_count()
+    }
+
+    /// Source triangles dropped entirely by homogeneous clipping.
+    #[must_use]
+    pub const fn fully_clipped_source_triangle_count(&self) -> usize {
+        self.0.fully_clipped_source_triangle_count()
+    }
+
+    /// Source triangles dropped by the back-face (`D3DCULL_CCW`) cull.
+    #[must_use]
+    pub const fn counter_clockwise_triangle_count(&self) -> usize {
+        self.0.counter_clockwise_triangle_count()
+    }
+}
+
 impl SoftwareC3dPreparedBatch {
     #[must_use]
     pub fn triangles(&self) -> &[SoftwareC3dPreparedTriangle] {
