@@ -20,8 +20,9 @@ use std::fmt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use cmr_core::audio_assets::FRONTEND_MUSIC;
-use cmr_core::audio_mixer::{AudioMixer, ChannelId, apply_commands};
+use cmr_core::audio_assets::{FRONTEND_MUSIC, MENU_WAVE_FILES};
+use cmr_core::audio_menu::{MenuChannel, menu_sound_for_input, play_menu_sound};
+use cmr_core::audio_mixer::{AudioMixer, ChannelId, WaveSlotId, apply_commands};
 use cmr_core::audio_music_cues::FRONTEND_CONTEXT;
 use cmr_core::frontend::FrontendInput;
 use cmr_core::music_player::MusicController;
@@ -470,6 +471,7 @@ fn rendered_rgba<E>(
 pub fn run_interactive_root_frame<E>(
     mut interaction: RootInteraction,
     save_allowed: bool,
+    source_root: Option<&Path>,
     mut render: impl FnMut(&RootRenderInput) -> Result<SoftwarePresentedFrame, E>,
 ) -> Result<(), InteractiveRootError<E>> {
     let clock = Instant::now();
@@ -545,6 +547,29 @@ pub fn run_interactive_root_frame<E>(
         .event_pump()
         .map_err(|error| host(SdlHostError::sdl("event pump creation", error)))?;
 
+    // Best-effort front-end menu SFX: open the audio device and register the
+    // recovered four menu waves (their install-root-relative leading separator
+    // stripped for the source-rooted wave reader) into consecutive slots 0..3 on
+    // channel 0, so navigating the menu plays the recovered one-shot cues. Any
+    // failure (no source root / no device / missing wave) leaves `menu_audio` as
+    // None and navigation stays silent.
+    let mut menu_audio = source_root.and_then(|root| {
+        let audio_host = AudioHost::open(&sdl, root).ok()?;
+        let shared = audio_host.mixer();
+        {
+            let mut mixer = shared.lock().ok()?;
+            for file in MENU_WAVE_FILES {
+                let name = file.trim_start_matches(['\\', '/']);
+                mixer.load_wave(name, 22_050, 16, false).ok()?;
+            }
+        }
+        let menu = MenuChannel {
+            channel: ChannelId::new(0).ok()?,
+            base_slot: WaveSlotId::from_ordinal(0),
+        };
+        Some((audio_host, menu))
+    });
+
     while !host_state.exit_requested() {
         let mut pending = Vec::new();
         if let Some(event) = events.wait_event_timeout(INTERACTIVE_FRAME_INTERVAL) {
@@ -599,7 +624,17 @@ pub fn run_interactive_root_frame<E>(
             continue;
         }
 
-        let tick = interaction.tick(mapper.poll(), elapsed_ms(clock), save_allowed);
+        let input = mapper.poll();
+        // Play the recovered menu SFX for this tick's input edge (confirm /
+        // cancel / vertical move) on the shared software mixer, before the
+        // controller consumes the input.
+        if let Some(sound) = menu_sound_for_input(input)
+            && let Some((audio_host, menu)) = menu_audio.as_mut()
+            && let Ok(mut mixer) = audio_host.mixer().lock()
+        {
+            let _ = apply_commands(&mut *mixer, &play_menu_sound(*menu, sound, 100));
+        }
+        let tick = interaction.tick(input, elapsed_ms(clock), save_allowed);
         if tick.exit_requested {
             break;
         }

@@ -25,6 +25,7 @@
 use crate::audio_mixer::{
     ChannelId, MixerCommand, PLAY_ONE_SHOT, WaveSlotId, scale_volume_by_master_percent,
 };
+use crate::frontend::FrontendInput;
 
 /// Full channel volume the menu play helpers set before each sound (`0x7fff`),
 /// before the master-volume scale.
@@ -63,6 +64,28 @@ pub struct MenuChannel {
     pub base_slot: WaveSlotId,
 }
 
+/// The menu UI sound a recovered front-end input edge plays, mapping a
+/// [`FrontendInput`] to the [`MenuSound`] the matching play helper emits: a
+/// `confirm` plays `FORWARD` (the carved helper `FUN_00467ef0`, offset 0), a
+/// vertical move (`next`/`previous`) plays `UPDOWN` (the carved helper
+/// `FUN_00467dd0`, offset 3), and a `cancel` plays `BACKWARD` (offset 1, by
+/// filename - the helper Ghidra did not carve). `None` when no edge fired.
+/// `confirm` takes precedence over `cancel` over a move (only one edge normally
+/// fires per tick). `LEFTRIGH` (offset 2) is a horizontal-change sound the
+/// vertical root menu never triggers, so it is not produced here.
+#[must_use]
+pub fn menu_sound_for_input(input: FrontendInput) -> Option<MenuSound> {
+    if input.confirm {
+        Some(MenuSound::Forward)
+    } else if input.cancel {
+        Some(MenuSound::Backward)
+    } else if input.next || input.previous {
+        Some(MenuSound::UpDown)
+    } else {
+        None
+    }
+}
+
 /// Reproduce a menu play helper: set the full master-scaled volume, stop the
 /// channel, then play the selected sound one-shot. The stop makes a new UI sound
 /// interrupt the previous one on the shared menu channel.
@@ -96,6 +119,56 @@ mod tests {
             channel: ChannelId::new(7).unwrap(),
             base_slot: WaveSlotId::from_ordinal(20),
         }
+    }
+
+    #[test]
+    fn input_edges_map_to_the_recovered_menu_sounds() {
+        let none = FrontendInput::default();
+        assert_eq!(menu_sound_for_input(none), None);
+        assert_eq!(
+            menu_sound_for_input(FrontendInput {
+                confirm: true,
+                ..none
+            }),
+            Some(MenuSound::Forward)
+        );
+        assert_eq!(
+            menu_sound_for_input(FrontendInput {
+                cancel: true,
+                ..none
+            }),
+            Some(MenuSound::Backward)
+        );
+        assert_eq!(
+            menu_sound_for_input(FrontendInput { next: true, ..none }),
+            Some(MenuSound::UpDown)
+        );
+        assert_eq!(
+            menu_sound_for_input(FrontendInput {
+                previous: true,
+                ..none
+            }),
+            Some(MenuSound::UpDown)
+        );
+        // Confirm wins over a simultaneous cancel and move.
+        assert_eq!(
+            menu_sound_for_input(FrontendInput {
+                confirm: true,
+                cancel: true,
+                next: true,
+                previous: true,
+            }),
+            Some(MenuSound::Forward)
+        );
+        // Cancel wins over a move.
+        assert_eq!(
+            menu_sound_for_input(FrontendInput {
+                cancel: true,
+                next: true,
+                ..none
+            }),
+            Some(MenuSound::Backward)
+        );
     }
 
     #[test]

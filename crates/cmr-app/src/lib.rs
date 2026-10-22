@@ -767,7 +767,10 @@ fn open_root_session_inputs(
 /// The compatibility session stays live for the whole loop: each distinct
 /// recovered render input is drawn by the software path and presented by the
 /// SDL host, which owns the window, input, and gamepads.
-pub fn run_windowed_root_frame(runtime_data: &Path) -> Result<(), WindowedRootFrameError> {
+pub fn run_windowed_root_frame(
+    runtime_data: &Path,
+    source_root: Option<&Path>,
+) -> Result<(), WindowedRootFrameError> {
     let reviewed =
         ReviewedProfile::from_json(REVIEWED_PROFILE).map_err(HeadlessRootFrameError::Profile)?;
     let request = SoftwareRootMenuSessionRequest::official_eu_initial_software_default_config(
@@ -780,7 +783,7 @@ pub fn run_windowed_root_frame(runtime_data: &Path) -> Result<(), WindowedRootFr
         let interaction =
             RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0)
                 .expect("zero is a valid recovered root selection");
-        run_interactive_root_frame(interaction, true, |input| {
+        run_interactive_root_frame(interaction, true, source_root, |input| {
             session
                 .render(*input)
                 .map_err(HeadlessRootFrameError::Render)?;

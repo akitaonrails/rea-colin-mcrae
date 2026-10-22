@@ -36,7 +36,10 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             },
-            AppCommand::WindowedRootFrame => match run_windowed_root_frame(config.runtime_data()) {
+            AppCommand::WindowedRootFrame => match run_windowed_root_frame(
+                config.runtime_data(),
+                config.media_root(),
+            ) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("cmr-app: windowed-root-frame failed: {}", error.kind());
