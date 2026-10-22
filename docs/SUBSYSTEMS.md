@@ -186,8 +186,14 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   trigger-volume record (`0x30`: geometry / payload / node index / raw type /
   flag / passed-bits). Pure, bounds-checked, rejects misaligned/truncated input
   with length+stride; the raw trigger type is classified by
-  `cmr-core::collision::TriggerType`. The other 12 section interiors and the
-  runtime fix-up/relocation remain. See evidence `rea.official-eu.stage-bundle`.
+  `cmr-core::collision::TriggerType`. The bundle front half ties these together:
+  `load_stage(source: &impl StageSectionSource, c3d_limits) -> StageBundle` parses
+  the mandatory `.c3d` scene and the optional `.cat` nodes from an abstract
+  per-extension byte source (base-path resolution + file IO + CMPR decode stay in
+  the caller), so a resolved stage base yields a scene ready for
+  `cmr-core::c3d_mesh::assemble_scene_meshes` (`impl.stage-bundle-loader`). The
+  other 12 section interiors and the runtime fix-up/relocation remain. See
+  evidence `rea.official-eu.stage-bundle`.
 - `cmr-core::car_resources`: the car-resource composition (E09). A car is a set
   of sibling `.C3D` resources under `OBJECTS\CARS\` (body `<code><DAY|NIGHT>.C3D`,
   reflection `<code><tag>ref.c3d`, shared `ref_map.bmp`, low-detail `med`/

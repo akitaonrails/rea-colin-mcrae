@@ -33,6 +33,8 @@
 
 use std::fmt;
 
+use crate::c3d::{C3dError, C3dFile, C3dLimits, parse_c3d};
+
 /// Stride of one `.cat` node record (7 dwords).
 pub const CAT_NODE_STRIDE: usize = 0x1c;
 
@@ -127,6 +129,101 @@ impl fmt::Display for StageError {
 }
 
 impl std::error::Error for StageError {}
+
+/// Supplies the CMPR-decoded bytes of a stage's sibling section files, keyed by
+/// extension (`.c3d`, `.cat`, ...).
+///
+/// Keeping the byte source abstract keeps this a pure decoder: the base-path
+/// resolution ([`stage_section_path`]), file IO, and the shared CMPR decode
+/// (`FUN_00495ed0`, handled upstream in `cmr-formats::stored_asset`) all live in
+/// the caller, which reads original media in place and hands the already-decoded
+/// section payloads here.
+pub trait StageSectionSource {
+    /// The decoded bytes of the section with this extension, or `None` when the
+    /// stage has no such sibling file.
+    fn section(&self, extension: &str) -> Option<&[u8]>;
+}
+
+/// The decoded sections of one stage needed to render and navigate it: the
+/// `.c3d` scene (always present) and the `.cat` node spline (optional).
+///
+/// This is the recovered front half of the stage bundle (`FUN_004228d0` walks
+/// the 14-extension sibling set): it ties the per-section decoders to one stage,
+/// so a caller can go from a resolved stage base path to a parsed scene ready
+/// for `cmr-core::c3d_mesh::assemble_scene_meshes`. Sections whose decode is not
+/// yet reconstructed (`.obj`, `.sht`, ...) are left for later milestones.
+#[derive(Debug)]
+pub struct StageBundle {
+    scene: C3dFile,
+    nodes: Option<Vec<CatNode>>,
+}
+
+impl StageBundle {
+    /// The parsed `.c3d` scene (group-0 node records + group-1 mesh records).
+    #[must_use]
+    pub fn scene(&self) -> &C3dFile {
+        &self.scene
+    }
+
+    /// The parsed `.cat` node spline, if the stage carried a `.cat` sibling.
+    #[must_use]
+    pub fn nodes(&self) -> Option<&[CatNode]> {
+        self.nodes.as_deref()
+    }
+}
+
+/// Failure to load a stage bundle from its section source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StageLoadError {
+    /// The stage has no `.c3d` section (the scene is mandatory).
+    MissingScene,
+    /// The `.c3d` scene payload failed to parse.
+    Scene(C3dError),
+    /// The `.cat` node-spline payload failed to decode.
+    Nodes(StageError),
+}
+
+impl fmt::Display for StageLoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StageLoadError::MissingScene => write!(f, "stage has no .c3d scene section"),
+            StageLoadError::Scene(error) => write!(f, "stage .c3d scene: {error}"),
+            StageLoadError::Nodes(error) => write!(f, "stage .cat nodes: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for StageLoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            StageLoadError::Scene(error) => Some(error),
+            StageLoadError::Nodes(error) => Some(error),
+            StageLoadError::MissingScene => None,
+        }
+    }
+}
+
+/// Loads a stage bundle from its section source, parsing the `.c3d` scene (with
+/// `c3d_limits`) and the `.cat` node spline when present.
+///
+/// The `.c3d` scene is mandatory ([`StageLoadError::MissingScene`] otherwise);
+/// a missing `.cat` yields [`StageBundle::nodes`] `None`. Other sibling sections
+/// are not decoded here yet.
+pub fn load_stage(
+    source: &impl StageSectionSource,
+    c3d_limits: C3dLimits,
+) -> Result<StageBundle, StageLoadError> {
+    let scene_bytes = source
+        .section(C3D_EXTENSION)
+        .ok_or(StageLoadError::MissingScene)?;
+    let scene = parse_c3d(scene_bytes, c3d_limits).map_err(StageLoadError::Scene)?;
+    let nodes = source
+        .section(CAT_EXTENSION)
+        .map(parse_cat_nodes)
+        .transpose()
+        .map_err(StageLoadError::Nodes)?;
+    Ok(StageBundle { scene, nodes })
+}
 
 /// One `.cat` node: a position, a tangent/direction, a split flag, and a
 /// sequence index. The byte at `+0x19` is an unrecovered field, preserved.
@@ -458,5 +555,72 @@ mod tests {
         assert_eq!(cjp_extension(1), Some("i.cjp"));
         assert_eq!(cjp_extension(2), Some("e.cjp"));
         assert_eq!(cjp_extension(3), None);
+    }
+
+    /// A stage section source backed by an in-memory extension -> bytes map.
+    struct MapSource(std::collections::HashMap<&'static str, Vec<u8>>);
+
+    impl StageSectionSource for MapSource {
+        fn section(&self, extension: &str) -> Option<&[u8]> {
+            self.0.get(extension).map(Vec::as_slice)
+        }
+    }
+
+    /// A minimal valid header-only CM3D payload (no records).
+    fn empty_scene_bytes() -> Vec<u8> {
+        let mut buf = vec![0u8; 32];
+        buf[0..4].copy_from_slice(b"CM3D");
+        buf[4..8].copy_from_slice(&100u32.to_le_bytes()); // version
+        buf[20..24].copy_from_slice(&32u32.to_le_bytes()); // group0 at end
+        buf[24..28].copy_from_slice(&32u32.to_le_bytes()); // group1 at end
+        buf[28..32].copy_from_slice(&32u32.to_le_bytes()); // blob at end
+        buf
+    }
+
+    #[test]
+    fn load_stage_parses_the_scene_and_optional_cat_nodes() {
+        let mut sections = std::collections::HashMap::new();
+        sections.insert(C3D_EXTENSION, empty_scene_bytes());
+        sections.insert(CAT_EXTENSION, vec![0u8; CAT_NODE_STRIDE * 2]); // two nodes
+        let source = MapSource(sections);
+
+        let bundle = load_stage(&source, C3dLimits::default()).unwrap();
+        assert_eq!(bundle.scene().group0_records().count(), 0);
+        assert_eq!(bundle.nodes().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn load_stage_without_a_cat_sibling_has_no_nodes() {
+        let mut sections = std::collections::HashMap::new();
+        sections.insert(C3D_EXTENSION, empty_scene_bytes());
+        let source = MapSource(sections);
+
+        let bundle = load_stage(&source, C3dLimits::default()).unwrap();
+        assert!(bundle.nodes().is_none());
+    }
+
+    #[test]
+    fn load_stage_requires_the_c3d_scene() {
+        let source = MapSource(std::collections::HashMap::new());
+        assert_eq!(
+            load_stage(&source, C3dLimits::default()).unwrap_err(),
+            StageLoadError::MissingScene
+        );
+    }
+
+    #[test]
+    fn load_stage_propagates_a_malformed_cat_section() {
+        let mut sections = std::collections::HashMap::new();
+        sections.insert(C3D_EXTENSION, empty_scene_bytes());
+        sections.insert(CAT_EXTENSION, vec![0u8; CAT_NODE_STRIDE + 3]); // misaligned
+        let source = MapSource(sections);
+
+        assert_eq!(
+            load_stage(&source, C3dLimits::default()).unwrap_err(),
+            StageLoadError::Nodes(StageError::CatNotNodeAligned {
+                len: CAT_NODE_STRIDE + 3,
+                stride: CAT_NODE_STRIDE,
+            })
+        );
     }
 }
