@@ -48,7 +48,9 @@ use cmr_platform_sdl3::{
     run_interactive_root_frame, run_windowed_game_session as run_windowed_game_session_loop,
 };
 use cmr_core::drive_controls::DriveResponse;
-use cmr_core::gameplay_camera::{ChasePreset, GameplayCamera};
+use cmr_core::camera_mode::{CameraMode, ViewGate};
+use cmr_core::camera_view::ViewController;
+use cmr_core::game_rng::GameLcg;
 use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
 use cmr_core::render_compose::{fade_duration_frames, fade_level_to_modulation_byte, fade_out};
 use cmr_core::render_route::{RenderRoute, composes_frontend_root, presents_world_scene};
@@ -1221,6 +1223,53 @@ impl HostClock for WallClock {
 /// synthetic [`headless_checkpoint_line`], and the per-route recovered
 /// compositors + a live follow camera remain to be wired - but the FSM, the
 /// input chain, and the render-route routing are all the recovered behavior.
+/// The windowed session's camera state: the recovered multi-mode view
+/// controller plus the harness view-cycle binding.
+///
+/// The view modes, their placement math, and the cycle order are all recovered
+/// behavior ([`ViewController`]/[`cmr_core::camera_view`]). What is *not*
+/// recovered is the shipped camera-change input binding, so this harness cycles
+/// the modes on the rising edge of a documented key (VK `0x43` / `C`, matching
+/// `cmr_platform_sdl3::input::sdl_keycode_to_vk`) seeded from a fixed harness
+/// seed - the same documented-stand-in pattern as the loop's synthetic drive
+/// force and checkpoint line. Only the trigger key and seed are harness policy.
+struct ViewHarness {
+    controller: ViewController,
+    rng: GameLcg,
+    change_view_down: bool,
+}
+
+impl ViewHarness {
+    /// VK of the harness change-view key (`C`).
+    const CHANGE_VIEW_VK: u8 = 0x43;
+    /// In-race view gate: both interior cockpit poses are reachable; the
+    /// showroom pose is a front-end mode, not an in-race one.
+    const GATE: ViewGate = ViewGate {
+        cockpit_enabled: true,
+        showroom_allowed: false,
+    };
+    /// Fixed harness seed for the cinematic view-offset RNG draws.
+    const VIEW_SEED: u32 = 1;
+
+    fn new() -> Self {
+        Self {
+            controller: ViewController::new(CameraMode::ChaseNear),
+            rng: GameLcg::new(Self::VIEW_SEED),
+            change_view_down: false,
+        }
+    }
+
+    /// Cycles to the next recovered view on the rising edge of the change-view
+    /// key, then returns the world matrix for the car's current placement.
+    fn update(&mut self, change_view_down: bool, position: Vec3, heading: u16, pal: bool) -> [i32; 16] {
+        if change_view_down && !self.change_view_down {
+            self.controller.cycle(Self::GATE, &mut self.rng);
+        }
+        self.change_view_down = change_view_down;
+        self.controller.update(position, heading, pal)
+    }
+}
+
 /// One windowed-game-session frame of the input/advance/world-compose work the
 /// two loop variants share.
 ///
@@ -1242,7 +1291,7 @@ fn advance_game_frame<C: HostClock>(
     progress: &mut StageProgress,
     clock: &C,
     resources: &StageRenderResources,
-    camera: &mut GameplayCamera,
+    camera: &mut ViewHarness,
     fade: &mut Option<ScalarTween>,
     input: WindowedInput,
 ) -> GameFrameOutcome {
@@ -1263,11 +1312,14 @@ fn advance_game_frame<C: HostClock>(
         // overlay layer and fade modulation are runtime/asset-gated effects over
         // it, not yet reproduced here). The recovered in-race chase camera places
         // behind + above the car along its heading and eases the orientation
-        // (`gameplay_camera`), NTSC base rate (`pal = false`).
+        // (`gameplay_camera`), NTSC base rate (`pal = false`). The harness
+        // change-view key cycles the recovered view modes (chase/cockpit/
+        // cinematic) on its rising edge.
         let car = session.car();
-        let camera_world = camera.update(car.position, car.heading, ChasePreset::Near, false);
+        let change_view_down = input.keys.is_down(ViewHarness::CHANGE_VIEW_VK);
+        let camera_world = camera.update(change_view_down, car.position, car.heading, false);
         resources
-            .compose(camera_world)
+            .compose(&camera_world)
             .ok()
             .map(|rendered| rendered.frame)
     } else {
@@ -1333,7 +1385,7 @@ pub fn run_windowed_game_session(
     let nodes = headless_checkpoint_line();
     let mut progress = StageProgress::new(&nodes, 0);
     let clock = WallClock::new();
-    let mut camera = GameplayCamera::new();
+    let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
 
     // Best-effort: open the recovered front-end root-menu compositor from the

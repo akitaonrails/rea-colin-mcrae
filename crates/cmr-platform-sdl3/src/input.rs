@@ -111,6 +111,8 @@ pub fn sdl_keycode_to_vk(keycode: Keycode) -> Option<u8> {
         Keycode::Kp8 => 0x68,
         // Shared pause.
         Keycode::Escape => 0x1b,
+        // Change camera view (harness binding for the recovered view cycle).
+        Keycode::C => 0x43,
         // Player 2: letters + tab.
         Keycode::Tab => 0x09,
         Keycode::A => 0x41,
@@ -473,6 +475,8 @@ mod tests {
         assert_eq!(sdl_keycode_to_vk(Keycode::Down), Some(0x28));
         assert_eq!(sdl_keycode_to_vk(Keycode::Kp8), Some(0x68));
         assert_eq!(sdl_keycode_to_vk(Keycode::Escape), Some(0x1b));
+        // Change-camera-view harness binding.
+        assert_eq!(sdl_keycode_to_vk(Keycode::C), Some(0x43));
         // Player 2 letters + tab.
         assert_eq!(sdl_keycode_to_vk(Keycode::A), Some(0x41));
         assert_eq!(sdl_keycode_to_vk(Keycode::S), Some(0x53));
