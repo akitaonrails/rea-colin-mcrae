@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cmr_assets::{
     AssetFile, AssetProfile, AssetStore, ReviewedProfile, StorageEncoding, import_source,
 };
+use cmr_core::c3d_stage_scene::StageScene;
 use cmr_core::display::{
     CooperativeMode, DisplayExtent, IndexedMode, IndexedVideoBackend, SurfaceTopology,
 };
@@ -36,6 +37,7 @@ use cmr_video::c3d_software_raster::{
     SoftwareC3dRasterError, SoftwareC3dTransformState, compose_root_c3d_indexed_copy_no_blend,
     preflight_mesh_lod_prim, preflight_root_c3d_batch, preflight_root_c3d_copy_batch,
 };
+use cmr_video::software_stage_scene::compose_stage_scene_frame;
 use sha2::{Digest, Sha256};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -692,6 +694,162 @@ fn gameplay_zbuffer_resolves_occlusion_independent_of_draw_order() {
     // objects would pass independently.
     assert!(near_then_far.3 > 0);
     assert!(near_then_far.2 < near_solo.2 + far_solo.2);
+}
+
+/// E08 stage scene session: a parsed C3D scene is walked by
+/// `cmr_core::c3d_stage_scene::StageScene` and composited to pixels by
+/// `cmr_video::software_stage_scene::compose_stage_scene_frame`, with the prim's
+/// group-2 material ordinal resolved to a texture by a caller-supplied closure.
+/// The result must match the direct single-prim path (same camera, same identity
+/// node world), proving the scene walk adds no distortion, and the deferred
+/// texture resolver must be honoured (an unresolved ordinal composites nothing).
+#[test]
+fn stage_scene_frame_composites_a_walked_node_like_the_direct_prim_path() {
+    let temporary = TestDirectory::new();
+    let source = temporary.0.join("source");
+    let slot = RootMenuC3dSlot::Championship;
+    let path = slot.path(VisualVariant::Normal);
+    let bitmap = indexed_bitmap_4x4();
+    let bytes = drawable_root_c3d(&bitmap, [0, 0, -(1 << 16)]);
+    let source_file = source.join(path);
+    fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+    fs::write(&source_file, &bytes).unwrap();
+
+    let profile = AssetProfile {
+        schema_version: 1,
+        id: "synthetic-video-c3d-stage-scene".to_owned(),
+        roots: vec!["New_Fe".to_owned()],
+        empty_directories: Vec::new(),
+        sentinels: Vec::new(),
+        files: vec![AssetFile {
+            path: path.to_owned(),
+            size: bytes.len() as u64,
+            sha256: hex_sha256(&bytes),
+            encoding: StorageEncoding::Raw,
+        }],
+    };
+    let reviewed = ReviewedProfile::from_json(&serde_json::to_vec(&profile).unwrap()).unwrap();
+    let imported = temporary.0.join("runtime-data");
+    import_source(&source, &imported, &reviewed).unwrap();
+    let store = AssetStore::open(
+        &imported,
+        &reviewed,
+        DecodeLimits {
+            max_stored_bytes: 64 * 1024,
+            max_payload_bytes: 64 * 1024,
+        },
+    )
+    .unwrap();
+    let assets = load_root_menu_c3d(&store, VisualVariant::Normal, C3dLimits::default());
+    let topology = prepare_root_menu_c3d_topology(&assets, BitmapLimits::default()).unwrap();
+    let load_states = RootMenuC3dMode2LoadStates::splat(C3dMode2LoadState {
+        prepared_resource_count: 0,
+        corner_source: C3dMode2CornerSource::OrdinaryDefaults,
+        surface_layout: C3dSurfaceLayoutGates::default(),
+    });
+    let catalog = prepare_software_root_c3d_bindings(&topology, load_states).unwrap();
+    let resource_id = topology.resources().next().unwrap().0;
+    let texture = catalog.binding(resource_id).unwrap();
+
+    // Walk the same parsed scene through the backend-neutral StageScene.
+    let file = parse_c3d(&bytes, C3dLimits::default()).unwrap();
+    let identity_q16 = cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
+    let scene = StageScene::from_c3d(
+        &file,
+        &identity_q16,
+        cmr_core::c3d_render::VERTEXTYPE_LVERTEX,
+    )
+    .unwrap();
+    assert_eq!(scene.node_count(), 1);
+    assert_eq!(scene.draw_order().len(), 1);
+
+    let mut camera = identity_q16;
+    camera[14] = -(6 << 16);
+    let extent = [64u16, 48u16];
+    let palette = active_palette_16();
+
+    let frame = compose_stage_scene_frame(
+        &scene,
+        &camera,
+        extent,
+        &palette,
+        SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+        |ordinal| (ordinal == 0).then_some(texture),
+    )
+    .unwrap();
+
+    // The single prim composited, nothing skipped, and it covered the target.
+    assert_eq!(frame.stats().prims_composed, 1);
+    assert_eq!(frame.stats().unresolved_prims, 0);
+    assert_eq!(frame.stats().empty_lod_nodes, 0);
+    assert!(frame.stats().depth_passed > 0);
+    assert!(frame.stats().covered > 0);
+    assert!(frame.pixels().iter().any(|&index| index != 0));
+    assert!(frame.depth().values().iter().any(|&d| d < 1.0));
+    assert!(frame.depth().values().contains(&1.0));
+
+    // Determinism: recomposing yields the identical frame.
+    let again = compose_stage_scene_frame(
+        &scene,
+        &camera,
+        extent,
+        &palette,
+        SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+        |ordinal| (ordinal == 0).then_some(texture),
+    )
+    .unwrap();
+    assert_eq!(frame.pixels(), again.pixels());
+    assert_eq!(frame.depth().values(), again.depth().values());
+
+    // Faithfulness: the walked frame equals the direct single-prim path with the
+    // same camera and identity node world.
+    let record = file.group1_records().next().unwrap();
+    let selectors: Vec<i16> = record
+        .entries_24()
+        .map(|face| face.group2_ordinal())
+        .collect();
+    let group = cmr_core::c3d_mesh::assemble_lod_draw_group(
+        record,
+        cmr_core::c3d_render::VERTEXTYPE_LVERTEX,
+        &selectors,
+    )
+    .unwrap();
+    let prim = &group.prims()[0];
+    let direct_state =
+        SoftwareC3dTransformState::for_gameplay_scene(extent[0], extent[1], &camera, &identity_q16)
+            .unwrap();
+    let direct_batch =
+        preflight_mesh_lod_prim(prim.unique_entries_32(), prim.indices(), direct_state).unwrap();
+    let mut direct_depth = SoftwareC3dDepthBuffer::new_far(extent).unwrap();
+    let mut direct_pixels = vec![0u8; usize::from(extent[0]) * usize::from(extent[1])];
+    compose_root_c3d_indexed_copy_no_blend(
+        &direct_batch,
+        texture,
+        &mut direct_depth,
+        extent,
+        &mut direct_pixels,
+        &palette,
+        SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+    )
+    .unwrap();
+    assert_eq!(frame.pixels(), direct_pixels.as_slice());
+    assert_eq!(frame.depth().values(), direct_depth.values());
+
+    // The deferred texture resolver is honoured: an unresolved ordinal composites
+    // nothing and leaves the frame at its cleared background.
+    let empty = compose_stage_scene_frame(
+        &scene,
+        &camera,
+        extent,
+        &palette,
+        SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+        |_ordinal| None,
+    )
+    .unwrap();
+    assert_eq!(empty.stats().prims_composed, 0);
+    assert_eq!(empty.stats().unresolved_prims, 1);
+    assert!(empty.pixels().iter().all(|&index| index == 0));
+    assert!(empty.depth().values().iter().all(|&d| d == 1.0));
 }
 
 /// A 16-entry indexed display palette (the rest white), matching the synthetic

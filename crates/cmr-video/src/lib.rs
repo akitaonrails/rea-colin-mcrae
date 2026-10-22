@@ -31,6 +31,7 @@ pub mod software_queued_font_glyphs;
 pub mod software_queued_font_quad;
 pub mod software_queued_font_queue;
 pub mod software_root_menu_session;
+pub mod software_stage_scene;
 
 pub use c3d_software_backend::SoftwareC3dBackendError;
 pub use root_frame_software::{
