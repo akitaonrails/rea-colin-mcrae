@@ -627,7 +627,13 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   count `node+0x4c`) is one LOD selecting `group1_records[index]`, a `0xffff` or
   zero-geometry index leaving an empty (`None`) LOD slot, the active LOD `0` at
   load; with `node_mesh_vertex_type(load_flags)` (`param_5 & 1`: `2` lit / `1`
-  pre-lit, shared by all LODs). See evidence `rea.official-eu.c3d-rasterizer`,
+  pre-lit, shared by all LODs). The whole-graph capstone
+  `assemble_scene_meshes(group0_records, group1_records, vertex_type)` resolves
+  every node's `C3dGroup0Record::values()` through the group-1 LUT into one
+  `Option<AssembledMesh>` per node (aligned with the `from_c3d_group0` node
+  index; meshless nodes -> `None`), closing parse -> scene graph -> world
+  transforms -> per-node multi-LOD mesh -> per-LOD draw groups ->
+  `DrawIndexedPrimitive`. See evidence `rea.official-eu.c3d-rasterizer`,
   `rea.official-eu.c3d-mesh-instantiate`, `impl.c3d-mesh-draw` and
   `impl.c3d-mesh-instantiate`.
 - `cmr-core::c3d_transform`: the per-frame scene-graph world-transform

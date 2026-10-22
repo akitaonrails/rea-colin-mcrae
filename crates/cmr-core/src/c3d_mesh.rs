@@ -63,7 +63,7 @@
 
 use std::fmt;
 
-use cmr_formats::c3d::C3dGroup1Record;
+use cmr_formats::c3d::{C3dGroup0Record, C3dGroup1Record};
 
 use crate::c3d_batch::{C3dBatchPlanError, C3dConsecutiveBatch, plan_consecutive_batches};
 use crate::c3d_render::{DP_DONOTUPDATEEXTENTS, PRIMTYPE_TRIANGLELIST, VERTEXTYPE_LVERTEX};
@@ -496,6 +496,34 @@ pub fn assemble_node_mesh<'a>(
     })
 }
 
+/// Assembles every scene node's mesh from a parsed C3D file's node records and
+/// group-1 records (the mesh LUT, in file order).
+///
+/// Returns one entry per group-0 node record, aligned with the scene-graph node
+/// index that [`crate::c3d_scene_graph::SceneGraph::from_c3d_group0`] assigns
+/// (records map 1:1 to nodes). A node with no mesh-index list (`value_count == 0`,
+/// the root marker and transform-only nodes) yields `None`; a drawable node
+/// yields its [`AssembledMesh`] via [`assemble_node_mesh`] over its
+/// [`C3dGroup0Record::values`]. `vertex_type` is the fixed per-load value (see
+/// [`node_mesh_vertex_type`]). This is the capstone that turns a parsed stage or
+/// car `.c3d` into per-node geometry.
+pub fn assemble_scene_meshes<'a>(
+    group0_records: impl IntoIterator<Item = C3dGroup0Record<'a>>,
+    group1_records: &[C3dGroup1Record<'a>],
+    vertex_type: u32,
+) -> Result<Vec<Option<AssembledMesh<'a>>>, AssembleNodeMeshError> {
+    group0_records
+        .into_iter()
+        .map(|node| {
+            if node.value_count() == 0 {
+                return Ok(None);
+            }
+            let indices: Vec<u16> = node.values().collect();
+            assemble_node_mesh(&indices, group1_records, vertex_type).map(Some)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,6 +746,82 @@ mod tests {
                 record_count: 1,
             }
         );
+    }
+
+    #[test]
+    fn scene_meshes_align_with_node_index_and_resolve_values_through_the_lut() {
+        // Node 0 = root marker (no mesh), node 1 = two LODs (indices 0, 1),
+        // node 2 = transform-only (no mesh).
+        let nodes = nodes_file(&[&[], &[0, 1], &[]]);
+        let lod0 = mesh_record_file(3, &[(7, [0, 1, 2])]);
+        let lod1 = mesh_record_file(4, &[(5, [0, 1, 3])]);
+        let lut = [
+            lod0.group1_records().next().unwrap(),
+            lod1.group1_records().next().unwrap(),
+        ];
+
+        let meshes =
+            assemble_scene_meshes(nodes.group0_records(), &lut, VERTEXTYPE_LVERTEX).unwrap();
+
+        assert_eq!(meshes.len(), 3); // one entry per node record
+        assert!(meshes[0].is_none()); // marker, no mesh-index list
+        assert!(meshes[2].is_none()); // transform-only
+        let node1 = meshes[1].as_ref().unwrap();
+        assert_eq!(node1.lod_count(), 2);
+        assert_eq!(node1.lod(0).unwrap().prims()[0].selector(), 7);
+        assert_eq!(node1.lod(1).unwrap().prims()[0].selector(), 5);
+    }
+
+    #[test]
+    fn scene_meshes_propagate_a_bad_mesh_index() {
+        let nodes = nodes_file(&[&[], &[5]]); // node 1 references LUT index 5
+        let only = mesh_record_file(3, &[(0, [0, 1, 2])]);
+        let lut = [only.group1_records().next().unwrap()];
+
+        let error =
+            assemble_scene_meshes(nodes.group0_records(), &lut, VERTEXTYPE_LVERTEX).unwrap_err();
+        assert_eq!(
+            error,
+            AssembleNodeMeshError::MeshIndexOutOfBounds {
+                lod: 0,
+                index: 5,
+                record_count: 1,
+            }
+        );
+    }
+
+    /// Builds a group-0-only C3D file whose node records carry the given
+    /// mesh-index (`values`) lists. Node 0 is the root marker (`field_04 = -1`),
+    /// the rest reference parent 0; only the fields this module reads are set.
+    fn nodes_file(nodes: &[&[u16]]) -> cmr_formats::c3d::C3dFile {
+        use cmr_formats::c3d::{C3dLimits, parse_c3d};
+
+        let mut body = Vec::new();
+        for (index, values) in nodes.iter().enumerate() {
+            let declared = 0x50 + values.len() * 2;
+            let mut record = vec![0u8; declared];
+            record[0..4].copy_from_slice(&u32::try_from(declared).unwrap().to_le_bytes());
+            let field_04: i16 = if index == 0 { -1 } else { 0 };
+            record[4..6].copy_from_slice(&field_04.to_le_bytes());
+            record[0x4c] = u8::try_from(values.len()).unwrap();
+            for (k, &value) in values.iter().enumerate() {
+                let start = 0x50 + k * 2;
+                record[start..start + 2].copy_from_slice(&value.to_le_bytes());
+            }
+            body.extend_from_slice(&record);
+        }
+
+        let mut buf = vec![0u8; 32];
+        buf[0..4].copy_from_slice(b"CM3D");
+        buf[4..8].copy_from_slice(&100u32.to_le_bytes());
+        buf[12..14].copy_from_slice(&u16::try_from(nodes.len()).unwrap().to_le_bytes());
+        buf[20..24].copy_from_slice(&32u32.to_le_bytes()); // group0 at offset 32
+        let end = u32::try_from(32 + body.len()).unwrap();
+        buf[24..28].copy_from_slice(&end.to_le_bytes()); // empty group1 at end
+        buf[28..32].copy_from_slice(&end.to_le_bytes()); // empty blob at end
+        buf.extend_from_slice(&body);
+
+        parse_c3d(&buf, C3dLimits::default()).unwrap()
     }
 
     /// Builds a minimal C3D file with one group-1 mesh record: `vertex_count`
