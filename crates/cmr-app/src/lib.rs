@@ -35,7 +35,9 @@ use cmr_formats::stage::{
     C3D_EXTENSION, CAT_EXTENSION, StageLoadError, StageSectionSource, load_stage,
 };
 use cmr_formats::stored_asset::{DecodeError, DecodeLimits, decode_stored_asset};
-use cmr_platform_sdl3::{InteractiveRootError, run_interactive_root_frame};
+use cmr_platform_sdl3::{
+    InteractiveRootError, SdlHostError, present_software_frame, run_interactive_root_frame,
+};
 use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
@@ -72,6 +74,8 @@ pub enum AppCommand {
     WindowedRootFrame,
     /// Compose one software frame of a named stage from the `--source` root.
     HeadlessStageFrame,
+    /// Compose and present a named stage frame in a native window.
+    WindowedStageFrame,
 }
 
 /// Parsed command-line options before environment fallback resolution.
@@ -111,6 +115,12 @@ impl AppOptions {
             if argument == OsStr::new("--headless-stage-frame") {
                 if command.replace(AppCommand::HeadlessStageFrame).is_some() {
                     return Err(ConfigError::DuplicateOption("--headless-stage-frame"));
+                }
+                continue;
+            }
+            if argument == OsStr::new("--windowed-stage-frame") {
+                if command.replace(AppCommand::WindowedStageFrame).is_some() {
+                    return Err(ConfigError::DuplicateOption("--windowed-stage-frame"));
                 }
                 continue;
             }
@@ -197,9 +207,12 @@ impl AppOptions {
             return Err(ConfigError::EmptyStage);
         }
 
-        // The stage command needs both a stage name and a media root to read the
+        // The stage commands need both a stage name and a media root to read the
         // sibling section files from; the root-frame commands need neither.
-        if self.command == AppCommand::HeadlessStageFrame {
+        if matches!(
+            self.command,
+            AppCommand::HeadlessStageFrame | AppCommand::WindowedStageFrame
+        ) {
             if self.stage.is_none() {
                 return Err(ConfigError::MissingStage);
             }
@@ -302,7 +315,7 @@ impl fmt::Display for ConfigError {
             Self::MissingOptionValue(option) => write!(formatter, "missing value for {option}"),
             Self::MissingCommand => write!(
                 formatter,
-                "missing command; pass --headless-root-frame, --windowed-root-frame, or --headless-stage-frame"
+                "missing command; pass --headless-root-frame, --windowed-root-frame, --headless-stage-frame, or --windowed-stage-frame"
             ),
             Self::MissingRuntimeData => write!(
                 formatter,
@@ -326,11 +339,11 @@ impl fmt::Display for ConfigError {
             Self::EmptyStage => write!(formatter, "--stage must not be empty"),
             Self::MissingStage => write!(
                 formatter,
-                "--headless-stage-frame requires a stage; pass --stage NAME"
+                "a stage command requires a stage; pass --stage NAME"
             ),
             Self::MissingSourceForStage => write!(
                 formatter,
-                "--headless-stage-frame requires a media root; pass --source PATH or set {SOURCE_ENV}"
+                "a stage command requires a media root; pass --source PATH or set {SOURCE_ENV}"
             ),
         }
     }
@@ -971,6 +984,31 @@ fn stage_placeholder_palette() -> [PaletteEntry; 256] {
     palette
 }
 
+/// A composed stage frame plus its scene statistics, for a caller-owned
+/// presenter (the native window host or the headless digest path).
+#[derive(Clone, Debug)]
+pub struct RenderedStageFrameOutput {
+    pub stage: String,
+    pub frame: SoftwarePresentedFrame,
+    pub node_count: usize,
+    pub draw_ops: usize,
+    pub textures: usize,
+    pub stats: StageSceneFrameStats,
+}
+
+impl From<RenderedStageFrameOutput> for HeadlessStageFrameOutput {
+    fn from(rendered: RenderedStageFrameOutput) -> Self {
+        Self {
+            stage: rendered.stage,
+            node_count: rendered.node_count,
+            draw_ops: rendered.draw_ops,
+            textures: rendered.textures,
+            stats: rendered.stats,
+            frame_digest: rendered.frame.digest_summary(),
+        }
+    }
+}
+
 /// Loads the named stage from the media root and composes one software frame.
 ///
 /// This threads the `--source` seam end to end: it reads the stage's sibling
@@ -978,12 +1016,12 @@ fn stage_placeholder_palette() -> [PaletteEntry; 256] {
 /// the `.c3d` scene ([`StageScene::from_c3d`]), binds its group-2 textures
 /// ([`StageC3dTextures`]), composes the scene into a software frame
 /// ([`compose_stage_scene_frame`]) with a fixed placeholder camera and palette,
-/// and bridges it to the shared presentation type for a path-free digest. No SDL
-/// window is opened, so the whole path is exercisable headlessly.
-pub fn run_headless_stage_frame(
+/// and bridges it to the shared presentation type. The owned frame lets a
+/// headless caller take a digest or a native host present it in a window.
+pub fn render_stage_frame(
     media_root: &Path,
     stage: &str,
-) -> Result<HeadlessStageFrameOutput, StageFrameError> {
+) -> Result<RenderedStageFrameOutput, StageFrameError> {
     let source = FsStageSectionSource::read(media_root, stage, DecodeLimits::default())?;
     let bundle = load_stage(&source, C3dLimits::default()).map_err(StageFrameError::Load)?;
 
@@ -1008,14 +1046,76 @@ pub fn run_headless_stage_frame(
         .to_presented_frame()
         .map_err(StageFrameError::Present)?;
 
-    Ok(HeadlessStageFrameOutput {
+    Ok(RenderedStageFrameOutput {
         stage: stage.to_owned(),
+        frame: presented,
         node_count: scene.node_count(),
         draw_ops: scene.draw_order().len(),
         textures: textures.len(),
         stats: *frame.stats(),
-        frame_digest: presented.digest_summary(),
     })
+}
+
+/// Composes one stage frame headlessly and returns its path-free measurements.
+pub fn run_headless_stage_frame(
+    media_root: &Path,
+    stage: &str,
+) -> Result<HeadlessStageFrameOutput, StageFrameError> {
+    render_stage_frame(media_root, stage).map(HeadlessStageFrameOutput::from)
+}
+
+/// A failure while running the native windowed stage frame.
+#[derive(Debug)]
+pub enum WindowedStageFrameError {
+    /// Loading or composing the stage frame failed.
+    Setup(StageFrameError),
+    /// The SDL host failed to present the composed frame.
+    Present(SdlHostError),
+}
+
+impl WindowedStageFrameError {
+    /// Stable error category for path-free process diagnostics.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Setup(source) => source.kind(),
+            Self::Present(_) => "present-host",
+        }
+    }
+}
+
+impl From<StageFrameError> for WindowedStageFrameError {
+    fn from(source: StageFrameError) -> Self {
+        Self::Setup(source)
+    }
+}
+
+impl fmt::Display for WindowedStageFrameError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Setup(source) => source.fmt(formatter),
+            Self::Present(source) => write!(formatter, "cannot present stage frame: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for WindowedStageFrameError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Setup(source) => Some(source),
+            Self::Present(source) => Some(source),
+        }
+    }
+}
+
+/// Composes one stage frame and presents it in a native SDL window until the
+/// user closes it, reusing the same composition path as the headless command.
+pub fn run_windowed_stage_frame(
+    media_root: &Path,
+    stage: &str,
+) -> Result<(), WindowedStageFrameError> {
+    let rendered = render_stage_frame(media_root, stage)?;
+    present_software_frame(&rendered.frame).map_err(WindowedStageFrameError::Present)
 }
 
 #[cfg(test)]
@@ -1274,6 +1374,43 @@ mod tests {
         assert_eq!(config.command(), AppCommand::HeadlessStageFrame);
         assert_eq!(config.stage(), Some("MONACO1"));
         assert_eq!(config.media_root(), Some(Path::new("/media")));
+    }
+
+    #[test]
+    fn windowed_stage_command_uses_the_same_stage_contract() {
+        let config = runtime_config(
+            arguments(&[
+                "--windowed-stage-frame",
+                "--runtime-data",
+                "/user",
+                "--source",
+                "/media",
+                "--stage",
+                "MONACO1",
+            ]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.command(), AppCommand::WindowedStageFrame);
+        assert_eq!(config.stage(), Some("MONACO1"));
+        assert_eq!(config.media_root(), Some(Path::new("/media")));
+
+        // It requires a media root just like the headless stage command.
+        assert_eq!(
+            runtime_config(
+                arguments(&[
+                    "--windowed-stage-frame",
+                    "--runtime-data",
+                    "/user",
+                    "--stage",
+                    "MONACO1",
+                ]),
+                None,
+                None,
+            ),
+            Err(ConfigError::MissingSourceForStage)
+        );
     }
 
     #[test]

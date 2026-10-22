@@ -10,13 +10,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cmr_app::{StageFrameError, run_headless_stage_frame};
+use cmr_app::{StageFrameError, render_stage_frame, run_headless_stage_frame};
 use cmr_formats::c3d::{
     C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS, C3D_FORMAT_VERSION, C3D_GROUP0_VALUES_OFFSET,
     C3D_GROUP1_ENTRY24_LEN, C3D_GROUP1_ENTRY32_LEN, C3D_GROUP1_FIXED_LEN, C3D_HEADER_LEN,
     C3D_MAGIC,
 };
 use cmr_formats::stage::{C3D_EXTENSION, CAT_EXTENSION, CAT_NODE_STRIDE};
+use cmr_platform_sdl3::present_software_frame_once;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -79,6 +80,23 @@ fn composes_a_drawable_stage_from_a_source_root() {
             .stable_summary()
             .contains(media.root().to_str().unwrap())
     );
+}
+
+#[test]
+#[ignore = "requires an SDL video driver; run with SDL_VIDEODRIVER=dummy"]
+fn sdl_host_presents_a_composed_stage_frame() {
+    let media = MediaDir::new();
+    media.write_section(
+        "windowed",
+        C3D_EXTENSION,
+        &drawable_c3d(&indexed_bitmap_4x4(), [0, 0, -(1 << 16)]),
+    );
+
+    // The windowed command's composition path, presented once (the live
+    // `run_windowed_stage_frame` waits for the user to close the window).
+    let rendered = render_stage_frame(media.root(), "windowed").unwrap();
+    assert_eq!(rendered.node_count, 1);
+    present_software_frame_once(&rendered.frame).unwrap();
 }
 
 #[test]
