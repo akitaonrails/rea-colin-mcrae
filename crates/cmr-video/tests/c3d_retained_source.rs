@@ -37,7 +37,7 @@ use cmr_video::c3d_software_raster::{
     SoftwareC3dRasterError, SoftwareC3dTransformState, compose_root_c3d_indexed_copy_no_blend,
     preflight_mesh_lod_prim, preflight_root_c3d_batch, preflight_root_c3d_copy_batch,
 };
-use cmr_video::software_stage_scene::compose_stage_scene_frame;
+use cmr_video::software_stage_scene::{StageC3dTextures, compose_stage_scene_frame};
 use sha2::{Digest, Sha256};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -865,6 +865,27 @@ fn stage_scene_frame_composites_a_walked_node_like_the_direct_prim_path() {
     assert_eq!(empty.stats().unresolved_prims, 1);
     assert!(empty.pixels().iter().all(|&index| index == 0));
     assert!(empty.depth().values().iter().all(|&d| d == 1.0));
+
+    // The stage's OWN group-2 texture binding resolves the face ordinal to a
+    // sampled texture and composites to the identical frame as the root-menu
+    // catalog path (both decode the same inline BM blob at full extent).
+    let stage_textures = StageC3dTextures::prepare(&file, BitmapLimits::default()).unwrap();
+    assert_eq!(stage_textures.len(), 1);
+    assert!(stage_textures.texture_for_ordinal(0).is_some());
+    assert!(stage_textures.texture_for_ordinal(-1).is_none());
+    assert!(stage_textures.texture_for_ordinal(1).is_none());
+    let bound = compose_stage_scene_frame(
+        &scene,
+        &camera,
+        extent,
+        &palette,
+        SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+        |ordinal| stage_textures.texture_for_ordinal(ordinal),
+    )
+    .unwrap();
+    assert_eq!(bound.stats().prims_composed, 1);
+    assert_eq!(bound.pixels(), frame.pixels());
+    assert_eq!(bound.depth().values(), frame.depth().values());
 }
 
 /// A 16-entry indexed display palette (the rest white), matching the synthetic

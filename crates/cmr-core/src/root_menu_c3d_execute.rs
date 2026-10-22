@@ -280,7 +280,8 @@ pub fn bind_root_menu_c3d_resources<H, E>(
             resource_id: error.resource_id,
             first_slot: match error.origin.source().owner {
                 crate::root_menu_c3d_resources::FrontendC3dOwner::RootMenu(slot) => slot,
-                crate::root_menu_c3d_resources::FrontendC3dOwner::ChampionshipCar(_) => {
+                crate::root_menu_c3d_resources::FrontendC3dOwner::ChampionshipCar(_)
+                | crate::root_menu_c3d_resources::FrontendC3dOwner::Stage => {
                     unreachable!("root topology contains only root-owned C3D resources")
                 }
             },

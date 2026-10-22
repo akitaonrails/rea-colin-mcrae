@@ -36,6 +36,9 @@ pub const ROOT_MENU_C3D_RESOURCE_CAPACITY: usize = 2048;
 pub enum FrontendC3dOwner {
     ChampionshipCar(CanonicalCar),
     RootMenu(RootMenuC3dSlot),
+    /// A gameplay stage/track scene (`cmr_core::c3d_stage_scene`), prepared
+    /// outside the frontend's fixed root/car slots. It owns no root-menu slot.
+    Stage,
 }
 
 /// Owned identity of one C3D input. Paths need not be static or root-menu paths.
@@ -256,7 +259,7 @@ impl C3dPreparedResource {
     pub const fn first_root_slot(&self) -> Option<RootMenuC3dSlot> {
         match self.origin.source.owner {
             FrontendC3dOwner::RootMenu(slot) => Some(slot),
-            FrontendC3dOwner::ChampionshipCar(_) => None,
+            FrontendC3dOwner::ChampionshipCar(_) | FrontendC3dOwner::Stage => None,
         }
     }
 

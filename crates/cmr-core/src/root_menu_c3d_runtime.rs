@@ -877,9 +877,9 @@ fn map_root_materialization_error(
             extent_bits,
         },
         C3dResourceScaledMaterializationError::UnusableSurfaceExtent {
-            first_owner: FrontendC3dOwner::ChampionshipCar(_),
+            first_owner: FrontendC3dOwner::ChampionshipCar(_) | FrontendC3dOwner::Stage,
             ..
-        } => unreachable!("isolated root topology cannot contain car-owned resources"),
+        } => unreachable!("isolated root topology cannot contain car- or stage-owned resources"),
     }
 }
 

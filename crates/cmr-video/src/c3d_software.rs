@@ -94,7 +94,7 @@ impl SoftwareC3dRetainedSource {
     pub fn first_slot(&self) -> Option<RootMenuC3dSlot> {
         match self.0.owner {
             FrontendC3dOwner::RootMenu(slot) => Some(slot),
-            FrontendC3dOwner::ChampionshipCar(_) => None,
+            FrontendC3dOwner::ChampionshipCar(_) | FrontendC3dOwner::Stage => None,
         }
     }
 
