@@ -37,6 +37,7 @@ pub mod championship_model;
 pub mod championship_progression;
 pub mod championship_setup;
 pub mod championship_setup_frame;
+pub mod camera_cinematic;
 pub mod camera_crossfade;
 pub mod camera_mode;
 pub mod camera_placement;
