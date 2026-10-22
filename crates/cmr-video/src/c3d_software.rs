@@ -21,7 +21,9 @@ use cmr_core::root_menu_c3d_runtime::{
     resolve_c3d_surface_layout,
 };
 use cmr_core::root_menu_c3d_topology::RootMenuC3dTopology;
-use cmr_formats::bitmap::{BitmapPaletteEntry, IndexedBitmap};
+use cmr_formats::bitmap::{
+    BitmapError, BitmapLimits, BitmapPaletteEntry, IndexedBitmap, parse_indexed_bitmap,
+};
 use cmr_formats::c3d::{C3dEngineBitmap, C3dPalettedBitmap};
 
 #[derive(Debug, Eq, PartialEq)]
@@ -208,6 +210,28 @@ impl SoftwareC3dSampledTexture {
             source,
             resource.origin().preparation_policy().surface_layout,
         )
+    }
+
+    /// Builds a sampled texture from a raw `BM` group-2 blob, mirroring the
+    /// frontend prepare path (no color key, default surface gates) without the
+    /// prepared-resource arena, so a caller decoding group-2 blobs one at a time
+    /// gets the same result the arena-backed [`Self::from_prepared_frontend`]
+    /// produces for a stage resource.
+    pub fn from_bm_blob(
+        bytes: &[u8],
+        owner: FrontendC3dOwner,
+        bitmap_limits: BitmapLimits,
+    ) -> Result<Self, SoftwareC3dBitmapError> {
+        let bitmap =
+            parse_indexed_bitmap(bytes, bitmap_limits).map_err(SoftwareC3dBitmapError::Decode)?;
+        let source_dib_extent_low16 = [
+            u16::from_le_bytes([bytes[18], bytes[19]]),
+            u16::from_le_bytes([bytes[22], bytes[23]]),
+        ];
+        let source =
+            SoftwareC3dRetainedSource::from_bitmap(owner, &bitmap, source_dib_extent_low16, None);
+        Self::from_retained(source, C3dSurfaceLayoutGates::default())
+            .map_err(SoftwareC3dBitmapError::Sampling)
     }
 
     /// Builds a sampled texture from a parsed C3D engine inline texture blob
@@ -437,6 +461,33 @@ impl std::error::Error for SoftwareC3dSamplingError {
         match self {
             Self::Layout(source) => Some(source),
             _ => None,
+        }
+    }
+}
+
+/// Why [`SoftwareC3dSampledTexture::from_bm_blob`] rejected a `BM` group-2 blob.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SoftwareC3dBitmapError {
+    /// The `BM` payload failed to parse.
+    Decode(BitmapError),
+    /// The parsed bitmap was rejected by the software sampler.
+    Sampling(SoftwareC3dSamplingError),
+}
+
+impl fmt::Display for SoftwareC3dBitmapError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decode(source) => write!(formatter, "cannot decode BM group-2 blob: {source}"),
+            Self::Sampling(source) => write!(formatter, "cannot sample BM group-2 blob: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for SoftwareC3dBitmapError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Decode(source) => Some(source),
+            Self::Sampling(source) => Some(source),
         }
     }
 }

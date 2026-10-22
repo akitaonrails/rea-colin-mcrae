@@ -888,6 +888,39 @@ fn stage_scene_frame_composites_a_walked_node_like_the_direct_prim_path() {
     assert_eq!(bound.depth().values(), frame.depth().values());
 }
 
+/// The real shipped stage/car group-2 blobs are the C3D engine inline texture
+/// format, not `BM` bitmaps. `StageC3dTextures::prepare` must decode an inline
+/// paletted engine blob positionally into its ordinal slot - the arena-backed
+/// frontend prepare path rejected every such blob as `UnsupportedResource`.
+#[test]
+fn stage_textures_decode_an_inline_engine_paletted_blob_positionally() {
+    let file = parse_c3d(
+        &one_resource_c3d(&engine_paletted_blob()),
+        C3dLimits::default(),
+    )
+    .unwrap();
+    let textures = StageC3dTextures::prepare(&file, BitmapLimits::default()).unwrap();
+
+    assert_eq!(textures.len(), 1);
+    assert!(textures.texture_for_ordinal(-1).is_none());
+    assert!(textures.texture_for_ordinal(1).is_none());
+    let texture = textures
+        .texture_for_ordinal(0)
+        .expect("ordinal 0 is the decoded engine paletted texture");
+    assert_eq!(texture.extent(), [4, 2]);
+    assert_eq!(texture.indices(), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(texture.palette().len(), 16);
+    assert_eq!(
+        texture.palette()[1],
+        BitmapPaletteEntry {
+            red: 248,
+            green: 0,
+            blue: 0,
+            reserved: 0,
+        }
+    );
+}
+
 /// A 16-entry indexed display palette (the rest white), matching the synthetic
 /// `indexed_bitmap_4x4` source colors used by the pixel-path tests.
 fn active_palette_16() -> [PaletteEntry; 256] {
@@ -998,6 +1031,28 @@ fn drawable_root_c3d(bitmap: &[u8], normal_q16: [i32; 3]) -> Vec<u8> {
     input[blob_start + 12..blob_start + 16].copy_from_slice(&(bitmap.len() as u32).to_le_bytes());
     input[blob_start + 16..].copy_from_slice(bitmap);
     input
+}
+
+/// A 16-colour inline-palette engine paletted blob: pixel extent 4x2, indices
+/// `[1..=8]`, palette entry 1 red and 2 green (`X1R5G5B5`). Mirrors the unit
+/// fixture in `c3d_software`, built through the recovered layout offsets.
+fn engine_paletted_blob() -> Vec<u8> {
+    const PALETTED_TAG: u8 = 0x10;
+    let palette_entries = 16usize;
+    let descriptor = 0x14 + palette_entries * 2;
+    let data_start = descriptor + 0x0c;
+    let (stored_width, stored_height) = (1u16, 2u16);
+    let row_bytes = 2 * stored_width as usize;
+    let mut blob = vec![0u8; data_start + row_bytes * stored_height as usize];
+    blob[0] = PALETTED_TAG;
+    blob[0x04] = 0x08; // 16-colour + inline palette
+    blob[0x16..0x18].copy_from_slice(&0x001fu16.to_le_bytes()); // palette[1] = red
+    blob[0x18..0x1a].copy_from_slice(&0x03e0u16.to_le_bytes()); // palette[2] = green
+    blob[descriptor + 0x08..descriptor + 0x0a].copy_from_slice(&stored_width.to_le_bytes());
+    blob[descriptor + 0x0a..descriptor + 0x0c].copy_from_slice(&stored_height.to_le_bytes());
+    // Two pixels per byte, low nibble first: row0 [1,2,3,4], row1 [5,6,7,8].
+    blob[data_start..data_start + 4].copy_from_slice(&[0x21, 0x43, 0x65, 0x87]);
+    blob
 }
 
 fn indexed_bitmap_4x4() -> Vec<u8> {

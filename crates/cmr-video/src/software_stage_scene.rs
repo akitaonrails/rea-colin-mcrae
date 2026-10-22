@@ -23,17 +23,13 @@ use std::fmt;
 
 use cmr_core::c3d_stage_scene::StageScene;
 use cmr_core::display::DisplayExtent;
-use cmr_core::root_menu_c3d_resources::{
-    C3dEntryMaterialPolicy, C3dLoadPolicy, C3dPreparedArenaBuilder, C3dPreparedResourceAccessError,
-    C3dResourceAllocationPolicy, C3dResourceArenaIdentityExhausted, C3dResourcePreparationError,
-    C3dSourceIdentity, C3dSurfaceLayoutGates, FrontendC3dOwner,
-};
+use cmr_core::root_menu_c3d_resources::FrontendC3dOwner;
 use cmr_core::root_menu_c3d_transform::RootMenuC3dViewportError;
 use cmr_formats::bitmap::BitmapLimits;
-use cmr_formats::c3d::C3dFile;
+use cmr_formats::c3d::{C3dFile, C3dResourceError, C3dResourceView};
 use cmr_formats::riff_palette::PaletteEntry;
 
-use crate::c3d_software::{SoftwareC3dSampledTexture, SoftwareC3dSamplingError};
+use crate::c3d_software::{SoftwareC3dBitmapError, SoftwareC3dSampledTexture};
 use crate::c3d_software_raster::{
     SoftwareC3dComposeError, SoftwareC3dDepthBuffer, SoftwareC3dIndexedQuantization,
     SoftwareC3dRasterError, SoftwareC3dTransformState, compose_root_c3d_indexed_copy_no_blend,
@@ -228,27 +224,6 @@ impl std::error::Error for StageSceneComposeError {
     }
 }
 
-/// The explicit preparation policy for a standalone stage/car C3D scene.
-///
-/// This is an adapter policy, not a recovered runtime load state: a stage builds
-/// with the recovered mode `5`, Type-2 (lit) vertices (`caller_flags` bit 0
-/// clear), one distinct resource per group-2 record ([`C3dResourceAllocationPolicy::AppendEveryResource`]),
-/// and no surface reduction ([`C3dSurfaceLayoutGates::default`]) so a texture
-/// samples at its full stored extent. The ordinary Mode-2 material policy keeps
-/// per-face material references as-is.
-fn stage_preparation_policy(entry_resource_count: u32) -> C3dLoadPolicy {
-    C3dLoadPolicy {
-        mode: 5,
-        caller_option: 0,
-        caller_flags: 0,
-        surface_constructor_flags: 0,
-        entry_resource_count,
-        allocation: C3dResourceAllocationPolicy::AppendEveryResource,
-        surface_layout: C3dSurfaceLayoutGates::default(),
-        material: C3dEntryMaterialPolicy::Mode2Ordinary,
-    }
-}
-
 /// The group-2 textures of one stage/car C3D scene, prepared and sampled into
 /// the software [`SoftwareC3dSampledTexture`] form, indexed by group-2 ordinal.
 ///
@@ -260,62 +235,82 @@ fn stage_preparation_policy(entry_resource_count: u32) -> C3dLoadPolicy {
 /// (`rea.official-eu.c3d-material-binding`). An untextured ordinal (`-1`) yields
 /// `None`.
 ///
-/// Only group-2 blobs carrying an inline `BM` bitmap are decoded (as the shipped
-/// frontend C3D assets do). The shipped stage/car blobs' inline engine paletted
-/// format is a separate unrecovered decoder; preparing such a scene fails rather
-/// than guessing it.
+/// Each group-2 record is classified and decoded in place, so `by_ordinal` is
+/// positional (one slot per group-2 record): a slot holds the sampled texture
+/// when it decoded, or `None` when the record is not a drawable texture (an
+/// `ANIM` composite) or carries an engine texture the software sampler does not
+/// yet decode (truecolor, or a palette-less paletted blob). An inline `BM`
+/// bitmap (the shipped frontend assets) must decode or the whole preparation
+/// fails closed; the shipped stage/car engine paletted blobs decode when they
+/// carry an inline palette.
 #[derive(Clone, Debug)]
 pub struct StageC3dTextures {
-    by_ordinal: Vec<SoftwareC3dSampledTexture>,
+    by_ordinal: Vec<Option<SoftwareC3dSampledTexture>>,
 }
 
 impl StageC3dTextures {
-    /// Prepares every group-2 texture of `scene` into its sampled form.
+    /// Prepares every group-2 record of `scene` into its sampled form, indexed
+    /// by group-2 ordinal.
     ///
-    /// Fails closed: a blob that is not a decodable `BM` bitmap, or a texture the
-    /// software sampler rejects (non-square/unaligned padding), aborts the whole
-    /// preparation rather than silently dropping a material.
+    /// A record is classified ([`C3dResourceView`]) then decoded per kind:
+    /// - `BM` bitmap bytes decode through the frontend BM path and **must**
+    ///   succeed, or the whole preparation fails
+    ///   ([`StageC3dTextureError::Bitmap`]) - a malformed shipped-format bitmap
+    ///   is a real defect, not a material to drop.
+    /// - A non-`BM`/non-`ANIM` blob is the engine inline texture format; it is
+    ///   decoded best-effort, and a record the engine parser or software sampler
+    ///   cannot yet handle (truecolor, palette-less) becomes an empty slot rather
+    ///   than aborting the scene.
+    /// - An `ANIM` composite is not a bitmap and becomes an empty slot.
+    ///
+    /// A record whose `ANIM` framing is itself malformed aborts preparation
+    /// ([`StageC3dTextureError::Classify`]), since that is corrupt input, not an
+    /// unsupported-but-valid texture.
     pub fn prepare(
         scene: &C3dFile,
         bitmap_limits: BitmapLimits,
     ) -> Result<Self, StageC3dTextureError> {
-        let mut builder = C3dPreparedArenaBuilder::new()?;
-        let source = C3dSourceIdentity {
-            owner: FrontendC3dOwner::Stage,
-            path: Box::from("<stage>"),
-        };
-        let resource_count = u32::try_from(scene.blob_records().len()).unwrap_or(u32::MAX);
-        let object = builder.prepare_object(
-            source,
-            scene,
-            stage_preparation_policy(resource_count),
-            bitmap_limits,
-        )?;
-        let ordinal_resources = object.ordinal_resources().to_vec();
-        let arena = builder.finish();
-
-        let mut by_ordinal = Vec::with_capacity(ordinal_resources.len());
-        for id in ordinal_resources {
-            let resource = arena.resource(id)?;
-            by_ordinal.push(SoftwareC3dSampledTexture::from_prepared_frontend(resource)?);
+        let mut by_ordinal = Vec::with_capacity(scene.blob_records().len());
+        for (ordinal, record) in scene.blob_records().enumerate() {
+            let texture = match record
+                .classify_resource()
+                .map_err(|source| StageC3dTextureError::Classify { ordinal, source })?
+            {
+                C3dResourceView::BitmapBytes(bytes) => Some(
+                    SoftwareC3dSampledTexture::from_bm_blob(
+                        bytes,
+                        FrontendC3dOwner::Stage,
+                        bitmap_limits,
+                    )
+                    .map_err(|source| StageC3dTextureError::Bitmap { ordinal, source })?,
+                ),
+                C3dResourceView::Unknown(_) => record.engine_bitmap().ok().and_then(|bitmap| {
+                    SoftwareC3dSampledTexture::from_engine_bitmap(&bitmap, FrontendC3dOwner::Stage)
+                        .ok()
+                }),
+                C3dResourceView::Animation(_) => None,
+            };
+            by_ordinal.push(texture);
         }
         Ok(StageC3dTextures { by_ordinal })
     }
 
     /// The sampled texture for a face's group-2 ordinal, or `None` for the
-    /// untextured sentinel (`-1`) or an out-of-range ordinal.
+    /// untextured sentinel (`-1`), an out-of-range ordinal, or an ordinal whose
+    /// record decoded to an empty slot (a composite or unsupported texture).
     pub fn texture_for_ordinal(&self, ordinal: i16) -> Option<&SoftwareC3dSampledTexture> {
         usize::try_from(ordinal)
             .ok()
             .and_then(|index| self.by_ordinal.get(index))
+            .and_then(|slot| slot.as_ref())
     }
 
-    /// The number of prepared group-2 textures.
+    /// The number of group-2 ordinal slots (decoded or empty).
     pub fn len(&self) -> usize {
         self.by_ordinal.len()
     }
 
-    /// Whether the scene has no group-2 textures.
+    /// Whether the scene has no group-2 records.
     pub fn is_empty(&self) -> bool {
         self.by_ordinal.is_empty()
     }
@@ -324,55 +319,27 @@ impl StageC3dTextures {
 /// Why [`StageC3dTextures::prepare`] failed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StageC3dTextureError {
-    /// The process ran out of distinct C3D resource-arena identities.
-    ArenaExhausted,
-    /// A group-2 blob could not be prepared into a resource (not a decodable
-    /// bitmap, or a bad reference).
-    Prepare(C3dResourcePreparationError),
-    /// A prepared resource could not be read back from its arena.
-    ResourceAccess(C3dPreparedResourceAccessError),
-    /// The software sampler rejected a prepared texture.
-    Sampling(SoftwareC3dSamplingError),
-}
-
-impl From<C3dResourceArenaIdentityExhausted> for StageC3dTextureError {
-    fn from(_: C3dResourceArenaIdentityExhausted) -> Self {
-        StageC3dTextureError::ArenaExhausted
-    }
-}
-
-impl From<C3dResourcePreparationError> for StageC3dTextureError {
-    fn from(error: C3dResourcePreparationError) -> Self {
-        StageC3dTextureError::Prepare(error)
-    }
-}
-
-impl From<C3dPreparedResourceAccessError> for StageC3dTextureError {
-    fn from(error: C3dPreparedResourceAccessError) -> Self {
-        StageC3dTextureError::ResourceAccess(error)
-    }
-}
-
-impl From<SoftwareC3dSamplingError> for StageC3dTextureError {
-    fn from(error: SoftwareC3dSamplingError) -> Self {
-        StageC3dTextureError::Sampling(error)
-    }
+    /// A group-2 record's resource framing (an `ANIM` composite header) is
+    /// malformed and could not be classified.
+    Classify {
+        ordinal: usize,
+        source: C3dResourceError,
+    },
+    /// A group-2 `BM` bitmap blob could not be decoded or sampled.
+    Bitmap {
+        ordinal: usize,
+        source: SoftwareC3dBitmapError,
+    },
 }
 
 impl fmt::Display for StageC3dTextureError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StageC3dTextureError::ArenaExhausted => {
-                write!(f, "stage C3D resource arena identities exhausted")
+            StageC3dTextureError::Classify { ordinal, source } => {
+                write!(f, "stage C3D group-2 ordinal {ordinal} classify: {source}")
             }
-            StageC3dTextureError::Prepare(error) => {
-                write!(f, "stage C3D resource prepare: {error}")
-            }
-            StageC3dTextureError::ResourceAccess(error) => {
-                write!(f, "stage C3D resource access: {error}")
-            }
-            StageC3dTextureError::Sampling(error) => {
-                write!(f, "stage C3D texture sampling: {error}")
+            StageC3dTextureError::Bitmap { ordinal, source } => {
+                write!(f, "stage C3D group-2 ordinal {ordinal} bitmap: {source}")
             }
         }
     }
@@ -381,10 +348,8 @@ impl fmt::Display for StageC3dTextureError {
 impl std::error::Error for StageC3dTextureError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            StageC3dTextureError::ArenaExhausted => None,
-            StageC3dTextureError::Prepare(error) => Some(error),
-            StageC3dTextureError::ResourceAccess(error) => Some(error),
-            StageC3dTextureError::Sampling(error) => Some(error),
+            StageC3dTextureError::Classify { source, .. } => Some(source),
+            StageC3dTextureError::Bitmap { source, .. } => Some(source),
         }
     }
 }
