@@ -39,6 +39,7 @@ pub mod championship_setup;
 pub mod championship_setup_frame;
 pub mod camera_cinematic;
 pub mod camera_crossfade;
+pub mod camera_interior;
 pub mod camera_mode;
 pub mod camera_placement;
 pub mod camera_trackside;
