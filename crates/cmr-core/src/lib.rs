@@ -43,6 +43,7 @@ pub mod camera_interior;
 pub mod camera_mode;
 pub mod camera_placement;
 pub mod camera_trackside;
+pub mod camera_view;
 pub mod championship_setup_visual;
 pub mod championship_terminal_frame;
 pub mod collision;

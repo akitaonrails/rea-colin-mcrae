@@ -119,7 +119,7 @@ fn basis_needs_ease(cur: &[i32; 16], target: &[i32; 16]) -> bool {
 /// sin h)` (col 2), translation `= position` (col 3). The basis is orthonormal
 /// and matches the sim's forward `(cos h, 0, sin h)`.
 #[must_use]
-fn car_world_q16(trig: &[i32; TRIG_TABLE_LEN], position: Vec3, heading: u16) -> [i32; 16] {
+pub fn car_world_q16(trig: &[i32; TRIG_TABLE_LEN], position: Vec3, heading: u16) -> [i32; 16] {
     let cos = cos_bam(trig, heading).raw();
     let sin = sin_bam(trig, heading).raw();
     let one = Fixed16::ONE.raw();
