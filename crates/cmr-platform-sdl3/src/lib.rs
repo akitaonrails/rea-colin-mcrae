@@ -17,9 +17,14 @@ pub use input::{
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
+use cmr_core::audio_assets::FRONTEND_MUSIC;
+use cmr_core::audio_mixer::{AudioMixer, ChannelId, apply_commands};
+use cmr_core::audio_music_cues::FRONTEND_CONTEXT;
 use cmr_core::frontend::FrontendInput;
+use cmr_core::music_player::MusicController;
 use cmr_core::host_lifecycle::{HostLifecycle, PlatformLifecycleEvent};
 use cmr_core::present_scaling::{DEFAULT_SCALING, PresentationScaling};
 use cmr_core::root_menu_interactive::RootInteraction;
@@ -631,7 +636,19 @@ pub struct WindowedGameFrame {
     pub present: Option<SoftwarePresentedFrame>,
     /// Whether the session has reached the terminal stopped state.
     pub stopped: bool,
+    /// Whether the recovered front-end music should play this frame (true during
+    /// the front-end/menu band; false while racing or stopped).
+    pub music_active: bool,
 }
+
+/// The documented harness music config byte for the windowed session's front-end
+/// music, used for both the full-volume and fade-target config inputs. The
+/// shipped game reads these from the runtime config (`DAT_00d3ca80[7]` and
+/// `0x00d3ac60[0xf]`, both `& 0x7f`), which are not in the static image; `8`
+/// scales (via the recovered `music_volume` = `cfg*400000/100`) to ~`0x7d00`,
+/// near the mixer's full scale, reached over an `8*0x14 = 160`-frame fade-in
+/// (the recovered `music_fade_volume` ramp lands exactly on that full volume).
+const FRONTEND_MUSIC_CONFIG_BYTE: u8 = 8;
 
 /// Runs the windowed game session: drives the recovered top-level FSM with live
 /// keyboard input and presents the frame the recovered render route selected,
@@ -648,6 +665,7 @@ pub struct WindowedGameFrame {
 /// exit. Focus loss pauses the stepping, as the recovered host loop does.
 pub fn run_windowed_game_session<F>(
     initial: &SoftwarePresentedFrame,
+    source_root: Option<&Path>,
     mut step: F,
 ) -> Result<(), SdlHostError>
 where
@@ -714,6 +732,30 @@ where
     let mut lifecycle = HostLifecycle::new(WindowMode::Windowed);
     lifecycle.apply(PlatformLifecycleEvent::FocusGained);
 
+    // Best-effort front-end music: open the audio device, register the recovered
+    // front-end music wave (its shipped path is install-root-relative, so its
+    // leading separator is stripped for the source-rooted wave reader), and build
+    // the recovered music controller on channel 0. Any failure (no source root,
+    // no device, missing wave) leaves `audio` as None and the session runs
+    // silent.
+    let mut audio = source_root.and_then(|root| {
+        let host = AudioHost::open(&sdl, root).ok()?;
+        let name = FRONTEND_MUSIC.trim_start_matches(['\\', '/']);
+        let slot = host
+            .mixer()
+            .lock()
+            .ok()?
+            .load_wave(name, 22_050, 16, false)
+            .ok()?;
+        let music = MusicController::new(
+            ChannelId::new(0).ok()?,
+            slot,
+            FRONTEND_MUSIC_CONFIG_BYTE,
+            FRONTEND_MUSIC_CONFIG_BYTE,
+        );
+        Some((host, music))
+    });
+
     loop {
         let mut host_events = Vec::new();
         if let Some(event) = events.wait_event_timeout(INTERACTIVE_FRAME_INTERVAL) {
@@ -762,6 +804,26 @@ where
         let frame = step(input);
         if frame.stopped {
             break;
+        }
+        // Drive the recovered front-end music: start/fade it in during the
+        // front-end band (entering the frontend context gate), stop it otherwise,
+        // applying the emitted mixer commands to the shared software mixer.
+        if let Some((host, music)) = audio.as_mut()
+            && let Ok(mut mixer) = host.mixer().lock()
+        {
+            let commands = if frame.music_active {
+                if music.is_active() {
+                    let busy = mixer.is_channel_busy(music.channel());
+                    music.keepalive(busy)
+                } else {
+                    music.on_context(FRONTEND_CONTEXT)
+                }
+            } else if music.is_active() {
+                music.stop()
+            } else {
+                Vec::new()
+            };
+            let _ = apply_commands(&mut *mixer, &commands);
         }
         match frame.present {
             Some(presented) => {

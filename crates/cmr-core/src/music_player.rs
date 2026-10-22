@@ -12,17 +12,19 @@
 //! looping with loop count `0xffffffff`), and run the per-frame keep-alive
 //! (`FUN_004c9d70`: restart the loop when the voice drains, advance the fade-in
 //! ramp while below the target, else hold). The fade ramp's per-step volume
-//! curve (`FUN_004c97f0`) was not recovered, so the ramp is tracked only as
-//! state and no fabricated `SetVolume` is emitted for it. The explicit
-//! music-stop trigger site is also unrecovered, so [`MusicController::stop`]
-//! exposes the teardown capability without asserting the game's exact trigger.
+//! curve `FUN_004c97f0` is now recovered (`QSWaveMixSetVolume(channel,
+//! counter * 20000 / 100)` = [`music_fade_volume`]), so the keep-alive emits the
+//! ramped `SetVolume` and the ramp lands exactly on the configured
+//! [`music_volume`] at the fade target. The explicit music-stop trigger site is
+//! unrecovered, so [`MusicController::stop`] exposes the teardown capability
+//! without asserting the game's exact trigger.
 //!
-//! See evidence `rea.official-eu.music-lifecycle`.
+//! See evidence `rea.official-eu.music-lifecycle` / `rea.official-eu.frontend-music-channel`.
 
 use crate::audio_mixer::{ChannelId, MixerCommand, WaveSlotId};
 use crate::audio_music_cues::{
     MUSIC_LOOP_COUNT, MusicKeepAlive, MusicTrack, frontend_music_active, music_fade_target,
-    music_keepalive, music_volume,
+    music_fade_volume, music_keepalive, music_volume,
 };
 
 /// Drives looping frontend/replay music over the mixer contract. Holds the
@@ -105,15 +107,18 @@ impl MusicController {
 
     /// One keep-alive frame (`FUN_004c9d70`): when the voice has drained, restart
     /// the loop (and reset the fade ramp); while the voice plays below the fade
-    /// target, advance the ramp (no command - the curve is unrecovered); at or
-    /// above the target, hold. Returns no commands when music is inactive.
-    pub fn keepalive(&mut self, voice_playing: bool, fade_elapsed: i32) -> Vec<MixerCommand> {
+    /// target, advance the ramp one step and set the recovered ramped volume
+    /// ([`music_fade_volume`]); at or above the target, hold. The decision uses
+    /// the controller's own ramp (`DAT_00d90088`), so the caller supplies only
+    /// whether the voice is still playing (`QSWaveMixIsChannelDone == 0`).
+    /// Returns no commands when music is inactive.
+    pub fn keepalive(&mut self, voice_playing: bool) -> Vec<MixerCommand> {
         if !self.active {
             return Vec::new();
         }
         match music_keepalive(
             voice_playing,
-            fade_elapsed,
+            self.ramp as i32,
             music_fade_target(self.fade_config),
         ) {
             MusicKeepAlive::Restart => {
@@ -126,7 +131,10 @@ impl MusicController {
             }
             MusicKeepAlive::FadeIn => {
                 self.ramp = self.ramp.saturating_add(1);
-                Vec::new()
+                vec![MixerCommand::SetVolume {
+                    channel: self.channel,
+                    volume: music_fade_volume(self.ramp as i32),
+                }]
             }
             MusicKeepAlive::HoldFadedIn => Vec::new(),
         }
@@ -203,17 +211,26 @@ mod tests {
     fn keepalive_restarts_on_drain_and_ramps_while_playing() {
         let mut c = controller();
         c.on_context(0);
-        // Fade target is 50 * 0x14 = 1000.
-        // Below target while playing: advance the ramp, no command.
-        assert!(c.keepalive(true, 0).is_empty());
+        // Fade target is 50 * 0x14 = 1000, reached once the ramp counter hits it.
+        // Below target while playing: advance the ramp, set the ramped volume.
+        assert_eq!(
+            c.keepalive(true),
+            vec![MixerCommand::SetVolume {
+                channel: ChannelId::new(5).unwrap(),
+                volume: music_fade_volume(1),
+            }]
+        );
         assert_eq!(c.fade_ramp(), 1);
-        assert!(c.keepalive(true, 500).is_empty());
-        assert_eq!(c.fade_ramp(), 2);
-        // At/above target: hold, ramp unchanged.
-        assert!(c.keepalive(true, 1000).is_empty());
+        assert_eq!(
+            c.keepalive(true),
+            vec![MixerCommand::SetVolume {
+                channel: ChannelId::new(5).unwrap(),
+                volume: music_fade_volume(2),
+            }]
+        );
         assert_eq!(c.fade_ramp(), 2);
         // Drained: restart the loop, reset the ramp.
-        let restart = c.keepalive(false, 1000);
+        let restart = c.keepalive(false);
         assert_eq!(
             restart,
             vec![MixerCommand::Play {
@@ -226,9 +243,35 @@ mod tests {
     }
 
     #[test]
+    fn keepalive_holds_once_the_ramp_reaches_the_fade_target() {
+        // Fade config 1 -> target counter 1*0x14 = 20. Volume config matched to
+        // 1 so the ramp lands exactly on the configured full volume at target.
+        let mut c = MusicController::new(ChannelId::new(5).unwrap(), WaveSlotId::from_ordinal(12), 1, 1);
+        c.on_context(0);
+        let target = music_fade_target(1);
+        assert_eq!(target, 20);
+        // Ramp up to the target; each step sets the ramped volume.
+        for step in 1..=target {
+            assert_eq!(
+                c.keepalive(true),
+                vec![MixerCommand::SetVolume {
+                    channel: ChannelId::new(5).unwrap(),
+                    volume: music_fade_volume(step),
+                }]
+            );
+        }
+        assert_eq!(c.fade_ramp(), target as u32);
+        // At the target: hold, no further command, ramp pinned.
+        assert!(c.keepalive(true).is_empty());
+        assert_eq!(c.fade_ramp(), target as u32);
+        // The ramp landed on the configured full volume.
+        assert_eq!(music_fade_volume(target), music_volume(1));
+    }
+
+    #[test]
     fn keepalive_is_inert_when_inactive() {
         let mut c = controller();
-        assert!(c.keepalive(false, 0).is_empty());
+        assert!(c.keepalive(false).is_empty());
         assert_eq!(c.fade_ramp(), 0);
     }
 

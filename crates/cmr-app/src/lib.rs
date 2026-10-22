@@ -18,6 +18,7 @@ use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
 use cmr_core::fixed_point::{Fixed16, Vec3};
 use cmr_core::frontend::{FrontendPhase, RootSelection};
 use cmr_core::game_menu_flow::MenuFlowInputs;
+use cmr_core::game_session::SessionBand;
 use cmr_core::gameplay_session::{GameplaySession, InRaceScript};
 use cmr_core::host_loop::HostClock;
 use cmr_core::localization::Language;
@@ -1238,7 +1239,7 @@ fn advance_game_frame<C: HostClock>(
     resources: &StageRenderResources,
     camera: &mut GameplayCamera,
     input: WindowedInput,
-) -> (Option<RenderRoute>, Option<SoftwarePresentedFrame>, bool) {
+) -> GameFrameOutcome {
     let controls = if let Some(pad) = input.gamepad {
         analog
             .poll(pad.steer_axis(), pad.pedal_axis(), pad.buttons(), response, true)
@@ -1262,7 +1263,21 @@ fn advance_game_frame<C: HostClock>(
     } else {
         None
     };
-    (advanced.route, world, session.is_stopped())
+    GameFrameOutcome {
+        route: advanced.route,
+        world,
+        stopped: session.is_stopped(),
+        // The recovered front-end music plays during the menu band (states 1..4).
+        music_active: matches!(advanced.band, SessionBand::Menu),
+    }
+}
+
+/// What one [`advance_game_frame`] produced for the windowed loop.
+struct GameFrameOutcome {
+    route: Option<RenderRoute>,
+    world: Option<SoftwarePresentedFrame>,
+    stopped: bool,
+    music_active: bool,
 }
 
 pub fn run_windowed_game_session(
@@ -1310,8 +1325,8 @@ pub fn run_windowed_game_session(
             VisualVariant::Normal,
         );
         let built = with_software_root_menu_session(&store, startup, request, |root| {
-            run_windowed_game_session_loop(&initial.frame, |input: WindowedInput| {
-                let (route, world, stopped) = advance_game_frame(
+            run_windowed_game_session_loop(&initial.frame, Some(media_root), |input: WindowedInput| {
+                let outcome = advance_game_frame(
                     &mut session,
                     &mut keyboard,
                     &mut analog,
@@ -1327,16 +1342,20 @@ pub fn run_windowed_game_session(
                 // route presents the recovered root-menu frame (steady initial
                 // input - live menu navigation is the separate windowed root-frame
                 // command). Any render failure drops the frame.
-                let present = if world.is_some() {
-                    world
-                } else if route.is_some_and(composes_frontend_root) {
+                let present = if outcome.world.is_some() {
+                    outcome.world
+                } else if outcome.route.is_some_and(composes_frontend_root) {
                     root.render(initial_root_input())
                         .ok()
                         .and_then(|_| root.backend().presented_frame().cloned())
                 } else {
                     None
                 };
-                WindowedGameFrame { present, stopped }
+                WindowedGameFrame {
+                    present,
+                    stopped: outcome.stopped,
+                    music_active: outcome.music_active,
+                }
             })
         });
         if let Ok(run) = built {
@@ -1346,8 +1365,8 @@ pub fn run_windowed_game_session(
         // through to the world-only loop below rather than failing the session.
     }
 
-    run_windowed_game_session_loop(&initial.frame, |input: WindowedInput| {
-        let (_route, world, stopped) = advance_game_frame(
+    run_windowed_game_session_loop(&initial.frame, Some(media_root), |input: WindowedInput| {
+        let outcome = advance_game_frame(
             &mut session,
             &mut keyboard,
             &mut analog,
@@ -1360,8 +1379,9 @@ pub fn run_windowed_game_session(
             input,
         );
         WindowedGameFrame {
-            present: world,
-            stopped,
+            present: outcome.world,
+            stopped: outcome.stopped,
+            music_active: outcome.music_active,
         }
     })
     .map_err(WindowedStageFrameError::Present)

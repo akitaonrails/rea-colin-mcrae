@@ -121,6 +121,19 @@ pub const MUSIC_VOLUME_DENOMINATOR: i32 = 100;
 /// Per-step scale of the fade-in target level (`FUN_004c9d70`).
 pub const MUSIC_FADE_TARGET_SCALE: i32 = 0x14;
 
+/// The mixer-volume per ramp step the keep-alive fade applies (`FUN_004c97f0`:
+/// `QSWaveMixSetVolume(channel, counter * 20000 / 100)` = `counter * 200`).
+pub const MUSIC_FADE_VOLUME_STEP: i32 = 20_000 / 100;
+
+/// The mixer volume the keep-alive fade sets for a ramp count (`FUN_004c97f0`):
+/// `fade_elapsed * 200`. At the fade target ([`music_fade_target`]) this equals
+/// the full [`music_volume`] (`cfg*20 * 200 == cfg*400000/100`), so the ramp
+/// lands exactly on the configured volume.
+#[must_use]
+pub fn music_fade_volume(fade_elapsed: i32) -> i32 {
+    fade_elapsed * MUSIC_FADE_VOLUME_STEP
+}
+
 /// Whether frontend music / the stage countdown is active for a context flag
 /// value, reproducing the `DAT_00d3ca88 == 0` gate.
 pub fn frontend_music_active(context: u32) -> bool {
@@ -263,6 +276,19 @@ mod tests {
         assert_eq!(music_keepalive(true, 0, 0), MusicKeepAlive::HoldFadedIn);
         // Music loops forever.
         assert_eq!(MUSIC_LOOP_COUNT, 0xffff_ffff);
+    }
+
+    #[test]
+    fn fade_ramp_lands_on_the_configured_full_volume() {
+        // The per-step volume is counter*200.
+        assert_eq!(music_fade_volume(0), 0);
+        assert_eq!(music_fade_volume(1), 200);
+        assert_eq!(music_fade_volume(50), 10_000);
+        // Ramping to the fade target yields exactly the full configured volume
+        // (cfg*20 steps * 200 == cfg*400000/100), for every config byte.
+        for cfg in [0u8, 1, 10, 50, 0x7f] {
+            assert_eq!(music_fade_volume(music_fade_target(cfg)), music_volume(cfg));
+        }
     }
 
     #[test]
