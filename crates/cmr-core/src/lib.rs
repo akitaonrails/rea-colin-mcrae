@@ -19,6 +19,7 @@ pub mod c3d_mesh;
 pub mod c3d_reflection;
 pub mod c3d_render;
 pub mod c3d_scene_graph;
+pub mod c3d_stage_scene;
 pub mod c3d_terrain_cull;
 pub mod c3d_topology;
 pub mod c3d_transform;

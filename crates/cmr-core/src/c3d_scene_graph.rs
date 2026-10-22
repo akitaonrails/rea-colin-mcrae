@@ -311,6 +311,19 @@ pub enum SceneAssemblyError {
     },
 }
 
+impl core::fmt::Display for SceneAssemblyError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            SceneAssemblyError::ForwardParent { node, parent } => write!(
+                f,
+                "C3D scene node {node} names parent {parent}, not an earlier node in the stream"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SceneAssemblyError {}
+
 /// An arena of scene-graph nodes. Indices stand in for the shipped node
 /// pointers; the graph must be acyclic (a tree, as the shipped scene data is).
 #[derive(Clone, Debug, Default)]
