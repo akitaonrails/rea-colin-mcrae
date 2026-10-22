@@ -50,7 +50,7 @@ use cmr_platform_sdl3::{
 use cmr_core::drive_controls::DriveResponse;
 use cmr_core::gameplay_camera::{ChasePreset, GameplayCamera};
 use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
-use cmr_core::render_route::{RenderRoute, composes_frontend_root, composes_world};
+use cmr_core::render_route::{RenderRoute, composes_frontend_root, presents_world_scene};
 use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
@@ -1250,10 +1250,14 @@ fn advance_game_frame<C: HostClock>(
             .controls
     };
     let advanced = session.advance(clock, menu_inputs, controls, progress);
-    let world = if advanced.route.is_some_and(composes_world) {
-        // The recovered in-race chase camera: place behind + above the car along
-        // its heading and ease the orientation (`gameplay_camera`), replacing the
-        // earlier placeholder follow camera. NTSC base rate (`pal = false`).
+    let world = if advanced.route.is_some_and(presents_world_scene) {
+        // Compose the live world for every route that reaches the shared viewport
+        // compositor 0x422ca0: the in-race StageWorld states and the overlay
+        // (0xa) / fade (0xb) routes, which composite the same world frame (the
+        // overlay layer and fade modulation are runtime/asset-gated effects over
+        // it, not yet reproduced here). The recovered in-race chase camera places
+        // behind + above the car along its heading and eases the orientation
+        // (`gameplay_camera`), NTSC base rate (`pal = false`).
         let car = session.car();
         let camera_world = camera.update(car.position, car.heading, ChasePreset::Near, false);
         resources

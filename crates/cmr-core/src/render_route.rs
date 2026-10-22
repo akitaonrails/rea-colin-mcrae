@@ -144,6 +144,24 @@ pub fn composes_world(route: RenderRoute) -> bool {
     matches!(route, RenderRoute::StageWorld(_))
 }
 
+/// Whether a route reaches the shared per-viewport scene compositor `0x422ca0`
+/// and so puts the live world scene on screen this frame: the `StageWorld` family
+/// (states `5..=9`) plus [`RenderRoute::OverlayAlt`] (state `0xa`, which runs
+/// `0x422ca0(1,1,0)` after its overlay) and [`RenderRoute::FadeComposite`] (state
+/// `0xb`, which runs `0x422ca0(1,0,0)` while a fade is in progress and presents
+/// the last composite when idle). A backend composes the world scene for all
+/// three; the overlay layer and the fade modulation are additional
+/// runtime/asset-gated effects over that same world frame
+/// (`rea.official-eu.game-fsm-overlay-fade`). Contrast [`composes_world`], which
+/// is only the camera/object-interpolation chain the `StageWorld` bodies run.
+#[must_use]
+pub fn presents_world_scene(route: RenderRoute) -> bool {
+    matches!(
+        route,
+        RenderRoute::StageWorld(_) | RenderRoute::OverlayAlt | RenderRoute::FadeComposite
+    )
+}
+
 /// Whether a route composes the interactive front-end root menu - the screen the
 /// recovered root-menu session (`FUN_00421cd0`, state `2`) draws: the rotating
 /// 3D car selection and root-menu objects over the front-end backdrop.
@@ -238,6 +256,24 @@ mod tests {
         assert_eq!(render_route(state(0xb)), RenderRoute::FadeComposite);
         assert!(!composes_world(render_route(state(0xa))));
         assert!(!composes_world(render_route(state(0xb))));
+    }
+
+    #[test]
+    fn world_scene_is_presented_by_the_stageworld_overlay_and_fade_routes() {
+        // The shared compositor 0x422ca0 is reached by 5..=9 and by 0xa / 0xb.
+        for id in 0x5..=0xb {
+            assert!(presents_world_scene(render_route(state(id))));
+        }
+        // Terminal / front-end / load routes do not put the world on screen.
+        for id in [0x0, 0x1, 0x2, 0x3, 0x4, 0xc] {
+            assert!(!presents_world_scene(render_route(state(id))));
+        }
+        // The narrower camera-chain predicate is a strict subset: it excludes the
+        // overlay/fade routes, which do not run the world camera/interp chain.
+        assert!(!composes_world(render_route(state(0xa))));
+        assert!(!composes_world(render_route(state(0xb))));
+        assert!(presents_world_scene(render_route(state(0xa))));
+        assert!(presents_world_scene(render_route(state(0xb))));
     }
 
     #[test]
