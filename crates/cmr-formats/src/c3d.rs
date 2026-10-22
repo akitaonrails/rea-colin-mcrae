@@ -1363,6 +1363,476 @@ impl<'a> C3dBlobRecord<'a> {
 
         Ok(C3dResourceView::Unknown(self.blob))
     }
+
+    /// Parses this record's payload as a C3D engine inline texture blob (the
+    /// stage/car group-2 material format), dispatching exactly as the recovered
+    /// loader does: a leading [`C3D_ENGINE_PALETTED_TAG`] byte selects the
+    /// indexed paletted layout; any other leading byte is treated as the
+    /// truecolor layout.
+    ///
+    /// Call this only for a non-composite material (a blob whose leading byte is
+    /// not the `'A'` animation tag); a composite is [`C3dResourceView::Animation`]
+    /// and is not a bitmap. See [`parse_c3d_engine_bitmap`] for the standalone
+    /// entry point and the recovered evidence.
+    pub fn engine_bitmap(self) -> Result<C3dEngineBitmap<'a>, C3dEngineBitmapError> {
+        parse_c3d_engine_bitmap(self.blob)
+    }
+}
+
+/// Leading blob byte that selects the indexed paletted engine-texture layout;
+/// any other leading byte (other than the `'A'` composite tag) is truecolor.
+pub const C3D_ENGINE_PALETTED_TAG: u8 = 0x10;
+/// The largest texture edge the paletted decoder accepts (powers of two only).
+pub const C3D_ENGINE_MAX_DIMENSION: u16 = 512;
+
+// Paletted layout offsets (blob-relative; `rea.official-eu.c3d-inline-texture`).
+const PALETTED_MODE_OFFSET: usize = 0x04;
+const PALETTED_MODE_PALETTE_MASK: u8 = 0x3;
+const PALETTED_MODE_INLINE_PALETTE: u8 = 0x8;
+const PALETTED_INLINE_PALETTE_OFFSET: usize = 0x14;
+// The dimension descriptor sits at blob+0x08 with no inline palette, else right
+// after the inline palette; width is at descriptor+0x08, height at +0x0a, and
+// the index data at +0x0c.
+const PALETTED_DESCRIPTOR_BASE_NO_PALETTE: usize = 0x08;
+const PALETTED_DESCRIPTOR_WIDTH: usize = 0x08;
+const PALETTED_DESCRIPTOR_HEIGHT: usize = 0x0a;
+const PALETTED_DESCRIPTOR_DATA: usize = 0x0c;
+const PALETTED_PALETTE_ENTRY_LEN: usize = 2;
+
+// Truecolor layout offsets (blob-relative).
+const TRUECOLOR_PIXEL_OFFSET_FIELD: usize = 0x0a;
+const TRUECOLOR_WIDTH_OFFSET: usize = 0x12;
+const TRUECOLOR_HEIGHT_OFFSET: usize = 0x16;
+const TRUECOLOR_BPP_OFFSET: usize = 0x1c;
+const TRUECOLOR_PALETTE_OVERRIDE_OFFSET: usize = 0x2e;
+const TRUECOLOR_PALETTE_OFFSET: usize = 0x36;
+const TRUECOLOR_PALETTE_ENTRY_LEN: usize = 4;
+const TRUECOLOR_HEADER_MIN_LEN: usize = TRUECOLOR_PALETTE_OVERRIDE_OFFSET + 4;
+
+/// A parsed C3D engine inline texture blob (the stage/car group-2 material
+/// format recovered in `rea.official-eu.c3d-inline-texture`).
+///
+/// The payload is framed and validated but not expanded: dimensions, the inline
+/// palette (when present), and the pixel/index region are borrowed in place.
+/// Bytes the recovered decoders do not read (descriptor padding, reserved header
+/// fields) are preserved and never interpreted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dEngineBitmap<'a> {
+    /// The indexed layout (leading tag [`C3D_ENGINE_PALETTED_TAG`]).
+    Paletted(C3dPalettedBitmap<'a>),
+    /// The truecolor / indexed-by-depth layout (any other leading tag).
+    Truecolor(C3dTruecolorBitmap<'a>),
+}
+
+/// The indexed paletted engine-texture layout.
+///
+/// The stored width is a packing width: each on-disk row is `2 * stored_width`
+/// bytes, so the pixel width is `2 * stored_width` for the 256-colour mode and
+/// `4 * stored_width` for the 16-colour (two-pixels-per-byte) mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dPalettedBitmap<'a> {
+    mode: u8,
+    palette_entry_count: usize,
+    inline_palette: Option<&'a [u8]>,
+    stored_width: u16,
+    stored_height: u16,
+    index_data: &'a [u8],
+}
+
+impl<'a> C3dPalettedBitmap<'a> {
+    /// The raw mode byte at `blob+0x04`.
+    #[must_use]
+    pub const fn mode(self) -> u8 {
+        self.mode
+    }
+
+    /// The palette entry count the mode byte selects (`16`, `256`, or `0`).
+    #[must_use]
+    pub const fn palette_entry_count(self) -> usize {
+        self.palette_entry_count
+    }
+
+    /// Whether the palette is carried inline in the blob (mode bit 3).
+    #[must_use]
+    pub const fn has_inline_palette(self) -> bool {
+        self.inline_palette.is_some()
+    }
+
+    /// Whether this is the 16-colour, two-pixels-per-byte mode.
+    #[must_use]
+    pub const fn is_sixteen_colour(self) -> bool {
+        self.mode & PALETTED_MODE_PALETTE_MASK == 0
+    }
+
+    /// The stored packing width (not the pixel width).
+    #[must_use]
+    pub const fn stored_width(self) -> u16 {
+        self.stored_width
+    }
+
+    /// The pixel width: `4 * stored_width` (16-colour) or `2 * stored_width`.
+    #[must_use]
+    pub const fn pixel_width(self) -> usize {
+        let factor = if self.is_sixteen_colour() { 4 } else { 2 };
+        self.stored_width as usize * factor
+    }
+
+    /// The pixel height (equals the stored height).
+    #[must_use]
+    pub const fn pixel_height(self) -> u16 {
+        self.stored_height
+    }
+
+    /// The borrowed inline palette bytes (`2` bytes per entry), if present.
+    #[must_use]
+    pub const fn inline_palette(self) -> Option<&'a [u8]> {
+        self.inline_palette
+    }
+
+    /// The borrowed, tightly packed index data (`2 * stored_width` bytes per
+    /// row, `stored_height` rows).
+    #[must_use]
+    pub const fn index_data(self) -> &'a [u8] {
+        self.index_data
+    }
+
+    /// Decodes inline palette entry `index` from its `X1R5G5B5` word into an
+    /// `[R, G, B]` triple (each 5-bit channel scaled to 8 bits).
+    #[must_use]
+    pub fn inline_palette_entry(self, index: usize) -> Option<[u8; 3]> {
+        let palette = self.inline_palette?;
+        let start = index.checked_mul(PALETTED_PALETTE_ENTRY_LEN)?;
+        let word = palette.get(start..start + PALETTED_PALETTE_ENTRY_LEN)?;
+        let value = u16::from_le_bytes([word[0], word[1]]);
+        Some(expand_x1r5g5b5(value))
+    }
+}
+
+/// The truecolor engine-texture layout (24-bit direct colour, or 4/8-bit indexed
+/// through an inline palette).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dTruecolorBitmap<'a> {
+    bits_per_pixel: u16,
+    width: u16,
+    height: u16,
+    palette_entry_count: usize,
+    inline_palette: Option<&'a [u8]>,
+    pixel_data: &'a [u8],
+}
+
+impl<'a> C3dTruecolorBitmap<'a> {
+    /// The source bit depth (`4`, `8`, or `24`).
+    #[must_use]
+    pub const fn bits_per_pixel(self) -> u16 {
+        self.bits_per_pixel
+    }
+
+    #[must_use]
+    pub const fn width(self) -> u16 {
+        self.width
+    }
+
+    #[must_use]
+    pub const fn height(self) -> u16 {
+        self.height
+    }
+
+    /// Whether the layout is palette-indexed (bit depth 4 or 8).
+    #[must_use]
+    pub const fn is_indexed(self) -> bool {
+        matches!(self.bits_per_pixel, 4 | 8)
+    }
+
+    /// The row stride in pixels: the width rounded up to a multiple of four.
+    #[must_use]
+    pub const fn padded_width(self) -> usize {
+        (self.width as usize + 3) & !3
+    }
+
+    /// The palette entry count in use (the override at `blob+0x2e` when nonzero,
+    /// else `16`/`256` for bit depth 4/8, else `0`).
+    #[must_use]
+    pub const fn palette_entry_count(self) -> usize {
+        self.palette_entry_count
+    }
+
+    /// The borrowed inline palette bytes (`4` bytes per entry), if present.
+    #[must_use]
+    pub const fn inline_palette(self) -> Option<&'a [u8]> {
+        self.inline_palette
+    }
+
+    /// The borrowed pixel/index region (from the pixel-data offset to the end of
+    /// the blob).
+    #[must_use]
+    pub const fn pixel_data(self) -> &'a [u8] {
+        self.pixel_data
+    }
+
+    /// Decodes inline palette entry `index` from its on-disk `BGRX` quad into an
+    /// `[R, G, B]` triple.
+    #[must_use]
+    pub fn inline_palette_entry(self, index: usize) -> Option<[u8; 3]> {
+        let palette = self.inline_palette?;
+        let start = index.checked_mul(TRUECOLOR_PALETTE_ENTRY_LEN)?;
+        let entry = palette.get(start..start + TRUECOLOR_PALETTE_ENTRY_LEN)?;
+        Some([entry[2], entry[1], entry[0]])
+    }
+}
+
+/// Why [`parse_c3d_engine_bitmap`] rejected a payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dEngineBitmapError {
+    /// The blob is shorter than the fields the layout must read.
+    TruncatedHeader { required: usize, actual: usize },
+    /// The paletted mode byte selected the reserved palette size (`mode & 3 == 3`).
+    UnsupportedPaletteSelector { mode: u8 },
+    /// A paletted dimension was zero or not a power of two in `1..=512`.
+    InvalidDimension { which: &'static str, value: u16 },
+    /// The truecolor bit depth was not one of `4`, `8`, or `24`.
+    UnsupportedBitDepth { bits_per_pixel: u16 },
+    /// The inline palette runs past the end of the blob.
+    PaletteOutOfBounds {
+        start: usize,
+        entry_count: usize,
+        blob_len: usize,
+    },
+    /// The pixel/index data offset or length runs past the end of the blob.
+    PixelDataOutOfBounds {
+        offset: usize,
+        required: usize,
+        blob_len: usize,
+    },
+}
+
+impl fmt::Display for C3dEngineBitmapError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TruncatedHeader { required, actual } => write!(
+                formatter,
+                "engine texture header needs {required} bytes but blob has {actual}"
+            ),
+            Self::UnsupportedPaletteSelector { mode } => write!(
+                formatter,
+                "engine paletted mode {mode:#04x} selects the reserved palette size"
+            ),
+            Self::InvalidDimension { which, value } => write!(
+                formatter,
+                "engine paletted {which} {value} is not a power of two in 1..=512"
+            ),
+            Self::UnsupportedBitDepth { bits_per_pixel } => write!(
+                formatter,
+                "engine truecolor bit depth {bits_per_pixel} is not 4, 8, or 24"
+            ),
+            Self::PaletteOutOfBounds {
+                start,
+                entry_count,
+                blob_len,
+            } => write!(
+                formatter,
+                "engine inline palette ({entry_count} entries at {start}) exceeds blob length {blob_len}"
+            ),
+            Self::PixelDataOutOfBounds {
+                offset,
+                required,
+                blob_len,
+            } => write!(
+                formatter,
+                "engine pixel data ({required} bytes at {offset}) exceeds blob length {blob_len}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for C3dEngineBitmapError {}
+
+/// Expands an `X1R5G5B5` word into an `[R, G, B]` triple (each 5-bit channel
+/// scaled to 8 bits; bit 15 is ignored).
+fn expand_x1r5g5b5(value: u16) -> [u8; 3] {
+    let red = (value & 0x1f) as u8;
+    let green = ((value >> 5) & 0x1f) as u8;
+    let blue = ((value >> 10) & 0x1f) as u8;
+    [red << 3, green << 3, blue << 3]
+}
+
+/// Parses a C3D engine inline texture blob, dispatching on its leading byte as
+/// the recovered loader does (see [`C3dBlobRecord::engine_bitmap`]).
+pub fn parse_c3d_engine_bitmap(blob: &[u8]) -> Result<C3dEngineBitmap<'_>, C3dEngineBitmapError> {
+    if blob.first() == Some(&C3D_ENGINE_PALETTED_TAG) {
+        Ok(C3dEngineBitmap::Paletted(parse_c3d_paletted_bitmap(blob)?))
+    } else {
+        Ok(C3dEngineBitmap::Truecolor(parse_c3d_truecolor_bitmap(
+            blob,
+        )?))
+    }
+}
+
+/// Parses the indexed paletted engine-texture layout.
+pub fn parse_c3d_paletted_bitmap(
+    blob: &[u8],
+) -> Result<C3dPalettedBitmap<'_>, C3dEngineBitmapError> {
+    if blob.len() <= PALETTED_MODE_OFFSET {
+        return Err(C3dEngineBitmapError::TruncatedHeader {
+            required: PALETTED_MODE_OFFSET + 1,
+            actual: blob.len(),
+        });
+    }
+
+    let mode = blob[PALETTED_MODE_OFFSET];
+    let palette_entry_count = match mode & PALETTED_MODE_PALETTE_MASK {
+        0 => 16,
+        1 => 256,
+        2 => 0,
+        _ => return Err(C3dEngineBitmapError::UnsupportedPaletteSelector { mode }),
+    };
+    let has_inline_palette = mode & PALETTED_MODE_INLINE_PALETTE != 0;
+
+    let (inline_palette, descriptor) = if has_inline_palette {
+        let palette_bytes = palette_entry_count * PALETTED_PALETTE_ENTRY_LEN;
+        let palette_end = PALETTED_INLINE_PALETTE_OFFSET + palette_bytes;
+        if blob.len() < palette_end {
+            return Err(C3dEngineBitmapError::PaletteOutOfBounds {
+                start: PALETTED_INLINE_PALETTE_OFFSET,
+                entry_count: palette_entry_count,
+                blob_len: blob.len(),
+            });
+        }
+        (
+            Some(&blob[PALETTED_INLINE_PALETTE_OFFSET..palette_end]),
+            palette_end,
+        )
+    } else {
+        (None, PALETTED_DESCRIPTOR_BASE_NO_PALETTE)
+    };
+
+    let data_start = descriptor + PALETTED_DESCRIPTOR_DATA;
+    if blob.len() < data_start {
+        return Err(C3dEngineBitmapError::TruncatedHeader {
+            required: data_start,
+            actual: blob.len(),
+        });
+    }
+    let stored_width = read_u16(blob, descriptor + PALETTED_DESCRIPTOR_WIDTH);
+    let stored_height = read_u16(blob, descriptor + PALETTED_DESCRIPTOR_HEIGHT);
+    validate_paletted_dimension("width", stored_width)?;
+    validate_paletted_dimension("height", stored_height)?;
+
+    let row_bytes = 2 * stored_width as usize;
+    let data_len = row_bytes * stored_height as usize;
+    let data_end = data_start + data_len;
+    if blob.len() < data_end {
+        return Err(C3dEngineBitmapError::PixelDataOutOfBounds {
+            offset: data_start,
+            required: data_len,
+            blob_len: blob.len(),
+        });
+    }
+
+    Ok(C3dPalettedBitmap {
+        mode,
+        palette_entry_count,
+        inline_palette,
+        stored_width,
+        stored_height,
+        index_data: &blob[data_start..data_end],
+    })
+}
+
+/// Parses the truecolor engine-texture layout.
+pub fn parse_c3d_truecolor_bitmap(
+    blob: &[u8],
+) -> Result<C3dTruecolorBitmap<'_>, C3dEngineBitmapError> {
+    if blob.len() < TRUECOLOR_HEADER_MIN_LEN {
+        return Err(C3dEngineBitmapError::TruncatedHeader {
+            required: TRUECOLOR_HEADER_MIN_LEN,
+            actual: blob.len(),
+        });
+    }
+
+    let bits_per_pixel = read_u16(blob, TRUECOLOR_BPP_OFFSET);
+    let palette_from_depth = match bits_per_pixel {
+        4 => 16,
+        8 => 256,
+        0x18 => 0,
+        other => {
+            return Err(C3dEngineBitmapError::UnsupportedBitDepth {
+                bits_per_pixel: other,
+            });
+        }
+    };
+    let override_count = read_u32(blob, TRUECOLOR_PALETTE_OVERRIDE_OFFSET) as usize;
+    let palette_entry_count = if override_count != 0 {
+        override_count
+    } else {
+        palette_from_depth
+    };
+
+    let width = read_u16(blob, TRUECOLOR_WIDTH_OFFSET);
+    let height = read_u16(blob, TRUECOLOR_HEIGHT_OFFSET);
+    let is_indexed = matches!(bits_per_pixel, 4 | 8);
+
+    let inline_palette = if is_indexed && palette_entry_count != 0 {
+        let palette_end = palette_entry_count
+            .checked_mul(TRUECOLOR_PALETTE_ENTRY_LEN)
+            .and_then(|bytes| TRUECOLOR_PALETTE_OFFSET.checked_add(bytes));
+        match palette_end {
+            Some(end) if end <= blob.len() => Some(&blob[TRUECOLOR_PALETTE_OFFSET..end]),
+            _ => {
+                return Err(C3dEngineBitmapError::PaletteOutOfBounds {
+                    start: TRUECOLOR_PALETTE_OFFSET,
+                    entry_count: palette_entry_count,
+                    blob_len: blob.len(),
+                });
+            }
+        }
+    } else {
+        None
+    };
+
+    let pixel_offset = read_u32(blob, TRUECOLOR_PIXEL_OFFSET_FIELD) as usize;
+    if pixel_offset > blob.len() {
+        return Err(C3dEngineBitmapError::PixelDataOutOfBounds {
+            offset: pixel_offset,
+            required: 0,
+            blob_len: blob.len(),
+        });
+    }
+
+    // The 24-bit row stride is asm-confirmed (width padded to a multiple of
+    // four, three bytes per pixel), so its data region is validated exactly. The
+    // exact row padding of the 4/8-bit indexed variants is not pinned, so their
+    // pixel region is framed to the end of the blob without a length assertion.
+    if bits_per_pixel == 0x18 {
+        let padded_width = (width as usize + 3) & !3;
+        let required = padded_width * 3 * height as usize;
+        if blob.len() - pixel_offset < required {
+            return Err(C3dEngineBitmapError::PixelDataOutOfBounds {
+                offset: pixel_offset,
+                required,
+                blob_len: blob.len(),
+            });
+        }
+    }
+
+    Ok(C3dTruecolorBitmap {
+        bits_per_pixel,
+        width,
+        height,
+        palette_entry_count,
+        inline_palette,
+        pixel_data: &blob[pixel_offset..],
+    })
+}
+
+fn validate_paletted_dimension(
+    which: &'static str,
+    value: u16,
+) -> Result<(), C3dEngineBitmapError> {
+    let is_power_of_two = value != 0 && value & (value - 1) == 0;
+    if !is_power_of_two || value > C3D_ENGINE_MAX_DIMENSION {
+        return Err(C3dEngineBitmapError::InvalidDimension { which, value });
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3484,6 +3954,270 @@ mod tests {
             .copy_from_slice(&(blob.len() as u32).to_le_bytes());
         input[blob_start..end].copy_from_slice(blob);
         end
+    }
+
+    fn put_u16(blob: &mut [u8], offset: usize, value: u16) {
+        blob[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u32(blob: &mut [u8], offset: usize, value: u32) {
+        blob[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    #[test]
+    fn paletted_256_colour_with_inline_palette_frames_dimensions_and_palette() {
+        // mode 0x09 = 256-colour (bit0) + inline palette (bit3).
+        let palette_bytes = 256 * 2;
+        let descriptor = PALETTED_INLINE_PALETTE_OFFSET + palette_bytes;
+        let data_start = descriptor + PALETTED_DESCRIPTOR_DATA;
+        let (stored_width, stored_height) = (2u16, 2u16);
+        let data_len = 2 * stored_width as usize * stored_height as usize;
+        let mut blob = vec![0u8; data_start + data_len];
+        blob[0] = C3D_ENGINE_PALETTED_TAG;
+        blob[PALETTED_MODE_OFFSET] = 0x09;
+        // Palette entry 0 = pure red (R=31) in X1R5G5B5.
+        put_u16(&mut blob, PALETTED_INLINE_PALETTE_OFFSET, 0x001f);
+        put_u16(
+            &mut blob,
+            descriptor + PALETTED_DESCRIPTOR_WIDTH,
+            stored_width,
+        );
+        put_u16(
+            &mut blob,
+            descriptor + PALETTED_DESCRIPTOR_HEIGHT,
+            stored_height,
+        );
+
+        let C3dEngineBitmap::Paletted(bitmap) = parse_c3d_engine_bitmap(&blob).unwrap() else {
+            panic!("tag 0x10 must dispatch to the paletted layout");
+        };
+        assert_eq!(bitmap.palette_entry_count(), 256);
+        assert!(bitmap.has_inline_palette());
+        assert!(!bitmap.is_sixteen_colour());
+        assert_eq!(bitmap.stored_width(), 2);
+        assert_eq!(bitmap.pixel_width(), 4); // 2 * stored_width (256-colour)
+        assert_eq!(bitmap.pixel_height(), 2);
+        assert_eq!(bitmap.index_data().len(), data_len);
+        assert_eq!(bitmap.inline_palette_entry(0), Some([248, 0, 0]));
+    }
+
+    #[test]
+    fn paletted_16_colour_without_inline_palette_uses_the_short_descriptor() {
+        // mode 0x00 = 16-colour, no inline palette -> descriptor at blob+0x08.
+        let descriptor = PALETTED_DESCRIPTOR_BASE_NO_PALETTE;
+        let data_start = descriptor + PALETTED_DESCRIPTOR_DATA; // 0x14
+        let (stored_width, stored_height) = (4u16, 1u16);
+        let data_len = 2 * stored_width as usize * stored_height as usize;
+        let mut blob = vec![0u8; data_start + data_len];
+        blob[0] = C3D_ENGINE_PALETTED_TAG;
+        blob[PALETTED_MODE_OFFSET] = 0x00;
+        put_u16(
+            &mut blob,
+            descriptor + PALETTED_DESCRIPTOR_WIDTH,
+            stored_width,
+        );
+        put_u16(
+            &mut blob,
+            descriptor + PALETTED_DESCRIPTOR_HEIGHT,
+            stored_height,
+        );
+
+        let bitmap = parse_c3d_paletted_bitmap(&blob).unwrap();
+        assert!(bitmap.is_sixteen_colour());
+        assert!(!bitmap.has_inline_palette());
+        assert_eq!(bitmap.inline_palette(), None);
+        assert_eq!(bitmap.inline_palette_entry(0), None);
+        assert_eq!(bitmap.pixel_width(), 16); // 4 * stored_width (16-colour)
+        assert_eq!(bitmap.pixel_height(), 1);
+        assert_eq!(bitmap.index_data().len(), data_len);
+    }
+
+    #[test]
+    fn paletted_rejects_the_reserved_selector_and_bad_dimensions() {
+        let mut reserved = vec![0u8; 0x20];
+        reserved[0] = C3D_ENGINE_PALETTED_TAG;
+        reserved[PALETTED_MODE_OFFSET] = 0x03; // mode & 3 == 3
+        assert_eq!(
+            parse_c3d_paletted_bitmap(&reserved),
+            Err(C3dEngineBitmapError::UnsupportedPaletteSelector { mode: 0x03 })
+        );
+
+        // 16-colour, no inline palette, non-power-of-two width.
+        let mut bad_width = vec![0u8; 0x20];
+        bad_width[0] = C3D_ENGINE_PALETTED_TAG;
+        bad_width[PALETTED_MODE_OFFSET] = 0x00;
+        put_u16(
+            &mut bad_width,
+            PALETTED_DESCRIPTOR_BASE_NO_PALETTE + PALETTED_DESCRIPTOR_WIDTH,
+            3,
+        );
+        put_u16(
+            &mut bad_width,
+            PALETTED_DESCRIPTOR_BASE_NO_PALETTE + PALETTED_DESCRIPTOR_HEIGHT,
+            4,
+        );
+        assert_eq!(
+            parse_c3d_paletted_bitmap(&bad_width),
+            Err(C3dEngineBitmapError::InvalidDimension {
+                which: "width",
+                value: 3
+            })
+        );
+    }
+
+    #[test]
+    fn paletted_rejects_truncation_and_short_index_data() {
+        assert_eq!(
+            parse_c3d_paletted_bitmap(&[C3D_ENGINE_PALETTED_TAG, 0, 0, 0]),
+            Err(C3dEngineBitmapError::TruncatedHeader {
+                required: PALETTED_MODE_OFFSET + 1,
+                actual: 4,
+            })
+        );
+
+        // Valid header but the index data is one byte short.
+        let descriptor = PALETTED_DESCRIPTOR_BASE_NO_PALETTE;
+        let data_start = descriptor + PALETTED_DESCRIPTOR_DATA;
+        let mut blob = vec![0u8; data_start + 1];
+        blob[0] = C3D_ENGINE_PALETTED_TAG;
+        put_u16(&mut blob, descriptor + PALETTED_DESCRIPTOR_WIDTH, 1);
+        put_u16(&mut blob, descriptor + PALETTED_DESCRIPTOR_HEIGHT, 1);
+        assert_eq!(
+            parse_c3d_paletted_bitmap(&blob),
+            Err(C3dEngineBitmapError::PixelDataOutOfBounds {
+                offset: data_start,
+                required: 2,
+                blob_len: data_start + 1,
+            })
+        );
+    }
+
+    #[test]
+    fn truecolor_24bpp_validates_the_padded_row_region() {
+        let pixel_offset = 0x40usize;
+        let (width, height) = (4u16, 2u16);
+        let required = ((width as usize + 3) & !3) * 3 * height as usize;
+        let mut blob = vec![0u8; pixel_offset + required];
+        blob[0] = 0x00; // any non-0x10, non-0x41 tag
+        put_u32(&mut blob, TRUECOLOR_PIXEL_OFFSET_FIELD, pixel_offset as u32);
+        put_u16(&mut blob, TRUECOLOR_WIDTH_OFFSET, width);
+        put_u16(&mut blob, TRUECOLOR_HEIGHT_OFFSET, height);
+        put_u16(&mut blob, TRUECOLOR_BPP_OFFSET, 0x18);
+
+        let C3dEngineBitmap::Truecolor(bitmap) = parse_c3d_engine_bitmap(&blob).unwrap() else {
+            panic!("a non-paletted tag must dispatch to the truecolor layout");
+        };
+        assert_eq!(bitmap.bits_per_pixel(), 24);
+        assert!(!bitmap.is_indexed());
+        assert_eq!(bitmap.width(), 4);
+        assert_eq!(bitmap.padded_width(), 4);
+        assert_eq!(bitmap.palette_entry_count(), 0);
+        assert_eq!(bitmap.inline_palette(), None);
+        assert_eq!(bitmap.pixel_data().len(), required);
+
+        // One byte short of the padded 24-bit region is rejected.
+        let mut short = blob.clone();
+        short.pop();
+        assert_eq!(
+            parse_c3d_truecolor_bitmap(&short),
+            Err(C3dEngineBitmapError::PixelDataOutOfBounds {
+                offset: pixel_offset,
+                required,
+                blob_len: pixel_offset + required - 1,
+            })
+        );
+    }
+
+    #[test]
+    fn truecolor_8bpp_reads_the_inline_bgrx_palette() {
+        let palette_bytes = 256 * TRUECOLOR_PALETTE_ENTRY_LEN;
+        let pixel_offset = TRUECOLOR_PALETTE_OFFSET + palette_bytes;
+        let mut blob = vec![0u8; pixel_offset + 4];
+        blob[0] = 0x05;
+        put_u32(&mut blob, TRUECOLOR_PIXEL_OFFSET_FIELD, pixel_offset as u32);
+        put_u16(&mut blob, TRUECOLOR_WIDTH_OFFSET, 2);
+        put_u16(&mut blob, TRUECOLOR_HEIGHT_OFFSET, 2);
+        put_u16(&mut blob, TRUECOLOR_BPP_OFFSET, 8);
+        // Palette entry 0 on disk is B,G,R,X.
+        blob[TRUECOLOR_PALETTE_OFFSET..TRUECOLOR_PALETTE_OFFSET + 4]
+            .copy_from_slice(&[10, 20, 30, 0]);
+
+        let bitmap = parse_c3d_truecolor_bitmap(&blob).unwrap();
+        assert!(bitmap.is_indexed());
+        assert_eq!(bitmap.palette_entry_count(), 256);
+        assert_eq!(bitmap.inline_palette().unwrap().len(), palette_bytes);
+        assert_eq!(bitmap.inline_palette_entry(0), Some([30, 20, 10]));
+        assert_eq!(bitmap.pixel_data().len(), 4);
+    }
+
+    #[test]
+    fn truecolor_palette_count_override_wins_over_the_bit_depth_default() {
+        let override_count = 2usize;
+        let palette_bytes = override_count * TRUECOLOR_PALETTE_ENTRY_LEN;
+        let pixel_offset = TRUECOLOR_PALETTE_OFFSET + palette_bytes;
+        let mut blob = vec![0u8; pixel_offset];
+        blob[0] = 0x05;
+        put_u32(&mut blob, TRUECOLOR_PIXEL_OFFSET_FIELD, pixel_offset as u32);
+        put_u16(&mut blob, TRUECOLOR_WIDTH_OFFSET, 1);
+        put_u16(&mut blob, TRUECOLOR_HEIGHT_OFFSET, 1);
+        put_u16(&mut blob, TRUECOLOR_BPP_OFFSET, 8);
+        put_u32(
+            &mut blob,
+            TRUECOLOR_PALETTE_OVERRIDE_OFFSET,
+            override_count as u32,
+        );
+
+        let bitmap = parse_c3d_truecolor_bitmap(&blob).unwrap();
+        assert_eq!(bitmap.palette_entry_count(), 2);
+        assert_eq!(bitmap.inline_palette().unwrap().len(), palette_bytes);
+    }
+
+    #[test]
+    fn truecolor_rejects_bad_depth_truncation_and_out_of_range_pixels() {
+        let mut bad_depth = vec![0u8; TRUECOLOR_HEADER_MIN_LEN];
+        bad_depth[0] = 0x05;
+        put_u16(&mut bad_depth, TRUECOLOR_BPP_OFFSET, 16);
+        assert_eq!(
+            parse_c3d_truecolor_bitmap(&bad_depth),
+            Err(C3dEngineBitmapError::UnsupportedBitDepth { bits_per_pixel: 16 })
+        );
+
+        assert_eq!(
+            parse_c3d_truecolor_bitmap(&[0u8; 8]),
+            Err(C3dEngineBitmapError::TruncatedHeader {
+                required: TRUECOLOR_HEADER_MIN_LEN,
+                actual: 8,
+            })
+        );
+
+        // A 24-bit blob whose pixel-data offset points past the end.
+        let mut bad_offset = vec![0u8; TRUECOLOR_HEADER_MIN_LEN];
+        bad_offset[0] = 0x05;
+        put_u16(&mut bad_offset, TRUECOLOR_BPP_OFFSET, 0x18);
+        put_u32(&mut bad_offset, TRUECOLOR_PIXEL_OFFSET_FIELD, 0x1000);
+        assert_eq!(
+            parse_c3d_truecolor_bitmap(&bad_offset),
+            Err(C3dEngineBitmapError::PixelDataOutOfBounds {
+                offset: 0x1000,
+                required: 0,
+                blob_len: TRUECOLOR_HEADER_MIN_LEN,
+            })
+        );
+    }
+
+    #[test]
+    fn engine_bitmap_is_reachable_through_a_blob_record() {
+        let descriptor = PALETTED_DESCRIPTOR_BASE_NO_PALETTE;
+        let data_start = descriptor + PALETTED_DESCRIPTOR_DATA;
+        let mut blob = vec![0u8; data_start + 2];
+        blob[0] = C3D_ENGINE_PALETTED_TAG;
+        put_u16(&mut blob, descriptor + PALETTED_DESCRIPTOR_WIDTH, 1);
+        put_u16(&mut blob, descriptor + PALETTED_DESCRIPTOR_HEIGHT, 1);
+
+        assert!(matches!(
+            blob_record(&blob).engine_bitmap(),
+            Ok(C3dEngineBitmap::Paletted(_))
+        ));
     }
 
     fn write_group0_record(
