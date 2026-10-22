@@ -55,6 +55,7 @@ pub mod frontend_c3d_resources;
 pub mod frontend_c3d_route;
 pub mod frontend_c3d_scene;
 pub mod game_driver;
+pub mod game_menu_flow;
 pub mod game_state;
 pub mod host_lifecycle;
 pub mod host_loop;
