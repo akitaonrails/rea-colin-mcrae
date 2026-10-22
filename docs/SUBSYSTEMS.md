@@ -549,9 +549,16 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   child as its parent's last sibling (first-child `+0x04`, else walk the
   next-sibling chain `+0x00` to the tail) - rejecting a forward/out-of-range
   parent with `SceneAssemblyError::ForwardParent`. The C3D Group0 transform
-  table projects directly to that stream (see `cmr-formats::c3d` below). See
-  evidence `rea.official-eu.c3d-scene-graph`, `impl.c3d-scene-graph`,
-  `rea.official-eu.c3d-scene-node`, and `impl.c3d-scene-node`.
+  table projects directly to that stream (see `cmr-formats::c3d` below), and
+  `SceneGraph::from_c3d_group0` is the end-to-end bridge: it maps a parsed
+  `C3dFile`'s Group0 records (1:1, as `FUN_004a2b70` does for well-formed files)
+  into the arena - `has_mesh` from the mesh-index count, load-time `culled` the
+  negation of `has_mesh` (node `+0x180` = 3 for a transform-only node), and the
+  `ALL_RENDER_PASSES` default since the file carries no `+0x184` mask (the
+  runtime assigns it). This closes the wiring from a real on-disk C3D source to
+  the recovered traversal. See evidence `rea.official-eu.c3d-scene-graph`,
+  `impl.c3d-scene-graph`, `rea.official-eu.c3d-scene-node`, and
+  `impl.c3d-scene-node`.
 - `cmr-core::c3d_terrain_cull`: the backend-neutral terrain-cell visibility grid
   cull (E05), from `FUN_00490040`/`FUN_00490af0`/`FUN_00490800`. The world is a
   rectangular grid of cells; each frame the cull rebuilds the visible-cell list

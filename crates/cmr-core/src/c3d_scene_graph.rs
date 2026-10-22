@@ -38,6 +38,8 @@
 //! render-pass mask (the emitter's `param_5`) selects which nodes draw this
 //! frame.
 
+use cmr_formats::c3d::C3dGroup0Record;
+
 // --- Scene-node layout (byte offsets, observed) -------------------------------
 
 /// `node+0x00` - pointer to the next sibling in the chain (list terminator 0).
@@ -107,6 +109,11 @@ pub const RENDER_CAP_MAX: u32 = 7;
 /// The render-capability level at which the dispatcher distance-sorts every
 /// object category (`FUN_00498af0() == 2`).
 pub const RENDER_CAP_SORTED: u32 = 2;
+
+/// The render-pass mask applied to every node built from a C3D file: the file
+/// carries no mask (`FUN_004a2b70` never writes node `+0x184`), so a load-time
+/// node is drawable in all passes until the runtime assigns its real mask.
+pub const ALL_RENDER_PASSES: u8 = 0xff;
 
 // --- Capability and per-node draw gates ---------------------------------------
 
@@ -360,6 +367,37 @@ impl SceneGraph {
             }
         }
         Ok(SceneGraph { nodes })
+    }
+
+    /// Builds the traversal arena directly from a C3D Group0 transform table
+    /// (`FUN_004a2b70`'s node-build loop). Each record maps 1:1 to a node (as it
+    /// does in well-formed stage/car files, where record 0 is the root marker):
+    /// the parent is `field_04` (`-1` => a root with no in-stream parent), the
+    /// translucency class is the `+0x48` dword, and a node has a mesh exactly
+    /// when its mesh-index list is non-empty (`value_count > 0`); the shipped
+    /// loader then writes node `+0x180` = `3` (culled) for a mesh-less
+    /// transform-only node and `0` for a mesh node, so load-time `culled` is the
+    /// negation of `has_mesh`. The render-pass mask is **not** in the file
+    /// (`FUN_004a2b70` never writes node `+0x184`; the runtime assigns it), so
+    /// every node is marked drawable in all passes ([`ALL_RENDER_PASSES`]) as the
+    /// pre-runtime default. Rejects a forward/out-of-range parent exactly as
+    /// [`assemble`](Self::assemble).
+    pub fn from_c3d_group0<'a>(
+        records: impl Iterator<Item = C3dGroup0Record<'a>>,
+    ) -> Result<Self, SceneAssemblyError> {
+        let descriptors: Vec<SceneNodeDescriptor> = records
+            .map(|record| {
+                let has_mesh = record.value_count() > 0;
+                SceneNodeDescriptor {
+                    parent: record.parent_index(),
+                    has_mesh,
+                    translucency_class: record.node_class() as i32,
+                    culled: !has_mesh,
+                    render_pass_mask: ALL_RENDER_PASSES,
+                }
+            })
+            .collect();
+        SceneGraph::assemble(&descriptors)
     }
 
     /// The node at `index`.
@@ -698,6 +736,64 @@ mod tests {
             culled: false,
             render_pass_mask: 0xff,
         }
+    }
+
+    /// Minimal valid `CM3D` buffer whose Group0 table holds `records` as
+    /// `(field_04, node_class, mesh_count)` tuples (group1/blob sections empty).
+    fn c3d_group0_bytes(records: &[(i16, u32, u8)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for &(field_04, class, mesh_count) in records {
+            let declared = 80 + usize::from(mesh_count) * 2;
+            let mut record = vec![0u8; declared];
+            record[0..4].copy_from_slice(&(declared as u32).to_le_bytes());
+            record[4..6].copy_from_slice(&field_04.to_le_bytes());
+            record[0x48..0x4c].copy_from_slice(&class.to_le_bytes());
+            record[0x4c] = mesh_count; // value_count = mesh-index-list length
+            body.extend_from_slice(&record);
+        }
+        let mut buf = vec![0u8; 32];
+        buf[0..4].copy_from_slice(b"CM3D");
+        buf[4..8].copy_from_slice(&100u32.to_le_bytes());
+        buf[12..14].copy_from_slice(&(records.len() as u16).to_le_bytes());
+        buf[20..24].copy_from_slice(&32u32.to_le_bytes()); // group0 at offset 32
+        let end = (32 + body.len()) as u32;
+        buf[24..28].copy_from_slice(&end.to_le_bytes()); // empty group1 at end
+        buf[28..32].copy_from_slice(&end.to_le_bytes()); // empty blob at end
+        buf.extend_from_slice(&body);
+        buf
+    }
+
+    #[test]
+    fn from_c3d_group0_builds_the_tree_and_maps_node_fields() {
+        use cmr_formats::c3d::{C3dLimits, parse_c3d};
+        // Root (marker), a mesh child, a translucent mesh child, a transform-only
+        // grandchild under node 1.
+        let bytes = c3d_group0_bytes(&[
+            (-1, 0x10, 0),                    // 0: root marker, no mesh
+            (0, 0x20, 3),                     // 1: child of 0, 3 meshes
+            (0, TRANSLUCENT_CLASS as u32, 1), // 2: translucent child of 0
+            (1, 0x30, 0),                     // 3: transform-only child of 1
+        ]);
+        let limits = C3dLimits {
+            max_payload_bytes: 4096,
+            max_group0_records: 16,
+            max_group1_records: 16,
+            max_blob_records: 16,
+        };
+        let file = parse_c3d(&bytes, limits).unwrap();
+        let graph = SceneGraph::from_c3d_group0(file.group0_records()).unwrap();
+
+        // Tree: 0 -> [1, 2]; 1 -> [3].
+        assert_eq!(graph.node(0).first_child, Some(1));
+        assert_eq!(graph.node(1).next_sibling, Some(2));
+        assert_eq!(graph.node(1).first_child, Some(3));
+        // Field mapping: mesh presence from value_count, cull = !has_mesh.
+        assert!(graph.node(0).culled && !graph.node(0).has_mesh); // marker, no mesh
+        assert!(graph.node(1).has_mesh && !graph.node(1).culled); // 3 meshes
+        assert!(graph.node(2).is_translucent());
+        assert!(graph.node(3).culled && !graph.node(3).has_mesh); // transform-only
+        // Pass mask is the all-passes pre-runtime default.
+        assert_eq!(graph.node(1).render_pass_mask, ALL_RENDER_PASSES);
     }
 
     #[test]
