@@ -434,8 +434,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   span-filler and no painter's triangle sort; ordering is a per-object
   **back-to-front** distance sort (farthest first, by 2D top-down XZ distance -
   `object_sort_key`/`object_drawn_before`, `FUN_004a2070`) plus scene-graph
-  order, opaque pass (Z-write on) then deferred transparent batches (Z-write
-  off). The module encodes the public DX5
+  order, opaque geometry then a deferred transparent flush (the opaque/transparent
+  split is deferral + an alpha-blend bracket, **not** a per-pass Z-write toggle -
+  see `c3d_scene_graph`). The module encodes the public DX5
   render-state codes/values, the four-way `BlendMode`/`BlendConfig`
   (opaque/color-keyed/alpha/additive) from `FUN_004a2540`, the
   `ALPHABLENDENABLE`/`STIPPLEDALPHA` capability fallback, the `D3DLVERTEX`
@@ -492,6 +493,30 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   `rea.official-eu.c3d-camera`,
   `impl.c3d-camera`, `rea.official-eu.c3d-view-inverse`, `impl.c3d-view-inverse`,
   `impl.c3d-scene-matrices`, and `impl.c3d-scene-oracle`.
+- `cmr-core::c3d_scene_graph`: the backend-neutral gameplay scene-graph traversal
+  and per-frame draw orchestration (E07), from the dispatcher `FUN_004a07d0`, the
+  root emitter `FUN_004a2700`, and the recursive walker `FUN_004a28a0` (the walker
+  cross-checked against its disassembly). `SceneGraph::emit_entity(root, pass)`
+  reproduces the pass-gated pre-order walk: a node is visited only when its
+  render-pass mask bit (`node+0x184`) is set; a visited, un-culled (`node+0x180`)
+  node with a mesh (`node+0x0c`) emits a `DrawOp` (its `SetTransform(WORLD)` from
+  `node+0x114`), then its children recurse; an entity root draws its own mesh then
+  walks its child chain unconditionally; a translucent sibling (`node+0x2c` ==
+  `0x6f`) is re-entered under a deferred blend bracket before the walk continues
+  past it (transcribed exactly, including the mid-chain tail re-process the
+  shipped terminal-translucent data avoids). The dispatcher is a single
+  render-pass mask per frame (**no pass-index loop**) bracketed by
+  `BeginScene`/`EndScene` (device vtable `0x28`/`0x2c`) with scene-wide
+  `FOGENABLE`; it distance-sorts each object category when
+  `should_distance_sort`, and collects near entities into a bounded deferred list
+  (`DEFERRED_NEAR_LIST_CAP` = `0x19` = 25, the same `c3d_camera::NEAR_LIST_CAP`)
+  flushed last under the alpha bracket. The capability gates are
+  `alpha_blend_enabled(cap, flag)` (`cap != 7 && flag`), `node_prims_draw` (opaque
+  always draws; translucent only when blending is enabled or the override is set),
+  and `deferred_translucent_state` (additive vs enable). This resolves the
+  render-capability globals (`DAT_00a23994` is the level `0..=7`) and corrects the
+  E06 Z-write inference. See evidence `rea.official-eu.c3d-scene-graph` and
+  `impl.c3d-scene-graph`.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one
   group-1 record and caller-prepared selectors. It preserves maximal
   consecutive selector runs and source entry order, deduplicates local entry32

@@ -1,0 +1,566 @@
+//! C3D gameplay scene-graph traversal and per-frame draw orchestration
+//! (reconstruction item E07).
+//!
+//! # What this recovers
+//!
+//! The gameplay 3D renderer walks a scene graph of entity nodes and submits
+//! each node's mesh through the Direct3D-IM device for a single render-pass
+//! selector per frame. Three shipped routines define the contract:
+//!
+//! - `FUN_004a07d0` - the per-frame dispatcher: `BeginScene`, then for each
+//!   object category it optionally distance-sorts the entity list
+//!   (`FUN_004a2070`, [`crate::c3d_render::object_sort_key`]) and emits every
+//!   entity through the root emitter; near/flagged entities are deferred into a
+//!   bounded list and flushed last under an alpha-blend bracket; `EndScene`.
+//! - `FUN_004a2700` - the entity-root emitter: draws the root node's mesh when
+//!   it passes the render-pass mask and is not culled, then descends into the
+//!   child chain via the recursive walker.
+//! - `FUN_004a28a0` - the recursive sibling/child walker: a pass-gated
+//!   pre-order traversal with per-node cull and deferred-translucency handling.
+//!
+//! The traversal below is transcribed directly from the shipped control flow
+//! (`FUN_004a28a0` was cross-checked against its disassembly for the
+//! translucent-sibling branch). Everything here is backend-neutral (it issues
+//! no device calls), so the software oracle (E07) and a later modern backend
+//! drive the *same* traversal and pass the *same* tests.
+//!
+//! See evidence `rea.official-eu.c3d-scene-graph`.
+//!
+//! ## Decisive corrections to the E06 submission note
+//!
+//! The dispatcher toggles **no** `ZWRITEENABLE`/`ZENABLE` render state: the
+//! opaque-vs-transparent separation is implemented by **deferral** - a bounded
+//! near list ([`DEFERRED_NEAR_LIST_CAP`]) drawn last under an
+//! `ALPHABLENDENABLE`/`STIPPLEDALPHA` bracket - not by disabling depth writes
+//! for a transparent pass. Depth-write state is established at device setup and
+//! left alone across the frame. `FOGENABLE` is set for the whole 3D scene (on
+//! before `BeginScene`, off after). There is **no pass-index loop**: a single
+//! render-pass mask (the emitter's `param_5`) selects which nodes draw this
+//! frame.
+
+// --- Scene-node layout (byte offsets, observed) -------------------------------
+
+/// `node+0x00` - pointer to the next sibling in the chain (list terminator 0).
+pub const NODE_NEXT_SIBLING: usize = 0x00;
+/// `node+0x04` - pointer to the first child (subtree root, 0 if a leaf).
+pub const NODE_FIRST_CHILD: usize = 0x04;
+/// `node+0x0c` - pointer to the node's mesh (0 = no geometry; the walker skips
+/// such nodes, the root emitter presumes it non-null).
+pub const NODE_MESH: usize = 0x0c;
+/// `node+0x2c` - the render/translucency class; [`TRANSLUCENT_CLASS`] marks a
+/// deferred-transparent node.
+pub const NODE_TRANSLUCENCY_CLASS: usize = 0x2c;
+/// `node+0x114` - the node's world matrix, submitted via `SetTransform(WORLD)`.
+pub const NODE_WORLD_MATRIX: usize = 0x114;
+/// `node+0x180` - the cull/hidden flag; nonzero suppresses this node's own draw
+/// (its children are still traversed).
+pub const NODE_CULL_FLAG: usize = 0x180;
+/// `node+0x184` - the render-pass bitmask byte; bit `p` set means "emit in pass
+/// `p`". A node is visited in pass `p` iff `(mask >> p) & 1`.
+pub const NODE_RENDER_PASS_MASK: usize = 0x184;
+
+/// The translucency-class sentinel (`node+0x2c == 0x6f`): a deferred-transparent
+/// node whose primitives draw only when blending is enabled or the override is
+/// set, and which the walker re-enters under a blend-state bracket.
+pub const TRANSLUCENT_CLASS: i32 = 0x6f;
+
+// --- Scene-entity (object) layout for the dispatcher's sort/deferral ----------
+
+/// `object+0x104` - the entity's world X, the sort key's X term (`FUN_004a2070`).
+pub const OBJECT_SORT_X: usize = 0x104;
+/// `object+0x10c` - the entity's world Z, the sort key's Z term (`FUN_004a2070`).
+pub const OBJECT_SORT_Z: usize = 0x10c;
+/// `object+0x16c` - the per-category entity list thread (next object), the field
+/// the distance sort relinks and the dispatcher walks.
+pub const OBJECT_LIST_NEXT: usize = 0x16c;
+
+// --- Renderer device-wrapper vtable offsets (observed) ------------------------
+//
+// The renderer device lives at `PTR_DAT_0050283c + 0x10`; these are the method
+// slots the dispatcher and emitters call. They are the game's own device-wrapper
+// vtable, not raw `IDirect3DDevice2` slots.
+
+/// `BeginScene()` - opens the frame (dispatcher `FUN_004a07d0`).
+pub const DEVICE_BEGIN_SCENE: usize = 0x28;
+/// `EndScene()` - closes the frame (dispatcher `FUN_004a07d0`).
+pub const DEVICE_END_SCENE: usize = 0x2c;
+/// `SetRenderState(state, value)` (dispatcher scene-state toggles).
+pub const DEVICE_SET_RENDER_STATE: usize = 0x5c;
+/// `SetTransform(state, matrix)` (emitters set `WORLD` per node).
+pub const DEVICE_SET_TRANSFORM: usize = 0x68;
+/// `DrawIndexedPrimitive(...)` (emitters submit each prim batch).
+pub const DEVICE_DRAW_INDEXED_PRIMITIVE: usize = 0x78;
+
+// --- Dispatcher orchestration constants ---------------------------------------
+
+/// The bounded deferred near-object list cap (`local_30 < 0x19` in
+/// `FUN_004a07d0`): at most 25 entities are held back for the post-walk
+/// transparent flush. This is the same 25 the near/far frustum split records as
+/// [`crate::c3d_camera::NEAR_LIST_CAP`].
+pub const DEFERRED_NEAR_LIST_CAP: usize = 0x19;
+
+/// The top render-capability level (`DAT_00a23994` ranges 0..=7, read via
+/// `FUN_00498af0`). At this level hardware alpha blending is forced off
+/// (`FUN_004aa040`).
+pub const RENDER_CAP_MAX: u32 = 7;
+
+/// The render-capability level at which the dispatcher distance-sorts every
+/// object category (`FUN_00498af0() == 2`).
+pub const RENDER_CAP_SORTED: u32 = 2;
+
+// --- Capability and per-node draw gates ---------------------------------------
+
+/// Whether hardware alpha blending is currently enabled for translucent geometry
+/// (`FUN_004aa040` = `-(cap != 7) & DAT_00bb320c`): true iff the render
+/// capability level is not the top value [`RENDER_CAP_MAX`] and the global blend
+/// flag is set.
+pub fn alpha_blend_enabled(cap: u32, blend_flag: bool) -> bool {
+    cap != RENDER_CAP_MAX && blend_flag
+}
+
+/// Whether a node's primitives are actually submitted, given its translucency
+/// class and the current runtime state - the per-prim gate in both emitters:
+/// `(class != 0x6f) || FUN_004aa040() || FUN_00498370()`. Opaque nodes always
+/// draw; a translucent node draws only when alpha blending is enabled
+/// ([`alpha_blend_enabled`]) or the debug override (`FUN_00498370`,
+/// `DAT_00a23988`) is set. A node can be *visited* (its `SetTransform` and prim
+/// loop run) yet draw nothing when this gate is false.
+pub fn node_prims_draw(class: i32, cap: u32, blend_flag: bool, override_flag: bool) -> bool {
+    class != TRANSLUCENT_CLASS || alpha_blend_enabled(cap, blend_flag) || override_flag
+}
+
+/// The transparency render state the walker establishes before re-entering a
+/// deferred-translucent sibling (`FUN_004a28a0` tail, verified against the
+/// disassembly at `0x4a2a59`-`0x4a2a76`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeferredTranslucentState {
+    /// `FUN_004a2540(3)` - additive blend; chosen when the capability level is
+    /// nonzero *and* alpha blending is enabled.
+    Additive,
+    /// `FUN_004a2290(1)` - enable the transparency state (hardware alpha or the
+    /// stippled-alpha fallback); chosen otherwise.
+    Enable,
+}
+
+/// Selects the deferred-translucent render state (`FUN_004a28a0`):
+/// `if cap != 0 && FUN_004aa040() -> additive(3) else enable(1)`.
+pub fn deferred_translucent_state(cap: u32, blend_flag: bool) -> DeferredTranslucentState {
+    if cap != 0 && alpha_blend_enabled(cap, blend_flag) {
+        DeferredTranslucentState::Additive
+    } else {
+        DeferredTranslucentState::Enable
+    }
+}
+
+/// Whether the dispatcher distance-sorts an object category before walking it
+/// (`FUN_004a07d0`: `FUN_00498af0() == 2 || *(renderer+0x28) == 0`). The sort is
+/// the back-to-front relink of [`crate::c3d_render::object_sort_key`].
+pub fn should_distance_sort(cap: u32, renderer_flag_0x28: i32) -> bool {
+    cap == RENDER_CAP_SORTED || renderer_flag_0x28 == 0
+}
+
+/// Whether an entity is held back for the deferred transparent flush
+/// (`FUN_004a07d0`: `(int)DAT_00b64374 < DAT_00502774 && local_30 < 0x19`): its
+/// near-distance metric is under the threshold and the list is not yet full.
+pub fn entity_is_deferred(distance_metric: i32, near_threshold: i32, current_count: usize) -> bool {
+    distance_metric < near_threshold && current_count < DEFERRED_NEAR_LIST_CAP
+}
+
+// --- Scene-graph traversal ----------------------------------------------------
+
+/// A gameplay scene-graph node - the fields the traversal reads. Pointers are
+/// modelled as arena indices into the [`SceneGraph`]'s node slice.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SceneNode {
+    /// `node+0x00`: next sibling index, or `None` for the chain terminator.
+    pub next_sibling: Option<usize>,
+    /// `node+0x04`: first child index, or `None` for a leaf.
+    pub first_child: Option<usize>,
+    /// `node+0x0c != 0`: whether the node carries a mesh to submit.
+    pub has_mesh: bool,
+    /// `node+0x2c`: the render/translucency class ([`TRANSLUCENT_CLASS`] defers).
+    pub translucency_class: i32,
+    /// `node+0x180 != 0`: the cull/hidden flag (suppresses this node's own draw).
+    pub culled: bool,
+    /// `node+0x184`: the render-pass bitmask (bit `p` => emit in pass `p`).
+    pub render_pass_mask: u8,
+}
+
+impl SceneNode {
+    /// A plain opaque leaf that draws in every pass (all mask bits set).
+    pub fn leaf() -> Self {
+        SceneNode {
+            next_sibling: None,
+            first_child: None,
+            has_mesh: true,
+            translucency_class: 0,
+            culled: false,
+            render_pass_mask: 0xff,
+        }
+    }
+
+    /// Whether this node is selected by render pass `pass` (`(mask >> pass) & 1`).
+    pub fn in_pass(&self, pass: u32) -> bool {
+        u32::from(self.render_pass_mask) & (1u32 << (pass & 0x1f)) != 0
+    }
+
+    /// Whether this node is translucent/deferred (`class == 0x6f`).
+    pub fn is_translucent(&self) -> bool {
+        self.translucency_class == TRANSLUCENT_CLASS
+    }
+}
+
+/// A node submission produced by the traversal: the node was set up for drawing
+/// (its `SetTransform(WORLD)` was issued and its primitive loop ran). Whether the
+/// individual primitives were actually rasterized is the separate runtime gate
+/// [`node_prims_draw`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DrawOp {
+    /// The emitted node's arena index.
+    pub node: usize,
+    /// Whether this emission occurred inside a deferred-translucent state
+    /// bracket (the node was reached as a translucent sibling).
+    pub deferred_translucent: bool,
+}
+
+/// An arena of scene-graph nodes. Indices stand in for the shipped node
+/// pointers; the graph must be acyclic (a tree, as the shipped scene data is).
+#[derive(Clone, Debug, Default)]
+pub struct SceneGraph {
+    nodes: Vec<SceneNode>,
+}
+
+impl SceneGraph {
+    /// Builds a graph from its nodes (index order defines the arena layout).
+    pub fn new(nodes: Vec<SceneNode>) -> Self {
+        SceneGraph { nodes }
+    }
+
+    /// The node at `index`.
+    pub fn node(&self, index: usize) -> &SceneNode {
+        &self.nodes[index]
+    }
+
+    /// The number of nodes in the arena.
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Whether the arena is empty.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    /// Emits one entity's subtree for render pass `pass`, reproducing the
+    /// entity-root emitter `FUN_004a2700`: the root draws iff it is selected by
+    /// the pass and not culled (the emitter presumes the root carries a mesh),
+    /// then its child chain is walked **unconditionally** (the root's own
+    /// pass/cull gate does not gate its descendants).
+    pub fn emit_entity(&self, root: usize, pass: u32) -> Vec<DrawOp> {
+        let mut ops = Vec::new();
+        let node = self.nodes[root];
+        if !node.culled && node.in_pass(pass) && node.has_mesh {
+            ops.push(DrawOp {
+                node: root,
+                deferred_translucent: false,
+            });
+        }
+        if let Some(child) = node.first_child {
+            self.walk_siblings(child, pass, false, &mut ops);
+        }
+        ops
+    }
+
+    /// The recursive sibling/child walker `FUN_004a28a0`: for render pass `pass`,
+    /// walk the sibling chain from `start`. A node is visited only when selected
+    /// by the pass; a visited, un-culled node with a mesh emits a [`DrawOp`] and
+    /// then its children are walked. On advancing to the next sibling, a
+    /// translucent sibling ([`TRANSLUCENT_CLASS`]) is re-entered under a deferred
+    /// state bracket (modelled by `in_deferred`) before the walk continues past
+    /// it - transcribed exactly from the shipped control flow.
+    fn walk_siblings(&self, start: usize, pass: u32, in_deferred: bool, ops: &mut Vec<DrawOp>) {
+        let mut cursor = Some(start);
+        while let Some(index) = cursor {
+            let node = self.nodes[index];
+            if node.in_pass(pass) {
+                if !node.culled && node.has_mesh {
+                    ops.push(DrawOp {
+                        node: index,
+                        deferred_translucent: in_deferred,
+                    });
+                }
+                if let Some(child) = node.first_child {
+                    self.walk_siblings(child, pass, in_deferred, ops);
+                }
+            }
+
+            // Advance to the next sibling. A translucent sibling is handled
+            // immediately under the deferred bracket, then skipped past; any
+            // other sibling is processed by the next loop iteration.
+            cursor = node.next_sibling;
+            if let Some(sibling) = cursor
+                && self.nodes[sibling].is_translucent()
+            {
+                self.walk_siblings(sibling, pass, true, ops);
+                cursor = self.nodes[sibling].next_sibling;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opaque_child(next: Option<usize>, child: Option<usize>) -> SceneNode {
+        SceneNode {
+            next_sibling: next,
+            first_child: child,
+            ..SceneNode::leaf()
+        }
+    }
+
+    #[test]
+    fn node_layout_offsets_are_the_recovered_values() {
+        assert_eq!(NODE_NEXT_SIBLING, 0x00);
+        assert_eq!(NODE_FIRST_CHILD, 0x04);
+        assert_eq!(NODE_MESH, 0x0c);
+        assert_eq!(NODE_TRANSLUCENCY_CLASS, 0x2c);
+        assert_eq!(NODE_WORLD_MATRIX, 0x114);
+        assert_eq!(NODE_CULL_FLAG, 0x180);
+        assert_eq!(NODE_RENDER_PASS_MASK, 0x184);
+        assert_eq!(TRANSLUCENT_CLASS, 0x6f);
+    }
+
+    #[test]
+    fn object_and_device_offsets_hold() {
+        assert_eq!(OBJECT_SORT_X, 0x104);
+        assert_eq!(OBJECT_SORT_Z, 0x10c);
+        assert_eq!(OBJECT_LIST_NEXT, 0x16c);
+        assert_eq!(DEVICE_BEGIN_SCENE, 0x28);
+        assert_eq!(DEVICE_END_SCENE, 0x2c);
+        assert_eq!(DEVICE_SET_RENDER_STATE, 0x5c);
+        assert_eq!(DEVICE_SET_TRANSFORM, 0x68);
+        assert_eq!(DEVICE_DRAW_INDEXED_PRIMITIVE, 0x78);
+        // The deferred near list cap matches the frustum near-list cap (25).
+        assert_eq!(DEFERRED_NEAR_LIST_CAP, 25);
+        assert_eq!(DEFERRED_NEAR_LIST_CAP, crate::c3d_camera::NEAR_LIST_CAP);
+    }
+
+    #[test]
+    fn alpha_blend_is_off_at_the_top_capability_level() {
+        // Below the top level, the global flag decides.
+        assert!(alpha_blend_enabled(0, true));
+        assert!(alpha_blend_enabled(6, true));
+        assert!(!alpha_blend_enabled(3, false));
+        // At the top level 7, blending is forced off even with the flag set.
+        assert!(!alpha_blend_enabled(RENDER_CAP_MAX, true));
+    }
+
+    #[test]
+    fn opaque_nodes_always_draw_translucent_only_when_enabled() {
+        // Opaque: draws regardless of blend/override.
+        assert!(node_prims_draw(0, RENDER_CAP_MAX, false, false));
+        // Translucent: suppressed when blending off and no override.
+        assert!(!node_prims_draw(
+            TRANSLUCENT_CLASS,
+            RENDER_CAP_MAX,
+            true,
+            false
+        ));
+        assert!(!node_prims_draw(TRANSLUCENT_CLASS, 3, false, false));
+        // Translucent: draws when blending enabled...
+        assert!(node_prims_draw(TRANSLUCENT_CLASS, 3, true, false));
+        // ...or when the debug override forces it.
+        assert!(node_prims_draw(
+            TRANSLUCENT_CLASS,
+            RENDER_CAP_MAX,
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn deferred_state_is_additive_only_with_nonzero_cap_and_blending() {
+        assert_eq!(
+            deferred_translucent_state(3, true),
+            DeferredTranslucentState::Additive
+        );
+        // cap == 0 -> enable path even if the flag is set.
+        assert_eq!(
+            deferred_translucent_state(0, true),
+            DeferredTranslucentState::Enable
+        );
+        // blending disabled (flag off, or top cap) -> enable path.
+        assert_eq!(
+            deferred_translucent_state(3, false),
+            DeferredTranslucentState::Enable
+        );
+        assert_eq!(
+            deferred_translucent_state(RENDER_CAP_MAX, true),
+            DeferredTranslucentState::Enable
+        );
+    }
+
+    #[test]
+    fn distance_sort_trigger_and_deferral_bounds() {
+        assert!(should_distance_sort(RENDER_CAP_SORTED, 1));
+        assert!(should_distance_sort(5, 0));
+        assert!(!should_distance_sort(5, 1));
+        // Near metric under threshold and room in the list -> deferred.
+        assert!(entity_is_deferred(10, 20, 0));
+        // Not near enough.
+        assert!(!entity_is_deferred(20, 20, 0));
+        // List already full (25 entries).
+        assert!(!entity_is_deferred(10, 20, DEFERRED_NEAR_LIST_CAP));
+    }
+
+    #[test]
+    fn pass_mask_selects_nodes_bitwise() {
+        let mut n = SceneNode::leaf();
+        n.render_pass_mask = 0b0000_1010; // passes 1 and 3
+        assert!(!n.in_pass(0));
+        assert!(n.in_pass(1));
+        assert!(!n.in_pass(2));
+        assert!(n.in_pass(3));
+        // Bits beyond the byte are never set.
+        assert!(!n.in_pass(8));
+    }
+
+    #[test]
+    fn preorder_root_then_children_then_siblings() {
+        // entity 0 -> child 1 -> (child 1's children: 2, 3) ; sibling of 1: 4
+        //   0
+        //   `- 1
+        //   |  `- 2 -> 3
+        //   `- 4
+        let graph = SceneGraph::new(vec![
+            opaque_child(None, Some(1)),    // 0 root
+            opaque_child(Some(4), Some(2)), // 1 child of root, sibling 4
+            opaque_child(Some(3), None),    // 2 child of 1
+            opaque_child(None, None),       // 3 sibling of 2
+            opaque_child(None, None),       // 4 sibling of 1
+        ]);
+        let ops: Vec<usize> = graph.emit_entity(0, 0).iter().map(|op| op.node).collect();
+        // Root first, then child subtree (1,2,3) in pre-order, then sibling 4.
+        assert_eq!(ops, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn root_children_are_walked_even_when_root_fails_the_pass() {
+        let mut root = opaque_child(None, Some(1));
+        root.render_pass_mask = 0; // root not in any pass
+        let graph = SceneGraph::new(vec![root, opaque_child(None, None)]);
+        let ops: Vec<usize> = graph.emit_entity(0, 0).iter().map(|op| op.node).collect();
+        // Root suppressed, but its child is still traversed and drawn.
+        assert_eq!(ops, vec![1]);
+    }
+
+    #[test]
+    fn culled_node_is_skipped_but_its_children_are_not() {
+        let mut culled = opaque_child(None, Some(1));
+        culled.culled = true;
+        // Make node 0 a child of an entity root so the walker (not the root
+        // emitter) handles it. Root 2 -> child 0(culled) -> child 1.
+        let graph = SceneGraph::new(vec![
+            culled,                      // 0 culled, has child 1
+            opaque_child(None, None),    // 1 child of 0
+            opaque_child(None, Some(0)), // 2 entity root
+        ]);
+        let ops: Vec<usize> = graph.emit_entity(2, 0).iter().map(|op| op.node).collect();
+        // Root 2 drawn, node 0 culled (skipped), its child 1 still drawn.
+        assert_eq!(ops, vec![2, 1]);
+    }
+
+    #[test]
+    fn meshless_node_is_visited_for_children_but_emits_no_draw() {
+        let mut meshless = opaque_child(None, Some(1));
+        meshless.has_mesh = false;
+        let graph = SceneGraph::new(vec![
+            meshless,                    // 0 no mesh, has child 1
+            opaque_child(None, None),    // 1 child
+            opaque_child(None, Some(0)), // 2 entity root
+        ]);
+        let ops: Vec<usize> = graph.emit_entity(2, 0).iter().map(|op| op.node).collect();
+        assert_eq!(ops, vec![2, 1]);
+    }
+
+    #[test]
+    fn translucent_tail_sibling_is_emitted_under_the_deferred_bracket() {
+        // Root 0 -> child chain: A(1) -> T(2, translucent, terminal).
+        let translucent = SceneNode {
+            translucency_class: TRANSLUCENT_CLASS,
+            ..opaque_child(None, None)
+        };
+        let graph = SceneGraph::new(vec![
+            opaque_child(None, Some(1)), // 0 root
+            opaque_child(Some(2), None), // 1 = A, sibling T
+            translucent,                 // 2 = T, terminal translucent
+        ]);
+        let ops = graph.emit_entity(0, 0);
+        assert_eq!(
+            ops,
+            vec![
+                DrawOp {
+                    node: 0,
+                    deferred_translucent: false
+                },
+                DrawOp {
+                    node: 1,
+                    deferred_translucent: false
+                },
+                DrawOp {
+                    node: 2,
+                    deferred_translucent: true
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn translucent_midchain_reenters_then_reprocesses_the_tail() {
+        // Transcribed faithfully: a translucent node mid-chain is re-entered
+        // under the bracket (drawing it and its tail deferred), then the walk
+        // advances past it and the loop reprocesses the tail opaquely. The
+        // shipped scene data avoids this by making translucent nodes terminal.
+        // Root 0 -> child chain: A(1) -> T(2, translucent) -> B(3).
+        let translucent = SceneNode {
+            translucency_class: TRANSLUCENT_CLASS,
+            next_sibling: Some(3),
+            first_child: None,
+            ..SceneNode::leaf()
+        };
+        let graph = SceneGraph::new(vec![
+            opaque_child(None, Some(1)), // 0 root
+            opaque_child(Some(2), None), // 1 = A
+            translucent,                 // 2 = T (translucent), sibling B
+            opaque_child(None, None),    // 3 = B
+        ]);
+        let ops = graph.emit_entity(0, 0);
+        assert_eq!(
+            ops,
+            vec![
+                DrawOp {
+                    node: 0,
+                    deferred_translucent: false
+                }, // root
+                DrawOp {
+                    node: 1,
+                    deferred_translucent: false
+                }, // A
+                DrawOp {
+                    node: 2,
+                    deferred_translucent: true
+                }, // T (bracket)
+                DrawOp {
+                    node: 3,
+                    deferred_translucent: true
+                }, // B (in bracket)
+                DrawOp {
+                    node: 3,
+                    deferred_translucent: false
+                }, // B reprocessed
+            ]
+        );
+    }
+}
