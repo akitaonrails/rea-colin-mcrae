@@ -616,7 +616,12 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   prim builder `FUN_004b2340` allocates vbuf/ibuf from a system-memory arena (not
   a Direct3D buffer) and its topology is the existing
   `c3d_batch::plan_consecutive_batches`, reused rather than re-derived; the only
-  Direct3D resource the loader creates is the texture. See evidence
+  Direct3D resource the loader creates is the texture. The parse -> batch ->
+  draw-group wiring is closed by `assemble_lod_draw_group(record, vertex_type,
+  selectors) -> MeshLodDrawGroup` (prim build delegated to
+  `c3d_batch::plan_consecutive_batches`; selector = each face's resolved group-2
+  material ordinal), with `MeshLodDrawGroup::{takes_fog,has_per_vertex_diffuse}`
+  and `prim_draw_counts(prim) -> (vertex_count, 3*triangles)`. See evidence
   `rea.official-eu.c3d-rasterizer`, `rea.official-eu.c3d-mesh-instantiate`,
   `impl.c3d-mesh-draw` and `impl.c3d-mesh-instantiate`.
 - `cmr-core::c3d_transform`: the per-frame scene-graph world-transform

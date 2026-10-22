@@ -61,6 +61,9 @@
 //! See evidence `rea.official-eu.c3d-rasterizer`, `rea.official-eu.c3d-mesh-instantiate`
 //! and `impl.c3d-mesh-draw`.
 
+use cmr_formats::c3d::C3dGroup1Record;
+
+use crate::c3d_batch::{C3dBatchPlanError, C3dConsecutiveBatch, plan_consecutive_batches};
 use crate::c3d_render::{DP_DONOTUPDATEEXTENTS, PRIMTYPE_TRIANGLELIST, VERTEXTYPE_LVERTEX};
 
 /// `mesh+0x80`: the active level-of-detail index selecting the draw-group pair.
@@ -277,6 +280,76 @@ pub fn lod_stream_backup_offset(lod: u8) -> Option<usize> {
     }
 }
 
+// --- Per-LOD draw-group assembly (parse -> batch -> draw call) ---
+
+/// One LOD's assembled draw group: the draw-group vertex type (the value
+/// `FUN_004b1e10` writes - `2` = lit LVERTEX, `1` = pre-lit) paired with the
+/// prim batches the draw walker expands.
+///
+/// Each prim is a consecutive run of faces sharing a resolved selector, carrying
+/// the deduplicated vertices and compact triangle indices directly. Those are
+/// the recovered system-memory vertex/index streams (see the module docs), not
+/// Direct3D buffers, so the prim *is* a [`C3dConsecutiveBatch`]. The batch
+/// builder `FUN_004b2340` is exactly [`plan_consecutive_batches`], so this type
+/// only pairs that output with the LOD's vertex type.
+#[derive(Debug, Eq, PartialEq)]
+pub struct MeshLodDrawGroup<'a, S> {
+    vertex_type: u32,
+    prims: Vec<C3dConsecutiveBatch<'a, S>>,
+}
+
+impl<'a, S: Copy> MeshLodDrawGroup<'a, S> {
+    /// The draw-group vertex type passed to [`draw_call`] for every prim.
+    pub fn vertex_type(&self) -> u32 {
+        self.vertex_type
+    }
+
+    /// The prim batches, in submission order.
+    pub fn prims(&self) -> &[C3dConsecutiveBatch<'a, S>] {
+        &self.prims
+    }
+
+    /// Whether the per-prim fog bake applies to this LOD (see [`prim_takes_fog`]).
+    pub fn takes_fog(&self, global_fog_enabled: bool) -> bool {
+        prim_takes_fog(global_fog_enabled, self.vertex_type)
+    }
+
+    /// Whether this LOD's vertices carry per-vertex diffuse color (see
+    /// [`vertex_type_has_per_vertex_diffuse`]).
+    pub fn has_per_vertex_diffuse(&self) -> bool {
+        vertex_type_has_per_vertex_diffuse(self.vertex_type)
+    }
+}
+
+/// Assembles one LOD's draw group from its on-disk group-1 mesh record, the LOD
+/// draw-group vertex type, and the resolved per-face selectors.
+///
+/// There is one selector per 24-byte face: the face's group-2 material ordinal
+/// resolved to a render resource, already reflecting the `-1` untextured
+/// fallback, exactly as [`plan_consecutive_batches`] requires. This mirrors the
+/// loader finalize `FUN_004b1e10` -> prim builder `FUN_004b2340`: the prim list
+/// is grouped by consecutive selector run, with per-run vertex deduplication and
+/// compact `u16` indices. Keying on the resolved selector (not the raw on-disk
+/// ordinal) is deliberate - the loader batches on the runtime material reference.
+pub fn assemble_lod_draw_group<'a, S: Copy + Eq>(
+    record: C3dGroup1Record<'a>,
+    vertex_type: u32,
+    selectors: &[S],
+) -> Result<MeshLodDrawGroup<'a, S>, C3dBatchPlanError> {
+    let prims = plan_consecutive_batches(record, selectors)?;
+    Ok(MeshLodDrawGroup { vertex_type, prims })
+}
+
+/// The vertex and index counts one prim submits in its `DrawIndexedPrimitive`
+/// call: the prim's deduplicated vertex count and its `3 * triangles` indices.
+pub fn prim_draw_counts<S: Copy>(prim: &C3dConsecutiveBatch<'_, S>) -> (u32, u32) {
+    let vertex_count = u32::try_from(prim.unique_entries_32().len())
+        .expect("a C3D prim's deduplicated vertex count fits in u32");
+    let index_count =
+        u32::try_from(prim.indices().len()).expect("a C3D prim's index count fits in u32");
+    (vertex_count, index_count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,5 +462,102 @@ mod tests {
         assert_eq!(lod_stream_backup_offset(1), Some(0x08));
         assert_eq!(lod_stream_backup_offset(2), None);
         assert_eq!(lod_stream_backup_offset(255), None);
+    }
+
+    #[test]
+    fn lod_draw_group_batches_faces_by_consecutive_material_run() {
+        // Three vertices; three faces all referencing [0, 1, 2]; materials form
+        // a run of 7, then the untextured sentinel -1 => two prim batches.
+        let file = mesh_record_file(3, &[(7, [0, 1, 2]), (7, [0, 1, 2]), (-1, [0, 1, 2])]);
+        let record = file.group1_records().next().unwrap();
+        let selectors: Vec<i16> = record
+            .entries_24()
+            .map(|face| face.group2_ordinal())
+            .collect();
+
+        let group = assemble_lod_draw_group(record, VERTEXTYPE_LVERTEX, &selectors).unwrap();
+
+        assert_eq!(group.vertex_type(), VERTEXTYPE_LVERTEX);
+        assert!(group.has_per_vertex_diffuse());
+        assert!(group.takes_fog(true));
+        assert!(!group.takes_fog(false));
+
+        let prims = group.prims();
+        assert_eq!(prims.len(), 2);
+        // Prim 0: the two material-7 faces, three unique vertices, six indices.
+        assert_eq!(prims[0].selector(), 7);
+        assert_eq!(prim_draw_counts(&prims[0]), (3, 6));
+        // Prim 1: the single untextured face.
+        assert_eq!(prims[1].selector(), -1);
+        assert_eq!(prim_draw_counts(&prims[1]), (3, 3));
+    }
+
+    #[test]
+    fn lod_draw_group_rejects_a_mismatched_selector_count() {
+        let file = mesh_record_file(3, &[(0, [0, 1, 2])]);
+        let record = file.group1_records().next().unwrap();
+
+        let error = assemble_lod_draw_group::<i16>(record, VERTEXTYPE_LVERTEX, &[]).unwrap_err();
+        assert_eq!(
+            error,
+            crate::c3d_batch::C3dBatchPlanError::SelectorCountMismatch {
+                entry24_count: 1,
+                selector_count: 0,
+            }
+        );
+    }
+
+    /// Builds a minimal C3D file with one group-1 mesh record: `vertex_count`
+    /// distinct 32-byte vertices and one 24-byte face per `(material, ordinals)`,
+    /// with the material ordinal written to the face `+0x08` field.
+    fn mesh_record_file(
+        vertex_count: usize,
+        faces: &[(i16, [u16; 3])],
+    ) -> cmr_formats::c3d::C3dFile {
+        use cmr_formats::c3d::{
+            C3D_FORMAT_VERSION, C3D_GROUP1_ENTRY24_LEN, C3D_GROUP1_ENTRY32_LEN,
+            C3D_GROUP1_FIXED_LEN, C3D_HEADER_LEN, C3dLimits, parse_c3d,
+        };
+
+        let record_len = C3D_GROUP1_FIXED_LEN
+            + vertex_count * C3D_GROUP1_ENTRY32_LEN
+            + faces.len() * C3D_GROUP1_ENTRY24_LEN;
+        let payload_len = C3D_HEADER_LEN + record_len;
+        let mut input = vec![0u8; payload_len];
+        input[0..4].copy_from_slice(b"CM3D");
+        input[4..8].copy_from_slice(&C3D_FORMAT_VERSION.to_le_bytes());
+        input[8..12].copy_from_slice(&(C3D_HEADER_LEN as u32).to_le_bytes());
+        input[14..16].copy_from_slice(&1u16.to_le_bytes());
+        input[20..24].copy_from_slice(&(C3D_HEADER_LEN as u32).to_le_bytes());
+        input[24..28].copy_from_slice(&(C3D_HEADER_LEN as u32).to_le_bytes());
+        input[28..32].copy_from_slice(&(payload_len as u32).to_le_bytes());
+
+        let record_offset = C3D_HEADER_LEN;
+        input[record_offset + 12..record_offset + 16]
+            .copy_from_slice(&(record_len as u32).to_le_bytes());
+        input[record_offset + 16..record_offset + 18]
+            .copy_from_slice(&u16::try_from(vertex_count).unwrap().to_le_bytes());
+        input[record_offset + 18..record_offset + 20]
+            .copy_from_slice(&u16::try_from(faces.len()).unwrap().to_le_bytes());
+
+        let entries32_offset = record_offset + C3D_GROUP1_FIXED_LEN;
+        for index in 0..vertex_count {
+            let start = entries32_offset + index * C3D_GROUP1_ENTRY32_LEN;
+            input[start..start + C3D_GROUP1_ENTRY32_LEN]
+                .copy_from_slice(&[u8::try_from(index + 1).unwrap(); C3D_GROUP1_ENTRY32_LEN]);
+        }
+
+        let entries24_offset = entries32_offset + vertex_count * C3D_GROUP1_ENTRY32_LEN;
+        // Face layout: ordinals at +0x02/+0x04/+0x06, material ordinal at +0x08.
+        for (face_index, (material, ordinals)) in faces.iter().enumerate() {
+            let start = entries24_offset + face_index * C3D_GROUP1_ENTRY24_LEN;
+            for (corner, ordinal) in ordinals.iter().enumerate() {
+                let field = start + 2 + corner * 2;
+                input[field..field + 2].copy_from_slice(&ordinal.to_le_bytes());
+            }
+            input[start + 8..start + 10].copy_from_slice(&material.to_le_bytes());
+        }
+
+        parse_c3d(&input, C3dLimits::default()).unwrap()
     }
 }
