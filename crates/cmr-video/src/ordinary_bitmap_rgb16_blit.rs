@@ -1,10 +1,19 @@
-//! Exact-size logical blits for converted ordinary `0x81` bitmaps.
+//! Logical blits for converted ordinary `0x81` bitmaps.
 //!
-//! This is a source-owned composition boundary over logical packed words. It
-//! models only a validated `Fast` copy between matching RGB555 or RGB565
-//! layouts, with the recovered packed palette-entry-zero key when requested.
-//! Stretching, native surface bytes and pitch, driver conversion and
-//! dithering, and presentation remain outside this module.
+//! This is a source-owned composition boundary over logical packed words
+//! between matching RGB555 or RGB565 layouts, with the recovered packed
+//! palette-entry-zero key when requested. It models both recovered
+//! `FUN_0049e3e0` paths: a validated exact-size `Fast` copy, and a `Stretch`
+//! resample for differing source/destination sizes (the loading bar's vertical
+//! fill and its 1px horizontal rule, `rea.official-eu.game-fsm-load-surface`).
+//!
+//! The clip + Fast-vs-Stretch dispatch is the recovered
+//! [`cmr_core::blit::plan_legacy_blit`] contract. The DirectDraw `Blt` stretch
+//! samples in the driver (not in the static image), so the stretch resample here
+//! is a documented backend-neutral **nearest-neighbor** policy - the same stance
+//! as the sequential-`f32` software raster - not a byte-exact oracle of the DX5
+//! driver. Native surface bytes and pitch, driver dithering, and presentation
+//! remain outside this module.
 
 use std::fmt;
 
@@ -105,6 +114,55 @@ pub fn compose_ordinary_bitmap_logical_rgb16_fast_blit(
     Ok(())
 }
 
+/// Validates a stretch (resampling) ordinary-bitmap logical RGB16 blit.
+///
+/// Like the fast preflight but with no source/destination size-match
+/// requirement - the destination rectangle may be any positive size.
+pub fn preflight_ordinary_bitmap_logical_rgb16_stretch_blit(
+    source: &OrdinaryBitmapLogicalRgb16Source,
+    target: &LogicalMaskedRgbTarget,
+    plan: BlitPlan,
+) -> Result<(), OrdinaryBitmapRgb16BlitError> {
+    validate_stretch_blit(source, target, plan).map(|_| ())
+}
+
+/// Composes a preflight-valid stretch logical RGB16 blit by nearest-neighbor
+/// resampling.
+///
+/// Each destination pixel samples the source at `src = src_origin + dst_offset *
+/// src_size / dst_size` (integer, truncating) - the documented backend-neutral
+/// stretch policy (the DX5 driver's `Blt` sampling is not in the static image).
+/// Validation completes before the first write, so every rejection preserves the
+/// target exactly, and a color-key-matching source pixel leaves its destination
+/// word untouched.
+pub fn compose_ordinary_bitmap_logical_rgb16_stretch_blit(
+    source: &OrdinaryBitmapLogicalRgb16Source,
+    target: &mut LogicalMaskedRgbTarget,
+    plan: BlitPlan,
+) -> Result<(), OrdinaryBitmapRgb16BlitError> {
+    let validated = validate_stretch_blit(source, target, plan)?;
+    let source_stride = source.aligned_surface_extent()[0] as usize;
+    let destination_stride = usize::from(target.extent()[0]);
+
+    for row in 0..validated.destination_height {
+        let source_row = validated.source_top + row * validated.source_height / validated.destination_height;
+        let destination_start =
+            (validated.destination_top + row) * destination_stride + validated.destination_left;
+        for column in 0..validated.destination_width {
+            let source_column =
+                validated.source_left + column * validated.source_width / validated.destination_width;
+            let word = source.logical_words()[source_row * source_stride + source_column];
+            if validated.packed_color_key != Some(word) {
+                target.copy_matching_rgb16_word_at_source_owned_oracle(
+                    destination_start + column,
+                    word,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_fast_blit(
     source: &OrdinaryBitmapLogicalRgb16Source,
     target: &LogicalMaskedRgbTarget,
@@ -114,17 +172,7 @@ fn validate_fast_blit(
         return Err(OrdinaryBitmapRgb16BlitError::UnsupportedStretch);
     }
 
-    let source_size = validate_rectangle(
-        plan.source,
-        source.aligned_surface_extent(),
-        OrdinaryBitmapRgb16BlitError::InvalidSourceRectangle,
-    )?;
-    let destination_extent = target.extent().map(u32::from);
-    let destination_size = validate_rectangle(
-        plan.destination,
-        destination_extent,
-        OrdinaryBitmapRgb16BlitError::InvalidDestinationRectangle,
-    )?;
+    let (source_size, destination_size) = validate_blit_rectangles(source, target, plan)?;
     if source_size != destination_size {
         return Err(
             OrdinaryBitmapRgb16BlitError::SourceDestinationSizeMismatch {
@@ -134,6 +182,85 @@ fn validate_fast_blit(
         );
     }
 
+    let packed_color_key = validate_layout_and_color_key(source, target, plan.color_key)?;
+
+    Ok(ValidatedFastBlit {
+        source_left: plan.source.left as usize,
+        source_top: plan.source.top as usize,
+        destination_left: plan.destination.left as usize,
+        destination_top: plan.destination.top as usize,
+        width: source_size[0] as usize,
+        height: source_size[1] as usize,
+        packed_color_key,
+    })
+}
+
+/// A preflight-valid stretch blit: an arbitrary-size source rectangle resampled
+/// into an arbitrary-size destination rectangle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ValidatedStretchBlit {
+    source_left: usize,
+    source_top: usize,
+    source_width: usize,
+    source_height: usize,
+    destination_left: usize,
+    destination_top: usize,
+    destination_width: usize,
+    destination_height: usize,
+    packed_color_key: Option<u16>,
+}
+
+fn validate_stretch_blit(
+    source: &OrdinaryBitmapLogicalRgb16Source,
+    target: &LogicalMaskedRgbTarget,
+    plan: BlitPlan,
+) -> Result<ValidatedStretchBlit, OrdinaryBitmapRgb16BlitError> {
+    // The stretch resample handles any positive source/destination sizes (an
+    // equal-size plan degenerates to a 1:1 copy); the caller dispatches Fast vs
+    // Stretch from the recovered plan, so the method flag is not re-checked here.
+    let (source_size, destination_size) = validate_blit_rectangles(source, target, plan)?;
+    let packed_color_key = validate_layout_and_color_key(source, target, plan.color_key)?;
+
+    Ok(ValidatedStretchBlit {
+        source_left: plan.source.left as usize,
+        source_top: plan.source.top as usize,
+        source_width: source_size[0] as usize,
+        source_height: source_size[1] as usize,
+        destination_left: plan.destination.left as usize,
+        destination_top: plan.destination.top as usize,
+        destination_width: destination_size[0] as usize,
+        destination_height: destination_size[1] as usize,
+        packed_color_key,
+    })
+}
+
+/// Validate the source and destination rectangles against their surface extents,
+/// returning `(source_size, destination_size)`.
+fn validate_blit_rectangles(
+    source: &OrdinaryBitmapLogicalRgb16Source,
+    target: &LogicalMaskedRgbTarget,
+    plan: BlitPlan,
+) -> Result<([u32; 2], [u32; 2]), OrdinaryBitmapRgb16BlitError> {
+    let source_size = validate_rectangle(
+        plan.source,
+        source.aligned_surface_extent(),
+        OrdinaryBitmapRgb16BlitError::InvalidSourceRectangle,
+    )?;
+    let destination_size = validate_rectangle(
+        plan.destination,
+        target.extent().map(u32::from),
+        OrdinaryBitmapRgb16BlitError::InvalidDestinationRectangle,
+    )?;
+    Ok((source_size, destination_size))
+}
+
+/// Validate the source/destination layout match and resolve the optional color
+/// key against the source's recovered packed palette-entry-zero.
+fn validate_layout_and_color_key(
+    source: &OrdinaryBitmapLogicalRgb16Source,
+    target: &LogicalMaskedRgbTarget,
+    color_key: Option<ColorKey>,
+) -> Result<Option<u16>, OrdinaryBitmapRgb16BlitError> {
     let expected_layout = match source.layout() {
         OrdinaryBitmapRgb16Layout::Rgb555 => KnownRgbLayout::Rgb555,
         OrdinaryBitmapRgb16Layout::Rgb565 => KnownRgbLayout::Rgb565,
@@ -146,29 +273,19 @@ fn validate_fast_blit(
         });
     }
 
-    let packed_color_key = match plan.color_key {
-        None => None,
+    match color_key {
+        None => Ok(None),
         Some(key) if key.low != key.high => {
-            return Err(OrdinaryBitmapRgb16BlitError::UnsupportedColorKeyRange(key));
+            Err(OrdinaryBitmapRgb16BlitError::UnsupportedColorKeyRange(key))
         }
         Some(key) if key.low != u32::from(source.packed_color_key()) => {
-            return Err(OrdinaryBitmapRgb16BlitError::UnsupportedColorKey {
+            Err(OrdinaryBitmapRgb16BlitError::UnsupportedColorKey {
                 expected: source.packed_color_key(),
                 actual: key.low,
-            });
+            })
         }
-        Some(_) => Some(source.packed_color_key()),
-    };
-
-    Ok(ValidatedFastBlit {
-        source_left: plan.source.left as usize,
-        source_top: plan.source.top as usize,
-        destination_left: plan.destination.left as usize,
-        destination_top: plan.destination.top as usize,
-        width: source_size[0] as usize,
-        height: source_size[1] as usize,
-        packed_color_key,
-    })
+        Some(_) => Ok(Some(source.packed_color_key())),
+    }
 }
 
 fn validate_rectangle(
@@ -470,5 +587,78 @@ mod tests {
             Err(OrdinaryBitmapRgb16BlitError::UnsupportedStretch)
         );
         assert_eq!(target, before);
+    }
+
+    fn stretch_plan(source: RectEdges, destination: RectEdges, color_key: Option<ColorKey>) -> BlitPlan {
+        BlitPlan {
+            source,
+            destination,
+            method: BlitMethod::Stretch,
+            color_key,
+        }
+    }
+
+    #[test]
+    fn horizontal_stretch_nearest_samples_each_destination_column() {
+        // Source row 0, columns 1..3 = [red, green] (RGB565); stretch 2 -> 4 wide.
+        let source = converted_source(6);
+        let mut target = LogicalMaskedRgbTarget::new([4, 1], format(source.layout())).unwrap();
+        target.replace_from_canonical_rgb([4, 1], &[[255, 255, 255]; 4]).unwrap();
+
+        let plan = stretch_plan(edges(1, 0, 3, 1), edges(0, 0, 4, 1), None);
+        preflight_ordinary_bitmap_logical_rgb16_stretch_blit(&source, &target, plan).unwrap();
+        compose_ordinary_bitmap_logical_rgb16_stretch_blit(&source, &mut target, plan).unwrap();
+
+        // sx = 1 + col*2/4 = {1,1,2,2} -> [red, red, green, green].
+        assert_eq!(target.words(), [0xf800, 0xf800, 0x07e0, 0x07e0]);
+    }
+
+    #[test]
+    fn one_pixel_source_fills_a_line_the_loading_bar_rule_case() {
+        // A 1x1 source (one red pixel) stretched to 3x1 - the static LINE.BMP rule.
+        let source = converted_source(6);
+        let mut target = LogicalMaskedRgbTarget::new([3, 1], format(source.layout())).unwrap();
+        target.replace_from_canonical_rgb([3, 1], &[[255, 255, 255]; 3]).unwrap();
+
+        let plan = stretch_plan(edges(1, 0, 2, 1), edges(0, 0, 3, 1), None);
+        compose_ordinary_bitmap_logical_rgb16_stretch_blit(&source, &mut target, plan).unwrap();
+
+        assert_eq!(target.words(), [0xf800, 0xf800, 0xf800]);
+    }
+
+    #[test]
+    fn stretch_honors_the_color_key_leaving_keyed_destinations_untouched() {
+        // Source columns 0..2 = [key, red]; stretch 2 -> 4 with the color key, so
+        // the two columns sampling the key keep the white background.
+        let source = converted_source(6);
+        let mut target = LogicalMaskedRgbTarget::new([4, 1], format(source.layout())).unwrap();
+        target.replace_from_canonical_rgb([4, 1], &[[255, 255, 255]; 4]).unwrap();
+        let key = u32::from(source.packed_color_key());
+
+        let plan = stretch_plan(edges(0, 0, 2, 1), edges(0, 0, 4, 1), Some(ColorKey { low: key, high: key }));
+        compose_ordinary_bitmap_logical_rgb16_stretch_blit(&source, &mut target, plan).unwrap();
+
+        // sx = {0,0,1,1}: cols 0,1 sample the key (skipped), cols 2,3 sample red.
+        assert_eq!(target.words(), [0xffff, 0xffff, 0xf800, 0xf800]);
+    }
+
+    #[test]
+    fn stretch_preflight_accepts_differing_sizes_and_rejections_are_atomic() {
+        let source = converted_source(6);
+        let mut target = LogicalMaskedRgbTarget::new([4, 2], format(source.layout())).unwrap();
+        target.replace_from_canonical_rgb([4, 2], &[[255, 255, 255]; 8]).unwrap();
+        let before = target.words().to_vec();
+
+        // A differing-size plan the fast path rejects is valid for the stretch path.
+        let grow = stretch_plan(edges(0, 0, 2, 1), edges(0, 0, 4, 2), None);
+        preflight_ordinary_bitmap_logical_rgb16_stretch_blit(&source, &target, grow).unwrap();
+
+        // An out-of-bounds source rectangle is still rejected, atomically.
+        let bad = stretch_plan(edges(0, 0, 5, 1), edges(0, 0, 4, 2), None);
+        assert_eq!(
+            compose_ordinary_bitmap_logical_rgb16_stretch_blit(&source, &mut target, bad),
+            Err(OrdinaryBitmapRgb16BlitError::InvalidSourceRectangle(edges(0, 0, 5, 1)))
+        );
+        assert_eq!(target.words(), before);
     }
 }
