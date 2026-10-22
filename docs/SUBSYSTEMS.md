@@ -602,8 +602,23 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   DONOTUPDATEEXTENTS }`, `PrimBatch::is_untextured` tests the `-1` ordinal, and
   `prim_takes_fog` gates the per-prim fog bake (global flag on and vertex type
   not `1`). The buffers are opaque handles from the batch builder (`c3d_batch`);
-  the per-prim translucent gate is `c3d_scene_graph::node_prims_draw`. See
-  evidence `rea.official-eu.c3d-rasterizer` and `impl.c3d-mesh-draw`.
+  the per-prim translucent gate is `c3d_scene_graph::node_prims_draw`. It also
+  recovers the loader node-loop half - how that draw-time layout is populated by
+  `FUN_004a2b70`/`FUN_004ae1d0`/`FUN_004b1e10`/`FUN_004b2340`: the `0xa4`-byte
+  runtime record's vertex count (`+0x0c`), triangle count (`+0x10`, doubled for
+  the two-sided menu mode `3` when the renderer lacks hardware two-sided handling
+  - `runtime_face_count`/`mode_duplicates_back_faces`), the runtime triangle array
+  (`+0x18`, stride `0x1c` - `RuntimeTriangle`), the dequantized staging vertices
+  (`+0x00`, stride `0x20`), and the stage/car LOD-0/LOD-1 vertex-stream backups
+  (`+0x04`/`+0x08`, modes `5..=8` - `preserves_lod_vertex_streams`/
+  `lod_stream_backup_offset`), plus the vertex-type diffuse split
+  (`vertex_type_has_per_vertex_diffuse`: lit `2` vs pre-lit `1`). Decisively, the
+  prim builder `FUN_004b2340` allocates vbuf/ibuf from a system-memory arena (not
+  a Direct3D buffer) and its topology is the existing
+  `c3d_batch::plan_consecutive_batches`, reused rather than re-derived; the only
+  Direct3D resource the loader creates is the texture. See evidence
+  `rea.official-eu.c3d-rasterizer`, `rea.official-eu.c3d-mesh-instantiate`,
+  `impl.c3d-mesh-draw` and `impl.c3d-mesh-instantiate`.
 - `cmr-core::c3d_transform`: the per-frame scene-graph world-transform
   propagation (E07/E08), from `FUN_00492190`/`FUN_00492520`. The loader stores
   only each node's local matrix; this pre-pass composes the world matrix down the
