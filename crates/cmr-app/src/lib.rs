@@ -18,11 +18,10 @@ use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
 use cmr_core::fixed_point::{Fixed16, Vec3};
 use cmr_core::frontend::{FrontendPhase, RootSelection};
 use cmr_core::game_menu_flow::MenuFlowInputs;
-use cmr_core::game_race_flow::{InRaceInputs, race_flow_next};
-use cmr_core::game_session::GameSession;
+use cmr_core::gameplay_session::{GameplaySession, InRaceScript};
 use cmr_core::host_loop::HostClock;
 use cmr_core::localization::Language;
-use cmr_core::race_state::{CarState, Controls, RaceState, SimParams};
+use cmr_core::race_state::{Controls, SimParams};
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::{
@@ -44,8 +43,11 @@ use cmr_formats::stage::{
 };
 use cmr_formats::stored_asset::{DecodeError, DecodeLimits, decode_stored_asset};
 use cmr_platform_sdl3::{
-    InteractiveRootError, SdlHostError, present_software_frame, run_interactive_root_frame,
+    GameSessionStep, InteractiveRootError, SdlHostError, present_software_frame,
+    run_interactive_root_frame, run_windowed_game_session as run_windowed_game_session_loop,
 };
+use cmr_core::gameplay_input::KeyboardDriver;
+use cmr_core::drive_controls::DriveResponse;
 use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
@@ -87,6 +89,10 @@ pub enum AppCommand {
     /// Run the recovered top-level game FSM headless (boot -> menu -> load ->
     /// in-race -> quit) with the recovered race sim as the in-race handler.
     HeadlessGameSession,
+    /// Run the recovered top-level game FSM in a native window, driven by live
+    /// keyboard input and presenting a named stage per the recovered render
+    /// route.
+    WindowedGameSession,
 }
 
 /// Parsed command-line options before environment fallback resolution.
@@ -138,6 +144,12 @@ impl AppOptions {
             if argument == OsStr::new("--headless-game-session") {
                 if command.replace(AppCommand::HeadlessGameSession).is_some() {
                     return Err(ConfigError::DuplicateOption("--headless-game-session"));
+                }
+                continue;
+            }
+            if argument == OsStr::new("--windowed-game-session") {
+                if command.replace(AppCommand::WindowedGameSession).is_some() {
+                    return Err(ConfigError::DuplicateOption("--windowed-game-session"));
                 }
                 continue;
             }
@@ -228,7 +240,9 @@ impl AppOptions {
         // sibling section files from; the root-frame commands need neither.
         if matches!(
             self.command,
-            AppCommand::HeadlessStageFrame | AppCommand::WindowedStageFrame
+            AppCommand::HeadlessStageFrame
+                | AppCommand::WindowedStageFrame
+                | AppCommand::WindowedGameSession
         ) {
             if self.stage.is_none() {
                 return Err(ConfigError::MissingStage);
@@ -1135,6 +1149,82 @@ pub fn run_windowed_stage_frame(
     present_software_frame(&rendered.frame).map_err(WindowedStageFrameError::Present)
 }
 
+/// A real wall clock for the windowed session: milliseconds since the loop
+/// started, so the [`FrameDriver`](cmr_core::game_driver::FrameDriver)'s 40 ms
+/// catch-up buckets advance the sim in real time (lock-step 25 Hz against the
+/// host's frame pace), unlike the headless [`StationaryClock`].
+struct WallClock {
+    start: std::time::Instant,
+}
+
+impl WallClock {
+    fn new() -> Self {
+        WallClock {
+            start: std::time::Instant::now(),
+        }
+    }
+}
+
+impl HostClock for WallClock {
+    fn millis(&self) -> u32 {
+        self.start.elapsed().as_millis() as u32
+    }
+}
+
+/// Composes the named stage once and runs the recovered top-level game session
+/// in a native SDL window, driven by **live keyboard input** and presenting per
+/// the recovered render route.
+///
+/// This threads the whole live chain end to end: SDL key events feed a
+/// [`KeyboardVkState`](cmr_platform_sdl3::KeyboardVkState) that the recovered
+/// keyboard driver ([`KeyboardDriver`]) turns into sim [`Controls`], which drive
+/// the fixed-step race sim inside the recovered FSM ([`GameplaySession`]); the
+/// loop presents the composed stage frame whenever the state's render route
+/// composes the in-race world and clears otherwise. The drive-force and
+/// steer-rate magnitudes are the documented harness [`DriveResponse`] (the real
+/// values are runtime car/surface-table quantities), the checkpoint line is the
+/// synthetic [`headless_checkpoint_line`], and the per-route recovered
+/// compositors + a live follow camera remain to be wired - but the FSM, the
+/// input chain, and the render-route routing are all the recovered behavior.
+pub fn run_windowed_game_session(
+    media_root: &Path,
+    stage: &str,
+) -> Result<(), WindowedStageFrameError> {
+    let rendered = render_stage_frame(media_root, stage)?;
+
+    let params = SimParams {
+        inverse_mass: Fixed16::ONE,
+        gravity: Vec3::ZERO,
+    };
+    let mut session = GameplaySession::new(params, InRaceScript::frontend_harness());
+    let mut driver = KeyboardDriver::player_one();
+    let response = DriveResponse {
+        max_forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
+        max_steer_rate: GAME_SESSION_MAX_STEER_RATE,
+    };
+    let menu_inputs = MenuFlowInputs {
+        frontend_active: true,
+        root_menu_ready: true,
+        screen_graph_ready: true,
+        ..MenuFlowInputs::default()
+    };
+    let nodes = headless_checkpoint_line();
+    let mut progress = StageProgress::new(&nodes, 0);
+    let clock = WallClock::new();
+
+    run_windowed_game_session_loop(&rendered.frame, |keys| {
+        // Live keyboard -> recovered control map -> sim controls, then one FSM
+        // frame stepping the race sim in the driving state.
+        let frame = driver.poll(|vk| keys.is_down(vk), &response, true);
+        let advanced = session.advance(&clock, menu_inputs, frame.controls, &mut progress);
+        GameSessionStep {
+            route: advanced.route,
+            stopped: session.is_stopped(),
+        }
+    })
+    .map_err(WindowedStageFrameError::Present)
+}
+
 /// A stationary host clock: it never advances within a frame, so the
 /// [`FrameDriver`](cmr_core::game_driver::FrameDriver)'s in-race catch-up loop
 /// (`do { tick } while (the tick crossed a 40 ms bucket)`) runs exactly one sim
@@ -1152,6 +1242,11 @@ impl HostClock for StationaryClock {
 /// tick. A **harness constant** for the demonstration drive, not a recovered
 /// value.
 const GAME_SESSION_DRIVE_FORCE_Q16: i32 = 8 << 16;
+/// The heading rate (signed 16-bit BAM per tick) at full steer for the windowed
+/// session's live-input drive. A **harness constant**, not a recovered value:
+/// the shipped steer authority is a runtime car/surface-table quantity
+/// (`rea.official-eu.drivetrain-actuator-chain`).
+const GAME_SESSION_MAX_STEER_RATE: i16 = 0x200;
 /// A safety cap on frames so a mis-tuned drive cannot loop forever.
 const GAME_SESSION_MAX_FRAMES: u32 = 100_000;
 
@@ -1230,12 +1325,11 @@ impl HeadlessGameSessionOutput {
 /// fade/quit flags) are documented **harness** stand-ins for the real subsystems.
 pub fn run_headless_game_session() -> HeadlessGameSessionOutput {
     let clock = StationaryClock;
-    let mut session = GameSession::new();
-    let mut race = RaceState::new(CarState::at_rest());
     let params = SimParams {
         inverse_mass: Fixed16::ONE,
         gravity: Vec3::ZERO,
     };
+    let mut session = GameplaySession::new(params, InRaceScript::frontend_harness());
     let controls = Controls {
         steer_rate: 0,
         forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
@@ -1252,45 +1346,23 @@ pub fn run_headless_game_session() -> HeadlessGameSessionOutput {
 
     let nodes = headless_checkpoint_line();
     let mut progress = StageProgress::new(&nodes, 0);
-    let mut sim_ticks = 0u32;
 
     let mut frames = 0u32;
     while !session.is_stopped() && frames < GAME_SESSION_MAX_FRAMES {
         frames += 1;
-        session.run_frame(&clock, menu_inputs, |state| {
-            // State 5 is the main driving tick: advance the sim and the
-            // checkpoint tracker. Other in-race states are transitions/overlays.
-            if state.id() == 5 {
-                let sample = race.step(&controls, &params);
-                sim_ticks += 1;
-                progress.update(sample.car.position, sample.centiseconds);
-            }
-            // The recovered in-race inputs. In normal driving the finish flag is
-            // the tracker's; the front-end sequencer flags are scripted so the
-            // recovered front-end path (5 -> 9 -> 0xb -> 0xc) runs to completion.
-            let inputs = InRaceInputs {
-                frontend_active: true,
-                stage_world_ready: true,
-                stage_finished: progress.finished(),
-                replay_ready: true,
-                replay_intro_done: true,
-                flyby_cinematic_done: true,
-                quit_requested: true,
-                fade_done: true,
-                ..InRaceInputs::default()
-            };
-            race_flow_next(state, inputs).unwrap_or(state)
-        });
+        // Fixed forward controls each frame: the deterministic demonstration
+        // drive. The windowed session injects live controls here instead.
+        session.advance(&clock, menu_inputs, controls, &mut progress);
     }
 
     HeadlessGameSessionOutput {
         frames,
-        sim_ticks,
-        final_state: session.current().id(),
+        sim_ticks: session.sim_ticks(),
+        final_state: session.state().id(),
         finished: progress.finished(),
         finish_centiseconds: progress.finish_centiseconds(),
-        final_position_x_q16: race.car().position.x.raw(),
-        stage_clock_q16: race.clock().raw(),
+        final_position_x_q16: session.car().position.x.raw(),
+        stage_clock_q16: session.stage_clock().raw(),
     }
 }
 
@@ -1613,6 +1685,51 @@ mod tests {
             runtime_config(
                 arguments(&[
                     "--windowed-stage-frame",
+                    "--runtime-data",
+                    "/user",
+                    "--stage",
+                    "MONACO1",
+                ]),
+                None,
+                None,
+            ),
+            Err(ConfigError::MissingSourceForStage)
+        );
+    }
+
+    #[test]
+    fn windowed_game_session_command_uses_the_stage_contract() {
+        let config = runtime_config(
+            arguments(&[
+                "--windowed-game-session",
+                "--runtime-data",
+                "/user",
+                "--source",
+                "/media",
+                "--stage",
+                "MONACO1",
+            ]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.command(), AppCommand::WindowedGameSession);
+        assert_eq!(config.stage(), Some("MONACO1"));
+        assert_eq!(config.media_root(), Some(Path::new("/media")));
+
+        // Like the stage commands, it needs both a stage name and a media root.
+        assert_eq!(
+            runtime_config(
+                arguments(&["--windowed-game-session", "--runtime-data", "/user", "--source", "/media"]),
+                None,
+                None,
+            ),
+            Err(ConfigError::MissingStage)
+        );
+        assert_eq!(
+            runtime_config(
+                arguments(&[
+                    "--windowed-game-session",
                     "--runtime-data",
                     "/user",
                     "--stage",

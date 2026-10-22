@@ -3,8 +3,8 @@ use std::process::ExitCode;
 
 use cmr_app::{
     AppCommand, RUNTIME_DATA_ENV, RuntimeConfig, SOURCE_ENV, run_headless_game_session,
-    run_headless_root_frame, run_headless_stage_frame, run_windowed_root_frame,
-    run_windowed_stage_frame, runtime_config,
+    run_headless_root_frame, run_headless_stage_frame, run_windowed_game_session,
+    run_windowed_root_frame, run_windowed_stage_frame, runtime_config,
 };
 
 /// The media root and stage name a stage command resolves with.
@@ -72,6 +72,16 @@ fn main() -> ExitCode {
                 let output = run_headless_game_session();
                 println!("{}", output.stable_summary());
                 ExitCode::SUCCESS
+            }
+            AppCommand::WindowedGameSession => {
+                let (media_root, stage) = stage_inputs(&config);
+                match run_windowed_game_session(media_root, stage) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("cmr-app: windowed-game-session failed: {}", error.kind());
+                        ExitCode::FAILURE
+                    }
+                }
             }
         },
         Err(error) => {

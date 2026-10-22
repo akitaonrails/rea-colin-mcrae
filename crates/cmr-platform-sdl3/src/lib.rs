@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use cmr_core::frontend::FrontendInput;
 use cmr_core::host_lifecycle::{HostLifecycle, PlatformLifecycleEvent};
 use cmr_core::present_scaling::{DEFAULT_SCALING, PresentationScaling};
+use cmr_core::render_route::{RenderRoute, composes_world};
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::RootRenderInput;
 use cmr_core::window::{WindowEffect, WindowMode};
@@ -604,6 +605,135 @@ pub fn run_interactive_root_frame<E>(
             rgba = rendered_rgba(render(&current_input).map_err(InteractiveRootError::Render)?)?;
             upload_rgba_frame(&mut texture, &rgba).map_err(InteractiveRootError::Host)?;
             redraw_present(&mut canvas, &texture).map_err(InteractiveRootError::Host)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// One windowed game-session frame's outcome, returned by the `advance`
+/// callback of [`run_windowed_game_session`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GameSessionStep {
+    /// The render route of the state whose render handler ran this frame, or
+    /// `None` when the render-skip gate dropped the frame.
+    pub route: Option<RenderRoute>,
+    /// Whether the session has reached the terminal stopped state.
+    pub stopped: bool,
+}
+
+/// Runs the windowed game session: drives the recovered top-level FSM with live
+/// keyboard input and presents per the recovered render route, until the session
+/// stops or the window closes.
+///
+/// SDL owns the window, keyboard, and presentation; the recovered game logic is
+/// entirely in the `advance` callback, which is handed the live held-key state
+/// (the [`KeyboardVkState`] the loop maintains from key events through
+/// [`sdl_keycode_to_vk`]) and returns that frame's [`GameSessionStep`]. The loop
+/// presents the pre-composed `stage_frame` whenever the step's route composes the
+/// in-race world ([`composes_world`]) and clears to black otherwise - a
+/// documented placeholder until the per-route recovered compositors (front-end,
+/// overlays) and a live follow camera are wired. `Escape` is left to the game
+/// (its recovered pause binding, VK `0x1b`); the window close button and a quit
+/// event exit. Focus loss pauses the advance, as the recovered host loop does.
+pub fn run_windowed_game_session<A>(
+    stage_frame: &SoftwarePresentedFrame,
+    mut advance: A,
+) -> Result<(), SdlHostError>
+where
+    A: FnMut(&KeyboardVkState) -> GameSessionStep,
+{
+    let rgba = stage_frame
+        .expand_rgba8()
+        .map_err(SdlHostError::FrameConversion)?;
+    let extent = rgba.extent();
+
+    let sdl = sdl3::init().map_err(|error| SdlHostError::sdl("initialization", error))?;
+    let video = sdl
+        .video()
+        .map_err(|error| SdlHostError::sdl("video initialization", error))?;
+    let window = video
+        .window(
+            "Colin McRae Rally — reconstruction",
+            u32::from(extent.width),
+            u32::from(extent.height),
+        )
+        .position_centered()
+        .resizable()
+        .build()
+        .map_err(|error| SdlHostError::sdl("window creation", error))?;
+    let mut canvas = window.into_canvas();
+    canvas
+        .set_logical_size(
+            u32::from(extent.width),
+            u32::from(extent.height),
+            logical_presentation(DEFAULT_SCALING),
+        )
+        .map_err(|error| SdlHostError::sdl("logical presentation setup", error))?;
+    let texture_creator = canvas.texture_creator();
+    let mut texture = texture_creator
+        .create_texture_streaming(
+            PixelFormat::RGBA32,
+            u32::from(extent.width),
+            u32::from(extent.height),
+        )
+        .map_err(|error| SdlHostError::sdl("streaming texture creation", error))?;
+    texture.set_scale_mode(ScaleMode::Nearest);
+    upload_rgba_frame(&mut texture, &rgba)?;
+
+    let mut events = sdl
+        .event_pump()
+        .map_err(|error| SdlHostError::sdl("event pump creation", error))?;
+    let mut keys = KeyboardVkState::new();
+    let mut focused = true;
+    let mut exit = false;
+
+    while !exit {
+        if let Some(event) = events.wait_event_timeout(INTERACTIVE_FRAME_INTERVAL) {
+            for event in std::iter::once(event).chain(events.poll_iter()) {
+                match event {
+                    Event::Quit { .. } => exit = true,
+                    Event::KeyDown {
+                        keycode: Some(code),
+                        ..
+                    } => keys.apply_key(code, true),
+                    Event::KeyUp {
+                        keycode: Some(code),
+                        ..
+                    } => keys.apply_key(code, false),
+                    Event::Window {
+                        win_event: WindowEvent::FocusGained | WindowEvent::Restored,
+                        ..
+                    } => focused = true,
+                    Event::Window {
+                        win_event: WindowEvent::FocusLost | WindowEvent::Minimized,
+                        ..
+                    } => focused = false,
+                    _ => {}
+                }
+            }
+        }
+        if exit {
+            break;
+        }
+        if !focused {
+            // Paused: do not advance the sim or present while unfocused.
+            continue;
+        }
+
+        let step = advance(&keys);
+        if step.stopped {
+            break;
+        }
+        if step.route.is_some_and(composes_world) {
+            redraw_present(&mut canvas, &texture)?;
+        } else {
+            // A route that does not compose the world: clear to black until the
+            // recovered front-end/overlay compositors are wired for this path.
+            canvas.clear();
+            if !canvas.present() {
+                return Err(SdlHostError::sdl("frame presentation", sdl3::get_error()));
+            }
         }
     }
 
