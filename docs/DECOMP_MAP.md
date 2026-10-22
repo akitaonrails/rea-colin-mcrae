@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-23T06:15:00Z
-milestone=compose-the-recovered-analog-driver-and-wire-gamepad-input-into-the-windowed-session
+updated_utc=2026-10-23T06:40:00Z
+milestone=present-the-recovered-front-end-root-menu-frame-on-the-windowed-game-session-front-end-route
 completed=53
 partial=57
 not_started=7
 blocked=0
 total=117
-current_focus=wire-the-per-route-recovered-compositors-and-the-cat-start-gameplay-camera-into-the-windowed-session-then-audio-h-and-the-gpu-backend-i08-i09
-next_exit_gate=a-windowed-game-session-command-runs-the-fsm-with-live-input-routes-rendering-per-render-route-and-presents-frames-through-the-sdl-host
+current_focus=wire-the-recovered-cat-start-gameplay-camera-into-the-windowed-session-replacing-the-follow-placeholder-camera-then-audio-h-and-the-gpu-backend-i08-i09
+next_exit_gate=the-windowed-game-session-presents-the-recovered-front-end-root-menu-on-the-front-end-route-and-the-stage-world-on-the-world-route
 <!-- PROGRESS-TAIL-END -->

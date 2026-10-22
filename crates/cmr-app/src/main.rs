@@ -75,7 +75,7 @@ fn main() -> ExitCode {
             }
             AppCommand::WindowedGameSession => {
                 let (media_root, stage) = stage_inputs(&config);
-                match run_windowed_game_session(media_root, stage) {
+                match run_windowed_game_session(media_root, config.runtime_data(), stage) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("cmr-app: windowed-game-session failed: {}", error.kind());

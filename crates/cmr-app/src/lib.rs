@@ -48,7 +48,7 @@ use cmr_platform_sdl3::{
 };
 use cmr_core::drive_controls::DriveResponse;
 use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
-use cmr_core::render_route::composes_world;
+use cmr_core::render_route::{RenderRoute, composes_frontend_root, composes_world};
 use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
@@ -1228,8 +1228,53 @@ impl HostClock for WallClock {
 /// synthetic [`headless_checkpoint_line`], and the per-route recovered
 /// compositors + a live follow camera remain to be wired - but the FSM, the
 /// input chain, and the render-route routing are all the recovered behavior.
+/// One windowed-game-session frame of the input/advance/world-compose work the
+/// two loop variants share.
+///
+/// It maps the live input through the recovered control map (the analog driver
+/// when a gamepad is connected, the keyboard driver otherwise), advances the FSM
+/// one frame stepping the race sim in the driving state, and - only when the
+/// route is a `StageWorld`-family route - composes the stage from the follow
+/// camera. A compose failure drops the world frame rather than killing the loop.
+/// It returns the frame's render route (so the caller can decide any non-world
+/// presentation), the composed world frame (if any), and whether the FSM has
+/// reached the stopped state.
+#[allow(clippy::too_many_arguments)]
+fn advance_game_frame<C: HostClock>(
+    session: &mut GameplaySession,
+    keyboard: &mut KeyboardDriver,
+    analog: &mut AnalogDriver,
+    response: &DriveResponse,
+    menu_inputs: MenuFlowInputs,
+    progress: &mut StageProgress,
+    clock: &C,
+    resources: &StageRenderResources,
+    input: WindowedInput,
+) -> (Option<RenderRoute>, Option<SoftwarePresentedFrame>, bool) {
+    let controls = if let Some(pad) = input.gamepad {
+        analog
+            .poll(pad.steer_axis(), pad.pedal_axis(), pad.buttons(), response, true)
+            .controls
+    } else {
+        keyboard
+            .poll(|vk| input.keys.is_down(vk), response, true)
+            .controls
+    };
+    let advanced = session.advance(clock, menu_inputs, controls, progress);
+    let world = if advanced.route.is_some_and(composes_world) {
+        resources
+            .compose(&follow_camera(&session.car()))
+            .ok()
+            .map(|rendered| rendered.frame)
+    } else {
+        None
+    };
+    (advanced.route, world, session.is_stopped())
+}
+
 pub fn run_windowed_game_session(
     media_root: &Path,
+    runtime_data: &Path,
     stage: &str,
 ) -> Result<(), WindowedStageFrameError> {
     let resources = StageRenderResources::load(media_root, stage)?;
@@ -1256,34 +1301,71 @@ pub fn run_windowed_game_session(
     let mut progress = StageProgress::new(&nodes, 0);
     let clock = WallClock::new();
 
+    // Best-effort: open the recovered front-end root-menu compositor from the
+    // runtime-data root so the interactive front-end route (state 2) presents the
+    // real recovered menu frame instead of a cleared one. If the front-end assets
+    // are unavailable or the session cannot be built, the front-end route falls
+    // back to a cleared frame and the world render path is unaffected.
+    let front_end = ReviewedProfile::from_json(REVIEWED_PROFILE)
+        .ok()
+        .and_then(|reviewed| open_root_session_inputs(runtime_data, &reviewed).ok());
+
+    if let Some((store, startup)) = front_end {
+        let request = SoftwareRootMenuSessionRequest::official_eu_initial_software_default_config(
+            Language::English,
+            VisualVariant::Normal,
+        );
+        let built = with_software_root_menu_session(&store, startup, request, |root| {
+            run_windowed_game_session_loop(&initial.frame, |input: WindowedInput| {
+                let (route, world, stopped) = advance_game_frame(
+                    &mut session,
+                    &mut keyboard,
+                    &mut analog,
+                    &response,
+                    menu_inputs,
+                    &mut progress,
+                    &clock,
+                    &resources,
+                    input,
+                );
+                // A composed world frame wins; otherwise the interactive front-end
+                // route presents the recovered root-menu frame (steady initial
+                // input - live menu navigation is the separate windowed root-frame
+                // command). Any render failure drops the frame.
+                let present = if world.is_some() {
+                    world
+                } else if route.is_some_and(composes_frontend_root) {
+                    root.render(initial_root_input())
+                        .ok()
+                        .and_then(|_| root.backend().presented_frame().cloned())
+                } else {
+                    None
+                };
+                WindowedGameFrame { present, stopped }
+            })
+        });
+        if let Ok(run) = built {
+            return run.output.map_err(WindowedStageFrameError::Present);
+        }
+        // The front-end session could not be built after its inputs opened; fall
+        // through to the world-only loop below rather than failing the session.
+    }
+
     run_windowed_game_session_loop(&initial.frame, |input: WindowedInput| {
-        // Live input -> recovered control map -> sim controls: the analog driver
-        // when a gamepad is connected, the keyboard driver otherwise. Then one
-        // FSM frame stepping the race sim in the driving state.
-        let controls = if let Some(pad) = input.gamepad {
-            analog
-                .poll(pad.steer_axis(), pad.pedal_axis(), pad.buttons(), &response, true)
-                .controls
-        } else {
-            keyboard
-                .poll(|vk| input.keys.is_down(vk), &response, true)
-                .controls
-        };
-        let advanced = session.advance(&clock, menu_inputs, controls, &mut progress);
-        // Present the stage from a follow camera when the route composes the
-        // world; otherwise clear (the non-world recovered compositors are a later
-        // wire-up). A compose failure drops the frame rather than killing the loop.
-        let present = if advanced.route.is_some_and(composes_world) {
-            resources
-                .compose(&follow_camera(&session.car()))
-                .ok()
-                .map(|rendered| rendered.frame)
-        } else {
-            None
-        };
+        let (_route, world, stopped) = advance_game_frame(
+            &mut session,
+            &mut keyboard,
+            &mut analog,
+            &response,
+            menu_inputs,
+            &mut progress,
+            &clock,
+            &resources,
+            input,
+        );
         WindowedGameFrame {
-            present,
-            stopped: session.is_stopped(),
+            present: world,
+            stopped,
         }
     })
     .map_err(WindowedStageFrameError::Present)

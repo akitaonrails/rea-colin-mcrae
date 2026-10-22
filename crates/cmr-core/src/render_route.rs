@@ -144,6 +144,21 @@ pub fn composes_world(route: RenderRoute) -> bool {
     matches!(route, RenderRoute::StageWorld(_))
 }
 
+/// Whether a route composes the interactive front-end root menu - the screen the
+/// recovered root-menu session (`FUN_00421cd0`, state `2`) draws: the rotating
+/// 3D car selection and root-menu objects over the front-end backdrop.
+///
+/// This is deliberately narrower than "any front-end state": only
+/// [`RenderRoute::FrontendDisplay`] is the root-menu composition.
+/// [`RenderRoute::FrontendSurface`] (state `3`) reconfigures the display surface
+/// and [`RenderRoute::LoadInterstitial`] (state `4`) runs the load/progress pump;
+/// neither redraws the root menu, so a backend must not feed them a root-menu
+/// frame.
+#[must_use]
+pub fn composes_frontend_root(route: RenderRoute) -> bool {
+    matches!(route, RenderRoute::FrontendDisplay)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +238,20 @@ mod tests {
         assert_eq!(render_route(state(0xb)), RenderRoute::FadeComposite);
         assert!(!composes_world(render_route(state(0xa))));
         assert!(!composes_world(render_route(state(0xb))));
+    }
+
+    #[test]
+    fn only_the_frontend_display_route_composes_the_root_menu() {
+        // State 2 (the interactive front-end) is the root-menu composition.
+        assert!(composes_frontend_root(render_route(state(0x2))));
+        // The sibling front-end routes (surface reconfig, load pump) are not, and
+        // neither is any world / overlay / fade / terminal route.
+        for id in 0x0..=0xc {
+            let route = render_route(state(id));
+            assert_eq!(composes_frontend_root(route), id == 0x2);
+            // The root-menu and world predicates never both claim a route.
+            assert!(!(composes_frontend_root(route) && composes_world(route)));
+        }
     }
 
     #[test]
