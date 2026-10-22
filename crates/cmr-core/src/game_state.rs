@@ -75,8 +75,8 @@ pub const STATE_HANDLERS: [(u32, u32); 13] = [
     (0x0043_7690, 0x0042_31f0), // 6   in-race update (Mechanics; shares render B)
     (0x0043_7ef0, 0x0042_2c30), // 7   in-race update (Mechanics)
     (0x0043_8100, 0x0042_3260), // 8   in-race update (Mechanics)
-    (0x0043_84a0, 0x0043_3380), // 9   in-race update (Mechanics)
-    (0x0043_8970, 0x0043_33e0), // 0xa in-race overlay/hub (role unproven)
+    (0x0043_84a0, 0x0042_3380), // 9   in-race update (Mechanics)
+    (0x0043_8970, 0x0042_33e0), // 0xa in-race overlay/hub (role unproven)
     (0x0043_8b90, 0x0042_3420), // 0xb post-race / results dispatch
     (0x0043_98a0, 0x0042_34a0), // 0xc quit funnel (sentinel row; shares state 0)
 ];

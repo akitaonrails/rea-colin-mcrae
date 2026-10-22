@@ -77,6 +77,7 @@ pub mod presentation;
 pub mod profile_store;
 pub mod race_participants;
 pub mod race_state;
+pub mod render_route;
 pub mod replay;
 pub mod root_menu_animation;
 pub mod root_menu_assets;
