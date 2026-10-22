@@ -11,7 +11,7 @@
 //! game used DirectInput and its exact device bindings are not recovered, so
 //! these choices are not a compatibility claim.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cmr_core::frontend::FrontendInput;
 use sdl3::gamepad::{Axis, Button};
@@ -84,6 +84,83 @@ pub fn axis_action(axis: Axis, value: i16) -> Option<FrontendAction> {
         Some(FrontendAction::Next)
     } else {
         None
+    }
+}
+
+/// Translates an SDL keyboard key to the Windows **virtual-key code** the
+/// recovered in-race keyboard bindings ([`cmr_core::input_map::KeyBindings`])
+/// expect, or `None` when the key has no bound VK code.
+///
+/// The recovered control map reads keys by VK code (`GetAsyncKeyState`), so the
+/// SDL host must present the same VK numbering. This covers both default player
+/// tables: player 1 (arrows + numpad + escape) and player 2 (A/S/R/D, Q, T, Tab,
+/// escape). The one recovered player-2 binding with no clean SDL equivalent
+/// (reset at raw VK `0x5c`) is left unmapped; that is host policy, not a
+/// compatibility claim, exactly as the frontend bindings above.
+#[must_use]
+pub fn sdl_keycode_to_vk(keycode: Keycode) -> Option<u8> {
+    let vk = match keycode {
+        // Player 1: arrows + numpad.
+        Keycode::Left => 0x25,
+        Keycode::Up => 0x26,
+        Keycode::Right => 0x27,
+        Keycode::Down => 0x28,
+        Keycode::Kp2 => 0x62,
+        Keycode::Kp4 => 0x64,
+        Keycode::Kp6 => 0x66,
+        Keycode::Kp8 => 0x68,
+        // Shared pause.
+        Keycode::Escape => 0x1b,
+        // Player 2: letters + tab.
+        Keycode::Tab => 0x09,
+        Keycode::A => 0x41,
+        Keycode::D => 0x44,
+        Keycode::Q => 0x51,
+        Keycode::R => 0x52,
+        Keycode::S => 0x53,
+        Keycode::T => 0x54,
+        _ => return None,
+    };
+    Some(vk)
+}
+
+/// Tracks which recovered VK codes are currently held, so the in-race keyboard
+/// poll ([`cmr_core::input_poll::DevicePoll::poll_keyboard`]) can be driven from
+/// SDL key-down/up events with a level (`is_down`) probe.
+///
+/// The recovered poll computes its own rising edges across frames from this
+/// level state, so the host only has to maintain the held set - exactly the
+/// `GetAsyncKeyState` level the shipped poll read.
+#[derive(Clone, Debug, Default)]
+pub struct KeyboardVkState {
+    held: BTreeSet<u8>,
+}
+
+impl KeyboardVkState {
+    /// A fresh tracker (nothing held).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Apply a key-down (`pressed`) or key-up event; keys with no bound VK code
+    /// are ignored.
+    pub fn apply_key(&mut self, keycode: Keycode, pressed: bool) {
+        let Some(vk) = sdl_keycode_to_vk(keycode) else {
+            return;
+        };
+        if pressed {
+            self.held.insert(vk);
+        } else {
+            self.held.remove(&vk);
+        }
+    }
+
+    /// Whether the given VK code is currently held (the `is_down` probe the
+    /// recovered keyboard poll takes).
+    #[must_use]
+    pub fn is_down(&self, vk: u8) -> bool {
+        self.held.contains(&vk)
     }
 }
 
@@ -211,6 +288,61 @@ impl FrontendInputMapper {
 mod tests {
     use super::*;
     use cmr_core::frontend::{FrontendEffect, FrontendState, ROOT_SCREEN, TransitionResult};
+
+    #[test]
+    fn sdl_keys_translate_to_the_recovered_vk_codes() {
+        // Player 1 arrows + numpad.
+        assert_eq!(sdl_keycode_to_vk(Keycode::Left), Some(0x25));
+        assert_eq!(sdl_keycode_to_vk(Keycode::Up), Some(0x26));
+        assert_eq!(sdl_keycode_to_vk(Keycode::Right), Some(0x27));
+        assert_eq!(sdl_keycode_to_vk(Keycode::Down), Some(0x28));
+        assert_eq!(sdl_keycode_to_vk(Keycode::Kp8), Some(0x68));
+        assert_eq!(sdl_keycode_to_vk(Keycode::Escape), Some(0x1b));
+        // Player 2 letters + tab.
+        assert_eq!(sdl_keycode_to_vk(Keycode::A), Some(0x41));
+        assert_eq!(sdl_keycode_to_vk(Keycode::S), Some(0x53));
+        assert_eq!(sdl_keycode_to_vk(Keycode::Tab), Some(0x09));
+        // An unbound key.
+        assert_eq!(sdl_keycode_to_vk(Keycode::F1), None);
+    }
+
+    #[test]
+    fn held_vk_state_tracks_press_and_release_and_ignores_unbound_keys() {
+        let mut keys = KeyboardVkState::new();
+        assert!(!keys.is_down(0x26));
+        keys.apply_key(Keycode::Up, true);
+        assert!(keys.is_down(0x26));
+        // An unbound key changes nothing.
+        keys.apply_key(Keycode::F1, true);
+        assert!(keys.is_down(0x26));
+        keys.apply_key(Keycode::Up, false);
+        assert!(!keys.is_down(0x26));
+    }
+
+    #[test]
+    fn held_vk_state_feeds_the_recovered_driving_chain() {
+        use cmr_core::drive_controls::DriveResponse;
+        use cmr_core::fixed_point::Fixed16;
+        use cmr_core::gameplay_input::KeyboardDriver;
+
+        let mut keys = KeyboardVkState::new();
+        let mut driver = KeyboardDriver::player_one();
+        let response = DriveResponse {
+            max_forward_force: Fixed16::from_raw(8 << 16),
+            max_steer_rate: 0x200,
+        };
+
+        // Holding Up (SDL) drives the throttle through the whole recovered chain.
+        keys.apply_key(Keycode::Up, true);
+        let frame = driver.poll(|vk| keys.is_down(vk), &response, true);
+        assert!(frame.car.throttle > 0);
+        assert!(frame.controls.forward_force > Fixed16::ZERO);
+
+        // Releasing returns to neutral.
+        keys.apply_key(Keycode::Up, false);
+        let neutral = driver.poll(|vk| keys.is_down(vk), &response, true);
+        assert_eq!(neutral.controls.forward_force, Fixed16::ZERO);
+    }
 
     #[test]
     fn keyboard_and_dpad_bindings_resolve_to_the_recovered_actions() {

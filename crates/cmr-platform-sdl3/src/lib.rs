@@ -10,8 +10,8 @@ pub mod input;
 
 pub use audio::{AudioHost, SharedSoftwareMixer};
 pub use input::{
-    AXIS_DEAD_ZONE, FrontendAction, FrontendInputMapper, action_for_button, action_for_key,
-    axis_action,
+    AXIS_DEAD_ZONE, FrontendAction, FrontendInputMapper, KeyboardVkState, action_for_button,
+    action_for_key, axis_action, sdl_keycode_to_vk,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

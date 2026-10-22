@@ -36,7 +36,7 @@ pub struct SimParams {
 }
 
 /// A driver's per-tick inputs for the harness.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Controls {
     /// Signed BAM steering rate added to the heading each tick.
     pub steer_rate: i16,
