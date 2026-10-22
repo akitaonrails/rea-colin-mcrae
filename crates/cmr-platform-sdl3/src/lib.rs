@@ -21,7 +21,6 @@ use std::time::{Duration, Instant};
 use cmr_core::frontend::FrontendInput;
 use cmr_core::host_lifecycle::{HostLifecycle, PlatformLifecycleEvent};
 use cmr_core::present_scaling::{DEFAULT_SCALING, PresentationScaling};
-use cmr_core::render_route::{RenderRoute, composes_world};
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::RootRenderInput;
 use cmr_core::window::{WindowEffect, WindowMode};
@@ -611,41 +610,38 @@ pub fn run_interactive_root_frame<E>(
     Ok(())
 }
 
-/// One windowed game-session frame's outcome, returned by the `advance`
-/// callback of [`run_windowed_game_session`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GameSessionStep {
-    /// The render route of the state whose render handler ran this frame, or
-    /// `None` when the render-skip gate dropped the frame.
-    pub route: Option<RenderRoute>,
+/// One windowed game-session frame, returned by the `step` callback of
+/// [`run_windowed_game_session`].
+pub struct WindowedGameFrame {
+    /// The software frame to present this tick (e.g. the stage composed from a
+    /// follow camera), or `None` to clear to black when the active render route
+    /// composes no world scene.
+    pub present: Option<SoftwarePresentedFrame>,
     /// Whether the session has reached the terminal stopped state.
     pub stopped: bool,
 }
 
 /// Runs the windowed game session: drives the recovered top-level FSM with live
-/// keyboard input and presents per the recovered render route, until the session
-/// stops or the window closes.
+/// keyboard input and presents the frame the recovered render route selected,
+/// until the session stops or the window closes.
 ///
 /// SDL owns the window, keyboard, and presentation; the recovered game logic is
-/// entirely in the `advance` callback, which is handed the live held-key state
-/// (the [`KeyboardVkState`] the loop maintains from key events through
-/// [`sdl_keycode_to_vk`]) and returns that frame's [`GameSessionStep`]. The loop
-/// presents the pre-composed `stage_frame` whenever the step's route composes the
-/// in-race world ([`composes_world`]) and clears to black otherwise - a
-/// documented placeholder until the per-route recovered compositors (front-end,
-/// overlays) and a live follow camera are wired. `Escape` is left to the game
-/// (its recovered pause binding, VK `0x1b`); the window close button and a quit
-/// event exit. Focus loss pauses the advance, as the recovered host loop does.
-pub fn run_windowed_game_session<A>(
-    stage_frame: &SoftwarePresentedFrame,
-    mut advance: A,
+/// entirely in the `step` callback, which is handed the live held-key state (the
+/// [`KeyboardVkState`] the loop maintains from key events through
+/// [`sdl_keycode_to_vk`]) and returns that tick's [`WindowedGameFrame`]: the
+/// software frame to present (the caller composes it per the recovered render
+/// route, e.g. the stage from a follow camera) or `None` to clear. `initial`
+/// sizes the window and is presented first. `Escape` is left to the game (its
+/// recovered pause binding, VK `0x1b`); the window close button and a quit event
+/// exit. Focus loss pauses the stepping, as the recovered host loop does.
+pub fn run_windowed_game_session<F>(
+    initial: &SoftwarePresentedFrame,
+    mut step: F,
 ) -> Result<(), SdlHostError>
 where
-    A: FnMut(&KeyboardVkState) -> GameSessionStep,
+    F: FnMut(&KeyboardVkState) -> WindowedGameFrame,
 {
-    let rgba = stage_frame
-        .expand_rgba8()
-        .map_err(SdlHostError::FrameConversion)?;
+    let rgba = initial.expand_rgba8().map_err(SdlHostError::FrameConversion)?;
     let extent = rgba.extent();
 
     let sdl = sdl3::init().map_err(|error| SdlHostError::sdl("initialization", error))?;
@@ -680,6 +676,7 @@ where
         .map_err(|error| SdlHostError::sdl("streaming texture creation", error))?;
     texture.set_scale_mode(ScaleMode::Nearest);
     upload_rgba_frame(&mut texture, &rgba)?;
+    redraw_present(&mut canvas, &texture)?;
 
     let mut events = sdl
         .event_pump()
@@ -721,18 +718,25 @@ where
             continue;
         }
 
-        let step = advance(&keys);
-        if step.stopped {
+        let frame = step(&keys);
+        if frame.stopped {
             break;
         }
-        if step.route.is_some_and(composes_world) {
-            redraw_present(&mut canvas, &texture)?;
-        } else {
-            // A route that does not compose the world: clear to black until the
-            // recovered front-end/overlay compositors are wired for this path.
-            canvas.clear();
-            if !canvas.present() {
-                return Err(SdlHostError::sdl("frame presentation", sdl3::get_error()));
+        match frame.present {
+            Some(presented) => {
+                let rgba = presented
+                    .expand_rgba8()
+                    .map_err(SdlHostError::FrameConversion)?;
+                upload_rgba_frame(&mut texture, &rgba)?;
+                redraw_present(&mut canvas, &texture)?;
+            }
+            None => {
+                // A route that composes no world scene: clear to black until the
+                // recovered front-end/overlay compositors are wired for this path.
+                canvas.clear();
+                if !canvas.present() {
+                    return Err(SdlHostError::sdl("frame presentation", sdl3::get_error()));
+                }
             }
         }
     }

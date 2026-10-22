@@ -21,7 +21,7 @@ use cmr_core::game_menu_flow::MenuFlowInputs;
 use cmr_core::gameplay_session::{GameplaySession, InRaceScript};
 use cmr_core::host_loop::HostClock;
 use cmr_core::localization::Language;
-use cmr_core::race_state::{Controls, SimParams};
+use cmr_core::race_state::{CarState, Controls, SimParams};
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::{
@@ -39,15 +39,16 @@ use cmr_formats::c3d::C3dLimits;
 use cmr_formats::riff_palette::PaletteEntry;
 use cmr_formats::stage::CatNode;
 use cmr_formats::stage::{
-    C3D_EXTENSION, CAT_EXTENSION, StageLoadError, StageSectionSource, load_stage,
+    C3D_EXTENSION, CAT_EXTENSION, StageBundle, StageLoadError, StageSectionSource, load_stage,
 };
 use cmr_formats::stored_asset::{DecodeError, DecodeLimits, decode_stored_asset};
 use cmr_platform_sdl3::{
-    GameSessionStep, InteractiveRootError, SdlHostError, present_software_frame,
+    InteractiveRootError, SdlHostError, WindowedGameFrame, present_software_frame,
     run_interactive_root_frame, run_windowed_game_session as run_windowed_game_session_loop,
 };
-use cmr_core::gameplay_input::KeyboardDriver;
 use cmr_core::drive_controls::DriveResponse;
+use cmr_core::gameplay_input::KeyboardDriver;
+use cmr_core::render_route::composes_world;
 use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
@@ -994,6 +995,20 @@ fn stage_placeholder_camera() -> [i32; 16] {
     camera
 }
 
+/// A follow camera for the windowed session: the placeholder camera translated
+/// by the car's world position so the car stays framed and the track scrolls as
+/// it drives. The camera-follow mapping is a **harness presentation** choice (the
+/// base camera is itself a placeholder); the recovered `.cat`-start gameplay
+/// camera is a later wire-up.
+fn follow_camera(car: &CarState) -> [i32; 16] {
+    let mut camera = stage_placeholder_camera();
+    // Translation lives in elements 12/13/14 (the recovered Q16.16 world basis).
+    camera[12] = camera[12].wrapping_add(car.position.x.raw());
+    camera[13] = camera[13].wrapping_add(car.position.y.raw());
+    camera[14] = camera[14].wrapping_add(car.position.z.raw());
+    camera
+}
+
 /// A deterministic grayscale display palette used as a placeholder until the
 /// recovered gameplay active palette is wired.
 fn stage_placeholder_palette() -> [PaletteEntry; 256] {
@@ -1040,51 +1055,78 @@ impl From<RenderedStageFrameOutput> for HeadlessStageFrameOutput {
     }
 }
 
-/// Loads the named stage from the media root and composes one software frame.
+/// A loaded stage's retained render inputs: the owned bundle and prepared
+/// textures, so a caller can recompose the scene every frame with a new camera
+/// (the windowed session's follow camera) without reloading.
 ///
-/// This threads the `--source` seam end to end: it reads the stage's sibling
-/// sections ([`FsStageSectionSource`]), loads the bundle ([`load_stage`]), walks
-/// the `.c3d` scene ([`StageScene::from_c3d`]), binds its group-2 textures
-/// ([`StageC3dTextures`]), composes the scene into a software frame
-/// ([`compose_stage_scene_frame`]) with a fixed placeholder camera and palette,
-/// and bridges it to the shared presentation type. The owned frame lets a
-/// headless caller take a digest or a native host present it in a window.
+/// [`StageScene`] borrows the bundle, so it is rebuilt per compose from the
+/// retained `bundle` (cheap: it collects the group records); the textures and
+/// palette are prepared once.
+pub struct StageRenderResources {
+    stage: String,
+    bundle: StageBundle,
+    textures: StageC3dTextures,
+    palette: [PaletteEntry; 256],
+}
+
+impl StageRenderResources {
+    /// Loads the named stage from the media root, threading the `--source` seam:
+    /// it reads the stage's sibling sections ([`FsStageSectionSource`]), loads the
+    /// bundle ([`load_stage`]), binds its group-2 textures ([`StageC3dTextures`]),
+    /// and prepares the placeholder palette.
+    pub fn load(media_root: &Path, stage: &str) -> Result<Self, StageFrameError> {
+        let source = FsStageSectionSource::read(media_root, stage, DecodeLimits::default())?;
+        let bundle = load_stage(&source, C3dLimits::default()).map_err(StageFrameError::Load)?;
+        let textures = StageC3dTextures::prepare(bundle.scene(), BitmapLimits::default())
+            .map_err(StageFrameError::Texture)?;
+        Ok(StageRenderResources {
+            stage: stage.to_owned(),
+            bundle,
+            textures,
+            palette: stage_placeholder_palette(),
+        })
+    }
+
+    /// Composes one software frame of the retained stage from the given camera
+    /// world transform, walking the `.c3d` scene ([`StageScene::from_c3d`]) and
+    /// composing it ([`compose_stage_scene_frame`]) into the shared presentation
+    /// type.
+    pub fn compose(&self, camera: &[i32; 16]) -> Result<RenderedStageFrameOutput, StageFrameError> {
+        let scene = StageScene::from_c3d(self.bundle.scene(), &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX)
+            .map_err(StageFrameError::Scene)?;
+        let frame = compose_stage_scene_frame(
+            &scene,
+            camera,
+            [ROOT_EXTENT.width, ROOT_EXTENT.height],
+            &self.palette,
+            SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+            |ordinal| self.textures.texture_for_ordinal(ordinal),
+        )
+        .map_err(StageFrameError::Compose)?;
+
+        let presented = frame
+            .to_presented_frame()
+            .map_err(StageFrameError::Present)?;
+
+        Ok(RenderedStageFrameOutput {
+            stage: self.stage.clone(),
+            frame: presented,
+            node_count: scene.node_count(),
+            draw_ops: scene.draw_order().len(),
+            textures: self.textures.len(),
+            stats: *frame.stats(),
+        })
+    }
+}
+
+/// Loads the named stage from the media root and composes one software frame
+/// with the fixed placeholder camera. The owned frame lets a headless caller
+/// take a digest or a native host present it in a window.
 pub fn render_stage_frame(
     media_root: &Path,
     stage: &str,
 ) -> Result<RenderedStageFrameOutput, StageFrameError> {
-    let source = FsStageSectionSource::read(media_root, stage, DecodeLimits::default())?;
-    let bundle = load_stage(&source, C3dLimits::default()).map_err(StageFrameError::Load)?;
-
-    let scene = StageScene::from_c3d(bundle.scene(), &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX)
-        .map_err(StageFrameError::Scene)?;
-    let textures = StageC3dTextures::prepare(bundle.scene(), BitmapLimits::default())
-        .map_err(StageFrameError::Texture)?;
-
-    let palette = stage_placeholder_palette();
-    let camera = stage_placeholder_camera();
-    let frame = compose_stage_scene_frame(
-        &scene,
-        &camera,
-        [ROOT_EXTENT.width, ROOT_EXTENT.height],
-        &palette,
-        SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
-        |ordinal| textures.texture_for_ordinal(ordinal),
-    )
-    .map_err(StageFrameError::Compose)?;
-
-    let presented = frame
-        .to_presented_frame()
-        .map_err(StageFrameError::Present)?;
-
-    Ok(RenderedStageFrameOutput {
-        stage: stage.to_owned(),
-        frame: presented,
-        node_count: scene.node_count(),
-        draw_ops: scene.draw_order().len(),
-        textures: textures.len(),
-        stats: *frame.stats(),
-    })
+    StageRenderResources::load(media_root, stage)?.compose(&stage_placeholder_camera())
 }
 
 /// Composes one stage frame headlessly and returns its path-free measurements.
@@ -1190,7 +1232,8 @@ pub fn run_windowed_game_session(
     media_root: &Path,
     stage: &str,
 ) -> Result<(), WindowedStageFrameError> {
-    let rendered = render_stage_frame(media_root, stage)?;
+    let resources = StageRenderResources::load(media_root, stage)?;
+    let initial = resources.compose(&stage_placeholder_camera())?;
 
     let params = SimParams {
         inverse_mass: Fixed16::ONE,
@@ -1212,13 +1255,24 @@ pub fn run_windowed_game_session(
     let mut progress = StageProgress::new(&nodes, 0);
     let clock = WallClock::new();
 
-    run_windowed_game_session_loop(&rendered.frame, |keys| {
+    run_windowed_game_session_loop(&initial.frame, |keys| {
         // Live keyboard -> recovered control map -> sim controls, then one FSM
         // frame stepping the race sim in the driving state.
         let frame = driver.poll(|vk| keys.is_down(vk), &response, true);
         let advanced = session.advance(&clock, menu_inputs, frame.controls, &mut progress);
-        GameSessionStep {
-            route: advanced.route,
+        // Present the stage from a follow camera when the route composes the
+        // world; otherwise clear (the non-world recovered compositors are a later
+        // wire-up). A compose failure drops the frame rather than killing the loop.
+        let present = if advanced.route.is_some_and(composes_world) {
+            resources
+                .compose(&follow_camera(&session.car()))
+                .ok()
+                .map(|rendered| rendered.frame)
+        } else {
+            None
+        };
+        WindowedGameFrame {
+            present,
             stopped: session.is_stopped(),
         }
     })
@@ -1740,6 +1794,24 @@ mod tests {
             ),
             Err(ConfigError::MissingSourceForStage)
         );
+    }
+
+    #[test]
+    fn follow_camera_tracks_the_car_world_position() {
+        use cmr_core::fixed_point::{Fixed16, Vec3};
+
+        let base = stage_placeholder_camera();
+        // At rest the follow camera is exactly the placeholder camera.
+        assert_eq!(follow_camera(&CarState::at_rest()), base);
+
+        // Driving +x shifts the camera's x-translation by the same raw amount,
+        // leaving the other axes at the placeholder values.
+        let mut car = CarState::at_rest();
+        car.position = Vec3::new(Fixed16::from_int(5), Fixed16::ZERO, Fixed16::ZERO);
+        let camera = follow_camera(&car);
+        assert_eq!(camera[12], base[12].wrapping_add(5 << 16));
+        assert_eq!(camera[13], base[13]);
+        assert_eq!(camera[14], base[14]);
     }
 
     #[test]
