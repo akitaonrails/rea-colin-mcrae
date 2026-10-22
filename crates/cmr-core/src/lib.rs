@@ -97,6 +97,7 @@ pub mod root_menu_visual;
 pub mod settings_store;
 pub mod sim_clock;
 pub mod source_store;
+pub mod stage_checkpoints;
 pub mod stage_timing;
 pub mod startup;
 pub mod startup_display;
