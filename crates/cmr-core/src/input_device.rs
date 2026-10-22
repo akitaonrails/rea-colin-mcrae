@@ -9,7 +9,7 @@
 //! (`FUN_0049cca0`), a keyboard reader (`FUN_0049cfb0`), or an analog
 //! joystick/wheel reader (`FUN_0049cdf0`). `FUN_00449580` then maps the selected
 //! record into the per-car control struct's `+0x2fc` command region (steer
-//! left/right, brake, throttle, handbrake, reverse), from which the drivetrain
+//! left/right, throttle, brake, handbrake, reverse), from which the drivetrain
 //! ramp stage produces the physical actuator scalars.
 //!
 //! This module reconstructs the cleanly-transcribable numeric transforms: the
@@ -23,11 +23,20 @@
 //! Observations: the record count/stride, the device-type ids, the edge-mask
 //! formula, the digital axis thresholds, the dead-zone rescale, the command
 //! offsets and quantize/saturate, the analog-enable caps bits, and the default
-//! button masks. Inference: the pedal-axis sign convention (+throttle / -brake)
+//! button masks. Inference: the pedal-axis sign convention (-throttle / +brake)
 //! and the steer split (-left / +right). Unknowns (not reproduced): the source /
 //! configurability of the per-axis dead-zone values `DAT_00504cc0/cc4`, the
 //! `DINPUT.dll` string's purpose (not on the poll path), and the `+0x2b8[4]`
 //! actuator slot order (a drivetrain, not input, question).
+//!
+//! **Correction (verified against `FUN_00449580`):** an earlier pass labelled
+//! `+0x304` brake / `+0x308` throttle with the analog caps swapped. A re-read
+//! shows `+0x304` is **throttle** (digital bit 2, analog cap `0x2`, active on a
+//! *negative* pedal axis, and the slot carrying the ramp assist) and `+0x308` is
+//! **brake** (digital bit 3, analog cap `0x1`, *positive* pedal axis); the analog
+//! paths clamp to `0xffbe` *then* quantize (`& 0xfffffc00`), so analog saturates
+//! at `0xfc00` while a digital press is `0xffbe`. The full stateful mapper lives
+//! in `input_map`; this module is the reusable primitive layer it composes.
 
 /// Logical device records polled per frame (`for i in 0..0x12`).
 pub const DEVICE_RECORD_COUNT: usize = 0x12;
@@ -58,10 +67,10 @@ pub mod command_offset {
     pub const STEER_LEFT: usize = 0x2fc;
     /// Steer-right demand.
     pub const STEER_RIGHT: usize = 0x300;
-    /// Brake demand.
-    pub const BRAKE: usize = 0x304;
     /// Throttle demand.
-    pub const THROTTLE: usize = 0x308;
+    pub const THROTTLE: usize = 0x304;
+    /// Brake demand.
+    pub const BRAKE: usize = 0x308;
     /// Handbrake (clutch) demand.
     pub const HANDBRAKE: usize = 0x30c;
     /// Alternate handbrake slot (config `[+0x24] & 0x40`).
@@ -74,16 +83,17 @@ pub mod command_offset {
 pub mod analog_caps {
     /// Steering axis is analog.
     pub const STEER: u8 = 0x4;
-    /// Brake axis is analog.
-    pub const BRAKE: u8 = 0x2;
     /// Throttle axis is analog.
-    pub const THROTTLE: u8 = 0x1;
+    pub const THROTTLE: u8 = 0x2;
+    /// Brake axis is analog.
+    pub const BRAKE: u8 = 0x1;
 }
 
 /// Recovered default button masks (used when no device-specific config matches).
 pub mod default_button_mask {
-    /// `DAT_0055aea8`: low 16 = brake button, high 16 = throttle button.
-    pub const BRAKE_THROTTLE: u32 = 0x8_0004;
+    /// `DAT_0055aea8`: low 16 = throttle button (bit 2), high 16 = brake button
+    /// (bit 3).
+    pub const THROTTLE_BRAKE: u32 = 0x8_0004;
     /// `DAT_0055aeac`: low 16 = handbrake, high 16 = reverse.
     pub const HANDBRAKE_REVERSE: u32 = 0x200_0100;
     /// `DAT_0055aeb0`.
@@ -156,10 +166,13 @@ pub fn apply_axis_deadzone(position: u32, deadzone: i32) -> i32 {
     (adjusted * AXIS_CENTER / span) * 2
 }
 
-/// Quantize and saturate a command demand, reproducing the `& 0xfffffc00` /
-/// clamp-to-`0xffbe` applied in `FUN_00449580` (non-negative demands).
+/// Saturate then quantize a command demand, reproducing the order applied by the
+/// analog paths of `FUN_00449580`: clamp to `[0, 0xffbe]` **first**, then clear
+/// the low 10 bits (`& 0xfffffc00`). Saturation therefore lands at `0xffbe &
+/// 0xfffffc00 == 0xfc00`, not `0xffbe` (a digital press writes the un-quantized
+/// `0xffbe` directly).
 pub fn clamp_demand(value: i32) -> i32 {
-    (value & DEMAND_QUANTIZE_MASK).clamp(0, DEMAND_SATURATION)
+    value.clamp(0, DEMAND_SATURATION) & DEMAND_QUANTIZE_MASK
 }
 
 /// The driving demands mapped from the command region (all non-negative,
@@ -170,22 +183,22 @@ pub struct DrivingDemands {
     pub steer_left: i32,
     /// Steer-right demand (`+0x300`).
     pub steer_right: i32,
-    /// Brake demand (`+0x304`).
-    pub brake: i32,
-    /// Throttle demand (`+0x308`).
+    /// Throttle demand (`+0x304`).
     pub throttle: i32,
+    /// Brake demand (`+0x308`).
+    pub brake: i32,
 }
 
 /// Map the analog steer and pedal axes into the command demands, reproducing the
 /// split in `FUN_00449580`: the steer axis splits into left (negative) / right
-/// (positive); the pedal axis splits into throttle (positive) / brake
-/// (negative); each is quantized and saturated.
+/// (positive); the single pedal axis splits into throttle (negative) / brake
+/// (positive); each is saturated then quantized.
 pub fn map_analog_axes(steer_axis: i32, pedal_axis: i32) -> DrivingDemands {
     DrivingDemands {
         steer_left: clamp_demand((-steer_axis).max(0)),
         steer_right: clamp_demand(steer_axis.max(0)),
-        brake: clamp_demand((-pedal_axis).max(0)),
-        throttle: clamp_demand(pedal_axis.max(0)),
+        throttle: clamp_demand((-pedal_axis).max(0)),
+        brake: clamp_demand(pedal_axis.max(0)),
     }
 }
 
@@ -252,25 +265,27 @@ mod tests {
     }
 
     #[test]
-    fn clamp_demand_quantizes_and_saturates() {
+    fn clamp_demand_saturates_then_quantizes() {
         // Low 10 bits cleared.
         assert_eq!(clamp_demand(0x1fff), 0x1c00);
-        // Saturates at 0xffbe (which is itself low-10-bits-clear-safe: 0xfc00).
-        assert_eq!(clamp_demand(0x2_0000), DEMAND_SATURATION);
+        // Saturates: clamp to 0xffbe first, then quantize -> 0xfc00 (NOT 0xffbe,
+        // which is not itself low-10-bits-clear).
+        assert_eq!(clamp_demand(0x2_0000), 0xfc00);
+        assert_eq!(clamp_demand(DEMAND_SATURATION), 0xfc00);
         // Negative clamps to zero.
         assert_eq!(clamp_demand(-5), 0);
     }
 
     #[test]
     fn analog_axes_split_into_the_command_demands() {
-        // Positive pedal -> throttle only; steer right -> steer_right only.
-        let d = map_analog_axes(0x4000, 0x4000);
+        // Negative pedal -> throttle only; steer right -> steer_right only.
+        let d = map_analog_axes(0x4000, -0x4000);
         assert_eq!(d.throttle, clamp_demand(0x4000));
         assert_eq!(d.brake, 0);
         assert_eq!(d.steer_right, clamp_demand(0x4000));
         assert_eq!(d.steer_left, 0);
-        // Negative pedal -> brake; steer left.
-        let d = map_analog_axes(-0x4000, -0x4000);
+        // Positive pedal -> brake; steer left.
+        let d = map_analog_axes(-0x4000, 0x4000);
         assert_eq!(d.brake, clamp_demand(0x4000));
         assert_eq!(d.throttle, 0);
         assert_eq!(d.steer_left, clamp_demand(0x4000));
@@ -283,8 +298,12 @@ mod tests {
         assert_eq!(JOY_AXIS_HIGH_THRESHOLD, 0xd8f0);
         assert_eq!(DEMAND_SATURATION, 0xffbe);
         assert_eq!(command_offset::STEER_LEFT, 0x2fc);
+        assert_eq!(command_offset::THROTTLE, 0x304);
+        assert_eq!(command_offset::BRAKE, 0x308);
         assert_eq!(command_offset::REVERSE, 0x314);
         assert_eq!(analog_caps::STEER, 4);
-        assert_eq!(default_button_mask::BRAKE_THROTTLE, 0x8_0004);
+        assert_eq!(analog_caps::THROTTLE, 2);
+        assert_eq!(analog_caps::BRAKE, 1);
+        assert_eq!(default_button_mask::THROTTLE_BRAKE, 0x8_0004);
     }
 }

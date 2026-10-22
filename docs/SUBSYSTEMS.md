@@ -121,16 +121,26 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::input`: platform-neutral keyboard and WinMM-compatible joystick
   masks, rising-edge state, raw menu-key repeat, frontend combination policy,
   and focus-gated sampling. OS polling and force feedback remain backend work.
-- `cmr-core::input_device`: the in-race driving-input transforms recovered from
-  the WinMM `joyGetPosEx` + `GetAsyncKeyState` poll (no DirectInput on this
-  path). Reconstructs the device-record types, the rising-edge mask, the 8-way
-  digital direction from axis thresholds (`0x2710`/`0xd8f0`), the centred analog
-  dead-zone rescale, the command quantize/saturate (`& 0xfffffc00` / `0xffbe`),
-  and the analog axis -> demand split into the `+0x2fc` command region (steer
-  left/right, throttle, brake); with the caps/offset/default-mask constants. The
-  WinMM/Win32 acquisition is SDL-backend glue; the dead-zone source and the
-  `+0x2b8[4]` slot order (a drivetrain question) remain. See evidence
-  `rea.official-eu.host-input-mapping`.
+- `cmr-core::input_device`: the in-race driving-input **primitive** transforms
+  recovered from the WinMM `joyGetPosEx` + `GetAsyncKeyState` poll (no DirectInput
+  on this path). Reconstructs the device-record types, the rising-edge mask, the
+  8-way digital direction from axis thresholds (`0x2710`/`0xd8f0`), the centred
+  analog dead-zone rescale, the command saturate-then-quantize (clamp to `0xffbe`
+  **then** `& 0xfffffc00`, so analog tops out at `0xfc00`), and the analog axis ->
+  demand split into the `+0x2fc` command region; with the caps/offset/default-mask
+  constants. Throttle is `+0x304` (digital bit 2, analog cap `0x2`, negative pedal
+  axis); brake is `+0x308` (digital bit 3, analog cap `0x1`, positive pedal axis) -
+  an earlier pass had the two inverted. The WinMM/Win32 acquisition is SDL-backend
+  glue; the dead-zone source and the `+0x2b8[4]` slot order (a drivetrain question)
+  remain. See evidence `rea.official-eu.host-input-mapping`.
+- `cmr-core::input_map`: the full stateful in-race control map `FUN_00449580`
+  composed from the `input_device` primitives (B10/G02 boundary). Merges the
+  player's primary device with the keyboard, writes the steer/throttle/brake/
+  handbrake/gear/reset command fields of the per-car control block, applies the
+  invert-steer swap and the alternate throttle ramp, and latches reset/rescue
+  once per press. Carries the default P1/P2 keyboard binding tables and the
+  per-action mask decomposition. See evidence
+  `rea.official-eu.in-race-control-map`.
 - `cmr-core::force_feedback`: the DirectInput force-feedback effect transforms.
   The shipped game drives FFB through DirectInput and that is the sole purpose of
   the `DINPUT.dll` import (resolving the B10 unknown): in-race input is WinMM,
