@@ -2,8 +2,9 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use cmr_app::{
-    AppCommand, RUNTIME_DATA_ENV, RuntimeConfig, SOURCE_ENV, run_headless_root_frame,
-    run_headless_stage_frame, run_windowed_root_frame, run_windowed_stage_frame, runtime_config,
+    AppCommand, RUNTIME_DATA_ENV, RuntimeConfig, SOURCE_ENV, run_headless_game_session,
+    run_headless_root_frame, run_headless_stage_frame, run_windowed_root_frame,
+    run_windowed_stage_frame, runtime_config,
 };
 
 /// The media root and stage name a stage command resolves with.
@@ -66,6 +67,11 @@ fn main() -> ExitCode {
                         ExitCode::FAILURE
                     }
                 }
+            }
+            AppCommand::HeadlessGameSession => {
+                let output = run_headless_game_session();
+                println!("{}", output.stable_summary());
+                ExitCode::SUCCESS
             }
         },
         Err(error) => {

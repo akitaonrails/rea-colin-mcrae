@@ -55,7 +55,7 @@ Status markers:
 - [x] `C10` Implement byte-text measurement, wrapping, and glyph layout.
 - [x] `C11` Upload and retain all 16 frontend fonts through shared sources.
 - [x] `C12` Recover startup art/palette selection and indexed presentation.
-- [~] `C13` Run startup through a native executable and window (the `cmr-app` executable already parses a command + writable runtime-data root and runs the root frame headless or windowed via `cmr-platform-sdl3`; C13 threads the C05 portable settings/path backend through startup. `AppOptions` gains `--source <media root>` with the `CMR_ORIGINAL_DIR` environment fallback (`SOURCE_ENV`) - the portable replacement for the shipped registry `CDPath`/`HDPath` lookup - resolved optionally (an explicit option wins, an empty value is the typed `EmptySource` error, absence is allowed since the headless demo needs no media). `RuntimeConfig` exposes `media_root`/`media_source` and `data_paths()`, which pairs the writable runtime-data root with the media root into a `settings_store::DataPaths`. `resolve_startup_settings(file_bytes)` reproduces the recovered load gate over injected bytes - absent -> `Defaults`, exactly `0x1e20` -> `Loaded` with the runtime region cleared, wrong length -> `Rejected` - so the shipped defaults stand on a missing/short file. 5 new app tests (source precedence/fallback, optional media + empty-source rejection, duplicate `--source`, the settings gate). C13 -> partial; the SDL window run already exists, and the live game loop consumes `DataPaths`/`StartupSettings` + the B12 `HostLifecycle` once the full game loop (not just the root-frame demo) is SDL-driven (I-series).)
+- [~] `C13` Run startup through a native executable and window (the `cmr-app` executable already parses a command + writable runtime-data root and runs the root frame headless or windowed via `cmr-platform-sdl3`; C13 threads the C05 portable settings/path backend through startup. `AppOptions` gains `--source <media root>` with the `CMR_ORIGINAL_DIR` environment fallback (`SOURCE_ENV`) - the portable replacement for the shipped registry `CDPath`/`HDPath` lookup - resolved optionally (an explicit option wins, an empty value is the typed `EmptySource` error, absence is allowed since the headless demo needs no media). `RuntimeConfig` exposes `media_root`/`media_source` and `data_paths()`, which pairs the writable runtime-data root with the media root into a `settings_store::DataPaths`. `resolve_startup_settings(file_bytes)` reproduces the recovered load gate over injected bytes - absent -> `Defaults`, exactly `0x1e20` -> `Loaded` with the runtime region cleared, wrong length -> `Rejected` - so the shipped defaults stand on a missing/short file. 5 new app tests (source precedence/fallback, optional media + empty-source rejection, duplicate `--source`, the settings gate). C13 -> partial; the SDL window run already exists, and the live game loop consumes `DataPaths`/`StartupSettings` + the B12 `HostLifecycle` once the full game loop (not just the root-frame demo) is SDL-driven (I-series). **The app now runs the recovered top-level game loop headless** (`impl.app-game-session`): `AppCommand::HeadlessGameSession` (flag `--headless-game-session`, needs neither stage nor media) runs `cmr-core::game_session::GameSession` from boot to the terminal stopped state, driving the menu band through the direct path and the in-race band (`state 5`) with the recovered deterministic race sim (`race_state::RaceState::step`, one fixed tick per frame under a stationary `HostClock`). A harness finish condition (the car reaching a `+x` finish line) routes the recovered graph `5 -> 9 -> 0xb -> 0xc -> 0`; `HeadlessGameSessionOutput::stable_summary()` is a path-free digest (frames/sim-ticks/final-state/finish-centiseconds/position/clock). 2 app tests: the flag parses like a root-frame command (no stage/media), and the session runs boot->stopped deterministically, finishing inside the frame cap. This is the first time the executable runs the actual game FSM, not just the root-frame render demo; the drive script + finish sub-state choice are a demonstration path, not recovered sub-state semantics.)
 - [x] `C14` Preserve unsafe shipped glyph metadata with safe per-glyph continuation.
 - [x] `C15` Preflight and execute identity-neutral persistent-font text safely.
 
@@ -165,13 +165,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-22T22:55:00Z
-milestone=compose-the-whole-program-session-loop-from-boot-to-quit
+updated_utc=2026-10-22T23:15:00Z
+milestone=run-the-top-level-game-session-headless-in-cmr-app-over-the-recovered-race-sim
 completed=53
 partial=57
 not_started=7
 blocked=0
 total=117
-current_focus=wire-the-game-session-loop-into-a-cmr-app-gameplay-command-driving-the-recovered-race-sim
-next_exit_gate=run-the-game-session-headless-in-cmr-app-advancing-the-fsm-with-the-recovered-race-state-as-the-in-race-handler
+current_focus=drive-the-headless-game-session-through-a-real-stage-bundle-binding-the-race-sim-to-a-loaded-cat-spline
+next_exit_gate=advance-the-game-session-in-race-band-over-a-loaded-stage-cat-checkpoint-line-from-a-source-root
 <!-- PROGRESS-TAIL-END -->

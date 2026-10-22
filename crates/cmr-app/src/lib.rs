@@ -15,8 +15,14 @@ use cmr_core::c3d_render::VERTEXTYPE_LVERTEX;
 use cmr_core::c3d_stage_scene::{StageScene, StageSceneError};
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
+use cmr_core::fixed_point::{Fixed16, Vec3};
 use cmr_core::frontend::{FrontendPhase, RootSelection};
+use cmr_core::game_menu_flow::MenuFlowInputs;
+use cmr_core::game_session::GameSession;
+use cmr_core::game_state::GameState;
+use cmr_core::host_loop::HostClock;
 use cmr_core::localization::Language;
+use cmr_core::race_state::{CarState, Controls, RaceState, SimParams};
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::{
@@ -76,6 +82,9 @@ pub enum AppCommand {
     HeadlessStageFrame,
     /// Compose and present a named stage frame in a native window.
     WindowedStageFrame,
+    /// Run the recovered top-level game FSM headless (boot -> menu -> load ->
+    /// in-race -> quit) with the recovered race sim as the in-race handler.
+    HeadlessGameSession,
 }
 
 /// Parsed command-line options before environment fallback resolution.
@@ -121,6 +130,12 @@ impl AppOptions {
             if argument == OsStr::new("--windowed-stage-frame") {
                 if command.replace(AppCommand::WindowedStageFrame).is_some() {
                     return Err(ConfigError::DuplicateOption("--windowed-stage-frame"));
+                }
+                continue;
+            }
+            if argument == OsStr::new("--headless-game-session") {
+                if command.replace(AppCommand::HeadlessGameSession).is_some() {
+                    return Err(ConfigError::DuplicateOption("--headless-game-session"));
                 }
                 continue;
             }
@@ -315,7 +330,7 @@ impl fmt::Display for ConfigError {
             Self::MissingOptionValue(option) => write!(formatter, "missing value for {option}"),
             Self::MissingCommand => write!(
                 formatter,
-                "missing command; pass --headless-root-frame, --windowed-root-frame, --headless-stage-frame, or --windowed-stage-frame"
+                "missing command; pass --headless-root-frame, --windowed-root-frame, --headless-stage-frame, --windowed-stage-frame, or --headless-game-session"
             ),
             Self::MissingRuntimeData => write!(
                 formatter,
@@ -1118,6 +1133,126 @@ pub fn run_windowed_stage_frame(
     present_software_frame(&rendered.frame).map_err(WindowedStageFrameError::Present)
 }
 
+/// A stationary host clock: it never advances within a frame, so the
+/// [`FrameDriver`](cmr_core::game_driver::FrameDriver)'s in-race catch-up loop
+/// (`do { tick } while (the tick crossed a 40 ms bucket)`) runs exactly one sim
+/// tick per in-race frame - deterministic lock-step for a headless trace. Real
+/// wall-clock pacing is the windowed backend's concern.
+struct StationaryClock;
+
+impl HostClock for StationaryClock {
+    fn millis(&self) -> u32 {
+        0
+    }
+}
+
+/// The forward drive force (Q16.16) the headless session applies each in-race
+/// tick, and the +x finish-line coordinate it drives toward. These are
+/// **harness constants** for the demonstration drive, not recovered values.
+const GAME_SESSION_DRIVE_FORCE_Q16: i32 = 8 << 16;
+const GAME_SESSION_FINISH_X_Q16: i32 = 40 << 16;
+/// A safety cap on frames so a mis-tuned drive cannot loop forever.
+const GAME_SESSION_MAX_FRAMES: u32 = 100_000;
+
+/// The result of a headless game-session run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HeadlessGameSessionOutput {
+    /// Frames driven until the FSM reached the stopped state (or the cap).
+    pub frames: u32,
+    /// Sim ticks the in-race handler stepped the race state.
+    pub sim_ticks: u32,
+    /// The final FSM state id (`0` when the session stopped cleanly).
+    pub final_state: u8,
+    /// Whether the drive crossed the finish line.
+    pub finished: bool,
+    /// The finish time in centiseconds, if it finished.
+    pub finish_centiseconds: Option<i32>,
+    /// The car's final +x position (Q16.16 raw).
+    pub final_position_x_q16: i32,
+    /// The stage clock at the end (Q16.16 raw).
+    pub stage_clock_q16: i32,
+}
+
+impl HeadlessGameSessionOutput {
+    /// A deterministic, path-free one-line digest for the CLI.
+    pub fn stable_summary(&self) -> String {
+        format!(
+            "game-session frames={} sim_ticks={} final_state={} finished={} finish_cs={} pos_x_q16={} clock_q16={}",
+            self.frames,
+            self.sim_ticks,
+            self.final_state,
+            self.finished,
+            self.finish_centiseconds
+                .map_or_else(|| "none".to_string(), |cs| cs.to_string()),
+            self.final_position_x_q16,
+            self.stage_clock_q16,
+        )
+    }
+}
+
+/// Runs the recovered top-level game FSM headless from boot to quit, driving the
+/// in-race band with the recovered deterministic race sim
+/// ([`cmr_core::race_state::RaceState`]).
+///
+/// The menu band takes the direct (non-interactive) path
+/// ([`MenuFlowInputs::default`]): boot seeds state `1` and the FSM runs straight
+/// through `3 -> 4 -> 5` into the in-race band. In state `5` (the main driving
+/// tick) the race sim steps one fixed tick per frame under a stationary clock; a
+/// **harness** finish condition (the car reaching the +x finish line) routes the
+/// recovered graph `5 -> 9 -> 0xb -> 0xc -> 0`, draining to the stopped state.
+/// The choice of which in-race sub-states mean "finish" is a demonstration path
+/// through the recovered transition graph, not recovered sub-state semantics.
+pub fn run_headless_game_session() -> HeadlessGameSessionOutput {
+    let clock = StationaryClock;
+    let mut session = GameSession::new();
+    let mut race = RaceState::new(CarState::at_rest());
+    let params = SimParams {
+        inverse_mass: Fixed16::ONE,
+        gravity: Vec3::ZERO,
+    };
+    let controls = Controls {
+        steer_rate: 0,
+        forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
+        handbrake: false,
+    };
+
+    let mut sim_ticks = 0u32;
+    let mut finished = false;
+    let mut finish_centiseconds = None;
+    let menu_inputs = MenuFlowInputs::default();
+
+    let mut frames = 0u32;
+    while !session.is_stopped() && frames < GAME_SESSION_MAX_FRAMES {
+        frames += 1;
+        session.run_frame(&clock, menu_inputs, |state| match state.id() {
+            5 => {
+                let sample = race.step(&controls, &params);
+                sim_ticks += 1;
+                if sample.car.position.x.raw() >= GAME_SESSION_FINISH_X_Q16 {
+                    finished = true;
+                    finish_centiseconds = Some(sample.centiseconds);
+                    GameState::new(9).expect("9 is a recovered state")
+                } else {
+                    state
+                }
+            }
+            9 => GameState::new(0xB).expect("0xb is a recovered state"),
+            0xB => GameState::new(0xC).expect("0xc is a recovered state"),
+            _ => state,
+        });
+    }
+
+    HeadlessGameSessionOutput {
+        frames,
+        sim_ticks,
+        final_state: session.current().id(),
+        finished,
+        finish_centiseconds,
+        final_position_x_q16: race.car().position.x.raw(),
+        stage_clock_q16: race.clock().raw(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1164,6 +1299,42 @@ mod tests {
 
         assert_eq!(config.command(), AppCommand::WindowedRootFrame);
         assert_eq!(config.runtime_data(), Path::new("native-data"));
+    }
+
+    #[test]
+    fn headless_game_session_command_parses_like_a_root_frame() {
+        let config = runtime_config(
+            arguments(&["--headless-game-session", "--runtime-data", "data"]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.command(), AppCommand::HeadlessGameSession);
+        // It needs neither a stage nor a media root.
+        assert_eq!(config.stage(), None);
+        assert_eq!(config.media_root(), None);
+    }
+
+    #[test]
+    fn headless_game_session_runs_the_fsm_from_boot_to_stopped_deterministically() {
+        let first = run_headless_game_session();
+        let second = run_headless_game_session();
+        assert_eq!(first, second, "the session must be deterministic");
+
+        // It drives the FSM to the terminal stopped state, having stepped the
+        // in-race sim and crossed the harness finish line.
+        assert_eq!(first.final_state, 0);
+        assert!(first.finished);
+        assert!(first.finish_centiseconds.is_some());
+        assert!(first.sim_ticks > 0);
+        // It stopped well inside the safety cap (did not spin).
+        assert!(first.frames < GAME_SESSION_MAX_FRAMES);
+        // The car reached at least the finish line on +x.
+        assert!(first.final_position_x_q16 >= GAME_SESSION_FINISH_X_Q16);
+        // The summary is a single path-free line.
+        let summary = first.stable_summary();
+        assert!(summary.starts_with("game-session frames="));
+        assert!(!summary.contains('/') && !summary.contains('\\'));
     }
 
     #[test]
