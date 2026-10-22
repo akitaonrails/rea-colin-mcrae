@@ -43,11 +43,11 @@ use cmr_formats::stage::{
 };
 use cmr_formats::stored_asset::{DecodeError, DecodeLimits, decode_stored_asset};
 use cmr_platform_sdl3::{
-    InteractiveRootError, SdlHostError, WindowedGameFrame, present_software_frame,
+    InteractiveRootError, SdlHostError, WindowedGameFrame, WindowedInput, present_software_frame,
     run_interactive_root_frame, run_windowed_game_session as run_windowed_game_session_loop,
 };
 use cmr_core::drive_controls::DriveResponse;
-use cmr_core::gameplay_input::KeyboardDriver;
+use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
 use cmr_core::render_route::composes_world;
 use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
 use cmr_video::software_root_menu_session::{
@@ -1240,7 +1240,8 @@ pub fn run_windowed_game_session(
         gravity: Vec3::ZERO,
     };
     let mut session = GameplaySession::new(params, InRaceScript::frontend_harness());
-    let mut driver = KeyboardDriver::player_one();
+    let mut keyboard = KeyboardDriver::player_one();
+    let mut analog = AnalogDriver::new();
     let response = DriveResponse {
         max_forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
         max_steer_rate: GAME_SESSION_MAX_STEER_RATE,
@@ -1255,11 +1256,20 @@ pub fn run_windowed_game_session(
     let mut progress = StageProgress::new(&nodes, 0);
     let clock = WallClock::new();
 
-    run_windowed_game_session_loop(&initial.frame, |keys| {
-        // Live keyboard -> recovered control map -> sim controls, then one FSM
-        // frame stepping the race sim in the driving state.
-        let frame = driver.poll(|vk| keys.is_down(vk), &response, true);
-        let advanced = session.advance(&clock, menu_inputs, frame.controls, &mut progress);
+    run_windowed_game_session_loop(&initial.frame, |input: WindowedInput| {
+        // Live input -> recovered control map -> sim controls: the analog driver
+        // when a gamepad is connected, the keyboard driver otherwise. Then one
+        // FSM frame stepping the race sim in the driving state.
+        let controls = if let Some(pad) = input.gamepad {
+            analog
+                .poll(pad.steer_axis(), pad.pedal_axis(), pad.buttons(), &response, true)
+                .controls
+        } else {
+            keyboard
+                .poll(|vk| input.keys.is_down(vk), &response, true)
+                .controls
+        };
+        let advanced = session.advance(&clock, menu_inputs, controls, &mut progress);
         // Present the stage from a follow camera when the route composes the
         // world; otherwise clear (the non-world recovered compositors are a later
         // wire-up). A compose failure drops the frame rather than killing the loop.

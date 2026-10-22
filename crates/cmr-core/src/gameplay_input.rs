@@ -19,7 +19,7 @@
 //! logic.
 
 use crate::drive_controls::{DriveResponse, car_controls_to_sim};
-use crate::input_map::{CarControls, ControlConfig, InRaceControlMapper, KeyBindings};
+use crate::input_map::{CarControls, ControlConfig, DeviceSnapshot, InRaceControlMapper, KeyBindings};
 use crate::input_poll::DevicePoll;
 use crate::race_state::Controls;
 
@@ -90,10 +90,73 @@ impl KeyboardDriver {
     }
 }
 
+/// An analog-device (wheel/pad) driving-input source composing the recovered
+/// analog poll, control map, and sim bridge, carrying their per-frame state.
+///
+/// The recovered analog control path reads one steering axis (sign-split into
+/// left/right) and one pedal axis (negative half throttle, positive half brake),
+/// with the discrete actions (handbrake/gear/reset) coming from a button mask.
+/// A host supplies the raw axis positions in the WinMM range (centre `0x8000`,
+/// `0..=0xffff`) and the already-packed `buttons` mask; the dead-zone, the axis
+/// split, and the quantization are the recovered transform.
+#[derive(Clone, Debug)]
+pub struct AnalogDriver {
+    config: ControlConfig,
+    poll: DevicePoll,
+    mapper: InRaceControlMapper,
+}
+
+impl Default for AnalogDriver {
+    fn default() -> Self {
+        AnalogDriver::new()
+    }
+}
+
+impl AnalogDriver {
+    /// A fresh analog driver with the three analog axes enabled and the recovered
+    /// default action-bit masks for its buttons.
+    #[must_use]
+    pub fn new() -> Self {
+        AnalogDriver {
+            config: ControlConfig {
+                analog_steer: true,
+                analog_throttle: true,
+                analog_brake: true,
+                ..ControlConfig::default()
+            },
+            poll: DevicePoll::new(),
+            mapper: InRaceControlMapper::new(),
+        }
+    }
+
+    /// Poll one frame from the raw analog axes and button mask. `steer_raw` and
+    /// `pedal_raw` are host axis positions in the WinMM range (centre `0x8000`);
+    /// `buttons` carries the recovered action bits (handbrake `0x100`, gear-up
+    /// `0x200`, gear-down `0x80`, reset `0x40`). Returns the car controls and the
+    /// sim controls scaled by `response`.
+    pub fn poll(
+        &mut self,
+        steer_raw: u32,
+        pedal_raw: u32,
+        buttons: u32,
+        response: &DriveResponse,
+        gear_enabled: bool,
+    ) -> DriveFrame {
+        let snapshot = self.poll.poll_analog(steer_raw, pedal_raw, buttons);
+        // An analog device has no paired keyboard record on this path.
+        let car = self
+            .mapper
+            .map(&snapshot, &DeviceSnapshot::default(), &self.config, gear_enabled);
+        let controls = car_controls_to_sim(&car, response);
+        DriveFrame { car, controls }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fixed_point::Fixed16;
+    use crate::input_device::AXIS_CENTER;
 
     fn response() -> DriveResponse {
         DriveResponse {
@@ -155,5 +218,53 @@ mod tests {
         // Release re-arms; the next press fires again.
         let _ = driver.poll(|_| false, &response(), true);
         assert!(driver.poll(|vk| vk == VK_RESET, &response(), true).car.reset_fired);
+    }
+
+    #[test]
+    fn analog_centered_axes_are_the_neutral_frame() {
+        let mut driver = AnalogDriver::new();
+        let center = AXIS_CENTER as u32;
+        let frame = driver.poll(center, center, 0, &response(), true);
+        assert_eq!(frame.controls.steer_rate, 0);
+        assert_eq!(frame.controls.forward_force, Fixed16::ZERO);
+        assert!(!frame.controls.handbrake);
+    }
+
+    #[test]
+    fn analog_steer_axis_splits_left_and_right() {
+        let mut driver = AnalogDriver::new();
+        let center = AXIS_CENTER as u32;
+        // Full right (axis above centre) -> positive steer rate.
+        let right = driver.poll(0xffff, center, 0, &response(), true);
+        assert!(right.car.steer_right > 0);
+        assert!(right.controls.steer_rate > 0);
+        // Full left (axis below centre) -> negative steer rate.
+        let left = driver.poll(0, center, 0, &response(), true);
+        assert!(left.car.steer_left > 0);
+        assert!(left.controls.steer_rate < 0);
+    }
+
+    #[test]
+    fn analog_pedal_axis_splits_throttle_and_brake() {
+        let mut driver = AnalogDriver::new();
+        let center = AXIS_CENTER as u32;
+        // Pedal below centre is the throttle half -> forward.
+        let throttle = driver.poll(center, 0, 0, &response(), true);
+        assert!(throttle.car.throttle > 0);
+        assert!(throttle.controls.forward_force > Fixed16::ZERO);
+        // Pedal above centre is the brake half -> reverse force.
+        let brake = driver.poll(center, 0xffff, 0, &response(), true);
+        assert!(brake.car.brake > 0);
+        assert!(brake.controls.forward_force < Fixed16::ZERO);
+    }
+
+    #[test]
+    fn analog_handbrake_button_bit_engages_the_handbrake() {
+        let mut driver = AnalogDriver::new();
+        let center = AXIS_CENTER as u32;
+        // The recovered handbrake action bit (0x100) in the button mask.
+        let frame = driver.poll(center, center, 0x100, &response(), true);
+        assert!(frame.car.handbrake);
+        assert!(frame.controls.handbrake);
     }
 }

@@ -164,6 +164,109 @@ impl KeyboardVkState {
     }
 }
 
+/// Maps an SDL analog axis value (`i16`, centre `0`) onto the WinMM range the
+/// recovered analog poll expects (`0..=0xffff`, centre `0x8000`).
+///
+/// The recovered `FUN_0049cdf0` reads `joyGetPosEx` axes in the WinMM range; an
+/// SDL host presents its `i16` stick the same way so the recovered dead-zone and
+/// axis split apply unchanged.
+#[must_use]
+pub fn sdl_axis_to_winmm(value: i16) -> u32 {
+    (i32::from(value) + 0x8000).clamp(0, 0xffff) as u32
+}
+
+/// Combines a gamepad's two one-sided triggers (`0..=i16::MAX`) into the single
+/// WinMM pedal axis the recovered analog path reads: the throttle trigger pulls
+/// below centre (the recovered throttle half) and the brake trigger pulls above
+/// it (the brake half), centred at `0x8000` when both are released.
+///
+/// Splitting the triggers onto one recovered pedal axis is host policy (the
+/// shipped analog path has one pedal axis), not a compatibility claim.
+#[must_use]
+pub fn gamepad_trigger_pedal(throttle: i16, brake: i16) -> u32 {
+    let throttle = i32::from(throttle.max(0));
+    let brake = i32::from(brake.max(0));
+    (0x8000 + brake - throttle).clamp(0, 0xffff) as u32
+}
+
+/// Maps a gamepad button to the recovered driving action bit it drives in the
+/// control map's button mask, or `None` when unbound. Host policy, like the
+/// frontend bindings: handbrake `0x100`, gear-up `0x200`, gear-down `0x80`,
+/// reset `0x40`.
+#[must_use]
+pub fn gamepad_action_bit(button: Button) -> Option<u32> {
+    let bit = match button {
+        Button::South => 0x100,        // handbrake
+        Button::RightShoulder => 0x200, // gear up
+        Button::LeftShoulder => 0x80,   // gear down
+        Button::North => 0x40,          // reset / rescue
+        _ => return None,
+    };
+    Some(bit)
+}
+
+/// Tracks a gamepad's live driving state - the steering axis, the two pedal
+/// triggers, and the held driving-action button bits - so the recovered analog
+/// driver ([`cmr_core::gameplay_input::AnalogDriver`]) can be fed the WinMM-range
+/// axes and the packed button mask each frame.
+#[derive(Clone, Debug, Default)]
+pub struct GamepadDrivingState {
+    steer: i16,
+    throttle: i16,
+    brake: i16,
+    buttons: u32,
+}
+
+impl GamepadDrivingState {
+    /// A fresh state (centred axes, nothing held).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Apply a gamepad axis motion: the left-X stick steers, the triggers are the
+    /// pedals; other axes are ignored.
+    pub fn apply_axis(&mut self, axis: Axis, value: i16) {
+        match axis {
+            Axis::LeftX => self.steer = value,
+            Axis::TriggerRight => self.throttle = value,
+            Axis::TriggerLeft => self.brake = value,
+            _ => {}
+        }
+    }
+
+    /// Apply a gamepad button-down (`pressed`) or button-up event, setting or
+    /// clearing its recovered action bit.
+    pub fn apply_button(&mut self, button: Button, pressed: bool) {
+        let Some(bit) = gamepad_action_bit(button) else {
+            return;
+        };
+        if pressed {
+            self.buttons |= bit;
+        } else {
+            self.buttons &= !bit;
+        }
+    }
+
+    /// The steering axis in the recovered WinMM range.
+    #[must_use]
+    pub fn steer_axis(&self) -> u32 {
+        sdl_axis_to_winmm(self.steer)
+    }
+
+    /// The combined pedal axis in the recovered WinMM range.
+    #[must_use]
+    pub fn pedal_axis(&self) -> u32 {
+        gamepad_trigger_pedal(self.throttle, self.brake)
+    }
+
+    /// The held driving-action button bits.
+    #[must_use]
+    pub fn buttons(&self) -> u32 {
+        self.buttons
+    }
+}
+
 /// A distinct physical input whose held state the mapper tracks.
 ///
 /// Several sources may resolve to the same action (for example, the D-pad and
@@ -288,6 +391,78 @@ impl FrontendInputMapper {
 mod tests {
     use super::*;
     use cmr_core::frontend::{FrontendEffect, FrontendState, ROOT_SCREEN, TransitionResult};
+
+    #[test]
+    fn sdl_axis_maps_onto_the_winmm_range() {
+        assert_eq!(sdl_axis_to_winmm(0), 0x8000);
+        assert_eq!(sdl_axis_to_winmm(i16::MAX), 0xffff);
+        assert_eq!(sdl_axis_to_winmm(i16::MIN), 0);
+    }
+
+    #[test]
+    fn gamepad_triggers_split_onto_the_recovered_pedal_axis() {
+        // Released: centre.
+        assert_eq!(gamepad_trigger_pedal(0, 0), 0x8000);
+        // Full throttle pulls below centre (the recovered throttle half).
+        assert!(gamepad_trigger_pedal(i16::MAX, 0) < 0x8000);
+        // Full brake pulls to the top (the brake half).
+        assert_eq!(gamepad_trigger_pedal(0, i16::MAX), 0xffff);
+    }
+
+    #[test]
+    fn gamepad_buttons_map_to_recovered_action_bits() {
+        assert_eq!(gamepad_action_bit(Button::South), Some(0x100));
+        assert_eq!(gamepad_action_bit(Button::RightShoulder), Some(0x200));
+        assert_eq!(gamepad_action_bit(Button::LeftShoulder), Some(0x80));
+        assert_eq!(gamepad_action_bit(Button::North), Some(0x40));
+        assert_eq!(gamepad_action_bit(Button::Start), None);
+    }
+
+    #[test]
+    fn gamepad_driving_state_tracks_axes_and_buttons() {
+        let mut state = GamepadDrivingState::new();
+        assert_eq!(state.steer_axis(), 0x8000);
+        assert_eq!(state.pedal_axis(), 0x8000);
+        assert_eq!(state.buttons(), 0);
+
+        state.apply_axis(Axis::LeftX, i16::MAX);
+        state.apply_axis(Axis::TriggerRight, i16::MAX);
+        assert_eq!(state.steer_axis(), 0xffff);
+        assert!(state.pedal_axis() < 0x8000); // throttle half
+        // A non-driving axis is ignored.
+        state.apply_axis(Axis::RightY, i16::MAX);
+
+        state.apply_button(Button::South, true);
+        assert_eq!(state.buttons() & 0x100, 0x100);
+        state.apply_button(Button::South, false);
+        assert_eq!(state.buttons() & 0x100, 0);
+    }
+
+    #[test]
+    fn gamepad_state_feeds_the_recovered_analog_driver() {
+        use cmr_core::drive_controls::DriveResponse;
+        use cmr_core::fixed_point::Fixed16;
+        use cmr_core::gameplay_input::AnalogDriver;
+
+        let mut state = GamepadDrivingState::new();
+        let mut driver = AnalogDriver::new();
+        let response = DriveResponse {
+            max_forward_force: Fixed16::from_raw(8 << 16),
+            max_steer_rate: 0x200,
+        };
+
+        // Full throttle trigger drives forward through the whole recovered chain.
+        state.apply_axis(Axis::TriggerRight, i16::MAX);
+        let frame = driver.poll(
+            state.steer_axis(),
+            state.pedal_axis(),
+            state.buttons(),
+            &response,
+            true,
+        );
+        assert!(frame.car.throttle > 0);
+        assert!(frame.controls.forward_force > Fixed16::ZERO);
+    }
 
     #[test]
     fn sdl_keys_translate_to_the_recovered_vk_codes() {

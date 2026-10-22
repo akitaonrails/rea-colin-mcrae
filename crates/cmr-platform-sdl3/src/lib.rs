@@ -10,8 +10,9 @@ pub mod input;
 
 pub use audio::{AudioHost, SharedSoftwareMixer};
 pub use input::{
-    AXIS_DEAD_ZONE, FrontendAction, FrontendInputMapper, KeyboardVkState, action_for_button,
-    action_for_key, axis_action, sdl_keycode_to_vk,
+    AXIS_DEAD_ZONE, FrontendAction, FrontendInputMapper, GamepadDrivingState, KeyboardVkState,
+    action_for_button, action_for_key, axis_action, gamepad_action_bit, gamepad_trigger_pedal,
+    sdl_axis_to_winmm, sdl_keycode_to_vk,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -610,6 +611,17 @@ pub fn run_interactive_root_frame<E>(
     Ok(())
 }
 
+/// The live input handed to the `step` callback of [`run_windowed_game_session`]
+/// each tick: the held-key state always, and the gamepad driving state when at
+/// least one gamepad is connected (so the caller can pick the recovered keyboard
+/// or analog driver).
+pub struct WindowedInput<'a> {
+    /// The live held-VK keyboard state.
+    pub keys: &'a KeyboardVkState,
+    /// The live gamepad driving state, or `None` when no gamepad is connected.
+    pub gamepad: Option<&'a GamepadDrivingState>,
+}
+
 /// One windowed game-session frame, returned by the `step` callback of
 /// [`run_windowed_game_session`].
 pub struct WindowedGameFrame {
@@ -639,7 +651,7 @@ pub fn run_windowed_game_session<F>(
     mut step: F,
 ) -> Result<(), SdlHostError>
 where
-    F: FnMut(&KeyboardVkState) -> WindowedGameFrame,
+    F: FnMut(WindowedInput<'_>) -> WindowedGameFrame,
 {
     let rgba = initial.expand_rgba8().map_err(SdlHostError::FrameConversion)?;
     let extent = rgba.extent();
@@ -648,6 +660,9 @@ where
     let video = sdl
         .video()
         .map_err(|error| SdlHostError::sdl("video initialization", error))?;
+    let gamepad = sdl
+        .gamepad()
+        .map_err(|error| SdlHostError::sdl("gamepad initialization", error))?;
     let window = video
         .window(
             "Colin McRae Rally — reconstruction",
@@ -682,6 +697,17 @@ where
         .event_pump()
         .map_err(|error| SdlHostError::sdl("event pump creation", error))?;
     let mut keys = KeyboardVkState::new();
+    let mut pad = GamepadDrivingState::new();
+    // Open any already-connected gamepads; hotplug is handled in the loop. The
+    // handles must be kept alive for the device to keep sending events.
+    let mut open_gamepads = BTreeMap::new();
+    if let Ok(ids) = gamepad.gamepads() {
+        for id in ids {
+            if let Ok(handle) = gamepad.open(id) {
+                open_gamepads.insert(id.raw(), handle);
+            }
+        }
+    }
     // Drive focus/pause/restore/shutdown through the recovered host lifecycle
     // (B12), seeded focused at window creation, exactly as the interactive root
     // loop does.
@@ -701,6 +727,17 @@ where
                         keycode: Some(code),
                         ..
                     } => keys.apply_key(code, false),
+                    Event::GamepadAxisMotion { axis, value, .. } => pad.apply_axis(axis, value),
+                    Event::GamepadButtonDown { button, .. } => pad.apply_button(button, true),
+                    Event::GamepadButtonUp { button, .. } => pad.apply_button(button, false),
+                    Event::GamepadAdded { which, .. } => {
+                        if let Ok(handle) = gamepad.open(which) {
+                            open_gamepads.insert(which.raw(), handle);
+                        }
+                    }
+                    Event::GamepadRemoved { which, .. } => {
+                        open_gamepads.remove(&which.raw());
+                    }
                     _ => {}
                 }
                 host_events.push(map_event(&event));
@@ -718,7 +755,11 @@ where
             continue;
         }
 
-        let frame = step(&keys);
+        let input = WindowedInput {
+            keys: &keys,
+            gamepad: (!open_gamepads.is_empty()).then_some(&pad),
+        };
+        let frame = step(input);
         if frame.stopped {
             break;
         }
