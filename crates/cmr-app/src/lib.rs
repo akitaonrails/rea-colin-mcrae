@@ -50,7 +50,9 @@ use cmr_platform_sdl3::{
 use cmr_core::drive_controls::DriveResponse;
 use cmr_core::gameplay_camera::{ChasePreset, GameplayCamera};
 use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
+use cmr_core::render_compose::{fade_duration_frames, fade_level_to_modulation_byte, fade_out};
 use cmr_core::render_route::{RenderRoute, composes_frontend_root, presents_world_scene};
+use cmr_core::scalar_tween::ScalarTween;
 use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
@@ -1238,6 +1240,7 @@ fn advance_game_frame<C: HostClock>(
     clock: &C,
     resources: &StageRenderResources,
     camera: &mut GameplayCamera,
+    fade: &mut Option<ScalarTween>,
     input: WindowedInput,
 ) -> GameFrameOutcome {
     let controls = if let Some(pad) = input.gamepad {
@@ -1266,6 +1269,21 @@ fn advance_game_frame<C: HostClock>(
             .map(|rendered| rendered.frame)
     } else {
         None
+    };
+    // Race-end fade (state 0xb, FadeComposite): the recovered linear brightness
+    // tween drives a fullscreen modulate of the composed world toward black. The
+    // shipped fade is triggered by the in-race transition handlers; this windowed
+    // harness starts the recovered fade-out when the FSM reaches the fade route
+    // and advances it one step per frame (a documented harness stand-in, like the
+    // synthetic checkpoint line), presenting the modulated world so the race-end
+    // transition is visible. Any other route clears the fade.
+    let world = if advanced.route == Some(RenderRoute::FadeComposite) {
+        let tween = fade.get_or_insert_with(|| fade_out(fade_duration_frames(false)));
+        let level = tween.evaluate_and_advance();
+        world.map(|frame| frame.modulated(fade_level_to_modulation_byte(level)))
+    } else {
+        *fade = None;
+        world
     };
     GameFrameOutcome {
         route: advanced.route,
@@ -1313,6 +1331,7 @@ pub fn run_windowed_game_session(
     let mut progress = StageProgress::new(&nodes, 0);
     let clock = WallClock::new();
     let mut camera = GameplayCamera::new();
+    let mut fade: Option<ScalarTween> = None;
 
     // Best-effort: open the recovered front-end root-menu compositor from the
     // runtime-data root so the interactive front-end route (state 2) presents the
@@ -1340,6 +1359,7 @@ pub fn run_windowed_game_session(
                     &clock,
                     &resources,
                     &mut camera,
+                    &mut fade,
                     input,
                 );
                 // A composed world frame wins; otherwise the interactive front-end
@@ -1380,6 +1400,7 @@ pub fn run_windowed_game_session(
             &clock,
             &resources,
             &mut camera,
+            &mut fade,
             input,
         );
         WindowedGameFrame {

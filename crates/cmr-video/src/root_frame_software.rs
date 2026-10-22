@@ -182,6 +182,30 @@ impl SoftwarePresentedFrame {
         expand_indexed_frame_rgba8(self.extent, &self.pixels, &self.palette)
     }
 
+    /// Returns this frame with every palette RGB channel scaled by `level/255`
+    /// (flags preserved), the backend realization of the recovered fullscreen
+    /// modulate the screen fade applies (`render_compose::fade_level_to_modulation_byte`).
+    /// Because every pixel shares one palette, a palette scale and a fullscreen
+    /// modulate-by-`(level,level,level)` quad produce the identical per-pixel
+    /// multiply; `0xff` leaves the frame unchanged (full brightness) and `0`
+    /// drives it to black. The pixels are shared unchanged; only the palette is
+    /// rebuilt, so this cannot fail.
+    #[must_use]
+    pub fn modulated(&self, level: u8) -> Self {
+        let scale = u32::from(level);
+        let mut palette = self.palette.clone();
+        for entry in palette.iter_mut() {
+            entry.red = ((u32::from(entry.red) * scale) / 255) as u8;
+            entry.green = ((u32::from(entry.green) * scale) / 255) as u8;
+            entry.blue = ((u32::from(entry.blue) * scale) / 255) as u8;
+        }
+        Self {
+            extent: self.extent,
+            pixels: self.pixels.clone(),
+            palette,
+        }
+    }
+
     /// Computes stable component and canonical checksums for this frame.
     #[must_use]
     pub fn digest_summary(&self) -> SoftwarePresentedFrameDigest {
@@ -380,6 +404,38 @@ mod tests {
             ),
             Err(SoftwareRgba8Error::InvalidExtent(zero))
         );
+    }
+
+    #[test]
+    fn modulated_scales_the_palette_rgb_and_preserves_flags_and_pixels() {
+        let pixels = vec![5u8; 8].into_boxed_slice();
+        let frame =
+            SoftwarePresentedFrame::from_indexed(EXTENT, pixels, Box::new(palette(10))).unwrap();
+
+        // Full brightness (0xff) leaves the frame unchanged.
+        let full = frame.modulated(0xff);
+        assert_eq!(full.palette(), frame.palette());
+        assert_eq!(full.pixels(), frame.pixels());
+
+        // Black (0) zeroes every RGB channel but keeps the flags and pixels.
+        let black = frame.modulated(0);
+        for (scaled, original) in black.palette().iter().zip(frame.palette().iter()) {
+            assert_eq!(scaled.red, 0);
+            assert_eq!(scaled.green, 0);
+            assert_eq!(scaled.blue, 0);
+            assert_eq!(scaled.flags, original.flags);
+        }
+        assert_eq!(black.pixels(), frame.pixels());
+        assert_eq!(black.extent(), frame.extent());
+
+        // Half (0x80) scales each channel by 128/255 with truncation.
+        let half = frame.modulated(0x80);
+        for (scaled, original) in half.palette().iter().zip(frame.palette().iter()) {
+            assert_eq!(scaled.red, ((u32::from(original.red) * 0x80) / 255) as u8);
+            assert_eq!(scaled.green, ((u32::from(original.green) * 0x80) / 255) as u8);
+            assert_eq!(scaled.blue, ((u32::from(original.blue) * 0x80) / 255) as u8);
+            assert_eq!(scaled.flags, original.flags);
+        }
     }
 
     fn surfaces_only() -> (SoftwareIndexedBackend, DisplaySurfaces<SurfaceHandle>) {

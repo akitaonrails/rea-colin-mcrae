@@ -104,6 +104,7 @@ pub mod root_menu_frame;
 pub mod root_menu_interactive;
 pub mod root_menu_visual;
 pub mod settings_store;
+pub mod scalar_tween;
 pub mod sim_clock;
 pub mod source_store;
 pub mod stage_checkpoints;
