@@ -85,6 +85,7 @@ pub mod localization;
 pub mod localization_assets;
 pub mod music_player;
 pub mod options_screen;
+pub mod overlay_alt;
 pub mod pacenote_schedule;
 pub mod present_scaling;
 pub mod presentation;
