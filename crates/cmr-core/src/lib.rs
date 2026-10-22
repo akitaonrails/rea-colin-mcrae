@@ -15,6 +15,7 @@ pub mod blit;
 pub mod c3d_actor_rgb;
 pub mod c3d_batch;
 pub mod c3d_camera;
+pub mod c3d_reflection;
 pub mod c3d_render;
 pub mod c3d_scene_graph;
 pub mod c3d_terrain_cull;

@@ -476,8 +476,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   object's world matrix, converts it to a float `D3DMATRIX` (`matrix_q16_to_f32`,
   each word times `2^-16`), and submits it with `SetTransform(VIEW=2)`;
   `TRANSFORMSTATE_WORLD`/`VIEW`/`PROJECTION` = 1/2/3. WORLD * VIEW * PROJECTION is
-  concatenated by Direct3D per vertex (no CPU matrix-matrix multiply), so the
-  software oracle must perform that concatenation itself. The gameplay-scene
+  concatenated by Direct3D per vertex (no CPU matrix-matrix multiply in the
+  opaque path - the reflection-UV path in `c3d_reflection` is the one exception),
+  so the software oracle must perform that concatenation itself. The gameplay-scene
   submission builders `projection_matrix_words`/`world_matrix_words`/
   `view_matrix_words`/`viewport_words` emit the f32 `C3dMatrixWords`/
   `C3dViewportWords` the `cmr-video` software transform path consumes (row-major,
@@ -544,6 +545,22 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   per-track runtime data taken as parameters (never vendored), and the forward
   normalization's rsqrt LUT is not reproduced. See evidence
   `rea.official-eu.c3d-terrain-cull` and `impl.c3d-terrain-cull`.
+- `cmr-core::c3d_reflection`: the backend-neutral spherical environment-map
+  (reflection) UV generation (E07), from the translucent-node vertex-prep routine
+  `FUN_0049f6b0` the scene-graph walker invokes for reflective meshes.
+  `reflection_uv_matrix(node_world, camera_world)` builds the node-local-to-view
+  transform as `matmul_q16(node_world, invert_affine_q16(camera_world))`;
+  `reflection_vertex_uv` rotates a normalized node-local normal into view space
+  (`transform_direction_q16`, the 3x3 rotation only) and `spherical_env_uv` maps
+  the view-space normal to a UV pair `((n * 2^-16) + 1) * 0.5` (Z unused), written
+  to the vertex `tu`/`tv`. The two matrix primitives are recovered into
+  `c3d_camera`: `matmul_q16` (`FUN_0048ecb0`) is the **one CPU matrix-matrix
+  concatenation** in the render path (the opaque path defers WORLD*VIEW*PROJECTION
+  to Direct3D), and `transform_direction_q16` (`FUN_0048dfe0`) is `apply_affine_q16`
+  without the translation term. The normal-normalization rsqrt LUT (`DAT_0082b380`)
+  is not reproduced: the UV helpers take an already-normalized normal, as the
+  object-sort and terrain-cull recoveries take pre-scaled inputs. See evidence
+  `rea.official-eu.c3d-reflection` and `impl.c3d-reflection`.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one
   group-1 record and caller-prepared selectors. It preserves maximal
   consecutive selector runs and source entry order, deduplicates local entry32

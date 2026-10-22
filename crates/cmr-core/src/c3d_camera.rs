@@ -267,6 +267,39 @@ pub fn apply_affine_q16(m: &[i32; 16], v: [i32; 3]) -> [i32; 3] {
     out
 }
 
+/// Concatenates two Q16.16 matrices (`FUN_0048ecb0`): `out[4*r + c] =
+/// sum_k (A[4*r + k] * B[4*k + c]) >> 16`. With the row-vector convention of
+/// [`apply_affine_q16`]/[`transform_direction_q16`] this composes left to right -
+/// `transform(v, matmul(A, B))` applies `A` then `B`. Unlike the main render
+/// path (where Direct3D concatenates WORLD * VIEW * PROJECTION per vertex), the
+/// reflection-UV path performs this concatenation on the CPU.
+pub fn matmul_q16(a: &[i32; 16], b: &[i32; 16]) -> [i32; 16] {
+    let mut out = [0_i32; 16];
+    for r in 0..4 {
+        for c in 0..4 {
+            let mut acc = 0_i32;
+            for k in 0..4 {
+                acc = acc.wrapping_add(fmul_q16(a[4 * r + k], b[4 * k + c]));
+            }
+            out[4 * r + c] = acc;
+        }
+    }
+    out
+}
+
+/// Transforms a direction (a normal) by the 3x3 rotation part of a Q16.16
+/// matrix (`FUN_0048dfe0`), ignoring translation: `out[c] = sum_r (m[4*r + c] *
+/// v[r]) >> 16` for `c` in `0..3`. This is [`apply_affine_q16`] without the
+/// translation term, used to carry a vertex normal into view space for the
+/// reflection-UV generator.
+pub fn transform_direction_q16(m: &[i32; 16], v: [i32; 3]) -> [i32; 3] {
+    let mut out = [0_i32; 3];
+    for (c, slot) in out.iter_mut().enumerate() {
+        *slot = fmul_q16(m[c], v[0]) + fmul_q16(m[4 + c], v[1]) + fmul_q16(m[8 + c], v[2]);
+    }
+    out
+}
+
 // --- Transform-state submission (FUN_004a7d70, FUN_004a71b0) -------------------
 
 /// `D3DTRANSFORMSTATE_WORLD` - the per-node model matrix (`SetTransform(1)`).
@@ -551,6 +584,62 @@ mod tests {
                 TRANSFORMSTATE_PROJECTION
             ],
             [1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn matmul_identity_is_the_other_operand() {
+        let mut m = MATRIX_IDENTITY_Q16;
+        m[0] = 2 * ONE;
+        m[12] = 7 * ONE;
+        assert_eq!(matmul_q16(&MATRIX_IDENTITY_Q16, &m), m);
+        assert_eq!(matmul_q16(&m, &MATRIX_IDENTITY_Q16), m);
+    }
+
+    #[test]
+    fn matmul_composes_left_to_right_like_sequential_transforms() {
+        // A: +90 deg about Z, then translate (2, 3, 0). B: translate (0, 0, 5).
+        let mut a = MATRIX_IDENTITY_Q16;
+        a[0] = 0;
+        a[1] = ONE;
+        a[4] = -ONE;
+        a[5] = 0;
+        a[12] = 2 * ONE;
+        a[13] = 3 * ONE;
+        let mut b = MATRIX_IDENTITY_Q16;
+        b[14] = 5 * ONE;
+
+        let composed = matmul_q16(&a, &b);
+        let v = [ONE, 0, 0];
+        // transform(v, A*B) must equal applying A then B (translation included).
+        let via_composed = apply_affine_q16(&composed, v);
+        let via_steps = apply_affine_q16(&b, apply_affine_q16(&a, v));
+        assert_eq!(via_composed, via_steps);
+        // (1,0,0) -> rotate -> (0,1,0) -> +(2,3,0) -> (2,4,0) -> +(0,0,5).
+        assert_eq!(via_composed, [2 * ONE, 4 * ONE, 5 * ONE]);
+    }
+
+    #[test]
+    fn transform_direction_ignores_translation() {
+        // +90 deg about Z with a large translation that a direction must not see.
+        let mut m = MATRIX_IDENTITY_Q16;
+        m[0] = 0;
+        m[1] = ONE;
+        m[4] = -ONE;
+        m[5] = 0;
+        m[12] = 100 * ONE;
+        m[13] = -50 * ONE;
+        m[14] = 9 * ONE;
+        // (1,0,0) rotated +90 about Z = (0,1,0); no translation leaks in.
+        assert_eq!(transform_direction_q16(&m, [ONE, 0, 0]), [0, ONE, 0]);
+        // The same matrix with translation zeroed gives the identical result.
+        let mut rot = m;
+        rot[12] = 0;
+        rot[13] = 0;
+        rot[14] = 0;
+        assert_eq!(
+            transform_direction_q16(&m, [ONE, ONE, 0]),
+            transform_direction_q16(&rot, [ONE, ONE, 0])
         );
     }
 }
