@@ -61,6 +61,8 @@
 //! See evidence `rea.official-eu.c3d-rasterizer`, `rea.official-eu.c3d-mesh-instantiate`
 //! and `impl.c3d-mesh-draw`.
 
+use std::fmt;
+
 use cmr_formats::c3d::C3dGroup1Record;
 
 use crate::c3d_batch::{C3dBatchPlanError, C3dConsecutiveBatch, plan_consecutive_batches};
@@ -350,6 +352,150 @@ pub fn prim_draw_counts<S: Copy>(prim: &C3dConsecutiveBatch<'_, S>) -> (u32, u32
     (vertex_count, index_count)
 }
 
+// --- Node multi-LOD mesh assembly (node mesh-index list -> per-LOD meshes) ---
+
+/// The mesh-index value marking a skipped LOD slot (the node value `0xffff`).
+pub const MESH_LOD_INDEX_SENTINEL: u16 = 0xffff;
+
+/// The draw-group vertex type the loader assigns to every LOD of a node's mesh,
+/// chosen by bit 0 of the load mode flag `param_5` of `FUN_004a2b70`: `2`
+/// ([`VERTEXTYPE_LVERTEX`], lit, per-vertex diffuse) when the bit is clear, `1`
+/// (pre-lit, opaque + UV-only) when it is set. It is fixed per load call and
+/// shared by all LODs.
+pub fn node_mesh_vertex_type(load_flags: u8) -> u32 {
+    if load_flags & 1 == 0 {
+        VERTEXTYPE_LVERTEX
+    } else {
+        1
+    }
+}
+
+/// A scene node's assembled multi-LOD mesh: one draw group per LOD in the node's
+/// mesh-index-list order, plus the active LOD the draw walker reads.
+///
+/// A LOD slot is `None` when the node's mesh-index entry is the
+/// [`MESH_LOD_INDEX_SENTINEL`] or its group-1 record has no geometry: the loader
+/// advances the LOD index but finalizes no draw group, so the slot is preserved
+/// (keeping later LOD indices aligned) but empty. The active LOD is `0` at load
+/// (`mesh+0x80`); the runtime distance-based LOD selection that later updates it
+/// is a separate subsystem not modeled here.
+#[derive(Debug, Eq, PartialEq)]
+pub struct AssembledMesh<'a> {
+    active_lod: u8,
+    lods: Vec<Option<MeshLodDrawGroup<'a, i16>>>,
+}
+
+impl<'a> AssembledMesh<'a> {
+    /// The load-time active LOD index (`0`), the slot the draw walker expands.
+    pub fn active_lod(&self) -> u8 {
+        self.active_lod
+    }
+
+    /// The number of LOD slots (`mesh+0x81`), equal to the node's mesh-index
+    /// count including any skipped (`None`) slots.
+    pub fn lod_count(&self) -> usize {
+        self.lods.len()
+    }
+
+    /// The draw group for LOD `lod`, or `None` for a skipped slot or an index
+    /// past the last LOD.
+    pub fn lod(&self, lod: usize) -> Option<&MeshLodDrawGroup<'a, i16>> {
+        self.lods.get(lod).and_then(Option::as_ref)
+    }
+
+    /// The draw group for the active LOD, if that slot carries geometry.
+    pub fn active(&self) -> Option<&MeshLodDrawGroup<'a, i16>> {
+        self.lod(usize::from(self.active_lod))
+    }
+}
+
+/// Failure to assemble a node's multi-LOD mesh.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AssembleNodeMeshError {
+    /// A mesh index addressed past the end of the group-1 record table (mesh LUT).
+    MeshIndexOutOfBounds {
+        lod: usize,
+        index: u16,
+        record_count: usize,
+    },
+    /// One LOD's draw-group assembly failed (an out-of-range vertex ordinal).
+    Lod {
+        lod: usize,
+        source: C3dBatchPlanError,
+    },
+}
+
+impl fmt::Display for AssembleNodeMeshError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MeshIndexOutOfBounds {
+                lod,
+                index,
+                record_count,
+            } => write!(
+                formatter,
+                "C3D node LOD {lod} mesh index {index} is outside the {record_count} group-1 records"
+            ),
+            Self::Lod { lod, source } => write!(formatter, "C3D node LOD {lod}: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for AssembleNodeMeshError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Lod { source, .. } => Some(source),
+            Self::MeshIndexOutOfBounds { .. } => None,
+        }
+    }
+}
+
+/// Assembles a scene node's multi-LOD mesh from its mesh-index list and the
+/// file's group-1 records (the mesh LUT, in file order).
+///
+/// Each mesh index is one LOD (`FUN_004a2b70` node loop): `mesh_indices[k]`
+/// selects `group1_records[mesh_indices[k]]` for LOD `k`. A [`MESH_LOD_INDEX_SENTINEL`]
+/// index, or a record with zero vertices or zero faces, leaves LOD `k`'s slot
+/// empty. `vertex_type` is the fixed per-load value (see [`node_mesh_vertex_type`])
+/// shared by every LOD. Each LOD's faces are batched by their group-2 material
+/// ordinal (the loader keys the prim builder on the on-disk material id;
+/// resolving an ordinal to a bound texture is a separate step).
+pub fn assemble_node_mesh<'a>(
+    mesh_indices: &[u16],
+    group1_records: &[C3dGroup1Record<'a>],
+    vertex_type: u32,
+) -> Result<AssembledMesh<'a>, AssembleNodeMeshError> {
+    let mut lods = Vec::with_capacity(mesh_indices.len());
+    for (lod, &index) in mesh_indices.iter().enumerate() {
+        if index == MESH_LOD_INDEX_SENTINEL {
+            lods.push(None);
+            continue;
+        }
+        let record = *group1_records.get(usize::from(index)).ok_or(
+            AssembleNodeMeshError::MeshIndexOutOfBounds {
+                lod,
+                index,
+                record_count: group1_records.len(),
+            },
+        )?;
+        if record.entry32_count() == 0 || record.entry24_count() == 0 {
+            lods.push(None);
+            continue;
+        }
+        let selectors: Vec<i16> = record
+            .entries_24()
+            .map(|face| face.group2_ordinal())
+            .collect();
+        let group = assemble_lod_draw_group(record, vertex_type, &selectors)
+            .map_err(|source| AssembleNodeMeshError::Lod { lod, source })?;
+        lods.push(Some(group));
+    }
+    Ok(AssembledMesh {
+        active_lod: 0,
+        lods,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,6 +649,73 @@ mod tests {
             crate::c3d_batch::C3dBatchPlanError::SelectorCountMismatch {
                 entry24_count: 1,
                 selector_count: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn node_mesh_vertex_type_follows_bit_zero_of_the_load_flags() {
+        assert_eq!(node_mesh_vertex_type(0), VERTEXTYPE_LVERTEX); // bit clear => lit
+        assert_eq!(node_mesh_vertex_type(0b1110), VERTEXTYPE_LVERTEX); // other bits ignored
+        assert_eq!(node_mesh_vertex_type(1), 1); // bit set => pre-lit
+        assert_eq!(node_mesh_vertex_type(0b1011), 1);
+    }
+
+    #[test]
+    fn node_mesh_assembles_one_draw_group_per_lod_in_index_order() {
+        // LOD 0: two material-7 faces over 3 verts. LOD 1: one face over 4 verts.
+        let lod0 = mesh_record_file(3, &[(7, [0, 1, 2]), (7, [0, 1, 2])]);
+        let lod1 = mesh_record_file(4, &[(5, [0, 1, 3])]);
+        let lut = [
+            lod0.group1_records().next().unwrap(),
+            lod1.group1_records().next().unwrap(),
+        ];
+
+        let mesh = assemble_node_mesh(&[0, 1], &lut, VERTEXTYPE_LVERTEX).unwrap();
+
+        assert_eq!(mesh.active_lod(), 0);
+        assert_eq!(mesh.lod_count(), 2);
+        let lod0_group = mesh.lod(0).unwrap();
+        assert_eq!(lod0_group.prims().len(), 1);
+        assert_eq!(prim_draw_counts(&lod0_group.prims()[0]), (3, 6));
+        assert_eq!(mesh.lod(1).unwrap().prims()[0].selector(), 5);
+        // The active LOD is the first slot.
+        assert_eq!(mesh.active(), mesh.lod(0));
+    }
+
+    #[test]
+    fn node_mesh_leaves_sentinel_and_empty_lod_slots_vacant_but_aligned() {
+        let geometry = mesh_record_file(3, &[(0, [0, 1, 2])]);
+        let empty = mesh_record_file(3, &[]); // a record with no faces
+        let lut = [
+            geometry.group1_records().next().unwrap(),
+            empty.group1_records().next().unwrap(),
+        ];
+
+        // LOD 0 = sentinel (skipped), LOD 1 = real geometry, LOD 2 = empty record.
+        let mesh =
+            assemble_node_mesh(&[MESH_LOD_INDEX_SENTINEL, 0, 1], &lut, VERTEXTYPE_LVERTEX).unwrap();
+
+        assert_eq!(mesh.lod_count(), 3); // slots stay aligned with the index list
+        assert!(mesh.lod(0).is_none()); // sentinel
+        assert!(mesh.lod(1).is_some()); // geometry
+        assert!(mesh.lod(2).is_none()); // zero-face record
+        // Active LOD 0 is a skipped slot, so nothing is drawn at load.
+        assert!(mesh.active().is_none());
+    }
+
+    #[test]
+    fn node_mesh_rejects_a_mesh_index_past_the_lut() {
+        let only = mesh_record_file(3, &[(0, [0, 1, 2])]);
+        let lut = [only.group1_records().next().unwrap()];
+
+        let error = assemble_node_mesh(&[0, 2], &lut, VERTEXTYPE_LVERTEX).unwrap_err();
+        assert_eq!(
+            error,
+            AssembleNodeMeshError::MeshIndexOutOfBounds {
+                lod: 1,
+                index: 2,
+                record_count: 1,
             }
         );
     }

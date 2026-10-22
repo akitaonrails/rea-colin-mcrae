@@ -621,9 +621,15 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   selectors) -> MeshLodDrawGroup` (prim build delegated to
   `c3d_batch::plan_consecutive_batches`; selector = each face's resolved group-2
   material ordinal), with `MeshLodDrawGroup::{takes_fog,has_per_vertex_diffuse}`
-  and `prim_draw_counts(prim) -> (vertex_count, 3*triangles)`. See evidence
-  `rea.official-eu.c3d-rasterizer`, `rea.official-eu.c3d-mesh-instantiate`,
-  `impl.c3d-mesh-draw` and `impl.c3d-mesh-instantiate`.
+  and `prim_draw_counts(prim) -> (vertex_count, 3*triangles)`. The node ->
+  multi-LOD mapping is `assemble_node_mesh(mesh_indices, group1_records,
+  vertex_type) -> AssembledMesh`: each node mesh-index entry (`node+0x50`,
+  count `node+0x4c`) is one LOD selecting `group1_records[index]`, a `0xffff` or
+  zero-geometry index leaving an empty (`None`) LOD slot, the active LOD `0` at
+  load; with `node_mesh_vertex_type(load_flags)` (`param_5 & 1`: `2` lit / `1`
+  pre-lit, shared by all LODs). See evidence `rea.official-eu.c3d-rasterizer`,
+  `rea.official-eu.c3d-mesh-instantiate`, `impl.c3d-mesh-draw` and
+  `impl.c3d-mesh-instantiate`.
 - `cmr-core::c3d_transform`: the per-frame scene-graph world-transform
   propagation (E07/E08), from `FUN_00492190`/`FUN_00492520`. The loader stores
   only each node's local matrix; this pre-pass composes the world matrix down the
