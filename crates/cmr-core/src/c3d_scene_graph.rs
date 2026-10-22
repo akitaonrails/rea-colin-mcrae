@@ -270,6 +270,40 @@ pub struct DrawOp {
     pub deferred_translucent: bool,
 }
 
+/// A node described for tree assembly: its own traversal fields plus the
+/// batch-relative index of its parent. The C3D Group0 transform table projects
+/// to an ordered stream of these (`cmr_formats::c3d::C3dGroup0Record`: the
+/// matrix/class/flags per record, `parent` from `field_04`), which
+/// [`SceneGraph::assemble`] threads into the arena the traversal walks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SceneNodeDescriptor {
+    /// The parent's index in the stream, or `None` for a root/group marker
+    /// (`field_04 == -1`).
+    pub parent: Option<usize>,
+    /// `node+0x0c != 0`: whether the node carries a mesh.
+    pub has_mesh: bool,
+    /// `node+0x2c`: the render/translucency class.
+    pub translucency_class: i32,
+    /// `node+0x180 != 0`: the cull/hidden flag.
+    pub culled: bool,
+    /// `node+0x184`: the render-pass bitmask.
+    pub render_pass_mask: u8,
+}
+
+/// Why [`SceneGraph::assemble`] rejected a descriptor stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SceneAssemblyError {
+    /// A descriptor names a parent that is not an earlier node in the stream
+    /// (a forward or out-of-range index). The shipped loader only ever
+    /// references an already-created node, so this is malformed input.
+    ForwardParent {
+        /// The child descriptor's index.
+        node: usize,
+        /// The invalid parent index it named.
+        parent: usize,
+    },
+}
+
 /// An arena of scene-graph nodes. Indices stand in for the shipped node
 /// pointers; the graph must be acyclic (a tree, as the shipped scene data is).
 #[derive(Clone, Debug, Default)]
@@ -281,6 +315,51 @@ impl SceneGraph {
     /// Builds a graph from its nodes (index order defines the arena layout).
     pub fn new(nodes: Vec<SceneNode>) -> Self {
         SceneGraph { nodes }
+    }
+
+    /// Assembles an arena from an ordered descriptor stream, threading each child
+    /// onto its parent as the **last** sibling - the exact rule of the shipped
+    /// node attach `FUN_00492410`: set the parent's first-child link (`+0x04`) if
+    /// it is empty, else walk the next-sibling chain (`+0x00`) to the tail and
+    /// link there. Sibling order therefore follows stream order, as it does when
+    /// `FUN_004a2b70` emits the C3D transform table. A parent must precede its
+    /// children in the stream (the shipped loader references an already-created
+    /// node by a batch-relative index); a forward or out-of-range parent is
+    /// rejected with the offending indices. Root descriptors (`parent == None`,
+    /// the on-disk `field_04 == -1` group markers) are left unlinked - the
+    /// dispatcher iterates them through the per-category object list, not the
+    /// tree.
+    pub fn assemble(descriptors: &[SceneNodeDescriptor]) -> Result<Self, SceneAssemblyError> {
+        let mut nodes: Vec<SceneNode> = Vec::with_capacity(descriptors.len());
+        for (index, descriptor) in descriptors.iter().enumerate() {
+            nodes.push(SceneNode {
+                next_sibling: None,
+                first_child: None,
+                has_mesh: descriptor.has_mesh,
+                translucency_class: descriptor.translucency_class,
+                culled: descriptor.culled,
+                render_pass_mask: descriptor.render_pass_mask,
+            });
+            if let Some(parent) = descriptor.parent {
+                if parent >= index {
+                    return Err(SceneAssemblyError::ForwardParent {
+                        node: index,
+                        parent,
+                    });
+                }
+                match nodes[parent].first_child {
+                    None => nodes[parent].first_child = Some(index),
+                    Some(first) => {
+                        let mut tail = first;
+                        while let Some(next) = nodes[tail].next_sibling {
+                            tail = next;
+                        }
+                        nodes[tail].next_sibling = Some(index);
+                    }
+                }
+            }
+        }
+        Ok(SceneGraph { nodes })
     }
 
     /// The node at `index`.
@@ -608,6 +687,74 @@ mod tests {
                     deferred_translucent: false
                 }, // B reprocessed
             ]
+        );
+    }
+
+    fn descriptor(parent: Option<usize>) -> SceneNodeDescriptor {
+        SceneNodeDescriptor {
+            parent,
+            has_mesh: true,
+            translucency_class: 0,
+            culled: false,
+            render_pass_mask: 0xff,
+        }
+    }
+
+    #[test]
+    fn assemble_threads_children_in_stream_order_as_last_siblings() {
+        // Root 0; children 1, 2, 3 of 0 (in order); grandchild 4 of 1.
+        let graph = SceneGraph::assemble(&[
+            descriptor(None),
+            descriptor(Some(0)),
+            descriptor(Some(0)),
+            descriptor(Some(0)),
+            descriptor(Some(1)),
+        ])
+        .unwrap();
+        // Parent 0's first child is 1, then the sibling chain is 1 -> 2 -> 3.
+        assert_eq!(graph.node(0).first_child, Some(1));
+        assert_eq!(graph.node(1).next_sibling, Some(2));
+        assert_eq!(graph.node(2).next_sibling, Some(3));
+        assert_eq!(graph.node(3).next_sibling, None);
+        // Node 1 owns grandchild 4; leaves have no child/sibling.
+        assert_eq!(graph.node(1).first_child, Some(4));
+        assert_eq!(graph.node(4).first_child, None);
+        assert_eq!(graph.node(4).next_sibling, None);
+        // A root is left unlinked (no sibling, iterated via the object list).
+        assert_eq!(graph.node(0).next_sibling, None);
+    }
+
+    #[test]
+    fn assemble_preserves_the_descriptor_node_fields() {
+        let graph = SceneGraph::assemble(&[
+            descriptor(None),
+            SceneNodeDescriptor {
+                parent: Some(0),
+                has_mesh: false,
+                translucency_class: TRANSLUCENT_CLASS,
+                culled: true,
+                render_pass_mask: 0x04,
+            },
+        ])
+        .unwrap();
+        let child = graph.node(1);
+        assert!(!child.has_mesh);
+        assert!(child.is_translucent());
+        assert!(child.culled);
+        assert!(child.in_pass(2) && !child.in_pass(0));
+    }
+
+    #[test]
+    fn assemble_rejects_a_forward_or_out_of_range_parent() {
+        // Node 0 names parent 1, which does not exist yet.
+        assert_eq!(
+            SceneGraph::assemble(&[descriptor(Some(1)), descriptor(None)]).unwrap_err(),
+            SceneAssemblyError::ForwardParent { node: 0, parent: 1 }
+        );
+        // A node may not name itself.
+        assert_eq!(
+            SceneGraph::assemble(&[descriptor(Some(0))]).unwrap_err(),
+            SceneAssemblyError::ForwardParent { node: 0, parent: 0 }
         );
     }
 

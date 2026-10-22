@@ -421,8 +421,17 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   preserved-but-unconsumed), plus checked borrowed group-0→group-1, entry24
   `+2/+4/+6`→same-record entry32, and group-1-entry24→group-2 ordinal resolution.
   The draw-time UV wrap/bias is a render-time convention and is not baked into
-  the parser. See evidence `rea.official-eu.c3d-entry-semantics` and
-  `impl.c3d-entry-semantics`. Group-2 resources may be classified on demand as opaque
+  the parser. A group-0 record is also the scene-graph **transform/node** record:
+  beyond `field_04_i16` and `affine_matrix_q16`, it now exposes the node
+  descriptor fields `FUN_004a2b70` copies into the runtime node - `node_class`
+  (`+0x48` -> node `+0x2c`), `node_id` (`& 0xfff`, the id `FUN_00495050` searches
+  by), `is_translucent_class` (`== 0x6f`), `flag_a`/`flag_b` (`+0x4d`/`+0x4e`),
+  `is_group_marker` (`field_04 == -1`), and `parent_index` (`field_04` when
+  `>= 0`) - so the table projects to the `SceneNodeDescriptor` stream
+  `cmr-core::c3d_scene_graph::SceneGraph::assemble` threads into the traversal
+  arena. See evidence `rea.official-eu.c3d-entry-semantics`,
+  `impl.c3d-entry-semantics`, `rea.official-eu.c3d-scene-node`, and
+  `impl.c3d-scene-node`. Group-2 resources may be classified on demand as opaque
   `BM` bytes, checked borrowed `ANIM` frame references/thresholds, or unknown
   bytes without forcing universal bitmap decoding. A checked selected-record
   iterator resolves animation frame ordinals to generic group-2 records while
@@ -533,8 +542,16 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   `object_colorkey_disabled(cap, is_focus_entity)` force-disables `COLORKEYENABLE`
   for the distinguished focus entity (`param_3`) at render-cap level
   `RENDER_CAP_SORTED` only (the focus entity's gameplay role is not yet pinned);
-  the `RS_TEXTUREPERSPECTIVE` = 4 constant lives in `c3d_render`. See evidence
-  `rea.official-eu.c3d-scene-graph` and `impl.c3d-scene-graph`.
+  the `RS_TEXTUREPERSPECTIVE` = 4 constant lives in `c3d_render`. The traversal
+  arena can now be **built from a real on-disk source**: `SceneGraph::assemble`
+  threads an ordered `SceneNodeDescriptor` stream (parent index + node fields)
+  into the arena by the shipped node-attach rule `FUN_00492410` - append each
+  child as its parent's last sibling (first-child `+0x04`, else walk the
+  next-sibling chain `+0x00` to the tail) - rejecting a forward/out-of-range
+  parent with `SceneAssemblyError::ForwardParent`. The C3D Group0 transform
+  table projects directly to that stream (see `cmr-formats::c3d` below). See
+  evidence `rea.official-eu.c3d-scene-graph`, `impl.c3d-scene-graph`,
+  `rea.official-eu.c3d-scene-node`, and `impl.c3d-scene-node`.
 - `cmr-core::c3d_terrain_cull`: the backend-neutral terrain-cell visibility grid
   cull (E05), from `FUN_00490040`/`FUN_00490af0`/`FUN_00490800`. The world is a
   rectangular grid of cells; each frame the cull rebuilds the visible-cell list

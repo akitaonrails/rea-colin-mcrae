@@ -23,6 +23,21 @@ pub const C3D_GROUP0_AFFINE_MATRIX_BYTE_LEN: usize =
     C3D_GROUP0_AFFINE_MATRIX_COMPONENT_COUNT * size_of::<i32>();
 pub const C3D_GROUP0_VALUE_COUNT_OFFSET: usize = 76;
 pub const C3D_GROUP0_VALUES_OFFSET: usize = 80;
+/// Offset of the node class/id dword (`FUN_004a2b70` copies it to runtime node
+/// `+0x2c`; its low 12 bits are the node id `FUN_00495050` searches by, and the
+/// whole value selects the translucent render class).
+pub const C3D_GROUP0_NODE_CLASS_OFFSET: usize = 0x48;
+/// Offset of the first flag byte (`FUN_004a2b70` copies it to node `+0x190`).
+pub const C3D_GROUP0_FLAG_A_OFFSET: usize = 0x4d;
+/// Offset of the second flag byte (`FUN_004a2b70` copies it to node `+0x191`).
+pub const C3D_GROUP0_FLAG_B_OFFSET: usize = 0x4e;
+/// The `field_04` sentinel marking a group/root record (no parent): the loader
+/// begins a new top-level group rather than attaching to an earlier node.
+pub const C3D_GROUP0_GROUP_MARKER: i16 = -1;
+/// Mask recovering the node id from the class dword (`FUN_00495050`: `& 0xfff`).
+pub const C3D_NODE_ID_MASK: u32 = 0xfff;
+/// The node class value marking a translucent/deferred node (`== 0x6f`).
+pub const C3D_NODE_TRANSLUCENT_CLASS: u32 = 0x6f;
 pub const C3D_GROUP1_FIXED_LEN: usize = 48;
 pub const C3D_GROUP1_PREFIX_LEN: usize = 12;
 pub const C3D_GROUP1_UNKNOWN_LEN: usize = 28;
@@ -387,6 +402,55 @@ impl<'a> C3dGroup0Record<'a> {
                 C3D_GROUP0_AFFINE_MATRIX_OFFSET + index * size_of::<i32>(),
             )
         })
+    }
+
+    /// The node class/id dword at `+0x48`, copied verbatim to runtime node
+    /// `+0x2c` by `FUN_004a2b70`.
+    #[must_use]
+    pub fn node_class(self) -> u32 {
+        read_u32(self.bytes, C3D_GROUP0_NODE_CLASS_OFFSET)
+    }
+
+    /// The node id - the low 12 bits of [`node_class`](Self::node_class), the
+    /// value `FUN_00495050` searches the sibling/child tree by.
+    #[must_use]
+    pub fn node_id(self) -> u16 {
+        (self.node_class() & C3D_NODE_ID_MASK) as u16
+    }
+
+    /// Whether this node carries the translucent/deferred render class
+    /// (`node_class == 0x6f`), matching the traversal's deferral gate.
+    #[must_use]
+    pub fn is_translucent_class(self) -> bool {
+        self.node_class() == C3D_NODE_TRANSLUCENT_CLASS
+    }
+
+    /// The flag byte at `+0x4d`, copied to runtime node `+0x190`.
+    #[must_use]
+    pub const fn flag_a(self) -> u8 {
+        self.bytes[C3D_GROUP0_FLAG_A_OFFSET]
+    }
+
+    /// The flag byte at `+0x4e`, copied to runtime node `+0x191`.
+    #[must_use]
+    pub const fn flag_b(self) -> u8 {
+        self.bytes[C3D_GROUP0_FLAG_B_OFFSET]
+    }
+
+    /// Whether this record is a group/root marker (`field_04 == -1`): the loader
+    /// starts a new top-level group instead of attaching to an earlier node.
+    #[must_use]
+    pub fn is_group_marker(self) -> bool {
+        self.field_04_i16() == C3D_GROUP0_GROUP_MARKER
+    }
+
+    /// The batch-relative index of this node's parent, or `None` for a group
+    /// marker (`field_04 < 0`). A non-marker record attaches as a child of the
+    /// node this index refers to.
+    #[must_use]
+    pub fn parent_index(self) -> Option<usize> {
+        let field = self.field_04_i16();
+        (field >= 0).then_some(field as usize)
     }
 
     #[must_use]
@@ -2062,6 +2126,60 @@ mod tests {
         assert_eq!(record.affine_matrix_q16(), expected);
         assert_eq!(record.bytes(), &original[32..112]);
         assert_eq!(parsed.bytes(), original);
+    }
+
+    #[test]
+    fn exposes_group0_node_class_id_translucency_and_flag_bytes() {
+        assert_eq!(C3D_GROUP0_NODE_CLASS_OFFSET, 0x48);
+        assert_eq!(C3D_GROUP0_FLAG_A_OFFSET, 0x4d);
+        assert_eq!(C3D_GROUP0_FLAG_B_OFFSET, 0x4e);
+
+        let mut input = fixture([1, 0, 0], [32, 112, 112], 112);
+        assert_eq!(write_group0_record(&mut input, 32, &[], &[]), 112);
+        // Node class 0x1006f: low 12 bits (id) = 0x06f, full value != 0x6f.
+        input[32 + C3D_GROUP0_NODE_CLASS_OFFSET..32 + C3D_GROUP0_NODE_CLASS_OFFSET + 4]
+            .copy_from_slice(&0x0001_006fu32.to_le_bytes());
+        input[32 + C3D_GROUP0_FLAG_A_OFFSET] = 0xab;
+        input[32 + C3D_GROUP0_FLAG_B_OFFSET] = 0xcd;
+        let original = input.clone();
+
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        let record = parsed.group0_records().next().unwrap();
+
+        assert_eq!(record.node_class(), 0x0001_006f);
+        assert_eq!(record.node_id(), 0x06f);
+        assert!(!record.is_translucent_class()); // full value, not just the id
+        assert_eq!(record.flag_a(), 0xab);
+        assert_eq!(record.flag_b(), 0xcd);
+        assert_eq!(parsed.bytes(), original); // accessors never mutate
+
+        // A class of exactly 0x6f is the translucent/deferred node.
+        input[32 + C3D_GROUP0_NODE_CLASS_OFFSET..32 + C3D_GROUP0_NODE_CLASS_OFFSET + 4]
+            .copy_from_slice(&C3D_NODE_TRANSLUCENT_CLASS.to_le_bytes());
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        let record = parsed.group0_records().next().unwrap();
+        assert!(record.is_translucent_class());
+        assert_eq!(record.node_id(), 0x6f);
+    }
+
+    #[test]
+    fn group0_group_marker_and_parent_index_follow_field_04() {
+        for (field, marker, parent) in [
+            (-1_i16, true, None),
+            (0_i16, false, Some(0_usize)),
+            (7_i16, false, Some(7_usize)),
+            (i16::MAX, false, Some(i16::MAX as usize)),
+        ] {
+            let mut input = fixture([1, 0, 0], [32, 112, 112], 112);
+            assert_eq!(write_group0_record(&mut input, 32, &[], &[]), 112);
+            input[32 + C3D_GROUP0_FIELD_04_OFFSET..32 + C3D_GROUP0_FIELD_04_OFFSET + 2]
+                .copy_from_slice(&field.to_le_bytes());
+
+            let parsed = parse_c3d(&input, LIMITS).unwrap();
+            let record = parsed.group0_records().next().unwrap();
+            assert_eq!(record.is_group_marker(), marker);
+            assert_eq!(record.parent_index(), parent);
+        }
     }
 
     #[test]
