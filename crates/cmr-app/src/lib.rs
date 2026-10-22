@@ -10,6 +10,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use cmr_assets::{AssetStore, AssetStoreError, ReviewedProfile, ReviewedProfileError};
+use cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
+use cmr_core::c3d_render::VERTEXTYPE_LVERTEX;
+use cmr_core::c3d_stage_scene::{StageScene, StageSceneError};
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
 use cmr_core::frontend::{FrontendPhase, RootSelection};
@@ -26,15 +29,25 @@ use cmr_core::startup_display::{
 };
 use cmr_core::surface::PaletteMapping;
 use cmr_formats::bitmap::BitmapLimits;
-use cmr_formats::stored_asset::DecodeLimits;
+use cmr_formats::c3d::C3dLimits;
+use cmr_formats::riff_palette::PaletteEntry;
+use cmr_formats::stage::{
+    C3D_EXTENSION, CAT_EXTENSION, StageLoadError, StageSectionSource, load_stage,
+};
+use cmr_formats::stored_asset::{DecodeError, DecodeLimits, decode_stored_asset};
 use cmr_platform_sdl3::{InteractiveRootError, run_interactive_root_frame};
+use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
     with_software_root_menu_session,
 };
+use cmr_video::software_stage_scene::{
+    StageC3dTextureError, StageC3dTextures, StageSceneComposeError, StageSceneFrameStats,
+    compose_stage_scene_frame,
+};
 use cmr_video::{
     SoftwareIndexedBackend, SoftwarePresentedFrame, SoftwarePresentedFrameDigest,
-    SoftwareVideoError,
+    SoftwareRgba8Error, SoftwareVideoError,
 };
 
 /// Environment variable consumed by the `cmr-app` binary as a runtime-data
@@ -57,6 +70,8 @@ const ROOT_EXTENT: DisplayExtent = DisplayExtent {
 pub enum AppCommand {
     HeadlessRootFrame,
     WindowedRootFrame,
+    /// Compose one software frame of a named stage from the `--source` root.
+    HeadlessStageFrame,
 }
 
 /// Parsed command-line options before environment fallback resolution.
@@ -65,6 +80,7 @@ pub struct AppOptions {
     command: AppCommand,
     runtime_data: Option<PathBuf>,
     source: Option<PathBuf>,
+    stage: Option<String>,
 }
 
 impl AppOptions {
@@ -77,6 +93,7 @@ impl AppOptions {
         let mut command = None;
         let mut runtime_data = None;
         let mut source = None;
+        let mut stage = None;
 
         while let Some(argument) = arguments.next() {
             if argument == OsStr::new("--headless-root-frame") {
@@ -89,6 +106,22 @@ impl AppOptions {
                 if command.replace(AppCommand::WindowedRootFrame).is_some() {
                     return Err(ConfigError::DuplicateOption("--windowed-root-frame"));
                 }
+                continue;
+            }
+            if argument == OsStr::new("--headless-stage-frame") {
+                if command.replace(AppCommand::HeadlessStageFrame).is_some() {
+                    return Err(ConfigError::DuplicateOption("--headless-stage-frame"));
+                }
+                continue;
+            }
+            if argument == OsStr::new("--stage") {
+                if stage.is_some() {
+                    return Err(ConfigError::DuplicateOption("--stage"));
+                }
+                let value = arguments
+                    .next()
+                    .ok_or(ConfigError::MissingOptionValue("--stage"))?;
+                stage = Some(value.into_string().map_err(ConfigError::NonUtf8Stage)?);
                 continue;
             }
             if argument == OsStr::new("--runtime-data") {
@@ -118,6 +151,7 @@ impl AppOptions {
             command: command.ok_or(ConfigError::MissingCommand)?,
             runtime_data,
             source,
+            stage,
         })
     }
 
@@ -156,11 +190,30 @@ impl AppOptions {
             other => other,
         };
 
+        // A stage name, when supplied, must be non-empty regardless of command.
+        if let Some(name) = &self.stage
+            && name.is_empty()
+        {
+            return Err(ConfigError::EmptyStage);
+        }
+
+        // The stage command needs both a stage name and a media root to read the
+        // sibling section files from; the root-frame commands need neither.
+        if self.command == AppCommand::HeadlessStageFrame {
+            if self.stage.is_none() {
+                return Err(ConfigError::MissingStage);
+            }
+            if media.is_none() {
+                return Err(ConfigError::MissingSourceForStage);
+            }
+        }
+
         Ok(RuntimeConfig {
             command: self.command,
             runtime_data,
             source,
             media,
+            stage: self.stage,
         })
     }
 }
@@ -172,11 +225,17 @@ pub struct RuntimeConfig {
     runtime_data: PathBuf,
     source: RuntimeDataSource,
     media: Option<(PathBuf, RuntimeDataSource)>,
+    stage: Option<String>,
 }
 
 impl RuntimeConfig {
     pub fn command(&self) -> AppCommand {
         self.command
+    }
+
+    /// The selected stage base name, if one was supplied.
+    pub fn stage(&self) -> Option<&str> {
+        self.stage.as_deref()
     }
 
     pub fn runtime_data(&self) -> &Path {
@@ -223,6 +282,14 @@ pub enum ConfigError {
     MissingRuntimeData,
     EmptyRuntimeData(RuntimeDataSource),
     EmptySource(RuntimeDataSource),
+    /// `--stage` carried a non-UTF-8 value (stage base names are identifiers).
+    NonUtf8Stage(OsString),
+    /// `--stage` was supplied but empty.
+    EmptyStage,
+    /// The stage command was selected without a `--stage` name.
+    MissingStage,
+    /// The stage command was selected without a `--source` media root.
+    MissingSourceForStage,
 }
 
 impl fmt::Display for ConfigError {
@@ -235,7 +302,7 @@ impl fmt::Display for ConfigError {
             Self::MissingOptionValue(option) => write!(formatter, "missing value for {option}"),
             Self::MissingCommand => write!(
                 formatter,
-                "missing command; pass --headless-root-frame or --windowed-root-frame"
+                "missing command; pass --headless-root-frame, --windowed-root-frame, or --headless-stage-frame"
             ),
             Self::MissingRuntimeData => write!(
                 formatter,
@@ -253,6 +320,18 @@ impl fmt::Display for ConfigError {
             Self::EmptySource(RuntimeDataSource::Environment) => {
                 write!(formatter, "{SOURCE_ENV} must not be empty")
             }
+            Self::NonUtf8Stage(value) => {
+                write!(formatter, "--stage must be valid UTF-8, got {value:?}")
+            }
+            Self::EmptyStage => write!(formatter, "--stage must not be empty"),
+            Self::MissingStage => write!(
+                formatter,
+                "--headless-stage-frame requires a stage; pass --stage NAME"
+            ),
+            Self::MissingSourceForStage => write!(
+                formatter,
+                "--headless-stage-frame requires a media root; pass --source PATH or set {SOURCE_ENV}"
+            ),
         }
     }
 }
@@ -681,6 +760,264 @@ fn initial_root_input() -> RootRenderInput {
     }
 }
 
+/// Reads a stage's sibling section files from a filesystem media root.
+///
+/// The recovered master loader (`FUN_004228d0`) walks a 14-extension table and
+/// loads `<stagebase><ext>` for each present sibling through the shared,
+/// CMPR-capable loader. This source reproduces that lookup over a real directory
+/// for the sections the bundle loader consumes (`.c3d`, `.cat`): it reads
+/// `<media_root>/<stage><ext>`, runs each file through [`decode_stored_asset`]
+/// (so a CMPR-wrapped sibling is transparently inflated), and keeps the decoded
+/// bytes. A missing sibling is simply absent; only an I/O or decode failure is an
+/// error. Original media is read in place and never copied into the repository.
+pub struct FsStageSectionSource {
+    c3d: Option<Vec<u8>>,
+    cat: Option<Vec<u8>>,
+}
+
+impl FsStageSectionSource {
+    /// Reads the `.c3d` and `.cat` siblings of `stage` under `media_root`.
+    pub fn read(
+        media_root: &Path,
+        stage: &str,
+        limits: DecodeLimits,
+    ) -> Result<Self, StageFrameError> {
+        Ok(Self {
+            c3d: read_decoded_section(media_root, stage, C3D_EXTENSION, limits)?,
+            cat: read_decoded_section(media_root, stage, CAT_EXTENSION, limits)?,
+        })
+    }
+}
+
+impl StageSectionSource for FsStageSectionSource {
+    fn section(&self, extension: &str) -> Option<&[u8]> {
+        match extension {
+            C3D_EXTENSION => self.c3d.as_deref(),
+            CAT_EXTENSION => self.cat.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+/// Reads `<media_root>/<stage><extension>` and decodes its storage wrapper,
+/// returning `None` when the sibling file is absent.
+fn read_decoded_section(
+    media_root: &Path,
+    stage: &str,
+    extension: &'static str,
+    limits: DecodeLimits,
+) -> Result<Option<Vec<u8>>, StageFrameError> {
+    let path = media_root.join(format!("{stage}{extension}"));
+    let raw = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(StageFrameError::Io { extension, error }),
+    };
+    let decoded = decode_stored_asset(&raw, limits)
+        .map_err(|error| StageFrameError::Decode { extension, error })?;
+    Ok(Some(decoded.bytes().to_vec()))
+}
+
+/// Stable measurements from one complete headless stage frame.
+///
+/// The composition uses a fixed placeholder camera (world origin) and a
+/// deterministic grayscale display palette: the recovered gameplay camera and
+/// active palette are later-milestone concerns. This output therefore proves the
+/// file -> scene -> texture-binding -> compose -> present wiring end to end and
+/// reports the scene and frame statistics, with a path-free digest for
+/// differential checks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HeadlessStageFrameOutput {
+    pub stage: String,
+    pub node_count: usize,
+    pub draw_ops: usize,
+    pub textures: usize,
+    pub stats: StageSceneFrameStats,
+    pub frame_digest: SoftwarePresentedFrameDigest,
+}
+
+impl HeadlessStageFrameOutput {
+    /// Produces a stable, path-free representation suitable for the CLI.
+    #[must_use]
+    pub fn stable_summary(&self) -> String {
+        format!(
+            "stage={} extent={}x{} nodes={} draw_ops={} textures={} prims_composed={} unresolved_prims={} empty_lod_nodes={} covered={} depth_passed={} depth_rejected={} frame_sha256={} pixels_sha256={} palette_sha256={}",
+            self.stage,
+            self.frame_digest.extent.width,
+            self.frame_digest.extent.height,
+            self.node_count,
+            self.draw_ops,
+            self.textures,
+            self.stats.prims_composed,
+            self.stats.unresolved_prims,
+            self.stats.empty_lod_nodes,
+            self.stats.covered,
+            self.stats.depth_passed,
+            self.stats.depth_rejected,
+            self.frame_digest.canonical_frame_sha256,
+            self.frame_digest.indexed_pixels_sha256,
+            self.frame_digest.palette_rgb_flags_sha256,
+        )
+    }
+}
+
+/// Typed failures from the headless stage-frame boundary.
+#[derive(Debug)]
+pub enum StageFrameError {
+    /// A sibling section file could not be read.
+    Io {
+        extension: &'static str,
+        error: std::io::Error,
+    },
+    /// A sibling section file's storage wrapper could not be decoded.
+    Decode {
+        extension: &'static str,
+        error: DecodeError,
+    },
+    /// The stage bundle (its `.c3d` scene or `.cat` nodes) failed to load.
+    Load(StageLoadError),
+    /// The parsed scene could not be walked into a drawable stage scene.
+    Scene(StageSceneError),
+    /// The scene's group-2 textures could not be prepared.
+    Texture(StageC3dTextureError),
+    /// The stage scene could not be composed into a frame.
+    Compose(StageSceneComposeError),
+    /// The composed frame could not be bridged to the presentation type.
+    Present(SoftwareRgba8Error),
+}
+
+impl StageFrameError {
+    /// Stable error category for path-free process diagnostics.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Io { .. } => "io",
+            Self::Decode { .. } => "decode",
+            Self::Load(_) => "load",
+            Self::Scene(_) => "scene",
+            Self::Texture(_) => "texture",
+            Self::Compose(_) => "compose",
+            Self::Present(_) => "present",
+        }
+    }
+}
+
+impl fmt::Display for StageFrameError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io { extension, error } => {
+                write!(formatter, "cannot read stage {extension} section: {error}")
+            }
+            Self::Decode { extension, error } => {
+                write!(
+                    formatter,
+                    "cannot decode stage {extension} section: {error}"
+                )
+            }
+            Self::Load(error) => write!(formatter, "cannot load stage bundle: {error}"),
+            Self::Scene(error) => write!(formatter, "cannot walk stage scene: {error}"),
+            Self::Texture(error) => write!(formatter, "cannot prepare stage textures: {error}"),
+            Self::Compose(error) => write!(formatter, "cannot compose stage frame: {error}"),
+            Self::Present(error) => write!(formatter, "cannot present stage frame: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for StageFrameError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { error, .. } => Some(error),
+            Self::Decode { error, .. } => Some(error),
+            Self::Load(error) => Some(error),
+            Self::Scene(error) => Some(error),
+            Self::Texture(error) => Some(error),
+            Self::Compose(error) => Some(error),
+            Self::Present(error) => Some(error),
+        }
+    }
+}
+
+/// The placeholder stage camera is backed this far along `-Z` from the world
+/// origin (Q16.16), so origin-centred geometry projects into the viewport until
+/// the recovered gameplay camera (driven by the `.cat` start node) is wired.
+const STAGE_PLACEHOLDER_CAMERA_BACKOFF_Q16: i32 = 6 << 16;
+
+/// A fixed placeholder camera world transform: the identity basis translated
+/// back along `-Z` so it looks toward geometry at the world origin.
+fn stage_placeholder_camera() -> [i32; 16] {
+    let mut camera = MATRIX_IDENTITY_Q16;
+    camera[14] = -STAGE_PLACEHOLDER_CAMERA_BACKOFF_Q16;
+    camera
+}
+
+/// A deterministic grayscale display palette used as a placeholder until the
+/// recovered gameplay active palette is wired.
+fn stage_placeholder_palette() -> [PaletteEntry; 256] {
+    let mut palette = [PaletteEntry {
+        red: 0,
+        green: 0,
+        blue: 0,
+        flags: 0,
+    }; 256];
+    for (index, entry) in palette.iter_mut().enumerate() {
+        let level = index as u8;
+        *entry = PaletteEntry {
+            red: level,
+            green: level,
+            blue: level,
+            flags: 0,
+        };
+    }
+    palette
+}
+
+/// Loads the named stage from the media root and composes one software frame.
+///
+/// This threads the `--source` seam end to end: it reads the stage's sibling
+/// sections ([`FsStageSectionSource`]), loads the bundle ([`load_stage`]), walks
+/// the `.c3d` scene ([`StageScene::from_c3d`]), binds its group-2 textures
+/// ([`StageC3dTextures`]), composes the scene into a software frame
+/// ([`compose_stage_scene_frame`]) with a fixed placeholder camera and palette,
+/// and bridges it to the shared presentation type for a path-free digest. No SDL
+/// window is opened, so the whole path is exercisable headlessly.
+pub fn run_headless_stage_frame(
+    media_root: &Path,
+    stage: &str,
+) -> Result<HeadlessStageFrameOutput, StageFrameError> {
+    let source = FsStageSectionSource::read(media_root, stage, DecodeLimits::default())?;
+    let bundle = load_stage(&source, C3dLimits::default()).map_err(StageFrameError::Load)?;
+
+    let scene = StageScene::from_c3d(bundle.scene(), &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX)
+        .map_err(StageFrameError::Scene)?;
+    let textures = StageC3dTextures::prepare(bundle.scene(), BitmapLimits::default())
+        .map_err(StageFrameError::Texture)?;
+
+    let palette = stage_placeholder_palette();
+    let camera = stage_placeholder_camera();
+    let frame = compose_stage_scene_frame(
+        &scene,
+        &camera,
+        [ROOT_EXTENT.width, ROOT_EXTENT.height],
+        &palette,
+        SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+        |ordinal| textures.texture_for_ordinal(ordinal),
+    )
+    .map_err(StageFrameError::Compose)?;
+
+    let presented = frame
+        .to_presented_frame()
+        .map_err(StageFrameError::Present)?;
+
+    Ok(HeadlessStageFrameOutput {
+        stage: stage.to_owned(),
+        node_count: scene.node_count(),
+        draw_ops: scene.draw_order().len(),
+        textures: textures.len(),
+        stats: *frame.stats(),
+        frame_digest: presented.digest_summary(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -817,6 +1154,22 @@ mod tests {
         assert_eq!(config.runtime_data().as_os_str(), path.as_os_str());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn rejects_non_utf8_stage_names() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let stage = OsString::from_vec(b"stage-\xff".to_vec());
+        assert_eq!(
+            AppOptions::parse([
+                OsString::from("--headless-stage-frame"),
+                OsString::from("--stage"),
+                stage.clone(),
+            ]),
+            Err(ConfigError::NonUtf8Stage(stage))
+        );
+    }
+
     #[test]
     fn source_option_wins_over_its_environment_fallback_and_builds_data_paths() {
         let config = runtime_config(
@@ -898,6 +1251,113 @@ mod tests {
                 "two",
             ])),
             Err(ConfigError::DuplicateOption("--source"))
+        );
+    }
+
+    #[test]
+    fn stage_command_resolves_with_a_stage_name_and_media_root() {
+        let config = runtime_config(
+            arguments(&[
+                "--headless-stage-frame",
+                "--runtime-data",
+                "/user",
+                "--source",
+                "/media",
+                "--stage",
+                "MONACO1",
+            ]),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(config.command(), AppCommand::HeadlessStageFrame);
+        assert_eq!(config.stage(), Some("MONACO1"));
+        assert_eq!(config.media_root(), Some(Path::new("/media")));
+    }
+
+    #[test]
+    fn stage_command_takes_its_media_root_from_the_environment_fallback() {
+        let config = runtime_config(
+            arguments(&[
+                "--headless-stage-frame",
+                "--runtime-data",
+                "/user",
+                "--stage",
+                "MONACO1",
+            ]),
+            None,
+            Some(OsString::from("/media/env")),
+        )
+        .unwrap();
+
+        assert_eq!(config.media_root(), Some(Path::new("/media/env")));
+        assert_eq!(config.media_source(), Some(RuntimeDataSource::Environment));
+    }
+
+    #[test]
+    fn stage_command_requires_a_stage_and_a_media_root() {
+        assert_eq!(
+            runtime_config(
+                arguments(&[
+                    "--headless-stage-frame",
+                    "--runtime-data",
+                    "/user",
+                    "--source",
+                    "/media",
+                ]),
+                None,
+                None,
+            ),
+            Err(ConfigError::MissingStage)
+        );
+        assert_eq!(
+            runtime_config(
+                arguments(&[
+                    "--headless-stage-frame",
+                    "--runtime-data",
+                    "/user",
+                    "--stage",
+                    "MONACO1",
+                ]),
+                None,
+                None,
+            ),
+            Err(ConfigError::MissingSourceForStage)
+        );
+    }
+
+    #[test]
+    fn empty_and_duplicate_stage_options_are_rejected() {
+        assert_eq!(
+            runtime_config(
+                arguments(&[
+                    "--headless-stage-frame",
+                    "--runtime-data",
+                    "/user",
+                    "--source",
+                    "/media",
+                    "--stage",
+                    "",
+                ]),
+                None,
+                None,
+            ),
+            Err(ConfigError::EmptyStage)
+        );
+        assert_eq!(
+            AppOptions::parse(arguments(&[
+                "--headless-stage-frame",
+                "--stage",
+                "one",
+                "--stage",
+                "two",
+            ])),
+            Err(ConfigError::DuplicateOption("--stage"))
+        );
+        assert_eq!(
+            AppOptions::parse(arguments(&["--headless-stage-frame", "--stage"])),
+            Err(ConfigError::MissingOptionValue("--stage"))
         );
     }
 
