@@ -527,6 +527,23 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   render-capability globals (`DAT_00a23994` is the level `0..=7`) and corrects the
   E06 Z-write inference. See evidence `rea.official-eu.c3d-scene-graph` and
   `impl.c3d-scene-graph`.
+- `cmr-core::c3d_terrain_cull`: the backend-neutral terrain-cell visibility grid
+  cull (E05), from `FUN_00490040`/`FUN_00490af0`/`FUN_00490800`. The world is a
+  rectangular grid of cells; each frame the cull rebuilds the visible-cell list
+  the scene dispatcher iterates plus a 4096-bit cell mask. `CellGrid::cell_of_point`
+  maps a world XZ point to its cell (`width * |z-anchor|/cell_size + |x-anchor|/cell_size`,
+  clamped), `scan_box` is the clamped cell box of half-extent `radius_in_cells`
+  around the camera's cell, `is_in_3x3_neighborhood` is the always-visible block,
+  and a cell is otherwise kept when any of its four corners lies inside the
+  view-cone triangle (`view_triangle`: apex = camera, two far corners from the
+  forward direction) via `cell_corner_visible`, which reuses the same 2D-XZ
+  `c3d_camera::point_in_triangle_xz` predicate the frustum cull uses (the shipped
+  `FUN_00490800` is that predicate with the opposite cross-sign on a CW-wound
+  cone, plus an AABB pre-reject). `CellVisibilityMask` is the 4096-bit per-cell
+  bitset. The grid dimensions, cell size, world anchors, and far radius are
+  per-track runtime data taken as parameters (never vendored), and the forward
+  normalization's rsqrt LUT is not reproduced. See evidence
+  `rea.official-eu.c3d-terrain-cull` and `impl.c3d-terrain-cull`.
 - `cmr-core::c3d_batch`: checked, backend-free topology planning over one
   group-1 record and caller-prepared selectors. It preserves maximal
   consecutive selector runs and source entry order, deduplicates local entry32

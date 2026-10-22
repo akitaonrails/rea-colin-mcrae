@@ -17,6 +17,7 @@ pub mod c3d_batch;
 pub mod c3d_camera;
 pub mod c3d_render;
 pub mod c3d_scene_graph;
+pub mod c3d_terrain_cull;
 pub mod c3d_topology;
 pub mod c3d_type2_fog;
 pub mod car_resources;
