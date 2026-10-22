@@ -682,14 +682,17 @@ where
         .event_pump()
         .map_err(|error| SdlHostError::sdl("event pump creation", error))?;
     let mut keys = KeyboardVkState::new();
-    let mut focused = true;
-    let mut exit = false;
+    // Drive focus/pause/restore/shutdown through the recovered host lifecycle
+    // (B12), seeded focused at window creation, exactly as the interactive root
+    // loop does.
+    let mut lifecycle = HostLifecycle::new(WindowMode::Windowed);
+    lifecycle.apply(PlatformLifecycleEvent::FocusGained);
 
-    while !exit {
+    loop {
+        let mut host_events = Vec::new();
         if let Some(event) = events.wait_event_timeout(INTERACTIVE_FRAME_INTERVAL) {
             for event in std::iter::once(event).chain(events.poll_iter()) {
                 match event {
-                    Event::Quit { .. } => exit = true,
                     Event::KeyDown {
                         keycode: Some(code),
                         ..
@@ -698,23 +701,20 @@ where
                         keycode: Some(code),
                         ..
                     } => keys.apply_key(code, false),
-                    Event::Window {
-                        win_event: WindowEvent::FocusGained | WindowEvent::Restored,
-                        ..
-                    } => focused = true,
-                    Event::Window {
-                        win_event: WindowEvent::FocusLost | WindowEvent::Minimized,
-                        ..
-                    } => focused = false,
                     _ => {}
                 }
+                host_events.push(map_event(&event));
             }
         }
-        if exit {
+        let decision = advance_root_lifecycle(&host_events, &mut lifecycle);
+        if decision.quit {
             break;
         }
-        if !focused {
-            // Paused: do not advance the sim or present while unfocused.
+        if decision.restore_surfaces {
+            redraw_present(&mut canvas, &texture)?;
+        }
+        if !decision.active {
+            // Unfocused: pause stepping and presenting; block on the next event.
             continue;
         }
 
