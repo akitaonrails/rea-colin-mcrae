@@ -19,7 +19,7 @@ use cmr_core::{
     },
     root_menu_c3d_transform::{C3dMatrixWords, C3dViewportWords, RootMenuC3dViewportError},
 };
-use cmr_formats::{bitmap::BitmapPaletteEntry, riff_palette::PaletteEntry};
+use cmr_formats::{bitmap::BitmapPaletteEntry, c3d::C3dEntry32, riff_palette::PaletteEntry};
 
 use crate::{
     c3d_software::SoftwareC3dSampledTexture, packed_rgb_target::LogicalMaskedRgbTarget,
@@ -692,6 +692,30 @@ pub fn preflight_root_c3d_copy_batch(
         .collect::<Result<Vec<_>, _>>()?;
     preflight_indexed_triangle_list(&vertices, command.indices(), transforms)
         .map(SoftwareC3dPreparedCopyBatch)
+}
+
+/// Preflights one assembled-mesh LOD prim for the texture-COPY/no-blend profile.
+///
+/// The prim is a [`cmr_core::c3d_mesh::MeshLodDrawGroup`] prim: its deduplicated
+/// 32-byte vertices (`cmr_core::c3d_batch::C3dConsecutiveBatch::unique_entries_32`)
+/// and compact triangle indices (`indices`). Each vertex becomes a model-space
+/// [`RasterInputVertex`] via [`RasterInputVertex::from_mesh_entry`]; the node
+/// world matrix belongs in the WORLD slot of `transforms` (for example via
+/// [`SoftwareC3dTransformState::for_gameplay_scene`]), not in the vertex
+/// conversion. The result feeds the same clip/cull core and `compose_*` entries
+/// as the menu and car batches, so a parsed stage or car `.c3d` mesh reaches
+/// pixels through the recovered transform pipeline.
+pub fn preflight_mesh_lod_prim(
+    vertices: &[C3dEntry32],
+    indices: &[u16],
+    transforms: SoftwareC3dTransformState,
+) -> Result<SoftwareC3dPreparedCopyBatch, SoftwareC3dRasterError> {
+    let raster = vertices
+        .iter()
+        .copied()
+        .map(RasterInputVertex::from_mesh_entry)
+        .collect::<Vec<_>>();
+    preflight_indexed_triangle_list(&raster, indices, transforms).map(SoftwareC3dPreparedCopyBatch)
 }
 
 /// Preflights a car batch for the bounded COPY profile using already-prepared
@@ -1788,6 +1812,25 @@ impl RasterInputVertex {
             diffuse: words[4],
             specular: words[5],
             uv: [words[6], words[7]].map(f32::from_bits),
+        }
+    }
+
+    /// Builds a texture-COPY vertex from a raw 32-byte C3D entry (one prim vertex
+    /// of a [`cmr_core::c3d_mesh::MeshLodDrawGroup`]). Position and UV are the
+    /// Q16.16 components dequantized in model space (`component / 65536`); the
+    /// node world transform is applied later through the WORLD slot of the
+    /// transform state, so the vertex is not pre-transformed here. Diffuse and
+    /// specular are zero, as in [`Self::from_type1_copy`] - the COPY combiner
+    /// ignores the lighting payload, and the entry's normal words are not colors.
+    fn from_mesh_entry(entry: C3dEntry32) -> Self {
+        const Q16_SCALE: f32 = 1.0 / 65536.0;
+        Self {
+            position: entry
+                .position_q16()
+                .map(|component| component as f32 * Q16_SCALE),
+            diffuse: 0,
+            specular: 0,
+            uv: entry.uv_q16().map(|component| component as f32 * Q16_SCALE),
         }
     }
 }

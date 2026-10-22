@@ -508,7 +508,14 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   (`impl.c3d-occlusion-oracle`) - closing the deterministic compatibility
   renderer/oracle loop (transform, clip, 2D-XZ cull, Z-buffered raster,
   multi-object occlusion); only true differential verification against the
-  shipped binary (a scoped runtime experiment) remains. See evidence
+  shipped binary (a scoped runtime experiment) remains. The recovered C3D
+  geometry chain now reaches this rasterizer directly: `preflight_mesh_lod_prim`
+  maps an `assemble_lod_draw_group`/`assemble_node_mesh` prim's 32-byte vertices
+  to the private `RasterInputVertex` (`from_mesh_entry`: model-space Q16.16
+  dequant, COPY diffuse/specular `0`, node world left to the transform state)
+  and feeds the shared `preflight_indexed_triangle_list` + `compose_*` path, so a
+  parsed stage/car `.c3d` mesh renders through the same pipeline
+  (`impl.c3d-mesh-raster-bridge`). See evidence
   `rea.official-eu.c3d-camera`,
   `impl.c3d-camera`, `rea.official-eu.c3d-view-inverse`, `impl.c3d-view-inverse`,
   `impl.c3d-scene-matrices`, `impl.c3d-scene-oracle`, and

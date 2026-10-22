@@ -25,7 +25,7 @@ use cmr_formats::bitmap::{BitmapLimits, BitmapPaletteEntry};
 use cmr_formats::c3d::{
     C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS, C3D_FORMAT_VERSION, C3D_GROUP0_VALUES_OFFSET,
     C3D_GROUP1_ENTRY24_LEN, C3D_GROUP1_ENTRY32_LEN, C3D_GROUP1_FIXED_LEN, C3D_HEADER_LEN,
-    C3D_MAGIC, C3dLimits,
+    C3D_MAGIC, C3dLimits, parse_c3d,
 };
 use cmr_formats::riff_palette::PaletteEntry;
 use cmr_formats::stored_asset::DecodeLimits;
@@ -34,7 +34,7 @@ use cmr_video::c3d_software::prepare_software_root_c3d_bindings;
 use cmr_video::c3d_software_raster::{
     SoftwareC3dDepthBuffer, SoftwareC3dIndexedQuantization, SoftwareC3dPreparedCopyBatch,
     SoftwareC3dRasterError, SoftwareC3dTransformState, compose_root_c3d_indexed_copy_no_blend,
-    preflight_root_c3d_batch, preflight_root_c3d_copy_batch,
+    preflight_mesh_lod_prim, preflight_root_c3d_batch, preflight_root_c3d_copy_batch,
 };
 use sha2::{Digest, Sha256};
 
@@ -445,6 +445,63 @@ fn gameplay_camera_matrices_drive_the_real_scene_transform() {
             max - min
         };
         assert!(span(&near) > span(&far));
+    }
+}
+
+/// Bridge: an `assemble_lod_draw_group` prim (the recovered stage/car geometry
+/// path) feeds the real cmr-video transform/clip/cull through the new
+/// `preflight_mesh_lod_prim`, producing the same visible triangle the recovered
+/// camera pipeline sees. This closes parse -> `c3d_mesh` assembly -> raster for a
+/// node mesh, independent of the menu `RootMenuC3dDrawCommand` path.
+#[test]
+fn assembled_mesh_prim_drives_the_real_gameplay_transform() {
+    let bitmap = indexed_bitmap_4x4();
+    // The same single camera-facing triangle the gameplay test uses.
+    let bytes = drawable_root_c3d(&bitmap, [0, 0, -(1 << 16)]);
+    let file = parse_c3d(&bytes, C3dLimits::default()).unwrap();
+    let record = file.group1_records().next().unwrap();
+
+    // Assemble the LOD draw group from the parsed mesh record, keying prims on
+    // each face's group-2 material ordinal (the recovered loader topology).
+    let selectors: Vec<i16> = record
+        .entries_24()
+        .map(|face| face.group2_ordinal())
+        .collect();
+    let group = cmr_core::c3d_mesh::assemble_lod_draw_group(
+        record,
+        cmr_core::c3d_render::VERTEXTYPE_LVERTEX,
+        &selectors,
+    )
+    .unwrap();
+    assert_eq!(group.prims().len(), 1);
+    let prim = &group.prims()[0];
+
+    // Identity node, camera translated back along -Z so the model-z=0 triangle
+    // sits at positive view-space depth (as in the gameplay command test).
+    let identity_q16 = cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
+    let mut camera_world = identity_q16;
+    camera_world[14] = -(6 << 16);
+    let state = || {
+        SoftwareC3dTransformState::for_gameplay_scene(64, 48, &camera_world, &identity_q16).unwrap()
+    };
+
+    let batch = preflight_mesh_lod_prim(prim.unique_entries_32(), prim.indices(), state()).unwrap();
+    let again = preflight_mesh_lod_prim(prim.unique_entries_32(), prim.indices(), state()).unwrap();
+
+    // The one assembled triangle survives clipping and the back-face cull.
+    assert_eq!(batch.source_triangle_count(), 1);
+    assert_eq!(batch.triangles().len(), 1);
+    assert_eq!(batch.counter_clockwise_triangle_count(), 0);
+    assert_eq!(batch.fully_clipped_source_triangle_count(), 0);
+    // Deterministic, and every prepared screen vertex is finite and in-bounds.
+    assert_eq!(batch, again);
+    for triangle in batch.triangles() {
+        for vertex in triangle.vertices() {
+            let [x, y, z] = vertex.position();
+            assert!(x.is_finite() && y.is_finite() && z.is_finite());
+            assert!((0.0..=64.0).contains(&x));
+            assert!((0.0..=48.0).contains(&y));
+        }
     }
 }
 
