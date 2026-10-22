@@ -7,13 +7,22 @@
 //! This ties the camera modules together into one driver the windowed session
 //! can hold: chase ([`gameplay_camera`]) with its orientation ease, cockpit/mirror
 //! ([`camera_interior`]), and the cinematic replay/TV cams ([`camera_cinematic`]).
-//! The helmet look overlay, the trackside director, and the inter-mode crossfade
-//! are their own (recovered) modules and are not folded in here; modes without a
+//!
+//! It reproduces the recovered **double-buffered mode-change crossfade** of
+//! `FUN_004343a0`: a player "next view" request copies the live camera into the
+//! other of two slots, retargets it to the new mode, and starts a countdown; each
+//! frame while the countdown runs, **both** the old (A) and new (B) slot cameras
+//! are re-evaluated live from the car pose and blended by the recovered weight
+//! ([`camera_crossfade::blend_weight_q16`]/[`camera_crossfade::blend_pose`]), with
+//! the displayed mode held at [`CameraMode::Blending`]; when it drains the new
+//! slot becomes active. The helmet look overlay and the trackside director are
+//! their own (recovered) modules and are not folded in here; modes without a
 //! self-contained placement fall back to the chase camera.
 
 use crate::camera_cinematic::{cinematic_camera, cinematic_offset_fixed, cinematic_offset_random};
+use crate::camera_crossfade::{blend_pose, blend_weight_q16};
 use crate::camera_interior::cockpit_camera;
-use crate::camera_mode::{cycle_next_view, CameraMode, ViewGate};
+use crate::camera_mode::{cycle_next_view, resolve_transition, CameraMode, TransitionResult, ViewGate};
 use crate::fixed_point::{build_sine_table, Vec3, TRIG_TABLE_LEN};
 use crate::game_rng::GameLcg;
 use crate::gameplay_camera::{car_world_q16, ChasePreset, GameplayCamera};
@@ -21,12 +30,46 @@ use crate::gameplay_camera::{car_world_q16, ChasePreset, GameplayCamera};
 /// Q16.16 one.
 const ONE: i32 = 0x1_0000;
 
-/// The stateful camera driver: the active mode plus the state the modes need (the
-/// eased chase camera and the current cinematic shot offset).
-pub struct ViewController {
+/// The windowed/in-race driver runs real-time NTSC with the slow-motion flag
+/// (`DAT_00551af0`) clear, so the crossfade durations take the single (non-
+/// doubled) base. The flag's exact identity is unresolved in the static image.
+const SLOW_MOTION: bool = false;
+
+/// One camera slot of the recovered per-player double buffer (the two `0x60`
+/// records at `DAT_00550650`): its mode plus the per-mode placement state the
+/// slot needs (its own eased chase camera and current cinematic shot offset).
+#[derive(Clone)]
+struct ViewSlot {
     mode: CameraMode,
     chase: GameplayCamera,
     cinematic_offset: [i32; 3],
+}
+
+impl ViewSlot {
+    fn new(mode: CameraMode) -> Self {
+        Self {
+            mode,
+            chase: GameplayCamera::new(),
+            cinematic_offset: cinematic_offset_fixed(),
+        }
+    }
+}
+
+/// The stateful camera driver: the two mode slots, which one is active (the
+/// recovered parity flag `DAT_00550644`), and the crossfade countdown
+/// (`DAT_00550558`) / duration (`DAT_00550640`).
+pub struct ViewController {
+    slots: [ViewSlot; 2],
+    /// The active (displayed, and during a blend the *old*/A) slot index.
+    active: usize,
+    /// Blend countdown: `< 1` means no blend is running (`0` is the swap frame).
+    counter: i32,
+    /// The crossfade duration the countdown started from.
+    duration: i32,
+    /// The engine BAM cosine table for the blend weight (`DAT_0082d380`, built
+    /// at runtime; here rotated from the sine table a quarter turn).
+    cos_lut: [i32; TRIG_TABLE_LEN],
+    /// The BAM sine table the placements use.
     trig: [i32; TRIG_TABLE_LEN],
 }
 
@@ -34,42 +77,116 @@ impl ViewController {
     /// A controller starting in `mode` (the game seeds [`CameraMode::ChaseNear`]).
     #[must_use]
     pub fn new(mode: CameraMode) -> Self {
+        let trig = build_sine_table();
+        // cos(x) = sin(x + quarter-turn); the BAM quarter-turn is 0x400 entries.
+        let mut cos_lut = [0i32; TRIG_TABLE_LEN];
+        for (i, slot) in cos_lut.iter_mut().enumerate() {
+            *slot = trig[(i + 0x400) & 0xfff];
+        }
+        let slot = ViewSlot::new(mode);
         Self {
-            mode,
-            chase: GameplayCamera::new(),
-            cinematic_offset: cinematic_offset_fixed(),
-            trig: build_sine_table(),
+            slots: [slot.clone(), slot],
+            active: 0,
+            counter: -1,
+            duration: 0,
+            cos_lut,
+            trig,
         }
     }
 
-    /// The active camera mode.
+    /// Whether a mode-change crossfade is currently running.
+    #[must_use]
+    pub fn is_blending(&self) -> bool {
+        self.counter >= 1
+    }
+
+    /// The player's selected view. During a crossfade this is the target (the new
+    /// slot B); the displayed mode field itself holds [`CameraMode::Blending`] in
+    /// the shipped driver, exposed via [`ViewController::is_blending`].
     #[must_use]
     pub fn mode(&self) -> CameraMode {
-        self.mode
-    }
-
-    /// Advance to the next selectable view (the player's "change camera" input):
-    /// [`cycle_next_view`] under `gate`, re-seeding the cinematic shot offset when
-    /// the new mode is a cinematic cam (fixed for the bonnet TV cam, a fresh
-    /// random framing drawn from `rng` for the replay action cam).
-    pub fn cycle(&mut self, gate: ViewGate, rng: &mut GameLcg) {
-        self.mode = cycle_next_view(self.mode, gate);
-        match self.mode {
-            CameraMode::Bonnet => self.cinematic_offset = cinematic_offset_fixed(),
-            CameraMode::ReplayAction => self.cinematic_offset = cinematic_offset_random(rng),
-            _ => {}
+        if self.is_blending() {
+            self.slots[self.active ^ 1].mode
+        } else {
+            self.slots[self.active].mode
         }
     }
 
-    /// The camera world matrix for this frame, dispatched by the active mode from
-    /// the car's sim pose (`FUN_00436490`). Chase modes ease toward the target;
-    /// cockpit/mirror and the cinematic cams are placed directly; any mode without
-    /// a self-contained placement here falls back to the near chase.
+    /// Advance to the next selectable view (the player's "change camera" input,
+    /// `FUN_00434210` + `FUN_00434060`): pick the next mode under `gate`, copy the
+    /// live slot into the other and retarget it (re-seeding the cinematic shot
+    /// offset for a cinematic cam), then start the crossfade - or cut instantly
+    /// when the gate suppresses the fade (a showroom side). A request while a
+    /// blend is already running is refused (the recovered lock).
+    pub fn cycle(&mut self, gate: ViewGate, rng: &mut GameLcg) {
+        if self.is_blending() {
+            return;
+        }
+        let current = self.slots[self.active].mode;
+        let next = cycle_next_view(current, gate);
+        if next == current {
+            return;
+        }
+
+        // Copy the current slot into the other, then retarget it (FUN_00434060).
+        let other = self.active ^ 1;
+        self.slots[other] = self.slots[self.active].clone();
+        self.slots[other].mode = next;
+        match next {
+            CameraMode::Bonnet => self.slots[other].cinematic_offset = cinematic_offset_fixed(),
+            CameraMode::ReplayAction => self.slots[other].cinematic_offset = cinematic_offset_random(rng),
+            _ => {}
+        }
+
+        match resolve_transition(current, next, true, SLOW_MOTION) {
+            TransitionResult::Crossfade { frames, .. } => {
+                // Start the blend; the active (old) slot stays displayed until the
+                // countdown drains, then the parity flips to the new slot.
+                self.counter = frames;
+                self.duration = frames;
+            }
+            TransitionResult::Immediate { .. } => {
+                // Instant cut (a showroom side, or a zero-length fade).
+                self.active = other;
+                self.counter = -1;
+            }
+            TransitionResult::Locked => {}
+        }
+    }
+
+    /// The camera world matrix for this frame (`FUN_004343a0`). When no blend is
+    /// running the active slot is placed directly; during a blend both slots are
+    /// re-evaluated live from the car pose and blended by the recovered weight,
+    /// and on the frame the countdown reaches zero the new slot becomes active.
     pub fn update(&mut self, position: Vec3, heading: u16, pal: bool) -> [i32; 16] {
-        match self.mode {
+        if self.counter < 1 {
+            // Not blending - or the swap frame (counter == 0): promote the new
+            // slot, then display it.
+            if self.counter == 0 {
+                self.active ^= 1;
+            }
+            self.counter = -1;
+            return self.place(self.active, position, heading, pal);
+        }
+
+        // Blending: evaluate the old (A = active) and new (B = other) cameras from
+        // the current car pose, blend, and count down one frame.
+        let a = self.place(self.active, position, heading, pal);
+        let b = self.place(self.active ^ 1, position, heading, pal);
+        let weight = blend_weight_q16(self.counter, self.duration, &self.cos_lut);
+        self.counter -= 1;
+        blend_pose(&a, &b, weight)
+    }
+
+    /// Place one slot's camera from the car pose, dispatched by its mode
+    /// (`FUN_00436490`): chase modes ease toward the target; cockpit/mirror and the
+    /// cinematic cams are placed directly; any mode without a self-contained
+    /// placement here falls back to the near chase.
+    fn place(&mut self, slot: usize, position: Vec3, heading: u16, pal: bool) -> [i32; 16] {
+        match self.slots[slot].mode {
             CameraMode::ChaseNear | CameraMode::ChaseFar | CameraMode::ChaseThird => {
-                let preset = self.mode.chase_preset().unwrap_or(ChasePreset::Near);
-                *self.chase.update(position, heading, preset, pal)
+                let preset = self.slots[slot].mode.chase_preset().unwrap_or(ChasePreset::Near);
+                *self.slots[slot].chase.update(position, heading, preset, pal)
             }
             CameraMode::CockpitA => {
                 let car = car_world_q16(&self.trig, position, heading);
@@ -83,17 +200,17 @@ impl ViewController {
                 let car = car_world_q16(&self.trig, position, heading);
                 let car_pos = [car[12], car[13], car[14]];
                 // Bonnet looks along the car forward; the replay cam keeps world up.
-                let up_ref = if self.mode == CameraMode::Bonnet {
+                let up_ref = if self.slots[slot].mode == CameraMode::Bonnet {
                     [car[8], car[9], car[10]]
                 } else {
                     [0, ONE, 0]
                 };
-                cinematic_camera(car_pos, self.cinematic_offset, up_ref)
+                cinematic_camera(car_pos, self.slots[slot].cinematic_offset, up_ref)
             }
             _ => {
                 // Helmet / trackside / showroom / sentinels: no self-contained
                 // placement here - fall back to the near chase.
-                *self.chase.update(position, heading, ChasePreset::Near, pal)
+                *self.slots[slot].chase.update(position, heading, ChasePreset::Near, pal)
             }
         }
     }
@@ -112,15 +229,22 @@ mod tests {
         [m[12], m[13], m[14]]
     }
 
+    fn q16_dot(a: [i32; 3], b: [i32; 3]) -> i64 {
+        (0..3).map(|i| (i64::from(a[i]) * i64::from(b[i])) >> 16).sum()
+    }
+
+    const IN_RACE_GATE: ViewGate = ViewGate { cockpit_enabled: true, showroom_allowed: false };
+
     #[test]
     fn starts_in_the_seeded_mode_and_cycles() {
         let mut vc = ViewController::new(CameraMode::ChaseNear);
         assert_eq!(vc.mode(), CameraMode::ChaseNear);
         let mut rng = GameLcg::new(1);
-        // Cockpit enabled, showroom blocked: near -> far -> cockpit A ...
-        let gate = ViewGate { cockpit_enabled: true, showroom_allowed: false };
-        vc.cycle(gate, &mut rng);
+        // Cockpit enabled, showroom blocked: near -> far ...
+        vc.cycle(IN_RACE_GATE, &mut rng);
+        // The target view is reported immediately; the blend is now running.
         assert_eq!(vc.mode(), CameraMode::ChaseFar);
+        assert!(vc.is_blending());
     }
 
     #[test]
@@ -142,12 +266,13 @@ mod tests {
 
     #[test]
     fn entering_the_replay_cam_seeds_a_random_offset_within_envelope() {
+        // Put the active slot directly on the replay action cam with a random
+        // framing (a gate that leaves only chase won't reach it).
         let mut vc = ViewController::new(CameraMode::ChaseNear);
-        // Force the mode to the replay action cam via a direct cycle target: a gate
-        // that leaves only chase won't reach it, so drive the offset seed directly.
         let mut rng = GameLcg::new(7);
-        vc.mode = CameraMode::ReplayAction;
-        vc.cinematic_offset = cinematic_offset_random(&mut rng);
+        let active = vc.active;
+        vc.slots[active].mode = CameraMode::ReplayAction;
+        vc.slots[active].cinematic_offset = cinematic_offset_random(&mut rng);
         let m = vc.update(v(0, 0, 0), 0, false);
         // The eye is offset from the car by the cinematic distance (4.5..10).
         let off = translation(&m);
@@ -156,5 +281,31 @@ mod tests {
             + (off[2] as f64 / 65536.0).powi(2))
         .sqrt();
         assert!((4.0..10.5).contains(&len), "replay cam distance {len} out of envelope");
+    }
+
+    #[test]
+    fn a_crossfade_runs_for_its_duration_then_promotes_the_new_slot() {
+        let mut vc = ViewController::new(CameraMode::ChaseNear);
+        let mut rng = GameLcg::new(1);
+        vc.cycle(IN_RACE_GATE, &mut rng);
+        assert!(vc.is_blending());
+        let duration = vc.duration;
+        assert_eq!(duration, 25, "NTSC chase-to-chase crossfade is 25 frames");
+
+        // Each blend frame produces a clean orthonormal pose, and a second cycle
+        // is refused while the blend runs.
+        for _ in 0..duration {
+            assert!(vc.is_blending());
+            vc.cycle(IN_RACE_GATE, &mut rng); // locked - no effect
+            let m = vc.update(v(0, 0, 0), 0, false);
+            for row in [[m[0], m[1], m[2]], [m[4], m[5], m[6]], [m[8], m[9], m[10]]] {
+                let len2 = q16_dot(row, row);
+                assert!((len2 - ONE as i64).abs() <= 8, "blend axis not unit: {len2:#x}");
+            }
+        }
+        // The swap frame drains the countdown and the new mode becomes active.
+        let _ = vc.update(v(0, 0, 0), 0, false);
+        assert!(!vc.is_blending());
+        assert_eq!(vc.mode(), CameraMode::ChaseFar);
     }
 }

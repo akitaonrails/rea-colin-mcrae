@@ -174,22 +174,28 @@ pub fn cycle_next_view(current: CameraMode, gate: ViewGate) -> CameraMode {
     CameraMode::ChaseNear
 }
 
-/// The base crossfade length in frames before the PAL and replay multipliers:
+/// The base crossfade length in frames before the slow-motion multiplier:
 /// `0x19` (25) normally, `0x32` (50) for a transition into or out of trackside.
 const FADE_BASE_FRAMES: i32 = 0x19;
 const FADE_BASE_FRAMES_TRACKSIDE: i32 = 0x32;
 
-/// The crossfade length in frames (`FUN_00434060`): `base * (pal + 1)` doubled
-/// again while the replay/slow flag (`DAT_00551af0`) is set. `base` is `0x32`
-/// when either side is [`CameraMode::Trackside`], else `0x19`.
+/// The crossfade length in frames, exactly as `FUN_00434060` seeds the counter
+/// (`DAT_00550558`) and duration (`DAT_00550640`): `base * ((DAT_00551af0 != 0) +
+/// 1)`, i.e. `base` doubled while the single slow-motion flag is set. `base` is
+/// `0x32` when either side is [`CameraMode::Trackside`], else `0x19`.
+///
+/// `slow_motion` is the one boolean the seed site reads (`DAT_00551af0`); its
+/// exact identity (PAL, replay slow-mo, or both) is not resolved in the static
+/// image. There is **one** doubling factor at this site, not an independent
+/// PAL-and-replay product.
 #[must_use]
-pub fn crossfade_duration_frames(from: CameraMode, to: CameraMode, pal: bool, replay: bool) -> i32 {
+pub fn crossfade_duration_frames(from: CameraMode, to: CameraMode, slow_motion: bool) -> i32 {
     let base = if from == CameraMode::Trackside || to == CameraMode::Trackside {
         FADE_BASE_FRAMES_TRACKSIDE
     } else {
         FADE_BASE_FRAMES
     };
-    base * (i32::from(pal) + 1) * (i32::from(replay) + 1)
+    base * (i32::from(slow_motion) + 1)
 }
 
 /// What the mode-change gate does with a request.
@@ -214,8 +220,7 @@ pub fn resolve_transition(
     current: CameraMode,
     new_mode: CameraMode,
     crossfade_requested: bool,
-    pal: bool,
-    replay: bool,
+    slow_motion: bool,
 ) -> TransitionResult {
     if current == CameraMode::Blending {
         return TransitionResult::Locked;
@@ -228,7 +233,7 @@ pub fn resolve_transition(
     }
     TransitionResult::Crossfade {
         new_mode,
-        frames: crossfade_duration_frames(current, new_mode, pal, replay),
+        frames: crossfade_duration_frames(current, new_mode, slow_motion),
     }
 }
 
@@ -297,35 +302,31 @@ mod tests {
     }
 
     #[test]
-    fn crossfade_duration_applies_pal_replay_and_trackside() {
-        // NTSC single play, chase-to-chase: 25 frames.
+    fn crossfade_duration_applies_slow_motion_and_trackside() {
+        // Normal, chase-to-chase: 25 frames.
         assert_eq!(
-            crossfade_duration_frames(CameraMode::ChaseNear, CameraMode::ChaseFar, false, false),
+            crossfade_duration_frames(CameraMode::ChaseNear, CameraMode::ChaseFar, false),
             25
         );
-        // PAL doubles it.
+        // The single slow-motion flag doubles it (there is ONE factor, not a
+        // PAL-and-replay product).
         assert_eq!(
-            crossfade_duration_frames(CameraMode::ChaseNear, CameraMode::ChaseFar, true, false),
+            crossfade_duration_frames(CameraMode::ChaseNear, CameraMode::ChaseFar, true),
             50
-        );
-        // Replay doubles it again.
-        assert_eq!(
-            crossfade_duration_frames(CameraMode::ChaseNear, CameraMode::ChaseFar, false, true),
-            50
-        );
-        assert_eq!(
-            crossfade_duration_frames(CameraMode::ChaseNear, CameraMode::ChaseFar, true, true),
-            100
         );
         // Into trackside uses the longer 0x32 base.
         assert_eq!(
-            crossfade_duration_frames(CameraMode::ChaseNear, CameraMode::Trackside, false, false),
+            crossfade_duration_frames(CameraMode::ChaseNear, CameraMode::Trackside, false),
             50
         );
-        // Out of trackside too.
+        // Out of trackside too, and the slow-motion flag still only doubles once.
         assert_eq!(
-            crossfade_duration_frames(CameraMode::Trackside, CameraMode::ChaseNear, false, false),
+            crossfade_duration_frames(CameraMode::Trackside, CameraMode::ChaseNear, false),
             50
+        );
+        assert_eq!(
+            crossfade_duration_frames(CameraMode::Trackside, CameraMode::ChaseNear, true),
+            100
         );
     }
 
@@ -333,26 +334,26 @@ mod tests {
     fn transition_gate_locks_cuts_and_fades() {
         // Blending is locked.
         assert_eq!(
-            resolve_transition(CameraMode::Blending, CameraMode::ChaseFar, true, false, false),
+            resolve_transition(CameraMode::Blending, CameraMode::ChaseFar, true, false),
             TransitionResult::Locked
         );
         // No crossfade requested -> instant cut.
         assert_eq!(
-            resolve_transition(CameraMode::ChaseNear, CameraMode::ChaseFar, false, false, false),
+            resolve_transition(CameraMode::ChaseNear, CameraMode::ChaseFar, false, false),
             TransitionResult::Immediate { new_mode: CameraMode::ChaseFar }
         );
         // Showroom on either side forces an instant cut despite the request.
         assert_eq!(
-            resolve_transition(CameraMode::Showroom, CameraMode::ChaseFar, true, false, false),
+            resolve_transition(CameraMode::Showroom, CameraMode::ChaseFar, true, false),
             TransitionResult::Immediate { new_mode: CameraMode::ChaseFar }
         );
         assert_eq!(
-            resolve_transition(CameraMode::ChaseNear, CameraMode::Showroom, true, false, false),
+            resolve_transition(CameraMode::ChaseNear, CameraMode::Showroom, true, false),
             TransitionResult::Immediate { new_mode: CameraMode::Showroom }
         );
-        // Otherwise a crossfade over the recovered duration.
+        // Otherwise a crossfade over the recovered duration (slow-motion off = 25).
         assert_eq!(
-            resolve_transition(CameraMode::ChaseNear, CameraMode::ChaseFar, true, false, false),
+            resolve_transition(CameraMode::ChaseNear, CameraMode::ChaseFar, true, false),
             TransitionResult::Crossfade { new_mode: CameraMode::ChaseFar, frames: 25 }
         );
     }

@@ -55,6 +55,75 @@ pub fn lerp_q16(a: i32, b: i32, frac: i32) -> i32 {
     (i64::from(a) + ((delta * i64::from(frac)) >> 16)) as i32
 }
 
+/// Q16.16 one.
+const ONE: i32 = 0x1_0000;
+
+/// A Q16.16 cross product `a × b` (`>>16` per multiply).
+fn cross_q16(a: [i32; 3], b: [i32; 3]) -> [i32; 3] {
+    let m = |x: i32, y: i32| ((i64::from(x) * i64::from(y)) >> 16) as i32;
+    [
+        m(a[1], b[2]).wrapping_sub(m(a[2], b[1])),
+        m(a[2], b[0]).wrapping_sub(m(a[0], b[2])),
+        m(a[0], b[1]).wrapping_sub(m(a[1], b[0])),
+    ]
+}
+
+/// Normalize a Q16.16 vector to unit length. `FUN_00435400` uses the engine
+/// reciprocal-magnitude table `DAT_0082b380` (runtime data, zero in the static
+/// image); this reconstruction uses an `f64` square root as the documented
+/// backend-equivalent (the same stance as [`super::camera_cinematic`]). A zero
+/// vector normalizes to zero.
+fn normalize_q16(v: [i32; 3]) -> [i32; 3] {
+    let f = |x: i32| f64::from(x) / 65536.0;
+    let (x, y, z) = (f(v[0]), f(v[1]), f(v[2]));
+    let len = (x * x + y * y + z * z).sqrt();
+    if len == 0.0 {
+        return [0, 0, 0];
+    }
+    let q = |c: f64| (c / len * 65536.0).round() as i32;
+    [q(x), q(y), q(z)]
+}
+
+/// The recovered world-matrix crossfade blend (`FUN_00435400`, the up-anchored
+/// `param_7 == 0` path that `FUN_00436930` calls): blend the two camera world
+/// matrices `a` (from) and `b` (to) at weight `frac` (Q16.16) and return the
+/// displayed matrix.
+///
+/// Each is `[i32;16]` row-major Q16.16 (right `0..3`, up `4..7`, forward `8..11`,
+/// translation `12..15`, element `15` = [`ONE`]). The blend is **hybrid, not a
+/// naive element-wise matrix lerp**: the translation is a plain Q16.16 lerp,
+/// while the orientation is lerped then **re-orthonormalized about the up axis**
+/// (Gram-Schmidt): `up = normalize(lerp(a.up, b.up))`, `forward =
+/// normalize(lerp(a.right, b.right) × up)`, `right = up × forward`. The result
+/// is always a clean orthonormal frame, so blending two valid camera bases never
+/// produces a skewed matrix. (The five camera-record scalars are blended
+/// separately by [`CameraScalars::blend`].)
+#[must_use]
+pub fn blend_pose(a: &[i32; 16], b: &[i32; 16], frac: i32) -> [i32; 16] {
+    let row = |m: &[i32; 16], i: usize| [m[i], m[i + 1], m[i + 2]];
+    let lerp3 = |x: [i32; 3], y: [i32; 3]| {
+        [
+            lerp_q16(x[0], y[0], frac),
+            lerp_q16(x[1], y[1], frac),
+            lerp_q16(x[2], y[2], frac),
+        ]
+    };
+    // Up-anchored Gram-Schmidt: the interpolated right only seeds the forward.
+    let right_lerp = lerp3(row(a, 0), row(b, 0));
+    let up = normalize_q16(lerp3(row(a, 4), row(b, 4)));
+    let forward = normalize_q16(cross_q16(right_lerp, up));
+    let right = cross_q16(up, forward);
+    let trans = lerp3(row(a, 12), row(b, 12));
+
+    let mut out = [0i32; 16];
+    out[0..3].copy_from_slice(&right);
+    out[4..7].copy_from_slice(&up);
+    out[8..11].copy_from_slice(&forward);
+    out[12..15].copy_from_slice(&trans);
+    out[15] = ONE;
+    out
+}
+
 /// The five scalar camera parameters the crossfade lerps (`FUN_00436930`), the
 /// camera record fields `+0x48`/`+0x4c`/`+0x50`/`+0x54`/`+0x58` (Q16.16).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -137,6 +206,70 @@ mod tests {
         assert_eq!(lerp_q16(0, 0x10_0000, 0x8000), 0x8_0000);
         // Descending lerp.
         assert_eq!(lerp_q16(0x10_0000, 0, 0x8000), 0x8_0000);
+    }
+
+    /// Q16.16 dot of two 3-vectors.
+    fn dot(a: [i32; 3], b: [i32; 3]) -> i64 {
+        (0..3).map(|i| (i64::from(a[i]) * i64::from(b[i])) >> 16).sum()
+    }
+
+    /// The standard right-handed basis (right +X, up +Y, forward +Z) plus a
+    /// translation, as the game's camera world matrix would hold it.
+    fn basis_with_translation(t: [i32; 3]) -> [i32; 16] {
+        [
+            0x1_0000, 0, 0, 0, // right +X
+            0, 0x1_0000, 0, 0, // up +Y
+            0, 0, 0x1_0000, 0, // forward +Z
+            t[0], t[1], t[2], 0x1_0000,
+        ]
+    }
+
+    #[test]
+    fn blending_identical_poses_returns_that_pose() {
+        // The standard basis satisfies forward = right x up and right = up x
+        // forward, so the Gram-Schmidt rebuild is a fixed point: a == b yields a.
+        let a = basis_with_translation([0x5_0000, 0x2_0000, -0x3_0000]);
+        for &frac in &[0, 0x4000, 0x8000, 0xc000, 0x1_0000] {
+            let out = blend_pose(&a, &a, frac);
+            assert_eq!(out, a, "identical blend at frac {frac:#x} must be a fixed point");
+        }
+    }
+
+    #[test]
+    fn blended_translation_is_a_plain_lerp() {
+        let a = basis_with_translation([0, 0, 0]);
+        let b = basis_with_translation([0x8_0000, 0x4_0000, 0]);
+        let out = blend_pose(&a, &b, 0x8000); // halfway
+        assert_eq!([out[12], out[13], out[14]], [0x4_0000, 0x2_0000, 0]);
+    }
+
+    #[test]
+    fn blended_orientation_is_orthonormal() {
+        // Blend the identity basis with one yawed 90 degrees (right -> +Z,
+        // forward -> -X). At any weight the rebuilt frame must stay orthonormal.
+        let a = basis_with_translation([0, 0, 0]);
+        let b = [
+            0, 0, 0x1_0000, 0, // right +Z
+            0, 0x1_0000, 0, 0, // up +Y
+            -0x1_0000, 0, 0, 0, // forward -X
+            0, 0, 0, 0x1_0000,
+        ];
+        for &frac in &[0x4000, 0x8000, 0xc000] {
+            let m = blend_pose(&a, &b, frac);
+            let right = [m[0], m[1], m[2]];
+            let up = [m[4], m[5], m[6]];
+            let forward = [m[8], m[9], m[10]];
+            // Unit length (Q16.16 one = 0x1_0000), within a small rounding slop.
+            for v in [right, up, forward] {
+                let len2 = dot(v, v);
+                assert!((len2 - 0x1_0000).abs() <= 4, "axis not unit: len^2 {len2:#x}");
+            }
+            // Mutually orthogonal.
+            assert!(dot(right, up).abs() <= 4, "right.up {:#x}", dot(right, up));
+            assert!(dot(right, forward).abs() <= 4, "right.fwd {:#x}", dot(right, forward));
+            assert!(dot(up, forward).abs() <= 4, "up.fwd {:#x}", dot(up, forward));
+            assert_eq!(m[15], 0x1_0000);
+        }
     }
 
     #[test]
