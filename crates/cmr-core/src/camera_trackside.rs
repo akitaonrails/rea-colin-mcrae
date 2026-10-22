@@ -80,18 +80,77 @@ pub fn trackside_in_range(point: TracksidePoint, car: [i32; 3]) -> bool {
     dist2_xz_q16(point, car[0], car[2]) < i64::from(TRACKSIDE_RANGE_DIST2_Q16)
 }
 
-/// The trackside dwell length in frames (`(pal+1)*0x4b`, 75/150), the interval the
-/// director holds a trackside cam before re-evaluating.
+/// The trackside **entry** dwell in frames (`(pal+1)*0x4b`, 75/150): the director
+/// counts up to this while the camera is *not* in trackside mode, and only then
+/// may enter it (the exit back to chase is RNG-driven, see
+/// [`trackside_director_exit`], not this dwell).
 #[must_use]
 pub fn trackside_dwell_frames(pal: bool) -> i32 {
     TRACKSIDE_DWELL_FRAMES * (i32::from(pal) + 1)
 }
 
-// NOT reconstructed here (left for a verification pass, not invented): the
-// panning cam's look-at ease coefficient `0x8554d0000/((pal+1)*0x190000)` from
-// `FUN_004864f0` - the recovered numerator and the stated quotient (~21856)
-// disagree under exact arithmetic, so the constant is left to re-derive rather
-// than pin a wrong value; and the director's RNG-driven exit (mode 9 vs 10).
+/// The panning-cam look-at ease coefficient (`FUN_004864f0`):
+/// `0x8554d0000 / ((pal+1)*0x190000)`, which the recovered numerator makes exact
+/// at `0x5555 / (pal+1)` - `21845` (NTSC, a `1/3` ease per frame) / `10922` (PAL,
+/// `1/6`). The smoothed look-at point moves toward the car by this fraction.
+#[must_use]
+pub fn trackside_lookat_ease_coeff(pal: bool) -> i32 {
+    (0x8_554d_0000i64 / ((i64::from(pal) + 1) * 0x19_0000)) as i32
+}
+
+/// Ease a panning cam's smoothed look-at point toward the live car position by
+/// `coeff` (Q16.16), componentwise: `smoothed += (car - smoothed) * coeff >> 16`
+/// (`FUN_004864f0`; the per-car state is `DAT_008294f8/fc/00829500[car*0xc]`). A
+/// fixed (non-panning) cam snaps instead - the caller uses `car` directly.
+#[must_use]
+pub fn trackside_lookat_ease(smoothed: [i32; 3], car: [i32; 3], coeff: i32) -> [i32; 3] {
+    let mut out = smoothed;
+    for i in 0..3 {
+        let diff = i64::from(car[i]) - i64::from(smoothed[i]);
+        out[i] = (i64::from(smoothed[i]) + ((diff * i64::from(coeff)) >> 16)) as i32;
+    }
+    out
+}
+
+/// The chase mode the director's RNG exit falls back to when it leaves the
+/// trackside cam (`FUN_004343a0`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DirectorExitMode {
+    /// Mode `9`: the replay action cam (`rand` fraction `< 0x8000`).
+    ReplayAction,
+    /// Mode `10`: the third chase (`rand` fraction `>= 0x8000`).
+    ThirdChase,
+}
+
+impl DirectorExitMode {
+    /// The raw camera-mode value (`9` or `10`).
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        match self {
+            DirectorExitMode::ReplayAction => 9,
+            DirectorExitMode::ThirdChase => 10,
+        }
+    }
+}
+
+/// The 20%-per-frame exit probability threshold (`0x3333` of a Q16.16 fraction).
+pub const DIRECTOR_EXIT_PROBABILITY_Q16: i32 = 0x3333;
+
+/// The director's trackside exit roll (`FUN_004343a0`): a first RNG draw below
+/// [`DIRECTOR_EXIT_PROBABILITY_Q16`] (~20%) authorizes leaving the trackside cam,
+/// and a second draw picks the destination - `< 0x8000` (50/50) is the replay
+/// action cam, else the third chase. `None` keeps the trackside cam this frame.
+#[must_use]
+pub fn trackside_director_exit(rng: &mut crate::game_rng::GameLcg) -> Option<DirectorExitMode> {
+    if rng.next_q16() >= DIRECTOR_EXIT_PROBABILITY_Q16 {
+        return None;
+    }
+    Some(if rng.next_q16() < 0x8000 {
+        DirectorExitMode::ReplayAction
+    } else {
+        DirectorExitMode::ThirdChase
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -135,5 +194,48 @@ mod tests {
         assert!(!trackside_in_range(pt(0x3c_0000, 0x3c_0000, 0), [0, 0, 0]));
         // A large Y delta also rejects.
         assert!(!trackside_in_range(pt(0, 0x50_0000, 0), [0, 0, 0]));
+    }
+
+    #[test]
+    fn lookat_ease_coeff_is_one_third_per_frame() {
+        assert_eq!(trackside_lookat_ease_coeff(false), 0x5555); // 21845, ~1/3
+        assert_eq!(trackside_lookat_ease_coeff(true), 0x2aaa); // 10922, ~1/6
+        // One NTSC step moves ~1/3 of the way from 0 toward 3.0.
+        let stepped = trackside_lookat_ease([0, 0, 0], [0x3_0000, 0, 0], trackside_lookat_ease_coeff(false));
+        assert!((stepped[0] - 0x1_0000).abs() <= 2, "~1.0 after one 1/3 step, got {:#x}", stepped[0]);
+        // Already-at-target stays put.
+        assert_eq!(
+            trackside_lookat_ease([0x3_0000, 0, 0], [0x3_0000, 0, 0], trackside_lookat_ease_coeff(false)),
+            [0x3_0000, 0, 0]
+        );
+    }
+
+    #[test]
+    fn director_exit_roll_authorizes_then_picks_mode() {
+        use crate::game_rng::GameLcg;
+        // Over many draws the exit fires ~20% of the time and splits ~50/50.
+        let mut rng = GameLcg::new(0xC0FFEE);
+        let (mut exits, mut replay, mut third) = (0u32, 0u32, 0u32);
+        for _ in 0..4000 {
+            match trackside_director_exit(&mut rng) {
+                None => {}
+                Some(DirectorExitMode::ReplayAction) => {
+                    exits += 1;
+                    replay += 1;
+                }
+                Some(DirectorExitMode::ThirdChase) => {
+                    exits += 1;
+                    third += 1;
+                }
+            }
+        }
+        // ~20% exits (allow a wide band for the sample size).
+        assert!((600..1000).contains(&exits), "exit rate out of band: {exits}/4000");
+        // The two modes are both produced and roughly balanced.
+        assert!(replay > 0 && third > 0);
+        let ratio = replay as f64 / exits as f64;
+        assert!((0.35..0.65).contains(&ratio), "mode split skewed: {ratio}");
+        assert_eq!(DirectorExitMode::ReplayAction.raw(), 9);
+        assert_eq!(DirectorExitMode::ThirdChase.raw(), 10);
     }
 }

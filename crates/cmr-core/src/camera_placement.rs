@@ -92,12 +92,32 @@ impl ResetTransient {
     }
 }
 
-// NOT reconstructed (left for a verification pass, not invented): the exact
-// vertical-offset formula `up -= (((cos_lut[idx] * s) >> 16) * 0x4000 >> 16) *
-// amplitude >> 16`, because the LUT index `idx` and the phase scale `s` derive
-// from `ftol(...)` expressions the recovery did not fully pin, and the cosine
-// table `DAT_0082d380` is runtime-built. The timer state machine above and the
-// `0x4000` damping constant are the pinned parts.
+/// The BAM cosine table length (`DAT_0082d380`, 4096 Q16.16 entries); the table
+/// is runtime-built so it is injected into [`reset_vertical_drop`].
+pub const BAM_TABLE_LEN: usize = 0x1000;
+
+/// The reset transient's damped-cosine drop subtracted from the camera's
+/// vertical (up) offset (`FUN_0041a3e0`, `+0x4` offset component), for a running
+/// [`ResetTransient`] with `timer` frames left and latched `amplitude`.
+///
+/// The phase `s = (timer << 16) / ((pal+1)*25)` is the remaining fraction in
+/// Q16.16 (`1.0` just after the arm, falling to `0`); the cosine index is
+/// `(s * 360 / 5760) & 0xfff` (`= (s >> 4) & 0xfff`, since `360/5760 = 1/16`);
+/// the drop is `((cos[idx] * s >> 16) * 0x4000 >> 16) * amplitude >> 16` - the
+/// cosine modulated by the linearly decaying `s` and the `0x4000` (0.25) damping.
+/// A non-positive `timer` yields `0`.
+#[must_use]
+pub fn reset_vertical_drop(timer: i16, pal: bool, amplitude: i32, cos_lut: &[i32; BAM_TABLE_LEN]) -> i32 {
+    if timer <= 0 {
+        return 0;
+    }
+    let denom = (i32::from(pal) + 1) * 25;
+    let s = (i32::from(timer) << 16) / denom; // remaining fraction, Q16.16
+    let idx = ((i64::from(s) * 360 / 5760) as usize) & 0xfff;
+    let v = (i64::from(cos_lut[idx]) * i64::from(s)) >> 16;
+    let v = (v * i64::from(RESET_DAMPING_Q16)) >> 16;
+    ((v * i64::from(amplitude)) >> 16) as i32
+}
 
 #[cfg(test)]
 mod tests {
@@ -156,5 +176,38 @@ mod tests {
         // No arm, stays idle (floored at -1).
         assert_eq!(t.timer(), -1);
         assert!(!t.is_active());
+    }
+
+    /// A generated BAM cosine table (`lut[a] = cos(2*pi*a/4096)` Q16.16), standing
+    /// in for the runtime-built `DAT_0082d380`.
+    fn cos_table() -> [i32; BAM_TABLE_LEN] {
+        let mut lut = [0i32; BAM_TABLE_LEN];
+        for (a, slot) in lut.iter_mut().enumerate() {
+            let theta = std::f64::consts::TAU * (a as f64) / (BAM_TABLE_LEN as f64);
+            *slot = (theta.cos() * 65536.0).round() as i32;
+        }
+        lut
+    }
+
+    #[test]
+    fn reset_vertical_drop_follows_the_pinned_chain() {
+        let lut = cos_table();
+        // Idle / spent transient contributes nothing.
+        assert_eq!(reset_vertical_drop(0, false, 0x2_0000, &lut), 0);
+        assert_eq!(reset_vertical_drop(-1, false, 0x2_0000, &lut), 0);
+
+        // Just after the NTSC arm: timer == 25 -> s == 1.0 (0x10000) -> index
+        // (0x10000 >> 4) & 0xfff == 0 -> cos[0] == 1.0, so
+        // drop = ((1.0 * 1.0) * 0.25) * amplitude = 0.25 * amplitude.
+        let amp = 0x4_0000; // 4.0
+        let drop = reset_vertical_drop(25, false, amp, &lut);
+        assert!((drop - 0x1_0000).abs() <= 4, "expected ~1.0 (0.25*4.0), got {drop:#x}");
+
+        // The index is derived from the phase: timer 25 and the PAL-doubled timer
+        // 50 both map to s == 1.0, so they agree.
+        assert_eq!(
+            reset_vertical_drop(25, false, amp, &lut),
+            reset_vertical_drop(50, true, amp, &lut)
+        );
     }
 }

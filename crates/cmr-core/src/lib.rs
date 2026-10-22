@@ -62,6 +62,7 @@ pub mod frontend_c3d_scene;
 pub mod game_driver;
 pub mod game_menu_flow;
 pub mod game_race_flow;
+pub mod game_rng;
 pub mod game_session;
 pub mod game_state;
 pub mod gameplay_camera;
