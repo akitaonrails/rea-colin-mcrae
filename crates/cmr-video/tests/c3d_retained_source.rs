@@ -801,6 +801,21 @@ fn stage_scene_frame_composites_a_walked_node_like_the_direct_prim_path() {
     assert_eq!(frame.pixels(), again.pixels());
     assert_eq!(frame.depth().values(), again.depth().values());
 
+    // The frame bridges to the shared presentation type the platform host
+    // consumes, preserving the indexed pixels and palette and expanding to RGBA8.
+    let presented = frame.to_presented_frame().unwrap();
+    assert_eq!(
+        presented.extent(),
+        DisplayExtent {
+            width: 64,
+            height: 48
+        }
+    );
+    assert_eq!(presented.pixels(), frame.pixels());
+    assert_eq!(presented.palette(), frame.palette());
+    let rgba = presented.expand_rgba8().unwrap();
+    assert_eq!(rgba.extent(), presented.extent());
+
     // Faithfulness: the walked frame equals the direct single-prim path with the
     // same camera and identity node world.
     let record = file.group1_records().next().unwrap();

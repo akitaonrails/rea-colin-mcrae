@@ -131,6 +131,35 @@ pub struct SoftwarePresentedFrame {
 }
 
 impl SoftwarePresentedFrame {
+    /// Builds a presented frame from an indexed framebuffer and its display
+    /// palette, for a software path that produces indexed pixels outside the
+    /// root-menu backend (such as the C3D stage scene composer). The pixel count
+    /// must equal `extent.width * extent.height`; the pixels are row-major
+    /// palette indices.
+    pub fn from_indexed(
+        extent: DisplayExtent,
+        pixels: Box<[u8]>,
+        palette: Box<[PaletteEntry; 256]>,
+    ) -> Result<Self, SoftwareRgba8Error> {
+        if extent.width == 0 || extent.height == 0 {
+            return Err(SoftwareRgba8Error::InvalidExtent(extent));
+        }
+        let expected = usize::from(extent.width)
+            .checked_mul(usize::from(extent.height))
+            .ok_or(SoftwareRgba8Error::SizeOverflow(extent))?;
+        if pixels.len() != expected {
+            return Err(SoftwareRgba8Error::InvalidIndexedPixelLength {
+                expected,
+                actual: pixels.len(),
+            });
+        }
+        Ok(SoftwarePresentedFrame {
+            extent,
+            pixels,
+            palette,
+        })
+    }
+
     #[must_use]
     pub const fn extent(&self) -> DisplayExtent {
         self.extent
@@ -312,6 +341,45 @@ mod tests {
             blue: index as u8,
             flags: (index as u8) ^ seed,
         })
+    }
+
+    #[test]
+    fn from_indexed_builds_a_presentable_frame_and_rejects_bad_input() {
+        let pixels = vec![3u8; 8].into_boxed_slice(); // 4 * 2
+        let frame =
+            SoftwarePresentedFrame::from_indexed(EXTENT, pixels, Box::new(palette(1))).unwrap();
+        assert_eq!(frame.extent(), EXTENT);
+        assert_eq!(frame.pixels(), &[3u8; 8]);
+        assert_eq!(frame.palette(), &palette(1));
+        // It expands exactly like a backend-emitted frame.
+        assert_eq!(
+            frame.expand_rgba8().unwrap(),
+            expand_indexed_frame_rgba8(EXTENT, &[3u8; 8], &palette(1)).unwrap()
+        );
+
+        // One pixel short is rejected with the expected/actual lengths.
+        let short = vec![0u8; 7].into_boxed_slice();
+        assert_eq!(
+            SoftwarePresentedFrame::from_indexed(EXTENT, short, Box::new(palette(1))),
+            Err(SoftwareRgba8Error::InvalidIndexedPixelLength {
+                expected: 8,
+                actual: 7,
+            })
+        );
+
+        // A zero extent is rejected before the length check.
+        let zero = DisplayExtent {
+            width: 0,
+            height: 2,
+        };
+        assert_eq!(
+            SoftwarePresentedFrame::from_indexed(
+                zero,
+                Vec::<u8>::new().into_boxed_slice(),
+                Box::new(palette(1)),
+            ),
+            Err(SoftwareRgba8Error::InvalidExtent(zero))
+        );
     }
 
     fn surfaces_only() -> (SoftwareIndexedBackend, DisplaySurfaces<SurfaceHandle>) {

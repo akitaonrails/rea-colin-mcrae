@@ -22,6 +22,7 @@
 use std::fmt;
 
 use cmr_core::c3d_stage_scene::StageScene;
+use cmr_core::display::DisplayExtent;
 use cmr_core::root_menu_c3d_transform::RootMenuC3dViewportError;
 use cmr_formats::riff_palette::PaletteEntry;
 
@@ -31,6 +32,7 @@ use crate::c3d_software_raster::{
     SoftwareC3dRasterError, SoftwareC3dTransformState, compose_root_c3d_indexed_copy_no_blend,
     preflight_mesh_lod_prim,
 };
+use crate::{SoftwarePresentedFrame, SoftwareRgba8Error};
 
 /// The counters a [`compose_stage_scene_frame`] run accumulates.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -49,12 +51,13 @@ pub struct StageSceneFrameStats {
     pub depth_rejected: usize,
 }
 
-/// A composed stage-scene frame: the indexed framebuffer, its depth buffer, and
-/// the run statistics.
-#[derive(Debug)]
+/// A composed stage-scene frame: the indexed framebuffer, its display palette,
+/// its depth buffer, and the run statistics.
+#[derive(Clone, Debug)]
 pub struct StageSceneFrame {
     extent: [u16; 2],
     pixels: Vec<u8>,
+    palette: Box<[PaletteEntry; 256]>,
     depth: SoftwareC3dDepthBuffer,
     stats: StageSceneFrameStats,
 }
@@ -70,6 +73,11 @@ impl StageSceneFrame {
         &self.pixels
     }
 
+    /// The display palette the frame was composed against.
+    pub fn palette(&self) -> &[PaletteEntry; 256] {
+        &self.palette
+    }
+
     /// The depth buffer after composition.
     pub fn depth(&self) -> &SoftwareC3dDepthBuffer {
         &self.depth
@@ -78,6 +86,18 @@ impl StageSceneFrame {
     /// The run statistics.
     pub fn stats(&self) -> &StageSceneFrameStats {
         &self.stats
+    }
+
+    /// Bridges the indexed frame into a [`SoftwarePresentedFrame`] the platform
+    /// host can present (via `expand_rgba8` + a streaming texture upload),
+    /// reusing the same presentation type the root-menu backend emits.
+    pub fn to_presented_frame(&self) -> Result<SoftwarePresentedFrame, SoftwareRgba8Error> {
+        let [width, height] = self.extent;
+        SoftwarePresentedFrame::from_indexed(
+            DisplayExtent { width, height },
+            self.pixels.clone().into_boxed_slice(),
+            self.palette.clone(),
+        )
     }
 }
 
@@ -146,6 +166,7 @@ where
     Ok(StageSceneFrame {
         extent,
         pixels,
+        palette: Box::new(*active_palette),
         depth,
         stats,
     })
