@@ -43,6 +43,7 @@ mechanism, the replacement, and the reason. "Item" cross-references the roadmap.
 | Analog calibration | Two fixed `.data` dead-zone constants (no screen, no persisted state) | Same fixed-dead-zone scaling as the baseline, with the dead-zone parameterized behind the input backend | Faithful: there is no calibration UI to reproduce | F02 |
 | Key rebinding | No per-action rebind UI located; built-in code default key tables | Default control scheme modeled structurally; a rebind UI is not fabricated | Faithful to the recovered design | F02 |
 | Force feedback | DirectInput effects (`DINPUT.dll`) | Recovered effect semantics (`cmr-core::force_feedback`); a portable FFB output backend is future work | Remove the DirectInput requirement without inventing effects | H08 |
+| Multiplayer | DirectPlay `DPLAYX.dll` host/join sessions, player enumeration, and `Send`/`Receive` messages | Not required by the single-player portable build; an optional direct-connect TCP transport (`cmr-core::net_tcp`) implements the recovered session lifecycle behind the shared `NetworkTransport` contract and its tests | Removes the DirectPlay requirement; multiplayer parity is not claimed and the game-side message/sync semantics remain unrecovered | H09, H10 |
 | Required DLLs | DirectX, QMixer, WinMM, DirectInput | None required by the portable build; SDL3/wgpu/software backends provide the equivalents, and `scripts/check-legacy-backends.sh` gates that no project code, dependency, or built artifact binds the legacy surface | A self-contained portable build | I10 |
 | Packaging | Shipped with copyrighted payloads | Binaries packaged without any game payload; media supplied by the user | Legal and redistributable | I11 |
 | Launcher / CLI | No in-binary command-line parsing; a separate setup/launcher binary (not in this artifact) | A native `cmr-app` with explicit `--source` / `--runtime-data` options | Recovered negative result (no `-skip`/`nointro` tokens exist); portable entry point | H06, I02 |
@@ -67,5 +68,6 @@ These are open items, tracked in [DECOMP_MAP.md](DECOMP_MAP.md), that will eithe
 resolve into faithful behavior or become declared deviations once recovered:
 the GPU backend selection (`I08`/`I09`), the portable FFB output path (`H08`),
 byte-exact persistence against original-written saves (`F07`), and a displayed
-end-to-end run on the real user corpus (`I03`/`I04`). Networking (`H09`/`H10`) is
-deprioritized and carries no deviation claim yet.
+end-to-end run on the real user corpus (`I03`/`I04`). Networking carries no parity claim: the DirectPlay session surface is
+recovered and an optional TCP backend implements its lifecycle, but the game-side message/sync semantics
+remain open (`H09`).
