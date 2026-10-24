@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::verify::{join_portable, require_real_directory, sha256, verify_file};
-use crate::{AssetProfile, ReviewedProfile, VerificationError, verify_source};
+use crate::{
+    AssetProfile, IMPORT_STATE_SCHEMA_VERSION, ReviewedProfile, VerificationError, verify_source,
+};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ImportSummary {
@@ -193,7 +195,7 @@ fn populate_stage(
     }
 
     let summary = ImportSummary {
-        schema_version: 1,
+        schema_version: IMPORT_STATE_SCHEMA_VERSION,
         profile: profile.id.clone(),
         profile_sha256: profile_sha256.to_owned(),
         files: u64::try_from(verified.files).map_err(|_| ImportError::TooManyFiles)?,

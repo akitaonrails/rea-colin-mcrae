@@ -5,6 +5,7 @@ mod import;
 mod path;
 mod profile;
 mod resolver;
+mod schema;
 mod store;
 mod verify;
 
@@ -15,5 +16,9 @@ pub use profile::{
     AssetFile, AssetProfile, ProfileError, ReviewedProfile, ReviewedProfileError, StorageEncoding,
 };
 pub use resolver::{AssetIndex, ResolveError};
+pub use schema::{
+    IMPORT_STATE_SCHEMA_VERSION, PROFILE_SCHEMA_VERSION, SchemaStatus, import_state_schema_status,
+    profile_schema_status,
+};
 pub use store::{AssetStore, AssetStoreError};
 pub use verify::{VerificationError, VerificationSummary, verify_source};

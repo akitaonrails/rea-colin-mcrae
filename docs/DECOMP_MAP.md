@@ -24,7 +24,7 @@ Status markers:
 - [x] `A08` Recheck imported asset size/hash on every load.
 - [x] `A09` Decode bounded raw and gzip/`CMPR` stored assets.
 - [~] `A10` Support additional legitimate disc/install editions and languages.
-- [ ] `A11` Define migration/versioning for future imported-data schemas.
+- [x] `A11` Define migration/versioning for future imported-data schemas (`cmr-assets::schema` now owns the policy and the constants behind both on-disk boundaries: `PROFILE_SCHEMA_VERSION` for `profiles/*.json` and `IMPORT_STATE_SCHEMA_VERSION` for `<runtime-data>/import-state.json`. Readers accept only the exact generation this build was written against via `profile_schema_status`/`import_state_schema_status`; an older or newer value is `SchemaStatus::Regenerate`, never an in-place migration, because imported trees are derived data that is regenerated from the user's own media. The profile validator, the catalog/importer writers, and the store all use the shared constants instead of stray literals. New tests reject profile versions 0/2/99 through `validate` and `ReviewedProfile::from_json`, and an import state at generation 2 through `AssetStore::open`; `docs/ASSET_PIPELINE.md` documents the bump policy (semantic or required-field changes only; additive optional fields do not bump; a bump updates every writer, the example, and the rejection fixtures).)
 
 ## B. Executable and platform contracts
 
@@ -166,13 +166,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-24T21:05:00Z
-milestone=legacy-backend-free-and-payload-audited
-completed=57
+updated_utc=2026-10-24T21:35:00Z
+milestone=imported-data-schema-versioning-policy
+completed=58
 partial=59
-not_started=2
+not_started=1
 blocked=0
 total=118
-current_focus=A11-define-imported-data-schema-migration
-next_exit_gate=the-imported-data-profile-and-catalog-schema-boundary-has-a-documented-and-tested-migration-policy
+current_focus=H09-recover-directplay-session-protocol
+next_exit_gate=a-bounded-safe-recovery-of-reachable-directplay-session-behavior-with-no-live-multiplayer-requirement
 <!-- PROGRESS-TAIL-END -->

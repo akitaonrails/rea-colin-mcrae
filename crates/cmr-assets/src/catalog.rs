@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use cmr_formats::stored_asset::{DecodeLimits, StoredAsset, decode_stored_asset};
 
 use crate::verify::{join_portable, portable_relative, require_real_directory, sha256};
-use crate::{AssetFile, AssetProfile, StorageEncoding, VerificationError};
+use crate::{AssetFile, AssetProfile, PROFILE_SCHEMA_VERSION, StorageEncoding, VerificationError};
 
 const ROOTS: [&str; 3] = ["Game", "New_Fe", "ini"];
 const SENTINELS: [&str; 3] = ["Game.exe", "Rally.exe", "qmixer.dll"];
@@ -38,7 +38,7 @@ pub fn catalog_standard_source(
     sentinels.sort_by(|left, right| left.path.cmp(&right.path));
     empty_directories.sort();
     let profile = AssetProfile {
-        schema_version: 1,
+        schema_version: PROFILE_SCHEMA_VERSION,
         id: id.into(),
         roots: ROOTS.into_iter().map(str::to_owned).collect(),
         empty_directories,

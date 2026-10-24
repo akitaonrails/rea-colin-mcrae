@@ -9,7 +9,7 @@ use cmr_formats::stored_asset::{DecodeError, DecodeLimits, StoredAsset, decode_s
 use crate::verify::{join_portable, require_real_directory, sha256};
 use crate::{
     AssetFile, AssetIndex, AssetProfile, ImportSummary, ResolveError, ReviewedProfile,
-    StorageEncoding, VerificationError,
+    SchemaStatus, StorageEncoding, VerificationError, import_state_schema_status,
 };
 
 const MAX_IMPORT_STATE_BYTES: u64 = 64 * 1024;
@@ -220,7 +220,10 @@ fn validate_state(
     let expected_files = u64::try_from(profile.files.len())
         .map_err(|_| AssetStoreError::InvalidImportState { field: "files" })?;
     let checks = [
-        (state.schema_version == 1, "schema_version"),
+        (
+            import_state_schema_status(state.schema_version) == SchemaStatus::Supported,
+            "schema_version",
+        ),
         (state.profile == profile.id, "profile"),
         (state.profile_sha256 == profile_sha256, "profile_sha256"),
         (state.files == expected_files, "files"),
@@ -423,6 +426,25 @@ mod tests {
         assert!(matches!(
             AssetStore::open(&output, &reviewed, limits()),
             Err(AssetStoreError::InvalidImportState { field: "profile" })
+        ));
+    }
+
+    #[test]
+    fn rejects_an_import_state_from_another_schema_generation() {
+        let base = TestDirectory::new();
+        let (output, reviewed) = imported(&base);
+        let state_path = output.join("import-state.json");
+        let mut state: ImportSummary =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        state.schema_version = 2;
+        fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+        // A newer/older generation is derived data to regenerate, never to
+        // migrate in place.
+        assert!(matches!(
+            AssetStore::open(&output, &reviewed, limits()),
+            Err(AssetStoreError::InvalidImportState {
+                field: "schema_version"
+            })
         ));
     }
 

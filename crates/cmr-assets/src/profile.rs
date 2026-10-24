@@ -4,6 +4,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::schema::{SchemaStatus, profile_schema_status};
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AssetProfile {
     pub schema_version: u32,
@@ -135,7 +137,7 @@ impl std::error::Error for ProfileError {}
 
 impl AssetProfile {
     pub fn validate(&self) -> Result<(), ProfileError> {
-        if self.schema_version != 1 {
+        if profile_schema_status(self.schema_version) != SchemaStatus::Supported {
             return Err(ProfileError::UnsupportedSchema(self.schema_version));
         }
         if self.id.trim().is_empty() {
@@ -367,6 +369,26 @@ mod tests {
             assert!(matches!(
                 candidate.validate(),
                 Err(ProfileError::InvalidSha256 { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_schema_versions() {
+        // Both directions are rejected: there is no implicit downgrade or
+        // forward-compatibility path for derived imported data.
+        for version in [0, 2, 99] {
+            let mut candidate = profile();
+            candidate.schema_version = version;
+            assert_eq!(
+                candidate.validate(),
+                Err(ProfileError::UnsupportedSchema(version))
+            );
+            assert!(matches!(
+                ReviewedProfile::from_json(&serde_json::to_vec(&candidate).unwrap()),
+                Err(ReviewedProfileError::Profile(
+                    ProfileError::UnsupportedSchema(found)
+                )) if found == version
             ));
         }
     }

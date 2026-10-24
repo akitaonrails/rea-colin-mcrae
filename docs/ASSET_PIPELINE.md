@@ -160,6 +160,31 @@ It contains metadata for 5,162 files across all three required roots and no
 payload bytes or absolute paths. V2 supersedes the incomplete V1 profile after
 static evidence established startup reads from `ini/**`.
 
+## Schema versioning and migration
+
+Two on-disk artifacts carry a `schema_version`, and both readers accept only the
+exact generation this build was written against
+(`cmr-assets::PROFILE_SCHEMA_VERSION` and
+`cmr-assets::IMPORT_STATE_SCHEMA_VERSION`):
+
+- the reviewed source profile (`profiles/*.json`);
+- the import state (`<runtime-data>/import-state.json`).
+
+Imported trees are derived data. An incompatible version is never migrated in
+place: the profile validator and the store fail closed
+(`ProfileError::UnsupportedSchema` /
+`AssetStoreError::InvalidImportState { field: "schema_version" }`) and the
+caller regenerates the tree from the user's own media with the matching
+importer. A profile and an import state from different generations cannot be
+paired, and the store additionally checks profile identity, profile digest, and
+file/byte totals, so a stale tree cannot be mistaken for a current one.
+
+A version bump is required for any semantic or required-field change. Purely
+additive optional fields that readers can ignore leave the version alone. A
+bump must update the constants, every writer, the worked example above, and add
+a profile fixture plus the rejection tests at the new generation. There is no
+implicit downgrade or forward-compatibility path.
+
 ## Safety and verification
 
 - Reject absolute, parent-traversal, NUL-containing, and ambiguous case-folded
