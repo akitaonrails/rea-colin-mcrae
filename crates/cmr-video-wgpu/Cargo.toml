@@ -6,10 +6,10 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+cmr-formats = { path = "../cmr-formats" }
 cmr-gpu-contract = { path = "../cmr-gpu-contract" }
 pollster = "=0.4.0"
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "dx12", "gles"] }
 
 [dev-dependencies]
 cmr-core = { path = "../cmr-core" }
-cmr-formats = { path = "../cmr-formats" }

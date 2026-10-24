@@ -1375,6 +1375,17 @@ languages rather than fabricating or silently aliasing Italian assets.
   presentation primitive only; raw C3D packets, representative-stage timings,
   device recovery, and a selected backend remain open under I08/I09. See
   evidence `impl.gpu-indexed-palette-conformance`.
+- The Phase 4B native-geometry slice is `cmr-gpu-contract::C3dRawFrame` and
+  `RawC3dGpuBackend`. It preserves each recovered C3D vertex as eight Q16.16
+  words, compact triangle indices, resource ordinals, draw brackets, and exact
+  matrix words. `cmr-gpu-conformance::PreparedRawStage` builds that stream from
+  `StageScene` and `StageC3dTextures` without CPU transform/clip/cull work.
+  Both GPU candidates execute the bounded opaque-COPY profile with point/clamp
+  indexed materials, exact L1/lowest-index active-palette mapping, perspective
+  UV, legacy CCW culling, and writable `LessEqual` depth. Their readbacks match
+  exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
+  ownership and representative imported-stage timing remain the I08 exit gate.
+  See evidence `impl.gpu-raw-c3d-conformance`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

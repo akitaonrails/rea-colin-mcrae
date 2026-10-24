@@ -6,6 +6,8 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=shaders/indexed.vert.glsl");
     println!("cargo:rerun-if-changed=shaders/indexed.frag.glsl");
+    println!("cargo:rerun-if-changed=shaders/c3d.vert.glsl");
+    println!("cargo:rerun-if-changed=shaders/c3d.frag.glsl");
     println!("cargo:rerun-if-env-changed=CMR_GLSLANG_VALIDATOR");
 
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"));
@@ -27,10 +29,24 @@ fn main() {
         &output.join("indexed.frag.spv"),
         "frag",
     );
-    let available = vertex && fragment;
+    let c3d_vertex = compile(
+        &compiler,
+        Path::new("shaders/c3d.vert.glsl"),
+        &output.join("c3d.vert.spv"),
+        "vert",
+    );
+    let c3d_fragment = compile(
+        &compiler,
+        Path::new("shaders/c3d.frag.glsl"),
+        &output.join("c3d.frag.spv"),
+        "frag",
+    );
+    let available = vertex && fragment && c3d_vertex && c3d_fragment;
     if !available {
         fs::write(output.join("indexed.vert.spv"), []).expect("write empty vertex marker");
         fs::write(output.join("indexed.frag.spv"), []).expect("write empty fragment marker");
+        fs::write(output.join("c3d.vert.spv"), []).expect("write empty C3D vertex marker");
+        fs::write(output.join("c3d.frag.spv"), []).expect("write empty C3D fragment marker");
         println!(
             "cargo:warning=SDL_GPU SPIR-V shaders unavailable; set CMR_GLSLANG_VALIDATOR to an external glslangValidator to enable hardware conformance (the toolchain is currently unpinned)"
         );

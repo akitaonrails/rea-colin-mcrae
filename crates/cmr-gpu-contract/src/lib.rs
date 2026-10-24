@@ -322,6 +322,564 @@ pub trait IndexedPaletteGpuBackend {
     ) -> Result<ConformanceFrame, Self::Error>;
 }
 
+/// One raw recovered C3D vertex, before host floating-point conversion,
+/// transformation, clipping, or culling.
+///
+/// Components are the eight signed Q16.16 words stored by a C3D 32-byte entry:
+/// model-space XYZ, UV, and the lighting normal. Candidate vertex shaders own
+/// the Q16.16 conversion so this boundary cannot accidentally benchmark the
+/// software rasterizer's prepared geometry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dVertexQ16 {
+    pub components: [i32; 8],
+}
+
+impl From<cmr_formats::c3d::C3dEntry32<'_>> for C3dVertexQ16 {
+    fn from(entry: cmr_formats::c3d::C3dEntry32<'_>) -> Self {
+        Self {
+            components: entry.components_q16(),
+        }
+    }
+}
+
+/// Validated owned raw geometry for one recovered C3D primitive batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct C3dMeshResource {
+    vertices: Box<[C3dVertexQ16]>,
+    indices: Box<[u16]>,
+}
+
+impl C3dMeshResource {
+    /// Admits a non-empty indexed triangle list whose compact indices all
+    /// address the supplied raw vertices.
+    pub fn new(
+        vertices: impl Into<Box<[C3dVertexQ16]>>,
+        indices: impl Into<Box<[u16]>>,
+    ) -> Result<Self, RawC3dContractError> {
+        let vertices = vertices.into();
+        let indices = indices.into();
+        if indices.is_empty() || indices.len() % 3 != 0 {
+            return Err(RawC3dContractError::InvalidTriangleIndexCount {
+                actual: indices.len(),
+            });
+        }
+        for (position, &index) in indices.iter().enumerate() {
+            if usize::from(index) >= vertices.len() {
+                return Err(RawC3dContractError::VertexIndexOutOfBounds {
+                    position,
+                    index,
+                    vertex_count: vertices.len(),
+                });
+            }
+        }
+        Ok(Self { vertices, indices })
+    }
+
+    #[must_use]
+    pub fn vertices(&self) -> &[C3dVertexQ16] {
+        &self.vertices
+    }
+
+    #[must_use]
+    pub fn indices(&self) -> &[u16] {
+        &self.indices
+    }
+}
+
+/// API-neutral RGB entry for a raw C3D indexed texture palette.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dRgb8 {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+}
+
+impl From<cmr_formats::bitmap::BitmapPaletteEntry> for C3dRgb8 {
+    fn from(entry: cmr_formats::bitmap::BitmapPaletteEntry) -> Self {
+        Self {
+            red: entry.red,
+            green: entry.green,
+            blue: entry.blue,
+        }
+    }
+}
+
+/// Validated owned indexed texture referenced by raw C3D draw packets.
+///
+/// `color_key_index` is retained for later recovered profiles. The bounded
+/// [`C3dPipelineState::OPAQUE_COPY`] stage profile intentionally treats every
+/// index as opaque, matching the established software stage composer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct C3dIndexedTexture {
+    extent: DisplayExtent,
+    indices: Box<[u8]>,
+    palette: Box<[C3dRgb8]>,
+    color_key_index: Option<u8>,
+}
+
+impl C3dIndexedTexture {
+    /// Admits a non-empty tightly packed texture with 1..=256 palette entries.
+    /// Every texel and an optional color-key index must address that palette.
+    pub fn new(
+        extent: DisplayExtent,
+        indices: impl Into<Box<[u8]>>,
+        palette: impl Into<Box<[C3dRgb8]>>,
+        color_key_index: Option<u8>,
+    ) -> Result<Self, RawC3dContractError> {
+        let expected = checked_pixel_count(extent)?;
+        let indices = indices.into();
+        let palette = palette.into();
+        if indices.len() != expected {
+            return Err(RawC3dContractError::InvalidTextureIndexLength {
+                expected,
+                actual: indices.len(),
+            });
+        }
+        if palette.is_empty() || palette.len() > INDEXED_PALETTE_LEN {
+            return Err(RawC3dContractError::InvalidTexturePaletteLength {
+                actual: palette.len(),
+            });
+        }
+        for (position, &index) in indices.iter().enumerate() {
+            if usize::from(index) >= palette.len() {
+                return Err(RawC3dContractError::TexturePaletteIndexOutOfBounds {
+                    position,
+                    index,
+                    palette_len: palette.len(),
+                });
+            }
+        }
+        if let Some(index) = color_key_index
+            && usize::from(index) >= palette.len()
+        {
+            return Err(RawC3dContractError::ColorKeyIndexOutOfBounds {
+                index,
+                palette_len: palette.len(),
+            });
+        }
+        Ok(Self {
+            extent,
+            indices,
+            palette,
+            color_key_index,
+        })
+    }
+
+    #[must_use]
+    pub const fn extent(&self) -> DisplayExtent {
+        self.extent
+    }
+
+    #[must_use]
+    pub fn indices(&self) -> &[u8] {
+        &self.indices
+    }
+
+    #[must_use]
+    pub fn palette(&self) -> &[C3dRgb8] {
+        &self.palette
+    }
+
+    #[must_use]
+    pub const fn color_key_index(&self) -> Option<u8> {
+        self.color_key_index
+    }
+}
+
+/// Maps each source material palette entry to the exact active display-palette
+/// index used by the established software stage composer.
+///
+/// RGB Manhattan distance is minimized across all 256 active entries. Iteration
+/// is ascending and equal distances do not replace the current result, so the
+/// lowest index wins every tie. Palette flags do not participate.
+#[must_use]
+pub fn c3d_active_palette_l1_map(
+    texture: &C3dIndexedTexture,
+    active_palette: &[PaletteEntry; INDEXED_PALETTE_LEN],
+) -> Box<[u8]> {
+    texture
+        .palette
+        .iter()
+        .map(|source| {
+            let mut best_index = 0u8;
+            let mut best_distance = u16::MAX;
+            for (index, destination) in active_palette.iter().enumerate() {
+                let distance = u16::from(source.red.abs_diff(destination.red))
+                    + u16::from(source.green.abs_diff(destination.green))
+                    + u16::from(source.blue.abs_diff(destination.blue));
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_index = index as u8;
+                    if distance == 0 {
+                        break;
+                    }
+                }
+            }
+            best_index
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+}
+
+/// The scene-walk bracket in which a node was submitted.
+///
+/// This remains separate from depth and blend state: later recovery established
+/// that the dispatcher deferred translucent nodes without disabling depth
+/// writes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dSubmissionBracket {
+    Normal,
+    DeferredTranslucent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dDepthCompare {
+    LessEqual,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dCullMode {
+    /// Legacy `D3DCULL_CCW`: clockwise faces survive.
+    CullCounterClockwise,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dFilter {
+    PointClamp,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C3dBlendMode {
+    OpaqueCopy,
+}
+
+/// The bounded first native-C3D profile shared with the established software
+/// stage composer. `OpaqueCopy` still follows the compatibility color path:
+/// source material palette RGB is mapped to the nearest active-display-palette
+/// RGB by L1 distance (lowest-index tie), and only then expanded for readback.
+///
+/// Fields are private and the sole value keeps depth writes enabled. Broader
+/// recovered blend/filter profiles require their own contract milestone rather
+/// than silently changing this benchmark. A retained material color key is not
+/// active in this profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dPipelineState {
+    depth_compare: C3dDepthCompare,
+    depth_write: bool,
+    cull: C3dCullMode,
+    filter: C3dFilter,
+    blend: C3dBlendMode,
+    perspective_correct: bool,
+}
+
+impl C3dPipelineState {
+    pub const OPAQUE_COPY: Self = Self {
+        depth_compare: C3dDepthCompare::LessEqual,
+        depth_write: true,
+        cull: C3dCullMode::CullCounterClockwise,
+        filter: C3dFilter::PointClamp,
+        blend: C3dBlendMode::OpaqueCopy,
+        perspective_correct: true,
+    };
+
+    #[must_use]
+    pub const fn depth_compare(self) -> C3dDepthCompare {
+        self.depth_compare
+    }
+
+    #[must_use]
+    pub const fn depth_write(self) -> bool {
+        self.depth_write
+    }
+
+    #[must_use]
+    pub const fn cull(self) -> C3dCullMode {
+        self.cull
+    }
+
+    #[must_use]
+    pub const fn filter(self) -> C3dFilter {
+        self.filter
+    }
+
+    #[must_use]
+    pub const fn blend(self) -> C3dBlendMode {
+        self.blend
+    }
+
+    #[must_use]
+    pub const fn perspective_correct(self) -> bool {
+        self.perspective_correct
+    }
+}
+
+/// One raw draw referencing validated scene resources by stable ordinal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dDraw {
+    mesh: u32,
+    texture: u32,
+    world: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
+    submission: C3dSubmissionBracket,
+    state: C3dPipelineState,
+}
+
+impl C3dDraw {
+    pub fn new(
+        mesh: u32,
+        texture: u32,
+        world: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
+        submission: C3dSubmissionBracket,
+    ) -> Result<Self, RawC3dContractError> {
+        validate_matrix("world", world)?;
+        Ok(Self {
+            mesh,
+            texture,
+            world,
+            submission,
+            state: C3dPipelineState::OPAQUE_COPY,
+        })
+    }
+
+    #[must_use]
+    pub const fn mesh(self) -> u32 {
+        self.mesh
+    }
+
+    #[must_use]
+    pub const fn texture(self) -> u32 {
+        self.texture
+    }
+
+    #[must_use]
+    pub const fn world(self) -> cmr_core::root_menu_c3d_transform::C3dMatrixWords {
+        self.world
+    }
+
+    #[must_use]
+    pub const fn submission(self) -> C3dSubmissionBracket {
+        self.submission
+    }
+
+    #[must_use]
+    pub const fn state(self) -> C3dPipelineState {
+        self.state
+    }
+}
+
+/// Owned immutable geometry and texture tables shared across benchmark frames.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct C3dResourceSet {
+    meshes: Box<[C3dMeshResource]>,
+    textures: Box<[C3dIndexedTexture]>,
+}
+
+impl C3dResourceSet {
+    #[must_use]
+    pub fn new(
+        meshes: impl Into<Box<[C3dMeshResource]>>,
+        textures: impl Into<Box<[C3dIndexedTexture]>>,
+    ) -> Self {
+        Self {
+            meshes: meshes.into(),
+            textures: textures.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn meshes(&self) -> &[C3dMeshResource] {
+        &self.meshes
+    }
+
+    #[must_use]
+    pub fn textures(&self) -> &[C3dIndexedTexture] {
+        &self.textures
+    }
+}
+
+/// Validated per-frame raw C3D draw stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dRawFrame<'a> {
+    extent: DisplayExtent,
+    view: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
+    projection: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
+    active_palette: &'a [PaletteEntry; INDEXED_PALETTE_LEN],
+    resources: &'a C3dResourceSet,
+    draws: &'a [C3dDraw],
+}
+
+impl<'a> C3dRawFrame<'a> {
+    pub fn new(
+        extent: DisplayExtent,
+        view: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
+        projection: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
+        active_palette: &'a [PaletteEntry; INDEXED_PALETTE_LEN],
+        resources: &'a C3dResourceSet,
+        draws: &'a [C3dDraw],
+    ) -> Result<Self, RawC3dContractError> {
+        checked_pixel_count(extent)?;
+        validate_matrix("view", view)?;
+        validate_matrix("projection", projection)?;
+        for (draw_index, draw) in draws.iter().copied().enumerate() {
+            if usize::try_from(draw.mesh)
+                .ok()
+                .is_none_or(|index| index >= resources.meshes.len())
+            {
+                return Err(RawC3dContractError::MeshResourceOutOfBounds {
+                    draw: draw_index,
+                    resource: draw.mesh,
+                    resource_count: resources.meshes.len(),
+                });
+            }
+            if usize::try_from(draw.texture)
+                .ok()
+                .is_none_or(|index| index >= resources.textures.len())
+            {
+                return Err(RawC3dContractError::TextureResourceOutOfBounds {
+                    draw: draw_index,
+                    resource: draw.texture,
+                    resource_count: resources.textures.len(),
+                });
+            }
+        }
+        Ok(Self {
+            extent,
+            view,
+            projection,
+            active_palette,
+            resources,
+            draws,
+        })
+    }
+
+    #[must_use]
+    pub const fn extent(self) -> DisplayExtent {
+        self.extent
+    }
+
+    #[must_use]
+    pub const fn view(self) -> cmr_core::root_menu_c3d_transform::C3dMatrixWords {
+        self.view
+    }
+
+    #[must_use]
+    pub const fn projection(self) -> cmr_core::root_menu_c3d_transform::C3dMatrixWords {
+        self.projection
+    }
+
+    /// The exact 256-entry display palette into which source material RGB is
+    /// quantized before final RGBA presentation.
+    ///
+    /// The compatibility result is not direct source-palette RGB: each source
+    /// texel first selects the active entry with minimum RGB L1 distance (the
+    /// lowest index wins ties), then that active entry supplies the output RGB.
+    /// Backends may precompute this material-index to active-index mapping
+    /// outside the timed draw interval.
+    #[must_use]
+    pub const fn active_palette(self) -> &'a [PaletteEntry; INDEXED_PALETTE_LEN] {
+        self.active_palette
+    }
+
+    #[must_use]
+    pub const fn resources(self) -> &'a C3dResourceSet {
+        self.resources
+    }
+
+    #[must_use]
+    pub const fn draws(self) -> &'a [C3dDraw] {
+        self.draws
+    }
+}
+
+fn validate_matrix(
+    name: &'static str,
+    matrix: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
+) -> Result<(), RawC3dContractError> {
+    for (component, word) in matrix.words().into_iter().enumerate() {
+        if !f32::from_bits(word).is_finite() {
+            return Err(RawC3dContractError::NonFiniteMatrixComponent { name, component });
+        }
+    }
+    Ok(())
+}
+
+/// Validation failure at the raw recovered C3D GPU boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RawC3dContractError {
+    Frame(FrameContractError),
+    InvalidTriangleIndexCount {
+        actual: usize,
+    },
+    VertexIndexOutOfBounds {
+        position: usize,
+        index: u16,
+        vertex_count: usize,
+    },
+    InvalidTextureIndexLength {
+        expected: usize,
+        actual: usize,
+    },
+    InvalidTexturePaletteLength {
+        actual: usize,
+    },
+    TexturePaletteIndexOutOfBounds {
+        position: usize,
+        index: u8,
+        palette_len: usize,
+    },
+    ColorKeyIndexOutOfBounds {
+        index: u8,
+        palette_len: usize,
+    },
+    NonFiniteMatrixComponent {
+        name: &'static str,
+        component: usize,
+    },
+    MeshResourceOutOfBounds {
+        draw: usize,
+        resource: u32,
+        resource_count: usize,
+    },
+    TextureResourceOutOfBounds {
+        draw: usize,
+        resource: u32,
+        resource_count: usize,
+    },
+}
+
+impl From<FrameContractError> for RawC3dContractError {
+    fn from(error: FrameContractError) -> Self {
+        Self::Frame(error)
+    }
+}
+
+impl fmt::Display for RawC3dContractError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "raw C3D GPU contract failed: {self:?}")
+    }
+}
+
+impl std::error::Error for RawC3dContractError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Frame(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Common raw-C3D operation implemented by both native GPU candidates.
+pub trait RawC3dGpuBackend {
+    type Error;
+
+    fn info(&self) -> &BackendInfo;
+    fn capabilities(&self) -> BackendCapabilities;
+    fn render_c3d_readback(
+        &mut self,
+        frame: C3dRawFrame<'_>,
+    ) -> Result<ConformanceFrame, Self::Error>;
+}
+
 /// Deterministic nearest-rank timing summary over non-empty nanosecond samples.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TimingSummary {
@@ -621,5 +1179,274 @@ mod tests {
         assert_eq!(timing.cpu_encode_submit_ns, 11);
         assert_eq!(timing.submit_to_completion_ns, 22);
         assert_eq!(timing.gpu_timestamp_ns, Some(17));
+    }
+
+    fn raw_vertex(seed: i32) -> C3dVertexQ16 {
+        C3dVertexQ16 {
+            components: std::array::from_fn(|index| seed + index as i32),
+        }
+    }
+
+    fn raw_resources() -> C3dResourceSet {
+        let mesh = C3dMeshResource::new(
+            vec![raw_vertex(10), raw_vertex(20), raw_vertex(30)],
+            vec![0, 1, 2],
+        )
+        .unwrap();
+        let texture = C3dIndexedTexture::new(
+            DisplayExtent {
+                width: 2,
+                height: 1,
+            },
+            vec![0, 1],
+            vec![
+                C3dRgb8 {
+                    red: 1,
+                    green: 2,
+                    blue: 3,
+                },
+                C3dRgb8 {
+                    red: 4,
+                    green: 5,
+                    blue: 6,
+                },
+            ],
+            Some(0),
+        )
+        .unwrap();
+        C3dResourceSet::new(vec![mesh], vec![texture])
+    }
+
+    #[test]
+    fn raw_mesh_preserves_q16_words_and_validates_triangle_indices() {
+        let vertices = [
+            raw_vertex(i32::MIN),
+            raw_vertex(7),
+            raw_vertex(i32::MAX - 7),
+        ];
+        let mesh = C3dMeshResource::new(vertices.to_vec(), vec![2, 0, 1]).unwrap();
+        assert_eq!(mesh.vertices(), &vertices);
+        assert_eq!(mesh.indices(), &[2, 0, 1]);
+
+        assert_eq!(
+            C3dMeshResource::new(vertices.to_vec(), Vec::<u16>::new()),
+            Err(RawC3dContractError::InvalidTriangleIndexCount { actual: 0 })
+        );
+        assert_eq!(
+            C3dMeshResource::new(vertices.to_vec(), vec![0, 1]),
+            Err(RawC3dContractError::InvalidTriangleIndexCount { actual: 2 })
+        );
+        assert_eq!(
+            C3dMeshResource::new(vertices.to_vec(), vec![0, 3, 1]),
+            Err(RawC3dContractError::VertexIndexOutOfBounds {
+                position: 1,
+                index: 3,
+                vertex_count: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn raw_texture_validates_shape_palette_and_every_index() {
+        let extent = DisplayExtent {
+            width: 2,
+            height: 1,
+        };
+        let rgb = C3dRgb8 {
+            red: 1,
+            green: 2,
+            blue: 3,
+        };
+        assert!(C3dIndexedTexture::new(extent, vec![0, 0], vec![rgb], Some(0)).is_ok());
+        assert_eq!(
+            C3dIndexedTexture::new(extent, vec![0], vec![rgb], None),
+            Err(RawC3dContractError::InvalidTextureIndexLength {
+                expected: 2,
+                actual: 1,
+            })
+        );
+        assert_eq!(
+            C3dIndexedTexture::new(extent, vec![0, 0], Vec::<C3dRgb8>::new(), None),
+            Err(RawC3dContractError::InvalidTexturePaletteLength { actual: 0 })
+        );
+        assert_eq!(
+            C3dIndexedTexture::new(extent, vec![0, 1], vec![rgb], None),
+            Err(RawC3dContractError::TexturePaletteIndexOutOfBounds {
+                position: 1,
+                index: 1,
+                palette_len: 1,
+            })
+        );
+        assert_eq!(
+            C3dIndexedTexture::new(extent, vec![0, 0], vec![rgb], Some(1)),
+            Err(RawC3dContractError::ColorKeyIndexOutOfBounds {
+                index: 1,
+                palette_len: 1,
+            })
+        );
+        assert_eq!(
+            C3dIndexedTexture::new(
+                DisplayExtent {
+                    width: 0,
+                    height: 1,
+                },
+                Vec::<u8>::new(),
+                vec![rgb],
+                None,
+            ),
+            Err(RawC3dContractError::Frame(
+                FrameContractError::InvalidExtent(DisplayExtent {
+                    width: 0,
+                    height: 1,
+                })
+            ))
+        );
+    }
+
+    #[test]
+    fn raw_texture_maps_into_the_active_palette_by_l1_with_lowest_tie() {
+        let texture = C3dIndexedTexture::new(
+            DisplayExtent {
+                width: 2,
+                height: 1,
+            },
+            vec![0, 1],
+            vec![
+                C3dRgb8 {
+                    red: 10,
+                    green: 10,
+                    blue: 10,
+                },
+                C3dRgb8 {
+                    red: 20,
+                    green: 20,
+                    blue: 20,
+                },
+            ],
+            None,
+        )
+        .unwrap();
+        let mut active = [PaletteEntry {
+            red: 255,
+            green: 255,
+            blue: 255,
+            flags: 0,
+        }; INDEXED_PALETTE_LEN];
+        active[3] = PaletteEntry {
+            red: 9,
+            green: 10,
+            blue: 10,
+            flags: 255,
+        };
+        active[4] = PaletteEntry {
+            red: 11,
+            green: 10,
+            blue: 10,
+            flags: 0,
+        };
+        active[7] = PaletteEntry {
+            red: 20,
+            green: 20,
+            blue: 20,
+            flags: 99,
+        };
+
+        assert_eq!(&*c3d_active_palette_l1_map(&texture, &active), &[3, 7]);
+    }
+
+    #[test]
+    fn opaque_copy_profile_keeps_submission_bracket_separate_and_depth_writable() {
+        let resources = raw_resources();
+        let world = cmr_core::root_menu_c3d_transform::ROOT_MENU_C3D_VIEW;
+        let draw = C3dDraw::new(0, 0, world, C3dSubmissionBracket::DeferredTranslucent).unwrap();
+        assert_eq!(draw.submission(), C3dSubmissionBracket::DeferredTranslucent);
+        assert_eq!(draw.state().blend(), C3dBlendMode::OpaqueCopy);
+        assert_eq!(draw.state().depth_compare(), C3dDepthCompare::LessEqual);
+        assert!(draw.state().depth_write());
+        assert_eq!(draw.state().cull(), C3dCullMode::CullCounterClockwise);
+        assert_eq!(draw.state().filter(), C3dFilter::PointClamp);
+        assert!(draw.state().perspective_correct());
+
+        let active_palette = palette();
+        let frame = C3dRawFrame::new(
+            DisplayExtent {
+                width: 4,
+                height: 3,
+            },
+            world,
+            cmr_core::root_menu_c3d_transform::ROOT_MENU_C3D_PROJECTION,
+            &active_palette,
+            &resources,
+            std::slice::from_ref(&draw),
+        )
+        .unwrap();
+        assert_eq!(frame.draws(), &[draw]);
+        assert_eq!(frame.resources(), &resources);
+        assert_eq!(frame.active_palette(), &active_palette);
+    }
+
+    #[test]
+    fn raw_frame_rejects_bad_resource_ids_and_nonfinite_matrices() {
+        let resources = raw_resources();
+        let active_palette = palette();
+        let identity = cmr_core::root_menu_c3d_transform::ROOT_MENU_C3D_VIEW;
+        let bad_mesh = C3dDraw::new(1, 0, identity, C3dSubmissionBracket::Normal).unwrap();
+        assert!(matches!(
+            C3dRawFrame::new(
+                DisplayExtent {
+                    width: 1,
+                    height: 1,
+                },
+                identity,
+                cmr_core::root_menu_c3d_transform::ROOT_MENU_C3D_PROJECTION,
+                &active_palette,
+                &resources,
+                std::slice::from_ref(&bad_mesh),
+            ),
+            Err(RawC3dContractError::MeshResourceOutOfBounds {
+                draw: 0,
+                resource: 1,
+                resource_count: 1,
+            })
+        ));
+
+        let bad_texture = C3dDraw::new(0, 1, identity, C3dSubmissionBracket::Normal).unwrap();
+        assert!(matches!(
+            C3dRawFrame::new(
+                DisplayExtent {
+                    width: 1,
+                    height: 1,
+                },
+                identity,
+                cmr_core::root_menu_c3d_transform::ROOT_MENU_C3D_PROJECTION,
+                &active_palette,
+                &resources,
+                std::slice::from_ref(&bad_texture),
+            ),
+            Err(RawC3dContractError::TextureResourceOutOfBounds {
+                draw: 0,
+                resource: 1,
+                resource_count: 1,
+            })
+        ));
+
+        let nonfinite = cmr_core::c3d_camera::projection_matrix_words(f32::NAN, 2.4, 1.0, 250.0);
+        assert_eq!(
+            C3dRawFrame::new(
+                DisplayExtent {
+                    width: 1,
+                    height: 1,
+                },
+                nonfinite,
+                cmr_core::root_menu_c3d_transform::ROOT_MENU_C3D_PROJECTION,
+                &active_palette,
+                &resources,
+                &[],
+            ),
+            Err(RawC3dContractError::NonFiniteMatrixComponent {
+                name: "view",
+                component: 0,
+            })
+        );
     }
 }

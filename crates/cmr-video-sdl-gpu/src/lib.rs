@@ -18,16 +18,20 @@ use cmr_gpu_contract::{
     GraphicsApi, IndexedFrameView, IndexedPaletteGpuBackend, ReadbackFormat, normalize_readback,
 };
 use sdl3::gpu::{
-    ColorTargetDescription, ColorTargetInfo, Device, FillMode, GraphicsPipeline,
-    GraphicsPipelineTargetInfo, LoadOp, PrimitiveType, Sampler, SamplerAddressMode,
-    SamplerCreateInfo, SamplerMipmapMode, ShaderFormat, ShaderStage, StoreOp, TextureCreateInfo,
-    TextureFormat, TextureRegion, TextureSamplerBinding, TextureTransferInfo, TextureType,
-    TextureUsage, TransferBufferUsage,
+    ColorTargetDescription, ColorTargetInfo, CompareOp, CullMode, DepthStencilState, Device,
+    FillMode, FrontFace, GraphicsPipeline, GraphicsPipelineTargetInfo, LoadOp, PrimitiveType,
+    RasterizerState, Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode,
+    ShaderFormat, ShaderStage, StoreOp, TextureCreateInfo, TextureFormat, TextureRegion,
+    TextureSamplerBinding, TextureTransferInfo, TextureType, TextureUsage, TransferBufferUsage,
+    VertexAttribute, VertexBufferDescription, VertexElementFormat, VertexInputRate,
+    VertexInputState,
 };
 use sdl3::properties::{Properties, Setter};
 
 const VERTEX_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/indexed.vert.spv"));
 const FRAGMENT_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/indexed.frag.spv"));
+const C3D_VERTEX_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/c3d.vert.spv"));
+const C3D_FRAGMENT_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/c3d.frag.spv"));
 const PALETTE_BYTES: usize = 256 * 4;
 const TRANSFER_ALIGNMENT: usize = 512;
 const READBACK_ROW_ALIGNMENT: usize = 256;
@@ -46,6 +50,7 @@ pub struct SdlGpuConfig {
 
 pub struct SdlGpuIndexedBackend {
     pipeline: GraphicsPipeline,
+    c3d_pipeline: GraphicsPipeline,
     sampler: Sampler,
     device: Device,
     info: BackendInfo,
@@ -58,6 +63,8 @@ impl SdlGpuIndexedBackend {
         if env!("CMR_SDL_GPU_SPIRV_AVAILABLE") != "1"
             || VERTEX_SPIRV.is_empty()
             || FRAGMENT_SPIRV.is_empty()
+            || C3D_VERTEX_SPIRV.is_empty()
+            || C3D_FRAGMENT_SPIRV.is_empty()
         {
             return Err(SdlGpuError::ShaderCompilerUnavailable);
         }
@@ -146,6 +153,78 @@ impl SdlGpuIndexedBackend {
             )
             .build()
             .map_err(|error| SdlGpuError::sdl("pipeline creation", error))?;
+        let c3d_vertex_shader = device
+            .create_shader()
+            .with_code(ShaderFormat::SPIRV, C3D_VERTEX_SPIRV, ShaderStage::Vertex)
+            .with_uniform_buffers(1)
+            .with_entrypoint(c"main")
+            .build()
+            .map_err(|error| SdlGpuError::sdl("C3D vertex shader creation", error))?;
+        let c3d_fragment_shader = device
+            .create_shader()
+            .with_code(
+                ShaderFormat::SPIRV,
+                C3D_FRAGMENT_SPIRV,
+                ShaderStage::Fragment,
+            )
+            .with_samplers(2)
+            .with_entrypoint(c"main")
+            .build()
+            .map_err(|error| SdlGpuError::sdl("C3D fragment shader creation", error))?;
+        let c3d_vertex_buffers = [VertexBufferDescription::new()
+            .with_slot(0)
+            .with_pitch(32)
+            .with_input_rate(VertexInputRate::Vertex)
+            .with_instance_step_rate(0)];
+        let c3d_vertex_attributes = [
+            VertexAttribute::new()
+                .with_location(0)
+                .with_buffer_slot(0)
+                .with_format(VertexElementFormat::Int3)
+                .with_offset(0),
+            VertexAttribute::new()
+                .with_location(1)
+                .with_buffer_slot(0)
+                .with_format(VertexElementFormat::Int2)
+                .with_offset(12),
+            VertexAttribute::new()
+                .with_location(2)
+                .with_buffer_slot(0)
+                .with_format(VertexElementFormat::Int3)
+                .with_offset(20),
+        ];
+        let c3d_targets = [ColorTargetDescription::new().with_format(TextureFormat::R8g8b8a8Unorm)];
+        let c3d_pipeline = device
+            .create_graphics_pipeline()
+            .with_vertex_shader(&c3d_vertex_shader)
+            .with_fragment_shader(&c3d_fragment_shader)
+            .with_primitive_type(PrimitiveType::TriangleList)
+            .with_vertex_input_state(
+                VertexInputState::new()
+                    .with_vertex_buffer_descriptions(&c3d_vertex_buffers)
+                    .with_vertex_attributes(&c3d_vertex_attributes),
+            )
+            .with_rasterizer_state(
+                RasterizerState::new()
+                    .with_fill_mode(FillMode::Fill)
+                    .with_cull_mode(CullMode::Back)
+                    .with_front_face(FrontFace::Clockwise)
+                    .with_enable_depth_clip(true),
+            )
+            .with_depth_stencil_state(
+                DepthStencilState::new()
+                    .with_enable_depth_test(true)
+                    .with_enable_depth_write(true)
+                    .with_compare_op(CompareOp::LessOrEqual),
+            )
+            .with_target_info(
+                GraphicsPipelineTargetInfo::new()
+                    .with_color_target_descriptions(&c3d_targets)
+                    .with_has_depth_stencil_target(true)
+                    .with_depth_stencil_format(TextureFormat::D32Float),
+            )
+            .build()
+            .map_err(|error| SdlGpuError::sdl("C3D pipeline creation", error))?;
         let sampler = device
             .create_sampler(
                 SamplerCreateInfo::new()
@@ -158,6 +237,7 @@ impl SdlGpuIndexedBackend {
             .map_err(|error| SdlGpuError::sdl("sampler creation", error))?;
         Ok(Self {
             pipeline,
+            c3d_pipeline,
             sampler,
             device,
             info,
@@ -166,6 +246,8 @@ impl SdlGpuIndexedBackend {
         })
     }
 }
+
+mod c3d;
 
 impl IndexedPaletteGpuBackend for SdlGpuIndexedBackend {
     type Error = SdlGpuError;
@@ -532,14 +614,36 @@ mod raw {
         palette_offset: usize,
         palette: &[u8],
     ) -> Result<(), SdlGpuError> {
+        write_transfer(
+            device,
+            transfer,
+            len,
+            &[(0, indices), (palette_offset, palette)],
+        )
+    }
+
+    pub(super) fn write_transfer(
+        device: &Device,
+        transfer: &TransferBuffer,
+        len: usize,
+        chunks: &[(usize, &[u8])],
+    ) -> Result<(), SdlGpuError> {
+        for &(offset, chunk) in chunks {
+            offset
+                .checked_add(chunk.len())
+                .filter(|&end| end <= len)
+                .ok_or(SdlGpuError::SizeOverflow)?;
+        }
         let pointer = unsafe { SDL_MapGPUTransferBuffer(device.raw(), transfer.raw(), false) };
         if pointer.is_null() {
             return Err(SdlGpuError::NullTransferMap);
         }
         let bytes = unsafe { slice::from_raw_parts_mut(pointer.cast::<u8>(), len) };
         bytes.fill(0);
-        bytes[..indices.len()].copy_from_slice(indices);
-        bytes[palette_offset..palette_offset + palette.len()].copy_from_slice(palette);
+        for &(offset, chunk) in chunks {
+            let end = offset + chunk.len();
+            bytes[offset..end].copy_from_slice(chunk);
+        }
         unsafe { SDL_UnmapGPUTransferBuffer(device.raw(), transfer.raw()) };
         Ok(())
     }

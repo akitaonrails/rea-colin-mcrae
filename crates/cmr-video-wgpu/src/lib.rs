@@ -10,9 +10,10 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use cmr_gpu_contract::{
-    BackendCapabilities, BackendInfo, BackendKind, ConformanceFrame, DeviceKind,
-    FrameContractError, FrameTiming, GraphicsApi, IndexedFrameView, IndexedPaletteGpuBackend,
-    ReadbackFormat, normalize_readback,
+    BackendCapabilities, BackendInfo, BackendKind, C3dCullMode, C3dRawFrame, ConformanceFrame,
+    DeviceKind, FrameContractError, FrameTiming, GraphicsApi, IndexedFrameView,
+    IndexedPaletteGpuBackend, RawC3dGpuBackend, ReadbackFormat, c3d_active_palette_l1_map,
+    normalize_readback,
 };
 
 const PALETTE_LEN: u32 = 256;
@@ -38,6 +39,54 @@ fn fragment_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
     let coordinate = vec2i(position.xy);
     let palette_index = textureLoad(indices, coordinate, 0).r;
     let color = textureLoad(palette, vec2i(i32(palette_index), 0), 0);
+    return vec4f(vec3f(color.rgb) / 255.0, 1.0);
+}
+"#;
+
+const C3D_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+const C3D_SHADER: &str = r#"
+struct Transform {
+    world: mat4x4f,
+    view: mat4x4f,
+    projection: mat4x4f,
+    clip_parameters: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> transform: Transform;
+@group(1) @binding(0) var material_indices: texture_2d<u32>;
+@group(1) @binding(1) var active_palette: texture_2d<u32>;
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) uv: vec2f,
+};
+
+@vertex
+fn vertex_main(
+    @location(0) position_u: vec4i,
+    @location(1) v_normal: vec4i,
+) -> VertexOutput {
+    let scale = 1.0 / 65536.0;
+    let model = vec4f(vec3f(position_u.xyz) * scale, 1.0);
+    var clip = transform.projection * transform.view * transform.world * model;
+    // The recovered D3DVIEWPORT2 clip volume is
+    // {-1, 2, width/height, 2*width/height, 0, 1}. X and Z are already in
+    // the standard GPU clip volume; Y must be normalized by the aspect ratio.
+    clip.y = clip.y / transform.clip_parameters.x;
+    var result: VertexOutput;
+    result.position = clip;
+    result.uv = vec2f(f32(position_u.w), f32(v_normal.x)) * scale;
+    return result;
+}
+
+@fragment
+fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
+    let dimensions = vec2f(textureDimensions(material_indices));
+    let bounded = clamp(input.uv, vec2f(0.0), vec2f(1.0));
+    let coordinate = min(vec2i(floor(bounded * dimensions)), vec2i(dimensions) - vec2i(1));
+    let palette_index = textureLoad(material_indices, coordinate, 0).r;
+    let color = textureLoad(active_palette, vec2i(i32(palette_index), 0), 0);
     return vec4f(vec3f(color.rgb) / 255.0, 1.0);
 }
 "#;
@@ -92,6 +141,10 @@ pub struct WgpuIndexedPaletteBackend {
     queue: wgpu::Queue,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    c3d_transform_layout: wgpu::BindGroupLayout,
+    c3d_texture_layout: wgpu::BindGroupLayout,
+    c3d_culled_pipeline: wgpu::RenderPipeline,
+    c3d_two_sided_pipeline: wgpu::RenderPipeline,
     info: BackendInfo,
     capabilities: BackendCapabilities,
 }
@@ -201,6 +254,42 @@ impl WgpuIndexedPaletteBackend {
             multiview_mask: None,
             cache: None,
         });
+        let c3d_transform_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("cmr raw C3D transform layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let c3d_texture_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("cmr raw C3D texture layout"),
+                entries: &[texture_layout_entry(0), texture_layout_entry(1)],
+            });
+        let c3d_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("cmr raw C3D pipeline layout"),
+            bind_group_layouts: &[Some(&c3d_transform_layout), Some(&c3d_texture_layout)],
+            immediate_size: 0,
+        });
+        let c3d_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("cmr raw C3D shader"),
+            source: wgpu::ShaderSource::Wgsl(C3D_SHADER.into()),
+        });
+        let c3d_culled_pipeline = create_c3d_pipeline(
+            &device,
+            &c3d_pipeline_layout,
+            &c3d_shader,
+            Some(wgpu::Face::Back),
+        );
+        let c3d_two_sided_pipeline =
+            create_c3d_pipeline(&device, &c3d_pipeline_layout, &c3d_shader, None);
         let info = BackendInfo {
             backend: BackendKind::Wgpu,
             graphics_api: graphics_api(native_info.backend),
@@ -222,6 +311,10 @@ impl WgpuIndexedPaletteBackend {
             queue,
             bind_group_layout,
             pipeline,
+            c3d_transform_layout,
+            c3d_texture_layout,
+            c3d_culled_pipeline,
+            c3d_two_sided_pipeline,
             info,
             capabilities,
         })
@@ -414,6 +507,420 @@ impl IndexedPaletteGpuBackend for WgpuIndexedPaletteBackend {
     }
 }
 
+impl RawC3dGpuBackend for WgpuIndexedPaletteBackend {
+    type Error = WgpuBackendError;
+
+    fn info(&self) -> &BackendInfo {
+        &self.info
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.capabilities
+    }
+
+    fn render_c3d_readback(
+        &mut self,
+        frame: C3dRawFrame<'_>,
+    ) -> Result<ConformanceFrame, Self::Error> {
+        let extent = frame.extent();
+        let size = wgpu::Extent3d {
+            width: u32::from(extent.width),
+            height: u32::from(extent.height),
+            depth_or_array_layers: 1,
+        };
+        let encode_started = Instant::now();
+        let output_texture = create_texture(
+            &self.device,
+            "cmr raw C3D output",
+            size,
+            OUTPUT_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let depth_texture = create_texture(
+            &self.device,
+            "cmr raw C3D depth",
+            size,
+            C3D_DEPTH_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let active_palette_texture = create_texture(
+            &self.device,
+            "cmr raw C3D active palette",
+            wgpu::Extent3d {
+                width: PALETTE_LEN,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            wgpu::TextureFormat::Rgba8Uint,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        );
+        let active_palette_bytes = active_palette_rgba8(frame.active_palette());
+        self.queue.write_texture(
+            texture_copy(&active_palette_texture),
+            &active_palette_bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(PALETTE_LEN * 4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: PALETTE_LEN,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let active_palette_view =
+            active_palette_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        struct DrawResources {
+            vertex: wgpu::Buffer,
+            index: wgpu::Buffer,
+            transform: wgpu::Buffer,
+            transform_bind_group: wgpu::BindGroup,
+            material_texture: wgpu::Texture,
+            texture_bind_group: wgpu::BindGroup,
+            index_count: u32,
+            cull: C3dCullMode,
+        }
+
+        let mut draws = Vec::with_capacity(frame.draws().len());
+        for draw in frame.draws() {
+            let mesh = &frame.resources().meshes()[draw.mesh() as usize];
+            let texture = &frame.resources().textures()[draw.texture() as usize];
+            let vertex_bytes = c3d_vertex_bytes(mesh.vertices());
+            let index_bytes = c3d_index_bytes(mesh.indices());
+            let transform_bytes = c3d_transform_bytes(
+                draw.world().words(),
+                frame.view().words(),
+                frame.projection().words(),
+                f32::from(extent.width) / f32::from(extent.height),
+            );
+            let vertex = create_initialized_buffer(
+                &self.device,
+                &self.queue,
+                "cmr raw C3D vertices",
+                &vertex_bytes,
+                wgpu::BufferUsages::VERTEX,
+            );
+            let index = create_initialized_buffer(
+                &self.device,
+                &self.queue,
+                "cmr raw C3D indices",
+                &index_bytes,
+                wgpu::BufferUsages::INDEX,
+            );
+            let transform = create_initialized_buffer(
+                &self.device,
+                &self.queue,
+                "cmr raw C3D transform",
+                &transform_bytes,
+                wgpu::BufferUsages::UNIFORM,
+            );
+            let transform_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("cmr raw C3D transform bind group"),
+                layout: &self.c3d_transform_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: transform.as_entire_binding(),
+                }],
+            });
+            let material_extent = texture.extent();
+            let material_size = wgpu::Extent3d {
+                width: u32::from(material_extent.width),
+                height: u32::from(material_extent.height),
+                depth_or_array_layers: 1,
+            };
+            let material_texture = create_texture(
+                &self.device,
+                "cmr raw C3D mapped material",
+                material_size,
+                wgpu::TextureFormat::R8Uint,
+                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            );
+            let palette_map = c3d_active_palette_l1_map(texture, frame.active_palette());
+            let mapped_indices: Vec<u8> = texture
+                .indices()
+                .iter()
+                .map(|&index| palette_map[usize::from(index)])
+                .collect();
+            self.queue.write_texture(
+                texture_copy(&material_texture),
+                &mapped_indices,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(u32::from(material_extent.width)),
+                    rows_per_image: Some(u32::from(material_extent.height)),
+                },
+                material_size,
+            );
+            let material_view =
+                material_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let texture_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("cmr raw C3D texture bind group"),
+                layout: &self.c3d_texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&material_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&active_palette_view),
+                    },
+                ],
+            });
+            draws.push(DrawResources {
+                vertex,
+                index,
+                transform,
+                transform_bind_group,
+                material_texture,
+                texture_bind_group,
+                index_count: mesh.indices().len() as u32,
+                cull: draw.state().cull(),
+            });
+        }
+
+        let tight_pitch = u32::from(extent.width) * 4;
+        let readback_pitch = tight_pitch.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
+        let readback_size = u64::from(readback_pitch) * u64::from(extent.height);
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cmr raw C3D readback"),
+            size: readback_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("cmr raw C3D commands"),
+            });
+        let clear = frame.active_palette()[0];
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("cmr raw C3D pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &output_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: f64::from(clear.red) / 255.0,
+                            g: f64::from(clear.green) / 255.0,
+                            b: f64::from(clear.blue) / 255.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            for draw in &draws {
+                let pipeline = match draw.cull {
+                    C3dCullMode::CullCounterClockwise => &self.c3d_culled_pipeline,
+                    C3dCullMode::None => &self.c3d_two_sided_pipeline,
+                };
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &draw.transform_bind_group, &[]);
+                pass.set_bind_group(1, &draw.texture_bind_group, &[]);
+                pass.set_vertex_buffer(0, draw.vertex.slice(..));
+                pass.set_index_buffer(draw.index.slice(..), wgpu::IndexFormat::Uint16);
+                pass.draw_indexed(0..draw.index_count, 0, 0..1);
+            }
+        }
+        encoder.copy_texture_to_buffer(
+            texture_copy(&output_texture),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(readback_pitch),
+                    rows_per_image: Some(u32::from(extent.height)),
+                },
+            },
+            size,
+        );
+        let submission = self.queue.submit([encoder.finish()]);
+        let cpu_encode_submit_ns = elapsed_ns(encode_started.elapsed());
+        let completion_started = Instant::now();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: None,
+            })
+            .map_err(|error| WgpuBackendError::Poll(error.to_string()))?;
+        receiver
+            .recv()
+            .map_err(|error| WgpuBackendError::MapChannel(error.to_string()))?
+            .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
+        let submit_to_completion_ns = elapsed_ns(completion_started.elapsed());
+        let mapped = readback
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
+        let rgba8 = normalize_readback(
+            extent,
+            &mapped,
+            readback_pitch as usize,
+            ReadbackFormat::Rgba8,
+        )
+        .map_err(WgpuBackendError::Contract)?;
+        drop(mapped);
+        readback.unmap();
+        // Keep resources observably alive through submission completion.
+        for draw in &draws {
+            let _ = (&draw.transform, &draw.material_texture);
+        }
+        Ok(ConformanceFrame {
+            rgba8,
+            timing: FrameTiming {
+                cpu_encode_submit_ns,
+                submit_to_completion_ns,
+                gpu_timestamp_ns: None,
+            },
+        })
+    }
+}
+
+fn create_c3d_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    cull_mode: Option<wgpu::Face>,
+) -> wgpu::RenderPipeline {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Sint32x4,
+            offset: 0,
+            shader_location: 0,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Sint32x4,
+            offset: 16,
+            shader_location: 1,
+        },
+    ];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("cmr raw C3D pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vertex_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: 32,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &ATTRIBUTES,
+            })],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Cw,
+            cull_mode,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: C3D_DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fragment_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: OUTPUT_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn active_palette_rgba8(palette: &[cmr_formats::riff_palette::PaletteEntry; 256]) -> [u8; 1024] {
+    let mut bytes = [0; 1024];
+    for (chunk, entry) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(palette) {
+        chunk.copy_from_slice(&[entry.red, entry.green, entry.blue, u8::MAX]);
+    }
+    bytes
+}
+
+fn c3d_vertex_bytes(vertices: &[cmr_gpu_contract::C3dVertexQ16]) -> Vec<u8> {
+    vertices
+        .iter()
+        .flat_map(|vertex| vertex.components)
+        .flat_map(i32::to_le_bytes)
+        .collect()
+}
+
+fn c3d_index_bytes(indices: &[u16]) -> Vec<u8> {
+    indices.iter().copied().flat_map(u16::to_le_bytes).collect()
+}
+
+fn c3d_transform_bytes(
+    world: [u32; 16],
+    view: [u32; 16],
+    projection: [u32; 16],
+    aspect: f32,
+) -> Vec<u8> {
+    world
+        .into_iter()
+        .chain(view)
+        .chain(projection)
+        .chain([aspect.to_bits(), 0, 0, 0])
+        .flat_map(u32::to_le_bytes)
+        .collect()
+}
+
+fn create_initialized_buffer(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &'static str,
+    bytes: &[u8],
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    let padded_len = bytes.len().div_ceil(wgpu::COPY_BUFFER_ALIGNMENT as usize)
+        * wgpu::COPY_BUFFER_ALIGNMENT as usize;
+    let mut padded = Vec::with_capacity(padded_len);
+    padded.extend_from_slice(bytes);
+    padded.resize(padded_len, 0);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: padded.len() as u64,
+        usage: usage | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&buffer, 0, &padded);
+    buffer
+}
+
 fn texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -540,9 +1047,15 @@ impl std::error::Error for WgpuBackendError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cmr_core::c3d_camera::{
+        MATRIX_IDENTITY_Q16, projection_matrix_words, view_matrix_words, world_matrix_words,
+    };
     use cmr_core::display::DisplayExtent;
     use cmr_formats::riff_palette::PaletteEntry;
-    use cmr_gpu_contract::IndexedPaletteGpuBackend;
+    use cmr_gpu_contract::{
+        C3dDraw, C3dIndexedTexture, C3dMeshResource, C3dRawFrame, C3dResourceSet, C3dRgb8,
+        C3dSubmissionBracket, C3dVertexQ16, IndexedPaletteGpuBackend, RawC3dGpuBackend,
+    };
 
     #[test]
     fn adapter_rank_honors_power_preference_before_fallbacks() {
@@ -567,6 +1080,110 @@ mod tests {
     fn elapsed_nanoseconds_saturate_instead_of_wrapping() {
         assert_eq!(elapsed_ns(Duration::from_nanos(17)), 17);
         assert_eq!(elapsed_ns(Duration::new(u64::MAX, 999_999_999)), u64::MAX);
+    }
+
+    #[test]
+    fn raw_c3d_binary_encoders_preserve_exact_words_and_alignment() {
+        let vertices = [C3dVertexQ16 {
+            components: [1, -2, 3, -4, 5, -6, 7, -8],
+        }];
+        let bytes = c3d_vertex_bytes(&vertices);
+        assert_eq!(bytes.len(), 32);
+        assert_eq!(&bytes[0..4], &1i32.to_le_bytes());
+        assert_eq!(&bytes[28..32], &(-8i32).to_le_bytes());
+        assert_eq!(c3d_index_bytes(&[0x1234, 0xabcd]), [0x34, 0x12, 0xcd, 0xab]);
+
+        let identity = world_matrix_words(&MATRIX_IDENTITY_Q16).words();
+        let transform = c3d_transform_bytes(identity, identity, identity, 4.0 / 3.0);
+        assert_eq!(transform.len(), 208);
+        assert_eq!(&transform[192..196], &(4.0f32 / 3.0).to_le_bytes());
+        assert!(transform[196..].iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
+    #[ignore = "requires a Vulkan adapter; run explicitly for raw C3D GPU conformance"]
+    fn raw_c3d_triangle_uses_gpu_transform_texture_and_depth_path() {
+        const ONE: i32 = 0x1_0000;
+        let vertex = |x: i32, y: i32, z: i32, u: i32, v: i32| C3dVertexQ16 {
+            components: [x, y, z, u, v, 0, 0, ONE],
+        };
+        let triangle = [
+            vertex(-ONE / 2, -ONE / 2, 2 * ONE, 0, ONE),
+            vertex(0, ONE / 2, 2 * ONE, ONE / 2, 0),
+            vertex(ONE / 2, -ONE / 2, 2 * ONE, ONE, ONE),
+        ];
+        let mesh = C3dMeshResource::new(triangle, [0, 1, 2]).unwrap();
+        let texture = C3dIndexedTexture::new(
+            DisplayExtent {
+                width: 1,
+                height: 1,
+            },
+            [0],
+            [C3dRgb8 {
+                red: 250,
+                green: 4,
+                blue: 3,
+            }],
+            None,
+        )
+        .unwrap();
+        let resources = C3dResourceSet::new([mesh], [texture]);
+        let identity = world_matrix_words(&MATRIX_IDENTITY_Q16);
+        let draw = C3dDraw::new(0, 0, identity, C3dSubmissionBracket::Normal).unwrap();
+        let active_palette: [PaletteEntry; 256] = std::array::from_fn(|index| {
+            if index == 7 {
+                PaletteEntry {
+                    red: 250,
+                    green: 4,
+                    blue: 3,
+                    flags: 0xaa,
+                }
+            } else {
+                PaletteEntry {
+                    red: 0,
+                    green: 0,
+                    blue: 0,
+                    flags: index as u8,
+                }
+            }
+        });
+        let extent = DisplayExtent {
+            width: 64,
+            height: 64,
+        };
+        let draws = [draw];
+        let frame = C3dRawFrame::new(
+            extent,
+            view_matrix_words(&MATRIX_IDENTITY_Q16),
+            projection_matrix_words(2.0, 2.4, 1.0, 250.0),
+            &active_palette,
+            &resources,
+            &draws,
+        )
+        .unwrap();
+        let config = WgpuBackendConfig {
+            adapter_name_contains: std::env::var("CMR_WGPU_TEST_ADAPTER").ok(),
+            ..WgpuBackendConfig::default()
+        };
+        let mut backend = WgpuIndexedPaletteBackend::new(&config).unwrap();
+        let rendered = backend.render_c3d_readback(frame).unwrap();
+        let red = [250, 4, 3, 255];
+        let red_pixels = rendered
+            .rgba8
+            .pixels()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|pixel| **pixel == red)
+            .count();
+        assert!(
+            red_pixels > 0,
+            "clockwise raw triangle must survive culling"
+        );
+        assert!(
+            red_pixels < 64 * 64,
+            "triangle must not cover the clear target"
+        );
     }
 
     #[test]
@@ -604,9 +1221,15 @@ mod tests {
             assert_eq!(actual.rgba8, expected);
         }
 
-        assert_eq!(backend.info().graphics_api, GraphicsApi::Vulkan);
-        assert!(backend.capabilities().sampled_r8_uint);
-        assert!(backend.capabilities().headless_readback);
-        eprintln!("wgpu adapter: {:?}", backend.info());
+        assert_eq!(
+            IndexedPaletteGpuBackend::info(&backend).graphics_api,
+            GraphicsApi::Vulkan
+        );
+        assert!(IndexedPaletteGpuBackend::capabilities(&backend).sampled_r8_uint);
+        assert!(IndexedPaletteGpuBackend::capabilities(&backend).headless_readback);
+        eprintln!(
+            "wgpu adapter: {:?}",
+            IndexedPaletteGpuBackend::info(&backend)
+        );
     }
 }

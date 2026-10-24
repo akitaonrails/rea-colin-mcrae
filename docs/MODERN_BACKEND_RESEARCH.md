@@ -28,6 +28,19 @@ Vulkan-only; a reproducible shader package and its DX12 shader path remain open.
 The final native backend choice is gated on both candidates consuming identical
 raw recovered C3D draw packets and rendering a caller-selected imported stage.
 
+The raw-packet half of that gate is now implemented. `C3dRawFrame` retains the
+original Q16.16 vertex words and compact indices plus recovered draw order and
+matrices; transforms, clipping, culling, perspective interpolation, depth, and
+indexed-material sampling execute on each GPU. The two candidates produce
+byte-exact readback for the same parsed synthetic C3D packet on both local GPU
+classes. This integration also corrected SDL/Vulkan's viewport convention: its
+shader normalizes the recovered D3DVIEWPORT2 Y clip volume by `width/height`,
+while SDL_GPU supplies the framebuffer inversion; clockwise is the surviving
+front face. No performance winner is selected because the synchronous proof
+path still reallocates/uploads/reads back every call. The remaining gate is a
+persistent prepared-scene API and steady-state measurement of an explicitly
+selected user-imported stage.
+
 ## Recommendation
 
 Use four deliberately separate layers:

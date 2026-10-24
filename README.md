@@ -122,6 +122,18 @@ GPU readbacks against the established software presenter and against each
 other. It does not choose a native 3D backend; that decision waits for the raw
 recovered C3D workload and a representative user-imported stage benchmark.
 
+The source-owned raw-C3D cross-backend hardware check is opt-in:
+
+```sh
+SDL_VIDEO_DRIVER=offscreen cargo test -p cmr-gpu-conformance \
+  both_backends_match_exactly_on_one_raw_recovered_c3d_packet \
+  -- --ignored --nocapture
+```
+
+It proves that both APIs transform and rasterize the same raw C3D packet with
+byte-exact readback. It is not the final performance benchmark: that requires
+persistent uploaded resources and an explicit user-imported stage.
+
 Verify the currently cataloged source corpus, then import exact asset bytes into
 the ignored runtime directory:
 
