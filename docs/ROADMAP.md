@@ -450,9 +450,9 @@ a documented 0.1%-of-frame nearest-neighbour sampling-tie budget against the
 software oracle; a fixed-point hardware rasterizer cannot reproduce a float
 software rasterizer at UV texel boundaries, and the installed-corpus worst case
 is 189 of 307,200 pixels (0.062%) with the candidates identical to each other.
-46 of the 60 installed EU stage scenes gate on the RTX 5090 and AMD 610M/RADV
-paths; 12 see nothing at the placeholder origin camera and two still hit the
-known E01/E03 bitmap gaps. The placeholder camera/palette and the origin
+47 of the 60 installed EU stage scenes gate on the RTX 5090 and AMD 610M/RADV
+paths; 12 see nothing at the placeholder origin camera and GR4 still hits the
+unresolved 32x64 padded-layout surface case. The placeholder camera/palette and the origin
 visibility limit are recorded in the evidence ledger. Captured steady-state
 timings (median of three 240-frame runs after 32 warmup frames,
 encode+submit / submit-to-completion in microseconds) show wgpu ahead on the

@@ -1684,7 +1684,7 @@ mod tests {
     #[test]
     fn resource_failure_leaves_a_hole_and_later_slot_topology_survives() {
         let groups = [group(1, &[[0, 0, 0]], &[0])];
-        let bad = [(*b"BAD-BITMAP!!", indexed_bmp(1, 2, 4))];
+        let bad = [(*b"BAD-BITMAP!!", indexed_bmp(1, 2, 1))];
         let good = [(*b"GOOD-BITMAP!", indexed_bmp(1, 2, 8))];
         let fixture = fixture_for(&[
             (RootMenuC3dSlot::Championship, c3d(&groups, &bad)),
@@ -1699,7 +1699,7 @@ mod tests {
         assert!(matches!(
             topology.diagnostics().next().unwrap().error(),
             C3dResourcePreparationError::Bitmap {
-                source: BitmapError::UnsupportedBitDepth(4),
+                source: BitmapError::UnsupportedBitDepth(1),
                 ..
             }
         ));

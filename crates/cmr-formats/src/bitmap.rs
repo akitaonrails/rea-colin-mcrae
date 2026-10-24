@@ -151,8 +151,8 @@ impl fmt::Display for BitmapError {
 
 impl std::error::Error for BitmapError {}
 
-/// Parses the Windows V3, 8-bit, uncompressed indexed bitmap subset observed in
-/// the startup assets.
+/// Parses the Windows V3, 8-bit or 4-bit, uncompressed indexed bitmap subset
+/// observed in the startup and stage assets.
 ///
 /// A short all-zero trailing pad is accepted when it rounds the file up to a
 /// four-byte boundary: the shipped stage `.c3d` textures carry exactly that pad
@@ -201,7 +201,7 @@ pub fn parse_indexed_bitmap(
         return Err(BitmapError::InvalidPlanes(planes));
     }
     let depth = read_u16(input, 28)?;
-    if depth != 8 {
+    if depth != 8 && depth != 4 {
         return Err(BitmapError::UnsupportedBitDepth(depth));
     }
     let compression = read_u32(input, 30)?;
@@ -211,7 +211,13 @@ pub fn parse_indexed_bitmap(
 
     let declared_image_size = read_u32(input, 34)? as usize;
     let colors_used = read_u32(input, 46)?;
-    let palette_count = if colors_used == 0 { 256 } else { colors_used };
+    // A zero `biClrUsed` means the maximum palette for the bit depth: 256
+    // entries for 8bpp and 16 for 4bpp.
+    let palette_count = if colors_used == 0 {
+        1u32 << depth
+    } else {
+        colors_used
+    };
     if palette_count == 0 || palette_count > 256 {
         return Err(BitmapError::InvalidPaletteCount(palette_count));
     }
@@ -294,7 +300,20 @@ pub fn parse_indexed_bitmap(
         };
         let row_start = pixel_offset + source_y * stride;
         let stored_row = &input[row_start..row_start + stride];
-        let row = &stored_row[..width];
+        // 8bpp stores one index per byte; 4bpp packs two indices per byte with
+        // the higher nibble first (the legacy DIB convention).
+        let row: Vec<u8> = if depth == 8 {
+            stored_row[..width].to_vec()
+        } else {
+            let mut row = Vec::with_capacity(width);
+            for byte in &stored_row[..width.div_ceil(2)] {
+                row.push(byte >> 4);
+                if row.len() < width {
+                    row.push(byte & 0x0f);
+                }
+            }
+            row
+        };
         if let Some(index) = row
             .iter()
             .copied()
@@ -305,7 +324,7 @@ pub fn parse_indexed_bitmap(
                 palette_entries: palette.len(),
             });
         }
-        normalized.extend_from_slice(row);
+        normalized.extend_from_slice(&row);
         normalized_stored.extend_from_slice(stored_row);
     }
 
@@ -415,6 +434,68 @@ mod tests {
         assert_eq!(parsed.stored_pixels, [0, 1, 2, 88, 2, 3, 1, 99]);
     }
 
+    /// Builds a 4bpp V3 bitmap fixture with one nibble pair per byte.
+    fn bitmap_4bpp(width: i32, height: i32, colors: &[[u8; 4]], stored_rows: &[u8]) -> Vec<u8> {
+        let mut result = bitmap(width, height, colors, stored_rows);
+        result[28..30].copy_from_slice(&4u16.to_le_bytes());
+        // `bitmap` already wrote the stored rows and the file size for the
+        // 8bpp layout; the depths share the same stride here only because the
+        // fixture supplies its own packed rows and the declared image size is
+        // overwritten below.
+        let stored = stored_rows.len() as u32;
+        result[34..38].copy_from_slice(&stored.to_le_bytes());
+        result
+    }
+
+    #[test]
+    fn parses_4bpp_packed_rows_with_high_nibble_first() {
+        // 4x2, 4 bytes per row: row 0 = indices 0,1,2,3 then padding 0xee,
+        // row 1 = 3,2,1,0 then padding 0xdd. Rows are bottom-up.
+        let colors = &COLORS;
+        let input = bitmap_4bpp(
+            4,
+            2,
+            colors,
+            &[0x01, 0x23, 0xee, 0xee, 0x32, 0x10, 0xdd, 0xdd],
+        );
+        let parsed = parse_indexed_bitmap(&input, BitmapLimits::default()).unwrap();
+        assert_eq!(parsed.width, 4);
+        assert_eq!(parsed.height, 2);
+        assert_eq!(parsed.row_stride, 4);
+        assert_eq!(parsed.palette.len(), colors.len());
+        // Bottom row first, then the top row; padding is preserved verbatim.
+        assert_eq!(parsed.pixels, [3, 2, 1, 0, 0, 1, 2, 3]);
+        assert_eq!(
+            parsed.stored_pixels,
+            [0x32, 0x10, 0xdd, 0xdd, 0x01, 0x23, 0xee, 0xee]
+        );
+    }
+
+    #[test]
+    fn defaults_a_zero_color_count_to_sixteen_entries_for_4bpp() {
+        let colors: Vec<[u8; 4]> = (0..16).map(|index| [index as u8, 0, 0, 0]).collect();
+        let mut input = bitmap_4bpp(2, 1, &colors, &[0x01, 0x00, 0x00, 0x00]);
+        input[46..50].fill(0);
+        let parsed = parse_indexed_bitmap(&input, BitmapLimits::default()).unwrap();
+        assert_eq!(parsed.palette.len(), 16);
+        assert_eq!(parsed.pixels, [0, 1]);
+    }
+
+    #[test]
+    fn rejects_a_4bpp_index_outside_the_palette() {
+        // Palette declares one usable entry, so index 1 is out of range.
+        let input = bitmap_4bpp(2, 1, &COLORS, &[0x01, 0x00, 0x00, 0x00]);
+        let mut input = input;
+        input[46..50].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(
+            parse_indexed_bitmap(&input, BitmapLimits::default()),
+            Err(BitmapError::PaletteIndexOutOfRange {
+                index: 1,
+                palette_entries: 1
+            })
+        );
+    }
+
     #[test]
     fn accepts_zero_image_size_for_uncompressed_bitmap() {
         let mut input = bitmap(1, 1, &COLORS, &[0, 0, 0, 0]);
@@ -433,7 +514,7 @@ mod tests {
                 BitmapError::UnsupportedDibHeader(12),
             ),
             (26, &2u16.to_le_bytes(), BitmapError::InvalidPlanes(2)),
-            (28, &4u16.to_le_bytes(), BitmapError::UnsupportedBitDepth(4)),
+            (28, &1u16.to_le_bytes(), BitmapError::UnsupportedBitDepth(1)),
             (
                 30,
                 &1u32.to_le_bytes(),

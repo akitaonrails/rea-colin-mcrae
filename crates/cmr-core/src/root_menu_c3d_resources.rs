@@ -1361,8 +1361,8 @@ mod tests {
             ),
             (
                 vec![],
-                vec![(*b"FOUR-BIT-BMP", indexed_bmp(1, 0, 1, 4))],
-                ExpectedError::Bitmap(BitmapError::UnsupportedBitDepth(4)),
+                vec![(*b"ONE-BIT-BMP!", indexed_bmp(1, 0, 1, 1))],
+                ExpectedError::Bitmap(BitmapError::UnsupportedBitDepth(1)),
             ),
             (
                 vec![],
