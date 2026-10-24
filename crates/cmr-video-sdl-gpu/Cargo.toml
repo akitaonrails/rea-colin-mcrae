@@ -1,0 +1,18 @@
+[package]
+name = "cmr-video-sdl-gpu"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+build = "build.rs"
+
+[dependencies]
+cmr-gpu-contract = { path = "../cmr-gpu-contract" }
+sdl3 = "=0.20.0"
+
+[dev-dependencies]
+cmr-core = { path = "../cmr-core" }
+cmr-formats = { path = "../cmr-formats" }
+
+[features]
+bundled-sdl3 = ["sdl3/build-from-source"]

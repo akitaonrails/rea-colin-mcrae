@@ -150,7 +150,7 @@ Status markers:
 - [~] `I05` Add CI for formatting, clippy, tests, Linux, and Windows builds (`.github/workflows/ci.yml` runs three jobs on push/PR to `main` with `dtolnay/rust-toolchain@stable` + `Swatinem/rust-cache`: **portable-gate** (ubuntu) runs `cargo fmt --all --check`, `cargo clippy <slice> --all-targets -- -D warnings`, and `cargo test <slice>` over the SDL-free slice; **windows-cross-check** (ubuntu) adds the `x86_64-pc-windows-gnu` target and runs the I04 `cargo check --target … <slice> --all-targets`; **full-workspace** (ubuntu + windows matrix) clippy+tests the whole workspace with `--features cmr-platform-sdl3/bundled-sdl3`, a new passthrough feature (`sdl3/build-from-source`) added so CI and a Windows build compile SDL3 from source with no pre-installed library (needs only CMake + a C toolchain, present on the hosted runners). The exact commands of the first two jobs are verified locally (fmt/clippy/test/cross-check all pass) and the `bundled-sdl3` feature is confirmed to resolve to `sdl3/build-from-source` while the default still links system SDL3. I05 -> partial; **GitHub Actions itself is not executed in this environment**, so the SDL source-build jobs (`full-workspace`, incl. the `windows-latest` leg that also realizes the I04 displayed-run automation) are written-but-unrun here and need a first live run to confirm the runner provisioning.)
 - [x] `I06` Research and select SDL3 for portable host integration.
 - [~] `I07` Implement SDL3 host window/input/audio/presentation boundaries (resizable window, integer-scaled nearest streaming presentation of one completed software frame, startup gamepad enumeration with idempotent hotplug tracking, renderer-reset/redraw handling, and an edge-triggered keyboard/gamepad input mapper that drives the recovered `FrontendInput` contract implemented behind `cmr-platform-sdl3`; the pure interactive controller (`cmr-core::root_menu_interactive` plus the `steady_root_render_input` bridge) composes `FrontendState` into per-tick render inputs with a minimal root/exit transition driver; and the SDL interactive loop (`run_interactive_root_frame`, exposed through the app's `--windowed-root-frame` via `run_windowed_root_frame`) feeds live input into the controller and re-presents each distinct session-rendered frame. The audio host is now implemented (`cmr-platform-sdl3::audio::AudioHost` opens a 22050 Hz/stereo/s16 SDL3 playback stream and pumps the shared `SoftwareMixer<FileWaveSource>` from the audio callback, with the game driving the recovered subsystems against the shared mixer handle). All four SDL3 host boundaries (window/input/audio/presentation) now exist; a displayed end-to-end run on the real user corpus is gated under `I03`/`I04`).
-- [ ] `I08` Benchmark wgpu against SDL_GPU for the recovered 3D workload.
+- [~] `I08` Benchmark wgpu against SDL_GPU for the recovered 3D workload (Phase 4A complete: `cmr-gpu-contract` plus `cmr-video-wgpu` and Vulkan-only `cmr-video-sdl-gpu` render the same 257x2 all-index/palette-mutation fixture, validated against the established software presenter and exact cross-backend readback on local NVIDIA RTX 5090 and AMD Radeon 610M/RADV adapters; timing windows are aligned and reported but no winner is selected because raw recovered C3D packets and a representative caller-selected imported stage remain Phase 4B).
 - [ ] `I09` Implement the selected portable GPU backend behind shared contracts.
 - [ ] `I10` Remove requirements for original DirectX/QMixer/WinMM DLLs.
 - [ ] `I11` Package binaries without copyrighted game payloads.
@@ -166,13 +166,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-24T12:00:00Z
-milestone=restore-current-toolchain-format-gate
+updated_utc=2026-10-24T16:00:00Z
+milestone=prove-cross-backend-indexed-gpu-conformance
 completed=53
-partial=58
-not_started=7
+partial=59
+not_started=6
 blocked=0
 total=118
-current_focus=I08-shared-gpu-conformance-corpus-and-wgpu-versus-sdl-gpu-benchmark
-next_exit_gate=both-gpu-candidates-render-the-same-indexed-palette-fixture-with-readback-and-local-adapter-evidence
+current_focus=I08-raw-c3d-draw-packets-and-representative-stage-gpu-benchmark
+next_exit_gate=wgpu-and-sdl-gpu-render-the-same-recovered-c3d-packets-and-report-correctness-gated-stage-timings
 <!-- PROGRESS-TAIL-END -->

@@ -1362,6 +1362,19 @@ languages rather than fabricating or silently aliasing Italian assets.
   `sdl3/build-from-source`, so no system SDL3 is needed). The first two jobs'
   commands are locally verified; the SDL source-build jobs are authored but not
   yet run under Actions. See evidence `impl.ci-workflow`.
+- The native GPU comparison now has an API-neutral presentation slice.
+  `cmr-gpu-contract` validates borrowed indexed frames, defines canonical
+  opaque RGBA8 expansion and readback normalization, reports capabilities and
+  aligned wall-clock timing intervals, and owns the shared synchronous backend
+  trait. `cmr-video-wgpu` implements the slice with integer `R8Uint` indices and
+  a 256-entry `Rgba8Uint` palette. `cmr-video-sdl-gpu` implements the same slice
+  through SDL_GPU's Vulkan backend, keeping its narrow raw-SDL bridge private.
+  `cmr-gpu-conformance` validates its all-index and palette-mutation fixture
+  against `cmr-video::SoftwarePresentedFrame`, then requires exact readback
+  equality from each candidate and across candidates. This is the Phase 4A
+  presentation primitive only; raw C3D packets, representative-stage timings,
+  device recovery, and a selected backend remain open under I08/I09. See
+  evidence `impl.gpu-indexed-palette-conformance`.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

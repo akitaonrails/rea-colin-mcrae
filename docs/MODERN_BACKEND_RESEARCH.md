@@ -1,8 +1,32 @@
 # Modern backend research
 
-Status: provisional architecture decision, researched 2026-10-20. This does not
-replace the compatibility backend and does not authorize observable behavior to
-drift from recovered contracts.
+Status: Phase 4A presentation conformance implemented 2026-10-24; native C3D
+comparison remains provisional. This does not replace the compatibility backend
+and does not authorize observable behavior to drift from recovered contracts.
+
+## Phase 4A result
+
+The source-owned `cmr-gpu-contract` contract now validates an indexed frame and
+expands it to the canonical opaque RGBA8 oracle. Both candidates implement that
+same contract offscreen:
+
+- `cmr-video-wgpu` uses an `R8Uint` index texture, a 256-entry `Rgba8Uint`
+  palette texture, integer shader loads, and an `Rgba8Unorm` target;
+- `cmr-video-sdl-gpu` implements the same pipeline through SDL_GPU's Vulkan
+  backend, with a narrow private `sdl3::sys` bridge for capabilities and
+  readback calls missing from the safe wrapper;
+- `cmr-gpu-conformance` checks the contract oracle against the established
+  `cmr-video::SoftwarePresentedFrame`, then requires exact candidate readback
+  equality for an asymmetric 257x2 fixture covering every index and a
+  palette-only mutation.
+
+Local Linux runs passed on both an NVIDIA RTX 5090 and an AMD Radeon 610M/RADV.
+The runner deliberately selects no winner: this proves indexed-palette
+presentation correctness, not native C3D rendering performance. SDL_GPU's
+current source-shader build uses an external `glslangValidator` and is
+Vulkan-only; a reproducible shader package and its DX12 shader path remain open.
+The final native backend choice is gated on both candidates consuming identical
+raw recovered C3D draw packets and rendering a caller-selected imported stage.
 
 ## Recommendation
 

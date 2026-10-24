@@ -109,6 +109,19 @@ cargo clippy --workspace --all-targets -- -D warnings
 ./scripts/check-portability.sh
 ```
 
+Run the exact offscreen indexed-palette GPU conformance slice with:
+
+```sh
+SDL_VIDEO_DRIVER=offscreen cargo run -q -p cmr-gpu-conformance -- \
+  --backend both --warmup 2 --frames 8
+```
+
+The SDL_GPU contender currently targets Vulkan and compiles its source-owned
+GLSL with `glslangValidator` (or `CMR_GLSLANG_VALIDATOR`). The run checks both
+GPU readbacks against the established software presenter and against each
+other. It does not choose a native 3D backend; that decision waits for the raw
+recovered C3D workload and a representative user-imported stage benchmark.
+
 Verify the currently cataloged source corpus, then import exact asset bytes into
 the ignored runtime directory:
 

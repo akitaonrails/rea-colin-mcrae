@@ -425,6 +425,13 @@ tracked in [`MODERN_BACKEND_RESEARCH.md`](MODERN_BACKEND_RESEARCH.md). SDL3 is
 the selected host-layer direction; SDL_Renderer is only the first compatibility
 presenter, not a mandate that native 3D use SDL_GPU.
 
+Phase 4A is complete: `cmr-video-wgpu` and the Vulkan-only
+`cmr-video-sdl-gpu` pass the same exact indexed-palette readback contract on the
+locally available discrete NVIDIA and integrated AMD adapters. This establishes
+the presentation primitive but does not select a winner. Phase 4B must feed
+both candidates the same raw recovered C3D draw packets and benchmark a
+caller-selected imported stage before I08 can complete or I09 can begin.
+
 An original-compatible audio lane can begin with a narrow shim for the 16
 `QSWaveMix*` APIs the game imports. The shipped DLL's complete 62-export surface
 is an ABI oracle, but unreferenced exports are not automatically reconstruction
