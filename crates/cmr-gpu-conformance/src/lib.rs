@@ -16,9 +16,10 @@ use cmr_core::c3d_stage_scene::StageScene;
 use cmr_core::display::DisplayExtent;
 use cmr_formats::riff_palette::PaletteEntry;
 use cmr_gpu_contract::{
-    BackendCapabilities, BackendInfo, C3dDraw, C3dIndexedTexture, C3dMeshResource, C3dRawFrame,
-    C3dResourceSet, C3dRgb8, C3dSubmissionBracket, C3dVertexQ16, CanonicalRgba8Frame, DeviceKind,
-    GraphicsApi, IndexedFrameView, IndexedPaletteGpuBackend, RawC3dContractError, TimingSummary,
+    BackendCapabilities, BackendInfo, C3dDraw, C3dIndexedTexture, C3dMeshResource,
+    C3dPreparedFrame, C3dRawFrame, C3dResourceSet, C3dRgb8, C3dSceneUpload, C3dSubmissionBracket,
+    C3dVertexQ16, CanonicalRgba8Frame, DeviceKind, GraphicsApi, IndexedFrameView,
+    IndexedPaletteGpuBackend, RawC3dContractError, TimingSummary,
 };
 use cmr_video::SoftwarePresentedFrame;
 use cmr_video::software_stage_scene::StageC3dTextures;
@@ -176,6 +177,23 @@ impl PreparedRawStage {
             &self.draws,
         )
         .expect("PreparedRawStage validated its immutable resources and draws")
+    }
+
+    /// Borrows the immutable upload inputs for a persistent GPU scene.
+    pub fn upload(&self) -> C3dSceneUpload<'_> {
+        C3dSceneUpload::new(self.extent, &self.resources, &self.active_palette)
+            .expect("PreparedRawStage validated its immutable extent and resources")
+    }
+
+    /// Borrows the per-frame matrices and draw list for the uploaded scene.
+    pub fn prepared_frame(&self) -> C3dPreparedFrame<'_> {
+        C3dPreparedFrame::new(
+            self.upload().layout(),
+            self.view,
+            self.projection,
+            &self.draws,
+        )
+        .expect("PreparedRawStage validated its immutable matrices and draws")
     }
 
     #[must_use]
@@ -989,6 +1007,20 @@ mod tests {
             world_matrix_words(scene.world(0)).words()
         );
         assert_eq!(frame.view().words(), view_matrix_words(&camera).words());
+
+        let upload = prepared.upload();
+        assert_eq!(upload.layout().extent(), frame.extent());
+        assert_eq!(upload.layout().mesh_count(), 1);
+        assert_eq!(upload.layout().texture_count(), 1);
+        assert_eq!(upload.resources(), frame.resources());
+        assert_eq!(upload.active_palette(), frame.active_palette());
+
+        let persistent_frame = prepared.prepared_frame();
+        assert_eq!(persistent_frame.layout(), upload.layout());
+        assert_eq!(persistent_frame.view(), frame.view());
+        assert_eq!(persistent_frame.projection(), frame.projection());
+        assert_eq!(persistent_frame.draws(), frame.draws());
+        persistent_frame.ensure_layout(upload.layout()).unwrap();
     }
 
     #[test]

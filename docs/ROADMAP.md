@@ -435,10 +435,14 @@ caller-selected imported stage before I08 can complete or I09 can begin.
 The Phase 4B correctness slice is also complete for the bounded opaque-COPY
 stage profile: both candidates consume the same raw recovered C3D packets and
 match exact readback on source-owned geometry, with shared tests for culling,
-depth ordering, and palette mutation. The remaining I08 work is performance
-architecture rather than geometry recovery: retain uploaded stage resources,
-separate preparation/readback from steady-state frame timing, and run that path
-against an explicit caller-selected imported stage before choosing I09.
+depth ordering, and palette mutation. The persistent prepared-scene
+architecture now exists on both candidates: `PersistentRawC3dGpuBackend`
+moves all allocation, palette mapping, and upload into a fence-completed
+one-time preparation, and the hardware-proven timed path only encodes,
+submits, and waits — no resource creation, upload, download, or mapping. The
+remaining I08 work is to run that persistent path as a correctness-gated
+steady-state benchmark against an explicit caller-selected imported stage
+before choosing I09.
 
 An original-compatible audio lane can begin with a narrow shim for the 16
 `QSWaveMix*` APIs the game imports. The shipped DLL's complete 62-export surface

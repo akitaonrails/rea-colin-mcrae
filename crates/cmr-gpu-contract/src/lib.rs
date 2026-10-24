@@ -791,6 +791,178 @@ impl<'a> C3dRawFrame<'a> {
     }
 }
 
+/// Immutable shape of one persistently prepared raw-C3D scene.
+///
+/// The fixed extent lets candidates retain color/depth targets. Resource counts
+/// validate every per-frame ordinal without exposing native resource handles.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dPreparedSceneLayout {
+    extent: DisplayExtent,
+    mesh_count: u32,
+    texture_count: u32,
+}
+
+impl C3dPreparedSceneLayout {
+    #[must_use]
+    pub const fn extent(self) -> DisplayExtent {
+        self.extent
+    }
+
+    #[must_use]
+    pub const fn mesh_count(self) -> u32 {
+        self.mesh_count
+    }
+
+    #[must_use]
+    pub const fn texture_count(self) -> u32 {
+        self.texture_count
+    }
+}
+
+/// Borrowed one-time upload input for a persistent raw-C3D scene.
+///
+/// Extent and active display palette are immutable preparation inputs. A
+/// palette change deliberately requires preparing another scene so palette
+/// mapping/upload cannot leak into steady-state frame timings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dSceneUpload<'a> {
+    layout: C3dPreparedSceneLayout,
+    resources: &'a C3dResourceSet,
+    active_palette: &'a [PaletteEntry; INDEXED_PALETTE_LEN],
+}
+
+impl<'a> C3dSceneUpload<'a> {
+    pub fn new(
+        extent: DisplayExtent,
+        resources: &'a C3dResourceSet,
+        active_palette: &'a [PaletteEntry; INDEXED_PALETTE_LEN],
+    ) -> Result<Self, RawC3dContractError> {
+        checked_pixel_count(extent)?;
+        let mesh_count = u32::try_from(resources.meshes.len()).map_err(|_| {
+            RawC3dContractError::PreparedResourceCountOverflow {
+                resource: "mesh",
+                count: resources.meshes.len(),
+            }
+        })?;
+        let texture_count = u32::try_from(resources.textures.len()).map_err(|_| {
+            RawC3dContractError::PreparedResourceCountOverflow {
+                resource: "texture",
+                count: resources.textures.len(),
+            }
+        })?;
+        Ok(Self {
+            layout: C3dPreparedSceneLayout {
+                extent,
+                mesh_count,
+                texture_count,
+            },
+            resources,
+            active_palette,
+        })
+    }
+
+    #[must_use]
+    pub const fn layout(self) -> C3dPreparedSceneLayout {
+        self.layout
+    }
+
+    #[must_use]
+    pub const fn resources(self) -> &'a C3dResourceSet {
+        self.resources
+    }
+
+    #[must_use]
+    pub const fn active_palette(self) -> &'a [PaletteEntry; INDEXED_PALETTE_LEN] {
+        self.active_palette
+    }
+}
+
+/// Per-frame matrices and draw ordinals for a persistent scene.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dPreparedFrame<'a> {
+    layout: C3dPreparedSceneLayout,
+    view: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
+    projection: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
+    draws: &'a [C3dDraw],
+}
+
+impl<'a> C3dPreparedFrame<'a> {
+    pub fn new(
+        layout: C3dPreparedSceneLayout,
+        view: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
+        projection: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
+        draws: &'a [C3dDraw],
+    ) -> Result<Self, RawC3dContractError> {
+        validate_matrix("view", view)?;
+        validate_matrix("projection", projection)?;
+        validate_prepared_draws(layout, draws)?;
+        Ok(Self {
+            layout,
+            view,
+            projection,
+            draws,
+        })
+    }
+
+    #[must_use]
+    pub const fn layout(self) -> C3dPreparedSceneLayout {
+        self.layout
+    }
+
+    #[must_use]
+    pub const fn view(self) -> cmr_core::root_menu_c3d_transform::C3dMatrixWords {
+        self.view
+    }
+
+    #[must_use]
+    pub const fn projection(self) -> cmr_core::root_menu_c3d_transform::C3dMatrixWords {
+        self.projection
+    }
+
+    #[must_use]
+    pub const fn draws(self) -> &'a [C3dDraw] {
+        self.draws
+    }
+
+    /// Rejects a frame built for a different persistent target/resource shape.
+    /// Candidate backends call this before touching native resources.
+    pub fn ensure_layout(
+        self,
+        prepared: C3dPreparedSceneLayout,
+    ) -> Result<(), RawC3dContractError> {
+        if self.layout != prepared {
+            return Err(RawC3dContractError::PreparedSceneLayoutMismatch {
+                prepared,
+                frame: self.layout,
+            });
+        }
+        Ok(())
+    }
+}
+
+fn validate_prepared_draws(
+    layout: C3dPreparedSceneLayout,
+    draws: &[C3dDraw],
+) -> Result<(), RawC3dContractError> {
+    for (draw_index, draw) in draws.iter().copied().enumerate() {
+        if draw.mesh >= layout.mesh_count {
+            return Err(RawC3dContractError::MeshResourceOutOfBounds {
+                draw: draw_index,
+                resource: draw.mesh,
+                resource_count: layout.mesh_count as usize,
+            });
+        }
+        if draw.texture >= layout.texture_count {
+            return Err(RawC3dContractError::TextureResourceOutOfBounds {
+                draw: draw_index,
+                resource: draw.texture,
+                resource_count: layout.texture_count as usize,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_matrix(
     name: &'static str,
     matrix: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
@@ -845,6 +1017,14 @@ pub enum RawC3dContractError {
         resource: u32,
         resource_count: usize,
     },
+    PreparedResourceCountOverflow {
+        resource: &'static str,
+        count: usize,
+    },
+    PreparedSceneLayoutMismatch {
+        prepared: C3dPreparedSceneLayout,
+        frame: C3dPreparedSceneLayout,
+    },
 }
 
 impl From<FrameContractError> for RawC3dContractError {
@@ -878,6 +1058,40 @@ pub trait RawC3dGpuBackend {
         &mut self,
         frame: C3dRawFrame<'_>,
     ) -> Result<ConformanceFrame, Self::Error>;
+}
+
+/// Persistent raw-C3D candidate boundary used for steady-state comparison.
+///
+/// `prepare_c3d_scene` owns all one-time allocation, palette mapping, and
+/// resource upload. Correctness readback is intentionally a separate operation
+/// from timed rendering: `render_prepared_timed` returns no pixels and must not
+/// encode a copy/map/readback. It must still wait for GPU completion so its
+/// submit-to-completion interval is comparable and queued work stays bounded.
+pub trait PersistentRawC3dGpuBackend {
+    type Error;
+    type PreparedScene;
+
+    fn info(&self) -> &BackendInfo;
+    fn capabilities(&self) -> BackendCapabilities;
+
+    fn prepare_c3d_scene(
+        &mut self,
+        source: C3dSceneUpload<'_>,
+    ) -> Result<Self::PreparedScene, Self::Error>;
+
+    fn prepared_layout(scene: &Self::PreparedScene) -> C3dPreparedSceneLayout;
+
+    fn render_prepared_readback(
+        &mut self,
+        scene: &mut Self::PreparedScene,
+        frame: C3dPreparedFrame<'_>,
+    ) -> Result<CanonicalRgba8Frame, Self::Error>;
+
+    fn render_prepared_timed(
+        &mut self,
+        scene: &mut Self::PreparedScene,
+        frame: C3dPreparedFrame<'_>,
+    ) -> Result<FrameTiming, Self::Error>;
 }
 
 /// Deterministic nearest-rank timing summary over non-empty nanosecond samples.
@@ -1446,6 +1660,120 @@ mod tests {
             Err(RawC3dContractError::NonFiniteMatrixComponent {
                 name: "view",
                 component: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn persistent_upload_locks_extent_resource_counts_and_active_palette() {
+        let resources = raw_resources();
+        let active_palette = palette();
+        let extent = DisplayExtent {
+            width: 320,
+            height: 200,
+        };
+        let upload = C3dSceneUpload::new(extent, &resources, &active_palette).unwrap();
+
+        assert_eq!(upload.layout().extent(), extent);
+        assert_eq!(upload.layout().mesh_count(), 1);
+        assert_eq!(upload.layout().texture_count(), 1);
+        assert_eq!(upload.resources(), &resources);
+        assert_eq!(upload.active_palette(), &active_palette);
+        assert!(matches!(
+            C3dSceneUpload::new(
+                DisplayExtent {
+                    width: 0,
+                    height: 200,
+                },
+                &resources,
+                &active_palette,
+            ),
+            Err(RawC3dContractError::Frame(
+                FrameContractError::InvalidExtent(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn persistent_frame_validates_matrices_draw_ids_and_uploaded_layout() {
+        let resources = raw_resources();
+        let active_palette = palette();
+        let extent = DisplayExtent {
+            width: 320,
+            height: 200,
+        };
+        let upload = C3dSceneUpload::new(extent, &resources, &active_palette).unwrap();
+        let identity = cmr_core::root_menu_c3d_transform::ROOT_MENU_C3D_VIEW;
+        let projection = cmr_core::root_menu_c3d_transform::ROOT_MENU_C3D_PROJECTION;
+        let draw = C3dDraw::new(0, 0, identity, C3dSubmissionBracket::Normal).unwrap();
+        let frame = C3dPreparedFrame::new(
+            upload.layout(),
+            identity,
+            projection,
+            std::slice::from_ref(&draw),
+        )
+        .unwrap();
+
+        assert_eq!(frame.layout(), upload.layout());
+        assert_eq!(frame.view(), identity);
+        assert_eq!(frame.projection(), projection);
+        assert_eq!(frame.draws(), &[draw]);
+        frame.ensure_layout(upload.layout()).unwrap();
+
+        let bad_mesh = C3dDraw::new(1, 0, identity, C3dSubmissionBracket::Normal).unwrap();
+        assert!(matches!(
+            C3dPreparedFrame::new(
+                upload.layout(),
+                identity,
+                projection,
+                std::slice::from_ref(&bad_mesh),
+            ),
+            Err(RawC3dContractError::MeshResourceOutOfBounds {
+                draw: 0,
+                resource: 1,
+                resource_count: 1,
+            })
+        ));
+
+        let bad_texture = C3dDraw::new(0, 1, identity, C3dSubmissionBracket::Normal).unwrap();
+        assert!(matches!(
+            C3dPreparedFrame::new(
+                upload.layout(),
+                identity,
+                projection,
+                std::slice::from_ref(&bad_texture),
+            ),
+            Err(RawC3dContractError::TextureResourceOutOfBounds {
+                draw: 0,
+                resource: 1,
+                resource_count: 1,
+            })
+        ));
+
+        let nonfinite =
+            cmr_core::c3d_camera::projection_matrix_words(f32::INFINITY, 2.4, 1.0, 250.0);
+        assert_eq!(
+            C3dPreparedFrame::new(upload.layout(), identity, nonfinite, &[]),
+            Err(RawC3dContractError::NonFiniteMatrixComponent {
+                name: "projection",
+                component: 0,
+            })
+        );
+
+        let other_upload = C3dSceneUpload::new(
+            DisplayExtent {
+                width: 640,
+                height: 480,
+            },
+            &resources,
+            &active_palette,
+        )
+        .unwrap();
+        assert_eq!(
+            frame.ensure_layout(other_upload.layout()),
+            Err(RawC3dContractError::PreparedSceneLayoutMismatch {
+                prepared: other_upload.layout(),
+                frame: upload.layout(),
             })
         );
     }

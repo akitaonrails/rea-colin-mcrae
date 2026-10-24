@@ -11,6 +11,7 @@
 //! Direct3D 12 or Metal shader support.
 
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use cmr_gpu_contract::{
@@ -36,6 +37,7 @@ const PALETTE_BYTES: usize = 256 * 4;
 const TRANSFER_ALIGNMENT: usize = 512;
 const READBACK_ROW_ALIGNMENT: usize = 256;
 const SDL_GPU_DRIVER: &str = "vulkan";
+static NEXT_C3D_BACKEND_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 /// SDL_GPU Vulkan device selection knobs exposed by its creation properties.
 ///
@@ -53,6 +55,7 @@ pub struct SdlGpuIndexedBackend {
     c3d_pipeline: GraphicsPipeline,
     sampler: Sampler,
     device: Device,
+    c3d_backend_token: u64,
     info: BackendInfo,
     _video: sdl3::VideoSubsystem,
     _sdl: sdl3::Sdl,
@@ -240,6 +243,7 @@ impl SdlGpuIndexedBackend {
             c3d_pipeline,
             sampler,
             device,
+            c3d_backend_token: NEXT_C3D_BACKEND_TOKEN.fetch_add(1, Ordering::Relaxed),
             info,
             _video: video,
             _sdl: sdl,
@@ -248,6 +252,7 @@ impl SdlGpuIndexedBackend {
 }
 
 mod c3d;
+pub use c3d::{SdlGpuPreparedC3dScene, SdlGpuPreparedC3dStats};
 
 impl IndexedPaletteGpuBackend for SdlGpuIndexedBackend {
     type Error = SdlGpuError;
@@ -479,6 +484,9 @@ pub enum SdlGpuError {
     UnsupportedFormat(&'static str),
     SizeOverflow,
     NullTransferMap,
+    PreparedSceneBackendMismatch,
+    PreparedScenePoisoned,
+    RawC3dContract(cmr_gpu_contract::RawC3dContractError),
     FrameContract(FrameContractError),
     Sdl {
         operation: &'static str,
@@ -511,6 +519,19 @@ impl fmt::Display for SdlGpuError {
             }
             Self::SizeOverflow => write!(formatter, "SDL_GPU transfer size overflow"),
             Self::NullTransferMap => write!(formatter, "SDL_GPU returned a null transfer map"),
+            Self::PreparedSceneBackendMismatch => {
+                write!(
+                    formatter,
+                    "SDL_GPU prepared C3D scene belongs to another backend"
+                )
+            }
+            Self::PreparedScenePoisoned => {
+                write!(
+                    formatter,
+                    "SDL_GPU prepared C3D scene is not reusable after a failed wait"
+                )
+            }
+            Self::RawC3dContract(source) => source.fmt(formatter),
             Self::FrameContract(source) => source.fmt(formatter),
             Self::Sdl { operation, detail } => {
                 write!(formatter, "SDL_GPU {operation} failed: {detail}")
@@ -523,6 +544,7 @@ impl std::error::Error for SdlGpuError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::FrameContract(source) => Some(source),
+            Self::RawC3dContract(source) => Some(source),
             _ => None,
         }
     }

@@ -10,10 +10,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use cmr_gpu_contract::{
-    BackendCapabilities, BackendInfo, BackendKind, C3dCullMode, C3dRawFrame, ConformanceFrame,
-    DeviceKind, FrameContractError, FrameTiming, GraphicsApi, IndexedFrameView,
-    IndexedPaletteGpuBackend, RawC3dGpuBackend, ReadbackFormat, c3d_active_palette_l1_map,
-    normalize_readback,
+    BackendCapabilities, BackendInfo, BackendKind, C3dCullMode, C3dPreparedFrame,
+    C3dPreparedSceneLayout, C3dRawFrame, C3dSceneUpload, ConformanceFrame, DeviceKind,
+    FrameContractError, FrameTiming, GraphicsApi, IndexedFrameView, IndexedPaletteGpuBackend,
+    PersistentRawC3dGpuBackend, RawC3dContractError, RawC3dGpuBackend, ReadbackFormat,
+    c3d_active_palette_l1_map, normalize_readback,
 };
 
 const PALETTE_LEN: u32 = 256;
@@ -149,6 +150,65 @@ pub struct WgpuIndexedPaletteBackend {
     capabilities: BackendCapabilities,
 }
 
+struct WgpuPreparedMesh {
+    vertex: wgpu::Buffer,
+    index: wgpu::Buffer,
+    index_count: u32,
+}
+
+struct WgpuPreparedTexture {
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+}
+
+/// Opaque persistent wgpu realization of one validated raw-C3D resource set.
+pub struct WgpuPreparedC3dScene {
+    layout: C3dPreparedSceneLayout,
+    active_palette: Box<[cmr_formats::riff_palette::PaletteEntry; 256]>,
+    meshes: Vec<WgpuPreparedMesh>,
+    textures: Vec<WgpuPreparedTexture>,
+    _active_palette_texture: wgpu::Texture,
+    _output_texture: wgpu::Texture,
+    output_view: wgpu::TextureView,
+    _depth_texture: wgpu::Texture,
+    depth_view: wgpu::TextureView,
+    readback: wgpu::Buffer,
+    readback_pitch: u32,
+    transform_buffer: wgpu::Buffer,
+    transform_bind_group: wgpu::BindGroup,
+    transform_stride: u32,
+    transform_capacity: usize,
+    static_buffer_uploads: usize,
+    static_texture_uploads: usize,
+    timed_resource_allocations: usize,
+    timed_frames: usize,
+}
+
+impl WgpuPreparedC3dScene {
+    /// Test/diagnostic counters. Timed frames never change either upload count.
+    #[must_use]
+    pub const fn static_upload_counts(&self) -> [usize; 2] {
+        [self.static_buffer_uploads, self.static_texture_uploads]
+    }
+
+    #[must_use]
+    pub const fn timed_frame_count(&self) -> usize {
+        self.timed_frames
+    }
+
+    #[must_use]
+    pub const fn timed_resource_allocations(&self) -> usize {
+        self.timed_resource_allocations
+    }
+}
+
+struct WgpuFrameDraw {
+    mesh: usize,
+    texture: usize,
+    cull: C3dCullMode,
+    transform_offset: u32,
+}
+
 impl WgpuIndexedPaletteBackend {
     /// Enumerates only the requested API and selects an adapter deterministically.
     pub fn new(config: &WgpuBackendConfig) -> Result<Self, WgpuBackendError> {
@@ -262,7 +322,7 @@ impl WgpuIndexedPaletteBackend {
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
+                        has_dynamic_offset: true,
                         min_binding_size: None,
                     },
                     count: None,
@@ -734,7 +794,7 @@ impl RawC3dGpuBackend for WgpuIndexedPaletteBackend {
                     C3dCullMode::None => &self.c3d_two_sided_pipeline,
                 };
                 pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, &draw.transform_bind_group, &[]);
+                pass.set_bind_group(0, &draw.transform_bind_group, &[0]);
                 pass.set_bind_group(1, &draw.texture_bind_group, &[]);
                 pass.set_vertex_buffer(0, draw.vertex.slice(..));
                 pass.set_index_buffer(draw.index.slice(..), wgpu::IndexFormat::Uint16);
@@ -798,6 +858,401 @@ impl RawC3dGpuBackend for WgpuIndexedPaletteBackend {
                 gpu_timestamp_ns: None,
             },
         })
+    }
+}
+
+impl PersistentRawC3dGpuBackend for WgpuIndexedPaletteBackend {
+    type Error = WgpuBackendError;
+    type PreparedScene = WgpuPreparedC3dScene;
+
+    fn info(&self) -> &BackendInfo {
+        &self.info
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.capabilities
+    }
+
+    fn prepare_c3d_scene(
+        &mut self,
+        source: C3dSceneUpload<'_>,
+    ) -> Result<Self::PreparedScene, Self::Error> {
+        let layout = source.layout();
+        let extent = layout.extent();
+        let size = wgpu::Extent3d {
+            width: u32::from(extent.width),
+            height: u32::from(extent.height),
+            depth_or_array_layers: 1,
+        };
+        let active_palette_texture = create_texture(
+            &self.device,
+            "cmr prepared C3D active palette",
+            wgpu::Extent3d {
+                width: PALETTE_LEN,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            wgpu::TextureFormat::Rgba8Uint,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        );
+        self.queue.write_texture(
+            texture_copy(&active_palette_texture),
+            &active_palette_rgba8(source.active_palette()),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(PALETTE_LEN * 4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: PALETTE_LEN,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let active_palette_view =
+            active_palette_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let meshes = source
+            .resources()
+            .meshes()
+            .iter()
+            .map(|mesh| WgpuPreparedMesh {
+                vertex: create_initialized_buffer(
+                    &self.device,
+                    &self.queue,
+                    "cmr prepared C3D vertices",
+                    &c3d_vertex_bytes(mesh.vertices()),
+                    wgpu::BufferUsages::VERTEX,
+                ),
+                index: create_initialized_buffer(
+                    &self.device,
+                    &self.queue,
+                    "cmr prepared C3D indices",
+                    &c3d_index_bytes(mesh.indices()),
+                    wgpu::BufferUsages::INDEX,
+                ),
+                index_count: mesh.indices().len() as u32,
+            })
+            .collect::<Vec<_>>();
+        let textures = source
+            .resources()
+            .textures()
+            .iter()
+            .map(|texture| {
+                let extent = texture.extent();
+                let size = wgpu::Extent3d {
+                    width: u32::from(extent.width),
+                    height: u32::from(extent.height),
+                    depth_or_array_layers: 1,
+                };
+                let native = create_texture(
+                    &self.device,
+                    "cmr prepared C3D mapped material",
+                    size,
+                    wgpu::TextureFormat::R8Uint,
+                    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                );
+                let palette_map = c3d_active_palette_l1_map(texture, source.active_palette());
+                let mapped = texture
+                    .indices()
+                    .iter()
+                    .map(|&index| palette_map[usize::from(index)])
+                    .collect::<Vec<_>>();
+                self.queue.write_texture(
+                    texture_copy(&native),
+                    &mapped,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(u32::from(extent.width)),
+                        rows_per_image: Some(u32::from(extent.height)),
+                    },
+                    size,
+                );
+                let view = native.create_view(&wgpu::TextureViewDescriptor::default());
+                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("cmr prepared C3D texture bind group"),
+                    layout: &self.c3d_texture_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&active_palette_view),
+                        },
+                    ],
+                });
+                WgpuPreparedTexture {
+                    _texture: native,
+                    bind_group,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let output_texture = create_texture(
+            &self.device,
+            "cmr prepared C3D output",
+            size,
+            OUTPUT_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_texture = create_texture(
+            &self.device,
+            "cmr prepared C3D depth",
+            size,
+            C3D_DEPTH_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let tight_pitch = u32::from(extent.width) * 4;
+        let readback_pitch = tight_pitch.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cmr prepared C3D readback"),
+            size: u64::from(readback_pitch) * u64::from(extent.height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let transform_size = 208u32;
+        let alignment = self.device.limits().min_uniform_buffer_offset_alignment;
+        let transform_stride = transform_size.div_ceil(alignment) * alignment;
+        let transform_capacity = meshes.len().max(1);
+        let transform_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cmr prepared C3D transform ring"),
+            size: u64::from(transform_stride) * transform_capacity as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let transform_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("cmr prepared C3D transform ring bind group"),
+            layout: &self.c3d_transform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &transform_buffer,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(u64::from(transform_size)),
+                }),
+            }],
+        });
+        Ok(WgpuPreparedC3dScene {
+            layout,
+            active_palette: Box::new(*source.active_palette()),
+            static_buffer_uploads: meshes.len() * 2,
+            static_texture_uploads: textures.len() + 1,
+            meshes,
+            textures,
+            _active_palette_texture: active_palette_texture,
+            _output_texture: output_texture,
+            output_view,
+            _depth_texture: depth_texture,
+            depth_view,
+            readback,
+            readback_pitch,
+            transform_buffer,
+            transform_bind_group,
+            transform_stride,
+            transform_capacity,
+            timed_frames: 0,
+            timed_resource_allocations: 0,
+        })
+    }
+
+    fn prepared_layout(scene: &Self::PreparedScene) -> C3dPreparedSceneLayout {
+        scene.layout
+    }
+
+    fn render_prepared_readback(
+        &mut self,
+        scene: &mut Self::PreparedScene,
+        frame: C3dPreparedFrame<'_>,
+    ) -> Result<cmr_gpu_contract::CanonicalRgba8Frame, Self::Error> {
+        frame
+            .ensure_layout(scene.layout)
+            .map_err(WgpuBackendError::RawContract)?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("cmr prepared C3D correctness commands"),
+            });
+        let frame_draws = self.encode_prepared_c3d(scene, frame, &mut encoder)?;
+        let extent = scene.layout.extent();
+        encoder.copy_texture_to_buffer(
+            texture_copy(&scene._output_texture),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &scene.readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(scene.readback_pitch),
+                    rows_per_image: Some(u32::from(extent.height)),
+                },
+            },
+            wgpu::Extent3d {
+                width: u32::from(extent.width),
+                height: u32::from(extent.height),
+                depth_or_array_layers: 1,
+            },
+        );
+        let submission = self.queue.submit([encoder.finish()]);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        scene
+            .readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        self.wait_for_submission(submission)?;
+        receiver
+            .recv()
+            .map_err(|error| WgpuBackendError::MapChannel(error.to_string()))?
+            .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
+        let mapped = scene
+            .readback
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
+        let rgba8 = normalize_readback(
+            extent,
+            &mapped,
+            scene.readback_pitch as usize,
+            ReadbackFormat::Rgba8,
+        )
+        .map_err(WgpuBackendError::Contract)?;
+        drop(mapped);
+        scene.readback.unmap();
+        drop(frame_draws);
+        Ok(rgba8)
+    }
+
+    fn render_prepared_timed(
+        &mut self,
+        scene: &mut Self::PreparedScene,
+        frame: C3dPreparedFrame<'_>,
+    ) -> Result<FrameTiming, Self::Error> {
+        frame
+            .ensure_layout(scene.layout)
+            .map_err(WgpuBackendError::RawContract)?;
+        let encode_started = Instant::now();
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("cmr prepared C3D timed commands"),
+            });
+        let frame_draws = self.encode_prepared_c3d(scene, frame, &mut encoder)?;
+        let submission = self.queue.submit([encoder.finish()]);
+        let cpu_encode_submit_ns = elapsed_ns(encode_started.elapsed());
+        let completion_started = Instant::now();
+        self.wait_for_submission(submission)?;
+        let submit_to_completion_ns = elapsed_ns(completion_started.elapsed());
+        drop(frame_draws);
+        scene.timed_frames += 1;
+        Ok(FrameTiming {
+            cpu_encode_submit_ns,
+            submit_to_completion_ns,
+            gpu_timestamp_ns: None,
+        })
+    }
+}
+
+impl WgpuIndexedPaletteBackend {
+    fn encode_prepared_c3d(
+        &self,
+        scene: &WgpuPreparedC3dScene,
+        frame: C3dPreparedFrame<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<Vec<WgpuFrameDraw>, WgpuBackendError> {
+        let extent = scene.layout.extent();
+        if frame.draws().len() > scene.transform_capacity {
+            return Err(WgpuBackendError::TransformCapacity {
+                required: frame.draws().len(),
+                capacity: scene.transform_capacity,
+            });
+        }
+        let mut transform_upload = vec![0u8; scene.transform_stride as usize * frame.draws().len()];
+        let frame_draws = frame
+            .draws()
+            .iter()
+            .enumerate()
+            .map(|(index, draw)| {
+                let transform = c3d_transform_bytes(
+                    draw.world().words(),
+                    frame.view().words(),
+                    frame.projection().words(),
+                    f32::from(extent.width) / f32::from(extent.height),
+                );
+                let offset = index * scene.transform_stride as usize;
+                transform_upload[offset..offset + transform.len()].copy_from_slice(&transform);
+                WgpuFrameDraw {
+                    mesh: draw.mesh() as usize,
+                    texture: draw.texture() as usize,
+                    cull: draw.state().cull(),
+                    transform_offset: offset as u32,
+                }
+            })
+            .collect::<Vec<_>>();
+        if !transform_upload.is_empty() {
+            self.queue
+                .write_buffer(&scene.transform_buffer, 0, &transform_upload);
+        }
+        let clear = scene.active_palette[0];
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("cmr prepared C3D pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scene.output_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: f64::from(clear.red) / 255.0,
+                            g: f64::from(clear.green) / 255.0,
+                            b: f64::from(clear.blue) / 255.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &scene.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            for draw in &frame_draws {
+                let mesh = &scene.meshes[draw.mesh];
+                let texture = &scene.textures[draw.texture];
+                pass.set_pipeline(match draw.cull {
+                    C3dCullMode::CullCounterClockwise => &self.c3d_culled_pipeline,
+                    C3dCullMode::None => &self.c3d_two_sided_pipeline,
+                });
+                pass.set_bind_group(0, &scene.transform_bind_group, &[draw.transform_offset]);
+                pass.set_bind_group(1, &texture.bind_group, &[]);
+                pass.set_vertex_buffer(0, mesh.vertex.slice(..));
+                pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint16);
+                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
+        }
+        Ok(frame_draws)
+    }
+
+    fn wait_for_submission(
+        &self,
+        submission: wgpu::SubmissionIndex,
+    ) -> Result<(), WgpuBackendError> {
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: None,
+            })
+            .map_err(|error| WgpuBackendError::Poll(error.to_string()))?;
+        Ok(())
     }
 }
 
@@ -1027,6 +1482,11 @@ pub enum WgpuBackendError {
     MapChannel(String),
     Map(String),
     Contract(FrameContractError),
+    RawContract(RawC3dContractError),
+    TransformCapacity {
+        required: usize,
+        capacity: usize,
+    },
 }
 
 impl fmt::Display for WgpuBackendError {
@@ -1039,6 +1499,7 @@ impl std::error::Error for WgpuBackendError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Contract(source) => Some(source),
+            Self::RawContract(source) => Some(source),
             _ => None,
         }
     }
@@ -1053,8 +1514,9 @@ mod tests {
     use cmr_core::display::DisplayExtent;
     use cmr_formats::riff_palette::PaletteEntry;
     use cmr_gpu_contract::{
-        C3dDraw, C3dIndexedTexture, C3dMeshResource, C3dRawFrame, C3dResourceSet, C3dRgb8,
-        C3dSubmissionBracket, C3dVertexQ16, IndexedPaletteGpuBackend, RawC3dGpuBackend,
+        C3dDraw, C3dIndexedTexture, C3dMeshResource, C3dPreparedFrame, C3dRawFrame, C3dResourceSet,
+        C3dRgb8, C3dSceneUpload, C3dSubmissionBracket, C3dVertexQ16, IndexedPaletteGpuBackend,
+        PersistentRawC3dGpuBackend, RawC3dGpuBackend,
     };
 
     #[test]
@@ -1184,6 +1646,34 @@ mod tests {
             red_pixels < 64 * 64,
             "triangle must not cover the clear target"
         );
+
+        let upload = C3dSceneUpload::new(extent, &resources, &active_palette).unwrap();
+        let mut prepared = backend.prepare_c3d_scene(upload).unwrap();
+        let prepared_frame = C3dPreparedFrame::new(
+            WgpuIndexedPaletteBackend::prepared_layout(&prepared),
+            view_matrix_words(&MATRIX_IDENTITY_Q16),
+            projection_matrix_words(2.0, 2.4, 1.0, 250.0),
+            &draws,
+        )
+        .unwrap();
+        let prepared_pixels = backend
+            .render_prepared_readback(&mut prepared, prepared_frame)
+            .unwrap();
+        assert_eq!(prepared_pixels, rendered.rgba8);
+        let uploads = prepared.static_upload_counts();
+        let first_timing = backend
+            .render_prepared_timed(&mut prepared, prepared_frame)
+            .unwrap();
+        let second_timing = backend
+            .render_prepared_timed(&mut prepared, prepared_frame)
+            .unwrap();
+        assert_eq!(prepared.static_upload_counts(), uploads);
+        assert_eq!(prepared.timed_frame_count(), 2);
+        assert_eq!(prepared.timed_resource_allocations(), 0);
+        assert!(first_timing.cpu_encode_submit_ns > 0);
+        assert!(first_timing.submit_to_completion_ns > 0);
+        assert!(second_timing.cpu_encode_submit_ns > 0);
+        assert!(second_timing.submit_to_completion_ns > 0);
     }
 
     #[test]
