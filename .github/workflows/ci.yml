@@ -30,6 +30,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
+      - name: Portability and legacy-backend audits
+        run: |
+          ./scripts/check-portability.sh
+          ./scripts/check-legacy-backends.sh
       - name: Clippy (portable slice)
         run: cargo clippy ${{ env.PORTABLE_SLICE }} --all-targets -- -D warnings
       - name: Test (portable slice)

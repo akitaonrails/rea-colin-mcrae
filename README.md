@@ -107,6 +107,7 @@ Run source-owned checks with:
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ./scripts/check-portability.sh
+./scripts/check-legacy-backends.sh
 ```
 
 Run the exact offscreen indexed-palette GPU conformance slice with:
