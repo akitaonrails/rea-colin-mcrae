@@ -119,8 +119,8 @@ SDL_VIDEO_DRIVER=offscreen cargo run -q -p cmr-gpu-conformance -- \
 The SDL_GPU contender currently targets Vulkan and compiles its source-owned
 GLSL with `glslangValidator` (or `CMR_GLSLANG_VALIDATOR`). The run checks both
 GPU readbacks against the established software presenter and against each
-other. It does not choose a native 3D backend; that decision waits for the raw
-recovered C3D workload and a representative user-imported stage benchmark.
+other. It does not choose a native 3D backend; that decision uses the
+imported-stage benchmark below.
 
 The source-owned raw-C3D cross-backend hardware check is opt-in:
 
@@ -131,8 +131,27 @@ SDL_VIDEO_DRIVER=offscreen cargo test -p cmr-gpu-conformance \
 ```
 
 It proves that both APIs transform and rasterize the same raw C3D packet with
-byte-exact readback. It is not the final performance benchmark: that requires
-persistent uploaded resources and an explicit user-imported stage.
+byte-exact readback.
+
+The I08 decision lane is a correctness-gated steady-state benchmark over one
+imported stage, read in place from the user's own media root:
+
+```sh
+SDL_VIDEO_DRIVER=offscreen cargo run --release -q -p cmr-gpu-conformance \
+  --bin cmr-gpu-stage-benchmark -- \
+  --source "$CMR_ORIGINAL_DIR/Game/Au/1" --stage AU1 \
+  --warmup 32 --frames 240
+```
+
+It composes the established software stage frame as the oracle, prepares the
+persistent GPU scene once per candidate, gates correctness, warms up, and then
+ranks only the steady-state encode/submit/fence-wait interval. The gate is
+cross-backend byte equality plus a documented nearest-neighbour sampling-tie
+budget (0.1% of the frame) against the software oracle, because a fixed-point
+hardware rasterizer cannot match the float software reference at UV texel
+boundaries. `--backend wgpu|sdl-gpu|both`, `--wgpu-adapter`, and `--low-power`
+select the candidates. Stage output is path-free, reports timings and
+`winner=not-selected`, and needs an otherwise idle GPU for meaningful numbers.
 
 Verify the currently cataloged source corpus, then import exact asset bytes into
 the ignored runtime directory:

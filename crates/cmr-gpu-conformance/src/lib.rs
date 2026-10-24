@@ -26,6 +26,8 @@ use cmr_video::software_stage_scene::StageC3dTextures;
 use cmr_video_sdl_gpu::{SdlGpuConfig, SdlGpuIndexedBackend};
 use cmr_video_wgpu::{WgpuApi, WgpuBackendConfig, WgpuIndexedPaletteBackend, WgpuPowerPreference};
 
+pub mod stage_benchmark;
+
 pub const FIXTURE_EXTENT: DisplayExtent = DisplayExtent {
     width: 257,
     height: 2,
@@ -689,14 +691,14 @@ where
     })
 }
 
-fn backend_name(backend: cmr_gpu_contract::BackendKind) -> &'static str {
+pub(crate) fn backend_name(backend: cmr_gpu_contract::BackendKind) -> &'static str {
     match backend {
         cmr_gpu_contract::BackendKind::Wgpu => "wgpu",
         cmr_gpu_contract::BackendKind::SdlGpu => "sdl-gpu",
     }
 }
 
-fn api_name(api: GraphicsApi) -> &'static str {
+pub(crate) fn api_name(api: GraphicsApi) -> &'static str {
     match api {
         GraphicsApi::Vulkan => "vulkan",
         GraphicsApi::Direct3d12 => "direct3d12",
@@ -707,7 +709,7 @@ fn api_name(api: GraphicsApi) -> &'static str {
     }
 }
 
-fn device_kind_name(kind: DeviceKind) -> &'static str {
+pub(crate) fn device_kind_name(kind: DeviceKind) -> &'static str {
     match kind {
         DeviceKind::Integrated => "integrated",
         DeviceKind::Discrete => "discrete",
@@ -717,7 +719,7 @@ fn device_kind_name(kind: DeviceKind) -> &'static str {
     }
 }
 
-fn optional_hex(value: Option<u32>) -> String {
+pub(crate) fn optional_hex(value: Option<u32>) -> String {
     value.map_or_else(|| "unknown".to_owned(), |value| format!("0x{value:04x}"))
 }
 

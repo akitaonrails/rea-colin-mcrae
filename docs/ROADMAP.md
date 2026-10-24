@@ -439,10 +439,29 @@ depth ordering, and palette mutation. The persistent prepared-scene
 architecture now exists on both candidates: `PersistentRawC3dGpuBackend`
 moves all allocation, palette mapping, and upload into a fence-completed
 one-time preparation, and the hardware-proven timed path only encodes,
-submits, and waits — no resource creation, upload, download, or mapping. The
-remaining I08 work is to run that persistent path as a correctness-gated
-steady-state benchmark against an explicit caller-selected imported stage
-before choosing I09.
+submits, and waits — no resource creation, upload, download, or mapping.
+
+I08's decision lane is the correctness-gated `cmr-gpu-stage-benchmark`
+(`cmr-gpu-conformance::stage_benchmark`). It reads one caller-selected imported
+stage in place, composes the software stage frame as the oracle, prepares the
+persistent scene once per candidate, and ranks only the steady-state
+encode/submit/fence-wait interval. The gate is cross-backend byte equality plus
+a documented 0.1%-of-frame nearest-neighbour sampling-tie budget against the
+software oracle; a fixed-point hardware rasterizer cannot reproduce a float
+software rasterizer at UV texel boundaries, and the installed-corpus worst case
+is 189 of 307,200 pixels (0.062%) with the candidates identical to each other.
+46 of the 60 installed EU stage scenes gate on the RTX 5090 and AMD 610M/RADV
+paths; 12 see nothing at the placeholder origin camera and two still hit the
+known E01/E03 bitmap gaps. The placeholder camera/palette and the origin
+visibility limit are recorded in the evidence ledger. Captured steady-state
+timings (median of three 240-frame runs after 32 warmup frames,
+encode+submit / submit-to-completion in microseconds) show wgpu ahead on the
+draw-heavy recovered stages: MC5 1235/98 vs 3110/91, NZ2 1296/88 vs 2253/72,
+AU1 645/78 vs 1210/59 on the RTX 5090 (same ordering on RADV), while SDL_GPU
+leads the 97-draw stage (66/75 vs 108/47). The CPU encode/submit interval,
+which grows with prepared draw count, dominates. I09 therefore selects
+**wgpu**, which also avoids SDL_GPU's external `glslangValidator` runtime
+dependency, and now has to wire that backend behind the shared contracts.
 
 An original-compatible audio lane can begin with a narrow shim for the 16
 `QSWaveMix*` APIs the game imports. The shipped DLL's complete 62-export surface
