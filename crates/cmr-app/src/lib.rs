@@ -51,6 +51,8 @@ use cmr_formats::stage::{
     C3D_EXTENSION, CAT_EXTENSION, StageBundle, StageLoadError, StageSectionSource, load_stage,
 };
 use cmr_formats::stored_asset::{DecodeError, DecodeLimits, decode_stored_asset};
+use cmr_gpu_contract::{PersistentRawC3dGpuBackend, PersistentRawC3dIndexedBackend};
+use cmr_gpu_stage::{PreparedRawStage, PreparedRawStageError, PreparedRawStageStats};
 use cmr_platform_sdl3::{
     InteractiveRootError, SdlHostError, WindowedGameFrame, WindowedInput, present_software_frame,
     run_interactive_root_frame, run_windowed_game_session as run_windowed_game_session_loop,
@@ -68,6 +70,7 @@ use cmr_video::{
     SoftwareIndexedBackend, SoftwarePresentedFrame, SoftwarePresentedFrameDigest,
     SoftwareRgba8Error, SoftwareVideoError,
 };
+use cmr_video_wgpu::{WgpuBackendConfig, WgpuIndexedPaletteBackend};
 
 /// Environment variable consumed by the `cmr-app` binary as a runtime-data
 /// fallback.
@@ -102,6 +105,52 @@ pub enum AppCommand {
     WindowedGameSession,
 }
 
+/// Which stage renderer a stage command uses.
+///
+/// The selected native GPU backend (wgpu, see I08/I09) is the default when a
+/// device can be initialized; the established software compositor remains the
+/// oracle and the fallback, and stays available explicitly for differential
+/// runs and headless hosts without a GPU.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StageRendererChoice {
+    /// Use the GPU backend when a device is available, otherwise software.
+    #[default]
+    Auto,
+    /// Force the established software stage compositor.
+    Software,
+    /// Require the GPU backend; initialization or frame failure is an error.
+    Gpu,
+}
+
+impl StageRendererChoice {
+    /// The stable name used by the CLI and the path-free summaries.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Software => "software",
+            Self::Gpu => "gpu",
+        }
+    }
+}
+
+/// Which renderer actually produced a stage frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StageRendererKind {
+    Software,
+    Gpu,
+}
+
+impl StageRendererKind {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Software => "software",
+            Self::Gpu => "gpu",
+        }
+    }
+}
+
 /// Parsed command-line options before environment fallback resolution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppOptions {
@@ -109,6 +158,7 @@ pub struct AppOptions {
     runtime_data: Option<PathBuf>,
     source: Option<PathBuf>,
     stage: Option<String>,
+    renderer: StageRendererChoice,
 }
 
 impl AppOptions {
@@ -122,6 +172,7 @@ impl AppOptions {
         let mut runtime_data = None;
         let mut source = None;
         let mut stage = None;
+        let mut renderer = None;
 
         while let Some(argument) = arguments.next() {
             if argument == OsStr::new("--headless-root-frame") {
@@ -158,6 +209,22 @@ impl AppOptions {
                 if command.replace(AppCommand::WindowedGameSession).is_some() {
                     return Err(ConfigError::DuplicateOption("--windowed-game-session"));
                 }
+                continue;
+            }
+            if argument == OsStr::new("--renderer") {
+                if renderer.is_some() {
+                    return Err(ConfigError::DuplicateOption("--renderer"));
+                }
+                let value = arguments
+                    .next()
+                    .ok_or(ConfigError::MissingOptionValue("--renderer"))?;
+                let value = value.into_string().map_err(ConfigError::NonUtf8Renderer)?;
+                renderer = Some(match value.as_str() {
+                    "auto" => StageRendererChoice::Auto,
+                    "software" => StageRendererChoice::Software,
+                    "gpu" => StageRendererChoice::Gpu,
+                    _ => return Err(ConfigError::InvalidRenderer(value)),
+                });
                 continue;
             }
             if argument == OsStr::new("--stage") {
@@ -198,6 +265,7 @@ impl AppOptions {
             runtime_data,
             source,
             stage,
+            renderer: renderer.unwrap_or_default(),
         })
     }
 
@@ -265,6 +333,7 @@ impl AppOptions {
             source,
             media,
             stage: self.stage,
+            renderer: self.renderer,
         })
     }
 }
@@ -277,6 +346,7 @@ pub struct RuntimeConfig {
     source: RuntimeDataSource,
     media: Option<(PathBuf, RuntimeDataSource)>,
     stage: Option<String>,
+    renderer: StageRendererChoice,
 }
 
 impl RuntimeConfig {
@@ -287,6 +357,11 @@ impl RuntimeConfig {
     /// The selected stage base name, if one was supplied.
     pub fn stage(&self) -> Option<&str> {
         self.stage.as_deref()
+    }
+
+    /// The selected stage renderer (`--renderer`).
+    pub fn stage_renderer(&self) -> StageRendererChoice {
+        self.renderer
     }
 
     pub fn runtime_data(&self) -> &Path {
@@ -341,6 +416,10 @@ pub enum ConfigError {
     MissingStage,
     /// The stage command was selected without a `--source` media root.
     MissingSourceForStage,
+    /// `--renderer` carried a non-UTF-8 value.
+    NonUtf8Renderer(OsString),
+    /// `--renderer` named an unknown renderer.
+    InvalidRenderer(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -382,6 +461,13 @@ impl fmt::Display for ConfigError {
             Self::MissingSourceForStage => write!(
                 formatter,
                 "a stage command requires a media root; pass --source PATH or set {SOURCE_ENV}"
+            ),
+            Self::NonUtf8Renderer(value) => {
+                write!(formatter, "--renderer must be valid UTF-8, got {value:?}")
+            }
+            Self::InvalidRenderer(value) => write!(
+                formatter,
+                "invalid renderer {value:?}; expected auto, software, or gpu"
             ),
         }
     }
@@ -872,6 +958,19 @@ fn read_decoded_section(
     Ok(Some(decoded.bytes().to_vec()))
 }
 
+/// Renderer-specific measurements for one composed stage frame.
+///
+/// The software compositor reports its full raster statistics. The GPU path
+/// reports the prepared-scene conversion counts instead: rasterization happens
+/// on the device and its correctness is the shared raw-C3D contract's concern
+/// (the same oracle comparison the conformance suite performs), not a per-frame
+/// host counter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StageRenderStats {
+    Software(StageSceneFrameStats),
+    Gpu(PreparedRawStageStats),
+}
+
 /// Stable measurements from one complete headless stage frame.
 ///
 /// The composition uses a fixed placeholder camera (world origin) and a
@@ -883,10 +982,11 @@ fn read_decoded_section(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeadlessStageFrameOutput {
     pub stage: String,
+    pub renderer: StageRendererKind,
     pub node_count: usize,
     pub draw_ops: usize,
     pub textures: usize,
-    pub stats: StageSceneFrameStats,
+    pub stats: StageRenderStats,
     pub frame_digest: SoftwarePresentedFrameDigest,
 }
 
@@ -894,20 +994,30 @@ impl HeadlessStageFrameOutput {
     /// Produces a stable, path-free representation suitable for the CLI.
     #[must_use]
     pub fn stable_summary(&self) -> String {
+        let stats = match self.stats {
+            StageRenderStats::Software(stats) => format!(
+                "prims_composed={} unresolved_prims={} empty_lod_nodes={} covered={} depth_passed={} depth_rejected={}",
+                stats.prims_composed,
+                stats.unresolved_prims,
+                stats.empty_lod_nodes,
+                stats.covered,
+                stats.depth_passed,
+                stats.depth_rejected,
+            ),
+            StageRenderStats::Gpu(stats) => format!(
+                "prepared_draws={} unique_textures={} unresolved_prims={} empty_lod_nodes={}",
+                stats.draws, stats.unique_textures, stats.unresolved_prims, stats.empty_lod_nodes,
+            ),
+        };
         format!(
-            "stage={} extent={}x{} nodes={} draw_ops={} textures={} prims_composed={} unresolved_prims={} empty_lod_nodes={} covered={} depth_passed={} depth_rejected={} frame_sha256={} pixels_sha256={} palette_sha256={}",
+            "stage={} renderer={} extent={}x{} nodes={} draw_ops={} textures={} {stats} frame_sha256={} pixels_sha256={} palette_sha256={}",
             self.stage,
+            self.renderer.name(),
             self.frame_digest.extent.width,
             self.frame_digest.extent.height,
             self.node_count,
             self.draw_ops,
             self.textures,
-            self.stats.prims_composed,
-            self.stats.unresolved_prims,
-            self.stats.empty_lod_nodes,
-            self.stats.covered,
-            self.stats.depth_passed,
-            self.stats.depth_rejected,
             self.frame_digest.canonical_frame_sha256,
             self.frame_digest.indexed_pixels_sha256,
             self.frame_digest.palette_rgb_flags_sha256,
@@ -938,6 +1048,13 @@ pub enum StageFrameError {
     Compose(StageSceneComposeError),
     /// The composed frame could not be bridged to the presentation type.
     Present(SoftwareRgba8Error),
+    /// The raw-GPU stage adapter rejected the scene.
+    GpuPrepare(PreparedRawStageError),
+    /// The selected GPU backend could not be initialized (or its persistent
+    /// scene could not be uploaded).
+    GpuInit(String),
+    /// The selected GPU backend failed to render or read back a frame.
+    GpuCompose(String),
 }
 
 impl StageFrameError {
@@ -952,6 +1069,9 @@ impl StageFrameError {
             Self::Texture(_) => "texture",
             Self::Compose(_) => "compose",
             Self::Present(_) => "present",
+            Self::GpuPrepare(_) => "gpu-prepare",
+            Self::GpuInit(_) => "gpu-init",
+            Self::GpuCompose(_) => "gpu-compose",
         }
     }
 }
@@ -973,6 +1093,16 @@ impl fmt::Display for StageFrameError {
             Self::Texture(error) => write!(formatter, "cannot prepare stage textures: {error}"),
             Self::Compose(error) => write!(formatter, "cannot compose stage frame: {error}"),
             Self::Present(error) => write!(formatter, "cannot present stage frame: {error}"),
+            Self::GpuPrepare(error) => write!(formatter, "cannot prepare raw GPU stage: {error}"),
+            Self::GpuInit(detail) => {
+                write!(
+                    formatter,
+                    "cannot initialize the GPU stage renderer: {detail}"
+                )
+            }
+            Self::GpuCompose(detail) => {
+                write!(formatter, "cannot compose the GPU stage frame: {detail}")
+            }
         }
     }
 }
@@ -987,6 +1117,8 @@ impl std::error::Error for StageFrameError {
             Self::Texture(error) => Some(error),
             Self::Compose(error) => Some(error),
             Self::Present(error) => Some(error),
+            Self::GpuPrepare(error) => Some(error),
+            Self::GpuInit(_) | Self::GpuCompose(_) => None,
         }
     }
 }
@@ -1030,17 +1162,19 @@ fn stage_placeholder_palette() -> [PaletteEntry; 256] {
 #[derive(Clone, Debug)]
 pub struct RenderedStageFrameOutput {
     pub stage: String,
+    pub renderer: StageRendererKind,
     pub frame: SoftwarePresentedFrame,
     pub node_count: usize,
     pub draw_ops: usize,
     pub textures: usize,
-    pub stats: StageSceneFrameStats,
+    pub stats: StageRenderStats,
 }
 
 impl From<RenderedStageFrameOutput> for HeadlessStageFrameOutput {
     fn from(rendered: RenderedStageFrameOutput) -> Self {
         Self {
             stage: rendered.stage,
+            renderer: rendered.renderer,
             node_count: rendered.node_count,
             draw_ops: rendered.draw_ops,
             textures: rendered.textures,
@@ -1050,43 +1184,193 @@ impl From<RenderedStageFrameOutput> for HeadlessStageFrameOutput {
     }
 }
 
+/// The persistent wgpu stage renderer: the selected native backend behind the
+/// shared raw-C3D contracts.
+///
+/// One-time preparation converts the walkable scene into [`PreparedRawStage`]
+/// (validated raw resources + the recovered draw list) and uploads it to a
+/// persistent GPU scene. Each frame only supplies the camera VIEW matrix,
+/// rasterizes into the 8-bit palette-index target, and reads that index plane
+/// back, so the host presents it through the same recovered indexed display
+/// path the software compositor feeds. The software composer remains the
+/// oracle; the GPU frame is the same rendering contract, not a replacement
+/// semantics.
+struct WgpuStageRenderer {
+    backend: WgpuIndexedPaletteBackend,
+    prepared: PreparedRawStage,
+    scene: <WgpuIndexedPaletteBackend as PersistentRawC3dGpuBackend>::PreparedScene,
+    palette: [PaletteEntry; 256],
+}
+
+impl WgpuStageRenderer {
+    fn new(
+        scene: &StageScene<'_>,
+        textures: &StageC3dTextures,
+        extent: DisplayExtent,
+        palette: &[PaletteEntry; 256],
+    ) -> Result<Self, StageFrameError> {
+        let prepared = PreparedRawStage::prepare(scene, textures, extent, palette)
+            .map_err(StageFrameError::GpuPrepare)?;
+        let mut backend = WgpuIndexedPaletteBackend::new(&WgpuBackendConfig::default())
+            .map_err(|error| StageFrameError::GpuInit(error.to_string()))?;
+        let prepared_scene = backend
+            .prepare_c3d_scene(prepared.upload())
+            .map_err(|error| StageFrameError::GpuInit(error.to_string()))?;
+        Ok(Self {
+            backend,
+            prepared,
+            scene: prepared_scene,
+            palette: *palette,
+        })
+    }
+
+    fn stats(&self) -> PreparedRawStageStats {
+        self.prepared.stats()
+    }
+
+    /// Rasterizes one camera frame and returns it as the recovered indexed
+    /// presentation value (active-palette slots + the active palette).
+    fn compose(&mut self, camera: &[i32; 16]) -> Result<SoftwarePresentedFrame, StageFrameError> {
+        let frame = self.prepared.prepared_frame_for(camera);
+        let indexed = self
+            .backend
+            .render_prepared_indexed_readback(&mut self.scene, frame)
+            .map_err(|error| StageFrameError::GpuCompose(error.to_string()))?;
+        SoftwarePresentedFrame::from_indexed(
+            indexed.extent(),
+            indexed.indices().to_vec().into_boxed_slice(),
+            Box::new(self.palette),
+        )
+        .map_err(StageFrameError::Present)
+    }
+}
+
 /// A loaded stage's retained render inputs: the owned bundle and prepared
 /// textures, so a caller can recompose the scene every frame with a new camera
 /// (the windowed session's follow camera) without reloading.
 ///
-/// [`StageScene`] borrows the bundle, so it is rebuilt per compose from the
-/// retained `bundle` (cheap: it collects the group records); the textures and
-/// palette are prepared once.
+/// The GPU path prepares and uploads its persistent scene once at load. When no
+/// device is available, or a GPU frame fails under [`StageRendererChoice::Auto`],
+/// the retained bundle keeps the software compositor available as the oracle
+/// fallback. [`StageScene`] borrows the bundle, so it is rebuilt per software
+/// compose from the retained `bundle` (cheap: it collects the group records);
+/// the textures and palette are prepared once.
 pub struct StageRenderResources {
     stage: String,
     bundle: StageBundle,
     textures: StageC3dTextures,
     palette: [PaletteEntry; 256],
+    node_count: usize,
+    draw_ops: usize,
+    choice: StageRendererChoice,
+    gpu: Option<WgpuStageRenderer>,
 }
 
 impl StageRenderResources {
-    /// Loads the named stage from the media root, threading the `--source` seam:
-    /// it reads the stage's sibling sections ([`FsStageSectionSource`]), loads the
-    /// bundle ([`load_stage`]), binds its group-2 textures ([`StageC3dTextures`]),
-    /// and prepares the placeholder palette.
+    /// Loads the named stage with the default renderer policy
+    /// ([`StageRendererChoice::Auto`]: GPU when available, else software).
     pub fn load(media_root: &Path, stage: &str) -> Result<Self, StageFrameError> {
+        Self::load_with(media_root, stage, StageRendererChoice::Auto)
+    }
+
+    /// Loads the named stage and selects its renderer.
+    ///
+    /// `--source` threading is unchanged: it reads the stage's sibling sections
+    /// ([`FsStageSectionSource`]), loads the bundle ([`load_stage`]), binds its
+    /// group-2 textures ([`StageC3dTextures`]), and prepares the placeholder
+    /// palette. The GPU path then converts the already-walked scene and uploads
+    /// the persistent scene once. `Gpu` fails closed when the device or scene is
+    /// unavailable; `Auto` falls back to the software compositor.
+    pub fn load_with(
+        media_root: &Path,
+        stage: &str,
+        choice: StageRendererChoice,
+    ) -> Result<Self, StageFrameError> {
         let source = FsStageSectionSource::read(media_root, stage, DecodeLimits::default())?;
         let bundle = load_stage(&source, C3dLimits::default()).map_err(StageFrameError::Load)?;
         let textures = StageC3dTextures::prepare(bundle.scene(), BitmapLimits::default())
             .map_err(StageFrameError::Texture)?;
+        let palette = stage_placeholder_palette();
+        let scene = StageScene::from_c3d(bundle.scene(), &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX)
+            .map_err(StageFrameError::Scene)?;
+        let node_count = scene.node_count();
+        let draw_ops = scene.draw_order().len();
+
+        let gpu = match choice {
+            StageRendererChoice::Software => None,
+            StageRendererChoice::Gpu => Some(WgpuStageRenderer::new(
+                &scene,
+                &textures,
+                ROOT_EXTENT,
+                &palette,
+            )?),
+            StageRendererChoice::Auto => {
+                WgpuStageRenderer::new(&scene, &textures, ROOT_EXTENT, &palette).ok()
+            }
+        };
+
         Ok(StageRenderResources {
             stage: stage.to_owned(),
             bundle,
             textures,
-            palette: stage_placeholder_palette(),
+            palette,
+            node_count,
+            draw_ops,
+            choice,
+            gpu,
         })
     }
 
-    /// Composes one software frame of the retained stage from the given camera
-    /// world transform, walking the `.c3d` scene ([`StageScene::from_c3d`]) and
-    /// composing it ([`compose_stage_scene_frame`]) into the shared presentation
-    /// type.
-    pub fn compose(&self, camera: &[i32; 16]) -> Result<RenderedStageFrameOutput, StageFrameError> {
+    /// Which renderer will compose the next frame.
+    #[must_use]
+    pub fn renderer(&self) -> StageRendererKind {
+        if self.gpu.is_some() {
+            StageRendererKind::Gpu
+        } else {
+            StageRendererKind::Software
+        }
+    }
+
+    /// Composes one frame of the retained stage from the given camera world
+    /// transform through the selected renderer.
+    ///
+    /// A GPU frame failure under `Auto` disables the GPU path for the rest of the
+    /// session and composes the software oracle frame instead; `Gpu` surfaces the
+    /// failure.
+    pub fn compose(
+        &mut self,
+        camera: &[i32; 16],
+    ) -> Result<RenderedStageFrameOutput, StageFrameError> {
+        if let Some(gpu) = self.gpu.as_mut() {
+            match gpu.compose(camera) {
+                Ok(frame) => {
+                    return Ok(RenderedStageFrameOutput {
+                        stage: self.stage.clone(),
+                        renderer: StageRendererKind::Gpu,
+                        frame,
+                        node_count: self.node_count,
+                        draw_ops: self.draw_ops,
+                        textures: self.textures.len(),
+                        stats: StageRenderStats::Gpu(gpu.stats()),
+                    });
+                }
+                Err(error) => {
+                    if self.choice == StageRendererChoice::Gpu {
+                        return Err(error);
+                    }
+                    // Auto: fall back to the software oracle for this and every
+                    // later frame rather than failing the session.
+                    self.gpu = None;
+                }
+            }
+        }
+        self.compose_software(camera)
+    }
+
+    fn compose_software(
+        &self,
+        camera: &[i32; 16],
+    ) -> Result<RenderedStageFrameOutput, StageFrameError> {
         let scene = StageScene::from_c3d(
             self.bundle.scene(),
             &MATRIX_IDENTITY_Q16,
@@ -1109,31 +1393,35 @@ impl StageRenderResources {
 
         Ok(RenderedStageFrameOutput {
             stage: self.stage.clone(),
+            renderer: StageRendererKind::Software,
             frame: presented,
-            node_count: scene.node_count(),
-            draw_ops: scene.draw_order().len(),
+            node_count: self.node_count,
+            draw_ops: self.draw_ops,
             textures: self.textures.len(),
-            stats: *frame.stats(),
+            stats: StageRenderStats::Software(*frame.stats()),
         })
     }
 }
 
-/// Loads the named stage from the media root and composes one software frame
-/// with the fixed placeholder camera. The owned frame lets a headless caller
-/// take a digest or a native host present it in a window.
+/// Loads the named stage from the media root and composes one frame with the
+/// fixed placeholder camera. The owned frame lets a headless caller take a
+/// digest or a native host present it in a window.
 pub fn render_stage_frame(
     media_root: &Path,
     stage: &str,
+    renderer: StageRendererChoice,
 ) -> Result<RenderedStageFrameOutput, StageFrameError> {
-    StageRenderResources::load(media_root, stage)?.compose(&stage_placeholder_camera())
+    StageRenderResources::load_with(media_root, stage, renderer)?
+        .compose(&stage_placeholder_camera())
 }
 
 /// Composes one stage frame headlessly and returns its path-free measurements.
 pub fn run_headless_stage_frame(
     media_root: &Path,
     stage: &str,
+    renderer: StageRendererChoice,
 ) -> Result<HeadlessStageFrameOutput, StageFrameError> {
-    render_stage_frame(media_root, stage).map(HeadlessStageFrameOutput::from)
+    render_stage_frame(media_root, stage, renderer).map(HeadlessStageFrameOutput::from)
 }
 
 /// A failure while running the native windowed stage frame.
@@ -1185,8 +1473,9 @@ impl std::error::Error for WindowedStageFrameError {
 pub fn run_windowed_stage_frame(
     media_root: &Path,
     stage: &str,
+    renderer: StageRendererChoice,
 ) -> Result<(), WindowedStageFrameError> {
-    let rendered = render_stage_frame(media_root, stage)?;
+    let rendered = render_stage_frame(media_root, stage, renderer)?;
     present_software_frame(&rendered.frame).map_err(WindowedStageFrameError::Present)
 }
 
@@ -1300,7 +1589,7 @@ fn advance_game_frame<C: HostClock>(
     menu_inputs: MenuFlowInputs,
     progress: &mut StageProgress,
     clock: &C,
-    resources: &StageRenderResources,
+    resources: &mut StageRenderResources,
     camera: &mut ViewHarness,
     fade: &mut Option<ScalarTween>,
     input: WindowedInput,
@@ -1377,8 +1666,9 @@ pub fn run_windowed_game_session(
     media_root: &Path,
     runtime_data: &Path,
     stage: &str,
+    renderer: StageRendererChoice,
 ) -> Result<(), WindowedStageFrameError> {
-    let resources = StageRenderResources::load(media_root, stage)?;
+    let mut resources = StageRenderResources::load_with(media_root, stage, renderer)?;
     let initial = resources.compose(&stage_placeholder_camera())?;
 
     let params = SimParams {
@@ -1431,7 +1721,7 @@ pub fn run_windowed_game_session(
                         menu_inputs,
                         &mut progress,
                         &clock,
-                        &resources,
+                        &mut resources,
                         &mut camera,
                         &mut fade,
                         input,
@@ -1473,7 +1763,7 @@ pub fn run_windowed_game_session(
             menu_inputs,
             &mut progress,
             &clock,
-            &resources,
+            &mut resources,
             &mut camera,
             &mut fade,
             input,
@@ -1688,6 +1978,105 @@ mod tests {
         // It needs neither a stage nor a media root.
         assert_eq!(config.stage(), None);
         assert_eq!(config.media_root(), None);
+    }
+
+    #[test]
+    fn stage_renderer_option_defaults_to_auto_and_accepts_each_name() {
+        let config = runtime_config(
+            arguments(&[
+                "--headless-stage-frame",
+                "--runtime-data",
+                "data",
+                "--source",
+                "media",
+                "--stage",
+                "AU1",
+            ]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.stage_renderer(), StageRendererChoice::Auto);
+
+        for (value, expected) in [
+            ("auto", StageRendererChoice::Auto),
+            ("software", StageRendererChoice::Software),
+            ("gpu", StageRendererChoice::Gpu),
+        ] {
+            let config = runtime_config(
+                arguments(&[
+                    "--headless-stage-frame",
+                    "--runtime-data",
+                    "data",
+                    "--source",
+                    "media",
+                    "--stage",
+                    "AU1",
+                    "--renderer",
+                    value,
+                ]),
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(config.stage_renderer(), expected);
+        }
+
+        assert_eq!(
+            runtime_config(
+                arguments(&[
+                    "--headless-stage-frame",
+                    "--runtime-data",
+                    "data",
+                    "--source",
+                    "media",
+                    "--stage",
+                    "AU1",
+                    "--renderer",
+                    "gpu",
+                    "--renderer",
+                    "software",
+                ]),
+                None,
+                None,
+            ),
+            Err(ConfigError::DuplicateOption("--renderer"))
+        );
+        assert_eq!(
+            runtime_config(
+                arguments(&[
+                    "--headless-stage-frame",
+                    "--runtime-data",
+                    "data",
+                    "--source",
+                    "media",
+                    "--stage",
+                    "AU1",
+                    "--renderer",
+                    "vulkan",
+                ]),
+                None,
+                None,
+            ),
+            Err(ConfigError::InvalidRenderer("vulkan".to_owned()))
+        );
+        assert_eq!(
+            runtime_config(
+                arguments(&[
+                    "--headless-stage-frame",
+                    "--runtime-data",
+                    "data",
+                    "--source",
+                    "media",
+                    "--stage",
+                    "AU1",
+                    "--renderer",
+                ]),
+                None,
+                None,
+            ),
+            Err(ConfigError::MissingOptionValue("--renderer"))
+        );
     }
 
     #[test]

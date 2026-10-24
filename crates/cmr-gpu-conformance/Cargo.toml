@@ -9,6 +9,7 @@ publish = false
 cmr-core = { path = "../cmr-core" }
 cmr-formats = { path = "../cmr-formats" }
 cmr-gpu-contract = { path = "../cmr-gpu-contract" }
+cmr-gpu-stage = { path = "../cmr-gpu-stage" }
 cmr-video = { path = "../cmr-video" }
 cmr-video-sdl-gpu = { path = "../cmr-video-sdl-gpu" }
 cmr-video-wgpu = { path = "../cmr-video-wgpu" }

@@ -138,9 +138,12 @@ dependencies = [
  "cmr-assets",
  "cmr-core",
  "cmr-formats",
+ "cmr-gpu-contract",
+ "cmr-gpu-stage",
  "cmr-platform-sdl3",
  "cmr-test-support",
  "cmr-video",
+ "cmr-video-wgpu",
 ]
 
 [[package]]
@@ -178,6 +181,7 @@ dependencies = [
  "cmr-core",
  "cmr-formats",
  "cmr-gpu-contract",
+ "cmr-gpu-stage",
  "cmr-video",
  "cmr-video-sdl-gpu",
  "cmr-video-wgpu",
@@ -189,6 +193,16 @@ version = "0.1.0"
 dependencies = [
  "cmr-core",
  "cmr-formats",
+]
+
+[[package]]
+name = "cmr-gpu-stage"
+version = "0.1.0"
+dependencies = [
+ "cmr-core",
+ "cmr-formats",
+ "cmr-gpu-contract",
+ "cmr-video",
 ]
 
 [[package]]

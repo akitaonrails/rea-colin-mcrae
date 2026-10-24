@@ -1094,6 +1094,66 @@ pub trait PersistentRawC3dGpuBackend {
     ) -> Result<FrameTiming, Self::Error>;
 }
 
+/// A tightly packed, row-major, 8-bit **active-palette index** frame read back
+/// from a GPU target.
+///
+/// The indices are the active display-palette slots the candidate resolved, not
+/// the source material texel values: pairing them with the caller's active
+/// palette reconstructs exactly the RGBA image the expanded readback would
+/// produce. This is the presentation form the indexed host already consumes, so
+/// a GPU-rendered stage frame needs no palette inversion and no lossy
+/// RGBA -> index conversion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalIndexedFrame {
+    extent: DisplayExtent,
+    indices: Box<[u8]>,
+}
+
+impl CanonicalIndexedFrame {
+    /// Wraps exactly `width * height` index bytes.
+    pub fn new(extent: DisplayExtent, indices: Box<[u8]>) -> Result<Self, FrameContractError> {
+        let pixel_count = checked_pixel_count(extent)?;
+        if indices.len() != pixel_count {
+            return Err(FrameContractError::InvalidIndexLength {
+                expected: pixel_count,
+                actual: indices.len(),
+            });
+        }
+        Ok(Self { extent, indices })
+    }
+
+    #[must_use]
+    pub const fn extent(&self) -> DisplayExtent {
+        self.extent
+    }
+
+    #[must_use]
+    pub fn indices(&self) -> &[u8] {
+        &self.indices
+    }
+
+    #[must_use]
+    pub const fn row_pitch(&self) -> usize {
+        self.extent.width as usize
+    }
+}
+
+/// Presentation readback for a persistent raw-C3D scene.
+///
+/// Separate from [`PersistentRawC3dGpuBackend`] because it is not part of the
+/// steady-state ranking contract: it exists so a host can present the GPU's
+/// rasterized stage through the recovered indexed display path. A candidate
+/// that cannot render into an 8-bit integer target (or cannot read it back)
+/// simply does not implement it; correctness comparison keeps using the
+/// expanded RGBA readback.
+pub trait PersistentRawC3dIndexedBackend: PersistentRawC3dGpuBackend {
+    fn render_prepared_indexed_readback(
+        &mut self,
+        scene: &mut Self::PreparedScene,
+        frame: C3dPreparedFrame<'_>,
+    ) -> Result<CanonicalIndexedFrame, Self::Error>;
+}
+
 /// Deterministic nearest-rank timing summary over non-empty nanosecond samples.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TimingSummary {
@@ -1247,6 +1307,51 @@ mod tests {
         let normalized =
             normalize_readback(extent, &[1, 2, 3, 4], 4, ReadbackFormat::Rgba8).unwrap();
         assert_eq!(normalized.pixels(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn canonical_indexed_frame_validates_length_and_matches_expanded_rgba() {
+        let palette = palette();
+        let extent = DisplayExtent {
+            width: 3,
+            height: 2,
+        };
+        let indices = Box::new([0u8, 1, 255, 7, 8, 9]);
+        let frame = CanonicalIndexedFrame::new(extent, indices.clone()).unwrap();
+        assert_eq!(frame.extent(), extent);
+        assert_eq!(frame.indices(), &indices[..]);
+        assert_eq!(frame.row_pitch(), 3);
+
+        // Pairing the indices with the caller's palette reconstructs exactly the
+        // canonical RGBA expansion a host would present.
+        let view = IndexedFrameView::new(extent, frame.indices(), &palette).unwrap();
+        let expanded = view.canonical_rgba8().unwrap();
+        assert_eq!(expanded.extent(), extent);
+        assert_eq!(
+            expanded.pixels()[..4],
+            [palette[0].red, palette[0].green, palette[0].blue, 255]
+        );
+
+        assert!(matches!(
+            CanonicalIndexedFrame::new(extent, Box::new([0u8; 5])),
+            Err(FrameContractError::InvalidIndexLength {
+                expected: 6,
+                actual: 5
+            })
+        ));
+        assert_eq!(
+            CanonicalIndexedFrame::new(
+                DisplayExtent {
+                    width: 0,
+                    height: 0,
+                },
+                Box::new([]),
+            ),
+            Err(FrameContractError::InvalidExtent(DisplayExtent {
+                width: 0,
+                height: 0,
+            }))
+        );
     }
 
     #[test]

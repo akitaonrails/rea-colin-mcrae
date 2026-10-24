@@ -49,7 +49,7 @@ fn main() -> ExitCode {
                 // resolve() guarantees both a stage name and a media root for
                 // this command, so these accessors are populated.
                 let (media_root, stage) = stage_inputs(&config);
-                match run_headless_stage_frame(media_root, stage) {
+                match run_headless_stage_frame(media_root, stage, config.stage_renderer()) {
                     Ok(output) => {
                         println!("{}", output.stable_summary());
                         ExitCode::SUCCESS
@@ -62,7 +62,7 @@ fn main() -> ExitCode {
             }
             AppCommand::WindowedStageFrame => {
                 let (media_root, stage) = stage_inputs(&config);
-                match run_windowed_stage_frame(media_root, stage) {
+                match run_windowed_stage_frame(media_root, stage, config.stage_renderer()) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("cmr-app: windowed-stage-frame failed: {}", error.kind());
@@ -77,7 +77,12 @@ fn main() -> ExitCode {
             }
             AppCommand::WindowedGameSession => {
                 let (media_root, stage) = stage_inputs(&config);
-                match run_windowed_game_session(media_root, config.runtime_data(), stage) {
+                match run_windowed_game_session(
+                    media_root,
+                    config.runtime_data(),
+                    stage,
+                    config.stage_renderer(),
+                ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {
                         eprintln!("cmr-app: windowed-game-session failed: {}", error.kind());

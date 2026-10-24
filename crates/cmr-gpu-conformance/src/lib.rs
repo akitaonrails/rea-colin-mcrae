@@ -5,24 +5,16 @@
 //! must match the same CPU oracle byte for byte. Timings describe this small
 //! upload/render/readback workload only and never select a winning backend.
 
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 
-use cmr_core::c3d_camera::{
-    PROJECTION_BASELINE, projection_matrix_words, view_matrix_words, world_matrix_words,
-};
-use cmr_core::c3d_stage_scene::StageScene;
 use cmr_core::display::DisplayExtent;
 use cmr_formats::riff_palette::PaletteEntry;
 use cmr_gpu_contract::{
-    BackendCapabilities, BackendInfo, C3dDraw, C3dIndexedTexture, C3dMeshResource,
-    C3dPreparedFrame, C3dRawFrame, C3dResourceSet, C3dRgb8, C3dSceneUpload, C3dSubmissionBracket,
-    C3dVertexQ16, CanonicalRgba8Frame, DeviceKind, GraphicsApi, IndexedFrameView,
-    IndexedPaletteGpuBackend, RawC3dContractError, TimingSummary,
+    BackendCapabilities, BackendInfo, CanonicalRgba8Frame, DeviceKind, GraphicsApi,
+    IndexedFrameView, IndexedPaletteGpuBackend, TimingSummary,
 };
 use cmr_video::SoftwarePresentedFrame;
-use cmr_video::software_stage_scene::StageC3dTextures;
 use cmr_video_sdl_gpu::{SdlGpuConfig, SdlGpuIndexedBackend};
 use cmr_video_wgpu::{WgpuApi, WgpuBackendConfig, WgpuIndexedPaletteBackend, WgpuPowerPreference};
 
@@ -37,202 +29,7 @@ const DEFAULT_WARMUP: usize = 2;
 const DEFAULT_FRAMES: usize = 8;
 const MAX_ITERATIONS: usize = 100_000;
 
-/// Counts retained and skipped inputs while a [`StageScene`] is converted to
-/// raw GPU resources. Skips mirror the established software stage composer.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct PreparedRawStageStats {
-    pub draws: usize,
-    pub unique_textures: usize,
-    pub unresolved_prims: usize,
-    pub empty_lod_nodes: usize,
-}
-
-/// An owned raw-GPU view of one already parsed stage scene.
-///
-/// Geometry remains the C3D Q16.16 vertex words plus compact `u16` indices.
-/// The adapter performs no transform, clipping, culling, or raster preparation.
-/// A material ordinal is uploaded once and shared by every draw that names it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedRawStage {
-    extent: DisplayExtent,
-    view: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
-    projection: cmr_core::root_menu_c3d_transform::C3dMatrixWords,
-    active_palette: Box<[PaletteEntry; 256]>,
-    resources: C3dResourceSet,
-    draws: Box<[C3dDraw]>,
-    stats: PreparedRawStageStats,
-}
-
-impl PreparedRawStage {
-    /// Converts the recovered scene walk and its already-decoded group-2
-    /// textures into the bounded opaque-COPY raw GPU profile.
-    pub fn prepare(
-        scene: &StageScene<'_>,
-        textures: &StageC3dTextures,
-        camera_world_q16: &[i32; 16],
-        extent: DisplayExtent,
-        active_palette: &[PaletteEntry; 256],
-    ) -> Result<Self, PreparedRawStageError> {
-        let view = view_matrix_words(camera_world_q16);
-        let (projection_width, projection_height, z_near, z_far) = PROJECTION_BASELINE;
-        let projection =
-            projection_matrix_words(projection_width, projection_height, z_near, z_far);
-        let mut meshes = Vec::new();
-        let mut prepared_textures = Vec::new();
-        let mut texture_by_ordinal = BTreeMap::<i16, u32>::new();
-        let mut draws = Vec::new();
-        let mut stats = PreparedRawStageStats::default();
-
-        for op in scene.draw_order() {
-            let Some(mesh) = scene.mesh(op.node) else {
-                continue;
-            };
-            let Some(draw_group) = mesh.active() else {
-                stats.empty_lod_nodes += 1;
-                continue;
-            };
-            for prim in draw_group.prims() {
-                let ordinal = prim.selector();
-                let Some(sampled) = textures.texture_for_ordinal(ordinal) else {
-                    stats.unresolved_prims += 1;
-                    continue;
-                };
-
-                let texture_id = if let Some(&existing) = texture_by_ordinal.get(&ordinal) {
-                    existing
-                } else {
-                    let [width, height] = sampled.extent();
-                    let texture = C3dIndexedTexture::new(
-                        DisplayExtent { width, height },
-                        sampled.indices().to_vec(),
-                        sampled
-                            .palette()
-                            .iter()
-                            .copied()
-                            .map(C3dRgb8::from)
-                            .collect::<Vec<_>>(),
-                        sampled.color_key_index(),
-                    )?;
-                    let id = u32::try_from(prepared_textures.len()).map_err(|_| {
-                        PreparedRawStageError::ResourceCountOverflow {
-                            resource: "texture",
-                            count: prepared_textures.len(),
-                        }
-                    })?;
-                    prepared_textures.push(texture);
-                    texture_by_ordinal.insert(ordinal, id);
-                    id
-                };
-
-                let mesh_id = u32::try_from(meshes.len()).map_err(|_| {
-                    PreparedRawStageError::ResourceCountOverflow {
-                        resource: "mesh",
-                        count: meshes.len(),
-                    }
-                })?;
-                meshes.push(C3dMeshResource::new(
-                    prim.unique_entries_32()
-                        .iter()
-                        .copied()
-                        .map(C3dVertexQ16::from)
-                        .collect::<Vec<_>>(),
-                    prim.indices().to_vec(),
-                )?);
-                draws.push(C3dDraw::new(
-                    mesh_id,
-                    texture_id,
-                    world_matrix_words(scene.world(op.node)),
-                    if op.deferred_translucent {
-                        C3dSubmissionBracket::DeferredTranslucent
-                    } else {
-                        C3dSubmissionBracket::Normal
-                    },
-                )?);
-            }
-        }
-
-        stats.draws = draws.len();
-        stats.unique_textures = prepared_textures.len();
-        let resources = C3dResourceSet::new(meshes, prepared_textures);
-        // Validate the complete cross-resource frame now; `frame()` repeats the
-        // cheap borrowed validation and cannot fail unless this type is broken.
-        C3dRawFrame::new(extent, view, projection, active_palette, &resources, &draws)?;
-
-        Ok(Self {
-            extent,
-            view,
-            projection,
-            active_palette: Box::new(*active_palette),
-            resources,
-            draws: draws.into_boxed_slice(),
-            stats,
-        })
-    }
-
-    pub fn frame(&self) -> C3dRawFrame<'_> {
-        C3dRawFrame::new(
-            self.extent,
-            self.view,
-            self.projection,
-            &self.active_palette,
-            &self.resources,
-            &self.draws,
-        )
-        .expect("PreparedRawStage validated its immutable resources and draws")
-    }
-
-    /// Borrows the immutable upload inputs for a persistent GPU scene.
-    pub fn upload(&self) -> C3dSceneUpload<'_> {
-        C3dSceneUpload::new(self.extent, &self.resources, &self.active_palette)
-            .expect("PreparedRawStage validated its immutable extent and resources")
-    }
-
-    /// Borrows the per-frame matrices and draw list for the uploaded scene.
-    pub fn prepared_frame(&self) -> C3dPreparedFrame<'_> {
-        C3dPreparedFrame::new(
-            self.upload().layout(),
-            self.view,
-            self.projection,
-            &self.draws,
-        )
-        .expect("PreparedRawStage validated its immutable matrices and draws")
-    }
-
-    #[must_use]
-    pub const fn stats(&self) -> PreparedRawStageStats {
-        self.stats
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PreparedRawStageError {
-    Contract(RawC3dContractError),
-    ResourceCountOverflow {
-        resource: &'static str,
-        count: usize,
-    },
-}
-
-impl From<RawC3dContractError> for PreparedRawStageError {
-    fn from(error: RawC3dContractError) -> Self {
-        Self::Contract(error)
-    }
-}
-
-impl fmt::Display for PreparedRawStageError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "cannot prepare raw GPU stage: {self:?}")
-    }
-}
-
-impl std::error::Error for PreparedRawStageError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Contract(error) => Some(error),
-            Self::ResourceCountOverflow { .. } => None,
-        }
-    }
-}
+pub use cmr_gpu_stage::{PreparedRawStage, PreparedRawStageError, PreparedRawStageStats};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum BackendSelection {
@@ -753,8 +550,9 @@ impl std::error::Error for RunError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
+    use cmr_core::c3d_camera::{MATRIX_IDENTITY_Q16, view_matrix_words, world_matrix_words};
     use cmr_core::c3d_render::VERTEXTYPE_LVERTEX;
+    use cmr_core::c3d_stage_scene::StageScene;
     use cmr_formats::bitmap::BitmapLimits;
     use cmr_formats::c3d::{
         C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS, C3D_FORMAT_VERSION, C3D_GROUP0_VALUES_OFFSET,
@@ -762,8 +560,10 @@ mod tests {
         C3D_MAGIC, C3dLimits, parse_c3d,
     };
     use cmr_gpu_contract::{
-        BackendKind, ConformanceFrame, FrameTiming, IndexedPaletteGpuBackend, RawC3dGpuBackend,
+        BackendKind, C3dSubmissionBracket, ConformanceFrame, FrameTiming, IndexedPaletteGpuBackend,
+        RawC3dGpuBackend,
     };
+    use cmr_video::software_stage_scene::StageC3dTextures;
 
     fn args(values: &[&str]) -> impl Iterator<Item = OsString> {
         values.iter().map(OsString::from)
@@ -960,7 +760,6 @@ mod tests {
         let prepared = PreparedRawStage::prepare(
             &scene,
             &textures,
-            &camera,
             DisplayExtent {
                 width: 64,
                 height: 48,
@@ -978,7 +777,7 @@ mod tests {
             }
         );
 
-        let frame = prepared.frame();
+        let frame = prepared.frame_for(&camera);
         assert_eq!(frame.active_palette(), &active_palette);
         assert_eq!(frame.draws().len(), 1);
         assert_eq!(frame.draws()[0].submission(), C3dSubmissionBracket::Normal);
@@ -1017,7 +816,7 @@ mod tests {
         assert_eq!(upload.resources(), frame.resources());
         assert_eq!(upload.active_palette(), frame.active_palette());
 
-        let persistent_frame = prepared.prepared_frame();
+        let persistent_frame = prepared.prepared_frame_for(&camera);
         assert_eq!(persistent_frame.layout(), upload.layout());
         assert_eq!(persistent_frame.view(), frame.view());
         assert_eq!(persistent_frame.projection(), frame.projection());
@@ -1038,7 +837,6 @@ mod tests {
         let prepared = PreparedRawStage::prepare(
             &scene,
             &textures,
-            &camera,
             DisplayExtent {
                 width: 64,
                 height: 48,
@@ -1062,8 +860,12 @@ mod tests {
             debug_mode: false,
         })
         .unwrap();
-        let wgpu_frame = wgpu.render_c3d_readback(prepared.frame()).unwrap();
-        let sdl_frame = sdl.render_c3d_readback(prepared.frame()).unwrap();
+        let wgpu_frame = wgpu
+            .render_c3d_readback(prepared.frame_for(&camera))
+            .unwrap();
+        let sdl_frame = sdl
+            .render_c3d_readback(prepared.frame_for(&camera))
+            .unwrap();
 
         let clear = [
             active_palette[0].red,

@@ -357,6 +357,7 @@ pub struct ImportedStageBenchmarkInput {
     node_count: usize,
     draw_ops: usize,
     texture_slots: usize,
+    camera: [i32; 16],
     prepared: PreparedRawStage,
     oracle_rgba8: Box<[u8]>,
     oracle_prims_composed: usize,
@@ -388,6 +389,13 @@ impl ImportedStageBenchmarkInput {
     #[must_use]
     pub const fn prepared(&self) -> &PreparedRawStage {
         &self.prepared
+    }
+
+    /// The placeholder benchmark camera used for both the oracle and the
+    /// per-frame GPU matrices.
+    #[must_use]
+    pub const fn camera(&self) -> &[i32; 16] {
+        &self.camera
     }
 
     /// The software oracle frame as tightly packed opaque RGBA8 bytes.
@@ -445,9 +453,8 @@ pub fn load_imported_stage(
             .expand_rgba8()
             .map_err(StageBenchmarkError::Present)?;
         debug_assert_eq!(oracle.extent(), BENCHMARK_EXTENT);
-        let prepared =
-            PreparedRawStage::prepare(&scene, &textures, &camera, BENCHMARK_EXTENT, &palette)
-                .map_err(StageBenchmarkError::Prepare)?;
+        let prepared = PreparedRawStage::prepare(&scene, &textures, BENCHMARK_EXTENT, &palette)
+            .map_err(StageBenchmarkError::Prepare)?;
         (
             node_count,
             draw_ops,
@@ -464,6 +471,7 @@ pub fn load_imported_stage(
         node_count,
         draw_ops,
         texture_slots,
+        camera,
         prepared,
         oracle_rgba8,
         oracle_prims_composed: prims_composed,
@@ -634,7 +642,7 @@ pub fn run(options: &StageBenchmarkOptions) -> Result<StageBenchmarkReport, Stag
         });
     }
 
-    let resources = input.prepared().frame().resources();
+    let resources = input.prepared().frame_for(input.camera()).resources();
     Ok(StageBenchmarkReport {
         stage: input.stage().to_owned(),
         node_count: input.node_count(),
@@ -678,7 +686,7 @@ where
             backend: name,
             detail: error.to_string(),
         })?;
-    let frame = input.prepared().prepared_frame();
+    let frame = input.prepared().prepared_frame_for(input.camera());
 
     let readback = backend
         .render_prepared_readback(&mut scene, frame)

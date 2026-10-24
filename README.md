@@ -153,6 +153,28 @@ boundaries. `--backend wgpu|sdl-gpu|both`, `--wgpu-adapter`, and `--low-power`
 select the candidates. Stage output is path-free, reports timings and
 `winner=not-selected`, and needs an otherwise idle GPU for meaningful numbers.
 
+The application's stage commands use the selected backend (wgpu) by default:
+the stage is prepared and uploaded once, each frame only updates the camera VIEW
+matrix and rasterizes into the 8-bit palette-index target, and the host presents
+that index plane through the recovered indexed display path. The software
+compositor remains the oracle and the automatic fallback:
+
+```sh
+cargo run --release -q -p cmr-app -- \
+  --windowed-game-session \
+  --runtime-data runtime-data \
+  --source "$CMR_ORIGINAL_DIR/Game/Au/1" \
+  --stage AU1 \
+  --renderer auto        # auto | software | gpu
+```
+
+`auto` (default) uses the GPU when a device is available and silently falls
+back to software; `software` forces the oracle compositor; `gpu` fails closed
+if the device or scene is unavailable. Measured per composed 640x480 stage
+frame on this host: AU1 79.6 ms (software) vs 0.75 ms (GPU), NZ2 67.9 vs 1.07,
+MC5 101.4 vs 1.11, IN8 7.2 vs 0.16. The GPU index frame is held to the
+software oracle by the shared raw-C3D contract (hardware-gated test).
+
 Verify the currently cataloged source corpus, then import exact asset bytes into
 the ignored runtime directory:
 

@@ -10,7 +10,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cmr_app::{StageFrameError, render_stage_frame, run_headless_stage_frame};
+use cmr_app::{
+    StageFrameError, StageRenderResources, StageRenderStats, StageRendererChoice,
+    StageRendererKind, render_stage_frame, run_headless_stage_frame,
+};
 use cmr_formats::c3d::{
     C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS, C3D_FORMAT_VERSION, C3D_GROUP0_VALUES_OFFSET,
     C3D_GROUP1_ENTRY24_LEN, C3D_GROUP1_ENTRY32_LEN, C3D_GROUP1_FIXED_LEN, C3D_HEADER_LEN,
@@ -58,22 +61,28 @@ fn composes_a_drawable_stage_from_a_source_root() {
         &drawable_c3d(&indexed_bitmap_4x4(), [0, 0, -(1 << 16)]),
     );
 
-    let output = run_headless_stage_frame(media.root(), "teststage").unwrap();
+    let output =
+        run_headless_stage_frame(media.root(), "teststage", StageRendererChoice::Software).unwrap();
 
     assert_eq!(output.stage, "teststage");
     assert_eq!(output.node_count, 1);
     assert_eq!(output.draw_ops, 1);
     assert_eq!(output.textures, 1);
-    assert_eq!(output.stats.prims_composed, 1);
-    assert_eq!(output.stats.unresolved_prims, 0);
-    assert_eq!(output.stats.empty_lod_nodes, 0);
-    assert!(output.stats.covered > 0);
-    assert!(output.stats.depth_passed > 0);
+    assert_eq!(output.renderer, StageRendererKind::Software);
+    let StageRenderStats::Software(stats) = output.stats else {
+        panic!("the software renderer must report software statistics");
+    };
+    assert_eq!(stats.prims_composed, 1);
+    assert_eq!(stats.unresolved_prims, 0);
+    assert_eq!(stats.empty_lod_nodes, 0);
+    assert!(stats.covered > 0);
+    assert!(stats.depth_passed > 0);
     assert_eq!(output.frame_digest.extent.width, 640);
     assert_eq!(output.frame_digest.extent.height, 480);
 
     // The summary is path-free and deterministic across runs.
-    let again = run_headless_stage_frame(media.root(), "teststage").unwrap();
+    let again =
+        run_headless_stage_frame(media.root(), "teststage", StageRendererChoice::Software).unwrap();
     assert_eq!(output.stable_summary(), again.stable_summary());
     assert!(
         !output
@@ -94,7 +103,8 @@ fn sdl_host_presents_a_composed_stage_frame() {
 
     // The windowed command's composition path, presented once (the live
     // `run_windowed_stage_frame` waits for the user to close the window).
-    let rendered = render_stage_frame(media.root(), "windowed").unwrap();
+    let rendered =
+        render_stage_frame(media.root(), "windowed", StageRendererChoice::Software).unwrap();
     assert_eq!(rendered.node_count, 1);
     present_software_frame_once(&rendered.frame).unwrap();
 }
@@ -110,9 +120,13 @@ fn reads_an_optional_cat_sibling_without_failing() {
     // Two well-formed (all-zero) .cat nodes alongside the scene.
     media.write_section("withcat", CAT_EXTENSION, &[0u8; CAT_NODE_STRIDE * 2]);
 
-    let output = run_headless_stage_frame(media.root(), "withcat").unwrap();
+    let output =
+        run_headless_stage_frame(media.root(), "withcat", StageRendererChoice::Software).unwrap();
     assert_eq!(output.node_count, 1);
-    assert_eq!(output.stats.prims_composed, 1);
+    let StageRenderStats::Software(stats) = output.stats else {
+        panic!("the software renderer must report software statistics");
+    };
+    assert_eq!(stats.prims_composed, 1);
 }
 
 #[test]
@@ -121,7 +135,8 @@ fn a_missing_scene_section_is_a_load_error() {
     // Only a .cat sibling, no mandatory .c3d scene.
     media.write_section("noscene", CAT_EXTENSION, &[0u8; CAT_NODE_STRIDE]);
 
-    let error = run_headless_stage_frame(media.root(), "noscene").unwrap_err();
+    let error = run_headless_stage_frame(media.root(), "noscene", StageRendererChoice::Software)
+        .unwrap_err();
     assert_eq!(error.kind(), "load");
     assert!(matches!(error, StageFrameError::Load(_)));
 }
@@ -131,8 +146,66 @@ fn a_malformed_scene_is_a_load_error() {
     let media = MediaDir::new();
     media.write_section("broken", C3D_EXTENSION, b"not a c3d scene at all");
 
-    let error = run_headless_stage_frame(media.root(), "broken").unwrap_err();
+    let error = run_headless_stage_frame(media.root(), "broken", StageRendererChoice::Software)
+        .unwrap_err();
     assert_eq!(error.kind(), "load");
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter; run explicitly for the GPU stage-renderer contract"]
+fn gpu_and_software_render_the_same_synthetic_stage_frame() {
+    let media = MediaDir::new();
+    media.write_section(
+        "gpucompare",
+        C3D_EXTENSION,
+        &drawable_c3d(&indexed_bitmap_4x4(), [0, 0, -(1 << 16)]),
+    );
+
+    let software =
+        render_stage_frame(media.root(), "gpucompare", StageRendererChoice::Software).unwrap();
+    let gpu = render_stage_frame(media.root(), "gpucompare", StageRendererChoice::Gpu).unwrap();
+
+    assert_eq!(software.renderer, StageRendererKind::Software);
+    assert_eq!(gpu.renderer, StageRendererKind::Gpu);
+    // Both renderers are held to the same source-owned fixture contract: the
+    // persistent GPU path must reproduce the software oracle index frame and
+    // use the same active palette, so the host presents the same image.
+    assert_eq!(gpu.frame.extent(), software.frame.extent());
+    assert_eq!(gpu.frame.pixels(), software.frame.pixels());
+    assert_eq!(gpu.frame.palette(), software.frame.palette());
+    let (StageRenderStats::Gpu(gpu_stats), StageRenderStats::Software(software_stats)) =
+        (gpu.stats, software.stats)
+    else {
+        panic!("each renderer must report its own statistics");
+    };
+    // The prepared adapter retains every drawable prim the software composer
+    // rasterizes, and the same unresolved-slot accounting.
+    assert_eq!(gpu_stats.draws, software_stats.prims_composed);
+    assert_eq!(gpu_stats.unresolved_prims, software_stats.unresolved_prims);
+    assert_eq!(
+        gpu_stats.unique_textures,
+        software_stats.empty_lod_nodes + 1
+    );
+
+    // A second camera pose proves the persistent scene takes its VIEW matrix
+    // per frame rather than baking the placeholder camera at upload time.
+    let mut moved = [0i32; 16];
+    moved[0] = 1 << 16;
+    moved[5] = 1 << 16;
+    moved[10] = 1 << 16;
+    moved[12] = -(1 << 16);
+    moved[14] = -(5 << 16);
+    moved[15] = 1 << 16;
+    let mut software_resources =
+        StageRenderResources::load_with(media.root(), "gpucompare", StageRendererChoice::Software)
+            .unwrap();
+    let mut gpu_resources =
+        StageRenderResources::load_with(media.root(), "gpucompare", StageRendererChoice::Gpu)
+            .unwrap();
+    let software_moved = software_resources.compose(&moved).unwrap();
+    let gpu_moved = gpu_resources.compose(&moved).unwrap();
+    assert_eq!(gpu_moved.renderer, StageRendererKind::Gpu);
+    assert_eq!(gpu_moved.frame.pixels(), software_moved.frame.pixels());
 }
 
 /// A minimal CM3D scene: one root group-0 node selecting one group-1 LOD mesh of

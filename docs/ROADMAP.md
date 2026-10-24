@@ -461,7 +461,16 @@ AU1 645/78 vs 1210/59 on the RTX 5090 (same ordering on RADV), while SDL_GPU
 leads the 97-draw stage (66/75 vs 108/47). The CPU encode/submit interval,
 which grows with prepared draw count, dominates. I09 therefore selects
 **wgpu**, which also avoids SDL_GPU's external `glslangValidator` runtime
-dependency, and now has to wire that backend behind the shared contracts.
+dependency, and wires it behind the shared contracts. The application's stage
+and windowed-session commands now render through the persistent wgpu path by
+default (`--renderer auto`), with the software compositor as the oracle and
+automatic fallback: the scene is converted and uploaded once, each frame only
+updates the camera VIEW matrix, and the GPU rasterizes into an 8-bit
+palette-index target that the recovered indexed host presents unchanged.
+Measured per 640x480 stage frame, the same workload composes in 79.6 ms
+(software) vs 0.75 ms (GPU) on AU1, 67.9 vs 1.07 on NZ2, 101.4 vs 1.11 on
+MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
+index readback remains a host optimization.
 
 An original-compatible audio lane can begin with a narrow shim for the 16
 `QSWaveMix*` APIs the game imports. The shipped DLL's complete 62-export surface

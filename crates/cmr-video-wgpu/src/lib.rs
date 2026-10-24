@@ -11,10 +11,11 @@ use std::time::{Duration, Instant};
 
 use cmr_gpu_contract::{
     BackendCapabilities, BackendInfo, BackendKind, C3dCullMode, C3dPreparedFrame,
-    C3dPreparedSceneLayout, C3dRawFrame, C3dSceneUpload, ConformanceFrame, DeviceKind,
-    FrameContractError, FrameTiming, GraphicsApi, IndexedFrameView, IndexedPaletteGpuBackend,
-    PersistentRawC3dGpuBackend, RawC3dContractError, RawC3dGpuBackend, ReadbackFormat,
-    c3d_active_palette_l1_map, normalize_readback,
+    C3dPreparedSceneLayout, C3dRawFrame, C3dSceneUpload, CanonicalIndexedFrame, ConformanceFrame,
+    DeviceKind, FrameContractError, FrameTiming, GraphicsApi, IndexedFrameView,
+    IndexedPaletteGpuBackend, PersistentRawC3dGpuBackend, PersistentRawC3dIndexedBackend,
+    RawC3dContractError, RawC3dGpuBackend, ReadbackFormat, c3d_active_palette_l1_map,
+    normalize_readback,
 };
 
 const PALETTE_LEN: u32 = 256;
@@ -45,6 +46,8 @@ fn fragment_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
 "#;
 
 const C3D_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// The presentation readback target: one active-palette index per pixel.
+const C3D_INDEX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Uint;
 
 const C3D_SHADER: &str = r#"
 struct Transform {
@@ -83,12 +86,24 @@ fn vertex_main(
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
+    let palette_index = resolve_palette_index(input);
+    let color = textureLoad(active_palette, vec2i(i32(palette_index), 0), 0);
+    return vec4f(vec3f(color.rgb) / 255.0, 1.0);
+}
+
+// Presentation readback: emit the resolved active-palette slot instead of the
+// palette colour, so the host presents the GPU frame through the recovered
+// indexed display path without an RGBA -> index inversion.
+@fragment
+fn fragment_index(input: VertexOutput) -> @location(0) u32 {
+    return resolve_palette_index(input);
+}
+
+fn resolve_palette_index(input: VertexOutput) -> u32 {
     let dimensions = vec2f(textureDimensions(material_indices));
     let bounded = clamp(input.uv, vec2f(0.0), vec2f(1.0));
     let coordinate = min(vec2i(floor(bounded * dimensions)), vec2i(dimensions) - vec2i(1));
-    let palette_index = textureLoad(material_indices, coordinate, 0).r;
-    let color = textureLoad(active_palette, vec2i(i32(palette_index), 0), 0);
-    return vec4f(vec3f(color.rgb) / 255.0, 1.0);
+    return textureLoad(material_indices, coordinate, 0).r;
 }
 "#;
 
@@ -146,6 +161,8 @@ pub struct WgpuIndexedPaletteBackend {
     c3d_texture_layout: wgpu::BindGroupLayout,
     c3d_culled_pipeline: wgpu::RenderPipeline,
     c3d_two_sided_pipeline: wgpu::RenderPipeline,
+    c3d_index_culled_pipeline: wgpu::RenderPipeline,
+    c3d_index_two_sided_pipeline: wgpu::RenderPipeline,
     info: BackendInfo,
     capabilities: BackendCapabilities,
 }
@@ -170,10 +187,14 @@ pub struct WgpuPreparedC3dScene {
     _active_palette_texture: wgpu::Texture,
     _output_texture: wgpu::Texture,
     output_view: wgpu::TextureView,
+    _index_texture: wgpu::Texture,
+    index_view: wgpu::TextureView,
     _depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
     readback: wgpu::Buffer,
     readback_pitch: u32,
+    index_readback: wgpu::Buffer,
+    index_readback_pitch: u32,
     transform_buffer: wgpu::Buffer,
     transform_bind_group: wgpu::BindGroup,
     transform_stride: u32,
@@ -207,6 +228,15 @@ struct WgpuFrameDraw {
     texture: usize,
     cull: C3dCullMode,
     transform_offset: u32,
+}
+
+/// Which prepared-scene color target a frame is encoded into.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum C3dEncodeTarget {
+    /// Expanded RGBA8: the correctness/benchmark readback.
+    Rgba,
+    /// One active-palette index per pixel: the presentation readback.
+    PaletteIndex,
 }
 
 impl WgpuIndexedPaletteBackend {
@@ -258,6 +288,15 @@ impl WgpuIndexedPaletteBackend {
         if !supports_usage(
             &adapter,
             OUTPUT_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        ) {
+            return Err(WgpuBackendError::MissingRequiredTextureRole(
+                WgpuTextureRole::ReadbackTarget,
+            ));
+        }
+        if !supports_usage(
+            &adapter,
+            C3D_INDEX_FORMAT,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         ) {
             return Err(WgpuBackendError::MissingRequiredTextureRole(
@@ -350,6 +389,14 @@ impl WgpuIndexedPaletteBackend {
         );
         let c3d_two_sided_pipeline =
             create_c3d_pipeline(&device, &c3d_pipeline_layout, &c3d_shader, None);
+        let c3d_index_culled_pipeline = create_c3d_index_pipeline(
+            &device,
+            &c3d_pipeline_layout,
+            &c3d_shader,
+            Some(wgpu::Face::Back),
+        );
+        let c3d_index_two_sided_pipeline =
+            create_c3d_index_pipeline(&device, &c3d_pipeline_layout, &c3d_shader, None);
         let info = BackendInfo {
             backend: BackendKind::Wgpu,
             graphics_api: graphics_api(native_info.backend),
@@ -375,6 +422,8 @@ impl WgpuIndexedPaletteBackend {
             c3d_texture_layout,
             c3d_culled_pipeline,
             c3d_two_sided_pipeline,
+            c3d_index_culled_pipeline,
+            c3d_index_two_sided_pipeline,
             info,
             capabilities,
         })
@@ -998,6 +1047,14 @@ impl PersistentRawC3dGpuBackend for WgpuIndexedPaletteBackend {
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
         let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let index_texture = create_texture(
+            &self.device,
+            "cmr prepared C3D palette-index output",
+            size,
+            C3D_INDEX_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let index_view = index_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let depth_texture = create_texture(
             &self.device,
             "cmr prepared C3D depth",
@@ -1011,6 +1068,14 @@ impl PersistentRawC3dGpuBackend for WgpuIndexedPaletteBackend {
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cmr prepared C3D readback"),
             size: u64::from(readback_pitch) * u64::from(extent.height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let index_tight_pitch = u32::from(extent.width);
+        let index_readback_pitch = index_tight_pitch.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
+        let index_readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cmr prepared C3D index readback"),
+            size: u64::from(index_readback_pitch) * u64::from(extent.height),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -1046,10 +1111,14 @@ impl PersistentRawC3dGpuBackend for WgpuIndexedPaletteBackend {
             _active_palette_texture: active_palette_texture,
             _output_texture: output_texture,
             output_view,
+            _index_texture: index_texture,
+            index_view,
             _depth_texture: depth_texture,
             depth_view,
             readback,
             readback_pitch,
+            index_readback,
+            index_readback_pitch,
             transform_buffer,
             transform_bind_group,
             transform_stride,
@@ -1155,12 +1224,104 @@ impl PersistentRawC3dGpuBackend for WgpuIndexedPaletteBackend {
     }
 }
 
+impl PersistentRawC3dIndexedBackend for WgpuIndexedPaletteBackend {
+    /// Rasterizes the prepared frame into the 8-bit palette-index target and
+    /// reads it back tightly packed, so the host can present it through the
+    /// recovered indexed display without an RGBA -> index inversion.
+    fn render_prepared_indexed_readback(
+        &mut self,
+        scene: &mut Self::PreparedScene,
+        frame: C3dPreparedFrame<'_>,
+    ) -> Result<CanonicalIndexedFrame, Self::Error> {
+        frame
+            .ensure_layout(scene.layout)
+            .map_err(WgpuBackendError::RawContract)?;
+        let extent = scene.layout.extent();
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("cmr prepared C3D indexed presentation commands"),
+            });
+        let frame_draws = self.encode_prepared_c3d_target(
+            scene,
+            frame,
+            &mut encoder,
+            C3dEncodeTarget::PaletteIndex,
+        )?;
+        encoder.copy_texture_to_buffer(
+            texture_copy(&scene._index_texture),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &scene.index_readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(scene.index_readback_pitch),
+                    rows_per_image: Some(u32::from(extent.height)),
+                },
+            },
+            wgpu::Extent3d {
+                width: u32::from(extent.width),
+                height: u32::from(extent.height),
+                depth_or_array_layers: 1,
+            },
+        );
+        let submission = self.queue.submit([encoder.finish()]);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        scene
+            .index_readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        self.wait_for_submission(submission)?;
+        receiver
+            .recv()
+            .map_err(|error| WgpuBackendError::MapChannel(error.to_string()))?
+            .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
+        let mapped = scene
+            .index_readback
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
+        let width = usize::from(extent.width);
+        let height = usize::from(extent.height);
+        let pitch = scene.index_readback_pitch as usize;
+        let mapped_len = pitch * height;
+        if mapped.len() != mapped_len {
+            return Err(WgpuBackendError::Contract(
+                FrameContractError::InvalidReadbackLength {
+                    expected: mapped_len,
+                    actual: mapped.len(),
+                },
+            ));
+        }
+        let mut indices = Vec::with_capacity(width * height);
+        for row in 0..height {
+            indices.extend_from_slice(&mapped[row * pitch..row * pitch + width]);
+        }
+        drop(mapped);
+        scene.index_readback.unmap();
+        drop(frame_draws);
+        CanonicalIndexedFrame::new(extent, indices.into_boxed_slice())
+            .map_err(WgpuBackendError::Contract)
+    }
+}
+
 impl WgpuIndexedPaletteBackend {
     fn encode_prepared_c3d(
         &self,
         scene: &WgpuPreparedC3dScene,
         frame: C3dPreparedFrame<'_>,
         encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<Vec<WgpuFrameDraw>, WgpuBackendError> {
+        self.encode_prepared_c3d_target(scene, frame, encoder, C3dEncodeTarget::Rgba)
+    }
+
+    fn encode_prepared_c3d_target(
+        &self,
+        scene: &WgpuPreparedC3dScene,
+        frame: C3dPreparedFrame<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+        target: C3dEncodeTarget,
     ) -> Result<Vec<WgpuFrameDraw>, WgpuBackendError> {
         let extent = scene.layout.extent();
         if frame.draws().len() > scene.transform_capacity {
@@ -1196,20 +1357,37 @@ impl WgpuIndexedPaletteBackend {
                 .write_buffer(&scene.transform_buffer, 0, &transform_upload);
         }
         let clear = scene.active_palette[0];
+        let (target_view, clear_color) = match target {
+            C3dEncodeTarget::Rgba => (
+                &scene.output_view,
+                wgpu::Color {
+                    r: f64::from(clear.red) / 255.0,
+                    g: f64::from(clear.green) / 255.0,
+                    b: f64::from(clear.blue) / 255.0,
+                    a: 1.0,
+                },
+            ),
+            // The software compositor clears its indexed framebuffer to index
+            // zero; the presentation target must start from the same index.
+            C3dEncodeTarget::PaletteIndex => (
+                &scene.index_view,
+                wgpu::Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.0,
+                },
+            ),
+        };
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("cmr prepared C3D pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &scene.output_view,
+                    view: target_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: f64::from(clear.red) / 255.0,
-                            g: f64::from(clear.green) / 255.0,
-                            b: f64::from(clear.blue) / 255.0,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(clear_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -1228,9 +1406,17 @@ impl WgpuIndexedPaletteBackend {
             for draw in &frame_draws {
                 let mesh = &scene.meshes[draw.mesh];
                 let texture = &scene.textures[draw.texture];
-                pass.set_pipeline(match draw.cull {
-                    C3dCullMode::CullCounterClockwise => &self.c3d_culled_pipeline,
-                    C3dCullMode::None => &self.c3d_two_sided_pipeline,
+                pass.set_pipeline(match (target, draw.cull) {
+                    (C3dEncodeTarget::Rgba, C3dCullMode::CullCounterClockwise) => {
+                        &self.c3d_culled_pipeline
+                    }
+                    (C3dEncodeTarget::Rgba, C3dCullMode::None) => &self.c3d_two_sided_pipeline,
+                    (C3dEncodeTarget::PaletteIndex, C3dCullMode::CullCounterClockwise) => {
+                        &self.c3d_index_culled_pipeline
+                    }
+                    (C3dEncodeTarget::PaletteIndex, C3dCullMode::None) => {
+                        &self.c3d_index_two_sided_pipeline
+                    }
                 });
                 pass.set_bind_group(0, &scene.transform_bind_group, &[draw.transform_offset]);
                 pass.set_bind_group(1, &texture.bind_group, &[]);
@@ -1262,6 +1448,43 @@ fn create_c3d_pipeline(
     shader: &wgpu::ShaderModule,
     cull_mode: Option<wgpu::Face>,
 ) -> wgpu::RenderPipeline {
+    create_c3d_pipeline_variant(
+        device,
+        layout,
+        shader,
+        cull_mode,
+        "cmr raw C3D pipeline",
+        "fragment_main",
+        OUTPUT_FORMAT,
+    )
+}
+
+fn create_c3d_index_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    cull_mode: Option<wgpu::Face>,
+) -> wgpu::RenderPipeline {
+    create_c3d_pipeline_variant(
+        device,
+        layout,
+        shader,
+        cull_mode,
+        "cmr raw C3D palette-index pipeline",
+        "fragment_index",
+        C3D_INDEX_FORMAT,
+    )
+}
+
+fn create_c3d_pipeline_variant(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    cull_mode: Option<wgpu::Face>,
+    label: &str,
+    fragment_entry: &str,
+    color_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
     const ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
         wgpu::VertexAttribute {
             format: wgpu::VertexFormat::Sint32x4,
@@ -1275,7 +1498,7 @@ fn create_c3d_pipeline(
         },
     ];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("cmr raw C3D pipeline"),
+        label: Some(label),
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module: shader,
@@ -1306,10 +1529,10 @@ fn create_c3d_pipeline(
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fragment_main"),
+            entry_point: Some(fragment_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
-                format: OUTPUT_FORMAT,
+                format: color_format,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -1660,6 +1883,28 @@ mod tests {
             .render_prepared_readback(&mut prepared, prepared_frame)
             .unwrap();
         assert_eq!(prepared_pixels, rendered.rgba8);
+
+        // The presentation readback emits the active-palette slot per pixel;
+        // pairing it with the same palette must reconstruct the expanded
+        // readback byte for byte, which proves the indexed host path is the
+        // same rendering result (not a lossy inversion).
+        let index_readback = backend
+            .render_prepared_indexed_readback(&mut prepared, prepared_frame)
+            .unwrap();
+        assert_eq!(index_readback.extent(), extent);
+        let indexed_presentation =
+            IndexedFrameView::new(extent, index_readback.indices(), &active_palette).unwrap();
+        assert_eq!(
+            indexed_presentation.canonical_rgba8().unwrap(),
+            prepared_pixels
+        );
+        // The one mapped material resolves to palette slot 7, and the clear
+        // target to index 0.
+        assert!(
+            index_readback.indices().contains(&7),
+            "the mapped material slot must appear in the index readback"
+        );
+        assert_eq!(index_readback.indices()[0], 0);
         let uploads = prepared.static_upload_counts();
         let first_timing = backend
             .render_prepared_timed(&mut prepared, prepared_frame)
