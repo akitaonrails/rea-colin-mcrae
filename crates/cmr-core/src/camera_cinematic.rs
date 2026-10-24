@@ -66,7 +66,11 @@ fn norm_f(v: [f64; 3]) -> [f64; 3] {
 #[must_use]
 pub fn cinematic_offset_fixed() -> [i32; 3] {
     let dir = normalize([ONE, 2 * ONE, ONE]);
-    [from_f(dir[0] * 20.0), from_f(dir[1] * 20.0), from_f(dir[2] * 20.0)]
+    [
+        from_f(dir[0] * 20.0),
+        from_f(dir[1] * 20.0),
+        from_f(dir[2] * 20.0),
+    ]
 }
 
 /// The randomized cinematic offset for a replay action shot (mode `9`,
@@ -108,10 +112,22 @@ pub fn cinematic_camera(car_pos: [i32; 3], world_offset: [i32; 3], up_ref: [i32;
     let right = norm_f(cross(up_ref, forward));
     let up = cross(forward, right);
     [
-        from_f(right[0]), from_f(right[1]), from_f(right[2]), 0,
-        from_f(up[0]), from_f(up[1]), from_f(up[2]), 0,
-        from_f(forward[0]), from_f(forward[1]), from_f(forward[2]), 0,
-        eye[0], eye[1], eye[2], ONE,
+        from_f(right[0]),
+        from_f(right[1]),
+        from_f(right[2]),
+        0,
+        from_f(up[0]),
+        from_f(up[1]),
+        from_f(up[2]),
+        0,
+        from_f(forward[0]),
+        from_f(forward[1]),
+        from_f(forward[2]),
+        0,
+        eye[0],
+        eye[1],
+        eye[2],
+        ONE,
     ]
 }
 
@@ -141,9 +157,16 @@ mod tests {
             let o = cinematic_offset_random(&mut rng);
             let len = len3(o);
             // The offset is renormalized to `dist` in [4.5, 10.0).
-            assert!((4.0..10.5).contains(&len), "offset length {len} out of envelope");
+            assert!(
+                (4.0..10.5).contains(&len),
+                "offset length {len} out of envelope"
+            );
             // The camera always sits above the car (y > 0).
-            assert!(o[1] > 0, "random cam should be above ground, got y={}", o[1]);
+            assert!(
+                o[1] > 0,
+                "random cam should be above ground, got y={}",
+                o[1]
+            );
         }
     }
 
@@ -163,7 +186,10 @@ mod tests {
         assert_eq!([m[12], m[13], m[14]], offset);
         // Forward points from the eye back toward the car (opposite the offset).
         let fwd = [to_f(m[8]), to_f(m[9]), to_f(m[10])];
-        assert!(fwd[0] < 0.0 && fwd[1] < 0.0 && fwd[2] < 0.0, "forward looks toward car");
+        assert!(
+            fwd[0] < 0.0 && fwd[1] < 0.0 && fwd[2] < 0.0,
+            "forward looks toward car"
+        );
         // Basis rows are unit length and mutually perpendicular.
         let right = [to_f(m[0]), to_f(m[1]), to_f(m[2])];
         let up = [to_f(m[4]), to_f(m[5]), to_f(m[6])];

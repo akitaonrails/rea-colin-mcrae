@@ -17,7 +17,7 @@
 //! selection are runtime/uncovered and left documented.
 
 use crate::c3d_camera::matmul_q16;
-use crate::fixed_point::{cos_bam, sin_bam, TRIG_TABLE_LEN};
+use crate::fixed_point::{TRIG_TABLE_LEN, cos_bam, sin_bam};
 use crate::gameplay_camera::chase_target_world;
 
 /// Q16.16 one.
@@ -88,10 +88,7 @@ pub fn cockpit_view_pitch(view: usize, mirror: bool) -> u16 {
 /// translation), for composing further rotations.
 fn orientation_only(m: &[i32; 16]) -> [i32; 16] {
     [
-        m[0], m[1], m[2], 0,
-        m[4], m[5], m[6], 0,
-        m[8], m[9], m[10], 0,
-        0, 0, 0, ONE,
+        m[0], m[1], m[2], 0, m[4], m[5], m[6], 0, m[8], m[9], m[10], 0, 0, 0, 0, ONE,
     ]
 }
 
@@ -102,12 +99,7 @@ fn orientation_only(m: &[i32; 16]) -> [i32; 16] {
 pub fn rotation_x_bam(angle: u16, trig: &[i32; TRIG_TABLE_LEN]) -> [i32; 16] {
     let s = sin_bam(trig, angle).raw();
     let c = cos_bam(trig, angle).raw();
-    [
-        ONE, 0, 0, 0,
-        0, c, s, 0,
-        0, -s, c, 0,
-        0, 0, 0, ONE,
-    ]
+    [ONE, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, ONE]
 }
 
 /// The cockpit camera world matrix for a view: the eye at `car_pos + car_basis *
@@ -115,7 +107,12 @@ pub fn rotation_x_bam(angle: u16, trig: &[i32; TRIG_TABLE_LEN]) -> [i32; 16] {
 /// interior view, pitched down by [`cockpit_view_pitch`]. The per-car ride-height
 /// terms added to the eye in `FUN_00401230` are runtime car data and omitted.
 #[must_use]
-pub fn cockpit_camera(car_world: &[i32; 16], view: usize, mirror: bool, trig: &[i32; TRIG_TABLE_LEN]) -> [i32; 16] {
+pub fn cockpit_camera(
+    car_world: &[i32; 16],
+    view: usize,
+    mirror: bool,
+    trig: &[i32; TRIG_TABLE_LEN],
+) -> [i32; 16] {
     let base = chase_target_world(car_world, cockpit_eye_offset(view, mirror));
     let pitch = cockpit_view_pitch(view, mirror);
     let orient = if pitch == 0 {
@@ -124,10 +121,8 @@ pub fn cockpit_camera(car_world: &[i32; 16], view: usize, mirror: bool, trig: &[
         matmul_q16(&rotation_x_bam(pitch, trig), &orientation_only(car_world))
     };
     [
-        orient[0], orient[1], orient[2], 0,
-        orient[4], orient[5], orient[6], 0,
-        orient[8], orient[9], orient[10], 0,
-        base[12], base[13], base[14], ONE,
+        orient[0], orient[1], orient[2], 0, orient[4], orient[5], orient[6], 0, orient[8],
+        orient[9], orient[10], 0, base[12], base[13], base[14], ONE,
     ]
 }
 
@@ -148,12 +143,48 @@ pub struct HelmetState {
 
 /// The helmet per-state table (`DAT_004f3d70`, 6 states).
 pub const HELMET_STATES: [HelmetState; 6] = [
-    HelmetState { yaw_gain: 0x0000, x_scalar: 0x0000_0000, base_z: -0x0004_0000, rot_scalar: 0x0000_6ccc, ease: [0x0000_b333; 4] },
-    HelmetState { yaw_gain: 0x00e3, x_scalar: 0x0008_0000, base_z: -0x0002_0000, rot_scalar: 0x0000_0000, ease: [0x0001_0000; 4] },
-    HelmetState { yaw_gain: 0x03f4, x_scalar: 0x0002_0000, base_z: -0x0014_0000, rot_scalar: 0x0001_0000, ease: [0x0001_0000; 4] },
-    HelmetState { yaw_gain: 0x0000, x_scalar: 0x0001_0000, base_z: -0x0003_0000, rot_scalar: 0x0000_c000, ease: [0x0001_0000; 4] },
-    HelmetState { yaw_gain: 0x038e, x_scalar: -0x000a_0000, base_z: -0x001e_0000, rot_scalar: -0x0000_6666, ease: [0x0001_0000, 0x0001_0000, 0x0000_b333, 0x0001_0000] },
-    HelmetState { yaw_gain: 0x038e, x_scalar: -0x000a_0000, base_z: -0x001e_0000, rot_scalar: 0x0000_6666, ease: [0x0001_0000, 0x0001_0000, 0x0000_b333, 0x0001_0000] },
+    HelmetState {
+        yaw_gain: 0x0000,
+        x_scalar: 0x0000_0000,
+        base_z: -0x0004_0000,
+        rot_scalar: 0x0000_6ccc,
+        ease: [0x0000_b333; 4],
+    },
+    HelmetState {
+        yaw_gain: 0x00e3,
+        x_scalar: 0x0008_0000,
+        base_z: -0x0002_0000,
+        rot_scalar: 0x0000_0000,
+        ease: [0x0001_0000; 4],
+    },
+    HelmetState {
+        yaw_gain: 0x03f4,
+        x_scalar: 0x0002_0000,
+        base_z: -0x0014_0000,
+        rot_scalar: 0x0001_0000,
+        ease: [0x0001_0000; 4],
+    },
+    HelmetState {
+        yaw_gain: 0x0000,
+        x_scalar: 0x0001_0000,
+        base_z: -0x0003_0000,
+        rot_scalar: 0x0000_c000,
+        ease: [0x0001_0000; 4],
+    },
+    HelmetState {
+        yaw_gain: 0x038e,
+        x_scalar: -0x000a_0000,
+        base_z: -0x001e_0000,
+        rot_scalar: -0x0000_6666,
+        ease: [0x0001_0000, 0x0001_0000, 0x0000_b333, 0x0001_0000],
+    },
+    HelmetState {
+        yaw_gain: 0x038e,
+        x_scalar: -0x000a_0000,
+        base_z: -0x001e_0000,
+        rot_scalar: 0x0000_6666,
+        ease: [0x0001_0000, 0x0001_0000, 0x0000_b333, 0x0001_0000],
+    },
 ];
 
 /// The `0x20000` (2.0) X bias and `0xa0000` (10.0) Z bias of `FUN_004678c0`.
@@ -181,10 +212,7 @@ mod tests {
     /// translation at 12/13/14).
     fn car_at(pos: [i32; 3]) -> [i32; 16] {
         [
-            ONE, 0, 0, 0,
-            0, ONE, 0, 0,
-            0, 0, ONE, 0,
-            pos[0], pos[1], pos[2], ONE,
+            ONE, 0, 0, 0, 0, ONE, 0, 0, 0, 0, ONE, 0, pos[0], pos[1], pos[2], ONE,
         ]
     }
 
@@ -223,7 +251,11 @@ mod tests {
         let car = car_at([0, 0, 0]);
         let m = cockpit_camera(&car, 0, false, &build_sine_table());
         // The pitched forward row (indices 8,9,10) tilts toward -Y (down).
-        assert!(m[9] < 0, "forward should gain a downward (-Y) component, got {}", m[9]);
+        assert!(
+            m[9] < 0,
+            "forward should gain a downward (-Y) component, got {}",
+            m[9]
+        );
         // Still a forward-ish, unit-length basis row.
         assert!(m[10] > 0);
         // A zero-pitch (mirror) view leaves the forward level for comparison.
@@ -238,7 +270,10 @@ mod tests {
         assert_eq!(HELMET_STATES[1].x_scalar, 0x0008_0000); // 8.0
         // Neutral head params reproduce {x_scalar, 0, base_z}.
         for st in &HELMET_STATES {
-            assert_eq!(helmet_local_offset(st, ONE, ONE), [st.x_scalar, 0, st.base_z]);
+            assert_eq!(
+                helmet_local_offset(st, ONE, ONE),
+                [st.x_scalar, 0, st.base_z]
+            );
         }
         // A half-param pulls X and Z toward their biases.
         let st = &HELMET_STATES[1]; // x_scalar 8.0, base_z -2.0

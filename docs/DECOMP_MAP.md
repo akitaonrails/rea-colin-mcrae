@@ -166,13 +166,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-22T13:00:00Z
-milestone=unify-the-reconstructed-camera-modes-into-one-per-frame-view-controller
+updated_utc=2026-10-24T12:00:00Z
+milestone=restore-current-toolchain-format-gate
 completed=53
 partial=58
 not_started=7
 blocked=0
 total=118
-current_focus=wiring-the-view-controller-into-the-windowed-session-then-the-user-and-runtime-gated-frontier
-next_exit_gate=the-view-controller-holds-the-active-mode-cycles-on-input-and-dispatches-per-mode-to-the-reconstructed-placements-with-tests
+current_focus=I08-shared-gpu-conformance-corpus-and-wgpu-versus-sdl-gpu-benchmark
+next_exit_gate=both-gpu-candidates-render-the-same-indexed-palette-fixture-with-readback-and-local-adapter-evidence
 <!-- PROGRESS-TAIL-END -->

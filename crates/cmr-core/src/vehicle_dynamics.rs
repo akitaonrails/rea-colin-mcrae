@@ -97,7 +97,9 @@ pub fn slope_grip(surface_normal_y: Fixed16) -> Fixed16 {
     if surface_normal_y >= SLOPE_NORMAL_Y_MAX {
         return SLOPE_GRIP_FLAT;
     }
-    let ramp = surface_normal_y.sub(SLOPE_NORMAL_Y_MIN).mul(SLOPE_GRIP_RAMP);
+    let ramp = surface_normal_y
+        .sub(SLOPE_NORMAL_Y_MIN)
+        .mul(SLOPE_GRIP_RAMP);
     if ramp.raw() <= 0 {
         return Fixed16::ZERO;
     }

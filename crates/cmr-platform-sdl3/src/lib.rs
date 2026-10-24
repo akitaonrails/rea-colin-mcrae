@@ -25,8 +25,8 @@ use cmr_core::audio_menu::{MenuChannel, menu_sound_for_input, play_menu_sound};
 use cmr_core::audio_mixer::{AudioMixer, ChannelId, WaveSlotId, apply_commands};
 use cmr_core::audio_music_cues::FRONTEND_CONTEXT;
 use cmr_core::frontend::FrontendInput;
-use cmr_core::music_player::MusicController;
 use cmr_core::host_lifecycle::{HostLifecycle, PlatformLifecycleEvent};
+use cmr_core::music_player::MusicController;
 use cmr_core::present_scaling::{DEFAULT_SCALING, PresentationScaling};
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::RootRenderInput;
@@ -706,7 +706,9 @@ pub fn run_windowed_game_session<F>(
 where
     F: FnMut(WindowedInput<'_>) -> WindowedGameFrame,
 {
-    let rgba = initial.expand_rgba8().map_err(SdlHostError::FrameConversion)?;
+    let rgba = initial
+        .expand_rgba8()
+        .map_err(SdlHostError::FrameConversion)?;
     let extent = rgba.extent();
 
     let sdl = sdl3::init().map_err(|error| SdlHostError::sdl("initialization", error))?;

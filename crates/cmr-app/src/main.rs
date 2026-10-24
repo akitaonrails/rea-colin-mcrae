@@ -36,16 +36,15 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             },
-            AppCommand::WindowedRootFrame => match run_windowed_root_frame(
-                config.runtime_data(),
-                config.media_root(),
-            ) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(error) => {
-                    eprintln!("cmr-app: windowed-root-frame failed: {}", error.kind());
-                    ExitCode::FAILURE
+            AppCommand::WindowedRootFrame => {
+                match run_windowed_root_frame(config.runtime_data(), config.media_root()) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("cmr-app: windowed-root-frame failed: {}", error.kind());
+                        ExitCode::FAILURE
+                    }
                 }
-            },
+            }
             AppCommand::HeadlessStageFrame => {
                 // resolve() guarantees both a stage name and a media root for
                 // this command, so these accessors are populated.

@@ -42,7 +42,11 @@ pub const LOADING_SCREEN_WIDTHS: [u16; 2] = [320, 512];
 /// front-end/attract context is active (`frontend_active`) or the alternate load
 /// flag is clear (`config_zero`), and loading is armed (`loading_armed`).
 #[must_use]
-pub fn load_interstitial_active(frontend_active: bool, config_zero: bool, loading_armed: bool) -> bool {
+pub fn load_interstitial_active(
+    frontend_active: bool,
+    config_zero: bool,
+    loading_armed: bool,
+) -> bool {
     (frontend_active || config_zero) && loading_armed
 }
 
@@ -132,7 +136,11 @@ pub fn loading_bar_fill_rect(progress: u8, screen_width: i32, screen_height: i32
     let k = loading_bar_mode_k(screen_width);
     BlitRect {
         x: k * screen_width / 640,
-        y: if screen_width < 512 { 106 } else { screen_height * 216 / 480 },
+        y: if screen_width < 512 {
+            106
+        } else {
+            screen_height * 216 / 480
+        },
         w: i32::from(progress) * screen_width * 213 / 16640,
         h: screen_height * 13 / 480,
     }
@@ -148,7 +156,11 @@ pub fn loading_bar_line_rect(screen_width: i32, screen_height: i32) -> BlitRect 
     BlitRect {
         x: k * screen_width / 640,
         y: screen_height * 205 / 480,
-        w: if screen_width == 320 { 141 } else { screen_width * 216 / 640 },
+        w: if screen_width == 320 {
+            141
+        } else {
+            screen_width * 216 / 640
+        },
         h: 1,
     }
 }
@@ -211,7 +223,15 @@ mod tests {
     fn fill_rect_matches_recovered_formula_at_320() {
         // 320-wide: K=350 -> x=175, y forced to 106, h = H*13/480.
         let empty = loading_bar_fill_rect(0, 320, 240);
-        assert_eq!(empty, BlitRect { x: 175, y: 106, w: 0, h: 6 });
+        assert_eq!(
+            empty,
+            BlitRect {
+                x: 175,
+                y: 106,
+                w: 0,
+                h: 6
+            }
+        );
         // progress*213/52 (= progress*320*213/16640): at 52 -> 213px.
         assert_eq!(loading_bar_fill_rect(52, 320, 240).w, 213);
         // Full byte overshoots the 320 surface (clipped by the blit).
@@ -222,7 +242,15 @@ mod tests {
     fn fill_rect_matches_recovered_formula_at_512() {
         // 512-wide: K=386 -> x=308, y = H*216/480, h = H*13/480.
         let r = loading_bar_fill_rect(255, 512, 384);
-        assert_eq!(r, BlitRect { x: 308, y: 172, w: 1671, h: 10 });
+        assert_eq!(
+            r,
+            BlitRect {
+                x: 308,
+                y: 172,
+                w: 1671,
+                h: 10
+            }
+        );
         // progress*426/65 (= progress*512*213/16640).
         assert_eq!(loading_bar_fill_rect(65, 512, 384).w, 426);
     }
@@ -240,8 +268,24 @@ mod tests {
     #[test]
     fn line_rect_is_a_fixed_one_pixel_rule() {
         // 320-wide forces w=141; shares the fill's x; y = H*205/480; h=1.
-        assert_eq!(loading_bar_line_rect(320, 240), BlitRect { x: 175, y: 102, w: 141, h: 1 });
+        assert_eq!(
+            loading_bar_line_rect(320, 240),
+            BlitRect {
+                x: 175,
+                y: 102,
+                w: 141,
+                h: 1
+            }
+        );
         // 512-wide: w = W*216/640.
-        assert_eq!(loading_bar_line_rect(512, 384), BlitRect { x: 308, y: 164, w: 172, h: 1 });
+        assert_eq!(
+            loading_bar_line_rect(512, 384),
+            BlitRect {
+                x: 308,
+                y: 164,
+                w: 172,
+                h: 1
+            }
+        );
     }
 }

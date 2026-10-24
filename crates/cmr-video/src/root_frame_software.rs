@@ -432,7 +432,10 @@ mod tests {
         let half = frame.modulated(0x80);
         for (scaled, original) in half.palette().iter().zip(frame.palette().iter()) {
             assert_eq!(scaled.red, ((u32::from(original.red) * 0x80) / 255) as u8);
-            assert_eq!(scaled.green, ((u32::from(original.green) * 0x80) / 255) as u8);
+            assert_eq!(
+                scaled.green,
+                ((u32::from(original.green) * 0x80) / 255) as u8
+            );
             assert_eq!(scaled.blue, ((u32::from(original.blue) * 0x80) / 255) as u8);
             assert_eq!(scaled.flags, original.flags);
         }

@@ -57,7 +57,10 @@ impl ResetTransient {
     /// An idle transient (`timer = -1`).
     #[must_use]
     pub const fn idle() -> Self {
-        Self { timer: -1, amplitude: 0 }
+        Self {
+            timer: -1,
+            amplitude: 0,
+        }
     }
 
     /// One frame of `FUN_00419e50`'s arm/tick: while idle, a positive `impulse`
@@ -107,7 +110,12 @@ pub const BAM_TABLE_LEN: usize = 0x1000;
 /// cosine modulated by the linearly decaying `s` and the `0x4000` (0.25) damping.
 /// A non-positive `timer` yields `0`.
 #[must_use]
-pub fn reset_vertical_drop(timer: i16, pal: bool, amplitude: i32, cos_lut: &[i32; BAM_TABLE_LEN]) -> i32 {
+pub fn reset_vertical_drop(
+    timer: i16,
+    pal: bool,
+    amplitude: i32,
+    cos_lut: &[i32; BAM_TABLE_LEN],
+) -> i32 {
     if timer <= 0 {
         return 0;
     }
@@ -128,7 +136,10 @@ mod tests {
         // 1.0 . 1.0 over one axis = 1.0.
         assert_eq!(dot3_q16([0x1_0000, 0, 0], [0x1_0000, 0, 0]), 0x1_0000);
         // 2.0 forward . 3.0 motion = 6.0.
-        assert_eq!(velocity_longitudinal_lead([0x2_0000, 0, 0], [0x3_0000, 0, 0]), 0x6_0000);
+        assert_eq!(
+            velocity_longitudinal_lead([0x2_0000, 0, 0], [0x3_0000, 0, 0]),
+            0x6_0000
+        );
         // A still car produces no lead.
         assert_eq!(velocity_longitudinal_lead([0x1_0000, 0, 0], [0, 0, 0]), 0);
     }
@@ -201,7 +212,10 @@ mod tests {
         // drop = ((1.0 * 1.0) * 0.25) * amplitude = 0.25 * amplitude.
         let amp = 0x4_0000; // 4.0
         let drop = reset_vertical_drop(25, false, amp, &lut);
-        assert!((drop - 0x1_0000).abs() <= 4, "expected ~1.0 (0.25*4.0), got {drop:#x}");
+        assert!(
+            (drop - 0x1_0000).abs() <= 4,
+            "expected ~1.0 (0.25*4.0), got {drop:#x}"
+        );
 
         // The index is derived from the phase: timer 25 and the PAL-doubled timer
         // 50 both map to s == 1.0, so they agree.

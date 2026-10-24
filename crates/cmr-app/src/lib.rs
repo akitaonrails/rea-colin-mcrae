@@ -13,21 +13,29 @@ use cmr_assets::{AssetStore, AssetStoreError, ReviewedProfile, ReviewedProfileEr
 use cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
 use cmr_core::c3d_render::VERTEXTYPE_LVERTEX;
 use cmr_core::c3d_stage_scene::{StageScene, StageSceneError};
+use cmr_core::camera_mode::{CameraMode, ViewGate};
+use cmr_core::camera_view::ViewController;
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
+use cmr_core::drive_controls::DriveResponse;
 use cmr_core::fixed_point::{Fixed16, Vec3};
 use cmr_core::frontend::{FrontendPhase, RootSelection};
 use cmr_core::game_menu_flow::MenuFlowInputs;
+use cmr_core::game_rng::GameLcg;
 use cmr_core::game_session::SessionBand;
+use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
 use cmr_core::gameplay_session::{GameplaySession, InRaceScript};
 use cmr_core::host_loop::HostClock;
 use cmr_core::localization::Language;
 use cmr_core::race_state::{Controls, SimParams};
+use cmr_core::render_compose::{fade_duration_frames, fade_level_to_modulation_byte, fade_out};
+use cmr_core::render_route::{RenderRoute, composes_frontend_root, presents_world_scene};
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::{
     ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16, ROOT_INITIAL_VERTICAL_TRANSFORM_Q16, RootRenderInput,
 };
+use cmr_core::scalar_tween::ScalarTween;
 use cmr_core::settings_store::{DataPaths, SettingsError, SettingsImage};
 use cmr_core::stage_checkpoints::StageProgress;
 use cmr_core::startup::{StartupLanguage, StartupScreen};
@@ -47,14 +55,6 @@ use cmr_platform_sdl3::{
     InteractiveRootError, SdlHostError, WindowedGameFrame, WindowedInput, present_software_frame,
     run_interactive_root_frame, run_windowed_game_session as run_windowed_game_session_loop,
 };
-use cmr_core::drive_controls::DriveResponse;
-use cmr_core::camera_mode::{CameraMode, ViewGate};
-use cmr_core::camera_view::ViewController;
-use cmr_core::game_rng::GameLcg;
-use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
-use cmr_core::render_compose::{fade_duration_frames, fade_level_to_modulation_byte, fade_out};
-use cmr_core::render_route::{RenderRoute, composes_frontend_root, presents_world_scene};
-use cmr_core::scalar_tween::ScalarTween;
 use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
@@ -1087,8 +1087,12 @@ impl StageRenderResources {
     /// composing it ([`compose_stage_scene_frame`]) into the shared presentation
     /// type.
     pub fn compose(&self, camera: &[i32; 16]) -> Result<RenderedStageFrameOutput, StageFrameError> {
-        let scene = StageScene::from_c3d(self.bundle.scene(), &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX)
-            .map_err(StageFrameError::Scene)?;
+        let scene = StageScene::from_c3d(
+            self.bundle.scene(),
+            &MATRIX_IDENTITY_Q16,
+            VERTEXTYPE_LVERTEX,
+        )
+        .map_err(StageFrameError::Scene)?;
         let frame = compose_stage_scene_frame(
             &scene,
             camera,
@@ -1261,7 +1265,13 @@ impl ViewHarness {
 
     /// Cycles to the next recovered view on the rising edge of the change-view
     /// key, then returns the world matrix for the car's current placement.
-    fn update(&mut self, change_view_down: bool, position: Vec3, heading: u16, pal: bool) -> [i32; 16] {
+    fn update(
+        &mut self,
+        change_view_down: bool,
+        position: Vec3,
+        heading: u16,
+        pal: bool,
+    ) -> [i32; 16] {
         if change_view_down && !self.change_view_down {
             self.controller.cycle(Self::GATE, &mut self.rng);
         }
@@ -1297,7 +1307,13 @@ fn advance_game_frame<C: HostClock>(
 ) -> GameFrameOutcome {
     let controls = if let Some(pad) = input.gamepad {
         analog
-            .poll(pad.steer_axis(), pad.pedal_axis(), pad.buttons(), response, true)
+            .poll(
+                pad.steer_axis(),
+                pad.pedal_axis(),
+                pad.buttons(),
+                response,
+                true,
+            )
             .controls
     } else {
         keyboard
@@ -1403,39 +1419,43 @@ pub fn run_windowed_game_session(
             VisualVariant::Normal,
         );
         let built = with_software_root_menu_session(&store, startup, request, |root| {
-            run_windowed_game_session_loop(&initial.frame, Some(media_root), |input: WindowedInput| {
-                let outcome = advance_game_frame(
-                    &mut session,
-                    &mut keyboard,
-                    &mut analog,
-                    &response,
-                    menu_inputs,
-                    &mut progress,
-                    &clock,
-                    &resources,
-                    &mut camera,
-                    &mut fade,
-                    input,
-                );
-                // A composed world frame wins; otherwise the interactive front-end
-                // route presents the recovered root-menu frame (steady initial
-                // input - live menu navigation is the separate windowed root-frame
-                // command). Any render failure drops the frame.
-                let present = if outcome.world.is_some() {
-                    outcome.world
-                } else if outcome.route.is_some_and(composes_frontend_root) {
-                    root.render(initial_root_input())
-                        .ok()
-                        .and_then(|_| root.backend().presented_frame().cloned())
-                } else {
-                    None
-                };
-                WindowedGameFrame {
-                    present,
-                    stopped: outcome.stopped,
-                    music_active: outcome.music_active,
-                }
-            })
+            run_windowed_game_session_loop(
+                &initial.frame,
+                Some(media_root),
+                |input: WindowedInput| {
+                    let outcome = advance_game_frame(
+                        &mut session,
+                        &mut keyboard,
+                        &mut analog,
+                        &response,
+                        menu_inputs,
+                        &mut progress,
+                        &clock,
+                        &resources,
+                        &mut camera,
+                        &mut fade,
+                        input,
+                    );
+                    // A composed world frame wins; otherwise the interactive front-end
+                    // route presents the recovered root-menu frame (steady initial
+                    // input - live menu navigation is the separate windowed root-frame
+                    // command). Any render failure drops the frame.
+                    let present = if outcome.world.is_some() {
+                        outcome.world
+                    } else if outcome.route.is_some_and(composes_frontend_root) {
+                        root.render(initial_root_input())
+                            .ok()
+                            .and_then(|_| root.backend().presented_frame().cloned())
+                    } else {
+                        None
+                    };
+                    WindowedGameFrame {
+                        present,
+                        stopped: outcome.stopped,
+                        music_active: outcome.music_active,
+                    }
+                },
+            )
         });
         if let Ok(run) = built {
             return run.output.map_err(WindowedStageFrameError::Present);
@@ -1962,7 +1982,13 @@ mod tests {
         // Like the stage commands, it needs both a stage name and a media root.
         assert_eq!(
             runtime_config(
-                arguments(&["--windowed-game-session", "--runtime-data", "/user", "--source", "/media"]),
+                arguments(&[
+                    "--windowed-game-session",
+                    "--runtime-data",
+                    "/user",
+                    "--source",
+                    "/media"
+                ]),
                 None,
                 None,
             ),

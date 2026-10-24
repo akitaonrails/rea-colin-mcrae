@@ -22,10 +22,12 @@
 use crate::camera_cinematic::{cinematic_camera, cinematic_offset_fixed, cinematic_offset_random};
 use crate::camera_crossfade::{blend_pose, blend_weight_q16};
 use crate::camera_interior::cockpit_camera;
-use crate::camera_mode::{cycle_next_view, resolve_transition, CameraMode, TransitionResult, ViewGate};
-use crate::fixed_point::{build_sine_table, Vec3, TRIG_TABLE_LEN};
+use crate::camera_mode::{
+    CameraMode, TransitionResult, ViewGate, cycle_next_view, resolve_transition,
+};
+use crate::fixed_point::{TRIG_TABLE_LEN, Vec3, build_sine_table};
 use crate::game_rng::GameLcg;
-use crate::gameplay_camera::{car_world_q16, ChasePreset, GameplayCamera};
+use crate::gameplay_camera::{ChasePreset, GameplayCamera, car_world_q16};
 
 /// Q16.16 one.
 const ONE: i32 = 0x1_0000;
@@ -134,7 +136,9 @@ impl ViewController {
         self.slots[other].mode = next;
         match next {
             CameraMode::Bonnet => self.slots[other].cinematic_offset = cinematic_offset_fixed(),
-            CameraMode::ReplayAction => self.slots[other].cinematic_offset = cinematic_offset_random(rng),
+            CameraMode::ReplayAction => {
+                self.slots[other].cinematic_offset = cinematic_offset_random(rng)
+            }
             _ => {}
         }
 
@@ -185,8 +189,13 @@ impl ViewController {
     fn place(&mut self, slot: usize, position: Vec3, heading: u16, pal: bool) -> [i32; 16] {
         match self.slots[slot].mode {
             CameraMode::ChaseNear | CameraMode::ChaseFar | CameraMode::ChaseThird => {
-                let preset = self.slots[slot].mode.chase_preset().unwrap_or(ChasePreset::Near);
-                *self.slots[slot].chase.update(position, heading, preset, pal)
+                let preset = self.slots[slot]
+                    .mode
+                    .chase_preset()
+                    .unwrap_or(ChasePreset::Near);
+                *self.slots[slot]
+                    .chase
+                    .update(position, heading, preset, pal)
             }
             CameraMode::CockpitA => {
                 let car = car_world_q16(&self.trig, position, heading);
@@ -210,7 +219,9 @@ impl ViewController {
             _ => {
                 // Helmet / trackside / showroom / sentinels: no self-contained
                 // placement here - fall back to the near chase.
-                *self.slots[slot].chase.update(position, heading, ChasePreset::Near, pal)
+                *self.slots[slot]
+                    .chase
+                    .update(position, heading, ChasePreset::Near, pal)
             }
         }
     }
@@ -222,7 +233,11 @@ mod tests {
     use crate::fixed_point::Fixed16;
 
     fn v(x: i32, y: i32, z: i32) -> Vec3 {
-        Vec3::new(Fixed16::from_raw(x), Fixed16::from_raw(y), Fixed16::from_raw(z))
+        Vec3::new(
+            Fixed16::from_raw(x),
+            Fixed16::from_raw(y),
+            Fixed16::from_raw(z),
+        )
     }
 
     fn translation(m: &[i32; 16]) -> [i32; 3] {
@@ -230,10 +245,15 @@ mod tests {
     }
 
     fn q16_dot(a: [i32; 3], b: [i32; 3]) -> i64 {
-        (0..3).map(|i| (i64::from(a[i]) * i64::from(b[i])) >> 16).sum()
+        (0..3)
+            .map(|i| (i64::from(a[i]) * i64::from(b[i])) >> 16)
+            .sum()
     }
 
-    const IN_RACE_GATE: ViewGate = ViewGate { cockpit_enabled: true, showroom_allowed: false };
+    const IN_RACE_GATE: ViewGate = ViewGate {
+        cockpit_enabled: true,
+        showroom_allowed: false,
+    };
 
     #[test]
     fn starts_in_the_seeded_mode_and_cycles() {
@@ -261,7 +281,11 @@ mod tests {
         let mut vc = ViewController::new(CameraMode::CockpitA);
         let m = vc.update(v(0, 0, 0), 0, false);
         // The cockpit eye is roughly at driver height (~1.0), close to the car.
-        assert!(m[13] > 0 && m[13] < 0x2_0000, "eye near ~1.0 height, got {}", m[13]);
+        assert!(
+            m[13] > 0 && m[13] < 0x2_0000,
+            "eye near ~1.0 height, got {}",
+            m[13]
+        );
     }
 
     #[test]
@@ -280,7 +304,10 @@ mod tests {
             + (off[1] as f64 / 65536.0).powi(2)
             + (off[2] as f64 / 65536.0).powi(2))
         .sqrt();
-        assert!((4.0..10.5).contains(&len), "replay cam distance {len} out of envelope");
+        assert!(
+            (4.0..10.5).contains(&len),
+            "replay cam distance {len} out of envelope"
+        );
     }
 
     #[test]
@@ -300,7 +327,10 @@ mod tests {
             let m = vc.update(v(0, 0, 0), 0, false);
             for row in [[m[0], m[1], m[2]], [m[4], m[5], m[6]], [m[8], m[9], m[10]]] {
                 let len2 = q16_dot(row, row);
-                assert!((len2 - ONE as i64).abs() <= 8, "blend axis not unit: {len2:#x}");
+                assert!(
+                    (len2 - ONE as i64).abs() <= 8,
+                    "blend axis not unit: {len2:#x}"
+                );
             }
         }
         // The swap frame drains the countdown and the new mode becomes active.

@@ -19,7 +19,9 @@
 //! logic.
 
 use crate::drive_controls::{DriveResponse, car_controls_to_sim};
-use crate::input_map::{CarControls, ControlConfig, DeviceSnapshot, InRaceControlMapper, KeyBindings};
+use crate::input_map::{
+    CarControls, ControlConfig, DeviceSnapshot, InRaceControlMapper, KeyBindings,
+};
 use crate::input_poll::DevicePoll;
 use crate::race_state::Controls;
 
@@ -144,9 +146,12 @@ impl AnalogDriver {
     ) -> DriveFrame {
         let snapshot = self.poll.poll_analog(steer_raw, pedal_raw, buttons);
         // An analog device has no paired keyboard record on this path.
-        let car = self
-            .mapper
-            .map(&snapshot, &DeviceSnapshot::default(), &self.config, gear_enabled);
+        let car = self.mapper.map(
+            &snapshot,
+            &DeviceSnapshot::default(),
+            &self.config,
+            gear_enabled,
+        );
         let controls = car_controls_to_sim(&car, response);
         DriveFrame { car, controls }
     }
@@ -212,12 +217,27 @@ mod tests {
         // The recovered latch starts disarmed (zeroed BSS); a clear frame arms it.
         assert!(!driver.poll(|_| false, &response(), true).car.reset_fired);
         // Next press edge (while armed) fires once.
-        assert!(driver.poll(|vk| vk == VK_RESET, &response(), true).car.reset_fired);
+        assert!(
+            driver
+                .poll(|vk| vk == VK_RESET, &response(), true)
+                .car
+                .reset_fired
+        );
         // Held again, no new edge: it does not re-fire.
-        assert!(!driver.poll(|vk| vk == VK_RESET, &response(), true).car.reset_fired);
+        assert!(
+            !driver
+                .poll(|vk| vk == VK_RESET, &response(), true)
+                .car
+                .reset_fired
+        );
         // Release re-arms; the next press fires again.
         let _ = driver.poll(|_| false, &response(), true);
-        assert!(driver.poll(|vk| vk == VK_RESET, &response(), true).car.reset_fired);
+        assert!(
+            driver
+                .poll(|vk| vk == VK_RESET, &response(), true)
+                .car
+                .reset_fired
+        );
     }
 
     #[test]

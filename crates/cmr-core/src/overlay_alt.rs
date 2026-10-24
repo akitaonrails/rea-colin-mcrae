@@ -92,7 +92,11 @@ impl OverlayAltPhase {
 /// W >> 16`, `y = H * 19660 >> 16`, `w = W * phase_x >> 16`, `h = phase_h * H >>
 /// 16`.
 #[must_use]
-pub fn overlay_alt_quad(phase: OverlayAltPhase, screen_width: u16, screen_height: u16) -> OverlayQuad {
+pub fn overlay_alt_quad(
+    phase: OverlayAltPhase,
+    screen_width: u16,
+    screen_height: u16,
+) -> OverlayQuad {
     let w = i64::from(screen_width);
     let h = i64::from(screen_height);
     let phase_x = i64::from(phase.x);
@@ -113,7 +117,15 @@ mod tests {
     fn phase_zero_starts_centered_with_a_fixed_vertical_and_zero_size() {
         // At phase 0: x = 0.5*W (0x8000 Q16.16), y = 0.300*H, w = h = 0.
         let quad = overlay_alt_quad(OverlayAltPhase::new(), 640, 480);
-        assert_eq!(quad, OverlayQuad { x: 320, y: 143, w: 0, h: 0 });
+        assert_eq!(
+            quad,
+            OverlayQuad {
+                x: 320,
+                y: 143,
+                w: 0,
+                h: 0
+            }
+        );
         // Independent of width for the centering and of the phase for y.
         assert_eq!(overlay_alt_quad(OverlayAltPhase::new(), 512, 384).x, 256);
         assert_eq!(overlay_alt_quad(OverlayAltPhase::new(), 512, 384).y, 115);
@@ -137,7 +149,15 @@ mod tests {
         let quad = overlay_alt_quad(phase, 640, 480);
         // x = (0x8000 - 0xccc)*640 >> 16 = 288; w = 640*0x1999 >> 16 = 63;
         // h = 0x51e*480 >> 16 = 9; y unchanged at 143.
-        assert_eq!(quad, OverlayQuad { x: 288, y: 143, w: 63, h: 9 });
+        assert_eq!(
+            quad,
+            OverlayQuad {
+                x: 288,
+                y: 143,
+                w: 63,
+                h: 9
+            }
+        );
         assert!(quad.x < 320 && quad.w > 0 && quad.h > 0);
     }
 

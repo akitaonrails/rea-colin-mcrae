@@ -400,7 +400,11 @@ fn map_brake(
         let value = if y > 0 { clamp_demand(y) } else { 0 };
         (value, true)
     } else {
-        let value = if held & masks.brake != 0 { FULL_SCALE } else { 0 };
+        let value = if held & masks.brake != 0 {
+            FULL_SCALE
+        } else {
+            0
+        };
         (value, false)
     }
 }
@@ -486,7 +490,12 @@ mod tests {
             handbrake_alt: true,
             ..ControlConfig::default()
         };
-        let out = mapper.map(&keyboard(config.masks.handbrake, 0), &keyboard(0, 0), &config, true);
+        let out = mapper.map(
+            &keyboard(config.masks.handbrake, 0),
+            &keyboard(0, 0),
+            &config,
+            true,
+        );
         assert!(out.handbrake);
         assert!(out.handbrake_alt);
         // The ramp mode forces the handbrake off.
@@ -494,7 +503,12 @@ mod tests {
             ramp_throttle: true,
             ..ControlConfig::default()
         };
-        let out = mapper.map(&keyboard(ramp.masks.handbrake, 0), &keyboard(0, 0), &ramp, true);
+        let out = mapper.map(
+            &keyboard(ramp.masks.handbrake, 0),
+            &keyboard(0, 0),
+            &ramp,
+            true,
+        );
         assert!(!out.handbrake);
     }
 
@@ -503,17 +517,32 @@ mod tests {
         let mut mapper = InRaceControlMapper::new();
         let config = ControlConfig::default();
         // Gear up on its edge.
-        let out = mapper.map(&keyboard(0, config.masks.gear_up), &keyboard(0, 0), &config, true);
+        let out = mapper.map(
+            &keyboard(0, config.masks.gear_up),
+            &keyboard(0, 0),
+            &config,
+            true,
+        );
         assert_eq!(out.gear_command, GearCommand::Up);
         // Down wins a tie (tested second in the shipped code).
         let both = config.masks.gear_up | config.masks.gear_down;
         let out = mapper.map(&keyboard(0, both), &keyboard(0, 0), &config, true);
         assert_eq!(out.gear_command, GearCommand::Down);
         // Held (not edged) does not shift.
-        let out = mapper.map(&keyboard(config.masks.gear_up, 0), &keyboard(0, 0), &config, true);
+        let out = mapper.map(
+            &keyboard(config.masks.gear_up, 0),
+            &keyboard(0, 0),
+            &config,
+            true,
+        );
         assert_eq!(out.gear_command, GearCommand::None);
         // Suppressed when the gear gate is closed.
-        let out = mapper.map(&keyboard(0, config.masks.gear_up), &keyboard(0, 0), &config, false);
+        let out = mapper.map(
+            &keyboard(0, config.masks.gear_up),
+            &keyboard(0, 0),
+            &config,
+            false,
+        );
         assert_eq!(out.gear_command, GearCommand::None);
     }
 
@@ -557,7 +586,12 @@ mod tests {
             ..ControlConfig::default()
         };
         // X < 0 -> steer left (magnitude clamped to 0xffbe then quantized).
-        let out = mapper.map(&analog(-0x4321, -0x2000, 0), &analog(0, 0, 0), &config, true);
+        let out = mapper.map(
+            &analog(-0x4321, -0x2000, 0),
+            &analog(0, 0, 0),
+            &config,
+            true,
+        );
         assert!(out.steer_analog);
         assert_eq!(out.steer_left, clamp_demand(0x4321));
         assert_eq!(out.steer_right, 0);
@@ -565,7 +599,12 @@ mod tests {
         assert!(out.throttle_analog && out.throttle == clamp_demand(0x2000));
         assert_eq!(out.brake, 0);
 
-        let out = mapper.map(&analog(0x1_0000, 0x3000, 0), &analog(0, 0, 0), &config, true);
+        let out = mapper.map(
+            &analog(0x1_0000, 0x3000, 0),
+            &analog(0, 0, 0),
+            &config,
+            true,
+        );
         // X > 0 -> steer right, clamped to the 0xffbe ceiling then quantized.
         assert_eq!(out.steer_right, clamp_demand(0x1_0000));
         assert_eq!(out.steer_right, FULL_SCALE & DEMAND_QUANTIZE_MASK);
@@ -599,7 +638,10 @@ mod tests {
         assert_eq!(mask & BIT_STEER_RIGHT, 0);
         // P2 uses A/S/R/D.
         let down = |vk: u8| vk == 0x41; // 'A' = steer left
-        assert_eq!(KeyBindings::PLAYER2.held_mask(down) & BIT_STEER_LEFT, BIT_STEER_LEFT);
+        assert_eq!(
+            KeyBindings::PLAYER2.held_mask(down) & BIT_STEER_LEFT,
+            BIT_STEER_LEFT
+        );
         // ESC is bound to the pause bit (10) for both players.
         assert_eq!(KeyBindings::PLAYER1.codes[10], Some(0x1b));
         assert_eq!(KeyBindings::PLAYER2.codes[10], Some(0x1b));
@@ -614,14 +656,24 @@ mod tests {
         };
         // Engaging throttle seeds the ramp; the first frame is a nonzero pulse.
         let first = mapper
-            .map(&keyboard(config.masks.throttle, 0), &keyboard(0, 0), &config, true)
+            .map(
+                &keyboard(config.masks.throttle, 0),
+                &keyboard(0, 0),
+                &config,
+                true,
+            )
             .throttle;
         assert!(first > 0);
         // Held continuously, the counter decays below 0x60 and the pulse ends.
         let mut last = first;
         for _ in 0..8 {
             last = mapper
-                .map(&keyboard(config.masks.throttle, 0), &keyboard(0, 0), &config, true)
+                .map(
+                    &keyboard(config.masks.throttle, 0),
+                    &keyboard(0, 0),
+                    &config,
+                    true,
+                )
                 .throttle;
         }
         assert_eq!(last, 0);

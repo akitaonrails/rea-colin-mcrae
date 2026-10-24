@@ -177,7 +177,10 @@ mod tests {
         // End of the blend (counter == 0): elapsed 1.0 -> index 0x400 + 0x800.
         assert_eq!(blend_lut_index(0, 25), 0xc00);
         // Halfway.
-        assert_eq!(blend_lut_index(12, 25), 0x400 + ((0x1_0000 - 12 * 0x1_0000 / 25) * 180 / 5760) as usize);
+        assert_eq!(
+            blend_lut_index(12, 25),
+            0x400 + ((0x1_0000 - 12 * 0x1_0000 / 25) * 180 / 5760) as usize
+        );
         // Degenerate duration -> start index, no panic.
         assert_eq!(blend_lut_index(0, 0), 0x400);
     }
@@ -188,10 +191,16 @@ mod tests {
         // Start: cos at index 0x400 (quarter table) = cos(pi/2) = 0, half = 0.5,
         // weight = 1 - 0.25 = 0.75 (0xc000).
         let w_start = blend_weight_q16(25, 25, &lut);
-        assert!((w_start - 0xc000).abs() <= 2, "start weight ~0.75, got {w_start:#x}");
+        assert!(
+            (w_start - 0xc000).abs() <= 2,
+            "start weight ~0.75, got {w_start:#x}"
+        );
         // End: index 0xc00 (three-quarter table) = cos(3pi/2) = 0, same 0.75.
         let w_end = blend_weight_q16(0, 25, &lut);
-        assert!((w_end - 0xc000).abs() <= 2, "end weight ~0.75, got {w_end:#x}");
+        assert!(
+            (w_end - 0xc000).abs() <= 2,
+            "end weight ~0.75, got {w_end:#x}"
+        );
         // Weight stays within [0, 1] across the whole sweep.
         for counter in 0..=25 {
             let w = blend_weight_q16(counter, 25, &lut);
@@ -210,7 +219,9 @@ mod tests {
 
     /// Q16.16 dot of two 3-vectors.
     fn dot(a: [i32; 3], b: [i32; 3]) -> i64 {
-        (0..3).map(|i| (i64::from(a[i]) * i64::from(b[i])) >> 16).sum()
+        (0..3)
+            .map(|i| (i64::from(a[i]) * i64::from(b[i])) >> 16)
+            .sum()
     }
 
     /// The standard right-handed basis (right +X, up +Y, forward +Z) plus a
@@ -231,7 +242,10 @@ mod tests {
         let a = basis_with_translation([0x5_0000, 0x2_0000, -0x3_0000]);
         for &frac in &[0, 0x4000, 0x8000, 0xc000, 0x1_0000] {
             let out = blend_pose(&a, &a, frac);
-            assert_eq!(out, a, "identical blend at frac {frac:#x} must be a fixed point");
+            assert_eq!(
+                out, a,
+                "identical blend at frac {frac:#x} must be a fixed point"
+            );
         }
     }
 
@@ -262,19 +276,36 @@ mod tests {
             // Unit length (Q16.16 one = 0x1_0000), within a small rounding slop.
             for v in [right, up, forward] {
                 let len2 = dot(v, v);
-                assert!((len2 - 0x1_0000).abs() <= 4, "axis not unit: len^2 {len2:#x}");
+                assert!(
+                    (len2 - 0x1_0000).abs() <= 4,
+                    "axis not unit: len^2 {len2:#x}"
+                );
             }
             // Mutually orthogonal.
             assert!(dot(right, up).abs() <= 4, "right.up {:#x}", dot(right, up));
-            assert!(dot(right, forward).abs() <= 4, "right.fwd {:#x}", dot(right, forward));
-            assert!(dot(up, forward).abs() <= 4, "up.fwd {:#x}", dot(up, forward));
+            assert!(
+                dot(right, forward).abs() <= 4,
+                "right.fwd {:#x}",
+                dot(right, forward)
+            );
+            assert!(
+                dot(up, forward).abs() <= 4,
+                "up.fwd {:#x}",
+                dot(up, forward)
+            );
             assert_eq!(m[15], 0x1_0000);
         }
     }
 
     #[test]
     fn scalars_blend_componentwise() {
-        let a = CameraScalars { p48: 0, p4c: 0x1_0000, p50: 0, p54: 0, p58: 0 };
+        let a = CameraScalars {
+            p48: 0,
+            p4c: 0x1_0000,
+            p50: 0,
+            p54: 0,
+            p58: 0,
+        };
         let b = CameraScalars {
             p48: 0x4_0000,
             p4c: 0x3_0000,

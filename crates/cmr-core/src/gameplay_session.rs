@@ -20,11 +20,11 @@
 //! only `stage_finished` comes from the live tracker.
 
 use crate::fixed_point::Fixed16;
+use crate::game_menu_flow::MenuFlowInputs;
 use crate::game_race_flow::{InRaceInputs, race_flow_next};
 use crate::game_session::{GameSession, SessionBand};
 use crate::game_state::GameState;
 use crate::host_loop::HostClock;
-use crate::game_menu_flow::MenuFlowInputs;
 use crate::race_state::{CarState, Controls, RaceState, SimParams};
 use crate::render_route::{RenderRoute, render_route};
 use crate::stage_checkpoints::StageProgress;
@@ -136,18 +136,16 @@ impl GameplaySession {
         let sim_ticks = &mut self.sim_ticks;
         let mut stepped = false;
 
-        let frame = self
-            .session
-            .run_frame(clock, menu_inputs, |state| {
-                if state.id() == 5 {
-                    let sample = race.step(&controls, params);
-                    *sim_ticks += 1;
-                    progress.update(sample.car.position, sample.centiseconds);
-                    stepped = true;
-                }
-                let inputs = script.with_finish(progress.finished());
-                race_flow_next(state, inputs).unwrap_or(state)
-            });
+        let frame = self.session.run_frame(clock, menu_inputs, |state| {
+            if state.id() == 5 {
+                let sample = race.step(&controls, params);
+                *sim_ticks += 1;
+                progress.update(sample.car.position, sample.centiseconds);
+                stepped = true;
+            }
+            let inputs = script.with_finish(progress.finished());
+            race_flow_next(state, inputs).unwrap_or(state)
+        });
 
         GameplayFrame {
             band: frame.band,
@@ -274,7 +272,8 @@ mod tests {
         let mut frames = 0u32;
         while !session.is_stopped() && frames < 100_000 {
             frames += 1;
-            let frame = session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            let frame =
+                session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
             if frame.stepped {
                 assert_eq!(frame.band, SessionBand::Gameplay);
                 if matches!(frame.route, Some(RenderRoute::StageWorld(_))) {

@@ -393,10 +393,7 @@ mod tests {
         );
         // Any single escape hatch -> composite the world with (1,0,0).
         let world = FadeCompositeStep::CompositeWorld(SharedComposite { args: [1, 0, 0] });
-        assert_eq!(
-            fade_composite_plan(fading, true, false, true, true),
-            world
-        );
+        assert_eq!(fade_composite_plan(fading, true, false, true, true), world);
         assert_eq!(fade_composite_plan(fading, true, true, false, true), world);
         assert_eq!(fade_composite_plan(fading, true, true, true, false), world);
         // The device-ready flag is ignored while a fade is in progress (path B).

@@ -172,9 +172,9 @@ mod tests {
     #[test]
     fn nearest_picks_the_closest_in_xz() {
         let points = [
-            pt(0x64_0000, 0, 0),       // 100.0 away on X
-            pt(0x0a_0000, 0, 0),       // 10.0 away on X (nearest)
-            pt(0, 0x32_0000, 0),       // 50.0 away on Z
+            pt(0x64_0000, 0, 0), // 100.0 away on X
+            pt(0x0a_0000, 0, 0), // 10.0 away on X (nearest)
+            pt(0, 0x32_0000, 0), // 50.0 away on Z
         ];
         assert_eq!(nearest_trackside(&points, 0, 0), Some(1));
         assert_eq!(nearest_trackside(&[], 0, 0), None);
@@ -201,11 +201,23 @@ mod tests {
         assert_eq!(trackside_lookat_ease_coeff(false), 0x5555); // 21845, ~1/3
         assert_eq!(trackside_lookat_ease_coeff(true), 0x2aaa); // 10922, ~1/6
         // One NTSC step moves ~1/3 of the way from 0 toward 3.0.
-        let stepped = trackside_lookat_ease([0, 0, 0], [0x3_0000, 0, 0], trackside_lookat_ease_coeff(false));
-        assert!((stepped[0] - 0x1_0000).abs() <= 2, "~1.0 after one 1/3 step, got {:#x}", stepped[0]);
+        let stepped = trackside_lookat_ease(
+            [0, 0, 0],
+            [0x3_0000, 0, 0],
+            trackside_lookat_ease_coeff(false),
+        );
+        assert!(
+            (stepped[0] - 0x1_0000).abs() <= 2,
+            "~1.0 after one 1/3 step, got {:#x}",
+            stepped[0]
+        );
         // Already-at-target stays put.
         assert_eq!(
-            trackside_lookat_ease([0x3_0000, 0, 0], [0x3_0000, 0, 0], trackside_lookat_ease_coeff(false)),
+            trackside_lookat_ease(
+                [0x3_0000, 0, 0],
+                [0x3_0000, 0, 0],
+                trackside_lookat_ease_coeff(false)
+            ),
             [0x3_0000, 0, 0]
         );
     }
@@ -230,7 +242,10 @@ mod tests {
             }
         }
         // ~20% exits (allow a wide band for the sample size).
-        assert!((600..1000).contains(&exits), "exit rate out of band: {exits}/4000");
+        assert!(
+            (600..1000).contains(&exits),
+            "exit rate out of band: {exits}/4000"
+        );
         // The two modes are both produced and roughly balanced.
         assert!(replay > 0 && third > 0);
         let ratio = replay as f64 / exits as f64;

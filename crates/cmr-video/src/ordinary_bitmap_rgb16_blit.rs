@@ -145,12 +145,13 @@ pub fn compose_ordinary_bitmap_logical_rgb16_stretch_blit(
     let destination_stride = usize::from(target.extent()[0]);
 
     for row in 0..validated.destination_height {
-        let source_row = validated.source_top + row * validated.source_height / validated.destination_height;
+        let source_row =
+            validated.source_top + row * validated.source_height / validated.destination_height;
         let destination_start =
             (validated.destination_top + row) * destination_stride + validated.destination_left;
         for column in 0..validated.destination_width {
-            let source_column =
-                validated.source_left + column * validated.source_width / validated.destination_width;
+            let source_column = validated.source_left
+                + column * validated.source_width / validated.destination_width;
             let word = source.logical_words()[source_row * source_stride + source_column];
             if validated.packed_color_key != Some(word) {
                 target.copy_matching_rgb16_word_at_source_owned_oracle(
@@ -589,7 +590,11 @@ mod tests {
         assert_eq!(target, before);
     }
 
-    fn stretch_plan(source: RectEdges, destination: RectEdges, color_key: Option<ColorKey>) -> BlitPlan {
+    fn stretch_plan(
+        source: RectEdges,
+        destination: RectEdges,
+        color_key: Option<ColorKey>,
+    ) -> BlitPlan {
         BlitPlan {
             source,
             destination,
@@ -603,7 +608,9 @@ mod tests {
         // Source row 0, columns 1..3 = [red, green] (RGB565); stretch 2 -> 4 wide.
         let source = converted_source(6);
         let mut target = LogicalMaskedRgbTarget::new([4, 1], format(source.layout())).unwrap();
-        target.replace_from_canonical_rgb([4, 1], &[[255, 255, 255]; 4]).unwrap();
+        target
+            .replace_from_canonical_rgb([4, 1], &[[255, 255, 255]; 4])
+            .unwrap();
 
         let plan = stretch_plan(edges(1, 0, 3, 1), edges(0, 0, 4, 1), None);
         preflight_ordinary_bitmap_logical_rgb16_stretch_blit(&source, &target, plan).unwrap();
@@ -618,7 +625,9 @@ mod tests {
         // A 1x1 source (one red pixel) stretched to 3x1 - the static LINE.BMP rule.
         let source = converted_source(6);
         let mut target = LogicalMaskedRgbTarget::new([3, 1], format(source.layout())).unwrap();
-        target.replace_from_canonical_rgb([3, 1], &[[255, 255, 255]; 3]).unwrap();
+        target
+            .replace_from_canonical_rgb([3, 1], &[[255, 255, 255]; 3])
+            .unwrap();
 
         let plan = stretch_plan(edges(1, 0, 2, 1), edges(0, 0, 3, 1), None);
         compose_ordinary_bitmap_logical_rgb16_stretch_blit(&source, &mut target, plan).unwrap();
@@ -632,10 +641,19 @@ mod tests {
         // the two columns sampling the key keep the white background.
         let source = converted_source(6);
         let mut target = LogicalMaskedRgbTarget::new([4, 1], format(source.layout())).unwrap();
-        target.replace_from_canonical_rgb([4, 1], &[[255, 255, 255]; 4]).unwrap();
+        target
+            .replace_from_canonical_rgb([4, 1], &[[255, 255, 255]; 4])
+            .unwrap();
         let key = u32::from(source.packed_color_key());
 
-        let plan = stretch_plan(edges(0, 0, 2, 1), edges(0, 0, 4, 1), Some(ColorKey { low: key, high: key }));
+        let plan = stretch_plan(
+            edges(0, 0, 2, 1),
+            edges(0, 0, 4, 1),
+            Some(ColorKey {
+                low: key,
+                high: key,
+            }),
+        );
         compose_ordinary_bitmap_logical_rgb16_stretch_blit(&source, &mut target, plan).unwrap();
 
         // sx = {0,0,1,1}: cols 0,1 sample the key (skipped), cols 2,3 sample red.
@@ -646,7 +664,9 @@ mod tests {
     fn stretch_preflight_accepts_differing_sizes_and_rejections_are_atomic() {
         let source = converted_source(6);
         let mut target = LogicalMaskedRgbTarget::new([4, 2], format(source.layout())).unwrap();
-        target.replace_from_canonical_rgb([4, 2], &[[255, 255, 255]; 8]).unwrap();
+        target
+            .replace_from_canonical_rgb([4, 2], &[[255, 255, 255]; 8])
+            .unwrap();
         let before = target.words().to_vec();
 
         // A differing-size plan the fast path rejects is valid for the stretch path.
@@ -657,7 +677,9 @@ mod tests {
         let bad = stretch_plan(edges(0, 0, 5, 1), edges(0, 0, 4, 2), None);
         assert_eq!(
             compose_ordinary_bitmap_logical_rgb16_stretch_blit(&source, &mut target, bad),
-            Err(OrdinaryBitmapRgb16BlitError::InvalidSourceRectangle(edges(0, 0, 5, 1)))
+            Err(OrdinaryBitmapRgb16BlitError::InvalidSourceRectangle(edges(
+                0, 0, 5, 1
+            )))
         );
         assert_eq!(target.words(), before);
     }

@@ -109,7 +109,8 @@ fn basis_needs_ease(cur: &[i32; 16], target: &[i32; 16]) -> bool {
     (0..3).any(|j| {
         (0..3).any(|i| {
             let idx = 4 * j + i;
-            (i64::from(cur[idx]) - i64::from(target[idx])).abs() > i64::from(EASE_SNAP_THRESHOLD_Q16)
+            (i64::from(cur[idx]) - i64::from(target[idx])).abs()
+                > i64::from(EASE_SNAP_THRESHOLD_Q16)
         })
     })
 }
@@ -241,9 +242,7 @@ impl GameplayCamera {
 /// Column-major Q16.16 identity.
 const IDENTITY_Q16: [i32; 16] = {
     let one = 0x0001_0000;
-    [
-        one, 0, 0, 0, 0, one, 0, 0, 0, 0, one, 0, 0, 0, 0, one,
-    ]
+    [one, 0, 0, 0, 0, one, 0, 0, 0, 0, one, 0, 0, 0, 0, one]
 };
 
 #[cfg(test)]
@@ -253,7 +252,11 @@ mod tests {
     const ONE: i32 = 0x0001_0000;
 
     fn v(x: i32, y: i32, z: i32) -> Vec3 {
-        Vec3::new(Fixed16::from_raw(x), Fixed16::from_raw(y), Fixed16::from_raw(z))
+        Vec3::new(
+            Fixed16::from_raw(x),
+            Fixed16::from_raw(y),
+            Fixed16::from_raw(z),
+        )
     }
 
     #[test]
@@ -270,7 +273,10 @@ mod tests {
         // NTSC: 0x1C9210000 / 0x190000 = 4681 exactly (the recovery's ~0x1234 is
         // an approximation of this integer divide).
         assert_eq!(ease_rate_q16(false), 4681);
-        assert_eq!(ease_rate_q16(false), (EASE_RATE_NUMERATOR / EASE_RATE_FPS_BASE_Q16) as i32);
+        assert_eq!(
+            ease_rate_q16(false),
+            (EASE_RATE_NUMERATOR / EASE_RATE_FPS_BASE_Q16) as i32
+        );
         // PAL doubles the divisor, halving the rate (integer floor).
         assert_eq!(ease_rate_q16(true), 2340);
     }

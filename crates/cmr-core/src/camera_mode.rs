@@ -225,9 +225,8 @@ pub fn resolve_transition(
     if current == CameraMode::Blending {
         return TransitionResult::Locked;
     }
-    let fade = crossfade_requested
-        && current != CameraMode::Showroom
-        && new_mode != CameraMode::Showroom;
+    let fade =
+        crossfade_requested && current != CameraMode::Showroom && new_mode != CameraMode::Showroom;
     if !fade {
         return TransitionResult::Immediate { new_mode };
     }
@@ -256,9 +255,15 @@ mod tests {
 
     #[test]
     fn chase_modes_map_to_the_recovered_presets() {
-        assert_eq!(CameraMode::ChaseNear.chase_preset(), Some(ChasePreset::Near));
+        assert_eq!(
+            CameraMode::ChaseNear.chase_preset(),
+            Some(ChasePreset::Near)
+        );
         assert_eq!(CameraMode::ChaseFar.chase_preset(), Some(ChasePreset::Far));
-        assert_eq!(CameraMode::ChaseThird.chase_preset(), Some(ChasePreset::Third));
+        assert_eq!(
+            CameraMode::ChaseThird.chase_preset(),
+            Some(ChasePreset::Third)
+        );
         assert_eq!(CameraMode::Bonnet.chase_preset(), None);
         assert_eq!(CameraMode::Trackside.chase_preset(), None);
     }
@@ -279,26 +284,53 @@ mod tests {
     #[test]
     fn view_cycle_respects_the_gate() {
         // Cockpit enabled, showroom blocked: bonnet is excluded, cockpits in.
-        let cockpit = ViewGate { cockpit_enabled: true, showroom_allowed: false };
+        let cockpit = ViewGate {
+            cockpit_enabled: true,
+            showroom_allowed: false,
+        };
         assert!(view_mode_allowed(CameraMode::CockpitA, cockpit));
         assert!(!view_mode_allowed(CameraMode::Bonnet, cockpit));
         // From near chase (5): 6 is always allowed, so the next stop is far.
-        assert_eq!(cycle_next_view(CameraMode::ChaseNear, cockpit), CameraMode::ChaseFar);
+        assert_eq!(
+            cycle_next_view(CameraMode::ChaseNear, cockpit),
+            CameraMode::ChaseFar
+        );
         // From far (6): 7 bonnet excluded, 8/9/10/11/12/0 excluded, wrap to 1.
-        assert_eq!(cycle_next_view(CameraMode::ChaseFar, cockpit), CameraMode::CockpitA);
+        assert_eq!(
+            cycle_next_view(CameraMode::ChaseFar, cockpit),
+            CameraMode::CockpitA
+        );
 
         // Cockpit disabled, showroom blocked: bonnet allowed, cockpits out.
-        let exterior = ViewGate { cockpit_enabled: false, showroom_allowed: false };
-        assert_eq!(cycle_next_view(CameraMode::ChaseFar, exterior), CameraMode::Bonnet);
+        let exterior = ViewGate {
+            cockpit_enabled: false,
+            showroom_allowed: false,
+        };
+        assert_eq!(
+            cycle_next_view(CameraMode::ChaseFar, exterior),
+            CameraMode::Bonnet
+        );
         // From bonnet (7): nothing allowed until the wrap lands on near (5).
-        assert_eq!(cycle_next_view(CameraMode::Bonnet, exterior), CameraMode::ChaseNear);
+        assert_eq!(
+            cycle_next_view(CameraMode::Bonnet, exterior),
+            CameraMode::ChaseNear
+        );
 
         // Showroom allowed: it becomes a cycle stop.
-        let showroom = ViewGate { cockpit_enabled: false, showroom_allowed: true };
-        assert_eq!(cycle_next_view(CameraMode::CockpitB, showroom), CameraMode::Showroom);
+        let showroom = ViewGate {
+            cockpit_enabled: false,
+            showroom_allowed: true,
+        };
+        assert_eq!(
+            cycle_next_view(CameraMode::CockpitB, showroom),
+            CameraMode::Showroom
+        );
 
         // Helmet never cycles.
-        assert_eq!(cycle_next_view(CameraMode::Helmet, cockpit), CameraMode::Helmet);
+        assert_eq!(
+            cycle_next_view(CameraMode::Helmet, cockpit),
+            CameraMode::Helmet
+        );
     }
 
     #[test]
@@ -340,21 +372,30 @@ mod tests {
         // No crossfade requested -> instant cut.
         assert_eq!(
             resolve_transition(CameraMode::ChaseNear, CameraMode::ChaseFar, false, false),
-            TransitionResult::Immediate { new_mode: CameraMode::ChaseFar }
+            TransitionResult::Immediate {
+                new_mode: CameraMode::ChaseFar
+            }
         );
         // Showroom on either side forces an instant cut despite the request.
         assert_eq!(
             resolve_transition(CameraMode::Showroom, CameraMode::ChaseFar, true, false),
-            TransitionResult::Immediate { new_mode: CameraMode::ChaseFar }
+            TransitionResult::Immediate {
+                new_mode: CameraMode::ChaseFar
+            }
         );
         assert_eq!(
             resolve_transition(CameraMode::ChaseNear, CameraMode::Showroom, true, false),
-            TransitionResult::Immediate { new_mode: CameraMode::Showroom }
+            TransitionResult::Immediate {
+                new_mode: CameraMode::Showroom
+            }
         );
         // Otherwise a crossfade over the recovered duration (slow-motion off = 25).
         assert_eq!(
             resolve_transition(CameraMode::ChaseNear, CameraMode::ChaseFar, true, false),
-            TransitionResult::Crossfade { new_mode: CameraMode::ChaseFar, frames: 25 }
+            TransitionResult::Crossfade {
+                new_mode: CameraMode::ChaseFar,
+                frames: 25
+            }
         );
     }
 }

@@ -198,7 +198,7 @@ pub fn gamepad_trigger_pedal(throttle: i16, brake: i16) -> u32 {
 #[must_use]
 pub fn gamepad_action_bit(button: Button) -> Option<u32> {
     let bit = match button {
-        Button::South => 0x100,        // handbrake
+        Button::South => 0x100,         // handbrake
         Button::RightShoulder => 0x200, // gear up
         Button::LeftShoulder => 0x80,   // gear down
         Button::North => 0x40,          // reset / rescue

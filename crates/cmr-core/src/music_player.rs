@@ -246,7 +246,12 @@ mod tests {
     fn keepalive_holds_once_the_ramp_reaches_the_fade_target() {
         // Fade config 1 -> target counter 1*0x14 = 20. Volume config matched to
         // 1 so the ramp lands exactly on the configured full volume at target.
-        let mut c = MusicController::new(ChannelId::new(5).unwrap(), WaveSlotId::from_ordinal(12), 1, 1);
+        let mut c = MusicController::new(
+            ChannelId::new(5).unwrap(),
+            WaveSlotId::from_ordinal(12),
+            1,
+            1,
+        );
         c.on_context(0);
         let target = music_fade_target(1);
         assert_eq!(target, 20);
