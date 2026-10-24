@@ -18,7 +18,7 @@ define a clean compatibility interface.
 | persistence | `save\\cmRally.cfg`, registry reads/writes | What is mutable state, its layout, defaults, and failure behavior? | storage module |
 | localization | language-file paths and ordered text tables | What indexing, encoding, fallback, and formatting rules apply? | localization module |
 | models/scenes | C3D and stage-bundle path strings/files | What layouts and cross-file references build a drivable scene? | formats + scene loader |
-| multiplayer | two DirectPlay ordinal imports | Which protocol/session behavior is actually reachable and safe to preserve? | deferred network interface |
+| multiplayer | two DirectPlay ordinal imports, recovered IDirectPlay3A session surface | Which protocol/session behavior is actually reachable and safe to preserve? | optional transport behind a recovered host/join/player/message lifecycle (H10) |
 
 ## First focused queries
 
