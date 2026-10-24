@@ -84,6 +84,7 @@ pub mod load_interstitial;
 pub mod localization;
 pub mod localization_assets;
 pub mod music_player;
+pub mod net_transport;
 pub mod options_screen;
 pub mod overlay_alt;
 pub mod pacenote_schedule;
