@@ -271,7 +271,7 @@ pub fn parse_indexed_bitmap(
     if pixel_end > input.len()
         || (!trailing.is_empty()
             && (trailing.len() > 3
-                || input.len() % 4 != 0
+                || !input.len().is_multiple_of(4)
                 || trailing.iter().any(|&byte| byte != 0)))
     {
         return Err(BitmapError::PixelDataSizeMismatch {
