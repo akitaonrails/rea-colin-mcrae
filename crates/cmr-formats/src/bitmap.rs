@@ -153,6 +153,11 @@ impl std::error::Error for BitmapError {}
 
 /// Parses the Windows V3, 8-bit, uncompressed indexed bitmap subset observed in
 /// the startup assets.
+///
+/// A short all-zero trailing pad is accepted when it rounds the file up to a
+/// four-byte boundary: the shipped stage `.c3d` textures carry exactly that pad
+/// (their own declared file size includes it). Any other trailing byte pattern
+/// is still rejected as malformed.
 pub fn parse_indexed_bitmap(
     input: &[u8],
     limits: BitmapLimits,
@@ -257,7 +262,18 @@ pub fn parse_indexed_bitmap(
     let pixel_end = pixel_offset
         .checked_add(stored_size)
         .ok_or(BitmapError::LimitsExceeded)?;
-    if pixel_end != input.len() {
+    // Shipped stage textures (for example the padded blobs in `Game/Au/*`)
+    // carry a zero pad after the pixel rows that rounds the declared file size
+    // up to a four-byte boundary - the same alignment the DIB row stride
+    // already requires. Accept only that pad: nonzero trailing bytes, a pad
+    // longer than three bytes, or a misaligned end remain malformed.
+    let trailing = &input[pixel_end.min(input.len())..];
+    if pixel_end > input.len()
+        || (!trailing.is_empty()
+            && (trailing.len() > 3
+                || input.len() % 4 != 0
+                || trailing.iter().any(|&byte| byte != 0)))
+    {
         return Err(BitmapError::PixelDataSizeMismatch {
             expected_end: pixel_end,
             actual_end: input.len(),
@@ -566,6 +582,60 @@ mod tests {
         trailing_pixels[2..6].copy_from_slice(&trailing_len.to_le_bytes());
         assert!(matches!(
             parse_indexed_bitmap(&trailing_pixels, BitmapLimits::default()),
+            Err(BitmapError::PixelDataSizeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn accepts_the_shipped_stage_texture_zero_pad_and_rejects_other_trailing() {
+        // The shipped stage shape: a 64x64, 256-color blob whose own declared
+        // file size includes a two-byte zero pad rounding 5174 up to 5176.
+        let colors = [[0u8; 4]; 256];
+        let rows = vec![0u8; 64 * 64];
+        let exact = bitmap(64, 64, &colors, &rows);
+        assert_eq!(exact.len() % 4, 2);
+
+        let mut padded = exact.clone();
+        padded.extend_from_slice(&[0, 0]);
+        let padded_len = padded.len() as u32;
+        padded[2..6].copy_from_slice(&padded_len.to_le_bytes());
+        assert_eq!(padded.len() % 4, 0);
+        let parsed = parse_indexed_bitmap(&padded, BitmapLimits::default()).unwrap();
+        assert_eq!(
+            parsed.pixels,
+            parse_indexed_bitmap(&exact, BitmapLimits::default())
+                .unwrap()
+                .pixels
+        );
+
+        // A nonzero pad byte is malformed even when the end is aligned.
+        let mut nonzero = exact.clone();
+        nonzero.extend_from_slice(&[0, 1]);
+        let nonzero_len = nonzero.len() as u32;
+        nonzero[2..6].copy_from_slice(&nonzero_len.to_le_bytes());
+        assert!(matches!(
+            parse_indexed_bitmap(&nonzero, BitmapLimits::default()),
+            Err(BitmapError::PixelDataSizeMismatch { .. })
+        ));
+
+        // A zero pad that leaves the end unaligned is malformed.
+        let mut unaligned = exact.clone();
+        unaligned.extend_from_slice(&[0, 0, 0]);
+        let unaligned_len = unaligned.len() as u32;
+        unaligned[2..6].copy_from_slice(&unaligned_len.to_le_bytes());
+        assert!(matches!(
+            parse_indexed_bitmap(&unaligned, BitmapLimits::default()),
+            Err(BitmapError::PixelDataSizeMismatch { .. })
+        ));
+
+        // More than three pad bytes is malformed even when aligned and zero.
+        let mut long_pad = exact.clone();
+        long_pad.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let long_pad_len = long_pad.len() as u32;
+        long_pad[2..6].copy_from_slice(&long_pad_len.to_le_bytes());
+        assert_eq!(long_pad.len() % 4, 0);
+        assert!(matches!(
+            parse_indexed_bitmap(&long_pad, BitmapLimits::default()),
             Err(BitmapError::PixelDataSizeMismatch { .. })
         ));
     }
