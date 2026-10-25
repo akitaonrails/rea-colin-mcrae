@@ -1163,6 +1163,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   the preceding interval, and the shipped pointer reload/partial-publication
   behavior remains outside the pure stable-object contract. One focused test
   plus strengthened schema/composition coverage bring `cmr-core` to 1,161.
+  G03-AF combines the next provisional slices because their register setup
+  overlaps: `[0x4068ff,0x406aaf)` writes 27 arithmetic-half/sign state dwords,
+  ten control dword zeros, four state u16 zeros, and four state dwords selected
+  as zero or `-0x8000` by raw unindexed config `+0x26 & 0x02`. Three focused
+  tests plus strengthened resolver/schema/composition coverage bring `cmr-core`
+  to 1,164. The pure effects assume stable objects/config and do not model the
+  outgoing `ESI`/`EBX` handoff or native partial publication.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1194,8 +1201,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-suffix-defaults`,
   `rea.official-eu.sim-compiled-state-reciprocal-trio`,
   `impl.sim-compiled-state-reciprocal-trio`,
-  `rea.official-eu.sim-compiled-control-clear-loop`, and
-  `impl.sim-compiled-control-clear-loop`.
+  `rea.official-eu.sim-compiled-control-clear-loop`,
+  `impl.sim-compiled-control-clear-loop`,
+  `rea.official-eu.sim-compiled-half-sign-mixed-reset`, and
+  `impl.sim-compiled-half-sign-mixed-reset`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

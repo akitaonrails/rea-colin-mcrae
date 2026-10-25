@@ -59,8 +59,11 @@ pub const COMPILED_CONFIG_RECORD_STRIDE: usize = 0x09c;
 /// other live configuration-block fields at the observed stride.
 pub const COMPILED_CONFIG_SLOT_COUNT: i8 = 8;
 
-/// Unindexed configuration flag whose bit one forces the auxiliary default.
-pub const COMPILED_CONFIG_AUX_FORCE_FLAG_OFFSET: usize = 0x026;
+/// Unindexed configuration byte shared by multiple recovered branches.
+pub const COMPILED_CONFIG_UNINDEXED_FLAGS_26_OFFSET: usize = 0x026;
+
+/// Compatibility name for the same byte's auxiliary-default use.
+pub const COMPILED_CONFIG_AUX_FORCE_FLAG_OFFSET: usize = COMPILED_CONFIG_UNINDEXED_FLAGS_26_OFFSET;
 
 /// Unindexed configuration byte controlling the common-prefix scale branches.
 pub const COMPILED_CONFIG_COMMON_FLAGS_OFFSET: usize = 0x025;
@@ -79,6 +82,7 @@ pub const COMPILED_CONFIG_STATE_758_OPTION_OFFSET: usize = 0x091;
 pub const COMPILED_CONFIG_STATE_758_SELECTION_OFFSET: usize = 0x6c0;
 
 const COMPILED_CONFIG_AUX_FORCE_DEFAULT_MASK: u8 = 0x02;
+pub const COMPILED_MIXED_RESET_NEGATIVE_VALUE_MASK: u8 = 0x02;
 
 /// Auxiliary control destinations in ascending offset order.
 pub const AUX_CONTROL_WORD_OFFSETS: [u16; AUX_CONTROL_WORD_COUNT] = [
@@ -396,6 +400,19 @@ pub const COMPILED_CONTROL_CLEAR_LOOP_OFFSETS: [u16; COMPILED_CONTROL_CLEAR_LOOP
     0x31c, 0x33c, 0x320, 0x340, 0x324, 0x344, 0x328, 0x348, 0x32c, 0x34c, 0x330, 0x350, 0x334,
     0x354, 0x338, 0x358,
 ];
+pub const COMPILED_HALF_SIGN_STATE_WORD_COUNT: usize = 27;
+
+/// State dword destinations in the half/corner interval's observed store order.
+pub const COMPILED_HALF_SIGN_STATE_OFFSETS: [u16; COMPILED_HALF_SIGN_STATE_WORD_COUNT] = [
+    0x02c, 0x030, 0x034, 0x068, 0x06c, 0x070, 0x05c, 0x060, 0x064, 0x074, 0x078, 0x07c, 0x080,
+    0x084, 0x088, 0x098, 0x09c, 0x0a0, 0x08c, 0x090, 0x094, 0x0a4, 0x0a8, 0x0ac, 0x0b0, 0x0b4,
+    0x0b8,
+];
+pub const COMPILED_MIXED_RESET_CONTROL_OFFSETS: [u16; 10] = [
+    0x2a8, 0x2b8, 0x2ac, 0x2bc, 0x2b0, 0x2c0, 0x2b4, 0x2c4, 0x250, 0x254,
+];
+pub const COMPILED_MIXED_RESET_STATE_DWORD_OFFSETS: [u16; 4] = [0x584, 0x588, 0x58c, 0x590];
+pub const COMPILED_MIXED_RESET_STATE_U16_OFFSETS: [u16; 4] = [0x57c, 0x57e, 0x580, 0x582];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledSuffixDefaultEffects {
@@ -506,6 +523,58 @@ pub struct CompiledControlClearLoop {
 pub const fn derive_compiled_control_clear_loop() -> CompiledControlClearLoop {
     CompiledControlClearLoop {
         words: [0; COMPILED_CONTROL_CLEAR_LOOP_WORD_COUNT],
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledHalfSignState {
+    pub words: [i32; COMPILED_HALF_SIGN_STATE_WORD_COUNT],
+}
+
+/// Reconstruct state interval `[0x4068ff,0x406a44)`.
+///
+/// The three effective state inputs are loaded before any destination store,
+/// arithmetic-halved, and reused to form eight sign combinations. Negation is
+/// wrapping, matching x86 `NEG` for `i32::MIN`. The shipped code repeatedly
+/// reloads the state pointer; this pure aggregate assumes one stable object and
+/// does not reproduce partial publication from memory faults or pointer races.
+#[must_use]
+pub fn derive_compiled_half_sign_state(
+    effective_state_words_20_24_28: [i32; 3],
+) -> CompiledHalfSignState {
+    let [x, y, z] = effective_state_words_20_24_28.map(|word| word >> 1);
+    let negative_x = x.wrapping_neg();
+    let negative_y = y.wrapping_neg();
+    let negative_z = z.wrapping_neg();
+    CompiledHalfSignState {
+        words: [
+            x, y, z, x, negative_y, negative_z, x, negative_y, z, negative_x, negative_y, z,
+            negative_x, negative_y, negative_z, x, y, negative_z, x, y, z, negative_x, y, z,
+            negative_x, y, negative_z,
+        ],
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledMixedResetEffects {
+    pub control_words: [i32; 10],
+    pub state_words: [i32; 4],
+    pub state_u16_words: [u16; 4],
+}
+
+/// Reconstruct the reset effects whose register setup overlaps the preceding
+/// state-write interval, completing combined region `[0x4068ff,0x406aaf)`.
+#[must_use]
+pub fn derive_compiled_mixed_reset_effects(unindexed_flags_26: u8) -> CompiledMixedResetEffects {
+    let state_word = if unindexed_flags_26 & COMPILED_MIXED_RESET_NEGATIVE_VALUE_MASK != 0 {
+        -0x8000
+    } else {
+        0
+    };
+    CompiledMixedResetEffects {
+        control_words: [0; 10],
+        state_words: [state_word; 4],
+        state_u16_words: [0; 4],
     }
 }
 
@@ -744,6 +813,7 @@ pub const fn compiled_center_split_q16(option_byte: u8) -> i32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledConfigOptions {
     pub common_prefix_flags: u8,
+    pub unindexed_flags_26: u8,
     pub state_word_758_fallback: u8,
     pub center_split: u8,
     pub control_run: u8,
@@ -826,7 +896,7 @@ pub fn resolve_compiled_config_options(
         });
     }
 
-    let aux_control = if config[COMPILED_CONFIG_AUX_FORCE_FLAG_OFFSET]
+    let aux_control = if config[COMPILED_CONFIG_UNINDEXED_FLAGS_26_OFFSET]
         & COMPILED_CONFIG_AUX_FORCE_DEFAULT_MASK
         != 0
     {
@@ -837,6 +907,7 @@ pub fn resolve_compiled_config_options(
 
     Ok(CompiledConfigOptions {
         common_prefix_flags: config[COMPILED_CONFIG_COMMON_FLAGS_OFFSET],
+        unindexed_flags_26: config[COMPILED_CONFIG_UNINDEXED_FLAGS_26_OFFSET],
         state_word_758_fallback: config[record_base + COMPILED_CONFIG_STATE_758_OPTION_OFFSET],
         center_split: config[record_base + COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET],
         control_run: config[record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET],
@@ -1186,6 +1257,8 @@ pub struct RecoveredCompiledStageEffects {
     pub suffix_defaults: CompiledSuffixDefaultEffects,
     pub state_reciprocal_trio: CompiledStateReciprocalTrio,
     pub control_clear_loop: CompiledControlClearLoop,
+    pub half_sign_state: CompiledHalfSignState,
+    pub mixed_reset: CompiledMixedResetEffects,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1257,9 +1330,10 @@ impl std::error::Error for RecoveredCompiledStageError {
 /// post-helper patch do not touch. Config, prefix, auxiliary, state-`+0x758`
 /// selection, post-helper, family, then product-pair validation order applies
 /// only to the represented fallible stages. The infallible suffix-default
-/// effect follows the product pair, followed by the state reciprocal trio and
-/// the infallible control-clear loop. Success does not prove a complete shipped
-/// initializer snapshot. Any represented failure returns no partial bundle.
+/// effect follows the product pair, followed by the state reciprocal trio, the
+/// control-clear loop, and the half/sign plus mixed-reset effects. Success does
+/// not prove a complete shipped initializer snapshot. Any represented failure
+/// returns no partial bundle.
 /// That atomic error boundary is a safe
 /// reconstruction policy; the shipped in-place code could have performed
 /// earlier writes before an `IDIV` fault.
@@ -1340,6 +1414,12 @@ pub fn compose_recovered_compiled_stage_effects(
     ])
     .map_err(RecoveredCompiledStageError::StateReciprocalTrio)?;
     let control_clear_loop = derive_compiled_control_clear_loop();
+    let half_sign_state = derive_compiled_half_sign_state([
+        effective_state_words[0],
+        effective_state_words[1],
+        effective_state_words[2],
+    ]);
+    let mixed_reset = derive_compiled_mixed_reset_effects(options.unindexed_flags_26);
 
     Ok(RecoveredCompiledStageEffects {
         direct_case_stores,
@@ -1353,6 +1433,8 @@ pub fn compose_recovered_compiled_stage_effects(
         suffix_defaults,
         state_reciprocal_trio,
         control_clear_loop,
+        half_sign_state,
+        mixed_reset,
     })
 }
 
@@ -1877,6 +1959,74 @@ mod tests {
                 }
             }
         }
+        for offset in COMPILED_HALF_SIGN_STATE_OFFSETS {
+            assert!(!COMPILED_STATE_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_COMMON_PREFIX_STATE_OFFSETS.contains(&offset));
+            assert!(!COMPILED_POST_HELPER_STATE_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_SUFFIX_DEFAULT_STATE_OFFSETS.contains(&offset));
+            assert!(!COMPILED_STATE_RECIPROCAL_TRIO_OFFSETS.contains(&offset));
+            assert_ne!(offset, COMPILED_STATE_WORD_758_OFFSET);
+        }
+        for offset in COMPILED_MIXED_RESET_CONTROL_OFFSETS {
+            assert!(!COMPILED_CONTROL_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_COMMON_PREFIX_CONTROL_OFFSETS.contains(&offset));
+            assert!(!AUX_CONTROL_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_POST_HELPER_CONTROL_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_CONTROL_PRODUCT_OFFSETS.contains(&offset));
+            assert!(!COMPILED_CONTROL_CLEAR_LOOP_OFFSETS.contains(&offset));
+            assert!(!COMPILED_POST_HELPER_CONTROL_U16_OFFSETS.contains(&offset));
+            assert!(!COMPILED_POST_HELPER_CONTROL_BYTE_OFFSETS.contains(&offset));
+            assert_ne!(offset, 0x170);
+            for family_base in [0x1d0_u16, 0x1f0, 0x210, 0x230] {
+                for family_index in 0..COMPILED_CONTROL_FAMILY_WORD_COUNT as u16 {
+                    assert_ne!(offset, family_base + family_index * 4);
+                }
+            }
+        }
+        for offset in COMPILED_MIXED_RESET_STATE_DWORD_OFFSETS {
+            assert!(!COMPILED_STATE_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_COMMON_PREFIX_STATE_OFFSETS.contains(&offset));
+            assert!(!COMPILED_POST_HELPER_STATE_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_SUFFIX_DEFAULT_STATE_OFFSETS.contains(&offset));
+            assert!(!COMPILED_STATE_RECIPROCAL_TRIO_OFFSETS.contains(&offset));
+            assert!(!COMPILED_HALF_SIGN_STATE_OFFSETS.contains(&offset));
+            assert_ne!(offset, COMPILED_STATE_WORD_758_OFFSET);
+        }
+        let represented_state_dwords: Vec<u16> = COMPILED_STATE_WORD_OFFSETS
+            .into_iter()
+            .chain(COMPILED_COMMON_PREFIX_STATE_OFFSETS)
+            .chain(COMPILED_POST_HELPER_STATE_WORD_OFFSETS)
+            .chain(COMPILED_SUFFIX_DEFAULT_STATE_OFFSETS)
+            .chain(COMPILED_STATE_RECIPROCAL_TRIO_OFFSETS)
+            .chain(COMPILED_HALF_SIGN_STATE_OFFSETS)
+            .chain(COMPILED_MIXED_RESET_STATE_DWORD_OFFSETS)
+            .chain([COMPILED_STATE_WORD_758_OFFSET])
+            .collect();
+        for (index, offset) in COMPILED_MIXED_RESET_STATE_U16_OFFSETS
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(offset % 2, 0);
+            let start = u32::from(offset);
+            let end = start + 2;
+            for (other_index, other) in COMPILED_MIXED_RESET_STATE_U16_OFFSETS
+                .into_iter()
+                .enumerate()
+            {
+                if index != other_index {
+                    let other_start = u32::from(other);
+                    assert!(end <= other_start || other_start + 2 <= start);
+                }
+            }
+            for dword in &represented_state_dwords {
+                let dword_start = u32::from(*dword);
+                assert!(end <= dword_start || dword_start + 4 <= start);
+            }
+        }
+        assert_eq!(
+            u32::from(COMPILED_MIXED_RESET_STATE_U16_OFFSETS[3]) + 2,
+            u32::from(COMPILED_MIXED_RESET_STATE_DWORD_OFFSETS[0])
+        );
     }
 
     #[test]
@@ -2326,6 +2476,82 @@ mod tests {
     }
 
     #[test]
+    fn half_sign_state_pins_exact_store_schema_and_sign_combinations() {
+        assert_eq!(
+            COMPILED_HALF_SIGN_STATE_OFFSETS,
+            [
+                0x02c, 0x030, 0x034, 0x068, 0x06c, 0x070, 0x05c, 0x060, 0x064, 0x074, 0x078, 0x07c,
+                0x080, 0x084, 0x088, 0x098, 0x09c, 0x0a0, 0x08c, 0x090, 0x094, 0x0a4, 0x0a8, 0x0ac,
+                0x0b0, 0x0b4, 0x0b8,
+            ]
+        );
+        assert_eq!(
+            derive_compiled_half_sign_state([3, -5, 7]).words,
+            [
+                1, -3, 3, 1, 3, -3, 1, 3, 3, -1, 3, 3, -1, 3, -3, 1, -3, -3, 1, -3, 3, -1, -3, 3,
+                -1, -3, -3,
+            ]
+        );
+
+        let mut canonical = COMPILED_HALF_SIGN_STATE_OFFSETS;
+        canonical.sort_unstable();
+        assert_eq!(
+            canonical,
+            [
+                0x02c, 0x030, 0x034, 0x05c, 0x060, 0x064, 0x068, 0x06c, 0x070, 0x074, 0x078, 0x07c,
+                0x080, 0x084, 0x088, 0x08c, 0x090, 0x094, 0x098, 0x09c, 0x0a0, 0x0a4, 0x0a8, 0x0ac,
+                0x0b0, 0x0b4, 0x0b8,
+            ]
+        );
+    }
+
+    #[test]
+    fn half_sign_state_uses_arithmetic_halves_at_signed_boundaries() {
+        let effects = derive_compiled_half_sign_state([i32::MIN, i32::MAX, -1]);
+        let x = -0x4000_0000;
+        let y = 0x3fff_ffff;
+        let z = -1;
+        assert_eq!(&effects.words[..3], &[x, y, z]);
+        assert_eq!(
+            &effects.words[12..15],
+            &[x.wrapping_neg(), y.wrapping_neg(), 1]
+        );
+        assert_eq!(&effects.words[24..], &[x.wrapping_neg(), y, 1]);
+    }
+
+    #[test]
+    fn mixed_reset_pins_widths_offsets_and_mask_for_every_flag_byte() {
+        assert_eq!(
+            COMPILED_MIXED_RESET_CONTROL_OFFSETS,
+            [
+                0x2a8, 0x2b8, 0x2ac, 0x2bc, 0x2b0, 0x2c0, 0x2b4, 0x2c4, 0x250, 0x254
+            ]
+        );
+        assert_eq!(
+            COMPILED_MIXED_RESET_STATE_DWORD_OFFSETS,
+            [0x584, 0x588, 0x58c, 0x590]
+        );
+        assert_eq!(
+            COMPILED_MIXED_RESET_STATE_U16_OFFSETS,
+            [0x57c, 0x57e, 0x580, 0x582]
+        );
+        for flags in u8::MIN..=u8::MAX {
+            assert_eq!(
+                derive_compiled_mixed_reset_effects(flags),
+                CompiledMixedResetEffects {
+                    control_words: [0; 10],
+                    state_words: [if flags & COMPILED_MIXED_RESET_NEGATIVE_VALUE_MASK == 0 {
+                        0
+                    } else {
+                        -0x8000
+                    }; 4],
+                    state_u16_words: [0; 4],
+                }
+            );
+        }
+    }
+
+    #[test]
     fn state_758_caller_selection_exhaustively_pins_gate_and_indices() {
         let table: Vec<i32> = (0..19).map(|index| index + 100).collect();
         assert_eq!(
@@ -2435,6 +2661,7 @@ mod tests {
             resolve_compiled_config_options(&vec![0; required_len], 0),
             Ok(CompiledConfigOptions {
                 common_prefix_flags: 0,
+                unindexed_flags_26: 0,
                 state_word_758_fallback: 0,
                 center_split: 0,
                 control_run: 0,
@@ -2463,6 +2690,7 @@ mod tests {
             resolve_compiled_config_options(&config, 1),
             Ok(CompiledConfigOptions {
                 common_prefix_flags: 0,
+                unindexed_flags_26: 0,
                 state_word_758_fallback: 0x7b,
                 center_split: 0xfa,
                 control_run: 0xf9,
@@ -2513,6 +2741,7 @@ mod tests {
             resolve_compiled_config_options(&config, index),
             Ok(CompiledConfigOptions {
                 common_prefix_flags: 0,
+                unindexed_flags_26: 0,
                 state_word_758_fallback: 0,
                 center_split: 0xa5,
                 control_run: 0xa9,
@@ -2538,19 +2767,16 @@ mod tests {
         );
 
         config[COMPILED_CONFIG_AUX_FORCE_FLAG_OFFSET] = 0xfd;
-        assert_eq!(
-            resolve_compiled_config_options(&config, 1)
-                .unwrap()
-                .aux_control,
-            AuxControlOption::Resolved(0xa7)
-        );
+        let options = resolve_compiled_config_options(&config, 1).unwrap();
+        assert_eq!(options.aux_control, AuxControlOption::Resolved(0xa7));
+        assert_eq!(options.unindexed_flags_26, 0xfd);
 
         config[COMPILED_CONFIG_AUX_FORCE_FLAG_OFFSET] = COMPILED_CONFIG_AUX_FORCE_DEFAULT_MASK;
+        let options = resolve_compiled_config_options(&config, 1).unwrap();
+        assert_eq!(options.aux_control, AuxControlOption::ForcedDefault);
         assert_eq!(
-            resolve_compiled_config_options(&config, 1)
-                .unwrap()
-                .aux_control,
-            AuxControlOption::ForcedDefault
+            options.unindexed_flags_26,
+            COMPILED_CONFIG_AUX_FORCE_DEFAULT_MASK
         );
     }
 
@@ -2765,6 +2991,20 @@ mod tests {
                 effects.control_clear_loop,
                 derive_compiled_control_clear_loop()
             );
+            assert_eq!(
+                effects.half_sign_state,
+                derive_compiled_half_sign_state([
+                    effects.common_prefix.state_words.unwrap()[0],
+                    effects.common_prefix.state_words.unwrap()[1],
+                    effects.common_prefix.state_words.unwrap()[2],
+                ])
+            );
+            assert_eq!(
+                effects.mixed_reset,
+                derive_compiled_mixed_reset_effects(
+                    config[COMPILED_CONFIG_UNINDEXED_FLAGS_26_OFFSET]
+                )
+            );
         }
     }
 
@@ -2841,6 +3081,18 @@ mod tests {
         assert_eq!(
             effects.control_clear_loop,
             derive_compiled_control_clear_loop()
+        );
+        assert_eq!(
+            effects.half_sign_state,
+            derive_compiled_half_sign_state([
+                scaled_state_words[0],
+                scaled_state_words[1],
+                scaled_state_words[2],
+            ])
+        );
+        assert_eq!(
+            effects.mixed_reset,
+            derive_compiled_mixed_reset_effects(config[COMPILED_CONFIG_UNINDEXED_FLAGS_26_OFFSET])
         );
     }
 
@@ -2979,6 +3231,14 @@ mod tests {
                     ],
                     0,
                 )
+            );
+            assert_eq!(
+                effects.half_sign_state,
+                derive_compiled_half_sign_state([
+                    selected_words.state_words[0],
+                    selected_words.state_words[1],
+                    selected_words.state_words[2],
+                ])
             );
         }
     }

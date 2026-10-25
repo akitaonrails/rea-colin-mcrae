@@ -703,6 +703,16 @@ plus strengthened schema and composition coverage bring `cmr-core` to 1,161.
 The repeatedly loaded native control pointer, partial memory-fault visibility,
 field meanings, and the half/corner state region from `0x4068ff` remain open.
 
+G03-AF corrects two provisional suffix boundaries and reconstructs the complete
+direct object-write effect of no-call interval `[0x4068ff,0x406aaf)`. Effective
+state `+0x20/+0x24/+0x28` is arithmetic-halved and expanded into 27 ordered
+half/sign dwords. The overlapping reset setup then clears ten control dwords
+and four state u16s while raw unindexed config `+0x26 & 0x02` selects four state
+dwords as zero or `-0x8000`. Three new focused tests plus strengthened resolver,
+schema, and composition coverage bring `cmr-core` to 1,164. Native pointer/config
+rebinding, partial publication, the outgoing `ESI=0`/`EBX=2` handoff, meanings,
+and the call-bearing region beginning at `0x406aaf` remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed
