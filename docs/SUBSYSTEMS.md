@@ -1194,6 +1194,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   exact store order, normalization/cross/plane rules, fallback, and typed final
   division overflow after publication. Five focused tests bring `cmr-core` to
   1,185; raw table lookup and spatial candidate search remain open.
+  G03-AK2 reconstructs `FUN_00447540`'s inner candidate chooser over a signed
+  count and bounded handle list. It preserves lazy validation/decoding,
+  wrapping signed-average distance, first-winner/strict-replacement ordering,
+  stable ties, and final-only handle publication. Five tests bring `cmr-core`
+  to 1,190; the outer spatial hierarchy and raw geometry lookup remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1238,7 +1243,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-compiled-lane-dispatcher`, and
   `impl.sim-compiled-lane-dispatcher`,
   `rea.official-eu.sim-compiled-lane-build`, and
-  `impl.sim-compiled-lane-build`.
+  `impl.sim-compiled-lane-build`,
+  `rea.official-eu.sim-compiled-lane-candidate-chooser`, and
+  `impl.sim-compiled-lane-candidate-chooser`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

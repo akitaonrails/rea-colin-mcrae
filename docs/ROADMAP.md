@@ -748,6 +748,13 @@ normalization and cross orientation, fallback behavior, and a typed final
 division overflow carrying already-published effects. Five focused tests bring
 `cmr-core` to 1,185. Raw record/vector lookup and spatial search remain open.
 
+G03-AK2 reconstructs the inner ordered candidate chooser `FUN_00447540` over
+an explicit signed count and bounded handle list. It preserves lazy
+validate/decode gating, wrapped signed-average scoring, first-winner and strict
+replacement behavior, tie stability, and the sole final handle publication.
+Five focused tests bring `cmr-core` to 1,190. The outer `FUN_004473f0` spatial
+hierarchy/list-offset decoder and raw geometry-table access remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

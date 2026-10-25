@@ -1062,6 +1062,140 @@ pub fn dispatch_compiled_lane<P: CompiledLaneGeometryProvider>(
     }
 }
 
+/// Decoded candidate access required by the inner search at `FUN_00447540`.
+///
+/// The three metric words are the second component of each decoded vertex.
+/// `None` preserves the caller's checked decoder-zero branch even though the
+/// observed official-EU decoder returns one after its unchecked reads.
+pub trait CompiledLaneCandidateProvider {
+    type Error;
+
+    fn validate_candidate(
+        &mut self,
+        source_vector: [i32; 3],
+        handle: i16,
+    ) -> Result<bool, Self::Error>;
+    fn decode_metric_words(&mut self, handle: i16) -> Result<Option<[i32; 3]>, Self::Error>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledLaneCandidateFailurePhase {
+    Validate,
+    Decode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompiledLaneCandidateFailure<E> {
+    CandidateOutOfBounds {
+        ordinal: usize,
+        requested_count: i16,
+        available: usize,
+    },
+    Provider {
+        phase: CompiledLaneCandidateFailurePhase,
+        ordinal: usize,
+        handle: i16,
+        provider_error: E,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledLaneCandidateChoice {
+    Miss,
+    /// The sole caller-visible handle write, performed only after a complete
+    /// successful scan.
+    Found {
+        ordinal: usize,
+        handle: i16,
+        score: i32,
+    },
+}
+
+fn compiled_lane_candidate_metric(words: [i32; 3], fallback: i32) -> i32 {
+    let average = words.into_iter().fold(0_i32, i32::wrapping_add) / 3;
+    fallback.wrapping_sub(average).wrapping_abs()
+}
+
+/// Stable decoded-list contract for `FUN_00447540`.
+///
+/// Candidates are visited in list order. Validation precedes decoding, and
+/// rejected candidates do not decode. The first accepted candidate becomes
+/// the provisional winner regardless of its signed metric; later candidates
+/// replace it only for a strictly smaller signed metric, so ties retain the
+/// first handle. The three-word sum and fallback difference wrap as x86
+/// dword arithmetic, signed division truncates toward zero, and the native
+/// pseudo-absolute-value operation leaves `i32::MIN` negative.
+///
+/// This safe aggregate receives the decoded signed count and candidate list.
+/// A non-positive count is an immediate miss. Positive counts read each list
+/// word lazily, so an earlier provider error precedes a later bounds error.
+/// Raw hierarchy decoding remains the outer search contract. Errors expose no
+/// choice/handle write because the shipped routine publishes its winner only
+/// after the whole list has been scanned. The immutable slice also excludes
+/// concurrent or aliased mutation between observing and finally reloading the
+/// winning list word.
+pub fn search_decoded_compiled_lane_candidates<P: CompiledLaneCandidateProvider>(
+    source_vector: [i32; 3],
+    fallback: i32,
+    signed_count: i16,
+    candidates: &[i16],
+    provider: &mut P,
+) -> Result<CompiledLaneCandidateChoice, CompiledLaneCandidateFailure<P::Error>> {
+    if signed_count <= 0 {
+        return Ok(CompiledLaneCandidateChoice::Miss);
+    }
+
+    let mut winner: Option<(usize, i16)> = None;
+    let mut winning_metric = 0;
+
+    for ordinal in 0..signed_count as usize {
+        let Some(&handle) = candidates.get(ordinal) else {
+            return Err(CompiledLaneCandidateFailure::CandidateOutOfBounds {
+                ordinal,
+                requested_count: signed_count,
+                available: candidates.len(),
+            });
+        };
+        let valid =
+            provider
+                .validate_candidate(source_vector, handle)
+                .map_err(|provider_error| CompiledLaneCandidateFailure::Provider {
+                    phase: CompiledLaneCandidateFailurePhase::Validate,
+                    ordinal,
+                    handle,
+                    provider_error,
+                })?;
+        if !valid {
+            continue;
+        }
+        let Some(words) = provider
+            .decode_metric_words(handle)
+            .map_err(|provider_error| CompiledLaneCandidateFailure::Provider {
+                phase: CompiledLaneCandidateFailurePhase::Decode,
+                ordinal,
+                handle,
+                provider_error,
+            })?
+        else {
+            continue;
+        };
+        let metric = compiled_lane_candidate_metric(words, fallback);
+        if winner.is_none() || metric < winning_metric {
+            winner = Some((ordinal, handle));
+            winning_metric = metric;
+        }
+    }
+
+    Ok(match winner {
+        Some((ordinal, handle)) => CompiledLaneCandidateChoice::Found {
+            ordinal,
+            handle,
+            score: winning_metric,
+        },
+        None => CompiledLaneCandidateChoice::Miss,
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodedCompiledLaneTriangle {
     pub vertices: [[i32; 3]; 3],
@@ -3795,6 +3929,244 @@ mod tests {
         assert_eq!(error.phase, CompiledLaneDispatchFailurePhase::Build);
         assert!(error.handle_writes.normalized_to_minus_one);
         assert_eq!(error.handle_writes.searched_handle, Some(7));
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum CandidateCall {
+        Validate([i32; 3], i16),
+        Decode(i16),
+    }
+
+    struct ScriptedCandidateProvider {
+        validations: Vec<Result<bool, &'static str>>,
+        decodes: Vec<Result<Option<[i32; 3]>, &'static str>>,
+        calls: Vec<CandidateCall>,
+    }
+
+    impl ScriptedCandidateProvider {
+        fn new(
+            validations: impl IntoIterator<Item = Result<bool, &'static str>>,
+            decodes: impl IntoIterator<Item = Result<Option<[i32; 3]>, &'static str>>,
+        ) -> Self {
+            Self {
+                validations: validations.into_iter().collect(),
+                decodes: decodes.into_iter().collect(),
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl CompiledLaneCandidateProvider for ScriptedCandidateProvider {
+        type Error = &'static str;
+
+        fn validate_candidate(
+            &mut self,
+            source_vector: [i32; 3],
+            handle: i16,
+        ) -> Result<bool, Self::Error> {
+            self.calls
+                .push(CandidateCall::Validate(source_vector, handle));
+            self.validations.remove(0)
+        }
+
+        fn decode_metric_words(&mut self, handle: i16) -> Result<Option<[i32; 3]>, Self::Error> {
+            self.calls.push(CandidateCall::Decode(handle));
+            self.decodes.remove(0)
+        }
+    }
+
+    #[test]
+    fn decoded_candidate_search_pins_signed_count_and_lazy_list_bounds() {
+        for signed_count in [0, -1, i16::MIN] {
+            let mut provider = ScriptedCandidateProvider::new([], []);
+            assert_eq!(
+                search_decoded_compiled_lane_candidates(
+                    [1, 2, 3],
+                    9,
+                    signed_count,
+                    &[],
+                    &mut provider
+                ),
+                Ok(CompiledLaneCandidateChoice::Miss)
+            );
+            assert!(provider.calls.is_empty());
+        }
+
+        let mut provider = ScriptedCandidateProvider::new([Ok(false), Ok(true)], [Ok(None)]);
+        assert_eq!(
+            search_decoded_compiled_lane_candidates([1, 2, 3], 9, 2, &[10, 20, 30], &mut provider),
+            Ok(CompiledLaneCandidateChoice::Miss)
+        );
+        assert_eq!(
+            provider.calls,
+            [
+                CandidateCall::Validate([1, 2, 3], 10),
+                CandidateCall::Validate([1, 2, 3], 20),
+                CandidateCall::Decode(20),
+            ]
+        );
+    }
+
+    #[test]
+    fn decoded_candidate_search_uses_strict_signed_score_order_and_keeps_ties() {
+        let mut provider = ScriptedCandidateProvider::new(
+            [Ok(true), Ok(true), Ok(true)],
+            [
+                Ok(Some([0, 0, 9])),
+                Ok(Some([3, 3, 3])),
+                Ok(Some([6, 6, 6])),
+            ],
+        );
+        assert_eq!(
+            search_decoded_compiled_lane_candidates([4, 5, 6], 10, 3, &[7, 8, 9], &mut provider),
+            Ok(CompiledLaneCandidateChoice::Found {
+                ordinal: 2,
+                handle: 9,
+                score: 4,
+            })
+        );
+        assert_eq!(
+            provider.calls,
+            [
+                CandidateCall::Validate([4, 5, 6], 7),
+                CandidateCall::Decode(7),
+                CandidateCall::Validate([4, 5, 6], 8),
+                CandidateCall::Decode(8),
+                CandidateCall::Validate([4, 5, 6], 9),
+                CandidateCall::Decode(9),
+            ]
+        );
+
+        let mut tied = ScriptedCandidateProvider::new(
+            [Ok(true), Ok(true)],
+            [Ok(Some([0, 0, 9])), Ok(Some([3, 3, 3]))],
+        );
+        assert_eq!(
+            search_decoded_compiled_lane_candidates([0; 3], 10, 2, &[70, 80], &mut tied),
+            Ok(CompiledLaneCandidateChoice::Found {
+                ordinal: 0,
+                handle: 70,
+                score: 7,
+            })
+        );
+    }
+
+    #[test]
+    fn decoded_candidate_metric_pins_wrapping_division_and_minimum_pseudo_abs() {
+        assert_eq!(compiled_lane_candidate_metric([-1, -2, -4], 0), 2);
+        assert_eq!(compiled_lane_candidate_metric([1, 2, 4], 0), 2);
+        assert_eq!(
+            compiled_lane_candidate_metric([i32::MAX, 1, 1], 0),
+            715_827_882
+        );
+        assert_eq!(
+            compiled_lane_candidate_metric([-1, -1, -1], i32::MAX),
+            i32::MIN
+        );
+
+        let mut provider = ScriptedCandidateProvider::new(
+            [Ok(true), Ok(true)],
+            [Ok(Some([-1, -1, -1])), Ok(Some([0, 0, 0]))],
+        );
+        assert_eq!(
+            search_decoded_compiled_lane_candidates(
+                [0; 3],
+                i32::MAX,
+                2,
+                &[i16::MIN, i16::MAX],
+                &mut provider
+            ),
+            Ok(CompiledLaneCandidateChoice::Found {
+                ordinal: 0,
+                handle: i16::MIN,
+                score: i32::MIN,
+            })
+        );
+    }
+
+    #[test]
+    fn decoded_candidate_search_errors_preserve_lazy_precedence_and_publish_nothing() {
+        let mut validate_error = ScriptedCandidateProvider::new([Err("validate")], []);
+        assert_eq!(
+            search_decoded_compiled_lane_candidates([0; 3], 0, 2, &[11], &mut validate_error),
+            Err(CompiledLaneCandidateFailure::Provider {
+                phase: CompiledLaneCandidateFailurePhase::Validate,
+                ordinal: 0,
+                handle: 11,
+                provider_error: "validate",
+            })
+        );
+
+        let mut decode_error = ScriptedCandidateProvider::new([Ok(true)], [Err("decode")]);
+        assert_eq!(
+            search_decoded_compiled_lane_candidates([0; 3], 0, 2, &[12], &mut decode_error),
+            Err(CompiledLaneCandidateFailure::Provider {
+                phase: CompiledLaneCandidateFailurePhase::Decode,
+                ordinal: 0,
+                handle: 12,
+                provider_error: "decode",
+            })
+        );
+
+        let mut bounds = ScriptedCandidateProvider::new([Ok(false)], []);
+        assert_eq!(
+            search_decoded_compiled_lane_candidates([0; 3], 0, 2, &[13], &mut bounds),
+            Err(CompiledLaneCandidateFailure::CandidateOutOfBounds {
+                ordinal: 1,
+                requested_count: 2,
+                available: 1,
+            })
+        );
+
+        let mut winner_then_bounds =
+            ScriptedCandidateProvider::new([Ok(true)], [Ok(Some([0, 0, 0]))]);
+        assert_eq!(
+            search_decoded_compiled_lane_candidates([0; 3], 0, 2, &[13], &mut winner_then_bounds),
+            Err(CompiledLaneCandidateFailure::CandidateOutOfBounds {
+                ordinal: 1,
+                requested_count: 2,
+                available: 1,
+            })
+        );
+
+        let mut late_error =
+            ScriptedCandidateProvider::new([Ok(true), Err("late")], [Ok(Some([0, 0, 0]))]);
+        assert!(matches!(
+            search_decoded_compiled_lane_candidates([0; 3], 0, 2, &[14, 15], &mut late_error),
+            Err(CompiledLaneCandidateFailure::Provider { ordinal: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn decoded_candidate_search_forwards_full_handles_and_skips_rejected_decodes() {
+        let mut provider = ScriptedCandidateProvider::new(
+            [Ok(false), Ok(true), Ok(true)],
+            [Ok(None), Ok(Some([30, 30, 30]))],
+        );
+        assert_eq!(
+            search_decoded_compiled_lane_candidates(
+                [i32::MIN, 0, i32::MAX],
+                29,
+                3,
+                &[i16::MAX, -7, i16::MIN],
+                &mut provider
+            ),
+            Ok(CompiledLaneCandidateChoice::Found {
+                ordinal: 2,
+                handle: i16::MIN,
+                score: 1,
+            })
+        );
+        assert_eq!(
+            provider.calls,
+            [
+                CandidateCall::Validate([i32::MIN, 0, i32::MAX], i16::MAX),
+                CandidateCall::Validate([i32::MIN, 0, i32::MAX], -7),
+                CandidateCall::Decode(-7),
+                CandidateCall::Validate([i32::MIN, 0, i32::MAX], i16::MIN),
+                CandidateCall::Decode(i16::MIN),
+            ]
+        );
     }
 
     fn horizontal_lane_triangle() -> DecodedCompiledLaneTriangle {
