@@ -1428,6 +1428,67 @@ pub struct DecodedCompiledLaneTriangle {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecodedCompiledLaneRecord {
+    pub vertex_indices: [u16; 3],
+    pub type_word: u16,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DecodedCompiledLaneTables<'a> {
+    pub records: &'a [DecodedCompiledLaneRecord],
+    pub vertices: &'a [[i32; 3]],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledLaneDecodeError {
+    HandleOutOfBounds {
+        handle: i16,
+        available_records: usize,
+    },
+    VertexOutOfBounds {
+        handle: i16,
+        slot: u8,
+        vertex_index: u16,
+        available_vertices: usize,
+    },
+}
+
+/// Safe stable-table decoder for the record/vertex reads in `FUN_00446e80`.
+///
+/// Native records are eight bytes (three u16 vertex indices plus a type u16
+/// that this helper does not read), and vertices are three signed dwords at
+/// stride twelve. The shipped helper performs unchecked progressive reads and returns one; this reconstruction
+/// instead reports negative/out-of-range handles and the first invalid vertex
+/// slot without converting malformed lookup into geometric rejection.
+pub fn decode_compiled_lane_vertices(
+    handle: i16,
+    tables: DecodedCompiledLaneTables<'_>,
+) -> Result<[[i32; 3]; 3], CompiledLaneDecodeError> {
+    let record = usize::try_from(handle)
+        .ok()
+        .and_then(|index| tables.records.get(index))
+        .copied()
+        .ok_or(CompiledLaneDecodeError::HandleOutOfBounds {
+            handle,
+            available_records: tables.records.len(),
+        })?;
+    let mut vertices = [[0; 3]; 3];
+    for (slot, vertex_index) in record.vertex_indices.into_iter().enumerate() {
+        vertices[slot] = tables
+            .vertices
+            .get(usize::from(vertex_index))
+            .copied()
+            .ok_or(CompiledLaneDecodeError::VertexOutOfBounds {
+                handle,
+                slot: slot as u8,
+                vertex_index,
+                available_vertices: tables.vertices.len(),
+            })?;
+    }
+    Ok(vertices)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledLaneBuildEffects {
     pub lane_word: i32,
     pub type_word: u16,
@@ -4977,6 +5038,139 @@ mod tests {
         assert!(validate_decoded_compiled_lane_source(
             extreme_source,
             extreme_vertices
+        ));
+    }
+
+    #[test]
+    fn compiled_lane_decoder_preserves_record_slot_order_and_signed_endpoints() {
+        let vertices = [[10, 11, 12], [20, 21, 22], [30, 31, 32], [40, 41, 42]];
+        let records = [
+            DecodedCompiledLaneRecord {
+                vertex_indices: [3, 1, 2],
+                type_word: 0xabcd,
+            },
+            DecodedCompiledLaneRecord {
+                vertex_indices: [0, 2, 1],
+                type_word: 0x1234,
+            },
+        ];
+        let tables = DecodedCompiledLaneTables {
+            records: &records,
+            vertices: &vertices,
+        };
+        assert_eq!(
+            decode_compiled_lane_vertices(0, tables),
+            Ok([vertices[3], vertices[1], vertices[2]])
+        );
+        assert_eq!(
+            decode_compiled_lane_vertices(1, tables),
+            Ok([vertices[0], vertices[2], vertices[1]])
+        );
+        for handle in [-1, i16::MIN, 2, i16::MAX] {
+            assert_eq!(
+                decode_compiled_lane_vertices(handle, tables),
+                Err(CompiledLaneDecodeError::HandleOutOfBounds {
+                    handle,
+                    available_records: 2,
+                })
+            );
+        }
+
+        let mut high_vertices = vec![[0; 3]; 32_769];
+        high_vertices[0x8000] = [101, 102, 103];
+        let mut high_records = vec![
+            DecodedCompiledLaneRecord {
+                vertex_indices: [0, 0, 0],
+                type_word: 0,
+            };
+            32_769
+        ];
+        high_records[0].vertex_indices = [0x8000, 0, 0];
+        let high_tables = DecodedCompiledLaneTables {
+            records: &high_records,
+            vertices: &high_vertices,
+        };
+        assert_eq!(
+            decode_compiled_lane_vertices(0, high_tables).unwrap()[0],
+            [101, 102, 103]
+        );
+        assert_eq!(
+            decode_compiled_lane_vertices(i16::MIN, high_tables),
+            Err(CompiledLaneDecodeError::HandleOutOfBounds {
+                handle: i16::MIN,
+                available_records: 32_769,
+            })
+        );
+    }
+
+    #[test]
+    fn compiled_lane_decoder_reports_the_first_invalid_vertex_slot_lazily() {
+        let vertices = [[1, 2, 3]];
+        for (indices, expected_slot, expected_index) in [
+            ([2, 3, u16::MAX], 0, 2),
+            ([0, 3, u16::MAX], 1, 3),
+            ([0, 0, u16::MAX], 2, u16::MAX),
+        ] {
+            let records = [DecodedCompiledLaneRecord {
+                vertex_indices: indices,
+                type_word: 0xffff,
+            }];
+            assert_eq!(
+                decode_compiled_lane_vertices(
+                    0,
+                    DecodedCompiledLaneTables {
+                        records: &records,
+                        vertices: &vertices,
+                    }
+                ),
+                Err(CompiledLaneDecodeError::VertexOutOfBounds {
+                    handle: 0,
+                    slot: expected_slot,
+                    vertex_index: expected_index,
+                    available_vertices: 1,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn compiled_lane_decoder_type_and_y_words_do_not_change_validation() {
+        let footprint = validator_triangle();
+        let mut changed = footprint;
+        changed[0][1] = i32::MAX;
+        changed[1][1] = i32::MIN;
+        changed[2][1] = 0;
+        let vertices = [
+            footprint[0],
+            footprint[1],
+            footprint[2],
+            changed[0],
+            changed[1],
+            changed[2],
+        ];
+        let records = [
+            DecodedCompiledLaneRecord {
+                vertex_indices: [0, 1, 2],
+                type_word: 0,
+            },
+            DecodedCompiledLaneRecord {
+                vertex_indices: [3, 4, 5],
+                type_word: u16::MAX,
+            },
+        ];
+        let tables = DecodedCompiledLaneTables {
+            records: &records,
+            vertices: &vertices,
+        };
+        let first = decode_compiled_lane_vertices(0, tables).unwrap();
+        let second = decode_compiled_lane_vertices(1, tables).unwrap();
+        assert!(validate_decoded_compiled_lane_source(
+            [0x4000, 7, 0x4000],
+            first
+        ));
+        assert!(validate_decoded_compiled_lane_source(
+            [0x4000, -9, 0x4000],
+            second
         ));
     }
 

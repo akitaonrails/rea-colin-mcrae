@@ -1213,6 +1213,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   X/Z bounds followed by three winding-sensitive, independently projected Q16
   edge scores with wrapping arithmetic. Six tests bring `cmr-core` to 1,203;
   raw record/vertex decoding and provider integration remain open.
+  G03-AK6 reconstructs `FUN_00446e80` as an exact type-free vertex decoder
+  over safe stable tables. Three tests bring `cmr-core` to 1,206; the later
+  type read and concrete provider composition remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1264,7 +1267,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-lane-spatial-hierarchy`, and
   `impl.sim-compiled-lane-spatial-search`,
   `rea.official-eu.sim-compiled-lane-validator`, and
-  `impl.sim-compiled-lane-validator`.
+  `impl.sim-compiled-lane-validator`,
+  `rea.official-eu.sim-compiled-lane-decoder`, and
+  `impl.sim-compiled-lane-decoder`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

@@ -774,6 +774,11 @@ Six focused tests cover orientation, edges, degeneracy, bounds, rounding, and
 overflow, bringing `cmr-core` to 1,203. Raw record/vertex decoding and concrete
 provider integration remain open.
 
+G03-AK6 reconstructs exact `FUN_00446e80` record/vertex lookup as a safe
+type-free decoder with ordered bounds errors. Three focused tests bring
+`cmr-core` to 1,206. The later record-type read and concrete provider
+composition remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed
