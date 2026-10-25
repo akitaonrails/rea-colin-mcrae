@@ -1014,7 +1014,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   gate's pure signed scalar rules are also reconstructed. Direction/state
   accumulation and parts of the torque-to-velocity integration remain. The
   ratio arrays are now known to come from fourteen compiled initializer cases,
-  not a runtime file loader; their complete tuning schema and importer remain.
+  not a runtime file loader. `cmr-core::compiled_car_initializer` records the
+  exact eight-state/twenty-three-control destination schema and unsigned
+  selector behavior without embedding the case values, then separately derives
+  the later eight-slot reciprocal/copy families from caller-supplied post-callee
+  words. The full common path, meanings, extractor/store, and application wiring
+  remain. See `rea.official-eu.sim-compiled-car-initializer-schema` and
+  `impl.sim-compiled-car-initializer-schema`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

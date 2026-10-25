@@ -460,9 +460,16 @@ lane-scalar rule: it bounds-checks before override handling and preserves the
 selected raw signed Q16.16 value. The adjacent second family remains
 store-only and unknown; this milestone does not wire the store into the app or
 session and does not conflate it with FFB `DAT_004edb70`, car initializer
-`FUN_00404440`, or BSS `DAT_0050e170`. Next G03 work is application wiring,
-the compiled car initializer's complete schema/import, or runtime geometry/BSS
-consumers. Entry meanings, gameplay index invariants, other editions, and full
+`FUN_00404440`, or BSS `DAT_0050e170`. The compiled initializer now has a
+payload-free schema contract: fourteen unsigned selectors share an exact
+eight-state/twenty-three-control-word destination layout, invalid selectors
+preserve those destinations, and a separate helper reconstructs the later
+eight-slot reciprocal/copy family with signed division and zero handling. Nine
+synthetic tests bring `cmr-core` to 1,104 while `vehicle_dynamics` remains 85.
+No official tuning values are tracked. The full common path (including its
+option transforms, intervening callees, and later derived words), a verified
+extractor/store, application wiring, entry meanings, gameplay index invariants,
+other editions, runtime geometry/BSS consumers, and full
 `FUN_0040d810`/`FUN_0040a4a0` closure remain open.
 
 Exit gate:

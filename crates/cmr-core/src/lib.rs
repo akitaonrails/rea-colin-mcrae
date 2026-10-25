@@ -47,6 +47,7 @@ pub mod championship_setup_frame;
 pub mod championship_setup_visual;
 pub mod championship_terminal_frame;
 pub mod collision;
+pub mod compiled_car_initializer;
 pub mod config;
 pub mod control_bindings;
 pub mod deferred_palette;
