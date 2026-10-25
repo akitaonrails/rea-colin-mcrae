@@ -864,6 +864,15 @@ the separate state-adjustment phase. Three focused tests bring `cmr-core` to
 1,245. Destination aliases, pointer rebinding, and progressive fault prefixes
 remain open.
 
+G03-AK15 opens that adjustment phase. `derive_compiled_state_adjustment_cc`
+reproduces the wrapping accumulation `state+0xcc += state+0x2e4 - state+0x100`,
+and `publish_compiled_state_adjustment` writes `+0xc8`, the updated `+0xcc`,
+and `+0xd0` at destination `+0x30/+0x34/+0x38`, preserving the following
+dword. The subsequent call order is pinned as `FUN_00492770(state+8,
+state+0xc8)`, `FUN_00409c10(state)`, `FUN_004126b0()`; only `FUN_00409c10` is
+already reconstructed. Two focused tests bring `cmr-core` to 1,247. The other
+two callees and destination alias/fault behavior remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

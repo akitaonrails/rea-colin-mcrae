@@ -1274,6 +1274,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   following `FUN_00409c10(state)` call edge is documented. Three focused
   tests bring `cmr-core` to 1,245. Destination aliases, pointer rebinding,
   and progressive fault prefixes remain open.
+  G03-AK15 opens the state-adjustment phase: the wrapping accumulation
+  `state+0xcc += state+0x2e4 - state+0x100`, then publication of `+0xc8`, the
+  updated `+0xcc`, and `+0xd0` at destination `+0x30/+0x34/+0x38`, preserving
+  the following dword. The subsequent call order `FUN_00492770`,
+  `FUN_00409c10`, `FUN_004126b0` is pinned; only `FUN_00409c10` is already
+  reconstructed. Two focused tests bring `cmr-core` to 1,247. The remaining
+  callees and native alias/fault behavior remain open.
+  See
   See
   See
   See

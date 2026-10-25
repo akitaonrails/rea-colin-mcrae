@@ -2189,6 +2189,55 @@ impl CompiledPostLaneTransform for CompiledPostLanePublishedBasis {
     }
 }
 
+/// Destination byte offsets of the published state-adjustment vector.
+pub const COMPILED_STATE_ADJUSTMENT_PUBLICATION_OFFSETS: [usize; 3] = [0x30, 0x34, 0x38];
+
+/// Source state bases in publication order.
+pub const COMPILED_STATE_ADJUSTMENT_SOURCE_BASES: [u16; 3] = [0xc8, 0xcc, 0xd0];
+
+/// Call targets in native order after the publication:
+/// `FUN_00492770(state+8, state+0xc8)`, then `FUN_00409c10(state)`, then
+/// `FUN_004126b0()`. The first and last callees are not yet reconstructed;
+/// `FUN_00409c10` already has its own stable-snapshot contract.
+pub const COMPILED_STATE_ADJUSTMENT_CALL_TARGETS: [u32; 3] = [0x492770, 0x409c10, 0x4126b0];
+
+/// Inputs for the wrapping accumulation that opens the state-adjustment phase
+/// at `0x406ea5`, after the second `FUN_00409c10(state)` call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledStateAdjustmentInputs {
+    /// Prior value of state `+0xcc`.
+    pub prior_cc: i32,
+    /// State `+0x2e4`, the minuend of the accumulated difference.
+    pub word_2e4: i32,
+    /// State `+0x100`, the subtrahend of the accumulated difference.
+    pub word_100: i32,
+}
+
+/// Reconstructs `state+0xcc += state+0x2e4 - state+0x100` with exact wrapping
+/// subtraction and addition.
+#[must_use]
+pub fn derive_compiled_state_adjustment_cc(input: CompiledStateAdjustmentInputs) -> i32 {
+    input
+        .prior_cc
+        .wrapping_add(input.word_2e4.wrapping_sub(input.word_100))
+}
+
+/// Publishes the adjusted vector through the destination pointer reloaded from
+/// state `+0x2a0`: `+0x30` receives `+0xc8`, `+0x34` the updated `+0xcc`, and
+/// `+0x38` `+0xd0`. The following dword is not written.
+///
+/// The injected destination stands for native memory. Native code reloads the
+/// global state and destination pointer, so aliases, rebinding, and
+/// progressive faults remain explicit limitations.
+pub fn publish_compiled_state_adjustment(
+    destination: &mut [i32; 4],
+    word_c8: i32,
+    word_cc: i32,
+    word_d0: i32,
+) {
+    destination[..3].copy_from_slice(&[word_c8, word_cc, word_d0]);
+}
+
 fn solve_compiled_lane_plane(
     source_vector: [i32; 3],
     fallback: i32,
@@ -7319,6 +7368,74 @@ mod tests {
         assert_eq!(destination[0], [1, 2, 3, 0x5555]);
         assert_eq!(destination[1], [4, 5, 6, 0x6666]);
         assert_eq!(destination[2], [7, 8, 9, 0x7777]);
+    }
+
+    #[test]
+    fn state_adjustment_accumulates_with_wrapping_difference_and_sum() {
+        assert_eq!(
+            derive_compiled_state_adjustment_cc(CompiledStateAdjustmentInputs {
+                prior_cc: 5,
+                word_2e4: 10,
+                word_100: 3,
+            }),
+            12
+        );
+        assert_eq!(
+            derive_compiled_state_adjustment_cc(CompiledStateAdjustmentInputs {
+                prior_cc: 5,
+                word_2e4: 3,
+                word_100: 10,
+            }),
+            -2
+        );
+        // The difference wraps before it is added.
+        assert_eq!(
+            derive_compiled_state_adjustment_cc(CompiledStateAdjustmentInputs {
+                prior_cc: 0,
+                word_2e4: i32::MIN,
+                word_100: 1,
+            }),
+            i32::MAX
+        );
+        // The accumulated sum wraps too.
+        assert_eq!(
+            derive_compiled_state_adjustment_cc(CompiledStateAdjustmentInputs {
+                prior_cc: i32::MAX,
+                word_2e4: 1,
+                word_100: 0,
+            }),
+            i32::MIN
+        );
+        assert_eq!(
+            derive_compiled_state_adjustment_cc(CompiledStateAdjustmentInputs {
+                prior_cc: i32::MIN,
+                word_2e4: 0,
+                word_100: 1,
+            }),
+            i32::MAX
+        );
+    }
+
+    #[test]
+    fn state_adjustment_publication_uses_updated_values_and_preserves_padding() {
+        assert_eq!(
+            COMPILED_STATE_ADJUSTMENT_PUBLICATION_OFFSETS,
+            [0x30, 0x34, 0x38]
+        );
+        assert_eq!(COMPILED_STATE_ADJUSTMENT_SOURCE_BASES, [0xc8, 0xcc, 0xd0]);
+        assert_eq!(
+            COMPILED_STATE_ADJUSTMENT_CALL_TARGETS,
+            [0x492770, 0x409c10, 0x4126b0]
+        );
+
+        let adjusted = derive_compiled_state_adjustment_cc(CompiledStateAdjustmentInputs {
+            prior_cc: 5,
+            word_2e4: 10,
+            word_100: 3,
+        });
+        let mut destination = [-1, -2, -3, 0x5555];
+        publish_compiled_state_adjustment(&mut destination, 100, adjusted, 300);
+        assert_eq!(destination, [100, 12, 300, 0x5555]);
     }
 
     #[test]
