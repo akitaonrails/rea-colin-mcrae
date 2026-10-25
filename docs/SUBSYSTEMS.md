@@ -1071,8 +1071,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   rejects malformed/truncated/trailing/substituted files, and owns the constants
   without a path. Verification comprises 149 format tests, 76 assets-library
   tests, eight CLI tests, three audits, and an ignored `CMR_ORIGINAL_DIR` smoke
-  limited to public shape/counts. Signed config lookup, the checked core adapter,
-  full composition with the other stages/tail, meanings/units,
+  limited to public shape/counts. `AuxControlConstantSet` is now the checked
+  core ownership adapter: compile-time array equalities pin record counts,
+  construction verifies exact format/core offset order, and all 38 signed words
+  are copied into core-owned records that survive dropping the store and root.
+  Its narrow `derive` method delegates to the existing auxiliary-patch helper
+  and preserves typed reciprocal overflow. Three tests bring `cmr-core` to
+  1,123. Signed config lookup and composition with direct-case selection,
+  center split, six-word transform, the reciprocal/copy tail,
+  meanings/units,
   application/session/gameplay wiring, and other editions remain. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1085,8 +1092,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-control-run-transform`,
   `impl.sim-compiled-center-split`,
   `impl.sim-compiled-aux-control-patch`,
-  `impl.sim-compiled-aux-control-extractor`, and
-  `impl.sim-compiled-aux-control-store`.
+  `impl.sim-compiled-aux-control-extractor`,
+  `impl.sim-compiled-aux-control-store`, and
+  `impl.sim-compiled-aux-control-consumer`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

@@ -538,6 +538,19 @@ resolver and domain, composition with the direct cases/center split/six-word
 transform/auxiliary patch/later tail, semantics and units, application/session
 wiring, and other editions remain open.
 
+G03-V adds the checked core ownership boundary for those authenticated words.
+`AuxControlConstantSet` accepts an `AuxControlConstantsStore`, uses fixed array
+types to pin record cardinalities, verifies the exact format/core order of all
+22 output, nine common, and seven policy offsets, and copies the complete
+38-word signed shape unchanged into core-owned records. The value survives
+dropping both the store and its backing root. Its narrow `derive` method only
+delegates to `derive_aux_control_patch`, including that helper's typed reciprocal
+overflow. Three synthetic tests cover cross-layer shape/order invariants, signed
+ownership and every policy after drop, and overflow propagation, bringing
+`cmr-core` to 1,123. The signed config-record resolver, composition with direct
+cases, center split, six-word transform, later reciprocal/copy tail, application
+or session/gameplay state, meanings, units, and other editions remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

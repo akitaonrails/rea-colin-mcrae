@@ -14,7 +14,14 @@
 
 use std::fmt;
 
-use cmr_assets::CompiledInitializerStore;
+use cmr_assets::{AuxControlConstantsStore, CompiledInitializerStore};
+use cmr_formats::pe_aux_control_initializer::{
+    AUX_CONTROL_COMMON_WORD_OFFSETS as FORMAT_AUX_COMMON_WORD_OFFSETS,
+    AUX_CONTROL_POLICY_WORD_OFFSETS as FORMAT_AUX_POLICY_WORD_OFFSETS,
+    AUX_CONTROL_WORD_OFFSETS as FORMAT_AUX_WORD_OFFSETS,
+    AuxControlConstantWords as FormatAuxControlConstantWords,
+    AuxControlPolicyWords as FormatAuxControlPolicyWords,
+};
 use cmr_formats::pe_compiled_initializer::{
     COMPILED_CASE_COUNT as FORMAT_CASE_COUNT,
     COMPILED_CONTROL_WORD_OFFSETS as FORMAT_CONTROL_WORD_OFFSETS,
@@ -54,6 +61,10 @@ pub const AUX_CONTROL_POLICY_WORD_OFFSETS: [u16; 7] =
 pub const AUX_CONTROL_COMMON_WORD_OFFSETS: [u16; 9] = [
     0x0d8, 0x0dc, 0x0e0, 0x0e4, 0x0e8, 0x0ec, 0x0f0, 0x0fc, 0x104,
 ];
+
+const _: [(); AUX_CONTROL_WORD_OFFSETS.len()] = [(); FORMAT_AUX_WORD_OFFSETS.len()];
+const _: [(); AUX_CONTROL_COMMON_WORD_OFFSETS.len()] = [(); FORMAT_AUX_COMMON_WORD_OFFSETS.len()];
+const _: [(); AUX_CONTROL_POLICY_WORD_OFFSETS.len()] = [(); FORMAT_AUX_POLICY_WORD_OFFSETS.len()];
 
 /// State destinations in their observed case-body store order.
 pub const COMPILED_STATE_WORD_OFFSETS: [u16; COMPILED_STATE_WORD_COUNT] =
@@ -267,6 +278,125 @@ pub struct AuxControlConstants {
     pub policy_one: AuxControlPolicyConstants,
     pub policy_two: AuxControlPolicyConstants,
     pub default_policy: AuxControlPolicyConstants,
+}
+
+/// Owned auxiliary constants copied from a verified user-data store.
+///
+/// Construction checks exact format/core offset order. The policy order is
+/// copied explicitly as one, two, then default; fixed array types prove each
+/// record's word count. Codec shape is authenticated by the input store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuxControlConstantSet {
+    constants: AuxControlConstants,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuxControlConstantSetError {
+    OffsetOrder {
+        group: &'static str,
+        index: usize,
+        core_offset: u16,
+        format_offset: u16,
+    },
+}
+
+impl fmt::Display for AuxControlConstantSetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "auxiliary-control store schema does not match the core contract: {self:?}"
+        )
+    }
+}
+
+impl std::error::Error for AuxControlConstantSetError {}
+
+impl AuxControlConstantSet {
+    pub fn from_store(
+        store: &AuxControlConstantsStore,
+    ) -> Result<Self, AuxControlConstantSetError> {
+        Self::from_format(store.constants())
+    }
+
+    fn from_format(
+        constants: &FormatAuxControlConstantWords,
+    ) -> Result<Self, AuxControlConstantSetError> {
+        verify_aux_control_format_schema()?;
+        Ok(Self {
+            constants: AuxControlConstants {
+                common_words: constants.common_words,
+                q16_multipliers: constants.q16_multipliers,
+                policy_one: copy_aux_policy(constants.policy_one),
+                policy_two: copy_aux_policy(constants.policy_two),
+                default_policy: copy_aux_policy(constants.default_policy),
+            },
+        })
+    }
+
+    #[must_use]
+    pub const fn constants(&self) -> &AuxControlConstants {
+        &self.constants
+    }
+
+    pub fn derive(
+        &self,
+        option: AuxControlOption,
+        state_word_48: i32,
+        global_word: i32,
+    ) -> Result<AuxControlPatch, AuxControlReciprocalOverflow> {
+        derive_aux_control_patch(option, state_word_48, global_word, &self.constants)
+    }
+}
+
+impl TryFrom<&AuxControlConstantsStore> for AuxControlConstantSet {
+    type Error = AuxControlConstantSetError;
+
+    fn try_from(store: &AuxControlConstantsStore) -> Result<Self, Self::Error> {
+        Self::from_store(store)
+    }
+}
+
+const fn copy_aux_policy(policy: FormatAuxControlPolicyWords) -> AuxControlPolicyConstants {
+    AuxControlPolicyConstants {
+        words: policy.words,
+        reciprocal_divisor: policy.reciprocal_divisor,
+        scaled_reciprocal_divisor: policy.scaled_reciprocal_divisor,
+    }
+}
+
+fn verify_aux_control_format_schema() -> Result<(), AuxControlConstantSetError> {
+    for (group, core_offsets, format_offsets) in [
+        (
+            "all outputs",
+            AUX_CONTROL_WORD_OFFSETS.as_slice(),
+            FORMAT_AUX_WORD_OFFSETS.as_slice(),
+        ),
+        (
+            "common words",
+            AUX_CONTROL_COMMON_WORD_OFFSETS.as_slice(),
+            FORMAT_AUX_COMMON_WORD_OFFSETS.as_slice(),
+        ),
+        (
+            "policy words",
+            AUX_CONTROL_POLICY_WORD_OFFSETS.as_slice(),
+            FORMAT_AUX_POLICY_WORD_OFFSETS.as_slice(),
+        ),
+    ] {
+        for (index, (&core_offset, &format_offset)) in
+            core_offsets.iter().zip(format_offsets).enumerate()
+        {
+            if core_offset != format_offset {
+                return Err(AuxControlConstantSetError::OffsetOrder {
+                    group,
+                    index,
+                    core_offset,
+                    format_offset,
+                });
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Option source for the auxiliary policy selection.
@@ -503,11 +633,28 @@ pub fn derive_compiled_control_families(
 mod tests {
     use super::*;
     use cmr_assets::{
-        COMPILED_INITIALIZER_DATA_FILE, COMPILED_INITIALIZER_IMPORT_SCHEMA_VERSION,
-        COMPILED_INITIALIZER_STATE_FILE, CompiledInitializerEncoding,
-        CompiledInitializerExecutable, CompiledInitializerImportFile,
+        AUX_CONTROL_DATA_FILE, AUX_CONTROL_IMPORT_SCHEMA_VERSION,
+        AUX_CONTROL_PROFILE_SCHEMA_VERSION, AUX_CONTROL_STATE_FILE, AuxControlEncoding,
+        AuxControlExecutable, AuxControlImportFile, AuxControlImportShape, AuxControlImportSummary,
+        AuxControlProfile, AuxControlSpec, COMPILED_INITIALIZER_DATA_FILE,
+        COMPILED_INITIALIZER_IMPORT_SCHEMA_VERSION, COMPILED_INITIALIZER_STATE_FILE,
+        CompiledInitializerEncoding, CompiledInitializerExecutable, CompiledInitializerImportFile,
         CompiledInitializerImportShape, CompiledInitializerImportSummary,
-        CompiledInitializerProfile, CompiledInitializerSpec, ReviewedCompiledInitializerProfile,
+        CompiledInitializerProfile, CompiledInitializerSpec, ReviewedAuxControlProfile,
+        ReviewedCompiledInitializerProfile,
+    };
+    use cmr_formats::pe_aux_control_initializer::{
+        AUX_CONTROL_COMMON_WORD_COUNT as FORMAT_AUX_COMMON_WORD_COUNT,
+        AUX_CONTROL_ENCODED_LEN as FORMAT_AUX_ENCODED_LEN,
+        AUX_CONTROL_FORMAT_VERSION as FORMAT_AUX_FORMAT_VERSION,
+        AUX_CONTROL_MULTIPLIER_COUNT as FORMAT_AUX_MULTIPLIER_COUNT,
+        AUX_CONTROL_POLICY_COUNT as FORMAT_AUX_POLICY_COUNT,
+        AUX_CONTROL_POLICY_DIVISOR_COUNT as FORMAT_AUX_POLICY_DIVISOR_COUNT,
+        AUX_CONTROL_POLICY_WORD_COUNT as FORMAT_AUX_POLICY_WORD_COUNT,
+        AUX_CONTROL_TOTAL_WORD_COUNT as FORMAT_AUX_TOTAL_WORD_COUNT,
+        AuxControlConstantWords as FormatAuxControlConstantWords,
+        AuxControlPolicyWords as FormatAuxControlPolicyWords,
+        OFFICIAL_EU_AUX_CONTROL_INITIALIZER_LAYOUT, encode_aux_control_constants,
     };
     use cmr_formats::pe_compiled_initializer::{
         COMPILED_CASE_ENCODED_LEN, COMPILED_CASE_FORMAT_VERSION,
@@ -661,6 +808,120 @@ mod tests {
             policy_two: aux_policy(200),
             default_policy: aux_policy(300),
         }
+    }
+
+    fn format_aux_constants() -> FormatAuxControlConstantWords {
+        FormatAuxControlConstantWords {
+            common_words: [i32::MIN, i32::MAX, 0, -1, -2, 3, -4, 5, 0x1_0000],
+            q16_multipliers: [i32::MIN, i32::MAX],
+            policy_one: FormatAuxControlPolicyWords {
+                words: [i32::MAX, i32::MIN, 0, -1, 11, -12, 13],
+                reciprocal_divisor: 0x1_0000,
+                scaled_reciprocal_divisor: -0x3_0000,
+            },
+            policy_two: FormatAuxControlPolicyWords {
+                words: [-20, 21, -22, 23, -24, 25, -26],
+                reciprocal_divisor: -0x2_0000,
+                scaled_reciprocal_divisor: 0,
+            },
+            default_policy: FormatAuxControlPolicyWords {
+                words: [30, -31, 32, -33, 34, -35, 36],
+                reciprocal_divisor: i32::MIN,
+                scaled_reciprocal_divisor: i32::MAX,
+            },
+        }
+    }
+
+    fn core_aux_constants(format: &FormatAuxControlConstantWords) -> AuxControlConstants {
+        AuxControlConstants {
+            common_words: format.common_words,
+            q16_multipliers: format.q16_multipliers,
+            policy_one: copy_aux_policy(format.policy_one),
+            policy_two: copy_aux_policy(format.policy_two),
+            default_policy: copy_aux_policy(format.default_policy),
+        }
+    }
+
+    fn open_synthetic_aux_store(
+        constants: &FormatAuxControlConstantWords,
+    ) -> (TempDirectory, AuxControlConstantsStore) {
+        let temp = TempDirectory::new();
+        let root = temp.0.join("aux-store");
+        fs::create_dir(&root).unwrap();
+        let source = b"synthetic aux-control source identity";
+        let layout = OFFICIAL_EU_AUX_CONTROL_INITIALIZER_LAYOUT;
+        let profile = AuxControlProfile {
+            schema_version: AUX_CONTROL_PROFILE_SCHEMA_VERSION,
+            id: "synthetic-core-aux-adapter".into(),
+            executable: AuxControlExecutable {
+                path: "Rally.exe".into(),
+                size: source.len() as u64,
+                sha256: digest(source),
+            },
+            initializer: AuxControlSpec {
+                image_base: layout.image_base,
+                function_start_va: layout.function_start_va,
+                function_end_va: layout.function_end_va,
+                lookup_va: layout.lookup_va,
+                select_va: layout.select_va,
+                default_policy_va: layout.default_policy_va,
+                policy_two_va: layout.policy_two_va,
+                policy_one_va: layout.policy_one_va,
+                common_va: layout.common_va,
+                first_divide_va: layout.first_divide_va,
+                first_divide_join_va: layout.first_divide_join_va,
+                second_divide_va: layout.second_divide_va,
+                second_divide_join_va: layout.second_divide_join_va,
+                third_divide_va: layout.third_divide_va,
+                third_divide_join_va: layout.third_divide_join_va,
+                config_pointer_va: layout.config_pointer_va,
+                state_pointer_va: layout.state_pointer_va,
+                control_pointer_va: layout.control_pointer_va,
+                global_word_va: layout.global_word_va,
+                config_flag_offset: layout.config_flag_offset,
+                state_index_offset: layout.state_index_offset,
+                config_option_offset: layout.config_option_offset,
+                config_record_stride: layout.config_record_stride,
+                state_word_offset: layout.state_word_offset,
+                output_offsets: layout.output_offsets,
+                output_encoding: AuxControlEncoding::CmrAuxcV1,
+            },
+        };
+        let reviewed =
+            ReviewedAuxControlProfile::from_json(&serde_json::to_vec(&profile).unwrap()).unwrap();
+        let data = encode_aux_control_constants(constants);
+        fs::write(root.join(AUX_CONTROL_DATA_FILE), data).unwrap();
+        let summary = AuxControlImportSummary {
+            schema_version: AUX_CONTROL_IMPORT_SCHEMA_VERSION,
+            profile: reviewed.profile().id.clone(),
+            profile_sha256: reviewed.sha256().into(),
+            source: AuxControlImportFile {
+                path: reviewed.profile().executable.path.clone(),
+                size: reviewed.profile().executable.size,
+                sha256: reviewed.profile().executable.sha256.clone(),
+            },
+            output: AuxControlImportFile {
+                path: AUX_CONTROL_DATA_FILE.into(),
+                size: FORMAT_AUX_ENCODED_LEN as u64,
+                sha256: digest(&data),
+            },
+            shape: AuxControlImportShape {
+                format_version: FORMAT_AUX_FORMAT_VERSION,
+                common_word_count: FORMAT_AUX_COMMON_WORD_COUNT as u32,
+                multiplier_count: FORMAT_AUX_MULTIPLIER_COUNT as u32,
+                policy_count: FORMAT_AUX_POLICY_COUNT as u32,
+                policy_word_count: FORMAT_AUX_POLICY_WORD_COUNT as u32,
+                policy_divisor_count: FORMAT_AUX_POLICY_DIVISOR_COUNT as u32,
+                encoding: AuxControlEncoding::CmrAuxcV1,
+            },
+        };
+        fs::write(
+            root.join(AUX_CONTROL_STATE_FILE),
+            serde_json::to_vec(&summary).unwrap(),
+        )
+        .unwrap();
+        let store = AuxControlConstantsStore::open(&root, &reviewed).unwrap();
+        (temp, store)
     }
 
     fn aux_value(patch: AuxControlPatch, offset: u16) -> i32 {
@@ -817,6 +1078,83 @@ mod tests {
                 compiled_center_split_q16(option_byte & 7)
             );
         }
+    }
+
+    #[test]
+    fn aux_cross_layer_regression_pins_offset_and_codec_invariants() {
+        assert_eq!(AUX_CONTROL_WORD_OFFSETS, FORMAT_AUX_WORD_OFFSETS);
+        assert_eq!(
+            AUX_CONTROL_COMMON_WORD_OFFSETS,
+            FORMAT_AUX_COMMON_WORD_OFFSETS
+        );
+        assert_eq!(
+            AUX_CONTROL_POLICY_WORD_OFFSETS,
+            FORMAT_AUX_POLICY_WORD_OFFSETS
+        );
+        assert_eq!(FORMAT_AUX_FORMAT_VERSION, 1);
+        assert_eq!(FORMAT_AUX_COMMON_WORD_COUNT, 9);
+        assert_eq!(FORMAT_AUX_MULTIPLIER_COUNT, 2);
+        assert_eq!(FORMAT_AUX_POLICY_COUNT, 3);
+        assert_eq!(FORMAT_AUX_POLICY_WORD_COUNT, 7);
+        assert_eq!(FORMAT_AUX_POLICY_DIVISOR_COUNT, 2);
+        assert_eq!(FORMAT_AUX_TOTAL_WORD_COUNT, 38);
+        assert_eq!(FORMAT_AUX_ENCODED_LEN, 184);
+        assert_eq!(verify_aux_control_format_schema(), Ok(()));
+    }
+
+    #[test]
+    fn verified_aux_store_becomes_owned_and_derives_each_policy_after_drop() {
+        let format = format_aux_constants();
+        let expected = core_aux_constants(&format);
+        let (temp, owned) = {
+            let (temp, store) = open_synthetic_aux_store(&format);
+            let owned = AuxControlConstantSet::try_from(&store).unwrap();
+            (temp, owned)
+        };
+        drop(temp);
+
+        assert_eq!(owned.constants(), &expected);
+        assert_eq!(owned.constants().common_words[0], i32::MIN);
+        assert_eq!(owned.constants().common_words[1], i32::MAX);
+        assert_eq!(owned.constants().common_words[2], 0);
+        assert_eq!(owned.constants().common_words[3], -1);
+        assert_eq!(
+            owned.constants().policy_one.words[..4],
+            [i32::MAX, i32::MIN, 0, -1]
+        );
+
+        for option in [
+            AuxControlOption::Resolved(1),
+            AuxControlOption::Resolved(2),
+            AuxControlOption::Resolved(0),
+            AuxControlOption::Resolved(7),
+            AuxControlOption::ForcedDefault,
+        ] {
+            assert_eq!(
+                owned.derive(option, -9, 0x1_0000),
+                derive_aux_control_patch(option, -9, 0x1_0000, &expected)
+            );
+        }
+    }
+
+    #[test]
+    fn verified_aux_store_preserves_typed_overflow_through_owned_adapter() {
+        let mut format = format_aux_constants();
+        format.policy_one.reciprocal_divisor = 1;
+        let (temp, owned) = {
+            let (temp, store) = open_synthetic_aux_store(&format);
+            let owned = AuxControlConstantSet::from_store(&store).unwrap();
+            (temp, owned)
+        };
+        drop(temp);
+
+        assert_eq!(
+            owned.derive(AuxControlOption::Resolved(1), 0, 0),
+            Err(AuxControlReciprocalOverflow {
+                input: AuxControlReciprocalInput::PolicyDivisor,
+                divisor: 1,
+            })
+        );
     }
 
     #[test]
