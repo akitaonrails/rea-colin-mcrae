@@ -389,6 +389,13 @@ pub const COMPILED_CONTROL_PRODUCT_OFFSETS: [u16; 2] = [
 /// State destinations written by the bounded suffix-default interval.
 pub const COMPILED_SUFFIX_DEFAULT_STATE_OFFSETS: [u16; 4] = [0x044, 0x050, 0x054, 0x058];
 pub const COMPILED_STATE_RECIPROCAL_TRIO_OFFSETS: [u16; 3] = [0x038, 0x03c, 0x040];
+pub const COMPILED_CONTROL_CLEAR_LOOP_WORD_COUNT: usize = 16;
+
+/// Control dword destinations in the clear loop's observed store order.
+pub const COMPILED_CONTROL_CLEAR_LOOP_OFFSETS: [u16; COMPILED_CONTROL_CLEAR_LOOP_WORD_COUNT] = [
+    0x31c, 0x33c, 0x320, 0x340, 0x324, 0x344, 0x328, 0x348, 0x32c, 0x34c, 0x330, 0x350, 0x334,
+    0x354, 0x338, 0x358,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledSuffixDefaultEffects {
@@ -481,6 +488,25 @@ pub fn derive_compiled_state_reciprocal_trio(
         };
     }
     Ok(CompiledStateReciprocalTrio { words })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledControlClearLoop {
+    pub words: [i32; COMPILED_CONTROL_CLEAR_LOOP_WORD_COUNT],
+}
+
+/// Reconstruct the composed initializer effect of `[0x4068dc,0x4068ff)`.
+///
+/// The loop itself stores the carried `EDI`; the immediately preceding path
+/// establishes `EDI = 0` and does not modify it before these stores. The
+/// shipped loop reloads the control pointer before each store, so this pure
+/// aggregate assumes a stable destination and does not reproduce partial
+/// publication from a memory fault or concurrent pointer mutation.
+#[must_use]
+pub const fn derive_compiled_control_clear_loop() -> CompiledControlClearLoop {
+    CompiledControlClearLoop {
+        words: [0; COMPILED_CONTROL_CLEAR_LOOP_WORD_COUNT],
+    }
 }
 
 /// Two recovered control writes immediately after the reciprocal/copy families.
@@ -1159,6 +1185,7 @@ pub struct RecoveredCompiledStageEffects {
     pub control_product_pair: CompiledControlProductPair,
     pub suffix_defaults: CompiledSuffixDefaultEffects,
     pub state_reciprocal_trio: CompiledStateReciprocalTrio,
+    pub control_clear_loop: CompiledControlClearLoop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1230,8 +1257,8 @@ impl std::error::Error for RecoveredCompiledStageError {
 /// post-helper patch do not touch. Config, prefix, auxiliary, state-`+0x758`
 /// selection, post-helper, family, then product-pair validation order applies
 /// only to the represented fallible stages. The infallible suffix-default
-/// effect follows the product pair, followed by the state reciprocal trio.
-/// Success does not prove a complete shipped
+/// effect follows the product pair, followed by the state reciprocal trio and
+/// the infallible control-clear loop. Success does not prove a complete shipped
 /// initializer snapshot. Any represented failure returns no partial bundle.
 /// That atomic error boundary is a safe
 /// reconstruction policy; the shipped in-place code could have performed
@@ -1312,6 +1339,7 @@ pub fn compose_recovered_compiled_stage_effects(
         effective_state_words[2],
     ])
     .map_err(RecoveredCompiledStageError::StateReciprocalTrio)?;
+    let control_clear_loop = derive_compiled_control_clear_loop();
 
     Ok(RecoveredCompiledStageEffects {
         direct_case_stores,
@@ -1324,6 +1352,7 @@ pub fn compose_recovered_compiled_stage_effects(
         control_product_pair,
         suffix_defaults,
         state_reciprocal_trio,
+        control_clear_loop,
     })
 }
 
@@ -1833,6 +1862,21 @@ mod tests {
             assert!(!COMPILED_SUFFIX_DEFAULT_STATE_OFFSETS.contains(&offset));
             assert_ne!(offset, COMPILED_STATE_WORD_758_OFFSET);
         }
+        for offset in COMPILED_CONTROL_CLEAR_LOOP_OFFSETS {
+            assert!(!COMPILED_CONTROL_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_COMMON_PREFIX_CONTROL_OFFSETS.contains(&offset));
+            assert!(!AUX_CONTROL_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_POST_HELPER_CONTROL_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_CONTROL_PRODUCT_OFFSETS.contains(&offset));
+            assert!(!COMPILED_POST_HELPER_CONTROL_U16_OFFSETS.contains(&offset));
+            assert!(!COMPILED_POST_HELPER_CONTROL_BYTE_OFFSETS.contains(&offset));
+            assert_ne!(offset, 0x170);
+            for family_base in [0x1d0_u16, 0x1f0, 0x210, 0x230] {
+                for family_index in 0..COMPILED_CONTROL_FAMILY_WORD_COUNT as u16 {
+                    assert_ne!(offset, family_base + family_index * 4);
+                }
+            }
+        }
     }
 
     #[test]
@@ -2249,6 +2293,36 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn control_clear_loop_pins_interleaved_store_order_and_zero_effect() {
+        assert_eq!(
+            COMPILED_CONTROL_CLEAR_LOOP_OFFSETS,
+            [
+                0x31c, 0x33c, 0x320, 0x340, 0x324, 0x344, 0x328, 0x348, 0x32c, 0x34c, 0x330, 0x350,
+                0x334, 0x354, 0x338, 0x358,
+            ]
+        );
+        let (pairs, remainder) = COMPILED_CONTROL_CLEAR_LOOP_OFFSETS.as_chunks::<2>();
+        assert!(remainder.is_empty());
+        for (iteration, pair) in pairs.iter().enumerate() {
+            let step = u16::try_from(iteration).unwrap() * 4;
+            assert_eq!(*pair, [0x31c + step, 0x33c + step]);
+        }
+        let mut canonical = COMPILED_CONTROL_CLEAR_LOOP_OFFSETS;
+        canonical.sort_unstable();
+        assert_eq!(
+            canonical,
+            [
+                0x31c, 0x320, 0x324, 0x328, 0x32c, 0x330, 0x334, 0x338, 0x33c, 0x340, 0x344, 0x348,
+                0x34c, 0x350, 0x354, 0x358,
+            ]
+        );
+        assert_eq!(
+            derive_compiled_control_clear_loop(),
+            CompiledControlClearLoop { words: [0; 16] }
+        );
     }
 
     #[test]
@@ -2687,6 +2761,10 @@ mod tests {
                     COMPILED_COMMON_STATE_SCALE_MASK,
                 )
             );
+            assert_eq!(
+                effects.control_clear_loop,
+                derive_compiled_control_clear_loop()
+            );
         }
     }
 
@@ -2759,6 +2837,10 @@ mod tests {
                 scaled_state_words[2],
             ])
             .unwrap()
+        );
+        assert_eq!(
+            effects.control_clear_loop,
+            derive_compiled_control_clear_loop()
         );
     }
 

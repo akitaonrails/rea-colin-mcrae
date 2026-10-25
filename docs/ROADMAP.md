@@ -694,6 +694,15 @@ runs the trio after suffix defaults and ProductPair. Three new tests plus
 strengthened schema/composition coverage bring `cmr-core` to 1,160. The next
 control-clear loop and all later mapped suffix regions remain open.
 
+G03-AE reconstructs the control-clear loop `[0x4068dc,0x4068ff)`. The
+containing path carries zero in `EDI`; eight iterations publish sixteen dword
+zeros as interleaved pairs across control `+0x31c..+0x338` and
+`+0x33c..+0x358`. The pure effect preserves observed store order and is added
+to stage composition only after reciprocal-trio success. One new focused test
+plus strengthened schema and composition coverage bring `cmr-core` to 1,161.
+The repeatedly loaded native control pointer, partial memory-fault visibility,
+field meanings, and the half/corner state region from `0x4068ff` remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

@@ -1157,7 +1157,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   Typed overflow identifies exact fault divisors `-1,1,2`, the failing slot,
   and earlier shipped stores while the pure aggregate stays atomic. Three new
   tests plus strengthened schema/composition coverage bring `cmr-core` to
-  1,160. See
+  1,160. G03-AE reconstructs the next `[0x4068dc,0x4068ff)` clear loop as an
+  ordered sixteen-dword zero effect. Its eight iterations interleave the
+  `+0x31c..+0x338` and `+0x33c..+0x358` families; zero is carried in `EDI` from
+  the preceding interval, and the shipped pointer reload/partial-publication
+  behavior remains outside the pure stable-object contract. One focused test
+  plus strengthened schema/composition coverage bring `cmr-core` to 1,161.
+  See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
   `rea.official-eu.sim-compiled-center-split`,
@@ -1186,8 +1192,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-compiled-initializer-suffix-map`,
   `rea.official-eu.sim-compiled-suffix-defaults`,
   `impl.sim-compiled-suffix-defaults`,
-  `rea.official-eu.sim-compiled-state-reciprocal-trio`, and
-  `impl.sim-compiled-state-reciprocal-trio`.
+  `rea.official-eu.sim-compiled-state-reciprocal-trio`,
+  `impl.sim-compiled-state-reciprocal-trio`,
+  `rea.official-eu.sim-compiled-control-clear-loop`, and
+  `impl.sim-compiled-control-clear-loop`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
