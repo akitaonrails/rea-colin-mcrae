@@ -735,6 +735,13 @@ and per-lane config-override rules. Six focused tests bring `cmr-core` to 1,177.
 The dispatcher and its global geometry/spatial tables remain an injected open
 boundary, so this aggregate is not yet composed into the initializer.
 
+G03-AJ reconstructs the `FUN_00446c40` wrapper state machine behind a narrow
+geometry-provider interface. The typed controller preserves redundant negative
+handle normalization, validate/search/build routing, fallback behavior, ordered
+handle-write prefixes, provider-owned output/type writes, and failure phase.
+Three focused tests bring `cmr-core` to 1,180. The provider's transitive
+geometry, tables, arithmetic faults, and partial internal writes remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

@@ -904,6 +904,164 @@ pub fn derive_compiled_eight_lane_postprocess(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledLaneDispatchInput {
+    pub source_vector: [i32; 3],
+    pub initial_handle: i16,
+    pub fallback: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledLaneBuildCompletion {
+    Unavailable,
+    Built {
+        lane_word: i32,
+        type_word: u16,
+        output_vector: [i32; 3],
+    },
+}
+
+pub trait CompiledLaneGeometryProvider {
+    type Error;
+
+    fn validate(&mut self, source_vector: [i32; 3], handle: i16) -> Result<bool, Self::Error>;
+    fn search(
+        &mut self,
+        source_vector: [i32; 3],
+        fallback: i32,
+    ) -> Result<Option<i16>, Self::Error>;
+    fn build(
+        &mut self,
+        source_vector: [i32; 3],
+        handle: i16,
+        fallback: i32,
+    ) -> Result<CompiledLaneBuildCompletion, Self::Error>;
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompiledLaneHandleWriteTrace {
+    pub normalized_to_minus_one: bool,
+    pub searched_handle: Option<i16>,
+    pub invalidated_after_search_miss: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledLaneDispatchCompletion {
+    pub lane_word: i32,
+    pub handle_writes: CompiledLaneHandleWriteTrace,
+    pub type_word_write: Option<u16>,
+    pub output_vector_write: Option<[i32; 3]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledLaneDispatchFailurePhase {
+    Validate,
+    Search,
+    Build,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledLaneDispatchFailure<E> {
+    pub phase: CompiledLaneDispatchFailurePhase,
+    pub handle_writes: CompiledLaneHandleWriteTrace,
+    pub provider_error: E,
+}
+
+fn finish_compiled_lane_build(
+    build: CompiledLaneBuildCompletion,
+    handle_writes: CompiledLaneHandleWriteTrace,
+) -> CompiledLaneDispatchCompletion {
+    match build {
+        CompiledLaneBuildCompletion::Unavailable => CompiledLaneDispatchCompletion {
+            lane_word: 0,
+            handle_writes,
+            type_word_write: None,
+            output_vector_write: None,
+        },
+        CompiledLaneBuildCompletion::Built {
+            lane_word,
+            type_word,
+            output_vector,
+        } => CompiledLaneDispatchCompletion {
+            lane_word,
+            handle_writes,
+            type_word_write: Some(type_word),
+            output_vector_write: Some(output_vector),
+        },
+    }
+}
+
+/// Safe no-fault-provider orchestration contract for `FUN_00446c40`.
+///
+/// Provider errors retain the completed orchestration-visible handle-write
+/// prefix, including a completed search selection. Partial writes internal to
+/// the failing provider phase remain owned by the provider error. The
+/// typed contract snapshots the source vector and assumes stable, mutually
+/// disjoint native arguments. It does not reproduce pointer aliases, machine
+/// faults, concurrent mutation, or the open geometry/table arithmetic.
+pub fn dispatch_compiled_lane<P: CompiledLaneGeometryProvider>(
+    input: CompiledLaneDispatchInput,
+    provider: &mut P,
+) -> Result<CompiledLaneDispatchCompletion, CompiledLaneDispatchFailure<P::Error>> {
+    let mut handle = input.initial_handle;
+    let mut handle_writes = CompiledLaneHandleWriteTrace::default();
+    if handle < 0 {
+        handle = -1;
+        handle_writes.normalized_to_minus_one = true;
+    }
+
+    let needs_search = if handle == -1 {
+        true
+    } else {
+        match provider.validate(input.source_vector, handle) {
+            Ok(valid) => !valid,
+            Err(provider_error) => {
+                return Err(CompiledLaneDispatchFailure {
+                    phase: CompiledLaneDispatchFailurePhase::Validate,
+                    handle_writes,
+                    provider_error,
+                });
+            }
+        }
+    };
+
+    if needs_search {
+        match provider.search(input.source_vector, input.fallback) {
+            Ok(Some(selected_handle)) => {
+                handle = selected_handle;
+                handle_writes.searched_handle = Some(selected_handle);
+            }
+            Ok(None) => {
+                if input.initial_handle >= 0 {
+                    handle_writes.invalidated_after_search_miss = true;
+                }
+                return Ok(CompiledLaneDispatchCompletion {
+                    lane_word: input.fallback,
+                    handle_writes,
+                    type_word_write: None,
+                    output_vector_write: None,
+                });
+            }
+            Err(provider_error) => {
+                return Err(CompiledLaneDispatchFailure {
+                    phase: CompiledLaneDispatchFailurePhase::Search,
+                    handle_writes,
+                    provider_error,
+                });
+            }
+        }
+    }
+
+    match provider.build(input.source_vector, handle, input.fallback) {
+        Ok(build) => Ok(finish_compiled_lane_build(build, handle_writes)),
+        Err(provider_error) => Err(CompiledLaneDispatchFailure {
+            phase: CompiledLaneDispatchFailurePhase::Build,
+            handle_writes,
+            provider_error,
+        }),
+    }
+}
+
 /// Two recovered control writes immediately after the reciprocal/copy families.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledControlProductPair {
@@ -3325,6 +3483,198 @@ mod tests {
         assert_eq!(effects.lane_words[2], i32::MAX);
         assert_eq!(effects.lane_words[3], 99);
         assert_eq!(effects.lane_words[4], 104);
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum DispatcherCall {
+        Validate(i16),
+        Search(i32),
+        Build(i16, i32),
+    }
+
+    struct ScriptedGeometryProvider {
+        validate: Option<Result<bool, &'static str>>,
+        search: Option<Result<Option<i16>, &'static str>>,
+        build: Option<Result<CompiledLaneBuildCompletion, &'static str>>,
+        calls: Vec<DispatcherCall>,
+    }
+
+    impl ScriptedGeometryProvider {
+        fn new(
+            validate: Option<Result<bool, &'static str>>,
+            search: Option<Result<Option<i16>, &'static str>>,
+            build: Option<Result<CompiledLaneBuildCompletion, &'static str>>,
+        ) -> Self {
+            Self {
+                validate,
+                search,
+                build,
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl CompiledLaneGeometryProvider for ScriptedGeometryProvider {
+        type Error = &'static str;
+
+        fn validate(&mut self, _source: [i32; 3], handle: i16) -> Result<bool, Self::Error> {
+            self.calls.push(DispatcherCall::Validate(handle));
+            self.validate.take().expect("unexpected validate call")
+        }
+
+        fn search(&mut self, _source: [i32; 3], fallback: i32) -> Result<Option<i16>, Self::Error> {
+            self.calls.push(DispatcherCall::Search(fallback));
+            self.search.take().expect("unexpected search call")
+        }
+
+        fn build(
+            &mut self,
+            _source: [i32; 3],
+            handle: i16,
+            fallback: i32,
+        ) -> Result<CompiledLaneBuildCompletion, Self::Error> {
+            self.calls.push(DispatcherCall::Build(handle, fallback));
+            self.build.take().expect("unexpected build call")
+        }
+    }
+
+    fn dispatch_input(handle: i16, fallback: i32) -> CompiledLaneDispatchInput {
+        CompiledLaneDispatchInput {
+            source_vector: [11, 22, 33],
+            initial_handle: handle,
+            fallback,
+        }
+    }
+
+    #[test]
+    fn lane_dispatcher_exhausts_signed_handle_partition_and_redundant_normalization() {
+        for raw in 0..=u16::MAX {
+            let handle = raw as i16;
+            let mut provider = if handle < 0 {
+                ScriptedGeometryProvider::new(None, Some(Ok(None)), None)
+            } else {
+                ScriptedGeometryProvider::new(Some(Ok(false)), Some(Ok(None)), None)
+            };
+            let completion = dispatch_compiled_lane(dispatch_input(handle, 77), &mut provider)
+                .expect("scripted no-fault path");
+            assert_eq!(completion.lane_word, 77);
+            assert_eq!(completion.handle_writes.normalized_to_minus_one, handle < 0);
+            assert_eq!(
+                completion.handle_writes.invalidated_after_search_miss,
+                handle >= 0
+            );
+            if handle < 0 {
+                assert_eq!(provider.calls, [DispatcherCall::Search(77)]);
+            } else {
+                assert_eq!(
+                    provider.calls,
+                    [DispatcherCall::Validate(handle), DispatcherCall::Search(77)]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lane_dispatcher_pins_all_successful_branch_orders_and_provider_ownership() {
+        let built = CompiledLaneBuildCompletion::Built {
+            lane_word: i32::MIN,
+            type_word: 0xffff,
+            output_vector: [i32::MIN, 0, i32::MAX],
+        };
+        let mut negative_hit =
+            ScriptedGeometryProvider::new(None, Some(Ok(Some(7))), Some(Ok(built)));
+        let completion = dispatch_compiled_lane(dispatch_input(-2, 9), &mut negative_hit).unwrap();
+        assert_eq!(
+            negative_hit.calls,
+            [DispatcherCall::Search(9), DispatcherCall::Build(7, 9)]
+        );
+        assert_eq!(completion.lane_word, i32::MIN);
+        assert_eq!(completion.type_word_write, Some(0xffff));
+        assert_eq!(
+            completion.output_vector_write,
+            Some([i32::MIN, 0, i32::MAX])
+        );
+        assert_eq!(
+            completion.handle_writes,
+            CompiledLaneHandleWriteTrace {
+                normalized_to_minus_one: true,
+                searched_handle: Some(7),
+                invalidated_after_search_miss: false,
+            }
+        );
+
+        let mut valid = ScriptedGeometryProvider::new(
+            Some(Ok(true)),
+            None,
+            Some(Ok(CompiledLaneBuildCompletion::Unavailable)),
+        );
+        let completion = dispatch_compiled_lane(dispatch_input(0, -77), &mut valid).unwrap();
+        assert_eq!(
+            valid.calls,
+            [DispatcherCall::Validate(0), DispatcherCall::Build(0, -77)]
+        );
+        assert_eq!(completion.lane_word, 0);
+        assert_eq!(completion.type_word_write, None);
+        assert_eq!(completion.output_vector_write, None);
+
+        let mut invalid_hit =
+            ScriptedGeometryProvider::new(Some(Ok(false)), Some(Ok(Some(-9))), Some(Ok(built)));
+        dispatch_compiled_lane(dispatch_input(42, 5), &mut invalid_hit).unwrap();
+        assert_eq!(
+            invalid_hit.calls,
+            [
+                DispatcherCall::Validate(42),
+                DispatcherCall::Search(5),
+                DispatcherCall::Build(-9, 5)
+            ]
+        );
+    }
+
+    #[test]
+    fn lane_dispatcher_preserves_orchestration_write_prefixes_on_provider_errors() {
+        let mut validate_error = ScriptedGeometryProvider::new(Some(Err("v")), None, None);
+        let error = dispatch_compiled_lane(dispatch_input(3, 4), &mut validate_error).unwrap_err();
+        assert_eq!(error.phase, CompiledLaneDispatchFailurePhase::Validate);
+        assert_eq!(error.handle_writes, CompiledLaneHandleWriteTrace::default());
+
+        let mut search_error = ScriptedGeometryProvider::new(None, Some(Err("s")), None);
+        let error = dispatch_compiled_lane(dispatch_input(-1, 4), &mut search_error).unwrap_err();
+        assert_eq!(error.phase, CompiledLaneDispatchFailurePhase::Search);
+        assert!(error.handle_writes.normalized_to_minus_one);
+
+        let mut invalid_search_error =
+            ScriptedGeometryProvider::new(Some(Ok(false)), Some(Err("is")), None);
+        let error =
+            dispatch_compiled_lane(dispatch_input(3, 4), &mut invalid_search_error).unwrap_err();
+        assert_eq!(error.phase, CompiledLaneDispatchFailurePhase::Search);
+        assert_eq!(error.handle_writes, CompiledLaneHandleWriteTrace::default());
+        assert_eq!(
+            invalid_search_error.calls,
+            [DispatcherCall::Validate(3), DispatcherCall::Search(4)]
+        );
+
+        let mut direct_build_error =
+            ScriptedGeometryProvider::new(Some(Ok(true)), None, Some(Err("db")));
+        let error =
+            dispatch_compiled_lane(dispatch_input(3, 4), &mut direct_build_error).unwrap_err();
+        assert_eq!(error.phase, CompiledLaneDispatchFailurePhase::Build);
+        assert_eq!(error.handle_writes, CompiledLaneHandleWriteTrace::default());
+
+        let mut build_error =
+            ScriptedGeometryProvider::new(Some(Ok(false)), Some(Ok(Some(9))), Some(Err("b")));
+        let error = dispatch_compiled_lane(dispatch_input(3, 4), &mut build_error).unwrap_err();
+        assert_eq!(error.phase, CompiledLaneDispatchFailurePhase::Build);
+        assert_eq!(error.handle_writes.searched_handle, Some(9));
+        assert!(!error.handle_writes.invalidated_after_search_miss);
+
+        let mut normalized_build_error =
+            ScriptedGeometryProvider::new(None, Some(Ok(Some(7))), Some(Err("nb")));
+        let error =
+            dispatch_compiled_lane(dispatch_input(i16::MIN, 4), &mut normalized_build_error)
+                .unwrap_err();
+        assert_eq!(error.phase, CompiledLaneDispatchFailurePhase::Build);
+        assert!(error.handle_writes.normalized_to_minus_one);
+        assert_eq!(error.handle_writes.searched_handle, Some(7));
     }
 
     #[test]

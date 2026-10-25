@@ -1186,6 +1186,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   override. Six focused tests bring `cmr-core` to 1,177. The global-table
   dispatcher remains an explicit open boundary rather than a fabricated pure
   lookup.
+  G03-AJ reconstructs that dispatcher's outer handle state machine behind an
+  injected geometry provider. Exhaustive signed-handle routing and all normal
+  branches/failure prefixes are tested without claiming the provider's global
+  tables or geometry arithmetic. Three focused tests bring `cmr-core` to 1,180.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1226,7 +1230,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-compiled-state-basis-pair`, and
   `impl.sim-compiled-state-basis-pair`,
   `rea.official-eu.sim-compiled-eight-lane-caller`, and
-  `impl.sim-compiled-eight-lane-postprocess`.
+  `impl.sim-compiled-eight-lane-postprocess`,
+  `rea.official-eu.sim-compiled-lane-dispatcher`, and
+  `impl.sim-compiled-lane-dispatcher`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
