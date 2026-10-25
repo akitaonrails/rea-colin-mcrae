@@ -1219,8 +1219,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   type read, and builder behind a concrete stable-table provider. Five tests
   bring `cmr-core` to 1,211. The composition repeats logical resolution at each
   phase but does not claim equivalence to native global-pointer rebinding,
-  candidate mutation, aliases, or component-level fault prefixes. Raw official
-  table acquisition and eight-lane application remain open.
+  candidate mutation, aliases, or component-level fault prefixes. G03-AK8
+  binds one provider snapshot per lane into the ascending `FUN_00419a40` loop,
+  immediately applies that lane's caller stages, and performs the config read
+  late through a fallible interface. Four tests bring `cmr-core` to 1,215 and
+  pin concrete decoded-provider execution plus dispatch/config failure state
+  prefixes. Raw official table acquisition, native alias/rebinding faults,
+  `FUN_00408fe0`, and full call-spine composition remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1274,7 +1279,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-compiled-lane-validator`, and
   `impl.sim-compiled-lane-validator`,
   `rea.official-eu.sim-compiled-lane-decoder`, and
-  `impl.sim-compiled-lane-decoder`.
+  `impl.sim-compiled-lane-decoder`,
+  `impl.sim-compiled-lane-geometry-provider`, and
+  `impl.sim-compiled-eight-lane-executor`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

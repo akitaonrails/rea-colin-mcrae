@@ -786,6 +786,18 @@ Five focused tests bring `cmr-core` to 1,211. Raw official table acquisition,
 native rebinding/alias/fault behavior, and the eight-lane application remain
 open.
 
+G03-AK8 binds that provider boundary to the eight iterations of
+`FUN_00419a40`. `execute_compiled_eight_lanes` performs each dispatch and its
+caller postprocess before advancing, applies provider type/vector writes before
+the post-call type branch, and reloads config through a late fallible provider.
+Typed dispatch/config failures retain the exact reconstructed state prefix and
+completed-lane trace at the represented wrapper/caller boundary; provider-
+internal partial publication remains in the nested typed error. Four focused
+tests, including a concrete eight-provider decoded-table run, bring `cmr-core`
+to 1,215. Raw official table acquisition, native pointer aliases/rebinding/
+machine-fault prefixes, `FUN_00408fe0`, and full call-spine composition remain
+open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

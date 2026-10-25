@@ -802,6 +802,26 @@ pub struct CompiledEightLanePostprocessEffects {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CompiledSingleLanePostprocessInput {
+    post_dispatch: CompiledLanePostDispatchSnapshot,
+    gate_word: i32,
+    drive_word: i32,
+    accumulator_word: i32,
+    first_four_subtraction: Option<i32>,
+    config_flag_26: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledSingleLanePostprocessEffects {
+    pub lane_word: i32,
+    pub output_vector_write: Option<[i32; 3]>,
+    pub type_word_write: Option<u16>,
+    pub accumulator_write: Option<i32>,
+    /// `Some(1)` represents the conditional native store; `None` preserves it.
+    pub latch_67c: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompiledLaneTypeEffect {
     None,
     ReduceAndResetVector,
@@ -820,6 +840,72 @@ pub const fn compiled_lane_type_effect(type_word: u16) -> CompiledLaneTypeEffect
         0x52 => CompiledLaneTypeEffect::ReduceAndAccumulate,
         _ => CompiledLaneTypeEffect::None,
     }
+}
+
+fn derive_compiled_single_lane_before_config(
+    input: CompiledSingleLanePostprocessInput,
+) -> CompiledSingleLanePostprocessEffects {
+    let mut lane_word = input.post_dispatch.lane_word;
+    let mut output_vector_write = None;
+    let mut accumulator_write = None;
+    let mut latch_67c = None;
+
+    if input.gate_word != 0 {
+        let doubled = common_prefix_q16_mul(input.drive_word, 0x2_0000);
+        let upper_clamped = doubled.min(0x1_0000);
+        lane_word = lane_word.wrapping_add(common_prefix_q16_mul(upper_clamped, 0x9999));
+    }
+
+    match compiled_lane_type_effect(input.post_dispatch.type_word) {
+        CompiledLaneTypeEffect::None => {}
+        CompiledLaneTypeEffect::ReduceAndResetVector => {
+            lane_word = lane_word.wrapping_sub(0x4ccc);
+            output_vector_write = Some([0, 0x1_0000, 0]);
+        }
+        CompiledLaneTypeEffect::Reduce => {
+            lane_word = lane_word.wrapping_sub(0x4ccc);
+        }
+        CompiledLaneTypeEffect::ReduceAndAccumulate => {
+            lane_word = lane_word.wrapping_sub(0x4ccc);
+            lane_word = lane_word.wrapping_sub(common_prefix_q16_mul(input.accumulator_word, 0xc4));
+            let accumulator = input.accumulator_word.wrapping_add(0x1_0000);
+            accumulator_write = Some(accumulator);
+            if accumulator >= COMPILED_LANE_ACCUMULATOR_LATCH_THRESHOLD {
+                latch_67c = Some(1);
+            }
+        }
+    }
+
+    if let Some(subtraction) = input.first_four_subtraction {
+        lane_word = lane_word.wrapping_sub(subtraction);
+    }
+
+    CompiledSingleLanePostprocessEffects {
+        lane_word,
+        output_vector_write,
+        type_word_write: None,
+        accumulator_write,
+        latch_67c,
+    }
+}
+
+fn apply_compiled_single_lane_config(
+    effects: &mut CompiledSingleLanePostprocessEffects,
+    config_flag_26: u8,
+) {
+    if config_flag_26 & 0x02 != 0 {
+        effects.lane_word = effects.lane_word.wrapping_add(0x1_0000);
+        effects.output_vector_write = Some([0, 0x1_0000, 0]);
+        effects.type_word_write = Some(0x000a);
+    }
+}
+
+fn derive_compiled_single_lane_postprocess(
+    input: CompiledSingleLanePostprocessInput,
+) -> CompiledSingleLanePostprocessEffects {
+    let mut effects = derive_compiled_single_lane_before_config(input);
+    apply_compiled_single_lane_config(&mut effects, input.config_flag_26);
+    effects
 }
 
 /// Pure caller-side contract for `FUN_00419a40` after each lane dispatcher
@@ -847,52 +933,25 @@ pub fn derive_compiled_eight_lane_postprocess(
     let mut latch_67c = None;
 
     for lane_index in 0..8 {
-        let post_dispatch = input.post_dispatch[lane_index];
-        let mut lane_word = post_dispatch.lane_word;
-        let mut output_vector_write = None;
-        let mut type_word_write = None;
-        let type_word = post_dispatch.type_word;
-
-        if input.gate_words[lane_index] != 0 {
-            let doubled = common_prefix_q16_mul(input.drive_words[lane_index], 0x2_0000);
-            let upper_clamped = doubled.min(0x1_0000);
-            lane_word = lane_word.wrapping_add(common_prefix_q16_mul(upper_clamped, 0x9999));
+        let effects = derive_compiled_single_lane_postprocess(CompiledSingleLanePostprocessInput {
+            post_dispatch: input.post_dispatch[lane_index],
+            gate_word: input.gate_words[lane_index],
+            drive_word: input.drive_words[lane_index],
+            accumulator_word: accumulator_words[lane_index],
+            first_four_subtraction: (lane_index < 4)
+                .then_some(input.first_four_subtractions[lane_index.min(3)]),
+            config_flag_26: input.config_flag_26[lane_index],
+        });
+        lane_words[lane_index] = effects.lane_word;
+        output_vector_writes[lane_index] = effects.output_vector_write;
+        type_word_writes[lane_index] = effects.type_word_write;
+        if let Some(accumulator) = effects.accumulator_write {
+            accumulator_words[lane_index] = accumulator;
+            accumulator_writes[lane_index] = Some(accumulator);
         }
-
-        match compiled_lane_type_effect(type_word) {
-            CompiledLaneTypeEffect::None => {}
-            CompiledLaneTypeEffect::ReduceAndResetVector => {
-                lane_word = lane_word.wrapping_sub(0x4ccc);
-                output_vector_write = Some([0, 0x1_0000, 0]);
-            }
-            CompiledLaneTypeEffect::Reduce => {
-                lane_word = lane_word.wrapping_sub(0x4ccc);
-            }
-            CompiledLaneTypeEffect::ReduceAndAccumulate => {
-                lane_word = lane_word.wrapping_sub(0x4ccc);
-                lane_word = lane_word
-                    .wrapping_sub(common_prefix_q16_mul(accumulator_words[lane_index], 0xc4));
-                accumulator_words[lane_index] =
-                    accumulator_words[lane_index].wrapping_add(0x1_0000);
-                accumulator_writes[lane_index] = Some(accumulator_words[lane_index]);
-                if accumulator_words[lane_index] >= COMPILED_LANE_ACCUMULATOR_LATCH_THRESHOLD {
-                    latch_67c = Some(1);
-                }
-            }
+        if effects.latch_67c.is_some() {
+            latch_67c = effects.latch_67c;
         }
-
-        if lane_index < 4 {
-            lane_word = lane_word.wrapping_sub(input.first_four_subtractions[lane_index]);
-        }
-        if input.config_flag_26[lane_index] & 0x02 != 0 {
-            lane_word = lane_word.wrapping_add(0x1_0000);
-            output_vector_write = Some([0, 0x1_0000, 0]);
-            type_word_write = Some(0x000a);
-        }
-
-        lane_words[lane_index] = lane_word;
-        output_vector_writes[lane_index] = output_vector_write;
-        type_word_writes[lane_index] = type_word_write;
     }
 
     CompiledEightLanePostprocessEffects {
@@ -1060,6 +1119,214 @@ pub fn dispatch_compiled_lane<P: CompiledLaneGeometryProvider>(
             provider_error,
         }),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledEightLaneExecutionInputs {
+    pub source_vectors: [[i32; 3]; 8],
+    pub gate_words: [i32; 8],
+    pub drive_words: [i32; 8],
+    pub first_four_subtractions: [i32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledEightLaneExecutionState {
+    pub handles: [i16; 8],
+    pub type_words: [u16; 8],
+    pub output_vectors: [[i32; 3]; 8],
+    pub lane_words: [i32; 8],
+    pub accumulator_words: [i32; 8],
+    pub latch_67c: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledLaneExecutionEffects {
+    /// Provider/wrapper writes happen before every caller-owned write below.
+    pub dispatch: CompiledLaneDispatchCompletion,
+    pub postprocess: CompiledSingleLanePostprocessEffects,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledEightLaneExecutionSuccess {
+    pub state: CompiledEightLaneExecutionState,
+    pub lanes: [CompiledLaneExecutionEffects; 8],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledEightLaneExecutionProgress {
+    pub completed_lanes: usize,
+    pub state: CompiledEightLaneExecutionState,
+    pub lanes: [Option<CompiledLaneExecutionEffects>; 8],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompiledEightLaneExecutionFailure<ProviderError, ConfigError> {
+    Dispatch {
+        failed_lane: usize,
+        progress: Box<CompiledEightLaneExecutionProgress>,
+        failure: CompiledLaneDispatchFailure<ProviderError>,
+    },
+    Config {
+        failed_lane: usize,
+        progress: Box<CompiledEightLaneExecutionProgress>,
+        dispatch: CompiledLaneDispatchCompletion,
+        pre_config_postprocess: CompiledSingleLanePostprocessEffects,
+        config_error: ConfigError,
+    },
+}
+
+pub trait CompiledLaneConfigProvider {
+    type Error;
+
+    /// Reloads the native global config view late in this lane's iteration.
+    fn read_flag_26(&mut self, lane_index: usize) -> Result<u8, Self::Error>;
+}
+
+impl<Error, Reader> CompiledLaneConfigProvider for Reader
+where
+    Reader: FnMut(usize) -> Result<u8, Error>,
+{
+    type Error = Error;
+
+    fn read_flag_26(&mut self, lane_index: usize) -> Result<u8, Self::Error> {
+        self(lane_index)
+    }
+}
+
+fn apply_compiled_lane_handle_writes(handle: &mut i16, writes: CompiledLaneHandleWriteTrace) {
+    if writes.normalized_to_minus_one {
+        *handle = -1;
+    }
+    if let Some(selected) = writes.searched_handle {
+        *handle = selected;
+    }
+    if writes.invalidated_after_search_miss {
+        *handle = -1;
+    }
+}
+
+fn apply_compiled_lane_postprocess_effects(
+    state: &mut CompiledEightLaneExecutionState,
+    lane_index: usize,
+    effects: CompiledSingleLanePostprocessEffects,
+) {
+    state.lane_words[lane_index] = effects.lane_word;
+    if let Some(output_vector) = effects.output_vector_write {
+        state.output_vectors[lane_index] = output_vector;
+    }
+    if let Some(type_word) = effects.type_word_write {
+        state.type_words[lane_index] = type_word;
+    }
+    if let Some(accumulator) = effects.accumulator_write {
+        state.accumulator_words[lane_index] = accumulator;
+    }
+    if let Some(latch) = effects.latch_67c {
+        state.latch_67c = latch;
+    }
+}
+
+/// Executes the recovered `FUN_00419a40` dispatcher/postprocess loop in its
+/// native ascending, lane-interleaved order.
+///
+/// Each lane receives its own provider snapshot because the shipped loop can
+/// reload table globals between iterations. The config provider is invoked
+/// only after the lane-word/type/accumulator/subtraction writes, allowing its
+/// error result to preserve that exact same-lane prefix. Dispatch failures
+/// preserve the wrapper's handle trace and all earlier completed lanes; any
+/// provider-internal partial publication remains represented by its typed
+/// nested error. Stable disjoint state is assumed. Native pointer aliases,
+/// within-lane table rebinding, and machine-fault store prefixes remain out of
+/// scope for this safe contract.
+pub fn execute_compiled_eight_lanes<P, C>(
+    input: CompiledEightLaneExecutionInputs,
+    mut state: CompiledEightLaneExecutionState,
+    providers: &mut [P; 8],
+    config: &mut C,
+) -> Result<CompiledEightLaneExecutionSuccess, CompiledEightLaneExecutionFailure<P::Error, C::Error>>
+where
+    P: CompiledLaneGeometryProvider,
+    C: CompiledLaneConfigProvider,
+{
+    let mut lanes = [None; 8];
+
+    for lane_index in 0..8 {
+        let dispatch = match dispatch_compiled_lane(
+            CompiledLaneDispatchInput {
+                source_vector: input.source_vectors[lane_index],
+                initial_handle: state.handles[lane_index],
+                fallback: state.lane_words[lane_index],
+            },
+            &mut providers[lane_index],
+        ) {
+            Ok(dispatch) => dispatch,
+            Err(failure) => {
+                apply_compiled_lane_handle_writes(
+                    &mut state.handles[lane_index],
+                    failure.handle_writes,
+                );
+                return Err(CompiledEightLaneExecutionFailure::Dispatch {
+                    failed_lane: lane_index,
+                    progress: Box::new(CompiledEightLaneExecutionProgress {
+                        completed_lanes: lane_index,
+                        state,
+                        lanes,
+                    }),
+                    failure,
+                });
+            }
+        };
+
+        apply_compiled_lane_handle_writes(&mut state.handles[lane_index], dispatch.handle_writes);
+        if let Some(type_word) = dispatch.type_word_write {
+            state.type_words[lane_index] = type_word;
+        }
+        if let Some(output_vector) = dispatch.output_vector_write {
+            state.output_vectors[lane_index] = output_vector;
+        }
+
+        let postprocess_input = CompiledSingleLanePostprocessInput {
+            post_dispatch: CompiledLanePostDispatchSnapshot {
+                lane_word: dispatch.lane_word,
+                type_word: state.type_words[lane_index],
+            },
+            gate_word: input.gate_words[lane_index],
+            drive_word: input.drive_words[lane_index],
+            accumulator_word: state.accumulator_words[lane_index],
+            first_four_subtraction: (lane_index < 4)
+                .then_some(input.first_four_subtractions[lane_index.min(3)]),
+            config_flag_26: 0,
+        };
+        let mut postprocess = derive_compiled_single_lane_before_config(postprocess_input);
+        apply_compiled_lane_postprocess_effects(&mut state, lane_index, postprocess);
+
+        let config_flag_26 = match config.read_flag_26(lane_index) {
+            Ok(flag) => flag,
+            Err(config_error) => {
+                return Err(CompiledEightLaneExecutionFailure::Config {
+                    failed_lane: lane_index,
+                    progress: Box::new(CompiledEightLaneExecutionProgress {
+                        completed_lanes: lane_index,
+                        state,
+                        lanes,
+                    }),
+                    dispatch,
+                    pre_config_postprocess: postprocess,
+                    config_error,
+                });
+            }
+        };
+        apply_compiled_single_lane_config(&mut postprocess, config_flag_26);
+        apply_compiled_lane_postprocess_effects(&mut state, lane_index, postprocess);
+        lanes[lane_index] = Some(CompiledLaneExecutionEffects {
+            dispatch,
+            postprocess,
+        });
+    }
+
+    Ok(CompiledEightLaneExecutionSuccess {
+        state,
+        lanes: lanes.map(|lane| lane.expect("all eight lanes completed")),
+    })
 }
 
 /// Decoded candidate access required by the inner search at `FUN_00447540`.
@@ -2693,6 +2960,7 @@ mod tests {
         encode_compiled_cases,
     };
     use sha2::{Digest, Sha256};
+    use std::{cell::RefCell, rc::Rc};
     use std::{
         fs,
         path::PathBuf,
@@ -4348,6 +4616,284 @@ mod tests {
         assert_eq!(error.handle_writes.searched_handle, Some(7));
     }
 
+    #[derive(Clone, Copy)]
+    enum IntegratedLaneMode {
+        Built(u16),
+        SearchMiss,
+        SearchThenBuildFailure,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum IntegratedLaneEvent {
+        Validate(usize),
+        Search(usize),
+        Build(usize),
+        Config(usize),
+    }
+
+    struct IntegratedLaneProvider {
+        lane: usize,
+        mode: IntegratedLaneMode,
+        events: Rc<RefCell<Vec<IntegratedLaneEvent>>>,
+    }
+
+    impl CompiledLaneGeometryProvider for IntegratedLaneProvider {
+        type Error = &'static str;
+
+        fn validate(&mut self, _source: [i32; 3], _handle: i16) -> Result<bool, Self::Error> {
+            self.events
+                .borrow_mut()
+                .push(IntegratedLaneEvent::Validate(self.lane));
+            Ok(!matches!(self.mode, IntegratedLaneMode::SearchMiss))
+        }
+
+        fn search(
+            &mut self,
+            _source: [i32; 3],
+            _fallback: i32,
+        ) -> Result<Option<i16>, Self::Error> {
+            self.events
+                .borrow_mut()
+                .push(IntegratedLaneEvent::Search(self.lane));
+            Ok(match self.mode {
+                IntegratedLaneMode::SearchMiss => None,
+                IntegratedLaneMode::SearchThenBuildFailure => Some(7),
+                IntegratedLaneMode::Built(_) => panic!("unexpected search"),
+            })
+        }
+
+        fn build(
+            &mut self,
+            _source: [i32; 3],
+            _handle: i16,
+            _fallback: i32,
+        ) -> Result<CompiledLaneBuildCompletion, Self::Error> {
+            self.events
+                .borrow_mut()
+                .push(IntegratedLaneEvent::Build(self.lane));
+            match self.mode {
+                IntegratedLaneMode::Built(type_word) => Ok(CompiledLaneBuildCompletion::Built {
+                    lane_word: 100 + i32::try_from(self.lane).unwrap(),
+                    type_word,
+                    output_vector: [i32::try_from(self.lane).unwrap(); 3],
+                }),
+                IntegratedLaneMode::SearchThenBuildFailure => Err("build"),
+                IntegratedLaneMode::SearchMiss => panic!("unexpected build"),
+            }
+        }
+    }
+
+    fn integrated_execution_input() -> CompiledEightLaneExecutionInputs {
+        CompiledEightLaneExecutionInputs {
+            source_vectors: std::array::from_fn(|lane| [i32::try_from(lane).unwrap(); 3]),
+            gate_words: [0; 8],
+            drive_words: [0; 8],
+            first_four_subtractions: [1, 2, 3, 4],
+        }
+    }
+
+    fn integrated_execution_state() -> CompiledEightLaneExecutionState {
+        CompiledEightLaneExecutionState {
+            handles: [0; 8],
+            type_words: [0; 8],
+            output_vectors: [[-1; 3]; 8],
+            lane_words: std::array::from_fn(|lane| 200 + i32::try_from(lane).unwrap()),
+            accumulator_words: [0; 8],
+            latch_67c: 73,
+        }
+    }
+
+    fn integrated_providers(
+        events: &Rc<RefCell<Vec<IntegratedLaneEvent>>>,
+        modes: [IntegratedLaneMode; 8],
+    ) -> [IntegratedLaneProvider; 8] {
+        std::array::from_fn(|lane| IntegratedLaneProvider {
+            lane,
+            mode: modes[lane],
+            events: Rc::clone(events),
+        })
+    }
+
+    #[test]
+    fn eight_lane_executor_interleaves_dispatch_and_late_config_and_preserves_write_layers() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            [
+                IntegratedLaneMode::Built(0x52),
+                IntegratedLaneMode::SearchMiss,
+                IntegratedLaneMode::Built(0x51),
+                IntegratedLaneMode::Built(0),
+                IntegratedLaneMode::SearchMiss,
+                IntegratedLaneMode::Built(0),
+                IntegratedLaneMode::Built(0),
+                IntegratedLaneMode::Built(0),
+            ],
+        );
+        let mut state = integrated_execution_state();
+        state.handles[1] = 5;
+        state.type_words[1] = 0x3b;
+        state.accumulator_words[0] = COMPILED_LANE_ACCUMULATOR_LATCH_THRESHOLD - 0x1_0000;
+        let config_events = Rc::clone(&events);
+        let mut config = move |lane| -> Result<u8, &'static str> {
+            config_events
+                .borrow_mut()
+                .push(IntegratedLaneEvent::Config(lane));
+            Ok(if lane == 2 { 0x02 } else { 0 })
+        };
+
+        let success = execute_compiled_eight_lanes(
+            integrated_execution_input(),
+            state,
+            &mut providers,
+            &mut config,
+        )
+        .unwrap();
+
+        let expected_events: Vec<_> = (0..8)
+            .flat_map(|lane| {
+                if lane == 1 || lane == 4 {
+                    vec![
+                        IntegratedLaneEvent::Validate(lane),
+                        IntegratedLaneEvent::Search(lane),
+                        IntegratedLaneEvent::Config(lane),
+                    ]
+                } else {
+                    vec![
+                        IntegratedLaneEvent::Validate(lane),
+                        IntegratedLaneEvent::Build(lane),
+                        IntegratedLaneEvent::Config(lane),
+                    ]
+                }
+            })
+            .collect();
+        assert_eq!(*events.borrow(), expected_events);
+        assert_eq!(success.state.handles[1], -1);
+        assert_eq!(success.state.type_words[0], 0x52);
+        assert_eq!(
+            success.state.accumulator_words[0],
+            COMPILED_LANE_ACCUMULATOR_LATCH_THRESHOLD
+        );
+        assert_eq!(success.state.latch_67c, 1);
+        assert_eq!(success.state.lane_words[1], 201 - 0x4ccc - 2);
+        assert_eq!(success.state.output_vectors[1], [0, 0x1_0000, 0]);
+        assert_eq!(success.state.output_vectors[4], [-1; 3]);
+        assert_eq!(success.state.type_words[4], 0);
+        assert_eq!(success.lanes[2].dispatch.type_word_write, Some(0x51));
+        assert_eq!(success.lanes[2].dispatch.output_vector_write, Some([2; 3]));
+        assert_eq!(success.lanes[2].postprocess.type_word_write, Some(0x000a));
+        assert_eq!(success.state.type_words[2], 0x000a);
+        assert_eq!(success.state.output_vectors[2], [0, 0x1_0000, 0]);
+        assert_eq!(success.state.lane_words[2], 102 - 0x4ccc - 3 + 0x1_0000);
+    }
+
+    #[test]
+    fn eight_lane_executor_config_failure_preserves_same_lane_pre_config_prefix() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| IntegratedLaneMode::Built(if lane == 3 { 0x52 } else { 0 })),
+        );
+        let mut state = integrated_execution_state();
+        state.accumulator_words[3] = 0x2_0000;
+        let initial_lane_four = state.lane_words[4];
+        let config_events = Rc::clone(&events);
+        let mut config = move |lane| -> Result<u8, &'static str> {
+            config_events
+                .borrow_mut()
+                .push(IntegratedLaneEvent::Config(lane));
+            if lane == 3 { Err("config") } else { Ok(0) }
+        };
+
+        let failure = execute_compiled_eight_lanes(
+            integrated_execution_input(),
+            state,
+            &mut providers,
+            &mut config,
+        )
+        .unwrap_err();
+        let CompiledEightLaneExecutionFailure::Config {
+            failed_lane,
+            progress,
+            dispatch,
+            pre_config_postprocess,
+            config_error,
+        } = failure
+        else {
+            panic!("expected config failure")
+        };
+        assert_eq!(failed_lane, 3);
+        assert_eq!(progress.completed_lanes, 3);
+        assert_eq!(config_error, "config");
+        assert!(progress.lanes[..3].iter().all(Option::is_some));
+        assert!(progress.lanes[3..].iter().all(Option::is_none));
+        assert_eq!(dispatch.type_word_write, Some(0x52));
+        let expected_lane_three = 103_i32
+            .wrapping_sub(0x4ccc)
+            .wrapping_sub(common_prefix_q16_mul(0x2_0000, 0xc4))
+            .wrapping_sub(4);
+        assert_eq!(expected_lane_three, -19_953);
+        assert_eq!(pre_config_postprocess.lane_word, expected_lane_three);
+        assert_eq!(progress.state.type_words[3], 0x52);
+        assert_eq!(progress.state.output_vectors[3], [3; 3]);
+        assert_eq!(progress.state.accumulator_words[3], 0x3_0000);
+        assert_eq!(progress.state.lane_words[3], expected_lane_three);
+        assert_eq!(progress.state.lane_words[4], initial_lane_four);
+        assert!(!events.borrow().contains(&IntegratedLaneEvent::Validate(4)));
+    }
+
+    #[test]
+    fn eight_lane_executor_dispatch_failure_keeps_handle_prefix_and_stops_before_config() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| {
+                if lane == 3 {
+                    IntegratedLaneMode::SearchThenBuildFailure
+                } else {
+                    IntegratedLaneMode::Built(0)
+                }
+            }),
+        );
+        let mut state = integrated_execution_state();
+        state.handles[3] = -9;
+        let initial_lane_three = state.lane_words[3];
+        let config_events = Rc::clone(&events);
+        let mut config = move |lane| -> Result<u8, &'static str> {
+            config_events
+                .borrow_mut()
+                .push(IntegratedLaneEvent::Config(lane));
+            Ok(0)
+        };
+
+        let failure = execute_compiled_eight_lanes(
+            integrated_execution_input(),
+            state,
+            &mut providers,
+            &mut config,
+        )
+        .unwrap_err();
+        let CompiledEightLaneExecutionFailure::Dispatch {
+            failed_lane,
+            progress,
+            failure,
+        } = failure
+        else {
+            panic!("expected dispatch failure")
+        };
+        assert_eq!(failed_lane, 3);
+        assert_eq!(progress.completed_lanes, 3);
+        assert_eq!(failure.phase, CompiledLaneDispatchFailurePhase::Build);
+        assert!(failure.handle_writes.normalized_to_minus_one);
+        assert_eq!(failure.handle_writes.searched_handle, Some(7));
+        assert_eq!(progress.state.handles[3], 7);
+        assert_eq!(progress.state.lane_words[3], initial_lane_three);
+        assert!(progress.lanes[..3].iter().all(Option::is_some));
+        assert!(progress.lanes[3..].iter().all(Option::is_none));
+        assert!(!events.borrow().contains(&IntegratedLaneEvent::Config(3)));
+        assert!(!events.borrow().contains(&IntegratedLaneEvent::Validate(4)));
+    }
+
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum CandidateCall {
         Validate([i32; 3], i16),
@@ -5520,6 +6066,67 @@ mod tests {
                 type_word_write: Some(expected.type_word),
                 output_vector_write: Some(expected.output_vector),
             })
+        );
+    }
+
+    #[test]
+    fn eight_lane_executor_accepts_the_composed_decoded_geometry_provider() {
+        let triangle = DecodedCompiledLaneTriangle {
+            vertices: [
+                [0, 0x2_0000, 0],
+                [0, 0x2_0000, 0x1_0000],
+                [0x1_0000, 0x2_0000, 0],
+            ],
+            type_word: 0,
+        };
+        let records = [DecodedCompiledLaneRecord {
+            vertex_indices: [0, 1, 2],
+            type_word: triangle.type_word,
+        }];
+        let leaf = [spatial_cell(0, i32::MIN)];
+        let hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 1,
+            height: 1,
+            levels: [&leaf, &[], &[], &[], &[], &[]],
+        };
+        let provider = DecodedCompiledLaneGeometryProvider {
+            hierarchy,
+            candidate_pool: &[],
+            tables: DecodedCompiledLaneTables {
+                records: &records,
+                vertices: &triangle.vertices,
+            },
+        };
+        let mut providers = [provider; 8];
+        let source = [0x4000, i32::MIN, 0x4000];
+        let input = CompiledEightLaneExecutionInputs {
+            source_vectors: [source; 8],
+            gate_words: [0; 8],
+            drive_words: [0; 8],
+            first_four_subtractions: [0; 4],
+        };
+        let state = CompiledEightLaneExecutionState {
+            handles: [0; 8],
+            type_words: [u16::MAX; 8],
+            output_vectors: [[i32::MIN; 3]; 8],
+            lane_words: [-99; 8],
+            accumulator_words: [0; 8],
+            latch_67c: 0,
+        };
+        let mut config = |_lane| -> Result<u8, std::convert::Infallible> { Ok(0) };
+
+        let success = execute_compiled_eight_lanes(input, state, &mut providers, &mut config)
+            .expect("decoded stable-table providers should complete");
+        let expected = derive_decoded_compiled_lane_build(source, -99, triangle).unwrap();
+        assert_eq!(success.state.lane_words, [expected.lane_word; 8]);
+        assert_eq!(success.state.type_words, [expected.type_word; 8]);
+        assert_eq!(success.state.output_vectors, [expected.output_vector; 8]);
+        assert!(
+            success
+                .lanes
+                .iter()
+                .all(|lane| lane.dispatch.type_word_write == Some(triangle.type_word))
         );
     }
 
