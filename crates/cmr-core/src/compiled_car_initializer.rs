@@ -1464,16 +1464,16 @@ pub fn decode_compiled_lane_vertices(
     handle: i16,
     tables: DecodedCompiledLaneTables<'_>,
 ) -> Result<[[i32; 3]; 3], CompiledLaneDecodeError> {
-    let record = usize::try_from(handle)
+    let vertex_indices = usize::try_from(handle)
         .ok()
         .and_then(|index| tables.records.get(index))
-        .copied()
+        .map(|record| record.vertex_indices)
         .ok_or(CompiledLaneDecodeError::HandleOutOfBounds {
             handle,
             available_records: tables.records.len(),
         })?;
     let mut vertices = [[0; 3]; 3];
-    for (slot, vertex_index) in record.vertex_indices.into_iter().enumerate() {
+    for (slot, vertex_index) in vertex_indices.into_iter().enumerate() {
         vertices[slot] = tables
             .vertices
             .get(usize::from(vertex_index))
@@ -1600,6 +1600,137 @@ pub fn derive_decoded_compiled_lane_build(
         type_word: triangle.type_word,
         output_vector,
     })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledLaneTypeReadError {
+    pub handle: i16,
+    pub available_records: usize,
+}
+
+/// Read the record type word used by `FUN_00446fa0` after vertex decoding.
+///
+/// This is deliberately separate from [`decode_compiled_lane_vertices`]. The
+/// shipped builder calls the decoder first, then reloads the record-table base,
+/// sign-extends the handle again, and reads the u16 at record offset `+6`.
+pub fn read_compiled_lane_type_word(
+    handle: i16,
+    records: &[DecodedCompiledLaneRecord],
+) -> Result<u16, CompiledLaneTypeReadError> {
+    usize::try_from(handle)
+        .ok()
+        .and_then(|index| records.get(index))
+        .map(|record| record.type_word)
+        .ok_or(CompiledLaneTypeReadError {
+            handle,
+            available_records: records.len(),
+        })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DecodedCompiledLaneGeometryError {
+    Decode(CompiledLaneDecodeError),
+    Search(CompiledLaneSpatialSearchFailure<CompiledLaneDecodeError>),
+    TypeRead(CompiledLaneTypeReadError),
+    BuildDivide(CompiledLaneBuildDivideOverflow),
+}
+
+/// Concrete stable-table provider for the recovered compiled-lane dispatcher.
+///
+/// Every validation, candidate metric decode, and final build resolves the
+/// handle again. The final type word is read only after the build's vertex
+/// decode succeeds. This preserves the native logical phase order while the
+/// immutable slices intentionally collapse native global-pointer rebinding,
+/// candidate-list mutation, component-level faults, and aliases into one
+/// stable snapshot. SuperGhidra/REA observations that suggest a function start
+/// remain discovery hints; this provider's behavior is grounded in the
+/// separately recorded REA instruction evidence and the pure helpers above.
+#[derive(Clone, Copy, Debug)]
+pub struct DecodedCompiledLaneGeometryProvider<'a> {
+    pub hierarchy: DecodedCompiledLaneSpatialHierarchy<'a>,
+    pub candidate_pool: &'a [i16],
+    pub tables: DecodedCompiledLaneTables<'a>,
+}
+
+impl CompiledLaneCandidateProvider for DecodedCompiledLaneGeometryProvider<'_> {
+    type Error = CompiledLaneDecodeError;
+
+    fn validate_candidate(
+        &mut self,
+        source_vector: [i32; 3],
+        handle: i16,
+    ) -> Result<bool, Self::Error> {
+        let vertices = decode_compiled_lane_vertices(handle, self.tables)?;
+        Ok(validate_decoded_compiled_lane_source(
+            source_vector,
+            vertices,
+        ))
+    }
+
+    fn decode_metric_words(&mut self, handle: i16) -> Result<Option<[i32; 3]>, Self::Error> {
+        let vertices = decode_compiled_lane_vertices(handle, self.tables)?;
+        Ok(Some([vertices[0][1], vertices[1][1], vertices[2][1]]))
+    }
+}
+
+impl CompiledLaneGeometryProvider for DecodedCompiledLaneGeometryProvider<'_> {
+    type Error = DecodedCompiledLaneGeometryError;
+
+    fn validate(&mut self, source_vector: [i32; 3], handle: i16) -> Result<bool, Self::Error> {
+        let vertices = decode_compiled_lane_vertices(handle, self.tables)
+            .map_err(DecodedCompiledLaneGeometryError::Decode)?;
+        Ok(validate_decoded_compiled_lane_source(
+            source_vector,
+            vertices,
+        ))
+    }
+
+    fn search(
+        &mut self,
+        source_vector: [i32; 3],
+        fallback: i32,
+    ) -> Result<Option<i16>, Self::Error> {
+        let hierarchy = self.hierarchy;
+        let candidate_pool = self.candidate_pool;
+        let choice = search_decoded_compiled_lane_spatial_hierarchy(
+            source_vector,
+            fallback,
+            hierarchy,
+            candidate_pool,
+            self,
+        )
+        .map_err(DecodedCompiledLaneGeometryError::Search)?;
+        Ok(match choice {
+            CompiledLaneCandidateChoice::Miss => None,
+            CompiledLaneCandidateChoice::Found { handle, .. } => Some(handle),
+        })
+    }
+
+    fn build(
+        &mut self,
+        source_vector: [i32; 3],
+        handle: i16,
+        fallback: i32,
+    ) -> Result<CompiledLaneBuildCompletion, Self::Error> {
+        let vertices = decode_compiled_lane_vertices(handle, self.tables)
+            .map_err(DecodedCompiledLaneGeometryError::Decode)?;
+        let type_word = read_compiled_lane_type_word(handle, self.tables.records)
+            .map_err(DecodedCompiledLaneGeometryError::TypeRead)?;
+        let effects = derive_decoded_compiled_lane_build(
+            source_vector,
+            fallback,
+            DecodedCompiledLaneTriangle {
+                vertices,
+                type_word,
+            },
+        )
+        .map_err(DecodedCompiledLaneGeometryError::BuildDivide)?;
+        Ok(CompiledLaneBuildCompletion::Built {
+            lane_word: effects.lane_word,
+            type_word: effects.type_word,
+            output_vector: effects.output_vector,
+        })
+    }
 }
 
 /// Two recovered control writes immediately after the reciprocal/copy families.
@@ -5075,6 +5206,19 @@ mod tests {
                 })
             );
         }
+        let mut high_records = vec![records[0]; 32_769];
+        high_records[usize::from(i16::MAX as u16)].type_word = 0x7fff;
+        assert_eq!(
+            read_compiled_lane_type_word(i16::MAX, &high_records),
+            Ok(0x7fff)
+        );
+        assert_eq!(
+            read_compiled_lane_type_word(i16::MIN, &high_records),
+            Err(CompiledLaneTypeReadError {
+                handle: i16::MIN,
+                available_records: 32_769,
+            })
+        );
 
         let mut high_vertices = vec![[0; 3]; 32_769];
         high_vertices[0x8000] = [101, 102, 103];
@@ -5301,6 +5445,371 @@ mod tests {
                 published_type_word: 0x55aa,
                 published_output_vector: [0, -255, 0x1_0000],
             }
+        );
+    }
+
+    #[test]
+    fn decoded_lane_type_read_is_separate_signed_and_exact() {
+        let records = [
+            DecodedCompiledLaneRecord {
+                vertex_indices: [9, 8, 7],
+                type_word: 0,
+            },
+            DecodedCompiledLaneRecord {
+                vertex_indices: [6, 5, 4],
+                type_word: u16::MAX,
+            },
+        ];
+        assert_eq!(read_compiled_lane_type_word(0, &records), Ok(0));
+        assert_eq!(read_compiled_lane_type_word(1, &records), Ok(u16::MAX));
+        for handle in [-1, i16::MIN, 2, i16::MAX] {
+            assert_eq!(
+                read_compiled_lane_type_word(handle, &records),
+                Err(CompiledLaneTypeReadError {
+                    handle,
+                    available_records: 2,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn decoded_geometry_provider_dispatches_a_direct_valid_handle() {
+        let triangle = DecodedCompiledLaneTriangle {
+            vertices: [
+                [0, 0x2_0000, 0],
+                [0, 0x2_0000, 0x1_0000],
+                [0x1_0000, 0x2_0000, 0],
+            ],
+            type_word: 0xabcd,
+        };
+        let records = [DecodedCompiledLaneRecord {
+            vertex_indices: [0, 1, 2],
+            type_word: triangle.type_word,
+        }];
+        let leaf = [spatial_cell(0, i32::MIN)];
+        let hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 1,
+            height: 1,
+            levels: [&leaf, &[], &[], &[], &[], &[]],
+        };
+        let tables = DecodedCompiledLaneTables {
+            records: &records,
+            vertices: &triangle.vertices,
+        };
+        let source = [0x4000, i32::MIN, 0x4000];
+        let expected = derive_decoded_compiled_lane_build(source, -99, triangle).unwrap();
+        let mut provider = DecodedCompiledLaneGeometryProvider {
+            hierarchy,
+            candidate_pool: &[],
+            tables,
+        };
+        assert_eq!(
+            dispatch_compiled_lane(
+                CompiledLaneDispatchInput {
+                    source_vector: source,
+                    initial_handle: 0,
+                    fallback: -99,
+                },
+                &mut provider,
+            ),
+            Ok(CompiledLaneDispatchCompletion {
+                lane_word: expected.lane_word,
+                handle_writes: CompiledLaneHandleWriteTrace::default(),
+                type_word_write: Some(expected.type_word),
+                output_vector_write: Some(expected.output_vector),
+            })
+        );
+    }
+
+    #[test]
+    fn decoded_geometry_provider_builds_the_winner_not_the_last_candidate() {
+        let first_vertices = [
+            [0, 0x2_0000, 0],
+            [0, 0x2_0000, 0x1_0000],
+            [0x1_0000, 0x2_0000, 0],
+        ];
+        let last_vertices = [
+            [0, 0x8_0000, 0],
+            [0, 0x8_0000, 0x1_0000],
+            [0x1_0000, 0x8_0000, 0],
+        ];
+        let vertices = [
+            first_vertices[0],
+            first_vertices[1],
+            first_vertices[2],
+            last_vertices[0],
+            last_vertices[1],
+            last_vertices[2],
+        ];
+        let mut records = [DecodedCompiledLaneRecord {
+            vertex_indices: [3, 4, 5],
+            type_word: 0x9999,
+        }; 10];
+        records[5] = DecodedCompiledLaneRecord {
+            vertex_indices: [0, 1, 2],
+            type_word: 0x5555,
+        };
+        records[9] = DecodedCompiledLaneRecord {
+            vertex_indices: [3, 4, 5],
+            type_word: 0x9999,
+        };
+        let leaf = [spatial_cell(2, 1)];
+        let hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 1,
+            height: 1,
+            levels: [&leaf, &[], &[], &[], &[], &[]],
+        };
+        let source = [0x4000, 123, 0x4000];
+        let fallback = 0x2_0000;
+        let expected = derive_decoded_compiled_lane_build(
+            source,
+            fallback,
+            DecodedCompiledLaneTriangle {
+                vertices: first_vertices,
+                type_word: 0x5555,
+            },
+        )
+        .unwrap();
+        let mut provider = DecodedCompiledLaneGeometryProvider {
+            hierarchy,
+            candidate_pool: &[77, 5, 9],
+            tables: DecodedCompiledLaneTables {
+                records: &records,
+                vertices: &vertices,
+            },
+        };
+        assert_eq!(
+            dispatch_compiled_lane(
+                CompiledLaneDispatchInput {
+                    source_vector: source,
+                    initial_handle: -7,
+                    fallback,
+                },
+                &mut provider,
+            ),
+            Ok(CompiledLaneDispatchCompletion {
+                lane_word: expected.lane_word,
+                handle_writes: CompiledLaneHandleWriteTrace {
+                    normalized_to_minus_one: true,
+                    searched_handle: Some(5),
+                    invalidated_after_search_miss: false,
+                },
+                type_word_write: Some(0x5555),
+                output_vector_write: Some(expected.output_vector),
+            })
+        );
+    }
+
+    #[test]
+    fn decoded_geometry_provider_preserves_lazy_search_failure_and_miss_prefixes() {
+        let vertices = [
+            [0, 0x2_0000, 0],
+            [0, 0x2_0000, 0x1_0000],
+            [0x1_0000, 0x2_0000, 0],
+        ];
+        let records = [DecodedCompiledLaneRecord {
+            vertex_indices: [0, 1, 2],
+            type_word: 5,
+        }; 6];
+        let leaf = [spatial_cell(2, 0)];
+        let hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 1,
+            height: 1,
+            levels: [&leaf, &[], &[], &[], &[], &[]],
+        };
+        let mut provider = DecodedCompiledLaneGeometryProvider {
+            hierarchy,
+            candidate_pool: &[5],
+            tables: DecodedCompiledLaneTables {
+                records: &records,
+                vertices: &vertices,
+            },
+        };
+        let failure = dispatch_compiled_lane(
+            CompiledLaneDispatchInput {
+                source_vector: [0x4000, 0, 0x4000],
+                initial_handle: -1,
+                fallback: 0,
+            },
+            &mut provider,
+        )
+        .unwrap_err();
+        assert_eq!(failure.phase, CompiledLaneDispatchFailurePhase::Search);
+        assert!(failure.handle_writes.normalized_to_minus_one);
+        assert!(failure.handle_writes.searched_handle.is_none());
+        assert_eq!(
+            failure.provider_error,
+            DecodedCompiledLaneGeometryError::Search(CompiledLaneSpatialSearchFailure::Candidate(
+                CompiledLaneCandidateFailure::CandidateOutOfBounds {
+                    ordinal: 1,
+                    requested_count: 2,
+                    available: 1,
+                }
+            ))
+        );
+
+        let decode_leaf = [spatial_cell(1, 0)];
+        let mut decode_provider = DecodedCompiledLaneGeometryProvider {
+            hierarchy: DecodedCompiledLaneSpatialHierarchy {
+                levels: [&decode_leaf, &[], &[], &[], &[], &[]],
+                ..hierarchy
+            },
+            candidate_pool: &[i16::MIN],
+            tables: DecodedCompiledLaneTables {
+                records: &records,
+                vertices: &vertices,
+            },
+        };
+        let decode_failure = dispatch_compiled_lane(
+            CompiledLaneDispatchInput {
+                source_vector: [0x4000, 0, 0x4000],
+                initial_handle: -1,
+                fallback: 0,
+            },
+            &mut decode_provider,
+        )
+        .unwrap_err();
+        assert_eq!(
+            decode_failure.phase,
+            CompiledLaneDispatchFailurePhase::Search
+        );
+        assert!(decode_failure.handle_writes.normalized_to_minus_one);
+        assert!(decode_failure.handle_writes.searched_handle.is_none());
+        assert_eq!(
+            decode_failure.provider_error,
+            DecodedCompiledLaneGeometryError::Search(CompiledLaneSpatialSearchFailure::Candidate(
+                CompiledLaneCandidateFailure::Provider {
+                    phase: CompiledLaneCandidateFailurePhase::Validate,
+                    ordinal: 0,
+                    handle: i16::MIN,
+                    provider_error: CompiledLaneDecodeError::HandleOutOfBounds {
+                        handle: i16::MIN,
+                        available_records: records.len(),
+                    },
+                }
+            ))
+        );
+
+        let miss_leaf = [spatial_cell(0, i32::MIN)];
+        let mut miss_provider = DecodedCompiledLaneGeometryProvider {
+            hierarchy: DecodedCompiledLaneSpatialHierarchy {
+                origin_xz: [0, 0],
+                width: 1,
+                height: 1,
+                levels: [&miss_leaf, &[], &[], &[], &[], &[]],
+            },
+            candidate_pool: &[],
+            tables: DecodedCompiledLaneTables {
+                records: &records,
+                vertices: &vertices,
+            },
+        };
+        assert_eq!(
+            dispatch_compiled_lane(
+                CompiledLaneDispatchInput {
+                    source_vector: [-1, 0, 0],
+                    initial_handle: 0,
+                    fallback: 1234,
+                },
+                &mut miss_provider,
+            ),
+            Ok(CompiledLaneDispatchCompletion {
+                lane_word: 1234,
+                handle_writes: CompiledLaneHandleWriteTrace {
+                    normalized_to_minus_one: false,
+                    searched_handle: None,
+                    invalidated_after_search_miss: true,
+                },
+                type_word_write: None,
+                output_vector_write: None,
+            })
+        );
+    }
+
+    #[test]
+    fn decoded_geometry_provider_maps_direct_decode_and_build_overflow_phases() {
+        let leaf = [spatial_cell(0, 0)];
+        let hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 1,
+            height: 1,
+            levels: [&leaf, &[], &[], &[], &[], &[]],
+        };
+        let empty_tables = DecodedCompiledLaneTables {
+            records: &[],
+            vertices: &[],
+        };
+        let mut empty_provider = DecodedCompiledLaneGeometryProvider {
+            hierarchy,
+            candidate_pool: &[],
+            tables: empty_tables,
+        };
+        assert_eq!(
+            dispatch_compiled_lane(
+                CompiledLaneDispatchInput {
+                    source_vector: [0; 3],
+                    initial_handle: 0,
+                    fallback: 9,
+                },
+                &mut empty_provider,
+            ),
+            Err(CompiledLaneDispatchFailure {
+                phase: CompiledLaneDispatchFailurePhase::Validate,
+                handle_writes: CompiledLaneHandleWriteTrace::default(),
+                provider_error: DecodedCompiledLaneGeometryError::Decode(
+                    CompiledLaneDecodeError::HandleOutOfBounds {
+                        handle: 0,
+                        available_records: 0,
+                    }
+                ),
+            })
+        );
+
+        let overflow_triangle = DecodedCompiledLaneTriangle {
+            vertices: [
+                [0, 0, i32::MAX - 255],
+                [0x1_0000, 0, i32::MAX - 255],
+                [0, 0x1_0000, i32::MIN],
+            ],
+            type_word: 0x55aa,
+        };
+        let overflow_source = [0, 0, -1];
+        assert!(validate_decoded_compiled_lane_source(
+            overflow_source,
+            overflow_triangle.vertices
+        ));
+        let records = [DecodedCompiledLaneRecord {
+            vertex_indices: [0, 1, 2],
+            type_word: overflow_triangle.type_word,
+        }];
+        let mut overflow_provider = DecodedCompiledLaneGeometryProvider {
+            hierarchy,
+            candidate_pool: &[],
+            tables: DecodedCompiledLaneTables {
+                records: &records,
+                vertices: &overflow_triangle.vertices,
+            },
+        };
+        let expected = derive_decoded_compiled_lane_build(overflow_source, 123, overflow_triangle)
+            .expect_err("fixture must reach the final signed divide overflow");
+        assert_eq!(
+            dispatch_compiled_lane(
+                CompiledLaneDispatchInput {
+                    source_vector: overflow_source,
+                    initial_handle: 0,
+                    fallback: 123,
+                },
+                &mut overflow_provider,
+            ),
+            Err(CompiledLaneDispatchFailure {
+                phase: CompiledLaneDispatchFailurePhase::Build,
+                handle_writes: CompiledLaneHandleWriteTrace::default(),
+                provider_error: DecodedCompiledLaneGeometryError::BuildDivide(expected),
+            })
         );
     }
 

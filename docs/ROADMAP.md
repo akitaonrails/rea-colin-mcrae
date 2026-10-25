@@ -776,8 +776,15 @@ provider integration remain open.
 
 G03-AK6 reconstructs exact `FUN_00446e80` record/vertex lookup as a safe
 type-free decoder with ordered bounds errors. Three focused tests bring
-`cmr-core` to 1,206. The later record-type read and concrete provider
-composition remain open.
+`cmr-core` to 1,206.
+
+G03-AK7 composes the decoded hierarchy, candidate pool, record/vertex tables,
+validator, chooser, and builder into a concrete stable-table geometry provider.
+The build performs its checked type +6 read only after a fresh vertex decode;
+nested failures retain the wrapper/search/build phase and publication prefix.
+Five focused tests bring `cmr-core` to 1,211. Raw official table acquisition,
+native rebinding/alias/fault behavior, and the eight-lane application remain
+open.
 
 Exit gate:
 

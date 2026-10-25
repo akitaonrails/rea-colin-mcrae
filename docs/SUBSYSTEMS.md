@@ -1214,8 +1214,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   edge scores with wrapping arithmetic. Six tests bring `cmr-core` to 1,203;
   raw record/vertex decoding and provider integration remain open.
   G03-AK6 reconstructs `FUN_00446e80` as an exact type-free vertex decoder
-  over safe stable tables. Three tests bring `cmr-core` to 1,206; the later
-  type read and concrete provider composition remain open.
+  over safe stable tables. Three tests bring `cmr-core` to 1,206. G03-AK7 then
+  composes the hierarchy/pool, decoder, validator, chooser, separate post-decode
+  type read, and builder behind a concrete stable-table provider. Five tests
+  bring `cmr-core` to 1,211. The composition repeats logical resolution at each
+  phase but does not claim equivalence to native global-pointer rebinding,
+  candidate mutation, aliases, or component-level fault prefixes. Raw official
+  table acquisition and eight-lane application remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
