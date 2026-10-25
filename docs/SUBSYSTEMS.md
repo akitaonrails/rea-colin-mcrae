@@ -1002,9 +1002,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   speeds `+0x2b8[4]`, and smoothing gains `+0x2c8[4]`. A later force-pass branch
   now has a recovered signed raw candidate-selection rule: retain the current
   candidate at/below its threshold, otherwise use a caller-derived replacement
-  verbatim. Candidate derivation and the remaining per-wheel accumulation,
-  parts of the torque-to-velocity integration, and the ratio-table loader remain. See evidence
-  `rea.official-eu.sim-drivetrain`.
+  verbatim. The later `+0x420` correction gate and its pure signed scalar rules
+  are also reconstructed. Initial candidate derivation, direction/state
+  accumulation, parts of the torque-to-velocity integration, and the
+  ratio-table loader remain. See evidence `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
   same `0x407690` solver chain. The lateral-grip constraint `0x41b270` strips the
   sideways velocity component each step (`v -= (v - fwd*dot(fwd,v))*K`, `K`~0.02
@@ -1017,11 +1018,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   `cmr-core::fixed_point::Vec3`. `0x40d810` now distinguishes raw wheel speeds
   at `+0x2a8[4]` from smoothed/current speeds at `+0x2b8[4]`. Its signed
   compare/select at `0x40f5e0..0x40f5e8` is reconstructed as
-  `select_signed_force_candidate` without assigning physical semantics. Candidate
-  derivation and units/order, control `+0x420`, surface resistance,
-  `FUN_0040fbe0`, remaining per-wheel accumulation, the position update, the
-  damper source, and runtime-loaded table values remain. See evidence
-  `rea.official-eu.sim-grip` and `rea.official-eu.sim-signed-force-candidate-select`.
+  `select_signed_force_candidate` without assigning physical semantics. A
+  nonzero `+0x420` admits the recovered same-sign wheel correction; its modular
+  candidate, signed threshold/alternate, and remaining-budget rules are
+  reconstructed as three pure helpers. Initial candidate derivation,
+  direction/state accumulation, the surface-indexed contribution,
+  `FUN_0040fbe0`, the position update, damper source, and runtime-loaded table
+  values remain. See evidence `rea.official-eu.sim-grip`,
+  `rea.official-eu.sim-signed-force-candidate-select`, and
+  `rea.official-eu.sim-wheel-correction-arithmetic`.
 - Collision/damage runs from `0x410a60` (Mechanics callee), which delegates the
   crash path to `0x4115d0` once the out-of-control flag `car+0x680` is set. The
   contact impulse accumulates into `car+0x3cc..`; its magnitude feeds the impact
