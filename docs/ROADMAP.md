@@ -481,11 +481,20 @@ word counts, while construction explicitly checks selector count and exact
 neutral offset identity, copies all signed words in selector order, and feeds only the
 existing unsigned direct-case selection contract. Two synthetic tests bring
 `cmr-core` to 1,106. This is not application/session/gameplay wiring and does
-not extend the recovered behavior beyond the direct stores. The full common
-path (including its option transforms, `FUN_00404160`, other intervening
-callees, reciprocal/copy application, and later derived words), entry meanings,
-gameplay index invariants, other editions, runtime geometry/BSS consumers, and full
-`FUN_0040d810`/`FUN_0040a4a0` closure remain open.
+not extend the recovered behavior beyond the direct stores. G03-R recovers the
+next bounded common-path step, official-EU `FUN_00404160`: it reads and rewrites
+only control `+0x1d4..+0x1e8`, computes all five wrapping adjacent differences
+before mutation, selects one of five Q16 scale/first-word-bias policies from the
+low three option bits, then rebuilds the six words with signed arithmetic-shift
+products and cumulative wrapping addition. The payload-free
+`transform_compiled_control_run` and eight-word
+`transform_compiled_control_family` adapter preserve the outer words and add
+six synthetic tests, bringing `cmr-core` to 1,112. The signed config-record
+lookup/domain, `FUN_00404100`, `FUN_00407270`, the rest of the common path,
+composition with the later reciprocal/copy helper, application/session/gameplay
+wiring, entry meanings/units, gameplay index invariants, other editions,
+runtime geometry/BSS consumers, and full `FUN_0040d810`/`FUN_0040a4a0`
+closure remain open.
 
 Exit gate:
 

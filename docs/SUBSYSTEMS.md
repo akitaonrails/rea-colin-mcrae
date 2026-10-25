@@ -1030,14 +1030,26 @@ languages rather than fabricating or silently aliasing Italian assets.
   count and exact offset-schema identity at that boundary, copies every signed
   word in selector order, and exposes the existing unsigned direct-case
   selection contract over a core-owned set. It deliberately does not apply the
-  separate reciprocal helper to these pre-common-path words. The full common
-  path (especially `FUN_00404160`), meanings, and application/session/gameplay
-  wiring remain. See
+  separate reciprocal helper to these pre-common-path words.
+  `FUN_00404160` is now recovered as the next narrow stage: it transforms only
+  `+0x1d4,+0x1d8,+0x1dc,+0x1e0,+0x1e4,+0x1e8`, leaving `+0x1d0/+0x1ec`
+  unchanged. It forms all five wrapping adjacent differences from the original
+  run, masks the caller-owned option byte to three bits, chooses the observed
+  five Q16 scale/bias policies, and cumulatively rebuilds the run with signed
+  arithmetic-shift products and wrapping adds.
+  `transform_compiled_control_run` and
+  `transform_compiled_control_family` encode that payload-free contract; six
+  synthetic tests bring `cmr-core` to 1,112. The signed config-record
+  lookup/domain, neighboring `FUN_00404100`/`FUN_00407270`, rest of the common
+  path, composition with the later reciprocal/copy helper, meanings/units, and
+  application/session/gameplay wiring remain. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
+  `rea.official-eu.sim-compiled-control-run-transform`,
   `impl.sim-compiled-car-initializer-schema`,
-  `impl.sim-compiled-car-initializer-extractor`, and
-  `impl.sim-compiled-car-initializer-store`, and
-  `impl.sim-compiled-car-initializer-consumer`.
+  `impl.sim-compiled-car-initializer-extractor`,
+  `impl.sim-compiled-car-initializer-store`,
+  `impl.sim-compiled-car-initializer-consumer`, and
+  `impl.sim-compiled-control-run-transform`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

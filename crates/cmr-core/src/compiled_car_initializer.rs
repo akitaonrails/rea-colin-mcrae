@@ -34,6 +34,9 @@ pub const COMPILED_CONTROL_WORD_COUNT: usize = 23;
 /// Number of words in the later primary/reciprocal control families.
 pub const COMPILED_CONTROL_FAMILY_WORD_COUNT: usize = 8;
 
+/// Number of middle control-family words rewritten by the recovered transform.
+pub const COMPILED_CONTROL_RUN_WORD_COUNT: usize = 6;
+
 /// State destinations in their observed case-body store order.
 pub const COMPILED_STATE_WORD_OFFSETS: [u16; COMPILED_STATE_WORD_COUNT] =
     [0x020, 0x024, 0x028, 0x638, 0x63c, 0x640, 0x648, 0x644];
@@ -206,6 +209,53 @@ pub fn apply_compiled_case(
         words,
         selected_case,
     }
+}
+
+/// Transform the six-word middle run selected by the low three option bits.
+///
+/// All five differences are taken from `original` before rebuilding the
+/// output. Products use signed Q16 arithmetic and retain the low 32 bits after
+/// the arithmetic right shift. Subtraction, the first-word bias, and the
+/// cumulative rebuild use 32-bit wrapping arithmetic.
+#[must_use]
+pub fn transform_compiled_control_run(
+    original: [i32; COMPILED_CONTROL_RUN_WORD_COUNT],
+    option_byte: u8,
+) -> [i32; COMPILED_CONTROL_RUN_WORD_COUNT] {
+    let (scale, bias) = match option_byte & 7 {
+        0 => (0x1_1999_i32, -0x3333_i32),
+        1 => (0x1_0ccc, -0x1999),
+        2 => (0x1_0000, 0),
+        3 => (0x0_f334, 0x1999),
+        _ => (0x0_e667, 0x3333),
+    };
+    let deltas: [i32; COMPILED_CONTROL_RUN_WORD_COUNT - 1] =
+        std::array::from_fn(|index| original[index + 1].wrapping_sub(original[index]));
+    let scaled = deltas.map(|delta| ((i64::from(delta) * i64::from(scale)) >> 16) as i32);
+
+    let mut output = [0; COMPILED_CONTROL_RUN_WORD_COUNT];
+    output[0] = original[0].wrapping_add(bias);
+    for index in 0..scaled.len() {
+        output[index + 1] = output[index].wrapping_add(scaled[index]);
+    }
+    output
+}
+
+/// Apply [`transform_compiled_control_run`] to indices `1..=6` of the
+/// eight-word family, preserving endpoints zero and seven exactly.
+///
+/// This adapter performs neither case selection nor reciprocal/copy-tail
+/// derivation.
+#[must_use]
+pub fn transform_compiled_control_family(
+    original: [i32; COMPILED_CONTROL_FAMILY_WORD_COUNT],
+    option_byte: u8,
+) -> [i32; COMPILED_CONTROL_FAMILY_WORD_COUNT] {
+    let run = std::array::from_fn(|index| original[index + 1]);
+    let transformed = transform_compiled_control_run(run, option_byte);
+    let mut output = original;
+    output[1..=COMPILED_CONTROL_RUN_WORD_COUNT].copy_from_slice(&transformed);
+    output
 }
 
 /// The four eight-word families after the observed reciprocal/copy tail.
@@ -542,6 +592,105 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn control_run_pins_all_five_mode_policies() {
+        let original = [0, 0x1_0000, 0x2_0000, 0x3_0000, 0x4_0000, 0x5_0000];
+        assert_eq!(
+            transform_compiled_control_run(original, 0),
+            [-13_107, 58_982, 131_071, 203_160, 275_249, 347_338]
+        );
+        assert_eq!(
+            transform_compiled_control_run(original, 1),
+            [-6_553, 62_259, 131_071, 199_883, 268_695, 337_507]
+        );
+        assert_eq!(transform_compiled_control_run(original, 2), original);
+        assert_eq!(
+            transform_compiled_control_run(original, 3),
+            [6_553, 68_813, 131_073, 193_333, 255_593, 317_853]
+        );
+
+        let default = [13_107, 72_090, 131_073, 190_056, 249_039, 308_022];
+        for mode in 4..=7 {
+            assert_eq!(transform_compiled_control_run(original, mode), default);
+        }
+    }
+
+    #[test]
+    fn control_run_masks_option_to_its_low_three_bits() {
+        let original = [-70_001, -2, 0, 9, 80_000, i32::MAX];
+        for mode in 0..=7 {
+            assert_eq!(
+                transform_compiled_control_run(original, mode),
+                transform_compiled_control_run(original, mode | 0xf8)
+            );
+        }
+    }
+
+    #[test]
+    fn control_run_mode_two_is_identity_at_signed_boundaries() {
+        for original in [
+            [0, 1, 2, 3, 4, 5],
+            [i32::MIN, i32::MAX, 0, -1, 1, i32::MIN],
+            [i32::MAX, i32::MIN, i32::MAX, i32::MIN, -1, 0],
+        ] {
+            assert_eq!(transform_compiled_control_run(original, 2), original);
+        }
+    }
+
+    #[test]
+    fn control_run_uses_original_deltas_and_arithmetic_right_shift() {
+        assert_eq!(
+            transform_compiled_control_run([100, 200, 400, 800, 1_600, 3_200], 0),
+            [-13_007, -12_898, -12_679, -12_240, -11_361, -9_602]
+        );
+
+        // A signed Q16 product of -1 by 0x11999 shifts to -2, not the -1
+        // produced by truncating signed division toward zero.
+        assert_eq!(
+            transform_compiled_control_run([1, 0, 0, 0, 0, 0], 0),
+            [-13_106, -13_108, -13_108, -13_108, -13_108, -13_108]
+        );
+    }
+
+    #[test]
+    fn control_run_wraps_delta_shift_retention_bias_and_rebuild() {
+        // 0 - MIN wraps during delta formation. Its scaled signed product
+        // shifts below i32::MIN, so the cast retains the low 32 bits. The
+        // first bias and the first cumulative rebuild both wrap as well.
+        assert_eq!(
+            transform_compiled_control_run([i32::MIN, 0, 0, 0, 0, 0], 0),
+            [
+                2_147_470_541,
+                -214_741_811,
+                -214_741_811,
+                -214_741_811,
+                -214_741_811,
+                -214_741_811,
+            ]
+        );
+    }
+
+    #[test]
+    fn eight_word_adapter_preserves_endpoints_and_only_transforms_middle_run() {
+        let original = [
+            i32::MIN,
+            0,
+            0x1_0000,
+            0x2_0000,
+            0x3_0000,
+            0x4_0000,
+            0x5_0000,
+            i32::MAX,
+        ];
+        let transformed = transform_compiled_control_family(original, 0);
+        assert_eq!(transformed[0], i32::MIN);
+        assert_eq!(transformed[7], i32::MAX);
+        assert_eq!(
+            transformed[1..=6],
+            [-13_107, 58_982, 131_071, 203_160, 275_249, 347_338]
+        );
     }
 
     #[test]
