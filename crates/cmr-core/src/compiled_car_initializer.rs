@@ -2276,6 +2276,47 @@ pub const fn derive_compiled_adjustment_reset() -> CompiledAdjustmentResetEffect
     }
 }
 
+/// Control dword offset of the config-selected flag: `2` when the config byte
+/// at `DAT_00d3ca80 + 0xb6 + state_738 * 0x9c` has bit `0x10` clear, else `1`.
+pub const COMPILED_INITIALIZER_CONTROL_FLAG_OFFSET: u16 = 0x3f0;
+
+/// Reconstructs the config-selected control flag. Only bit `0x10` of the
+/// injected config byte participates.
+#[must_use]
+pub const fn derive_compiled_initializer_control_flag(config_b6: u8) -> i32 {
+    if config_b6 & 0x10 == 0 { 2 } else { 1 }
+}
+
+/// Constant effects of the flag/reset block following the adjustment reset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledInitializerFlagEffects {
+    /// Control dwords zeroed in native order.
+    pub control_zero_dwords: [u16; 4],
+    /// Control bytes zeroed in native order.
+    pub control_zero_bytes: [u16; 3],
+    /// Remaining control dword writes in native order.
+    pub control_constant_dwords: [(u16, i32); 2],
+    /// State dwords zeroed in native order.
+    pub state_zero_dwords: [u16; 4],
+    /// State u16 words zeroed in native order.
+    pub state_zero_u16_offsets: [u16; 2],
+    /// Three-dword vector copy: source `+0x258` to destination `+0x5d4`.
+    pub state_vector_copy: (u16, u16),
+}
+
+/// Reconstructs the constant flag/reset writes after the adjustment reset.
+#[must_use]
+pub const fn derive_compiled_initializer_flag_effects() -> CompiledInitializerFlagEffects {
+    CompiledInitializerFlagEffects {
+        control_zero_dwords: [0x3f4, 0x3f8, 0x3fc, 0x3ec],
+        control_zero_bytes: [0x43c, 0x43d, 0x43e],
+        control_constant_dwords: [(0x37c, -0x4ccc), (0x41c, 0)],
+        state_zero_dwords: [0x684, 0x610, 0x678, 0x6e4],
+        state_zero_u16_offsets: [0x60c, 0x614],
+        state_vector_copy: (0x258, 0x5d4),
+    }
+}
+
 fn solve_compiled_lane_plane(
     source_vector: [i32; 3],
     fallback: i32,
@@ -7517,6 +7558,40 @@ mod tests {
             sorted,
             [0x3b0, 0x3b4, 0x3b8, 0x3bc, 0x3c0, 0x3c4, 0x3c8, 0x3cc]
         );
+    }
+
+    #[test]
+    fn initializer_control_flag_depends_only_on_config_bit_0x10() {
+        assert_eq!(COMPILED_INITIALIZER_CONTROL_FLAG_OFFSET, 0x3f0);
+        for (config, expected) in [(0x00, 2), (0x0f, 2), (0x10, 1), (0x1f, 1), (0xff, 1)] {
+            assert_eq!(derive_compiled_initializer_control_flag(config), expected);
+        }
+    }
+
+    #[test]
+    fn initializer_flag_effects_pin_constant_writes_and_the_vector_copy() {
+        let effects = derive_compiled_initializer_flag_effects();
+        assert_eq!(effects.control_zero_dwords, [0x3f4, 0x3f8, 0x3fc, 0x3ec]);
+        assert_eq!(effects.control_zero_bytes, [0x43c, 0x43d, 0x43e]);
+        assert_eq!(
+            effects.control_constant_dwords,
+            [(0x37c, -0x4ccc), (0x41c, 0)]
+        );
+        assert_eq!(effects.state_zero_dwords, [0x684, 0x610, 0x678, 0x6e4]);
+        assert_eq!(effects.state_zero_u16_offsets, [0x60c, 0x614]);
+        assert_eq!(effects.state_vector_copy, (0x258, 0x5d4));
+
+        // The flag and the constant writes target distinct control dwords.
+        for offset in effects.control_zero_dwords {
+            assert_ne!(offset, COMPILED_INITIALIZER_CONTROL_FLAG_OFFSET);
+        }
+        for (offset, _) in effects.control_constant_dwords {
+            assert!(!effects.control_zero_dwords.contains(&offset));
+            assert_ne!(offset, COMPILED_INITIALIZER_CONTROL_FLAG_OFFSET);
+        }
+        // The copy moves three dwords from +0x258 to +0x5d4 without overlap.
+        let (source, destination) = effects.state_vector_copy;
+        assert!(destination >= source + 0x0c || source >= destination + 0x0c);
     }
 
     #[test]

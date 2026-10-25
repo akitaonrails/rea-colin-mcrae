@@ -880,6 +880,14 @@ native order. `derive_compiled_adjustment_reset` pins the constant effects.
 Two focused tests bring `cmr-core` to 1,249. The config-dependent flag bytes,
 copy loops, and final state writes remain open.
 
+G03-AK17 reconstructs the config-selected control flag (`+0x3f0` is `2` when
+config bit `0x10` is clear, else `1`) and the surrounding constant writes:
+control dwords `+0x3f4/+0x3f8/+0x3fc/+0x3ec` and bytes `+0x43c/+0x43d/+0x43e`
+zeroed, control `+0x37c = -0x4ccc` and `+0x41c = 0`, state dwords
+`+0x684/+0x610/+0x678/+0x6e4` and u16 words `+0x60c/+0x614` zeroed, and three
+dwords copied from `+0x258` to `+0x5d4`. Two focused tests bring `cmr-core` to
+1,251. The `+0x6f8` conditional flag and the `+0x6e8/+0x6ec` words remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed
