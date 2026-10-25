@@ -1099,17 +1099,26 @@ languages rather than fabricating or silently aliasing Italian assets.
   control dwords `+0x144,+0x14c,+0x150,+0x154,+0x160,+0x174,+0x178,+0x17c`,
   `+0x180,+0x184,+0x188,+0x18c,+0x1a8,+0x1b4,+0x408`; control byte `+0x440`;
   and control word `+0x3e4`. Its guarded `+0x15c`-to-`+0x160` reciprocal can
-  fault before the reciprocal/copy tail. `compose_recovered_compiled_stage_effects`
-  returns the raw direct outcome, center scalar, auxiliary patch, and four
-  family/tail arrays separately; it requires caller-supplied post-prefix
-  `state_word_48` and deliberately is not a complete state/control snapshot.
-  Config, auxiliary, then family validation produces typed atomic failure only
-  among represented stages; success does not prove the shipped full path reaches
-  or publishes the tail.
-  Five more tests bring `cmr-core` to 1,133. The common prefix,
-  `FUN_00486090`, the post-helper interval, merged object application,
-  meanings/units, config loading,
-  application/session/gameplay wiring, and other editions remain. See
+  fault before the reciprocal/copy tail. At G03-X,
+  `compose_recovered_compiled_stage_effects` returned the raw direct outcome,
+  center scalar, auxiliary patch, and four family/tail arrays separately; it
+  required caller-supplied post-prefix `state_word_48`. Config, auxiliary, then
+  family validation produced typed atomic failure only among those represented
+  stages. It deliberately was not a complete state/control snapshot, and
+  success did not prove the shipped full path reached or published the tail.
+  Five more tests brought `cmr-core` to 1,133. G03-Y then reconstructs and
+  integrates the exact common prefix `[0x4060d3,0x4062ba)`: an exact-write
+  patch carries unconditional wrapped control `+0x148`, optional bit-`0x02`
+  control scaling, optional bit-`0x04` scaling of all eight direct state words,
+  and derived state `+0x48/+0x4c`. Conditional writes remain optional rather
+  than fabricated stores; reciprocal overflow at divisors `-1`, `1`, or `2`
+  is typed and atomic. The config resolver now returns raw unindexed `+0x25`,
+  and stage composition derives the prefix for valid or invalid selectors,
+  feeds its `+0x48` to the auxiliary patch, and validates represented stages
+  config-before-prefix-before-aux-before-family. Eight new tests bring
+  `cmr-core` to 1,141. `FUN_00486090`, the post-helper interval, merged object
+  application, meanings/units, config loading, application/session/gameplay
+  wiring, and other editions remain. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
   `rea.official-eu.sim-compiled-center-split`,
@@ -1127,7 +1136,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-aux-control-consumer`,
   `impl.sim-compiled-config-options`,
   `rea.official-eu.sim-compiled-stage-dataflow`, and
-  `impl.sim-compiled-stage-effects`.
+  `impl.sim-compiled-stage-effects`, and
+  `impl.sim-compiled-common-prefix`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

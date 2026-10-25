@@ -574,7 +574,7 @@ cases, center split, the six-word transform, auxiliary patch, and reciprocal
 tail remains separate; config loading, application/session/gameplay wiring,
 meanings, units, and other editions remain open.
 
-G03-X composes those recovered stages while preserving the gaps established by
+G03-X (`f26520d`) composes those recovered stages while preserving the gaps established by
 static dataflow. From the direct-case join to the first helper, the omitted
 common prefix always adjusts direct control `+0x148`, can Q16-scale direct
 control `+0x148/+0x15c` and all eight direct state words under config flags,
@@ -590,18 +590,39 @@ before the reciprocal/copy tail. Its guarded reciprocal from `+0x15c` to
 `+0x160` can fault first. `RecoveredCompiledStageEffects` therefore keeps the raw
 direct-case outcome, center scalar, auxiliary patch, and four post-tail family
 arrays separate rather than inventing a complete state/control snapshot.
-`compose_recovered_compiled_stage_effects` resolves the shared config once,
-accepts caller-supplied post-prefix `state_word_48`, and validates in
+At G03-X, `compose_recovered_compiled_stage_effects` resolved the shared config
+once, accepted caller-supplied post-prefix `state_word_48`, and validated in
 config-before-aux-before-family order only among represented stages. Typed
-failure returns no partial bundle, an explicit safe reconstruction policy
-rather than shipped in-place fault semantics; success does not prove the shipped
-full path reaches or publishes the tail. Five synthetic tests cover a selected
+failure returned no partial bundle, an explicit safe reconstruction policy
+rather than shipped in-place fault semantics; success did not prove the shipped
+full path reached or published the tail. Five synthetic tests covered a selected
 case, invalid-selector common
 effects, exact destination relationships, option routing and tail output, and
 typed error precedence, bringing `cmr-core` to 1,133. The common prefix,
 `FUN_00486090`, the post-helper interval, merged object application,
 application/session/gameplay wiring,
 meanings/units, and other editions remain open.
+
+G03-Y supersedes the G03-X caller-supplied-prefix interface. Static
+instruction verification pins exact interval `[0x4060d3,0x4062ba)`: wrapped
+`control+0x148-0x51e`; optional raw-config-`+0x25` bit-`0x02` Q16 stores to
+`+0x15c` and adjusted `+0x148`; optional bit-`0x04` Q16 halving of all eight
+direct state words; wrapped `state+0x48=control+0x140+0x780000`; and guarded
+signed `2^32/+0x48` into state `+0x4c`. The exact-write patch preserves absent
+conditional stores as `None`; divisors `-1`, `1`, and `2` return a typed atomic
+error. This no-result error boundary is reconstruction policy because the
+shipped in-place path had already written earlier destinations before `IDIV`.
+The config resolver now returns raw unindexed `+0x25`, and the stage composition
+derives the prefix for selected and invalid-selector-preserved words, routes its
+derived `+0x48` into the auxiliary helper, and reports represented failures in
+config-before-prefix-before-aux-before-family order. Eight new synthetic tests
+plus strengthened existing composition tests cover the exact write set,
+individual and combined flags, unrelated bits, signed/wrapping arithmetic,
+fault boundaries, resolver addressing, invalid selectors, destination
+disjointness, and precedence, bringing `cmr-core` to 1,141.
+`FUN_00486090`, interval `0x406324..0x406459`, complete object application,
+runtime reachability, meanings/units, other editions, and application wiring
+remain open.
 
 Exit gate:
 

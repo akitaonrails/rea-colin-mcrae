@@ -60,6 +60,9 @@ pub const COMPILED_CONFIG_SLOT_COUNT: i8 = 8;
 /// Unindexed configuration flag whose bit one forces the auxiliary default.
 pub const COMPILED_CONFIG_AUX_FORCE_FLAG_OFFSET: usize = 0x026;
 
+/// Unindexed configuration byte controlling the common-prefix scale branches.
+pub const COMPILED_CONFIG_COMMON_FLAGS_OFFSET: usize = 0x025;
+
 /// Record-relative auxiliary-policy option byte.
 pub const COMPILED_CONFIG_AUX_OPTION_OFFSET: usize = 0x093;
 
@@ -94,6 +97,14 @@ const _: [(); AUX_CONTROL_POLICY_WORD_OFFSETS.len()] = [(); FORMAT_AUX_POLICY_WO
 pub const COMPILED_STATE_WORD_OFFSETS: [u16; COMPILED_STATE_WORD_COUNT] =
     [0x020, 0x024, 0x028, 0x638, 0x63c, 0x640, 0x648, 0x644];
 
+/// Complete state-destination universe of the recovered common prefix.
+pub const COMPILED_COMMON_PREFIX_STATE_OFFSETS: [u16; COMPILED_STATE_WORD_COUNT + 2] = [
+    0x020, 0x024, 0x028, 0x638, 0x63c, 0x640, 0x648, 0x644, 0x048, 0x04c,
+];
+
+/// Complete control-destination universe of the recovered common prefix.
+pub const COMPILED_COMMON_PREFIX_CONTROL_OFFSETS: [u16; 2] = [0x148, 0x15c];
+
 /// Control destinations in the neutral schema order used by
 /// [`CompiledCaseWords::control_words`].
 ///
@@ -105,6 +116,12 @@ pub const COMPILED_CONTROL_WORD_OFFSETS: [u16; COMPILED_CONTROL_WORD_COUNT] = [
 ];
 
 const CONTROL_FAMILY_START: usize = 14;
+
+/// Unindexed configuration flag that scales two direct control destinations.
+pub const COMPILED_COMMON_CONTROL_SCALE_MASK: u8 = 0x02;
+
+/// Unindexed configuration flag that scales all eight direct state words.
+pub const COMPILED_COMMON_STATE_SCALE_MASK: u8 = 0x04;
 
 /// Caller-supplied words for one compiled selector body.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -264,6 +281,88 @@ pub fn apply_compiled_case(
     }
 }
 
+/// Exact writes performed by the observed common prefix.
+///
+/// `None` means the corresponding flag-controlled destination was not written.
+/// This is a bounded patch, not a complete state/control object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledCommonPrefixEffects {
+    pub control_word_148: i32,
+    pub control_word_15c: Option<i32>,
+    pub state_words: Option<[i32; COMPILED_STATE_WORD_COUNT]>,
+    pub state_word_48: i32,
+    pub state_word_4c: i32,
+}
+
+/// A derived state `+0x48` whose signed `2^32 / value` quotient would make the
+/// shipped x86 `IDIV` fault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledCommonPrefixReciprocalOverflow {
+    pub state_word_48: i32,
+}
+
+impl fmt::Display for CompiledCommonPrefixReciprocalOverflow {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "compiled common-prefix reciprocal overflows i32 for state +0x48 value {}",
+            self.state_word_48
+        )
+    }
+}
+
+impl std::error::Error for CompiledCommonPrefixReciprocalOverflow {}
+
+/// Apply the common prefix reached after both valid and invalid selectors.
+///
+/// The raw unindexed config byte controls two independent scaling branches.
+/// Control `+0x148` is always adjusted before optional scaling; state `+0x48`
+/// is then derived from control `+0x140`, and state `+0x4c` is its guarded
+/// signed Q16 reciprocal. Every arithmetic store uses the observed 32-bit
+/// wrapping/low-word behavior. On reciprocal overflow this pure contract
+/// returns no partial effect bundle, an explicit reconstruction-safety policy;
+/// the shipped in-place routine had already performed earlier writes.
+pub fn derive_compiled_common_prefix(
+    words: CompiledCaseWords,
+    config_flags: u8,
+) -> Result<CompiledCommonPrefixEffects, CompiledCommonPrefixReciprocalOverflow> {
+    let adjusted_word_148 = words.control_words[0].wrapping_sub(0x051e);
+    let control_scale_enabled = config_flags & COMPILED_COMMON_CONTROL_SCALE_MASK != 0;
+    let control_word_148 = if control_scale_enabled {
+        common_prefix_q16_mul(adjusted_word_148, 0x2_0000)
+    } else {
+        adjusted_word_148
+    };
+    let control_word_15c =
+        control_scale_enabled.then(|| common_prefix_q16_mul(words.control_words[3], 0x1_3333));
+    let state_words = (config_flags & COMPILED_COMMON_STATE_SCALE_MASK != 0).then(|| {
+        words
+            .state_words
+            .map(|word| common_prefix_q16_mul(word, 0x8000))
+    });
+
+    let state_word_48 = words.control_words[22].wrapping_add(0x78_0000);
+    let state_word_4c = if state_word_48 == 0 {
+        -1
+    } else {
+        let quotient = (1_i64 << 32) / i64::from(state_word_48);
+        i32::try_from(quotient)
+            .map_err(|_| CompiledCommonPrefixReciprocalOverflow { state_word_48 })?
+    };
+
+    Ok(CompiledCommonPrefixEffects {
+        control_word_148,
+        control_word_15c,
+        state_words,
+        state_word_48,
+        state_word_4c,
+    })
+}
+
+fn common_prefix_q16_mul(left: i32, right: i32) -> i32 {
+    ((i64::from(left) * i64::from(right)) >> 16) as i32
+}
+
 /// Select the Q16 center-drive-split word from the low three option bits.
 ///
 /// This is the total value policy recovered from `FUN_00404100`. Resolving the
@@ -278,13 +377,14 @@ pub const fn compiled_center_split_q16(option_byte: u8) -> i32 {
     }
 }
 
-/// Raw option bytes resolved through the shared signed configuration index.
+/// Raw option/flag bytes resolved for the recovered common path.
 ///
 /// The existing arithmetic helpers own low-three-bit masking. Keeping the raw
-/// bytes here makes this resolver only the checked replacement for the three
-/// observed pointer calculations.
+/// bytes here makes this resolver only the checked replacement for the
+/// observed configuration reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledConfigOptions {
+    pub common_prefix_flags: u8,
     pub center_split: u8,
     pub control_run: u8,
     pub aux_control: AuxControlOption,
@@ -333,7 +433,7 @@ impl fmt::Display for CompiledConfigResolveError {
 
 impl std::error::Error for CompiledConfigResolveError {}
 
-/// Resolve the three option bytes read by the recovered common-path helpers.
+/// Resolve the option and flag bytes read by the recovered common path.
 ///
 /// The shipped code sign-extends a state byte, multiplies it by `0x9c`, and
 /// performs unchecked reads. This safe reconstruction rejects a negative
@@ -376,6 +476,7 @@ pub fn resolve_compiled_config_options(
     };
 
     Ok(CompiledConfigOptions {
+        common_prefix_flags: config[COMPILED_CONFIG_COMMON_FLAGS_OFFSET],
         center_split: config[record_base + COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET],
         control_run: config[record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET],
         aux_control,
@@ -693,16 +794,12 @@ pub fn transform_compiled_control_family(
 }
 
 /// Caller-owned inputs for composing only the recovered initializer stages.
-///
-/// `state_word_48` must be the value after the omitted common-prefix code. It
-/// is intentionally not derived from the raw direct-case stores here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecoveredCompiledStageInputs<'a> {
     pub prior_case_words: CompiledCaseWords,
     pub selector: u32,
     pub config: &'a [u8],
     pub state_slot: i8,
-    pub state_word_48: i32,
     pub global_word: i32,
 }
 
@@ -716,6 +813,7 @@ pub struct RecoveredCompiledStageInputs<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecoveredCompiledStageEffects {
     pub direct_case_stores: CompiledCaseOutcome,
+    pub common_prefix: CompiledCommonPrefixEffects,
     pub center_split_q16: i32,
     pub aux_control_patch: AuxControlPatch,
     pub control_families: CompiledControlFamilies,
@@ -724,6 +822,7 @@ pub struct RecoveredCompiledStageEffects {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveredCompiledStageError {
     Config(CompiledConfigResolveError),
+    Prefix(CompiledCommonPrefixReciprocalOverflow),
     Aux(AuxControlReciprocalOverflow),
     Family(CompiledReciprocalOverflow),
 }
@@ -732,6 +831,7 @@ impl fmt::Display for RecoveredCompiledStageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config(source) => write!(formatter, "cannot resolve compiled options: {source}"),
+            Self::Prefix(source) => write!(formatter, "cannot derive common prefix: {source}"),
             Self::Aux(source) => write!(formatter, "cannot derive auxiliary patch: {source}"),
             Self::Family(source) => {
                 write!(
@@ -747,6 +847,7 @@ impl std::error::Error for RecoveredCompiledStageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Config(source) => Some(source),
+            Self::Prefix(source) => Some(source),
             Self::Aux(source) => Some(source),
             Self::Family(source) => Some(source),
         }
@@ -755,14 +856,15 @@ impl std::error::Error for RecoveredCompiledStageError {
 
 /// Compose only the recovered post-dispatch stages in their observed order.
 ///
-/// The returned bundle keeps raw direct stores separate from the center-split,
-/// auxiliary, and family/tail effects. The family/tail is derived from and
-/// supersedes only the raw direct-case family. The family-disjoint omitted
-/// interval between the auxiliary helper and reciprocal/copy tail is not
-/// represented and can itself fault. Config, auxiliary, then family validation
-/// order applies only to the represented stages; success does not prove that
-/// the shipped full initializer reaches its tail. Any represented failure
-/// returns no partial bundle. That atomic error boundary is a safe
+/// The returned bundle keeps raw direct stores separate from the exact prefix,
+/// center-split, auxiliary, and family/tail effects. The family/tail is derived
+/// from and supersedes only the raw direct-case family, which the prefix does
+/// not touch. The family-disjoint omitted interval between the auxiliary helper
+/// and reciprocal/copy tail is not represented and can itself fault. Config,
+/// prefix, auxiliary, then family validation order applies only to the
+/// represented stages; success does not prove that the shipped full initializer
+/// reaches its tail. Any represented failure returns no partial bundle. That
+/// atomic error boundary is a safe
 /// reconstruction policy; the shipped in-place code could have performed
 /// earlier writes before an `IDIV` fault.
 pub fn compose_recovered_compiled_stage_effects(
@@ -773,19 +875,27 @@ pub fn compose_recovered_compiled_stage_effects(
     let options = resolve_compiled_config_options(input.config, input.state_slot)
         .map_err(RecoveredCompiledStageError::Config)?;
     let direct_case_stores = direct_cases.apply(input.prior_case_words, input.selector);
+    let common_prefix =
+        derive_compiled_common_prefix(direct_case_stores.words, options.common_prefix_flags)
+            .map_err(RecoveredCompiledStageError::Prefix)?;
     let center_split_q16 = compiled_center_split_q16(options.center_split);
     let transformed_control_family = transform_compiled_control_family(
         direct_case_stores.words.control_family(),
         options.control_run,
     );
     let aux_control_patch = aux_constants
-        .derive(options.aux_control, input.state_word_48, input.global_word)
+        .derive(
+            options.aux_control,
+            common_prefix.state_word_48,
+            input.global_word,
+        )
         .map_err(RecoveredCompiledStageError::Aux)?;
     let control_families = derive_compiled_control_families(transformed_control_family)
         .map_err(RecoveredCompiledStageError::Family)?;
 
     Ok(RecoveredCompiledStageEffects {
         direct_case_stores,
+        common_prefix,
         center_split_q16,
         aux_control_patch,
         control_families,
@@ -1154,6 +1264,7 @@ mod tests {
 
     fn compiled_stage_config(
         slot: i8,
+        common_prefix_flags: u8,
         aux_option: u8,
         center_option: u8,
         run_option: u8,
@@ -1161,6 +1272,7 @@ mod tests {
     ) -> Vec<u8> {
         let record_base = slot as usize * COMPILED_CONFIG_RECORD_STRIDE;
         let mut config = vec![0; record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET + 1];
+        config[COMPILED_CONFIG_COMMON_FLAGS_OFFSET] = common_prefix_flags;
         config[record_base + COMPILED_CONFIG_AUX_OPTION_OFFSET] = aux_option;
         config[record_base + COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET] = center_option;
         config[record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET] = run_option;
@@ -1308,6 +1420,111 @@ mod tests {
     }
 
     #[test]
+    fn common_prefix_always_adjusts_control_and_derives_zero_reciprocal() {
+        let mut words = synthetic_case(3);
+        words.control_words[0] = 0x051e;
+        words.control_words[22] = -0x78_0000;
+        let original_state = words.state_words;
+        let original_control_15c = words.control_words[3];
+
+        let effects = derive_compiled_common_prefix(words, 0).unwrap();
+
+        assert_eq!(effects.control_word_148, 0);
+        assert_eq!(effects.control_word_15c, None);
+        assert_eq!(effects.state_words, None);
+        assert_eq!(words.control_words[3], original_control_15c);
+        assert_eq!(words.state_words, original_state);
+        assert_eq!(effects.state_word_48, 0);
+        assert_eq!(effects.state_word_4c, -1);
+    }
+
+    #[test]
+    fn common_prefix_control_flag_scales_adjusted_signed_words() {
+        let mut words = synthetic_case(4);
+        words.control_words[0] = i32::MAX;
+        words.control_words[3] = -0x1_0001;
+        words.control_words[22] = -0x77_fffc;
+        let adjusted = i32::MAX.wrapping_sub(0x051e);
+
+        let effects =
+            derive_compiled_common_prefix(words, COMPILED_COMMON_CONTROL_SCALE_MASK).unwrap();
+
+        assert_eq!(
+            effects.control_word_148,
+            ((i64::from(adjusted) * 0x2_0000_i64) >> 16) as i32
+        );
+        assert_eq!(effects.control_word_15c, Some(-0x1_3335));
+        assert_eq!(effects.state_words, None);
+        assert_eq!(effects.state_word_48, 4);
+        assert_eq!(effects.state_word_4c, 0x4000_0000);
+    }
+
+    #[test]
+    fn common_prefix_state_flag_halves_all_eight_words_with_arithmetic_shift() {
+        let mut words = synthetic_case(5);
+        words.state_words = [-3, -2, -1, 0, 1, 2, 3, i32::MAX];
+        words.control_words[22] = -0x77_fffd;
+
+        let effects =
+            derive_compiled_common_prefix(words, COMPILED_COMMON_STATE_SCALE_MASK).unwrap();
+
+        assert_eq!(
+            effects.state_words,
+            Some([-2, -1, -1, 0, 0, 1, 1, 0x3fff_ffff])
+        );
+        assert_eq!(effects.control_word_15c, None);
+        assert_eq!(effects.state_word_48, 3);
+        assert_eq!(effects.state_word_4c, 1_431_655_765);
+    }
+
+    #[test]
+    fn common_prefix_combines_both_masks_and_ignores_other_bits() {
+        let mut words = synthetic_case(9);
+        words.state_words = [2, 4, 6, 8, 10, 12, 14, 16];
+        words.control_words[0] = 0x151e;
+        words.control_words[3] = 0x2_0000;
+        words.control_words[22] = -0x77_fffc;
+        let flags = COMPILED_COMMON_CONTROL_SCALE_MASK | COMPILED_COMMON_STATE_SCALE_MASK;
+
+        let combined = derive_compiled_common_prefix(words, flags).unwrap();
+        let with_other_bits = derive_compiled_common_prefix(words, flags | 0xf9).unwrap();
+
+        assert_eq!(combined, with_other_bits);
+        assert_eq!(combined.control_word_148, 0x2000);
+        assert_eq!(combined.control_word_15c, Some(0x2_6666));
+        assert_eq!(combined.state_words, Some([1, 2, 3, 4, 5, 6, 7, 8]));
+    }
+
+    #[test]
+    fn common_prefix_ignores_unobserved_flag_bits_and_wraps_state_derivation() {
+        let mut words = synthetic_case(6);
+        words.control_words[22] = i32::MAX;
+
+        let baseline = derive_compiled_common_prefix(words, 0).unwrap();
+        let unknown_bits = derive_compiled_common_prefix(words, 0xf9).unwrap();
+
+        assert_eq!(unknown_bits, baseline);
+        assert_eq!(baseline.state_word_48, i32::MIN + 0x77_ffff);
+    }
+
+    #[test]
+    fn common_prefix_reports_every_signed_reciprocal_overflow_boundary() {
+        for state_word_48 in [-1_i32, 1, 2] {
+            let mut words = synthetic_case(7);
+            words.control_words[22] = state_word_48.wrapping_sub(0x78_0000);
+            assert_eq!(
+                derive_compiled_common_prefix(words, 0),
+                Err(CompiledCommonPrefixReciprocalOverflow { state_word_48 })
+            );
+        }
+
+        let mut words = synthetic_case(8);
+        words.control_words[22] = (-2_i32).wrapping_sub(0x78_0000);
+        let effects = derive_compiled_common_prefix(words, 0).unwrap();
+        assert_eq!(effects.state_word_4c, i32::MIN);
+    }
+
+    #[test]
     fn center_split_pins_all_low_three_bit_policies() {
         assert_eq!(compiled_center_split_q16(0), 0x4000);
         assert_eq!(compiled_center_split_q16(1), 0x8000);
@@ -1353,6 +1570,7 @@ mod tests {
         assert_eq!(
             resolve_compiled_config_options(&vec![0; required_len], 0),
             Ok(CompiledConfigOptions {
+                common_prefix_flags: 0,
                 center_split: 0,
                 control_run: 0,
                 aux_control: AuxControlOption::Resolved(0),
@@ -1377,6 +1595,7 @@ mod tests {
         assert_eq!(
             resolve_compiled_config_options(&config, 1),
             Ok(CompiledConfigOptions {
+                common_prefix_flags: 0,
                 center_split: 0xfa,
                 control_run: 0xf9,
                 aux_control: AuxControlOption::Resolved(0xe5),
@@ -1425,6 +1644,7 @@ mod tests {
         assert_eq!(
             resolve_compiled_config_options(&config, index),
             Ok(CompiledConfigOptions {
+                common_prefix_flags: 0,
                 center_split: 0xa5,
                 control_run: 0xa9,
                 aux_control: AuxControlOption::Resolved(0xa3),
@@ -1466,12 +1686,25 @@ mod tests {
     }
 
     #[test]
+    fn config_option_resolver_preserves_unindexed_common_prefix_flags() {
+        let mut config = compiled_stage_config(1, 0xa6, 1, 2, 3, false);
+        config[COMPILED_CONFIG_COMMON_FLAGS_OFFSET + COMPILED_CONFIG_RECORD_STRIDE] = 0x19;
+
+        assert_eq!(
+            resolve_compiled_config_options(&config, 1)
+                .unwrap()
+                .common_prefix_flags,
+            0xa6
+        );
+    }
+
+    #[test]
     fn recovered_stage_bundle_routes_selected_case_options_and_tail_in_order() {
         let cases = synthetic_cases();
         let direct_cases = CompiledDirectCaseSet { cases };
         let constants = aux_constants();
         let aux_constants = AuxControlConstantSet { constants };
-        let config = compiled_stage_config(1, 1, 1, 0, false);
+        let config = compiled_stage_config(1, 0, 1, 1, 0, false);
         let prior = synthetic_case(-7);
 
         let effects = compose_recovered_compiled_stage_effects(
@@ -1482,7 +1715,6 @@ mod tests {
                 selector: 3,
                 config: &config,
                 state_slot: 1,
-                state_word_48: -17,
                 global_word: 0x1_0000,
             },
         )
@@ -1493,7 +1725,9 @@ mod tests {
             selected_case: Some(3),
         };
         let transformed = transform_compiled_control_family(cases[3].control_family(), 0);
+        let prefix = derive_compiled_common_prefix(cases[3], 0).unwrap();
         assert_eq!(effects.direct_case_stores, selected);
+        assert_eq!(effects.common_prefix, prefix);
         assert_ne!(
             effects.direct_case_stores.words.control_family(),
             transformed
@@ -1501,8 +1735,13 @@ mod tests {
         assert_eq!(effects.center_split_q16, 0x8000);
         assert_eq!(
             effects.aux_control_patch,
-            derive_aux_control_patch(AuxControlOption::Resolved(1), -17, 0x1_0000, &constants,)
-                .unwrap()
+            derive_aux_control_patch(
+                AuxControlOption::Resolved(1),
+                prefix.state_word_48,
+                0x1_0000,
+                &constants,
+            )
+            .unwrap()
         );
         assert_eq!(
             effects.control_families,
@@ -1520,6 +1759,18 @@ mod tests {
         );
         assert!(!COMPILED_CONTROL_WORD_OFFSETS.contains(&0x170));
         assert!(!AUX_CONTROL_WORD_OFFSETS.contains(&0x170));
+        assert_eq!(COMPILED_COMMON_PREFIX_CONTROL_OFFSETS, [0x148, 0x15c]);
+        assert_eq!(
+            COMPILED_COMMON_PREFIX_STATE_OFFSETS,
+            [
+                0x020, 0x024, 0x028, 0x638, 0x63c, 0x640, 0x648, 0x644, 0x048, 0x04c
+            ]
+        );
+        for offset in COMPILED_COMMON_PREFIX_CONTROL_OFFSETS {
+            assert_ne!(offset, 0x170);
+            assert!(!family_offsets.contains(&offset));
+            assert!(!AUX_CONTROL_WORD_OFFSETS.contains(&offset));
+        }
         for offset in family_offsets {
             assert!(COMPILED_CONTROL_WORD_OFFSETS.contains(offset));
             assert!(!AUX_CONTROL_WORD_OFFSETS.contains(offset));
@@ -1533,7 +1784,7 @@ mod tests {
         };
         let constants = aux_constants();
         let aux_constants = AuxControlConstantSet { constants };
-        let config = compiled_stage_config(0, 2, 0, 0, true);
+        let config = compiled_stage_config(0, COMPILED_COMMON_STATE_SCALE_MASK, 2, 0, 0, true);
         let prior = synthetic_case(40);
         let transformed = transform_compiled_control_family(prior.control_family(), 0);
         assert_ne!(transformed, prior.control_family());
@@ -1547,7 +1798,6 @@ mod tests {
                     selector,
                     config: &config,
                     state_slot: 0,
-                    state_word_48: 24,
                     global_word: 0x8000,
                 },
             )
@@ -1561,20 +1811,29 @@ mod tests {
                 }
             );
             assert_eq!(effects.center_split_q16, 0x4000);
+            assert_eq!(
+                effects.common_prefix,
+                derive_compiled_common_prefix(prior, COMPILED_COMMON_STATE_SCALE_MASK).unwrap()
+            );
             assert_eq!(effects.control_families.post_processed_raw, transformed);
             assert_eq!(
                 effects.aux_control_patch,
-                derive_aux_control_patch(AuxControlOption::ForcedDefault, 24, 0x8000, &constants,)
-                    .unwrap()
+                derive_aux_control_patch(
+                    AuxControlOption::ForcedDefault,
+                    effects.common_prefix.state_word_48,
+                    0x8000,
+                    &constants,
+                )
+                .unwrap()
             );
         }
     }
 
     #[test]
     fn recovered_stage_bundle_reports_config_before_auxiliary_failure() {
-        let direct_cases = CompiledDirectCaseSet {
-            cases: synthetic_cases(),
-        };
+        let mut cases = synthetic_cases();
+        cases[0].control_words[22] = 1_i32.wrapping_sub(0x78_0000);
+        let direct_cases = CompiledDirectCaseSet { cases };
         let mut constants = aux_constants();
         constants.policy_one.reciprocal_divisor = 1;
         let aux_constants = AuxControlConstantSet { constants };
@@ -1613,7 +1872,6 @@ mod tests {
                         selector: 0,
                         config: &config,
                         state_slot,
-                        state_word_48: 0,
                         global_word: 0,
                     },
                 ),
@@ -1621,17 +1879,16 @@ mod tests {
             );
         }
 
-        let config = compiled_stage_config(0, 1, 0, 2, false);
+        let config = compiled_stage_config(0, 0, 1, 0, 2, false);
         assert_eq!(
             compose_recovered_compiled_stage_effects(
                 &direct_cases,
                 &aux_constants,
                 RecoveredCompiledStageInputs {
                     prior_case_words: prior,
-                    selector: 0,
+                    selector: 1,
                     config: &config,
                     state_slot: 0,
-                    state_word_48: 0,
                     global_word: 0,
                 },
             ),
@@ -1645,17 +1902,45 @@ mod tests {
     }
 
     #[test]
+    fn recovered_stage_bundle_reports_prefix_before_auxiliary_and_family_failure() {
+        let mut cases = synthetic_cases();
+        cases[0].control_words[22] = 1_i32.wrapping_sub(0x78_0000);
+        cases[0].control_words[CONTROL_FAMILY_START + 1] = 1;
+        let direct_cases = CompiledDirectCaseSet { cases };
+        let mut constants = aux_constants();
+        constants.policy_one.reciprocal_divisor = 1;
+        let aux_constants = AuxControlConstantSet { constants };
+        let config = compiled_stage_config(0, 0, 1, 0, 2, false);
+
+        assert_eq!(
+            compose_recovered_compiled_stage_effects(
+                &direct_cases,
+                &aux_constants,
+                RecoveredCompiledStageInputs {
+                    prior_case_words: synthetic_case(-1),
+                    selector: 0,
+                    config: &config,
+                    state_slot: 0,
+                    global_word: 0,
+                },
+            ),
+            Err(RecoveredCompiledStageError::Prefix(
+                CompiledCommonPrefixReciprocalOverflow { state_word_48: 1 }
+            ))
+        );
+    }
+
+    #[test]
     fn recovered_stage_bundle_reports_auxiliary_before_family_overflow() {
         let mut cases = synthetic_cases();
         cases[0].control_words[CONTROL_FAMILY_START + 1] = 1;
         let direct_cases = CompiledDirectCaseSet { cases };
-        let config = compiled_stage_config(0, 1, 0, 2, false);
+        let config = compiled_stage_config(0, 0, 1, 0, 2, false);
         let input = RecoveredCompiledStageInputs {
             prior_case_words: synthetic_case(-2),
             selector: 0,
             config: &config,
             state_slot: 0,
-            state_word_48: 0,
             global_word: 0,
         };
 
