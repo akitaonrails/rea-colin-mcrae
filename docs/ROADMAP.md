@@ -402,12 +402,17 @@ Add subsystems in dependency order:
 Current G03 recovery has isolated the signed force-candidate selector and the
 pure arithmetic behind the nonzero control `+0x420` correction gate inside
 `FUN_0040d810`; its two lookup-free initial-candidate branches are also
-reconstructed. The remaining physics exit work is the lookup-dependent
-candidate branch, direction/state accumulation, surface-indexed add and the
-geometric qualification around `FUN_0040fbe0`; its pure postprocess scalar is
-now recovered, as is the surface-indexed add's pure scalar. Direction vectors,
-projections, and stateful accumulation remain separated from unsupported
-physical labels until recovered.
+reconstructed. `FUN_0048fba0` proves the dependent trig, atan, and square-root
+tables are runtime-generated math rather than asset payloads. The exact
+source-owned `legacy_math::{sin_q16,cos_q16,sqrt_q16}` compatibility helpers
+now centralize trig and legacy square root, while mathematical
+`Fixed16::sqrt` stays distinct. The atan table is reproducible, but its API is
+deferred until the combined path's full quadrant and zero-input behavior is
+recovered. The remaining physics exit work is that lookup-dependent candidate
+consumer, direction/state accumulation, surface direction/projection and add,
+and geometric qualification around `FUN_0040fbe0`; the two adjacent pure
+scalars are recovered. Direction vectors, projections, and stateful
+accumulation remain separated from unsupported physical labels until recovered.
 
 Exit gate:
 

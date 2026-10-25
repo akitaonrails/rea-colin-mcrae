@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use crate::legacy_math::sqrt_q16;
+
 /// Retained process-global inputs consumed by the Type-2 pre-draw mutation.
 ///
 /// A nonzero `shared_distance_q16` selects one distance for every vertex. Zero
@@ -176,7 +178,7 @@ fn vertex_distance_q16(
     let dx = center[0].wrapping_neg().wrapping_sub(qx);
     let dz = center[2].wrapping_neg().wrapping_sub(qz);
     let sum = qmul_low(dx, dx).wrapping_add(qmul_low(dz, dz)) as u32;
-    Ok(fixed_sqrt_q16(sum) as i32)
+    Ok(sqrt_q16(sum) as i32)
 }
 
 fn scaled_coordinate(bits: u32) -> Option<i32> {
@@ -198,57 +200,6 @@ fn scaled_coordinate(bits: u32) -> Option<i32> {
 
 fn qmul_low(left: i32, right: i32) -> i32 {
     ((i64::from(left) * i64::from(right)) >> 16) as i32
-}
-
-/// Exact counterpart of the shipped startup-generated 4096-entry u16 table.
-fn sqrt_lut(index: u32) -> u16 {
-    debug_assert!(index < 4096);
-    integer_sqrt(u64::from((8 + 16 * index) << 16)) as u16
-}
-
-fn fixed_sqrt_q16(value: u32) -> u32 {
-    if value == 0 {
-        return 0;
-    }
-    let highest_bit = 31_i8 - value.leading_zeros() as i8;
-    let mut exponent = highest_bit - 15;
-    if exponent & 1 != 0 {
-        exponent += 1;
-    }
-    let index_shift = exponent + 4;
-    let index = if index_shift < 0 {
-        value << u32::from(index_shift.unsigned_abs())
-    } else {
-        value >> u32::from(index_shift as u8)
-    };
-    debug_assert!((1024..=4095).contains(&index));
-
-    let scale = exponent >> 1;
-    let result = u32::from(sqrt_lut(index));
-    if scale < 0 {
-        result >> u32::from(scale.unsigned_abs())
-    } else {
-        result << u32::from(scale as u8)
-    }
-}
-
-fn integer_sqrt(value: u64) -> u64 {
-    let mut remainder = value;
-    let mut root = 0_u64;
-    let mut bit = 1_u64 << 62;
-    while bit > remainder {
-        bit >>= 2;
-    }
-    while bit != 0 {
-        if remainder >= root + bit {
-            remainder -= root + bit;
-            root = (root >> 1) + bit;
-        } else {
-            root >>= 1;
-        }
-        bit >>= 2;
-    }
-    root
 }
 
 #[cfg(test)]
@@ -318,7 +269,7 @@ mod tests {
 
         // The recovered lookup samples the middle of a bin, so this is the
         // table's exact answer rather than a host square-root result.
-        assert_eq!(fixed_sqrt_q16(25 << 16), 327_728);
+        assert_eq!(sqrt_q16(25 << 16), 327_728);
         assert_eq!(prepared[0].word5(), 0xff00_0000);
         assert_eq!(source[5], 0xdead_beef);
     }

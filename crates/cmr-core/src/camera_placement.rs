@@ -130,6 +130,7 @@ pub fn reset_vertical_drop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::legacy_math::cos_q16;
 
     #[test]
     fn dot_and_velocity_lead_are_q16() {
@@ -189,15 +190,9 @@ mod tests {
         assert!(!t.is_active());
     }
 
-    /// A generated BAM cosine table (`lut[a] = cos(2*pi*a/4096)` Q16.16), standing
-    /// in for the runtime-built `DAT_0082d380`.
+    /// The exact source-owned reconstruction of the startup cosine table.
     fn cos_table() -> [i32; BAM_TABLE_LEN] {
-        let mut lut = [0i32; BAM_TABLE_LEN];
-        for (a, slot) in lut.iter_mut().enumerate() {
-            let theta = std::f64::consts::TAU * (a as f64) / (BAM_TABLE_LEN as f64);
-            *slot = (theta.cos() * 65536.0).round() as i32;
-        }
-        lut
+        std::array::from_fn(|phase| cos_q16(phase as u16).raw())
     }
 
     #[test]

@@ -15,10 +15,10 @@
 //!
 //! Observations: the Q16.16 multiply/unit, the `>>0x10` truncation on signed
 //! ints, and the 4096-entry table indexing with the `+0x400` cosine offset.
-//! Inferences/design: the table holds a standard sine scaled to Q16.16 - the
-//! original table's bytes are game data and are NOT copied here; this module
-//! *reconstructs* the table from `sin` so behaviour matches without embedding
-//! the asset. See evidence `rea.official-eu.sim-fixed-step`.
+//! Inferences/design: the table holds a standard sine scaled to Q16.16. The
+//! source-owned reconstruction in [`crate::legacy_math`] reproduces the startup
+//! values without embedding game bytes. See evidence
+//! `rea.official-eu.sim-fixed-step`.
 
 /// `1.0` in Q16.16.
 pub const FIXED_ONE: i32 = 0x1_0000;
@@ -83,9 +83,8 @@ impl Fixed16 {
 
     /// Non-negative square root in Q16.16 (negative inputs yield `0`).
     ///
-    /// The shipped code reads a reciprocal-sqrt lookup table (`DAT_0082b380`) to
-    /// form vector magnitudes; its values are game data and are NOT copied here.
-    /// This reconstructs the same magnitude with an integer square root:
+    /// This is the mathematical integer-square-root helper, distinct from the
+    /// compatibility lookup behavior in [`crate::legacy_math::sqrt_q16`]:
     /// `sqrt(r / 2^16) * 2^16 == isqrt(r << 16)`.
     pub const fn sqrt(self) -> Fixed16 {
         if self.0 <= 0 {
@@ -134,16 +133,11 @@ pub const BAM_QUARTER_TURN: u16 = 0x400;
 
 /// Build the reconstructed Q16.16 sine table indexed by `angle & 0xfff`.
 ///
-/// The indexing scheme is recovered; the values are a standard sine scaled to
-/// Q16.16 (`round(sin(2*pi*i/4096) * 0x10000)`), reconstructed here rather than
-/// copied from the game's `DAT_0082d380`.
+/// The indexing and startup values are recovered. The source-owned quarter-wave
+/// reconstruction in [`crate::legacy_math::sin_q16`] supplies the exact
+/// truncating values without copied game bytes.
 pub fn build_sine_table() -> [i32; TRIG_TABLE_LEN] {
-    let mut table = [0i32; TRIG_TABLE_LEN];
-    for (index, slot) in table.iter_mut().enumerate() {
-        let radians = std::f64::consts::TAU * index as f64 / TRIG_TABLE_LEN as f64;
-        *slot = (radians.sin() * FIXED_ONE as f64).round() as i32;
-    }
-    table
+    std::array::from_fn(|index| crate::legacy_math::sin_q16(index as u16).raw())
 }
 
 /// Sine of a BAM angle: `table[angle & 0xfff]`.
@@ -201,8 +195,9 @@ impl Vec3 {
             .add(self.z.mul(rhs.z))
     }
 
-    /// Euclidean length `sqrt(x^2 + y^2 + z^2)` (the magnitude the shipped code
-    /// forms via its reciprocal-sqrt table; see [`Fixed16::sqrt`]).
+    /// Mathematical Euclidean length `sqrt(x^2 + y^2 + z^2)`. Compatibility
+    /// paths that use the recovered lookup approximation call
+    /// [`crate::legacy_math::sqrt_q16`] explicitly.
     pub const fn length(self) -> Fixed16 {
         self.dot(self).sqrt()
     }
@@ -318,5 +313,17 @@ mod tests {
         assert!(cos_bam(&table, BAM_QUARTER_TURN).raw().abs() <= 1);
         // Index wraps modulo a full turn.
         assert_eq!(sin_bam(&table, BAM_FULL_TURN), sin_bam(&table, 0));
+    }
+
+    #[test]
+    fn built_sine_table_matches_every_exact_legacy_lookup() {
+        let table = build_sine_table();
+        for (phase, value) in table.into_iter().enumerate() {
+            assert_eq!(value, crate::legacy_math::sin_q16(phase as u16).raw());
+        }
+        assert_eq!(
+            table[1], 100,
+            "startup conversion truncates instead of rounding"
+        );
     }
 }

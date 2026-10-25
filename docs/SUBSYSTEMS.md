@@ -982,11 +982,16 @@ languages rather than fabricating or silently aliasing Italian assets.
   canonical `(i64)a*(i64)b>>16` multiply; dt coefficient `0xa3d`~0.04) with
   16-bit BAM angles into a 4096-entry trig table `DAT_0082d380`
   (`sin=table[a&0xfff]`, `cos=table[(a+0x400)&0xfff]`); floats appear only at
-  `__ftol` input boundaries. Reconstructed in `cmr-core::fixed_point` (`Fixed16`
-  with the recovered multiply/units and BAM trig over a reconstructed sine LUT,
-  the game's table values not copied). Primary car state base `DAT_00700300`
+  `__ftol` input boundaries. `FUN_0048fba0` generates the trig, atan, and
+  square-root tables at startup with x87 operations and truncate-toward-zero
+  conversions. Reconstructed in `cmr-core::fixed_point` (`Fixed16` and BAM
+  indexing) plus deterministic `cmr-core::legacy_math::{sin_q16,cos_q16,sqrt_q16}`;
+  no game table bytes are copied. `Fixed16::sqrt` is deliberately the distinct
+  mathematical integer-square-root helper. Primary car state base `DAT_00700300`
   (stride 0x768); control/telemetry base `DAT_005fffc8` (stride 0x464). See
-  evidence `rea.official-eu.sim-fixed-step`.
+  evidence `rea.official-eu.sim-fixed-step`,
+  `rea.official-eu.sim-runtime-math-tables`, and
+  `impl.legacy-math-tables`.
 - The per-car vehicle dynamics run from the dispatcher `0x407690` (current-car
   globals `DAT_0050c604`/`DAT_0050c5b4`): input smoother `0x4088c0`, gearbox
   `0x41b5b0` (auto `0x41b810` / sequential `0x41bb30` / mode-2 `0x41bf00`), RPM +
@@ -1029,14 +1034,18 @@ languages rather than fabricating or silently aliasing Italian assets.
   clamp. The adjacent surface-indexed coefficient/override gates and scalar are
   also reconstructed. The combined candidate path, direction/state
   accumulation, surface direction/projection and stateful add, geometric
-  postprocess qualification, position update, damper source, and runtime-loaded
-  table values remain. See evidence
+  postprocess qualification, position update, and damper source remain. The
+  lookup tables themselves are now source-owned and deterministic; the atan2
+  consumer stays deferred until its full quadrant and zero-input behavior is
+  recovered. See evidence
   `rea.official-eu.sim-grip`,
   `rea.official-eu.sim-signed-force-candidate-select`,
   `rea.official-eu.sim-force-candidate-fast-paths`,
-  `rea.official-eu.sim-wheel-correction-arithmetic`, and
-  `rea.official-eu.sim-postprocess-correction-scalar`, and
-  `rea.official-eu.sim-surface-indexed-lane-scalar`.
+  `rea.official-eu.sim-wheel-correction-arithmetic`,
+  `rea.official-eu.sim-postprocess-correction-scalar`,
+  `rea.official-eu.sim-surface-indexed-lane-scalar`,
+  `rea.official-eu.sim-runtime-math-tables`, and
+  `impl.legacy-math-tables`.
 - Collision/damage runs from `0x410a60` (Mechanics callee), which delegates the
   crash path to `0x4115d0` once the out-of-control flag `car+0x680` is set. The
   contact impulse accumulates into `car+0x3cc..`; its magnitude feeds the impact

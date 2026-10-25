@@ -9,13 +9,13 @@
 
 use std::fmt;
 
-use crate::display::DisplayExtent;
+use crate::{
+    display::DisplayExtent,
+    legacy_math::{cos_q16, sin_q16, sqrt_q16},
+};
 
 const Q16_ONE: i32 = 0x1_0000;
 const ROOT_TRANSLATION_Q16: [i32; 3] = [0x4ccc, 0x1333, 0x14_0000];
-const TRIG_PHASE_MASK: u16 = 0x0fff;
-const TRIG_QUARTER_TURN: u16 = 0x0400;
-const TRIG_QUARTER: [i32; 1025] = include!("root_menu_c3d_trig_quarter.in");
 
 /// Exact f32 bit pattern for one row-major 4×4 compatibility matrix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -175,8 +175,8 @@ fn basis_row(basis: [i32; 9], row: usize) -> [i32; 3] {
 
 fn axis_angle_rotation_q16(axis: [i32; 3], angle: u16) -> [i32; 9] {
     let [x, y, z] = axis;
-    let negative_sine = trig_lookup(0_u16.wrapping_sub(angle));
-    let cosine = trig_lookup(TRIG_QUARTER_TURN.wrapping_sub(angle));
+    let negative_sine = sin_q16(0_u16.wrapping_sub(angle)).raw();
+    let cosine = cos_q16(angle).raw();
     let one_minus_cosine = Q16_ONE.wrapping_sub(cosine);
     let scaled_product = |left, right| qmul_low(qmul_low(left, right), one_minus_cosine);
 
@@ -245,19 +245,6 @@ fn q16_to_f32_bits(value: i32) -> u32 {
     ((f64::from(value) * (1.0 / 65_536.0)) as f32).to_bits()
 }
 
-fn trig_lookup(raw_phase: u16) -> i32 {
-    let phase = usize::from(raw_phase & TRIG_PHASE_MASK);
-    let quadrant = phase >> 10;
-    let offset = phase & 0x03ff;
-    match quadrant {
-        0 => TRIG_QUARTER[offset],
-        1 => TRIG_QUARTER[1024 - offset],
-        2 => -TRIG_QUARTER[offset],
-        3 => -TRIG_QUARTER[1024 - offset],
-        _ => unreachable!("masked trig phase has exactly four quadrants"),
-    }
-}
-
 fn qmul_low(left: i32, right: i32) -> i32 {
     (((i64::from(left) * i64::from(right)) >> 16) & i64::from(u32::MAX)) as i32
 }
@@ -270,62 +257,13 @@ fn normalize_q16(vector: [i32; 3]) -> [i32; 3] {
         return [0; 3];
     }
 
-    let highest_bit = 31_i8 - sum.leading_zeros() as i8;
-    let mut exponent = highest_bit - 15;
-    if exponent & 1 != 0 {
-        exponent += 1;
-    }
-
-    let index_shift = exponent + 4;
-    let index = if index_shift < 0 {
-        sum << u32::from(index_shift.unsigned_abs())
-    } else {
-        sum >> u32::from(index_shift as u8)
-    };
-    debug_assert!((1024..=4095).contains(&index));
-
-    let scale = exponent >> 1;
-    let mut divisor = u32::from(sqrt_lut(index as usize));
-    if scale < 0 {
-        divisor >>= u32::from(scale.unsigned_abs());
-    } else {
-        divisor <<= u32::from(scale as u8);
-    }
+    let divisor = sqrt_q16(sum);
     let reciprocal = ((1_u64 << 32) / u64::from(divisor)) as i32;
     vector.map(|component| qmul_low(component, reciprocal))
 }
 
-fn sqrt_lut(index: usize) -> u16 {
-    debug_assert!(index < 4096);
-    let radicand = ((8_u32 + 16 * index as u32) << 16) as u64;
-    integer_sqrt(radicand) as u16
-}
-
-fn integer_sqrt(value: u64) -> u64 {
-    let mut remainder = value;
-    let mut root = 0_u64;
-    let mut bit = 1_u64 << 62;
-    while bit > remainder {
-        bit >>= 2;
-    }
-    while bit != 0 {
-        if remainder >= root + bit {
-            remainder -= root + bit;
-            root = (root >> 1) + bit;
-        } else {
-            root >>= 1;
-        }
-        bit >>= 2;
-    }
-    root
-}
-
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write as _;
-
-    use sha2::{Digest, Sha256};
-
     use super::*;
 
     const ZERO_Q16: [i32; 16] = [
@@ -394,57 +332,6 @@ mod tests {
         assert_eq!([matrix[0], matrix[5], matrix[10]], [65_522; 3]);
         assert_ne!(matrix, ZERO_Q16);
         assert_eq!(root_menu_c3d_world(0x1000).words()[0], 0x3f7f_f200);
-    }
-
-    #[test]
-    fn trig_lookup_has_canonical_hash_and_symmetry() {
-        assert_eq!(trig_lookup(8), 804);
-        assert_eq!(trig_lookup(1016), 65_531);
-        assert_eq!(trig_lookup(4088), -804);
-
-        let mut full_bytes = Vec::with_capacity(4096 * 4);
-        for phase in 0..4096_u16 {
-            full_bytes.extend_from_slice(&trig_lookup(phase).to_le_bytes());
-            assert_eq!(trig_lookup(phase), trig_lookup(phase.wrapping_add(4096)));
-        }
-        assert_eq!(
-            hex_sha256(&full_bytes),
-            "f8002db15dd3f307df69236e00caa9233d027a059e50846db3e8925348b363aa"
-        );
-
-        let quarter_bytes: Vec<_> = TRIG_QUARTER
-            .into_iter()
-            .flat_map(i32::to_le_bytes)
-            .collect();
-        assert_eq!(
-            hex_sha256(&quarter_bytes),
-            "493588138b6b9a2fb39aff91a5e912eff965d4cf608dc0c672b3d7402324fabe"
-        );
-    }
-
-    #[test]
-    fn generated_sqrt_table_and_combined_tables_have_canonical_hashes() {
-        assert_eq!(sqrt_lut(1024), 32_775);
-        assert_eq!(sqrt_lut(4095), 65_531);
-
-        let mut sqrt_bytes = Vec::with_capacity(4096 * 2);
-        let mut combined = Vec::with_capacity(4096 * 6);
-        for phase in 0..4096_u16 {
-            combined.extend_from_slice(&trig_lookup(phase).to_le_bytes());
-        }
-        for index in 0..4096 {
-            let value = sqrt_lut(index);
-            sqrt_bytes.extend_from_slice(&value.to_le_bytes());
-            combined.extend_from_slice(&value.to_le_bytes());
-        }
-        assert_eq!(
-            hex_sha256(&sqrt_bytes),
-            "0750dc14e5f73204cdf69f0f7fe5a977788d970594fc5d3ab39b6914c85aa383"
-        );
-        assert_eq!(
-            hex_sha256(&combined),
-            "8f15233f6da6cb427bc88f913df1a3f35bc8035968a21300672b59fd56a07068"
-        );
     }
 
     #[test]
@@ -577,14 +464,5 @@ mod tests {
         assert_eq!(words[3..5], [0x7fff, 0x7fff]);
         assert_eq!(words[6], 1.0_f32.to_bits());
         assert_eq!(words[8], 2.0_f32.to_bits());
-    }
-
-    fn hex_sha256(bytes: &[u8]) -> String {
-        let digest = Sha256::digest(bytes);
-        let mut output = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
-        }
-        output
     }
 }

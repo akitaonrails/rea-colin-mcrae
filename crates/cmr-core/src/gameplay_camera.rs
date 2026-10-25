@@ -302,6 +302,14 @@ mod tests {
     }
 
     #[test]
+    fn non_cardinal_heading_uses_exact_startup_trig_values() {
+        let trig = build_sine_table();
+        let car = car_world_q16(&trig, Vec3::ZERO, 1);
+        assert_eq!([car[8], car[9], car[10]], [65_535, 0, 100]);
+        assert_eq!([car[0], car[1], car[2]], [100, 0, -65_535]);
+    }
+
+    #[test]
     fn first_update_snaps_then_translation_tracks_rigidly() {
         let mut cam = GameplayCamera::new();
         let first = *cam.update(v(0, 0, 0), 0, ChasePreset::Near, false);

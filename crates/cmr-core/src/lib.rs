@@ -80,6 +80,7 @@ pub mod input_device;
 pub mod input_map;
 pub mod input_poll;
 pub mod intro_video;
+pub mod legacy_math;
 pub mod load_interstitial;
 pub mod localization;
 pub mod localization_assets;

@@ -69,10 +69,11 @@ fn cross_q16(a: [i32; 3], b: [i32; 3]) -> [i32; 3] {
 }
 
 /// Normalize a Q16.16 vector to unit length. `FUN_00435400` uses the engine
-/// reciprocal-magnitude table `DAT_0082b380` (runtime data, zero in the static
-/// image); this reconstruction uses an `f64` square root as the documented
-/// backend-equivalent (the same stance as [`super::camera_cinematic`]). A zero
-/// vector normalizes to zero.
+/// reciprocal-magnitude table `DAT_0082b380`, whose startup generation is now
+/// recovered in [`crate::legacy_math`]. This still uses an `f64` square root as
+/// a documented approximation because the complete camera normalization path
+/// has not yet been migrated to the exact lookup contract (the same stance as
+/// [`super::camera_cinematic`]). A zero vector normalizes to zero.
 fn normalize_q16(v: [i32; 3]) -> [i32; 3] {
     let f = |x: i32| f64::from(x) / 65536.0;
     let (x, y, z) = (f(v[0]), f(v[1]), f(v[2]));
@@ -157,17 +158,11 @@ impl CameraScalars {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::legacy_math::cos_q16;
 
-    /// A faithful BAM cosine table for exercising the weight arithmetic:
-    /// `lut[a] = cos(2*pi*a/4096)` in Q16.16, matching the engine's runtime build
-    /// (the real table is zero in the static image, so a generated one is used).
+    /// The exact source-owned reconstruction of the startup cosine table.
     fn cos_table() -> [i32; BAM_TABLE_LEN] {
-        let mut lut = [0i32; BAM_TABLE_LEN];
-        for (a, slot) in lut.iter_mut().enumerate() {
-            let theta = std::f64::consts::TAU * (a as f64) / (BAM_TABLE_LEN as f64);
-            *slot = (theta.cos() * 65536.0).round() as i32;
-        }
-        lut
+        std::array::from_fn(|phase| cos_q16(phase as u16).raw())
     }
 
     #[test]
