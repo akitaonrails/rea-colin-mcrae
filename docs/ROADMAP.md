@@ -475,12 +475,16 @@ returning all fourteen records. The metadata-only official profile and
 parsing, then atomically publish the versioned 1,760-byte `CMRCCASE` container
 and path-free state beneath an explicit ignored `runtime-data/` destination.
 `CompiledInitializerStore` revalidates every identity/shape field, exact size
-and hash, and owns the decoded records without retaining a path. This is not
-application/session wiring and does not extend the recovered behavior beyond
-the direct stores. The full common path (including its option transforms,
-intervening callees, reciprocal/copy application, and later derived words), a
-proven consumer boundary, entry meanings, gameplay index invariants, other
-editions, runtime geometry/BSS consumers, and full
+and hash, and owns the decoded records without retaining a path. G03-Q adds the
+narrow `CompiledDirectCaseSet` core consumer: fixed array types prove per-record
+word counts, while construction explicitly checks selector count and exact
+neutral offset identity, copies all signed words in selector order, and feeds only the
+existing unsigned direct-case selection contract. Two synthetic tests bring
+`cmr-core` to 1,106. This is not application/session/gameplay wiring and does
+not extend the recovered behavior beyond the direct stores. The full common
+path (including its option transforms, `FUN_00404160`, other intervening
+callees, reciprocal/copy application, and later derived words), entry meanings,
+gameplay index invariants, other editions, runtime geometry/BSS consumers, and full
 `FUN_0040d810`/`FUN_0040a4a0` closure remain open.
 
 Exit gate:

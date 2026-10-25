@@ -1024,12 +1024,20 @@ languages rather than fabricating or silently aliasing Italian assets.
   identifies the user-owned executable before parsing and atomically publishes
   the versioned 1,760-byte `CMRCCASE` file plus path-free state;
   `CompiledInitializerStore` revalidates and owns those records without
-  retaining a filesystem path. The full common path, meanings, and
-  application/session consumer wiring remain. See
+  retaining a filesystem path.
+  `cmr-core::compiled_car_initializer::CompiledDirectCaseSet` now proves
+  per-record word counts through fixed array types, explicitly checks selector
+  count and exact offset-schema identity at that boundary, copies every signed
+  word in selector order, and exposes the existing unsigned direct-case
+  selection contract over a core-owned set. It deliberately does not apply the
+  separate reciprocal helper to these pre-common-path words. The full common
+  path (especially `FUN_00404160`), meanings, and application/session/gameplay
+  wiring remain. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `impl.sim-compiled-car-initializer-schema`,
   `impl.sim-compiled-car-initializer-extractor`, and
-  `impl.sim-compiled-car-initializer-store`.
+  `impl.sim-compiled-car-initializer-store`, and
+  `impl.sim-compiled-car-initializer-consumer`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

@@ -14,6 +14,14 @@
 
 use std::fmt;
 
+use cmr_assets::CompiledInitializerStore;
+use cmr_formats::pe_compiled_initializer::{
+    COMPILED_CASE_COUNT as FORMAT_CASE_COUNT,
+    COMPILED_CONTROL_WORD_OFFSETS as FORMAT_CONTROL_WORD_OFFSETS,
+    COMPILED_STATE_WORD_OFFSETS as FORMAT_STATE_WORD_OFFSETS,
+    CompiledCaseWords as FormatCompiledCaseWords,
+};
+
 /// Number of compiled selector bodies accepted by the unsigned dispatch.
 pub const COMPILED_CASE_COUNT: usize = 14;
 
@@ -47,6 +55,117 @@ const CONTROL_FAMILY_START: usize = 14;
 pub struct CompiledCaseWords {
     pub state_words: [i32; COMPILED_STATE_WORD_COUNT],
     pub control_words: [i32; COMPILED_CONTROL_WORD_COUNT],
+}
+
+/// An owned set of the fourteen direct case-body writes.
+///
+/// Construction proves that the format/store boundary and core contract agree
+/// on selector count and neutral offset order. The set contains no result from
+/// the omitted common-path helpers and must not be treated as post-processed
+/// input to [`derive_compiled_control_families`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompiledDirectCaseSet {
+    cases: [CompiledCaseWords; COMPILED_CASE_COUNT],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompiledDirectCaseSetError {
+    SelectorCount {
+        core: usize,
+        format: usize,
+    },
+    OffsetOrder {
+        object: &'static str,
+        index: usize,
+        core_offset: u16,
+        format_offset: u16,
+    },
+}
+
+impl fmt::Display for CompiledDirectCaseSetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "compiled direct-case store schema does not match the core contract: {self:?}"
+        )
+    }
+}
+
+impl std::error::Error for CompiledDirectCaseSetError {}
+
+impl CompiledDirectCaseSet {
+    /// Copy the verified format-owned direct cases into a core-owned set.
+    pub fn from_store(
+        store: &CompiledInitializerStore,
+    ) -> Result<Self, CompiledDirectCaseSetError> {
+        Self::from_format_cases(store.cases())
+    }
+
+    fn from_format_cases(
+        cases: &[FormatCompiledCaseWords; FORMAT_CASE_COUNT],
+    ) -> Result<Self, CompiledDirectCaseSetError> {
+        verify_format_schema()?;
+        Ok(Self {
+            cases: std::array::from_fn(|selector| CompiledCaseWords {
+                state_words: cases[selector].state_words,
+                control_words: cases[selector].control_words,
+            }),
+        })
+    }
+
+    #[must_use]
+    pub const fn cases(&self) -> &[CompiledCaseWords; COMPILED_CASE_COUNT] {
+        &self.cases
+    }
+
+    /// Apply only the observed unsigned direct-case dispatch.
+    #[must_use]
+    pub fn apply(&self, prior: CompiledCaseWords, selector: u32) -> CompiledCaseOutcome {
+        apply_compiled_case(prior, &self.cases, selector)
+    }
+}
+
+impl TryFrom<&CompiledInitializerStore> for CompiledDirectCaseSet {
+    type Error = CompiledDirectCaseSetError;
+
+    fn try_from(store: &CompiledInitializerStore) -> Result<Self, Self::Error> {
+        Self::from_store(store)
+    }
+}
+
+fn verify_format_schema() -> Result<(), CompiledDirectCaseSetError> {
+    if FORMAT_CASE_COUNT != COMPILED_CASE_COUNT {
+        return Err(CompiledDirectCaseSetError::SelectorCount {
+            core: COMPILED_CASE_COUNT,
+            format: FORMAT_CASE_COUNT,
+        });
+    }
+    for (object, core_offsets, format_offsets) in [
+        (
+            "state",
+            COMPILED_STATE_WORD_OFFSETS.as_slice(),
+            FORMAT_STATE_WORD_OFFSETS.as_slice(),
+        ),
+        (
+            "control",
+            COMPILED_CONTROL_WORD_OFFSETS.as_slice(),
+            FORMAT_CONTROL_WORD_OFFSETS.as_slice(),
+        ),
+    ] {
+        for (index, (&core_offset, &format_offset)) in
+            core_offsets.iter().zip(format_offsets).enumerate()
+        {
+            if core_offset != format_offset {
+                return Err(CompiledDirectCaseSetError::OffsetOrder {
+                    object,
+                    index,
+                    core_offset,
+                    format_offset,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 impl CompiledCaseWords {
@@ -157,6 +276,137 @@ pub fn derive_compiled_control_families(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cmr_assets::{
+        COMPILED_INITIALIZER_DATA_FILE, COMPILED_INITIALIZER_IMPORT_SCHEMA_VERSION,
+        COMPILED_INITIALIZER_STATE_FILE, CompiledInitializerEncoding,
+        CompiledInitializerExecutable, CompiledInitializerImportFile,
+        CompiledInitializerImportShape, CompiledInitializerImportSummary,
+        CompiledInitializerProfile, CompiledInitializerSpec, ReviewedCompiledInitializerProfile,
+    };
+    use cmr_formats::pe_compiled_initializer::{
+        COMPILED_CASE_ENCODED_LEN, COMPILED_CASE_FORMAT_VERSION,
+        COMPILED_CONTROL_WORD_COUNT as FORMAT_CONTROL_WORD_COUNT,
+        COMPILED_STATE_WORD_COUNT as FORMAT_STATE_WORD_COUNT,
+        CompiledCaseWords as FormatCompiledCaseWords, OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT,
+        encode_compiled_cases,
+    };
+    use sha2::{Digest, Sha256};
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDirectory(PathBuf);
+
+    impl TempDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "cmr-core-compiled-direct-cases-{}-{}",
+                std::process::id(),
+                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDirectory {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    fn digest(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+        let mut output = String::with_capacity(64);
+        for byte in Sha256::digest(bytes) {
+            write!(output, "{byte:02x}").unwrap();
+        }
+        output
+    }
+
+    fn format_cases() -> [FormatCompiledCaseWords; FORMAT_CASE_COUNT] {
+        let mut cases = std::array::from_fn(|selector| FormatCompiledCaseWords {
+            state_words: std::array::from_fn(|index| selector as i32 * 100 + index as i32 - 50),
+            control_words: std::array::from_fn(|index| selector as i32 * -1_000 - index as i32),
+        });
+        cases[0].state_words[..4].copy_from_slice(&[i32::MIN, i32::MAX, 0, -1]);
+        cases[13].control_words[..4].copy_from_slice(&[i32::MIN, i32::MAX, 0, -1]);
+        cases
+    }
+
+    fn open_synthetic_store(
+        cases: &[FormatCompiledCaseWords; FORMAT_CASE_COUNT],
+    ) -> (TempDirectory, CompiledInitializerStore) {
+        let temp = TempDirectory::new();
+        let root = temp.0.join("store");
+        fs::create_dir(&root).unwrap();
+        let source = b"synthetic source identity";
+        let layout = OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT;
+        let profile = CompiledInitializerProfile {
+            schema_version: 1,
+            id: "synthetic-core-adapter".into(),
+            executable: CompiledInitializerExecutable {
+                path: "Rally.exe".into(),
+                size: source.len() as u64,
+                sha256: digest(source),
+            },
+            initializer: CompiledInitializerSpec {
+                image_base: layout.image_base,
+                zero_seed_va: layout.zero_seed_va,
+                esi_seed_va: layout.esi_seed_va,
+                edi_seed_va: layout.edi_seed_va,
+                seed_call_targets: layout.seed_call_targets,
+                dispatch_va: layout.dispatch_va,
+                jump_table_va: layout.jump_table_va,
+                first_case_va: layout.first_case_va,
+                common_join_va: layout.common_join_va,
+                state_pointer_va: layout.state_pointer_va,
+                control_pointer_va: layout.control_pointer_va,
+                selectors: FORMAT_CASE_COUNT as u32,
+                state_offsets: layout.state_offsets,
+                control_offsets: layout.control_offsets,
+                output_encoding: CompiledInitializerEncoding::CmrCcaseV1,
+            },
+        };
+        let reviewed =
+            ReviewedCompiledInitializerProfile::from_json(&serde_json::to_vec(&profile).unwrap())
+                .unwrap();
+        let data = encode_compiled_cases(cases);
+        fs::write(root.join(COMPILED_INITIALIZER_DATA_FILE), data).unwrap();
+        let summary = CompiledInitializerImportSummary {
+            schema_version: COMPILED_INITIALIZER_IMPORT_SCHEMA_VERSION,
+            profile: reviewed.profile().id.clone(),
+            profile_sha256: reviewed.sha256().into(),
+            source: CompiledInitializerImportFile {
+                path: reviewed.profile().executable.path.clone(),
+                size: reviewed.profile().executable.size,
+                sha256: reviewed.profile().executable.sha256.clone(),
+            },
+            output: CompiledInitializerImportFile {
+                path: COMPILED_INITIALIZER_DATA_FILE.into(),
+                size: COMPILED_CASE_ENCODED_LEN as u64,
+                sha256: digest(&data),
+            },
+            shape: CompiledInitializerImportShape {
+                format_version: COMPILED_CASE_FORMAT_VERSION,
+                selectors: FORMAT_CASE_COUNT as u32,
+                state_words_per_selector: FORMAT_STATE_WORD_COUNT as u32,
+                control_words_per_selector: FORMAT_CONTROL_WORD_COUNT as u32,
+                encoding: CompiledInitializerEncoding::CmrCcaseV1,
+            },
+        };
+        fs::write(
+            root.join(COMPILED_INITIALIZER_STATE_FILE),
+            serde_json::to_vec(&summary).unwrap(),
+        )
+        .unwrap();
+        let store = CompiledInitializerStore::open(&root, &reviewed).unwrap();
+        (temp, store)
+    }
 
     fn synthetic_case(tag: i32) -> CompiledCaseWords {
         CompiledCaseWords {
@@ -167,6 +417,71 @@ mod tests {
 
     fn synthetic_cases() -> [CompiledCaseWords; COMPILED_CASE_COUNT] {
         std::array::from_fn(|index| synthetic_case(index as i32 + 1))
+    }
+
+    #[test]
+    fn format_adapter_pins_counts_offsets_and_selector_order() {
+        let format = format_cases();
+        let owned = CompiledDirectCaseSet::from_format_cases(&format).unwrap();
+        assert_eq!(owned.cases().len(), COMPILED_CASE_COUNT);
+        for (selector, format_case) in format.iter().enumerate() {
+            assert_eq!(owned.cases()[selector].state_words, format_case.state_words);
+            assert_eq!(
+                owned.cases()[selector].control_words,
+                format_case.control_words
+            );
+        }
+    }
+
+    #[test]
+    fn verified_store_adapts_to_owned_direct_cases_and_unsigned_selection() {
+        let format = format_cases();
+        let (temp, owned) = {
+            let (temp, store) = open_synthetic_store(&format);
+            let owned = CompiledDirectCaseSet::try_from(&store).unwrap();
+            (temp, owned)
+        };
+        drop(temp);
+
+        for (selector, format_case) in format.iter().enumerate() {
+            assert_eq!(owned.cases()[selector].state_words, format_case.state_words);
+            assert_eq!(
+                owned.cases()[selector].control_words,
+                format_case.control_words
+            );
+        }
+        assert_eq!(
+            owned.cases()[0].state_words[..4],
+            [i32::MIN, i32::MAX, 0, -1]
+        );
+        assert_eq!(
+            owned.cases()[13].control_words[..4],
+            [i32::MIN, i32::MAX, 0, -1]
+        );
+
+        let prior = synthetic_case(-77);
+
+        for selector in [0_u32, 7, 13] {
+            let outcome = owned.apply(prior, selector);
+            assert_eq!(outcome.selected_case, Some(selector as u8));
+            assert_eq!(
+                outcome.words.state_words,
+                format[selector as usize].state_words
+            );
+            assert_eq!(
+                outcome.words.control_words,
+                format[selector as usize].control_words
+            );
+        }
+        for selector in [14, u32::MAX] {
+            assert_eq!(
+                owned.apply(prior, selector),
+                CompiledCaseOutcome {
+                    words: prior,
+                    selected_case: None,
+                }
+            );
+        }
     }
 
     #[test]
