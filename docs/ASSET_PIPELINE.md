@@ -160,24 +160,66 @@ It contains metadata for 5,162 files across all three required roots and no
 payload bytes or absolute paths. V2 supersedes the incomplete V1 profile after
 static evidence established startup reads from `ini/**`.
 
+## Executable-derived surface coefficients
+
+The surface coefficients consumed by the recovered vehicle solver are not an
+external game file. In the official-EU executable they occupy two adjacent
+120-word signed little-endian families. Extract them from a user-owned,
+positively identified executable into a separate ignored runtime-data store:
+
+```sh
+cargo run -q -p cmr-assets -- extract-surface-tables \
+  --source "$CMR_ORIGINAL_DIR" \
+  --profile profiles/official-eu-surface-tables-v1.json \
+  --output runtime-data/official-eu-surface-tables
+```
+
+All three paths are explicit. The reviewed profile contains metadata only: a
+relative `Rally.exe` path, exact size and SHA-256, the reviewed virtual address,
+and the two-by-120 shape. The extractor rejects linked path components, bounds
+the read, verifies the hash before PE parsing, validates the complete PE32
+virtual/raw mapping, and atomically promotes a fresh sibling stage. It writes:
+
+```text
+runtime-data/official-eu-surface-tables/
+  surface-coefficients-q16le.bin
+  surface-import-state.json
+```
+
+The binary is exactly 960 bytes of user-derived game data and must stay under
+ignored `runtime-data/`. The JSON contains only relative metadata, sizes, and
+hashes; it never records the selected absolute source or output path. This is a
+project-owned extraction format, not an original game format, and remains
+separate from the media `import-state.json`. Tests construct synthetic PE
+images only; no coefficient values are committed.
+
 ## Schema versioning and migration
 
-Two on-disk artifacts carry a `schema_version`, and both readers accept only the
-exact generation this build was written against
-(`cmr-assets::PROFILE_SCHEMA_VERSION` and
-`cmr-assets::IMPORT_STATE_SCHEMA_VERSION`):
+Four regenerable on-disk artifacts carry a `schema_version`. The completed
+media-store readers accept only the exact generations selected by
+`cmr-assets::PROFILE_SCHEMA_VERSION` and
+`cmr-assets::IMPORT_STATE_SCHEMA_VERSION`. The executable-derived surface path
+currently validates its reviewed profile with
+`SURFACE_PROFILE_SCHEMA_VERSION` and emits a state document with
+`SURFACE_IMPORT_SCHEMA_VERSION`; it does not yet have a runtime state reader:
 
 - the reviewed source profile (`profiles/*.json`);
-- the import state (`<runtime-data>/import-state.json`).
+- the import state (`<runtime-data>/import-state.json`);
+- the reviewed surface-extraction profile;
+- the surface extraction state (`surface-import-state.json`).
 
-Imported trees are derived data. An incompatible version is never migrated in
-place: the profile validator and the store fail closed
+Imported trees are derived data. For the media store, an incompatible version
+is never migrated in place: the profile validator and store fail closed
 (`ProfileError::UnsupportedSchema` /
 `AssetStoreError::InvalidImportState { field: "schema_version" }`) and the
 caller regenerates the tree from the user's own media with the matching
-importer. A profile and an import state from different generations cannot be
-paired, and the store additionally checks profile identity, profile digest, and
-file/byte totals, so a stale tree cannot be mistaken for a current one.
+importer. A profile and its state from different generations cannot be paired.
+The media store additionally checks profile identity, digest, and file/byte
+totals. The surface profile validator already rejects unsupported profile
+generations, while the extractor records its state schema, exact profile
+digest, and output hash in a path-free document. A future surface-table reader
+must reject unsupported state generations and verify the profile ID/digest,
+declared output size, and output hash before consuming the local data.
 
 A version bump is required for any semantic or required-field change. Purely
 additive optional fields that readers can ignore leave the version alone. A

@@ -5,7 +5,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cmr_assets::{ReviewedProfile, catalog_standard_source, import_source, verify_source};
+use cmr_assets::{
+    ReviewedProfile, ReviewedSurfaceProfile, catalog_standard_source, extract_surface_tables,
+    import_source, verify_source,
+};
 
 fn main() -> ExitCode {
     match run(std::env::args_os().skip(1)) {
@@ -60,6 +63,16 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<String, String> {
             let reviewed = load_profile(&profile_path)?;
             let summary =
                 import_source(&source, &output, &reviewed).map_err(|error| error.to_string())?;
+            serde_json::to_string(&summary).map_err(|error| error.to_string())
+        }
+        Some("extract-surface-tables") => {
+            let source = required_path(&options, "--source")?;
+            let profile_path = required_path(&options, "--profile")?;
+            let output = required_path(&options, "--output")?;
+            reject_unknown(&options, &["--source", "--profile", "--output"])?;
+            let reviewed = load_surface_profile(&profile_path)?;
+            let summary = extract_surface_tables(&source, &output, &reviewed)
+                .map_err(|error| error.to_string())?;
             serde_json::to_string(&summary).map_err(|error| error.to_string())
         }
         _ => Err(usage()),
@@ -118,6 +131,12 @@ fn load_profile(path: &Path) -> Result<ReviewedProfile, String> {
     ReviewedProfile::from_json(&document).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+fn load_surface_profile(path: &Path) -> Result<ReviewedSurfaceProfile, String> {
+    let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    ReviewedSurfaceProfile::from_json(&document)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -129,7 +148,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cmr-assets <catalog|verify|import> [options]".to_owned()
+    "usage: cmr-assets <catalog|verify|import|extract-surface-tables> [options]".to_owned()
 }
 
 #[cfg(test)]
@@ -189,11 +208,36 @@ mod tests {
                 "--output",
                 "runtime-data",
             ],
+            &[
+                "extract-surface-tables",
+                "--profile",
+                "surface-profile.json",
+                "--output",
+                "runtime-data/surface",
+            ],
         ] {
             assert_eq!(
                 run(args(arguments)),
                 Err("missing required option --source".to_owned())
             );
         }
+    }
+
+    #[test]
+    fn surface_extraction_requires_profile_and_output() {
+        assert_eq!(
+            run(args(&["extract-surface-tables", "--source", "source"])),
+            Err("missing required option --profile".to_owned())
+        );
+        assert_eq!(
+            run(args(&[
+                "extract-surface-tables",
+                "--source",
+                "source",
+                "--profile",
+                "profile.json",
+            ])),
+            Err("missing required option --output".to_owned())
+        );
     }
 }

@@ -7,6 +7,8 @@ mod profile;
 mod resolver;
 mod schema;
 mod store;
+mod surface_import;
+mod surface_profile;
 mod verify;
 
 pub use catalog::catalog_standard_source;
@@ -21,4 +23,11 @@ pub use schema::{
     profile_schema_status,
 };
 pub use store::{AssetStore, AssetStoreError};
+pub use surface_import::{
+    SurfaceImportError, SurfaceImportFile, SurfaceImportSummary, extract_surface_tables,
+};
+pub use surface_profile::{
+    ReviewedSurfaceProfile, ReviewedSurfaceProfileError, SurfaceExecutableProfile,
+    SurfaceProfileError, SurfaceTableEncoding, SurfaceTableProfile, SurfaceTableSpec,
+};
 pub use verify::{VerificationError, VerificationSummary, verify_source};

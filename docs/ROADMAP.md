@@ -441,10 +441,19 @@ corrects the state map to position
 cached prior speed `+0xec`; `+0x3cc..+0x3d4` is an additive
 acceleration-like term and `+0x3d8..+0x3e0` belongs to the rotational chain.
 The callback/global mode resolver, semantic vector/mode names, integration into
-the simplified race-state harness, a distinct suspension-damper identity, and
-the runtime table loader remain. The next honest G03 scope is the runtime table
-provenance/layout inventory or another separately evidenced force boundary;
-this does not close all of `FUN_0040d810`/`FUN_0040a4a0`.
+the simplified race-state harness, and a distinct suspension-damper identity
+remain. The table-provenance inventory has now disproved the singular runtime
+loader premise: two adjacent 120-word surface/material coefficient families are
+PE-backed and can be extracted from a positively identified official-EU
+executable, the gear/car values are emitted by fourteen compiled initializer
+cases, and the `DAT_0050e170` family is BSS/runtime geometry state. The
+source-owned `pe_surface` parser plus the profile-gated, hash-first
+`extract-surface-tables` command establishes a safe local 960-byte extraction
+under ignored `runtime-data/` without vendoring values. Next G03 work is to
+define and wire the extracted coefficient interface, recover the compiled car
+initializer's complete schema/import, or reconstruct the runtime geometry/BSS
+consumers. Entry meanings, index invariants, other editions, and full
+`FUN_0040d810`/`FUN_0040a4a0` closure remain open.
 
 Exit gate:
 

@@ -6,6 +6,7 @@
 pub mod bitmap;
 pub mod c3d;
 pub mod font;
+pub mod pe_surface;
 pub mod riff_palette;
 pub mod stage;
 pub mod stored_asset;

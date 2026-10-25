@@ -190,6 +190,20 @@ cargo run -q -p cmr-assets -- import \
   --output runtime-data/installed-eu-derived-assets-v2
 ```
 
+Extract the official-EU executable-backed surface coefficients into their own
+ignored, profile-bound runtime-data store (no game values are bundled):
+
+```sh
+cargo run -q -p cmr-assets -- extract-surface-tables \
+  --source "$CMR_ORIGINAL_DIR" \
+  --profile profiles/official-eu-surface-tables-v1.json \
+  --output runtime-data/official-eu-surface-tables
+```
+
+This command requires the exact executable identified by the reviewed profile,
+checks its hash before parsing, and records no absolute source path. It is
+separate from the installed-media import above.
+
 Render one complete deterministic root-menu frame through the native
 application boundary (headless for now):
 

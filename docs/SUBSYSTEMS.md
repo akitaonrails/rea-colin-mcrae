@@ -1012,8 +1012,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   signed-ratio phase, deterministic trig and legacy square-root lookups, bases,
   and gains without assigning physical meaning. The later `+0x420` correction
   gate's pure signed scalar rules are also reconstructed. Direction/state
-  accumulation, parts of the torque-to-velocity integration, and the
-  ratio-table loader remain. See evidence
+  accumulation and parts of the torque-to-velocity integration remain. The
+  ratio arrays are now known to come from fourteen compiled initializer cases,
+  not a runtime file loader; their complete tuning schema and importer remain.
+  See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
   same `0x407690` solver chain. The lateral-grip constraint `0x41b270` strips the
@@ -1079,8 +1081,20 @@ languages rather than fabricating or silently aliasing Italian assets.
   acceleration-like term and part of the rotational/moment chain. Nine
   focused tests, including final-position wrapping, bring `vehicle_dynamics`
   to 80. “Translational damping” is a
-  value-flow description only; a distinct suspension damper, runtime table
-  loading, mode semantics, and the caller resolver remain open.
+  value-flow description only; a distinct suspension damper, mode semantics,
+  and the caller resolver remain open. The table-provenance pass proves there
+  is no single runtime table loader: `DAT_004f72cc` is the first of two
+  adjacent PE-backed 120-word signed coefficient families, while
+  `FUN_00404440` materializes car/gear tuning through fourteen compiled cases
+  and `DAT_0050e170` is BSS/runtime geometry state. `cmr-formats::pe_surface`
+  bounds-checks and extracts only the two official-EU PE families; the
+  profile-gated `cmr-assets extract-surface-tables` command verifies the
+  user-owned executable before atomically writing 960 bytes plus path-free
+  metadata under an explicit ignored runtime-data destination. Eleven parser
+  tests and the `cmr-assets` synthetic suite cover this boundary. The values
+  are not vendored or assigned physical names, are not yet wired into the
+  solver, and are distinct from the FFB `DAT_004edb70` family. The compiled
+  car-tuning schema and runtime BSS consumers remain open.
   `signed_arcsine_phase` preserves the signed lookup, `0x10000` clamp,
   index-4096 adjacent angle-table zero, and rejects unsafe `INT_MIN` instead of
   reproducing the unchecked read. `signed_ratio_angle` preserves the observed asymmetric
@@ -1099,7 +1113,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-postprocess-correction-scalar`,
   `rea.official-eu.sim-surface-indexed-lane-scalar`,
   `rea.official-eu.sim-runtime-math-tables`, and
-  `impl.legacy-math-tables`.
+  `impl.legacy-math-tables`, `rea.official-eu.sim-runtime-table-provenance`,
+  and `impl.sim-surface-table-extractor`.
 - Collision/damage runs from `0x410a60` (Mechanics callee), which delegates the
   crash path to `0x4115d0` once the out-of-control flag `car+0x680` is set. The
   contact impulse accumulates into `car+0x3cc..`; its magnitude feeds the impact
