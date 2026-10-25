@@ -2373,6 +2373,83 @@ pub fn derive_compiled_initializer_6e8(
     }
 }
 
+/// The first copy loop: 24 dwords from state `+0xfc` to `+0x1bc`.
+pub const COMPILED_INITIALIZER_COPY_FC: (u16, u16, usize) = (0xfc, 0x1bc, 24);
+
+/// The second copy loop: 9 dwords from state `+0x258` to `+0x21c`.
+pub const COMPILED_INITIALIZER_COPY_258: (u16, u16, usize) = (0x258, 0x21c, 9);
+
+/// Source state bases copied to `+0x240/+0x244/+0x248` after the second loop.
+pub const COMPILED_INITIALIZER_COPY_240_SOURCES: [u16; 3] = [0xc8, 0xcc, 0xd0];
+
+/// Source state base copied to `+0x24c/+0x250/+0x254`: the AK11 final vector.
+pub const COMPILED_INITIALIZER_COPY_24C_SOURCE: u16 = 0x324;
+
+/// State bytes zeroed after the copies: `+0x74d` and `+0x74e`.
+pub const COMPILED_INITIALIZER_FINAL_ZERO_STATE_BYTES: [u16; 2] = [0x74d, 0x74e];
+
+/// Control byte zeroed after the copies.
+pub const COMPILED_INITIALIZER_FINAL_ZERO_CONTROL_BYTE: u16 = 0x428;
+
+/// Control dword set to `1` after the copies.
+pub const COMPILED_INITIALIZER_FINAL_CONTROL_ONE_DWORD: u16 = 0x420;
+
+/// Inputs for the two copy loops and the three vector copies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledInitializerCopyInputs {
+    /// Twenty-four dwords at state `+0xfc..+0x15c`.
+    pub source_fc: [i32; 24],
+    /// Nine dwords at state `+0x258..+0x27c`.
+    pub source_258: [i32; 9],
+    /// State `+0xc8/+0xcc/+0xd0` words.
+    pub source_c8: i32,
+    pub source_cc: i32,
+    pub source_d0: i32,
+    /// The AK11 final vector at `+0x324/+0x328/+0x32c`.
+    pub source_324: [i32; 3],
+}
+
+/// Destination blocks produced by the copy loops and vector copies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledInitializerCopyEffects {
+    /// `+0x1bc..+0x21c`: the 24-dword copy of `+0xfc..+0x15c`.
+    pub block_1bc: [i32; 24],
+    /// `+0x21c..+0x240`: the 9-dword copy of `+0x258..+0x27c`.
+    pub block_21c: [i32; 9],
+    /// `+0x240/+0x244/+0x248`: `+0xc8/+0xcc/+0xd0`.
+    pub block_240: [i32; 3],
+    /// `+0x24c/+0x250/+0x254`: the AK11 final vector.
+    pub block_24c: [i32; 3],
+}
+
+/// Reconstructs the two copy loops and the three vector copies verbatim. The
+/// `+0x240` write follows the second copy loop in native order.
+#[must_use]
+pub fn derive_compiled_initializer_copies(
+    input: CompiledInitializerCopyInputs,
+) -> CompiledInitializerCopyEffects {
+    CompiledInitializerCopyEffects {
+        block_1bc: input.source_fc,
+        block_21c: input.source_258,
+        block_240: [input.source_c8, input.source_cc, input.source_d0],
+        block_24c: input.source_324,
+    }
+}
+
+/// Reconstructs `DAT_0050c5fc = ((~config_25 & 1) << 0xf) | 0x1999`.
+/// Only bit zero of the injected config byte participates, inverted.
+#[must_use]
+pub const fn derive_compiled_initializer_5fc(config_25: u8) -> u16 {
+    (((!config_25 & 1) as u16) << 0xf) | 0x1999
+}
+
+/// The closing conditional call edge: `FUN_0046eda0()` runs only when
+/// `DAT_00d3ca88 != 0`.
+#[must_use]
+pub const fn compiled_initializer_final_call_required(global_d3ca88: i32) -> bool {
+    global_d3ca88 != 0
+}
+
 fn solve_compiled_lane_plane(
     source_vector: [i32; 3],
     fallback: i32,
@@ -7716,6 +7793,54 @@ mod tests {
             assert_eq!(effects.word_6e8, 1);
             assert_eq!(effects.word_6ec, expected, "random {random:#x}");
         }
+    }
+
+    #[test]
+    fn initializer_copies_are_verbatim_and_pinned_to_their_offsets() {
+        assert_eq!(COMPILED_INITIALIZER_COPY_FC, (0xfc, 0x1bc, 24));
+        assert_eq!(COMPILED_INITIALIZER_COPY_258, (0x258, 0x21c, 9));
+        assert_eq!(COMPILED_INITIALIZER_COPY_240_SOURCES, [0xc8, 0xcc, 0xd0]);
+        assert_eq!(COMPILED_INITIALIZER_COPY_24C_SOURCE, 0x324);
+
+        let input = CompiledInitializerCopyInputs {
+            source_fc: std::array::from_fn(|index| index as i32 - 12),
+            source_258: std::array::from_fn(|index| 100 + index as i32),
+            source_c8: 1,
+            source_cc: 2,
+            source_d0: 3,
+            source_324: [7, 8, 9],
+        };
+        let effects = derive_compiled_initializer_copies(input);
+        assert_eq!(effects.block_1bc, input.source_fc);
+        assert_eq!(effects.block_21c, input.source_258);
+        assert_eq!(effects.block_240, [1, 2, 3]);
+        assert_eq!(effects.block_24c, [7, 8, 9]);
+
+        // Source and destination ranges of each loop are disjoint.
+        let (fc_source, fc_destination, fc_len) = COMPILED_INITIALIZER_COPY_FC;
+        assert!(fc_destination >= fc_source + 4 * fc_len as u16);
+        let (source, destination, len) = COMPILED_INITIALIZER_COPY_258;
+        // The second loop copies downward: +0x21c..+0x240 precedes +0x258.
+        assert!(destination + 4 * len as u16 <= source);
+        // The +0x240 write lands immediately after the second loop's range.
+        assert_eq!(destination + 4 * len as u16, 0x240);
+    }
+
+    #[test]
+    fn initializer_5fc_inverts_config_bit_zero_and_final_flags_are_pinned() {
+        for (config, expected) in [
+            (0x00, 0x9999),
+            (0x01, 0x1999),
+            (0x02, 0x9999),
+            (0xff, 0x1999),
+        ] {
+            assert_eq!(derive_compiled_initializer_5fc(config), expected);
+        }
+        assert_eq!(COMPILED_INITIALIZER_FINAL_ZERO_STATE_BYTES, [0x74d, 0x74e]);
+        assert_eq!(COMPILED_INITIALIZER_FINAL_ZERO_CONTROL_BYTE, 0x428);
+        assert_eq!(COMPILED_INITIALIZER_FINAL_CONTROL_ONE_DWORD, 0x420);
+        assert!(!compiled_initializer_final_call_required(0));
+        assert!(compiled_initializer_final_call_required(-1));
     }
 
     #[test]

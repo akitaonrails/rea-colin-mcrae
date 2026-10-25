@@ -896,6 +896,15 @@ are zero when `DAT_00550c08 == 2` or `DAT_00d3ca88 != 0`; otherwise `+0x6e8 =
 `0xd`, reachable values `3`, `13`, and `23`. Two focused tests bring
 `cmr-core` to 1,253. The copy loops and final state writes remain open.
 
+G03-AK19 closes the direct effects of `FUN_00404440`: copy loops move 24
+dwords from `+0xfc` to `+0x1bc` and 9 dwords from `+0x258` down to `+0x21c`;
+then `+0x240` receives `+0xc8/+0xcc/+0xd0` and `+0x24c` receives the AK11
+final vector. State bytes `+0x74d/+0x74e` and control byte `+0x428` are
+zeroed, control `+0x420 = 1`, `DAT_0050c5fc = ((~config_25 & 1) << 0xf) |
+0x1999`, and `FUN_0046eda0()` runs only when `DAT_00d3ca88 != 0`. Three
+focused tests bring `cmr-core` to 1,255. The remaining callees and full
+call-spine composition remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed
