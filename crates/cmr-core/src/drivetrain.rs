@@ -34,8 +34,8 @@
 //! neutral; the display-RPM literals map engine load to a 2000..8500 tach.
 //! The per-wheel arrays are now distinguished: raw speeds at `+0x2a8[4]`,
 //! smoothed/current speeds at `+0x2b8[4]`, and smoothing gains at `+0x2c8[4]`.
-//! Unknowns (not reproduced): the remaining per-wheel force accumulation and
-//! breakaway/clamp behavior, parts of the torque-to-velocity integration, and
+//! Unknowns (not reproduced): force-candidate derivation and remaining
+//! per-wheel accumulation, parts of the torque-to-velocity integration, and
 //! the loader that copies per-gear ratio tables into the control struct.
 
 use crate::fixed_point::Fixed16;

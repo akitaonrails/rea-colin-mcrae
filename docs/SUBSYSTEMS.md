@@ -999,9 +999,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   clamped `[2000,8500]`. Reconstructed in `cmr-core::drivetrain` (all Q16.16).
   Per-car-type params live at `~0x50e170` (stride 0xcd0), selected by the
   car-type byte `car+0x738`. Raw per-wheel speeds are `+0x2a8[4]`, smoothed/current
-  speeds `+0x2b8[4]`, and smoothing gains `+0x2c8[4]`. The remaining per-wheel
-  force accumulation/breakaway behavior, parts of the torque-to-velocity
-  integration, and the ratio-table loader remain. See evidence
+  speeds `+0x2b8[4]`, and smoothing gains `+0x2c8[4]`. A later force-pass branch
+  now has a recovered signed raw candidate-selection rule: retain the current
+  candidate at/below its threshold, otherwise use a caller-derived replacement
+  verbatim. Candidate derivation and the remaining per-wheel accumulation,
+  parts of the torque-to-velocity integration, and the ratio-table loader remain. See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
   same `0x407690` solver chain. The lateral-grip constraint `0x41b270` strips the
@@ -1013,10 +1015,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   `ctrl[0x42a+k*2]` indexes 8-byte grip records with ~0.24 (high) / ~0.15 (low)
   tiers. Reconstructed in `cmr-core::vehicle_dynamics` over a new Q16.16
   `cmr-core::fixed_point::Vec3`. `0x40d810` now distinguishes raw wheel speeds
-  at `+0x2a8[4]` from smoothed/current speeds at `+0x2b8[4]`; its remaining
-  per-wheel force accumulation and breakaway/clamp behavior, the position update,
-  the damper source, and the runtime-loaded per-surface/per-car table values
-  remain. See evidence `rea.official-eu.sim-grip`.
+  at `+0x2a8[4]` from smoothed/current speeds at `+0x2b8[4]`. Its signed
+  compare/select at `0x40f5e0..0x40f5e8` is reconstructed as
+  `select_signed_force_candidate` without assigning physical semantics. Candidate
+  derivation and units/order, control `+0x420`, surface resistance,
+  `FUN_0040fbe0`, remaining per-wheel accumulation, the position update, the
+  damper source, and runtime-loaded table values remain. See evidence
+  `rea.official-eu.sim-grip` and `rea.official-eu.sim-signed-force-candidate-select`.
 - Collision/damage runs from `0x410a60` (Mechanics callee), which delegates the
   crash path to `0x4115d0` once the out-of-control flag `car+0x680` is set. The
   contact impulse accumulates into `car+0x3cc..`; its magnitude feeds the impact

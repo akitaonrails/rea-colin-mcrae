@@ -399,6 +399,12 @@ Add subsystems in dependency order:
 5. race sequencing, timing, penalties, AI, co-driver, replay, and results;
 6. multiplayer only after its original protocol and security boundary are known.
 
+Current G03 recovery has isolated one instruction-exact signed force-candidate
+selection rule inside `FUN_0040d810`. The remaining physics exit work is to
+derive its caller-provided candidates and units/order, resolve control `+0x420`,
+recover surface resistance and `FUN_0040fbe0`, and connect the surrounding
+per-wheel accumulation without assigning unsupported physical semantics.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

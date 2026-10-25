@@ -24,6 +24,11 @@
 //!   high grip) and `0x2666` (~0.15, low grip). The full per-surface table and
 //!   the per-car-type parameter block (`DAT_0050e150`, stride 0xcd0, BSS) are
 //!   game data loaded at runtime - they are not vendored here.
+//! - **Signed force-candidate selection** (`FUN_0040d810`): one recovered branch uses
+//!   a signed raw comparison between caller-derived candidates. A current
+//!   candidate at or below the transition candidate is retained; above it, an
+//!   alternate candidate is selected verbatim. This comparison alone does
+//!   not establish a physical model or the meaning of either candidate.
 //!
 //! Values are signed Q16.16 ([`crate::fixed_point`]). See evidence
 //! `rea.official-eu.sim-grip`.
@@ -31,10 +36,11 @@
 //! Observations: the formulas and constants above, read from the solver passes.
 //! Inferences: the slope ramp raises grip as the surface flattens (output is a
 //! grip factor, high on flat ground); the two surface tiers are high/low grip.
-//! Unknowns (not reproduced): the remaining per-wheel force accumulation and
-//! breakaway/clamp rules in `FUN_0040d810`, the exact semi-implicit position
-//! update's half-accel term, the suspension damper magnitude source, and the
-//! numeric contents of the runtime-loaded per-surface and per-car tables.
+//! Unknowns (not reproduced): how the two signed force candidates and their
+//! units/order are derived, the remaining per-wheel force accumulation, the
+//! unresolved role of control `+0x420`, surface resistance, `FUN_0040fbe0`, the
+//! exact semi-implicit position update's half-accel term, the suspension damper
+//! magnitude source, and runtime-loaded per-surface/per-car table contents.
 
 use crate::fixed_point::{Fixed16, Vec3};
 
@@ -73,6 +79,25 @@ pub const SURFACE_GRIP_LOW: Fixed16 = Fixed16::from_raw(0x2666);
 
 /// Stride, in bytes, of a surface grip-table record (the `surfId * 8` index).
 pub const SURFACE_GRIP_RECORD_BYTES: usize = 8;
+
+/// Select between caller-derived force candidates using the recovered signed
+/// raw comparison in `FUN_0040d810`.
+///
+/// Values at or below `transition` are retained. Values above it select
+/// `alternate` verbatim. Candidate derivation and physical
+/// meaning remain outside this narrow recovered rule.
+#[must_use]
+pub const fn select_signed_force_candidate(
+    candidate: Fixed16,
+    transition: Fixed16,
+    alternate: Fixed16,
+) -> Fixed16 {
+    if candidate.raw() > transition.raw() {
+        alternate
+    } else {
+        candidate
+    }
+}
 
 /// Remove the sideways velocity component, reproducing `FUN_0041b270`:
 /// `perp = v - fwd * dot(fwd, v); v -= perp * K`. `forward_unit` is the car's
@@ -196,5 +221,51 @@ mod tests {
         assert_eq!(SURFACE_GRIP_LOW.raw(), 0x2666);
         assert!(SURFACE_GRIP_HIGH > SURFACE_GRIP_LOW);
         assert_eq!(SURFACE_GRIP_RECORD_BYTES, 8);
+    }
+
+    #[test]
+    fn signed_force_candidate_below_or_equal_to_transition_is_retained() {
+        let alternate = Fixed16::from_raw(0x7777);
+        assert_eq!(
+            select_signed_force_candidate(
+                Fixed16::from_raw(0x1233),
+                Fixed16::from_raw(0x1234),
+                alternate,
+            ),
+            Fixed16::from_raw(0x1233)
+        );
+        assert_eq!(
+            select_signed_force_candidate(
+                Fixed16::from_raw(0x1234),
+                Fixed16::from_raw(0x1234),
+                alternate,
+            ),
+            Fixed16::from_raw(0x1234)
+        );
+    }
+
+    #[test]
+    fn force_candidate_comparison_uses_signed_i32_ordering() {
+        let alternate = Fixed16::from_raw(0x55);
+        assert_eq!(
+            select_signed_force_candidate(Fixed16::from_raw(i32::MIN), Fixed16::ZERO, alternate),
+            Fixed16::from_raw(i32::MIN)
+        );
+        assert_eq!(
+            select_signed_force_candidate(Fixed16::ZERO, Fixed16::from_raw(i32::MIN), alternate),
+            alternate
+        );
+    }
+
+    #[test]
+    fn force_candidate_above_transition_returns_alternate_verbatim() {
+        let candidate = Fixed16::from_raw(10);
+        let transition = Fixed16::from_raw(9);
+        for alternate in [Fixed16::from_raw(-500), Fixed16::from_raw(500)] {
+            assert_eq!(
+                select_signed_force_candidate(candidate, transition, alternate),
+                alternate
+            );
+        }
     }
 }
