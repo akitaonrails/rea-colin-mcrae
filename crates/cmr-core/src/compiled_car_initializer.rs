@@ -1062,6 +1062,126 @@ pub fn dispatch_compiled_lane<P: CompiledLaneGeometryProvider>(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecodedCompiledLaneTriangle {
+    pub vertices: [[i32; 3]; 3],
+    pub type_word: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledLaneBuildEffects {
+    pub lane_word: i32,
+    pub type_word: u16,
+    pub output_vector: [i32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledLaneBuildDivideOverflow {
+    pub numerator: i32,
+    pub divisor: i32,
+    pub published_type_word: u16,
+    pub published_output_vector: [i32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledLaneBuildStore {
+    TypeWord,
+    RawOutputX,
+    RawOutputY,
+    RawOutputZ,
+    FinalOutputX,
+    FinalOutputY,
+    FinalOutputZ,
+}
+
+pub const COMPILED_LANE_BUILD_STORE_ORDER: [CompiledLaneBuildStore; 7] = [
+    CompiledLaneBuildStore::TypeWord,
+    CompiledLaneBuildStore::RawOutputX,
+    CompiledLaneBuildStore::RawOutputY,
+    CompiledLaneBuildStore::RawOutputZ,
+    CompiledLaneBuildStore::FinalOutputX,
+    CompiledLaneBuildStore::FinalOutputY,
+    CompiledLaneBuildStore::FinalOutputZ,
+];
+
+fn normalize_compiled_lane_vector(vector: [i32; 3]) -> [i32; 3] {
+    let square_sum = vector.into_iter().fold(0_i32, |sum, component| {
+        sum.wrapping_add(common_prefix_q16_mul(component, component))
+    });
+    let root = sqrt_q16(square_sum as u32);
+    if root == 0 {
+        return [0; 3];
+    }
+    let reciprocal = ((1_u64 << 32) / u64::from(root)) as i32;
+    vector.map(|component| common_prefix_q16_mul(component, reciprocal))
+}
+
+fn solve_compiled_lane_plane(
+    source_vector: [i32; 3],
+    fallback: i32,
+    v0: [i32; 3],
+    type_word: u16,
+    output_vector: [i32; 3],
+) -> Result<i32, CompiledLaneBuildDivideOverflow> {
+    let divisor = output_vector[1];
+    if divisor == 0 {
+        return Ok(fallback);
+    }
+    let plane_dot = (0..3).fold(0_i32, |sum, index| {
+        sum.wrapping_add(common_prefix_q16_mul(output_vector[index], v0[index]))
+    });
+    let numerator = plane_dot
+        .wrapping_sub(common_prefix_q16_mul(source_vector[2], output_vector[2]))
+        .wrapping_sub(common_prefix_q16_mul(source_vector[0], output_vector[0]));
+    let quotient = (i64::from(numerator) << 16) / i64::from(divisor);
+    i32::try_from(quotient).map_err(|_| CompiledLaneBuildDivideOverflow {
+        numerator,
+        divisor,
+        published_type_word: type_word,
+        published_output_vector: output_vector,
+    })
+}
+
+/// Stable/disjoint decoded-input contract for `FUN_00446fa0` arithmetic.
+///
+/// The caller's checked decoder-zero branch is retained as the provider's
+/// defensive `Unavailable` policy, although the observed shipped decoder
+/// returns one after its unchecked reads. A final signed
+/// division overflow reports the type and normalized vector that native code
+/// has already published. Component-level memory-fault prefixes and aliases
+/// remain outside this pure aggregate.
+pub fn derive_decoded_compiled_lane_build(
+    source_vector: [i32; 3],
+    fallback: i32,
+    triangle: DecodedCompiledLaneTriangle,
+) -> Result<CompiledLaneBuildEffects, CompiledLaneBuildDivideOverflow> {
+    let [v0, v1, v2] = triangle.vertices;
+    let a = normalize_compiled_lane_vector(std::array::from_fn(|index| {
+        v1[index].wrapping_sub(v0[index])
+    }));
+    let b = normalize_compiled_lane_vector(std::array::from_fn(|index| {
+        v2[index].wrapping_sub(v0[index])
+    }));
+    let raw_cross = [
+        common_prefix_q16_mul(a[1], b[2]).wrapping_sub(common_prefix_q16_mul(a[2], b[1])),
+        common_prefix_q16_mul(a[2], b[0]).wrapping_sub(common_prefix_q16_mul(a[0], b[2])),
+        common_prefix_q16_mul(a[0], b[1]).wrapping_sub(common_prefix_q16_mul(a[1], b[0])),
+    ];
+    let output_vector = normalize_compiled_lane_vector(raw_cross);
+    let lane_word = solve_compiled_lane_plane(
+        source_vector,
+        fallback,
+        v0,
+        triangle.type_word,
+        output_vector,
+    )?;
+    Ok(CompiledLaneBuildEffects {
+        lane_word,
+        type_word: triangle.type_word,
+        output_vector,
+    })
+}
+
 /// Two recovered control writes immediately after the reciprocal/copy families.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledControlProductPair {
@@ -3675,6 +3795,136 @@ mod tests {
         assert_eq!(error.phase, CompiledLaneDispatchFailurePhase::Build);
         assert!(error.handle_writes.normalized_to_minus_one);
         assert_eq!(error.handle_writes.searched_handle, Some(7));
+    }
+
+    fn horizontal_lane_triangle() -> DecodedCompiledLaneTriangle {
+        DecodedCompiledLaneTriangle {
+            vertices: [
+                [0, 0x2_0000, 0],
+                [0x1_0000, 0x2_0000, 0],
+                [0, 0x2_0000, 0x1_0000],
+            ],
+            type_word: 0xabcd,
+        }
+    }
+
+    #[test]
+    fn decoded_lane_build_pins_store_order_orientation_and_ignores_source_y() {
+        assert_eq!(
+            COMPILED_LANE_BUILD_STORE_ORDER,
+            [
+                CompiledLaneBuildStore::TypeWord,
+                CompiledLaneBuildStore::RawOutputX,
+                CompiledLaneBuildStore::RawOutputY,
+                CompiledLaneBuildStore::RawOutputZ,
+                CompiledLaneBuildStore::FinalOutputX,
+                CompiledLaneBuildStore::FinalOutputY,
+                CompiledLaneBuildStore::FinalOutputZ,
+            ]
+        );
+        let first = derive_decoded_compiled_lane_build(
+            [0x7_0000, i32::MIN, -0x4_0000],
+            -99,
+            horizontal_lane_triangle(),
+        )
+        .unwrap();
+        let second = derive_decoded_compiled_lane_build(
+            [0x7_0000, i32::MAX, -0x4_0000],
+            -99,
+            horizontal_lane_triangle(),
+        )
+        .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.output_vector, [0, -0x1_0001, 0]);
+        assert_eq!(first.lane_word, 0x2_0000);
+        assert_eq!(first.type_word, 0xabcd);
+
+        let mut reversed = horizontal_lane_triangle();
+        reversed.vertices.swap(1, 2);
+        let reversed = derive_decoded_compiled_lane_build([0; 3], 5, reversed).unwrap();
+        assert_eq!(reversed.output_vector, [0, 0x1_0000, 0]);
+        assert_eq!(reversed.lane_word, 0x2_0000);
+    }
+
+    #[test]
+    fn decoded_lane_build_returns_fallback_for_collinear_and_vertical_planes() {
+        let collinear = DecodedCompiledLaneTriangle {
+            vertices: [[0; 3], [0x1_0000, 0, 0], [0x2_0000, 0, 0]],
+            type_word: 7,
+        };
+        let effect = derive_decoded_compiled_lane_build([1, 2, 3], i32::MIN, collinear).unwrap();
+        assert_eq!(effect.lane_word, i32::MIN);
+        assert_eq!(effect.output_vector, [0; 3]);
+        assert_eq!(effect.type_word, 7);
+
+        let vertical = DecodedCompiledLaneTriangle {
+            vertices: [[0; 3], [0x1_0000, 0, 0], [0, 0x1_0000, 0]],
+            type_word: 8,
+        };
+        let effect = derive_decoded_compiled_lane_build([9, 8, 7], i32::MAX, vertical).unwrap();
+        assert_eq!(effect.lane_word, i32::MAX);
+        assert_eq!(effect.output_vector[1], 0);
+    }
+
+    #[test]
+    fn decoded_lane_plane_divide_reports_published_effects_and_exact_boundaries() {
+        let overflow =
+            solve_compiled_lane_plane([0; 3], 99, [0x1_0000, 0, 0], 0x1234, [0x1_0000, 1, 0])
+                .unwrap_err();
+        assert_eq!(overflow.numerator, 0x1_0000);
+        assert_eq!(overflow.divisor, 1);
+        assert_eq!(overflow.published_type_word, 0x1234);
+        assert_eq!(overflow.published_output_vector, [0x1_0000, 1, 0]);
+        assert_eq!(
+            solve_compiled_lane_plane([0; 3], 99, [0; 3], 1, [0, 0, 0]).unwrap(),
+            99
+        );
+        assert_eq!(
+            solve_compiled_lane_plane([0; 3], 0, [i32::MAX, 0, 0], 1, [0x1_0000, 0x1_0000, 0])
+                .unwrap(),
+            i32::MAX
+        );
+        assert_eq!(
+            solve_compiled_lane_plane([0; 3], 0, [1, 0, 0], 1, [0x1_0000, -3, 0]).unwrap(),
+            -21_845
+        );
+        assert_eq!(
+            solve_compiled_lane_plane([0; 3], 0, [-1, 0, 0], 1, [0x1_0000, 3, 0]).unwrap(),
+            -21_845
+        );
+        assert!(
+            solve_compiled_lane_plane([0; 3], 0, [i32::MIN, 0, 0], 1, [0x1_0000, 1, 0]).is_err()
+        );
+    }
+
+    #[test]
+    fn decoded_lane_normalization_pins_safe_reciprocal_domain_and_wrapped_zero() {
+        assert_eq!(sqrt_q16(1), 0x100);
+        assert!(sqrt_q16(u32::MAX) >= 0x100);
+        assert_eq!(normalize_compiled_lane_vector([i32::MIN, 0, 0]), [0; 3]);
+        assert_ne!(normalize_compiled_lane_vector([0x100, 0, 0]), [0; 3]);
+    }
+
+    #[test]
+    fn decoded_lane_build_reports_its_computed_vector_on_final_divide_overflow() {
+        let triangle = DecodedCompiledLaneTriangle {
+            vertices: [
+                [0, 0, i32::MAX - 255],
+                [0x1_0000, 0, i32::MAX - 255],
+                [0, 0x1_0000, i32::MIN],
+            ],
+            type_word: 0x55aa,
+        };
+        let error = derive_decoded_compiled_lane_build([0; 3], 123, triangle).unwrap_err();
+        assert_eq!(
+            error,
+            CompiledLaneBuildDivideOverflow {
+                numerator: 2_147_483_392,
+                divisor: -255,
+                published_type_word: 0x55aa,
+                published_output_vector: [0, -255, 0x1_0000],
+            }
+        );
     }
 
     #[test]

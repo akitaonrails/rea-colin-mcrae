@@ -742,6 +742,12 @@ handle-write prefixes, provider-owned output/type writes, and failure phase.
 Three focused tests bring `cmr-core` to 1,180. The provider's transitive
 geometry, tables, arithmetic faults, and partial internal writes remain open.
 
+G03-AK1 reconstructs `FUN_00446fa0` arithmetic over decoded caller-owned
+triangle data. It pins type/raw-vector/final-vector store order, exact Q16
+normalization and cross orientation, fallback behavior, and a typed final
+division overflow carrying already-published effects. Five focused tests bring
+`cmr-core` to 1,185. Raw record/vector lookup and spatial search remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed
