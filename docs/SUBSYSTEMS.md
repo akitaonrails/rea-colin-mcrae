@@ -1046,9 +1046,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   wrapping adds into `+0x45c+12*lane`. The only fallible domain is the unsafe
   arcsine `INT_MIN` lookup; the API stages all four decisions and contributions
   before publication, so that lookup error leaves every accumulator unchanged.
-  Eleven focused geometric tests bring `vehicle_dynamics` to 55 tests.
-  Direction/state accumulation in `FUN_0040d810`, surface direction/projection
-  and stateful add, position update, and damper source remain.
+  `apply_lane_accumulation` composes the following per-lane tail: overwrite the
+  accumulator by the selected scalar, optionally add the first direction,
+  derive the second scalar from a projection against the already-updated
+  accumulator and optionally add the second direction, then independently
+  project the surface vector and add its scalar along the first direction.
+  Eight focused tail tests bring `vehicle_dynamics` to 63 tests. The pure API
+  returns the resulting value but does not claim the shipped mutations were
+  atomic. Upstream mode-dependent direction construction, position update, and
+  the damper source remain.
   `signed_arcsine_phase` preserves the signed lookup, `0x10000` clamp,
   index-4096 adjacent angle-table zero, and rejects unsafe `INT_MIN` instead of
   reproducing the unchecked read. `signed_ratio_angle` preserves the observed asymmetric

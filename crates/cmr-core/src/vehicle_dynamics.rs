@@ -51,6 +51,12 @@
 //!   per-lane override selects `0x8000`; otherwise a caller-resolved surface
 //!   coefficient is used. The projected input is arithmetic-shifted by two,
 //!   multiplied through an opaque global factor, and wrapping-negated.
+//! - **Lane accumulation tail** (`FUN_0040d810`): the already-selected scalar
+//!   first replaces the accumulator with its component-wise Q16.16 product.
+//!   An admitted first correction is added along one direction; only then is
+//!   the updated accumulator projected onto a second direction for the
+//!   remaining-budget addition. The independent surface contribution projects
+//!   a caller-provided vector and adds along the first direction.
 //!
 //! Values are signed Q16.16 ([`crate::fixed_point`]). See evidence
 //! `rea.official-eu.sim-grip` and
@@ -59,12 +65,11 @@
 //! Observations: the formulas and constants above, read from the solver passes.
 //! Inferences: the slope ramp raises grip as the surface flattens (output is a
 //! grip factor, high on flat ground); the two surface tiers are high/low grip.
-//! Unknowns (not reproduced): the physical units of all candidates, the
-//! direction vectors and surrounding
-//! per-wheel accumulation, the physical meaning of the nonzero control
-//! `+0x420` gate, the surface-indexed direction/projection and stateful add, the
-//! exact semi-implicit position update's half-accel term, the suspension
-//! damper source, and runtime-loaded per-surface/per-car table contents.
+//! Unknowns (not reproduced): the physical units of all candidates and
+//! directions, how the direction vectors are constructed, the physical meaning
+//! of the nonzero control `+0x420` gate, the exact semi-implicit position
+//! update's half-accel term, the suspension damper source, and runtime-loaded
+//! per-surface/per-car table contents.
 
 use crate::{
     fixed_point::{Fixed16, Vec3},
@@ -121,6 +126,43 @@ pub enum LookupDependentCandidateError {
     LookupFreePath,
     /// The recovered signed ratio lookup cannot safely represent an operand.
     Angle(SignedRatioAngleError),
+}
+
+/// Already-resolved inputs to one lane's accumulation tail in
+/// `FUN_0040d810` (`0x40f5ee..0x40f9ff`).
+///
+/// The neutral field names reflect only their roles in the recovered
+/// arithmetic. Candidate derivation, table lookup, direction construction,
+/// inactive-lane handling, and physical interpretation remain upstream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LaneAccumulationInput {
+    pub accumulator: Vec3,
+    pub selected_scalar: Fixed16,
+    pub direction_a: Vec3,
+    pub direction_b: Vec3,
+    pub surface_vector: Vec3,
+    pub correction_gate: i32,
+    pub smoothed_value: Fixed16,
+    pub raw_value: Fixed16,
+    pub gear_ratio: Fixed16,
+    pub global_factor: Fixed16,
+    pub correction_threshold: Fixed16,
+    pub correction_alternate: Fixed16,
+    pub second_budget: Fixed16,
+    pub surface_coefficient: Fixed16,
+    pub surface_override: i32,
+}
+
+/// Observable result of [`apply_lane_accumulation`].
+///
+/// Optional scalars are `None` exactly when the corresponding recovered branch
+/// skipped its vector addition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LaneAccumulationOutcome {
+    pub accumulator: Vec3,
+    pub first_correction_scalar: Option<Fixed16>,
+    pub second_correction_scalar: Option<Fixed16>,
+    pub surface_scalar: Option<Fixed16>,
 }
 
 /// Strict signed angle boundary for the qualified-lane postprocess in
@@ -602,6 +644,67 @@ pub const fn second_correction_scalar(
     }
 }
 
+/// Apply one lane's recovered accumulation tail from `FUN_0040d810`.
+///
+/// Ordering is part of the contract. The selected scalar first replaces the
+/// accumulator with its component-wise Q16.16 product. When the gated first
+/// correction is admitted, it is limited and added along `direction_a`; the
+/// second projection then reads that updated accumulator and may add along
+/// `direction_b`. Finally, the surface path is considered independently of the
+/// correction gate and may add along `direction_a`.
+///
+/// All vector products, dot products, and additions use the existing modular
+/// Q16.16 operations. Inputs that require checked lookup or direction
+/// construction are deliberately resolved by the caller before this total,
+/// pure value transformation.
+#[must_use]
+pub const fn apply_lane_accumulation(input: LaneAccumulationInput) -> LaneAccumulationOutcome {
+    let mut accumulator = input.accumulator.scale(input.selected_scalar);
+    let mut first_correction_scalar = None;
+    let mut selected_second_scalar = None;
+
+    if let Some(candidate) = gated_correction_candidate(
+        input.correction_gate,
+        input.smoothed_value,
+        input.raw_value,
+        input.gear_ratio,
+        input.global_factor,
+    ) {
+        let first_scalar = limit_signed_correction_candidate(
+            candidate,
+            input.correction_threshold,
+            input.correction_alternate,
+        );
+        accumulator = accumulator.add(input.direction_a.scale(first_scalar));
+        first_correction_scalar = Some(first_scalar);
+
+        let projection = input.direction_b.dot(accumulator);
+        selected_second_scalar =
+            second_correction_scalar(first_scalar, projection, input.second_budget);
+        if let Some(second_scalar) = selected_second_scalar {
+            accumulator = accumulator.add(input.direction_b.scale(second_scalar));
+        }
+    }
+
+    let surface_projection = input.direction_a.dot(input.surface_vector);
+    let surface_scalar = surface_indexed_lane_scalar(
+        input.global_factor,
+        input.surface_coefficient,
+        input.surface_override,
+        surface_projection,
+    );
+    if let Some(scalar) = surface_scalar {
+        accumulator = accumulator.add(input.direction_a.scale(scalar));
+    }
+
+    LaneAccumulationOutcome {
+        accumulator,
+        first_correction_scalar,
+        second_correction_scalar: selected_second_scalar,
+        surface_scalar,
+    }
+}
+
 /// Remove the sideways velocity component, reproducing `FUN_0041b270`:
 /// `perp = v - fwd * dot(fwd, v); v -= perp * K`. `forward_unit` is the car's
 /// forward direction (a unit vector); `handbrake` halves the grip.
@@ -661,6 +764,34 @@ mod tests {
             Fixed16::from_int(y),
             Fixed16::from_int(z),
         )
+    }
+
+    fn raw_v(x: i32, y: i32, z: i32) -> Vec3 {
+        Vec3::new(
+            Fixed16::from_raw(x),
+            Fixed16::from_raw(y),
+            Fixed16::from_raw(z),
+        )
+    }
+
+    fn lane_accumulation_input() -> LaneAccumulationInput {
+        LaneAccumulationInput {
+            accumulator: Vec3::ZERO,
+            selected_scalar: Fixed16::ONE,
+            direction_a: Vec3::ZERO,
+            direction_b: Vec3::ZERO,
+            surface_vector: Vec3::ZERO,
+            correction_gate: 0,
+            smoothed_value: Fixed16::ZERO,
+            raw_value: Fixed16::ZERO,
+            gear_ratio: Fixed16::ZERO,
+            global_factor: Fixed16::ONE,
+            correction_threshold: Fixed16::ZERO,
+            correction_alternate: Fixed16::ZERO,
+            second_budget: Fixed16::ZERO,
+            surface_coefficient: Fixed16::ZERO,
+            surface_override: 0,
+        }
     }
 
     fn geometric_lane(
@@ -1685,6 +1816,200 @@ mod tests {
                 Fixed16::from_raw(i32::MIN),
             ),
             Some(Fixed16::from_raw(i32::MIN))
+        );
+    }
+
+    #[test]
+    fn lane_accumulation_scales_first_and_wraps_every_axis() {
+        let outcome = apply_lane_accumulation(LaneAccumulationInput {
+            accumulator: raw_v(i32::MAX, i32::MIN, 0x7000_0000),
+            selected_scalar: Fixed16::from_int(2),
+            ..lane_accumulation_input()
+        });
+
+        assert_eq!(outcome.accumulator, raw_v(-2, 0, 0xe000_0000_u32 as i32));
+        assert_eq!(outcome.first_correction_scalar, None);
+        assert_eq!(outcome.second_correction_scalar, None);
+        assert_eq!(outcome.surface_scalar, None);
+    }
+
+    #[test]
+    fn lane_accumulation_keeps_surface_path_outside_correction_gate() {
+        let outcome = apply_lane_accumulation(LaneAccumulationInput {
+            accumulator: v(1, 2, 3),
+            selected_scalar: Fixed16::from_raw(0x8000),
+            direction_a: v(1, 0, 0),
+            surface_vector: v(4, 0, 0),
+            surface_coefficient: Fixed16::ONE,
+            ..lane_accumulation_input()
+        });
+
+        assert_eq!(outcome.first_correction_scalar, None);
+        assert_eq!(outcome.second_correction_scalar, None);
+        assert_eq!(outcome.surface_scalar, Some(-Fixed16::ONE));
+        assert_eq!(
+            outcome.accumulator,
+            Vec3::new(
+                Fixed16::from_raw(-0x8000),
+                Fixed16::ONE,
+                Fixed16::from_raw(0x1_8000),
+            )
+        );
+    }
+
+    #[test]
+    fn lane_accumulation_skips_both_corrections_after_sign_rejection() {
+        let outcome = apply_lane_accumulation(LaneAccumulationInput {
+            accumulator: v(2, -3, 4),
+            selected_scalar: Fixed16::from_raw(0x8000),
+            correction_gate: 1,
+            smoothed_value: Fixed16::from_int(5),
+            raw_value: Fixed16::ONE,
+            gear_ratio: -Fixed16::ONE,
+            direction_a: v(7, 8, 9),
+            direction_b: v(4, 5, 6),
+            second_budget: Fixed16::from_int(100),
+            ..lane_accumulation_input()
+        });
+
+        assert_eq!(outcome.accumulator, raw_v(0x1_0000, -0x1_8000, 0x2_0000));
+        assert_eq!(outcome.first_correction_scalar, None);
+        assert_eq!(outcome.second_correction_scalar, None);
+    }
+
+    #[test]
+    fn lane_accumulation_second_projection_reads_post_first_accumulator() {
+        let pre_first_projection = Fixed16::from_int(2);
+        let admitted_first = Fixed16::from_raw(0x1999);
+        let budget = Fixed16::from_raw(0x2_8000);
+        assert_eq!(
+            second_correction_scalar(admitted_first, pre_first_projection, budget),
+            Some(admitted_first)
+        );
+
+        let outcome = apply_lane_accumulation(LaneAccumulationInput {
+            accumulator: v(2, 0, 0),
+            direction_a: v(10, 0, 0),
+            direction_b: v(1, 0, 0),
+            correction_gate: 1,
+            smoothed_value: Fixed16::from_int(5),
+            raw_value: Fixed16::ONE,
+            gear_ratio: Fixed16::ONE,
+            correction_threshold: Fixed16::from_raw(0x1999),
+            correction_alternate: Fixed16::from_raw(123),
+            second_budget: budget,
+            ..lane_accumulation_input()
+        });
+
+        assert_eq!(outcome.first_correction_scalar, Some(admitted_first));
+        assert_eq!(outcome.second_correction_scalar, None);
+        assert_eq!(outcome.accumulator, raw_v(196_602, 0, 0));
+    }
+
+    #[test]
+    fn lane_accumulation_composes_limit_sign_and_exact_budget_boundary() {
+        for (smoothed, raw, ratio, expected) in [
+            (5, 1, Fixed16::ONE, Fixed16::from_raw(3_000)),
+            (-5, -1, -Fixed16::ONE, Fixed16::from_raw(-3_000)),
+        ] {
+            let outcome = apply_lane_accumulation(LaneAccumulationInput {
+                direction_a: v(1, 0, 0),
+                direction_b: v(1, 0, 0),
+                correction_gate: 1,
+                smoothed_value: Fixed16::from_int(smoothed),
+                raw_value: Fixed16::from_int(raw),
+                gear_ratio: ratio,
+                correction_threshold: Fixed16::from_raw(0x1998),
+                correction_alternate: Fixed16::from_raw(3_000),
+                second_budget: Fixed16::from_raw(6_000),
+                ..lane_accumulation_input()
+            });
+
+            assert_eq!(outcome.first_correction_scalar, Some(expected));
+            assert_eq!(outcome.second_correction_scalar, Some(expected));
+            assert_eq!(outcome.accumulator.x, expected.add(expected));
+        }
+
+        let equality = apply_lane_accumulation(LaneAccumulationInput {
+            direction_a: v(1, 0, 0),
+            correction_gate: 1,
+            smoothed_value: Fixed16::from_int(5),
+            raw_value: Fixed16::ONE,
+            gear_ratio: Fixed16::ONE,
+            correction_threshold: Fixed16::from_raw(0x1999),
+            correction_alternate: Fixed16::from_raw(3_000),
+            ..lane_accumulation_input()
+        });
+        assert_eq!(
+            equality.first_correction_scalar,
+            Some(Fixed16::from_raw(0x1999))
+        );
+    }
+
+    #[test]
+    fn lane_accumulation_surface_uses_arithmetic_shift_and_override_branch() {
+        let shifted = apply_lane_accumulation(LaneAccumulationInput {
+            direction_a: raw_v(Fixed16::ONE.raw(), 0, 0),
+            surface_vector: raw_v(-5, 0, 0),
+            surface_coefficient: Fixed16::ONE,
+            ..lane_accumulation_input()
+        });
+        assert_eq!(shifted.surface_scalar, Some(Fixed16::from_raw(2)));
+        assert_eq!(shifted.accumulator, raw_v(2, 0, 0));
+
+        let overridden = apply_lane_accumulation(LaneAccumulationInput {
+            direction_a: v(1, 0, 0),
+            surface_vector: v(4, 0, 0),
+            surface_coefficient: Fixed16::from_raw(i32::MIN),
+            surface_override: -7,
+            ..lane_accumulation_input()
+        });
+        assert_eq!(overridden.surface_scalar, Some(Fixed16::from_raw(-0x8000)));
+        assert_eq!(overridden.accumulator, raw_v(-0x8000, 0, 0));
+
+        let zero_projection = apply_lane_accumulation(LaneAccumulationInput {
+            direction_a: v(1, 0, 0),
+            surface_vector: v(0, 4, 0),
+            surface_coefficient: Fixed16::ONE,
+            ..lane_accumulation_input()
+        });
+        assert_eq!(zero_projection.surface_scalar, None);
+    }
+
+    #[test]
+    fn lane_accumulation_surface_int_min_wraps_on_all_axes() {
+        let outcome = apply_lane_accumulation(LaneAccumulationInput {
+            direction_a: v(1, 1, 1),
+            surface_vector: v(4, 0, 0),
+            global_factor: Fixed16::from_raw(i32::MIN),
+            surface_coefficient: Fixed16::ONE,
+            ..lane_accumulation_input()
+        });
+
+        assert_eq!(outcome.surface_scalar, Some(Fixed16::from_raw(i32::MIN)));
+        assert_eq!(outcome.accumulator, raw_v(i32::MIN, i32::MIN, i32::MIN));
+    }
+
+    #[test]
+    fn lane_accumulation_first_add_wraps_independently_on_all_axes() {
+        let outcome = apply_lane_accumulation(LaneAccumulationInput {
+            accumulator: raw_v(i32::MAX - 5, i32::MIN + 5, i32::MAX - 5),
+            direction_a: raw_v(101, -101, 101),
+            correction_gate: 1,
+            smoothed_value: Fixed16::from_int(5),
+            raw_value: Fixed16::ONE,
+            gear_ratio: Fixed16::ONE,
+            correction_threshold: Fixed16::from_raw(0x1999),
+            ..lane_accumulation_input()
+        });
+
+        assert_eq!(
+            outcome.first_correction_scalar,
+            Some(Fixed16::from_raw(0x1999))
+        );
+        assert_eq!(
+            outcome.accumulator,
+            raw_v(i32::MIN + 4, i32::MAX - 5, i32::MIN + 4)
         );
     }
 }

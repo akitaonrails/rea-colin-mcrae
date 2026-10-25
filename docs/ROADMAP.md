@@ -418,12 +418,14 @@ rejection. `apply_geometric_lane_postprocess` reconstructs the four-lane
 two-pass qualification, legacy normalization, signed wrapping alignment bound,
 shared scalar, and wrapping accumulator adds behind an atomic API whose only
 fallible domain is the unsafe arcsine `INT_MIN` lookup.
-The other `legacy_math` helpers centralize the recovered consumers while
-mathematical `Fixed16::sqrt` stays distinct. The next G03 scope is
-direction/state accumulation in `FUN_0040d810`, surface
-direction/projection and add, position update, and the damper source also
-remain. Direction vectors, projections, and stateful
-accumulation remain separated from unsupported physical labels until recovered.
+`apply_lane_accumulation` now composes the subsequent `FUN_0040d810` tail in
+its observed order: selected-scalar overwrite, gated first direction add,
+second projection against that updated accumulator and optional add, then the
+independent surface projection/add. The other `legacy_math` helpers centralize
+the recovered consumers while mathematical `Fixed16::sqrt` stays distinct.
+The next G03 scope is the upstream mode-dependent construction of the two
+neutral direction vectors. Position update and the damper source also remain;
+physical labels and runtime table values stay unclaimed.
 
 Exit gate:
 
