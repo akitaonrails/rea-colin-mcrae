@@ -2119,6 +2119,76 @@ impl CompiledPostLaneTransform for CompiledPostLaneBasis {
     }
 }
 
+/// Destination-row stride in bytes of the post-basis pointer publication.
+pub const COMPILED_POST_LANE_PUBLICATION_ROW_STRIDE: usize = 0x10;
+
+/// Publication source rows in native write order: the rebuilt prior row, the
+/// verbatim AK11 row, then the cross row. This differs from the AK13 state
+/// store order, which writes the AK11 row first.
+pub const COMPILED_POST_LANE_PUBLICATION_SOURCE_BASES: [u16; 3] = [0x258, 0x264, 0x270];
+
+/// Destination byte offsets of the three published rows.
+pub const COMPILED_POST_LANE_PUBLICATION_DESTINATION_OFFSETS: [usize; 3] = [0x00, 0x10, 0x20];
+
+/// Publishes the rebuilt basis through the destination pointer reloaded from
+/// state `+0x2a0` in `FUN_00404440 [0x406e30,0x406e9a)`.
+///
+/// The injected destination stands for native memory: the three rows are
+/// written at destination strides `+0x00/+0x10/+0x20`, three dwords each,
+/// while the padding dwords at `+0x0c/+0x1c/+0x2c` keep their prior contents.
+/// Native code reloads the global state and the destination pointer between
+/// rows, so destination aliases, pointer rebinding, and progressive machine
+/// faults are explicit limitations, not modeled effects. The following
+/// `[0x406e9a,0x406ea5)` interval invokes the already reconstructed
+/// `FUN_00409c10(state)`; `0x406ea5` starts the separate state-adjustment
+/// phase.
+pub fn publish_compiled_post_lane_basis(
+    destination: &mut [[i32; 4]; 3],
+    effects: CompiledPostLaneBasisEffects,
+) {
+    let rows = [effects.vector_258, effects.vector_264, effects.vector_270];
+    for (destination_row, source_row) in destination.iter_mut().zip(rows) {
+        destination_row[..3].copy_from_slice(&source_row);
+    }
+}
+
+/// Concrete AK11 -> AK13 -> publication composition. The destination buffer is
+/// injected so pointer ownership stays outside the safe contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledPostLanePublishedBasis {
+    pub basis: CompiledPostLaneBasis,
+    /// Caller-owned destination rows; the padding dwords are preserved.
+    pub destination: [[i32; 4]; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledPostLanePublicationCompletion {
+    pub normal: CompiledPostLaneNormalEffects,
+    pub basis: CompiledPostLaneBasisEffects,
+    /// The published destination rows after the three-dword writes.
+    pub destination: [[i32; 4]; 3],
+}
+
+impl CompiledPostLaneTransform for CompiledPostLanePublishedBasis {
+    type Completion = CompiledPostLanePublicationCompletion;
+    type Error = std::convert::Infallible;
+
+    fn run_after_lanes(
+        &mut self,
+        input: &CompiledEightLaneExecutionInputs,
+        lanes: &CompiledEightLaneExecutionSuccess,
+    ) -> Result<Self::Completion, Self::Error> {
+        let completion = self.basis.run_after_lanes(input, lanes)?;
+        let mut destination = self.destination;
+        publish_compiled_post_lane_basis(&mut destination, completion.basis);
+        Ok(CompiledPostLanePublicationCompletion {
+            normal: completion.normal,
+            basis: completion.basis,
+            destination,
+        })
+    }
+}
+
 fn solve_compiled_lane_plane(
     source_vector: [i32; 3],
     fallback: i32,
@@ -5522,6 +5592,101 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn concrete_post_publication_publishes_the_rebuilt_rows_after_lane_success() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| IntegratedLaneMode::Built(if lane == 2 { 0x51 } else { 0 })),
+        );
+        let mut input = integrated_execution_input();
+        input.source_vectors = post_lane_square_input([0, 0, 0]).source_vectors;
+        let mut config =
+            |lane| -> Result<u8, &'static str> { Ok(if lane == 2 { 0x02 } else { 0 }) };
+        let mut post = CompiledPostLanePublishedBasis {
+            basis: CompiledPostLaneBasis {
+                normal: CompiledPostLaneGlobalNormal {
+                    selector_words: [0, 0, 9],
+                },
+                prior_vector_258: [0, 0x10000, 0],
+            },
+            destination: [[9, 9, 9, 0x1111], [8, 8, 8, 0x2222], [7, 7, 7, 0x3333]],
+        };
+        let success = execute_compiled_eight_lanes_then(
+            input,
+            integrated_execution_state(),
+            &mut providers,
+            &mut config,
+            &mut post,
+        )
+        .unwrap();
+
+        let normal = derive_compiled_post_lane_global_normal(CompiledPostLaneNormalInput {
+            source_vectors: input.source_vectors,
+            lane_words: success.lanes.state.lane_words,
+            selector_words: [0, 0, 9],
+        });
+        let basis = derive_compiled_post_lane_basis(CompiledPostLaneBasisInputs {
+            vector_324: normal.final_published_normal,
+            vector_258: [0, 0x10000, 0],
+        });
+        let mut destination = [[9, 9, 9, 0x1111], [8, 8, 8, 0x2222], [7, 7, 7, 0x3333]];
+        publish_compiled_post_lane_basis(&mut destination, basis);
+        assert_eq!(
+            success.post_lane,
+            CompiledPostLanePublicationCompletion {
+                normal,
+                basis,
+                destination,
+            }
+        );
+        assert_eq!(success.post_lane.destination[0][3], 0x1111);
+        assert_eq!(success.post_lane.destination[1][3], 0x2222);
+        assert_eq!(success.post_lane.destination[2][3], 0x3333);
+    }
+
+    #[test]
+    fn post_publication_is_not_produced_when_a_lane_fails() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| {
+                if lane == 7 {
+                    IntegratedLaneMode::SearchThenBuildFailure
+                } else {
+                    IntegratedLaneMode::Built(0)
+                }
+            }),
+        );
+        let mut state = integrated_execution_state();
+        state.handles[7] = -1;
+        let mut config = |_lane| -> Result<u8, &'static str> { Ok(0) };
+        let mut post = CompiledPostLanePublishedBasis {
+            basis: CompiledPostLaneBasis {
+                normal: CompiledPostLaneGlobalNormal {
+                    selector_words: [0, 0, 9],
+                },
+                prior_vector_258: [0, 0x10000, 0],
+            },
+            destination: [[0; 4]; 3],
+        };
+        let failure = execute_compiled_eight_lanes_then(
+            integrated_execution_input(),
+            state,
+            &mut providers,
+            &mut config,
+            &mut post,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            failure,
+            CompiledLaneAndPostFailure::Lanes(CompiledEightLaneExecutionFailure::Dispatch {
+                failed_lane: 7,
+                ..
+            })
+        ));
+    }
+
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum CandidateCall {
         Validate([i32; 3], i16),
@@ -7118,6 +7283,42 @@ mod tests {
         let effects =
             derive_compiled_post_lane_basis(post_lane_basis_input([3, 5, 7], [11, 13, 17]));
         assert_eq!(effects.vector_264, [3, 5, 7]);
+    }
+
+    #[test]
+    fn post_lane_publication_writes_rows_in_order_and_preserves_padding() {
+        assert_eq!(COMPILED_POST_LANE_PUBLICATION_ROW_STRIDE, 0x10);
+        assert_eq!(
+            COMPILED_POST_LANE_PUBLICATION_SOURCE_BASES,
+            [0x258, 0x264, 0x270]
+        );
+        assert_eq!(
+            COMPILED_POST_LANE_PUBLICATION_DESTINATION_OFFSETS,
+            [0x00, 0x10, 0x20]
+        );
+        for offsets in COMPILED_POST_LANE_PUBLICATION_DESTINATION_OFFSETS.windows(2) {
+            assert_eq!(
+                offsets[1] - offsets[0],
+                COMPILED_POST_LANE_PUBLICATION_ROW_STRIDE
+            );
+        }
+
+        let effects = CompiledPostLaneBasisEffects {
+            vector_258: [1, 2, 3],
+            vector_264: [4, 5, 6],
+            vector_270: [7, 8, 9],
+        };
+        let mut destination = [
+            [-1, -2, -3, 0x5555],
+            [-4, -5, -6, 0x6666],
+            [-7, -8, -9, 0x7777],
+        ];
+        publish_compiled_post_lane_basis(&mut destination, effects);
+        // Publication order is the rebuilt prior row, the verbatim AK11 row,
+        // then the cross row; each padding dword (+0x0c/+0x1c/+0x2c) survives.
+        assert_eq!(destination[0], [1, 2, 3, 0x5555]);
+        assert_eq!(destination[1], [4, 5, 6, 0x6666]);
+        assert_eq!(destination[2], [7, 8, 9, 0x7777]);
     }
 
     #[test]

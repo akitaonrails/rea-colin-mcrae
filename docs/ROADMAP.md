@@ -854,6 +854,16 @@ success. Ten focused tests bring `cmr-core` to 1,242. The following
 `[0x406e30,0x406e9a)` pointer publication, destination aliases, rebinding, and
 progressive fault prefixes remain open.
 
+G03-AK14 reconstructs that pointer publication. `publish_compiled_post_lane_basis`
+writes the rebuilt prior row, the verbatim AK11 row, and the cross row into an
+injected destination at strides `+0x00/+0x10/+0x20`, three dwords each,
+preserving the padding dwords. `CompiledPostLanePublishedBasis` composes AK11,
+AK13, and publication through the AK12 barrier. The following call to the
+already reconstructed `FUN_00409c10(state)` is documented; `0x406ea5` begins
+the separate state-adjustment phase. Three focused tests bring `cmr-core` to
+1,245. Destination aliases, pointer rebinding, and progressive fault prefixes
+remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

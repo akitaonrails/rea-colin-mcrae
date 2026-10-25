@@ -1266,6 +1266,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   after eight-lane success. Ten focused tests bring `cmr-core` to 1,242. The
   separate `[0x406e30,0x406e9a)` pointer publication and native alias/fault
   behavior remain open.
+  G03-AK14 reconstructs the publication: `publish_compiled_post_lane_basis`
+  writes the rebuilt `+0x258` row, the verbatim AK11 `+0x264` row, and the
+  cross `+0x270` row at destination strides `+0x00/+0x10/+0x20`, three dwords
+  each, preserving the padding dwords. `CompiledPostLanePublishedBasis`
+  composes AK11, AK13, and publication after eight-lane success. The
+  following `FUN_00409c10(state)` call edge is documented. Three focused
+  tests bring `cmr-core` to 1,245. Destination aliases, pointer rebinding,
+  and progressive fault prefixes remain open.
+  See
   See
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
