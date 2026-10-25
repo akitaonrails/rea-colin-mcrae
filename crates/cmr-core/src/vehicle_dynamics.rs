@@ -32,8 +32,9 @@
 //! - **Lookup-free candidate branches** (`FUN_0040d810`): when the wrapping
 //!   absolute first component is below `0x6666`, transition/alternate gains are
 //!   multiplied by their caller-derived bases. Otherwise a second component
-//!   below `0x6666` selects both gains verbatim. The remaining branch uses
-//!   runtime lookup tables and is not reconstructed by this helper.
+//!   below `0x6666` selects both gains verbatim. When neither component is below
+//!   the boundary, the paired candidate derivation composes the recovered
+//!   angle, trig, and square-root lookup behavior.
 //! - **Gated correction arithmetic** (`FUN_0040d810`): a nonzero control gate
 //!   admits a correction only when the wrapping difference between the
 //!   smoothed/current and raw wheel values has the same strict sign as the
@@ -56,15 +57,18 @@
 //! Observations: the formulas and constants above, read from the solver passes.
 //! Inferences: the slope ramp raises grip as the surface flattens (output is a
 //! grip factor, high on flat ground); the two surface tiers are high/low grip.
-//! Unknowns (not reproduced): the lookup-dependent candidate branch and the
-//! physical units of all candidates, the direction vectors and surrounding
+//! Unknowns (not reproduced): the physical units of all candidates, the
+//! direction vectors and surrounding
 //! per-wheel accumulation, the physical meaning of the nonzero control
 //! `+0x420` gate, the surface-indexed direction/projection and stateful add, the
 //! vector qualification and normalization around `FUN_0040fbe0`, the exact
 //! semi-implicit position update's half-accel term, the suspension damper
 //! source, and runtime-loaded per-surface/per-car table contents.
 
-use crate::fixed_point::{Fixed16, Vec3};
+use crate::{
+    fixed_point::{Fixed16, Vec3},
+    legacy_math::{SignedRatioAngleError, cos_q16, signed_ratio_angle, sin_q16, sqrt_q16},
+};
 
 /// Velocity-integration gain applied to acceleration (`0x3333` ~ 0.2); the
 /// fixed 40 ms step is folded into this tuned coefficient.
@@ -105,6 +109,15 @@ pub const SURFACE_GRIP_RECORD_BYTES: usize = 8;
 /// Signed component boundary used by the two lookup-free candidate branches
 /// in `FUN_0040d810` (`0x40f24f..0x40f2c7`).
 pub const CANDIDATE_COMPONENT_THRESHOLD: Fixed16 = Fixed16::from_raw(0x6666);
+
+/// Rejection from the lookup-dependent candidate derivation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LookupDependentCandidateError {
+    /// One of the wrapping-absolute components belongs to an earlier branch.
+    LookupFreePath,
+    /// The recovered signed ratio lookup cannot safely represent an operand.
+    Angle(SignedRatioAngleError),
+}
 
 /// Strict signed angle boundary for the qualified-lane postprocess in
 /// `FUN_0040fbe0`.
@@ -256,6 +269,75 @@ pub const fn derive_lookup_free_candidates(
     } else {
         None
     }
+}
+
+/// Derive the paired candidates for the lookup-dependent branch of
+/// `FUN_0040d810` (`0x40f2cc..0x40f5de`).
+///
+/// The components first use the same wrapping absolute value and signed
+/// `0x6666` gates as [`derive_lookup_free_candidates`]. Admitted inputs then
+/// pass through the recovered signed-ratio phase lookup, exact sine/cosine
+/// tables, wrapping Q16.16 square sum, legacy square-root lookup, and the two
+/// caller-provided gains. The returned order is `(transition, alternate)` for
+/// [`select_signed_force_candidate`]. No physical meaning is assigned to the
+/// inputs or outputs.
+///
+/// # Errors
+///
+/// Returns [`LookupDependentCandidateError::LookupFreePath`] when either
+/// component belongs to an earlier branch, and propagates unsafe angle input
+/// domains as [`LookupDependentCandidateError::Angle`]. A zero square sum is
+/// valid here: this path takes a square root and performs no reciprocal divide.
+pub fn derive_lookup_dependent_candidates(
+    component_a: Fixed16,
+    component_b: Fixed16,
+    transition_gain: Fixed16,
+    transition_base: Fixed16,
+    alternate_gain: Fixed16,
+    alternate_base: Fixed16,
+) -> Result<(Fixed16, Fixed16), LookupDependentCandidateError> {
+    let absolute_a = Fixed16::from_raw(component_a.raw().wrapping_abs());
+    let absolute_b = Fixed16::from_raw(component_b.raw().wrapping_abs());
+    if absolute_a.raw() < CANDIDATE_COMPONENT_THRESHOLD.raw()
+        || absolute_b.raw() < CANDIDATE_COMPONENT_THRESHOLD.raw()
+    {
+        return Err(LookupDependentCandidateError::LookupFreePath);
+    }
+
+    let transition = derive_one_lookup_dependent_candidate(
+        absolute_a,
+        absolute_b,
+        transition_base,
+        transition_gain,
+    )?;
+    let alternate = derive_one_lookup_dependent_candidate(
+        absolute_a,
+        absolute_b,
+        alternate_base,
+        alternate_gain,
+    )?;
+    Ok((transition, alternate))
+}
+
+fn derive_one_lookup_dependent_candidate(
+    component_a: Fixed16,
+    component_b: Fixed16,
+    base: Fixed16,
+    gain: Fixed16,
+) -> Result<Fixed16, LookupDependentCandidateError> {
+    let projected = component_a.mul(base);
+    let phase = match signed_ratio_angle(projected.raw(), component_b.raw()) {
+        Ok(phase) => phase as u16,
+        Err(error) => return Err(LookupDependentCandidateError::Angle(error)),
+    };
+    let scaled_cosine = base.mul(cos_q16(phase));
+    let sine = sin_q16(phase);
+    let square_sum = scaled_cosine
+        .mul(scaled_cosine)
+        .raw()
+        .wrapping_add(sine.mul(sine).raw()) as u32;
+    let root = Fixed16::from_raw(sqrt_q16(square_sum) as i32);
+    Ok(root.mul(gain))
 }
 
 /// Derive the correction candidate admitted by the recovered nonzero gate and
@@ -813,6 +895,154 @@ mod tests {
                 Fixed16::ONE,
             ),
             None
+        );
+    }
+
+    #[test]
+    fn lookup_dependent_candidates_pin_both_component_gate_edges() {
+        let below = Fixed16::from_raw(CANDIDATE_COMPONENT_THRESHOLD.raw() - 1);
+        let threshold = CANDIDATE_COMPONENT_THRESHOLD;
+        let derive = |component_a, component_b| {
+            derive_lookup_dependent_candidates(
+                component_a,
+                component_b,
+                Fixed16::ONE,
+                Fixed16::ZERO,
+                Fixed16::ONE,
+                Fixed16::ZERO,
+            )
+        };
+
+        assert_eq!(
+            derive(below, threshold),
+            Err(LookupDependentCandidateError::LookupFreePath)
+        );
+        assert_eq!(
+            derive(threshold, below),
+            Err(LookupDependentCandidateError::LookupFreePath)
+        );
+        assert_eq!(
+            derive(threshold.neg(), threshold.neg()),
+            Ok((Fixed16::ZERO, Fixed16::ZERO))
+        );
+        assert_eq!(
+            derive(Fixed16::from_raw(i32::MIN), threshold),
+            Err(LookupDependentCandidateError::LookupFreePath)
+        );
+    }
+
+    #[test]
+    fn lookup_dependent_candidates_preserve_equal_ratio_adjacent_zero() {
+        assert_eq!(
+            derive_lookup_dependent_candidates(
+                Fixed16::ONE,
+                Fixed16::from_int(2),
+                Fixed16::ONE,
+                Fixed16::from_int(2),
+                Fixed16::ONE,
+                Fixed16::ONE,
+            ),
+            Ok((Fixed16::from_raw(131_100), Fixed16::from_raw(65_531)))
+        );
+    }
+
+    #[test]
+    fn lookup_dependent_candidates_resolve_both_repeated_paths() {
+        assert_eq!(
+            derive_lookup_dependent_candidates(
+                Fixed16::from_raw(0x1_2000),
+                Fixed16::from_raw(0xc000),
+                Fixed16::from_raw(0x8000),
+                Fixed16::from_raw(0x1_4000),
+                Fixed16::from_raw(0x1_8000),
+                Fixed16::from_raw(0xa000),
+            ),
+            Ok((Fixed16::from_raw(34_748), Fixed16::from_raw(80_803)))
+        );
+    }
+
+    #[test]
+    fn lookup_dependent_candidates_keep_component_and_base_sign_rules() {
+        let positive_components = derive_lookup_dependent_candidates(
+            Fixed16::from_raw(0x1_2000),
+            Fixed16::from_raw(0xc000),
+            Fixed16::from_raw(-0x8000),
+            Fixed16::from_raw(-0x1_4000),
+            Fixed16::from_raw(0x1_8000),
+            Fixed16::from_raw(-0xa000),
+        );
+        let negative_components = derive_lookup_dependent_candidates(
+            Fixed16::from_raw(-0x1_2000),
+            Fixed16::from_raw(-0xc000),
+            Fixed16::from_raw(-0x8000),
+            Fixed16::from_raw(-0x1_4000),
+            Fixed16::from_raw(0x1_8000),
+            Fixed16::from_raw(-0xa000),
+        );
+
+        assert_eq!(positive_components, negative_components);
+        assert_eq!(
+            positive_components,
+            Ok((Fixed16::from_raw(-34_748), Fixed16::from_raw(80_803)))
+        );
+    }
+
+    #[test]
+    fn lookup_dependent_candidates_accept_zero_square_root_results() {
+        assert_eq!(
+            derive_lookup_dependent_candidates(
+                Fixed16::ONE,
+                Fixed16::ONE,
+                Fixed16::from_raw(i32::MAX),
+                Fixed16::ZERO,
+                Fixed16::from_raw(i32::MIN),
+                Fixed16::ZERO,
+            ),
+            Ok((Fixed16::ZERO, Fixed16::ZERO))
+        );
+    }
+
+    #[test]
+    fn lookup_dependent_candidates_keep_wrapping_square_sum() {
+        assert_eq!(
+            derive_lookup_dependent_candidates(
+                CANDIDATE_COMPONENT_THRESHOLD,
+                Fixed16::from_raw(0x100_0000),
+                Fixed16::ONE,
+                Fixed16::from_raw(0x100_0000),
+                Fixed16::ONE,
+                Fixed16::ONE,
+            ),
+            Ok((Fixed16::from_raw(15_587_072), Fixed16::from_raw(65_550)))
+        );
+    }
+
+    #[test]
+    fn lookup_dependent_candidates_propagate_each_angle_error() {
+        let expected = Err(LookupDependentCandidateError::Angle(
+            SignedRatioAngleError::MinimumOperand,
+        ));
+        assert_eq!(
+            derive_lookup_dependent_candidates(
+                Fixed16::ONE,
+                Fixed16::ONE,
+                Fixed16::ONE,
+                Fixed16::from_raw(i32::MIN),
+                Fixed16::ONE,
+                Fixed16::ZERO,
+            ),
+            expected
+        );
+        assert_eq!(
+            derive_lookup_dependent_candidates(
+                Fixed16::ONE,
+                Fixed16::ONE,
+                Fixed16::ONE,
+                Fixed16::ZERO,
+                Fixed16::ONE,
+                Fixed16::from_raw(i32::MIN),
+            ),
+            expected
         );
     }
 

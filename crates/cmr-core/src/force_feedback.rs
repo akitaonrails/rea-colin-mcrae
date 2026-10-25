@@ -33,10 +33,12 @@
 //!   selector (`0xb`..`0xe`), and the DirectInput `DIEP_*` / `DIEFF_*` /
 //!   cooperative-level ABI constants (these are public DirectInput SDK values,
 //!   not game data).
-//! - **Inference**: the continuous (analog) collision direction is a polar-angle
-//!   conversion from the game's `atan2` LUT (full circle = `0x400` units); the
-//!   LUT scale is modelled by [`polar_centidegrees`] but the exact unit was not
-//!   transcribed with certainty, so only the boundary mapping is asserted.
+//! - **Inference**: the continuous (analog) collision direction includes a
+//!   polar-angle conversion to DirectInput centidegrees. The recovered
+//!   signed-ratio phase uses `0x1000` per full period (`0x400` per quarter),
+//!   but its force-feedback consumer chain is not yet pinned; therefore
+//!   [`polar_centidegrees`] remains a generic conversion with only boundary
+//!   behavior asserted.
 //! - **Design decision**: the collision decay *step* source and the per-source
 //!   raw-sum derivations are left as caller-supplied inputs; this module
 //!   reconstructs the confidently-recovered *transforms*, not the unrecovered
@@ -112,10 +114,12 @@ pub const DI_DIRECTION_RIGHT_CENTIDEGREES: i32 = 9000;
 /// Digital-wheel collision direction "push left" (270 degrees).
 pub const DI_DIRECTION_LEFT_CENTIDEGREES: i32 = 27000;
 
-/// Full-circle unit count of the game's `atan2` LUT (`FUN_0048e100` ->
-/// `DAT_00833380`); a power-of-two angle used for the analog collision
-/// direction (inference; see module docs).
-pub const ATAN2_LUT_FULL_CIRCLE: i32 = 0x400;
+/// Full-period unit count of the recovered signed-ratio phase.
+///
+/// `FUN_0048e100` is a three-component Q16 transform, not the phase lookup.
+/// How this phase reaches the force-feedback centidegree consumer remains
+/// unresolved, so this constant states only the recovered phase scale.
+pub const SIGNED_RATIO_PHASE_FULL_PERIOD: i32 = 0x1000;
 
 /// Minimum sample period (microseconds) the surface-rumble computer
 /// (`FUN_00432e00`) allows before flooring; a rougher surface shortens the
@@ -256,13 +260,12 @@ pub fn digital_collision_direction(push_left: bool) -> i32 {
     }
 }
 
-/// Convert a full-circle angle in `full_circle_units` (for the game's `atan2`
-/// LUT, [`ATAN2_LUT_FULL_CIRCLE`]) into DirectInput polar centidegrees,
-/// wrapped into `[0, 36000)`.
+/// Convert an angle in caller-supplied full-period units into DirectInput polar
+/// centidegrees, wrapped into `[0, 36000)`.
 ///
 /// Inference: this models the analog collision direction conversion; only the
 /// boundary mapping (0 -> 0, quarter turn -> 9000, full turn -> wrap to 0) is
-/// asserted, because the exact LUT unit was not transcribed with certainty.
+/// asserted because the exact force-feedback consumer chain is not yet pinned.
 pub fn polar_centidegrees(angle: i32, full_circle_units: i32) -> i32 {
     debug_assert!(full_circle_units > 0);
     let wrapped = angle.rem_euclid(full_circle_units);
@@ -662,30 +665,42 @@ mod tests {
     #[test]
     fn polar_conversion_maps_lut_boundaries() {
         // Boundary mapping only (the analog direction is an inference).
-        assert_eq!(polar_centidegrees(0, ATAN2_LUT_FULL_CIRCLE), 0);
+        assert_eq!(polar_centidegrees(0, SIGNED_RATIO_PHASE_FULL_PERIOD), 0);
         assert_eq!(
-            polar_centidegrees(ATAN2_LUT_FULL_CIRCLE / 4, ATAN2_LUT_FULL_CIRCLE),
+            polar_centidegrees(
+                SIGNED_RATIO_PHASE_FULL_PERIOD / 4,
+                SIGNED_RATIO_PHASE_FULL_PERIOD
+            ),
             9000
         );
         assert_eq!(
-            polar_centidegrees(ATAN2_LUT_FULL_CIRCLE / 2, ATAN2_LUT_FULL_CIRCLE),
+            polar_centidegrees(
+                SIGNED_RATIO_PHASE_FULL_PERIOD / 2,
+                SIGNED_RATIO_PHASE_FULL_PERIOD
+            ),
             18000
         );
         // A full turn (and multiples) wraps back to zero.
         assert_eq!(
-            polar_centidegrees(ATAN2_LUT_FULL_CIRCLE, ATAN2_LUT_FULL_CIRCLE),
+            polar_centidegrees(
+                SIGNED_RATIO_PHASE_FULL_PERIOD,
+                SIGNED_RATIO_PHASE_FULL_PERIOD
+            ),
             0
         );
         assert_eq!(
             polar_centidegrees(
-                ATAN2_LUT_FULL_CIRCLE + ATAN2_LUT_FULL_CIRCLE / 4,
-                ATAN2_LUT_FULL_CIRCLE
+                SIGNED_RATIO_PHASE_FULL_PERIOD + SIGNED_RATIO_PHASE_FULL_PERIOD / 4,
+                SIGNED_RATIO_PHASE_FULL_PERIOD
             ),
             9000
         );
         // Negative angles wrap into range (three-quarter turn).
         assert_eq!(
-            polar_centidegrees(-ATAN2_LUT_FULL_CIRCLE / 4, ATAN2_LUT_FULL_CIRCLE),
+            polar_centidegrees(
+                -SIGNED_RATIO_PHASE_FULL_PERIOD / 4,
+                SIGNED_RATIO_PHASE_FULL_PERIOD
+            ),
             27000
         );
     }

@@ -9,6 +9,77 @@ use crate::fixed_point::Fixed16;
 const TRIG_PHASE_MASK: u16 = 0x0fff;
 const TRIG_QUARTER_TURN: u16 = 0x0400;
 const TRIG_QUARTER: [i32; 1025] = include!("root_menu_c3d_trig_quarter.in");
+const SIGNED_RATIO_ANGLE_TABLE: [u16; 512] = include!("signed_ratio_angle_table.in");
+
+/// Input-domain failure for [`signed_ratio_angle`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SignedRatioAngleError {
+    /// The legacy wrapping absolute-value sequence is not defined as a safe
+    /// lookup operation for `i32::MIN`.
+    MinimumOperand,
+    /// Checked arithmetic produced a ratio or table index outside the
+    /// recovered lookup domain.
+    ArithmeticDomain,
+}
+
+/// Reconstructs the legacy signed ratio-to-angle lookup.
+///
+/// The result uses a wrapping phase where `0x1000` is one full period and
+/// `0x0400` is one quarter-period. This is deliberately not an `atan2` API:
+/// it restores only the XOR of the operand signs. The asymmetric zero cases
+/// and the zero sentinel for equal nonzero magnitudes are compatibility
+/// behavior.
+///
+/// # Errors
+///
+/// Returns [`SignedRatioAngleError::MinimumOperand`] when either nonzero
+/// operand is `i32::MIN`. The recovered zero gates run first. If both operands
+/// are nonzero, the legacy `NEG` instruction cannot make the minimum value
+/// positive, after which its signed divide and logical index shift can fault or
+/// address outside the recovered table.
+pub fn signed_ratio_angle(first: i32, second: i32) -> Result<i16, SignedRatioAngleError> {
+    if first == 0 {
+        return Ok(0);
+    }
+    if second == 0 {
+        return Ok(TRIG_QUARTER_TURN as i16);
+    }
+    if first == i32::MIN || second == i32::MIN {
+        return Err(SignedRatioAngleError::MinimumOperand);
+    }
+
+    let mut first_magnitude = first.abs();
+    let mut second_magnitude = second.abs();
+    let negative = first.is_negative() ^ second.is_negative();
+    let swapped = first_magnitude > second_magnitude;
+    if swapped {
+        core::mem::swap(&mut first_magnitude, &mut second_magnitude);
+    }
+
+    let numerator = i64::from(first_magnitude)
+        .checked_shl(16)
+        .ok_or(SignedRatioAngleError::ArithmeticDomain)?;
+    let ratio = numerator
+        .checked_div(i64::from(second_magnitude))
+        .ok_or(SignedRatioAngleError::ArithmeticDomain)?;
+    let index = usize::try_from(ratio >> 7).map_err(|_| SignedRatioAngleError::ArithmeticDomain)?;
+    let mut angle = match index {
+        0..=511 => SIGNED_RATIO_ANGLE_TABLE[index],
+        // The legacy index lands on the adjacent generated table here. Its
+        // first entry is zero, so preserve the result without coupling the
+        // two source-owned representations.
+        512 => 0,
+        _ => return Err(SignedRatioAngleError::ArithmeticDomain),
+    };
+
+    if swapped {
+        angle = TRIG_QUARTER_TURN.wrapping_sub(angle);
+    }
+    if negative {
+        angle = angle.wrapping_neg();
+    }
+    Ok(angle as i16)
+}
 
 /// Exact Q16.16 sine lookup for a wrapping 16-bit BAM phase.
 #[must_use]
@@ -110,6 +181,91 @@ mod tests {
             assert_eq!(sin_q16(phase.wrapping_add(2048)), -sin_q16(phase));
             assert_eq!(cos_q16(phase), sin_q16(phase.wrapping_add(0x400)));
         }
+    }
+
+    #[test]
+    fn signed_ratio_angle_keeps_zero_asymmetry_and_rejects_minimum() {
+        assert_eq!(signed_ratio_angle(0, 0), Ok(0));
+        assert_eq!(signed_ratio_angle(0, 7), Ok(0));
+        assert_eq!(signed_ratio_angle(0, -7), Ok(0));
+        assert_eq!(signed_ratio_angle(7, 0), Ok(0x400));
+        assert_eq!(signed_ratio_angle(-7, 0), Ok(0x400));
+
+        assert_eq!(
+            signed_ratio_angle(i32::MIN, 1),
+            Err(SignedRatioAngleError::MinimumOperand)
+        );
+        assert_eq!(
+            signed_ratio_angle(1, i32::MIN),
+            Err(SignedRatioAngleError::MinimumOperand)
+        );
+        assert_eq!(signed_ratio_angle(0, i32::MIN), Ok(0));
+        assert_eq!(signed_ratio_angle(i32::MIN, 0), Ok(0x400));
+    }
+
+    #[test]
+    fn signed_ratio_angle_pins_index_boundaries_and_equal_sentinel() {
+        assert_eq!(signed_ratio_angle(127, 65_536), Ok(0));
+        assert_eq!(signed_ratio_angle(128, 65_536), Ok(1));
+        assert_eq!(signed_ratio_angle(65_408, 65_536), Ok(511));
+        assert_eq!(signed_ratio_angle(65_535, 65_536), Ok(511));
+
+        for magnitude in [1, 127, 128, 65_535, 65_536, i32::MAX] {
+            assert_eq!(signed_ratio_angle(magnitude, magnitude), Ok(0));
+            assert_eq!(signed_ratio_angle(-magnitude, -magnitude), Ok(0));
+        }
+    }
+
+    #[test]
+    fn signed_ratio_angle_restores_swap_and_xor_sign() {
+        let magnitudes = [1, 127, 128, 1024, 32_768, 65_408, 65_535, 65_536];
+        for first in magnitudes {
+            for second in magnitudes {
+                let positive = signed_ratio_angle(first, second).unwrap();
+                assert_eq!(signed_ratio_angle(-first, -second), Ok(positive));
+                assert_eq!(signed_ratio_angle(-first, second), Ok(-positive));
+                assert_eq!(signed_ratio_angle(first, -second), Ok(-positive));
+
+                if first != second {
+                    let swapped = signed_ratio_angle(second, first).unwrap();
+                    assert_eq!(i32::from(positive) + i32::from(swapped), 0x400);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn signed_ratio_angle_feeds_wrapping_trig_phase() {
+        let positive = signed_ratio_angle(32_768, 65_536).unwrap();
+        let negative = signed_ratio_angle(-32_768, 65_536).unwrap();
+        assert_eq!(negative, -positive);
+        assert_eq!(
+            sin_q16(negative as u16),
+            sin_q16((i32::from(negative) + 0x1000) as u16)
+        );
+        assert_eq!(sin_q16(negative as u16), -sin_q16(positive as u16));
+        assert_eq!(cos_q16(negative as u16), cos_q16(positive as u16));
+    }
+
+    #[test]
+    fn signed_ratio_angle_table_has_canonical_shape_and_hash() {
+        assert_eq!(SIGNED_RATIO_ANGLE_TABLE.len(), 512);
+        assert_eq!(SIGNED_RATIO_ANGLE_TABLE[0], 0);
+        assert_eq!(SIGNED_RATIO_ANGLE_TABLE[511], 511);
+        assert!(
+            SIGNED_RATIO_ANGLE_TABLE
+                .windows(2)
+                .all(|pair| pair[0] <= pair[1])
+        );
+
+        let bytes: Vec<_> = SIGNED_RATIO_ANGLE_TABLE
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        assert_eq!(
+            hex_sha256(&bytes),
+            "50604018fd3b52b579c3a26dc571d1d71f0db3a3f08faf706367fc84eb278150"
+        );
     }
 
     #[test]

@@ -401,17 +401,23 @@ Add subsystems in dependency order:
 
 Current G03 recovery has isolated the signed force-candidate selector and the
 pure arithmetic behind the nonzero control `+0x420` correction gate inside
-`FUN_0040d810`; its two lookup-free initial-candidate branches are also
-reconstructed. `FUN_0048fba0` proves the dependent trig, atan, and square-root
-tables are runtime-generated math rather than asset payloads. The exact
-source-owned `legacy_math::{sin_q16,cos_q16,sqrt_q16}` compatibility helpers
-now centralize trig and legacy square root, while mathematical
-`Fixed16::sqrt` stays distinct. The atan table is reproducible, but its API is
-deferred until the combined path's full quadrant and zero-input behavior is
-recovered. The remaining physics exit work is that lookup-dependent candidate
-consumer, direction/state accumulation, surface direction/projection and add,
-and geometric qualification around `FUN_0040fbe0`; the two adjacent pure
-scalars are recovered. Direction vectors, projections, and stateful
+`FUN_0040d810`. Both lookup-free candidate branches and the combined
+lookup-dependent branch are reconstructed. The latter uses neutral
+`signed_ratio_angle` and `derive_lookup_dependent_candidates` contracts with
+the observed asymmetric zero, swap/sign, exact-ratio index-512 adjacent-zero,
+and wrapping arithmetic. Zero gates precede validation: `(0,INT_MIN)` returns
+`0`, `(INT_MIN,0)` returns `0x400`, and `INT_MIN` is rejected only when both
+operands are nonzero. `0x400` denotes a
+quarter-period and `0x1000` a full wrapping phase; this is not exposed as a
+conventional atan2 API. `FUN_0048fba0` proves all five tables are generated
+math rather than asset payloads, including arcsine `DAT_00831380` (canonical
+hash `ddf0d95f...e02745b`) used by `FUN_0040fbe0`. The exact source-owned
+`legacy_math` helpers centralize these recovered consumers while mathematical
+`Fixed16::sqrt` stays distinct. The next G03 implementation scope is the now
+statically recovered four-lane geometric qualification/normalization and its
+wrapping adds; direction/state accumulation in `FUN_0040d810`, surface
+direction/projection and add, position update, and the damper source also
+remain. Direction vectors, projections, and stateful
 accumulation remain separated from unsupported physical labels until recovered.
 
 Exit gate:
