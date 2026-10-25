@@ -798,8 +798,8 @@ to 1,215. Raw official table acquisition, native pointer aliases/rebinding/
 machine-fault prefixes, `FUN_00408fe0`, and full call-spine composition remain
 open.
 
-G03-AK9 resolves the table provenance and implements the first authenticated
-format boundary: every geometry view consumed by AK3-AK8 comes from the decoded
+G03-AK9 resolves the table provenance and implements the decoded format
+boundary: every geometry view consumed by AK3-AK8 comes from the decoded
 payload of the stage's `.hpc` sidecar, loaded through the existing CMPR path.
 `cmr-formats::hpc::parse_hpc` preserves reserved words and safely validates the
 five real hierarchy arrays, vertices, records, candidate handles, dimensions,
@@ -809,7 +809,17 @@ with an unreachable empty slice. The decoded format also retains any opaque
 tail the unchecked native view constructor leaves unread. Eight synthetic
 tests plus an opt-in owned-media corpus test bring `cmr-formats` to 158 tests;
 `cmr-core` remains at 1,215.
-Stage-bundle/application wiring, the adjacent `.srf`/`.shp` sidecars,
+G03-AK10 adds the authenticated runtime owner without changing the recovered
+14-section render bundle. `StageCompiledGeometry::load` accepts an explicit
+profile-relative stage base, resolves and re-verifies its `.hpc` through the
+existing `AssetStore`, parses it into an owned snapshot, and exposes eight
+providers borrowing that same immutable payload. Seven focused tests cover raw
+and CMPR imports, case-normalized lookup, owned lifetime, tamper-before-parse
+precedence, authenticated malformed payloads, unsafe/missing identities,
+path-free parser diagnostics, and a complete eight-lane execution. `cmr-core` reaches
+1,222 tests. No new extractor or media profile is needed: the reviewed generic
+profile already authenticates all 76 installed-EU `.hpc` files.
+Live application identity/input wiring, the adjacent `.srf`/`.shp` sidecars,
 `FUN_00408fe0`, native pointer fault/rebinding behavior, and full call-spine
 composition remain open.
 

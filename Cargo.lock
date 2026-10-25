@@ -163,6 +163,7 @@ version = "0.1.0"
 dependencies = [
  "cmr-assets",
  "cmr-formats",
+ "flate2",
  "serde_json",
  "sha2",
 ]

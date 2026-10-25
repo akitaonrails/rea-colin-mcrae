@@ -1235,7 +1235,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   trailing payload bytes are retained. Eight synthetic format tests bring
   `cmr-formats` to 158; `cmr-core` remains at
   1,215 with its parsed-HPC eight-lane integration. Stage/application wiring
-  and the following global transform remain open.
+  and the following global transform remain open. G03-AK10 then adds
+  `stage_compiled_geometry::StageCompiledGeometry`, an owned runtime resource
+  loaded only from the reviewed `AssetStore` using an explicit
+  profile-relative stage base. Stored bytes are re-hashed and CMPR-decoded by
+  the existing store before parsing; no basename search, raw-media fallback, or
+  new extractor is introduced. Its eight providers borrow the same immutable
+  snapshot and feed the AK8 executor. Seven focused tests bring `cmr-core` to
+  1,222. Live stage identity and real simulation-input wiring remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1293,7 +1300,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-lane-geometry-provider`, and
   `impl.sim-compiled-eight-lane-executor`,
   `rea.official-eu.sim-hpc-geometry-loader`, and
-  `impl.sim-hpc-geometry-parser`.
+  `impl.sim-hpc-geometry-parser`, and
+  `impl.sim-hpc-geometry-runtime`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
