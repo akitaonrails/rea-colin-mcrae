@@ -1205,6 +1205,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   Four tests bring `cmr-core` to 1,194. Candidate-pool adaptation and raw table
   ownership/composition remain open; the deepest native pointer slot aliases
   the vertex-table pointer and is represented only as a decoded cell view.
+  G03-AK4 composes that locator with a candidate-word pool and the AK2 chooser
+  while retaining nonpositive-count bypass and lazy provider/list bounds.
+  Three tests bring `cmr-core` to 1,197. Raw official table acquisition and a
+  concrete validate/decode/build provider remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1253,7 +1257,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-compiled-lane-candidate-chooser`, and
   `impl.sim-compiled-lane-candidate-chooser`,
   `rea.official-eu.sim-compiled-lane-spatial-hierarchy`, and
-  `impl.sim-compiled-lane-spatial-hierarchy`.
+  `impl.sim-compiled-lane-spatial-hierarchy`, and
+  `impl.sim-compiled-lane-spatial-search`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

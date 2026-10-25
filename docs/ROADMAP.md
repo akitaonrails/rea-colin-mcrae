@@ -762,6 +762,12 @@ and lazy reached-cell failures are covered by four focused tests, bringing
 `cmr-core` to 1,194. Candidate-pool adaptation, raw table decoding, and
 composition into the dispatcher provider remain open.
 
+G03-AK4 composes the decoded hierarchy, candidate-word pool, and AK2 chooser
+without eager full-range validation. Three focused tests preserve hierarchy,
+pool-start, provider, and per-ordinal list-error precedence, bringing
+`cmr-core` to 1,197. Raw official table acquisition and a concrete geometry
+provider that also validates/decodes/builds remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

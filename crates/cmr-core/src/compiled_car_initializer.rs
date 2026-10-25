@@ -1304,6 +1304,73 @@ pub fn locate_decoded_compiled_lane_candidate_region(
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompiledLaneSpatialSearchFailure<E> {
+    Hierarchy(CompiledLaneSpatialBoundsError),
+    CandidateStartOutOfBounds {
+        candidate_offset_words: i32,
+        available_words: usize,
+    },
+    Candidate(CompiledLaneCandidateFailure<E>),
+}
+
+/// Safe composition of the decoded outer hierarchy and inner candidate
+/// chooser recovered from `FUN_004473f0`/`FUN_00447540`.
+///
+/// Non-positive leaf counts reach the inner chooser's immediate miss without
+/// validating or touching the candidate offset. Positive counts validate only
+/// the starting word offset; the remaining count is deliberately not
+/// prevalidated so per-ordinal provider calls and later list bounds retain the
+/// native lazy order. A one-past-end start is a valid empty tail whose first
+/// requested candidate fails through the chooser at ordinal zero.
+pub fn search_decoded_compiled_lane_spatial_hierarchy<P: CompiledLaneCandidateProvider>(
+    source_vector: [i32; 3],
+    fallback: i32,
+    hierarchy: DecodedCompiledLaneSpatialHierarchy<'_>,
+    candidate_pool: &[i16],
+    provider: &mut P,
+) -> Result<CompiledLaneCandidateChoice, CompiledLaneSpatialSearchFailure<P::Error>> {
+    let region = locate_decoded_compiled_lane_candidate_region(source_vector, hierarchy)
+        .map_err(CompiledLaneSpatialSearchFailure::Hierarchy)?;
+    let CompiledLaneSpatialLookup::CandidateRegion {
+        signed_count,
+        candidate_offset_words,
+        ..
+    } = region
+    else {
+        return Ok(CompiledLaneCandidateChoice::Miss);
+    };
+
+    if signed_count <= 0 {
+        return search_decoded_compiled_lane_candidates(
+            source_vector,
+            fallback,
+            signed_count,
+            &[],
+            provider,
+        )
+        .map_err(CompiledLaneSpatialSearchFailure::Candidate);
+    }
+
+    let candidate_start = usize::try_from(candidate_offset_words)
+        .ok()
+        .filter(|&start| start <= candidate_pool.len())
+        .ok_or(
+            CompiledLaneSpatialSearchFailure::CandidateStartOutOfBounds {
+                candidate_offset_words,
+                available_words: candidate_pool.len(),
+            },
+        )?;
+    search_decoded_compiled_lane_candidates(
+        source_vector,
+        fallback,
+        signed_count,
+        &candidate_pool[candidate_start..],
+        provider,
+    )
+    .map_err(CompiledLaneSpatialSearchFailure::Candidate)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodedCompiledLaneTriangle {
     pub vertices: [[i32; 3]; 3],
@@ -4486,6 +4553,229 @@ mod tests {
                 cell_index: 3,
                 available_cells: 3,
             })
+        );
+    }
+
+    #[test]
+    fn decoded_spatial_search_bypasses_candidate_offsets_for_nonpositive_counts() {
+        for (signed_count, offset) in [(0, i32::MIN), (-2, i32::MAX), (i16::MIN, 0)] {
+            let leaf = [spatial_cell(signed_count, offset)];
+            let hierarchy = DecodedCompiledLaneSpatialHierarchy {
+                origin_xz: [0, 0],
+                width: 1,
+                height: 1,
+                levels: [&leaf, &[], &[], &[], &[], &[]],
+            };
+            let mut provider = ScriptedCandidateProvider::new([], []);
+            assert_eq!(
+                search_decoded_compiled_lane_spatial_hierarchy(
+                    [0; 3],
+                    77,
+                    hierarchy,
+                    &[],
+                    &mut provider
+                ),
+                Ok(CompiledLaneCandidateChoice::Miss)
+            );
+            assert!(provider.calls.is_empty());
+        }
+
+        let outside = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 1,
+            height: 1,
+            levels: [&[]; COMPILED_LANE_SPATIAL_LEVEL_COUNT],
+        };
+        let mut provider = ScriptedCandidateProvider::new([], []);
+        assert_eq!(
+            search_decoded_compiled_lane_spatial_hierarchy(
+                [-1, 0, 0],
+                0,
+                outside,
+                &[],
+                &mut provider
+            ),
+            Ok(CompiledLaneCandidateChoice::Miss)
+        );
+        assert!(provider.calls.is_empty());
+    }
+
+    #[test]
+    fn decoded_spatial_search_passes_the_exact_word_tail_to_the_lazy_chooser() {
+        let leaf = [spatial_cell(2, 2)];
+        let hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 1,
+            height: 1,
+            levels: [&leaf, &[], &[], &[], &[], &[]],
+        };
+        let source = [4, 5, 6];
+        let mut provider = ScriptedCandidateProvider::new(
+            [Ok(true), Ok(true)],
+            [Ok(Some([0, 0, 9])), Ok(Some([6, 6, 6]))],
+        );
+        assert_eq!(
+            search_decoded_compiled_lane_spatial_hierarchy(
+                source,
+                10,
+                hierarchy,
+                &[99, 98, 7, 8, 9],
+                &mut provider
+            ),
+            Ok(CompiledLaneCandidateChoice::Found {
+                ordinal: 1,
+                handle: 8,
+                score: 4,
+            })
+        );
+        assert_eq!(
+            provider.calls,
+            [
+                CandidateCall::Validate(source, 7),
+                CandidateCall::Decode(7),
+                CandidateCall::Validate(source, 8),
+                CandidateCall::Decode(8),
+            ]
+        );
+    }
+
+    #[test]
+    fn decoded_spatial_search_preserves_start_and_per_ordinal_error_precedence() {
+        let leaf = [spatial_cell(2, 4)];
+        let hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 1,
+            height: 1,
+            levels: [&leaf, &[], &[], &[], &[], &[]],
+        };
+        let pool = [0, 0, 0, 0, 11];
+
+        let mut provider_error = ScriptedCandidateProvider::new([Err("first")], []);
+        assert_eq!(
+            search_decoded_compiled_lane_spatial_hierarchy(
+                [0; 3],
+                0,
+                hierarchy,
+                &pool,
+                &mut provider_error
+            ),
+            Err(CompiledLaneSpatialSearchFailure::Candidate(
+                CompiledLaneCandidateFailure::Provider {
+                    phase: CompiledLaneCandidateFailurePhase::Validate,
+                    ordinal: 0,
+                    handle: 11,
+                    provider_error: "first",
+                }
+            ))
+        );
+
+        let mut later_bounds = ScriptedCandidateProvider::new([Ok(false)], []);
+        assert_eq!(
+            search_decoded_compiled_lane_spatial_hierarchy(
+                [0; 3],
+                0,
+                hierarchy,
+                &pool,
+                &mut later_bounds
+            ),
+            Err(CompiledLaneSpatialSearchFailure::Candidate(
+                CompiledLaneCandidateFailure::CandidateOutOfBounds {
+                    ordinal: 1,
+                    requested_count: 2,
+                    available: 1,
+                }
+            ))
+        );
+
+        let mut winner_then_bounds =
+            ScriptedCandidateProvider::new([Ok(true)], [Ok(Some([0, 0, 0]))]);
+        assert_eq!(
+            search_decoded_compiled_lane_spatial_hierarchy(
+                [0; 3],
+                0,
+                hierarchy,
+                &pool,
+                &mut winner_then_bounds
+            ),
+            Err(CompiledLaneSpatialSearchFailure::Candidate(
+                CompiledLaneCandidateFailure::CandidateOutOfBounds {
+                    ordinal: 1,
+                    requested_count: 2,
+                    available: 1,
+                }
+            ))
+        );
+
+        for offset in [i32::MIN, -1, 6, i32::MAX] {
+            let invalid_leaf = [spatial_cell(1, offset)];
+            let invalid = DecodedCompiledLaneSpatialHierarchy {
+                levels: [&invalid_leaf, &[], &[], &[], &[], &[]],
+                ..hierarchy
+            };
+            let mut untouched = ScriptedCandidateProvider::new([], []);
+            assert_eq!(
+                search_decoded_compiled_lane_spatial_hierarchy(
+                    [0; 3],
+                    0,
+                    invalid,
+                    &pool,
+                    &mut untouched
+                ),
+                Err(
+                    CompiledLaneSpatialSearchFailure::CandidateStartOutOfBounds {
+                        candidate_offset_words: offset,
+                        available_words: 5,
+                    }
+                )
+            );
+            assert!(untouched.calls.is_empty());
+        }
+
+        let one_past_leaf = [spatial_cell(1, 5)];
+        let one_past = DecodedCompiledLaneSpatialHierarchy {
+            levels: [&one_past_leaf, &[], &[], &[], &[], &[]],
+            ..hierarchy
+        };
+        let mut untouched = ScriptedCandidateProvider::new([], []);
+        assert_eq!(
+            search_decoded_compiled_lane_spatial_hierarchy(
+                [0; 3],
+                0,
+                one_past,
+                &pool,
+                &mut untouched
+            ),
+            Err(CompiledLaneSpatialSearchFailure::Candidate(
+                CompiledLaneCandidateFailure::CandidateOutOfBounds {
+                    ordinal: 0,
+                    requested_count: 1,
+                    available: 0,
+                }
+            ))
+        );
+
+        let missing_root = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 1,
+            height: 1,
+            levels: [&[]; COMPILED_LANE_SPATIAL_LEVEL_COUNT],
+        };
+        let mut untouched = ScriptedCandidateProvider::new([], []);
+        assert_eq!(
+            search_decoded_compiled_lane_spatial_hierarchy(
+                [0; 3],
+                0,
+                missing_root,
+                &[],
+                &mut untouched
+            ),
+            Err(CompiledLaneSpatialSearchFailure::Hierarchy(
+                CompiledLaneSpatialBoundsError {
+                    level: 0,
+                    cell_index: 0,
+                    available_cells: 0,
+                }
+            ))
         );
     }
 
