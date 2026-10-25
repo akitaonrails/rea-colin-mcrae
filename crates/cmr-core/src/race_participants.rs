@@ -7,8 +7,9 @@
 //! base (`DAT_00700a68` / `DAT_0060042c`), reached solely when a second *human*
 //! is present - split-screen (`FUN_00485bb0`) or network (`FUN_00401060`) - and
 //! replay/playback (`DAT_00d3ca88 != 0`) forces the count to `1`. No function
-//! drives a second control struct's actuators (`ctrl+0x2b8[4]`) from a
-//! racing-line or waypoint spline; the only "line" data in the race loop
+//! drives a second car's command region (`ctrl+0x2fc..+0x318`) or raw wheel
+//! speeds (`ctrl+0x2a8[4]`) from a racing-line or waypoint spline; the only
+//! "line" data in the race loop
 //! (`DAT_0057ae6c`, stride `0x1c`) is *read* against a physically-driven car's
 //! position to record split/stage times (G05), never to steer a car. Rival WRC
 //! drivers exist only as a name roster feeding the championship/standings UI;

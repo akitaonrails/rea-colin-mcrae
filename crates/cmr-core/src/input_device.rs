@@ -25,9 +25,10 @@
 //! offsets and quantize/saturate, the analog-enable caps bits, and the default
 //! button masks. Inference: the pedal-axis sign convention (-throttle / +brake)
 //! and the steer split (-left / +right). Unknowns (not reproduced): the source /
-//! configurability of the per-axis dead-zone values `DAT_00504cc0/cc4`, the
-//! `DINPUT.dll` string's purpose (not on the poll path), and the `+0x2b8[4]`
-//! actuator slot order (a drivetrain, not input, question).
+//! configurability of the per-axis dead-zone values `DAT_00504cc0/cc4` and the
+//! `DINPUT.dll` string's purpose (not on the poll path). The drivetrain seam is
+//! resolved separately: `+0x2a8[4]` holds raw per-wheel speeds, `+0x2b8[4]`
+//! their smoothed/current values, and `+0x2c8[4]` the smoothing gains.
 //!
 //! **Correction (verified against `FUN_00449580`):** an earlier pass labelled
 //! `+0x304` brake / `+0x308` throttle with the analog caps swapped. A re-read

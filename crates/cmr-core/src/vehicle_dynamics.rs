@@ -1,4 +1,4 @@
-//! Reconstruction of the suspension/tyre/grip response and the velocity
+//! Reconstruction of the suspension/wheel/grip response and the velocity
 //! integrator (the confidently-recovered Q16.16 formulas of G03).
 //!
 //! From the dispatcher `FUN_00407690` solver passes:
@@ -31,10 +31,10 @@
 //! Observations: the formulas and constants above, read from the solver passes.
 //! Inferences: the slope ramp raises grip as the surface flattens (output is a
 //! grip factor, high on flat ground); the two surface tiers are high/low grip.
-//! Unknowns (not reproduced): the friction-circle/slip-angle
-//! tyre saturation in `FUN_0040d810`, the exact semi-implicit position update's
-//! half-accel term, the suspension damper magnitude source, and the numeric
-//! contents of the runtime-loaded per-surface and per-car tables.
+//! Unknowns (not reproduced): the remaining per-wheel force accumulation and
+//! breakaway/clamp rules in `FUN_0040d810`, the exact semi-implicit position
+//! update's half-accel term, the suspension damper magnitude source, and the
+//! numeric contents of the runtime-loaded per-surface and per-car tables.
 
 use crate::fixed_point::{Fixed16, Vec3};
 

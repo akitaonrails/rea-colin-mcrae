@@ -131,8 +131,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   constants. Throttle is `+0x304` (digital bit 2, analog cap `0x2`, negative pedal
   axis); brake is `+0x308` (digital bit 3, analog cap `0x1`, positive pedal axis) -
   an earlier pass had the two inverted. The WinMM/Win32 acquisition is SDL-backend
-  glue; the dead-zone source and the `+0x2b8[4]` slot order (a drivetrain question)
-  remain. See evidence `rea.official-eu.host-input-mapping`.
+  glue; the dead-zone source remains. The drivetrain arrays are resolved separately:
+  raw per-wheel speeds `+0x2a8[4]`, smoothed/current values `+0x2b8[4]`, and gains
+  `+0x2c8[4]`. See evidence `rea.official-eu.host-input-mapping`.
 - `cmr-core::input_map`: the full stateful in-race control map `FUN_00449580`
   composed from the `input_device` primitives (B10/G02 boundary). Merges the
   player's primary device with the keyboard, writes the steer/throttle/brake/
@@ -997,21 +998,25 @@ languages rather than fabricating or silently aliasing Italian assets.
   split across the wheels; the tachometer/engine-audio RPM is `norm*6500+2000`
   clamped `[2000,8500]`. Reconstructed in `cmr-core::drivetrain` (all Q16.16).
   Per-car-type params live at `~0x50e170` (stride 0xcd0), selected by the
-  car-type byte `car+0x738`. The actuator element order, the torque->velocity
-  integrators, and the ratio-table loader remain. See evidence
+  car-type byte `car+0x738`. Raw per-wheel speeds are `+0x2a8[4]`, smoothed/current
+  speeds `+0x2b8[4]`, and smoothing gains `+0x2c8[4]`. The remaining per-wheel
+  force accumulation/breakaway behavior, parts of the torque-to-velocity
+  integration, and the ratio-table loader remain. See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
   same `0x407690` solver chain. The lateral-grip constraint `0x41b270` strips the
   sideways velocity component each step (`v -= (v - fwd*dot(fwd,v))*K`, `K`~0.02
-  normal / ~0.01 handbrake); the slope-grip loss `0x408f50` ramps grip loss from
-  tilt ~0.70 up to a ~0.90 cap; the integrator `0x40a4a0` computes
+  normal / ~0.01 handbrake); the slope-grip factor `0x408f50` ramps from zero at
+  normal-Y ~0.70 to a ~0.90 flat-ground ceiling; the integrator `0x40a4a0` computes
   `accel = force*invMass + gravity`, quadratic drag `v*speed`, and
   `v += accel*0.2` (the 40 ms step folded into the gain). Per-wheel surface id
   `ctrl[0x42a+k*2]` indexes 8-byte grip records with ~0.24 (high) / ~0.15 (low)
   tiers. Reconstructed in `cmr-core::vehicle_dynamics` over a new Q16.16
-  `cmr-core::fixed_point::Vec3`. The slip-angle tyre saturation `0x40d810`, the
-  position update, the damper source, and the runtime-loaded per-surface/per-car
-  table values remain. See evidence `rea.official-eu.sim-grip`.
+  `cmr-core::fixed_point::Vec3`. `0x40d810` now distinguishes raw wheel speeds
+  at `+0x2a8[4]` from smoothed/current speeds at `+0x2b8[4]`; its remaining
+  per-wheel force accumulation and breakaway/clamp behavior, the position update,
+  the damper source, and the runtime-loaded per-surface/per-car table values
+  remain. See evidence `rea.official-eu.sim-grip`.
 - Collision/damage runs from `0x410a60` (Mechanics callee), which delegates the
   crash path to `0x4115d0` once the out-of-control flag `car+0x680` is set. The
   contact impulse accumulates into `car+0x3cc..`; its magnitude feeds the impact

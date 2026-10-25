@@ -32,10 +32,11 @@
 //! Observations: the formulas, constants and field offsets above, read from the
 //! decompiled callees. Inferences: gear `7` is reverse and a zero ratio is
 //! neutral; the display-RPM literals map engine load to a 2000..8500 tach.
-//! Unknowns (not reproduced): the element order within the 4-wide actuator
-//! vector (`+0x2b8`), the final torque->velocity integrators
-//! (`FUN_0040a4a0`/`FUN_00409f90`/`FUN_0040d740`), and the loader that copies
-//! the per-gear ratio tables into the control struct.
+//! The per-wheel arrays are now distinguished: raw speeds at `+0x2a8[4]`,
+//! smoothed/current speeds at `+0x2b8[4]`, and smoothing gains at `+0x2c8[4]`.
+//! Unknowns (not reproduced): the remaining per-wheel force accumulation and
+//! breakaway/clamp behavior, parts of the torque-to-velocity integration, and
+//! the loader that copies per-gear ratio tables into the control struct.
 
 use crate::fixed_point::Fixed16;
 
@@ -59,7 +60,8 @@ pub const COAST_DRAG_TORQUE: Fixed16 = Fixed16::from_raw(0x1999);
 /// A handbrake (`+0x30c`) adds its recovered extra torque (`+0x2f4`) to the rear
 /// pair only. The per-wheel application loop (sign from the wheel-speed
 /// direction plus the per-car-type wheel constant `DAT_0050e18c`) is the next
-/// stage and is not reproduced here.
+/// stage and is not reproduced here. The split is used as its raw signed Q16.16
+/// value; the shipped arithmetic does not clamp it to `[0, 1]`.
 #[must_use]
 pub fn drive_torque_split(
     engine_torque: Fixed16,
@@ -68,10 +70,8 @@ pub fn drive_torque_split(
     rear_factor: Fixed16,
     handbrake_torque: Option<Fixed16>,
 ) -> (Fixed16, Fixed16) {
-    let split = center_split.raw().clamp(0, Fixed16::ONE.raw());
-    let split = Fixed16::from_raw(split);
-    let remainder = Fixed16::ONE.sub(split);
-    let front = engine_torque.mul(front_factor).mul(split);
+    let remainder = Fixed16::ONE.sub(center_split);
+    let front = engine_torque.mul(front_factor).mul(center_split);
     let mut rear = engine_torque.mul(rear_factor).mul(remainder);
     if let Some(extra) = handbrake_torque {
         rear = rear.add(extra);
@@ -96,13 +96,15 @@ pub fn equalize_wheel_speeds(left: Fixed16, right: Fixed16) -> (Fixed16, Fixed16
     if difference <= WHEEL_PAIR_EQUALIZE_THRESHOLD {
         return (left, right);
     }
-    let sum = i64::from(left.raw()) + i64::from(right.raw());
-    let average = Fixed16::from_raw(((sum * 0x8000) >> 16) as i32);
+    let sum = Fixed16::from_raw(left.raw().wrapping_add(right.raw()));
+    let average = sum.mul(Fixed16::from_raw(0x8000));
     (average, average)
 }
 
-/// The coasting split: [`COAST_DRAG_TORQUE`] distributed by the centre split
-/// (the recovered in-gear, no-throttle/no-brake branch of `FUN_0040d810`).
+/// The coasting split: [`COAST_DRAG_TORQUE`] distributed directly by the centre
+/// split (the recovered in-gear, no-throttle/no-brake branch of
+/// `FUN_0040d810`). This branch bypasses the per-car front/rear factors used by
+/// the driven path.
 #[must_use]
 pub fn coast_torque_split(center_split: Fixed16) -> (Fixed16, Fixed16) {
     drive_torque_split(
@@ -291,17 +293,29 @@ mod tests {
         );
         assert_eq!(front, Fixed16::from_raw(0x8000));
         assert_eq!(rear, Fixed16::from_raw(0x8000));
+    }
 
-        // The split clamps to 0..=1 rather than extrapolating.
+    #[test]
+    fn centre_split_preserves_raw_out_of_range_values() {
         let (front, rear) = drive_torque_split(
-            torque,
-            Fixed16::from_int(3),
-            front_factor,
-            rear_factor,
+            Fixed16::from_int(2),
+            Fixed16::from_int(2),
+            Fixed16::from_raw(0x8000),
+            Fixed16::from_raw(0x8000),
             None,
         );
-        assert_eq!(front, Fixed16::from_int(1));
-        assert_eq!(rear, Fixed16::ZERO);
+        assert_eq!(front, Fixed16::from_int(2));
+        assert_eq!(rear, Fixed16::from_int(-1));
+
+        let (front, rear) = drive_torque_split(
+            Fixed16::from_int(2),
+            Fixed16::from_int(-1),
+            Fixed16::from_raw(0x8000),
+            Fixed16::from_raw(0x8000),
+            None,
+        );
+        assert_eq!(front, Fixed16::from_int(-1));
+        assert_eq!(rear, Fixed16::from_int(2));
     }
 
     #[test]
@@ -350,6 +364,22 @@ mod tests {
         assert_eq!(
             equalize_wheel_speeds(fx(0x10000), fx(0x18001)),
             (fx(0x14000), fx(0x14000))
+        );
+        // The first raw value beyond the threshold takes the averaging path.
+        assert_eq!(
+            equalize_wheel_speeds(Fixed16::ZERO, fx(0x199a)),
+            (fx(0x0ccd), fx(0x0ccd))
+        );
+        // The 32-bit add wraps before the Q16.16 multiply by one half.
+        assert_eq!(
+            equalize_wheel_speeds(fx(i32::MAX), Fixed16::ONE),
+            (fx(0xc000_7fff_u32 as i32), fx(0xc000_7fff_u32 as i32))
+        );
+        // `abs(INT_MIN)` remains INT_MIN under the shipped wrapping arithmetic,
+        // so this exceptional difference follows the unchanged path.
+        assert_eq!(
+            equalize_wheel_speeds(fx(i32::MIN), Fixed16::ZERO),
+            (fx(i32::MIN), Fixed16::ZERO)
         );
     }
 
