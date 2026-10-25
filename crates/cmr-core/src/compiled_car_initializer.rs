@@ -1196,6 +1196,114 @@ pub fn search_decoded_compiled_lane_candidates<P: CompiledLaneCandidateProvider>
     })
 }
 
+pub const COMPILED_LANE_SPATIAL_LEVEL_COUNT: usize = 6;
+
+/// One decoded eight-byte cell from the `FUN_004473f0` hierarchy.
+///
+/// The two bytes between the signed marker and dword link/offset are not read
+/// by the routine and therefore are not represented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecodedCompiledLaneSpatialCell {
+    pub marker: i16,
+    pub link_or_candidate_offset: i32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DecodedCompiledLaneSpatialHierarchy<'a> {
+    pub origin_xz: [i32; 2],
+    pub width: i16,
+    pub height: i16,
+    pub levels: [&'a [DecodedCompiledLaneSpatialCell]; COMPILED_LANE_SPATIAL_LEVEL_COUNT],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledLaneSpatialLookup {
+    Miss,
+    CandidateRegion {
+        level: u8,
+        cell_index: i32,
+        signed_count: i16,
+        candidate_offset_words: i32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledLaneSpatialBoundsError {
+    pub level: u8,
+    pub cell_index: i32,
+    pub available_cells: usize,
+}
+
+/// Stable decoded-hierarchy contract for outer search `FUN_004473f0`.
+///
+/// Source X/Z subtract the hierarchy origin with dword wrapping, then their
+/// signed top bytes select a row-major level-zero cell. Out-of-grid positions
+/// miss before any cell is read. An empty marker (`-1`) descends through at
+/// most five 4x4 refinements, consuming successive two-bit X/Z pairs from bits
+/// 23..14 and adding them to the wrapping child link. Any other signed marker,
+/// including another negative value, terminates with that marker as the signed
+/// candidate count and the dword field as a u16-element offset. An empty level
+/// five cell misses without consuming its link.
+///
+/// This contract stops at the candidate region so the inner chooser retains
+/// its own lazy list-read/error ordering. Decoded cells are immutable and
+/// field-complete; native pointer aliases, concurrent mutation, and faults
+/// between the marker and link/offset reads are outside this safe aggregate.
+pub fn locate_decoded_compiled_lane_candidate_region(
+    source_vector: [i32; 3],
+    hierarchy: DecodedCompiledLaneSpatialHierarchy<'_>,
+) -> Result<CompiledLaneSpatialLookup, CompiledLaneSpatialBoundsError> {
+    let delta_x = source_vector[0].wrapping_sub(hierarchy.origin_xz[0]);
+    let delta_z = source_vector[2].wrapping_sub(hierarchy.origin_xz[1]);
+    let cell_x = (delta_x >> 24) as i16;
+    let cell_z = (delta_z >> 24) as i16;
+    if cell_x < 0 || cell_x >= hierarchy.width || cell_z < 0 || cell_z >= hierarchy.height {
+        return Ok(CompiledLaneSpatialLookup::Miss);
+    }
+
+    let mut level = 0_usize;
+    let mut cell_index = i32::from(hierarchy.width)
+        .wrapping_mul(i32::from(cell_z))
+        .wrapping_add(i32::from(cell_x));
+    let mut mask = 0x00ff_ffff_i32;
+    let mut shift = 24_u32;
+
+    loop {
+        let cell = usize::try_from(cell_index)
+            .ok()
+            .and_then(|index| hierarchy.levels[level].get(index))
+            .copied()
+            .ok_or(CompiledLaneSpatialBoundsError {
+                level: level as u8,
+                cell_index,
+                available_cells: hierarchy.levels[level].len(),
+            })?;
+        if cell.marker != -1 {
+            return Ok(CompiledLaneSpatialLookup::CandidateRegion {
+                level: level as u8,
+                cell_index,
+                signed_count: cell.marker,
+                candidate_offset_words: cell.link_or_candidate_offset,
+            });
+        }
+        if level + 1 == COMPILED_LANE_SPATIAL_LEVEL_COUNT {
+            return Ok(CompiledLaneSpatialLookup::Miss);
+        }
+
+        let masked_x = delta_x & mask;
+        let masked_z = delta_z & mask;
+        mask >>= 2;
+        shift -= 2;
+        let subcell_x = (masked_x >> shift) as i16;
+        let subcell_z = (masked_z >> shift) as i16;
+        cell_index = cell
+            .link_or_candidate_offset
+            .wrapping_add(i32::from(subcell_x))
+            .wrapping_add(i32::from(subcell_z).wrapping_mul(4));
+        level += 1;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodedCompiledLaneTriangle {
     pub vertices: [[i32; 3]; 3],
@@ -4166,6 +4274,218 @@ mod tests {
                 CandidateCall::Validate([i32::MIN, 0, i32::MAX], i16::MIN),
                 CandidateCall::Decode(i16::MIN),
             ]
+        );
+    }
+
+    const fn spatial_cell(marker: i16, link: i32) -> DecodedCompiledLaneSpatialCell {
+        DecodedCompiledLaneSpatialCell {
+            marker,
+            link_or_candidate_offset: link,
+        }
+    }
+
+    #[test]
+    fn decoded_spatial_lookup_pins_wrapping_origin_signed_grid_and_source_y_omission() {
+        let occupied = [spatial_cell(4, 7)];
+        let hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [i32::MAX, i32::MAX],
+            width: 1,
+            height: 1,
+            levels: [&occupied, &[], &[], &[], &[], &[]],
+        };
+        let first = locate_decoded_compiled_lane_candidate_region(
+            [i32::MIN, i32::MIN, i32::MIN],
+            hierarchy,
+        );
+        let second = locate_decoded_compiled_lane_candidate_region(
+            [i32::MIN, i32::MAX, i32::MIN],
+            hierarchy,
+        );
+        assert_eq!(first, second);
+        assert_eq!(
+            first,
+            Ok(CompiledLaneSpatialLookup::CandidateRegion {
+                level: 0,
+                cell_index: 0,
+                signed_count: 4,
+                candidate_offset_words: 7,
+            })
+        );
+
+        let mut row_major = [spatial_cell(-1, 0); 15];
+        row_major[14] = spatial_cell(3, 9);
+        let row_major_hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 4,
+            height: 4,
+            levels: [&row_major, &[], &[], &[], &[], &[]],
+        };
+        assert_eq!(
+            locate_decoded_compiled_lane_candidate_region(
+                [2 << 24, 77, 3 << 24],
+                row_major_hierarchy
+            ),
+            Ok(CompiledLaneSpatialLookup::CandidateRegion {
+                level: 0,
+                cell_index: 14,
+                signed_count: 3,
+                candidate_offset_words: 9,
+            })
+        );
+
+        let mut wrapped_subtraction = [spatial_cell(-1, 0); 128];
+        wrapped_subtraction[127] = spatial_cell(1, 5);
+        let wrapped_hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [1, 0],
+            width: 128,
+            height: 1,
+            levels: [&wrapped_subtraction, &[], &[], &[], &[], &[]],
+        };
+        assert_eq!(
+            locate_decoded_compiled_lane_candidate_region([i32::MIN, 0, 0], wrapped_hierarchy),
+            Ok(CompiledLaneSpatialLookup::CandidateRegion {
+                level: 0,
+                cell_index: 127,
+                signed_count: 1,
+                candidate_offset_words: 5,
+            })
+        );
+
+        let no_cells = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 2,
+            height: 2,
+            levels: [&[]; COMPILED_LANE_SPATIAL_LEVEL_COUNT],
+        };
+        for source in [[-1, 0, 0], [2 << 24, 0, 0], [0, 0, -1], [0, 0, 2 << 24]] {
+            assert_eq!(
+                locate_decoded_compiled_lane_candidate_region(source, no_cells),
+                Ok(CompiledLaneSpatialLookup::Miss)
+            );
+        }
+        for (width, height) in [(0, 1), (-1, 1), (1, 0), (1, -1)] {
+            let nonpositive_dimension = DecodedCompiledLaneSpatialHierarchy {
+                width,
+                height,
+                ..no_cells
+            };
+            assert_eq!(
+                locate_decoded_compiled_lane_candidate_region([0; 3], nonpositive_dimension),
+                Ok(CompiledLaneSpatialLookup::Miss)
+            );
+        }
+    }
+
+    #[test]
+    fn decoded_spatial_lookup_consumes_exact_two_bit_subcells_across_six_levels() {
+        let empty = spatial_cell(-1, 0);
+        let occupied = spatial_cell(2, 4);
+        let level0 = [spatial_cell(-1, 10)];
+        let mut level1 = [occupied; 24];
+        let mut level2 = [occupied; 31];
+        let mut level3 = [occupied; 38];
+        let mut level4 = [occupied; 41];
+        let mut level5 = [occupied; 60];
+        level1[23] = spatial_cell(-1, 20);
+        level2[30] = spatial_cell(-1, 30);
+        level3[37] = spatial_cell(-1, 40);
+        level4[40] = spatial_cell(-1, 50);
+        level5[59] = occupied;
+        let hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 1,
+            height: 1,
+            levels: [&level0, &level1, &level2, &level3, &level4, &level5],
+        };
+        let delta_x = 0x006c_4000;
+        let delta_z = 0x00e4_8000;
+        assert_eq!(
+            locate_decoded_compiled_lane_candidate_region([delta_x, i32::MIN, delta_z], hierarchy),
+            Ok(CompiledLaneSpatialLookup::CandidateRegion {
+                level: 5,
+                cell_index: 59,
+                signed_count: 2,
+                candidate_offset_words: 4,
+            })
+        );
+
+        let mut level5_empty = level5;
+        level5_empty[59] = empty;
+        let empty_leaf = DecodedCompiledLaneSpatialHierarchy {
+            levels: [&level0, &level1, &level2, &level3, &level4, &level5_empty],
+            ..hierarchy
+        };
+        assert_eq!(
+            locate_decoded_compiled_lane_candidate_region([delta_x, i32::MAX, delta_z], empty_leaf),
+            Ok(CompiledLaneSpatialLookup::Miss)
+        );
+    }
+
+    #[test]
+    fn decoded_spatial_lookup_treats_only_minus_one_as_empty_and_wraps_child_links() {
+        let terminal = [spatial_cell(-2, i32::MIN)];
+        let hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 1,
+            height: 1,
+            levels: [&terminal, &[], &[], &[], &[], &[]],
+        };
+        assert_eq!(
+            locate_decoded_compiled_lane_candidate_region([0; 3], hierarchy),
+            Ok(CompiledLaneSpatialLookup::CandidateRegion {
+                level: 0,
+                cell_index: 0,
+                signed_count: -2,
+                candidate_offset_words: i32::MIN,
+            })
+        );
+
+        let zero = [spatial_cell(0, i32::MAX)];
+        let zero_count = DecodedCompiledLaneSpatialHierarchy {
+            levels: [&zero, &[], &[], &[], &[], &[]],
+            ..hierarchy
+        };
+        assert_eq!(
+            locate_decoded_compiled_lane_candidate_region([0; 3], zero_count),
+            Ok(CompiledLaneSpatialLookup::CandidateRegion {
+                level: 0,
+                cell_index: 0,
+                signed_count: 0,
+                candidate_offset_words: i32::MAX,
+            })
+        );
+
+        let root = [spatial_cell(-1, i32::MAX)];
+        let wrapping = DecodedCompiledLaneSpatialHierarchy {
+            levels: [&root, &[], &[], &[], &[], &[]],
+            ..hierarchy
+        };
+        assert_eq!(
+            locate_decoded_compiled_lane_candidate_region([3 << 22, 0, 3 << 22], wrapping),
+            Err(CompiledLaneSpatialBoundsError {
+                level: 1,
+                cell_index: i32::MIN + 14,
+                available_cells: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn decoded_spatial_lookup_reports_the_first_missing_cell_exactly() {
+        let level0 = [spatial_cell(1, 2); 3];
+        let hierarchy = DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: [0, 0],
+            width: 2,
+            height: 2,
+            levels: [&level0, &[], &[], &[], &[], &[]],
+        };
+        assert_eq!(
+            locate_decoded_compiled_lane_candidate_region([1 << 24, 0, 1 << 24], hierarchy),
+            Err(CompiledLaneSpatialBoundsError {
+                level: 0,
+                cell_index: 3,
+                available_cells: 3,
+            })
         );
     }
 

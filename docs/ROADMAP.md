@@ -755,6 +755,13 @@ replacement behavior, tie stability, and the sole final handle publication.
 Five focused tests bring `cmr-core` to 1,190. The outer `FUN_004473f0` spatial
 hierarchy/list-offset decoder and raw geometry-table access remain open.
 
+G03-AK3 reconstructs outer hierarchy resolver `FUN_004473f0` over decoded
+eight-byte cell views. Wrapping origin subtraction, signed coarse bounds,
+row-major indexing, five two-bit refinements, exact sentinel/depth behavior,
+and lazy reached-cell failures are covered by four focused tests, bringing
+`cmr-core` to 1,194. Candidate-pool adaptation, raw table decoding, and
+composition into the dispatcher provider remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

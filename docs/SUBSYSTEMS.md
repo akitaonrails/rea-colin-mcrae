@@ -1199,6 +1199,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   wrapping signed-average distance, first-winner/strict-replacement ordering,
   stable ties, and final-only handle publication. Five tests bring `cmr-core`
   to 1,190; the outer spatial hierarchy and raw geometry lookup remain open.
+  G03-AK3 reconstructs outer `FUN_004473f0` hierarchy resolution over decoded
+  cells: wrapping X/Z mapping, signed bounds, row-major level zero, five
+  two-bit refinements, exact `-1` sentinel/depth behavior, and lazy cell bounds.
+  Four tests bring `cmr-core` to 1,194. Candidate-pool adaptation and raw table
+  ownership/composition remain open; the deepest native pointer slot aliases
+  the vertex-table pointer and is represented only as a decoded cell view.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1245,7 +1251,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-compiled-lane-build`, and
   `impl.sim-compiled-lane-build`,
   `rea.official-eu.sim-compiled-lane-candidate-chooser`, and
-  `impl.sim-compiled-lane-candidate-chooser`.
+  `impl.sim-compiled-lane-candidate-chooser`,
+  `rea.official-eu.sim-compiled-lane-spatial-hierarchy`, and
+  `impl.sim-compiled-lane-spatial-hierarchy`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
