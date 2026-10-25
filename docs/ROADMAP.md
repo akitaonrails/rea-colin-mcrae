@@ -768,6 +768,12 @@ pool-start, provider, and per-ordinal list-error precedence, bringing
 `cmr-core` to 1,197. Raw official table acquisition and a concrete geometry
 provider that also validates/decodes/builds remain open.
 
+G03-AK5 reconstructs the post-decode `FUN_00446d00` X/Z validator with signed
+inclusive bounds and exact wrapping, independently projected Q16 edge scores.
+Six focused tests cover orientation, edges, degeneracy, bounds, rounding, and
+overflow, bringing `cmr-core` to 1,203. Raw record/vertex decoding and concrete
+provider integration remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

@@ -1209,6 +1209,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   while retaining nonpositive-count bypass and lazy provider/list bounds.
   Three tests bring `cmr-core` to 1,197. Raw official table acquisition and a
   concrete validate/decode/build provider remain open.
+  G03-AK5 reconstructs the decoded `FUN_00446d00` predicate: signed inclusive
+  X/Z bounds followed by three winding-sensitive, independently projected Q16
+  edge scores with wrapping arithmetic. Six tests bring `cmr-core` to 1,203;
+  raw record/vertex decoding and provider integration remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1258,7 +1262,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-lane-candidate-chooser`,
   `rea.official-eu.sim-compiled-lane-spatial-hierarchy`, and
   `impl.sim-compiled-lane-spatial-hierarchy`, and
-  `impl.sim-compiled-lane-spatial-search`.
+  `impl.sim-compiled-lane-spatial-search`,
+  `rea.official-eu.sim-compiled-lane-validator`, and
+  `impl.sim-compiled-lane-validator`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

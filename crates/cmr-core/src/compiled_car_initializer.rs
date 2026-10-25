@@ -1371,6 +1371,56 @@ pub fn search_decoded_compiled_lane_spatial_hierarchy<P: CompiledLaneCandidatePr
     .map_err(CompiledLaneSpatialSearchFailure::Candidate)
 }
 
+fn compiled_lane_xz_edge_score(point: [i32; 3], start: [i32; 3], end: [i32; 3]) -> i32 {
+    common_prefix_q16_mul(
+        point[0].wrapping_sub(start[0]),
+        end[2].wrapping_sub(start[2]),
+    )
+    .wrapping_add(common_prefix_q16_mul(
+        point[2].wrapping_sub(start[2]),
+        start[0].wrapping_sub(end[0]),
+    ))
+}
+
+fn compiled_lane_xz_edge_scores(source_vector: [i32; 3], vertices: [[i32; 3]; 3]) -> [i32; 3] {
+    [
+        compiled_lane_xz_edge_score(source_vector, vertices[0], vertices[1]),
+        compiled_lane_xz_edge_score(source_vector, vertices[1], vertices[2]),
+        compiled_lane_xz_edge_score(source_vector, vertices[2], vertices[0]),
+    ]
+}
+
+/// Stable decoded-geometry predicate for `FUN_00446d00` after its decoder
+/// succeeds.
+///
+/// Signed inclusive X/Z axis bounds run before the three winding-sensitive
+/// edge tests. Each edge performs its two signed Q16 products independently,
+/// then wrapping-adds their projected dwords. Source and vertex Y components
+/// are ignored; zero edge scores are accepted. This intentionally preserves
+/// degenerate and orientation-sensitive native behavior rather than replacing
+/// it with a modern unoriented point-in-triangle test.
+#[must_use]
+pub fn validate_decoded_compiled_lane_source(
+    source_vector: [i32; 3],
+    vertices: [[i32; 3]; 3],
+) -> bool {
+    let source_x = source_vector[0];
+    if vertices.iter().all(|vertex| source_x < vertex[0])
+        || vertices.iter().all(|vertex| source_x > vertex[0])
+    {
+        return false;
+    }
+    let source_z = source_vector[2];
+    if vertices.iter().all(|vertex| source_z < vertex[2])
+        || vertices.iter().all(|vertex| source_z > vertex[2])
+    {
+        return false;
+    }
+    compiled_lane_xz_edge_scores(source_vector, vertices)
+        .into_iter()
+        .all(|score| score >= 0)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodedCompiledLaneTriangle {
     pub vertices: [[i32; 3]; 3],
@@ -4777,6 +4827,157 @@ mod tests {
                 }
             ))
         );
+    }
+
+    fn validator_triangle() -> [[i32; 3]; 3] {
+        [[0, 11, 0], [0, 22, 0x1_0000], [0x1_0000, 33, 0]]
+    }
+
+    #[test]
+    fn decoded_lane_validator_is_winding_sensitive_and_ignores_every_y_word() {
+        let source = [0x4000, i32::MIN, 0x4000];
+        let vertices = validator_triangle();
+        assert_eq!(
+            compiled_lane_xz_edge_scores(source, vertices),
+            [0x4000, 0x8000, 0x4000]
+        );
+        assert!(validate_decoded_compiled_lane_source(source, vertices));
+        let mut changed_y = vertices;
+        changed_y[0][1] = i32::MIN;
+        changed_y[1][1] = 0;
+        changed_y[2][1] = i32::MAX;
+        assert!(validate_decoded_compiled_lane_source(
+            [source[0], i32::MAX, source[2]],
+            changed_y
+        ));
+        let mut reversed = vertices;
+        reversed.swap(1, 2);
+        assert!(!validate_decoded_compiled_lane_source(source, reversed));
+    }
+
+    #[test]
+    fn decoded_lane_validator_accepts_vertices_and_edges_but_rejects_bbox_outside() {
+        let vertices = validator_triangle();
+        for source in [
+            vertices[0],
+            vertices[1],
+            vertices[2],
+            [0, 9, 0x8000],
+            [0x8000, 9, 0],
+            [0x8000, 9, 0x8000],
+        ] {
+            assert!(validate_decoded_compiled_lane_source(source, vertices));
+        }
+        let source = [0xc000, 0, 0xc000];
+        let mut rotated = vertices;
+        for expected_negative_slot in [1, 0, 2] {
+            let scores = compiled_lane_xz_edge_scores(source, rotated);
+            assert!(scores[expected_negative_slot] < 0);
+            assert!(!validate_decoded_compiled_lane_source(source, rotated));
+            rotated.rotate_left(1);
+        }
+    }
+
+    #[test]
+    fn decoded_lane_validator_pins_signed_bbox_and_degenerate_inclusion() {
+        let vertices = validator_triangle();
+        for source in [[-1, 0, 0], [0x1_0001, 0, 0], [0, 0, -1], [0, 0, 0x1_0001]] {
+            assert!(!validate_decoded_compiled_lane_source(source, vertices));
+        }
+        let collapsed = [[7, i32::MIN, 9], [7, 0, 9], [7, i32::MAX, 9]];
+        assert!(validate_decoded_compiled_lane_source(
+            [7, 123, 9],
+            collapsed
+        ));
+        assert!(!validate_decoded_compiled_lane_source(
+            [8, 123, 9],
+            collapsed
+        ));
+        assert!(!validate_decoded_compiled_lane_source(
+            [7, 123, 8],
+            collapsed
+        ));
+        let collinear = [[-0x1_0000, 0, 0], [0, 0, 0], [0x1_0000, 0, 0]];
+        assert!(validate_decoded_compiled_lane_source(
+            [0x8000, 0, 0],
+            collinear
+        ));
+        assert!(!validate_decoded_compiled_lane_source(
+            [0x8000, 0, 1],
+            collinear
+        ));
+    }
+
+    #[test]
+    fn decoded_lane_validator_keeps_bbox_even_when_wrapped_edges_would_accept() {
+        let source = [1_073_741_824, 0, 1];
+        let vertices = [
+            [1, 0, 2_147_483_646],
+            [-1_073_741_824, 0, i32::MAX],
+            [-65_536, 0, i32::MIN],
+        ];
+        assert_eq!(
+            compiled_lane_xz_edge_scores(source, vertices),
+            [32_767, 2_147_418_114, 2_147_483_644]
+        );
+        assert!(!validate_decoded_compiled_lane_source(source, vertices));
+    }
+
+    #[test]
+    fn decoded_lane_validator_pins_independent_q16_projection_and_wrapping_sum() {
+        let rounding_source = [3, 0, 1];
+        let rounding_vertices = [[1, 0, 3], [2, 0, 5], [4, 0, 0]];
+        assert!(compiled_lane_xz_edge_scores(rounding_source, rounding_vertices).contains(&-1));
+        assert!(!validate_decoded_compiled_lane_source(
+            rounding_source,
+            rounding_vertices
+        ));
+        let wrapping_source = [-65_536, 0, 65_536];
+        let wrapping_vertices = [
+            [100_000_000, 0, 500_000_000],
+            [0, 0, 0],
+            [-1_000_000_000, 0, -750_000_000],
+        ];
+        assert_eq!(
+            compiled_lane_xz_edge_scores(wrapping_source, wrapping_vertices),
+            [600_000_000, 1_750_000_000, 1_529_701_898]
+        );
+        assert!(validate_decoded_compiled_lane_source(
+            wrapping_source,
+            wrapping_vertices
+        ));
+    }
+
+    #[test]
+    fn decoded_lane_validator_pins_odd_rounding_and_wrapping_subtraction() {
+        let odd_source = [0x3457, 0, -0x4569];
+        let odd_vertices = [
+            [0x1235, 0, -0x2347],
+            [0x1_89ab, 0, 0x4567],
+            [-0x789d, 0, -0x1_5679],
+        ];
+        assert_eq!(
+            compiled_lane_xz_edge_scores(odd_source, odd_vertices),
+            [16_388, 69_195, 15_223]
+        );
+        assert!(validate_decoded_compiled_lane_source(
+            odd_source,
+            odd_vertices
+        ));
+        let extreme_source = [-65_536, 0, -1];
+        let extreme_vertices = [
+            [-1, 0, i32::MIN],
+            [i32::MAX, 0, 65_535],
+            [-65_536, 0, 65_535],
+        ];
+        assert_eq!(
+            compiled_lane_xz_edge_scores(extreme_source, extreme_vertices),
+            [2_147_418_113, 2_147_418_113, 65_535]
+        );
+        assert!(validate_decoded_compiled_lane_source(
+            extreme_source,
+            extreme_vertices
+        ));
     }
 
     fn horizontal_lane_triangle() -> DecodedCompiledLaneTriangle {
