@@ -79,6 +79,28 @@ pub fn drive_torque_split(
     (front, rear)
 }
 
+/// Wheel-speed pair divergence (`0x1999` ~ 0.1 Q16.16) above which the
+/// end-of-pass equalizer `FUN_00410230` averages an axle's left/right speeds.
+pub const WHEEL_PAIR_EQUALIZE_THRESHOLD: i32 = 0x1999;
+
+/// The recovered axle wheel-speed equalizer `FUN_00410230`.
+///
+/// The shipped force pass ends by comparing each front/rear wheel-speed pair
+/// (`+0x2a8`/`+0x2ac` and `+0x2b0`/`+0x2b4`); when the pair differs by more
+/// than [`WHEEL_PAIR_EQUALIZE_THRESHOLD`] both wheels are set to
+/// `(left + right) * 0x8000 >> 16` (the truncated average). Differences at or
+/// below the threshold are left untouched.
+#[must_use]
+pub fn equalize_wheel_speeds(left: Fixed16, right: Fixed16) -> (Fixed16, Fixed16) {
+    let difference = left.raw().wrapping_sub(right.raw()).wrapping_abs();
+    if difference <= WHEEL_PAIR_EQUALIZE_THRESHOLD {
+        return (left, right);
+    }
+    let sum = i64::from(left.raw()) + i64::from(right.raw());
+    let average = Fixed16::from_raw(((sum * 0x8000) >> 16) as i32);
+    (average, average)
+}
+
 /// The coasting split: [`COAST_DRAG_TORQUE`] distributed by the centre split
 /// (the recovered in-gear, no-throttle/no-brake branch of `FUN_0040d810`).
 #[must_use]
@@ -304,6 +326,30 @@ mod tests {
         assert_eq!(
             coast_torque_split(Fixed16::ZERO),
             (Fixed16::ZERO, Fixed16::from_raw(0x1999))
+        );
+    }
+
+    #[test]
+    fn wheel_pair_equalizer_averages_only_beyond_the_threshold() {
+        // Differences at or below 0.1 leave the pair untouched.
+        assert_eq!(
+            equalize_wheel_speeds(fx(0x10000), fx(0x10000 + 0x1999)),
+            (fx(0x10000), fx(0x11999))
+        );
+        // Beyond it both wheels take the truncated average.
+        assert_eq!(
+            equalize_wheel_speeds(fx(0x10000), fx(0x14000)),
+            (fx(0x12000), fx(0x12000))
+        );
+        // Opposite signs average to zero.
+        assert_eq!(
+            equalize_wheel_speeds(fx(-0x10000), fx(0x10000)),
+            (Fixed16::ZERO, Fixed16::ZERO)
+        );
+        // Odd sums floor, matching the recovered `*0x8000 >> 16`.
+        assert_eq!(
+            equalize_wheel_speeds(fx(0x10000), fx(0x18001)),
+            (fx(0x14000), fx(0x14000))
         );
     }
 
