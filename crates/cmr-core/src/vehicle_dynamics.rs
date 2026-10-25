@@ -29,6 +29,11 @@
 //!   candidate at or below the transition candidate is retained; above it, an
 //!   alternate candidate is selected verbatim. This comparison alone does
 //!   not establish a physical model or the meaning of either candidate.
+//! - **Lookup-free candidate branches** (`FUN_0040d810`): when the wrapping
+//!   absolute first component is below `0x6666`, transition/alternate gains are
+//!   multiplied by their caller-derived bases. Otherwise a second component
+//!   below `0x6666` selects both gains verbatim. The remaining branch uses
+//!   runtime lookup tables and is not reconstructed by this helper.
 //! - **Gated correction arithmetic** (`FUN_0040d810`): a nonzero control gate
 //!   admits a correction only when the wrapping difference between the
 //!   smoothed/current and raw wheel values has the same strict sign as the
@@ -43,8 +48,8 @@
 //! Observations: the formulas and constants above, read from the solver passes.
 //! Inferences: the slope ramp raises grip as the surface flattens (output is a
 //! grip factor, high on flat ground); the two surface tiers are high/low grip.
-//! Unknowns (not reproduced): how the initial two signed force candidates and
-//! their units/order are derived, the direction vectors and surrounding
+//! Unknowns (not reproduced): the lookup-dependent candidate branch and the
+//! physical units of all candidates, the direction vectors and surrounding
 //! per-wheel accumulation, the physical meaning of the nonzero control
 //! `+0x420` gate, the surface-indexed contribution, `FUN_0040fbe0`, the exact
 //! semi-implicit position update's half-accel term, the suspension damper
@@ -88,6 +93,10 @@ pub const SURFACE_GRIP_LOW: Fixed16 = Fixed16::from_raw(0x2666);
 /// Stride, in bytes, of a surface grip-table record (the `surfId * 8` index).
 pub const SURFACE_GRIP_RECORD_BYTES: usize = 8;
 
+/// Signed component boundary used by the two lookup-free candidate branches
+/// in `FUN_0040d810` (`0x40f24f..0x40f2c7`).
+pub const CANDIDATE_COMPONENT_THRESHOLD: Fixed16 = Fixed16::from_raw(0x6666);
+
 /// Select between caller-derived force candidates using the recovered signed
 /// raw comparison in `FUN_0040d810`.
 ///
@@ -104,6 +113,40 @@ pub const fn select_signed_force_candidate(
         alternate
     } else {
         candidate
+    }
+}
+
+/// Derive the candidate pair for either lookup-free branch recovered from
+/// `FUN_0040d810`.
+///
+/// Components use wrapping absolute value followed by signed comparison with
+/// [`CANDIDATE_COMPONENT_THRESHOLD`]. When `component_a` is below the boundary,
+/// that first branch has priority and returns the Q16.16 products of each gain
+/// and base. Otherwise, a `component_b` below the boundary returns both gains
+/// verbatim. `None` denotes the remaining branch, whose derivation depends on
+/// lookup tables and is intentionally outside this helper.
+#[must_use]
+pub const fn derive_lookup_free_candidates(
+    component_a: Fixed16,
+    component_b: Fixed16,
+    transition_gain: Fixed16,
+    transition_base: Fixed16,
+    alternate_gain: Fixed16,
+    alternate_base: Fixed16,
+) -> Option<(Fixed16, Fixed16)> {
+    let absolute_a = Fixed16::from_raw(component_a.raw().wrapping_abs());
+    if absolute_a.raw() < CANDIDATE_COMPONENT_THRESHOLD.raw() {
+        return Some((
+            transition_gain.mul(transition_base),
+            alternate_gain.mul(alternate_base),
+        ));
+    }
+
+    let absolute_b = Fixed16::from_raw(component_b.raw().wrapping_abs());
+    if absolute_b.raw() < CANDIDATE_COMPONENT_THRESHOLD.raw() {
+        Some((transition_gain, alternate_gain))
+    } else {
+        None
     }
 }
 
@@ -363,6 +406,114 @@ mod tests {
                 alternate
             );
         }
+    }
+
+    #[test]
+    fn lookup_free_candidates_multiply_at_component_a_threshold_minus_one() {
+        assert_eq!(
+            derive_lookup_free_candidates(
+                Fixed16::from_raw(CANDIDATE_COMPONENT_THRESHOLD.raw() - 1),
+                CANDIDATE_COMPONENT_THRESHOLD,
+                Fixed16::from_raw(0x8000),
+                Fixed16::from_raw(0x1_6000),
+                Fixed16::from_raw(0x4000),
+                Fixed16::from_raw(0xe000),
+            ),
+            Some((Fixed16::from_raw(0xb000), Fixed16::from_raw(0x3800)))
+        );
+    }
+
+    #[test]
+    fn lookup_free_candidates_exact_component_a_threshold_uses_component_b_branch() {
+        let transition_gain = Fixed16::from_raw(0x8000);
+        let alternate_gain = Fixed16::from_raw(0x4000);
+        assert_eq!(
+            derive_lookup_free_candidates(
+                CANDIDATE_COMPONENT_THRESHOLD,
+                Fixed16::from_raw(CANDIDATE_COMPONENT_THRESHOLD.raw() - 1),
+                transition_gain,
+                Fixed16::from_raw(0x1_6000),
+                alternate_gain,
+                Fixed16::from_raw(0xe000),
+            ),
+            Some((transition_gain, alternate_gain))
+        );
+    }
+
+    #[test]
+    fn lookup_free_candidates_give_component_a_branch_priority_when_both_are_below() {
+        assert_eq!(
+            derive_lookup_free_candidates(
+                Fixed16::ZERO,
+                Fixed16::ZERO,
+                Fixed16::from_raw(0x8000),
+                Fixed16::from_raw(0x1_6000),
+                Fixed16::from_raw(0x4000),
+                Fixed16::from_raw(0xe000),
+            ),
+            Some((Fixed16::from_raw(0xb000), Fixed16::from_raw(0x3800)))
+        );
+    }
+
+    #[test]
+    fn lookup_free_candidates_use_signed_wrapping_absolute_for_int_min() {
+        let transition_gain = Fixed16::from_raw(0x8000);
+        let alternate_gain = Fixed16::from_raw(0x4000);
+        assert_eq!(i32::MIN.wrapping_abs(), i32::MIN);
+        assert_eq!(
+            derive_lookup_free_candidates(
+                Fixed16::from_raw(i32::MIN),
+                CANDIDATE_COMPONENT_THRESHOLD,
+                transition_gain,
+                Fixed16::ONE,
+                alternate_gain,
+                Fixed16::ONE,
+            ),
+            Some((transition_gain, alternate_gain))
+        );
+        assert_eq!(
+            derive_lookup_free_candidates(
+                CANDIDATE_COMPONENT_THRESHOLD,
+                Fixed16::from_raw(i32::MIN),
+                transition_gain,
+                Fixed16::from_raw(0x1_6000),
+                alternate_gain,
+                Fixed16::from_raw(0xe000),
+            ),
+            Some((transition_gain, alternate_gain))
+        );
+    }
+
+    #[test]
+    fn lookup_free_candidate_products_retain_modular_q16_results() {
+        let widened = (i32::MAX as i64 * i32::MAX as i64) >> 16;
+        assert!(widened > i32::MAX as i64);
+        assert_eq!(
+            derive_lookup_free_candidates(
+                Fixed16::ZERO,
+                CANDIDATE_COMPONENT_THRESHOLD,
+                Fixed16::from_raw(i32::MAX),
+                Fixed16::from_raw(i32::MAX),
+                Fixed16::from_raw(i32::MIN),
+                Fixed16::from_raw(i32::MIN),
+            ),
+            Some((Fixed16::from_raw(widened as i32), Fixed16::ZERO))
+        );
+    }
+
+    #[test]
+    fn lookup_free_candidates_defer_the_combined_path() {
+        assert_eq!(
+            derive_lookup_free_candidates(
+                CANDIDATE_COMPONENT_THRESHOLD,
+                CANDIDATE_COMPONENT_THRESHOLD,
+                Fixed16::ONE,
+                Fixed16::ONE,
+                Fixed16::ONE,
+                Fixed16::ONE,
+            ),
+            None
+        );
     }
 
     #[test]

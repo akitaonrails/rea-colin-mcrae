@@ -401,9 +401,10 @@ Add subsystems in dependency order:
 
 Current G03 recovery has isolated the signed force-candidate selector and the
 pure arithmetic behind the nonzero control `+0x420` correction gate inside
-`FUN_0040d810`. The remaining physics exit work is to derive the initial
-candidates, recover the direction/state accumulation, surface-indexed add and
-`FUN_0040fbe0`, and connect them without unsupported physical semantics.
+`FUN_0040d810`; its two lookup-free initial-candidate branches are also
+reconstructed. The remaining physics exit work is the lookup-dependent
+candidate branch, direction/state accumulation, surface-indexed add and
+`FUN_0040fbe0`, connected without unsupported physical semantics.
 
 Exit gate:
 
