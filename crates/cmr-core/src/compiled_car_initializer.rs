@@ -448,6 +448,8 @@ pub const COMPILED_LANE_FIRST_FOUR_SUBTRACTION_OFFSETS: [u16; 4] = [0x5e8, 0x5f0
 pub const COMPILED_LANE_LATCH_OFFSET: u16 = 0x67c;
 pub const COMPILED_LANE_CONFIG_FLAG_OFFSET: u16 = 0x26;
 pub const COMPILED_LANE_ACCUMULATOR_LATCH_THRESHOLD: i32 = 0x00c8_9cbc;
+pub const COMPILED_POST_LANE_SELECTOR_Y_OFFSETS: [u16; 3] = [0x25c, 0x268, 0x274];
+pub const COMPILED_POST_LANE_OUTPUT_OFFSETS: [u16; 3] = [0x324, 0x328, 0x32c];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledSuffixDefaultEffects {
@@ -1794,6 +1796,137 @@ fn normalize_compiled_lane_vector(vector: [i32; 3]) -> [i32; 3] {
     }
     let reciprocal = ((1_u64 << 32) / u64::from(root)) as i32;
     vector.map(|component| common_prefix_q16_mul(component, reciprocal))
+}
+
+/// Which four post-lane points `FUN_00408fe0` selects.
+///
+/// These neutral names reflect selector fields A/B/C. Their physical meaning
+/// is not established by static analysis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledPostLaneQuad {
+    A,
+    B,
+    C,
+}
+
+impl CompiledPostLaneQuad {
+    #[must_use]
+    pub const fn lane_indices(self) -> [usize; 4] {
+        match self {
+            Self::A => [0, 1, 4, 5],
+            Self::B => [0, 1, 2, 3],
+            Self::C => [0, 2, 4, 6],
+        }
+    }
+}
+
+/// Stable-snapshot inputs read by the post-eight-lane global transform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledPostLaneNormalInput {
+    /// Eight vectors at state `+0xfc..+0x158`; component 1 is not read.
+    pub source_vectors: [[i32; 3]; 8],
+    /// The post-`FUN_00419a40` words at state `+0x2e4..+0x300`.
+    pub lane_words: [i32; 8],
+    /// State words `+0x25c/+0x268/+0x274` used only for quad selection.
+    pub selector_words: [i32; 3],
+}
+
+/// Stable aggregate of `FUN_00408fe0`'s two publications and ignored return.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledPostLaneNormalEffects {
+    pub selected_quad: CompiledPostLaneQuad,
+    /// Normalized first face, published progressively at `+0x324..+0x32c`.
+    pub first_published_normal: [i32; 3],
+    /// Normalized second face, retained locally by the shipped function.
+    pub second_normal: [i32; 3],
+    /// Normalized wrapping sum, which overwrites the first publication.
+    pub final_published_normal: [i32; 3],
+    /// Wrapping Q16 square sum of the unnormalized final sum, returned in EAX
+    /// but ignored by every resolved caller.
+    pub final_square_sum: u32,
+}
+
+fn compiled_post_lane_pseudo_abs(value: i32) -> i32 {
+    if value < 0 {
+        value.wrapping_neg()
+    } else {
+        value
+    }
+}
+
+fn select_compiled_post_lane_quad(selector_words: [i32; 3]) -> CompiledPostLaneQuad {
+    let [a, b, c] = selector_words.map(compiled_post_lane_pseudo_abs);
+    if a <= b && b >= c {
+        CompiledPostLaneQuad::B
+    } else if a > b && a >= c {
+        CompiledPostLaneQuad::A
+    } else {
+        CompiledPostLaneQuad::C
+    }
+}
+
+fn compiled_post_lane_cross_v_by_u(v: [i32; 3], u: [i32; 3]) -> [i32; 3] {
+    [
+        common_prefix_q16_mul(v[1], u[2]).wrapping_sub(common_prefix_q16_mul(v[2], u[1])),
+        common_prefix_q16_mul(v[2], u[0]).wrapping_sub(common_prefix_q16_mul(v[0], u[2])),
+        common_prefix_q16_mul(v[0], u[1]).wrapping_sub(common_prefix_q16_mul(v[1], u[0])),
+    ]
+}
+
+fn compiled_post_lane_upward_normal(u: [i32; 3], v: [i32; 3]) -> [i32; 3] {
+    let mut normal = compiled_post_lane_cross_v_by_u(v, u);
+    if normal[1] < 0 {
+        normal = normal.map(i32::wrapping_neg);
+    }
+    normalize_compiled_lane_vector(normal)
+}
+
+fn compiled_post_lane_square_sum(vector: [i32; 3]) -> u32 {
+    vector.into_iter().fold(0_i32, |sum, component| {
+        sum.wrapping_add(common_prefix_q16_mul(component, component))
+    }) as u32
+}
+
+/// Reconstructs no-argument `FUN_00408fe0` over one stable state snapshot.
+///
+/// The native function can reload `DAT_0050c5b4` between source capture, its
+/// intermediate publication, and its final read/write. This pure contract
+/// intentionally collapses that rebinding, progressive machine faults, and
+/// concurrent mutation while preserving the exact wrapping arithmetic,
+/// selection/tie order, first publication, and final overwrite.
+#[must_use]
+pub fn derive_compiled_post_lane_global_normal(
+    input: CompiledPostLaneNormalInput,
+) -> CompiledPostLaneNormalEffects {
+    let selected_quad = select_compiled_post_lane_quad(input.selector_words);
+    let points = selected_quad.lane_indices().map(|lane| {
+        [
+            input.source_vectors[lane][0],
+            input.lane_words[lane],
+            input.source_vectors[lane][2],
+        ]
+    });
+    let [o, p, q, r] = points;
+    let first_published_normal = compiled_post_lane_upward_normal(
+        std::array::from_fn(|index| p[index].wrapping_sub(o[index])),
+        std::array::from_fn(|index| q[index].wrapping_sub(o[index])),
+    );
+    let second_normal = compiled_post_lane_upward_normal(
+        std::array::from_fn(|index| p[index].wrapping_sub(r[index])),
+        std::array::from_fn(|index| q[index].wrapping_sub(r[index])),
+    );
+    let sum = std::array::from_fn(|index| {
+        first_published_normal[index].wrapping_add(second_normal[index])
+    });
+    let final_square_sum = compiled_post_lane_square_sum(sum);
+    let final_published_normal = normalize_compiled_lane_vector(sum);
+    CompiledPostLaneNormalEffects {
+        selected_quad,
+        first_published_normal,
+        second_normal,
+        final_published_normal,
+        final_square_sum,
+    }
 }
 
 fn solve_compiled_lane_plane(
@@ -6246,6 +6379,110 @@ mod tests {
                 output_vector_write: Some(expected.output_vector),
             })
         );
+    }
+
+    fn post_lane_square_input(selector_words: [i32; 3]) -> CompiledPostLaneNormalInput {
+        let mut source_vectors = [[0; 3]; 8];
+        for (lane, x, z) in [
+            (0, 0, 0),
+            (1, 0x1_0000, 0),
+            (2, 0, 0x1_0000),
+            (3, 0x1_0000, 0x1_0000),
+            (4, 0, 0x2_0000),
+            (5, 0x1_0000, 0x2_0000),
+            (6, 0x2_0000, 0x1_0000),
+            (7, 0x3_0000, 0x3_0000),
+        ] {
+            source_vectors[lane] = [x, lane as i32 * 0x1111, z];
+        }
+        CompiledPostLaneNormalInput {
+            source_vectors,
+            lane_words: [0; 8],
+            selector_words,
+        }
+    }
+
+    #[test]
+    fn post_lane_normal_selects_all_quads_with_b_then_a_then_c_ties() {
+        for (selectors, expected) in [
+            ([9, 2, 1], CompiledPostLaneQuad::A),
+            ([1, 9, 2], CompiledPostLaneQuad::B),
+            ([1, 2, 9], CompiledPostLaneQuad::C),
+            ([9, 9, 9], CompiledPostLaneQuad::B),
+            ([9, 1, 9], CompiledPostLaneQuad::A),
+            ([1, 9, 9], CompiledPostLaneQuad::B),
+        ] {
+            assert_eq!(
+                derive_compiled_post_lane_global_normal(post_lane_square_input(selectors))
+                    .selected_quad,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn post_lane_normal_builds_two_upward_faces_and_their_final_sum() {
+        let effects = derive_compiled_post_lane_global_normal(post_lane_square_input([0, 1, 0]));
+        assert_eq!(effects.selected_quad, CompiledPostLaneQuad::B);
+        assert_eq!(effects.first_published_normal, [0, 65_522, 0]);
+        assert_eq!(effects.second_normal, [0, 65_522, 0]);
+        assert_eq!(effects.final_square_sum, 262_032);
+        assert_eq!(effects.final_published_normal, [0, 65_533, 0]);
+
+        let mut reversed = post_lane_square_input([0, 1, 0]);
+        reversed.source_vectors.swap(1, 2);
+        let reversed = derive_compiled_post_lane_global_normal(reversed);
+        assert!(reversed.first_published_normal[1] >= 0);
+        assert!(reversed.second_normal[1] >= 0);
+
+        let mut degenerate = post_lane_square_input([0, 1, 0]);
+        degenerate.source_vectors = [[7, i32::MIN, -3]; 8];
+        degenerate.lane_words = [11; 8];
+        let degenerate = derive_compiled_post_lane_global_normal(degenerate);
+        assert_eq!(degenerate.first_published_normal, [0; 3]);
+        assert_eq!(degenerate.second_normal, [0; 3]);
+        assert_eq!(degenerate.final_published_normal, [0; 3]);
+        assert_eq!(degenerate.final_square_sum, 0);
+    }
+
+    #[test]
+    fn post_lane_normal_ignores_source_y_and_unselected_lanes() {
+        let base = post_lane_square_input([0, 7, 0]);
+        let expected = derive_compiled_post_lane_global_normal(base);
+        let mut poisoned = base;
+        for (lane, source) in poisoned.source_vectors.iter_mut().enumerate() {
+            source[1] = if lane & 1 == 0 { i32::MIN } else { i32::MAX };
+        }
+        for lane in 4..8 {
+            poisoned.source_vectors[lane][0] = i32::MIN;
+            poisoned.source_vectors[lane][2] = i32::MAX;
+            poisoned.lane_words[lane] = i32::MIN;
+        }
+        assert_eq!(derive_compiled_post_lane_global_normal(poisoned), expected);
+    }
+
+    #[test]
+    fn post_lane_selector_preserves_wrapping_int_min_absolute_value() {
+        assert_eq!(compiled_post_lane_pseudo_abs(i32::MIN), i32::MIN);
+        assert_eq!(
+            derive_compiled_post_lane_global_normal(post_lane_square_input([i32::MIN, -1, -2,]))
+                .selected_quad,
+            CompiledPostLaneQuad::C
+        );
+        assert_eq!(
+            derive_compiled_post_lane_global_normal(post_lane_square_input([i32::MIN, 0, 0,]))
+                .selected_quad,
+            CompiledPostLaneQuad::B
+        );
+    }
+
+    #[test]
+    fn post_lane_layout_and_quad_routing_match_the_static_contract() {
+        assert_eq!(COMPILED_POST_LANE_SELECTOR_Y_OFFSETS, [0x25c, 0x268, 0x274]);
+        assert_eq!(COMPILED_POST_LANE_OUTPUT_OFFSETS, [0x324, 0x328, 0x32c]);
+        assert_eq!(CompiledPostLaneQuad::A.lane_indices(), [0, 1, 4, 5]);
+        assert_eq!(CompiledPostLaneQuad::B.lane_indices(), [0, 1, 2, 3]);
+        assert_eq!(CompiledPostLaneQuad::C.lane_indices(), [0, 2, 4, 6]);
     }
 
     #[test]

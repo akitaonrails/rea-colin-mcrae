@@ -823,6 +823,16 @@ Live application identity/input wiring, the adjacent `.srf`/`.shp` sidecars,
 `FUN_00408fe0`, native pointer fault/rebinding behavior, and full call-spine
 composition remain open.
 
+G03-AK11 reconstructs post-lane `FUN_00408fe0` over a stable snapshot. Signed
+wrapping pseudo-absolute selector words choose one of three four-point quads
+with exact B-then-A-then-C tie priority. Two Q16 face vectors are oriented to a
+nonnegative second component and normalized; the first is published, then its
+wrapping sum with the second is normalized and overwrites the same output.
+`derive_compiled_post_lane_global_normal` exposes both publication layers and
+the ignored raw final square-sum return. Five focused tests bring `cmr-core` to
+1,227. Native global-pointer rebinding/fault prefixes and composition after the
+fallible eight-lane executor remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

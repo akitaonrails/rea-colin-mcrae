@@ -1243,6 +1243,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   new extractor is introduced. Its eight providers borrow the same immutable
   snapshot and feed the AK8 executor. Seven focused tests bring `cmr-core` to
   1,222. Live stage identity and real simulation-input wiring remain open.
+  G03-AK11 reconstructs the following no-argument `FUN_00408fe0` transform:
+  selector words choose one of three four-point lane quads; two wrapping-Q16
+  face vectors are upward-oriented and normalized; the first is published at
+  state `+0x324..+0x32c`, then the normalized sum overwrites it. The pure
+  stable-snapshot effects retain both publications and the ignored EAX square
+  sum. Five focused tests bring `cmr-core` to 1,227. Native reloaded-pointer
+  aliases/fault prefixes and post-AK8 orchestration remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1301,7 +1308,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-eight-lane-executor`,
   `rea.official-eu.sim-hpc-geometry-loader`, and
   `impl.sim-hpc-geometry-parser`, and
-  `impl.sim-hpc-geometry-runtime`.
+  `impl.sim-hpc-geometry-runtime`,
+  `rea.official-eu.sim-post-lane-global-normal`, and
+  `impl.sim-post-lane-global-normal`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
