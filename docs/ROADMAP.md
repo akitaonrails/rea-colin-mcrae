@@ -510,12 +510,33 @@ use signed Q16 multiplication, signed `state+0x48 >> 3`, and three guarded
 signed `2^32/x` reciprocals. `AuxControlConstants` keeps every withheld
 function literal caller-owned; `derive_aux_control_patch` implements only the
 payload-free policy/arithmetic and a typed atomic overflow. Six tests bring
-`cmr-core` to 1,120. The patch is disjoint from direct-case destinations. A
-reviewed user-owned constants extractor/store, signed config lookup/domain,
-full composition with the other initializer stages and later tail,
+`cmr-core` to 1,120. The patch is disjoint from direct-case destinations. At
+the G03-T boundary, a reviewed user-owned constants extractor/store, signed
+config lookup/domain, full composition with the other initializer stages and later tail,
 application/session/gameplay wiring, meanings/units, gameplay index invariants,
 other editions, runtime geometry/BSS consumers, and full
 `FUN_0040d810`/`FUN_0040a4a0` closure remain open.
+
+G03-U completes that narrow user-owned auxiliary-constant extraction/storage
+boundary. `cmr-formats::pe_aux_control_initializer` semantically decodes the
+canonical official-EU `FUN_00407270` instruction and control-flow grammar rather
+than embedding a normalized byte template, returning a neutral 38-word shape
+(nine common words, two Q16 multipliers, and three seven-word/two-divisor
+policies). Its independently versioned `CMRAUXC` v1 codec is exactly 184 bytes:
+a 32-byte magic/version/count header followed by 38 signed little-endian words.
+The exact-digest metadata-only official profile and explicit
+`extract-aux-control-constants` command identify and hash the bounded user-owned
+executable before parsing, then self-check and atomically publish fixed flat
+data/state files beneath an explicit ignored `runtime-data/` destination.
+`AuxControlConstantsStore` rejects mismatched identity/shape/hash, linked or
+special files, truncation/trailing bytes, and malformed codecs before owning the
+decoded words without retaining a path. The 149 format tests, 76 assets-library
+tests, eight CLI tests, three audit tests, and opt-in ignored official smoke
+cover the semantic decoder and storage boundary without tracking or exposing an
+official value. A checked format/store-to-core adapter, safe signed config-record
+resolver and domain, composition with the direct cases/center split/six-word
+transform/auxiliary patch/later tail, semantics and units, application/session
+wiring, and other editions remain open.
 
 Exit gate:
 

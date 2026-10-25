@@ -15,8 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cmr_assets::{
-    COMPILED_INITIALIZER_DATA_FILE, COMPILED_INITIALIZER_STATE_FILE,
-    ReviewedCompiledInitializerProfile, ReviewedProfile,
+    AUX_CONTROL_DATA_FILE, AUX_CONTROL_STATE_FILE, COMPILED_INITIALIZER_DATA_FILE,
+    COMPILED_INITIALIZER_STATE_FILE, ReviewedAuxControlProfile, ReviewedCompiledInitializerProfile,
+    ReviewedProfile,
 };
 use sha2::{Digest, Sha256};
 
@@ -25,6 +26,32 @@ const REVIEWED_PROFILE: &str =
     include_str!("../../../profiles/installed-eu-derived-assets-v2.json");
 const COMPILED_INITIALIZER_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-compiled-car-initializer-v1.json");
+const AUX_CONTROL_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-aux-control-constants-v1.json");
+
+#[test]
+fn aux_control_profile_is_metadata_only_and_generated_store_is_untracked() {
+    let reviewed = ReviewedAuxControlProfile::from_json(AUX_CONTROL_PROFILE)
+        .expect("the aux-control profile is valid metadata");
+    assert_eq!(reviewed.profile().executable.path, "Rally.exe");
+
+    let document: serde_json::Value = serde_json::from_slice(AUX_CONTROL_PROFILE).unwrap();
+    for field in ["values", "constants", "immediates", "bytes"] {
+        assert!(document.get(field).is_none());
+        assert!(document["initializer"].get(field).is_none());
+    }
+
+    let root = repository_root();
+    let Some(tracked) = tracked_files(&root) else {
+        eprintln!("skipping generated-store audit: no Git metadata in this checkout");
+        return;
+    };
+    for relative in tracked {
+        let name = relative.file_name().and_then(|name| name.to_str());
+        assert_ne!(name, Some(AUX_CONTROL_DATA_FILE));
+        assert_ne!(name, Some(AUX_CONTROL_STATE_FILE));
+    }
+}
 
 fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

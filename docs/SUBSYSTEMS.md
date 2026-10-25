@@ -1059,8 +1059,20 @@ languages rather than fabricating or silently aliasing Italian assets.
   `AuxControlConstants` keeps all official function literals caller-owned;
   `derive_aux_control_patch` emits the exact ordered schema and returns typed
   atomic overflow. Six tests bring `cmr-core` to 1,120. The official constants
-  still require a reviewed user-owned extractor/store. Signed config lookup,
-  full composition with the other stages/tail, meanings/units, and
+  now have a separate reviewed user-owned extraction/store boundary:
+  `pe_aux_control_initializer` semantically validates the complete canonical
+  function without a shipped-byte template and returns the neutral 38-word
+  shape; `CMRAUXC` v1 stores those signed words in an exact 184-byte container.
+  The exact-digest metadata-only official profile and explicit
+  `extract-aux-control-constants` command hash the bounded executable before
+  parsing, reject linked/special paths, self-check a fresh stage, and atomically
+  publish fixed path-free data/state under ignored `runtime-data/`.
+  `AuxControlConstantsStore` revalidates every identity, count, size and hash,
+  rejects malformed/truncated/trailing/substituted files, and owns the constants
+  without a path. Verification comprises 149 format tests, 76 assets-library
+  tests, eight CLI tests, three audits, and an ignored `CMR_ORIGINAL_DIR` smoke
+  limited to public shape/counts. Signed config lookup, the checked core adapter,
+  full composition with the other stages/tail, meanings/units,
   application/session/gameplay wiring, and other editions remain. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1071,8 +1083,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-car-initializer-store`,
   `impl.sim-compiled-car-initializer-consumer`,
   `impl.sim-compiled-control-run-transform`,
-  `impl.sim-compiled-center-split`, and
-  `impl.sim-compiled-aux-control-patch`.
+  `impl.sim-compiled-center-split`,
+  `impl.sim-compiled-aux-control-patch`,
+  `impl.sim-compiled-aux-control-extractor`, and
+  `impl.sim-compiled-aux-control-store`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

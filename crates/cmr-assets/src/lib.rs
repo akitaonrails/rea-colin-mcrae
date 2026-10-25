@@ -1,5 +1,8 @@
 //! Verification and import of user-owned game data.
 
+mod aux_control_import;
+mod aux_control_profile;
+mod aux_control_store;
 mod catalog;
 mod compiled_initializer_import;
 mod compiled_initializer_profile;
@@ -15,6 +18,17 @@ mod surface_profile;
 mod surface_store;
 mod verify;
 
+pub use aux_control_import::{
+    AUX_CONTROL_DATA_FILE, AUX_CONTROL_IMPORT_SCHEMA_VERSION, AUX_CONTROL_STATE_FILE,
+    AuxControlImportError, AuxControlImportFile, AuxControlImportShape, AuxControlImportSummary,
+    extract_aux_control_constants,
+};
+pub use aux_control_profile::{
+    AUX_CONTROL_PROFILE_SCHEMA_VERSION, AuxControlEncoding, AuxControlExecutable,
+    AuxControlProfile, AuxControlProfileError, AuxControlSpec, ReviewedAuxControlProfile,
+    ReviewedAuxControlProfileError,
+};
+pub use aux_control_store::{AuxControlConstantsStore, AuxControlStoreError};
 pub use catalog::catalog_standard_source;
 pub use compiled_initializer_import::{
     COMPILED_INITIALIZER_DATA_FILE, COMPILED_INITIALIZER_IMPORT_SCHEMA_VERSION,

@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cmr_assets::{
-    ReviewedCompiledInitializerProfile, ReviewedProfile, ReviewedSurfaceProfile,
-    catalog_standard_source, extract_compiled_car_initializer, extract_surface_tables,
-    import_source, verify_source,
+    ReviewedAuxControlProfile, ReviewedCompiledInitializerProfile, ReviewedProfile,
+    ReviewedSurfaceProfile, catalog_standard_source, extract_aux_control_constants,
+    extract_compiled_car_initializer, extract_surface_tables, import_source, verify_source,
 };
 
 fn main() -> ExitCode {
@@ -86,6 +86,16 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<String, String> {
                 .map_err(|error| error.to_string())?;
             serde_json::to_string(&summary).map_err(|error| error.to_string())
         }
+        Some("extract-aux-control-constants") => {
+            let source = required_path(&options, "--source")?;
+            let profile_path = required_path(&options, "--profile")?;
+            let output = required_path(&options, "--output")?;
+            reject_unknown(&options, &["--source", "--profile", "--output"])?;
+            let reviewed = load_aux_control_profile(&profile_path)?;
+            let summary = extract_aux_control_constants(&source, &output, &reviewed)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_string(&summary).map_err(|error| error.to_string())
+        }
         _ => Err(usage()),
     }
 }
@@ -156,6 +166,12 @@ fn load_compiled_initializer_profile(
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+fn load_aux_control_profile(path: &Path) -> Result<ReviewedAuxControlProfile, String> {
+    let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    ReviewedAuxControlProfile::from_json(&document)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -167,15 +183,20 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-compiled-car-initializer> [options]".to_owned()
+    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-compiled-car-initializer|extract-aux-control-constants> [options]".to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use cmr_assets::{
-        CompiledInitializerEncoding, CompiledInitializerExecutable, CompiledInitializerProfile,
-        CompiledInitializerSpec, CompiledInitializerStore,
+        AUX_CONTROL_DATA_FILE, AUX_CONTROL_STATE_FILE, AuxControlConstantsStore,
+        AuxControlImportSummary, AuxControlProfile, CompiledInitializerEncoding,
+        CompiledInitializerExecutable, CompiledInitializerProfile, CompiledInitializerSpec,
+        CompiledInitializerStore, ReviewedAuxControlProfile,
+    };
+    use cmr_formats::pe_aux_control_initializer::{
+        AUX_CONTROL_ENCODED_LEN, test_support::synthetic_aux_control_pe,
     };
     use cmr_formats::pe_compiled_initializer::{
         COMPILED_CASE_COUNT, COMPILED_CONTROL_WORD_OFFSETS, COMPILED_STATE_WORD_OFFSETS,
@@ -404,6 +425,13 @@ mod tests {
                 "--output",
                 "runtime-data/compiled-cases",
             ],
+            &[
+                "extract-aux-control-constants",
+                "--profile",
+                "aux-profile.json",
+                "--output",
+                "runtime-data/aux-control",
+            ],
         ] {
             assert_eq!(
                 run(args(arguments)),
@@ -450,6 +478,107 @@ mod tests {
             ])),
             Err("missing required option --output".to_owned())
         );
+    }
+
+    #[test]
+    fn aux_control_extraction_requires_profile_and_output() {
+        assert_eq!(
+            run(args(&[
+                "extract-aux-control-constants",
+                "--source",
+                "source"
+            ])),
+            Err("missing required option --profile".to_owned())
+        );
+        assert_eq!(
+            run(args(&[
+                "extract-aux-control-constants",
+                "--source",
+                "source",
+                "--profile",
+                "profile.json",
+            ])),
+            Err("missing required option --output".to_owned())
+        );
+    }
+
+    #[test]
+    fn aux_control_cli_authenticates_then_rejects_a_malformed_synthetic_pe_without_output() {
+        let temp = Temp::new();
+        let source = temp.0.join("source");
+        fs::create_dir(&source).unwrap();
+        let executable = b"identified synthetic non-PE";
+        fs::write(source.join("Rally.exe"), executable).unwrap();
+        let mut profile: AuxControlProfile = serde_json::from_slice(include_bytes!(
+            "../../../profiles/official-eu-aux-control-constants-v1.json"
+        ))
+        .unwrap();
+        profile.id = "synthetic-cli-aux-control".into();
+        profile.executable.size = executable.len() as u64;
+        profile.executable.sha256 = digest(executable);
+        let profile_path = temp.0.join("aux-profile.json");
+        fs::write(&profile_path, serde_json::to_vec(&profile).unwrap()).unwrap();
+        let output = temp.0.join("aux-output");
+
+        let error = run([
+            OsString::from("extract-aux-control-constants"),
+            OsString::from("--source"),
+            source.into_os_string(),
+            OsString::from("--profile"),
+            profile_path.into_os_string(),
+            OsString::from("--output"),
+            output.clone().into_os_string(),
+        ]
+        .into_iter())
+        .unwrap_err();
+        assert!(error.contains("cannot extract aux-control constants"));
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn aux_control_cli_extracts_real_semantic_fixture_and_store_reopens_exact_words() {
+        let temp = Temp::new();
+        let source = temp.0.join("source");
+        fs::create_dir(&source).unwrap();
+        let (executable, expected) = synthetic_aux_control_pe();
+        fs::write(source.join("Rally.exe"), &executable).unwrap();
+        let mut profile: AuxControlProfile = serde_json::from_slice(include_bytes!(
+            "../../../profiles/official-eu-aux-control-constants-v1.json"
+        ))
+        .unwrap();
+        profile.id = "synthetic-cli-aux-control".into();
+        profile.executable.size = executable.len() as u64;
+        profile.executable.sha256 = digest(&executable);
+        let profile_bytes = serde_json::to_vec(&profile).unwrap();
+        let profile_path = temp.0.join("aux-profile.json");
+        fs::write(&profile_path, &profile_bytes).unwrap();
+        let output = temp.0.join("aux-output");
+
+        let output_text = run([
+            OsString::from("extract-aux-control-constants"),
+            OsString::from("--source"),
+            source.into_os_string(),
+            OsString::from("--profile"),
+            profile_path.into_os_string(),
+            OsString::from("--output"),
+            output.clone().into_os_string(),
+        ]
+        .into_iter())
+        .unwrap();
+        let summary: AuxControlImportSummary = serde_json::from_str(&output_text).unwrap();
+        assert_eq!(summary.output.path, AUX_CONTROL_DATA_FILE);
+        assert_eq!(summary.output.size, AUX_CONTROL_ENCODED_LEN as u64);
+        assert_eq!(
+            fs::metadata(output.join(AUX_CONTROL_DATA_FILE))
+                .unwrap()
+                .len(),
+            AUX_CONTROL_ENCODED_LEN as u64
+        );
+        assert!(output.join(AUX_CONTROL_STATE_FILE).is_file());
+
+        let reviewed = ReviewedAuxControlProfile::from_json(&profile_bytes).unwrap();
+        let store = AuxControlConstantsStore::open(&output, &reviewed).unwrap();
+        assert_eq!(store.constants(), &expected);
     }
 
     #[test]

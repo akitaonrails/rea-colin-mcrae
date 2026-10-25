@@ -264,9 +264,74 @@ not serialize the option-dependent pre-call transforms, intervening callees,
 reciprocal/copy common tail, later derived words, names, or units. It is not yet
 wired into an application or gameplay session.
 
+## Executable-derived auxiliary control constants
+
+Official-EU `FUN_00407270` contains the immediate words used by the recovered
+22-dword auxiliary control patch. They remain user-owned data and are extracted
+separately from both the direct compiled-car cases and the surface tables:
+
+```sh
+export CMR_ORIGINAL_DIR=/path/to/your/CMRally
+cargo run -q -p cmr-assets -- extract-aux-control-constants \
+  --source "$CMR_ORIGINAL_DIR" \
+  --profile profiles/official-eu-aux-control-constants-v1.json \
+  --output runtime-data/official-eu-aux-control-constants
+```
+
+The tracked profile is metadata only. It binds `Rally.exe` by relative path,
+exact size and SHA-256, the canonical address-only function layout, the 22
+neutral output offsets, and the `cmr-auxc-v1` encoding. Its exact reviewed JSON
+digest is
+`f56b25238ad4bf2caaf75e1984aeffabe6507e56e50c3e2e8fd2970051f1a057`.
+It contains no extracted constant, immediate word, or executable byte.
+
+The importer bounds and hashes the identified executable before invoking the
+parser. `cmr-formats` then semantically decodes the complete 799-byte function:
+it validates instruction classes, operands, register roles, control-flow
+targets, pointer addresses, destination offsets, guarded reciprocal sequences,
+and complete range consumption while reading literal operands as user data. It
+does not compare against or build a copied exact-byte template of the shipped
+routine. The neutral result is 38 signed words: nine common words, two Q16
+multipliers, and three policies each containing seven direct words and two
+reciprocal divisors.
+
+Successful publication produces only:
+
+```text
+runtime-data/official-eu-aux-control-constants/
+  aux-control-constants-v1.bin
+  aux-control-constants-import-state.json
+```
+
+`aux-control-constants-v1.bin` is the project-owned `CMRAUXC` version-1
+container. It is exactly 184 bytes: a 32-byte magic/version/count header followed
+by the 38 signed little-endian words. The JSON state contains only the profile
+ID and exact profile digest, relative source filename, source/output sizes and
+hashes, fixed output filename, format version, the five codec count fields, and
+encoding. It contains neither an absolute source/output path nor extracted
+values.
+
+Publication uses a fresh sibling stage, create-new files, an exact decode and
+public-store reopen self-check, and one atomic directory rename. Failure after
+stage creation removes only that invocation's stage and leaves the final output
+absent; stale stages and existing outputs are refused. Both the importer and
+store reject persistent symlinks and non-regular source/state/data paths under
+the documented stable caller-owned-directory threat model.
+`cmr_assets::AuxControlConstantsStore::open` caps and strictly decodes the state,
+requires every profile/source/output/shape field to match, reads exactly 184
+bytes, re-hashes and decodes `CMRAUXC`, and returns owned neutral constants while
+retaining no filesystem path.
+
+This completes extraction and authenticated local storage only. Adapting the
+verified format-owned constants into
+`cmr-core::compiled_car_initializer::AuxControlConstants`, resolving
+the signed config-record lookup/domain, composing the direct cases, center split,
+six-word transform, auxiliary patch, and later reciprocal/copy tail, assigning
+meanings or units, application/session wiring, and other editions remain open.
+
 ## Schema versioning and migration
 
-Six regenerable on-disk artifacts carry a `schema_version`. The completed
+Eight regenerable on-disk artifacts carry a `schema_version`. The completed
 media-store readers accept only the exact generations selected by
 `cmr-assets::PROFILE_SCHEMA_VERSION` and
 `cmr-assets::IMPORT_STATE_SCHEMA_VERSION`. The executable-derived surface path
@@ -279,9 +344,12 @@ likewise uses `COMPILED_INITIALIZER_PROFILE_SCHEMA_VERSION` and
 - the reviewed source profile (`profiles/*.json`);
 - the import state (`<runtime-data>/import-state.json`);
 - the reviewed surface-extraction profile;
-- the surface extraction state (`surface-import-state.json`).
+- the surface extraction state (`surface-import-state.json`);
 - the reviewed compiled-case extraction profile;
-- the compiled-case extraction state (`compiled-car-import-state.json`).
+- the compiled-case extraction state (`compiled-car-import-state.json`);
+- the reviewed auxiliary-control extraction profile;
+- the auxiliary-control extraction state
+  (`aux-control-constants-import-state.json`).
 
 Imported trees are derived data. For the media store, an incompatible version
 is never migrated in place: the profile validator and store fail closed
@@ -297,7 +365,9 @@ generations and verifies the profile ID/digest, all recorded source metadata,
 and the declared output path/size/hash before consuming the local data. The
 compiled-case profile/import/store applies the same exact-generation policy to
 its independently versioned `CMRCCASE` container; neither extractor state is
-interchangeable with the other or with the media import.
+interchangeable with the other or with the media import. The auxiliary-control
+profile/import/store independently applies that policy to `CMRAUXC`; its files
+and schema cannot be substituted for the compiled-case or surface stores.
 
 A version bump is required for any semantic or required-field change. Purely
 additive optional fields that readers can ignore leave the version alone. A

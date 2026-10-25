@@ -12,5 +12,6 @@ serde_json.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+cmr-formats = { path = "../cmr-formats", features = ["test-support"] }
 flate2.workspace = true
 
