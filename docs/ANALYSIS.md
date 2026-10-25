@@ -122,3 +122,44 @@ The unbuilt source checkout can be used later after an explicitly authorized
 dependency install/build. Until then, commands in this document describe the
 installed 6.5.0 CLI and its recorded analysis profile.
 
+## Optional SuperGhidra cross-check
+
+SuperGhidra can supplement REA as a discovery and cross-check tool. It is not
+an evidence replacement: both tools can use Ghidra, SuperGhidra CFG starts are
+candidates, and a selected function must still be inspected through REA before
+supporting a compatibility claim. Keep SuperGhidra external to this repository
+and keep all of its target-derived output under `.work/`.
+
+Run the bounded static probe with explicit roots:
+
+```sh
+export SUPERGHIDRA_DIR=/path/to/SuperGhidra
+python scripts/superghidra_probe.py \
+  --source "$CMR_ORIGINAL_DIR" \
+  --superghidra-root "$SUPERGHIDRA_DIR"
+```
+
+The probe records a source-relative executable path, exact size and SHA-256,
+tool version/commit, PE inventory, bounded MSVC RTTI/MFC counts, and candidate
+CFG starts in `.work/superghidra/crosscheck.json`. It does not store source-root
+paths, bytes, or pseudocode. The current SuperGhidra `diff` CLI is not used by
+this workflow because version 0.3.1 compares generated synthetic functions
+instead of the two supplied binaries.
+
+After reviewing a candidate address, emit only that address in REA's seed
+format and start a fresh REA session:
+
+```sh
+python scripts/superghidra_probe.py \
+  --source "$CMR_ORIGINAL_DIR" \
+  --superghidra-root "$SUPERGHIDRA_DIR" \
+  --seed-address 0x401000
+
+REA_GHIDRA_SEED_FILE="$PWD/.work/superghidra/rea-seeds.tsv" \
+  rea inspect "$CMR_ORIGINAL_DIR/Rally.exe" --provider ghidra --json
+```
+
+Never bulk-promote every candidate. Preserve the unseeded REA snapshot, compare
+the seeded result against it, and record the SuperGhidra report digest and its
+limitations when a cross-check materially changes a reconstruction claim.
+

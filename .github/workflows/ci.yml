@@ -34,6 +34,8 @@ jobs:
         run: |
           ./scripts/check-portability.sh
           ./scripts/check-legacy-backends.sh
+      - name: Analysis-tool bridge tests
+        run: python -m unittest discover -s scripts/tests -v
       - name: Clippy (portable slice)
         run: cargo clippy ${{ env.PORTABLE_SLICE }} --all-targets -- -D warnings
       - name: Test (portable slice)
