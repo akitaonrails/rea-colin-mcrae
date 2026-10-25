@@ -538,7 +538,8 @@ resolver and domain, composition with the direct cases/center split/six-word
 transform/auxiliary patch/later tail, semantics and units, application/session
 wiring, and other editions remain open.
 
-G03-V adds the checked core ownership boundary for those authenticated words.
+G03-V (`824acde`) adds the checked core ownership boundary for those
+authenticated words.
 `AuxControlConstantSet` accepts an `AuxControlConstantsStore`, uses fixed array
 types to pin record cardinalities, verifies the exact format/core order of all
 22 output, nine common, and seven policy offsets, and copies the complete
@@ -550,6 +551,29 @@ ownership and every policy after drop, and overflow propagation, bringing
 `cmr-core` to 1,123. The signed config-record resolver, composition with direct
 cases, center split, six-word transform, later reciprocal/copy tail, application
 or session/gameplay state, meanings, units, and other editions remain open.
+
+G03-W closes the unsafe shared option-lookup boundary without pretending the
+surrounding configuration block is a homogeneous table. Static evidence traces
+the authoritative `state+0x738` store through every resolved direct constructor:
+ordinary construction supplies `0..=7`, while the alternate path supplies only
+zero or one. All three helpers sign-extend that byte and use stride `0x9c` to
+read raw options at record-relative `+0x93`, `+0x95`, and `+0x99`; the auxiliary
+helper separately checks unindexed `config+0x26 & 2` to force its default. The
+config pointer comes from the persistent root and the initialized block is
+`0x6c4` bytes, but its persistence layout is heterogeneous: only slots zero and
+one belong to the directly authored/persisted two-stride window, while later
+helper-visible addresses overlap other copied regions. Thus eight is the bound
+for every resolved explicit state constructor, not a homogeneous record count.
+The derived
+`resolve_compiled_config_options` accepts a caller-owned byte view, rejects
+negative and `>=8` signed slots, validates the highest required address before
+reading, preserves all raw option bits for the existing arithmetic helpers, and
+uses only the unindexed force bit. Five synthetic tests cover error precedence,
+exact truncation boundaries, record selection without mutation, slot seven, and
+force-flag addressing, bringing `cmr-core` to 1,128. Composition with direct
+cases, center split, the six-word transform, auxiliary patch, and reciprocal
+tail remains separate; config loading, application/session/gameplay wiring,
+meanings, units, and other editions remain open.
 
 Exit gate:
 

@@ -1077,14 +1077,26 @@ languages rather than fabricating or silently aliasing Italian assets.
   are copied into core-owned records that survive dropping the store and root.
   Its narrow `derive` method delegates to the existing auxiliary-patch helper
   and preserves typed reciprocal overflow. Three tests bring `cmr-core` to
-  1,123. Signed config lookup and composition with direct-case selection,
-  center split, six-word transform, the reciprocal/copy tail,
-  meanings/units,
+  1,123. The shared signed option lookup is now recovered and bounded too.
+  Resolved state constructors write only `0..=7` to `state+0x738`; the three
+  helpers sign-extend it, multiply by stride `0x9c`, and read raw option bytes
+  at record-relative `+0x93`, `+0x95`, and `+0x99`. Unindexed
+  `config+0x26 & 2` alone forces the auxiliary default. The runtime config
+  block is an initialized `0x6c4`-byte heterogeneous object: slots zero and one
+  are directly authored/persisted in a two-stride window, but later indexed
+  addresses overlap other copied regions, so neither two nor eight is claimed
+  as a homogeneous table count. `resolve_compiled_config_options` rejects
+  negative and `>=8` slots, bounds the caller-owned byte view through the
+  highest required read, preserves raw bytes for the existing helpers to mask,
+  and does not mutate input. Five tests bring `cmr-core` to 1,128. Composition
+  with direct-case selection, center split, six-word transform, auxiliary patch
+  and reciprocal/copy tail, meanings/units, config loading,
   application/session/gameplay wiring, and other editions remain. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
   `rea.official-eu.sim-compiled-center-split`,
   `rea.official-eu.sim-compiled-aux-control-patch`,
+  `rea.official-eu.sim-compiled-config-options`,
   `impl.sim-compiled-car-initializer-schema`,
   `impl.sim-compiled-car-initializer-extractor`,
   `impl.sim-compiled-car-initializer-store`,
@@ -1093,8 +1105,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-center-split`,
   `impl.sim-compiled-aux-control-patch`,
   `impl.sim-compiled-aux-control-extractor`,
-  `impl.sim-compiled-aux-control-store`, and
-  `impl.sim-compiled-aux-control-consumer`.
+  `impl.sim-compiled-aux-control-store`,
+  `impl.sim-compiled-aux-control-consumer`, and
+  `impl.sim-compiled-config-options`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

@@ -47,6 +47,30 @@ pub const COMPILED_CONTROL_RUN_WORD_COUNT: usize = 6;
 /// Number of dword destinations written by the auxiliary control patch.
 pub const AUX_CONTROL_WORD_COUNT: usize = 22;
 
+/// Stride applied to the live configuration block by the compiled helpers.
+pub const COMPILED_CONFIG_RECORD_STRIDE: usize = 0x09c;
+
+/// State-slot domain supplied by every resolved explicit constructor.
+///
+/// This does not describe eight homogeneous or authored configuration
+/// records. Only the lookup index domain is established; later slots alias
+/// other live configuration-block fields at the observed stride.
+pub const COMPILED_CONFIG_SLOT_COUNT: i8 = 8;
+
+/// Unindexed configuration flag whose bit one forces the auxiliary default.
+pub const COMPILED_CONFIG_AUX_FORCE_FLAG_OFFSET: usize = 0x026;
+
+/// Record-relative auxiliary-policy option byte.
+pub const COMPILED_CONFIG_AUX_OPTION_OFFSET: usize = 0x093;
+
+/// Record-relative center-drive-split option byte.
+pub const COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET: usize = 0x095;
+
+/// Record-relative six-word-run option byte.
+pub const COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET: usize = 0x099;
+
+const COMPILED_CONFIG_AUX_FORCE_DEFAULT_MASK: u8 = 0x02;
+
 /// Auxiliary control destinations in ascending offset order.
 pub const AUX_CONTROL_WORD_OFFSETS: [u16; AUX_CONTROL_WORD_COUNT] = [
     0x0d8, 0x0dc, 0x0e0, 0x0e4, 0x0e8, 0x0ec, 0x0f0, 0x0f4, 0x0f8, 0x0fc, 0x100, 0x104, 0x108,
@@ -252,6 +276,110 @@ pub const fn compiled_center_split_q16(option_byte: u8) -> i32 {
         1 => 0x8000,
         _ => 0xc000,
     }
+}
+
+/// Raw option bytes resolved through the shared signed configuration index.
+///
+/// The existing arithmetic helpers own low-three-bit masking. Keeping the raw
+/// bytes here makes this resolver only the checked replacement for the three
+/// observed pointer calculations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledConfigOptions {
+    pub center_split: u8,
+    pub control_run: u8,
+    pub aux_control: AuxControlOption,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledConfigResolveError {
+    NegativeIndex {
+        index: i8,
+    },
+    IndexOutOfRange {
+        index: i8,
+        slot_count: i8,
+    },
+    TruncatedConfig {
+        index: i8,
+        required_len: usize,
+        actual_len: usize,
+    },
+}
+
+impl fmt::Display for CompiledConfigResolveError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NegativeIndex { index } => {
+                write!(
+                    formatter,
+                    "compiled configuration index is negative: {index}"
+                )
+            }
+            Self::IndexOutOfRange { index, slot_count } => write!(
+                formatter,
+                "compiled configuration index {index} is outside {slot_count} constructed slots"
+            ),
+            Self::TruncatedConfig {
+                index,
+                required_len,
+                actual_len,
+            } => write!(
+                formatter,
+                "compiled configuration index {index} requires {required_len} bytes, got {actual_len}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CompiledConfigResolveError {}
+
+/// Resolve the three option bytes read by the recovered common-path helpers.
+///
+/// The shipped code sign-extends a state byte, multiplies it by `0x9c`, and
+/// performs unchecked reads. This safe reconstruction rejects a negative
+/// index, applies a fail-closed rejection outside the eight-slot domain of the
+/// resolved explicit constructors, and proves the caller-owned slice contains
+/// the highest addressed byte before reading anything. The eight slots are not
+/// claimed to be homogeneous authored records, and the enclosing image need
+/// not end on a stride boundary.
+pub fn resolve_compiled_config_options(
+    config: &[u8],
+    signed_index: i8,
+) -> Result<CompiledConfigOptions, CompiledConfigResolveError> {
+    let index =
+        usize::try_from(signed_index).map_err(|_| CompiledConfigResolveError::NegativeIndex {
+            index: signed_index,
+        })?;
+    if signed_index >= COMPILED_CONFIG_SLOT_COUNT {
+        return Err(CompiledConfigResolveError::IndexOutOfRange {
+            index: signed_index,
+            slot_count: COMPILED_CONFIG_SLOT_COUNT,
+        });
+    }
+    let record_base = index * COMPILED_CONFIG_RECORD_STRIDE;
+    let required_len = record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET + 1;
+    if config.len() < required_len {
+        return Err(CompiledConfigResolveError::TruncatedConfig {
+            index: signed_index,
+            required_len,
+            actual_len: config.len(),
+        });
+    }
+
+    let aux_control = if config[COMPILED_CONFIG_AUX_FORCE_FLAG_OFFSET]
+        & COMPILED_CONFIG_AUX_FORCE_DEFAULT_MASK
+        != 0
+    {
+        AuxControlOption::ForcedDefault
+    } else {
+        AuxControlOption::Resolved(config[record_base + COMPILED_CONFIG_AUX_OPTION_OFFSET])
+    };
+
+    Ok(CompiledConfigOptions {
+        center_split: config[record_base + COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET],
+        control_run: config[record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET],
+        aux_control,
+    })
 }
 
 /// Caller-owned literals for one auxiliary-control policy.
@@ -1078,6 +1206,145 @@ mod tests {
                 compiled_center_split_q16(option_byte & 7)
             );
         }
+    }
+
+    #[test]
+    fn config_option_resolver_rejects_the_signed_negative_domain_first() {
+        for index in [-1, i8::MIN] {
+            assert_eq!(
+                resolve_compiled_config_options(&[], index),
+                Err(CompiledConfigResolveError::NegativeIndex { index })
+            );
+        }
+    }
+
+    #[test]
+    fn config_option_resolver_requires_only_the_highest_observed_read() {
+        let required_len = COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET + 1;
+        for actual_len in [0, required_len - 1] {
+            assert_eq!(
+                resolve_compiled_config_options(&vec![0; actual_len], 0),
+                Err(CompiledConfigResolveError::TruncatedConfig {
+                    index: 0,
+                    required_len,
+                    actual_len,
+                })
+            );
+        }
+
+        assert_eq!(
+            resolve_compiled_config_options(&vec![0; required_len], 0),
+            Ok(CompiledConfigOptions {
+                center_split: 0,
+                control_run: 0,
+                aux_control: AuxControlOption::Resolved(0),
+            })
+        );
+        assert!(resolve_compiled_config_options(&vec![0; required_len + 7], 0).is_ok());
+    }
+
+    #[test]
+    fn config_option_resolver_selects_one_record_and_preserves_raw_bytes() {
+        let record_base = COMPILED_CONFIG_RECORD_STRIDE;
+        let required_len = record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET + 1;
+        let mut config = vec![0; required_len];
+        config[COMPILED_CONFIG_AUX_OPTION_OFFSET] = 0x11;
+        config[COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET] = 0x22;
+        config[COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET] = 0x33;
+        config[record_base + COMPILED_CONFIG_AUX_OPTION_OFFSET] = 0xe5;
+        config[record_base + COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET] = 0xfa;
+        config[record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET] = 0xf9;
+        let original = config.clone();
+
+        assert_eq!(
+            resolve_compiled_config_options(&config, 1),
+            Ok(CompiledConfigOptions {
+                center_split: 0xfa,
+                control_run: 0xf9,
+                aux_control: AuxControlOption::Resolved(0xe5),
+            })
+        );
+        assert_eq!(config, original);
+
+        assert_eq!(
+            resolve_compiled_config_options(&config[..required_len - 1], 1),
+            Err(CompiledConfigResolveError::TruncatedConfig {
+                index: 1,
+                required_len,
+                actual_len: required_len - 1,
+            })
+        );
+    }
+
+    #[test]
+    fn config_option_resolver_pins_the_constructed_slot_boundary() {
+        for index in [COMPILED_CONFIG_SLOT_COUNT, i8::MAX] {
+            assert_eq!(
+                resolve_compiled_config_options(&[], index),
+                Err(CompiledConfigResolveError::IndexOutOfRange {
+                    index,
+                    slot_count: COMPILED_CONFIG_SLOT_COUNT,
+                })
+            );
+        }
+
+        let index = COMPILED_CONFIG_SLOT_COUNT - 1;
+        let record_base = index as usize * COMPILED_CONFIG_RECORD_STRIDE;
+        let required_len = record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET + 1;
+        assert_eq!(
+            resolve_compiled_config_options(&vec![0; required_len - 1], index),
+            Err(CompiledConfigResolveError::TruncatedConfig {
+                index,
+                required_len,
+                actual_len: required_len - 1,
+            })
+        );
+
+        let mut config = vec![0; required_len];
+        config[record_base + COMPILED_CONFIG_AUX_OPTION_OFFSET] = 0xa3;
+        config[record_base + COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET] = 0xa5;
+        config[record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET] = 0xa9;
+        assert_eq!(
+            resolve_compiled_config_options(&config, index),
+            Ok(CompiledConfigOptions {
+                center_split: 0xa5,
+                control_run: 0xa9,
+                aux_control: AuxControlOption::Resolved(0xa3),
+            })
+        );
+    }
+
+    #[test]
+    fn config_option_resolver_uses_only_the_unindexed_force_default_flag() {
+        let record_base = COMPILED_CONFIG_RECORD_STRIDE;
+        let required_len = record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET + 1;
+        let mut config = vec![0; required_len];
+        config[record_base + COMPILED_CONFIG_AUX_OPTION_OFFSET] = 0xa7;
+        config[record_base + COMPILED_CONFIG_AUX_FORCE_FLAG_OFFSET] =
+            COMPILED_CONFIG_AUX_FORCE_DEFAULT_MASK;
+
+        assert_eq!(
+            resolve_compiled_config_options(&config, 1)
+                .unwrap()
+                .aux_control,
+            AuxControlOption::Resolved(0xa7)
+        );
+
+        config[COMPILED_CONFIG_AUX_FORCE_FLAG_OFFSET] = 0xfd;
+        assert_eq!(
+            resolve_compiled_config_options(&config, 1)
+                .unwrap()
+                .aux_control,
+            AuxControlOption::Resolved(0xa7)
+        );
+
+        config[COMPILED_CONFIG_AUX_FORCE_FLAG_OFFSET] = COMPILED_CONFIG_AUX_FORCE_DEFAULT_MASK;
+        assert_eq!(
+            resolve_compiled_config_options(&config, 1)
+                .unwrap()
+                .aux_control,
+            AuxControlOption::ForcedDefault
+        );
     }
 
     #[test]
