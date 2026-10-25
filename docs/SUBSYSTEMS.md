@@ -1024,13 +1024,16 @@ languages rather than fabricating or silently aliasing Italian assets.
   explicitly defers the table-dependent branch. A nonzero `+0x420` admits the
   recovered same-sign wheel correction; its modular candidate, signed
   threshold/alternate, and remaining-budget rules are reconstructed as three
-  pure helpers. The combined candidate path, direction/state accumulation, the
-  surface-indexed contribution,
-  `FUN_0040fbe0`, the position update, damper source, and runtime-loaded table
-  values remain. See evidence `rea.official-eu.sim-grip`,
+  pure helpers. The share/ramp/gain scalar at the core of `FUN_0040fbe0` is
+  reconstructed with validated one-to-four-lane counts and its exact upper-only
+  clamp. The combined candidate path, direction/state accumulation,
+  surface-indexed contribution, geometric postprocess qualification, position
+  update, damper source, and runtime-loaded table values remain. See evidence
+  `rea.official-eu.sim-grip`,
   `rea.official-eu.sim-signed-force-candidate-select`,
-  `rea.official-eu.sim-force-candidate-fast-paths`, and
-  `rea.official-eu.sim-wheel-correction-arithmetic`.
+  `rea.official-eu.sim-force-candidate-fast-paths`,
+  `rea.official-eu.sim-wheel-correction-arithmetic`, and
+  `rea.official-eu.sim-postprocess-correction-scalar`.
 - Collision/damage runs from `0x410a60` (Mechanics callee), which delegates the
   crash path to `0x4115d0` once the out-of-control flag `car+0x680` is set. The
   contact impulse accumulates into `car+0x3cc..`; its magnitude feeds the impact

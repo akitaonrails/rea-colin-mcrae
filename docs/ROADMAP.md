@@ -403,8 +403,9 @@ Current G03 recovery has isolated the signed force-candidate selector and the
 pure arithmetic behind the nonzero control `+0x420` correction gate inside
 `FUN_0040d810`; its two lookup-free initial-candidate branches are also
 reconstructed. The remaining physics exit work is the lookup-dependent
-candidate branch, direction/state accumulation, surface-indexed add and
-`FUN_0040fbe0`, connected without unsupported physical semantics.
+candidate branch, direction/state accumulation, surface-indexed add and the
+geometric qualification around `FUN_0040fbe0`; its pure postprocess scalar is
+now recovered. These pieces remain separated from unsupported physical labels.
 
 Exit gate:
 

@@ -40,6 +40,10 @@
 //!   selected gear ratio. The admitted scalar is formed by two recovered
 //!   Q16.16 factors, then passes through a signed wrapping-absolute limit and
 //!   an optional second-scalar budget rule.
+//! - **Postprocess correction scalar** (`FUN_0040fbe0`): one to four qualified
+//!   lanes share `0x140000`; each strict-above-threshold angle measure feeds a
+//!   wrapping Q16.16 ramp with an upper-only clamp, then scales and negates an
+//!   opaque caller argument. Geometric lane qualification remains separate.
 //!
 //! Values are signed Q16.16 ([`crate::fixed_point`]). See evidence
 //! `rea.official-eu.sim-grip` and
@@ -51,9 +55,10 @@
 //! Unknowns (not reproduced): the lookup-dependent candidate branch and the
 //! physical units of all candidates, the direction vectors and surrounding
 //! per-wheel accumulation, the physical meaning of the nonzero control
-//! `+0x420` gate, the surface-indexed contribution, `FUN_0040fbe0`, the exact
-//! semi-implicit position update's half-accel term, the suspension damper
-//! source, and runtime-loaded per-surface/per-car table contents.
+//! `+0x420` gate, the surface-indexed contribution, the vector qualification
+//! and normalization around `FUN_0040fbe0`, the exact semi-implicit position
+//! update's half-accel term, the suspension damper source, and runtime-loaded
+//! per-surface/per-car table contents.
 
 use crate::fixed_point::{Fixed16, Vec3};
 
@@ -96,6 +101,76 @@ pub const SURFACE_GRIP_RECORD_BYTES: usize = 8;
 /// Signed component boundary used by the two lookup-free candidate branches
 /// in `FUN_0040d810` (`0x40f24f..0x40f2c7`).
 pub const CANDIDATE_COMPONENT_THRESHOLD: Fixed16 = Fixed16::from_raw(0x6666);
+
+/// Strict signed angle boundary for the qualified-lane postprocess in
+/// `FUN_0040fbe0`.
+pub const POSTPROCESS_ANGLE_THRESHOLD: Fixed16 = Fixed16::from_raw(0xa0000);
+
+/// Truncated Q16.16 reciprocal of the postprocess ramp span:
+/// `q16_div(1.0, 0x320000) == 0x51e`.
+pub const POSTPROCESS_RAMP_RECIPROCAL: Fixed16 = Fixed16::from_raw(0x51e);
+
+/// Recover the per-lane share used when `FUN_0040fbe0` has qualified one to
+/// four lanes.
+///
+/// The shipped code performs signed Q16.16 division of `0x140000` by the
+/// qualified count represented as Q16.16. Counts outside the four-lane domain
+/// cannot arise from that loop and are rejected rather than assigned behavior.
+#[must_use]
+pub const fn postprocess_qualified_lane_share(qualified_lane_count: u8) -> Option<Fixed16> {
+    if qualified_lane_count == 0 || qualified_lane_count > 4 {
+        return None;
+    }
+
+    let numerator = 0x140000_i64 << 16;
+    let denominator = (qualified_lane_count as i64) << 16;
+    Some(Fixed16::from_raw((numerator / denominator) as i32))
+}
+
+/// Apply the raw signed ramp arithmetic recovered from `FUN_0040fbe0`.
+///
+/// Subtraction and multiplication are modular Q16.16 operations. The final
+/// comparison is a signed upper-only clamp: negative results are deliberately
+/// retained. Qualification against [`POSTPROCESS_ANGLE_THRESHOLD`] is kept in
+/// [`postprocess_lane_correction_gain`], outside this raw arithmetic helper.
+#[must_use]
+pub const fn postprocess_correction_ramp(angle_measure: Fixed16) -> Fixed16 {
+    let ramp = angle_measure
+        .sub(POSTPROCESS_ANGLE_THRESHOLD)
+        .mul(POSTPROCESS_RAMP_RECIPROCAL);
+    if ramp.raw() > Fixed16::ONE.raw() {
+        Fixed16::ONE
+    } else {
+        ramp
+    }
+}
+
+/// Derive the final qualified-lane correction gain from `FUN_0040fbe0`.
+///
+/// The strict angle gate rejects equality. Invalid lane counts are also
+/// rejected. For admitted inputs, each Q16.16 multiply and the final negation
+/// preserve the recovered wrapping behavior.
+#[must_use]
+pub const fn postprocess_lane_correction_gain(
+    angle_measure: Fixed16,
+    argument_scale: Fixed16,
+    qualified_lane_count: u8,
+) -> Option<Fixed16> {
+    if angle_measure.raw() <= POSTPROCESS_ANGLE_THRESHOLD.raw() {
+        return None;
+    }
+
+    let share = match postprocess_qualified_lane_share(qualified_lane_count) {
+        Some(share) => share,
+        None => return None,
+    };
+    let scaled_argument = argument_scale.mul(share);
+    Some(
+        postprocess_correction_ramp(angle_measure)
+            .mul(scaled_argument)
+            .neg(),
+    )
+}
 
 /// Select between caller-derived force candidates using the recovered signed
 /// raw comparison in `FUN_0040d810`.
@@ -360,6 +435,114 @@ mod tests {
         assert_eq!(SURFACE_GRIP_LOW.raw(), 0x2666);
         assert!(SURFACE_GRIP_HIGH > SURFACE_GRIP_LOW);
         assert_eq!(SURFACE_GRIP_RECORD_BYTES, 8);
+    }
+
+    #[test]
+    fn postprocess_lane_shares_match_signed_q16_division() {
+        let expected = [0x140000, 0xa0000, 0x6aaaa, 0x50000];
+        for (count, expected_raw) in (1_u8..=4).zip(expected) {
+            assert_eq!(
+                postprocess_qualified_lane_share(count),
+                Some(Fixed16::from_raw(expected_raw))
+            );
+        }
+    }
+
+    #[test]
+    fn postprocess_lane_share_rejects_counts_outside_the_four_lane_loop() {
+        assert_eq!(postprocess_qualified_lane_share(0), None);
+        assert_eq!(postprocess_qualified_lane_share(5), None);
+        assert_eq!(postprocess_qualified_lane_share(u8::MAX), None);
+    }
+
+    #[test]
+    fn postprocess_gain_uses_a_strict_angle_gate() {
+        assert_eq!(
+            postprocess_lane_correction_gain(POSTPROCESS_ANGLE_THRESHOLD, Fixed16::ONE, 1,),
+            None
+        );
+        assert_eq!(
+            postprocess_lane_correction_gain(
+                POSTPROCESS_ANGLE_THRESHOLD.add(Fixed16::from_raw(1)),
+                Fixed16::ONE,
+                1,
+            ),
+            Some(Fixed16::ZERO)
+        );
+        assert_eq!(
+            postprocess_lane_correction_gain(
+                POSTPROCESS_ANGLE_THRESHOLD.add(Fixed16::from_raw(1)),
+                Fixed16::ONE,
+                5,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn postprocess_ramp_has_no_signed_lower_clamp() {
+        assert_eq!(
+            postprocess_correction_ramp(POSTPROCESS_ANGLE_THRESHOLD.sub(Fixed16::from_raw(1))),
+            Fixed16::from_raw(-1)
+        );
+    }
+
+    #[test]
+    fn postprocess_ramp_pins_the_exact_upper_boundary_and_clamp() {
+        assert_eq!(
+            postprocess_correction_ramp(
+                POSTPROCESS_ANGLE_THRESHOLD.add(Fixed16::from_raw(0x320708))
+            ),
+            Fixed16::from_raw(0xffff)
+        );
+        assert_eq!(
+            postprocess_correction_ramp(
+                POSTPROCESS_ANGLE_THRESHOLD.add(Fixed16::from_raw(0x320709))
+            ),
+            Fixed16::ONE
+        );
+        assert_eq!(
+            postprocess_correction_ramp(
+                POSTPROCESS_ANGLE_THRESHOLD.add(Fixed16::from_raw(0x32073c))
+            ),
+            Fixed16::ONE
+        );
+    }
+
+    #[test]
+    fn postprocess_gain_distributes_the_argument_across_qualified_lanes() {
+        let angle = POSTPROCESS_ANGLE_THRESHOLD.add(Fixed16::ONE);
+        let expected = [-0x6658, -0x332c, -0x221d, -0x1996];
+        for (count, expected_raw) in (1_u8..=4).zip(expected) {
+            assert_eq!(
+                postprocess_lane_correction_gain(angle, Fixed16::ONE, count),
+                Some(Fixed16::from_raw(expected_raw))
+            );
+        }
+        assert_eq!(
+            postprocess_lane_correction_gain(angle, Fixed16::from_raw(-0x10000), 1),
+            Some(Fixed16::from_raw(0x6658))
+        );
+    }
+
+    #[test]
+    fn postprocess_ramp_and_gain_preserve_wrapping_extremes() {
+        assert_eq!(
+            postprocess_correction_ramp(Fixed16::from_raw(i32::MAX)),
+            Fixed16::ONE
+        );
+        assert_eq!(
+            postprocess_correction_ramp(Fixed16::from_raw(i32::MIN)),
+            Fixed16::ONE
+        );
+        assert_eq!(
+            postprocess_lane_correction_gain(
+                POSTPROCESS_ANGLE_THRESHOLD.add(Fixed16::ONE),
+                Fixed16::from_raw(i32::MIN),
+                4,
+            ),
+            Some(Fixed16::from_raw(0x028f0000))
+        );
     }
 
     #[test]
