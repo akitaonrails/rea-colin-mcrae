@@ -798,6 +798,21 @@ to 1,215. Raw official table acquisition, native pointer aliases/rebinding/
 machine-fault prefixes, `FUN_00408fe0`, and full call-spine composition remain
 open.
 
+G03-AK9 resolves the table provenance and implements the first authenticated
+format boundary: every geometry view consumed by AK3-AK8 comes from the decoded
+payload of the stage's `.hpc` sidecar, loaded through the existing CMPR path.
+`cmr-formats::hpc::parse_hpc` preserves reserved words and safely validates the
+five real hierarchy arrays, vertices, records, candidate handles, dimensions,
+and every reachable relationship. A core adapter feeds the parsed snapshot to
+the decoded provider while replacing the native sixth-slot vertex-pointer alias
+with an unreachable empty slice. The decoded format also retains any opaque
+tail the unchecked native view constructor leaves unread. Eight synthetic
+tests plus an opt-in owned-media corpus test bring `cmr-formats` to 158 tests;
+`cmr-core` remains at 1,215.
+Stage-bundle/application wiring, the adjacent `.srf`/`.shp` sidecars,
+`FUN_00408fe0`, native pointer fault/rebinding behavior, and full call-spine
+composition remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

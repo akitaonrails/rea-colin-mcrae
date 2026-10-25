@@ -6,6 +6,7 @@
 pub mod bitmap;
 pub mod c3d;
 pub mod font;
+pub mod hpc;
 mod pe32;
 pub mod pe_aux_control_initializer;
 pub mod pe_compiled_initializer;

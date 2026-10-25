@@ -1225,7 +1225,17 @@ languages rather than fabricating or silently aliasing Italian assets.
   late through a fallible interface. Four tests bring `cmr-core` to 1,215 and
   pin concrete decoded-provider execution plus dispatch/config failure state
   prefixes. Raw official table acquisition, native alias/rebinding faults,
-  `FUN_00408fe0`, and full call-spine composition remain open.
+  `FUN_00408fe0`, and full call-spine composition remain open. G03-AK9 then
+  proves those tables are the decoded stage `.hpc` sidecar, not C3D or
+  executable-resident data. `cmr-formats::hpc` parses and validates the five
+  cell levels, vertices, records, candidate pool, and dimensions while
+  retaining every reserved word; an opt-in test validates the user-owned
+  corpus in place. The core adapter safely supplies an empty unreachable sixth
+  level instead of reinterpreting the native vertex-pointer alias. Opaque
+  trailing payload bytes are retained. Eight synthetic format tests bring
+  `cmr-formats` to 158; `cmr-core` remains at
+  1,215 with its parsed-HPC eight-lane integration. Stage/application wiring
+  and the following global transform remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1281,7 +1291,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-compiled-lane-decoder`, and
   `impl.sim-compiled-lane-decoder`,
   `impl.sim-compiled-lane-geometry-provider`, and
-  `impl.sim-compiled-eight-lane-executor`.
+  `impl.sim-compiled-eight-lane-executor`,
+  `rea.official-eu.sim-hpc-geometry-loader`, and
+  `impl.sim-hpc-geometry-parser`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

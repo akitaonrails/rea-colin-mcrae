@@ -15,6 +15,7 @@
 use std::fmt;
 
 use cmr_assets::{AuxControlConstantsStore, CompiledInitializerStore};
+use cmr_formats::hpc::HpcFile;
 use cmr_formats::pe_aux_control_initializer::{
     AUX_CONTROL_COMMON_WORD_OFFSETS as FORMAT_AUX_COMMON_WORD_OFFSETS,
     AUX_CONTROL_POLICY_WORD_OFFSETS as FORMAT_AUX_POLICY_WORD_OFFSETS,
@@ -1467,13 +1468,9 @@ pub const COMPILED_LANE_SPATIAL_LEVEL_COUNT: usize = 6;
 
 /// One decoded eight-byte cell from the `FUN_004473f0` hierarchy.
 ///
-/// The two bytes between the signed marker and dword link/offset are not read
-/// by the routine and therefore are not represented.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DecodedCompiledLaneSpatialCell {
-    pub marker: i16,
-    pub link_or_candidate_offset: i32,
-}
+/// The two bytes between the signed marker and dword link/offset are retained
+/// by the format layer even though the routine does not read them.
+pub type DecodedCompiledLaneSpatialCell = cmr_formats::hpc::HpcSpatialCell;
 
 #[derive(Clone, Copy, Debug)]
 pub struct DecodedCompiledLaneSpatialHierarchy<'a> {
@@ -1694,11 +1691,7 @@ pub struct DecodedCompiledLaneTriangle {
     pub type_word: u16,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DecodedCompiledLaneRecord {
-    pub vertex_indices: [u16; 3],
-    pub type_word: u16,
-}
+pub type DecodedCompiledLaneRecord = cmr_formats::hpc::HpcRecord;
 
 #[derive(Clone, Copy, Debug)]
 pub struct DecodedCompiledLaneTables<'a> {
@@ -1917,6 +1910,40 @@ pub struct DecodedCompiledLaneGeometryProvider<'a> {
     pub hierarchy: DecodedCompiledLaneSpatialHierarchy<'a>,
     pub candidate_pool: &'a [i16],
     pub tables: DecodedCompiledLaneTables<'a>,
+}
+
+/// Adapts one validated decoded stage `.hpc` payload to the stable geometry
+/// provider used by the recovered lane dispatcher.
+///
+/// The shipped pointer array has five actual cell arrays followed by a sixth
+/// slot that aliases the vertex pointer. `parse_hpc` rejects every reachable
+/// level-four sentinel, so the safe adapter supplies an empty sixth level and
+/// cannot reinterpret 12-byte vertices as an incompatible 8-byte cell array.
+#[must_use]
+pub fn decoded_compiled_lane_provider_from_hpc(
+    hpc: &HpcFile,
+) -> DecodedCompiledLaneGeometryProvider<'_> {
+    let levels = hpc.levels();
+    DecodedCompiledLaneGeometryProvider {
+        hierarchy: DecodedCompiledLaneSpatialHierarchy {
+            origin_xz: hpc.origin_xz(),
+            width: hpc.width(),
+            height: hpc.height(),
+            levels: [
+                &levels[0],
+                &levels[1],
+                &levels[2],
+                &levels[3],
+                &levels[4],
+                &[],
+            ],
+        },
+        candidate_pool: hpc.candidates(),
+        tables: DecodedCompiledLaneTables {
+            records: hpc.records(),
+            vertices: hpc.vertices(),
+        },
+    }
 }
 
 impl CompiledLaneCandidateProvider for DecodedCompiledLaneGeometryProvider<'_> {
@@ -5135,6 +5162,7 @@ mod tests {
     const fn spatial_cell(marker: i16, link: i32) -> DecodedCompiledLaneSpatialCell {
         DecodedCompiledLaneSpatialCell {
             marker,
+            reserved: 0,
             link_or_candidate_offset: link,
         }
     }
@@ -6070,7 +6098,7 @@ mod tests {
     }
 
     #[test]
-    fn eight_lane_executor_accepts_the_composed_decoded_geometry_provider() {
+    fn eight_lane_executor_accepts_a_parsed_hpc_geometry_provider() {
         let triangle = DecodedCompiledLaneTriangle {
             vertices: [
                 [0, 0x2_0000, 0],
@@ -6079,25 +6107,35 @@ mod tests {
             ],
             type_word: 0,
         };
-        let records = [DecodedCompiledLaneRecord {
-            vertex_indices: [0, 1, 2],
-            type_word: triangle.type_word,
-        }];
-        let leaf = [spatial_cell(0, i32::MIN)];
-        let hierarchy = DecodedCompiledLaneSpatialHierarchy {
-            origin_xz: [0, 0],
-            width: 1,
-            height: 1,
-            levels: [&leaf, &[], &[], &[], &[], &[]],
-        };
-        let provider = DecodedCompiledLaneGeometryProvider {
-            hierarchy,
-            candidate_pool: &[],
-            tables: DecodedCompiledLaneTables {
-                records: &records,
-                vertices: &triangle.vertices,
-            },
-        };
+        let mut payload = Vec::new();
+        for word in [0_i32, 0] {
+            payload.extend_from_slice(&word.to_le_bytes());
+        }
+        for count in [1_i16, 0, 0, 0, 0] {
+            payload.extend_from_slice(&count.to_le_bytes());
+        }
+        payload.extend_from_slice(&0_u16.to_le_bytes());
+        payload.extend_from_slice(&1_i16.to_le_bytes());
+        payload.extend_from_slice(&0_u16.to_le_bytes());
+        payload.extend_from_slice(&0_i32.to_le_bytes());
+        payload.extend_from_slice(&3_u16.to_le_bytes());
+        payload.extend_from_slice(&0_u16.to_le_bytes());
+        for vertex in triangle.vertices {
+            for component in vertex {
+                payload.extend_from_slice(&component.to_le_bytes());
+            }
+        }
+        payload.extend_from_slice(&1_u16.to_le_bytes());
+        payload.extend_from_slice(&0_u16.to_le_bytes());
+        for word in [0_u16, 1, 2, triangle.type_word] {
+            payload.extend_from_slice(&word.to_le_bytes());
+        }
+        payload.extend_from_slice(&1_u32.to_le_bytes());
+        payload.extend_from_slice(&0_i16.to_le_bytes());
+        payload.extend_from_slice(&1_i16.to_le_bytes());
+        payload.extend_from_slice(&1_i16.to_le_bytes());
+        let hpc = cmr_formats::hpc::parse_hpc(&payload).unwrap();
+        let provider = decoded_compiled_lane_provider_from_hpc(&hpc);
         let mut providers = [provider; 8];
         let source = [0x4000, i32::MIN, 0x4000];
         let input = CompiledEightLaneExecutionInputs {
