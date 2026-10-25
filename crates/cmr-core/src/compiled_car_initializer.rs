@@ -377,6 +377,68 @@ fn common_prefix_q16_mul(left: i32, right: i32) -> i32 {
     ((i64::from(left) * i64::from(right)) >> 16) as i32
 }
 
+pub const COMPILED_CONTROL_PRODUCT_RECIPROCAL_OFFSET: u16 = 0x164;
+pub const COMPILED_CONTROL_PRODUCT_OFFSET: u16 = 0x168;
+pub const COMPILED_CONTROL_PRODUCT_OFFSETS: [u16; 2] = [
+    COMPILED_CONTROL_PRODUCT_RECIPROCAL_OFFSET,
+    COMPILED_CONTROL_PRODUCT_OFFSET,
+];
+
+/// Two recovered control writes immediately after the reciprocal/copy families.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledControlProductPair {
+    pub reciprocal_word_164: i32,
+    pub product_word_168: i32,
+}
+
+/// A quarter-product whose signed `2^32 / value` quotient would fault `IDIV`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledControlProductReciprocalOverflow {
+    pub divisor: i32,
+}
+
+impl fmt::Display for CompiledControlProductReciprocalOverflow {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "compiled control +0x164 reciprocal overflows i32 for divisor {}",
+            self.divisor
+        )
+    }
+}
+
+impl std::error::Error for CompiledControlProductReciprocalOverflow {}
+
+/// Reconstruct the paired control writes at `+0x164` and `+0x168`.
+///
+/// The product keeps bits 16..47 of the signed full-width multiplication,
+/// matching `IMUL` followed by `SHRD 16`. Its arithmetic quarter is the
+/// reciprocal divisor. Zero maps to `-1`; a quotient outside signed 32-bit is
+/// reported instead of reproducing the shipped x86 divide fault. The pure
+/// result is pair-atomic, although the shipped initializer had already made
+/// earlier writes before reaching this interval. Computing the product once is
+/// equivalent to the shipped reload/recompute only for stable, non-volatile
+/// object memory; concurrent mutation is outside this pure contract.
+pub fn derive_compiled_control_product_pair(
+    effective_control_word_15c: i32,
+    reciprocal_word_208: i32,
+) -> Result<CompiledControlProductPair, CompiledControlProductReciprocalOverflow> {
+    let product_word_168 =
+        ((i64::from(effective_control_word_15c) * i64::from(reciprocal_word_208)) >> 16) as i32;
+    let divisor = product_word_168 >> 2;
+    let reciprocal_word_164 = if divisor == 0 {
+        -1
+    } else {
+        let quotient = (1_i64 << 32) / i64::from(divisor);
+        i32::try_from(quotient).map_err(|_| CompiledControlProductReciprocalOverflow { divisor })?
+    };
+
+    Ok(CompiledControlProductPair {
+        reciprocal_word_164,
+        product_word_168,
+    })
+}
+
 /// Sole state destination written by `FUN_00486090`.
 pub const COMPILED_STATE_WORD_758_OFFSET: u16 = 0x758;
 
@@ -995,6 +1057,7 @@ pub struct RecoveredCompiledStageEffects {
     pub state_word_758: CompiledStateWord758Effect,
     pub post_helper: CompiledPostHelperEffects,
     pub control_families: CompiledControlFamilies,
+    pub control_product_pair: CompiledControlProductPair,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1005,6 +1068,7 @@ pub enum RecoveredCompiledStageError {
     State758Selection(CompiledStateWord758SelectionError),
     PostHelper(CompiledPostHelperReciprocalOverflow),
     Family(CompiledReciprocalOverflow),
+    ProductPair(CompiledControlProductReciprocalOverflow),
 }
 
 impl fmt::Display for RecoveredCompiledStageError {
@@ -1025,6 +1089,12 @@ impl fmt::Display for RecoveredCompiledStageError {
                     "cannot derive compiled control families: {source}"
                 )
             }
+            Self::ProductPair(source) => {
+                write!(
+                    formatter,
+                    "cannot derive compiled control product pair: {source}"
+                )
+            }
         }
     }
 }
@@ -1038,6 +1108,7 @@ impl std::error::Error for RecoveredCompiledStageError {
             Self::State758Selection(source) => Some(source),
             Self::PostHelper(source) => Some(source),
             Self::Family(source) => Some(source),
+            Self::ProductPair(source) => Some(source),
         }
     }
 }
@@ -1048,7 +1119,7 @@ impl std::error::Error for RecoveredCompiledStageError {
 /// center-split, auxiliary, and family/tail effects. The family/tail is derived
 /// from and supersedes only the raw direct-case family, which the prefix and
 /// post-helper patch do not touch. Config, prefix, auxiliary, state-`+0x758`
-/// selection, post-helper, then family
+/// selection, post-helper, family, then product-pair
 /// validation order applies only to the represented stages; success does not
 /// prove a complete shipped initializer snapshot. Any represented failure
 /// returns no partial bundle. That atomic error boundary is a safe
@@ -1108,6 +1179,11 @@ pub fn compose_recovered_compiled_stage_effects(
     .map_err(RecoveredCompiledStageError::PostHelper)?;
     let control_families = derive_compiled_control_families(transformed_control_family)
         .map_err(RecoveredCompiledStageError::Family)?;
+    let control_product_pair = derive_compiled_control_product_pair(
+        effective_control_word_15c,
+        control_families.reciprocal[6],
+    )
+    .map_err(RecoveredCompiledStageError::ProductPair)?;
 
     Ok(RecoveredCompiledStageEffects {
         direct_case_stores,
@@ -1117,6 +1193,7 @@ pub fn compose_recovered_compiled_stage_effects(
         state_word_758,
         post_helper,
         control_families,
+        control_product_pair,
     })
 }
 
@@ -1601,6 +1678,18 @@ mod tests {
 
         let words = synthetic_case(7);
         assert_eq!(words.control_family(), words.control_words[14..22]);
+        for offset in COMPILED_CONTROL_PRODUCT_OFFSETS {
+            assert!(!COMPILED_CONTROL_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_COMMON_PREFIX_CONTROL_OFFSETS.contains(&offset));
+            assert!(!AUX_CONTROL_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_POST_HELPER_CONTROL_WORD_OFFSETS.contains(&offset));
+            assert_ne!(offset, 0x170);
+            for family_base in [0x1f0_u16, 0x210, 0x230] {
+                for family_index in 0..COMPILED_CONTROL_FAMILY_WORD_COUNT as u16 {
+                    assert_ne!(offset, family_base + family_index * 4);
+                }
+            }
+        }
     }
 
     #[test]
@@ -1828,6 +1917,101 @@ mod tests {
     }
 
     #[test]
+    fn control_product_pair_pins_offsets_zero_quarter_and_nominal_values() {
+        assert_eq!(COMPILED_CONTROL_PRODUCT_OFFSETS, [0x164, 0x168]);
+        assert_eq!(
+            derive_compiled_control_product_pair(0x1_0000, 0x8000),
+            Ok(CompiledControlProductPair {
+                reciprocal_word_164: 0x8_0000,
+                product_word_168: 0x8000,
+            })
+        );
+        assert_eq!(
+            derive_compiled_control_product_pair(1, 0x1_0000),
+            Ok(CompiledControlProductPair {
+                reciprocal_word_164: -1,
+                product_word_168: 1,
+            })
+        );
+        assert_eq!(
+            derive_compiled_control_product_pair(3, 0x1_0000),
+            Ok(CompiledControlProductPair {
+                reciprocal_word_164: -1,
+                product_word_168: 3,
+            })
+        );
+        assert_eq!(
+            derive_compiled_control_product_pair(-5, 0x1_0000),
+            Ok(CompiledControlProductPair {
+                reciprocal_word_164: i32::MIN,
+                product_word_168: -5,
+            })
+        );
+        assert_eq!(
+            derive_compiled_control_product_pair(0x2_0000, 0x4000_0000),
+            Ok(CompiledControlProductPair {
+                reciprocal_word_164: -8,
+                product_word_168: i32::MIN,
+            })
+        );
+    }
+
+    #[test]
+    fn control_product_pair_pins_exact_idiv_overflow_and_safe_boundaries() {
+        for (product, divisor) in [(-4, -1), (4, 1), (8, 2)] {
+            assert_eq!(
+                derive_compiled_control_product_pair(product, 0x1_0000),
+                Err(CompiledControlProductReciprocalOverflow { divisor })
+            );
+        }
+        assert_eq!(
+            derive_compiled_control_product_pair(-8, 0x1_0000),
+            Ok(CompiledControlProductPair {
+                reciprocal_word_164: i32::MIN,
+                product_word_168: -8,
+            })
+        );
+        assert_eq!(
+            derive_compiled_control_product_pair(12, 0x1_0000),
+            Ok(CompiledControlProductPair {
+                reciprocal_word_164: 0x5555_5555,
+                product_word_168: 12,
+            })
+        );
+        assert_eq!(
+            derive_compiled_control_product_pair(-12, 0x1_0000),
+            Ok(CompiledControlProductPair {
+                reciprocal_word_164: -0x5555_5555,
+                product_word_168: -12,
+            })
+        );
+    }
+
+    #[test]
+    fn control_product_pair_keeps_wrapped_bits_16_through_47() {
+        for (left, right) in [
+            (i32::MIN, i32::MIN),
+            (i32::MAX, i32::MAX),
+            (i32::MIN, i32::MAX),
+            (-0x0345_6789, 0x0765_4321),
+        ] {
+            let expected_product = ((i64::from(left) * i64::from(right)) >> 16) as i32;
+            let expected_divisor = expected_product >> 2;
+            let result = derive_compiled_control_product_pair(left, right);
+            if [-1, 1, 2].contains(&expected_divisor) {
+                assert_eq!(
+                    result,
+                    Err(CompiledControlProductReciprocalOverflow {
+                        divisor: expected_divisor,
+                    })
+                );
+            } else {
+                assert_eq!(result.unwrap().product_word_168, expected_product);
+            }
+        }
+    }
+
+    #[test]
     fn state_758_caller_selection_exhaustively_pins_gate_and_indices() {
         let table: Vec<i32> = (0..19).map(|index| index + 100).collect();
         assert_eq!(
@@ -1836,11 +2020,12 @@ mod tests {
         );
 
         let mut reached = [false; 19];
-        for status in u8::MIN..=u8::MAX {
-            let row = usize::from((status >> 3) & 3);
-            let column = usize::from(status >> 5);
+        for selection_byte in u8::MIN..=u8::MAX {
+            let row = usize::from((selection_byte >> 3) & 3);
+            let column = usize::from(selection_byte >> 5);
             let gated = row >= 2 && column >= 4;
-            let selected = select_compiled_state_word_758_argument(true, status, &table).unwrap();
+            let selected =
+                select_compiled_state_word_758_argument(true, selection_byte, &table).unwrap();
             if gated {
                 assert_eq!(selected, -1);
             } else {
@@ -2223,6 +2408,14 @@ mod tests {
                 )
                 .unwrap()
             );
+            assert_eq!(
+                effects.control_product_pair,
+                derive_compiled_control_product_pair(
+                    prior.control_words[3],
+                    effects.control_families.reciprocal[6],
+                )
+                .unwrap()
+            );
         }
     }
 
@@ -2231,6 +2424,7 @@ mod tests {
         let mut cases = synthetic_cases();
         cases[0].control_words[0] = 0x151e;
         cases[0].control_words[3] = 0x2_0000;
+        cases[0].control_words[CONTROL_FAMILY_START + 6] = 0x2_0000;
         let direct_cases = CompiledDirectCaseSet { cases };
         let aux_constants = AuxControlConstantSet {
             constants: aux_constants(),
@@ -2262,6 +2456,61 @@ mod tests {
             effects.post_helper,
             derive_compiled_post_helper_effects(0x2000, 0x2_6666).unwrap()
         );
+        assert_eq!(effects.control_families.reciprocal[6], 0x8000);
+        assert_eq!(
+            effects.control_product_pair,
+            derive_compiled_control_product_pair(0x2_6666, 0x8000).unwrap()
+        );
+    }
+
+    #[test]
+    fn recovered_stage_bundle_reports_product_pair_after_family() {
+        let mut cases = synthetic_cases();
+        cases[0].control_words[3] = 0x1_0000;
+        cases[0].control_words[CONTROL_FAMILY_START + 6] = 0;
+        let direct_cases = CompiledDirectCaseSet { cases };
+        let aux_constants = AuxControlConstantSet {
+            constants: aux_constants(),
+        };
+        let config = compiled_stage_config(0, 0, 0, 0, 2, false);
+
+        assert_eq!(
+            compose_recovered_compiled_stage_effects(
+                &direct_cases,
+                &aux_constants,
+                RecoveredCompiledStageInputs {
+                    prior_case_words: synthetic_case(-1),
+                    selector: 0,
+                    config: &config,
+                    state_slot: 0,
+                    global_word: 0,
+                    state_758_context_nonzero: false,
+                    state_758_table: &[],
+                },
+            ),
+            Err(RecoveredCompiledStageError::ProductPair(
+                CompiledControlProductReciprocalOverflow { divisor: -1 }
+            ))
+        );
+
+        cases[0].control_words[CONTROL_FAMILY_START + 1] = 1;
+        let family_fails_first = CompiledDirectCaseSet { cases };
+        assert!(matches!(
+            compose_recovered_compiled_stage_effects(
+                &family_fails_first,
+                &aux_constants,
+                RecoveredCompiledStageInputs {
+                    prior_case_words: synthetic_case(-1),
+                    selector: 0,
+                    config: &config,
+                    state_slot: 0,
+                    global_word: 0,
+                    state_758_context_nonzero: false,
+                    state_758_table: &[],
+                },
+            ),
+            Err(RecoveredCompiledStageError::Family(_))
+        ));
     }
 
     #[test]

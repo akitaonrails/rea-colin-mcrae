@@ -654,6 +654,21 @@ values/extent, semantic meanings, generic second-caller provenance, runtime
 reachability, complete object application, wiring, and other editions remain
 open.
 
+G03-AB reconstructs the bounded immediate post-family no-call interval
+`[0x406655,0x4066dd)`. It signed-Q16 multiplies effective post-prefix control
+`+0x15c` by reciprocal-family slot 6 (`+0x208`), keeps product bits 16..47 as
+`p`, and uses arithmetic `d=p>>2`. Control `+0x164` receives `-1` when `d` is
+zero or signed `2^32/d`; exact quotient-fault divisors `-1,1,2` become a typed
+safe error. The shipped path writes `+0x164` first, then reloads and recomputes
+the product before writing `p` to `+0x168`. The pure helper returns the pair
+atomically under stable-memory assumptions, without claiming whole-initializer
+atomicity or concurrency equivalence. Composition runs after family success and
+uses `control_families.reciprocal[6]`, extending represented failure order with
+the product pair last. Four new tests plus strengthened composition tests bring
+`cmr-core` to 1,154. Field semantics, complete writers/consumers, runtime
+reachability, merged object application, application wiring, and other editions
+remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

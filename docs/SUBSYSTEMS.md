@@ -1132,7 +1132,18 @@ languages rather than fabricating or silently aliasing Italian assets.
   save/restore narrow the initializer claim to the only observed originating
   constructor assignment. Table values/extent, merged object application,
   meanings/units, config loading, application/session/gameplay wiring, runtime
-  reachability, generic second-caller provenance, and other editions remain. See
+  reachability, generic second-caller provenance, and other editions remain.
+  G03-AB completes the later derived pair in exact no-call interval
+  `[0x406655,0x4066dd)`: signed Q16 product of effective control `+0x15c` and
+  reciprocal-family slot 6 (`+0x208`) becomes control `+0x168`; its arithmetic
+  quarter drives the guarded signed reciprocal at `+0x164`. The shipped store
+  order is `+0x164` first, then a reload/recompute and `+0x168`; the pure helper
+  is pair-atomic only under stable-memory assumptions. Composition runs this
+  after family success and reports exact `IDIV` overflow divisors `-1,1,2` as a
+  typed final-stage error. Four new tests plus strengthened composition coverage
+  bring `cmr-core` to 1,154. Semantics, complete aliases/consumers, concurrency,
+  runtime reachability, merged object application, wiring, and other editions
+  remain open. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
   `rea.official-eu.sim-compiled-center-split`,
@@ -1154,8 +1165,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-common-prefix`,
   `rea.official-eu.sim-compiled-post-helper-initialization`,
   `impl.sim-compiled-post-helper-initialization`,
-  `rea.official-eu.sim-compiled-state-758-selection`, and
-  `impl.sim-compiled-state-758-selection`.
+  `rea.official-eu.sim-compiled-state-758-selection`,
+  `impl.sim-compiled-state-758-selection`,
+  `rea.official-eu.sim-compiled-control-product-pair`, and
+  `impl.sim-compiled-control-product-pair`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
