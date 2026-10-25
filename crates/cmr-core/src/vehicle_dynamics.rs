@@ -57,6 +57,10 @@
 //!   the updated accumulator projected onto a second direction for the
 //!   remaining-budget addition. The independent surface contribution projects
 //!   a caller-provided vector and adds along the first direction.
+//! - **Lane-direction construction** (`FUN_0040d810`): five caller vectors are
+//!   rejected from a shared axis and normalized with the legacy square-root
+//!   path. The resulting pair groups are preserved, exchanged, or partially
+//!   rebuilt according to an already-resolved opaque mode.
 //!
 //! Values are signed Q16.16 ([`crate::fixed_point`]). See evidence
 //! `rea.official-eu.sim-grip` and
@@ -66,10 +70,10 @@
 //! Inferences: the slope ramp raises grip as the surface flattens (output is a
 //! grip factor, high on flat ground); the two surface tiers are high/low grip.
 //! Unknowns (not reproduced): the physical units of all candidates and
-//! directions, how the direction vectors are constructed, the physical meaning
-//! of the nonzero control `+0x420` gate, the exact semi-implicit position
-//! update's half-accel term, the suspension damper source, and runtime-loaded
-//! per-surface/per-car table contents.
+//! directions, the physical meaning of the nonzero control `+0x420` gate, the
+//! exact semi-implicit position update's half-accel term, the suspension damper
+//! source, runtime-loaded per-surface/per-car table contents, and the opaque
+//! globals/callback that select the direction-construction mode.
 
 use crate::{
     fixed_point::{Fixed16, Vec3},
@@ -118,6 +122,143 @@ pub const SURFACE_GRIP_RECORD_BYTES: usize = 8;
 /// Signed component boundary used by the two lookup-free candidate branches
 /// in `FUN_0040d810` (`0x40f24f..0x40f2c7`).
 pub const CANDIDATE_COMPONENT_THRESHOLD: Fixed16 = Fixed16::from_raw(0x6666);
+
+/// Already-resolved control mode for [`construct_lane_directions`].
+///
+/// These names describe only the observed movement of the two packed lane
+/// groups. The globals, config bits, and callback that select the mode remain
+/// outside this pure reconstruction boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LaneDirectionMode {
+    /// Retain the initially constructed lane groups.
+    Preserve,
+    /// Exchange packed lanes 0/1 with lanes 2/3 in both direction arrays.
+    Exchange,
+    /// Replace the second A/B group using the recovered dependent transform.
+    Rebuild,
+}
+
+/// Neutral vector sources consumed by [`construct_lane_directions`].
+///
+/// The field names express only their roles in the recovered arithmetic. No
+/// physical interpretation or unit-length invariant is assigned to them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LaneDirectionSources {
+    pub projection_axis: Vec3,
+    pub source_a0: Vec3,
+    pub source_b0: Vec3,
+    pub source_a2: Vec3,
+    pub cross_operand: Vec3,
+}
+
+/// Observable result of [`construct_lane_directions`].
+///
+/// `pre_mode_a_valid` records whether the wrapping square sum of each initial
+/// A candidate was nonzero. The shipped routine neither exchanges nor
+/// recomputes these flags after applying the selected mode, so they can differ
+/// from the final vectors for degenerate inputs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LaneDirectionOutcome {
+    pub direction_a: [Vec3; 4],
+    pub direction_b: [Vec3; 4],
+    pub pre_mode_a_valid: [bool; 4],
+}
+
+impl LaneDirectionOutcome {
+    /// Return the four unique-vector slots in their recovered publication
+    /// order: A lane 0 (`+0x380`), A lane 2 (`+0x38c`), B lane 0 (`+0x398`),
+    /// and B lane 2 (`+0x3a4`).
+    #[must_use]
+    pub const fn published_unique_vectors(self) -> [Vec3; 4] {
+        [
+            self.direction_a[0],
+            self.direction_a[2],
+            self.direction_b[0],
+            self.direction_b[2],
+        ]
+    }
+}
+
+/// Construct the four packed direction pairs consumed by the recovered lane
+/// accumulation path in `FUN_0040d810` (`0x40d9b6..0x40e45d`).
+///
+/// Each source is rejected from `projection_axis` as `v + axis * -dot(v,
+/// axis)`, preserving the observed Q16.16 truncation, negation, and wrapping
+/// order. The second B source is the raw cross product `source_a2 x
+/// cross_operand`; it deliberately does not use the rejected/normalized A2.
+/// Every normalization uses the recovered square-root lookup and maps a zero
+/// root to the zero vector.
+///
+/// The caller resolves [`LaneDirectionMode`] because the original selector
+/// conditionally invokes an opaque callback. No physical meaning is assigned
+/// to the modes or vectors.
+#[must_use]
+pub fn construct_lane_directions(
+    sources: LaneDirectionSources,
+    mode: LaneDirectionMode,
+) -> LaneDirectionOutcome {
+    let (a0, a0_valid) =
+        normalize_lane_direction(reject_from_axis(sources.source_a0, sources.projection_axis));
+    let (b0, _) =
+        normalize_lane_direction(reject_from_axis(sources.source_b0, sources.projection_axis));
+    let (a2, a2_valid) =
+        normalize_lane_direction(reject_from_axis(sources.source_a2, sources.projection_axis));
+    let raw_b2 = wrapping_cross(sources.source_a2, sources.cross_operand);
+    let (b2, _) = normalize_lane_direction(reject_from_axis(raw_b2, sources.projection_axis));
+
+    let mut direction_a = [a0, a0, a2, a2];
+    let mut direction_b = [b0, b0, b2, b2];
+    let pre_mode_a_valid = [a0_valid, a0_valid, a2_valid, a2_valid];
+
+    match mode {
+        LaneDirectionMode::Preserve => {}
+        LaneDirectionMode::Exchange => {
+            direction_a = [a2, a2, a0, a0];
+            direction_b = [b2, b2, b0, b0];
+        }
+        LaneDirectionMode::Rebuild => {
+            let doubled_alignment = b2.dot(a0).mul(Fixed16::from_raw(0x20000));
+            let rebuilt_a2 = a0.sub(b2.scale(doubled_alignment));
+            let alignment = b2.dot(rebuilt_a2);
+            let (rebuilt_b2, _) = normalize_lane_direction(b2.sub(rebuilt_a2.scale(alignment)));
+            direction_a = [a0, a0, rebuilt_a2, rebuilt_a2];
+            direction_b = [b0, b0, rebuilt_b2, rebuilt_b2];
+        }
+    }
+
+    LaneDirectionOutcome {
+        direction_a,
+        direction_b,
+        pre_mode_a_valid,
+    }
+}
+
+fn reject_from_axis(source: Vec3, axis: Vec3) -> Vec3 {
+    let negative_projection = source.dot(axis).neg();
+    source.add(axis.scale(negative_projection))
+}
+
+fn wrapping_cross(lhs: Vec3, rhs: Vec3) -> Vec3 {
+    Vec3::new(
+        lhs.y.mul(rhs.z).sub(lhs.z.mul(rhs.y)),
+        lhs.z.mul(rhs.x).sub(lhs.x.mul(rhs.z)),
+        lhs.x.mul(rhs.y).sub(lhs.y.mul(rhs.x)),
+    )
+}
+
+fn normalize_lane_direction(direction: Vec3) -> (Vec3, bool) {
+    let square_sum = direction.dot(direction).raw() as u32;
+    let root = sqrt_q16(square_sum);
+    if root == 0 {
+        return (Vec3::ZERO, square_sum != 0);
+    }
+
+    let reciprocal = ((1_u64 << 32) / u64::from(root)) as i32;
+    (
+        direction.scale(Fixed16::from_raw(reciprocal)),
+        square_sum != 0,
+    )
+}
 
 /// Rejection from the lookup-dependent candidate derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -774,6 +915,10 @@ mod tests {
         )
     }
 
+    fn legacy_axis(x: i32, y: i32, z: i32) -> Vec3 {
+        raw_v(65_522 * x, 65_522 * y, 65_522 * z)
+    }
+
     fn lane_accumulation_input() -> LaneAccumulationInput {
         LaneAccumulationInput {
             accumulator: Vec3::ZERO,
@@ -812,6 +957,215 @@ mod tests {
 
     fn inactive_geometric_lane() -> GeometricPostprocessLane {
         geometric_lane(false, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO)
+    }
+
+    fn lane_direction_sources(
+        projection_axis: Vec3,
+        source_a0: Vec3,
+        source_b0: Vec3,
+        source_a2: Vec3,
+        cross_operand: Vec3,
+    ) -> LaneDirectionSources {
+        LaneDirectionSources {
+            projection_axis,
+            source_a0,
+            source_b0,
+            source_a2,
+            cross_operand,
+        }
+    }
+
+    #[test]
+    fn lane_directions_preserve_initial_pairs_and_raw_cross_order() {
+        let outcome = construct_lane_directions(
+            lane_direction_sources(Vec3::ZERO, v(1, 0, 0), v(0, 1, 0), v(0, 0, 1), v(0, 1, 0)),
+            LaneDirectionMode::Preserve,
+        );
+
+        assert_eq!(
+            outcome.direction_a,
+            [
+                legacy_axis(1, 0, 0),
+                legacy_axis(1, 0, 0),
+                legacy_axis(0, 0, 1),
+                legacy_axis(0, 0, 1),
+            ]
+        );
+        // source_a2 x cross_operand is Z x Y = -X. Reversing the raw
+        // operands would produce +X.
+        assert_eq!(
+            outcome.direction_b,
+            [
+                legacy_axis(0, 1, 0),
+                legacy_axis(0, 1, 0),
+                legacy_axis(-1, 0, 0),
+                legacy_axis(-1, 0, 0),
+            ]
+        );
+        assert_eq!(outcome.pre_mode_a_valid, [true; 4]);
+    }
+
+    #[test]
+    fn lane_directions_crosses_raw_a2_before_axis_rejection() {
+        let outcome = construct_lane_directions(
+            lane_direction_sources(v(1, 0, 0), v(1, 0, 0), v(0, 0, 1), v(1, 1, 0), v(0, 0, 1)),
+            LaneDirectionMode::Preserve,
+        );
+
+        // A2 rejects to +Y. Its raw source crosses Z to (1,-1,0), which then
+        // rejects to -Y. Crossing the already-rejected A2 would instead be
+        // removed completely by the X axis rejection.
+        assert_eq!(
+            outcome.direction_a,
+            [
+                Vec3::ZERO,
+                Vec3::ZERO,
+                legacy_axis(0, 1, 0),
+                legacy_axis(0, 1, 0),
+            ]
+        );
+        assert_eq!(
+            outcome.direction_b,
+            [
+                legacy_axis(0, 0, 1),
+                legacy_axis(0, 0, 1),
+                legacy_axis(0, -1, 0),
+                legacy_axis(0, -1, 0),
+            ]
+        );
+        assert_eq!(outcome.pre_mode_a_valid, [false, false, true, true]);
+    }
+
+    #[test]
+    fn lane_directions_exchange_pairs_but_not_pre_mode_validity() {
+        let outcome = construct_lane_directions(
+            lane_direction_sources(Vec3::ZERO, v(1, 0, 0), v(0, 1, 0), Vec3::ZERO, v(0, 0, 1)),
+            LaneDirectionMode::Exchange,
+        );
+
+        assert_eq!(
+            outcome.direction_a,
+            [
+                Vec3::ZERO,
+                Vec3::ZERO,
+                legacy_axis(1, 0, 0),
+                legacy_axis(1, 0, 0),
+            ]
+        );
+        assert_eq!(
+            outcome.direction_b,
+            [
+                Vec3::ZERO,
+                Vec3::ZERO,
+                legacy_axis(0, 1, 0),
+                legacy_axis(0, 1, 0),
+            ]
+        );
+        assert_eq!(outcome.pre_mode_a_valid, [true, true, false, false]);
+    }
+
+    #[test]
+    fn lane_directions_rebuild_discards_a2_without_recomputing_validity() {
+        let outcome = construct_lane_directions(
+            lane_direction_sources(v(1, 0, 0), v(0, 1, 0), v(1, 0, 0), v(1, 0, 0), v(0, 1, 0)),
+            LaneDirectionMode::Rebuild,
+        );
+
+        // Pre-mode A2 is rejected to zero, while raw X x Y supplies B2=Z.
+        // Rebuild replaces A2 with A0=Y and retains B2=Z, but the old false
+        // flags remain in lanes 2/3.
+        assert_eq!(outcome.direction_a, [legacy_axis(0, 1, 0); 4]);
+        assert_eq!(
+            outcome.direction_b,
+            [
+                Vec3::ZERO,
+                Vec3::ZERO,
+                raw_v(0, 0, 65_534),
+                raw_v(0, 0, 65_534),
+            ]
+        );
+        assert_eq!(outcome.pre_mode_a_valid, [true, true, false, false]);
+    }
+
+    #[test]
+    fn lane_directions_rebuild_uses_doubled_dot_then_new_a2() {
+        let outcome = construct_lane_directions(
+            lane_direction_sources(Vec3::ZERO, v(1, 2, 0), v(0, 0, 1), v(0, 0, 1), v(1, -1, 0)),
+            LaneDirectionMode::Rebuild,
+        );
+
+        assert_eq!(outcome.direction_a[0], raw_v(29_303, 58_606, 0));
+        assert_eq!(outcome.direction_a[2], raw_v(-58_581, -29_278, 0));
+        assert_eq!(outcome.direction_a[3], outcome.direction_a[2]);
+        // This literal pins the second dot to the newly rebuilt A2 before B2
+        // is normalized again.
+        assert_eq!(outcome.direction_b[2], raw_v(-29_056, 58_748, 0));
+        assert_eq!(outcome.direction_b[3], outcome.direction_b[2]);
+        assert_eq!(outcome.pre_mode_a_valid, [true; 4]);
+    }
+
+    #[test]
+    fn lane_directions_wrapped_zero_norm_and_rebuild_zero_b2() {
+        let outcome = construct_lane_directions(
+            lane_direction_sources(
+                Vec3::ZERO,
+                v(1, 0, 0),
+                v(0, 1, 0),
+                raw_v(0, 0, 0x0100_0000),
+                v(0, 1, 0),
+            ),
+            LaneDirectionMode::Rebuild,
+        );
+
+        // qmul(0x01000000, 0x01000000) wraps to zero. Both the initial A2
+        // and its raw-cross-derived B2 therefore normalize to zero, and the
+        // A2 validity captured before rebuild is false.
+        assert_eq!(outcome.direction_a[2], legacy_axis(1, 0, 0));
+        assert_eq!(outcome.direction_b[2], Vec3::ZERO);
+        assert_eq!(outcome.pre_mode_a_valid, [true, true, false, false]);
+    }
+
+    #[test]
+    fn lane_direction_publication_snapshot_uses_unique_slot_order() {
+        let outcome = construct_lane_directions(
+            lane_direction_sources(Vec3::ZERO, v(1, 0, 0), v(0, 1, 0), v(0, 0, 1), v(0, 1, 0)),
+            LaneDirectionMode::Preserve,
+        );
+
+        assert_eq!(
+            outcome.published_unique_vectors(),
+            [
+                raw_v(65_522, 0, 0),
+                raw_v(0, 0, 65_522),
+                raw_v(0, 65_522, 0),
+                raw_v(-65_522, 0, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn lane_direction_primitives_pin_truncation_wrapping_and_cross_products() {
+        assert_eq!(reject_from_axis(v(1, 0, 0), v(2, 0, 0)), v(-3, 0, 0));
+
+        let rejected = reject_from_axis(
+            raw_v(1_078, 42_317, -166_304),
+            raw_v(83_647, -68_071, 17_186),
+        );
+        assert_eq!(rejected, raw_v(111_088, -47_208, -143_702));
+
+        let wrapped = reject_from_axis(
+            raw_v(i32::MAX, i32::MAX - 1, -0x7000_0000),
+            raw_v(0x7000_0000, -0x6000_0000, 0x5000_0000),
+        );
+        assert_eq!(wrapped, raw_v(1_560_281_087, -1_644_167_170, 1_996_488_704));
+
+        assert_eq!(
+            wrapping_cross(
+                raw_v(0x18001, -0x10003, 0x28005),
+                raw_v(-0x1c007, 0x3000b, -0x1400d),
+            ),
+            raw_v(-409_626, -163_846, 180_231)
+        );
     }
 
     #[test]

@@ -423,9 +423,18 @@ its observed order: selected-scalar overwrite, gated first direction add,
 second projection against that updated accumulator and optional add, then the
 independent surface projection/add. The other `legacy_math` helpers centralize
 the recovered consumers while mathematical `Fixed16::sqrt` stays distinct.
-The next G03 scope is the upstream mode-dependent construction of the two
-neutral direction vectors. Position update and the damper source also remain;
-physical labels and runtime table values stay unclaimed.
+The upstream direction producer is now reconstructed as a neutral contract:
+reject/normalize sources at physics `+0x550`, `+0x544`, and `+0x5d4` against
+axis `+0x324`; form the fourth from the ordered raw cross of `+0x5d4` and
+`+0x264` before rejection; pack A/B as `[P,P,S,S]`/`[R,R,T,T]`; preserve the
+pre-mode A-valid flags; and apply caller-resolved Preserve, Exchange, or Rebuild
+packing. Rebuild leaves C as the raw doubled-projection rejection and normalizes
+only U, so exact unit/orthogonal claims are explicitly excluded. Eight focused
+tests bring `vehicle_dynamics` to 71; `legacy_math` remains at 13. The callback
+and global mode resolver, semantic vector/mode names, position update's
+half-acceleration term, damper source, and runtime table loader remain. The next
+honest G03 scope is either the position half-acceleration/damper chain or that
+runtime table loader; this does not close all of `FUN_0040d810`.
 
 Exit gate:
 

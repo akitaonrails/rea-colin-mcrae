@@ -1051,10 +1051,25 @@ languages rather than fabricating or silently aliasing Italian assets.
   derive the second scalar from a projection against the already-updated
   accumulator and optionally add the second direction, then independently
   project the surface vector and add its scalar along the first direction.
-  Eight focused tail tests bring `vehicle_dynamics` to 63 tests. The pure API
+  Eight focused tail tests brought `vehicle_dynamics` to 63 tests. The pure API
   returns the resulting value but does not claim the shipped mutations were
-  atomic. Upstream mode-dependent direction construction, position update, and
-  the damper source remain.
+  atomic. The upstream direction producer is now reconstructed as
+  `construct_lane_directions`: source vectors at physics `+0x550`, `+0x544`,
+  and `+0x5d4` are rejected from axis `+0x324` and normalized through the
+  legacy square-root/reciprocal path, while the fourth begins with the raw
+  ordered cross `cross(+0x5d4,+0x264)` before rejection. Baseline packing is
+  A=`[P,P,S,S]`, B=`[R,R,T,T]`; the four validity flags are snapshots of the
+  initial A square sums and do not follow later exchanges. Neutral modes expose
+  Preserve (baseline), Exchange (A=`[S,S,P,P]`, B=`[T,T,R,R]`), and Rebuild
+  (A=`[P,P,C,C]`, B=`[R,R,U,U]`). Rebuild forms raw
+  `C=P-T*qmul(dot(T,P),0x20000)` without normalizing C, then normalizes
+  `U=T-C*dot(T,C)`. Published unique vectors preserve control snapshot order
+  `+0x380,+0x38c,+0x398,+0x3a4`. Eight focused direction tests bring
+  `vehicle_dynamics` to 71 tests; `legacy_math` remains at 13. The callback and
+  global conditions that resolve a mode remain caller-owned and unimplemented,
+  and semantic vector/mode names remain unknown. Fixed-point wrap/truncation
+  means no exact unit/orthogonal claim is made. Position half-acceleration, the
+  damper source, and runtime table loading remain.
   `signed_arcsine_phase` preserves the signed lookup, `0x10000` clamp,
   index-4096 adjacent angle-table zero, and rejects unsafe `INT_MIN` instead of
   reproducing the unchecked read. `signed_ratio_angle` preserves the observed asymmetric
