@@ -833,6 +833,15 @@ the ignored raw final square-sum return. Five focused tests bring `cmr-core` to
 1,227. Native global-pointer rebinding/fault prefixes and composition after the
 fallible eight-lane executor remain open.
 
+G03-AK12 adds that orchestration boundary. `execute_compiled_eight_lanes_then`
+invokes one typed post stage only after all eight lanes and their late config
+reads succeed. Lane/config failure skips it; post failure retains the complete
+eight-lane success and leaves progressive post publication in the adapter's
+typed error. `CompiledPostLaneGlobalNormal` is the concrete AK11 adapter and
+feeds source vectors plus final post-config lane words. Five focused tests
+bring `cmr-core` to 1,232. Native pointer rebinding/fault prefixes and the
+remaining caller continuation after `0x406b00` remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

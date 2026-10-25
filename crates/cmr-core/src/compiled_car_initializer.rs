@@ -1178,6 +1178,69 @@ pub enum CompiledEightLaneExecutionFailure<ProviderError, ConfigError> {
     },
 }
 
+/// One post-lane stage invoked only after all eight lanes complete.
+pub trait CompiledPostLaneTransform {
+    type Completion;
+    type Error;
+
+    fn run_after_lanes(
+        &mut self,
+        input: &CompiledEightLaneExecutionInputs,
+        lanes: &CompiledEightLaneExecutionSuccess,
+    ) -> Result<Self::Completion, Self::Error>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledLaneAndPostSuccess<PostCompletion> {
+    pub lanes: CompiledEightLaneExecutionSuccess,
+    pub post_lane: PostCompletion,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompiledLaneAndPostFailure<ProviderError, ConfigError, PostError> {
+    Lanes(CompiledEightLaneExecutionFailure<ProviderError, ConfigError>),
+    PostLane {
+        lanes: Box<CompiledEightLaneExecutionSuccess>,
+        post_error: PostError,
+    },
+}
+
+pub type CompiledLaneAndPostResult<ProviderError, ConfigError, PostCompletion, PostError> = Result<
+    CompiledLaneAndPostSuccess<PostCompletion>,
+    CompiledLaneAndPostFailure<ProviderError, ConfigError, PostError>,
+>;
+
+/// Runs the recovered eight-lane body followed by its post-lane barrier.
+///
+/// A lane/config failure never invokes `post`. A post failure retains the
+/// complete lane success while any progressive post-stage publication remains
+/// represented by the post adapter's typed error.
+pub fn execute_compiled_eight_lanes_then<P, C, T>(
+    input: CompiledEightLaneExecutionInputs,
+    state: CompiledEightLaneExecutionState,
+    providers: &mut [P; 8],
+    config: &mut C,
+    post: &mut T,
+) -> CompiledLaneAndPostResult<P::Error, C::Error, T::Completion, T::Error>
+where
+    P: CompiledLaneGeometryProvider,
+    C: CompiledLaneConfigProvider,
+    T: CompiledPostLaneTransform,
+{
+    let lanes = execute_compiled_eight_lanes(input, state, providers, config)
+        .map_err(CompiledLaneAndPostFailure::Lanes)?;
+    let post_lane = match post.run_after_lanes(&input, &lanes) {
+        Ok(completion) => completion,
+        Err(post_error) => {
+            return Err(CompiledLaneAndPostFailure::PostLane {
+                lanes: Box::new(lanes),
+                post_error,
+            });
+        }
+    };
+    Ok(CompiledLaneAndPostSuccess { lanes, post_lane })
+}
+
 pub trait CompiledLaneConfigProvider {
     type Error;
 
@@ -1926,6 +1989,31 @@ pub fn derive_compiled_post_lane_global_normal(
         second_normal,
         final_published_normal,
         final_square_sum,
+    }
+}
+
+/// Concrete post-lane adapter for `FUN_00408fe0`'s stable-snapshot contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledPostLaneGlobalNormal {
+    pub selector_words: [i32; 3],
+}
+
+impl CompiledPostLaneTransform for CompiledPostLaneGlobalNormal {
+    type Completion = CompiledPostLaneNormalEffects;
+    type Error = std::convert::Infallible;
+
+    fn run_after_lanes(
+        &mut self,
+        input: &CompiledEightLaneExecutionInputs,
+        lanes: &CompiledEightLaneExecutionSuccess,
+    ) -> Result<Self::Completion, Self::Error> {
+        Ok(derive_compiled_post_lane_global_normal(
+            CompiledPostLaneNormalInput {
+                source_vectors: input.source_vectors,
+                lane_words: lanes.state.lane_words,
+                selector_words: self.selector_words,
+            },
+        ))
     }
 }
 
@@ -3120,7 +3208,10 @@ mod tests {
         encode_compiled_cases,
     };
     use sha2::{Digest, Sha256};
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
     use std::{
         fs,
         path::PathBuf,
@@ -5052,6 +5143,193 @@ mod tests {
         assert!(progress.lanes[3..].iter().all(Option::is_none));
         assert!(!events.borrow().contains(&IntegratedLaneEvent::Config(3)));
         assert!(!events.borrow().contains(&IntegratedLaneEvent::Validate(4)));
+    }
+
+    struct RecordingPostLane {
+        calls: Rc<Cell<usize>>,
+        fail: bool,
+    }
+
+    impl CompiledPostLaneTransform for RecordingPostLane {
+        type Completion = [i32; 8];
+        type Error = &'static str;
+
+        fn run_after_lanes(
+            &mut self,
+            _input: &CompiledEightLaneExecutionInputs,
+            lanes: &CompiledEightLaneExecutionSuccess,
+        ) -> Result<Self::Completion, Self::Error> {
+            self.calls.set(self.calls.get() + 1);
+            if self.fail {
+                Err("post")
+            } else {
+                Ok(lanes.state.lane_words)
+            }
+        }
+    }
+
+    #[test]
+    fn lane_and_post_composition_invokes_post_once_after_complete_lane_success() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(&events, [IntegratedLaneMode::Built(0); 8]);
+        let mut config = |_lane| -> Result<u8, &'static str> { Ok(0) };
+        let calls = Rc::new(Cell::new(0));
+        let mut post = RecordingPostLane {
+            calls: Rc::clone(&calls),
+            fail: false,
+        };
+        let success = execute_compiled_eight_lanes_then(
+            integrated_execution_input(),
+            integrated_execution_state(),
+            &mut providers,
+            &mut config,
+            &mut post,
+        )
+        .unwrap();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(success.post_lane, success.lanes.state.lane_words);
+        assert_eq!(success.lanes.state.lane_words[7], 107);
+    }
+
+    #[test]
+    fn lane_failure_skips_the_post_lane_stage() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| {
+                if lane == 7 {
+                    IntegratedLaneMode::SearchThenBuildFailure
+                } else {
+                    IntegratedLaneMode::Built(0)
+                }
+            }),
+        );
+        let mut state = integrated_execution_state();
+        state.handles[7] = -1;
+        let mut config = |_lane| -> Result<u8, &'static str> { Ok(0) };
+        let calls = Rc::new(Cell::new(0));
+        let mut post = RecordingPostLane {
+            calls: Rc::clone(&calls),
+            fail: false,
+        };
+        let failure = execute_compiled_eight_lanes_then(
+            integrated_execution_input(),
+            state,
+            &mut providers,
+            &mut config,
+            &mut post,
+        )
+        .unwrap_err();
+        assert_eq!(calls.get(), 0);
+        assert!(matches!(
+            failure,
+            CompiledLaneAndPostFailure::Lanes(CompiledEightLaneExecutionFailure::Dispatch {
+                failed_lane: 7,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn late_config_failure_skips_post_and_preserves_the_lane_prefix() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(&events, [IntegratedLaneMode::Built(0x52); 8]);
+        let mut config =
+            |lane| -> Result<u8, &'static str> { if lane == 7 { Err("config") } else { Ok(0) } };
+        let calls = Rc::new(Cell::new(0));
+        let mut post = RecordingPostLane {
+            calls: Rc::clone(&calls),
+            fail: false,
+        };
+        let failure = execute_compiled_eight_lanes_then(
+            integrated_execution_input(),
+            integrated_execution_state(),
+            &mut providers,
+            &mut config,
+            &mut post,
+        )
+        .unwrap_err();
+        assert_eq!(calls.get(), 0);
+        let CompiledLaneAndPostFailure::Lanes(CompiledEightLaneExecutionFailure::Config {
+            failed_lane,
+            progress,
+            dispatch,
+            pre_config_postprocess,
+            config_error,
+        }) = failure
+        else {
+            panic!("expected lane config failure")
+        };
+        assert_eq!(failed_lane, 7);
+        assert_eq!(progress.completed_lanes, 7);
+        assert_eq!(config_error, "config");
+        assert_eq!(dispatch.type_word_write, Some(0x52));
+        assert_eq!(progress.state.type_words[7], 0x52);
+        assert_eq!(
+            progress.state.lane_words[7],
+            pre_config_postprocess.lane_word
+        );
+        assert!(progress.lanes[..7].iter().all(Option::is_some));
+        assert!(progress.lanes[7].is_none());
+    }
+
+    #[test]
+    fn post_failure_retains_the_complete_eight_lane_success() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(&events, [IntegratedLaneMode::Built(0); 8]);
+        let mut config = |_lane| -> Result<u8, &'static str> { Ok(0) };
+        let calls = Rc::new(Cell::new(0));
+        let mut post = RecordingPostLane {
+            calls: Rc::clone(&calls),
+            fail: true,
+        };
+        let failure = execute_compiled_eight_lanes_then(
+            integrated_execution_input(),
+            integrated_execution_state(),
+            &mut providers,
+            &mut config,
+            &mut post,
+        )
+        .unwrap_err();
+        let CompiledLaneAndPostFailure::PostLane { lanes, post_error } = failure else {
+            panic!("expected post-lane failure")
+        };
+        assert_eq!(calls.get(), 1);
+        assert_eq!(post_error, "post");
+        assert_eq!(lanes.state.lane_words[7], 107);
+        assert_eq!(lanes.lanes.len(), 8);
+    }
+
+    #[test]
+    fn concrete_post_normal_uses_sources_final_lane_words_and_its_selector() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| IntegratedLaneMode::Built(if lane == 2 { 0x51 } else { 0 })),
+        );
+        let mut input = integrated_execution_input();
+        input.source_vectors = post_lane_square_input([0, 0, 0]).source_vectors;
+        let mut config =
+            |lane| -> Result<u8, &'static str> { Ok(if lane == 2 { 0x02 } else { 0 }) };
+        let mut post = CompiledPostLaneGlobalNormal {
+            selector_words: [0, 0, 9],
+        };
+        let success = execute_compiled_eight_lanes_then(
+            input,
+            integrated_execution_state(),
+            &mut providers,
+            &mut config,
+            &mut post,
+        )
+        .unwrap();
+        assert_ne!(success.lanes.state.lane_words[2], 102);
+        let expected = derive_compiled_post_lane_global_normal(CompiledPostLaneNormalInput {
+            source_vectors: input.source_vectors,
+            lane_words: success.lanes.state.lane_words,
+            selector_words: [0, 0, 9],
+        });
+        assert_eq!(success.post_lane, expected);
+        assert_eq!(success.post_lane.selected_quad, CompiledPostLaneQuad::C);
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

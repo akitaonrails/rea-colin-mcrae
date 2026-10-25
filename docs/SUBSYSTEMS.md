@@ -1250,6 +1250,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   stable-snapshot effects retain both publications and the ignored EAX square
   sum. Five focused tests bring `cmr-core` to 1,227. Native reloaded-pointer
   aliases/fault prefixes and post-AK8 orchestration remain open.
+  G03-AK12 composes the recovered barrier: a typed post-stage interface runs
+  exactly once after eight-lane success, never after dispatch/config failure,
+  and retains the complete lane success if the post stage fails. The concrete
+  normal adapter consumes original source vectors and final post-config lane
+  words. Five focused tests bring `cmr-core` to 1,232. Later caller work and
+  native pointer/fault behavior remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1310,7 +1316,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-hpc-geometry-parser`, and
   `impl.sim-hpc-geometry-runtime`,
   `rea.official-eu.sim-post-lane-global-normal`, and
-  `impl.sim-post-lane-global-normal`.
+  `impl.sim-post-lane-global-normal`, and
+  `impl.sim-eight-lane-post-barrier`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
