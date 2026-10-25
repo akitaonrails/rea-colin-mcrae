@@ -1031,20 +1031,27 @@ languages rather than fabricating or silently aliasing Italian assets.
   separate helper reconstructs both lookup-free candidate branches.
   `derive_lookup_dependent_candidates` now reconstructs the remaining combined
   branch, using `signed_ratio_angle` plus exact source-owned trig and legacy
-  square-root lookups; seven focused tests bring this module to 44. A nonzero
+  square-root lookups. A nonzero
   `+0x420` admits the
   recovered same-sign wheel correction; its modular candidate, signed
   threshold/alternate, and remaining-budget rules are reconstructed as three
   pure helpers. The share/ramp/gain scalar at the core of `FUN_0040fbe0` is
   reconstructed with validated one-to-four-lane counts and its exact upper-only
   clamp. The adjacent surface-indexed coefficient/override gates and scalar are
-  also reconstructed. The geometric qualification and normalization in
-  `FUN_0040fbe0` are recovered as the next implementation scope: four neutral
-  A/B/C vector lanes, strict angle/Y/residual-dot gates, generated arcsine and
-  legacy-square-root lookups, and wrapping adds into `+0x45c+12*lane`.
+  also reconstructed. `apply_geometric_lane_postprocess` now implements the
+  full two-pass geometric contract in `FUN_0040fbe0`: four neutral A/B/C vector
+  lanes, strict angle/Y/residual-dot gates, one-to-four-lane gain sharing,
+  generated arcsine plus legacy-square-root normalization, signed
+  wrapping-absolute alignment bounding (including `INT_MIN` passthrough), and
+  wrapping adds into `+0x45c+12*lane`. The only fallible domain is the unsafe
+  arcsine `INT_MIN` lookup; the API stages all four decisions and contributions
+  before publication, so that lookup error leaves every accumulator unchanged.
+  Eleven focused geometric tests bring `vehicle_dynamics` to 55 tests.
   Direction/state accumulation in `FUN_0040d810`, surface direction/projection
-  and stateful add, the geometric Rust implementation, position update, and
-  damper source remain. `signed_ratio_angle` preserves the observed asymmetric
+  and stateful add, position update, and damper source remain.
+  `signed_arcsine_phase` preserves the signed lookup, `0x10000` clamp,
+  index-4096 adjacent angle-table zero, and rejects unsafe `INT_MIN` instead of
+  reproducing the unchecked read. `signed_ratio_angle` preserves the observed asymmetric
   zero, sign/swap, and index-512 adjacent-zero rules. Its zero gates precede
   validation: `(0,INT_MIN)=0`, `(INT_MIN,0)=0x400`, and `INT_MIN` is rejected
   only when both operands are nonzero;

@@ -9,7 +9,54 @@ use crate::fixed_point::Fixed16;
 const TRIG_PHASE_MASK: u16 = 0x0fff;
 const TRIG_QUARTER_TURN: u16 = 0x0400;
 const TRIG_QUARTER: [i32; 1025] = include!("root_menu_c3d_trig_quarter.in");
+const SIGNED_ARCSINE_TABLE: [u16; 4096] = include!("signed_arcsine_table.in");
 const SIGNED_RATIO_ANGLE_TABLE: [u16; 512] = include!("signed_ratio_angle_table.in");
+
+/// Input-domain failure for [`signed_arcsine_phase`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SignedArcsinePhaseError {
+    /// Wrapping negation cannot produce a valid magnitude for `i32::MIN`.
+    MinimumInput,
+}
+
+/// Reconstructs the signed arcsine-table phase kernel used by
+/// `FUN_0040fbe0`.
+///
+/// The input is a signed Q16.16 scalar. Its wrapping absolute value is clamped
+/// to `0x10000`, shifted right by four, and used as a u16 table index. A
+/// negative input negates the recovered phase after lookup. Exact magnitude
+/// `0x10000` produces index 4096: the shipped layout reads the adjacent signed
+/// ratio table's first word, which is zero, and this helper represents that
+/// sentinel explicitly instead of indexing out of bounds.
+///
+/// This is a neutral compatibility primitive, not a general floating-point
+/// arcsine API. Its phase uses `0x1000` per full period and `0x400` per quarter.
+///
+/// # Errors
+///
+/// Returns [`SignedArcsinePhaseError::MinimumInput`] for `i32::MIN`, whose
+/// wrapping negation remains negative and would send the shipped unchecked
+/// logical-shift index far outside the recovered table span.
+pub fn signed_arcsine_phase(value: i32) -> Result<i16, SignedArcsinePhaseError> {
+    if value == i32::MIN {
+        return Err(SignedArcsinePhaseError::MinimumInput);
+    }
+
+    let negative = value.is_negative();
+    let magnitude = value.abs().min(Fixed16::ONE.raw());
+    let index = (magnitude as usize) >> 4;
+    let mut phase = match index {
+        0..=4095 => SIGNED_ARCSINE_TABLE[index],
+        // DAT_00831380 is immediately followed by DAT_00833380, whose first
+        // generated word is zero.
+        4096 => 0,
+        _ => unreachable!("the clamped magnitude cannot exceed index 4096"),
+    };
+    if negative {
+        phase = phase.wrapping_neg();
+    }
+    Ok(phase as i16)
+}
 
 /// Input-domain failure for [`signed_ratio_angle`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,6 +228,62 @@ mod tests {
             assert_eq!(sin_q16(phase.wrapping_add(2048)), -sin_q16(phase));
             assert_eq!(cos_q16(phase), sin_q16(phase.wrapping_add(0x400)));
         }
+    }
+
+    #[test]
+    fn signed_arcsine_phase_pins_zero_sign_and_minimum_domain() {
+        assert_eq!(signed_arcsine_phase(0), Ok(0));
+        assert_eq!(signed_arcsine_phase(15), Ok(0));
+        assert_eq!(signed_arcsine_phase(-15), Ok(0));
+        assert_eq!(signed_arcsine_phase(0x8000), Ok(341));
+        assert_eq!(signed_arcsine_phase(-0x8000), Ok(-341));
+        assert_eq!(
+            signed_arcsine_phase(i32::MIN),
+            Err(SignedArcsinePhaseError::MinimumInput)
+        );
+    }
+
+    #[test]
+    fn signed_arcsine_phase_pins_threshold_neighbor_indices() {
+        assert_eq!(signed_arcsine_phase(4032 << 4), Ok(909));
+        assert_eq!(signed_arcsine_phase(4033 << 4), Ok(910));
+        assert_eq!(signed_arcsine_phase(4034 << 4), Ok(911));
+        assert_eq!(signed_arcsine_phase(-(4033 << 4)), Ok(-910));
+        assert_eq!(signed_arcsine_phase(-(4034 << 4)), Ok(-911));
+    }
+
+    #[test]
+    fn signed_arcsine_phase_keeps_index_4096_adjacent_zero() {
+        assert_eq!(signed_arcsine_phase(0xffff), Ok(1023));
+        assert_eq!(signed_arcsine_phase(-0xffff), Ok(-1023));
+        assert_eq!(signed_arcsine_phase(0x10000), Ok(0));
+        assert_eq!(signed_arcsine_phase(-0x10000), Ok(0));
+        assert_eq!(signed_arcsine_phase(i32::MAX), Ok(0));
+        assert_eq!(signed_arcsine_phase(i32::MIN + 1), Ok(0));
+    }
+
+    #[test]
+    fn signed_arcsine_table_has_canonical_shape_and_hash() {
+        assert_eq!(SIGNED_ARCSINE_TABLE.len(), 4096);
+        assert_eq!(SIGNED_ARCSINE_TABLE[0], 0);
+        assert_eq!(SIGNED_ARCSINE_TABLE[2048], 341);
+        assert_eq!(SIGNED_ARCSINE_TABLE[4033], 910);
+        assert_eq!(SIGNED_ARCSINE_TABLE[4034], 911);
+        assert_eq!(SIGNED_ARCSINE_TABLE[4095], 1023);
+        assert!(
+            SIGNED_ARCSINE_TABLE
+                .windows(2)
+                .all(|pair| pair[0] <= pair[1])
+        );
+
+        let bytes: Vec<_> = SIGNED_ARCSINE_TABLE
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        assert_eq!(
+            hex_sha256(&bytes),
+            "ddf0d95fbd29aedd9287193c16fac32b628f29507e479220785ce00f1e02745b"
+        );
     }
 
     #[test]

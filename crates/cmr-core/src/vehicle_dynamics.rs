@@ -44,7 +44,9 @@
 //! - **Postprocess correction scalar** (`FUN_0040fbe0`): one to four qualified
 //!   lanes share `0x140000`; each strict-above-threshold angle measure feeds a
 //!   wrapping Q16.16 ramp with an upper-only clamp, then scales and negates an
-//!   opaque caller argument. Geometric lane qualification remains separate.
+//!   opaque caller argument. The surrounding geometric pass applies the exact
+//!   active/angle/Y/residual gates, legacy normalization, alignment clamp, and
+//!   wrapping accumulator adds over four neutral vector lanes.
 //! - **Surface-indexed lane scalar** (`FUN_0040d810`): an opaque nonzero
 //!   per-lane override selects `0x8000`; otherwise a caller-resolved surface
 //!   coefficient is used. The projected input is arithmetic-shifted by two,
@@ -61,13 +63,15 @@
 //! direction vectors and surrounding
 //! per-wheel accumulation, the physical meaning of the nonzero control
 //! `+0x420` gate, the surface-indexed direction/projection and stateful add, the
-//! vector qualification and normalization around `FUN_0040fbe0`, the exact
-//! semi-implicit position update's half-accel term, the suspension damper
-//! source, and runtime-loaded per-surface/per-car table contents.
+//! exact semi-implicit position update's half-accel term, the suspension
+//! damper source, and runtime-loaded per-surface/per-car table contents.
 
 use crate::{
     fixed_point::{Fixed16, Vec3},
-    legacy_math::{SignedRatioAngleError, cos_q16, signed_ratio_angle, sin_q16, sqrt_q16},
+    legacy_math::{
+        SignedArcsinePhaseError, SignedRatioAngleError, cos_q16, signed_arcsine_phase,
+        signed_ratio_angle, sin_q16, sqrt_q16,
+    },
 };
 
 /// Velocity-integration gain applied to acceleration (`0x3333` ~ 0.2); the
@@ -126,6 +130,176 @@ pub const POSTPROCESS_ANGLE_THRESHOLD: Fixed16 = Fixed16::from_raw(0xa0000);
 /// Truncated Q16.16 reciprocal of the postprocess ramp span:
 /// `q16_div(1.0, 0x320000) == 0x51e`.
 pub const POSTPROCESS_RAMP_RECIPROCAL: Fixed16 = Fixed16::from_raw(0x51e);
+
+/// One neutral vector lane consumed by the geometric postprocess in
+/// `FUN_0040fbe0`.
+///
+/// The vector labels intentionally mirror only their roles in the recovered
+/// arithmetic. Their physical meanings are not established.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeometricPostprocessLane {
+    pub active: bool,
+    pub vector_a: Vec3,
+    pub vector_b: Vec3,
+    pub vector_c: Vec3,
+    pub accumulator: Vec3,
+}
+
+/// Observable qualification result of [`apply_geometric_lane_postprocess`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeometricPostprocessOutcome {
+    pub qualified: [bool; 4],
+    pub angle_measures: [Fixed16; 4],
+}
+
+/// Safe-domain failure while reproducing the geometric lane postprocess.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GeometricPostprocessError {
+    /// The signed arcsine lookup cannot safely represent this lane's input.
+    Angle {
+        lane: u8,
+        source: SignedArcsinePhaseError,
+    },
+}
+
+/// Convert the recovered A/B dot product to the Q16.16 angle measure used by
+/// `FUN_0040fbe0` qualification.
+///
+/// A signed dot at or above `1.0` maps directly to zero. Smaller values use
+/// the signed arcsine phase, complement it about `0x400`, and multiply by
+/// `0x1680` with wrapping i32 arithmetic. This preserves the legacy exact
+/// negative-one adjacency sentinel through [`signed_arcsine_phase`].
+///
+/// # Errors
+///
+/// Propagates a signed-arcsine lookup domain failure.
+pub fn geometric_lane_angle_measure(dot_ab: Fixed16) -> Result<Fixed16, SignedArcsinePhaseError> {
+    if dot_ab.raw() >= Fixed16::ONE.raw() {
+        return Ok(Fixed16::ZERO);
+    }
+
+    let phase = i32::from(signed_arcsine_phase(dot_ab.raw())?);
+    Ok(Fixed16::from_raw(
+        0x400_i32.wrapping_sub(phase).wrapping_mul(0x1680),
+    ))
+}
+
+/// Apply the recovered four-lane geometric qualification, normalization, and
+/// stateful accumulator update from `FUN_0040fbe0`.
+///
+/// Qualification is exact and ordered: a lane must be active, its A/B angle
+/// must be strictly above [`POSTPROCESS_ANGLE_THRESHOLD`], `A.y` must be
+/// strictly below `B.y`, and `dot(A, C - B*dot(B,C))` must be strictly
+/// negative. Qualified lanes share the recovered `0x140000` budget. Each
+/// direction is `A - B*dot(B,A)`, normalized through the legacy square-root
+/// lookup and signed reciprocal, aligned to C with the signed
+/// wrapping-absolute limit (including its `i32::MIN` pass-through), scaled by
+/// the existing postprocess gain, then wrapping-added to its accumulator.
+///
+/// Updates are published only after every active lane has passed the safe arc
+/// lookup domain, so an error leaves all accumulators unchanged.
+///
+/// # Errors
+///
+/// Returns a lane-indexed lookup failure rather than reproducing an unchecked
+/// table read.
+pub fn apply_geometric_lane_postprocess(
+    lanes: &mut [GeometricPostprocessLane; 4],
+    argument_scale: Fixed16,
+) -> Result<GeometricPostprocessOutcome, GeometricPostprocessError> {
+    let mut qualified = [false; 4];
+    let mut angle_measures = [Fixed16::ZERO; 4];
+
+    for (index, lane) in lanes.iter().enumerate() {
+        if !lane.active {
+            continue;
+        }
+
+        let angle =
+            geometric_lane_angle_measure(lane.vector_b.dot(lane.vector_a)).map_err(|source| {
+                GeometricPostprocessError::Angle {
+                    lane: index as u8,
+                    source,
+                }
+            })?;
+        angle_measures[index] = angle;
+        if angle.raw() <= POSTPROCESS_ANGLE_THRESHOLD.raw()
+            || lane.vector_a.y.raw() >= lane.vector_b.y.raw()
+        {
+            continue;
+        }
+
+        let projection = lane.vector_b.dot(lane.vector_c);
+        let residual = lane.vector_c.sub(lane.vector_b.scale(projection));
+        if lane.vector_a.dot(residual).raw() < 0 {
+            qualified[index] = true;
+        }
+    }
+
+    let qualified_count = qualified.iter().filter(|&&value| value).count() as u8;
+    if qualified_count == 0 {
+        return Ok(GeometricPostprocessOutcome {
+            qualified,
+            angle_measures,
+        });
+    }
+
+    let mut pending = [Vec3::ZERO; 4];
+    for (index, lane) in lanes.iter().enumerate() {
+        if !qualified[index] {
+            continue;
+        }
+
+        let projection = lane.vector_b.dot(lane.vector_a);
+        let residual = lane.vector_a.sub(lane.vector_b.scale(projection));
+        let direction = normalize_geometric_residual(residual);
+        let alignment = direction.dot(lane.vector_c);
+        let bounded_alignment = bound_geometric_alignment(alignment);
+        let aligned_direction = direction.scale(bounded_alignment);
+        let Some(gain) = postprocess_lane_correction_gain(
+            angle_measures[index],
+            argument_scale,
+            qualified_count,
+        ) else {
+            continue;
+        };
+        pending[index] = aligned_direction.scale(gain);
+    }
+
+    for (lane, delta) in lanes.iter_mut().zip(pending) {
+        lane.accumulator = lane.accumulator.add(delta);
+    }
+    Ok(GeometricPostprocessOutcome {
+        qualified,
+        angle_measures,
+    })
+}
+
+fn normalize_geometric_residual(residual: Vec3) -> Vec3 {
+    let square_sum = residual.dot(residual).raw() as u32;
+    let root = sqrt_q16(square_sum);
+    if root == 0 {
+        return Vec3::ZERO;
+    }
+
+    // For every nonzero u32 square sum, `sqrt_q16` returns a positive root in
+    // the bounded legacy normalization range. The recovered 2^32/root
+    // reciprocal therefore fits a positive i32; no divide-error state is
+    // reachable after the explicit zero-root branch.
+    let reciprocal = ((1_u64 << 32) / u64::from(root)) as i32;
+    residual.scale(Fixed16::from_raw(reciprocal))
+}
+
+const fn bound_geometric_alignment(alignment: Fixed16) -> Fixed16 {
+    let absolute_alignment = alignment.raw().wrapping_abs();
+    if absolute_alignment <= Fixed16::ONE.raw() {
+        alignment
+    } else if alignment.raw() > 0 {
+        Fixed16::ONE
+    } else {
+        Fixed16::ONE.neg()
+    }
+}
 
 /// Recover the per-lane share used when `FUN_0040fbe0` has qualified one to
 /// four lanes.
@@ -489,6 +663,26 @@ mod tests {
         )
     }
 
+    fn geometric_lane(
+        active: bool,
+        vector_a: Vec3,
+        vector_b: Vec3,
+        vector_c: Vec3,
+        accumulator: Vec3,
+    ) -> GeometricPostprocessLane {
+        GeometricPostprocessLane {
+            active,
+            vector_a,
+            vector_b,
+            vector_c,
+            accumulator,
+        }
+    }
+
+    fn inactive_geometric_lane() -> GeometricPostprocessLane {
+        geometric_lane(false, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO)
+    }
+
     #[test]
     fn lateral_grip_leaves_pure_forward_velocity_untouched() {
         let forward = v(1, 0, 0);
@@ -550,6 +744,237 @@ mod tests {
         assert_eq!(SURFACE_GRIP_LOW.raw(), 0x2666);
         assert!(SURFACE_GRIP_HIGH > SURFACE_GRIP_LOW);
         assert_eq!(SURFACE_GRIP_RECORD_BYTES, 8);
+    }
+
+    #[test]
+    fn geometric_angle_pins_arc_indices_strict_threshold_and_adjacency() {
+        let index_4033 = geometric_lane_angle_measure(Fixed16::from_raw(4033 << 4)).unwrap();
+        let index_4034 = geometric_lane_angle_measure(Fixed16::from_raw(4034 << 4)).unwrap();
+        assert_eq!(index_4033, Fixed16::from_raw(0x0a0500));
+        assert_eq!(index_4034, Fixed16::from_raw(0x09ee80));
+        assert!(index_4033.raw() > POSTPROCESS_ANGLE_THRESHOLD.raw());
+        assert!(index_4034.raw() <= POSTPROCESS_ANGLE_THRESHOLD.raw());
+        assert_eq!(
+            geometric_lane_angle_measure(Fixed16::ONE.neg()),
+            Ok(Fixed16::from_raw(0x5a0000))
+        );
+        assert_eq!(
+            geometric_lane_angle_measure(Fixed16::ONE),
+            Ok(Fixed16::ZERO)
+        );
+        assert_eq!(
+            geometric_lane_angle_measure(Fixed16::from_raw(i32::MIN)),
+            Err(SignedArcsinePhaseError::MinimumInput)
+        );
+    }
+
+    #[test]
+    fn geometric_postprocess_qualifies_and_updates_one_lane() {
+        let qualified = geometric_lane(true, v(-1, 0, 0), v(0, 1, 0), v(1, 0, 0), Vec3::ZERO);
+        let mut lanes = [inactive_geometric_lane(); 4];
+        lanes[0] = qualified;
+
+        let outcome = apply_geometric_lane_postprocess(&mut lanes, Fixed16::ONE).unwrap();
+
+        assert_eq!(outcome.qualified, [true, false, false, false]);
+        assert_eq!(outcome.angle_measures[0], Fixed16::from_raw(0x5a0000));
+        assert_eq!(
+            lanes[0].accumulator,
+            Vec3::new(Fixed16::from_raw(-1_310_160), Fixed16::ZERO, Fixed16::ZERO,)
+        );
+    }
+
+    #[test]
+    fn geometric_postprocess_uses_strict_y_and_residual_dot_gates() {
+        let equal_y = geometric_lane(true, v(-1, 0, 0), v(0, 0, 1), v(1, 0, 0), v(3, 0, 0));
+        let zero_residual_dot =
+            geometric_lane(true, v(-1, 0, 0), v(0, 1, 0), v(0, 0, 1), v(4, 0, 0));
+        let positive_residual_dot =
+            geometric_lane(true, v(-1, 0, 0), v(0, 1, 0), v(-1, 0, 0), v(5, 0, 0));
+        let mut lanes = [inactive_geometric_lane(); 4];
+        lanes[0] = equal_y;
+        lanes[1] = zero_residual_dot;
+        lanes[2] = positive_residual_dot;
+
+        let outcome = apply_geometric_lane_postprocess(&mut lanes, Fixed16::ONE).unwrap();
+
+        assert_eq!(outcome.qualified, [false; 4]);
+        assert_eq!(lanes[0].accumulator, v(3, 0, 0));
+        assert_eq!(lanes[1].accumulator, v(4, 0, 0));
+        assert_eq!(lanes[2].accumulator, v(5, 0, 0));
+    }
+
+    #[test]
+    fn geometric_postprocess_propagates_each_one_to_four_lane_share() {
+        let expected_raw = [-1_310_160, -655_080, -436_720, -327_540];
+        for qualified_count in 1..=4 {
+            let mut lanes = [inactive_geometric_lane(); 4];
+            for lane in &mut lanes[..qualified_count] {
+                *lane = geometric_lane(true, v(-1, 0, 0), v(0, 1, 0), v(1, 0, 0), Vec3::ZERO);
+            }
+
+            let outcome = apply_geometric_lane_postprocess(&mut lanes, Fixed16::ONE).unwrap();
+
+            assert_eq!(
+                outcome.qualified.iter().filter(|&&value| value).count(),
+                qualified_count
+            );
+            for lane in &lanes[..qualified_count] {
+                assert_eq!(lane.accumulator.x.raw(), expected_raw[qualified_count - 1]);
+            }
+        }
+    }
+
+    #[test]
+    fn geometric_postprocess_shares_gain_and_preserves_alignment_steps() {
+        let half_aligned = geometric_lane(
+            true,
+            v(-1, 0, 0),
+            v(0, 1, 0),
+            Vec3::new(Fixed16::from_raw(0x8000), Fixed16::ZERO, Fixed16::ZERO),
+            Vec3::ZERO,
+        );
+        let over_aligned = geometric_lane(true, v(-1, 0, 0), v(0, 1, 0), v(2, 0, 0), Vec3::ZERO);
+        let mut lanes = [inactive_geometric_lane(); 4];
+        lanes[0] = half_aligned;
+        lanes[1] = over_aligned;
+
+        let outcome = apply_geometric_lane_postprocess(&mut lanes, Fixed16::ONE).unwrap();
+
+        assert_eq!(outcome.qualified, [true, true, false, false]);
+        assert_eq!(
+            lanes[0].accumulator,
+            Vec3::new(Fixed16::from_raw(-327_540), Fixed16::ZERO, Fixed16::ZERO,)
+        );
+        assert_eq!(
+            lanes[1].accumulator,
+            Vec3::new(Fixed16::from_raw(-655_220), Fixed16::ZERO, Fixed16::ZERO,)
+        );
+    }
+
+    #[test]
+    fn geometric_normalization_zero_root_returns_zero_direction() {
+        assert_eq!(normalize_geometric_residual(Vec3::ZERO), Vec3::ZERO);
+    }
+
+    #[test]
+    fn geometric_normalization_pins_lookup_reciprocal_and_axis_truncation() {
+        let residual = Vec3::new(
+            Fixed16::from_raw(0x18000),
+            Fixed16::from_raw(-0xc000),
+            Fixed16::from_raw(0x4000),
+        );
+
+        assert_eq!(residual.dot(residual).raw() as u32, 0x2e000);
+        assert_eq!(sqrt_q16(0x2e000), 111_130);
+        assert_eq!((1_u64 << 32) / 111_130, 38_648);
+        assert_eq!(
+            normalize_geometric_residual(residual),
+            Vec3::new(
+                Fixed16::from_raw(57_972),
+                Fixed16::from_raw(-28_986),
+                Fixed16::from_raw(9_662),
+            )
+        );
+    }
+
+    #[test]
+    fn geometric_alignment_clamp_keeps_signed_wrapping_rules() {
+        assert_eq!(bound_geometric_alignment(Fixed16::ONE), Fixed16::ONE);
+        assert_eq!(
+            bound_geometric_alignment(Fixed16::ONE.neg()),
+            Fixed16::ONE.neg()
+        );
+        assert_eq!(
+            bound_geometric_alignment(Fixed16::from_raw(0x10001)),
+            Fixed16::ONE
+        );
+        assert_eq!(
+            bound_geometric_alignment(Fixed16::from_raw(-0x10001)),
+            Fixed16::ONE.neg()
+        );
+        assert_eq!(
+            bound_geometric_alignment(Fixed16::from_raw(i32::MIN)),
+            Fixed16::from_raw(i32::MIN)
+        );
+    }
+
+    #[test]
+    fn geometric_postprocess_wraps_accumulator_addition_on_all_axes() {
+        let x_lane = geometric_lane(
+            true,
+            v(-1, 0, 0),
+            v(0, 1, 0),
+            v(1, 0, 0),
+            Vec3::new(Fixed16::from_raw(i32::MIN), Fixed16::ZERO, Fixed16::ZERO),
+        );
+        let y_lane = geometric_lane(
+            true,
+            v(0, -1, 0),
+            v(1, 0, 0),
+            v(0, 1, 0),
+            Vec3::new(Fixed16::ZERO, Fixed16::from_raw(i32::MIN), Fixed16::ZERO),
+        );
+        let z_lane = geometric_lane(
+            true,
+            v(0, 0, -1),
+            v(0, 1, 0),
+            v(0, 0, 1),
+            Vec3::new(Fixed16::ZERO, Fixed16::ZERO, Fixed16::from_raw(i32::MIN)),
+        );
+        let mut lanes = [inactive_geometric_lane(); 4];
+        lanes[0] = x_lane;
+        lanes[1] = y_lane;
+        lanes[2] = z_lane;
+
+        apply_geometric_lane_postprocess(&mut lanes, Fixed16::ONE).unwrap();
+
+        let expected = i32::MIN.wrapping_add(-436_720);
+        assert_eq!(lanes[0].accumulator.x.raw(), expected);
+        assert_eq!(lanes[1].accumulator.y.raw(), expected);
+        assert_eq!(lanes[2].accumulator.z.raw(), expected);
+    }
+
+    #[test]
+    fn geometric_postprocess_inactive_minimum_dot_is_not_evaluated() {
+        let mut lanes = [inactive_geometric_lane(); 4];
+        lanes[0] = geometric_lane(
+            false,
+            Vec3::new(Fixed16::from_raw(i32::MIN), Fixed16::ZERO, Fixed16::ZERO),
+            v(1, 0, 0),
+            Vec3::ZERO,
+            v(6, 0, 0),
+        );
+
+        let outcome = apply_geometric_lane_postprocess(&mut lanes, Fixed16::ONE).unwrap();
+
+        assert_eq!(outcome.qualified, [false; 4]);
+        assert_eq!(lanes[0].accumulator, v(6, 0, 0));
+    }
+
+    #[test]
+    fn geometric_postprocess_lookup_error_is_atomic_and_lane_indexed() {
+        let valid = geometric_lane(true, v(-1, 0, 0), v(0, 1, 0), v(1, 0, 0), v(7, 0, 0));
+        let invalid = geometric_lane(
+            true,
+            Vec3::new(Fixed16::from_raw(i32::MIN), Fixed16::ZERO, Fixed16::ZERO),
+            v(1, 0, 0),
+            Vec3::ZERO,
+            v(9, 0, 0),
+        );
+        let mut lanes = [inactive_geometric_lane(); 4];
+        lanes[0] = valid;
+        lanes[1] = invalid;
+
+        assert_eq!(
+            apply_geometric_lane_postprocess(&mut lanes, Fixed16::ONE),
+            Err(GeometricPostprocessError::Angle {
+                lane: 1,
+                source: SignedArcsinePhaseError::MinimumInput,
+            })
+        );
+        assert_eq!(lanes[0].accumulator, v(7, 0, 0));
+        assert_eq!(lanes[1].accumulator, v(9, 0, 0));
     }
 
     #[test]

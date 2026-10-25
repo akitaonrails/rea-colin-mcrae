@@ -412,10 +412,15 @@ quarter-period and `0x1000` a full wrapping phase; this is not exposed as a
 conventional atan2 API. `FUN_0048fba0` proves all five tables are generated
 math rather than asset payloads, including arcsine `DAT_00831380` (canonical
 hash `ddf0d95f...e02745b`) used by `FUN_0040fbe0`. The exact source-owned
-`legacy_math` helpers centralize these recovered consumers while mathematical
-`Fixed16::sqrt` stays distinct. The next G03 implementation scope is the now
-statically recovered four-lane geometric qualification/normalization and its
-wrapping adds; direction/state accumulation in `FUN_0040d810`, surface
+`signed_arcsine_phase` contract preserves sign restoration, clamp/index
+behavior, the exact-negative-one adjacent-zero sentinel, and safe `INT_MIN`
+rejection. `apply_geometric_lane_postprocess` reconstructs the four-lane
+two-pass qualification, legacy normalization, signed wrapping alignment bound,
+shared scalar, and wrapping accumulator adds behind an atomic API whose only
+fallible domain is the unsafe arcsine `INT_MIN` lookup.
+The other `legacy_math` helpers centralize the recovered consumers while
+mathematical `Fixed16::sqrt` stays distinct. The next G03 scope is
+direction/state accumulation in `FUN_0040d810`, surface
 direction/projection and add, position update, and the damper source also
 remain. Direction vectors, projections, and stateful
 accumulation remain separated from unsupported physical labels until recovered.
