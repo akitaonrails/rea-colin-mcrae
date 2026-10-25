@@ -624,7 +624,7 @@ disjointness, and precedence, bringing `cmr-core` to 1,141.
 runtime reachability, meanings/units, other editions, and application wiring
 remain open.
 
-G03-Z reconstructs and integrates the exact no-call interval
+G03-Z (`bcda59c`) reconstructs and integrates the exact no-call interval
 `[0x406324,0x40645f)`. A mixed-width exact-write patch carries fifteen control
 dwords, state dword `+0xec`, control byte `+0x440`, and control word `+0x3e4`.
 It consumes effective post-prefix control `+0x148/+0x15c`; `+0x14c` copies the
@@ -638,6 +638,21 @@ widths, values, signed boundaries, routing, disjointness, invalid selectors,
 and precedence, bringing `cmr-core` to 1,146. The preceding `FUN_00486090`
 state `+0x758` effect, complete object application, semantics/units, runtime
 reachability, application wiring, and other editions remain open.
+
+G03-AA reconstructs `FUN_00486090` plus its initializer caller selection while
+keeping the fixed-address table caller-owned. Context zero and the gated
+selection-byte region choose `-1`; other bytes select `5*row+column`, reaching
+indices `0..=13,15..=18`. The helper stores non-sentinel dwords verbatim to
+state `+0x758`; `-1` resolves checked record-relative config `+0x91 & 7`.
+Composition conditionally reads unindexed config `+0x6c0`, returns the state
+effect separately, and validates config-before-prefix-before-aux-before-state-
+selection-before-post-helper-before-family. Four new tests plus strengthened
+tests bring `cmr-core` to 1,150. Static review found the second direct caller at
+`0x46d113` and a `+0x738` save/restore store, narrowing the older claim to the
+initializer being the only observed originating constructor assignment. Table
+values/extent, semantic meanings, generic second-caller provenance, runtime
+reachability, complete object application, wiring, and other editions remain
+open.
 
 Exit gate:
 

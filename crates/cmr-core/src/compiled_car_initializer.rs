@@ -72,6 +72,10 @@ pub const COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET: usize = 0x095;
 /// Record-relative six-word-run option byte.
 pub const COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET: usize = 0x099;
 
+/// Record-relative fallback byte consumed by `FUN_00486090`.
+pub const COMPILED_CONFIG_STATE_758_OPTION_OFFSET: usize = 0x091;
+pub const COMPILED_CONFIG_STATE_758_SELECTION_OFFSET: usize = 0x6c0;
+
 const COMPILED_CONFIG_AUX_FORCE_DEFAULT_MASK: u8 = 0x02;
 
 /// Auxiliary control destinations in ascending offset order.
@@ -373,6 +377,91 @@ fn common_prefix_q16_mul(left: i32, right: i32) -> i32 {
     ((i64::from(left) * i64::from(right)) >> 16) as i32
 }
 
+/// Sole state destination written by `FUN_00486090`.
+pub const COMPILED_STATE_WORD_758_OFFSET: u16 = 0x758;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledStateWord758Effect {
+    pub state_word_758: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledStateWord758SelectionError {
+    TruncatedSelectionByte {
+        required_len: usize,
+        actual_len: usize,
+    },
+    TableTruncated {
+        index: usize,
+        table_len: usize,
+    },
+}
+
+impl fmt::Display for CompiledStateWord758SelectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TruncatedSelectionByte {
+                required_len,
+                actual_len,
+            } => write!(
+                formatter,
+                "compiled state +0x758 selection needs {required_len} config bytes, got {actual_len}"
+            ),
+            Self::TableTruncated { index, table_len } => write!(
+                formatter,
+                "compiled state +0x758 selector needs table index {index}, but length is {table_len}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CompiledStateWord758SelectionError {}
+
+/// Reconstruct the caller's requested-value selection before `FUN_00486090`.
+///
+/// The table remains caller-owned. Context-zero and the gated-default region
+/// return the `-1` sentinel without inspecting it. A short table on the table
+/// route is a typed safe-policy error; the shipped fixed-address read was
+/// unchecked.
+pub fn select_compiled_state_word_758_argument(
+    context_nonzero: bool,
+    selection_byte: u8,
+    table: &[i32],
+) -> Result<i32, CompiledStateWord758SelectionError> {
+    if !context_nonzero || (selection_byte & 0x18) >= 0x10 && (selection_byte & 0xe0) >= 0x80 {
+        return Ok(-1);
+    }
+
+    let row = usize::from((selection_byte >> 3) & 3);
+    let column = usize::from(selection_byte >> 5);
+    let index = row * 5 + column;
+    table
+        .get(index)
+        .copied()
+        .ok_or(CompiledStateWord758SelectionError::TableTruncated {
+            index,
+            table_len: table.len(),
+        })
+}
+
+/// Apply the exact `FUN_00486090` sentinel normalization.
+///
+/// Only `-1` selects the record-relative config fallback. Every other 32-bit
+/// value is written verbatim; the fallback is masked to its low three bits.
+#[must_use]
+pub const fn derive_compiled_state_word_758(
+    requested_value: i32,
+    config_fallback: u8,
+) -> CompiledStateWord758Effect {
+    CompiledStateWord758Effect {
+        state_word_758: if requested_value == -1 {
+            (config_fallback & 7) as i32
+        } else {
+            requested_value
+        },
+    }
+}
+
 /// Exact writes performed after the recovered helpers and before the family
 /// reciprocal/copy tail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -468,6 +557,7 @@ pub const fn compiled_center_split_q16(option_byte: u8) -> i32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledConfigOptions {
     pub common_prefix_flags: u8,
+    pub state_word_758_fallback: u8,
     pub center_split: u8,
     pub control_run: u8,
     pub aux_control: AuxControlOption,
@@ -560,6 +650,7 @@ pub fn resolve_compiled_config_options(
 
     Ok(CompiledConfigOptions {
         common_prefix_flags: config[COMPILED_CONFIG_COMMON_FLAGS_OFFSET],
+        state_word_758_fallback: config[record_base + COMPILED_CONFIG_STATE_758_OPTION_OFFSET],
         center_split: config[record_base + COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET],
         control_run: config[record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET],
         aux_control,
@@ -884,6 +975,8 @@ pub struct RecoveredCompiledStageInputs<'a> {
     pub config: &'a [u8],
     pub state_slot: i8,
     pub global_word: i32,
+    pub state_758_context_nonzero: bool,
+    pub state_758_table: &'a [i32],
 }
 
 /// Separate effects of the recovered post-dispatch initializer stages.
@@ -899,6 +992,7 @@ pub struct RecoveredCompiledStageEffects {
     pub common_prefix: CompiledCommonPrefixEffects,
     pub center_split_q16: i32,
     pub aux_control_patch: AuxControlPatch,
+    pub state_word_758: CompiledStateWord758Effect,
     pub post_helper: CompiledPostHelperEffects,
     pub control_families: CompiledControlFamilies,
 }
@@ -908,6 +1002,7 @@ pub enum RecoveredCompiledStageError {
     Config(CompiledConfigResolveError),
     Prefix(CompiledCommonPrefixReciprocalOverflow),
     Aux(AuxControlReciprocalOverflow),
+    State758Selection(CompiledStateWord758SelectionError),
     PostHelper(CompiledPostHelperReciprocalOverflow),
     Family(CompiledReciprocalOverflow),
 }
@@ -918,6 +1013,9 @@ impl fmt::Display for RecoveredCompiledStageError {
             Self::Config(source) => write!(formatter, "cannot resolve compiled options: {source}"),
             Self::Prefix(source) => write!(formatter, "cannot derive common prefix: {source}"),
             Self::Aux(source) => write!(formatter, "cannot derive auxiliary patch: {source}"),
+            Self::State758Selection(source) => {
+                write!(formatter, "cannot select state +0x758 value: {source}")
+            }
             Self::PostHelper(source) => {
                 write!(formatter, "cannot derive post-helper patch: {source}")
             }
@@ -937,6 +1035,7 @@ impl std::error::Error for RecoveredCompiledStageError {
             Self::Config(source) => Some(source),
             Self::Prefix(source) => Some(source),
             Self::Aux(source) => Some(source),
+            Self::State758Selection(source) => Some(source),
             Self::PostHelper(source) => Some(source),
             Self::Family(source) => Some(source),
         }
@@ -948,11 +1047,11 @@ impl std::error::Error for RecoveredCompiledStageError {
 /// The returned bundle keeps raw direct stores separate from the exact prefix,
 /// center-split, auxiliary, and family/tail effects. The family/tail is derived
 /// from and supersedes only the raw direct-case family, which the prefix and
-/// post-helper patch do not touch. The intervening `FUN_00486090` state
-/// `+0x758` write remains omitted. Config, prefix, auxiliary, post-helper, then
-/// family validation order applies only to the represented stages; success
-/// does not prove a complete shipped initializer snapshot. Any represented
-/// failure returns no partial bundle. That atomic error boundary is a safe
+/// post-helper patch do not touch. Config, prefix, auxiliary, state-`+0x758`
+/// selection, post-helper, then family
+/// validation order applies only to the represented stages; success does not
+/// prove a complete shipped initializer snapshot. Any represented failure
+/// returns no partial bundle. That atomic error boundary is a safe
 /// reconstruction policy; the shipped in-place code could have performed
 /// earlier writes before an `IDIV` fault.
 pub fn compose_recovered_compiled_stage_effects(
@@ -978,6 +1077,27 @@ pub fn compose_recovered_compiled_stage_effects(
             input.global_word,
         )
         .map_err(RecoveredCompiledStageError::Aux)?;
+    let selection_byte = if input.state_758_context_nonzero {
+        *input
+            .config
+            .get(COMPILED_CONFIG_STATE_758_SELECTION_OFFSET)
+            .ok_or(RecoveredCompiledStageError::State758Selection(
+                CompiledStateWord758SelectionError::TruncatedSelectionByte {
+                    required_len: COMPILED_CONFIG_STATE_758_SELECTION_OFFSET + 1,
+                    actual_len: input.config.len(),
+                },
+            ))?
+    } else {
+        0
+    };
+    let state_word_758_argument = select_compiled_state_word_758_argument(
+        input.state_758_context_nonzero,
+        selection_byte,
+        input.state_758_table,
+    )
+    .map_err(RecoveredCompiledStageError::State758Selection)?;
+    let state_word_758 =
+        derive_compiled_state_word_758(state_word_758_argument, options.state_word_758_fallback);
     let effective_control_word_15c = common_prefix
         .control_word_15c
         .unwrap_or(direct_case_stores.words.control_words[3]);
@@ -994,6 +1114,7 @@ pub fn compose_recovered_compiled_stage_effects(
         common_prefix,
         center_split_q16,
         aux_control_patch,
+        state_word_758,
         post_helper,
         control_families,
     })
@@ -1689,6 +1810,86 @@ mod tests {
     }
 
     #[test]
+    fn state_758_helper_preserves_every_non_sentinel_and_masks_fallback() {
+        for value in [i32::MIN, -2, 0, 1, i32::MAX] {
+            assert_eq!(
+                derive_compiled_state_word_758(value, 0xff),
+                CompiledStateWord758Effect {
+                    state_word_758: value
+                }
+            );
+        }
+        for fallback in u8::MIN..=u8::MAX {
+            assert_eq!(
+                derive_compiled_state_word_758(-1, fallback).state_word_758,
+                i32::from(fallback & 7)
+            );
+        }
+    }
+
+    #[test]
+    fn state_758_caller_selection_exhaustively_pins_gate_and_indices() {
+        let table: Vec<i32> = (0..19).map(|index| index + 100).collect();
+        assert_eq!(
+            select_compiled_state_word_758_argument(false, 0xff, &[]),
+            Ok(-1)
+        );
+
+        let mut reached = [false; 19];
+        for status in u8::MIN..=u8::MAX {
+            let row = usize::from((status >> 3) & 3);
+            let column = usize::from(status >> 5);
+            let gated = row >= 2 && column >= 4;
+            let selected = select_compiled_state_word_758_argument(true, status, &table).unwrap();
+            if gated {
+                assert_eq!(selected, -1);
+            } else {
+                let index = row * 5 + column;
+                reached[index] = true;
+                assert_eq!(selected, table[index]);
+            }
+        }
+        assert_eq!(
+            reached
+                .iter()
+                .enumerate()
+                .filter_map(|(index, reached)| reached.then_some(index))
+                .collect::<Vec<_>>(),
+            (0..=13).chain(15..=18).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn state_758_selection_checks_only_the_live_table_route() {
+        assert_eq!(
+            select_compiled_state_word_758_argument(true, 0x00, &[]),
+            Err(CompiledStateWord758SelectionError::TableTruncated {
+                index: 0,
+                table_len: 0,
+            })
+        );
+        assert_eq!(
+            select_compiled_state_word_758_argument(true, 0x90, &[]),
+            Ok(-1)
+        );
+        assert_eq!(
+            select_compiled_state_word_758_argument(true, 0x78, &[0; 18]),
+            Err(CompiledStateWord758SelectionError::TableTruncated {
+                index: 18,
+                table_len: 18,
+            })
+        );
+        assert_eq!(
+            select_compiled_state_word_758_argument(true, 0x78, &[0; 19]),
+            Ok(0)
+        );
+        assert_eq!(COMPILED_STATE_WORD_758_OFFSET, 0x758);
+        assert!(!COMPILED_STATE_WORD_OFFSETS.contains(&COMPILED_STATE_WORD_758_OFFSET));
+        assert!(!COMPILED_COMMON_PREFIX_STATE_OFFSETS.contains(&COMPILED_STATE_WORD_758_OFFSET));
+        assert!(!COMPILED_POST_HELPER_STATE_WORD_OFFSETS.contains(&COMPILED_STATE_WORD_758_OFFSET));
+    }
+
+    #[test]
     fn center_split_pins_all_low_three_bit_policies() {
         assert_eq!(compiled_center_split_q16(0), 0x4000);
         assert_eq!(compiled_center_split_q16(1), 0x8000);
@@ -1735,6 +1936,7 @@ mod tests {
             resolve_compiled_config_options(&vec![0; required_len], 0),
             Ok(CompiledConfigOptions {
                 common_prefix_flags: 0,
+                state_word_758_fallback: 0,
                 center_split: 0,
                 control_run: 0,
                 aux_control: AuxControlOption::Resolved(0),
@@ -1751,6 +1953,8 @@ mod tests {
         config[COMPILED_CONFIG_AUX_OPTION_OFFSET] = 0x11;
         config[COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET] = 0x22;
         config[COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET] = 0x33;
+        config[COMPILED_CONFIG_STATE_758_OPTION_OFFSET] = 0x44;
+        config[record_base + COMPILED_CONFIG_STATE_758_OPTION_OFFSET] = 0x7b;
         config[record_base + COMPILED_CONFIG_AUX_OPTION_OFFSET] = 0xe5;
         config[record_base + COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET] = 0xfa;
         config[record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET] = 0xf9;
@@ -1760,6 +1964,7 @@ mod tests {
             resolve_compiled_config_options(&config, 1),
             Ok(CompiledConfigOptions {
                 common_prefix_flags: 0,
+                state_word_758_fallback: 0x7b,
                 center_split: 0xfa,
                 control_run: 0xf9,
                 aux_control: AuxControlOption::Resolved(0xe5),
@@ -1809,6 +2014,7 @@ mod tests {
             resolve_compiled_config_options(&config, index),
             Ok(CompiledConfigOptions {
                 common_prefix_flags: 0,
+                state_word_758_fallback: 0,
                 center_split: 0xa5,
                 control_run: 0xa9,
                 aux_control: AuxControlOption::Resolved(0xa3),
@@ -1880,6 +2086,8 @@ mod tests {
                 config: &config,
                 state_slot: 1,
                 global_word: 0x1_0000,
+                state_758_context_nonzero: false,
+                state_758_table: &[],
             },
         )
         .unwrap();
@@ -1978,6 +2186,8 @@ mod tests {
                     config: &config,
                     state_slot: 0,
                     global_word: 0x8000,
+                    state_758_context_nonzero: false,
+                    state_758_table: &[],
                 },
             )
             .unwrap();
@@ -2036,6 +2246,8 @@ mod tests {
                 config: &config,
                 state_slot: 0,
                 global_word: 0,
+                state_758_context_nonzero: false,
+                state_758_table: &[],
             },
         )
         .unwrap();
@@ -2050,6 +2262,43 @@ mod tests {
             effects.post_helper,
             derive_compiled_post_helper_effects(0x2000, 0x2_6666).unwrap()
         );
+    }
+
+    #[test]
+    fn recovered_stage_bundle_routes_state_758_table_and_fallback_values() {
+        let direct_cases = CompiledDirectCaseSet {
+            cases: synthetic_cases(),
+        };
+        let aux_constants = AuxControlConstantSet {
+            constants: aux_constants(),
+        };
+        let mut config = compiled_stage_config(1, 0, 0, 0, 2, false);
+        config[COMPILED_CONFIG_RECORD_STRIDE + COMPILED_CONFIG_STATE_758_OPTION_OFFSET] = 0xfe;
+        config.resize(
+            COMPILED_CONFIG_STATE_758_SELECTION_OFFSET + COMPILED_CONFIG_RECORD_STRIDE + 1,
+            0,
+        );
+        config[COMPILED_CONFIG_STATE_758_SELECTION_OFFSET] = 0;
+        config[COMPILED_CONFIG_STATE_758_SELECTION_OFFSET + COMPILED_CONFIG_RECORD_STRIDE] = 0x90;
+
+        for (selector, table_value, expected) in [(0, 77, 77), (u32::MAX, -1, 6)] {
+            let table = [table_value];
+            let effects = compose_recovered_compiled_stage_effects(
+                &direct_cases,
+                &aux_constants,
+                RecoveredCompiledStageInputs {
+                    prior_case_words: synthetic_case(-3),
+                    selector,
+                    config: &config,
+                    state_slot: 1,
+                    global_word: 0,
+                    state_758_context_nonzero: true,
+                    state_758_table: &table,
+                },
+            )
+            .unwrap();
+            assert_eq!(effects.state_word_758.state_word_758, expected);
+        }
     }
 
     #[test]
@@ -2096,6 +2345,8 @@ mod tests {
                         config: &config,
                         state_slot,
                         global_word: 0,
+                        state_758_context_nonzero: false,
+                        state_758_table: &[],
                     },
                 ),
                 Err(RecoveredCompiledStageError::Config(expected))
@@ -2113,6 +2364,8 @@ mod tests {
                     config: &config,
                     state_slot: 0,
                     global_word: 0,
+                    state_758_context_nonzero: false,
+                    state_758_table: &[],
                 },
             ),
             Err(RecoveredCompiledStageError::Aux(
@@ -2145,6 +2398,8 @@ mod tests {
                     config: &config,
                     state_slot: 0,
                     global_word: 0,
+                    state_758_context_nonzero: false,
+                    state_758_table: &[],
                 },
             ),
             Err(RecoveredCompiledStageError::Prefix(
@@ -2166,22 +2421,44 @@ mod tests {
             config: &config,
             state_slot: 0,
             global_word: 0,
+            state_758_context_nonzero: false,
+            state_758_table: &[],
         };
 
         let mut failing_aux_constants = aux_constants();
         failing_aux_constants.policy_one.reciprocal_divisor = 1;
+        let selection_input = RecoveredCompiledStageInputs {
+            state_758_context_nonzero: true,
+            ..input
+        };
         assert_eq!(
             compose_recovered_compiled_stage_effects(
                 &direct_cases,
                 &AuxControlConstantSet {
                     constants: failing_aux_constants,
                 },
-                input,
+                selection_input,
             ),
             Err(RecoveredCompiledStageError::Aux(
                 AuxControlReciprocalOverflow {
                     input: AuxControlReciprocalInput::PolicyDivisor,
                     divisor: 1,
+                }
+            ))
+        );
+
+        assert_eq!(
+            compose_recovered_compiled_stage_effects(
+                &direct_cases,
+                &AuxControlConstantSet {
+                    constants: aux_constants(),
+                },
+                selection_input,
+            ),
+            Err(RecoveredCompiledStageError::State758Selection(
+                CompiledStateWord758SelectionError::TruncatedSelectionByte {
+                    required_len: COMPILED_CONFIG_STATE_758_SELECTION_OFFSET + 1,
+                    actual_len: config.len(),
                 }
             ))
         );
@@ -2214,6 +2491,8 @@ mod tests {
             config: &config,
             state_slot: 0,
             global_word: 0,
+            state_758_context_nonzero: false,
+            state_758_table: &[],
         };
 
         let safe_aux = AuxControlConstantSet {

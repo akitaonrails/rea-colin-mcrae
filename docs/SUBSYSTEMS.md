@@ -1123,9 +1123,16 @@ languages rather than fabricating or silently aliasing Italian assets.
   derives the guarded signed reciprocal at `+0x160`. Composition preserves the
   optional scaled-versus-raw `+0x15c` dependency and extends represented-stage
   precedence with PostHelper before Family. Five new tests plus strengthened
-  composition tests bring `cmr-core` to 1,146. `FUN_00486090`, merged object
-  application, meanings/units, config loading, application/session/gameplay
-  wiring, runtime reachability, and other editions remain. See
+  composition tests bring `cmr-core` to 1,146. G03-AA then reconstructs
+  `FUN_00486090` and its initializer selection: the conditional unindexed
+  config `+0x6c0` gate chooses `-1` or a caller-owned table value; non-sentinel
+  dwords store verbatim to state `+0x758`, while sentinel resolves checked
+  record `+0x91 & 7`. Four new tests plus strengthened resolver/composition
+  tests bring `cmr-core` to 1,150. The second direct caller and its `+0x738`
+  save/restore narrow the initializer claim to the only observed originating
+  constructor assignment. Table values/extent, merged object application,
+  meanings/units, config loading, application/session/gameplay wiring, runtime
+  reachability, generic second-caller provenance, and other editions remain. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
   `rea.official-eu.sim-compiled-center-split`,
@@ -1145,8 +1152,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-compiled-stage-dataflow`,
   `impl.sim-compiled-stage-effects`,
   `impl.sim-compiled-common-prefix`,
-  `rea.official-eu.sim-compiled-post-helper-initialization`, and
-  `impl.sim-compiled-post-helper-initialization`.
+  `rea.official-eu.sim-compiled-post-helper-initialization`,
+  `impl.sim-compiled-post-helper-initialization`,
+  `rea.official-eu.sim-compiled-state-758-selection`, and
+  `impl.sim-compiled-state-758-selection`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
