@@ -499,11 +499,23 @@ not a direct-case destination. The existing `FUN_0040d810` evidence consumes
 it and its `0x10000-split` complement in both coast and driven front/rear
 distribution. The total `compiled_center_split_q16` helper plus two tests,
 including all 256 byte inputs, brings `cmr-core` to 1,114. The signed config
-lookup/domain, `FUN_00407270`, rest of the common path, complete composition
-with selection/transform/reciprocal helpers, application/session/gameplay
-wiring, entry meanings/units, gameplay index invariants, other editions,
-runtime geometry/BSS consumers, and full `FUN_0040d810`/`FUN_0040a4a0`
-closure remain open.
+lookup/domain remains outside that helper. G03-T recovers `FUN_00407270` as a
+separate 22-dword auxiliary control patch. Its exact ascending destinations are
+`+0xd8,+0xdc,+0xe0,+0xe4,+0xe8,+0xec,+0xf0,+0xf4,+0xf8,+0xfc,+0x100`,
+`+0x104,+0x108,+0x10c,+0x110,+0x118,+0x11c,+0x120,+0x124,+0x128,+0x12c`,
+and `+0x13c`: seven policy immediates, nine common immediates, and six derived
+words. A force bit bypasses config lookup; otherwise low-three-bit modes `1`,
+`2`, and `0,3..7` choose policy one, policy two, and default. The derived words
+use signed Q16 multiplication, signed `state+0x48 >> 3`, and three guarded
+signed `2^32/x` reciprocals. `AuxControlConstants` keeps every withheld
+function literal caller-owned; `derive_aux_control_patch` implements only the
+payload-free policy/arithmetic and a typed atomic overflow. Six tests bring
+`cmr-core` to 1,120. The patch is disjoint from direct-case destinations. A
+reviewed user-owned constants extractor/store, signed config lookup/domain,
+full composition with the other initializer stages and later tail,
+application/session/gameplay wiring, meanings/units, gameplay index invariants,
+other editions, runtime geometry/BSS consumers, and full
+`FUN_0040d810`/`FUN_0040a4a0` closure remain open.
 
 Exit gate:
 

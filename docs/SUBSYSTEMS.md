@@ -1048,19 +1048,31 @@ languages rather than fabricating or silently aliasing Italian assets.
   and its `0x10000-split` complement as the center drive split in both coast
   and driven distribution. `compiled_center_split_q16` encodes only the total
   byte-to-word policy; two tests cover all low-bit policies and all 256 bytes,
-  bringing `cmr-core` to 1,114. The signed config-record lookup/domain,
-  `FUN_00407270`, rest of the common path, composition with the later
-  reciprocal/copy helper, meanings/units, and application/session/gameplay
-  wiring remain. See
+  bringing `cmr-core` to 1,114. `FUN_00407270` is now bounded as a disjoint
+  22-dword auxiliary patch: seven policy immediates at
+  `+0xf8,+0x10c,+0x110,+0x120,+0x124,+0x128,+0x13c`; nine common immediates
+  at `+0xd8,+0xdc,+0xe0,+0xe4,+0xe8,+0xec,+0xf0,+0xfc,+0x104`; and derived
+  words at `+0xf4,+0x100,+0x108,+0x118,+0x11c,+0x12c`. A force flag selects
+  default without config lookup; otherwise modes `1`, `2`, and `0,3..7` choose
+  policy one, policy two, and default. Derived words use signed Q16 products,
+  arithmetic `state+0x48 >> 3`, and three zero-guarded signed reciprocals.
+  `AuxControlConstants` keeps all official function literals caller-owned;
+  `derive_aux_control_patch` emits the exact ordered schema and returns typed
+  atomic overflow. Six tests bring `cmr-core` to 1,120. The official constants
+  still require a reviewed user-owned extractor/store. Signed config lookup,
+  full composition with the other stages/tail, meanings/units, and
+  application/session/gameplay wiring, and other editions remain. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
   `rea.official-eu.sim-compiled-center-split`,
+  `rea.official-eu.sim-compiled-aux-control-patch`,
   `impl.sim-compiled-car-initializer-schema`,
   `impl.sim-compiled-car-initializer-extractor`,
   `impl.sim-compiled-car-initializer-store`,
   `impl.sim-compiled-car-initializer-consumer`,
-  `impl.sim-compiled-control-run-transform`, and
-  `impl.sim-compiled-center-split`.
+  `impl.sim-compiled-control-run-transform`,
+  `impl.sim-compiled-center-split`, and
+  `impl.sim-compiled-aux-control-patch`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

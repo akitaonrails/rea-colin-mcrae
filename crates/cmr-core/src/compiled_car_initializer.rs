@@ -37,6 +37,24 @@ pub const COMPILED_CONTROL_FAMILY_WORD_COUNT: usize = 8;
 /// Number of middle control-family words rewritten by the recovered transform.
 pub const COMPILED_CONTROL_RUN_WORD_COUNT: usize = 6;
 
+/// Number of dword destinations written by the auxiliary control patch.
+pub const AUX_CONTROL_WORD_COUNT: usize = 22;
+
+/// Auxiliary control destinations in ascending offset order.
+pub const AUX_CONTROL_WORD_OFFSETS: [u16; AUX_CONTROL_WORD_COUNT] = [
+    0x0d8, 0x0dc, 0x0e0, 0x0e4, 0x0e8, 0x0ec, 0x0f0, 0x0f4, 0x0f8, 0x0fc, 0x100, 0x104, 0x108,
+    0x10c, 0x110, 0x118, 0x11c, 0x120, 0x124, 0x128, 0x12c, 0x13c,
+];
+
+/// Policy-owned destinations in [`AuxControlPolicyConstants::words`] order.
+pub const AUX_CONTROL_POLICY_WORD_OFFSETS: [u16; 7] =
+    [0x0f8, 0x10c, 0x110, 0x120, 0x124, 0x128, 0x13c];
+
+/// Common immediate destinations in [`AuxControlConstants::common_words`] order.
+pub const AUX_CONTROL_COMMON_WORD_OFFSETS: [u16; 9] = [
+    0x0d8, 0x0dc, 0x0e0, 0x0e4, 0x0e8, 0x0ec, 0x0f0, 0x0fc, 0x104,
+];
+
 /// State destinations in their observed case-body store order.
 pub const COMPILED_STATE_WORD_OFFSETS: [u16; COMPILED_STATE_WORD_COUNT] =
     [0x020, 0x024, 0x028, 0x638, 0x63c, 0x640, 0x648, 0x644];
@@ -223,6 +241,150 @@ pub const fn compiled_center_split_q16(option_byte: u8) -> i32 {
         1 => 0x8000,
         _ => 0xc000,
     }
+}
+
+/// Caller-owned literals for one auxiliary-control policy.
+///
+/// `words` follows [`AUX_CONTROL_POLICY_WORD_OFFSETS`]. The first divisor feeds
+/// control `+0x11c`; the reciprocal of the second is Q16-multiplied into
+/// control `+0x12c`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuxControlPolicyConstants {
+    pub words: [i32; 7],
+    pub reciprocal_divisor: i32,
+    pub scaled_reciprocal_divisor: i32,
+}
+
+/// Caller-owned literal set for the auxiliary 22-word control patch.
+///
+/// No shipped tuning payload is embedded here. `common_words` follows
+/// [`AUX_CONTROL_COMMON_WORD_OFFSETS`]. The Q16 multipliers feed `+0xf4` and
+/// `+0x100`, respectively.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuxControlConstants {
+    pub common_words: [i32; 9],
+    pub q16_multipliers: [i32; 2],
+    pub policy_one: AuxControlPolicyConstants,
+    pub policy_two: AuxControlPolicyConstants,
+    pub default_policy: AuxControlPolicyConstants,
+}
+
+/// Option source for the auxiliary policy selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuxControlOption {
+    /// The controlling flag bypasses the option lookup and selects the default.
+    ForcedDefault,
+    /// A safely resolved option byte; only its low three bits are observed.
+    Resolved(u8),
+}
+
+/// The complete auxiliary control patch in [`AUX_CONTROL_WORD_OFFSETS`] order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuxControlPatch {
+    pub words: [i32; AUX_CONTROL_WORD_COUNT],
+}
+
+/// Reciprocal input whose signed quotient does not fit the x86 destination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuxControlReciprocalInput {
+    CommonWord,
+    PolicyDivisor,
+    ScaledPolicyDivisor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuxControlReciprocalOverflow {
+    pub input: AuxControlReciprocalInput,
+    pub divisor: i32,
+}
+
+impl fmt::Display for AuxControlReciprocalOverflow {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "auxiliary control reciprocal {:?} overflows i32 for divisor {}",
+            self.input, self.divisor
+        )
+    }
+}
+
+impl std::error::Error for AuxControlReciprocalOverflow {}
+
+/// Derive the standalone auxiliary 22-word control patch.
+///
+/// Policy one is selected by masked option `1`, policy two by `2`, and options
+/// `0,3..=7` select the default. [`AuxControlOption::ForcedDefault`] represents
+/// the observed bypass without requiring an option lookup. The result is
+/// assembled only after every signed reciprocal has been validated.
+pub fn derive_aux_control_patch(
+    option: AuxControlOption,
+    state_word_48: i32,
+    global_word: i32,
+    constants: &AuxControlConstants,
+) -> Result<AuxControlPatch, AuxControlReciprocalOverflow> {
+    let policy = match option {
+        AuxControlOption::Resolved(option_byte) => match option_byte & 7 {
+            1 => &constants.policy_one,
+            2 => &constants.policy_two,
+            _ => &constants.default_policy,
+        },
+        AuxControlOption::ForcedDefault => &constants.default_policy,
+    };
+
+    let common_reciprocal = aux_control_reciprocal(
+        constants.common_words[8],
+        AuxControlReciprocalInput::CommonWord,
+    )?;
+    let policy_reciprocal = aux_control_reciprocal(
+        policy.reciprocal_divisor,
+        AuxControlReciprocalInput::PolicyDivisor,
+    )?;
+    let scaled_policy_reciprocal = aux_control_reciprocal(
+        policy.scaled_reciprocal_divisor,
+        AuxControlReciprocalInput::ScaledPolicyDivisor,
+    )?;
+
+    Ok(AuxControlPatch {
+        words: [
+            constants.common_words[0],
+            constants.common_words[1],
+            constants.common_words[2],
+            constants.common_words[3],
+            constants.common_words[4],
+            constants.common_words[5],
+            constants.common_words[6],
+            aux_control_q16_mul(global_word, constants.q16_multipliers[0]),
+            policy.words[0],
+            constants.common_words[7],
+            aux_control_q16_mul(global_word, constants.q16_multipliers[1]),
+            constants.common_words[8],
+            common_reciprocal,
+            policy.words[1],
+            policy.words[2],
+            state_word_48 >> 3,
+            policy_reciprocal,
+            policy.words[3],
+            policy.words[4],
+            policy.words[5],
+            aux_control_q16_mul(scaled_policy_reciprocal, global_word),
+            policy.words[6],
+        ],
+    })
+}
+
+fn aux_control_q16_mul(left: i32, right: i32) -> i32 {
+    ((i64::from(left) * i64::from(right)) >> 16) as i32
+}
+
+fn aux_control_reciprocal(
+    divisor: i32,
+    input: AuxControlReciprocalInput,
+) -> Result<i32, AuxControlReciprocalOverflow> {
+    if divisor == 0 {
+        return Ok(-1);
+    }
+    let quotient = (1_i64 << 32) / i64::from(divisor);
+    i32::try_from(quotient).map_err(|_| AuxControlReciprocalOverflow { input, divisor })
 }
 
 /// Transform the six-word middle run selected by the low three option bits.
@@ -483,6 +645,36 @@ mod tests {
         std::array::from_fn(|index| synthetic_case(index as i32 + 1))
     }
 
+    fn aux_policy(tag: i32) -> AuxControlPolicyConstants {
+        AuxControlPolicyConstants {
+            words: std::array::from_fn(|index| tag + index as i32 + 1),
+            reciprocal_divisor: 0x1_0000,
+            scaled_reciprocal_divisor: 0x2_0000,
+        }
+    }
+
+    fn aux_constants() -> AuxControlConstants {
+        AuxControlConstants {
+            common_words: [10, 11, 12, 13, 14, 15, 16, 17, 0x1_0000],
+            q16_multipliers: [0x1_0000, 0x2_0000],
+            policy_one: aux_policy(100),
+            policy_two: aux_policy(200),
+            default_policy: aux_policy(300),
+        }
+    }
+
+    fn aux_value(patch: AuxControlPatch, offset: u16) -> i32 {
+        let index = AUX_CONTROL_WORD_OFFSETS
+            .iter()
+            .position(|candidate| *candidate == offset)
+            .unwrap();
+        patch.words[index]
+    }
+
+    fn aux_policy_words(patch: AuxControlPatch) -> [i32; 7] {
+        AUX_CONTROL_POLICY_WORD_OFFSETS.map(|offset| aux_value(patch, offset))
+    }
+
     #[test]
     fn format_adapter_pins_counts_offsets_and_selector_order() {
         let format = format_cases();
@@ -623,6 +815,136 @@ mod tests {
             assert_eq!(
                 compiled_center_split_q16(option_byte),
                 compiled_center_split_q16(option_byte & 7)
+            );
+        }
+    }
+
+    #[test]
+    fn auxiliary_patch_pins_policy_partition_masking_and_forced_default() {
+        let constants = aux_constants();
+        for option in [1_u8, 9, 0xf9] {
+            let patch =
+                derive_aux_control_patch(AuxControlOption::Resolved(option), 0, 0, &constants)
+                    .unwrap();
+            assert_eq!(aux_policy_words(patch), constants.policy_one.words);
+        }
+        for option in [2_u8, 10, 0xfa] {
+            let patch =
+                derive_aux_control_patch(AuxControlOption::Resolved(option), 0, 0, &constants)
+                    .unwrap();
+            assert_eq!(aux_policy_words(patch), constants.policy_two.words);
+        }
+        for option in [0_u8, 3, 4, 5, 6, 7, 8, 0xfb, 0xff] {
+            let patch =
+                derive_aux_control_patch(AuxControlOption::Resolved(option), 0, 0, &constants)
+                    .unwrap();
+            assert_eq!(aux_policy_words(patch), constants.default_policy.words);
+        }
+
+        let forced =
+            derive_aux_control_patch(AuxControlOption::ForcedDefault, 0, 0, &constants).unwrap();
+        assert_eq!(aux_policy_words(forced), constants.default_policy.words);
+    }
+
+    #[test]
+    fn auxiliary_patch_maps_every_literal_and_derived_word_to_its_exact_offset() {
+        let patch = derive_aux_control_patch(
+            AuxControlOption::Resolved(1),
+            80,
+            0x1_0000,
+            &aux_constants(),
+        )
+        .unwrap();
+        assert_eq!(
+            patch.words,
+            [
+                10, 11, 12, 13, 14, 15, 16, 0x1_0000, 101, 17, 0x2_0000, 0x1_0000, 0x1_0000, 102,
+                103, 10, 0x1_0000, 104, 105, 106, 0x8000, 107,
+            ]
+        );
+    }
+
+    #[test]
+    fn auxiliary_patch_schema_is_exact_unique_and_disjoint_from_direct_cases() {
+        assert_eq!(
+            AUX_CONTROL_WORD_OFFSETS,
+            [
+                0x0d8, 0x0dc, 0x0e0, 0x0e4, 0x0e8, 0x0ec, 0x0f0, 0x0f4, 0x0f8, 0x0fc, 0x100, 0x104,
+                0x108, 0x10c, 0x110, 0x118, 0x11c, 0x120, 0x124, 0x128, 0x12c, 0x13c,
+            ]
+        );
+        assert!(
+            AUX_CONTROL_WORD_OFFSETS
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+        );
+        for omitted in [0x114, 0x130, 0x134, 0x138] {
+            assert!(!AUX_CONTROL_WORD_OFFSETS.contains(&omitted));
+        }
+        for direct_offset in COMPILED_CONTROL_WORD_OFFSETS {
+            assert!(!AUX_CONTROL_WORD_OFFSETS.contains(&direct_offset));
+        }
+    }
+
+    #[test]
+    fn auxiliary_patch_uses_signed_q16_bits_and_arithmetic_shift() {
+        let mut constants = aux_constants();
+        constants.q16_multipliers = [0x1_8000, -1];
+        let positive =
+            derive_aux_control_patch(AuxControlOption::Resolved(1), -9, 0x2_0000, &constants)
+                .unwrap();
+        assert_eq!(aux_value(positive, 0x0f4), 0x3_0000);
+        assert_eq!(aux_value(positive, 0x100), -2);
+        assert_eq!(aux_value(positive, 0x118), -2);
+
+        let negative_odd =
+            derive_aux_control_patch(AuxControlOption::Resolved(1), 0, 1, &constants).unwrap();
+        assert_eq!(aux_value(negative_odd, 0x100), -1);
+
+        constants.q16_multipliers[0] = i32::MAX;
+        let low_32 =
+            derive_aux_control_patch(AuxControlOption::Resolved(1), 0, i32::MIN, &constants)
+                .unwrap();
+        assert_eq!(aux_value(low_32, 0x0f4), 32_768);
+    }
+
+    #[test]
+    fn auxiliary_patch_reciprocals_pin_zero_and_signed_truncation() {
+        let mut constants = aux_constants();
+        constants.common_words[8] = 0;
+        constants.policy_one.reciprocal_divisor = 0x3_0000;
+        constants.policy_one.scaled_reciprocal_divisor = -0x3_0000;
+        let patch =
+            derive_aux_control_patch(AuxControlOption::Resolved(1), 0, 0x1_0000, &constants)
+                .unwrap();
+        assert_eq!(aux_value(patch, 0x108), -1);
+        assert_eq!(aux_value(patch, 0x11c), 0x5555);
+        assert_eq!(aux_value(patch, 0x12c), -0x5555);
+    }
+
+    #[test]
+    fn auxiliary_patch_reciprocal_overflow_is_typed_and_atomic() {
+        let mut constants = aux_constants();
+        for (input, divisor) in [
+            (AuxControlReciprocalInput::CommonWord, 1),
+            (AuxControlReciprocalInput::PolicyDivisor, 2),
+            (AuxControlReciprocalInput::ScaledPolicyDivisor, -1),
+        ] {
+            constants.common_words[8] = 0x1_0000;
+            constants.policy_one.reciprocal_divisor = 0x1_0000;
+            constants.policy_one.scaled_reciprocal_divisor = 0x1_0000;
+            match input {
+                AuxControlReciprocalInput::CommonWord => constants.common_words[8] = divisor,
+                AuxControlReciprocalInput::PolicyDivisor => {
+                    constants.policy_one.reciprocal_divisor = divisor;
+                }
+                AuxControlReciprocalInput::ScaledPolicyDivisor => {
+                    constants.policy_one.scaled_reciprocal_divisor = divisor;
+                }
+            }
+            assert_eq!(
+                derive_aux_control_patch(AuxControlOption::Resolved(1), 0, 0, &constants,),
+                Err(AuxControlReciprocalOverflow { input, divisor })
             );
         }
     }
