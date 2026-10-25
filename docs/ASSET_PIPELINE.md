@@ -207,20 +207,81 @@ This is not a claim of race-free path resolution under concurrent adversarial
 filesystem mutation; callers must keep the directory stable while `open`
 runs.
 
+## Executable-derived compiled car cases
+
+The fourteen direct case bodies of official-EU `FUN_00404440` contain tuning
+values compiled into `Rally.exe`; they are not redistributable project source
+or an external game-data format. Extract them from a user-owned installation
+into an ignored runtime-data directory:
+
+```sh
+export CMR_ORIGINAL_DIR=/path/to/your/CMRally
+cargo run -q -p cmr-assets -- extract-compiled-car-initializer \
+  --source "$CMR_ORIGINAL_DIR" \
+  --profile profiles/official-eu-compiled-car-initializer-v1.json \
+  --output runtime-data/official-eu-compiled-car-initializer
+```
+
+The profile is metadata only. It binds the relative executable path, exact
+size and SHA-256, reviewed control-flow addresses, seed-call targets, and
+neutral destination-offset arrays; it contains no extracted tuning word. The
+source is read with an exact profiled bound and hashed before PE or instruction
+parsing. The pure parser then requires i386 PE32, unique file-backed executable
+mappings, the reviewed seed/dispatch/jump-table shape, fourteen distinct
+non-overlapping case bodies, and exactly one constant store to each of the
+eight state and twenty-three control destinations. Any unsupported
+instruction, path, target, store, or partial case fails the whole extraction.
+
+Successful publication produces only:
+
+```text
+runtime-data/official-eu-compiled-car-initializer/
+  compiled-car-cases-v1.bin
+  compiled-car-import-state.json
+```
+
+`compiled-car-cases-v1.bin` is the project-owned `CMRCCASE` version-1
+container: a 24-byte magic/version/shape header followed by fourteen records
+in selector order, each containing eight then twenty-three signed
+little-endian words. Its exact size is 1,760 bytes. These bytes are
+user-derived game data and must remain under ignored `runtime-data/`. The state
+document retains only relative paths, reviewed profile identity and exact
+profile-document digest, source/output sizes and hashes, and the fixed encoding
+shape.
+
+Publication uses a fresh sibling staging directory, re-reads and decodes the
+written binary, reparses the state, and atomically renames the completed
+directory. `cmr_assets::CompiledInitializerStore::open` repeats the bounded
+state checks, requires the fixed flat regular files, verifies every state field,
+and re-hashes and decodes the exact 1,760-byte file before returning an owned
+fourteen-case array. The store retains no path or file handle. Persistent links
+are rejected, but both import and open assume stable caller-owned directories
+rather than claiming race-free operation against concurrent adversarial
+mutation.
+
+This extraction is intentionally narrower than the full initializer. It does
+not serialize the option-dependent pre-call transforms, intervening callees,
+reciprocal/copy common tail, later derived words, names, or units. It is not yet
+wired into an application or gameplay session.
+
 ## Schema versioning and migration
 
-Four regenerable on-disk artifacts carry a `schema_version`. The completed
+Six regenerable on-disk artifacts carry a `schema_version`. The completed
 media-store readers accept only the exact generations selected by
 `cmr-assets::PROFILE_SCHEMA_VERSION` and
 `cmr-assets::IMPORT_STATE_SCHEMA_VERSION`. The executable-derived surface path
 validates its reviewed profile with `SURFACE_PROFILE_SCHEMA_VERSION`, emits a
 state document with `SURFACE_IMPORT_SCHEMA_VERSION`, and reads it back through
-the fail-closed `SurfaceTableStore` described above:
+the fail-closed `SurfaceTableStore` described above. The compiled-case path
+likewise uses `COMPILED_INITIALIZER_PROFILE_SCHEMA_VERSION` and
+`COMPILED_INITIALIZER_IMPORT_SCHEMA_VERSION`:
 
 - the reviewed source profile (`profiles/*.json`);
 - the import state (`<runtime-data>/import-state.json`);
 - the reviewed surface-extraction profile;
 - the surface extraction state (`surface-import-state.json`).
+- the reviewed compiled-case extraction profile;
+- the compiled-case extraction state (`compiled-car-import-state.json`).
 
 Imported trees are derived data. For the media store, an incompatible version
 is never migrated in place: the profile validator and store fail closed
@@ -233,7 +294,10 @@ totals. The surface profile validator rejects unsupported profile generations,
 while the extractor records its state schema, exact profile digest, and output
 hash in a path-free document. `SurfaceTableStore` rejects unsupported state
 generations and verifies the profile ID/digest, all recorded source metadata,
-and the declared output path/size/hash before consuming the local data.
+and the declared output path/size/hash before consuming the local data. The
+compiled-case profile/import/store applies the same exact-generation policy to
+its independently versioned `CMRCCASE` container; neither extractor state is
+interchangeable with the other or with the media import.
 
 A version bump is required for any semantic or required-field change. Purely
 additive optional fields that readers can ignore leave the version alone. A

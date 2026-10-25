@@ -14,12 +14,17 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use cmr_assets::ReviewedProfile;
+use cmr_assets::{
+    COMPILED_INITIALIZER_DATA_FILE, COMPILED_INITIALIZER_STATE_FILE,
+    ReviewedCompiledInitializerProfile, ReviewedProfile,
+};
 use sha2::{Digest, Sha256};
 
 /// The reviewed profile embedded in the application build.
 const REVIEWED_PROFILE: &str =
     include_str!("../../../profiles/installed-eu-derived-assets-v2.json");
+const COMPILED_INITIALIZER_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-compiled-car-initializer-v1.json");
 
 fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -27,6 +32,31 @@ fn repository_root() -> PathBuf {
         .and_then(Path::parent)
         .expect("crates/cmr-assets has a repository root")
         .to_path_buf()
+}
+
+#[test]
+fn compiled_initializer_profile_is_metadata_only_and_generated_store_is_untracked() {
+    let reviewed = ReviewedCompiledInitializerProfile::from_json(COMPILED_INITIALIZER_PROFILE)
+        .expect("the compiled-initializer profile is valid metadata");
+    let profile = reviewed.profile();
+    assert_eq!(profile.executable.path, "Rally.exe");
+    assert_eq!(profile.initializer.selectors, 14);
+
+    let document: serde_json::Value = serde_json::from_slice(COMPILED_INITIALIZER_PROFILE).unwrap();
+    assert!(document.get("cases").is_none());
+    assert!(document["initializer"].get("cases").is_none());
+    assert!(document["initializer"].get("values").is_none());
+
+    let root = repository_root();
+    let Some(tracked) = tracked_files(&root) else {
+        eprintln!("skipping generated-store audit: no Git metadata in this checkout");
+        return;
+    };
+    for relative in tracked {
+        let name = relative.file_name().and_then(|name| name.to_str());
+        assert_ne!(name, Some(COMPILED_INITIALIZER_DATA_FILE));
+        assert_ne!(name, Some(COMPILED_INITIALIZER_STATE_FILE));
+    }
 }
 
 /// The tracked file list, or `None` when this checkout has no Git metadata.

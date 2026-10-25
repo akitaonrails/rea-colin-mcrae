@@ -1018,9 +1018,18 @@ languages rather than fabricating or silently aliasing Italian assets.
   exact eight-state/twenty-three-control destination schema and unsigned
   selector behavior without embedding the case values, then separately derives
   the later eight-slot reciprocal/copy families from caller-supplied post-callee
-  words. The full common path, meanings, extractor/store, and application wiring
-  remain. See `rea.official-eu.sim-compiled-car-initializer-schema` and
-  `impl.sim-compiled-car-initializer-schema`.
+  words. `cmr-formats::pe_compiled_initializer` now proves the reviewed i386
+  PE32 seed/dispatch/jump-table and exact store grammar before returning all
+  fourteen direct case records. `cmr-assets extract-compiled-car-initializer`
+  identifies the user-owned executable before parsing and atomically publishes
+  the versioned 1,760-byte `CMRCCASE` file plus path-free state;
+  `CompiledInitializerStore` revalidates and owns those records without
+  retaining a filesystem path. The full common path, meanings, and
+  application/session consumer wiring remain. See
+  `rea.official-eu.sim-compiled-car-initializer-schema`,
+  `impl.sim-compiled-car-initializer-schema`,
+  `impl.sim-compiled-car-initializer-extractor`, and
+  `impl.sim-compiled-car-initializer-store`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
@@ -1109,8 +1118,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `cmr-assets` has 50 library plus three CLI tests. The second family remains
   store-only with unknown semantics, and no application/session wiring is
   claimed. These families remain distinct from FFB `DAT_004edb70`, compiled
-  car initializer `FUN_00404440`, and BSS `DAT_0050e170`; those latter schemas
-  and consumers remain open.
+  car initializer `FUN_00404440`, and BSS `DAT_0050e170`. The compiled
+  initializer's direct cases now have the separate verified extractor/store
+  described above; their gameplay consumer, omitted common path, and the BSS
+  consumers remain open.
   `signed_arcsine_phase` preserves the signed lookup, `0x10000` clamp,
   index-4096 adjacent angle-table zero, and rejects unsafe `INT_MIN` instead of
   reproducing the unchecked read. `signed_ratio_angle` preserves the observed asymmetric

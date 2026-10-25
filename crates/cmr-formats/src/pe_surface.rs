@@ -8,6 +8,8 @@
 
 use std::{error::Error, fmt};
 
+use crate::pe32::{Pe32Error, Pe32Image};
+
 /// Number of signed little-endian dwords in each recovered family.
 pub const SURFACE_COEFFICIENT_COUNT: usize = 120;
 
@@ -16,11 +18,6 @@ pub const OFFICIAL_EU_SURFACE_FAMILY_VA: u32 = 0x004f_72cc;
 
 const FAMILY_BYTES: usize = SURFACE_COEFFICIENT_COUNT * size_of::<i32>();
 const BOTH_FAMILIES_BYTES: usize = FAMILY_BYTES * 2;
-const DOS_LFANEW_OFFSET: usize = 0x3c;
-const COFF_HEADER_SIZE: usize = 20;
-const SECTION_HEADER_SIZE: usize = 40;
-const PE32_MAGIC: u16 = 0x10b;
-const I386_MACHINE: u16 = 0x14c;
 
 /// One neutral 120-entry coefficient family from the executable image.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -140,6 +137,65 @@ impl fmt::Display for PeSurfaceError {
 
 impl Error for PeSurfaceError {}
 
+impl From<Pe32Error> for PeSurfaceError {
+    fn from(error: Pe32Error) -> Self {
+        match error {
+            Pe32Error::EmptyRange { virtual_address } => Self::UnmappedRange {
+                virtual_address,
+                byte_len: 0,
+            },
+            Pe32Error::Truncated {
+                offset,
+                needed,
+                input_len,
+            } => Self::Truncated {
+                offset,
+                needed,
+                input_len,
+            },
+            Pe32Error::InvalidDosMagic { offset } => Self::InvalidDosMagic { offset },
+            Pe32Error::InvalidPeSignature { offset } => Self::InvalidPeSignature { offset },
+            Pe32Error::UnsupportedMachine { offset, machine } => {
+                Self::UnsupportedMachine { offset, machine }
+            }
+            Pe32Error::NotPe32 { offset, magic } => Self::NotPe32 { offset, magic },
+            Pe32Error::OptionalHeaderTooShort { offset, size } => {
+                Self::OptionalHeaderTooShort { offset, size }
+            }
+            Pe32Error::AddressBeforeImage {
+                virtual_address,
+                image_base,
+            } => Self::AddressBeforeImage {
+                virtual_address,
+                image_base,
+            },
+            Pe32Error::UnmappedRange {
+                virtual_address,
+                byte_len,
+            } => Self::UnmappedRange {
+                virtual_address,
+                byte_len,
+            },
+            Pe32Error::AmbiguousRange {
+                virtual_address,
+                first_section_offset,
+                second_section_offset,
+            } => Self::AmbiguousRange {
+                virtual_address,
+                first_section_offset,
+                second_section_offset,
+            },
+            Pe32Error::SectionNotExecutable {
+                virtual_address, ..
+            } => Self::UnmappedRange {
+                virtual_address,
+                byte_len: BOTH_FAMILIES_BYTES,
+            },
+            Pe32Error::ArithmeticOverflow { offset } => Self::ArithmeticOverflow { offset },
+        }
+    }
+}
+
 /// Extract the two reviewed surface-coefficient families from caller-owned PE
 /// bytes.
 ///
@@ -148,185 +204,36 @@ impl Error for PeSurfaceError {}
 pub fn extract_official_eu_surface_coefficients(
     input: &[u8],
 ) -> Result<SurfaceCoefficientFamilies, PeSurfaceError> {
-    require(input, 0, 2)?;
-    if &input[..2] != b"MZ" {
-        return Err(PeSurfaceError::InvalidDosMagic { offset: 0 });
-    }
-
-    let pe_offset = read_u32(input, DOS_LFANEW_OFFSET)? as usize;
-    require(input, pe_offset, 4 + COFF_HEADER_SIZE)?;
-    if &input[pe_offset..pe_offset + 4] != b"PE\0\0" {
-        return Err(PeSurfaceError::InvalidPeSignature { offset: pe_offset });
-    }
-
-    let coff_offset = pe_offset + 4;
-    let machine = read_u16(input, coff_offset)?;
-    if machine != I386_MACHINE {
-        return Err(PeSurfaceError::UnsupportedMachine {
-            offset: coff_offset,
-            machine,
-        });
-    }
-    let section_count = read_u16(input, coff_offset + 2)? as usize;
-    let optional_size = read_u16(input, coff_offset + 16)? as usize;
-    let optional_offset = coff_offset + COFF_HEADER_SIZE;
-    require(input, optional_offset, optional_size)?;
-    if optional_size < 32 {
-        return Err(PeSurfaceError::OptionalHeaderTooShort {
-            offset: optional_offset,
-            size: optional_size,
-        });
-    }
-    let optional_magic = read_u16(input, optional_offset)?;
-    if optional_magic != PE32_MAGIC {
-        return Err(PeSurfaceError::NotPe32 {
-            offset: optional_offset,
-            magic: optional_magic,
-        });
-    }
-    let image_base = read_u32(input, optional_offset + 28)?;
-    let target_rva = OFFICIAL_EU_SURFACE_FAMILY_VA
-        .checked_sub(image_base)
-        .ok_or(PeSurfaceError::AddressBeforeImage {
-            virtual_address: OFFICIAL_EU_SURFACE_FAMILY_VA,
-            image_base,
-        })?;
-
-    let section_table =
-        optional_offset
-            .checked_add(optional_size)
-            .ok_or(PeSurfaceError::ArithmeticOverflow {
-                offset: optional_offset,
-            })?;
-    let section_bytes = section_count.checked_mul(SECTION_HEADER_SIZE).ok_or(
-        PeSurfaceError::ArithmeticOverflow {
-            offset: section_table,
-        },
-    )?;
-    require(input, section_table, section_bytes)?;
-
-    let file_offset = map_raw_range(
-        input,
-        section_table,
-        section_count,
-        target_rva,
-        BOTH_FAMILIES_BYTES,
-    )?
-    .ok_or(PeSurfaceError::UnmappedRange {
-        virtual_address: OFFICIAL_EU_SURFACE_FAMILY_VA,
-        byte_len: BOTH_FAMILIES_BYTES,
-    })?;
-
-    let first = decode_family(input, file_offset)?;
-    let second_offset =
-        file_offset
-            .checked_add(FAMILY_BYTES)
-            .ok_or(PeSurfaceError::ArithmeticOverflow {
-                offset: file_offset,
-            })?;
-    let second = decode_family(input, second_offset)?;
+    let image = Pe32Image::parse(input)?;
+    let encoded = image.read_va_range(OFFICIAL_EU_SURFACE_FAMILY_VA, BOTH_FAMILIES_BYTES)?;
+    let first = decode_family(&encoded[..FAMILY_BYTES]);
+    let second = decode_family(&encoded[FAMILY_BYTES..]);
     Ok(SurfaceCoefficientFamilies { first, second })
 }
 
-fn map_raw_range(
-    input: &[u8],
-    section_table: usize,
-    section_count: usize,
-    target_rva: u32,
-    byte_len: usize,
-) -> Result<Option<usize>, PeSurfaceError> {
-    let byte_len_u32 = u32::try_from(byte_len).map_err(|_| PeSurfaceError::ArithmeticOverflow {
-        offset: section_table,
-    })?;
-    let mut matched: Option<(usize, usize)> = None;
-    for index in 0..section_count {
-        let header = section_table + index * SECTION_HEADER_SIZE;
-        let virtual_size = read_u32(input, header + 8)?;
-        let section_rva = read_u32(input, header + 12)?;
-        let raw_size = read_u32(input, header + 16)?;
-        let raw_offset = read_u32(input, header + 20)?;
-        let Some(delta) = target_rva.checked_sub(section_rva) else {
-            continue;
-        };
-        let Some(range_end) = delta.checked_add(byte_len_u32) else {
-            continue;
-        };
-        // PE images occasionally encode a zero VirtualSize. Treat that shape
-        // as mapping SizeOfRawData; otherwise require the requested range to
-        // fit both the virtual extent and the file-backed raw extent.
-        let mapped_size = if virtual_size == 0 {
-            raw_size
-        } else {
-            virtual_size
-        };
-        if range_end > mapped_size || range_end > raw_size {
-            continue;
-        }
-        let file_offset = usize::try_from(raw_offset)
-            .ok()
-            .and_then(|offset| offset.checked_add(delta as usize))
-            .ok_or(PeSurfaceError::ArithmeticOverflow {
-                offset: header + 20,
-            })?;
-        if let Some((_, first_header)) = matched {
-            return Err(PeSurfaceError::AmbiguousRange {
-                virtual_address: OFFICIAL_EU_SURFACE_FAMILY_VA,
-                first_section_offset: first_header,
-                second_section_offset: header,
-            });
-        }
-        matched = Some((file_offset, header));
-    }
-    if let Some((file_offset, _)) = matched {
-        require(input, file_offset, byte_len)?;
-        Ok(Some(file_offset))
-    } else {
-        Ok(None)
-    }
-}
-
-fn decode_family(input: &[u8], offset: usize) -> Result<SurfaceCoefficientFamily, PeSurfaceError> {
-    require(input, offset, FAMILY_BYTES)?;
+fn decode_family(input: &[u8]) -> SurfaceCoefficientFamily {
+    debug_assert_eq!(input.len(), FAMILY_BYTES);
     let mut values = [0; SURFACE_COEFFICIENT_COUNT];
     for (index, value) in values.iter_mut().enumerate() {
-        *value = read_u32(input, offset + index * 4)? as i32;
+        let offset = index * 4;
+        *value = i32::from_le_bytes(
+            input[offset..offset + 4]
+                .try_into()
+                .expect("mapped family contains complete words"),
+        );
     }
-    Ok(SurfaceCoefficientFamily { values })
-}
-
-fn require(input: &[u8], offset: usize, needed: usize) -> Result<(), PeSurfaceError> {
-    let end = offset
-        .checked_add(needed)
-        .ok_or(PeSurfaceError::ArithmeticOverflow { offset })?;
-    if end > input.len() {
-        return Err(PeSurfaceError::Truncated {
-            offset,
-            needed,
-            input_len: input.len(),
-        });
-    }
-    Ok(())
-}
-
-fn read_u16(input: &[u8], offset: usize) -> Result<u16, PeSurfaceError> {
-    require(input, offset, 2)?;
-    Ok(u16::from_le_bytes([input[offset], input[offset + 1]]))
-}
-
-fn read_u32(input: &[u8], offset: usize) -> Result<u32, PeSurfaceError> {
-    require(input, offset, 4)?;
-    Ok(u32::from_le_bytes([
-        input[offset],
-        input[offset + 1],
-        input[offset + 2],
-        input[offset + 3],
-    ]))
+    SurfaceCoefficientFamily { values }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const DOS_LFANEW_OFFSET: usize = 0x3c;
+    const COFF_HEADER_SIZE: usize = 20;
+    const SECTION_HEADER_SIZE: usize = 40;
+    const PE32_MAGIC: u16 = 0x10b;
+    const I386_MACHINE: u16 = 0x14c;
     const PE_OFFSET: usize = 0x80;
     const OPTIONAL_SIZE: usize = 0xe0;
     const SECTION_TABLE: usize = PE_OFFSET + 4 + COFF_HEADER_SIZE + OPTIONAL_SIZE;

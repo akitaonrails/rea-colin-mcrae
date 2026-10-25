@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cmr_assets::{
-    ReviewedProfile, ReviewedSurfaceProfile, catalog_standard_source, extract_surface_tables,
+    ReviewedCompiledInitializerProfile, ReviewedProfile, ReviewedSurfaceProfile,
+    catalog_standard_source, extract_compiled_car_initializer, extract_surface_tables,
     import_source, verify_source,
 };
 
@@ -75,6 +76,16 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<String, String> {
                 .map_err(|error| error.to_string())?;
             serde_json::to_string(&summary).map_err(|error| error.to_string())
         }
+        Some("extract-compiled-car-initializer") => {
+            let source = required_path(&options, "--source")?;
+            let profile_path = required_path(&options, "--profile")?;
+            let output = required_path(&options, "--output")?;
+            reject_unknown(&options, &["--source", "--profile", "--output"])?;
+            let reviewed = load_compiled_initializer_profile(&profile_path)?;
+            let summary = extract_compiled_car_initializer(&source, &output, &reviewed)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_string(&summary).map_err(|error| error.to_string())
+        }
         _ => Err(usage()),
     }
 }
@@ -137,6 +148,14 @@ fn load_surface_profile(path: &Path) -> Result<ReviewedSurfaceProfile, String> {
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+fn load_compiled_initializer_profile(
+    path: &Path,
+) -> Result<ReviewedCompiledInitializerProfile, String> {
+    let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    ReviewedCompiledInitializerProfile::from_json(&document)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -148,15 +167,178 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cmr-assets <catalog|verify|import|extract-surface-tables> [options]".to_owned()
+    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-compiled-car-initializer> [options]".to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cmr_assets::{
+        CompiledInitializerEncoding, CompiledInitializerExecutable, CompiledInitializerProfile,
+        CompiledInitializerSpec, CompiledInitializerStore,
+    };
+    use cmr_formats::pe_compiled_initializer::{
+        COMPILED_CASE_COUNT, COMPILED_CONTROL_WORD_OFFSETS, COMPILED_STATE_WORD_OFFSETS,
+        OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT,
+    };
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    struct Temp(PathBuf);
+
+    impl Temp {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "cmr-compiled-cli-{}-{}",
+                std::process::id(),
+                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
 
     fn args(values: &[&str]) -> impl Iterator<Item = OsString> {
         values.iter().map(OsString::from)
+    }
+
+    fn put_u16(bytes: &mut [u8], offset: usize, value: u16) {
+        bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn compiled_cli_synthetic_pe() -> Vec<u8> {
+        const PE_OFFSET: usize = 0x80;
+        const OPTIONAL_SIZE: usize = 0xe0;
+        const SECTION_TABLE: usize = PE_OFFSET + 4 + 20 + OPTIONAL_SIZE;
+        const RAW_OFFSET: usize = 0x400;
+        const SECTION_RVA: u32 = 0x4000;
+        const RAW_SIZE: usize = 0x3400;
+        let layout = OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT;
+        let section_va = layout.image_base + SECTION_RVA;
+        let file_offset = |va: u32| RAW_OFFSET + usize::try_from(va - section_va).unwrap();
+
+        let mut bytes = vec![0_u8; RAW_OFFSET + RAW_SIZE];
+        bytes[..2].copy_from_slice(b"MZ");
+        put_u32(&mut bytes, 0x3c, PE_OFFSET as u32);
+        bytes[PE_OFFSET..PE_OFFSET + 4].copy_from_slice(b"PE\0\0");
+        put_u16(&mut bytes, PE_OFFSET + 4, 0x14c);
+        put_u16(&mut bytes, PE_OFFSET + 6, 1);
+        put_u16(&mut bytes, PE_OFFSET + 20, OPTIONAL_SIZE as u16);
+        put_u16(&mut bytes, PE_OFFSET + 24, 0x10b);
+        put_u32(&mut bytes, PE_OFFSET + 24 + 28, layout.image_base);
+        put_u32(&mut bytes, SECTION_TABLE + 8, RAW_SIZE as u32);
+        put_u32(&mut bytes, SECTION_TABLE + 12, SECTION_RVA);
+        put_u32(&mut bytes, SECTION_TABLE + 16, RAW_SIZE as u32);
+        put_u32(&mut bytes, SECTION_TABLE + 20, RAW_OFFSET as u32);
+        put_u32(&mut bytes, SECTION_TABLE + 36, 0x6000_0020);
+
+        let proof_start = file_offset(layout.zero_seed_va);
+        let proof_end = file_offset(layout.dispatch_va);
+        bytes[proof_start..proof_end].fill(0x50);
+        bytes[proof_start..proof_start + 2].copy_from_slice(&[0x33, 0xdb]);
+        let esi = file_offset(layout.esi_seed_va);
+        bytes[esi] = 0xbe;
+        put_u32(&mut bytes, esi + 1, i32::MIN as u32);
+        let edi = file_offset(layout.edi_seed_va);
+        bytes[edi] = 0xbf;
+        put_u32(&mut bytes, edi + 1, i32::MAX as u32);
+
+        let dispatch = file_offset(layout.dispatch_va);
+        bytes[dispatch..dispatch + 19].copy_from_slice(&[
+            0x8b, 0x45, 0x14, 0x83, 0xf8, 0x0d, 0x0f, 0x87, 0, 0, 0, 0, 0xff, 0x24, 0x85, 0, 0, 0,
+            0,
+        ]);
+        let default = i64::from(layout.common_join_va) - i64::from(layout.dispatch_va + 12);
+        put_u32(&mut bytes, dispatch + 8, default as i32 as u32);
+        put_u32(&mut bytes, dispatch + 15, layout.jump_table_va);
+
+        let chronological: Vec<(u32, u16)> = COMPILED_STATE_WORD_OFFSETS[..3]
+            .iter()
+            .copied()
+            .map(|offset| (layout.state_pointer_va, offset))
+            .chain(
+                COMPILED_CONTROL_WORD_OFFSETS
+                    .iter()
+                    .copied()
+                    .map(|offset| (layout.control_pointer_va, offset)),
+            )
+            .chain(
+                COMPILED_STATE_WORD_OFFSETS[3..]
+                    .iter()
+                    .copied()
+                    .map(|offset| (layout.state_pointer_va, offset)),
+            )
+            .collect();
+        assert_eq!(chronological.len(), 31);
+
+        let mut immediates_left = 192_usize;
+        let mut target = layout.first_case_va;
+        let mut targets = [0_u32; COMPILED_CASE_COUNT];
+        for (selector, case_target) in targets.iter_mut().enumerate() {
+            *case_target = target;
+            let mut body = Vec::new();
+            body.push(0xb9);
+            body.extend_from_slice(&(selector as i32 * 101 - 700).to_le_bytes());
+            if selector < 3 {
+                body.push(0xb8);
+                body.extend_from_slice(&(selector as i32 + 17).to_le_bytes());
+            }
+            for (index, (pointer, displacement)) in chronological.iter().copied().enumerate() {
+                body.extend_from_slice(&[0x8b, 0x15]);
+                body.extend_from_slice(&pointer.to_le_bytes());
+                if immediates_left > 0 {
+                    immediates_left -= 1;
+                    body.extend_from_slice(&[0xc7, 0x82]);
+                    body.extend_from_slice(&u32::from(displacement).to_le_bytes());
+                    body.extend_from_slice(
+                        &(selector as i32 * 1_000 + index as i32 - 300).to_le_bytes(),
+                    );
+                } else {
+                    let source = [3_u8, 6, 7][index % 3];
+                    body.extend_from_slice(&[0x89, 0x80 | (source << 3) | 2]);
+                    body.extend_from_slice(&u32::from(displacement).to_le_bytes());
+                }
+            }
+            let body_offset = file_offset(target);
+            bytes[body_offset..body_offset + body.len()].copy_from_slice(&body);
+            target += body.len() as u32;
+            if selector + 1 != COMPILED_CASE_COUNT {
+                let jump_offset = file_offset(target);
+                bytes[jump_offset] = 0xe9;
+                let displacement = i64::from(layout.common_join_va) - i64::from(target + 5);
+                put_u32(&mut bytes, jump_offset + 1, displacement as i32 as u32);
+                target += 5;
+            }
+        }
+        assert_eq!(immediates_left, 0);
+        assert_eq!(target, layout.common_join_va);
+        for (selector, target) in targets.into_iter().enumerate() {
+            put_u32(
+                &mut bytes,
+                file_offset(layout.jump_table_va) + selector * 4,
+                target,
+            );
+        }
+        bytes
+    }
+
+    fn digest(bytes: &[u8]) -> String {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
 
     #[test]
@@ -215,6 +397,13 @@ mod tests {
                 "--output",
                 "runtime-data/surface",
             ],
+            &[
+                "extract-compiled-car-initializer",
+                "--profile",
+                "compiled-profile.json",
+                "--output",
+                "runtime-data/compiled-cases",
+            ],
         ] {
             assert_eq!(
                 run(args(arguments)),
@@ -239,5 +428,86 @@ mod tests {
             ])),
             Err("missing required option --output".to_owned())
         );
+    }
+
+    #[test]
+    fn compiled_initializer_extraction_requires_profile_and_output() {
+        assert_eq!(
+            run(args(&[
+                "extract-compiled-car-initializer",
+                "--source",
+                "source",
+            ])),
+            Err("missing required option --profile".to_owned())
+        );
+        assert_eq!(
+            run(args(&[
+                "extract-compiled-car-initializer",
+                "--source",
+                "source",
+                "--profile",
+                "profile.json",
+            ])),
+            Err("missing required option --output".to_owned())
+        );
+    }
+
+    #[test]
+    fn compiled_initializer_cli_extracts_and_reopens_synthetic_cases() {
+        let temp = Temp::new();
+        let source = temp.0.join("source");
+        fs::create_dir(&source).unwrap();
+        let executable = compiled_cli_synthetic_pe();
+        fs::write(source.join("Rally.exe"), &executable).unwrap();
+        let layout = OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT;
+        let profile = CompiledInitializerProfile {
+            schema_version: 1,
+            id: "synthetic-cli-compiled-cases".into(),
+            executable: CompiledInitializerExecutable {
+                path: "Rally.exe".into(),
+                size: executable.len() as u64,
+                sha256: digest(&executable),
+            },
+            initializer: CompiledInitializerSpec {
+                image_base: layout.image_base,
+                zero_seed_va: layout.zero_seed_va,
+                esi_seed_va: layout.esi_seed_va,
+                edi_seed_va: layout.edi_seed_va,
+                seed_call_targets: layout.seed_call_targets,
+                dispatch_va: layout.dispatch_va,
+                jump_table_va: layout.jump_table_va,
+                first_case_va: layout.first_case_va,
+                common_join_va: layout.common_join_va,
+                state_pointer_va: layout.state_pointer_va,
+                control_pointer_va: layout.control_pointer_va,
+                selectors: COMPILED_CASE_COUNT as u32,
+                state_offsets: layout.state_offsets,
+                control_offsets: layout.control_offsets,
+                output_encoding: CompiledInitializerEncoding::CmrCcaseV1,
+            },
+        };
+        let profile_path = temp.0.join("profile.json");
+        let profile_bytes = serde_json::to_vec(&profile).unwrap();
+        fs::write(&profile_path, &profile_bytes).unwrap();
+        let output = temp.0.join("runtime-data");
+        let output_text = run([
+            OsString::from("extract-compiled-car-initializer"),
+            OsString::from("--source"),
+            source.into_os_string(),
+            OsString::from("--profile"),
+            profile_path.into_os_string(),
+            OsString::from("--output"),
+            output.clone().into_os_string(),
+        ]
+        .into_iter())
+        .unwrap();
+        let summary: cmr_assets::CompiledInitializerImportSummary =
+            serde_json::from_str(&output_text).unwrap();
+        assert_eq!(summary.output.size, 1_760);
+        let reviewed = ReviewedCompiledInitializerProfile::from_json(&profile_bytes).unwrap();
+        let store = CompiledInitializerStore::open(&output, &reviewed).unwrap();
+        assert_eq!(store.cases().len(), COMPILED_CASE_COUNT);
+        assert_eq!(store.case(0).unwrap().control_words[0], -297);
+        assert_eq!(store.case(13).unwrap().state_words[1], i32::MIN);
     }
 }

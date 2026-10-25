@@ -1,6 +1,9 @@
 //! Verification and import of user-owned game data.
 
 mod catalog;
+mod compiled_initializer_import;
+mod compiled_initializer_profile;
+mod compiled_initializer_store;
 mod import;
 mod path;
 mod profile;
@@ -13,6 +16,19 @@ mod surface_store;
 mod verify;
 
 pub use catalog::catalog_standard_source;
+pub use compiled_initializer_import::{
+    COMPILED_INITIALIZER_DATA_FILE, COMPILED_INITIALIZER_IMPORT_SCHEMA_VERSION,
+    COMPILED_INITIALIZER_STATE_FILE, CompiledInitializerImportError, CompiledInitializerImportFile,
+    CompiledInitializerImportShape, CompiledInitializerImportSummary,
+    extract_compiled_car_initializer,
+};
+pub use compiled_initializer_profile::{
+    COMPILED_INITIALIZER_PROFILE_SCHEMA_VERSION, CompiledInitializerEncoding,
+    CompiledInitializerExecutable, CompiledInitializerProfile, CompiledInitializerProfileError,
+    CompiledInitializerSpec, ReviewedCompiledInitializerProfile,
+    ReviewedCompiledInitializerProfileError,
+};
+pub use compiled_initializer_store::{CompiledInitializerStore, CompiledInitializerStoreError};
 pub use import::{ImportError, ImportSummary, import_source};
 pub use path::normalize_relative_path;
 pub use profile::{

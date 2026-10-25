@@ -6,6 +6,8 @@
 pub mod bitmap;
 pub mod c3d;
 pub mod font;
+mod pe32;
+pub mod pe_compiled_initializer;
 pub mod pe_surface;
 pub mod riff_palette;
 pub mod stage;

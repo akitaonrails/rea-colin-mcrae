@@ -466,10 +466,21 @@ eight-state/twenty-three-control-word destination layout, invalid selectors
 preserve those destinations, and a separate helper reconstructs the later
 eight-slot reciprocal/copy family with signed division and zero handling. Nine
 synthetic tests bring `cmr-core` to 1,104 while `vehicle_dynamics` remains 85.
-No official tuning values are tracked. The full common path (including its
-option transforms, intervening callees, and later derived words), a verified
-extractor/store, application wiring, entry meanings, gameplay index invariants,
-other editions, runtime geometry/BSS consumers, and full
+No official tuning values are tracked. G03-P now completes the narrow
+user-owned extraction boundary for those direct case words. The shared pure
+PE32 parser proves the reviewed seed, unsigned dispatch, fourteen-entry jump
+table, non-overlapping case bodies, and exact constant-store grammar before
+returning all fourteen records. The metadata-only official profile and
+`extract-compiled-car-initializer` command hash the bounded source before
+parsing, then atomically publish the versioned 1,760-byte `CMRCCASE` container
+and path-free state beneath an explicit ignored `runtime-data/` destination.
+`CompiledInitializerStore` revalidates every identity/shape field, exact size
+and hash, and owns the decoded records without retaining a path. This is not
+application/session wiring and does not extend the recovered behavior beyond
+the direct stores. The full common path (including its option transforms,
+intervening callees, reciprocal/copy application, and later derived words), a
+proven consumer boundary, entry meanings, gameplay index invariants, other
+editions, runtime geometry/BSS consumers, and full
 `FUN_0040d810`/`FUN_0040a4a0` closure remain open.
 
 Exit gate:
