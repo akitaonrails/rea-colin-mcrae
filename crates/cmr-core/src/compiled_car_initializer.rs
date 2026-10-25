@@ -413,6 +413,9 @@ pub const COMPILED_MIXED_RESET_CONTROL_OFFSETS: [u16; 10] = [
 ];
 pub const COMPILED_MIXED_RESET_STATE_DWORD_OFFSETS: [u16; 4] = [0x584, 0x588, 0x58c, 0x590];
 pub const COMPILED_MIXED_RESET_STATE_U16_OFFSETS: [u16; 4] = [0x57c, 0x57e, 0x580, 0x582];
+pub const COMPILED_CALL_SPINE_CONTROL_U16_OFFSETS: [u16; 8] =
+    [0x3d0, 0x3d2, 0x3d4, 0x3d6, 0x3d8, 0x3da, 0x3dc, 0x3de];
+pub const COMPILED_CALL_SPINE_GLOBAL_ADDRESSES: [u32; 3] = [0x50c5f0, 0x50c5f4, 0x50c5f8];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledSuffixDefaultEffects {
@@ -575,6 +578,61 @@ pub fn derive_compiled_mixed_reset_effects(unindexed_flags_26: u8) -> CompiledMi
         control_words: [0; 10],
         state_words: [state_word; 4],
         state_u16_words: [0; 4],
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledCallPointerSource {
+    CapturedState,
+    CapturedStateAndControl,
+    ReloadedGlobalState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledCallSpineStep {
+    Call {
+        target_va: u32,
+        stack_arg_count: u8,
+        pointer_source: CompiledCallPointerSource,
+    },
+    ControlU16Clear,
+    GlobalSeed,
+}
+
+pub const COMPILED_CALL_SPINE_STEPS: [CompiledCallSpineStep; 5] = [
+    CompiledCallSpineStep::Call {
+        target_va: 0x409c10,
+        stack_arg_count: 1,
+        pointer_source: CompiledCallPointerSource::CapturedState,
+    },
+    CompiledCallSpineStep::ControlU16Clear,
+    CompiledCallSpineStep::GlobalSeed,
+    CompiledCallSpineStep::Call {
+        target_va: 0x419a40,
+        stack_arg_count: 2,
+        pointer_source: CompiledCallPointerSource::CapturedStateAndControl,
+    },
+    CompiledCallSpineStep::Call {
+        target_va: 0x408fe0,
+        stack_arg_count: 0,
+        pointer_source: CompiledCallPointerSource::ReloadedGlobalState,
+    },
+];
+
+/// Caller-local direct effects between the three mutating call barriers in
+/// `[0x406aaf,0x406b00)`. This is not a complete spine result and must not be
+/// appended to [`RecoveredCompiledStageEffects`] until the callees are modeled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledCallSpineLocalEffects {
+    pub control_u16_words: [u16; 8],
+    pub global_words: [i32; 3],
+}
+
+#[must_use]
+pub const fn derive_compiled_call_spine_local_effects() -> CompiledCallSpineLocalEffects {
+    CompiledCallSpineLocalEffects {
+        control_u16_words: [0; 8],
+        global_words: [0, -0x8000, 0],
     }
 }
 
@@ -2548,6 +2606,90 @@ mod tests {
                     state_u16_words: [0; 4],
                 }
             );
+        }
+    }
+
+    #[test]
+    fn call_spine_plan_pins_barriers_and_caller_local_mixed_width_effects() {
+        assert_eq!(
+            COMPILED_CALL_SPINE_STEPS,
+            [
+                CompiledCallSpineStep::Call {
+                    target_va: 0x409c10,
+                    stack_arg_count: 1,
+                    pointer_source: CompiledCallPointerSource::CapturedState,
+                },
+                CompiledCallSpineStep::ControlU16Clear,
+                CompiledCallSpineStep::GlobalSeed,
+                CompiledCallSpineStep::Call {
+                    target_va: 0x419a40,
+                    stack_arg_count: 2,
+                    pointer_source: CompiledCallPointerSource::CapturedStateAndControl,
+                },
+                CompiledCallSpineStep::Call {
+                    target_va: 0x408fe0,
+                    stack_arg_count: 0,
+                    pointer_source: CompiledCallPointerSource::ReloadedGlobalState,
+                },
+            ]
+        );
+        assert_eq!(
+            COMPILED_CALL_SPINE_CONTROL_U16_OFFSETS,
+            [0x3d0, 0x3d2, 0x3d4, 0x3d6, 0x3d8, 0x3da, 0x3dc, 0x3de]
+        );
+        assert_eq!(
+            COMPILED_CALL_SPINE_GLOBAL_ADDRESSES,
+            [0x50c5f0, 0x50c5f4, 0x50c5f8]
+        );
+        assert_eq!(
+            derive_compiled_call_spine_local_effects(),
+            CompiledCallSpineLocalEffects {
+                control_u16_words: [0; 8],
+                global_words: [0, -0x8000, 0],
+            }
+        );
+
+        let represented_control_dwords: Vec<u16> = COMPILED_CONTROL_WORD_OFFSETS
+            .into_iter()
+            .chain(COMPILED_COMMON_PREFIX_CONTROL_OFFSETS)
+            .chain(AUX_CONTROL_WORD_OFFSETS)
+            .chain(COMPILED_POST_HELPER_CONTROL_WORD_OFFSETS)
+            .chain(COMPILED_CONTROL_PRODUCT_OFFSETS)
+            .chain(COMPILED_CONTROL_CLEAR_LOOP_OFFSETS)
+            .chain(COMPILED_MIXED_RESET_CONTROL_OFFSETS)
+            .chain(
+                (0..COMPILED_CONTROL_FAMILY_WORD_COUNT as u16)
+                    .flat_map(|index| [0x1f0 + index * 4, 0x210 + index * 4, 0x230 + index * 4]),
+            )
+            .chain([0x170])
+            .collect();
+        for (index, offset) in COMPILED_CALL_SPINE_CONTROL_U16_OFFSETS
+            .into_iter()
+            .enumerate()
+        {
+            let start = u32::from(offset);
+            let end = start + 2;
+            for (other_index, other) in COMPILED_CALL_SPINE_CONTROL_U16_OFFSETS
+                .into_iter()
+                .enumerate()
+            {
+                if index != other_index {
+                    let other_start = u32::from(other);
+                    assert!(end <= other_start || other_start + 2 <= start);
+                }
+            }
+            for dword in &represented_control_dwords {
+                let dword_start = u32::from(*dword);
+                assert!(end <= dword_start || dword_start + 4 <= start);
+            }
+            for existing_u16 in COMPILED_POST_HELPER_CONTROL_U16_OFFSETS {
+                let existing_start = u32::from(existing_u16);
+                assert!(end <= existing_start || existing_start + 2 <= start);
+            }
+            for existing_byte in COMPILED_POST_HELPER_CONTROL_BYTE_OFFSETS {
+                let existing_start = u32::from(existing_byte);
+                assert!(end <= existing_start || existing_start < start);
+            }
         }
     }
 

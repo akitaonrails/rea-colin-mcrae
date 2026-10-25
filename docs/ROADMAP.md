@@ -713,6 +713,13 @@ schema, and composition coverage bring `cmr-core` to 1,164. Native pointer/confi
 rebinding, partial publication, the outgoing `ESI=0`/`EBX=2` handoff, meanings,
 and the call-bearing region beginning at `0x406aaf` remain open.
 
+G03-AG maps `[0x406aaf,0x406b00)` as an ordered call-spine contract:
+state-basis call, eight control-u16 clears, three global seeds, eight-lane
+mutation call, then global state transform. Because every call materially
+mutates state, the direct local effects are intentionally not appended to the
+composed initializer. One focused test brings `cmr-core` to 1,165. Recovery of
+`FUN_00409c10` with transitive `FUN_00418120` is the next gate.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

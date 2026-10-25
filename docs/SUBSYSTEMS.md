@@ -1170,6 +1170,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   tests plus strengthened resolver/schema/composition coverage bring `cmr-core`
   to 1,164. The pure effects assume stable objects/config and do not model the
   outgoing `ESI`/`EBX` handoff or native partial publication.
+  G03-AG maps `[0x406aaf,0x406b00)` as the strict five-stage call/clear/global
+  spine. Its eight u16 clears and three global seeds have a tested caller-local
+  schema, but remain outside the composed stage because all three calls mutate
+  state and two have unresolved transitive callees. `cmr-core` has 1,165 tests.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1204,7 +1208,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-compiled-control-clear-loop`,
   `impl.sim-compiled-control-clear-loop`,
   `rea.official-eu.sim-compiled-half-sign-mixed-reset`, and
-  `impl.sim-compiled-half-sign-mixed-reset`.
+  `impl.sim-compiled-half-sign-mixed-reset`,
+  `rea.official-eu.sim-compiled-call-spine`, and
+  `impl.sim-compiled-call-spine-plan`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
