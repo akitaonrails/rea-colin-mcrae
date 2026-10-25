@@ -1151,7 +1151,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   It writes raw integer seeds `[1,2,1]` to `+0x50/+0x54/+0x58`, doubled to
   `[2,4,2]` by config `+0x25 & 0x04`. Three new tests plus strengthened
   schema/composition coverage bring `cmr-core` to 1,157. The mapped later
-  reciprocal/call/pointer/RNG/snapshot blocks remain separate open scopes. See
+  call/pointer/RNG/snapshot blocks remain separate open scopes. G03-AD then
+  reconstructs `[0x406831,0x4068dc)`: effective state `+0x20/+0x24/+0x28`
+  sequentially derives guarded signed reciprocals at `+0x38/+0x3c/+0x40`.
+  Typed overflow identifies exact fault divisors `-1,1,2`, the failing slot,
+  and earlier shipped stores while the pure aggregate stays atomic. Three new
+  tests plus strengthened schema/composition coverage bring `cmr-core` to
+  1,160. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
   `rea.official-eu.sim-compiled-center-split`,
@@ -1178,8 +1184,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-compiled-control-product-pair`,
   `impl.sim-compiled-control-product-pair`,
   `rea.official-eu.sim-compiled-initializer-suffix-map`,
-  `rea.official-eu.sim-compiled-suffix-defaults`, and
-  `impl.sim-compiled-suffix-defaults`.
+  `rea.official-eu.sim-compiled-suffix-defaults`,
+  `impl.sim-compiled-suffix-defaults`,
+  `rea.official-eu.sim-compiled-state-reciprocal-trio`, and
+  `impl.sim-compiled-state-reciprocal-trio`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

@@ -388,6 +388,7 @@ pub const COMPILED_CONTROL_PRODUCT_OFFSETS: [u16; 2] = [
 
 /// State destinations written by the bounded suffix-default interval.
 pub const COMPILED_SUFFIX_DEFAULT_STATE_OFFSETS: [u16; 4] = [0x044, 0x050, 0x054, 0x058];
+pub const COMPILED_STATE_RECIPROCAL_TRIO_OFFSETS: [u16; 3] = [0x038, 0x03c, 0x040];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledSuffixDefaultEffects {
@@ -424,6 +425,62 @@ pub fn derive_compiled_suffix_defaults(
         state_word_44,
         state_words_50_54_58,
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledStateReciprocalTrio {
+    pub words: [i32; 3],
+}
+
+/// A sequential suffix reciprocal whose shipped `IDIV` would fault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledStateReciprocalTrioOverflow {
+    pub index: usize,
+    pub divisor: i32,
+    /// Earlier stores completed by the shipped in-place sequence.
+    pub completed: [Option<i32>; 3],
+}
+
+impl fmt::Display for CompiledStateReciprocalTrioOverflow {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "compiled state reciprocal {} overflows i32 for divisor {}",
+            self.index, self.divisor
+        )
+    }
+}
+
+impl std::error::Error for CompiledStateReciprocalTrioOverflow {}
+
+/// Reconstruct sequential interval `[0x406831,0x4068dc)`.
+///
+/// Each zero input maps to `-1`; otherwise signed `2^32 / input` truncates
+/// toward zero. On quotient overflow the safe function returns no effect, but
+/// its error records earlier stores already visible in the shipped sequence.
+pub fn derive_compiled_state_reciprocal_trio(
+    effective_state_words_20_24_28: [i32; 3],
+) -> Result<CompiledStateReciprocalTrio, CompiledStateReciprocalTrioOverflow> {
+    let mut words = [0; 3];
+    for (index, divisor) in effective_state_words_20_24_28.into_iter().enumerate() {
+        words[index] = if divisor == 0 {
+            -1
+        } else {
+            let quotient = (1_i64 << 32) / i64::from(divisor);
+            i32::try_from(quotient).map_err(|_| {
+                let mut completed = [None; 3];
+                for completed_index in 0..index {
+                    completed[completed_index] = Some(words[completed_index]);
+                }
+                CompiledStateReciprocalTrioOverflow {
+                    index,
+                    divisor,
+                    completed,
+                }
+            })?
+        };
+    }
+    Ok(CompiledStateReciprocalTrio { words })
 }
 
 /// Two recovered control writes immediately after the reciprocal/copy families.
@@ -1101,6 +1158,7 @@ pub struct RecoveredCompiledStageEffects {
     pub control_families: CompiledControlFamilies,
     pub control_product_pair: CompiledControlProductPair,
     pub suffix_defaults: CompiledSuffixDefaultEffects,
+    pub state_reciprocal_trio: CompiledStateReciprocalTrio,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1112,6 +1170,7 @@ pub enum RecoveredCompiledStageError {
     PostHelper(CompiledPostHelperReciprocalOverflow),
     Family(CompiledReciprocalOverflow),
     ProductPair(CompiledControlProductReciprocalOverflow),
+    StateReciprocalTrio(CompiledStateReciprocalTrioOverflow),
 }
 
 impl fmt::Display for RecoveredCompiledStageError {
@@ -1138,6 +1197,12 @@ impl fmt::Display for RecoveredCompiledStageError {
                     "cannot derive compiled control product pair: {source}"
                 )
             }
+            Self::StateReciprocalTrio(source) => {
+                write!(
+                    formatter,
+                    "cannot derive compiled state reciprocal trio: {source}"
+                )
+            }
         }
     }
 }
@@ -1152,6 +1217,7 @@ impl std::error::Error for RecoveredCompiledStageError {
             Self::PostHelper(source) => Some(source),
             Self::Family(source) => Some(source),
             Self::ProductPair(source) => Some(source),
+            Self::StateReciprocalTrio(source) => Some(source),
         }
     }
 }
@@ -1164,7 +1230,8 @@ impl std::error::Error for RecoveredCompiledStageError {
 /// post-helper patch do not touch. Config, prefix, auxiliary, state-`+0x758`
 /// selection, post-helper, family, then product-pair validation order applies
 /// only to the represented fallible stages. The infallible suffix-default
-/// effect follows the product pair. Success does not prove a complete shipped
+/// effect follows the product pair, followed by the state reciprocal trio.
+/// Success does not prove a complete shipped
 /// initializer snapshot. Any represented failure returns no partial bundle.
 /// That atomic error boundary is a safe
 /// reconstruction policy; the shipped in-place code could have performed
@@ -1239,6 +1306,12 @@ pub fn compose_recovered_compiled_stage_effects(
         ],
         options.common_prefix_flags,
     );
+    let state_reciprocal_trio = derive_compiled_state_reciprocal_trio([
+        effective_state_words[0],
+        effective_state_words[1],
+        effective_state_words[2],
+    ])
+    .map_err(RecoveredCompiledStageError::StateReciprocalTrio)?;
 
     Ok(RecoveredCompiledStageEffects {
         direct_case_stores,
@@ -1250,6 +1323,7 @@ pub fn compose_recovered_compiled_stage_effects(
         control_families,
         control_product_pair,
         suffix_defaults,
+        state_reciprocal_trio,
     })
 }
 
@@ -1752,6 +1826,13 @@ mod tests {
             assert!(!COMPILED_POST_HELPER_STATE_WORD_OFFSETS.contains(&offset));
             assert_ne!(offset, COMPILED_STATE_WORD_758_OFFSET);
         }
+        for offset in COMPILED_STATE_RECIPROCAL_TRIO_OFFSETS {
+            assert!(!COMPILED_STATE_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_COMMON_PREFIX_STATE_OFFSETS.contains(&offset));
+            assert!(!COMPILED_POST_HELPER_STATE_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_SUFFIX_DEFAULT_STATE_OFFSETS.contains(&offset));
+            assert_ne!(offset, COMPILED_STATE_WORD_758_OFFSET);
+        }
     }
 
     #[test]
@@ -2133,6 +2214,44 @@ mod tests {
     }
 
     #[test]
+    fn state_reciprocal_trio_pins_zero_truncation_and_signed_boundaries() {
+        assert_eq!(COMPILED_STATE_RECIPROCAL_TRIO_OFFSETS, [0x38, 0x3c, 0x40]);
+        assert_eq!(
+            derive_compiled_state_reciprocal_trio([0, 0, 0]),
+            Ok(CompiledStateReciprocalTrio { words: [-1; 3] })
+        );
+        assert_eq!(
+            derive_compiled_state_reciprocal_trio([-2, 3, -3]),
+            Ok(CompiledStateReciprocalTrio {
+                words: [i32::MIN, 0x5555_5555, -0x5555_5555],
+            })
+        );
+    }
+
+    #[test]
+    fn state_reciprocal_trio_reports_exact_fault_and_completed_store_order() {
+        for (input, index, divisor, completed) in [
+            ([1, 4, 4], 0, 1, [None, None, None]),
+            ([0, 2, 4], 1, 2, [Some(-1), None, None]),
+            (
+                [-2, 3, -1],
+                2,
+                -1,
+                [Some(i32::MIN), Some(0x5555_5555), None],
+            ),
+        ] {
+            assert_eq!(
+                derive_compiled_state_reciprocal_trio(input),
+                Err(CompiledStateReciprocalTrioOverflow {
+                    index,
+                    divisor,
+                    completed,
+                })
+            );
+        }
+    }
+
+    #[test]
     fn state_758_caller_selection_exhaustively_pins_gate_and_indices() {
         let table: Vec<i32> = (0..19).map(|index| index + 100).collect();
         assert_eq!(
@@ -2431,6 +2550,15 @@ mod tests {
             )
         );
         assert_eq!(
+            effects.state_reciprocal_trio,
+            derive_compiled_state_reciprocal_trio([
+                cases[3].state_words[0],
+                cases[3].state_words[1],
+                cases[3].state_words[2],
+            ])
+            .unwrap()
+        );
+        assert_eq!(
             effects.aux_control_patch,
             derive_aux_control_patch(
                 AuxControlOption::Resolved(1),
@@ -2622,11 +2750,22 @@ mod tests {
                 COMPILED_COMMON_CONTROL_SCALE_MASK | COMPILED_COMMON_STATE_SCALE_MASK,
             )
         );
+        let scaled_state_words = effects.common_prefix.state_words.unwrap();
+        assert_eq!(
+            effects.state_reciprocal_trio,
+            derive_compiled_state_reciprocal_trio([
+                scaled_state_words[0],
+                scaled_state_words[1],
+                scaled_state_words[2],
+            ])
+            .unwrap()
+        );
     }
 
     #[test]
     fn recovered_stage_bundle_reports_product_pair_after_family() {
         let mut cases = synthetic_cases();
+        cases[0].state_words[0] = 1;
         cases[0].control_words[3] = 0x1_0000;
         cases[0].control_words[CONTROL_FAMILY_START + 6] = 0;
         let direct_cases = CompiledDirectCaseSet { cases };
@@ -2672,6 +2811,40 @@ mod tests {
             ),
             Err(RecoveredCompiledStageError::Family(_))
         ));
+    }
+
+    #[test]
+    fn recovered_stage_bundle_reports_state_reciprocal_after_product_pair() {
+        let mut cases = synthetic_cases();
+        cases[0].state_words[0] = 1;
+        let direct_cases = CompiledDirectCaseSet { cases };
+        let aux_constants = AuxControlConstantSet {
+            constants: aux_constants(),
+        };
+        let config = compiled_stage_config(0, 0, 0, 0, 2, false);
+
+        assert_eq!(
+            compose_recovered_compiled_stage_effects(
+                &direct_cases,
+                &aux_constants,
+                RecoveredCompiledStageInputs {
+                    prior_case_words: synthetic_case(-1),
+                    selector: 0,
+                    config: &config,
+                    state_slot: 0,
+                    global_word: 0,
+                    state_758_context_nonzero: false,
+                    state_758_table: &[],
+                },
+            ),
+            Err(RecoveredCompiledStageError::StateReciprocalTrio(
+                CompiledStateReciprocalTrioOverflow {
+                    index: 0,
+                    divisor: 1,
+                    completed: [None; 3],
+                }
+            ))
+        );
     }
 
     #[test]

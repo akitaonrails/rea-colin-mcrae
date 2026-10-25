@@ -684,6 +684,16 @@ pointer-backed writes, resets, RNG, snapshot, terminal blocks, semantic names,
 runtime reachability, complete object application, and other editions remain
 open.
 
+G03-AD reconstructs the sequential state reciprocal interval
+`[0x406831,0x4068dc)`. Effective post-prefix state `+0x20/+0x24/+0x28`
+produces `+0x38/+0x3c/+0x40` in order through zero-to-`-1` or signed
+`2^32/input`; exact fault divisors are `-1,1,2`. The typed safe error records
+the failing index/divisor and earlier stores the shipped in-place sequence had
+already published, while the pure aggregate returns no effect. Composition
+runs the trio after suffix defaults and ProductPair. Three new tests plus
+strengthened schema/composition coverage bring `cmr-core` to 1,160. The next
+control-clear loop and all later mapped suffix regions remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed
