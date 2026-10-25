@@ -1180,6 +1180,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   vectors/three scalars adjust only the primaries. Six focused tests bring
   `cmr-core` to 1,171; native
   aliasing/partial publication and full spine composition remain open.
+  G03-AI reconstructs the exact caller-side eight-lane postprocessor after
+  explicit geometry-dispatch results: drive gating, exhaustive type classes,
+  first-four subtraction, accumulator/latch behavior, and per-lane config
+  override. Six focused tests bring `cmr-core` to 1,177. The global-table
+  dispatcher remains an explicit open boundary rather than a fabricated pure
+  lookup.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1218,7 +1224,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-compiled-call-spine`, and
   `impl.sim-compiled-call-spine-plan`,
   `rea.official-eu.sim-compiled-state-basis-pair`, and
-  `impl.sim-compiled-state-basis-pair`.
+  `impl.sim-compiled-state-basis-pair`,
+  `rea.official-eu.sim-compiled-eight-lane-caller`, and
+  `impl.sim-compiled-eight-lane-postprocess`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

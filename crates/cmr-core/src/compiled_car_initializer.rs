@@ -427,6 +427,26 @@ pub const COMPILED_STATE_BASIS_OFFSETS: [u16; 24] = [
 pub const COMPILED_STATE_BASIS_ADJUSTMENT_STORE_OFFSETS: [u16; 12] = [
     0x12c, 0x130, 0x134, 0x138, 0x13c, 0x140, 0x144, 0x148, 0x14c, 0x154, 0x150, 0x158,
 ];
+pub const COMPILED_LANE_SOURCE_VECTOR_BASES: [u16; 8] =
+    [0x0fc, 0x108, 0x114, 0x120, 0x12c, 0x138, 0x144, 0x150];
+pub const COMPILED_LANE_OUTPUT_VECTOR_BASES: [u16; 8] =
+    [0x33c, 0x348, 0x354, 0x360, 0x36c, 0x378, 0x384, 0x390];
+pub const COMPILED_LANE_WORD_OFFSETS: [u16; 8] =
+    [0x2e4, 0x2e8, 0x2ec, 0x2f0, 0x2f4, 0x2f8, 0x2fc, 0x300];
+pub const COMPILED_LANE_TYPE_U16_OFFSETS: [u16; 8] =
+    [0x42a, 0x42c, 0x42e, 0x430, 0x432, 0x434, 0x436, 0x438];
+pub const COMPILED_LANE_HANDLE_I16_OFFSETS: [u16; 8] =
+    [0x3d0, 0x3d2, 0x3d4, 0x3d6, 0x3d8, 0x3da, 0x3dc, 0x3de];
+pub const COMPILED_LANE_GATE_OFFSETS: [u16; 8] =
+    [0x69c, 0x6a0, 0x6a4, 0x6a8, 0x6ac, 0x6b0, 0x6b4, 0x6b8];
+pub const COMPILED_LANE_DRIVE_OFFSETS: [u16; 8] =
+    [0x304, 0x308, 0x30c, 0x310, 0x314, 0x318, 0x31c, 0x320];
+pub const COMPILED_LANE_ACCUMULATOR_OFFSETS: [u16; 8] =
+    [0x618, 0x61c, 0x620, 0x624, 0x628, 0x62c, 0x630, 0x634];
+pub const COMPILED_LANE_FIRST_FOUR_SUBTRACTION_OFFSETS: [u16; 4] = [0x5e8, 0x5f0, 0x5f8, 0x600];
+pub const COMPILED_LANE_LATCH_OFFSET: u16 = 0x67c;
+pub const COMPILED_LANE_CONFIG_FLAG_OFFSET: u16 = 0x26;
+pub const COMPILED_LANE_ACCUMULATOR_LATCH_THRESHOLD: i32 = 0x00c8_9cbc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledSuffixDefaultEffects {
@@ -749,6 +769,138 @@ pub fn derive_compiled_state_basis_effects(
             adjusted[2],
             adjusted[3],
         ],
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledLanePostDispatchSnapshot {
+    pub lane_word: i32,
+    pub type_word: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledEightLanePostprocessInputs {
+    /// EAX plus the type word observed after each successful call and before
+    /// that lane's caller-side postprocessing begins.
+    pub post_dispatch: [CompiledLanePostDispatchSnapshot; 8],
+    pub gate_words: [i32; 8],
+    pub drive_words: [i32; 8],
+    pub accumulator_words: [i32; 8],
+    pub first_four_subtractions: [i32; 4],
+    /// Per-lane snapshots model the native global-config reload on every loop.
+    pub config_flag_26: [u8; 8],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledEightLanePostprocessEffects {
+    pub lane_words: [i32; 8],
+    pub output_vector_writes: [Option<[i32; 3]>; 8],
+    pub type_word_writes: [Option<u16>; 8],
+    pub accumulator_writes: [Option<i32>; 8],
+    /// `Some(1)` represents the conditional native store; `None` preserves it.
+    pub latch_67c: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompiledLaneTypeEffect {
+    None,
+    ReduceAndResetVector,
+    Reduce,
+    ReduceAndAccumulate,
+}
+
+#[must_use]
+pub const fn compiled_lane_type_effect(type_word: u16) -> CompiledLaneTypeEffect {
+    // Native sign-extends the word, subtracts 0x3b, then performs an unsigned
+    // range check. Matching the six surviving positive values on raw bits is
+    // equivalent; every high-bit word necessarily takes the default path.
+    match type_word {
+        0x3b | 0x3f | 0x40 => CompiledLaneTypeEffect::ReduceAndResetVector,
+        0x51 | 0x53 => CompiledLaneTypeEffect::Reduce,
+        0x52 => CompiledLaneTypeEffect::ReduceAndAccumulate,
+        _ => CompiledLaneTypeEffect::None,
+    }
+}
+
+/// Pure caller-side contract for `FUN_00419a40` after each lane dispatcher
+/// returns. EAX and the post-call type word are supplied together as an
+/// explicit post-dispatch snapshot.
+///
+/// The shipped loop publishes progressive per-lane stores and reloads the
+/// global config pointer every iteration. This aggregate assumes stable,
+/// non-aliasing state/control objects, successful config-pointer dereferences,
+/// and no dispatcher-created cross-lane aliases. Dispatcher and postprocessing
+/// are interleaved natively, so this total aggregate cannot represent earlier
+/// lane or same-lane prefixes surviving a later dispatcher/config fault. It
+/// retains a separate config byte for each lane so a captured trace can
+/// represent native per-iteration values. Optional fields report only writes
+/// performed by this caller; dispatcher-owned passthrough state is omitted.
+#[must_use]
+pub fn derive_compiled_eight_lane_postprocess(
+    input: CompiledEightLanePostprocessInputs,
+) -> CompiledEightLanePostprocessEffects {
+    let mut lane_words = [0; 8];
+    let mut output_vector_writes = [None; 8];
+    let mut type_word_writes = [None; 8];
+    let mut accumulator_words = input.accumulator_words;
+    let mut accumulator_writes = [None; 8];
+    let mut latch_67c = None;
+
+    for lane_index in 0..8 {
+        let post_dispatch = input.post_dispatch[lane_index];
+        let mut lane_word = post_dispatch.lane_word;
+        let mut output_vector_write = None;
+        let mut type_word_write = None;
+        let type_word = post_dispatch.type_word;
+
+        if input.gate_words[lane_index] != 0 {
+            let doubled = common_prefix_q16_mul(input.drive_words[lane_index], 0x2_0000);
+            let upper_clamped = doubled.min(0x1_0000);
+            lane_word = lane_word.wrapping_add(common_prefix_q16_mul(upper_clamped, 0x9999));
+        }
+
+        match compiled_lane_type_effect(type_word) {
+            CompiledLaneTypeEffect::None => {}
+            CompiledLaneTypeEffect::ReduceAndResetVector => {
+                lane_word = lane_word.wrapping_sub(0x4ccc);
+                output_vector_write = Some([0, 0x1_0000, 0]);
+            }
+            CompiledLaneTypeEffect::Reduce => {
+                lane_word = lane_word.wrapping_sub(0x4ccc);
+            }
+            CompiledLaneTypeEffect::ReduceAndAccumulate => {
+                lane_word = lane_word.wrapping_sub(0x4ccc);
+                lane_word = lane_word
+                    .wrapping_sub(common_prefix_q16_mul(accumulator_words[lane_index], 0xc4));
+                accumulator_words[lane_index] =
+                    accumulator_words[lane_index].wrapping_add(0x1_0000);
+                accumulator_writes[lane_index] = Some(accumulator_words[lane_index]);
+                if accumulator_words[lane_index] >= COMPILED_LANE_ACCUMULATOR_LATCH_THRESHOLD {
+                    latch_67c = Some(1);
+                }
+            }
+        }
+
+        if lane_index < 4 {
+            lane_word = lane_word.wrapping_sub(input.first_four_subtractions[lane_index]);
+        }
+        if input.config_flag_26[lane_index] & 0x02 != 0 {
+            lane_word = lane_word.wrapping_add(0x1_0000);
+            output_vector_write = Some([0, 0x1_0000, 0]);
+            type_word_write = Some(0x000a);
+        }
+
+        lane_words[lane_index] = lane_word;
+        output_vector_writes[lane_index] = output_vector_write;
+        type_word_writes[lane_index] = type_word_write;
+    }
+
+    CompiledEightLanePostprocessEffects {
+        lane_words,
+        output_vector_writes,
+        type_word_writes,
+        accumulator_writes,
+        latch_67c,
     }
 }
 
@@ -2975,6 +3127,204 @@ mod tests {
                 1_i32.wrapping_add(r[component].wrapping_add(q[component]))
             );
         }
+    }
+
+    fn lane_postprocess_input() -> CompiledEightLanePostprocessInputs {
+        CompiledEightLanePostprocessInputs {
+            post_dispatch: std::array::from_fn(|index| CompiledLanePostDispatchSnapshot {
+                lane_word: i32::try_from(index).unwrap() + 100,
+                type_word: 0,
+            }),
+            gate_words: [0; 8],
+            drive_words: [0; 8],
+            accumulator_words: [0; 8],
+            first_four_subtractions: [0; 4],
+            config_flag_26: [0; 8],
+        }
+    }
+
+    #[test]
+    fn eight_lane_postprocess_pins_every_strided_schema_and_caller_write() {
+        assert_eq!(
+            COMPILED_LANE_SOURCE_VECTOR_BASES,
+            COMPILED_STATE_BASIS_VECTOR_BASES
+        );
+        assert_eq!(
+            COMPILED_LANE_OUTPUT_VECTOR_BASES,
+            std::array::from_fn(|index| 0x33c + u16::try_from(index).unwrap() * 12)
+        );
+        assert_eq!(
+            COMPILED_LANE_WORD_OFFSETS,
+            std::array::from_fn(|index| 0x2e4 + u16::try_from(index).unwrap() * 4)
+        );
+        assert_eq!(
+            COMPILED_LANE_TYPE_U16_OFFSETS,
+            std::array::from_fn(|index| 0x42a + u16::try_from(index).unwrap() * 2)
+        );
+        assert_eq!(
+            COMPILED_LANE_HANDLE_I16_OFFSETS,
+            COMPILED_CALL_SPINE_CONTROL_U16_OFFSETS
+        );
+        assert_eq!(
+            COMPILED_LANE_GATE_OFFSETS,
+            std::array::from_fn(|index| 0x69c + u16::try_from(index).unwrap() * 4)
+        );
+        assert_eq!(
+            COMPILED_LANE_DRIVE_OFFSETS,
+            std::array::from_fn(|index| 0x304 + u16::try_from(index).unwrap() * 4)
+        );
+        assert_eq!(
+            COMPILED_LANE_ACCUMULATOR_OFFSETS,
+            std::array::from_fn(|index| 0x618 + u16::try_from(index).unwrap() * 4)
+        );
+        assert_eq!(
+            COMPILED_LANE_FIRST_FOUR_SUBTRACTION_OFFSETS,
+            [0x5e8, 0x5f0, 0x5f8, 0x600]
+        );
+        assert_eq!(COMPILED_LANE_LATCH_OFFSET, 0x67c);
+        assert_eq!(COMPILED_LANE_CONFIG_FLAG_OFFSET, 0x26);
+        assert_eq!(COMPILED_LANE_ACCUMULATOR_LATCH_THRESHOLD, 0x00c8_9cbc);
+
+        let mut state_destination_ranges = Vec::new();
+        state_destination_ranges
+            .extend(COMPILED_LANE_WORD_OFFSETS.map(|offset| (offset, offset + 4)));
+        state_destination_ranges
+            .extend(COMPILED_LANE_OUTPUT_VECTOR_BASES.map(|offset| (offset, offset + 12)));
+        state_destination_ranges
+            .extend(COMPILED_LANE_ACCUMULATOR_OFFSETS.map(|offset| (offset, offset + 4)));
+        state_destination_ranges.push((COMPILED_LANE_LATCH_OFFSET, COMPILED_LANE_LATCH_OFFSET + 4));
+        for left in 0..state_destination_ranges.len() {
+            for right in left + 1..state_destination_ranges.len() {
+                let (left_start, left_end) = state_destination_ranges[left];
+                let (right_start, right_end) = state_destination_ranges[right];
+                assert!(left_end <= right_start || right_end <= left_start);
+            }
+        }
+        for type_offset in COMPILED_LANE_TYPE_U16_OFFSETS {
+            for handle_offset in COMPILED_LANE_HANDLE_I16_OFFSETS {
+                assert!(type_offset + 2 <= handle_offset || handle_offset + 2 <= type_offset);
+            }
+        }
+
+        let input = lane_postprocess_input();
+        let effects = derive_compiled_eight_lane_postprocess(input);
+        assert_eq!(
+            effects.lane_words,
+            input.post_dispatch.map(|lane| lane.lane_word)
+        );
+        assert_eq!(effects.output_vector_writes, [None; 8]);
+        assert_eq!(effects.type_word_writes, [None; 8]);
+        assert_eq!(effects.accumulator_writes, [None; 8]);
+        assert_eq!(effects.latch_67c, None);
+    }
+
+    #[test]
+    fn lane_type_effect_exhaustively_partitions_all_u16_words() {
+        let mut reset = Vec::new();
+        let mut reduce = Vec::new();
+        let mut accumulate = Vec::new();
+        for word in 0..=u16::MAX {
+            match compiled_lane_type_effect(word) {
+                CompiledLaneTypeEffect::None => {}
+                CompiledLaneTypeEffect::ReduceAndResetVector => reset.push(word),
+                CompiledLaneTypeEffect::Reduce => reduce.push(word),
+                CompiledLaneTypeEffect::ReduceAndAccumulate => accumulate.push(word),
+            }
+        }
+        assert_eq!(reset, [0x3b, 0x3f, 0x40]);
+        assert_eq!(reduce, [0x51, 0x53]);
+        assert_eq!(accumulate, [0x52]);
+    }
+
+    #[test]
+    fn eight_lane_postprocess_preserves_native_stage_order_and_late_overrides() {
+        let mut input = lane_postprocess_input();
+        input.post_dispatch[0].type_word = 0x3b;
+        input.gate_words[0] = 1;
+        input.drive_words[0] = 0x1_0000;
+        input.first_four_subtractions[0] = 7;
+        input.config_flag_26[0] = 0xfe;
+
+        input.post_dispatch[1].type_word = 0x51;
+        input.first_four_subtractions[1] = -9;
+
+        input.post_dispatch[4].lane_word = 1000;
+        input.post_dispatch[4].type_word = 0x52;
+        input.accumulator_words[4] = 0x00c7_9cbc;
+
+        let effects = derive_compiled_eight_lane_postprocess(input);
+        assert_eq!(effects.lane_words[0], 85_290);
+        assert_eq!(effects.output_vector_writes[0], Some([0, 0x1_0000, 0]));
+        assert_eq!(effects.type_word_writes[0], Some(0x000a));
+        assert_eq!(effects.lane_words[1], 110_i32.wrapping_sub(0x4ccc));
+        assert_eq!(effects.output_vector_writes[1], None);
+        assert_eq!(effects.lane_words[4], -57_783);
+        assert_eq!(effects.accumulator_writes[4], Some(0x00c8_9cbc));
+        assert_eq!(effects.latch_67c, Some(1));
+    }
+
+    #[test]
+    fn eight_lane_postprocess_uses_signed_upper_only_clamp_and_lane_local_config() {
+        let mut input = lane_postprocess_input();
+        input.gate_words[4] = 1;
+        input.drive_words[4] = -1;
+        input.gate_words[5] = 1;
+        input.drive_words[5] = 0x1_0000;
+        input.post_dispatch[6].lane_word = i32::MAX;
+        input.config_flag_26[6] = 0x02;
+        input.config_flag_26[7] = 0x01;
+
+        let effects = derive_compiled_eight_lane_postprocess(input);
+        assert_eq!(effects.lane_words[4], 102);
+        assert_eq!(effects.lane_words[5], 105_i32.wrapping_add(0x9999));
+        assert_eq!(effects.lane_words[6], i32::MIN + 0xffff);
+        assert_eq!(effects.type_word_writes[6], Some(0x000a));
+        assert_eq!(effects.output_vector_writes[6], Some([0, 0x1_0000, 0]));
+        assert_eq!(effects.lane_words[7], 107);
+        assert_eq!(effects.type_word_writes[7], None);
+    }
+
+    #[test]
+    fn eight_lane_accumulator_latch_uses_updated_signed_word_and_wraps() {
+        let mut below = lane_postprocess_input();
+        below.post_dispatch[0].type_word = 0x52;
+        below.accumulator_words[0] = 0x00c7_9cbb;
+        assert_eq!(
+            derive_compiled_eight_lane_postprocess(below).latch_67c,
+            None
+        );
+
+        let mut wrapping = lane_postprocess_input();
+        wrapping.post_dispatch[6].lane_word = i32::MIN.wrapping_add(0x4ccc);
+        wrapping.post_dispatch[6].type_word = 0x52;
+        wrapping.accumulator_words[6] = 0x1_0000;
+        wrapping.post_dispatch[7].type_word = 0x52;
+        wrapping.accumulator_words[7] = i32::MAX;
+        let effects = derive_compiled_eight_lane_postprocess(wrapping);
+        assert_eq!(effects.lane_words[6], i32::MIN.wrapping_sub(0xc4));
+        assert_eq!(effects.accumulator_writes[6], Some(0x2_0000));
+        assert_eq!(effects.accumulator_writes[7], Some(i32::MIN + 0xffff));
+        assert_eq!(effects.latch_67c, None);
+    }
+
+    #[test]
+    fn eight_lane_word_arithmetic_wraps_and_first_four_cutoff_is_exact() {
+        let mut input = lane_postprocess_input();
+        input.post_dispatch[0].lane_word = i32::MAX;
+        input.gate_words[0] = 1;
+        input.drive_words[0] = 0x1_0000;
+        input.post_dispatch[1].lane_word = i32::MIN;
+        input.post_dispatch[1].type_word = 0x51;
+        input.post_dispatch[2].lane_word = i32::MIN;
+        input.first_four_subtractions = [0, 0, 1, 4];
+        input.post_dispatch[4].lane_word = 104;
+
+        let effects = derive_compiled_eight_lane_postprocess(input);
+        assert_eq!(effects.lane_words[0], i32::MAX.wrapping_add(0x9999));
+        assert_eq!(effects.lane_words[1], i32::MIN.wrapping_sub(0x4ccc));
+        assert_eq!(effects.lane_words[2], i32::MAX);
+        assert_eq!(effects.lane_words[3], 99);
+        assert_eq!(effects.lane_words[4], 104);
     }
 
     #[test]

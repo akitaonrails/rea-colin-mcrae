@@ -728,6 +728,13 @@ only the primaries from two vectors and three scalars. Six focused tests bring
 and call-spine integration remain open while `FUN_00419a40`/`FUN_00446c40` and
 `FUN_00408fe0` are unresolved.
 
+G03-AI separates the exact caller-side portion of `FUN_00419a40` from its
+geometry-dependent `FUN_00446c40` dispatcher. Eight per-lane post-dispatch snapshots
+feed tested gate/drive, type-switch, first-four subtraction, accumulator/latch,
+and per-lane config-override rules. Six focused tests bring `cmr-core` to 1,177.
+The dispatcher and its global geometry/spatial tables remain an injected open
+boundary, so this aggregate is not yet composed into the initializer.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed
