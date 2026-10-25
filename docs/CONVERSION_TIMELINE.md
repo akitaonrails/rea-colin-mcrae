@@ -380,5 +380,7 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-25T23:56Z | 129h38m | reconstruct-weather-detail-predicate-48d2d0 | _(pending)_ | G03 | G03-AK20 reconstructs `FUN_0048d2d0`: false at detail `8`; otherwise weather `3`/`4` yields `DAT_00592efc != 1`, weather `5` yields true, every other input yields false, with native short-circuit evaluation of the weather and intensity getters. `FUN_0046b240` is confirmed as the `DAT_00592f00` getter and `FUN_004cfac0` as the already reconstructed LCG. One focused test brings `cmr-core` to 1,256. The `FUN_00492770` switch stores remain open. |
 
+| 2026-10-25T23:59Z | 129h41m | reconstruct-callee-92770-vector-stores | _(pending)_ | G03 | G03-AK21 reconstructs `FUN_00492770`: the switch at `param_1+0x180` stores the three source dwords at `+0xc4/+0xc8/+0xcc` for cases `0` and `3`, adds stores at `+0x10/+0x14/+0x18` for cases `1` and `2`, and stores no vector otherwise. Every path zeroes `param_1+0x188` and calls `FUN_00492050`. One focused test brings `cmr-core` to 1,257. `FUN_00492050` remains unreconstructed. |
+
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

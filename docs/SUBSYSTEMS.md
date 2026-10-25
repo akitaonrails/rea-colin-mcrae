@@ -1312,14 +1312,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   every other input yields false, with native short-circuit evaluation of the
   weather and intensity getters. One focused test brings `cmr-core` to 1,256.
   The `FUN_00492770` switch stores remain open.
-  See
-  See
-  See
-  See
-  See
-  See
-  See
-  See
+  G03-AK21 reconstructs `FUN_00492770`: cases `0`/`3` store the source
+  vector at `+0xc4/+0xc8/+0xcc`, cases `1`/`2` add stores at
+  `+0x10/+0x14/+0x18`, other values store none, and every path zeroes
+  `param_1+0x188` and calls `FUN_00492050`. One focused test brings
+  `cmr-core` to 1,257. `FUN_00492050` remains unreconstructed.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

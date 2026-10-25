@@ -913,6 +913,13 @@ their native short-circuit paths. `FUN_0046b240` is confirmed as the
 focused test brings `cmr-core` to 1,256. The `FUN_00492770` switch stores
 remain open.
 
+G03-AK21 reconstructs `FUN_00492770`: the switch at `param_1+0x180` stores the
+three source dwords at `+0xc4/+0xc8/+0xcc` for cases `0` and `3`, adds stores
+at `+0x10/+0x14/+0x18` for cases `1` and `2`, and stores no vector otherwise.
+Every path zeroes `param_1+0x188` and calls `FUN_00492050`. One focused test
+brings `cmr-core` to 1,257. `FUN_00492050` remains unreconstructed; the
+`FUN_004126b0` lane threshold scan follows.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed
