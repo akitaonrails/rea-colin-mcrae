@@ -1039,17 +1039,28 @@ languages rather than fabricating or silently aliasing Italian assets.
   arithmetic-shift products and wrapping adds.
   `transform_compiled_control_run` and
   `transform_compiled_control_family` encode that payload-free contract; six
-  synthetic tests bring `cmr-core` to 1,112. The signed config-record
-  lookup/domain, neighboring `FUN_00404100`/`FUN_00407270`, rest of the common
-  path, composition with the later reciprocal/copy helper, meanings/units, and
-  application/session/gameplay wiring remain. See
+  synthetic tests bring `cmr-core` to 1,112. The preceding common-path helper
+  `FUN_00404100` is recovered too: it masks config-record byte `+0x95` to three
+  bits and unconditionally writes `control+0x170` as Q16 `0x4000`, `0x8000`,
+  or `0xc000` for modes `0`, `1`, or `2..7`. Because `+0x170` is not a direct
+  case destination and every selector reaches this call, invalid selectors
+  still receive the helper-derived word. Downstream `FUN_0040d810` consumes it
+  and its `0x10000-split` complement as the center drive split in both coast
+  and driven distribution. `compiled_center_split_q16` encodes only the total
+  byte-to-word policy; two tests cover all low-bit policies and all 256 bytes,
+  bringing `cmr-core` to 1,114. The signed config-record lookup/domain,
+  `FUN_00407270`, rest of the common path, composition with the later
+  reciprocal/copy helper, meanings/units, and application/session/gameplay
+  wiring remain. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
+  `rea.official-eu.sim-compiled-center-split`,
   `impl.sim-compiled-car-initializer-schema`,
   `impl.sim-compiled-car-initializer-extractor`,
   `impl.sim-compiled-car-initializer-store`,
-  `impl.sim-compiled-car-initializer-consumer`, and
-  `impl.sim-compiled-control-run-transform`.
+  `impl.sim-compiled-car-initializer-consumer`,
+  `impl.sim-compiled-control-run-transform`, and
+  `impl.sim-compiled-center-split`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

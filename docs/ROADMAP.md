@@ -490,8 +490,17 @@ products and cumulative wrapping addition. The payload-free
 `transform_compiled_control_run` and eight-word
 `transform_compiled_control_family` adapter preserve the outer words and add
 six synthetic tests, bringing `cmr-core` to 1,112. The signed config-record
-lookup/domain, `FUN_00404100`, `FUN_00407270`, the rest of the common path,
-composition with the later reciprocal/copy helper, application/session/gameplay
+lookup/domain remains outside that transform. G03-S recovers the preceding
+`FUN_00404100` helper: after every valid or invalid direct-case selector has
+joined the common path, it reads config-record byte `+0x95`, masks its low three
+bits, and always writes center drive split `control+0x170` as Q16 `0x4000` for
+mode `0`, `0x8000` for mode `1`, or `0xc000` for modes `2..7`. This field is
+not a direct-case destination. The existing `FUN_0040d810` evidence consumes
+it and its `0x10000-split` complement in both coast and driven front/rear
+distribution. The total `compiled_center_split_q16` helper plus two tests,
+including all 256 byte inputs, brings `cmr-core` to 1,114. The signed config
+lookup/domain, `FUN_00407270`, rest of the common path, complete composition
+with selection/transform/reciprocal helpers, application/session/gameplay
 wiring, entry meanings/units, gameplay index invariants, other editions,
 runtime geometry/BSS consumers, and full `FUN_0040d810`/`FUN_0040a4a0`
 closure remain open.

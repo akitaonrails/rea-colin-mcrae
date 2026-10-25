@@ -211,6 +211,20 @@ pub fn apply_compiled_case(
     }
 }
 
+/// Select the Q16 center-drive-split word from the low three option bits.
+///
+/// This is the total value policy recovered from `FUN_00404100`. Resolving the
+/// option byte through the shipped signed config-record index is deliberately
+/// outside this pure boundary.
+#[must_use]
+pub const fn compiled_center_split_q16(option_byte: u8) -> i32 {
+    match option_byte & 7 {
+        0 => 0x4000,
+        1 => 0x8000,
+        _ => 0xc000,
+    }
+}
+
 /// Transform the six-word middle run selected by the low three option bits.
 ///
 /// All five differences are taken from `original` before rebuilding the
@@ -590,6 +604,25 @@ mod tests {
                     words: prior,
                     selected_case: None,
                 }
+            );
+        }
+    }
+
+    #[test]
+    fn center_split_pins_all_low_three_bit_policies() {
+        assert_eq!(compiled_center_split_q16(0), 0x4000);
+        assert_eq!(compiled_center_split_q16(1), 0x8000);
+        for mode in 2..=7 {
+            assert_eq!(compiled_center_split_q16(mode), 0xc000);
+        }
+    }
+
+    #[test]
+    fn center_split_exhaustively_ignores_upper_option_bits() {
+        for option_byte in u8::MIN..=u8::MAX {
+            assert_eq!(
+                compiled_center_split_q16(option_byte),
+                compiled_center_split_q16(option_byte & 7)
             );
         }
     }
