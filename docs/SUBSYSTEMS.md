@@ -1294,6 +1294,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   `+0x684/+0x610/+0x678/+0x6e4` and u16 `+0x60c/+0x614` zeroed, and three
   dwords copied from `+0x258` to `+0x5d4`. Two focused tests bring `cmr-core`
   to 1,251. The `+0x6f8` flag and `+0x6e8/+0x6ec` words remain open.
+  G03-AK18 reconstructs the conditional `+0x6f8` flag (short-circuited second
+  callee), `+0x6f0 = 1`, and the `+0x6e8/+0x6ec` words: zero when
+  `DAT_00550c08 == 2` or `DAT_00d3ca88 != 0`, otherwise `+0x6e8 = 1` and
+  `+0x6ec` is the signed remainder of the RNG draw by two times ten plus
+  `0xd`, reachable values `3`, `13`, and `23`. Two focused tests bring
+  `cmr-core` to 1,253. The copy loops and final state writes remain open.
+  See
   See
   See
   See

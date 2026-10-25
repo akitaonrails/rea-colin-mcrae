@@ -2317,6 +2317,62 @@ pub const fn derive_compiled_initializer_flag_effects() -> CompiledInitializerFl
     }
 }
 
+/// State `+0x6f8`: `1` when `FUN_0046b240()` returns `8` or `FUN_0048d2d0()`
+/// returns nonzero, else `0`. The second callee is only evaluated when the
+/// first result differs from `8`; `state+0x6f0` is then set to `1`.
+#[must_use]
+pub fn derive_compiled_initializer_6f8(first: i32, second: impl FnOnce() -> i32) -> i32 {
+    i32::from(first == 8 || second() != 0)
+}
+
+/// Inputs for the `+0x6e8/+0x6ec` words after the `+0x6f0 = 1` store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledInitializer6e8Inputs {
+    /// Global `DAT_00550c08`.
+    pub global_550c08: i32,
+    /// Global `DAT_00d3ca88`.
+    pub global_d3ca88: i32,
+    /// The `FUN_004cfac0()` result, drawn only when the zero branch is not
+    /// taken. It is ignored in the zero branch.
+    pub random: u32,
+}
+
+/// The `+0x6e8` dword and the `+0x6ec` u16 word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledInitializer6e8Effects {
+    pub word_6e8: i32,
+    pub word_6ec: i16,
+}
+
+/// Reconstructs the `+0x6e8/+0x6ec` words.
+///
+/// When `DAT_00550c08 == 2` or `DAT_00d3ca88 != 0`, both are zero. Otherwise
+/// `+0x6e8 = 1` and `+0x6ec` is `(signed_remainder(random, 2)) * 10 + 0xd`
+/// truncated to 16 bits. The native `random & 0x80000001` followed by the
+/// negative correction is the C sign-following remainder: for a negative odd
+/// value the correction is `(value - 1 | 0xfffffffe) + 1`, all wrapping.
+#[must_use]
+pub fn derive_compiled_initializer_6e8(
+    input: CompiledInitializer6e8Inputs,
+) -> CompiledInitializer6e8Effects {
+    if input.global_550c08 == 2 || input.global_d3ca88 != 0 {
+        return CompiledInitializer6e8Effects {
+            word_6e8: 0,
+            word_6ec: 0,
+        };
+    }
+    let raw = (input.random & 0x8000_0001) as i32;
+    let remainder = if raw < 0 {
+        (raw.wrapping_sub(1) | -2).wrapping_add(1)
+    } else {
+        raw
+    };
+    CompiledInitializer6e8Effects {
+        word_6e8: 1,
+        word_6ec: (remainder * 10 + 0xd) as i16,
+    }
+}
+
 fn solve_compiled_lane_plane(
     source_vector: [i32; 3],
     fallback: i32,
@@ -7592,6 +7648,74 @@ mod tests {
         // The copy moves three dwords from +0x258 to +0x5d4 without overlap.
         let (source, destination) = effects.state_vector_copy;
         assert!(destination >= source + 0x0c || source >= destination + 0x0c);
+    }
+
+    #[test]
+    fn initializer_6f8_short_circuits_the_second_call() {
+        let calls = Cell::new(0);
+        let second = || {
+            calls.set(calls.get() + 1);
+            0
+        };
+        assert_eq!(derive_compiled_initializer_6f8(8, second), 1);
+        assert_eq!(calls.get(), 0, "the second callee is skipped after an 8");
+
+        let calls = Cell::new(0);
+        let second = || {
+            calls.set(calls.get() + 1);
+            0
+        };
+        assert_eq!(derive_compiled_initializer_6f8(7, second), 0);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(derive_compiled_initializer_6f8(7, || 3), 1);
+        assert_eq!(derive_compiled_initializer_6f8(0, || -1), 1);
+    }
+
+    #[test]
+    fn initializer_6e8_zero_branch_and_signed_remainder_word() {
+        // The zero branch ignores the RNG value entirely.
+        for input in [
+            CompiledInitializer6e8Inputs {
+                global_550c08: 2,
+                global_d3ca88: 0,
+                random: 1,
+            },
+            CompiledInitializer6e8Inputs {
+                global_550c08: 0,
+                global_d3ca88: 1,
+                random: u32::MAX,
+            },
+        ] {
+            assert_eq!(
+                derive_compiled_initializer_6e8(input),
+                CompiledInitializer6e8Effects {
+                    word_6e8: 0,
+                    word_6ec: 0,
+                }
+            );
+        }
+
+        let word = |random| {
+            derive_compiled_initializer_6e8(CompiledInitializer6e8Inputs {
+                global_550c08: 0,
+                global_d3ca88: 0,
+                random,
+            })
+        };
+        // Signed remainder by two, then *10+13: 0 -> 13, +1 -> 23, -1 -> 3.
+        for (random, expected) in [
+            (0, 13),
+            (1, 23),
+            (2, 13),
+            (3, 23),
+            (0x8000_0000, 13),
+            (0x8000_0001, 3),
+            (u32::MAX, 3),
+        ] {
+            let effects = word(random);
+            assert_eq!(effects.word_6e8, 1);
+            assert_eq!(effects.word_6ec, expected, "random {random:#x}");
+        }
     }
 
     #[test]

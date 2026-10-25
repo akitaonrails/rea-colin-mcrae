@@ -888,6 +888,14 @@ zeroed, control `+0x37c = -0x4ccc` and `+0x41c = 0`, state dwords
 dwords copied from `+0x258` to `+0x5d4`. Two focused tests bring `cmr-core` to
 1,251. The `+0x6f8` conditional flag and the `+0x6e8/+0x6ec` words remain open.
 
+G03-AK18 reconstructs the conditional flags: `+0x6f8` is `1` when
+`FUN_0046b240()` returns `8` or `FUN_0048d2d0()` returns nonzero, with the
+second callee short-circuited, then `+0x6f0 = 1`. The `+0x6e8/+0x6ec` words
+are zero when `DAT_00550c08 == 2` or `DAT_00d3ca88 != 0`; otherwise `+0x6e8 =
+1` and `+0x6ec` is the signed remainder of the RNG draw by two times ten plus
+`0xd`, reachable values `3`, `13`, and `23`. Two focused tests bring
+`cmr-core` to 1,253. The copy loops and final state writes remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed
