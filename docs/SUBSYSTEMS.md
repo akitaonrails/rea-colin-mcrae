@@ -1116,9 +1116,16 @@ languages rather than fabricating or silently aliasing Italian assets.
   and stage composition derives the prefix for valid or invalid selectors,
   feeds its `+0x48` to the auxiliary patch, and validates represented stages
   config-before-prefix-before-aux-before-family. Eight new tests bring
-  `cmr-core` to 1,141. `FUN_00486090`, the post-helper interval, merged object
+  `cmr-core` to 1,141. G03-Z then reconstructs exact no-call interval
+  `[0x406324,0x40645f)` as a separate mixed-width patch: fifteen control
+  dwords, one state dword, one control byte, and one control word. It consumes
+  effective post-prefix `+0x148/+0x15c`, copies `+0x148` to `+0x14c`, and
+  derives the guarded signed reciprocal at `+0x160`. Composition preserves the
+  optional scaled-versus-raw `+0x15c` dependency and extends represented-stage
+  precedence with PostHelper before Family. Five new tests plus strengthened
+  composition tests bring `cmr-core` to 1,146. `FUN_00486090`, merged object
   application, meanings/units, config loading, application/session/gameplay
-  wiring, and other editions remain. See
+  wiring, runtime reachability, and other editions remain. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
   `rea.official-eu.sim-compiled-center-split`,
@@ -1135,9 +1142,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-aux-control-store`,
   `impl.sim-compiled-aux-control-consumer`,
   `impl.sim-compiled-config-options`,
-  `rea.official-eu.sim-compiled-stage-dataflow`, and
-  `impl.sim-compiled-stage-effects`, and
-  `impl.sim-compiled-common-prefix`.
+  `rea.official-eu.sim-compiled-stage-dataflow`,
+  `impl.sim-compiled-stage-effects`,
+  `impl.sim-compiled-common-prefix`,
+  `rea.official-eu.sim-compiled-post-helper-initialization`, and
+  `impl.sim-compiled-post-helper-initialization`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

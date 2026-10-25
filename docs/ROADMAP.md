@@ -603,7 +603,7 @@ typed error precedence, bringing `cmr-core` to 1,133. The common prefix,
 application/session/gameplay wiring,
 meanings/units, and other editions remain open.
 
-G03-Y supersedes the G03-X caller-supplied-prefix interface. Static
+G03-Y (`414e90f`) supersedes the G03-X caller-supplied-prefix interface. Static
 instruction verification pins exact interval `[0x4060d3,0x4062ba)`: wrapped
 `control+0x148-0x51e`; optional raw-config-`+0x25` bit-`0x02` Q16 stores to
 `+0x15c` and adjusted `+0x148`; optional bit-`0x04` Q16 halving of all eight
@@ -623,6 +623,21 @@ disjointness, and precedence, bringing `cmr-core` to 1,141.
 `FUN_00486090`, interval `0x406324..0x406459`, complete object application,
 runtime reachability, meanings/units, other editions, and application wiring
 remain open.
+
+G03-Z reconstructs and integrates the exact no-call interval
+`[0x406324,0x40645f)`. A mixed-width exact-write patch carries fifteen control
+dwords, state dword `+0xec`, control byte `+0x440`, and control word `+0x3e4`.
+It consumes effective post-prefix control `+0x148/+0x15c`; `+0x14c` copies the
+former and `+0x160` is zero-to-`-1` or signed `2^32/+0x15c`. Divisors
+`-1,1,2` return a typed atomic error, unlike the shipped in-place path where
+eight earlier writes are already visible. Composition selects scaled or raw
+`+0x15c` correctly and validates represented stages
+config-before-prefix-before-aux-before-post-helper-before-family. Five new
+tests plus strengthened existing composition tests cover the complete schema,
+widths, values, signed boundaries, routing, disjointness, invalid selectors,
+and precedence, bringing `cmr-core` to 1,146. The preceding `FUN_00486090`
+state `+0x758` effect, complete object application, semantics/units, runtime
+reachability, application wiring, and other editions remain open.
 
 Exit gate:
 

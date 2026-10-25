@@ -105,6 +105,16 @@ pub const COMPILED_COMMON_PREFIX_STATE_OFFSETS: [u16; COMPILED_STATE_WORD_COUNT 
 /// Complete control-destination universe of the recovered common prefix.
 pub const COMPILED_COMMON_PREFIX_CONTROL_OFFSETS: [u16; 2] = [0x148, 0x15c];
 
+/// Control dword destinations in canonical ascending offset order.
+pub const COMPILED_POST_HELPER_CONTROL_WORD_OFFSETS: [u16; 15] = [
+    0x144, 0x14c, 0x150, 0x154, 0x160, 0x174, 0x178, 0x17c, 0x180, 0x184, 0x188, 0x18c, 0x1a8,
+    0x1b4, 0x408,
+];
+
+pub const COMPILED_POST_HELPER_STATE_WORD_OFFSETS: [u16; 1] = [0x0ec];
+pub const COMPILED_POST_HELPER_CONTROL_BYTE_OFFSETS: [u16; 1] = [0x440];
+pub const COMPILED_POST_HELPER_CONTROL_U16_OFFSETS: [u16; 1] = [0x3e4];
+
 /// Control destinations in the neutral schema order used by
 /// [`CompiledCaseWords::control_words`].
 ///
@@ -361,6 +371,79 @@ pub fn derive_compiled_common_prefix(
 
 fn common_prefix_q16_mul(left: i32, right: i32) -> i32 {
     ((i64::from(left) * i64::from(right)) >> 16) as i32
+}
+
+/// Exact writes performed after the recovered helpers and before the family
+/// reciprocal/copy tail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledPostHelperEffects {
+    /// Values corresponding to [`COMPILED_POST_HELPER_CONTROL_WORD_OFFSETS`].
+    pub control_words: [i32; COMPILED_POST_HELPER_CONTROL_WORD_OFFSETS.len()],
+    pub state_words: [i32; COMPILED_POST_HELPER_STATE_WORD_OFFSETS.len()],
+    pub control_bytes: [u8; COMPILED_POST_HELPER_CONTROL_BYTE_OFFSETS.len()],
+    pub control_u16: [u16; COMPILED_POST_HELPER_CONTROL_U16_OFFSETS.len()],
+}
+
+/// A control `+0x15c` value whose signed `2^32 / value` quotient would make
+/// the shipped x86 `IDIV` fault before the family tail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledPostHelperReciprocalOverflow {
+    pub control_word_15c: i32,
+}
+
+impl fmt::Display for CompiledPostHelperReciprocalOverflow {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "compiled post-helper reciprocal overflows i32 for control +0x15c value {}",
+            self.control_word_15c
+        )
+    }
+}
+
+impl std::error::Error for CompiledPostHelperReciprocalOverflow {}
+
+/// Derive the exact writes in `[0x406324,0x40645f)`.
+///
+/// The two inputs are the effective values after the recovered common prefix.
+/// Zero at `+0x15c` maps to `-1`; another value uses signed `2^32 / value`
+/// with truncation toward zero. A quotient overflow returns no patch, an
+/// explicit safe policy; the shipped in-place routine had already performed
+/// earlier stores before its unguarded `IDIV`.
+pub fn derive_compiled_post_helper_effects(
+    control_word_148: i32,
+    control_word_15c: i32,
+) -> Result<CompiledPostHelperEffects, CompiledPostHelperReciprocalOverflow> {
+    let reciprocal_160 = if control_word_15c == 0 {
+        -1
+    } else {
+        let quotient = (1_i64 << 32) / i64::from(control_word_15c);
+        i32::try_from(quotient)
+            .map_err(|_| CompiledPostHelperReciprocalOverflow { control_word_15c })?
+    };
+
+    Ok(CompiledPostHelperEffects {
+        control_words: [
+            0x83,
+            control_word_148,
+            0x0ccc,
+            0x0ccc,
+            reciprocal_160,
+            0x0ccc,
+            0x0ccc,
+            0x0ccc,
+            0x0ccc,
+            0x8000,
+            0x3333,
+            0x3333,
+            0x0_fae1,
+            0x8000,
+            0,
+        ],
+        state_words: [0],
+        control_bytes: [3],
+        control_u16: [0x02aa],
+    })
 }
 
 /// Select the Q16 center-drive-split word from the low three option bits.
@@ -816,6 +899,7 @@ pub struct RecoveredCompiledStageEffects {
     pub common_prefix: CompiledCommonPrefixEffects,
     pub center_split_q16: i32,
     pub aux_control_patch: AuxControlPatch,
+    pub post_helper: CompiledPostHelperEffects,
     pub control_families: CompiledControlFamilies,
 }
 
@@ -824,6 +908,7 @@ pub enum RecoveredCompiledStageError {
     Config(CompiledConfigResolveError),
     Prefix(CompiledCommonPrefixReciprocalOverflow),
     Aux(AuxControlReciprocalOverflow),
+    PostHelper(CompiledPostHelperReciprocalOverflow),
     Family(CompiledReciprocalOverflow),
 }
 
@@ -833,6 +918,9 @@ impl fmt::Display for RecoveredCompiledStageError {
             Self::Config(source) => write!(formatter, "cannot resolve compiled options: {source}"),
             Self::Prefix(source) => write!(formatter, "cannot derive common prefix: {source}"),
             Self::Aux(source) => write!(formatter, "cannot derive auxiliary patch: {source}"),
+            Self::PostHelper(source) => {
+                write!(formatter, "cannot derive post-helper patch: {source}")
+            }
             Self::Family(source) => {
                 write!(
                     formatter,
@@ -849,6 +937,7 @@ impl std::error::Error for RecoveredCompiledStageError {
             Self::Config(source) => Some(source),
             Self::Prefix(source) => Some(source),
             Self::Aux(source) => Some(source),
+            Self::PostHelper(source) => Some(source),
             Self::Family(source) => Some(source),
         }
     }
@@ -858,13 +947,12 @@ impl std::error::Error for RecoveredCompiledStageError {
 ///
 /// The returned bundle keeps raw direct stores separate from the exact prefix,
 /// center-split, auxiliary, and family/tail effects. The family/tail is derived
-/// from and supersedes only the raw direct-case family, which the prefix does
-/// not touch. The family-disjoint omitted interval between the auxiliary helper
-/// and reciprocal/copy tail is not represented and can itself fault. Config,
-/// prefix, auxiliary, then family validation order applies only to the
-/// represented stages; success does not prove that the shipped full initializer
-/// reaches its tail. Any represented failure returns no partial bundle. That
-/// atomic error boundary is a safe
+/// from and supersedes only the raw direct-case family, which the prefix and
+/// post-helper patch do not touch. The intervening `FUN_00486090` state
+/// `+0x758` write remains omitted. Config, prefix, auxiliary, post-helper, then
+/// family validation order applies only to the represented stages; success
+/// does not prove a complete shipped initializer snapshot. Any represented
+/// failure returns no partial bundle. That atomic error boundary is a safe
 /// reconstruction policy; the shipped in-place code could have performed
 /// earlier writes before an `IDIV` fault.
 pub fn compose_recovered_compiled_stage_effects(
@@ -890,6 +978,14 @@ pub fn compose_recovered_compiled_stage_effects(
             input.global_word,
         )
         .map_err(RecoveredCompiledStageError::Aux)?;
+    let effective_control_word_15c = common_prefix
+        .control_word_15c
+        .unwrap_or(direct_case_stores.words.control_words[3]);
+    let post_helper = derive_compiled_post_helper_effects(
+        common_prefix.control_word_148,
+        effective_control_word_15c,
+    )
+    .map_err(RecoveredCompiledStageError::PostHelper)?;
     let control_families = derive_compiled_control_families(transformed_control_family)
         .map_err(RecoveredCompiledStageError::Family)?;
 
@@ -898,6 +994,7 @@ pub fn compose_recovered_compiled_stage_effects(
         common_prefix,
         center_split_q16,
         aux_control_patch,
+        post_helper,
         control_families,
     })
 }
@@ -1290,6 +1387,14 @@ mod tests {
         patch.words[index]
     }
 
+    fn post_helper_control_value(effects: CompiledPostHelperEffects, offset: u16) -> i32 {
+        let index = COMPILED_POST_HELPER_CONTROL_WORD_OFFSETS
+            .iter()
+            .position(|candidate| *candidate == offset)
+            .unwrap();
+        effects.control_words[index]
+    }
+
     fn aux_policy_words(patch: AuxControlPatch) -> [i32; 7] {
         AUX_CONTROL_POLICY_WORD_OFFSETS.map(|offset| aux_value(patch, offset))
     }
@@ -1525,6 +1630,65 @@ mod tests {
     }
 
     #[test]
+    fn post_helper_patch_pins_exact_mixed_width_schema_and_values() {
+        assert_eq!(
+            COMPILED_POST_HELPER_CONTROL_WORD_OFFSETS,
+            [
+                0x144, 0x14c, 0x150, 0x154, 0x160, 0x174, 0x178, 0x17c, 0x180, 0x184, 0x188, 0x18c,
+                0x1a8, 0x1b4, 0x408
+            ]
+        );
+        assert_eq!(COMPILED_POST_HELPER_STATE_WORD_OFFSETS, [0x0ec]);
+        assert_eq!(COMPILED_POST_HELPER_CONTROL_BYTE_OFFSETS, [0x440]);
+        assert_eq!(COMPILED_POST_HELPER_CONTROL_U16_OFFSETS, [0x3e4]);
+
+        let effects = derive_compiled_post_helper_effects(-77, 0x2_0000).unwrap();
+        assert_eq!(post_helper_control_value(effects, 0x144), 0x83);
+        assert_eq!(post_helper_control_value(effects, 0x14c), -77);
+        assert_eq!(post_helper_control_value(effects, 0x150), 0x0ccc);
+        assert_eq!(post_helper_control_value(effects, 0x154), 0x0ccc);
+        assert_eq!(post_helper_control_value(effects, 0x160), 0x8000);
+        for offset in [0x174, 0x178, 0x17c, 0x180] {
+            assert_eq!(post_helper_control_value(effects, offset), 0x0ccc);
+        }
+        assert_eq!(post_helper_control_value(effects, 0x184), 0x8000);
+        assert_eq!(post_helper_control_value(effects, 0x188), 0x3333);
+        assert_eq!(post_helper_control_value(effects, 0x18c), 0x3333);
+        assert_eq!(post_helper_control_value(effects, 0x1a8), 0x0fae1);
+        assert_eq!(post_helper_control_value(effects, 0x1b4), 0x8000);
+        assert_eq!(post_helper_control_value(effects, 0x408), 0);
+        assert_eq!(effects.state_words, [0]);
+        assert_eq!(effects.control_bytes, [3]);
+        assert_eq!(effects.control_u16, [0x02aa]);
+    }
+
+    #[test]
+    fn post_helper_reciprocal_pins_zero_signed_truncation_and_boundaries() {
+        for (divisor, expected) in [
+            (0, -1),
+            (0x3_0000, 0x5555),
+            (-0x3_0000, -0x5555),
+            (-2, i32::MIN),
+            (3, 1_431_655_765),
+            (i32::MIN, -2),
+            (i32::MAX, 2),
+        ] {
+            let effects = derive_compiled_post_helper_effects(0, divisor).unwrap();
+            assert_eq!(post_helper_control_value(effects, 0x160), expected);
+        }
+    }
+
+    #[test]
+    fn post_helper_reciprocal_overflow_is_typed_and_atomic() {
+        for control_word_15c in [-1, 1, 2] {
+            assert_eq!(
+                derive_compiled_post_helper_effects(123, control_word_15c),
+                Err(CompiledPostHelperReciprocalOverflow { control_word_15c })
+            );
+        }
+    }
+
+    #[test]
     fn center_split_pins_all_low_three_bit_policies() {
         assert_eq!(compiled_center_split_q16(0), 0x4000);
         assert_eq!(compiled_center_split_q16(1), 0x8000);
@@ -1728,6 +1892,14 @@ mod tests {
         let prefix = derive_compiled_common_prefix(cases[3], 0).unwrap();
         assert_eq!(effects.direct_case_stores, selected);
         assert_eq!(effects.common_prefix, prefix);
+        assert_eq!(
+            effects.post_helper,
+            derive_compiled_post_helper_effects(
+                prefix.control_word_148,
+                cases[3].control_words[3],
+            )
+            .unwrap()
+        );
         assert_ne!(
             effects.direct_case_stores.words.control_family(),
             transformed
@@ -1770,6 +1942,13 @@ mod tests {
             assert_ne!(offset, 0x170);
             assert!(!family_offsets.contains(&offset));
             assert!(!AUX_CONTROL_WORD_OFFSETS.contains(&offset));
+        }
+        for offset in COMPILED_POST_HELPER_CONTROL_WORD_OFFSETS {
+            assert_ne!(offset, 0x170);
+            assert!(!COMPILED_CONTROL_WORD_OFFSETS.contains(&offset));
+            assert!(!AUX_CONTROL_WORD_OFFSETS.contains(&offset));
+            assert!(!family_offsets.contains(&offset));
+            assert!(!COMPILED_COMMON_PREFIX_CONTROL_OFFSETS.contains(&offset));
         }
         for offset in family_offsets {
             assert!(COMPILED_CONTROL_WORD_OFFSETS.contains(offset));
@@ -1817,6 +1996,14 @@ mod tests {
             );
             assert_eq!(effects.control_families.post_processed_raw, transformed);
             assert_eq!(
+                effects.post_helper,
+                derive_compiled_post_helper_effects(
+                    effects.common_prefix.control_word_148,
+                    prior.control_words[3],
+                )
+                .unwrap()
+            );
+            assert_eq!(
                 effects.aux_control_patch,
                 derive_aux_control_patch(
                     AuxControlOption::ForcedDefault,
@@ -1827,6 +2014,42 @@ mod tests {
                 .unwrap()
             );
         }
+    }
+
+    #[test]
+    fn recovered_stage_bundle_feeds_scaled_prefix_words_to_post_helper() {
+        let mut cases = synthetic_cases();
+        cases[0].control_words[0] = 0x151e;
+        cases[0].control_words[3] = 0x2_0000;
+        let direct_cases = CompiledDirectCaseSet { cases };
+        let aux_constants = AuxControlConstantSet {
+            constants: aux_constants(),
+        };
+        let config = compiled_stage_config(0, COMPILED_COMMON_CONTROL_SCALE_MASK, 0, 0, 2, false);
+
+        let effects = compose_recovered_compiled_stage_effects(
+            &direct_cases,
+            &aux_constants,
+            RecoveredCompiledStageInputs {
+                prior_case_words: synthetic_case(-1),
+                selector: 0,
+                config: &config,
+                state_slot: 0,
+                global_word: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(effects.common_prefix.control_word_148, 0x2000);
+        assert_eq!(effects.common_prefix.control_word_15c, Some(0x2_6666));
+        assert_eq!(
+            post_helper_control_value(effects.post_helper, 0x14c),
+            0x2000
+        );
+        assert_eq!(
+            effects.post_helper,
+            derive_compiled_post_helper_effects(0x2000, 0x2_6666).unwrap()
+        );
     }
 
     #[test]
@@ -1926,6 +2149,55 @@ mod tests {
             ),
             Err(RecoveredCompiledStageError::Prefix(
                 CompiledCommonPrefixReciprocalOverflow { state_word_48: 1 }
+            ))
+        );
+    }
+
+    #[test]
+    fn recovered_stage_bundle_orders_aux_post_helper_and_family_failures() {
+        let mut cases = synthetic_cases();
+        cases[0].control_words[3] = 1;
+        cases[0].control_words[CONTROL_FAMILY_START + 1] = 1;
+        let direct_cases = CompiledDirectCaseSet { cases };
+        let config = compiled_stage_config(0, 0, 1, 0, 2, false);
+        let input = RecoveredCompiledStageInputs {
+            prior_case_words: synthetic_case(-1),
+            selector: 0,
+            config: &config,
+            state_slot: 0,
+            global_word: 0,
+        };
+
+        let mut failing_aux_constants = aux_constants();
+        failing_aux_constants.policy_one.reciprocal_divisor = 1;
+        assert_eq!(
+            compose_recovered_compiled_stage_effects(
+                &direct_cases,
+                &AuxControlConstantSet {
+                    constants: failing_aux_constants,
+                },
+                input,
+            ),
+            Err(RecoveredCompiledStageError::Aux(
+                AuxControlReciprocalOverflow {
+                    input: AuxControlReciprocalInput::PolicyDivisor,
+                    divisor: 1,
+                }
+            ))
+        );
+
+        assert_eq!(
+            compose_recovered_compiled_stage_effects(
+                &direct_cases,
+                &AuxControlConstantSet {
+                    constants: aux_constants(),
+                },
+                input,
+            ),
+            Err(RecoveredCompiledStageError::PostHelper(
+                CompiledPostHelperReciprocalOverflow {
+                    control_word_15c: 1,
+                }
             ))
         );
     }
