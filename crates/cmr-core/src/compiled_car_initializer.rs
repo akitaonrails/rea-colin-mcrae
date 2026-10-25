@@ -2450,6 +2450,130 @@ pub const fn compiled_initializer_final_call_required(global_d3ca88: i32) -> boo
     global_d3ca88 != 0
 }
 
+/// Reconstructs `FUN_0048d2d0` over the three injected global values.
+///
+/// The result is false when the detail level (`DAT_00592f00`, getter
+/// `FUN_0046b240`) is `8`. Otherwise, when the weather type (`DAT_00592ef8`,
+/// getter `FUN_0046b220`) is `3` or `4`, the result is `DAT_00592efc != 1`
+/// (getter `FUN_0046b230`); when the weather type is `5`, the result is true.
+/// Every other input yields false. The weather getter is only evaluated when
+/// the detail level differs from `8`, and the intensity getter only when the
+/// weather type is `3` or `4`.
+#[must_use]
+pub const fn derive_compiled_initializer_48d2d0(detail: i32, weather: i32, intensity: i32) -> bool {
+    if detail == 8 {
+        return false;
+    }
+    if weather > 2 {
+        if weather < 5 {
+            return intensity != 1;
+        }
+        if weather == 5 {
+            return true;
+        }
+    }
+    false
+}
+
+/// The callee `FUN_00492770` always invokes after its stores.
+pub const COMPILED_92770_NEXT_CALL: u32 = 0x492050;
+
+/// Effects of `FUN_00492770(param_1, param_2)` over a stable snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Compiled92770Effects {
+    /// Three-dword writes at `param_1+0x10/+0x14/+0x18` (cases `1` and `2`).
+    pub low_vector: Option<[i32; 3]>,
+    /// Three-dword writes at `param_1+0xc4/+0xc8/+0xcc` (cases `0..=3`).
+    pub high_vector: Option<[i32; 3]>,
+    /// `param_1+0x188` is zeroed on every path.
+    pub zero_188: bool,
+}
+
+/// Reconstructs the switch-driven vector stores of `FUN_00492770`.
+///
+/// The switch reads `param_1+0x180`. Cases `0` and `3` store the three source
+/// dwords only at `+0xc4/+0xc8/+0xcc`; cases `1` and `2` additionally store
+/// them at `+0x10/+0x14/+0x18`. Every path zeroes `+0x188` and then invokes
+/// [`COMPILED_92770_NEXT_CALL`] (`FUN_00492050`), which is not yet
+/// reconstructed.
+#[must_use]
+pub fn derive_compiled_92770(switch_180: i32, source: [i32; 3]) -> Compiled92770Effects {
+    let (low_vector, high_vector) = match switch_180 {
+        1 | 2 => (Some(source), Some(source)),
+        0 | 3 => (None, Some(source)),
+        _ => (None, None),
+    };
+    Compiled92770Effects {
+        low_vector,
+        high_vector,
+        zero_188: true,
+    }
+}
+
+/// Inputs for `FUN_004126b0`: the per-lane threshold scan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledLaneThresholdInputs {
+    /// Lane words in lane order: lane `i` is read from `+0x2e4 + 4*i`.
+    pub lane_words: [i32; 8],
+    /// Source Y words in lane order: lane `i` is read from `+0x100 + 0x0c*i`.
+    pub source_y: [i32; 8],
+}
+
+/// Effects of the `FUN_004126b0` threshold scan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledLaneThresholdEffects {
+    /// Per-lane flags at `+0x73a+i`: `1` when `lane_word + 0x1999 < source_y`.
+    pub flags_73a: [u8; 8],
+    /// `+0x743`: initialized to `1` and cleared on the first failing lane.
+    pub flag_743: u8,
+    /// `+0x742`: initialized to `0` and incremented per failing lane.
+    pub count_742: u8,
+    /// `+0x744..`: failing lane indices in native descending processing order.
+    pub indices_744: [u8; 8],
+}
+
+/// Reconstructs the `FUN_004126b0` threshold scan in native descending lane
+/// order (lanes `7` down to `0`).
+///
+/// Each comparison is the signed test `lane_word + 0x1999 < source_y` with
+/// wrapping addition. A passing lane sets its `+0x73a` flag; a failing lane
+/// clears it, clears `+0x743`, appends the lane index at `+0x744 + count`, and
+/// increments `+0x742`.
+#[must_use]
+pub fn derive_compiled_lane_thresholds(
+    input: CompiledLaneThresholdInputs,
+) -> CompiledLaneThresholdEffects {
+    let mut effects = CompiledLaneThresholdEffects {
+        flags_73a: [0; 8],
+        flag_743: 1,
+        count_742: 0,
+        indices_744: [0; 8],
+    };
+    for lane in (0..8).rev() {
+        if input.lane_words[lane].wrapping_add(0x1999) < input.source_y[lane] {
+            effects.flags_73a[lane] = 1;
+        } else {
+            effects.flag_743 = 0;
+            effects.indices_744[usize::from(effects.count_742)] = lane as u8;
+            effects.count_742 += 1;
+        }
+    }
+    effects
+}
+
+/// The `FUN_0046eda0` copy gate: the global copies run only when
+/// `DAT_00550c08 == 1`.
+#[must_use]
+pub const fn compiled_special_copy_required(global_550c08: i32) -> bool {
+    global_550c08 == 1
+}
+
+/// Global copy blocks performed by `FUN_0046eda0` when its gate passes:
+/// `(source, destination, dword_count)`. Each destination begins immediately
+/// after its source range, so the blocks never overlap.
+pub const COMPILED_SPECIAL_COPY_BLOCKS: [(u32, u32, usize); 2] =
+    [(0x5fffc8, 0x60042c, 0x119), (0x700300, 0x700a68, 0x1da)];
+
 fn solve_compiled_lane_plane(
     source_vector: [i32; 3],
     fallback: i32,
@@ -7841,6 +7965,116 @@ mod tests {
         assert_eq!(COMPILED_INITIALIZER_FINAL_CONTROL_ONE_DWORD, 0x420);
         assert!(!compiled_initializer_final_call_required(0));
         assert!(compiled_initializer_final_call_required(-1));
+    }
+
+    #[test]
+    fn initializer_48d2d0_reproduces_the_detail_weather_intensity_branches() {
+        // Detail 8 is always false, even with otherwise-true inputs.
+        assert!(!derive_compiled_initializer_48d2d0(8, 5, 0));
+        assert!(!derive_compiled_initializer_48d2d0(8, 3, 0));
+        // Weather outside 3..=5 is false.
+        for weather in [0, 1, 2, 6, -1] {
+            assert!(!derive_compiled_initializer_48d2d0(0, weather, 0));
+        }
+        // Weather 3/4 defers to intensity != 1.
+        for weather in [3, 4] {
+            assert!(!derive_compiled_initializer_48d2d0(0, weather, 1));
+            assert!(derive_compiled_initializer_48d2d0(0, weather, 0));
+            assert!(derive_compiled_initializer_48d2d0(0, weather, 2));
+        }
+        // Weather 5 is true regardless of intensity.
+        assert!(derive_compiled_initializer_48d2d0(0, 5, 1));
+        assert!(derive_compiled_initializer_48d2d0(0, 5, 0));
+    }
+
+    #[test]
+    fn callee_92770_stores_vectors_by_switch_and_always_zeroes_188() {
+        assert_eq!(COMPILED_92770_NEXT_CALL, 0x492050);
+        let source = [1, 2, 3];
+        for switch in [0, 3] {
+            let effects = derive_compiled_92770(switch, source);
+            assert_eq!(effects.low_vector, None);
+            assert_eq!(effects.high_vector, Some(source));
+            assert!(effects.zero_188);
+        }
+        for switch in [1, 2] {
+            let effects = derive_compiled_92770(switch, source);
+            assert_eq!(effects.low_vector, Some(source));
+            assert_eq!(effects.high_vector, Some(source));
+            assert!(effects.zero_188);
+        }
+        for switch in [4, -1, i32::MAX] {
+            let effects = derive_compiled_92770(switch, source);
+            assert_eq!(effects.low_vector, None);
+            assert_eq!(effects.high_vector, None);
+            assert!(effects.zero_188);
+        }
+    }
+
+    #[test]
+    fn lane_thresholds_pass_fail_and_record_failing_lanes_in_descending_order() {
+        // All pass.
+        let effects = derive_compiled_lane_thresholds(CompiledLaneThresholdInputs {
+            lane_words: [0; 8],
+            source_y: [0x1999 + 1; 8],
+        });
+        assert_eq!(effects.flags_73a, [1; 8]);
+        assert_eq!(effects.flag_743, 1);
+        assert_eq!(effects.count_742, 0);
+        assert_eq!(effects.indices_744, [0; 8]);
+
+        // Lane 2 and lane 5 fail; equality fails because the test is strict <.
+        let mut source_y = [0x1999 + 1; 8];
+        source_y[2] = 0x1999;
+        source_y[5] = 0;
+        let effects = derive_compiled_lane_thresholds(CompiledLaneThresholdInputs {
+            lane_words: [0; 8],
+            source_y,
+        });
+        let mut expected_flags = [1; 8];
+        expected_flags[2] = 0;
+        expected_flags[5] = 0;
+        assert_eq!(effects.flags_73a, expected_flags);
+        assert_eq!(effects.flag_743, 0);
+        assert_eq!(effects.count_742, 2);
+        assert_eq!(effects.indices_744, [5, 2, 0, 0, 0, 0, 0, 0]);
+
+        // All fail: indices are recorded in native descending lane order.
+        let effects = derive_compiled_lane_thresholds(CompiledLaneThresholdInputs {
+            lane_words: [0; 8],
+            source_y: [0; 8],
+        });
+        assert_eq!(effects.flags_73a, [0; 8]);
+        assert_eq!(effects.flag_743, 0);
+        assert_eq!(effects.count_742, 8);
+        assert_eq!(effects.indices_744, [7, 6, 5, 4, 3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn lane_threshold_comparison_wraps_its_lane_word_addition() {
+        // lane_word + 0x1999 wraps negative, so the comparison passes.
+        let effects = derive_compiled_lane_thresholds(CompiledLaneThresholdInputs {
+            lane_words: [i32::MAX; 8],
+            source_y: [0; 8],
+        });
+        assert_eq!(effects.flags_73a, [1; 8]);
+        assert_eq!(effects.flag_743, 1);
+        assert_eq!(effects.count_742, 0);
+    }
+
+    #[test]
+    fn special_copy_gate_and_blocks_match_the_global_copy_contract() {
+        assert!(!compiled_special_copy_required(0));
+        assert!(!compiled_special_copy_required(2));
+        assert!(compiled_special_copy_required(1));
+        assert_eq!(
+            COMPILED_SPECIAL_COPY_BLOCKS,
+            [(0x5fffc8, 0x60042c, 0x119), (0x700300, 0x700a68, 0x1da)]
+        );
+        for (source, destination, count) in COMPILED_SPECIAL_COPY_BLOCKS {
+            // Each destination begins immediately after its source range.
+            assert_eq!(destination, source + 4 * count as u32);
+        }
     }
 
     #[test]

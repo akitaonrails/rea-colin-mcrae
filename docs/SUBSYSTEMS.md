@@ -1307,6 +1307,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   `DAT_0050c5fc = ((~config_25 & 1) << 0xf) | 0x1999`, and `FUN_0046eda0()`
   runs only when `DAT_00d3ca88 != 0`. Three focused tests bring `cmr-core` to
   1,255. The remaining callees and full call-spine composition remain open.
+  G03-AK20 reconstructs `FUN_0048d2d0`: false at detail `8`; otherwise
+  weather `3`/`4` yields `DAT_00592efc != 1`, weather `5` yields true, and
+  every other input yields false, with native short-circuit evaluation of the
+  weather and intensity getters. One focused test brings `cmr-core` to 1,256.
+  The `FUN_00492770` switch stores remain open.
+  See
   See
   See
   See

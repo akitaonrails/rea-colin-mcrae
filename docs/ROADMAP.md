@@ -905,6 +905,14 @@ zeroed, control `+0x420 = 1`, `DAT_0050c5fc = ((~config_25 & 1) << 0xf) |
 focused tests bring `cmr-core` to 1,255. The remaining callees and full
 call-spine composition remain open.
 
+G03-AK20 reconstructs `FUN_0048d2d0`: false at detail `8`; otherwise weather
+`3`/`4` yields `DAT_00592efc != 1`, weather `5` yields true, and every other
+input yields false. The weather and intensity getters are evaluated only on
+their native short-circuit paths. `FUN_0046b240` is confirmed as the
+`DAT_00592f00` getter and `FUN_004cfac0` as the already reconstructed LCG. One
+focused test brings `cmr-core` to 1,256. The `FUN_00492770` switch stores
+remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed
