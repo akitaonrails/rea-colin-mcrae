@@ -12,11 +12,12 @@
 //! It is **not** a claim of trajectory accuracy against the original game. The
 //! force that drives the car, the inverse mass, and gravity are explicit harness
 //! parameters ([`SimParams`]), because the original force-production wiring
-//! (drive torque -> contact force) and the semi-implicit position update's
-//! half-accel term are G02/G03 unknowns recorded in the evidence ledger. What is
-//! faithful here is the per-tick *composition order* and the recovered Q16.16
-//! operators themselves; what is a documented harness choice is the force model
-//! and the plain `position += velocity * dt` update.
+//! (drive torque -> contact force) remains a G02/G03 unknown. The recovered
+//! translation half-delta kernel is now available in `vehicle_dynamics`, but it
+//! is not yet wired into this older harness because this harness applies lateral
+//! grip between velocity and position updates. What is faithful here is the
+//! deterministic composition of its recovered primitives; the force model and
+//! plain `position += velocity * dt` update remain documented harness choices.
 //!
 //! See evidence `impl.sim-race-state-trace`.
 

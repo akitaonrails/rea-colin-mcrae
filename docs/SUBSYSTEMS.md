@@ -1068,8 +1068,19 @@ languages rather than fabricating or silently aliasing Italian assets.
   `vehicle_dynamics` to 71 tests; `legacy_math` remains at 13. The callback and
   global conditions that resolve a mode remain caller-owned and unimplemented,
   and semantic vector/mode names remain unknown. Fixed-point wrap/truncation
-  means no exact unit/orthogonal claim is made. Position half-acceleration, the
-  damper source, and runtime table loading remain.
+  means no exact unit/orthogonal claim is made. The translational portion of
+  `FUN_0040a4a0` is now also reconstructed by `apply_translation_step`:
+  position is physics `+0xc8..+0xd0`, velocity `+0xd4..+0xdc`, prior velocity
+  `+0xe0..+0xe8`, and cached prior speed `+0xec`. The old cached speed scales
+  velocity before force/inverse-mass/additive-acceleration processing; then
+  `dv=qmul(acceleration,0x3333)`, velocity advances, and position adds
+  `new_velocity-qmul(dv,0x8000)`. This corrects the older `+0x3cc` velocity and
+  `+0x3d8` position labels: those are respectively an additive
+  acceleration-like term and part of the rotational/moment chain. Nine
+  focused tests, including final-position wrapping, bring `vehicle_dynamics`
+  to 80. “Translational damping” is a
+  value-flow description only; a distinct suspension damper, runtime table
+  loading, mode semantics, and the caller resolver remain open.
   `signed_arcsine_phase` preserves the signed lookup, `0x10000` clamp,
   index-4096 adjacent angle-table zero, and rejects unsafe `INT_MIN` instead of
   reproducing the unchecked read. `signed_ratio_angle` preserves the observed asymmetric
@@ -1182,15 +1193,17 @@ languages rather than fabricating or silently aliasing Italian assets.
 - `cmr-core::race_state` composes the recovered fixed-step pieces (`fixed_point`
   BAM trig + `Vec3`, `vehicle_dynamics` lateral-grip/net-accel/drag/integration,
   and the `stage_timing` stage clock) into a deterministic offline race-state
-  trace: one `step` advances a 40 ms / 25 Hz tick in the observed order (steer ->
+  trace: one `step` advances a 40 ms / 25 Hz tick in its documented harness order (steer ->
   forward vector -> net force = drive force minus recovered drag -> integrate ->
   lateral grip -> `position += velocity*dt` -> advance clock), and all-integer
   `Fixed16` state makes the trace bit-for-bit reproducible. This is a
   composition/determinism harness, not trajectory-accurate: the drive force,
-  mass and gravity are explicit parameters because the drive-torque->force wiring
-  and the position-update half-accel term are still-unrecovered G02/G03 unknowns,
-  so a byte-exact differential fixture is gated on recovering the force
-  production. See evidence `impl.sim-race-state-trace`.
+  mass and gravity are explicit parameters because the drive-torque->force
+  wiring remains unresolved. The exact translation kernel is recovered in
+  `apply_translation_step`, but has not yet replaced this harness's simpler
+  update; a byte-exact differential fixture is still gated on force production
+  and that integration wiring. See evidence `impl.sim-race-state-trace` and
+  `impl.sim-translation-step`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

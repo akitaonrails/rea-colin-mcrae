@@ -430,11 +430,21 @@ axis `+0x324`; form the fourth from the ordered raw cross of `+0x5d4` and
 pre-mode A-valid flags; and apply caller-resolved Preserve, Exchange, or Rebuild
 packing. Rebuild leaves C as the raw doubled-projection rejection and normalizes
 only U, so exact unit/orthogonal claims are explicitly excluded. Eight focused
-tests bring `vehicle_dynamics` to 71; `legacy_math` remains at 13. The callback
-and global mode resolver, semantic vector/mode names, position update's
-half-acceleration term, damper source, and runtime table loader remain. The next
-honest G03 scope is either the position half-acceleration/damper chain or that
-runtime table loader; this does not close all of `FUN_0040d810`.
+tests bring `vehicle_dynamics` to 71; `legacy_math` remains at 13. The
+translational part of `FUN_0040a4a0` is now reconstructed separately as
+`apply_translation_step`: cached prior speed scales old velocity into the
+damping subtraction, acceleration advances velocity by `0x3333`, and position
+adds the new velocity minus the Q16 `0x8000` half-delta. Nine focused tests,
+including final-position wrapping, bring `vehicle_dynamics` to 80. This also
+corrects the state map to position
+`+0xc8..+0xd0`, velocity `+0xd4..+0xdc`, prior velocity `+0xe0..+0xe8`, and
+cached prior speed `+0xec`; `+0x3cc..+0x3d4` is an additive
+acceleration-like term and `+0x3d8..+0x3e0` belongs to the rotational chain.
+The callback/global mode resolver, semantic vector/mode names, integration into
+the simplified race-state harness, a distinct suspension-damper identity, and
+the runtime table loader remain. The next honest G03 scope is the runtime table
+provenance/layout inventory or another separately evidenced force boundary;
+this does not close all of `FUN_0040d810`/`FUN_0040a4a0`.
 
 Exit gate:
 

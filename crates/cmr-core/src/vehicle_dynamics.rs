@@ -18,7 +18,9 @@
 //! - **Integrator** (`FUN_0040a4a0`): `accel = force * invMass + gravity`;
 //!   quadratic drag `drag = v * speed` (drag coefficient `1.0`); velocity
 //!   integrates as `v += accel * 0x3333` (0.2 gain, the 40 ms step folded into
-//!   the tuned coefficient).
+//!   the tuned coefficient). The recovered translation step uses the cached
+//!   prior speed for damping, snapshots the old velocity, and advances position
+//!   by `new_velocity - delta_velocity * 0x8000`.
 //! - **Surface grip**: a per-wheel surface id `ctrl[0x42a + k*2]` indexes 8-byte
 //!   grip-table records; the recovered coefficient tiers are `0x3d70` (~0.24,
 //!   high grip) and `0x2666` (~0.15, low grip). The full per-surface table and
@@ -71,9 +73,10 @@
 //! grip factor, high on flat ground); the two surface tiers are high/low grip.
 //! Unknowns (not reproduced): the physical units of all candidates and
 //! directions, the physical meaning of the nonzero control `+0x420` gate, the
-//! exact semi-implicit position update's half-accel term, the suspension damper
-//! source, runtime-loaded per-surface/per-car table contents, and the opaque
-//! globals/callback that select the direction-construction mode.
+//! physical meaning of a distinct suspension-damper source, runtime-loaded
+//! per-surface/per-car table contents, the contributors to the accumulated
+//! force/additive-acceleration inputs, and the opaque globals/callback that
+//! select the direction-construction mode.
 
 use crate::{
     fixed_point::{Fixed16, Vec3},
@@ -86,6 +89,10 @@ use crate::{
 /// Velocity-integration gain applied to acceleration (`0x3333` ~ 0.2); the
 /// fixed 40 ms step is folded into this tuned coefficient.
 pub const VELOCITY_GAIN: Fixed16 = Fixed16::from_raw(0x3333);
+
+/// Half of the official-EU unit step scalar, applied to the recovered velocity
+/// delta before it is subtracted from the newly integrated velocity.
+pub const POSITION_HALF_DELTA: Fixed16 = Fixed16::from_raw(0x8000);
 
 /// Lateral-grip strength removed from the sideways velocity each step
 /// (`0x51e` ~ 0.02).
@@ -162,6 +169,32 @@ pub struct LaneDirectionOutcome {
     pub direction_a: [Vec3; 4],
     pub direction_b: [Vec3; 4],
     pub pre_mode_a_valid: [bool; 4],
+}
+
+/// Already-resolved translational inputs consumed by the official-EU
+/// `FUN_0040a4a0` integration chain.
+///
+/// `cached_speed` is the magnitude cached by the preceding tick. The shipped
+/// function reads it before updating velocity and recomputes the cache only
+/// afterward, so this contract deliberately does not derive it from
+/// `velocity`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TranslationStepInput {
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub cached_speed: Fixed16,
+    pub accumulated_force: Vec3,
+    pub inverse_mass: Fixed16,
+    pub additive_acceleration: Vec3,
+}
+
+/// Observable values produced by [`apply_translation_step`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TranslationStepOutcome {
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub prior_velocity: Vec3,
+    pub acceleration: Vec3,
 }
 
 impl LaneDirectionOutcome {
@@ -895,6 +928,38 @@ pub fn integrate_velocity(velocity: Vec3, accel: Vec3) -> Vec3 {
     velocity.add(accel.scale(VELOCITY_GAIN))
 }
 
+/// Apply the recovered official-EU translational damping, velocity, and
+/// position update from `FUN_0040a4a0`.
+///
+/// Every vector operation retains the observed per-operation Q16.16
+/// truncation and 32-bit wrapping. In particular, the cached magnitude uses
+/// wrapping absolute value (`i32::MIN` remains negative), and scaling a
+/// negative odd velocity delta by [`POSITION_HALF_DELTA`] rounds toward
+/// negative infinity rather than toward zero.
+#[must_use]
+pub fn apply_translation_step(input: TranslationStepInput) -> TranslationStepOutcome {
+    let damping_scalar =
+        Fixed16::from_raw(input.cached_speed.raw().wrapping_abs()).mul(Fixed16::ONE);
+    let damped_force = input
+        .accumulated_force
+        .sub(input.velocity.scale(damping_scalar));
+    let acceleration = damped_force
+        .scale(input.inverse_mass)
+        .add(input.additive_acceleration);
+    let gain_delta = acceleration.scale(VELOCITY_GAIN);
+    let delta_velocity = gain_delta.scale(Fixed16::ONE);
+    let velocity = input.velocity.add(delta_velocity);
+    let scaled_velocity = velocity.scale(Fixed16::ONE);
+    let position_delta = scaled_velocity.sub(delta_velocity.scale(POSITION_HALF_DELTA));
+
+    TranslationStepOutcome {
+        position: input.position.add(position_delta),
+        velocity,
+        prior_velocity: input.velocity,
+        acceleration,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,6 +1001,17 @@ mod tests {
             second_budget: Fixed16::ZERO,
             surface_coefficient: Fixed16::ZERO,
             surface_override: 0,
+        }
+    }
+
+    fn translation_step_input() -> TranslationStepInput {
+        TranslationStepInput {
+            position: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            cached_speed: Fixed16::ZERO,
+            accumulated_force: Vec3::ZERO,
+            inverse_mass: Fixed16::ONE,
+            additive_acceleration: Vec3::ZERO,
         }
     }
 
@@ -1221,6 +1297,153 @@ mod tests {
         // drag = v * speed.
         let d = drag(v(1, 0, 0), Fixed16::from_raw(0x8000));
         assert_eq!(d.x, Fixed16::from_raw(0x8000));
+    }
+
+    #[test]
+    fn translation_step_uses_cached_speed_before_moving() {
+        let outcome = apply_translation_step(TranslationStepInput {
+            velocity: raw_v(65_536, -131_072, 32_768),
+            cached_speed: Fixed16::from_raw(32_768),
+            ..translation_step_input()
+        });
+
+        assert_eq!(outcome.acceleration, raw_v(-32_768, 65_536, -16_384));
+        assert_eq!(outcome.velocity, raw_v(58_982, -117_965, 29_491));
+        assert_eq!(outcome.position, raw_v(62_259, -124_518, 31_130));
+    }
+
+    #[test]
+    fn translation_step_does_not_recompute_the_supplied_cached_speed() {
+        let base = TranslationStepInput {
+            velocity: raw_v(65_536, 0, 0),
+            ..translation_step_input()
+        };
+        let without_damping = apply_translation_step(base);
+        let with_damping = apply_translation_step(TranslationStepInput {
+            cached_speed: Fixed16::ONE,
+            ..base
+        });
+
+        assert_eq!(without_damping.position, raw_v(65_536, 0, 0));
+        assert_eq!(with_damping.acceleration, raw_v(-65_536, 0, 0));
+        assert_eq!(with_damping.position, raw_v(58_983, 0, 0));
+    }
+
+    #[test]
+    fn translation_step_preserves_wrapping_abs_for_min_cached_speed() {
+        let outcome = apply_translation_step(TranslationStepInput {
+            velocity: raw_v(65_536, -65_536, 32_768),
+            cached_speed: Fixed16::from_raw(i32::MIN),
+            ..translation_step_input()
+        });
+
+        assert_eq!(
+            outcome.acceleration,
+            raw_v(i32::MIN, i32::MIN, 1_073_741_824)
+        );
+        assert_eq!(
+            outcome.velocity,
+            raw_v(-429_424_640, -429_555_712, 214_777_856)
+        );
+        assert_eq!(
+            outcome.position,
+            raw_v(-214_679_552, -214_810_624, 107_405_312)
+        );
+    }
+
+    #[test]
+    fn translation_step_wraps_each_arithmetic_stage() {
+        let outcome = apply_translation_step(TranslationStepInput {
+            position: raw_v(i32::MAX - 7, i32::MIN + 8, 123),
+            velocity: raw_v(i32::MAX - 7, i32::MIN + 8, 1_879_048_192),
+            cached_speed: Fixed16::ONE,
+            accumulated_force: raw_v(i32::MIN + 8, i32::MAX - 7, -1_879_048_192),
+            inverse_mass: Fixed16::from_raw(i32::MIN),
+            additive_acceleration: raw_v(i32::MAX - 7, i32::MIN + 8, i32::MAX),
+        });
+
+        assert_eq!(
+            outcome.acceleration,
+            raw_v(2_146_959_352, -2_146_959_352, i32::MAX)
+        );
+        assert_eq!(
+            outcome.velocity,
+            raw_v(-1_718_098_338, 1_718_098_337, -1_986_428_929)
+        );
+        assert_eq!(
+            outcome.position,
+            raw_v(214_692_643, -214_692_643, 2_093_793_403)
+        );
+    }
+
+    #[test]
+    fn translation_step_truncates_each_nonunit_inverse_mass_product() {
+        let outcome = apply_translation_step(TranslationStepInput {
+            accumulated_force: raw_v(65_537, -65_537, 131_075),
+            inverse_mass: Fixed16::from_raw(21_845),
+            ..translation_step_input()
+        });
+
+        assert_eq!(outcome.acceleration, raw_v(21_845, -21_846, 43_690));
+        assert_eq!(outcome.velocity, raw_v(4_368, -4_370, 8_737));
+        assert_eq!(outcome.position, raw_v(2_184, -2_185, 4_369));
+    }
+
+    #[test]
+    fn translation_step_half_delta_uses_arithmetic_shift_for_negative_odds() {
+        let positive = apply_translation_step(TranslationStepInput {
+            additive_acceleration: raw_v(6, 0, 0),
+            ..translation_step_input()
+        });
+        let negative = apply_translation_step(TranslationStepInput {
+            additive_acceleration: raw_v(-1, 0, 0),
+            ..translation_step_input()
+        });
+
+        assert_eq!(positive.velocity.x.raw(), 1);
+        assert_eq!(positive.position.x.raw(), 1);
+        assert_eq!(negative.velocity.x.raw(), -1);
+        assert_eq!(negative.position.x.raw(), 0);
+    }
+
+    #[test]
+    fn translation_step_position_uses_new_velocity_minus_half_delta() {
+        let outcome = apply_translation_step(TranslationStepInput {
+            position: raw_v(1_000, -2_000, 3_000),
+            velocity: raw_v(4_000, -5_000, 6_000),
+            accumulated_force: raw_v(7_000, -8_000, 9_000),
+            additive_acceleration: raw_v(100, -200, 300),
+            ..translation_step_input()
+        });
+
+        assert_eq!(outcome.acceleration, raw_v(7_100, -8_200, 9_300));
+        assert_eq!(outcome.velocity, raw_v(5_419, -6_640, 7_859));
+        assert_eq!(outcome.position, raw_v(5_710, -7_820, 9_930));
+    }
+
+    #[test]
+    fn translation_step_snapshots_all_prior_velocity_axes_in_order() {
+        let old_velocity = raw_v(11, -22, 33);
+        let outcome = apply_translation_step(TranslationStepInput {
+            position: raw_v(100, 200, 300),
+            velocity: old_velocity,
+            ..translation_step_input()
+        });
+
+        assert_eq!(outcome.prior_velocity, old_velocity);
+        assert_eq!(outcome.velocity, old_velocity);
+        assert_eq!(outcome.position, raw_v(111, 178, 333));
+    }
+
+    #[test]
+    fn translation_step_wraps_final_position_addition() {
+        let outcome = apply_translation_step(TranslationStepInput {
+            position: raw_v(i32::MAX, i32::MIN, 0),
+            velocity: raw_v(1, -1, 0),
+            ..translation_step_input()
+        });
+
+        assert_eq!(outcome.position, raw_v(i32::MIN, i32::MAX, 0));
     }
 
     #[test]
