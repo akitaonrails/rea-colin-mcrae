@@ -1256,6 +1256,17 @@ languages rather than fabricating or silently aliasing Italian assets.
   normal adapter consumes original source vectors and final post-config lane
   words. Five focused tests bring `cmr-core` to 1,232. Later caller work and
   native pointer/fault behavior remain open.
+  G03-AK13 reconstructs the call-free post-normal basis rebuild
+  `FUN_00404440 [0x406b00,0x406e30)`: wrapping-Q16 dot of the AK11 final
+  vector with the prior `+0x258` vector, projection removal, generated-table
+  normalization, and the cross in exact `u × n` order. Stores publish the
+  verbatim AK11 row at `+0x264`, the rebuilt row at `+0x258`, and the cross
+  row at `+0x270` in native order; old rows are write-only. The concrete
+  `CompiledPostLaneBasis` adapter consumes the AK11 final publication only
+  after eight-lane success. Ten focused tests bring `cmr-core` to 1,242. The
+  separate `[0x406e30,0x406e9a)` pointer publication and native alias/fault
+  behavior remain open.
+  See
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

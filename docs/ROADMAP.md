@@ -842,6 +842,18 @@ feeds source vectors plus final post-config lane words. Five focused tests
 bring `cmr-core` to 1,232. Native pointer rebinding/fault prefixes and the
 remaining caller continuation after `0x406b00` remain open.
 
+G03-AK13 reconstructs the call-free post-normal basis rebuild at
+`FUN_00404440 [0x406b00,0x406e30)`. The pure contract dots the AK11 final
+vector with the prior `+0x258` vector using wrapping Q16 arithmetic, removes
+that projection, normalizes through the generated sqrt table, and takes the
+cross in exact `u × n` order. The verbatim AK11 vector is stored at `+0x264`
+(superseding old selector word `+0x268`), then the rebuilt row at `+0x258`,
+then the cross row at `+0x270`; the old rows are write-only.
+`CompiledPostLaneBasis` consumes the AK11 final publication only after AK8
+success. Ten focused tests bring `cmr-core` to 1,242. The following
+`[0x406e30,0x406e9a)` pointer publication, destination aliases, rebinding, and
+progressive fault prefixes remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

@@ -2017,6 +2017,108 @@ impl CompiledPostLaneTransform for CompiledPostLaneGlobalNormal {
     }
 }
 
+/// The post-normal basis rebuild's state vector bases: the prior row `+0x258`,
+/// the verbatim AK11 row `+0x264`, the rebuilt cross row `+0x270`, and the AK11
+/// final publication `+0x324` read as an input.
+pub const COMPILED_POST_LANE_VECTOR_BASES: [u16; 4] = [0x258, 0x264, 0x270, 0x324];
+
+/// Native destination-row store order in `[0x406b00,0x406e30)`: the verbatim
+/// AK11 row is stored first, then the rebuilt prior row, then the cross row.
+pub const COMPILED_POST_LANE_STORE_BASE_ORDER: [u16; 3] = [0x264, 0x258, 0x270];
+
+/// Stable-snapshot inputs read by the post-normal basis rebuild.
+///
+/// The old `+0x264`/`+0x270` rows are write-only destinations: their prior
+/// contents (including AK11's old selector word at `+0x268`, which the verbatim
+/// store supersedes) cannot influence the result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledPostLaneBasisInputs {
+    /// Final AK11 vector at state `+0x324/+0x328/+0x32c`.
+    pub vector_324: [i32; 3],
+    /// Prior vector at state `+0x258/+0x25c/+0x260`.
+    pub vector_258: [i32; 3],
+}
+
+/// The three destination rows produced by the basis rebuild.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledPostLaneBasisEffects {
+    /// Rebuilt prior row `+0x258/+0x25c/+0x260`.
+    pub vector_258: [i32; 3],
+    /// The AK11 final vector copied verbatim, not renormalized.
+    pub vector_264: [i32; 3],
+    /// Rebuilt cross row `+0x270/+0x274/+0x278`.
+    pub vector_270: [i32; 3],
+}
+
+/// Reconstructs the call-free post-normal basis rebuild
+/// `FUN_00404440 [0x406b00,0x406e30)` over one stable state snapshot.
+///
+/// With `n` the AK11 final vector and `s` the prior vector, the exact wrapping
+/// Q16 arithmetic is `dot = sum(qmul(n_i, s_i))`, `rejected = s - n*dot`,
+/// `u = legacy_normalize(rejected)`, and `v = legacy_normalize(u x n)` in that
+/// exact operand order. `legacy_normalize` is the generated-table `sqrt_q16`
+/// rule shared with AK11: a zero square sum yields zero, otherwise the
+/// reciprocal is `floor(2^32/root)` followed by Q16 component multiplies.
+///
+/// Native code stores non-atomically and the following interval
+/// `[0x406e30,0x406e9a)` publishes these rows through a reloaded pointer; that
+/// publication is a separate contract. Aliases, rebinding, and progressive
+/// machine faults remain outside this pure aggregate.
+#[must_use]
+pub fn derive_compiled_post_lane_basis(
+    input: CompiledPostLaneBasisInputs,
+) -> CompiledPostLaneBasisEffects {
+    let n = input.vector_324;
+    let s = input.vector_258;
+    let dot = (0..3).fold(0_i32, |sum, index| {
+        sum.wrapping_add(common_prefix_q16_mul(n[index], s[index]))
+    });
+    let rejected =
+        std::array::from_fn(|index| s[index].wrapping_sub(common_prefix_q16_mul(n[index], dot)));
+    let u = normalize_compiled_lane_vector(rejected);
+    let v = normalize_compiled_lane_vector(compiled_post_lane_cross_v_by_u(u, n));
+    CompiledPostLaneBasisEffects {
+        vector_258: u,
+        vector_264: n,
+        vector_270: v,
+    }
+}
+
+/// Concrete AK11 -> AK13 post-lane composition: the basis rebuild consumes the
+/// AK11 final publication only after the eight-lane barrier has succeeded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledPostLaneBasis {
+    pub normal: CompiledPostLaneGlobalNormal,
+    /// Prior vector at state `+0x258/+0x25c/+0x260`.
+    pub prior_vector_258: [i32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledPostLaneBasisCompletion {
+    pub normal: CompiledPostLaneNormalEffects,
+    pub basis: CompiledPostLaneBasisEffects,
+}
+
+impl CompiledPostLaneTransform for CompiledPostLaneBasis {
+    type Completion = CompiledPostLaneBasisCompletion;
+    type Error = std::convert::Infallible;
+
+    fn run_after_lanes(
+        &mut self,
+        input: &CompiledEightLaneExecutionInputs,
+        lanes: &CompiledEightLaneExecutionSuccess,
+    ) -> Result<Self::Completion, Self::Error> {
+        let normal = self.normal.run_after_lanes(input, lanes)?;
+        Ok(CompiledPostLaneBasisCompletion {
+            basis: derive_compiled_post_lane_basis(CompiledPostLaneBasisInputs {
+                vector_324: normal.final_published_normal,
+                vector_258: self.prior_vector_258,
+            }),
+            normal,
+        })
+    }
+}
+
 fn solve_compiled_lane_plane(
     source_vector: [i32; 3],
     fallback: i32,
@@ -5332,6 +5434,94 @@ mod tests {
         assert_eq!(success.post_lane.selected_quad, CompiledPostLaneQuad::C);
     }
 
+    #[test]
+    fn concrete_post_basis_consumes_the_ak11_final_publication_after_lane_success() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| IntegratedLaneMode::Built(if lane == 2 { 0x51 } else { 0 })),
+        );
+        let mut input = integrated_execution_input();
+        input.source_vectors = post_lane_square_input([0, 0, 0]).source_vectors;
+        let mut config =
+            |lane| -> Result<u8, &'static str> { Ok(if lane == 2 { 0x02 } else { 0 }) };
+        let mut post = CompiledPostLaneBasis {
+            normal: CompiledPostLaneGlobalNormal {
+                selector_words: [0, 0, 9],
+            },
+            prior_vector_258: [0, 0x10000, 0],
+        };
+        let success = execute_compiled_eight_lanes_then(
+            input,
+            integrated_execution_state(),
+            &mut providers,
+            &mut config,
+            &mut post,
+        )
+        .unwrap();
+
+        let normal = derive_compiled_post_lane_global_normal(CompiledPostLaneNormalInput {
+            source_vectors: input.source_vectors,
+            lane_words: success.lanes.state.lane_words,
+            selector_words: [0, 0, 9],
+        });
+        let basis = derive_compiled_post_lane_basis(CompiledPostLaneBasisInputs {
+            vector_324: normal.final_published_normal,
+            vector_258: [0, 0x10000, 0],
+        });
+        assert_eq!(
+            success.post_lane,
+            CompiledPostLaneBasisCompletion { normal, basis }
+        );
+        assert_eq!(
+            success.post_lane.normal.selected_quad,
+            CompiledPostLaneQuad::C
+        );
+        assert_eq!(
+            success.post_lane.basis.vector_264,
+            normal.final_published_normal
+        );
+    }
+
+    #[test]
+    fn post_basis_is_not_produced_when_a_lane_fails() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| {
+                if lane == 7 {
+                    IntegratedLaneMode::SearchThenBuildFailure
+                } else {
+                    IntegratedLaneMode::Built(0)
+                }
+            }),
+        );
+        let mut state = integrated_execution_state();
+        state.handles[7] = -1;
+        let mut config = |_lane| -> Result<u8, &'static str> { Ok(0) };
+        let mut post = CompiledPostLaneBasis {
+            normal: CompiledPostLaneGlobalNormal {
+                selector_words: [0, 0, 9],
+            },
+            prior_vector_258: [0, 0x10000, 0],
+        };
+        let failure = execute_compiled_eight_lanes_then(
+            integrated_execution_input(),
+            state,
+            &mut providers,
+            &mut config,
+            &mut post,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            failure,
+            CompiledLaneAndPostFailure::Lanes(CompiledEightLaneExecutionFailure::Dispatch {
+                failed_lane: 7,
+                ..
+            })
+        ));
+    }
+
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum CandidateCall {
         Validate([i32; 3], i16),
@@ -6761,6 +6951,173 @@ mod tests {
         assert_eq!(CompiledPostLaneQuad::A.lane_indices(), [0, 1, 4, 5]);
         assert_eq!(CompiledPostLaneQuad::B.lane_indices(), [0, 1, 2, 3]);
         assert_eq!(CompiledPostLaneQuad::C.lane_indices(), [0, 2, 4, 6]);
+    }
+
+    fn post_lane_basis_input(n: [i32; 3], s: [i32; 3]) -> CompiledPostLaneBasisInputs {
+        CompiledPostLaneBasisInputs {
+            vector_324: n,
+            vector_258: s,
+        }
+    }
+
+    #[test]
+    fn post_lane_basis_layout_store_order_and_disjoint_rows() {
+        assert_eq!(
+            COMPILED_POST_LANE_VECTOR_BASES,
+            [0x258, 0x264, 0x270, 0x324]
+        );
+        assert_eq!(COMPILED_POST_LANE_STORE_BASE_ORDER, [0x264, 0x258, 0x270]);
+        // Each destination row is three dwords and the rows are disjoint. The
+        // old +0x264/+0x270 rows are write-only destinations: the pure contract
+        // has no inputs for their prior contents, so they cannot affect it.
+        for pair in COMPILED_POST_LANE_VECTOR_BASES[..3].windows(2) {
+            assert!(pair[0] + 0x0c <= pair[1]);
+        }
+        for selector in COMPILED_POST_LANE_SELECTOR_Y_OFFSETS {
+            assert!(
+                COMPILED_POST_LANE_VECTOR_BASES[..3]
+                    .iter()
+                    .any(|base| (*base..*base + 0x0c).contains(&selector)),
+                "old selector {selector:#x} is superseded by a destination row"
+            );
+        }
+        assert!(
+            COMPILED_POST_LANE_VECTOR_BASES[..3]
+                .iter()
+                .all(|base| !(*base..*base + 0x0c).contains(&0x324))
+        );
+    }
+
+    #[test]
+    fn post_lane_basis_orthogonal_vectors_match_the_generated_table_results() {
+        let effects = derive_compiled_post_lane_basis(post_lane_basis_input(
+            [0x10000, 0, 0],
+            [0, 0x10000, 0],
+        ));
+        assert_eq!(effects.vector_258, [0, 65_522, 0]);
+        assert_eq!(effects.vector_264, [0x10000, 0, 0]);
+        assert_eq!(effects.vector_270, [0, 0, -65_535]);
+
+        let effects = derive_compiled_post_lane_basis(post_lane_basis_input(
+            [0x10000, 0, 0],
+            [0x8000, 0, 0x10000],
+        ));
+        assert_eq!(effects.vector_258, [0, 0, 65_522]);
+        assert_eq!(effects.vector_270, [0, 65_534, 0]);
+    }
+
+    #[test]
+    fn post_lane_basis_removes_the_projection_onto_the_ak11_vector() {
+        // dot = qmul(0x10000, 0x8000) = 0x8000, so rejected = s - n*dot leaves
+        // exactly [0, 0x10000, 0] before normalization.
+        let effects = derive_compiled_post_lane_basis(post_lane_basis_input(
+            [0x10000, 0, 0],
+            [0x8000, 0x10000, 0],
+        ));
+        assert_eq!(effects.vector_258, [0, 65_522, 0]);
+        assert_eq!(effects.vector_270, [0, 0, -65_535]);
+    }
+
+    #[test]
+    fn post_lane_basis_parallel_and_zero_vectors_degenerate_to_zero() {
+        let parallel = derive_compiled_post_lane_basis(post_lane_basis_input(
+            [0x10000, 0, 0],
+            [0x20000, 0, 0],
+        ));
+        assert_eq!(parallel.vector_258, [0; 3]);
+        assert_eq!(parallel.vector_264, [0x10000, 0, 0]);
+        assert_eq!(parallel.vector_270, [0; 3]);
+
+        let zero_normal =
+            derive_compiled_post_lane_basis(post_lane_basis_input([0; 3], [0, 0x10000, 0]));
+        assert_eq!(zero_normal.vector_258, [0, 65_522, 0]);
+        assert_eq!(zero_normal.vector_264, [0; 3]);
+        assert_eq!(zero_normal.vector_270, [0; 3]);
+
+        let zero_prior =
+            derive_compiled_post_lane_basis(post_lane_basis_input([0x10000, 0, 0], [0; 3]));
+        assert_eq!(zero_prior.vector_258, [0; 3]);
+        assert_eq!(zero_prior.vector_270, [0; 3]);
+    }
+
+    #[test]
+    fn post_lane_basis_cross_is_u_cross_n_not_n_cross_u() {
+        let effects = derive_compiled_post_lane_basis(post_lane_basis_input(
+            [0x10000, 0, 0],
+            [0, 0x10000, 0],
+        ));
+        assert_eq!(effects.vector_270, [0, 0, -65_535]);
+        assert_ne!(effects.vector_270, [0, 0, 65_535]);
+    }
+
+    #[test]
+    fn post_lane_basis_negative_odd_products_round_down_in_q16() {
+        // qmul(3, -5) = -1 (the arithmetic >>16 floors the negative product),
+        // so the rejected x component is -5 - qmul(3, -1) = -4, not the -5 a
+        // truncate-toward-zero implementation would leave.
+        let effects =
+            derive_compiled_post_lane_basis(post_lane_basis_input([3, 0, 0], [-5, 0x10000, 0]));
+        assert_eq!(effects.vector_258, [-4, 65_522, 0]);
+        assert_eq!(effects.vector_264, [3, 0, 0]);
+        // The cross z is -3; its Q16 square sum underflows to zero.
+        assert_eq!(effects.vector_270, [0; 3]);
+    }
+
+    #[test]
+    fn post_lane_basis_wraps_dot_projection_cross_and_i32_extremes() {
+        fn reference(input: CompiledPostLaneBasisInputs) -> CompiledPostLaneBasisEffects {
+            fn qmul(a: i32, b: i32) -> i32 {
+                ((i64::from(a) * i64::from(b)) >> 16) as i32
+            }
+            fn normalize(vector: [i32; 3]) -> [i32; 3] {
+                let square_sum = vector.into_iter().fold(0_i32, |sum, component| {
+                    sum.wrapping_add(qmul(component, component))
+                });
+                let root = sqrt_q16(square_sum as u32);
+                if root == 0 {
+                    return [0; 3];
+                }
+                let reciprocal = ((1_u64 << 32) / u64::from(root)) as i32;
+                vector.map(|component| qmul(component, reciprocal))
+            }
+            let n = input.vector_324;
+            let s = input.vector_258;
+            let dot = (0..3).fold(0_i32, |sum, index| {
+                sum.wrapping_add(qmul(n[index], s[index]))
+            });
+            let rejected = std::array::from_fn(|index| s[index].wrapping_sub(qmul(n[index], dot)));
+            let u = normalize(rejected);
+            let cross = [
+                qmul(u[1], n[2]).wrapping_sub(qmul(u[2], n[1])),
+                qmul(u[2], n[0]).wrapping_sub(qmul(u[0], n[2])),
+                qmul(u[0], n[1]).wrapping_sub(qmul(u[1], n[0])),
+            ];
+            CompiledPostLaneBasisEffects {
+                vector_258: u,
+                vector_264: n,
+                vector_270: normalize(cross),
+            }
+        }
+
+        for (n, s) in [
+            ([i32::MAX, 0, 0], [i32::MAX, 0, 0]),
+            ([i32::MIN, i32::MAX, -1], [i32::MAX, i32::MIN, 1]),
+            (
+                [i32::MIN, i32::MIN, i32::MIN],
+                [i32::MIN, i32::MIN, i32::MIN],
+            ),
+            ([1, -1, i32::MAX], [i32::MIN, 1, -1]),
+        ] {
+            let input = post_lane_basis_input(n, s);
+            assert_eq!(derive_compiled_post_lane_basis(input), reference(input));
+        }
+    }
+
+    #[test]
+    fn post_lane_basis_stores_the_ak11_vector_verbatim_not_renormalized() {
+        let effects =
+            derive_compiled_post_lane_basis(post_lane_basis_input([3, 5, 7], [11, 13, 17]));
+        assert_eq!(effects.vector_264, [3, 5, 7]);
     }
 
     #[test]
