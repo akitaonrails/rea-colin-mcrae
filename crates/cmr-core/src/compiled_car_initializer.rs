@@ -29,6 +29,8 @@ use cmr_formats::pe_compiled_initializer::{
     CompiledCaseWords as FormatCompiledCaseWords,
 };
 
+use crate::legacy_math::sqrt_q16;
+
 /// Number of compiled selector bodies accepted by the unsigned dispatch.
 pub const COMPILED_CASE_COUNT: usize = 14;
 
@@ -383,6 +385,46 @@ pub const COMPILED_CONTROL_PRODUCT_OFFSETS: [u16; 2] = [
     COMPILED_CONTROL_PRODUCT_RECIPROCAL_OFFSET,
     COMPILED_CONTROL_PRODUCT_OFFSET,
 ];
+
+/// State destinations written by the bounded suffix-default interval.
+pub const COMPILED_SUFFIX_DEFAULT_STATE_OFFSETS: [u16; 4] = [0x044, 0x050, 0x054, 0x058];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledSuffixDefaultEffects {
+    pub state_word_44: i32,
+    pub state_words_50_54_58: [i32; 3],
+}
+
+/// Reconstruct initializer interval `[0x4066dd,0x406831)`.
+///
+/// The first three effective state words are arithmetic-halved into stack
+/// temporaries, squared with wrapping signed Q16 projection, and accumulated
+/// with wrapping adds before the shared generated-table square root. The
+/// halves are not written back. Raw integer seeds `[1, 2, 1]` are written to
+/// `+0x50/+0x54/+0x58`; config `+0x25 & 0x04` doubles them through the shipped
+/// Q16 multiply.
+#[must_use]
+pub fn derive_compiled_suffix_defaults(
+    effective_state_words_20_24_28: [i32; 3],
+    config_flags: u8,
+) -> CompiledSuffixDefaultEffects {
+    let halves = effective_state_words_20_24_28.map(|word| word >> 1);
+    let square_sum = halves.into_iter().fold(0_i32, |sum, word| {
+        sum.wrapping_add(common_prefix_q16_mul(word, word))
+    });
+    let state_word_44 = sqrt_q16(square_sum as u32) as i32;
+
+    let mut state_words_50_54_58 = [1, 2, 1];
+    if config_flags & COMPILED_COMMON_STATE_SCALE_MASK != 0 {
+        state_words_50_54_58 =
+            state_words_50_54_58.map(|word| common_prefix_q16_mul(word, 0x2_0000));
+    }
+
+    CompiledSuffixDefaultEffects {
+        state_word_44,
+        state_words_50_54_58,
+    }
+}
 
 /// Two recovered control writes immediately after the reciprocal/copy families.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1058,6 +1100,7 @@ pub struct RecoveredCompiledStageEffects {
     pub post_helper: CompiledPostHelperEffects,
     pub control_families: CompiledControlFamilies,
     pub control_product_pair: CompiledControlProductPair,
+    pub suffix_defaults: CompiledSuffixDefaultEffects,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1119,10 +1162,11 @@ impl std::error::Error for RecoveredCompiledStageError {
 /// center-split, auxiliary, and family/tail effects. The family/tail is derived
 /// from and supersedes only the raw direct-case family, which the prefix and
 /// post-helper patch do not touch. Config, prefix, auxiliary, state-`+0x758`
-/// selection, post-helper, family, then product-pair
-/// validation order applies only to the represented stages; success does not
-/// prove a complete shipped initializer snapshot. Any represented failure
-/// returns no partial bundle. That atomic error boundary is a safe
+/// selection, post-helper, family, then product-pair validation order applies
+/// only to the represented fallible stages. The infallible suffix-default
+/// effect follows the product pair. Success does not prove a complete shipped
+/// initializer snapshot. Any represented failure returns no partial bundle.
+/// That atomic error boundary is a safe
 /// reconstruction policy; the shipped in-place code could have performed
 /// earlier writes before an `IDIV` fault.
 pub fn compose_recovered_compiled_stage_effects(
@@ -1184,6 +1228,17 @@ pub fn compose_recovered_compiled_stage_effects(
         control_families.reciprocal[6],
     )
     .map_err(RecoveredCompiledStageError::ProductPair)?;
+    let effective_state_words = common_prefix
+        .state_words
+        .unwrap_or(direct_case_stores.words.state_words);
+    let suffix_defaults = derive_compiled_suffix_defaults(
+        [
+            effective_state_words[0],
+            effective_state_words[1],
+            effective_state_words[2],
+        ],
+        options.common_prefix_flags,
+    );
 
     Ok(RecoveredCompiledStageEffects {
         direct_case_stores,
@@ -1194,6 +1249,7 @@ pub fn compose_recovered_compiled_stage_effects(
         post_helper,
         control_families,
         control_product_pair,
+        suffix_defaults,
     })
 }
 
@@ -1690,6 +1746,12 @@ mod tests {
                 }
             }
         }
+        for offset in COMPILED_SUFFIX_DEFAULT_STATE_OFFSETS {
+            assert!(!COMPILED_STATE_WORD_OFFSETS.contains(&offset));
+            assert!(!COMPILED_COMMON_PREFIX_STATE_OFFSETS.contains(&offset));
+            assert!(!COMPILED_POST_HELPER_STATE_WORD_OFFSETS.contains(&offset));
+            assert_ne!(offset, COMPILED_STATE_WORD_758_OFFSET);
+        }
     }
 
     #[test]
@@ -2012,6 +2074,65 @@ mod tests {
     }
 
     #[test]
+    fn suffix_defaults_pin_offsets_norm_anchor_and_raw_seed_values() {
+        assert_eq!(
+            COMPILED_SUFFIX_DEFAULT_STATE_OFFSETS,
+            [0x044, 0x050, 0x054, 0x058]
+        );
+        assert_eq!(
+            derive_compiled_suffix_defaults([0, 0, 0], 0),
+            CompiledSuffixDefaultEffects {
+                state_word_44: 0,
+                state_words_50_54_58: [1, 2, 1],
+            }
+        );
+        assert_eq!(
+            derive_compiled_suffix_defaults([0x4_0000, 0, 0], 0).state_word_44,
+            131_100
+        );
+    }
+
+    #[test]
+    fn suffix_defaults_exhaustively_use_only_config_mask_04() {
+        for config_flags in u8::MIN..=u8::MAX {
+            assert_eq!(
+                derive_compiled_suffix_defaults([0; 3], config_flags).state_words_50_54_58,
+                if config_flags & COMPILED_COMMON_STATE_SCALE_MASK == 0 {
+                    [1, 2, 1]
+                } else {
+                    [2, 4, 2]
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn suffix_defaults_use_arithmetic_halves_and_wrapping_q16_square_sum() {
+        assert_eq!(
+            derive_compiled_suffix_defaults([-0x2_0001, 0, 0], 0).state_word_44,
+            sqrt_q16(0x1_0002) as i32
+        );
+        assert_eq!(
+            derive_compiled_suffix_defaults([0x0100_0000; 3], 0).state_word_44,
+            sqrt_q16(0xc000_0000) as i32
+        );
+        for words in [
+            [i32::MIN, i32::MAX, -3],
+            [-1, -5, 7],
+            [0x4000_0000, 0x4000_0000, 0x4000_0000],
+        ] {
+            let halves = words.map(|word| word >> 1);
+            let expected_sum = halves.into_iter().fold(0_i32, |sum, word| {
+                sum.wrapping_add(((i64::from(word) * i64::from(word)) >> 16) as i32)
+            });
+            assert_eq!(
+                derive_compiled_suffix_defaults(words, 0).state_word_44,
+                sqrt_q16(expected_sum as u32) as i32
+            );
+        }
+    }
+
+    #[test]
     fn state_758_caller_selection_exhaustively_pins_gate_and_indices() {
         let table: Vec<i32> = (0..19).map(|index| index + 100).collect();
         assert_eq!(
@@ -2299,6 +2420,17 @@ mod tests {
         );
         assert_eq!(effects.center_split_q16, 0x8000);
         assert_eq!(
+            effects.suffix_defaults,
+            derive_compiled_suffix_defaults(
+                [
+                    cases[3].state_words[0],
+                    cases[3].state_words[1],
+                    cases[3].state_words[2],
+                ],
+                0,
+            )
+        );
+        assert_eq!(
             effects.aux_control_patch,
             derive_aux_control_patch(
                 AuxControlOption::Resolved(1),
@@ -2416,6 +2548,17 @@ mod tests {
                 )
                 .unwrap()
             );
+            assert_eq!(
+                effects.suffix_defaults,
+                derive_compiled_suffix_defaults(
+                    [
+                        effects.common_prefix.state_words.unwrap()[0],
+                        effects.common_prefix.state_words.unwrap()[1],
+                        effects.common_prefix.state_words.unwrap()[2],
+                    ],
+                    COMPILED_COMMON_STATE_SCALE_MASK,
+                )
+            );
         }
     }
 
@@ -2429,7 +2572,14 @@ mod tests {
         let aux_constants = AuxControlConstantSet {
             constants: aux_constants(),
         };
-        let config = compiled_stage_config(0, COMPILED_COMMON_CONTROL_SCALE_MASK, 0, 0, 2, false);
+        let config = compiled_stage_config(
+            0,
+            COMPILED_COMMON_CONTROL_SCALE_MASK | COMPILED_COMMON_STATE_SCALE_MASK,
+            0,
+            0,
+            2,
+            false,
+        );
 
         let effects = compose_recovered_compiled_stage_effects(
             &direct_cases,
@@ -2460,6 +2610,17 @@ mod tests {
         assert_eq!(
             effects.control_product_pair,
             derive_compiled_control_product_pair(0x2_6666, 0x8000).unwrap()
+        );
+        assert_eq!(
+            effects.suffix_defaults,
+            derive_compiled_suffix_defaults(
+                [
+                    effects.common_prefix.state_words.unwrap()[0],
+                    effects.common_prefix.state_words.unwrap()[1],
+                    effects.common_prefix.state_words.unwrap()[2],
+                ],
+                COMPILED_COMMON_CONTROL_SCALE_MASK | COMPILED_COMMON_STATE_SCALE_MASK,
+            )
         );
     }
 
@@ -2529,6 +2690,7 @@ mod tests {
         );
         config[COMPILED_CONFIG_STATE_758_SELECTION_OFFSET] = 0;
         config[COMPILED_CONFIG_STATE_758_SELECTION_OFFSET + COMPILED_CONFIG_RECORD_STRIDE] = 0x90;
+        let prior = synthetic_case(-3);
 
         for (selector, table_value, expected) in [(0, 77, 77), (u32::MAX, -1, 6)] {
             let table = [table_value];
@@ -2536,7 +2698,7 @@ mod tests {
                 &direct_cases,
                 &aux_constants,
                 RecoveredCompiledStageInputs {
-                    prior_case_words: synthetic_case(-3),
+                    prior_case_words: prior,
                     selector,
                     config: &config,
                     state_slot: 1,
@@ -2547,6 +2709,22 @@ mod tests {
             )
             .unwrap();
             assert_eq!(effects.state_word_758.state_word_758, expected);
+            let selected_words = if selector == 0 {
+                direct_cases.cases()[0]
+            } else {
+                prior
+            };
+            assert_eq!(
+                effects.suffix_defaults,
+                derive_compiled_suffix_defaults(
+                    [
+                        selected_words.state_words[0],
+                        selected_words.state_words[1],
+                        selected_words.state_words[2],
+                    ],
+                    0,
+                )
+            );
         }
     }
 

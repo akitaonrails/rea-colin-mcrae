@@ -669,6 +669,21 @@ the product pair last. Four new tests plus strengthened composition tests bring
 reachability, merged object application, application wiring, and other editions
 remain open.
 
+G03-AC maps the remaining instruction-aligned initializer suffix
+`[0x4066dd,0x407231)` into bounded arithmetic, reset, call, pointer-backed,
+RNG, snapshot, and terminal regions; `0x406d00` is explicitly rejected as a
+slice boundary because it bisects an instruction. The first recovered slice,
+`[0x4066dd,0x406831)`, derives state `+0x44` from the wrapping Q16 square sum of
+arithmetic-halved effective `+0x20/+0x24/+0x28` via the existing exact
+`sqrt_q16`, then writes raw integer seeds `[1,2,1]` at `+0x50/+0x54/+0x58`
+or `[2,4,2]` when unindexed config `+0x25 & 0x04` is set. Composition routes
+prefix-scaled or raw selected/prior state words into the separate effect. Three
+new tests plus strengthened schema/composition coverage bring `cmr-core` to
+1,157. The sequential reciprocal trio beginning at `0x406831`, later calls,
+pointer-backed writes, resets, RNG, snapshot, terminal blocks, semantic names,
+runtime reachability, complete object application, and other editions remain
+open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

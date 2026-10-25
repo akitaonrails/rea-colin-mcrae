@@ -1143,7 +1143,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   typed final-stage error. Four new tests plus strengthened composition coverage
   bring `cmr-core` to 1,154. Semantics, complete aliases/consumers, concurrency,
   runtime reachability, merged object application, wiring, and other editions
-  remain open. See
+  remain open. G03-AC maps the remaining instruction-aligned suffix through
+  exact function end `0x407231` and reconstructs its first bounded call-free
+  slice `[0x4066dd,0x406831)`. The slice arithmetic-halves effective state
+  `+0x20/+0x24/+0x28` only in temporaries, wrapping-accumulates their Q16
+  squares, and reuses the exact generated-table `sqrt_q16` for state `+0x44`.
+  It writes raw integer seeds `[1,2,1]` to `+0x50/+0x54/+0x58`, doubled to
+  `[2,4,2]` by config `+0x25 & 0x04`. Three new tests plus strengthened
+  schema/composition coverage bring `cmr-core` to 1,157. The mapped later
+  reciprocal/call/pointer/RNG/snapshot blocks remain separate open scopes. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
   `rea.official-eu.sim-compiled-center-split`,
@@ -1167,8 +1175,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-post-helper-initialization`,
   `rea.official-eu.sim-compiled-state-758-selection`,
   `impl.sim-compiled-state-758-selection`,
-  `rea.official-eu.sim-compiled-control-product-pair`, and
-  `impl.sim-compiled-control-product-pair`.
+  `rea.official-eu.sim-compiled-control-product-pair`,
+  `impl.sim-compiled-control-product-pair`,
+  `rea.official-eu.sim-compiled-initializer-suffix-map`,
+  `rea.official-eu.sim-compiled-suffix-defaults`, and
+  `impl.sim-compiled-suffix-defaults`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
