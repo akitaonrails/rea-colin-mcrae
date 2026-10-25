@@ -1174,6 +1174,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   spine. Its eight u16 clears and three global seeds have a tested caller-local
   schema, but remain outside the composed stage because all three calls mutate
   state and two have unresolved transitive callees. `cmr-core` has 1,165 tests.
+  G03-AH reconstructs the first call plus its sole helper as reusable pure
+  stable-snapshot contracts: a pointer-backed 3×3 matrix and three half words
+  generate four primary sign vectors and four center reflections, then two
+  vectors/three scalars adjust only the primaries. Six focused tests bring
+  `cmr-core` to 1,171; native
+  aliasing/partial publication and full spine composition remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1210,7 +1216,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-compiled-half-sign-mixed-reset`, and
   `impl.sim-compiled-half-sign-mixed-reset`,
   `rea.official-eu.sim-compiled-call-spine`, and
-  `impl.sim-compiled-call-spine-plan`.
+  `impl.sim-compiled-call-spine-plan`,
+  `rea.official-eu.sim-compiled-state-basis-pair`, and
+  `impl.sim-compiled-state-basis-pair`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the

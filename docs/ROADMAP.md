@@ -720,6 +720,14 @@ mutates state, the direct local effects are intentionally not appended to the
 composed initializer. One focused test brings `cmr-core` to 1,165. Recovery of
 `FUN_00409c10` with transitive `FUN_00418120` is the next gate.
 
+G03-AH reconstructs `FUN_00409c10` with its sole helper `FUN_00418120` as a
+fixed-shape stable-snapshot contract. The pair derives four primary sign vectors
+and four center reflections in state `+0xfc..+0x158`; the reusable helper adjusts
+only the primaries from two vectors and three scalars. Six focused tests bring
+`cmr-core` to 1,171. Native progressive matrix reads, aliases/store prefixes,
+and call-spine integration remain open while `FUN_00419a40`/`FUN_00446c40` and
+`FUN_00408fe0` are unresolved.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

@@ -416,6 +416,17 @@ pub const COMPILED_MIXED_RESET_STATE_U16_OFFSETS: [u16; 4] = [0x57c, 0x57e, 0x58
 pub const COMPILED_CALL_SPINE_CONTROL_U16_OFFSETS: [u16; 8] =
     [0x3d0, 0x3d2, 0x3d4, 0x3d6, 0x3d8, 0x3da, 0x3dc, 0x3de];
 pub const COMPILED_CALL_SPINE_GLOBAL_ADDRESSES: [u32; 3] = [0x50c5f0, 0x50c5f4, 0x50c5f8];
+pub const COMPILED_STATE_BASIS_MATRIX_OFFSETS: [[u16; 3]; 3] =
+    [[0x00, 0x04, 0x08], [0x10, 0x14, 0x18], [0x20, 0x24, 0x28]];
+pub const COMPILED_STATE_BASIS_VECTOR_BASES: [u16; 8] =
+    [0x0fc, 0x108, 0x114, 0x120, 0x12c, 0x138, 0x144, 0x150];
+pub const COMPILED_STATE_BASIS_OFFSETS: [u16; 24] = [
+    0x0fc, 0x100, 0x104, 0x108, 0x10c, 0x110, 0x114, 0x118, 0x11c, 0x120, 0x124, 0x128, 0x12c,
+    0x130, 0x134, 0x138, 0x13c, 0x140, 0x144, 0x148, 0x14c, 0x150, 0x154, 0x158,
+];
+pub const COMPILED_STATE_BASIS_ADJUSTMENT_STORE_OFFSETS: [u16; 12] = [
+    0x12c, 0x130, 0x134, 0x138, 0x13c, 0x140, 0x144, 0x148, 0x14c, 0x154, 0x150, 0x158,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledSuffixDefaultEffects {
@@ -633,6 +644,111 @@ pub const fn derive_compiled_call_spine_local_effects() -> CompiledCallSpineLoca
     CompiledCallSpineLocalEffects {
         control_u16_words: [0; 8],
         global_words: [0, -0x8000, 0],
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledStateBasisInputs {
+    pub half_words: [i32; 3],
+    pub matrix_rows: [[i32; 3]; 3],
+    pub center: [i32; 3],
+    pub adjustment_u: [i32; 3],
+    pub adjustment_v: [i32; 3],
+    pub scale_638: i32,
+    pub scale_63c: i32,
+    pub scale_640: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledStateBasisEffects {
+    /// Final vectors in [`COMPILED_STATE_BASIS_VECTOR_BASES`] order.
+    pub vectors: [[i32; 3]; 8],
+}
+
+#[must_use]
+pub fn apply_compiled_state_basis_adjustment(
+    mut primary: [[i32; 3]; 4],
+    adjustment_u: [i32; 3],
+    adjustment_v: [i32; 3],
+    scale_638: i32,
+    scale_63c: i32,
+    scale_640: i32,
+) -> [[i32; 3]; 4] {
+    let p = adjustment_u.map(|word| common_prefix_q16_mul(word, scale_638));
+    let q = adjustment_v.map(|word| common_prefix_q16_mul(word, scale_640));
+    let r = adjustment_u.map(|word| common_prefix_q16_mul(word, scale_63c));
+    for component in 0..3 {
+        primary[0][component] =
+            primary[0][component].wrapping_sub(p[component].wrapping_add(q[component]));
+        primary[1][component] =
+            primary[1][component].wrapping_add(q[component].wrapping_sub(p[component]));
+        primary[2][component] =
+            primary[2][component].wrapping_add(r[component].wrapping_sub(q[component]));
+        primary[3][component] =
+            primary[3][component].wrapping_add(r[component].wrapping_add(q[component]));
+    }
+    primary
+}
+
+/// Pure stable-snapshot contract for `FUN_00409c10` and `FUN_00418120`.
+///
+/// The native matrix pointer is read progressively and native stores are
+/// non-atomic. This aggregate is equivalent only when all sources are stable
+/// and the matrix storage does not alias the destination range.
+#[must_use]
+pub fn derive_compiled_state_basis_effects(
+    input: CompiledStateBasisInputs,
+) -> CompiledStateBasisEffects {
+    let [half_x, half_y, half_z] = input.half_words;
+    let a = input.matrix_rows[0].map(|word| common_prefix_q16_mul(word, half_x));
+    let b = input.matrix_rows[1].map(|word| common_prefix_q16_mul(word, half_y));
+    let c = input.matrix_rows[2].map(|word| common_prefix_q16_mul(word, half_z));
+
+    let combine = |a_sign: bool, b_sign: bool, c_sign: bool| {
+        std::array::from_fn(|component| {
+            let mut word = 0_i32;
+            for (value, positive) in [
+                (a[component], a_sign),
+                (b[component], b_sign),
+                (c[component], c_sign),
+            ] {
+                word = if positive {
+                    word.wrapping_add(value)
+                } else {
+                    word.wrapping_sub(value)
+                };
+            }
+            word
+        })
+    };
+    let primary = [
+        combine(true, true, true),
+        combine(true, true, false),
+        combine(false, true, true),
+        combine(false, true, false),
+    ];
+    let reflected = [primary[3], primary[2], primary[1], primary[0]].map(|vector| {
+        std::array::from_fn(|component| input.center[component].wrapping_sub(vector[component]))
+    });
+    let adjusted = apply_compiled_state_basis_adjustment(
+        primary,
+        input.adjustment_u,
+        input.adjustment_v,
+        input.scale_638,
+        input.scale_63c,
+        input.scale_640,
+    );
+    CompiledStateBasisEffects {
+        vectors: [
+            reflected[0],
+            reflected[1],
+            reflected[2],
+            reflected[3],
+            adjusted[0],
+            adjusted[1],
+            adjusted[2],
+            adjusted[3],
+        ],
     }
 }
 
@@ -2690,6 +2806,174 @@ mod tests {
                 let existing_start = u32::from(existing_byte);
                 assert!(end <= existing_start || existing_start < start);
             }
+        }
+    }
+
+    fn state_basis_input() -> CompiledStateBasisInputs {
+        CompiledStateBasisInputs {
+            half_words: [2, 3, 5],
+            matrix_rows: [[0x1_0000, 0, 0], [0, 0x1_0000, 0], [0, 0, 0x1_0000]],
+            center: [10, 20, 30],
+            adjustment_u: [0; 3],
+            adjustment_v: [0; 3],
+            scale_638: 0,
+            scale_63c: 0,
+            scale_640: 0,
+        }
+    }
+
+    #[test]
+    fn state_basis_pins_exact_schemas_and_all_eight_sign_vectors() {
+        assert_eq!(
+            COMPILED_STATE_BASIS_MATRIX_OFFSETS,
+            [[0x00, 0x04, 0x08], [0x10, 0x14, 0x18], [0x20, 0x24, 0x28]]
+        );
+        assert_eq!(
+            COMPILED_STATE_BASIS_VECTOR_BASES,
+            [0x0fc, 0x108, 0x114, 0x120, 0x12c, 0x138, 0x144, 0x150]
+        );
+        assert_eq!(
+            COMPILED_STATE_BASIS_OFFSETS,
+            std::array::from_fn(|index| 0x0fc + u16::try_from(index).unwrap() * 4)
+        );
+        assert_eq!(
+            COMPILED_STATE_BASIS_ADJUSTMENT_STORE_OFFSETS,
+            [
+                0x12c, 0x130, 0x134, 0x138, 0x13c, 0x140, 0x144, 0x148, 0x14c, 0x154, 0x150, 0x158
+            ]
+        );
+        assert_eq!(
+            derive_compiled_state_basis_effects(state_basis_input()).vectors,
+            [
+                [12, 17, 35],
+                [12, 17, 25],
+                [8, 17, 35],
+                [8, 17, 25],
+                [2, 3, 5],
+                [2, 3, -5],
+                [-2, 3, 5],
+                [-2, 3, -5],
+            ]
+        );
+    }
+
+    #[test]
+    fn state_basis_routes_asymmetric_matrix_rows_to_components() {
+        let mut input = state_basis_input();
+        input.matrix_rows = [
+            [0x1_0000, 0x2_0000, 0x3_0000],
+            [0x4_0000, 0x5_0000, 0x6_0000],
+            [0x7_0000, 0x8_0000, 0x9_0000],
+        ];
+        input.center = [0; 3];
+        assert_eq!(
+            derive_compiled_state_basis_effects(input).vectors,
+            [
+                [25, 29, 33],
+                [-45, -51, -57],
+                [21, 21, 21],
+                [-49, -59, -69],
+                [49, 59, 69],
+                [-21, -21, -21],
+                [45, 51, 57],
+                [-25, -29, -33],
+            ]
+        );
+    }
+
+    #[test]
+    fn state_basis_adjustment_pins_each_helper_sign_and_pre_adjustment_reflections() {
+        let baseline = derive_compiled_state_basis_effects(state_basis_input());
+        let mut input = state_basis_input();
+        input.adjustment_u = [1, 2, 3];
+        input.adjustment_v = [4, 5, 6];
+        input.scale_638 = 0x1_0000;
+        input.scale_63c = 0x1_0000;
+        input.scale_640 = 0x1_0000;
+        let effects = derive_compiled_state_basis_effects(input);
+        assert_eq!(&effects.vectors[..4], &baseline.vectors[..4]);
+        assert_eq!(
+            &effects.vectors[4..],
+            &[[-3, -4, -4], [5, 6, -2], [-5, 0, 2], [3, 10, 4]]
+        );
+    }
+
+    #[test]
+    fn state_basis_center_changes_only_reflected_vectors() {
+        let baseline = derive_compiled_state_basis_effects(state_basis_input());
+        let mut input = state_basis_input();
+        input.center = [-100, 200, -300];
+        let changed = derive_compiled_state_basis_effects(input);
+        assert_ne!(&changed.vectors[..4], &baseline.vectors[..4]);
+        assert_eq!(&changed.vectors[4..], &baseline.vectors[4..]);
+    }
+
+    #[test]
+    fn state_basis_q16_projection_and_outer_combination_wrap_at_signed_boundaries() {
+        assert_eq!(common_prefix_q16_mul(-1, 0x8000), -1);
+        assert_eq!(common_prefix_q16_mul(-3, 0x8000), -2);
+        assert_eq!(common_prefix_q16_mul(i32::MIN, i32::MAX), 0x8000);
+
+        let input = CompiledStateBasisInputs {
+            half_words: [0x1_0000; 3],
+            matrix_rows: [[i32::MAX, i32::MIN, -1], [1, -1, i32::MIN], [1, 1, 1]],
+            center: [i32::MIN, i32::MAX, 0],
+            adjustment_u: [0; 3],
+            adjustment_v: [0; 3],
+            scale_638: 0,
+            scale_63c: 0,
+            scale_640: 0,
+        };
+        assert_eq!(
+            derive_compiled_state_basis_effects(input).vectors,
+            [
+                [-1, 1, i32::MIN],
+                [-3, -1, 2_147_483_646],
+                [1, 1, -2_147_483_646],
+                [-1, -1, i32::MIN],
+                [-2_147_483_647, i32::MIN, i32::MIN],
+                [i32::MAX, 2_147_483_646, 2_147_483_646],
+                [-2_147_483_645, i32::MIN, -2_147_483_646],
+                [-2_147_483_647, 2_147_483_646, i32::MIN],
+            ]
+        );
+    }
+
+    #[test]
+    fn state_basis_adjustment_is_reusable_and_wraps_every_operation() {
+        let primary = [[i32::MAX; 3], [i32::MIN; 3], [-1; 3], [1; 3]];
+        assert_eq!(
+            apply_compiled_state_basis_adjustment(primary, [0; 3], [0; 3], 0, 0, 0),
+            primary
+        );
+        let adjusted = apply_compiled_state_basis_adjustment(
+            primary,
+            [i32::MIN, i32::MAX, -3],
+            [i32::MAX, i32::MIN, 5],
+            i32::MAX,
+            i32::MIN,
+            -0x1_0000,
+        );
+        let p = [i32::MIN, i32::MAX, -3].map(|word| common_prefix_q16_mul(word, i32::MAX));
+        let q = [i32::MAX, i32::MIN, 5].map(|word| common_prefix_q16_mul(word, -0x1_0000));
+        let r = [i32::MIN, i32::MAX, -3].map(|word| common_prefix_q16_mul(word, i32::MIN));
+        for component in 0..3 {
+            assert_eq!(
+                adjusted[0][component],
+                i32::MAX.wrapping_sub(p[component].wrapping_add(q[component]))
+            );
+            assert_eq!(
+                adjusted[1][component],
+                i32::MIN.wrapping_add(q[component].wrapping_sub(p[component]))
+            );
+            assert_eq!(
+                adjusted[2][component],
+                (-1_i32).wrapping_add(r[component].wrapping_sub(q[component]))
+            );
+            assert_eq!(
+                adjusted[3][component],
+                1_i32.wrapping_add(r[component].wrapping_add(q[component]))
+            );
         }
     }
 
