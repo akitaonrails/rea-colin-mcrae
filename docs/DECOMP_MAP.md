@@ -166,13 +166,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-25T06:00:00Z
-milestone=identify-wheel-contact-flags
+updated_utc=2026-10-25T06:40:00Z
+milestone=implement-recovered-ffb-formulas
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-trace-surface-contact-to-grounded-state
-next_exit_gate=the-contact-flag-and-grounded-byte-derivation-is-traced
+current_focus=H08-finish-the-condition-and-rumble-inputs
+next_exit_gate=the-condition-pair-and-rumble-input-derivations-are-recovered
 <!-- PROGRESS-TAIL-END -->

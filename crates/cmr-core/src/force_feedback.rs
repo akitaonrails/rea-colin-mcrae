@@ -283,12 +283,21 @@ pub struct DecayAccumulator {
 
 impl DecayAccumulator {
     /// Seed from a game-internal Q16.16 impact magnitude (rescaled to DI units)
-    /// and an explicit per-frame decay step. The seeding of the step itself is a
-    /// G04/unknown source, so it is supplied by the caller.
+    /// and an explicit per-frame decay step, for callers that override the
+    /// recovered step (for example a non-collision source).
     pub fn seed(game_impact: i32, step: i32) -> Self {
         Self {
             magnitude: scale_magnitude(game_impact),
             step: step.max(0),
+        }
+    }
+
+    /// Seed a collision accumulator with the recovered `FUN_004330c0` step
+    /// formula ([`collision_decay_step`]).
+    pub fn seed_collision(game_impact: i32, decay_scale_q16: i32, long_effect: bool) -> Self {
+        Self {
+            magnitude: collision_peak(game_impact),
+            step: collision_decay_step(game_impact, decay_scale_q16, long_effect),
         }
     }
 
@@ -383,6 +392,88 @@ pub fn ffb_enabled(player_config_option: u8) -> bool {
     player_config_option & FFB_ENABLE_BIT != 0
 }
 
+/// Collision effect duration constant, `25.0` in Q16.16 (`0x190000`). The
+/// shipped decay-step computation multiplies it by [`COLLISION_DURATION_GAIN`]
+/// and doubles it when the long-effect flag (`DAT_00551af0`) is set.
+pub const COLLISION_DURATION_Q16: i64 = 0x19_0000;
+
+/// Duration gain folded into the collision step (`0x3333` ~ 0.2 Q16.16), so the
+/// recovered duration is `25.0 * 0.2 = 5.0` (10.0 in long-effect mode) in Q16.16.
+pub const COLLISION_DURATION_GAIN: i64 = 0x3333;
+
+/// Numeric scale of the collision period effect for the peak magnitude
+/// (`DAT_00551af0` doubles the duration, halving the per-frame step).
+#[must_use]
+pub fn collision_peak(game_magnitude: i32) -> i32 {
+    scale_magnitude(game_magnitude)
+}
+
+/// The decay step `FUN_004330c0` seeds into `DecayAccumulator::step`, recovered
+/// as a formula (it is no longer a caller-supplied unknown):
+///
+/// ```text
+/// duration_q16 = (long_effect ? 2 : 1) * 0x190000 * 0x3333 >> 16   // 5.0 / 10.0
+/// step = (0x2710 << 32) / duration_q16 * ((magnitude * scale) >> 16) >> 32
+/// ```
+///
+/// with the result floored at `1`. `decay_scale_q16` is the per-source scale the
+/// call sites pass (`0x8000`, `0x4ccc`, `0x1999`, ...). The caller only applies
+/// the step when the new peak exceeds the accumulator's current magnitude and the
+/// magnitude is above the `0x1999` (0.1) threshold.
+#[must_use]
+pub fn collision_decay_step(game_magnitude: i32, decay_scale_q16: i32, long_effect: bool) -> i32 {
+    let magnitude = i64::from(game_magnitude.clamp(0, GAME_MAGNITUDE_MAX));
+    let duration_q16 =
+        ((if long_effect { 2 } else { 1 }) * COLLISION_DURATION_Q16 * COLLISION_DURATION_GAIN)
+            >> 16;
+    let step_factor = (i64::from(DI_MAGNITUDE_SCALE) << 32) / duration_q16;
+    let scaled = (magnitude * i64::from(decay_scale_q16.max(0))) >> 16;
+    let step = (step_factor * scaled) >> 32;
+    i32::try_from(step).unwrap_or(i32::MAX).max(1)
+}
+
+/// The flagged second collision accumulator's peak (`FUN_004331b0`, when the
+/// per-car flag `DAT_005500c4[player * 0x22]` is set): `min(2 * peak, 10000)`.
+#[must_use]
+pub fn collision_second_peak(game_magnitude: i32) -> i32 {
+    (2 * collision_peak(game_magnitude)).min(di::FF_NOMINAL_MAX)
+}
+
+/// Threshold (`0x1999` ~ 0.1 Q16.16) above which the collision and engine
+/// vibration sources produce any force at all.
+pub const FORCE_THRESHOLD_Q16: i32 = 0x1999;
+
+/// The continuous engine/gear vibration magnitude (`FUN_00433ec0`), recovered as
+/// a speed ramp: `0` below [`FORCE_THRESHOLD_Q16`], otherwise
+/// `min(((speed - 0x1999) * 0x11c71) >> 16, 0x10000) * 6000 >> 16` (0..6000, the
+/// DirectInput magnitude scale). The shipped caller gates this on front-wheel
+/// contact flags and engine-state guards.
+#[must_use]
+pub fn engine_vibration_magnitude(speed_q16: i32) -> i32 {
+    if speed_q16 < FORCE_THRESHOLD_Q16 {
+        return 0;
+    }
+    let factor = ((i64::from(speed_q16 - FORCE_THRESHOLD_Q16) * 0x1_1c71) >> 16)
+        .min(i64::from(GAME_MAGNITUDE_MAX));
+    i32::try_from((factor * 6000) >> 16).unwrap_or(6000)
+}
+
+/// The collision impact magnitude mapping of `FUN_0041f630`: a square-root
+/// magnitude below `0x2624` yields no impact, otherwise
+/// `min((sqrt - 0x2624) * 0xf536 >> 16, 0x10000)` (a ~0.958 gain), which the
+/// caller rescales for DirectInput.
+#[must_use]
+pub fn collision_impact_from_sqrt(sqrt_q16: i32) -> Option<i32> {
+    const THRESHOLD: i32 = 0x2624;
+    const GAIN: i64 = 0xf536;
+    if sqrt_q16 < THRESHOLD {
+        return None;
+    }
+    let scaled =
+        ((i64::from(sqrt_q16 - THRESHOLD) * GAIN) >> 16).min(i64::from(GAME_MAGNITUDE_MAX));
+    Some(i32::try_from(scaled).unwrap_or(GAME_MAGNITUDE_MAX))
+}
+
 /// Byte offset of a player's FFB option within the option struct `DAT_00d3ca80`.
 pub fn player_config_option_offset(player: usize) -> usize {
     PER_PLAYER_CONFIG_OPTION_OFFSET + player * PER_PLAYER_CONFIG_STRIDE
@@ -411,6 +502,67 @@ mod tests {
         // Out-of-range clamps rather than overflowing.
         assert_eq!(scale_magnitude(-1), 0);
         assert_eq!(scale_magnitude(0x20_0000), di::FF_NOMINAL_MAX);
+    }
+
+    #[test]
+    fn collision_step_matches_the_recovered_duration_formula() {
+        // duration 5.0 s (Q16), full magnitude and the 0.5 call-site scale:
+        // (10000<<32)/5.0 * 0.5 >> 32 = 1000 DI units per frame.
+        assert_eq!(collision_decay_step(0x10000, 0x8000, false), 1000);
+        // The long-effect flag doubles the duration, halving the step.
+        assert_eq!(collision_decay_step(0x10000, 0x8000, true), 500);
+        // The 0x4ccc (~0.3) call-site scale decays faster than 0x1999 (~0.1).
+        let fast = collision_decay_step(0x10000, 0x4ccc, false);
+        let slow = collision_decay_step(0x10000, 0x1999, false);
+        assert!(fast > slow, "{fast} should exceed {slow}");
+        // A magnitude just above the 0.1 threshold decays in a large step,
+        // and the smallest magnitude still yields at least one unit.
+        assert_eq!(collision_decay_step(0x199a, 0x8000, false), 100);
+        assert_eq!(collision_decay_step(1, 0x8000, false), 1);
+        assert_eq!(collision_decay_step(0, 0x8000, false), 1);
+        // A full 10000-unit peak decays in about ten frames at step 1000.
+        let mut accumulator = DecayAccumulator::seed_collision(0x10000, 0x8000, false);
+        assert_eq!(accumulator.magnitude, 10000);
+        assert_eq!(accumulator.step, 1000);
+        assert_eq!(accumulator.tick(), 10000);
+        assert_eq!(accumulator.magnitude, 9000);
+    }
+
+    #[test]
+    fn collision_second_peak_doubles_and_caps() {
+        assert_eq!(collision_second_peak(0), 0);
+        assert_eq!(collision_second_peak(0x4000), 5000);
+        assert_eq!(collision_second_peak(0x8000), di::FF_NOMINAL_MAX);
+        assert_eq!(collision_second_peak(0x10000), di::FF_NOMINAL_MAX);
+    }
+
+    #[test]
+    fn engine_vibration_ramps_from_the_recovered_threshold() {
+        assert_eq!(engine_vibration_magnitude(0), 0);
+        assert_eq!(engine_vibration_magnitude(FORCE_THRESHOLD_Q16 - 1), 0);
+        assert_eq!(engine_vibration_magnitude(FORCE_THRESHOLD_Q16), 0);
+        // The integer ramp lands one unit below full scale at exactly 1.0.
+        assert_eq!(engine_vibration_magnitude(0x10000), 5999);
+        // Monotonic ramp between the threshold and full scale.
+        let low = engine_vibration_magnitude(0x4000);
+        let high = engine_vibration_magnitude(0xc000);
+        assert!(low > 0 && low < high && high < 6000, "{low} {high}");
+        // Above full scale the factor clamps at 0x10000 (6000).
+        assert_eq!(engine_vibration_magnitude(0x40000), 6000);
+    }
+
+    #[test]
+    fn collision_impact_threshold_and_gain() {
+        assert_eq!(collision_impact_from_sqrt(0), None);
+        assert_eq!(collision_impact_from_sqrt(0x2623), None);
+        // Right at the threshold the mapping still rounds to zero.
+        assert_eq!(collision_impact_from_sqrt(0x2624), Some(0));
+        assert_eq!(collision_impact_from_sqrt(0x2625), Some(0));
+        // A little above it the integer gain produces a small positive impact.
+        assert_eq!(collision_impact_from_sqrt(0x2700), Some(210));
+        // The ~0.958 gain over (sqrt - 0x2624) tops out at 53,421, not at the
+        // 0x10000 game magnitude (the remaining headroom is never reached).
+        assert_eq!(collision_impact_from_sqrt(0x1_0000), Some(53_421));
     }
 
     #[test]
