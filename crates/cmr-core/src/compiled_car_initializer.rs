@@ -2238,6 +2238,44 @@ pub fn publish_compiled_state_adjustment(
     destination[..3].copy_from_slice(&[word_c8, word_cc, word_d0]);
 }
 
+/// State dwords zeroed after the three adjustment-phase calls: six contiguous
+/// dwords at `+0x3cc..+0x3e0`.
+pub const COMPILED_ADJUSTMENT_RESET_STATE_ZERO_OFFSETS: [u16; 6] =
+    [0x3cc, 0x3d0, 0x3d4, 0x3d8, 0x3dc, 0x3e0];
+
+/// Remaining state writes in native order: `+0xbc = 0`, `+0xc0 = 0x10000`,
+/// `+0xc4 = 0`.
+pub const COMPILED_ADJUSTMENT_RESET_STATE_WORDS: [(u16, i32); 3] =
+    [(0xbc, 0), (0xc0, 0x10000), (0xc4, 0)];
+
+/// Control dwords cleared by the descending loop after the state reset.
+///
+/// The native loop starts at `0x3cc` and, per iteration, writes zero at
+/// `offset-0x10` and `offset`, then subtracts four and continues while the new
+/// offset is above `0x3bf`. Iterations therefore run at `0x3cc`, `0x3c8`,
+/// `0x3c4`, and `0x3c0`, clearing exactly these eight dwords at
+/// `0x3b0..0x3cc` in the listed order.
+pub const COMPILED_ADJUSTMENT_CONTROL_CLEAR_OFFSETS: [u16; 8] =
+    [0x3bc, 0x3cc, 0x3b8, 0x3c8, 0x3b4, 0x3c4, 0x3b0, 0x3c0];
+
+/// Effects of the post-call state reset and the control clear loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledAdjustmentResetEffects {
+    pub state_zero_offsets: [u16; 6],
+    pub state_words: [(u16, i32); 3],
+    pub control_zero_offsets: [u16; 8],
+}
+
+/// Reconstructs the constant reset block following the adjustment-phase calls.
+#[must_use]
+pub const fn derive_compiled_adjustment_reset() -> CompiledAdjustmentResetEffects {
+    CompiledAdjustmentResetEffects {
+        state_zero_offsets: COMPILED_ADJUSTMENT_RESET_STATE_ZERO_OFFSETS,
+        state_words: COMPILED_ADJUSTMENT_RESET_STATE_WORDS,
+        control_zero_offsets: COMPILED_ADJUSTMENT_CONTROL_CLEAR_OFFSETS,
+    }
+}
+
 fn solve_compiled_lane_plane(
     source_vector: [i32; 3],
     fallback: i32,
@@ -7436,6 +7474,49 @@ mod tests {
         let mut destination = [-1, -2, -3, 0x5555];
         publish_compiled_state_adjustment(&mut destination, 100, adjusted, 300);
         assert_eq!(destination, [100, 12, 300, 0x5555]);
+    }
+
+    #[test]
+    fn adjustment_reset_pins_state_zero_offsets_and_words() {
+        let effects = derive_compiled_adjustment_reset();
+        assert_eq!(
+            effects.state_zero_offsets,
+            [0x3cc, 0x3d0, 0x3d4, 0x3d8, 0x3dc, 0x3e0]
+        );
+        for pair in effects.state_zero_offsets.windows(2) {
+            assert_eq!(pair[1] - pair[0], 4);
+        }
+        assert_eq!(effects.state_words, [(0xbc, 0), (0xc0, 0x10000), (0xc4, 0)]);
+        for (offset, _) in effects.state_words {
+            assert!(!effects.state_zero_offsets.contains(&offset));
+        }
+    }
+
+    #[test]
+    fn adjustment_control_clear_matches_the_descending_native_loop() {
+        // Independent simulation of the native do-while: start at 0x3cc, write
+        // offset-0x10 then offset, subtract four, continue while above 0x3bf.
+        let mut simulated = Vec::new();
+        let mut offset = 0x3cc_u16;
+        loop {
+            simulated.push(offset - 0x10);
+            simulated.push(offset);
+            let next = offset - 4;
+            if next <= 0x3bf {
+                break;
+            }
+            offset = next;
+        }
+        let effects = derive_compiled_adjustment_reset();
+        assert_eq!(simulated.as_slice(), &effects.control_zero_offsets);
+
+        // The eight cleared dwords are exactly the contiguous 0x3b0..0x3cc range.
+        let mut sorted = effects.control_zero_offsets;
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            [0x3b0, 0x3b4, 0x3b8, 0x3bc, 0x3c0, 0x3c4, 0x3c8, 0x3cc]
+        );
     }
 
     #[test]

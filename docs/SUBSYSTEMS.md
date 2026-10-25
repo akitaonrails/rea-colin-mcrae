@@ -1281,6 +1281,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   `FUN_00409c10`, `FUN_004126b0` is pinned; only `FUN_00409c10` is already
   reconstructed. Two focused tests bring `cmr-core` to 1,247. The remaining
   callees and native alias/fault behavior remain open.
+  G03-AK16 reconstructs the reset block: six state dwords zeroed at
+  `+0x3cc..+0x3e0`, then `+0xbc = 0`, `+0xc0 = 0x10000`, `+0xc4 = 0`, and the
+  descending control loop clearing eight dwords at `0x3b0..0x3cc` in native
+  order. `derive_compiled_adjustment_reset` pins the constant effects. Two
+  focused tests bring `cmr-core` to 1,249. Config-dependent flags, copies,
+  and final state writes remain open.
+  See
   See
   See
   See

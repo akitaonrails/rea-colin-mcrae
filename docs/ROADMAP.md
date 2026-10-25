@@ -873,6 +873,13 @@ state+0xc8)`, `FUN_00409c10(state)`, `FUN_004126b0()`; only `FUN_00409c10` is
 already reconstructed. Two focused tests bring `cmr-core` to 1,247. The other
 two callees and destination alias/fault behavior remain open.
 
+G03-AK16 reconstructs the following reset block: six contiguous state dwords
+zeroed at `+0x3cc..+0x3e0`, then `+0xbc = 0`, `+0xc0 = 0x10000`, `+0xc4 = 0`.
+The descending control loop clears exactly eight dwords at `0x3b0..0x3cc` in
+native order. `derive_compiled_adjustment_reset` pins the constant effects.
+Two focused tests bring `cmr-core` to 1,249. The config-dependent flag bytes,
+copy loops, and final state writes remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed
