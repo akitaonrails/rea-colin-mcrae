@@ -552,9 +552,9 @@ ownership and every policy after drop, and overflow propagation, bringing
 cases, center split, six-word transform, later reciprocal/copy tail, application
 or session/gameplay state, meanings, units, and other editions remain open.
 
-G03-W closes the unsafe shared option-lookup boundary without pretending the
-surrounding configuration block is a homogeneous table. Static evidence traces
-the authoritative `state+0x738` store through every resolved direct constructor:
+G03-W (`f9e3b1f`) closes the unsafe shared option-lookup boundary without
+pretending the surrounding configuration block is a homogeneous table. Static
+evidence traces the authoritative `state+0x738` store through every resolved direct constructor:
 ordinary construction supplies `0..=7`, while the alternate path supplies only
 zero or one. All three helpers sign-extend that byte and use stride `0x9c` to
 read raw options at record-relative `+0x93`, `+0x95`, and `+0x99`; the auxiliary
@@ -564,8 +564,7 @@ config pointer comes from the persistent root and the initialized block is
 one belong to the directly authored/persisted two-stride window, while later
 helper-visible addresses overlap other copied regions. Thus eight is the bound
 for every resolved explicit state constructor, not a homogeneous record count.
-The derived
-`resolve_compiled_config_options` accepts a caller-owned byte view, rejects
+The derived `resolve_compiled_config_options` accepts a caller-owned byte view, rejects
 negative and `>=8` signed slots, validates the highest required address before
 reading, preserves all raw option bits for the existing arithmetic helpers, and
 uses only the unindexed force bit. Five synthetic tests cover error precedence,
@@ -574,6 +573,35 @@ force-flag addressing, bringing `cmr-core` to 1,128. Composition with direct
 cases, center split, the six-word transform, auxiliary patch, and reciprocal
 tail remains separate; config loading, application/session/gameplay wiring,
 meanings, units, and other editions remain open.
+
+G03-X composes those recovered stages while preserving the gaps established by
+static dataflow. From the direct-case join to the first helper, the omitted
+common prefix always adjusts direct control `+0x148`, can Q16-scale direct
+control `+0x148/+0x15c` and all eight direct state words under config flags,
+and derives state `+0x48/+0x4c`; it does not touch the
+eight-word family `+0x1d0..+0x1ec`, center split `+0x170`, or auxiliary patch
+region. The observed later sequence is center split, six-word family transform,
+auxiliary patch, and the separate `FUN_00486090` write to state `+0x758`. The
+also-omitted `0x406324..0x406459` interval then writes state `+0xec`; control
+dwords `+0x144,+0x14c,+0x150,+0x154,+0x160,+0x174,+0x178,+0x17c`,
+`+0x180,+0x184,+0x188,+0x18c,+0x1a8,+0x1b4,+0x408`; control byte `+0x440`;
+and control word `+0x3e4`
+before the reciprocal/copy tail. Its guarded reciprocal from `+0x15c` to
+`+0x160` can fault first. `RecoveredCompiledStageEffects` therefore keeps the raw
+direct-case outcome, center scalar, auxiliary patch, and four post-tail family
+arrays separate rather than inventing a complete state/control snapshot.
+`compose_recovered_compiled_stage_effects` resolves the shared config once,
+accepts caller-supplied post-prefix `state_word_48`, and validates in
+config-before-aux-before-family order only among represented stages. Typed
+failure returns no partial bundle, an explicit safe reconstruction policy
+rather than shipped in-place fault semantics; success does not prove the shipped
+full path reaches or publishes the tail. Five synthetic tests cover a selected
+case, invalid-selector common
+effects, exact destination relationships, option routing and tail output, and
+typed error precedence, bringing `cmr-core` to 1,133. The common prefix,
+`FUN_00486090`, the post-helper interval, merged object application,
+application/session/gameplay wiring,
+meanings/units, and other editions remain open.
 
 Exit gate:
 

@@ -692,6 +692,106 @@ pub fn transform_compiled_control_family(
     output
 }
 
+/// Caller-owned inputs for composing only the recovered initializer stages.
+///
+/// `state_word_48` must be the value after the omitted common-prefix code. It
+/// is intentionally not derived from the raw direct-case stores here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveredCompiledStageInputs<'a> {
+    pub prior_case_words: CompiledCaseWords,
+    pub selector: u32,
+    pub config: &'a [u8],
+    pub state_slot: i8,
+    pub state_word_48: i32,
+    pub global_word: i32,
+}
+
+/// Separate effects of the recovered post-dispatch initializer stages.
+///
+/// This is deliberately not a complete state/control snapshot. In particular,
+/// `direct_case_stores` remains the raw case-body outcome before omitted
+/// common-prefix mutations. Only `control_families.post_processed_raw`
+/// supersedes its eight family words; the other three arrays are the later
+/// reciprocal/copy-tail effects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveredCompiledStageEffects {
+    pub direct_case_stores: CompiledCaseOutcome,
+    pub center_split_q16: i32,
+    pub aux_control_patch: AuxControlPatch,
+    pub control_families: CompiledControlFamilies,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveredCompiledStageError {
+    Config(CompiledConfigResolveError),
+    Aux(AuxControlReciprocalOverflow),
+    Family(CompiledReciprocalOverflow),
+}
+
+impl fmt::Display for RecoveredCompiledStageError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Config(source) => write!(formatter, "cannot resolve compiled options: {source}"),
+            Self::Aux(source) => write!(formatter, "cannot derive auxiliary patch: {source}"),
+            Self::Family(source) => {
+                write!(
+                    formatter,
+                    "cannot derive compiled control families: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RecoveredCompiledStageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Config(source) => Some(source),
+            Self::Aux(source) => Some(source),
+            Self::Family(source) => Some(source),
+        }
+    }
+}
+
+/// Compose only the recovered post-dispatch stages in their observed order.
+///
+/// The returned bundle keeps raw direct stores separate from the center-split,
+/// auxiliary, and family/tail effects. The family/tail is derived from and
+/// supersedes only the raw direct-case family. The family-disjoint omitted
+/// interval between the auxiliary helper and reciprocal/copy tail is not
+/// represented and can itself fault. Config, auxiliary, then family validation
+/// order applies only to the represented stages; success does not prove that
+/// the shipped full initializer reaches its tail. Any represented failure
+/// returns no partial bundle. That atomic error boundary is a safe
+/// reconstruction policy; the shipped in-place code could have performed
+/// earlier writes before an `IDIV` fault.
+pub fn compose_recovered_compiled_stage_effects(
+    direct_cases: &CompiledDirectCaseSet,
+    aux_constants: &AuxControlConstantSet,
+    input: RecoveredCompiledStageInputs<'_>,
+) -> Result<RecoveredCompiledStageEffects, RecoveredCompiledStageError> {
+    let options = resolve_compiled_config_options(input.config, input.state_slot)
+        .map_err(RecoveredCompiledStageError::Config)?;
+    let direct_case_stores = direct_cases.apply(input.prior_case_words, input.selector);
+    let center_split_q16 = compiled_center_split_q16(options.center_split);
+    let transformed_control_family = transform_compiled_control_family(
+        direct_case_stores.words.control_family(),
+        options.control_run,
+    );
+    let aux_control_patch = aux_constants
+        .derive(options.aux_control, input.state_word_48, input.global_word)
+        .map_err(RecoveredCompiledStageError::Aux)?;
+    let control_families = derive_compiled_control_families(transformed_control_family)
+        .map_err(RecoveredCompiledStageError::Family)?;
+
+    Ok(RecoveredCompiledStageEffects {
+        direct_case_stores,
+        center_split_q16,
+        aux_control_patch,
+        control_families,
+    })
+}
+
 /// The four eight-word families after the observed reciprocal/copy tail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompiledControlFamilies {
@@ -1052,6 +1152,24 @@ mod tests {
         (temp, store)
     }
 
+    fn compiled_stage_config(
+        slot: i8,
+        aux_option: u8,
+        center_option: u8,
+        run_option: u8,
+        force_default: bool,
+    ) -> Vec<u8> {
+        let record_base = slot as usize * COMPILED_CONFIG_RECORD_STRIDE;
+        let mut config = vec![0; record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET + 1];
+        config[record_base + COMPILED_CONFIG_AUX_OPTION_OFFSET] = aux_option;
+        config[record_base + COMPILED_CONFIG_CENTER_SPLIT_OPTION_OFFSET] = center_option;
+        config[record_base + COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET] = run_option;
+        if force_default {
+            config[COMPILED_CONFIG_AUX_FORCE_FLAG_OFFSET] = COMPILED_CONFIG_AUX_FORCE_DEFAULT_MASK;
+        }
+        config
+    }
+
     fn aux_value(patch: AuxControlPatch, offset: u16) -> i32 {
         let index = AUX_CONTROL_WORD_OFFSETS
             .iter()
@@ -1344,6 +1462,226 @@ mod tests {
                 .unwrap()
                 .aux_control,
             AuxControlOption::ForcedDefault
+        );
+    }
+
+    #[test]
+    fn recovered_stage_bundle_routes_selected_case_options_and_tail_in_order() {
+        let cases = synthetic_cases();
+        let direct_cases = CompiledDirectCaseSet { cases };
+        let constants = aux_constants();
+        let aux_constants = AuxControlConstantSet { constants };
+        let config = compiled_stage_config(1, 1, 1, 0, false);
+        let prior = synthetic_case(-7);
+
+        let effects = compose_recovered_compiled_stage_effects(
+            &direct_cases,
+            &aux_constants,
+            RecoveredCompiledStageInputs {
+                prior_case_words: prior,
+                selector: 3,
+                config: &config,
+                state_slot: 1,
+                state_word_48: -17,
+                global_word: 0x1_0000,
+            },
+        )
+        .unwrap();
+
+        let selected = CompiledCaseOutcome {
+            words: cases[3],
+            selected_case: Some(3),
+        };
+        let transformed = transform_compiled_control_family(cases[3].control_family(), 0);
+        assert_eq!(effects.direct_case_stores, selected);
+        assert_ne!(
+            effects.direct_case_stores.words.control_family(),
+            transformed
+        );
+        assert_eq!(effects.center_split_q16, 0x8000);
+        assert_eq!(
+            effects.aux_control_patch,
+            derive_aux_control_patch(AuxControlOption::Resolved(1), -17, 0x1_0000, &constants,)
+                .unwrap()
+        );
+        assert_eq!(
+            effects.control_families,
+            derive_compiled_control_families(transformed).unwrap()
+        );
+    }
+
+    #[test]
+    fn recovered_stage_bundle_pins_separate_destination_relationships() {
+        let family_offsets = &COMPILED_CONTROL_WORD_OFFSETS
+            [CONTROL_FAMILY_START..CONTROL_FAMILY_START + COMPILED_CONTROL_FAMILY_WORD_COUNT];
+        assert_eq!(
+            family_offsets,
+            &[0x1d0, 0x1d4, 0x1d8, 0x1dc, 0x1e0, 0x1e4, 0x1e8, 0x1ec]
+        );
+        assert!(!COMPILED_CONTROL_WORD_OFFSETS.contains(&0x170));
+        assert!(!AUX_CONTROL_WORD_OFFSETS.contains(&0x170));
+        for offset in family_offsets {
+            assert!(COMPILED_CONTROL_WORD_OFFSETS.contains(offset));
+            assert!(!AUX_CONTROL_WORD_OFFSETS.contains(offset));
+        }
+    }
+
+    #[test]
+    fn recovered_stage_bundle_runs_common_effects_for_invalid_selectors() {
+        let direct_cases = CompiledDirectCaseSet {
+            cases: synthetic_cases(),
+        };
+        let constants = aux_constants();
+        let aux_constants = AuxControlConstantSet { constants };
+        let config = compiled_stage_config(0, 2, 0, 0, true);
+        let prior = synthetic_case(40);
+        let transformed = transform_compiled_control_family(prior.control_family(), 0);
+        assert_ne!(transformed, prior.control_family());
+
+        for selector in [14, u32::MAX] {
+            let effects = compose_recovered_compiled_stage_effects(
+                &direct_cases,
+                &aux_constants,
+                RecoveredCompiledStageInputs {
+                    prior_case_words: prior,
+                    selector,
+                    config: &config,
+                    state_slot: 0,
+                    state_word_48: 24,
+                    global_word: 0x8000,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                effects.direct_case_stores,
+                CompiledCaseOutcome {
+                    words: prior,
+                    selected_case: None,
+                }
+            );
+            assert_eq!(effects.center_split_q16, 0x4000);
+            assert_eq!(effects.control_families.post_processed_raw, transformed);
+            assert_eq!(
+                effects.aux_control_patch,
+                derive_aux_control_patch(AuxControlOption::ForcedDefault, 24, 0x8000, &constants,)
+                    .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn recovered_stage_bundle_reports_config_before_auxiliary_failure() {
+        let direct_cases = CompiledDirectCaseSet {
+            cases: synthetic_cases(),
+        };
+        let mut constants = aux_constants();
+        constants.policy_one.reciprocal_divisor = 1;
+        let aux_constants = AuxControlConstantSet { constants };
+        let prior = synthetic_case(9);
+
+        for (config, state_slot, expected) in [
+            (
+                vec![],
+                -1,
+                CompiledConfigResolveError::NegativeIndex { index: -1 },
+            ),
+            (
+                vec![],
+                COMPILED_CONFIG_SLOT_COUNT,
+                CompiledConfigResolveError::IndexOutOfRange {
+                    index: COMPILED_CONFIG_SLOT_COUNT,
+                    slot_count: COMPILED_CONFIG_SLOT_COUNT,
+                },
+            ),
+            (
+                vec![0; COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET],
+                0,
+                CompiledConfigResolveError::TruncatedConfig {
+                    index: 0,
+                    required_len: COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET + 1,
+                    actual_len: COMPILED_CONFIG_CONTROL_RUN_OPTION_OFFSET,
+                },
+            ),
+        ] {
+            assert_eq!(
+                compose_recovered_compiled_stage_effects(
+                    &direct_cases,
+                    &aux_constants,
+                    RecoveredCompiledStageInputs {
+                        prior_case_words: prior,
+                        selector: 0,
+                        config: &config,
+                        state_slot,
+                        state_word_48: 0,
+                        global_word: 0,
+                    },
+                ),
+                Err(RecoveredCompiledStageError::Config(expected))
+            );
+        }
+
+        let config = compiled_stage_config(0, 1, 0, 2, false);
+        assert_eq!(
+            compose_recovered_compiled_stage_effects(
+                &direct_cases,
+                &aux_constants,
+                RecoveredCompiledStageInputs {
+                    prior_case_words: prior,
+                    selector: 0,
+                    config: &config,
+                    state_slot: 0,
+                    state_word_48: 0,
+                    global_word: 0,
+                },
+            ),
+            Err(RecoveredCompiledStageError::Aux(
+                AuxControlReciprocalOverflow {
+                    input: AuxControlReciprocalInput::PolicyDivisor,
+                    divisor: 1,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn recovered_stage_bundle_reports_auxiliary_before_family_overflow() {
+        let mut cases = synthetic_cases();
+        cases[0].control_words[CONTROL_FAMILY_START + 1] = 1;
+        let direct_cases = CompiledDirectCaseSet { cases };
+        let config = compiled_stage_config(0, 1, 0, 2, false);
+        let input = RecoveredCompiledStageInputs {
+            prior_case_words: synthetic_case(-2),
+            selector: 0,
+            config: &config,
+            state_slot: 0,
+            state_word_48: 0,
+            global_word: 0,
+        };
+
+        let safe_aux = AuxControlConstantSet {
+            constants: aux_constants(),
+        };
+        assert_eq!(
+            compose_recovered_compiled_stage_effects(&direct_cases, &safe_aux, input),
+            Err(RecoveredCompiledStageError::Family(
+                CompiledReciprocalOverflow { slot: 1, raw: 1 }
+            ))
+        );
+
+        let mut overflowing_constants = aux_constants();
+        overflowing_constants.policy_one.reciprocal_divisor = 1;
+        let overflowing_aux = AuxControlConstantSet {
+            constants: overflowing_constants,
+        };
+        assert_eq!(
+            compose_recovered_compiled_stage_effects(&direct_cases, &overflowing_aux, input),
+            Err(RecoveredCompiledStageError::Aux(
+                AuxControlReciprocalOverflow {
+                    input: AuxControlReciprocalInput::PolicyDivisor,
+                    divisor: 1,
+                }
+            ))
         );
     }
 

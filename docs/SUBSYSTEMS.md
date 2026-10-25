@@ -1088,9 +1088,27 @@ languages rather than fabricating or silently aliasing Italian assets.
   as a homogeneous table count. `resolve_compiled_config_options` rejects
   negative and `>=8` slots, bounds the caller-owned byte view through the
   highest required read, preserves raw bytes for the existing helpers to mask,
-  and does not mutate input. Five tests bring `cmr-core` to 1,128. Composition
-  with direct-case selection, center split, six-word transform, auxiliary patch
-  and reciprocal/copy tail, meanings/units, config loading,
+  and does not mutate input. Five tests bring `cmr-core` to 1,128. The recovered
+  non-contiguous stages now compose as separated effects. Static dataflow shows
+  that the omitted prefix always adjusts direct control `+0x148`, can Q16-scale
+  direct control `+0x148/+0x15c` and all eight direct state words under config
+  flags, and derives state `+0x48/+0x4c`, but leaves the raw eight-word
+  family, center split, and auxiliary region untouched. After the three helpers,
+  omitted `FUN_00486090` writes only state `+0x758`, disjoint from those effects.
+  The also-omitted `0x406324..0x406459` interval then writes state `+0xec`;
+  control dwords `+0x144,+0x14c,+0x150,+0x154,+0x160,+0x174,+0x178,+0x17c`,
+  `+0x180,+0x184,+0x188,+0x18c,+0x1a8,+0x1b4,+0x408`; control byte `+0x440`;
+  and control word `+0x3e4`. Its guarded `+0x15c`-to-`+0x160` reciprocal can
+  fault before the reciprocal/copy tail. `compose_recovered_compiled_stage_effects`
+  returns the raw direct outcome, center scalar, auxiliary patch, and four
+  family/tail arrays separately; it requires caller-supplied post-prefix
+  `state_word_48` and deliberately is not a complete state/control snapshot.
+  Config, auxiliary, then family validation produces typed atomic failure only
+  among represented stages; success does not prove the shipped full path reaches
+  or publishes the tail.
+  Five more tests bring `cmr-core` to 1,133. The common prefix,
+  `FUN_00486090`, the post-helper interval, merged object application,
+  meanings/units, config loading,
   application/session/gameplay wiring, and other editions remain. See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
@@ -1106,8 +1124,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `impl.sim-compiled-aux-control-patch`,
   `impl.sim-compiled-aux-control-extractor`,
   `impl.sim-compiled-aux-control-store`,
-  `impl.sim-compiled-aux-control-consumer`, and
-  `impl.sim-compiled-config-options`.
+  `impl.sim-compiled-aux-control-consumer`,
+  `impl.sim-compiled-config-options`,
+  `rea.official-eu.sim-compiled-stage-dataflow`, and
+  `impl.sim-compiled-stage-effects`.
   See evidence
   `rea.official-eu.sim-drivetrain`.
 - The grip/surface response and velocity integration run as later passes of the
