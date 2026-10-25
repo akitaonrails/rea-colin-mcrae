@@ -17,7 +17,8 @@
 //! - **Engine torque** (`FUN_0040ce40`): `torque = throttle * maxTorque -
 //!   engBrake * rpm^2` (each a `>>16` Q16.16 multiply); under the limiter the
 //!   torque is forced to `-cut`. Drive torque to the wheels is
-//!   `torque * ratio[gear] * finalDrive`, split across the four wheels.
+//!   `torque * ratio[gear] * finalDrive`, then distributed by the recovered
+//!   centre-differential split ([drive_torque_split]).
 //! - **Actuator smoothing** (`FUN_004088c0`): each actuator slews toward its
 //!   demand, snapping when within one unit (`0x10000`) else stepping by a unit,
 //!   with a dead-zone that zeroes magnitudes below `0x7ae`.
@@ -37,6 +38,59 @@
 //! the per-gear ratio tables into the control struct.
 
 use crate::fixed_point::Fixed16;
+
+/// Coasting drag torque (`0x1999` ~ 0.1 in Q16.16) that `FUN_0040d810`
+/// substitutes for the engine torque when the car is in gear with neither the
+/// throttle nor the brake pressed. The centre split still applies to it.
+pub const COAST_DRAG_TORQUE: Fixed16 = Fixed16::from_raw(0x1999);
+
+/// The recovered centre-differential drive split of `FUN_0040d810`.
+///
+/// The engine torque is scaled by the per-car-type front/rear factors
+/// (`DAT_0050e1a4`/`DAT_0050e1a8[type * 0x334]`, runtime game data) and then
+/// distributed by the centre split `+0x170` (`0` = all rear, `0x10000` = all
+/// front):
+///
+/// ```text
+/// front = ((engine_torque * front_factor) >> 16) * center_split      >> 16
+/// rear  = ((engine_torque * rear_factor)  >> 16) * (1 - center_split) >> 16
+/// ```
+///
+/// A handbrake (`+0x30c`) adds its recovered extra torque (`+0x2f4`) to the rear
+/// pair only. The per-wheel application loop (sign from the wheel-speed
+/// direction plus the per-car-type wheel constant `DAT_0050e18c`) is the next
+/// stage and is not reproduced here.
+#[must_use]
+pub fn drive_torque_split(
+    engine_torque: Fixed16,
+    center_split: Fixed16,
+    front_factor: Fixed16,
+    rear_factor: Fixed16,
+    handbrake_torque: Option<Fixed16>,
+) -> (Fixed16, Fixed16) {
+    let split = center_split.raw().clamp(0, Fixed16::ONE.raw());
+    let split = Fixed16::from_raw(split);
+    let remainder = Fixed16::ONE.sub(split);
+    let front = engine_torque.mul(front_factor).mul(split);
+    let mut rear = engine_torque.mul(rear_factor).mul(remainder);
+    if let Some(extra) = handbrake_torque {
+        rear = rear.add(extra);
+    }
+    (front, rear)
+}
+
+/// The coasting split: [`COAST_DRAG_TORQUE`] distributed by the centre split
+/// (the recovered in-gear, no-throttle/no-brake branch of `FUN_0040d810`).
+#[must_use]
+pub fn coast_torque_split(center_split: Fixed16) -> (Fixed16, Fixed16) {
+    drive_torque_split(
+        COAST_DRAG_TORQUE,
+        center_split,
+        Fixed16::ONE,
+        Fixed16::ONE,
+        None,
+    )
+}
 
 /// Highest forward gear index (`0..=6` forward).
 pub const MAX_FORWARD_GEAR: i8 = 6;
@@ -186,6 +240,72 @@ pub fn display_rpm(normalized_load: Fixed16) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn centre_split_distributes_drive_torque_front_and_rear() {
+        let torque = Fixed16::from_int(2);
+        let front_factor = Fixed16::from_raw(0x8000); // 0.5
+        let rear_factor = Fixed16::from_raw(0x8000);
+
+        // All front: 2.0 * 0.5 = 1.0 front, nothing rear.
+        let (front, rear) =
+            drive_torque_split(torque, Fixed16::ONE, front_factor, rear_factor, None);
+        assert_eq!(front, Fixed16::from_int(1));
+        assert_eq!(rear, Fixed16::ZERO);
+
+        // All rear.
+        let (front, rear) =
+            drive_torque_split(torque, Fixed16::ZERO, front_factor, rear_factor, None);
+        assert_eq!(front, Fixed16::ZERO);
+        assert_eq!(rear, Fixed16::from_int(1));
+
+        // Half/half.
+        let (front, rear) = drive_torque_split(
+            torque,
+            Fixed16::from_raw(0x8000),
+            front_factor,
+            rear_factor,
+            None,
+        );
+        assert_eq!(front, Fixed16::from_raw(0x8000));
+        assert_eq!(rear, Fixed16::from_raw(0x8000));
+
+        // The split clamps to 0..=1 rather than extrapolating.
+        let (front, rear) = drive_torque_split(
+            torque,
+            Fixed16::from_int(3),
+            front_factor,
+            rear_factor,
+            None,
+        );
+        assert_eq!(front, Fixed16::from_int(1));
+        assert_eq!(rear, Fixed16::ZERO);
+    }
+
+    #[test]
+    fn handbrake_torque_lands_on_the_rear_axle_only() {
+        let (front, rear) = drive_torque_split(
+            Fixed16::from_int(2),
+            Fixed16::from_raw(0x8000),
+            Fixed16::from_int(1),
+            Fixed16::from_int(1),
+            Some(Fixed16::from_raw(0x4000)),
+        );
+        assert_eq!(front, Fixed16::from_int(1));
+        assert_eq!(rear, Fixed16::from_raw(0x1_4000));
+    }
+
+    #[test]
+    fn coasting_uses_the_recovered_drag_torque() {
+        let (front, rear) = coast_torque_split(Fixed16::from_raw(0x8000));
+        // 0.1 split half/half -> 0.05 each.
+        assert_eq!(front, Fixed16::from_raw(0x0ccc));
+        assert_eq!(rear, Fixed16::from_raw(0x0ccc));
+        assert_eq!(
+            coast_torque_split(Fixed16::ZERO),
+            (Fixed16::ZERO, Fixed16::from_raw(0x1999))
+        );
+    }
 
     fn fx(raw: i32) -> Fixed16 {
         Fixed16::from_raw(raw)
