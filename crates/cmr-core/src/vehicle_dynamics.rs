@@ -44,6 +44,10 @@
 //!   lanes share `0x140000`; each strict-above-threshold angle measure feeds a
 //!   wrapping Q16.16 ramp with an upper-only clamp, then scales and negates an
 //!   opaque caller argument. Geometric lane qualification remains separate.
+//! - **Surface-indexed lane scalar** (`FUN_0040d810`): an opaque nonzero
+//!   per-lane override selects `0x8000`; otherwise a caller-resolved surface
+//!   coefficient is used. The projected input is arithmetic-shifted by two,
+//!   multiplied through an opaque global factor, and wrapping-negated.
 //!
 //! Values are signed Q16.16 ([`crate::fixed_point`]). See evidence
 //! `rea.official-eu.sim-grip` and
@@ -55,10 +59,10 @@
 //! Unknowns (not reproduced): the lookup-dependent candidate branch and the
 //! physical units of all candidates, the direction vectors and surrounding
 //! per-wheel accumulation, the physical meaning of the nonzero control
-//! `+0x420` gate, the surface-indexed contribution, the vector qualification
-//! and normalization around `FUN_0040fbe0`, the exact semi-implicit position
-//! update's half-accel term, the suspension damper source, and runtime-loaded
-//! per-surface/per-car table contents.
+//! `+0x420` gate, the surface-indexed direction/projection and stateful add, the
+//! vector qualification and normalization around `FUN_0040fbe0`, the exact
+//! semi-implicit position update's half-accel term, the suspension damper
+//! source, and runtime-loaded per-surface/per-car table contents.
 
 use crate::fixed_point::{Fixed16, Vec3};
 
@@ -170,6 +174,35 @@ pub const fn postprocess_lane_correction_gain(
             .mul(scaled_argument)
             .neg(),
     )
+}
+
+/// Derive the surface-indexed scalar at `FUN_0040d810`
+/// `0x40f890..0x40f986` from already-resolved caller inputs.
+///
+/// A nonzero opaque override selects the literal coefficient `0x8000`;
+/// otherwise `surface_coefficient` is used. The path is skipped only when both
+/// coefficient inputs are zero, or when `projection` is zero. The arithmetic
+/// right shift, Q16.16 products, and final negation retain signed wrapping
+/// behavior. No physical meaning is assigned to this scalar or its override.
+#[must_use]
+pub const fn surface_indexed_lane_scalar(
+    global_factor: Fixed16,
+    surface_coefficient: Fixed16,
+    override_value: i32,
+    projection: Fixed16,
+) -> Option<Fixed16> {
+    if (surface_coefficient.raw() == 0 && override_value == 0) || projection.raw() == 0 {
+        return None;
+    }
+
+    let selected_coefficient = if override_value != 0 {
+        Fixed16::from_raw(0x8000)
+    } else {
+        surface_coefficient
+    };
+    let scaled_factor = global_factor.mul(selected_coefficient);
+    let quarter_projection = Fixed16::from_raw(projection.raw() >> 2);
+    Some(quarter_projection.mul(scaled_factor).neg())
 }
 
 /// Select between caller-derived force candidates using the recovered signed
@@ -542,6 +575,90 @@ mod tests {
                 4,
             ),
             Some(Fixed16::from_raw(0x028f0000))
+        );
+    }
+
+    #[test]
+    fn surface_indexed_scalar_skips_only_the_recovered_zero_gates() {
+        assert_eq!(
+            surface_indexed_lane_scalar(Fixed16::ONE, Fixed16::ZERO, 0, Fixed16::from_int(4),),
+            None
+        );
+        assert_eq!(
+            surface_indexed_lane_scalar(Fixed16::ONE, Fixed16::ONE, 0, Fixed16::ZERO,),
+            None
+        );
+        assert_eq!(
+            surface_indexed_lane_scalar(Fixed16::ONE, Fixed16::ZERO, -1, Fixed16::from_int(4),),
+            Some(Fixed16::from_raw(-0x8000))
+        );
+    }
+
+    #[test]
+    fn surface_indexed_scalar_uses_the_looked_up_coefficient_without_override() {
+        assert_eq!(
+            surface_indexed_lane_scalar(
+                Fixed16::from_int(2),
+                Fixed16::from_raw(0x4000),
+                0,
+                Fixed16::from_int(4),
+            ),
+            Some(Fixed16::from_raw(-0x8000))
+        );
+    }
+
+    #[test]
+    fn surface_indexed_scalar_override_ignores_the_table_value() {
+        let projection = Fixed16::from_int(4);
+        for surface_coefficient in [Fixed16::ZERO, Fixed16::from_raw(-0x1234)] {
+            assert_eq!(
+                surface_indexed_lane_scalar(Fixed16::ONE, surface_coefficient, 7, projection,),
+                Some(Fixed16::from_raw(-0x8000))
+            );
+        }
+    }
+
+    #[test]
+    fn surface_indexed_scalar_preserves_projection_sign() {
+        assert_eq!(
+            surface_indexed_lane_scalar(
+                Fixed16::ONE,
+                Fixed16::from_raw(0x8000),
+                0,
+                Fixed16::from_int(4),
+            ),
+            Some(Fixed16::from_raw(-0x8000))
+        );
+        assert_eq!(
+            surface_indexed_lane_scalar(
+                Fixed16::ONE,
+                Fixed16::from_raw(0x8000),
+                0,
+                Fixed16::from_int(-4),
+            ),
+            Some(Fixed16::from_raw(0x8000))
+        );
+    }
+
+    #[test]
+    fn surface_indexed_scalar_uses_arithmetic_shift_for_negative_nonmultiple() {
+        assert_eq!(-5_i32 >> 2, -2);
+        assert_eq!(
+            surface_indexed_lane_scalar(Fixed16::ONE, Fixed16::ONE, 0, Fixed16::from_raw(-5),),
+            Some(Fixed16::from_raw(2))
+        );
+    }
+
+    #[test]
+    fn surface_indexed_scalar_final_negation_wraps_int_min() {
+        assert_eq!(
+            surface_indexed_lane_scalar(
+                Fixed16::from_raw(i32::MIN),
+                Fixed16::ONE,
+                0,
+                Fixed16::from_int(4),
+            ),
+            Some(Fixed16::from_raw(i32::MIN))
         );
     }
 

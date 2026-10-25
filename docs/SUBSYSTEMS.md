@@ -1026,14 +1026,17 @@ languages rather than fabricating or silently aliasing Italian assets.
   threshold/alternate, and remaining-budget rules are reconstructed as three
   pure helpers. The share/ramp/gain scalar at the core of `FUN_0040fbe0` is
   reconstructed with validated one-to-four-lane counts and its exact upper-only
-  clamp. The combined candidate path, direction/state accumulation,
-  surface-indexed contribution, geometric postprocess qualification, position
-  update, damper source, and runtime-loaded table values remain. See evidence
+  clamp. The adjacent surface-indexed coefficient/override gates and scalar are
+  also reconstructed. The combined candidate path, direction/state
+  accumulation, surface direction/projection and stateful add, geometric
+  postprocess qualification, position update, damper source, and runtime-loaded
+  table values remain. See evidence
   `rea.official-eu.sim-grip`,
   `rea.official-eu.sim-signed-force-candidate-select`,
   `rea.official-eu.sim-force-candidate-fast-paths`,
   `rea.official-eu.sim-wheel-correction-arithmetic`, and
-  `rea.official-eu.sim-postprocess-correction-scalar`.
+  `rea.official-eu.sim-postprocess-correction-scalar`, and
+  `rea.official-eu.sim-surface-indexed-lane-scalar`.
 - Collision/damage runs from `0x410a60` (Mechanics callee), which delegates the
   crash path to `0x4115d0` once the out-of-control flag `car+0x680` is set. The
   contact impulse accumulates into `car+0x3cc..`; its magnitude feeds the impact

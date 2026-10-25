@@ -405,7 +405,9 @@ pure arithmetic behind the nonzero control `+0x420` correction gate inside
 reconstructed. The remaining physics exit work is the lookup-dependent
 candidate branch, direction/state accumulation, surface-indexed add and the
 geometric qualification around `FUN_0040fbe0`; its pure postprocess scalar is
-now recovered. These pieces remain separated from unsupported physical labels.
+now recovered, as is the surface-indexed add's pure scalar. Direction vectors,
+projections, and stateful accumulation remain separated from unsupported
+physical labels until recovered.
 
 Exit gate:
 
