@@ -126,6 +126,17 @@ pub const SURFACE_GRIP_LOW: Fixed16 = Fixed16::from_raw(0x2666);
 /// Stride, in bytes, of a surface grip-table record (the `surfId * 8` index).
 pub const SURFACE_GRIP_RECORD_BYTES: usize = 8;
 
+/// Number of signed entries in the extracted coefficient family consumed by
+/// the recovered surface-indexed lane scalar.
+pub const SURFACE_COEFFICIENT_COUNT: usize = 120;
+
+/// Checked lookup failure for
+/// [`surface_indexed_lane_scalar_from_first_family`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SurfaceCoefficientIndexError {
+    pub index: usize,
+}
+
 /// Signed component boundary used by the two lookup-free candidate branches
 /// in `FUN_0040d810` (`0x40f24f..0x40f2c7`).
 pub const CANDIDATE_COMPONENT_THRESHOLD: Fixed16 = Fixed16::from_raw(0x6666);
@@ -606,6 +617,34 @@ pub const fn surface_indexed_lane_scalar(
     let scaled_factor = global_factor.mul(selected_coefficient);
     let quarter_projection = Fixed16::from_raw(projection.raw() >> 2);
     Some(quarter_projection.mul(scaled_factor).neg())
+}
+
+/// Resolve the coefficient from the first extracted family and apply the
+/// recovered surface-indexed lane scalar.
+///
+/// Static evidence pins `FUN_0040d810` to the first family rooted at
+/// `DAT_004f72cc`. Unlike the shipped unchecked table access, this safe
+/// boundary reports an out-of-range surface index. The adjacent family is not
+/// part of this compatibility contract because its consumer is unknown.
+pub const fn surface_indexed_lane_scalar_from_first_family(
+    first_family: &[i32; SURFACE_COEFFICIENT_COUNT],
+    surface_index: usize,
+    global_factor: Fixed16,
+    override_value: i32,
+    projection: Fixed16,
+) -> Result<Option<Fixed16>, SurfaceCoefficientIndexError> {
+    if surface_index >= SURFACE_COEFFICIENT_COUNT {
+        return Err(SurfaceCoefficientIndexError {
+            index: surface_index,
+        });
+    }
+    let coefficient = Fixed16::from_raw(first_family[surface_index]);
+    Ok(surface_indexed_lane_scalar(
+        global_factor,
+        coefficient,
+        override_value,
+        projection,
+    ))
 }
 
 /// Select between caller-derived force candidates using the recovered signed
@@ -1807,6 +1846,128 @@ mod tests {
             surface_indexed_lane_scalar(Fixed16::ONE, Fixed16::ZERO, -1, Fixed16::from_int(4),),
             Some(Fixed16::from_raw(-0x8000))
         );
+    }
+
+    #[test]
+    fn first_family_adapter_rejects_both_out_of_range_boundaries() {
+        let first = [0; SURFACE_COEFFICIENT_COUNT];
+
+        for index in [SURFACE_COEFFICIENT_COUNT, usize::from(u16::MAX)] {
+            assert_eq!(
+                surface_indexed_lane_scalar_from_first_family(
+                    &first,
+                    index,
+                    Fixed16::ONE,
+                    0,
+                    Fixed16::ONE,
+                ),
+                Err(SurfaceCoefficientIndexError { index })
+            );
+        }
+    }
+
+    #[test]
+    fn first_family_adapter_preserves_negative_and_int_min_arithmetic() {
+        let mut first = [0; SURFACE_COEFFICIENT_COUNT];
+        first[0] = -1;
+        first[119] = i32::MIN;
+
+        assert_eq!(
+            surface_indexed_lane_scalar_from_first_family(
+                &first,
+                0,
+                Fixed16::ONE,
+                0,
+                Fixed16::from_int(4),
+            ),
+            Ok(Some(Fixed16::from_raw(1)))
+        );
+        assert_eq!(
+            surface_indexed_lane_scalar_from_first_family(
+                &first,
+                119,
+                Fixed16::ONE,
+                0,
+                Fixed16::from_int(4),
+            ),
+            Ok(Some(Fixed16::from_raw(i32::MIN)))
+        );
+    }
+
+    #[test]
+    fn first_family_adapter_validates_index_before_nonzero_override() {
+        let first = [0; SURFACE_COEFFICIENT_COUNT];
+
+        assert_eq!(
+            surface_indexed_lane_scalar_from_first_family(
+                &first,
+                120,
+                Fixed16::ONE,
+                1,
+                Fixed16::ONE,
+            ),
+            Err(SurfaceCoefficientIndexError { index: 120 })
+        );
+        assert_eq!(
+            surface_indexed_lane_scalar_from_first_family(
+                &first,
+                0,
+                Fixed16::ONE,
+                1,
+                Fixed16::from_int(4),
+            ),
+            Ok(Some(Fixed16::from_raw(-0x8000)))
+        );
+    }
+
+    #[test]
+    fn first_family_adapter_matches_direct_scalar_at_both_valid_boundaries() {
+        let mut first = [0; SURFACE_COEFFICIENT_COUNT];
+        first[0] = -0x12345;
+        first[119] = 0x23456;
+        let global_factor = Fixed16::from_raw(-0x18000);
+        let projection = Fixed16::from_raw(0x34567);
+
+        for index in [0, 119] {
+            assert_eq!(
+                surface_indexed_lane_scalar_from_first_family(
+                    &first,
+                    index,
+                    global_factor,
+                    0,
+                    projection,
+                ),
+                Ok(surface_indexed_lane_scalar(
+                    global_factor,
+                    Fixed16::from_raw(first[index]),
+                    0,
+                    projection,
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn first_family_adapter_composition_has_an_explicit_golden() {
+        let mut first = [0; SURFACE_COEFFICIENT_COUNT];
+        first[7] = 0x4000;
+
+        let adapted = surface_indexed_lane_scalar_from_first_family(
+            &first,
+            7,
+            Fixed16::from_int(2),
+            0,
+            Fixed16::from_int(4),
+        );
+        let direct = surface_indexed_lane_scalar(
+            Fixed16::from_int(2),
+            Fixed16::from_raw(first[7]),
+            0,
+            Fixed16::from_int(4),
+        );
+
+        assert_eq!(adapted, Ok(direct));
+        assert_eq!(adapted, Ok(Some(Fixed16::from_raw(-0x8000))));
     }
 
     #[test]

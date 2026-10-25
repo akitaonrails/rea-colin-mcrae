@@ -449,10 +449,20 @@ executable, the gear/car values are emitted by fourteen compiled initializer
 cases, and the `DAT_0050e170` family is BSS/runtime geometry state. The
 source-owned `pe_surface` parser plus the profile-gated, hash-first
 `extract-surface-tables` command establishes a safe local 960-byte extraction
-under ignored `runtime-data/` without vendoring values. Next G03 work is to
-define and wire the extracted coefficient interface, recover the compiled car
-initializer's complete schema/import, or reconstruct the runtime geometry/BSS
-consumers. Entry meanings, index invariants, other editions, and full
+under ignored `runtime-data/` without vendoring values. The fail-closed
+`SurfaceTableStore` now validates the supported state generation, exact
+reviewed-profile identity/digest and source metadata, and output path/size/hash
+before owning both decoded families without retaining a filesystem path. Its
+persistent-symlink checks assume a stable caller-owned directory during
+`open`, not protection from concurrent adversarial mutation. A checked core
+adapter now consumes the first `&[i32; 120]` family through the recovered
+lane-scalar rule: it bounds-checks before override handling and preserves the
+selected raw signed Q16.16 value. The adjacent second family remains
+store-only and unknown; this milestone does not wire the store into the app or
+session and does not conflate it with FFB `DAT_004edb70`, car initializer
+`FUN_00404440`, or BSS `DAT_0050e170`. Next G03 work is application wiring,
+the compiled car initializer's complete schema/import, or runtime geometry/BSS
+consumers. Entry meanings, gameplay index invariants, other editions, and full
 `FUN_0040d810`/`FUN_0040a4a0` closure remain open.
 
 Exit gate:

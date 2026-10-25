@@ -1090,11 +1090,21 @@ languages rather than fabricating or silently aliasing Italian assets.
   bounds-checks and extracts only the two official-EU PE families; the
   profile-gated `cmr-assets extract-surface-tables` command verifies the
   user-owned executable before atomically writing 960 bytes plus path-free
-  metadata under an explicit ignored runtime-data destination. Eleven parser
-  tests and the `cmr-assets` synthetic suite cover this boundary. The values
-  are not vendored or assigned physical names, are not yet wired into the
-  solver, and are distinct from the FFB `DAT_004edb70` family. The compiled
-  car-tuning schema and runtime BSS consumers remain open.
+  metadata under an explicit ignored runtime-data destination.
+  `cmr-assets::SurfaceTableStore` now revalidates the state schema, reviewed
+  profile ID and exact digest, source metadata, output path/size/hash, and the
+  real 960-byte data file before owning both decoded families without retaining
+  a path. Its persistent-symlink rejection assumes the caller keeps the
+  directory stable during `open`; concurrent adversarial mutation is outside
+  the contract. The checked core adapter accepts the first `[i32; 120]`
+  family, validates the index before override handling, preserves the raw
+  signed Q16.16 word, and delegates to the recovered lane-scalar rule. Five
+  adapter tests bring `vehicle_dynamics` to 85; `cmr-core` has 1,095 tests and
+  `cmr-assets` has 50 library plus three CLI tests. The second family remains
+  store-only with unknown semantics, and no application/session wiring is
+  claimed. These families remain distinct from FFB `DAT_004edb70`, compiled
+  car initializer `FUN_00404440`, and BSS `DAT_0050e170`; those latter schemas
+  and consumers remain open.
   `signed_arcsine_phase` preserves the signed lookup, `0x10000` clamp,
   index-4096 adjacent angle-table zero, and rejects unsafe `INT_MIN` instead of
   reproducing the unchecked read. `signed_ratio_angle` preserves the observed asymmetric
@@ -1114,7 +1124,7 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-surface-indexed-lane-scalar`,
   `rea.official-eu.sim-runtime-math-tables`, and
   `impl.legacy-math-tables`, `rea.official-eu.sim-runtime-table-provenance`,
-  and `impl.sim-surface-table-extractor`.
+  `impl.sim-surface-table-extractor`, and `impl.sim-surface-table-store`.
 - Collision/damage runs from `0x410a60` (Mechanics callee), which delegates the
   crash path to `0x4115d0` once the out-of-control flag `car+0x680` is set. The
   contact impulse accumulates into `car+0x3cc..`; its magnitude feeds the impact

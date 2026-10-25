@@ -193,15 +193,29 @@ project-owned extraction format, not an original game format, and remains
 separate from the media `import-state.json`. Tests construct synthetic PE
 images only; no coefficient values are committed.
 
+`cmr_assets::SurfaceTableStore::open` is the corresponding runtime reader. On
+a stable, caller-owned directory it fails closed unless the root is a real
+directory; the bounded state document has the supported schema, reviewed
+profile ID and exact profile digest, and matching source path/size/hash; and
+the declared output path, size, and SHA-256 all match the opened regular
+960-byte data file. Persistent symlinks in the root and the fixed, flat state
+and data child paths are rejected; nested paths are not accepted or supported.
+The file is re-hashed and decoded into
+two owned `[i32; 120]` families during `open`, so the store retains no root or
+data path and later ordinary filesystem changes cannot alter an opened value.
+This is not a claim of race-free path resolution under concurrent adversarial
+filesystem mutation; callers must keep the directory stable while `open`
+runs.
+
 ## Schema versioning and migration
 
 Four regenerable on-disk artifacts carry a `schema_version`. The completed
 media-store readers accept only the exact generations selected by
 `cmr-assets::PROFILE_SCHEMA_VERSION` and
 `cmr-assets::IMPORT_STATE_SCHEMA_VERSION`. The executable-derived surface path
-currently validates its reviewed profile with
-`SURFACE_PROFILE_SCHEMA_VERSION` and emits a state document with
-`SURFACE_IMPORT_SCHEMA_VERSION`; it does not yet have a runtime state reader:
+validates its reviewed profile with `SURFACE_PROFILE_SCHEMA_VERSION`, emits a
+state document with `SURFACE_IMPORT_SCHEMA_VERSION`, and reads it back through
+the fail-closed `SurfaceTableStore` described above:
 
 - the reviewed source profile (`profiles/*.json`);
 - the import state (`<runtime-data>/import-state.json`);
@@ -215,11 +229,11 @@ is never migrated in place: the profile validator and store fail closed
 caller regenerates the tree from the user's own media with the matching
 importer. A profile and its state from different generations cannot be paired.
 The media store additionally checks profile identity, digest, and file/byte
-totals. The surface profile validator already rejects unsupported profile
-generations, while the extractor records its state schema, exact profile
-digest, and output hash in a path-free document. A future surface-table reader
-must reject unsupported state generations and verify the profile ID/digest,
-declared output size, and output hash before consuming the local data.
+totals. The surface profile validator rejects unsupported profile generations,
+while the extractor records its state schema, exact profile digest, and output
+hash in a path-free document. `SurfaceTableStore` rejects unsupported state
+generations and verifies the profile ID/digest, all recorded source metadata,
+and the declared output path/size/hash before consuming the local data.
 
 A version bump is required for any semantic or required-field change. Purely
 additive optional fields that readers can ignore leave the version alone. A
