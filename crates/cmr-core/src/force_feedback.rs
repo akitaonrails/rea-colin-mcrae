@@ -386,6 +386,38 @@ pub fn condition_update_flags(coefficient_changed: bool) -> u32 {
     }
 }
 
+/// Speed (`0xa3e` ~ 0.04 Q16.16) at or below which self-centring is at full
+/// strength (`FUN_00433800`).
+pub const SELF_CENTERING_REST_SPEED_Q16: i32 = 0xa3e;
+
+/// Speed (`0x3333` ~ 0.2 Q16.16) at or above which self-centring is zero.
+pub const SELF_CENTERING_ZERO_SPEED_Q16: i32 = 0x3333;
+
+/// Ramp gain of the self-centring speed curve (`0x63ff6` ~ 6.25 Q16.16).
+pub const SELF_CENTERING_RAMP_Q16: i64 = 0x63_ff6;
+
+/// The self-centring speed curve of `FUN_00433800`, in DirectInput units:
+/// full `10000` at or below [`SELF_CENTERING_REST_SPEED_Q16`], a linear-ish
+/// ramp down to `0` at [`SELF_CENTERING_ZERO_SPEED_Q16`], and `0` above it.
+///
+/// The shipped dispatcher only evaluates this when a front wheel is in contact;
+/// the per-wheel lateral term that is added afterwards comes from the runtime
+/// telemetry and surface tables.
+#[must_use]
+pub fn self_centering_speed_gain(speed_q16: i32) -> i32 {
+    if speed_q16 < SELF_CENTERING_REST_SPEED_Q16 {
+        return di::FF_NOMINAL_MAX;
+    }
+    if speed_q16 >= SELF_CENTERING_ZERO_SPEED_Q16 {
+        return 0;
+    }
+    let ramp = ((i64::from(speed_q16 - (SELF_CENTERING_REST_SPEED_Q16 - 1))
+        * SELF_CENTERING_RAMP_Q16)
+        >> 16)
+        .min(i64::from(GAME_MAGNITUDE_MAX));
+    i32::try_from(((i64::from(GAME_MAGNITUDE_MAX) - ramp) * 0x2710_0000) >> 32).unwrap_or(0)
+}
+
 /// Whether force feedback is enabled for a player, given that player's config
 /// option byte (`*(DAT_00d3ca80 + 0x3c + player*0x9c) & 8`).
 pub fn ffb_enabled(player_config_option: u8) -> bool {
@@ -563,6 +595,27 @@ mod tests {
         // The ~0.958 gain over (sqrt - 0x2624) tops out at 53,421, not at the
         // 0x10000 game magnitude (the remaining headroom is never reached).
         assert_eq!(collision_impact_from_sqrt(0x1_0000), Some(53_421));
+    }
+
+    #[test]
+    fn self_centering_follows_the_recovered_speed_curve() {
+        assert_eq!(self_centering_speed_gain(0), di::FF_NOMINAL_MAX);
+        assert_eq!(
+            self_centering_speed_gain(SELF_CENTERING_REST_SPEED_Q16 - 1),
+            di::FF_NOMINAL_MAX
+        );
+        assert_eq!(
+            self_centering_speed_gain(SELF_CENTERING_REST_SPEED_Q16),
+            9999
+        );
+        assert_eq!(self_centering_speed_gain(0x1999), 6250);
+        assert_eq!(self_centering_speed_gain(0x2000), 4687);
+        assert_eq!(
+            self_centering_speed_gain(SELF_CENTERING_ZERO_SPEED_Q16 - 1),
+            1
+        );
+        assert_eq!(self_centering_speed_gain(SELF_CENTERING_ZERO_SPEED_Q16), 0);
+        assert_eq!(self_centering_speed_gain(0x10000), 0);
     }
 
     #[test]

@@ -166,8 +166,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-25T07:20:00Z
-milestone=map-ffb-effect-inputs
+updated_utc=2026-10-25T07:50:00Z
+milestone=implement-self-centering-speed-curve
 completed=59
 partial=59
 not_started=0
