@@ -634,6 +634,52 @@ pub fn cross_and_project_normalize(v: [i32; 3], u: [i32; 3], normal: [i32; 3]) -
     project_and_normalize(cross_q16(v, u), normal)
 }
 
+/// The three global drive factors computed near the end of the force-pass
+/// head: `DAT_0050c5c4 = qmul(state+0x52c, DAT_004eac70)`,
+/// `DAT_0050c600 = qmul(DAT_004eac70, 0xf000)`, and
+/// `DAT_0050c5c0 = qmul(DAT_004eac6c, 0x11113)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DriveFactors {
+    pub scale_c5c4: i32,
+    pub scale_c600: i32,
+    pub factor_c5c0: i32,
+}
+
+/// Reconstructs the three global drive factors from the runtime state word at
+/// `+0x52c` and the data constants `DAT_004eac70`/`DAT_004eac6c` (whose values
+/// are game data, not recovered constants).
+#[must_use]
+pub fn compute_drive_factors(state_52c: i32) -> DriveFactors {
+    DriveFactors {
+        scale_c5c4: q16_mul(state_52c, 0x4eac70),
+        scale_c600: q16_mul(0x4eac70, 0xf000),
+        factor_c5c0: q16_mul(0x4eac6c, 0x11113),
+    }
+}
+
+/// Reconstructs the two-vector orthogonalization used by the force-pass head's
+/// alternate branch.
+///
+/// With `scaled_dot = qmul(qdot(v, w), 0x20000)`, it first forms
+/// `rejected = w - v * scaled_dot`, then `result = v - rejected * qdot(v,
+/// rejected)`, and normalizes the result with the legacy generated-table rule
+/// (zero square sum yields a zero vector).
+#[must_use]
+pub fn orthonormalize_pair(v: [i32; 3], w: [i32; 3]) -> [i32; 3] {
+    let dot = (0..3).fold(0_i32, |sum, index| {
+        sum.wrapping_add(q16_mul(v[index], w[index]))
+    });
+    let scaled_dot = q16_mul(dot, 0x20000);
+    let rejected: [i32; 3] =
+        std::array::from_fn(|index| w[index].wrapping_sub(q16_mul(v[index], scaled_dot)));
+    let second_dot = (0..3).fold(0_i32, |sum, index| {
+        sum.wrapping_add(q16_mul(v[index], rejected[index]))
+    });
+    let result: [i32; 3] =
+        std::array::from_fn(|index| v[index].wrapping_sub(q16_mul(rejected[index], second_dot)));
+    crate::compiled_car_initializer::normalize_compiled_lane_vector(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1227,5 +1273,43 @@ mod tests {
             cross_and_project_normalize([0x10000, 0, 0], [0, 0x10000, 0], [0x10000, 0, 0]),
             [0, 0, 65_522]
         );
+    }
+
+    #[test]
+    fn drive_factors_use_the_state_word_and_data_constants() {
+        let factors = compute_drive_factors(0x20000);
+        assert_eq!(factors.scale_c5c4, q16_mul(0x20000, 0x4eac70));
+        assert_eq!(factors.scale_c600, q16_mul(0x4eac70, 0xf000));
+        assert_eq!(factors.factor_c5c0, q16_mul(0x4eac6c, 0x11113));
+        // The state word scales only the first factor.
+        let zero = compute_drive_factors(0);
+        assert_eq!(zero.scale_c5c4, 0);
+        assert_eq!(zero.scale_c600, factors.scale_c600);
+        assert_eq!(zero.factor_c5c0, factors.factor_c5c0);
+    }
+
+    #[test]
+    fn pair_orthogonalization_normalizes_parallel_and_orthogonal_pairs() {
+        // Orthogonal input: dot = 0, so the result is just the normalized v.
+        assert_eq!(
+            orthonormalize_pair([0x10000, 0, 0], [0, 0x10000, 0]),
+            [65_522, 0, 0]
+        );
+        // Parallel input: the rejection collapses to zero.
+        assert_eq!(
+            orthonormalize_pair([0x10000, 0, 0], [0x10000, 0, 0]),
+            [0; 3]
+        );
+        // Swapped orthogonal input: the other axis is returned normalized.
+        assert_eq!(
+            orthonormalize_pair([0, 0x10000, 0], [0x10000, 0, 0]),
+            [0, 65_522, 0]
+        );
+    }
+
+    #[test]
+    fn pair_orthogonalization_handles_zero_inputs() {
+        assert_eq!(orthonormalize_pair([0; 3], [0x10000, 0, 0]), [0; 3]);
+        assert_eq!(orthonormalize_pair([0x10000, 0, 0], [0; 3]), [65_522, 0, 0]);
     }
 }

@@ -1447,6 +1447,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   `cmr-core::drivetrain` gains `cross_q16` and `cross_and_project_normalize`.
   Two focused tests bring `cmr-core` to 1,295. The config-gated vector
   selection and the first-loop drive factor remain open.
+  G03 drive factors and pair orthogonalization: the force-pass head computes
+  `DAT_0050c5c4 = qmul(state+0x52c, DAT_004eac70)`, `DAT_0050c600 =
+  qmul(DAT_004eac70, 0xf000)`, and `DAT_0050c5c0 = qmul(DAT_004eac6c,
+  0x11113)`. Its alternate branch orthogonalizes a vector pair:
+  `scaled_dot = qmul(qdot(v, w), 0x20000)`, `rejected = w - v * scaled_dot`,
+  then `result = v - rejected * qdot(v, rejected)`, normalized with the legacy
+  generated-table rule. `cmr-core::drivetrain` gains `compute_drive_factors`
+  and `orthonormalize_pair`. Four focused tests bring `cmr-core` to 1,298. The
+  config-gated vector selection remains open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

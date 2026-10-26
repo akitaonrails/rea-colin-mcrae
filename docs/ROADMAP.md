@@ -1039,7 +1039,13 @@ right-handed Q16.16 products and wrapping subtractions, then projected against
 the AK11 normal with the same rejection and legacy normalization.
 `cmr-core::drivetrain` gains `cross_q16` and `cross_and_project_normalize`.
 Two focused tests bring `cmr-core` to 1,295. The config-gated vector selection
-and the first-loop drive factor remain open.
+G03 recovers the drive factors (`DAT_0050c5c4`, `DAT_0050c600`, and
+`DAT_0050c5c0`) and the alternate-branch pair orthogonalization:
+`scaled_dot = qmul(qdot(v, w), 0x20000)`, `rejected = w - v * scaled_dot`,
+then `result = v - rejected * qdot(v, rejected)`, normalized with the legacy
+generated-table rule. `cmr-core::drivetrain` gains `compute_drive_factors` and
+`orthonormalize_pair`. Four focused tests bring `cmr-core` to 1,298. The
+config-gated vector selection remains open.
 
 Exit gate:
 
