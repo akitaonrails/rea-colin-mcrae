@@ -472,7 +472,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T07:46Z | 137h28m | wire-first-wheel-into-race-state | `92d3e89` | G09 | Added `step_with_first_wheel`: the recovered first-wheel force pass runs with explicit runtime inputs and its force drives the existing translation. A two-tick test checks split, slip clamp, integrated speed and movement, bringing `cmr-core` to 1,329. Full force production remains open. |
 
-| 2026-10-26T08:03Z | 137h45m | wire-second-wheel-core-into-race-state | _(pending)_ | G09 | Added `step_with_second_wheel`: the second core consumes the first-wheel speed delta and explicit vector/table inputs, recording residual, angle, component and accumulators. Its composition test brings `cmr-core` to 1,330. Full force production and accumulator feedback remain open. |
+| 2026-10-26T08:03Z | 137h45m | wire-second-wheel-core-into-race-state | `f1deb31` | G09 | Added `step_with_second_wheel`: the second core consumes the first-wheel speed delta and explicit vector/table inputs, recording residual, angle, component and accumulators. Its composition test brings `cmr-core` to 1,330. Full force production and accumulator feedback remain open. |
+
+| 2026-10-26T08:28Z | 138h10m | complete-second-wheel-lane-accumulation | _(pending)_ | G03, G09 | Corrected `execute_second_wheel_core` to use the recovered lane tail: selected-scalar scaling of the normalized direction, gated correction, updated-accumulator projection and second correction, then independent surface addition. Removed duplicated speed-delta and surface-dot inputs. Focused arithmetic and race-state tests pass with `cmr-core` at 1,330. The four-lane `FUN_0040fbe0` consumer and candidate production remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

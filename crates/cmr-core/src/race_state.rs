@@ -97,8 +97,11 @@ pub struct SecondWheelParams<'a> {
     pub arctan_table: &'a [i16],
     pub cos_table: &'a [i32],
     pub config_scale: i32,
+    pub selected_scalar: i32,
+    pub correction_gate: i32,
     pub accumulation_limit: i32,
-    pub final_dot: i32,
+    pub correction_alternate: i32,
+    pub surface_vector: [i32; 3],
     pub table_factor: Option<i32>,
 }
 
@@ -293,9 +296,11 @@ impl RaceState {
             arctan_table: second.arctan_table,
             cos_table: second.cos_table,
             config_scale: second.config_scale,
-            speed_delta: sample.car.first_wheel.wheel_speed.wrapping_sub(prior_speed),
+            selected_scalar: second.selected_scalar,
+            correction_gate: second.correction_gate,
             accumulation_limit: second.accumulation_limit,
-            final_dot: second.final_dot,
+            correction_alternate: second.correction_alternate,
+            surface_vector: second.surface_vector,
             table_factor: second.table_factor,
         });
         sample.car.second_wheel = SecondWheelState {
@@ -445,8 +450,11 @@ mod tests {
             arctan_table: &[],
             cos_table: &trig,
             config_scale: 1,
+            selected_scalar: 0x10000,
+            correction_gate: 1,
             accumulation_limit: 0x10000,
-            final_dot: 1,
+            correction_alternate: 0x10000,
+            surface_vector: [0x10000, 0, 0],
             table_factor: None,
         };
         let sample = state.step_with_second_wheel(
@@ -458,7 +466,7 @@ mod tests {
         assert_eq!(sample.car.second_wheel.ratio_at_3b0, -0x10003);
         assert_eq!(sample.car.second_wheel.angle, 0);
         assert_eq!(sample.car.second_wheel.component, 1);
-        assert_eq!(sample.car.second_wheel.accumulators, [1638, 0, 0]);
+        assert_eq!(sample.car.second_wheel.accumulators, [-6554, 0, 0]);
         assert!(sample.car.velocity.x > Fixed16::ZERO);
     }
 

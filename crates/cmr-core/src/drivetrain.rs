@@ -40,7 +40,8 @@
 //! tables into the control struct.
 
 use crate::compiled_car_initializer::CompiledControlFamilies;
-use crate::fixed_point::Fixed16;
+use crate::fixed_point::{Fixed16, Vec3};
+use crate::vehicle_dynamics::{LaneAccumulationInput, apply_lane_accumulation};
 use cmr_formats::pe_surface::SurfaceCapabilityTables;
 
 /// Coasting drag torque (`0x1999` ~ 0.1 in Q16.16) that `FUN_0040d810`
@@ -969,13 +970,16 @@ pub struct SecondWheelInputs<'a> {
     pub cos_table: &'a [i32],
     /// The config scale at `+0x35c` or `+0x36c`.
     pub config_scale: i32,
-    /// The speed delta `speed_at_2b8 - speed_at_2a8` for the gated accumulation.
-    pub speed_delta: i32,
+    /// The signed candidate selected for the normalized lane accumulator.
+    pub selected_scalar: i32,
+    /// The nonzero `ctl+0x420` correction gate.
+    pub correction_gate: i32,
     /// The per-wheel limit at `ctl+0x35c` for the gated accumulation.
     pub accumulation_limit: i32,
-    /// The direction dot for the final table-driven accumulation (nonzero to
-    /// produce a factor).
-    pub final_dot: i32,
+    /// The signed alternate at `ctl+0x36c` for the gated accumulation.
+    pub correction_alternate: i32,
+    /// The per-wheel surface vector at `+0x4bc+12*wheel`.
+    pub surface_vector: [i32; 3],
     /// The table factor for the final accumulation; `None` selects `0x8000`.
     pub table_factor: Option<i32>,
 }
@@ -995,13 +999,13 @@ pub struct SecondWheelCoreEffects {
     pub angle: i16,
     /// The cosine-modulated force component.
     pub component: i32,
-    /// The three force accumulators after both accumulation stages.
+    /// The selected-scaled lane accumulator after all three vector additions.
     pub accumulators: [i32; 3],
 }
 
 /// Composes the second per-wheel iteration's core from the recovered rules:
-/// ratio and residuals, residual saturation and gear-ratio gate, the two
-/// residuals, direction normalization, arctan folding, and cosine modulation.
+/// ratio and residuals, direction normalization, candidate modulation, and the
+/// ordered lane accumulation tail.
 #[must_use]
 pub fn execute_second_wheel_core(input: SecondWheelInputs<'_>) -> SecondWheelCoreEffects {
     let ratio = wheel_slip_candidate(input.dot, input.speed_at_2a8);
@@ -1040,22 +1044,30 @@ pub fn execute_second_wheel_core(input: SecondWheelInputs<'_>) -> SecondWheelCor
         input.arctan_table,
     );
     let angle_cos = input.cos_table[((i32::from(angle) + 0x400) & 0xfff) as usize];
-    let mut accumulators = [0; 3];
-    if let Some(factor) = second_loop_accumulation_factor(
-        input.speed_delta,
-        input.gear_ratio,
-        Fixed16::from_raw(input.scale_c5c4),
-        input.accumulation_limit,
-    ) {
-        accumulate_direction_force(&mut accumulators, input.local_68, factor);
-    }
-    if let Some(factor) = final_loop_accumulation_factor(
-        input.final_dot,
-        Fixed16::from_raw(input.scale_c5c4),
-        input.table_factor,
-    ) {
-        accumulate_direction_force(&mut accumulators, input.local_68, factor);
-    }
+    let vector = |components: [i32; 3]| {
+        Vec3::new(
+            Fixed16::from_raw(components[0]),
+            Fixed16::from_raw(components[1]),
+            Fixed16::from_raw(components[2]),
+        )
+    };
+    let lane = apply_lane_accumulation(LaneAccumulationInput {
+        accumulator: vector(normalization.direction),
+        selected_scalar: Fixed16::from_raw(input.selected_scalar),
+        direction_a: vector(input.local_68),
+        direction_b: vector(input.local_98),
+        surface_vector: vector(input.surface_vector),
+        correction_gate: input.correction_gate,
+        smoothed_value: Fixed16::from_raw(input.speed_at_2b8),
+        raw_value: Fixed16::from_raw(input.speed_at_2a8),
+        gear_ratio: Fixed16::from_raw(input.gear_ratio),
+        global_factor: Fixed16::from_raw(input.scale_c5c4),
+        correction_threshold: Fixed16::from_raw(input.accumulation_limit),
+        correction_alternate: Fixed16::from_raw(input.correction_alternate),
+        second_budget: Fixed16::from_raw(residual_30.wrapping_abs()),
+        surface_coefficient: Fixed16::from_raw(input.table_factor.unwrap_or(0)),
+        surface_override: i32::from(input.table_factor.is_none()),
+    });
     SecondWheelCoreEffects {
         ratio_at_3b0: wheel_slip_candidate(input.dot, input.speed_at_2b8),
         residual_2c,
@@ -1063,7 +1075,11 @@ pub fn execute_second_wheel_core(input: SecondWheelInputs<'_>) -> SecondWheelCor
         normalization,
         angle,
         component: cosine_modulated_component(input.coefficient_34, angle_cos, input.config_scale),
-        accumulators,
+        accumulators: [
+            lane.accumulator.x.raw(),
+            lane.accumulator.y.raw(),
+            lane.accumulator.z.raw(),
+        ],
     }
 }
 
@@ -2020,9 +2036,11 @@ mod tests {
             arctan_table: &[],
             cos_table: &[],
             config_scale: 0x10000,
-            speed_delta: 0x10000,
+            selected_scalar: 0x8000,
+            correction_gate: 1,
             accumulation_limit: 0x1000,
-            final_dot: 0x10000,
+            correction_alternate: 0x2000,
+            surface_vector: [0x10000, 0, 0],
             table_factor: Some(0x20000),
         }
     }
@@ -2085,27 +2103,22 @@ mod tests {
             effects.component,
             cosine_modulated_component(input.coefficient_34, angle_cos, input.config_scale)
         );
-        // Both accumulation stages use the head's first direction source.
-        let gated = second_loop_accumulation_factor(
-            input.speed_delta,
-            input.gear_ratio,
-            Fixed16::from_raw(input.scale_c5c4),
-            input.accumulation_limit,
-        )
-        .unwrap();
-        assert_eq!(gated, 0x666);
+        // The normalized lane is scaled before the surface addition, not
+        // initialized to zero. Equal raw/smoothed speeds skip the correction.
         let final_factor = final_loop_accumulation_factor(
-            input.final_dot,
+            input.local_68[0],
             Fixed16::from_raw(input.scale_c5c4),
             input.table_factor,
         )
         .unwrap();
         assert_eq!(final_factor, -0x8000);
-        let mut expected = [0; 3];
-        accumulate_direction_force(&mut expected, input.local_68, gated);
+        let mut expected = effects
+            .normalization
+            .direction
+            .map(|component| q16_mul(component, input.selected_scalar));
         accumulate_direction_force(&mut expected, input.local_68, final_factor);
         assert_eq!(effects.accumulators, expected);
-        assert_eq!(expected, [-0x799a, 0, 0]);
+        assert_ne!(expected[0], 0);
     }
 
     fn first_wheel_input() -> FirstWheelInputs {

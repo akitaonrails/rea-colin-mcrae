@@ -1905,8 +1905,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   force for that translation; a two-tick test covers split, slip clamp, speed
   integration and movement. `step_with_second_wheel` also composes the second
   core from the first-wheel speed delta and explicit vector/table inputs,
-  recording residual, angle, component and accumulators. See evidence
-  `impl.sim-race-state-trace` and `impl.sim-translation-step`.
+  recording residual, angle, component and the selected-scaled lane accumulator
+  after both ordered corrections and the independent surface addition. This
+  corrects the former zero-initialized accumulator composition. The four-lane
+  `FUN_0040fbe0` postprocess and candidate production remain separate. See evidence
+  `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
+  `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

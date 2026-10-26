@@ -1212,6 +1212,12 @@ G09 adds `step_with_second_wheel`: the second core consumes the first-wheel
 speed delta and explicit vector/table inputs, recording residual, angle,
 component and accumulators. Its composition test brings `cmr-core` to 1,330.
 Full force production and accumulator feedback remain open.
+G09 now completes the second-core lane accumulation in native order: selected-scalar
+scaling of the normalized direction, gated correction, projection of that updated
+accumulator for the second correction, then the independent surface addition.
+This corrects the previous zero-initialized composition. The remaining consumer is
+the four-lane `FUN_0040fbe0` postprocess, not direct translation; its wiring and
+candidate production remain open.
 
 Exit gate:
 
