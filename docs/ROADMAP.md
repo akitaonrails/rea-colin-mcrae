@@ -1271,8 +1271,10 @@ wheel parameter sets, and the vertical path uses it for every wheel, bringing
 `cmr-core` to 1,350. `populate_surface_table_factor` now maps the reviewed first
 family into second-core accumulation with checked indices; an authenticated real
 store also reopens and feeds the adapter. One synthetic and one opt-in test bring
-`cmr-core` to 1,352. Other vector/contact provenance and application wiring remain
-open.
+`cmr-core` to 1,352. `cmr-app::SessionWheelInputs` now exposes the authenticated
+coefficient store to second-core callers; its official opt-in smoke passes,
+bringing `cmr-app` to 27 library tests. Other runtime provenance and live-loop
+wiring remain open.
 
 Exit gate:
 

@@ -1952,8 +1952,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   sets, and the vertical path uses it for every wheel.
   `populate_surface_table_factor` maps the reviewed first coefficient family into
   second-core accumulation with checked indices; an authenticated real store also
-  reopens and feeds the adapter. Other vector/contact provenance and application
-  wiring remain open. See evidence
+  reopens and feeds the adapter. `cmr-app::SessionWheelInputs` exposes the same
+  authenticated store to second-core callers. Other vector/contact provenance and
+  live application-loop wiring remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

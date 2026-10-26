@@ -520,7 +520,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T11:11Z | 140h53m | wire-derived-scales-into-wheel-params | `02ff8b3` | G03, G10 | Added `populate_force_pass_scales` to apply one recovered scale bundle to both wheel parameter sets. The vertical path now derives every wheel's scales through it. One adapter test brings `cmr-core` to 1,350; finish/replay still passes. Other runtime provenance and application wiring remain open. |
 
-| 2026-10-26T11:22Z | 141h04m | wire-reviewed-surface-coefficients | _(pending)_ | G03, G10 | Added `populate_surface_table_factor` with checked first-family selection and override preservation. The vertical path uses it for every wheel. Synthetic index coverage and an authenticated real-store smoke pass without exposing values; `cmr-core` has 1,352 tests. Other input provenance and application wiring remain open. |
+| 2026-10-26T11:22Z | 141h04m | wire-reviewed-surface-coefficients | `286c8d4` | G03, G10 | Added `populate_surface_table_factor` with checked first-family selection and override preservation. The vertical path uses it for every wheel. Synthetic index coverage and an authenticated real-store smoke pass without exposing values; `cmr-core` has 1,352 tests. Other input provenance and application wiring remain open. |
+
+| 2026-10-26T11:30Z | 141h12m | add-authenticated-session-wheel-inputs | _(pending)_ | G09 | Added `cmr-app::SessionWheelInputs`: authenticated coefficient-store open and second-core population with shared index errors. The official opt-in smoke passes without exposing values; `cmr-app` has 27 library tests. Live-loop wiring and other runtime inputs remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

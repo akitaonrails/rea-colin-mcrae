@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use cmr_assets::{
     AssetStore, AssetStoreError, ReviewedProfile, ReviewedProfileError,
-    ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfileError, SurfaceCapabilityStore,
-    SurfaceTableStoreError,
+    ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile, ReviewedSurfaceProfileError,
+    SurfaceCapabilityStore, SurfaceTableStore, SurfaceTableStoreError,
 };
 use cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
 use cmr_core::c3d_render::VERTEXTYPE_LVERTEX;
@@ -35,7 +35,7 @@ use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
 use cmr_core::gameplay_session::{GameplaySession, InRaceScript};
 use cmr_core::host_loop::HostClock;
 use cmr_core::localization::Language;
-use cmr_core::race_state::{Controls, SimParams};
+use cmr_core::race_state::{Controls, SecondWheelParams, SimParams, populate_surface_table_factor};
 use cmr_core::render_compose::{fade_duration_frames, fade_level_to_modulation_byte, fade_out};
 use cmr_core::render_route::{RenderRoute, composes_frontend_root, presents_world_scene};
 use cmr_core::root_menu_assets::VisualVariant;
@@ -51,6 +51,7 @@ use cmr_core::startup_display::{
     StartupDisplay, StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
 };
 use cmr_core::surface::PaletteMapping;
+use cmr_core::vehicle_dynamics::SurfaceCoefficientIndexError;
 use cmr_core::weather::{StageWeatherEffects, particles};
 use cmr_formats::bitmap::BitmapLimits;
 use cmr_formats::c3d::C3dLimits;
@@ -94,6 +95,9 @@ const REVIEWED_PROFILE: &[u8] =
 const REVIEWED_SURFACE_CAPABILITY_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-surface-capabilities-v1.json");
 const SURFACE_CAPABILITY_STORE_DIRECTORY: &str = "official-eu-surface-capabilities";
+const REVIEWED_SURFACE_TABLE_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-surface-tables-v1.json");
+const SURFACE_TABLE_STORE_DIRECTORY: &str = "official-eu-surface-coefficients";
 const ROOT_EXTENT: DisplayExtent = DisplayExtent {
     width: 640,
     height: 480,
@@ -1795,6 +1799,36 @@ impl SessionSurfaceInputs {
     }
 }
 
+/// Authenticated coefficient inputs for the second-wheel force producer.
+#[derive(Debug)]
+pub struct SessionWheelInputs {
+    store: SurfaceTableStore,
+}
+
+impl SessionWheelInputs {
+    pub fn open(runtime_data: &Path) -> Result<Self, SessionSurfaceInputsError> {
+        let reviewed = ReviewedSurfaceProfile::from_json(REVIEWED_SURFACE_TABLE_PROFILE)
+            .map_err(SessionSurfaceInputsError::Profile)?;
+        let store =
+            SurfaceTableStore::open(&runtime_data.join(SURFACE_TABLE_STORE_DIRECTORY), &reviewed)
+                .map_err(SessionSurfaceInputsError::Store)?;
+        Ok(Self { store })
+    }
+
+    /// Populate a second-wheel coefficient from the authenticated first family.
+    ///
+    /// # Errors
+    ///
+    /// Returns the shared error when the stage surface ID is out of range.
+    pub fn populate_second_wheel(
+        &self,
+        second: &mut SecondWheelParams<'_>,
+        surface_index: usize,
+    ) -> Result<(), SurfaceCoefficientIndexError> {
+        populate_surface_table_factor(second, self.store.families(), surface_index)
+    }
+}
+
 pub fn run_windowed_game_session(
     media_root: &Path,
     runtime_data: &Path,
@@ -2202,6 +2236,46 @@ mod tests {
         assert_eq!(
             inputs.effect_enables(&[]),
             Some([0; SURFACE_CAPABILITY_COUNT])
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an authenticated coefficient store under CMR_RUNTIME_DATA"]
+    fn official_session_wheel_inputs_populate_second_core() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA").expect("CMR_RUNTIME_DATA");
+        let inputs = SessionWheelInputs::open(Path::new(&root)).unwrap();
+        let trig = cmr_core::fixed_point::build_sine_table();
+        let mut second = SecondWheelParams {
+            axis_dot: 0,
+            local_68: [0x10000, 0, 0],
+            local_98: [0; 3],
+            wheel_e8: 0,
+            scale_c5c4: 0x10000,
+            residual_flag_147a: false,
+            config_2ec: 1,
+            gear_ratio: 1,
+            coefficient_34: 0x10000,
+            arctan_table: &[],
+            cos_table: &trig,
+            config_scale: 1,
+            transition_gain: 0,
+            transition_base: 0,
+            alternate_gain: 0,
+            alternate_base: 0,
+            correction_gate: 1,
+            accumulation_limit: 0x10000,
+            correction_alternate: 0x10000,
+            surface_vector: [0x10000, 0, 0],
+            table_factor: None,
+        };
+        inputs.populate_second_wheel(&mut second, 0).unwrap();
+        assert_eq!(
+            second.table_factor,
+            Some(inputs.store.families().first.values[0])
+        );
+        assert_eq!(
+            inputs.populate_second_wheel(&mut second, 120),
+            Err(SurfaceCoefficientIndexError { index: 120 })
         );
     }
 
