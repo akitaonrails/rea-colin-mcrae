@@ -989,6 +989,27 @@ pub fn sum_translation_lane_forces(
         .fold(base, Vec3::add)
 }
 
+/// Accumulate the moment portion of `FUN_0040a4a0` as
+/// `transformed_force x contact_offset` with wrapping Q16.16 products.
+/// Non-wheel contacts are unconditional; wheel contacts use their contact flag.
+#[must_use]
+pub fn sum_contact_moments(
+    non_wheel_contacts: &[(Vec3, Vec3)],
+    wheel_contacts: [(bool, Vec3, Vec3); 4],
+) -> Vec3 {
+    non_wheel_contacts
+        .iter()
+        .copied()
+        .chain(
+            wheel_contacts
+                .into_iter()
+                .filter_map(|(contact, force, offset)| contact.then_some((force, offset))),
+        )
+        .fold(Vec3::ZERO, |moment, (force, offset)| {
+            moment.add(wrapping_cross(force, offset))
+        })
+}
+
 /// Runtime inputs for one `FUN_0040d400` contact-vector update.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContactVectorUpdateInput {
@@ -1404,6 +1425,30 @@ mod tests {
         // drag = v * speed.
         let d = drag(v(1, 0, 0), Fixed16::from_raw(0x8000));
         assert_eq!(d.x, Fixed16::from_raw(0x8000));
+    }
+
+    #[test]
+    fn contact_moments_cross_transformed_forces_and_filter_wheels() {
+        let moment = sum_contact_moments(
+            &[
+                (raw_v(0x10000, 0, 0), raw_v(0, 0x10000, 0)),
+                (raw_v(0, 0x10000, 0), raw_v(0x10000, 0, 0)),
+            ],
+            [
+                (true, raw_v(0x10000, 0, 0), raw_v(0, 0x10000, 0)),
+                (false, raw_v(i32::MAX, 0, 0), raw_v(0, 0x20000, 0)),
+                (false, raw_v(1, 2, 3), raw_v(4, 5, 6)),
+                (false, raw_v(7, 8, 9), raw_v(10, 11, 12)),
+            ],
+        );
+        assert_eq!(moment, raw_v(0, 0, 0x10000));
+        assert_eq!(
+            sum_contact_moments(
+                &[(raw_v(i32::MAX, 0, 0), raw_v(0, 0x20000, 0))],
+                [(false, Vec3::ZERO, Vec3::ZERO); 4],
+            ),
+            raw_v(0, 0, -2)
+        );
     }
 
     #[test]

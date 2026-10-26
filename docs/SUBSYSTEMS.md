@@ -1920,8 +1920,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   now performs that sum after postprocessing and translates with the resulting
   world force in the same tick. `apply_contact_vector_update` reconstructs one
   `FUN_0040d400` record with basis projection, legacy normalization, extra-length
-  subtraction and the distinct threshold/limit clamp. Eight-record traversal,
-  the moment path, and full four-iteration production remain open. See evidence
+  subtraction and the distinct threshold/limit clamp. `sum_contact_moments`
+  crosses each transformed force with its contact offset under the native contact
+  gates. `FUN_0048e100` composition, angular integration, eight-record traversal,
+  and full four-iteration production remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

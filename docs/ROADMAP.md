@@ -1232,8 +1232,11 @@ after postprocessing and translates with the resulting world force in the same
 tick; its test checks negative motion from the negative contacted lane.
 `apply_contact_vector_update` now reconstructs one `FUN_0040d400` projection,
 normalization, extra-length subtraction and distinct threshold/limit clamp, with
-one additional test bringing `cmr-core` to 1,334. Eight-record wiring, the moment
-path, and complete four-lane production remain open.
+one additional test bringing `cmr-core` to 1,334. `sum_contact_moments` now
+reproduces transformed-force cross contact-offset accumulation with the same
+contact filtering, bringing `cmr-core` to 1,335. `FUN_0048e100` composition,
+angular integration, eight-record wiring and complete four-lane production remain
+open.
 
 Exit gate:
 
