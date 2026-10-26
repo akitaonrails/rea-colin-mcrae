@@ -26,9 +26,10 @@ use crate::compiled_car_initializer::{
 };
 use crate::drivetrain::{
     FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
-    SecondWheelInputs, SmoothedEngineSpeedInput, advance_residual_enable, derive_force_pass_scales,
-    derive_gear_ratio, derive_smoothed_engine_speed, equalize_wheel_speeds,
-    execute_first_wheel_iteration, execute_second_wheel_core, track_smoothed_wheel_speed,
+    SecondWheelInputs, SmoothedEngineSpeedInput, advance_residual_enable, apply_rev_limiter,
+    derive_force_pass_scales, derive_gear_ratio, derive_smoothed_engine_speed,
+    equalize_wheel_speeds, execute_first_wheel_iteration, execute_second_wheel_core,
+    integrate_engine_from_raw_wheels, track_smoothed_wheel_speed,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::legacy_math::sqrt_q16;
@@ -356,6 +357,9 @@ pub struct FourWheelState {
     /// Engine-speed input at `control+0x2e0` and smoothed output at `+0x2e8`.
     pub engine_2e0: i32,
     pub engine_speed_2e8: i32,
+    /// Rev-limiter state and cut at `control+0x444/+0x448`.
+    pub limiter_444: bool,
+    pub limiter_cut_448: i32,
 }
 
 /// Apply neutral-gear zeroing or the ordinary post-step tracking update.
@@ -539,6 +543,8 @@ impl CarState {
                 residual_enable: 10,
                 engine_2e0: 0,
                 engine_speed_2e8: 0,
+                limiter_444: false,
+                limiter_cut_448: 0,
             },
         }
     }
@@ -1006,6 +1012,21 @@ impl RaceState {
         );
         self.car.four_wheel.speed_ec =
             sqrt_q16(self.car.velocity.dot(self.car.velocity).raw() as u32) as i32;
+        if first[0].gear_ratio != 0 && first[0].config_40c == 0 {
+            self.car.four_wheel.engine_2e0 = integrate_engine_from_raw_wheels(
+                self.car.four_wheel.engine_2e0,
+                std::array::from_fn(|index| self.car.four_wheel.first[index].wheel_speed),
+                first[0].config_158,
+                first[0].gear_ratio,
+            );
+        }
+        let rev_limit = apply_rev_limiter(
+            Fixed16::from_raw(self.car.four_wheel.engine_2e0),
+            Fixed16::from_raw(wheel.engine_smoothing.redline_15c),
+        );
+        self.car.four_wheel.engine_2e0 = rev_limit.rpm.raw();
+        self.car.four_wheel.limiter_444 = rev_limit.active;
+        self.car.four_wheel.limiter_cut_448 = rev_limit.cut.raw();
         update_smoothed_wheel_speeds(&mut self.car.four_wheel, first[0].gear_ratio);
         if first[0].gear_ratio == 0 {
             self.car.four_wheel.engine_speed_2e8 = self.car.four_wheel.engine_2e0;
@@ -1666,13 +1687,25 @@ mod tests {
                 track_smoothed_wheel_speed(sample.car.four_wheel.first[index].wheel_speed, 0)
             );
         }
+        let expected_engine = apply_rev_limiter(
+            Fixed16::from_raw(integrate_engine_from_raw_wheels(
+                0,
+                std::array::from_fn(|index| sample.car.four_wheel.first[index].wheel_speed),
+                wheel.first[0].config_158,
+                wheel.first[0].gear_ratio,
+            )),
+            Fixed16::from_raw(wheel.engine_smoothing.redline_15c),
+        )
+        .rpm
+        .raw();
+        assert_eq!(sample.car.four_wheel.engine_2e0, expected_engine);
         assert_eq!(
             sample.car.four_wheel.engine_speed_2e8,
             derive_smoothed_engine_speed(SmoothedEngineSpeedInput {
                 wheel_speeds: sample.car.four_wheel.smoothed_wheel_speeds,
                 config_158: wheel.first[0].config_158,
                 gear_ratio: wheel.first[0].gear_ratio,
-                engine_2e0: 0,
+                engine_2e0: expected_engine,
                 ..wheel.engine_smoothing
             })
             .speed_2e8

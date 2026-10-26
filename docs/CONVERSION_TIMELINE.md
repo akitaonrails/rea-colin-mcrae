@@ -580,7 +580,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T16:00Z | 145h53m | recover-driven-smoothing-scalars | `dba8b1e` | G03 | Recovered slip gain, engine load, signed speed limit and longitudinal/gear-reciprocal direction gain from `FUN_004088c0`, including native zero and negative-ratio rules. One exact-value test brings `cmr-core` to 1,374. Input population and `force_2c8` production remain. |
 
-| 2026-10-26T16:08Z | 146h01m | produce-smoothed-engine-speed | _(pending)_ | G03 | Wired `engine_2e0`/`engine_speed_2e8` state and the native axle blend plus load-dependent acceleration cap. Neutral copies engine input directly. One formula/cap test brings `cmr-core` to 1,375; composition independently checks stored output. |
+| 2026-10-26T16:08Z | 146h01m | produce-smoothed-engine-speed | `6c3c88c` | G03 | Wired `engine_2e0`/`engine_speed_2e8` state and the native axle blend plus load-dependent acceleration cap. Neutral copies engine input directly. One formula/cap test brings `cmr-core` to 1,375; composition independently checks stored output. |
+
+| 2026-10-26T16:13Z | 146h55m | integrate-ordinary-engine-update | _(pending)_ | G03 | Wired the ordinary raw-axle engine update and existing rev limiter before smoothing, preserving native middle-16-bit arithmetic and storing limiter state/cut. One fractional-update test brings `cmr-core` to 1,376; composition checks both engine outputs. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

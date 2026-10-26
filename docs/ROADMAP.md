@@ -1373,7 +1373,10 @@ exact-value test brings `cmr-core` to 1,374. Input population and `force_2c8`
 production remain next. Smoothed engine `+0x2e8` now comes from the native axle
 blend and load-dependent acceleration cap, with neutral copying `+0x2e0`; both
 engine fields persist in `FourWheelState`. One formula/cap test brings `cmr-core`
-to 1,375. Engine-control input production and `force_2c8` remain.
+to 1,375. The ordinary engine path now advances `+0x2e0` from raw axle speeds with
+native middle-16-bit arithmetic, applies the rev limiter, stores `+0x444/+0x448`,
+and then performs smoothing. One fractional-update test brings `cmr-core` to 1,376.
+Neutral/idle special cases and `force_2c8` production remain.
 
 Exit gate:
 

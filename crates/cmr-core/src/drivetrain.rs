@@ -336,6 +336,26 @@ pub fn derive_smoothed_engine_speed(input: SmoothedEngineSpeedInput) -> Smoothed
     }
 }
 
+/// Advance engine speed from raw axle speeds on the ordinary in-gear/no-shift
+/// `FUN_0040d0c0` path, preserving wrapping Q16 and addition order.
+#[must_use]
+pub fn integrate_engine_from_raw_wheels(
+    engine_2e0: i32,
+    wheel_speeds: [i32; 4],
+    config_158: i32,
+    gear_ratio: i32,
+) -> i32 {
+    let front = q16_mul(wheel_speeds[0], gear_ratio)
+        .wrapping_add(q16_mul(wheel_speeds[1], gear_ratio))
+        >> 1;
+    let rear = q16_mul(wheel_speeds[2], gear_ratio)
+        .wrapping_add(q16_mul(wheel_speeds[3], gear_ratio))
+        >> 1;
+    let blend = q16_mul(front.wrapping_sub(rear), config_158);
+    let delta = q16_mul(blend.wrapping_sub(engine_2e0).wrapping_add(rear), 0x10000);
+    engine_2e0.wrapping_add(delta)
+}
+
 /// Inputs for the driven `FUN_004088c0` integration branch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DrivenWheelSmoothingInput {
@@ -1937,6 +1957,26 @@ mod tests {
             })
             .response_load,
             0
+        );
+    }
+
+    #[test]
+    fn ordinary_engine_update_uses_raw_axles_and_current_engine() {
+        assert_eq!(
+            integrate_engine_from_raw_wheels(0, [0x8000, 0x8000, 0, 0], 0x10000, 0x10000),
+            0x8000
+        );
+        assert_eq!(
+            integrate_engine_from_raw_wheels(0x10000, [0x18000, 0x18000, 0, 0], 0x10000, 0x10000,),
+            0x18000
+        );
+        assert_eq!(
+            integrate_engine_from_raw_wheels(0x8000, [0; 4], 0x10000, 0x10000),
+            0
+        );
+        assert_eq!(
+            integrate_engine_from_raw_wheels(0, [0x20000, 0x20000, 0, 0], 0x10000, 0x10000),
+            0x20000
         );
     }
 

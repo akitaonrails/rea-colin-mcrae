@@ -2039,7 +2039,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   population and `force_2c8` production remain separate.
   `derive_smoothed_engine_speed` now produces `engine_speed_2e8` from the smoothed
   axle averages and load cap after the wheel update, while neutral copies `engine_2e0`.
-  Engine-control and redline/slip/load inputs remain explicit.
+  Engine-control and redline/slip/load inputs remain explicit. The ordinary path now
+  advances `engine_2e0` through `integrate_engine_from_raw_wheels`, applies the rev
+  limiter and stores `limiter_444`/`limiter_cut_448` before smoothing. Neutral/idle
+  special cases and `force_2c8` production remain separate.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing
