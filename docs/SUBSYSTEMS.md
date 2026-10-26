@@ -2096,13 +2096,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   submodule has the grey `(100,100,100,170)` blob color, the soft-edge per-vertex
   alpha ramp, the ground-plane flatten, `fixed_to_float`, and the
   `ShadowPrimitive` geometry (4-vertex strip / 11- / 15-index). The `sky`
-  submodule has the fog color/density/far constant sets and the `.hzn`
-  horizon-skip gate. Fog is software distance-haze - the engine-level analog of
-  the C3D type-2 per-vertex fog - with no DirectX fog render-state path; the
-  exact weather/intensity -> fog-value selection and the `Max_dust_size`
-  comparison scale are recorded as unknowns rather than invented. No rendering
-  path yet: this is domain behavior consumed later by the C3D raster / modern
-  backend. See evidence `impl.weather-effects`.
+  submodule has the complete `fog_settings` weather/intensity/country selector
+  and the `.hzn` horizon-skip gate. `MAX_DUST_SIZE` is the native 2.0 Q16.16
+  clamp. Thirty-four tests cover particles, render queues, shadows, fog and
+  tuning. Surface and sprite tables remain caller-supplied data; E10 is complete.
+  See evidence `impl.weather-effects`.
 - `cmr-test-support::image_compare` is the differential-verification primitive
   (E11) that closes the recovered format work. The reconstruction order ends
   each subsystem by verifying behavior against a differential fixture; the

@@ -136,8 +136,8 @@ pub mod tuning {
     pub const INITIAL_FOLLOW_SIZE: Fixed16 = Fixed16::from_raw(0x3333);
     /// `Follow_size_growth` (Q16.16), per-frame size growth.
     pub const FOLLOW_SIZE_GROWTH: Fixed16 = Fixed16::from_raw(0x51e);
-    /// `Max_dust_size` (raw tuning value; scale uncertain).
-    pub const MAX_DUST_SIZE: i32 = 2;
+    /// `Max_dust_size` (2.0 Q16.16), used directly by the native clamp.
+    pub const MAX_DUST_SIZE: Fixed16 = Fixed16::from_raw(0x2_0000);
     /// `Draw_dirt_my_viewport`: particle budget for the own-car viewport.
     pub const DRAW_DIRT_MY_VIEWPORT: u32 = 100;
     /// `Draw_dirt_other_viewport`: particle budget for the other viewport.
@@ -695,8 +695,8 @@ pub mod particles {
     }
 
     /// The follow particle's size after `frames` of growth: the spawn size plus
-    /// the per-frame growth, clamped to a caller-supplied maximum (the game's
-    /// `Max_dust_size`, whose scale is uncertain).
+    /// the per-frame growth, clamped to a caller-supplied Q16.16 maximum (the
+    /// default is [`crate::weather::tuning::MAX_DUST_SIZE`]).
     pub fn follow_size(frames: i32, max: Fixed16) -> Fixed16 {
         let grown =
             Fixed16::from_raw(INITIAL_FOLLOW_SIZE.raw() + FOLLOW_SIZE_GROWTH.raw() * frames.max(0));
@@ -792,6 +792,60 @@ pub mod sky {
     pub const FOG_COLOR_BLUISH: u32 = 0x7864_492a;
     /// White fog color.
     pub const FOG_COLOR_WHITE: u32 = 0xffff_ffff;
+
+    /// Complete inputs to the software fog setters.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct FogSettings {
+        pub color: u32,
+        pub density: f32,
+        pub far: Fixed16,
+        pub source_base: u32,
+    }
+
+    /// Select fog from weather type, intensity, country and detail level.
+    /// Weather 5 always uses density 0.8/far 70; weather 3 uses intensity rows
+    /// 0..2, weather 4 rows 1..3. Other cases or low detail disable fog.
+    #[must_use]
+    pub fn fog_settings(
+        weather_type: u32,
+        intensity: u32,
+        country: u8,
+        low_detail: bool,
+    ) -> Option<FogSettings> {
+        let color = match country {
+            3 | 6 => FOG_COLOR_BLUISH,
+            2 | 4 if weather_type == 4 => FOG_COLOR_WHITE,
+            _ if weather_type == 4 => FOG_COLOR_WHITE,
+            _ => FOG_COLOR_GREY,
+        };
+        if weather_type == 5 {
+            return Some(FogSettings {
+                color,
+                density: FOG_DENSITIES[3],
+                far: FOG_FAR_DISTANCES[3],
+                source_base: 0x50_0000,
+            });
+        }
+        if low_detail || !(1..=3).contains(&intensity) {
+            return None;
+        }
+        let row = usize::try_from(intensity - 1).ok()?;
+        match weather_type {
+            3 => Some(FogSettings {
+                color,
+                density: FOG_DENSITIES[row],
+                far: FOG_FAR_DISTANCES[row],
+                source_base: 0x8c_0000,
+            }),
+            4 => Some(FogSettings {
+                color,
+                density: FOG_DENSITIES[row + 1],
+                far: FOG_FAR_DISTANCES[row + 1],
+                source_base: 0x50_0000,
+            }),
+            _ => None,
+        }
+    }
 
     /// The full-screen precipitation overlay tint for wet weather
     /// (`IMAGES\SNOW.BMP`), RGBA `(100,100,100,255)`.
@@ -1276,6 +1330,31 @@ mod tests {
         // 1.0 in Q16.16 -> 1.0f; -2.0 ground plane.
         assert_eq!(fixed_to_float(0x1_0000), 1.0);
         assert_eq!(fixed_to_float(shadow::GROUND_PLANE_Q16), -2.0);
+    }
+
+    #[test]
+    fn fog_selection_covers_weather_intensity_country_and_detail() {
+        use sky::*;
+        let wet = fog_settings(3, 2, 3, false).unwrap();
+        assert_eq!(wet.color, FOG_COLOR_BLUISH);
+        assert_eq!(wet.density, 0.4);
+        assert_eq!(wet.far, FOG_FAR_DISTANCES[1]);
+        assert_eq!(wet.source_base, 0x8c_0000);
+
+        let rain = fog_settings(4, 3, 2, false).unwrap();
+        assert_eq!(rain.color, FOG_COLOR_WHITE);
+        assert_eq!(rain.density, 0.8);
+        assert_eq!(rain.far, FOG_FAR_DISTANCES[3]);
+        assert_eq!(rain.source_base, 0x50_0000);
+
+        let override_settings = fog_settings(5, 0, 6, true).unwrap();
+        assert_eq!(override_settings.color, FOG_COLOR_BLUISH);
+        assert_eq!(override_settings.density, 0.8);
+        assert_eq!(override_settings.far, FOG_FAR_DISTANCES[3]);
+        assert!(fog_settings(4, 0, 0, false).is_none());
+        assert!(fog_settings(3, 2, 0, true).is_none());
+        assert!(fog_settings(2, 2, 0, false).is_none());
+        assert_eq!(tuning::MAX_DUST_SIZE.raw(), 0x2_0000);
     }
 
     #[test]

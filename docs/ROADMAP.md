@@ -1444,6 +1444,10 @@ E09 is complete: `release_car_data_slots` implements the 16-slot non-null
 free-and-clear teardown, while wheel size/scale fields are confirmed as the
 existing radius inputs. One test brings `cmr-core` to 1,405. Car variant tables
 remain runtime data rather than unresolved code.
+E10 is complete: `fog_settings` implements every weather/intensity/country fog
+row and low-detail fallback, and `MAX_DUST_SIZE` is the native 2.0 Q16.16 clamp.
+One focused test brings `cmr-core` to 1,406; 34 weather tests pass. Surface and
+sprite tables remain caller-supplied data.
 
 Exit gate:
 
