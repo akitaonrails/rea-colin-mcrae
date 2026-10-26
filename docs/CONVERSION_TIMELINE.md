@@ -660,7 +660,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T19:44Z | 149h26m | wire-driven-wheel-force-smoothing | `4e926f7` | G02, G03 | Wired each first-loop `+0x540` force into the corresponding `+0x2c8` smoothing input, with recovered branch gates, live scalar derivation and shared engine-load inputs. Added `DrivenWheelUpdateParams` for runtime-only values and one composition test for force integration, ordinary tracking and neutral reset; `cmr-core` now has 1,410 tests. G02 is complete. |
 
-| 2026-10-26T19:50Z | 149h32m | complete-suspension-and-surface-response | _(pending)_ | G03 | Closed G03 through the authenticated eight-lane HPC/initializer composition and complete four-wheel producer. Confirmed cached-speed damping, semi-implicit position and Rebuild-first direction selection are implemented; runtime car/config/surface data and native pointer-fault behavior remain explicit safe-contract boundaries. |
+| 2026-10-26T19:50Z | 149h32m | complete-suspension-and-surface-response | `3f5510a` | G03 | Closed G03 through the authenticated eight-lane HPC/initializer composition and complete four-wheel producer. Confirmed cached-speed damping, semi-implicit position and Rebuild-first direction selection are implemented; runtime car/config/surface data and native pointer-fault behavior remain explicit safe-contract boundaries. |
+
+| 2026-10-26T20:00Z | 149h42m | recover-collision-reset-and-countdown | _(pending)_ | G04 | Implemented the signed out-of-bounds timer and crash reset orientation modes from `FUN_00407690`/`FUN_004115d0`: timeout sound, terminal latch, normal negation, snap/blend, legacy normalization/cross and countdown completion. Two tests bring `cmr-core` to 1,412; reset triggering and unsupported position/time penalties remain explicit. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

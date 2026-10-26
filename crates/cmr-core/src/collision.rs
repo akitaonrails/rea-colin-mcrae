@@ -27,12 +27,10 @@
 //!
 //! Observations: the formulas, constants, and type ids above. Inferences: the
 //! two coexisting damage representations (coarse scalar + fine per-region); the
-//! material/trigger id meanings. Unknowns (not reproduced): the geometry
-//! intersection that sets the contact flags/normals, the orientation re-righting
-//! blend (cross-product/recip-sqrt), the reset *trigger* (`ctrl+0x3ec` is only
-//! read, never set, in the recovered code - no position-snap or time-penalty was
-//! confirmed), the damage->performance mapping, and the `car+0x75c`
-//! out-of-bounds countdown arithmetic.
+//! material/trigger id meanings. The orientation re-righting blend and signed
+//! `car+0x75c` countdown are implemented below. The reset *trigger* remains an
+//! external input (`ctrl+0x3ec` is read by the recovered crash path); no
+//! position-snap, time-penalty, or damage->performance mapping is invented.
 
 use crate::fixed_point::{Fixed16, Vec3};
 
@@ -180,6 +178,138 @@ pub fn surface_switch_index(trigger_type: u8) -> Option<u8> {
     }
 }
 
+/// Result of one signed `car+0x75c` out-of-bounds countdown tick.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutOfBoundsTick {
+    pub timer: i16,
+    pub timeout_sound: bool,
+    pub totalled: bool,
+    pub finish: bool,
+}
+
+fn high_i16(product: i64) -> i16 {
+    (product >> 32) as i16
+}
+
+fn q16_mul(left: i32, right: i32) -> i32 {
+    Fixed16::from_raw(left).mul(Fixed16::from_raw(right)).raw()
+}
+
+/// Advance the signed out-of-bounds timer in `FUN_00407690`. Positive values
+/// count down and wrap to `-1`; negative values count toward the terminal
+/// threshold. The timeout sound is requested only at the exact positive threshold
+/// in game state 5, matching the `FUN_0041d270` call gate.
+#[must_use]
+pub fn advance_out_of_bounds(
+    timer: i16,
+    slow_motion: bool,
+    state_is_five: bool,
+) -> OutOfBoundsTick {
+    if timer > 0 {
+        let scale = if slow_motion { 0x320000 } else { 0x190000 };
+        let timeout = high_i16(scale * 0xc0000).wrapping_sub(high_i16(scale * 0x20000));
+        let next = timer.wrapping_sub(1);
+        return OutOfBoundsTick {
+            timer: if next == 0 { -1 } else { next },
+            timeout_sound: timer == timeout && state_is_five,
+            totalled: false,
+            finish: false,
+        };
+    }
+    if timer == 0 {
+        return OutOfBoundsTick {
+            timer,
+            timeout_sound: false,
+            totalled: false,
+            finish: false,
+        };
+    }
+    let scale = if slow_motion {
+        0x320000_i64
+    } else {
+        0x190000_i64
+    };
+    let terminal = high_i16(scale * 0x30000).wrapping_add(high_i16(scale * 0x60000));
+    let timer = timer.wrapping_sub(1);
+    let totalled = timer < terminal.wrapping_neg();
+    OutOfBoundsTick {
+        timer,
+        timeout_sound: false,
+        totalled,
+        finish: totalled,
+    }
+}
+
+/// Mutable control/basis state consumed by the crash reset path of
+/// `FUN_004115d0`. Row names preserve their native offsets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CrashResetInput {
+    pub alternate: bool,
+    pub countdown: u8,
+    pub row_258: [i32; 3],
+    pub row_264: [i32; 3],
+    pub row_270: [i32; 3],
+    pub normal_324: [i32; 3],
+}
+
+/// Recovered reorientation and reset-completion effects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CrashResetOutcome {
+    pub row_258: [i32; 3],
+    pub row_264: [i32; 3],
+    pub row_270: [i32; 3],
+    pub countdown: u8,
+    pub active: bool,
+    pub totalled: bool,
+}
+
+/// Apply the reset-triggered orientation blend and countdown. This does not
+/// invent a trigger producer: `ctrl+0x3ec` remains an external recovered input.
+#[must_use]
+pub fn apply_crash_reset(input: CrashResetInput) -> CrashResetOutcome {
+    use crate::compiled_car_initializer::normalize_compiled_lane_vector;
+    use crate::drivetrain::{cross_q16, project_and_normalize};
+
+    let (target, other, normal) = if input.alternate {
+        (
+            input.row_264,
+            input.row_270,
+            input.normal_324.map(i32::wrapping_neg),
+        )
+    } else {
+        (input.row_270, input.row_258, input.normal_324)
+    };
+    let delta = std::array::from_fn(|index| normal[index].wrapping_sub(target[index]));
+    let distance = crate::legacy_math::sqrt_q16(delta.iter().fold(0_i32, |sum, value| {
+        sum.wrapping_add(q16_mul(*value, *value))
+    }) as u32) as i32;
+    let target = if distance < 0x28f {
+        normal
+    } else {
+        let direction = normalize_compiled_lane_vector(delta);
+        normalize_compiled_lane_vector(std::array::from_fn(|index| {
+            target[index].wrapping_add(q16_mul(direction[index], 0x28f))
+        }))
+    };
+    let other = project_and_normalize(other, target);
+    let cross = normalize_compiled_lane_vector(cross_q16(target, other));
+    let (row_258, row_264, row_270) = if input.alternate {
+        (cross, target, other)
+    } else {
+        (other, cross, target)
+    };
+    let countdown = input.countdown.wrapping_sub(1);
+    let active = countdown != 0;
+    CrashResetOutcome {
+        row_258,
+        row_264,
+        row_270,
+        countdown,
+        active,
+        totalled: !active,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +371,54 @@ mod tests {
         assert_eq!(next_damage_level(Fixed16::from_raw(0x4000), 1), 1);
         // Level 2 is the cap.
         assert_eq!(next_damage_level(Fixed16::ONE, 2), 2);
+    }
+
+    #[test]
+    fn out_of_bounds_countdown_preserves_signed_thresholds() {
+        assert_eq!(
+            advance_out_of_bounds(250, false, true),
+            OutOfBoundsTick {
+                timer: 249,
+                timeout_sound: true,
+                totalled: false,
+                finish: false,
+            }
+        );
+        assert_eq!(advance_out_of_bounds(1, false, false).timer, -1);
+        assert_eq!(advance_out_of_bounds(0, false, false).timer, 0);
+        assert!(!advance_out_of_bounds(-224, false, false).totalled);
+        let expired = advance_out_of_bounds(-225, false, false);
+        assert!(expired.totalled && expired.finish);
+        assert!(advance_out_of_bounds(-450, true, false).totalled);
+    }
+
+    #[test]
+    fn crash_reset_blends_rows_and_latches_only_when_countdown_expires() {
+        let input = CrashResetInput {
+            alternate: false,
+            countdown: 2,
+            row_258: [0x10000, 0, 0],
+            row_264: [0, 0, 0x10000],
+            row_270: [0, 0x10000, 0],
+            normal_324: [0, 0x10000, 0],
+        };
+        let outcome = apply_crash_reset(input);
+        assert_eq!(outcome.row_258, [65522, 0, 0]);
+        assert_eq!(outcome.row_264, [0, 0, -65535]);
+        assert_eq!(outcome.row_270, input.row_270);
+        assert_eq!(outcome.countdown, 1);
+        assert!(outcome.active && !outcome.totalled);
+
+        let outcome = apply_crash_reset(CrashResetInput {
+            alternate: true,
+            countdown: 1,
+            normal_324: [0, 0, -0x10000],
+            ..input
+        });
+        assert_eq!(outcome.row_258, [-65535, 0, 0]);
+        assert_eq!(outcome.row_264, input.row_264);
+        assert_eq!(outcome.row_270, [0, 65522, 0]);
+        assert!(!outcome.active && outcome.totalled);
     }
 
     #[test]

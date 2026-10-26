@@ -2399,6 +2399,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- `cmr-core::collision` now covers the signed out-of-bounds timer and crash
+  reset orientation path: positive countdown/timeout sound, negative terminal
+  latch, both basis-row modes, snap/blend, normalization and totalled completion.
+  Contact geometry comes from the recovered HPC provider. Reset triggering is a
+  caller input; position-snap, time penalties, and damage-performance mapping
+  are not inferred.
 - Suspension/surface recovery is composed end to end: authenticated HPC data
   feeds the complete eight-lane initializer, and the four-wheel producer shares
   its force/contact results with geometric postprocess, translation, angular

@@ -1576,6 +1576,11 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+G04 now includes the signed out-of-bounds countdown and the crash reset's two
+orientation modes, not just impact/damage arithmetic. The reset trigger remains
+an explicit input, and no unsupported position-snap, time penalty, or
+damage-performance mapping is claimed.
+
 G03 is complete at the safe portable-contract boundary. The authenticated HPC
 provider runs the complete compiled-initializer spine, and the four-wheel
 producer includes contact/force/postprocess, translation, angular and smoothing
