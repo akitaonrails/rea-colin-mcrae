@@ -1576,6 +1576,12 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+The build and verification infrastructure is complete. Linux reviewed-import
+and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
+covers portable/cross-target/full-workspace jobs. Native Windows and Actions
+provisioning remain explicitly unrun. Comparison/deviation matrices and the
+README describe all 118 completed or explicitly unsupported roadmap items.
+
 A10 is bounded to the reviewed official-EU/installed-EU profile. Other editions
 and language packs are explicitly unsupported; official-US and xdelta artifacts
 remain comparison variants, not proof of compatibility.

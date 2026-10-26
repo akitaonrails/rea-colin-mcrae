@@ -11,69 +11,25 @@ the source version and prepare a local, ignored `runtime-data/` tree.
 
 ## Current status
 
-Milestone 0 (provenance and reconstruction plan) is complete. Milestone 1 has
-started with bounded parsers for the observed asset storage and indexed startup
-art, strict asset import/runtime loading, and recovered startup-art selection
-and surface contracts. A backend-neutral indexed display contract now preserves
-the recovered device, surface, shared-palette, and front/back startup-copy
-ordering. A pure window-loop reducer also captures activation pause/restore,
-message dispatch, and steady-frame presentation decisions for future Win32 and
-SDL backends. No gameplay subsystem is yet claimed compatible.
+All 118 reconstruction roadmap items are now complete or explicitly bounded
+with evidence. The supported baseline is the reviewed official-EU executable
+and installed EU-derived assets. Other editions and locales remain unsupported
+until separately validated.
 
-`cmr-video` currently supplies a deterministic in-memory indexed framebuffer
-used as the first executable backend oracle. It supports startup, persistent
-font/root resources, recovered aligned BMP surfaces, bounded root C3D drawing,
-palette commit, and complete headless root-frame capture. Native window, input,
-clock, and audio hosts remain separate work.
+The workspace includes the fixed-step game/session orchestration, four-wheel
+physics and surface recovery, collision/timing, championship progression,
+menus and persistence, indexed C3D rendering with a wgpu backend and software
+oracle, SDL window/input/audio hosts, PCM music and portable video contracts,
+DirectPlay session/player records, and opt-in direct TCP transport. Native
+DirectX/QMixer/DirectInput/DirectPlay DLLs are not required by the portable
+build.
 
-The first frontend foundation also includes bounded legacy configuration and
-localization models plus deterministic keyboard/joystick input rules. These
-now extend through the recovered root-screen state machine, exact menu visual
-and animation transcripts, verified root-bitmap loading, timing plans, and
-bounded FON/text layout plus persistent keyed-glyph resources. A production
-software session now assembles the verified user import and renders repeated
-complete root frames; an opt-in reviewed-corpus smoke test covers two frames
-and teardown. The first post-root championship setup state now also preserves
-car/gear filtering, navigation, preview identities, and the original commit-on-
-Escape behavior as a tested pure model. Its production asset boundary now
-admits all 14 car objects and palettes plus 11 deduplicated manufacturer logos
-from the caller-selected verified import; an opt-in reviewed-corpus test covers
-the complete set. Logo surfaces now have a transactional shared-store upload
-path, and an exact backend-neutral setup-frame plan covers title/rows,
-selection geometry, active preview ordering, and paired palette-cache behavior.
-An identity-neutral checked bitmap executor now supplies the shared safe blit
-boundary needed by selection, info-box, logo, and later frontend resources.
-The exact R_INFO bitmap, 15 Chequered preview frames, and FCHE palette now have
-a verified, transactional persistent asset boundary, while a generic prepared
-text path validates complete font work before issuing frame effects. Available
-setup text and 2D bitmap commands now execute in their recovered order after
-whole-frame preflight. The selected car's transform, actor scene, visibility
-latches, logical palette request/commit, and final presentation are integrated
-at the terminal frame boundary; info formatting, the animation timer, and
-alternate Type-2 render profiles remain explicit downstream work.
-The C3D resource-preparation kernel now has explicit domain and mode policies,
-so championship mode 8 can append resources without being forced through the
-root menu's mode-2 slot types. A shared frontend-session arena now prepares the
-14 cars first as the exact 55-resource prefix, then the six root objects in the
-same provenance domain. Car actor traversal and backend-neutral Type-2 scene
-submission are integrated. The optional word-5 fog mutation and actor-RGB
-word-4 override now have pure retained-state contracts. The software backend
-accepts all four fog/actor-RGB combinations for the unified-indexed
-COPY/no-blend profile and produces tested car color/depth pixels without RGB
-quantization. End-to-end software tests carry explicit per-car actor tables to
-visible submission, render the resulting indices, commit a discriminating
-group-4 palette, and capture presentation under that palette.
-A callback-scoped software championship session now owns all 14 car
-topology/runtime pairs, the shared binding catalog, explicit raster-profile
-provenance, compact palette policy, and retained frame state across car and
-Next previews, then releases every uploaded source. Static recovery shows that
-the original device branch, alpha, word-5 mutation, and actor-RGB gates were
-independently retained rather than selected by championship entry. Recovering
-and implementing the alternate split/modulate/linear/alpha raster profiles
-remains the next C3D milestone.
-These are platform-neutral compatibility contracts; registry, host clock/input,
-native window, audio, setup-screen pixel execution, later frontend screens, and
-gameplay integrations are not yet complete.
+Unsupported boundaries are explicit: native driver-owned padding and exact
+font/filter/alpha output, alternate type-1 lighting, a concrete video decoder
+and FFB device, other section formats/editions, full multi-peer synchronization,
+and native Windows or GitHub Actions execution not run locally. See
+[DECOMP_MAP.md](docs/DECOMP_MAP.md), [COMPARISON.md](docs/COMPARISON.md), and
+[DEVIATIONS.md](docs/DEVIATIONS.md) for the evidence and current limits.
 
 Known artifacts from the initial local installation:
 

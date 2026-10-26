@@ -2399,6 +2399,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Verification covers source-owned fixtures, reviewed-import and offscreen SDL
+  runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
+  cross-target and full-workspace jobs; native Windows and Actions provisioning
+  are unrun. Comparison/deviation matrices and the README now reflect the full
+  118-item completed/bounded roadmap.
 - Edition support is limited to the reviewed official-EU/installed-EU profile.
   Other editions and locales are unsupported until separately evidenced;
   official-US and xdelta files are comparison-only artifacts.

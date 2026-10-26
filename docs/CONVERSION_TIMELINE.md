@@ -686,7 +686,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T21:50Z | 151h32m | close-stage-and-championship-boundaries | `febec7a` | E08, E16 | Closed stage sibling/scene presentation and championship transform/visibility/mutation/setup sessions. The other 12 section formats and native device/font/filter/alpha details remain explicitly unsupported. |
 
-| 2026-10-26T22:00Z | 151h42m | bound-other-edition-support | _(pending)_ | A10 | Limited supported scope to the reviewed official-EU/installed-EU profile. Other editions/locales are explicitly unsupported; official-US and xdelta artifacts remain comparison-only. |
+| 2026-10-26T22:00Z | 151h42m | bound-other-edition-support | `a775c0d` | A10 | Limited supported scope to the reviewed official-EU/installed-EU profile. Other editions/locales are explicitly unsupported; official-US and xdelta artifacts remain comparison-only. |
+
+| 2026-10-26T22:10Z | 151h52m | complete-build-and-verification-infrastructure | _(pending)_ | I01, I03, I04, I05, I07, I12, I13 | Verified reviewed-import/offscreen SDL on Linux and `cargo check --target x86_64-pc-windows-gnu` for the portable slice. Updated CI/comparison/deviation matrices and README. All 118 roadmap items are complete or explicitly unsupported; native Windows and Actions provisioning remain unrun. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
