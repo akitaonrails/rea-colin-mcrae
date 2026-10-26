@@ -2102,6 +2102,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   clamp. Thirty-four tests cover particles, render queues, shadows, fog and
   tuning. Surface and sprite tables remain caller-supplied data; E10 is complete.
   See evidence `impl.weather-effects`.
+- B02's launcher lifecycle is recovered: video teardown, configured `Rally.exe`
+  path construction, `CreateProcessA`, failure reporting and quit. Successful
+  process execution remains outside static analysis.
 - E02's entry semantics are complete: vertex/face fields and RGBA order are
   consumer-proven, `field_22` is not a rasterizer input, and E03 resolves binding.
 - E03's material variants are complete: indexed truecolor rows preserve

@@ -1471,6 +1471,9 @@ covered by E03; no new duplicate implementation is needed.
 B03 is complete: all 16 reachable QMixer imports have recovered contracts and a
 software/SDL playback path. The remaining 46 exports are explicitly unreferenced.
 Unknown units stay verbatim instead of becoming invented conversion rules.
+B02 is complete: `KillVideoAndStartGame` releases video interfaces, constructs
+the configured `Rally.exe` path, calls `CreateProcessA`, and reports failure then
+quits. Successful process execution remains outside the static evidence boundary.
 
 Exit gate:
 
