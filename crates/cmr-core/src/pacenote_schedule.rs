@@ -38,9 +38,9 @@
 //! trigger-volume crossing, de-duplicated per player by a fire-once bit; drain
 //! gated only by channel-free status) with **no stage-clock or distance
 //! sampling** - the look-ahead is authored into the track's trigger-volume
-//! placement. Unknowns (not reproduced): the 20-byte display-record field
-//! layout, the exact semantics of the `DAT_00550c08`/`DAT_00550e90` mode gates,
-//! and the depth-counter behaviour past 2 in the full-eviction branch.
+//! placement. The display-record layout and over-depth FIFO behavior are
+//! recovered. Unknown: the exact semantics of the `DAT_00550c08`/`DAT_00550e90`
+//! mode gates.
 
 use crate::audio_pacenote::{PACENOTE_EVENT_RING_SIZE, PACENOTE_WORD_FIELDS};
 
@@ -77,13 +77,11 @@ pub fn swap_modifier(id: u32, swap: bool) -> u32 {
     (id & !(MODIFIER_MASK << MODIFIER_SHIFT)) | (swapped << MODIFIER_SHIFT)
 }
 
-/// Whether the audio ring should receive a submitted note, reproducing the
-/// `FUN_00444380` routing gate `DAT_00550c08 == 1 && (DAT_00550e90 == 1 ||
-/// track == 0)`: a single shared speech channel means only the owning mode, and
-/// only track 0 unless all cars are audible, reaches the audio ring; otherwise
-/// the note is visual-only.
-pub fn routes_to_audio(audio_mode_active: bool, all_cars_audible: bool, track: u32) -> bool {
-    audio_mode_active && (all_cars_audible || track == 0)
+/// Whether the audio ring should receive a submitted note: one replay car and
+/// either one active player or track 0 (`DAT_00550c08 == 1 &&
+/// (DAT_00550e90 == 1 || track == 0)`).
+pub fn routes_to_audio(replay_car_count: u32, active_player_count: u32, track: u32) -> bool {
+    replay_car_count == 1 && (active_player_count == 1 || track == 0)
 }
 
 /// Whether the next ring entry carries a word/corner field, so the sequencer
@@ -107,6 +105,108 @@ pub fn display_record_index(value: i32, track: usize) -> Option<usize> {
         Some(value as usize + track * DISPLAY_RECORDS_PER_TRACK)
     } else {
         None
+    }
+}
+
+/// One 20-byte display-table record: TTL, three padding bytes, two RGBA
+/// colors, x position and signed y position.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CodriverDisplayRecord {
+    pub ttl: u8,
+    pub padding: [u8; 3],
+    pub colors: [[u8; 4]; 2],
+    pub x: u16,
+    pub y: i16,
+    pub tail: [u8; 4],
+}
+
+/// Encode the exact `0x14`-byte display-record layout.
+#[must_use]
+pub fn encode_display_record(record: &CodriverDisplayRecord) -> [u8; DISPLAY_RECORD_STRIDE] {
+    let mut bytes = [0; DISPLAY_RECORD_STRIDE];
+    bytes[0] = record.ttl;
+    bytes[1..4].copy_from_slice(&record.padding);
+    for (index, color) in record.colors.into_iter().enumerate() {
+        bytes[4 + index * 4..8 + index * 4].copy_from_slice(&color);
+    }
+    bytes[12..14].copy_from_slice(&record.x.to_le_bytes());
+    bytes[14..16].copy_from_slice(&record.y.to_le_bytes());
+    bytes[16..20].copy_from_slice(&record.tail);
+    bytes
+}
+
+/// Decode a display record, rejecting truncated input.
+#[must_use]
+pub fn decode_display_record(bytes: &[u8]) -> Option<CodriverDisplayRecord> {
+    if bytes.len() != DISPLAY_RECORD_STRIDE {
+        return None;
+    }
+    Some(CodriverDisplayRecord {
+        ttl: bytes[0],
+        padding: bytes[1..4].try_into().ok()?,
+        colors: [bytes[4..8].try_into().ok()?, bytes[8..12].try_into().ok()?],
+        x: u16::from_le_bytes(bytes[12..14].try_into().ok()?),
+        y: i16::from_le_bytes(bytes[14..16].try_into().ok()?),
+        tail: bytes[16..20].try_into().ok()?,
+    })
+}
+
+/// Depth-2 visual FIFO used by the two interleaved co-driver tracks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VisualFifo {
+    pub notes: [i32; 2],
+    pub depth: u8,
+}
+
+impl Default for VisualFifo {
+    fn default() -> Self {
+        Self {
+            notes: [0xff; 2],
+            depth: 0,
+        }
+    }
+}
+
+impl VisualFifo {
+    /// Evict the current note's display record and apply native depth handling.
+    pub fn evict(&mut self, record: &mut CodriverDisplayRecord) {
+        if self.depth == 0 {
+            return;
+        }
+        record.ttl = 0;
+        if self.depth == 2 {
+            self.notes[0] = self.notes[1];
+            self.depth = 1;
+            self.notes[1] = 0xff;
+        } else {
+            self.notes[0] = 0xff;
+            self.depth -= 1;
+        }
+    }
+
+    /// Push a note, rotating out the oldest entry when already full.
+    pub fn push(&mut self, note: i32, record: &mut CodriverDisplayRecord) {
+        if self.depth < 2 {
+            self.notes[usize::from(self.depth)] = note;
+            self.depth += 1;
+            return;
+        }
+        let next = self.notes[1];
+        self.evict(record);
+        self.depth = self.depth.wrapping_add(1);
+        self.notes[0] = next;
+        self.notes[1] = note;
+    }
+
+    /// Add a modifier's row bump, preserving the native over-depth counter.
+    pub fn accumulate(&mut self, modifier: u32) {
+        if self.depth < 2 {
+            let index = usize::from(self.depth);
+            self.notes[index] = self.notes[index].wrapping_add(modifier_row_bump(modifier));
+            self.depth += 1;
+        } else {
+            self.notes[1] = self.notes[1].wrapping_add(modifier_row_bump(modifier));
+        }
     }
 }
 
@@ -234,13 +334,11 @@ mod tests {
 
     #[test]
     fn audio_routing_honours_the_mode_gate() {
-        // Active mode, all cars audible: any track reaches audio.
-        assert!(routes_to_audio(true, true, 1));
-        // Active mode, only car 0 audible.
-        assert!(routes_to_audio(true, false, 0));
-        assert!(!routes_to_audio(true, false, 1));
-        // Inactive mode: never audio (visual only).
-        assert!(!routes_to_audio(false, true, 0));
+        assert!(routes_to_audio(1, 1, 1));
+        assert!(routes_to_audio(1, 2, 0));
+        assert!(!routes_to_audio(1, 2, 1));
+        assert!(!routes_to_audio(2, 1, 0));
+        assert!(!routes_to_audio(0, 1, 0));
     }
 
     #[test]
@@ -265,6 +363,58 @@ mod tests {
         assert_eq!(display_record_index(5, 1), Some(5 + 0x12));
         assert_eq!(display_record_index(0x12, 0), None);
         assert_eq!(display_record_index(-1, 0), None);
+    }
+
+    #[test]
+    fn display_record_codec_preserves_every_field_and_rejects_truncation() {
+        let record = CodriverDisplayRecord {
+            ttl: 12,
+            padding: [1, 2, 3],
+            colors: [[0xc0, 0x40, 0x40, 0x40], [0x80, 0x40, 0x40, 0x40]],
+            x: 0x120,
+            y: -2,
+            tail: [4, 5, 6, 7],
+        };
+        let bytes = encode_display_record(&record);
+        assert_eq!(bytes[0], 12);
+        assert_eq!(&bytes[1..4], &[1, 2, 3]);
+        assert_eq!(&bytes[4..8], &[0xc0, 0x40, 0x40, 0x40]);
+        assert_eq!(&bytes[8..12], &[0x80, 0x40, 0x40, 0x40]);
+        assert_eq!(&bytes[12..14], &0x120_u16.to_le_bytes());
+        assert_eq!(&bytes[14..16], &(-2_i16).to_le_bytes());
+        assert_eq!(&bytes[16..20], &[4, 5, 6, 7]);
+        assert_eq!(decode_display_record(&bytes), Some(record));
+        assert_eq!(decode_display_record(&bytes[..19]), None);
+    }
+
+    #[test]
+    fn visual_fifo_rotates_accumulates_and_preserves_over_depth_counter() {
+        let mut record = CodriverDisplayRecord {
+            ttl: 12,
+            ..CodriverDisplayRecord::default()
+        };
+        let mut fifo = VisualFifo::default();
+        fifo.accumulate(2);
+        assert_eq!(fifo.notes, [0x108, 0xff]);
+        assert_eq!(fifo.depth, 1);
+        fifo.push(4, &mut record);
+        assert_eq!(fifo.notes, [0x108, 4]);
+        assert_eq!(fifo.depth, 2);
+        fifo.accumulate(2);
+        assert_eq!(fifo.notes, [0x108, 13]);
+        assert_eq!(fifo.depth, 2);
+        fifo.push(7, &mut record);
+        assert_eq!(fifo.notes, [13, 7]);
+        assert_eq!(fifo.depth, 2);
+        assert_eq!(record.ttl, 0);
+        fifo.depth = 3;
+        fifo.notes = [1, 2];
+        fifo.push(9, &mut record);
+        assert_eq!(fifo.notes, [2, 9]);
+        assert_eq!(fifo.depth, 3);
+        fifo.accumulate(3);
+        assert_eq!(fifo.notes, [2, 27]);
+        assert_eq!(fifo.depth, 3);
     }
 
     #[test]

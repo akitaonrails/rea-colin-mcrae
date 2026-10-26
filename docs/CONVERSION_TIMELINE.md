@@ -594,7 +594,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T16:49Z | 146h31m | recover-replay-region-a-layout | `d9d5e74` | G08 | Pinned Region A into car-type, control, physics, 500 bounded objects and trailing state/timer fields with checked offsets. One layout test brings `cmr-core` to 1,382. `.SSR` writing is explicitly unsupported by resolved static callers, with indirect-call caveats; network framing remains. |
 
-| 2026-10-26T16:53Z | 146h35m | complete-replay-format | _(pending)_ | G08 | Recovered network replay's shared four-byte records and exact duplicate-suppression masks. One test brings `cmr-core` to 1,383. G08 is complete: Region A and records implemented, `.SSR` writing explicitly unsupported, transport envelopes assigned to networking. |
+| 2026-10-26T16:53Z | 146h35m | complete-replay-format | `d70ea7d` | G08 | Recovered network replay's shared four-byte records and exact duplicate-suppression masks. One test brings `cmr-core` to 1,383. G08 is complete: Region A and records implemented, `.SSR` writing explicitly unsupported, transport envelopes assigned to networking. |
+
+| 2026-10-26T17:06Z | 146h48m | complete-codriver-scheduling | _(pending)_ | G07 | Recovered the 20-byte display record and depth-2 visual FIFO, including rotation, TTL eviction, modifier accumulation and over-depth behavior. Audio routing now uses replay-car and active-player counts. Two display/FIFO tests bring `cmr-core` to 1,385; G07 is complete. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

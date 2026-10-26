@@ -1893,7 +1893,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   suppression, completing G08. Transport envelopes remain networking work. See
   evidence `rea.official-eu.sim-replay`, `rea.official-eu.replay-control-record`,
   `rea.official-eu.replay-region-a-layout`, and
-  `rea.official-eu.network-replay-records`.
+  `rea.official-eu.network-replay-records`. Co-driver display records now round-trip
+  all 20 bytes, the visual FIFO implements rotation, TTL eviction and wrapping
+  modifier accumulation, and audio routing uses native replay-car/active-player
+  counts, completing G07.
 - `cmr-core::race_state` composes the recovered fixed-step pieces (`fixed_point`
   BAM trig + `Vec3`, `vehicle_dynamics` lateral-grip/net-accel/drag/integration,
   and the `stage_timing` stage clock) into a deterministic offline race-state

@@ -1396,7 +1396,10 @@ explicitly unsupported by the resolved static callers (save-slot/config only),
 with indirect-call coverage caveats. Network framing remains. Network replay uses
 the same four-byte records with native duplicate suppression; one mask test brings
 `cmr-core` to 1,383. G08 is complete, with `.SSR` writing explicitly unsupported
-and transport packet envelopes assigned to networking.
+and transport packet envelopes assigned to networking. G07 is complete: the
+20-byte display record round-trips, the visual FIFO rotates/evicts/accumulates
+with native depth behavior, and audio routing uses replay-car and active-player
+counts. Two display/FIFO tests plus count-gate coverage bring `cmr-core` to 1,385.
 
 Exit gate:
 
