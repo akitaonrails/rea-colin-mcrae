@@ -1529,6 +1529,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   `derive_gear_ratio_and_aux_from_families` composes them. One end-to-end test
   brings `cmr-core` to 1,311. The per-surface capability tables remain to be
   sourced.
+  G03 per-surface capability enable counters: `FUN_00424a40` marks enabled
+  surface ids, then accumulates each enabled id's per-surface capability byte
+  into the corresponding enable counter (16 counters over 120 surface ids,
+  duplicate ids enabled once). `accumulate_effect_enables` reproduces it with
+  a safe-contract out-of-range rejection. Two focused tests bring `cmr-core`
+  to 1,313. The per-surface capability tables are game data (not vendored).
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

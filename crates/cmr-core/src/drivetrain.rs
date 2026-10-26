@@ -772,6 +772,41 @@ pub const fn default_car_type_constants() -> CarTypeDefaults {
     }
 }
 
+/// The number of per-surface capability tables and enable counters.
+pub const SURFACE_CAPABILITY_COUNT: usize = 16;
+/// The number of surface ids covered by the tables.
+pub const SURFACE_ID_COUNT: usize = 120;
+
+/// Reconstructs `FUN_00424a40`'s per-effect enable-counter accumulation.
+///
+/// Surface ids are first marked enabled, then each enabled id adds its
+/// per-surface capability byte to the corresponding counter. Duplicate ids are
+/// enabled only once. Returns `None` if any id is outside the table's 120-id
+/// range (a safe-contract rejection, not observed recovery behavior).
+#[must_use]
+pub fn accumulate_effect_enables(
+    surface_ids: &[u8],
+    tables: &[[u8; SURFACE_ID_COUNT]; SURFACE_CAPABILITY_COUNT],
+) -> Option<[u32; SURFACE_CAPABILITY_COUNT]> {
+    let mut enabled = [false; SURFACE_ID_COUNT];
+    for &id in surface_ids {
+        let index = usize::from(id);
+        if index >= SURFACE_ID_COUNT {
+            return None;
+        }
+        enabled[index] = true;
+    }
+    let mut counters = [0u32; SURFACE_CAPABILITY_COUNT];
+    for (table_index, table) in tables.iter().enumerate() {
+        for (id, &is_enabled) in enabled.iter().enumerate() {
+            if is_enabled {
+                counters[table_index] = counters[table_index].wrapping_add(u32::from(table[id]));
+            }
+        }
+    }
+    Some(counters)
+}
+
 /// The gear ratio derivation of `FUN_00420740`:
 /// `ratio = qmul(original_at_0x40, DAT_0050c860)`.
 #[must_use]
@@ -1819,6 +1854,34 @@ mod tests {
         assert_eq!(reciprocal_or_minus_one(0x10000), 0x10000);
         assert_eq!(reciprocal_or_minus_one(4), 0x4000_0000);
         assert_eq!(reciprocal_or_minus_one(2), i32::MIN);
+    }
+
+    #[test]
+    fn effect_enables_accumulate_per_surface_with_dedup_and_bounds() {
+        let tables: [[u8; SURFACE_ID_COUNT]; SURFACE_CAPABILITY_COUNT] =
+            std::array::from_fn(|table| std::array::from_fn(|id| (table + id) as u8));
+        // Empty input yields all-zero counters.
+        assert_eq!(
+            accumulate_effect_enables(&[], &tables),
+            Some([0; SURFACE_CAPABILITY_COUNT])
+        );
+        // One enabled id adds its byte to every counter.
+        let counters = accumulate_effect_enables(&[3], &tables).unwrap();
+        for (index, &counter) in counters.iter().enumerate() {
+            assert_eq!(counter, (index + 3) as u32);
+        }
+        // Duplicate ids are enabled only once, and out-of-range ids are rejected.
+        assert_eq!(accumulate_effect_enables(&[3, 3, 120], &tables), None);
+    }
+
+    #[test]
+    fn effect_enables_add_two_enabled_ids_once_each() {
+        let tables: [[u8; SURFACE_ID_COUNT]; SURFACE_CAPABILITY_COUNT] =
+            std::array::from_fn(|table| std::array::from_fn(|id| (table + id) as u8));
+        let counters = accumulate_effect_enables(&[1, 3, 1], &tables).unwrap();
+        for (index, &counter) in counters.iter().enumerate() {
+            assert_eq!(counter, (index + 1 + index + 3) as u32);
+        }
     }
 
     #[test]
