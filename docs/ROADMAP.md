@@ -1311,8 +1311,11 @@ are explicit harness inputs, not a trajectory-equivalence claim. The complete pr
 now also runs `apply_contact_vector_updates` after lane postprocessing and before
 translation/moment integration, replacing all eight input vectors from the current
 contact basis and preserving skipped destinations in `FourWheelState`. The composition
-test compares against the independent kernel; scalar/projection-axis provenance remains
-explicit.
+test compares against the independent kernel. The update projection axis now comes
+from the compiled AK11 normal/basis, `+0x528` is count-scaled `+0x48`, the extra vector
+is reset, wheel enables come from contact flags, and limits/thresholds come from the
+compiled control-clear loop. Only the global update gate and non-wheel enable flags
+remain explicit in this path.
 
 Exit gate:
 

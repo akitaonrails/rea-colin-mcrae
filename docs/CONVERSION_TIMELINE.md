@@ -544,7 +544,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T13:11Z | 142h53m | connect-authenticated-four-wheel-session | `e5d619c` | G09 | `SessionWheelInputs` now builds complete wheel parameters with reviewed coefficients, compiled gear ratios, scales and offsets. Added the fallible headless four-wheel FSM driver. Synthetic authenticated finish/replay and real-store opt-in coverage pass; `cmr-app` has 29 library tests. Scalar/start tuning remains explicit harness input. |
 
-| 2026-10-26T13:22Z | 143h04m | integrate-eight-contact-updates | _(pending)_ | G03 | Inserted all eight `FUN_0040d400` updates after lane postprocessing and before translation/moment integration. Current contact-basis vectors replace the update inputs each tick and persistent skipped destinations live in `FourWheelState`. Composition compares against the independent kernel; vertical replay and authenticated session tests pass. Update scalar/projection-axis provenance remains explicit. |
+| 2026-10-26T13:22Z | 143h04m | integrate-eight-contact-updates | `1fd4dec` | G03 | Inserted all eight `FUN_0040d400` updates after lane postprocessing and before translation/moment integration. Current contact-basis vectors replace the update inputs each tick and persistent skipped destinations live in `FourWheelState`. Composition compares against the independent kernel; vertical replay and authenticated session tests pass. Update scalar/projection-axis provenance remains explicit. |
+
+| 2026-10-26T13:34Z | 143h16m | produce-contact-update-inputs | _(pending)_ | G03 | Sourced the update projection axis from compiled AK11/basis output, `+0x528` from contact-count scaling, extra reset and wheel enables from current state, and limits/thresholds from the compiled control-clear loop. Exact mapping, kernel, vertical replay and authenticated session tests pass. Global gate and non-wheel enables remain explicit. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

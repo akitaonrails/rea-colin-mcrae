@@ -1971,6 +1971,10 @@ impl SessionWheelInputs {
         }
         self.populate_four_wheel(&mut wheel, surface_indices)?;
         populate_compiled_contact_offsets(&mut wheel, half_state);
+        cmr_core::race_state::populate_compiled_contact_update_inputs(
+            &mut wheel,
+            &cmr_core::compiled_car_initializer::derive_compiled_control_clear_loop(),
+        );
         Ok(wheel)
     }
 }

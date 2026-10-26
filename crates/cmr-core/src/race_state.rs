@@ -20,7 +20,10 @@
 //!
 //! See evidence `impl.sim-race-state-trace`.
 
-use crate::compiled_car_initializer::{CompiledControlFamilies, CompiledHalfSignState};
+use crate::compiled_car_initializer::{
+    CompiledControlClearLoop, CompiledControlFamilies, CompiledHalfSignState,
+    CompiledPostLaneBasisEffects,
+};
 use crate::drivetrain::{
     FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
     SecondWheelInputs, derive_force_pass_scales, derive_gear_ratio, equalize_wheel_speeds,
@@ -33,8 +36,8 @@ use crate::vehicle_dynamics::{
     GeometricPostprocessError, GeometricPostprocessLane, LookupDependentCandidateError,
     SurfaceCoefficientIndexError, TranslationStepInput, apply_angular_orientation_pipeline,
     apply_contact_vector_updates, apply_geometric_lane_postprocess, apply_lateral_grip,
-    apply_translation_step, build_contact_basis_vectors, drag, net_accel, sum_contact_moments,
-    sum_translation_lane_forces, transform_contact_force,
+    apply_translation_step, build_contact_basis_vectors, contact_count_scale, drag, net_accel,
+    sum_contact_moments, sum_translation_lane_forces, transform_contact_force,
 };
 use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
 
@@ -238,6 +241,18 @@ pub fn populate_compiled_contact_offsets(
     });
 }
 
+/// Populate each update's limit and threshold from the interleaved compiled
+/// control-clear words at `+0x31c..+0x358`.
+pub fn populate_compiled_contact_update_inputs(
+    wheel: &mut FourWheelIterationParams<'_>,
+    state: &CompiledControlClearLoop,
+) {
+    for (index, input) in wheel.contact_update_inputs.iter_mut().enumerate() {
+        input.limit = Fixed16::from_raw(state.words[index * 2]);
+        input.threshold = Fixed16::from_raw(state.words[index * 2 + 1]);
+    }
+}
+
 /// Transform current postprocessed wheel forces through the pre-update basis and
 /// accumulate their contact moments in native lane order.
 #[must_use]
@@ -293,6 +308,8 @@ impl From<GeometricPostprocessError> for WheelPostprocessError {
 pub struct MotionState {
     /// The three axes published through physics `+0x2a0`.
     pub basis: [Vec3; 3],
+    /// The distinct AK11 projection axis at `+0x324/+0x328/+0x32c`.
+    pub projection_axis: Vec3,
     /// Primary angular velocity at `+0xf0/+0xf4/+0xf8`.
     pub angular_velocity: Vec3,
     /// Persistent prior moment at `+0x3d8/+0x3dc/+0x3e0`.
@@ -310,6 +327,7 @@ impl MotionState {
                 Vec3::new(Fixed16::ZERO, Fixed16::ONE.neg(), Fixed16::ZERO),
                 Vec3::new(Fixed16::ZERO, Fixed16::ZERO, Fixed16::ONE.neg()),
             ],
+            projection_axis: Vec3::ZERO,
             angular_velocity: Vec3::ZERO,
             moment: Vec3::ZERO,
             compiled_half_words: Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE),
@@ -323,6 +341,26 @@ impl MotionState {
             Fixed16::from_raw(state.words[1]),
             Fixed16::from_raw(state.words[2]),
         );
+    }
+
+    /// Publish the compiled AK11 normal and rebuilt orientation basis.
+    pub fn apply_compiled_post_lane_basis(
+        &mut self,
+        normal: [i32; 3],
+        effects: &CompiledPostLaneBasisEffects,
+    ) {
+        self.projection_axis = Vec3::new(
+            Fixed16::from_raw(normal[0]),
+            Fixed16::from_raw(normal[1]),
+            Fixed16::from_raw(normal[2]),
+        );
+        self.basis = [effects.vector_258, effects.vector_264, effects.vector_270].map(|vector| {
+            Vec3::new(
+                Fixed16::from_raw(vector[0]),
+                Fixed16::from_raw(vector[1]),
+                Fixed16::from_raw(vector[2]),
+            )
+        });
     }
 
     /// Form the six angular inputs and add the current native velocity field.
@@ -716,9 +754,26 @@ impl RaceState {
         }
         let contact_vectors =
             build_contact_basis_vectors(self.car.motion.contact_basis(self.car.velocity));
+        let contact_count = wheel
+            .postprocess
+            .wheel_contacts
+            .into_iter()
+            .filter(|contact| *contact)
+            .count() as u8;
+        let scale_528 = contact_count_scale(wheel.angular.momentum.moment_scale, contact_count);
         let mut contact_update_inputs = wheel.contact_update_inputs;
-        for (input, vector) in contact_update_inputs.iter_mut().zip(contact_vectors) {
+        for (index, (input, vector)) in contact_update_inputs
+            .iter_mut()
+            .zip(contact_vectors)
+            .enumerate()
+        {
             input.vector = vector;
+            input.basis = self.car.motion.projection_axis;
+            input.scale_528 = scale_528;
+            input.extra_vector = Vec3::ZERO;
+            if index < 4 {
+                input.enabled = wheel.postprocess.wheel_contacts[index];
+            }
         }
         let mut second = wheel.second.clone();
         for (lane, vector_index) in wheel.contact_vector_indices.into_iter().enumerate() {
@@ -992,6 +1047,25 @@ mod tests {
         motion.apply_compiled_half_state(
             &crate::compiled_car_initializer::derive_compiled_half_sign_state([4, -6, 8]),
         );
+        motion.apply_compiled_post_lane_basis(
+            [7, 8, 9],
+            &CompiledPostLaneBasisEffects {
+                vector_258: [1, 2, 3],
+                vector_264: [4, 5, 6],
+                vector_270: [7, 8, 9],
+            },
+        );
+        assert_eq!(
+            motion.projection_axis,
+            Vec3::new(
+                Fixed16::from_raw(7),
+                Fixed16::from_raw(8),
+                Fixed16::from_raw(9),
+            )
+        );
+        assert_eq!(motion.basis[0].x, Fixed16::from_raw(1));
+        assert_eq!(motion.basis[1].y, Fixed16::from_raw(5));
+        assert_eq!(motion.basis[2].z, Fixed16::from_raw(9));
         let velocity = Vec3::new(
             Fixed16::from_raw(9),
             Fixed16::from_raw(10),
@@ -1272,6 +1346,21 @@ mod tests {
                 0x40000, -0x60000, 0x80000,
             ]),
         );
+        populate_compiled_contact_update_inputs(
+            &mut wheel,
+            &CompiledControlClearLoop {
+                words: [
+                    0x10000, 0x7fff0000, 0x10000, 0x7fff0000, 0x10000, 0x7fff0000, 0x10000,
+                    0x7fff0000, 0x10000, 0x7fff0000, 0x10000, 0x7fff0000, 0x10000, 0x7fff0000,
+                    0x10000, 0x7fff0000,
+                ],
+            },
+        );
+        assert_eq!(wheel.contact_update_inputs[0].limit, Fixed16::ONE);
+        assert_eq!(
+            wheel.contact_update_inputs[0].threshold,
+            Fixed16::from_raw(0x7fff0000)
+        );
         assert_eq!(
             wheel.contact_offsets,
             [
@@ -1282,11 +1371,14 @@ mod tests {
             ]
         );
         let mut car = CarState::at_rest();
-        car.motion.basis = [
-            vector([0x10000, 0, 0]),
-            vector([0, 0x10000, 0]),
-            vector([0, 0, 0x10000]),
-        ];
+        car.motion.apply_compiled_post_lane_basis(
+            [0, 0, 0],
+            &CompiledPostLaneBasisEffects {
+                vector_258: [0x10000, 0, 0],
+                vector_264: [0, 0x10000, 0],
+                vector_270: [0, 0, 0x10000],
+            },
+        );
         car.motion.angular_velocity = vector([0x10000, 0x10000, 0x10000]);
         for (index, speed) in [-1, 0x10000, -1, -1].into_iter().enumerate() {
             car.four_wheel.first[index].wheel_speed = speed;
@@ -1305,8 +1397,14 @@ mod tests {
         );
         let contact_vectors = build_contact_basis_vectors(car.motion.contact_basis(car.velocity));
         let mut contact_inputs = wheel.contact_update_inputs;
-        for (input, vector) in contact_inputs.iter_mut().zip(contact_vectors) {
+        for (index, (input, vector)) in contact_inputs.iter_mut().zip(contact_vectors).enumerate() {
             input.vector = vector;
+            input.basis = car.motion.projection_axis;
+            input.scale_528 = contact_count_scale(wheel.angular.momentum.moment_scale, 4);
+            input.extra_vector = Vec3::ZERO;
+            if index < 4 {
+                input.enabled = wheel.postprocess.wheel_contacts[index];
+            }
         }
         assert_eq!(
             sample.car.four_wheel.contact_updates,
