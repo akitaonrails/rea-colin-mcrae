@@ -1927,8 +1927,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   cross product. `apply_angular_momentum_step` scales and combines moments,
   applies componentwise inertia, and negatively integrates angular velocity.
   `clamp_angular_velocity` reproduces the gated signed `0x3333` clamp including
-  wrapping-absolute behavior. Orientation updates, other angular special cases,
-  eight-record traversal, and full four-iteration production remain open. See evidence
+  wrapping-absolute behavior. `rotate_basis_axis_angle` and
+  `integrate_orientation` now reproduce the axis-angle matrix, normalization and
+  native `1,2,0` update order. Angular-velocity-to-angle conversion, other angular
+  special cases, eight-record traversal, and full four-iteration production remain
+  open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

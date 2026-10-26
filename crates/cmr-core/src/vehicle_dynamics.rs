@@ -995,6 +995,64 @@ pub fn transform_contact_force(rows: [Vec3; 3], force: Vec3) -> Vec3 {
     Vec3::new(rows[0].dot(force), rows[1].dot(force), rows[2].dot(force))
 }
 
+/// Rotate and renormalize a basis about one axis using the runtime trig table.
+/// Zero-angle stages preserve the basis exactly. `None` rejects a short table.
+#[must_use]
+pub fn rotate_basis_axis_angle(
+    basis: [Vec3; 3],
+    axis: Vec3,
+    angle: i16,
+    trig: &[i32],
+) -> Option<[Vec3; 3]> {
+    if angle == 0 {
+        return Some(basis);
+    }
+    if trig.len() < 0x1000 {
+        return None;
+    }
+    let angle = i32::from(angle);
+    let sine = Fixed16::from_raw(trig[(-angle & 0xfff) as usize]);
+    let cosine = Fixed16::from_raw(trig[((0x400 - angle) & 0xfff) as usize]);
+    let one_minus_cosine = Fixed16::ONE.sub(cosine);
+    let xx = axis.x.mul(axis.x);
+    let yy = axis.y.mul(axis.y);
+    let zz = axis.z.mul(axis.z);
+    let xy = axis.x.mul(axis.y).mul(one_minus_cosine);
+    let xz = axis.x.mul(axis.z).mul(one_minus_cosine);
+    let zy = axis.z.mul(axis.y).mul(one_minus_cosine);
+    let rows = [
+        Vec3::new(
+            cosine.mul(Fixed16::ONE.sub(xx)).add(xx),
+            xy.sub(axis.z.mul(sine)),
+            xz.add(axis.y.mul(sine)),
+        ),
+        Vec3::new(
+            xy.add(axis.z.mul(sine)),
+            cosine.mul(Fixed16::ONE.sub(yy)).add(yy),
+            zy.sub(axis.x.mul(sine)),
+        ),
+        Vec3::new(
+            xz.sub(axis.y.mul(sine)),
+            zy.add(axis.x.mul(sine)),
+            cosine.mul(Fixed16::ONE.sub(zz)).add(zz),
+        ),
+    ];
+    Some(basis.map(|vector| normalize_geometric_residual(transform_contact_force(rows, vector))))
+}
+
+/// Apply the recovered `FUN_004184e0` stage order: basis axes 1, 2, then 0.
+#[must_use]
+pub fn integrate_orientation(
+    mut basis: [Vec3; 3],
+    angles: [i16; 3],
+    trig: &[i32],
+) -> Option<[Vec3; 3]> {
+    for index in [1, 2, 0] {
+        basis = rotate_basis_axis_angle(basis, basis[index], angles[index], trig)?;
+    }
+    Some(basis)
+}
+
 /// Transform a contact force before its recovered moment cross product.
 #[must_use]
 pub fn transformed_contact_moment(rows: [Vec3; 3], force: Vec3, offset: Vec3) -> Vec3 {
@@ -1536,6 +1594,34 @@ mod tests {
         assert_eq!(
             outcome.angular_velocity,
             raw_v(-0x38000, -0x20000, -0xe0000)
+        );
+    }
+
+    #[test]
+    fn orientation_rotation_normalizes_and_preserves_zero_angle_stages() {
+        let basis = [
+            raw_v(0x10000, 0, 0),
+            raw_v(0, 0x10000, 0),
+            raw_v(0, 0, 0x10000),
+        ];
+        assert_eq!(integrate_orientation(basis, [0; 3], &[]), Some(basis));
+        assert_eq!(rotate_basis_axis_angle(basis, basis[2], 1, &[]), None);
+        let trig = crate::fixed_point::build_sine_table();
+        assert_eq!(
+            rotate_basis_axis_angle(basis, basis[2], 0x400, &trig),
+            Some([
+                raw_v(0, -0xfff2, 0),
+                raw_v(0xfff2, 0, 0),
+                raw_v(0, 0, 0xfff2),
+            ])
+        );
+        assert_eq!(
+            integrate_orientation(basis, [0x400, 0, 0], &trig),
+            Some([
+                raw_v(0xfff2, 0, 0),
+                raw_v(0, 0, -0xfff2),
+                raw_v(0, 0xfff2, 0),
+            ])
         );
     }
 
