@@ -1953,8 +1953,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `populate_surface_table_factor` maps the reviewed first coefficient family into
   second-core accumulation with checked indices; an authenticated real store also
   reopens and feeds the adapter. `cmr-app::SessionWheelInputs` exposes the same
-  authenticated store to second-core callers. Other vector/contact provenance and
-  live application-loop wiring remain open. See evidence
+  authenticated store to second-core callers. The strict `0xcccc` distance gate,
+  count scaling and four response-word timestep products are now reconstructed.
+  Contact-vector production and live application-loop wiring remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

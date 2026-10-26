@@ -522,7 +522,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T11:22Z | 141h04m | wire-reviewed-surface-coefficients | `286c8d4` | G03, G10 | Added `populate_surface_table_factor` with checked first-family selection and override preservation. The vertical path uses it for every wheel. Synthetic index coverage and an authenticated real-store smoke pass without exposing values; `cmr-core` has 1,352 tests. Other input provenance and application wiring remain open. |
 
-| 2026-10-26T11:30Z | 141h12m | add-authenticated-session-wheel-inputs | _(pending)_ | G09 | Added `cmr-app::SessionWheelInputs`: authenticated coefficient-store open and second-core population with shared index errors. The official opt-in smoke passes without exposing values; `cmr-app` has 27 library tests. Live-loop wiring and other runtime inputs remain open. |
+| 2026-10-26T11:30Z | 141h12m | add-authenticated-session-wheel-inputs | `8749fb4` | G09 | Added `cmr-app::SessionWheelInputs`: authenticated coefficient-store open and second-core population with shared index errors. The official opt-in smoke passes without exposing values; `cmr-app` has 27 library tests. Live-loop wiring and other runtime inputs remain open. |
+
+| 2026-10-26T11:38Z | 141h20m | recover-contact-input-scaling | _(pending)_ | G03 | Recovered `FUN_0040d740`'s strict `0xcccc` distance gate and count scaling, the analogous `FUN_004095e0` count rule, and `FUN_00415d20`'s four response-word timestep products. Three focused tests bring `cmr-core` to 1,355. Contact-vector production and live-loop wiring remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

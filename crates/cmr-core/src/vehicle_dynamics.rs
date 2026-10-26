@@ -1275,6 +1275,48 @@ pub fn apply_angular_orientation_pipeline(
     })
 }
 
+/// Result of the four-record distance gate in `FUN_0040d740`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContactDistanceGateOutcome {
+    pub contacts: [bool; 4],
+    pub count_674: u8,
+    pub scale_52c: Fixed16,
+}
+
+/// Apply the strict `0xcccc` distance gate and the `+0x52c` count scaling.
+#[must_use]
+pub fn evaluate_contact_distance_gate(
+    deltas: [i32; 4],
+    mass_48: Fixed16,
+) -> ContactDistanceGateOutcome {
+    let contacts = deltas.map(|delta| delta.wrapping_abs() < 0xcccc);
+    let count_674 = contacts.iter().filter(|&&contact| contact).count() as u8;
+    ContactDistanceGateOutcome {
+        contacts,
+        count_674,
+        scale_52c: contact_count_scale(mass_48, count_674),
+    }
+}
+
+/// Reproduce the shared count scaling: zero for 0, `>>2` for 4, `>>1` for 2,
+/// identity for 1, and signed division otherwise.
+#[must_use]
+pub fn contact_count_scale(mass_48: Fixed16, count: u8) -> Fixed16 {
+    match count {
+        0 => Fixed16::ZERO,
+        1 => mass_48,
+        2 => Fixed16::from_raw(mass_48.raw() >> 1),
+        4 => Fixed16::from_raw(mass_48.raw() >> 2),
+        _ => Fixed16::from_raw(mass_48.raw() / i32::from(count)),
+    }
+}
+
+/// Apply `FUN_00415d20`'s four timestep-scaled response words in source order.
+#[must_use]
+pub fn scale_contact_response_words(words: [Fixed16; 4], time_step: Fixed16) -> [Fixed16; 4] {
+    words.map(|word| word.mul(time_step))
+}
+
 /// Runtime inputs for one `FUN_0040d400` contact-vector update.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContactVectorUpdateInput {
@@ -1969,6 +2011,64 @@ mod tests {
                 [(false, Vec3::ZERO, Vec3::ZERO); 4],
             ),
             raw_v(0, 0, -2)
+        );
+    }
+
+    #[test]
+    fn contact_distance_gate_preserves_exact_threshold_and_count_scaling() {
+        let outcome = evaluate_contact_distance_gate(
+            [0, 0xcccc, -0xcccc, 0xcccc + 1],
+            Fixed16::from_raw(0x30000),
+        );
+        assert_eq!(outcome.contacts, [true, false, false, false]);
+        assert_eq!(outcome.count_674, 1);
+        assert_eq!(outcome.scale_52c, Fixed16::from_raw(0x30000));
+        assert_eq!(
+            evaluate_contact_distance_gate([1; 4], Fixed16::from_raw(0x30000)).scale_52c,
+            Fixed16::from_raw(0xc000)
+        );
+        assert_eq!(
+            evaluate_contact_distance_gate(
+                [0xcccc + 1, 0xcccc + 1, 0, 0],
+                Fixed16::from_raw(0x30000),
+            )
+            .scale_52c,
+            Fixed16::from_raw(0x18000)
+        );
+        assert_eq!(
+            evaluate_contact_distance_gate([0xcccc + 1; 4], Fixed16::from_raw(0x30000)).scale_52c,
+            Fixed16::ZERO
+        );
+    }
+
+    #[test]
+    fn contact_count_scale_handles_every_special_case() {
+        let mass = Fixed16::from_raw(0x30000);
+        assert_eq!(contact_count_scale(mass, 0), Fixed16::ZERO);
+        assert_eq!(contact_count_scale(mass, 1), mass);
+        assert_eq!(contact_count_scale(mass, 2), Fixed16::from_raw(0x18000));
+        assert_eq!(contact_count_scale(mass, 3), Fixed16::from_raw(0x10000));
+        assert_eq!(contact_count_scale(mass, 4), Fixed16::from_raw(0xc000));
+    }
+
+    #[test]
+    fn contact_response_words_scale_in_source_order() {
+        assert_eq!(
+            scale_contact_response_words(
+                [
+                    Fixed16::from_raw(0x10000),
+                    Fixed16::from_raw(0x20000),
+                    Fixed16::from_raw(0x30000),
+                    Fixed16::from_raw(0x40000),
+                ],
+                Fixed16::from_raw(0x8000),
+            ),
+            [
+                Fixed16::from_raw(0x8000),
+                Fixed16::from_raw(0x10000),
+                Fixed16::from_raw(0x18000),
+                Fixed16::from_raw(0x20000),
+            ]
         );
     }
 

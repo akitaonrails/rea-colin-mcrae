@@ -1273,8 +1273,10 @@ family into second-core accumulation with checked indices; an authenticated real
 store also reopens and feeds the adapter. One synthetic and one opt-in test bring
 `cmr-core` to 1,352. `cmr-app::SessionWheelInputs` now exposes the authenticated
 coefficient store to second-core callers; its official opt-in smoke passes,
-bringing `cmr-app` to 27 library tests. Other runtime provenance and live-loop
-wiring remain open.
+bringing `cmr-app` to 27 library tests. G03 now recovers the strict `0xcccc`
+distance gate, count scaling, and four response-word timestep products with three
+focused tests, bringing `cmr-core` to 1,355. Contact-vector production and
+live-loop wiring remain open.
 
 Exit gate:
 
