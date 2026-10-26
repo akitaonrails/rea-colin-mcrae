@@ -2574,6 +2574,184 @@ pub const fn compiled_special_copy_required(global_550c08: i32) -> bool {
 pub const COMPILED_SPECIAL_COPY_BLOCKS: [(u32, u32, usize); 2] =
     [(0x5fffc8, 0x60042c, 0x119), (0x700300, 0x700a68, 0x1da)];
 
+/// `FUN_00492050` follows the node link at `+0x8` and sets the flag at
+/// `+0x170` to `1` on every node until the null link.
+pub const COMPILED_92050_LINK_OFFSET: u16 = 0x8;
+pub const COMPILED_92050_FLAG_OFFSET: u16 = 0x170;
+
+/// Reconstructs `FUN_00492050`: every node in the chain gets its `+0x170`
+/// flag set to `1`, stopping at the null link. The injected flag slice models
+/// the chain (empty means a null initial pointer, so no writes), avoiding raw
+/// pointer chasing in the safe contract.
+pub fn apply_compiled_92050(flags: &mut [i32]) {
+    flags.fill(1);
+}
+
+/// `state+0x6f0` is unconditionally set to `1` after the `+0x6f8` flag.
+pub const COMPILED_INITIALIZER_6F0_VALUE: i32 = 1;
+
+/// Inputs for the composed post-lane spine: the eight-lane executor followed
+/// by AK11, AK13, AK14, the adjustment, and every later direct/callee effect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledSpineInputs {
+    pub execution: CompiledEightLaneExecutionInputs,
+    /// AK11 selector words at `+0x25c/+0x268/+0x274`.
+    pub normal_selector_words: [i32; 3],
+    /// Prior vector at `+0x258/+0x25c/+0x260` before AK13.
+    pub prior_vector_258: [i32; 3],
+    /// Injected destination for the AK14 publication.
+    pub publication_destination: [[i32; 4]; 3],
+    /// State `+0xcc` before the adjustment accumulation.
+    pub adjustment_prior_cc: i32,
+    /// Injected destination for the adjustment publication.
+    pub adjustment_destination: [i32; 4],
+    /// State `+0xc8/+0xd0` before the adjustment.
+    pub state_c8: i32,
+    pub state_d0: i32,
+    /// Switch word at `param_1+0x180` for `FUN_00492770`.
+    pub switch_180: i32,
+    /// Global detail level (`DAT_00592f00`).
+    pub detail: i32,
+    /// Global weather type (`DAT_00592ef8`).
+    pub weather: i32,
+    /// Global weather intensity (`DAT_00592efc`).
+    pub intensity: i32,
+    /// Config byte at `DAT_00d3ca80 + 0xb6 + state_738 * 0x9c`.
+    pub config_b6: u8,
+    /// Global `DAT_00550c08`.
+    pub global_550c08: i32,
+    /// Global `DAT_00d3ca88`.
+    pub global_d3ca88: i32,
+    /// The `FUN_004cfac0()` draw for the `+0x6ec` word.
+    pub random: u32,
+    /// Config byte at `DAT_00d3ca80 + 0x25`.
+    pub config_25: u8,
+}
+
+/// The composed effects of the whole post-lane spine, in native order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledSpineEffects {
+    pub lanes: CompiledEightLaneExecutionSuccess,
+    pub normal: CompiledPostLaneNormalEffects,
+    pub basis: CompiledPostLaneBasisEffects,
+    pub destination: [[i32; 4]; 3],
+    pub cc: i32,
+    pub adjustment_destination: [i32; 4],
+    pub callee_92770: Compiled92770Effects,
+    pub lane_thresholds: CompiledLaneThresholdEffects,
+    pub reset: CompiledAdjustmentResetEffects,
+    pub flags: CompiledInitializerFlagEffects,
+    pub control_flag: i32,
+    pub flag_6f8: i32,
+    pub flag_6f0: i32,
+    pub words_6e8: CompiledInitializer6e8Effects,
+    pub copies: CompiledInitializerCopyEffects,
+    pub word_5fc: u16,
+    pub final_call_required: bool,
+}
+
+/// Composes the recovered post-lane spine in native order.
+///
+/// The eight-lane executor runs first; its failure aborts the spine before any
+/// later effect. AK11 consumes the original source vectors and final lane
+/// words, AK13 consumes its final publication, and the adjustment uses lane
+/// zero's word (`+0x2e4`) and source Y (`+0x100`). The `+0x6f8` flag is
+/// evaluated before `+0x6f0 = 1` and the `+0x6e8/+0x6ec` words; the copies use
+/// the AK13 rows and the AK11 final vector. Callee calls are represented by
+/// their pure contracts, not by executing native code; progressive faults,
+/// pointer rebinding, and the early initializer stages remain separate.
+pub fn execute_compiled_spine_post<P, C>(
+    input: CompiledSpineInputs,
+    state: CompiledEightLaneExecutionState,
+    providers: &mut [P; 8],
+    config: &mut C,
+) -> Result<CompiledSpineEffects, CompiledEightLaneExecutionFailure<P::Error, C::Error>>
+where
+    P: CompiledLaneGeometryProvider,
+    C: CompiledLaneConfigProvider,
+{
+    let lanes = execute_compiled_eight_lanes(input.execution, state, providers, config)?;
+    let normal = derive_compiled_post_lane_global_normal(CompiledPostLaneNormalInput {
+        source_vectors: input.execution.source_vectors,
+        lane_words: lanes.state.lane_words,
+        selector_words: input.normal_selector_words,
+    });
+    let basis = derive_compiled_post_lane_basis(CompiledPostLaneBasisInputs {
+        vector_324: normal.final_published_normal,
+        vector_258: input.prior_vector_258,
+    });
+    let mut destination = input.publication_destination;
+    publish_compiled_post_lane_basis(&mut destination, basis);
+
+    let cc = derive_compiled_state_adjustment_cc(CompiledStateAdjustmentInputs {
+        prior_cc: input.adjustment_prior_cc,
+        word_2e4: lanes.state.lane_words[0],
+        word_100: input.execution.source_vectors[0][1],
+    });
+    let mut adjustment_destination = input.adjustment_destination;
+    publish_compiled_state_adjustment(
+        &mut adjustment_destination,
+        input.state_c8,
+        cc,
+        input.state_d0,
+    );
+    let callee_92770 =
+        derive_compiled_92770(input.switch_180, [input.state_c8, cc, input.state_d0]);
+    let lane_thresholds = derive_compiled_lane_thresholds(CompiledLaneThresholdInputs {
+        lane_words: lanes.state.lane_words,
+        source_y: input.execution.source_vectors.map(|vector| vector[1]),
+    });
+    let reset = derive_compiled_adjustment_reset();
+    let flags = derive_compiled_initializer_flag_effects();
+    let control_flag = derive_compiled_initializer_control_flag(input.config_b6);
+    let flag_6f8 = derive_compiled_initializer_6f8(input.detail, || {
+        i32::from(derive_compiled_initializer_48d2d0(
+            input.detail,
+            input.weather,
+            input.intensity,
+        ))
+    });
+    let words_6e8 = derive_compiled_initializer_6e8(CompiledInitializer6e8Inputs {
+        global_550c08: input.global_550c08,
+        global_d3ca88: input.global_d3ca88,
+        random: input.random,
+    });
+    let copies = derive_compiled_initializer_copies(CompiledInitializerCopyInputs {
+        source_fc: std::array::from_fn(|index| {
+            input.execution.source_vectors[index / 3][index % 3]
+        }),
+        source_258: std::array::from_fn(|index| {
+            [basis.vector_258, basis.vector_264, basis.vector_270][index / 3][index % 3]
+        }),
+        source_c8: input.state_c8,
+        source_cc: cc,
+        source_d0: input.state_d0,
+        source_324: normal.final_published_normal,
+    });
+    let word_5fc = derive_compiled_initializer_5fc(input.config_25);
+    let final_call_required = compiled_initializer_final_call_required(input.global_d3ca88);
+
+    Ok(CompiledSpineEffects {
+        lanes,
+        normal,
+        basis,
+        destination,
+        cc,
+        adjustment_destination,
+        callee_92770,
+        lane_thresholds,
+        reset,
+        flags,
+        control_flag,
+        flag_6f8,
+        flag_6f0: COMPILED_INITIALIZER_6F0_VALUE,
+        words_6e8,
+        copies,
+        word_5fc,
+        final_call_required,
+    })
+}
+
 fn solve_compiled_lane_plane(
     source_vector: [i32; 3],
     fallback: i32,
@@ -8075,6 +8253,147 @@ mod tests {
             // Each destination begins immediately after its source range.
             assert_eq!(destination, source + 4 * count as u32);
         }
+    }
+
+    #[test]
+    fn callee_92050_sets_every_chain_flag_and_tolerates_an_empty_chain() {
+        assert_eq!(COMPILED_92050_LINK_OFFSET, 0x8);
+        assert_eq!(COMPILED_92050_FLAG_OFFSET, 0x170);
+        let mut empty: [i32; 0] = [];
+        apply_compiled_92050(&mut empty);
+        let mut flags = [0, 7, -3, 0x1234];
+        apply_compiled_92050(&mut flags);
+        assert_eq!(flags, [1, 1, 1, 1]);
+    }
+
+    fn spine_input() -> CompiledSpineInputs {
+        let mut execution = integrated_execution_input();
+        execution.source_vectors = post_lane_square_input([0, 0, 0]).source_vectors;
+        CompiledSpineInputs {
+            execution,
+            normal_selector_words: [0, 0, 9],
+            prior_vector_258: [0, 0x10000, 0],
+            publication_destination: [[9, 9, 9, 0x1111], [8, 8, 8, 0x2222], [7, 7, 7, 0x3333]],
+            adjustment_prior_cc: 5,
+            adjustment_destination: [-1, -2, -3, 0x5555],
+            state_c8: 100,
+            state_d0: 300,
+            switch_180: 1,
+            detail: 0,
+            weather: 5,
+            intensity: 0,
+            config_b6: 0,
+            global_550c08: 0,
+            global_d3ca88: 0,
+            random: 1,
+            config_25: 0,
+        }
+    }
+
+    #[test]
+    fn composed_spine_runs_every_stage_in_native_order() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| IntegratedLaneMode::Built(if lane == 2 { 0x51 } else { 0 })),
+        );
+        let mut config =
+            |lane| -> Result<u8, &'static str> { Ok(if lane == 2 { 0x02 } else { 0 }) };
+        let input = spine_input();
+        let success = execute_compiled_spine_post(
+            input.clone(),
+            integrated_execution_state(),
+            &mut providers,
+            &mut config,
+        )
+        .unwrap();
+
+        let normal = derive_compiled_post_lane_global_normal(CompiledPostLaneNormalInput {
+            source_vectors: input.execution.source_vectors,
+            lane_words: success.lanes.state.lane_words,
+            selector_words: [0, 0, 9],
+        });
+        let basis = derive_compiled_post_lane_basis(CompiledPostLaneBasisInputs {
+            vector_324: normal.final_published_normal,
+            vector_258: [0, 0x10000, 0],
+        });
+        let mut destination = input.publication_destination;
+        publish_compiled_post_lane_basis(&mut destination, basis);
+        let cc = derive_compiled_state_adjustment_cc(CompiledStateAdjustmentInputs {
+            prior_cc: 5,
+            word_2e4: success.lanes.state.lane_words[0],
+            word_100: input.execution.source_vectors[0][1],
+        });
+        let mut adjustment_destination = input.adjustment_destination;
+        publish_compiled_state_adjustment(&mut adjustment_destination, 100, cc, 300);
+
+        assert_eq!(success.normal, normal);
+        assert_eq!(success.basis, basis);
+        assert_eq!(success.destination, destination);
+        assert_eq!(success.cc, cc);
+        assert_eq!(success.adjustment_destination, adjustment_destination);
+        assert_eq!(
+            success.callee_92770,
+            derive_compiled_92770(1, [100, cc, 300])
+        );
+        assert_eq!(
+            success.lane_thresholds,
+            derive_compiled_lane_thresholds(CompiledLaneThresholdInputs {
+                lane_words: success.lanes.state.lane_words,
+                source_y: input.execution.source_vectors.map(|vector| vector[1]),
+            })
+        );
+        assert_eq!(success.reset, derive_compiled_adjustment_reset());
+        assert_eq!(success.flags, derive_compiled_initializer_flag_effects());
+        assert_eq!(success.control_flag, 2);
+        assert_eq!(success.flag_6f8, 1);
+        assert_eq!(success.flag_6f0, 1);
+        assert_eq!(
+            success.words_6e8,
+            CompiledInitializer6e8Effects {
+                word_6e8: 1,
+                word_6ec: 23,
+            }
+        );
+        assert_eq!(success.copies.block_24c, normal.final_published_normal);
+        assert_eq!(success.copies.block_240, [100, cc, 300]);
+        assert_eq!(
+            success.copies.block_1bc,
+            std::array::from_fn(|index| input.execution.source_vectors[index / 3][index % 3])
+        );
+        assert_eq!(
+            success.copies.block_21c,
+            std::array::from_fn(|index| {
+                [basis.vector_258, basis.vector_264, basis.vector_270][index / 3][index % 3]
+            })
+        );
+        assert_eq!(success.word_5fc, 0x9999);
+        assert!(!success.final_call_required);
+    }
+
+    #[test]
+    fn composed_spine_aborts_before_any_post_effect_when_a_lane_fails() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| {
+                if lane == 7 {
+                    IntegratedLaneMode::SearchThenBuildFailure
+                } else {
+                    IntegratedLaneMode::Built(0)
+                }
+            }),
+        );
+        let mut state = integrated_execution_state();
+        state.handles[7] = -1;
+        let mut config = |_lane| -> Result<u8, &'static str> { Ok(0) };
+        let failure =
+            execute_compiled_spine_post(spine_input(), state, &mut providers, &mut config)
+                .unwrap_err();
+        assert!(matches!(
+            failure,
+            CompiledEightLaneExecutionFailure::Dispatch { failed_lane: 7, .. }
+        ));
     }
 
     #[test]

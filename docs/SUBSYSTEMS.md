@@ -1322,13 +1322,26 @@ languages rather than fabricating or silently aliasing Italian assets.
   `lane_word + 0x1999 < source_y` (wrapping addition). Passing lanes set
   their `+0x73a` flags; failing lanes clear them and `+0x743`, append their
   indices at `+0x744 + count`, and increment `+0x742`. Two focused tests
-  bring `cmr-core` to 1,258. The `FUN_0046eda0` global copy gate remains open.
+  bring `cmr-core` to 1,259. The `FUN_0046eda0` global copy gate remains open.
   G03-AK23 reconstructs `FUN_0046eda0`: only when `DAT_00550c08 == 1`, it
   copies `0x119` dwords from `DAT_005fffc8` to `DAT_0060042c` and `0x1da`
   dwords from `DAT_00700300` to `DAT_00700a68`, each destination beginning
   immediately after its source range. One focused test brings `cmr-core` to
-  1,259. The copied global tables are runtime data; full call-spine
+  1,260. The copied global tables are runtime data; full call-spine
   composition follows.
+  G03-AK24 reconstructs `FUN_00492050`: it follows the node link at `+0x8`
+  and sets the `+0x170` flag to `1` on every node until the null link, doing
+  nothing for a null initial pointer. `apply_compiled_92050` reproduces the
+  effect over an injected flag slice. One focused test brings `cmr-core` to
+  1,261.
+  G03-AK25 composes the post-lane spine in native order:
+  `execute_compiled_spine_post` runs the eight-lane executor (aborting on
+  failure), AK11, AK13, the AK14 publication, the adjustment and its
+  publication, `FUN_00492770`, the lane thresholds, the reset, the control
+  flags, the conditional flags and RNG word, the copies, `DAT_0050c5fc`, and
+  the final call gate, all through the pure callee contracts. Two focused
+  tests bring `cmr-core` to 1,263. Progressive faults, pointer rebinding, and
+  the early initializer stages remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
