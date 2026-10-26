@@ -678,7 +678,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T21:10Z | 150h52m | complete-network-player-records | `76f78e9` | H09 | Implemented positional per-player 15/16/17/5-word records, ready/active/done state, auxiliary values and wrapping accumulation. One test brings `cmr-core` to 1,418. Runtime GUIDs remain negotiated identity; full synchronization stays outside H10. |
 
-| 2026-10-26T21:20Z | 151h02m | complete-present-and-native-root-lifecycle | _(pending)_ | D16, D18 | Closed final presentation through owned indexed/RGBA frames, render-route selection and shared SDL presentation, and the interactive root through descriptor menus plus focus/pause/restore/quit handling. Native flip timing and display-server behavior remain backend boundaries. |
+| 2026-10-26T21:20Z | 151h02m | complete-present-and-native-root-lifecycle | `cd0ceff` | D16, D18 | Closed final presentation through owned indexed/RGBA frames, render-route selection and shared SDL presentation, and the interactive root through descriptor menus plus focus/pause/restore/quit handling. Native flip timing and display-server behavior remain backend boundaries. |
+
+| 2026-10-26T21:30Z | 151h12m | bound-type1-lighting-support | _(pending)_ | D14, D15 | Closed type-1 resources and branch-zero flat/COPY rendering. General lighting and alternate Gouraud/modulate output are explicitly unsupported by current evidence and are not replaced by type-2 semantics. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

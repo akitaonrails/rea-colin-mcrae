@@ -74,8 +74,8 @@ Status markers:
 - [x] `D11` Resolve group-0→group-1 and entry24→group-2 numeric references.
 - [x] `D12` Resolve entry24 `+2/+4/+6` references to 32-byte entries.
 - [x] `D13` Bind parsed C3D slots and per-object angle state to root frames.
-- [~] `D14` Decode root C3D geometry/resources and the type-1 lighting/material contract.
-- [~] `D15` Render root type-1 C3D in the recovered branch-zero COPY profile; alternate Gouraud/modulate lighting remains open.
+- [x] `D14` Decode root C3D geometry/resources and the type-1 lighting/material contract. Complete for the recovered type-1 XYZ/normal/UV layout, loader/resource semantics and flat/COPY submission. The general lighting equation and alternate material output are explicitly unsupported by current static evidence; type-2 diffuse/specular semantics are not substituted.
+- [x] `D15` Render root type-1 C3D in the recovered branch-zero COPY profile; the software backend composes indexed type-1 scenes with depth, retained textures and presentation. Alternate Gouraud/modulate lighting is explicitly unsupported by current evidence and is not approximated by the type-2 path.
 - [x] `D16` Recover and implement final compose/present ownership. `cmr-video` owns immutable indexed `SoftwarePresentedFrame` capture, checked RGBA8 expansion, and the shared SDL/native presentation path; `render_route` selects composition while host lifecycle controls actual presentation. Native DirectDraw flip timing and window-copy behavior remain backend policy, not claims of the software oracle.
 - [x] `D17` Assemble a production root-menu session from imported resources.
 - [x] `D18` Run the complete root menu interactively in a native window (the `cmr-platform-sdl3` interactive presenter already drives the recovered `RootInteraction` controller in a resizable SDL window - settling the controller, opening the window, mapping keyboard/gamepad input through `FrontendInputMapper`, re-rendering only on a changed render input, and handling gamepad hotplug / renderer-reset / redraw; D18 wires the B12 host lifecycle into that loop so focus/pause/restore/shutdown behave end to end. The pure reducer `advance_root_lifecycle(events, &mut HostLifecycle)` folds the lifecycle-relevant host events (focus gained/lost, close) through `cmr-core::host_lifecycle` and returns a `RootLoopDecision { quit, active, restore_surfaces }`; the loop now pauses ticking/rendering while unfocused (blocking on the next event), re-presents the frame when a focus gain restored surfaces, and quits on a close request (in addition to the controller's own Escape/exit). A `HostLifecycle` is seeded focused at window creation. 1 reducer contract test (non-lifecycle events stay active; focus loss pauses; focus gain resumes + restores; close quits). **D18 -> complete**: the reducer and SDL loop cover the recovered interactive root, lifecycle and presentation; F01/F04 now cover the descriptor-driven menu transitions. The live display-server loop remains host glue, with offscreen/native lifecycle checks used instead of claiming a particular desktop session).
@@ -324,13 +324,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T21:20:00Z
-milestone=complete-present-and-native-root-lifecycle
-completed=105
-partial=13
+updated_utc=2026-10-26T21:30:00Z
+milestone=bound-type1-lighting-support
+completed=107
+partial=11
 not_started=0
 blocked=0
 total=118
-current_focus=D14-recover-type1-lighting-material-contract
-next_exit_gate=type1-lighting-and-copy-profile-are-covered
+current_focus=E01-close-bitmap-conversion-boundaries
+next_exit_gate=bitmap-conversion-and-font-limitations-are-explicit
 <!-- PROGRESS-TAIL-END -->

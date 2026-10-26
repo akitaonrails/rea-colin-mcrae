@@ -2399,6 +2399,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Type-1 C3D support covers decoded XYZ/normal/UV resources and branch-zero
+  flat/COPY indexed rendering. General lighting and alternate Gouraud/modulate
+  output are explicitly unsupported rather than borrowed from type 2.
 - Final presentation uses owned indexed frames and checked RGBA8 expansion;
   render routes select composition and lifecycle controls presentation. The
   native root combines recovered interaction, descriptor menus, and

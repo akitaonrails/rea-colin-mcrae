@@ -1576,6 +1576,11 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+D14/D15 now close the supported type-1 boundary: geometry/resources and the
+flat/COPY renderer are implemented. General lighting and alternate
+Gouraud/modulate output are explicitly unsupported and are not replaced by the
+type-2 model.
+
 D16/D18 now close final presentation and native root interaction: owned indexed
 frames, checked RGBA expansion, render-route selection, descriptor menus, and
 focus/pause/restore/quit lifecycle all share the SDL path. Native flip timing
