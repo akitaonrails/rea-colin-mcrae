@@ -237,6 +237,22 @@ pub fn nearest_unshed_panel(impact: Vec3, panels: &[(Vec3, bool)]) -> Option<usi
         .map(|(index, _)| index)
 }
 
+/// Number of resource pointers released by the car-data destructor.
+pub const CAR_DATA_RESOURCE_SLOTS: usize = 16;
+
+/// Release non-null car-data resources in ascending slot order and clear every
+/// released slot (`0x481960`). Returns the number of releases, allowing a host
+/// to verify the same ownership events without native pointers.
+pub fn release_car_data_slots<T>(slots: &mut [Option<T>]) -> usize {
+    let mut released = 0;
+    for slot in slots {
+        if slot.take().is_some() {
+            released += 1;
+        }
+    }
+    released
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,6 +371,14 @@ mod tests {
         assert_eq!(nearest_unshed_panel(impact, &all_shed), None);
         // Empty -> None.
         assert_eq!(nearest_unshed_panel(impact, &[]), None);
+    }
+
+    #[test]
+    fn car_data_release_clears_only_present_slots() {
+        let mut slots = vec![Some(10), None, Some(30), None];
+        assert_eq!(release_car_data_slots(&mut slots), 2);
+        assert_eq!(slots, vec![None, None, None, None]);
+        assert_eq!(release_car_data_slots(&mut slots), 0);
     }
 
     #[test]

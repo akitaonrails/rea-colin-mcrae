@@ -216,7 +216,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   addressing (`car_type_param_base` 0xcd0 / `damage_region_base` 0x334 /
   `nearest_unshed_panel`, reusing the G04 thresholds). Liveries = palette +
   DAY/NIGHT variant; damage = vertex deformation + panel-shed flags (no extra
-  files). The car-code/make-name tables are game data, not vendored. See
+  files). The car-code/make-name and variant panel tables are game data, not
+  vendored. `release_car_data_slots` implements the 16-slot non-null free-and-clear
+  teardown; nine tests cover the composition and lifecycle. E09 is complete. See
   evidence `rea.official-eu.car-resources`.
 - `cmr-core::font_assets`: verified loading and stable style identity for the
   16 recovered frontend font atlases in original initialization order.

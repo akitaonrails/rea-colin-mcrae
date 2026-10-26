@@ -1440,6 +1440,10 @@ F03 is complete: the load-apply callback restores the 256-byte results region,
 six-bit progress and difficulty, and sets the loaded flag. The owned 12-slot
 cache retains valid positions and releases together; invalid records cannot
 mutate live state. Two tests bring `cmr-core` to 1,404.
+E09 is complete: `release_car_data_slots` implements the 16-slot non-null
+free-and-clear teardown, while wheel size/scale fields are confirmed as the
+existing radius inputs. One test brings `cmr-core` to 1,405. Car variant tables
+remain runtime data rather than unresolved code.
 
 Exit gate:
 
