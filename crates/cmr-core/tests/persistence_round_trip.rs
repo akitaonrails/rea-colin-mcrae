@@ -53,6 +53,20 @@ fn settings_load_then_persist_is_a_stable_fixed_point() {
 }
 
 #[test]
+fn championship_records_survive_settings_round_trips() {
+    let mut raw = settings_blob();
+    let range = cmr_core::championship_progression::championship_record_range(8, 6)
+        .expect("last championship record is in bounds");
+    raw[range.clone()].fill(0x5a);
+
+    let first = persist_settings(&load_settings(&raw).unwrap()).unwrap();
+    assert!(first[range.clone()].iter().all(|&byte| byte == 0x5a));
+    let second = persist_settings(&load_settings(&first).unwrap()).unwrap();
+    assert_eq!(first, second);
+    assert!(second[range].iter().all(|&byte| byte == 0x5a));
+}
+
+#[test]
 fn settings_do_not_save_flag_suppresses_persistence() {
     let mut raw = settings_blob();
     raw[SETTINGS_NO_SAVE_FLAG_OFFSET] = SETTINGS_NO_SAVE_FLAG_BIT;

@@ -604,7 +604,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T17:36Z | 147h18m | resolve-record-persistence | `8140a47` | F06 | Proved both record tables persist in the `0x1e20` `cmRally.cfg` image, added checked ranges and a settings round-trip, and implemented forced-country rival lookup from the dynamic `FUN_0044da00` path. Two tests bring `cmr-core` to 1,390. Custom scheduling remains. |
 
-| 2026-10-26T17:41Z | 147h23m | complete-championship-progression | _(pending)_ | F06 | Implemented sub-mode-1 limits/forced countries and sparse custom-stage scheduling, two-player reset, special-country rules and safe invalid-table rejection. Three tests bring `cmr-core` to 1,395; F06 is complete with runtime data and availability gates kept as inputs. |
+| 2026-10-26T17:41Z | 147h23m | complete-championship-progression | `b517751` | F06 | Implemented sub-mode-1 limits/forced countries and sparse custom-stage scheduling, two-player reset, special-country rules and safe invalid-table rejection. Three tests bring `cmr-core` to 1,395; F06 is complete with runtime data and availability gates kept as inputs. |
+
+| 2026-10-26T17:45Z | 147h27m | complete-persistence-verification | _(pending)_ | F07 | Added championship-record bytes to repeated settings round-trip coverage. Nine integration tests now cover persistence and failure recovery. Original-written differential fixtures are explicitly unsupported without a supplied original save and no shipped-binary execution. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

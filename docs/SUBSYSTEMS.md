@@ -2219,10 +2219,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   read back unchanged, settings load-then-persist is a stable fixed point, the
   do-not-save flag keeps the on-disk file, and every corruption, truncation, or
   absence recovers to the shipped-defaults / empty-slot behavior rather than
-  loading garbage - including the recovered no-delete overwrite. All fixtures
-  are synthetic and source-owned; byte-exact differential round-trips against an
-  original-written save and the championship payload semantics (F05/F06) remain.
-  See evidence `impl.persistence-round-trip`.
+  loading garbage - including the recovered no-delete overwrite. Championship
+  records also survive repeated settings round trips. Nine integration tests use
+  synthetic, source-owned fixtures. Original-written differential fixtures are
+  explicitly unsupported without a supplied original save, and creating one by
+  executing the shipped binary is outside the static-analysis policy. See
+  evidence `impl.persistence-round-trip`.
 - `cmr-core::championship_model` recovers the championship content addressing
   structure (F05) that the `0x690` save payload and the live struct share - not
   the content itself. Dimensions: 9 countries (live `+0x168 & 0xf`, each a `.TIM`

@@ -1418,6 +1418,11 @@ F06 is complete: sub-mode 1 now honors fixed/variable limits and forced
 countries, while sub-mode 2 scans sparse stage masks, applies two-player and
 special-country rules, and rejects invalid table indices safely. Three tests
 bring `cmr-core` to 1,395. Availability globals and table values remain inputs.
+F07 is complete: its integration suite now also proves championship-record bytes
+survive repeated settings round trips. Nine integration tests cover persistence
+and failure recovery. Original-written differential fixtures are explicitly
+unsupported without a supplied original save; the static policy forbids running
+the shipped binary to create one.
 
 Exit gate:
 
