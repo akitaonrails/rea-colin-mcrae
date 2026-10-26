@@ -96,6 +96,49 @@ pub mod di {
     pub const E_INVALIDARG: u32 = 0x8007_0057;
 }
 
+/// Exact parameter block passed by `FUN_004abe70` to
+/// `IDirectInputEffect::SetParameters`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SamplePeriodUpdate {
+    pub effect_size: u32,
+    pub sample_period: u32,
+    pub set_flags: u32,
+}
+
+#[must_use]
+pub fn sample_period_update(sample_period: u32) -> SamplePeriodUpdate {
+    SamplePeriodUpdate {
+        effect_size: di::DIEFFECT_DX7_SIZE,
+        sample_period,
+        set_flags: di::DIEP_SAMPLEPERIOD,
+    }
+}
+
+/// Exact effect/setup block passed by `FUN_004abed0` for a periodic gain update.
+/// The two-byte type-specific payload is preserved as observed, not expanded
+/// into an assumed SDK `DIPERIODIC` structure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PeriodicGainUpdate {
+    pub effect_size: u32,
+    pub effect_flags: u32,
+    pub gain: u32,
+    pub type_specific_size: u32,
+    pub type_specific_first: u32,
+    pub set_flags: u32,
+}
+
+#[must_use]
+pub fn periodic_gain_update(gain: u32, type_specific_first: u32) -> PeriodicGainUpdate {
+    PeriodicGainUpdate {
+        effect_size: di::DIEFFECT_DX7_SIZE,
+        effect_flags: di::DIEFF_POLAR | di::DIEFF_OBJECTOFFSETS,
+        gain,
+        type_specific_size: 2,
+        type_specific_first,
+        set_flags: di::DIEP_GAIN | di::DIEP_DIRECTION,
+    }
+}
+
 /// Game-internal magnitude ceiling: `1.0` in Q16.16 (impacts, grip, and rumble
 /// magnitudes are clamped to this before being rescaled for DirectInput).
 pub const GAME_MAGNITUDE_MAX: i32 = 0x1_0000;
@@ -727,6 +770,29 @@ mod tests {
         let acc = DecayAccumulator::seed(0x40_0000, -5);
         assert_eq!(acc.magnitude, di::FF_NOMINAL_MAX);
         assert_eq!(acc.step, 0);
+    }
+
+    #[test]
+    fn effect_update_wrappers_preserve_exact_parameters_and_flags() {
+        assert_eq!(
+            sample_period_update(1000),
+            SamplePeriodUpdate {
+                effect_size: 0x38,
+                sample_period: 1000,
+                set_flags: 2,
+            }
+        );
+        assert_eq!(
+            periodic_gain_update(6000, 500),
+            PeriodicGainUpdate {
+                effect_size: 0x38,
+                effect_flags: 0x22,
+                gain: 6000,
+                type_specific_size: 2,
+                type_specific_first: 500,
+                set_flags: 0x44,
+            }
+        );
     }
 
     #[test]

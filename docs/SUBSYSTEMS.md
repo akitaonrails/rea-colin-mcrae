@@ -2399,6 +2399,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Force feedback includes `SamplePeriodUpdate` and `PeriodicGainUpdate` for the
+  final native wrappers, with exact DX7 effect size, set flags and two-byte type
+  payload. Runtime surface/car tables remain external inputs.
 - Music/video are portable contract implementations: PCM selection/loop/fade
   runs through `AudioHost`, while `VideoBackend` covers open, bounds, play,
   pause, skip and close with tests. CD music and command-line intro skip are

@@ -672,7 +672,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T20:40Z | 150h22m | recover-impact-volume-and-listener-curve | `15effa1` | H03 | Implemented exact collision impact speed bucketing, primary/secondary volume formulas, sub-wave offset and listener curve. One test brings `cmr-core` to 1,416; vendor units and 3D coordinates remain explicit. |
 
-| 2026-10-26T20:50Z | 150h32m | complete-music-and-video-backends | _(pending)_ | H05, H06, H07 | Closed music and video through the existing tested PCM controller, SDL `AudioHost` integration, MCI state machine and portable `VideoBackend`. CD music and command-line skip remain negative findings; replay trigger, focus suppression, clip suffix/order and a concrete decoder are explicitly unsupported. |
+| 2026-10-26T20:50Z | 150h32m | complete-music-and-video-backends | `4f4f1b8` | H05, H06, H07 | Closed music and video through the existing tested PCM controller, SDL `AudioHost` integration, MCI state machine and portable `VideoBackend`. CD music and command-line skip remain negative findings; replay trigger, focus suppression, clip suffix/order and a concrete decoder are explicitly unsupported. |
+
+| 2026-10-26T21:00Z | 150h42m | recover-force-feedback-update-wrappers | _(pending)_ | H08 | Implemented `FUN_004abe70` sample-period and `FUN_004abed0` periodic-gain update contracts with exact DX7 effect/set flags and observed two-byte type payload. One test brings `cmr-core` to 1,417 and closes H08. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
