@@ -1137,6 +1137,12 @@ consumed by `FUN_00424a40`. Two store tests bring `cmr-assets` to 80 library
 tests, one adapter test brings `cmr-core` to 1,315, and the opt-in official
 extraction/reopen smoke passes. Runtime-table production and application/session
 wiring remain open.
+G03 establishes the runtime fifth table's startup boundary: all three literal
+sites are reads, no direct writer is analyzed, and the address has no file
+mapping. The loader-established table is therefore zero.
+`ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE` exposes that value and one
+test brings `cmr-core` to 1,316. Indirect runtime writes remain unknown;
+application/session wiring is still separate.
 
 Exit gate:
 

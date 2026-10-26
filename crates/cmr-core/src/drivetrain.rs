@@ -829,6 +829,11 @@ pub const SURFACE_EFFECT_PE_TABLE_INDICES: [Option<usize>; SURFACE_CAPABILITY_CO
     Some(14),
 ];
 
+/// Loader-established zero value of unmapped runtime `DAT_0054f824`.
+/// No direct writer was found in the analyzed image; indirect writes remain unknown.
+pub const ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE: [u8; SURFACE_ID_COUNT] =
+    [0; SURFACE_ID_COUNT];
+
 /// Accumulate enable counters from the address-ordered PE tables and the
 /// separately supplied runtime-backed fifth table.
 #[must_use]
@@ -1933,6 +1938,23 @@ mod tests {
             [2, 1, 3, 4, 99, 5, 6, 7, 8, 9, 10, 11, 12, 14, 13, 15],
         );
         assert!(accumulate_effect_enables_from_extracted(&[120], &extracted, &[99; 120]).is_none());
+    }
+
+    #[test]
+    fn zero_initialized_runtime_fifth_table_starts_with_a_zero_counter() {
+        let extracted = SurfaceCapabilityTables {
+            values: std::array::from_fn(|table| [(table + 1) as u8; SURFACE_ID_COUNT]),
+        };
+        let counters = accumulate_effect_enables_from_extracted(
+            &[3],
+            &extracted,
+            &ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE,
+        )
+        .unwrap();
+        assert_eq!(
+            counters,
+            [2, 1, 3, 4, 0, 5, 6, 7, 8, 9, 10, 11, 12, 14, 13, 15]
+        );
     }
 
     #[test]

@@ -233,7 +233,9 @@ values remain separate. `SurfaceCapabilityStore` revalidates the import and owns
 the complete span without retaining paths. The core counter adapter maps fifteen
 PE tables plus the separately injected runtime table; it does not consume the
 trailing PE table in `FUN_00424a40`. An opt-in official extraction/reopen smoke
-also passes without exposing values.
+also passes without exposing values. All three literal runtime-table sites are
+reads and no file mapping or direct writer exists, so the adapter also exposes
+the loader-zero startup table; indirect runtime mutation remains unknown.
 
 ## Executable-derived compiled car cases
 

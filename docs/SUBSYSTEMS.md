@@ -1566,6 +1566,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   library tests and one mapping test brings `cmr-core` to 1,315. The opt-in
   official extraction/reopen smoke passes. Runtime production and application
   wiring remain open.
+  G03 runtime fifth-table startup boundary: all three literal address sites are
+  reads, no direct writer is analyzed, and no file mapping exists for
+  `DAT_0054f824`. Its loader-established value is zero, exposed as
+  `ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE`; one test brings `cmr-core`
+  to 1,316. Indirect runtime writes remain unknown and application wiring is
+  separate.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
