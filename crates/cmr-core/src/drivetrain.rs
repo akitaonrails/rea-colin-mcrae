@@ -215,6 +215,79 @@ pub fn smoothed_speed_uses_tracking(input: SmoothedSpeedGateInput) -> bool {
     input.limiter_444 != 0 || ((input.handbrake_30c == 0 || input.lane < 2) && !mismatched_drive)
 }
 
+/// Runtime values for the shared slip/load/speed-limit calculation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DrivenSmoothingScalarInput {
+    pub suspension_298: [i32; 4],
+    pub longitudinal: i32,
+    pub gear_index: i32,
+    pub gear_ratio: i32,
+    pub gear_ratio_190: i32,
+    pub redline_15c: i32,
+    pub response_1f0: i32,
+    pub engine_2e0: i32,
+    pub response_160: i32,
+}
+
+/// Shared scalars consumed by driven smoothing and its direction branch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DrivenSmoothingScalars {
+    pub slip_gain: i32,
+    pub direction_gain: i32,
+    pub signed_speed_limit: i32,
+    pub engine_load: i32,
+}
+
+/// Recover the longitudinal and gear-reciprocal direction gain.
+#[must_use]
+pub fn derive_smoothing_direction_gain(longitudinal: i32, gear_index: i32, gear_ratio: i32) -> i32 {
+    let gear_term = if gear_ratio < 0 {
+        0x10000
+    } else if gear_index == 0 {
+        -1
+    } else {
+        (0x1_0000_0000_i64 / i64::from(gear_index)) as i32
+    };
+    q16_mul(longitudinal, 0x8000)
+        .wrapping_add(gear_term)
+        .min(0x10000)
+}
+
+/// Recover the suspension slip gain and engine/gear speed limit in native order.
+#[must_use]
+pub fn derive_driven_smoothing_scalars(
+    input: DrivenSmoothingScalarInput,
+) -> DrivenSmoothingScalars {
+    let suspension = input
+        .suspension_298
+        .into_iter()
+        .fold(0_i32, i32::wrapping_add);
+    let slip_gain = q16_mul(q16_mul(suspension, 0x4000), 0x9999);
+    let ratio_limit = if input.gear_ratio < 0 {
+        input.redline_15c
+    } else {
+        q16_mul(input.gear_ratio_190, input.redline_15c)
+    };
+    let response_limit = q16_mul(ratio_limit, input.response_1f0);
+    let engine_load = q16_mul(
+        ratio_limit.wrapping_sub(input.engine_2e0),
+        input.response_160,
+    )
+    .clamp(0, 0x10000);
+    let load_slip = q16_mul(engine_load, 0x10000_i32.wrapping_sub(slip_gain));
+    let signed_speed_limit = q16_mul(0x10000_i32.wrapping_sub(load_slip), response_limit);
+    DrivenSmoothingScalars {
+        slip_gain,
+        direction_gain: derive_smoothing_direction_gain(
+            input.longitudinal,
+            input.gear_index,
+            input.gear_ratio,
+        ),
+        signed_speed_limit,
+        engine_load,
+    }
+}
+
 /// Inputs for the driven `FUN_004088c0` integration branch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DrivenWheelSmoothingInput {
@@ -1731,6 +1804,53 @@ mod tests {
                 ..input
             }),
             0
+        );
+    }
+
+    #[test]
+    fn driven_smoothing_scalars_combine_suspension_load_and_gear_limits() {
+        let input = DrivenSmoothingScalarInput {
+            suspension_298: [0x10000; 4],
+            longitudinal: 0,
+            gear_index: 4,
+            gear_ratio: 1,
+            gear_ratio_190: 0x10000,
+            redline_15c: 0x10000,
+            response_1f0: 0x10000,
+            engine_2e0: 0,
+            response_160: 0x10000,
+        };
+        assert_eq!(
+            derive_driven_smoothing_scalars(input),
+            DrivenSmoothingScalars {
+                slip_gain: 0x9999,
+                direction_gain: 0x10000,
+                signed_speed_limit: 0x9999,
+                engine_load: 0x10000,
+            }
+        );
+        assert_eq!(
+            derive_driven_smoothing_scalars(DrivenSmoothingScalarInput {
+                gear_ratio: -1,
+                engine_2e0: 0x10000,
+                ..input
+            }),
+            DrivenSmoothingScalars {
+                slip_gain: 0x9999,
+                direction_gain: 0x10000,
+                signed_speed_limit: 0x10000,
+                engine_load: 0,
+            }
+        );
+        assert_eq!(derive_smoothing_direction_gain(0, 0, 1), -1);
+        assert_eq!(derive_smoothing_direction_gain(0x20000, 4, 1), 0x10000);
+        assert_eq!(
+            derive_driven_smoothing_scalars(DrivenSmoothingScalarInput {
+                engine_2e0: -0x20000,
+                ..input
+            })
+            .engine_load,
+            0x10000
         );
     }
 

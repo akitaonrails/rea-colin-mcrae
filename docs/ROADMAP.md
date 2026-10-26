@@ -1366,7 +1366,11 @@ raw/sign/asymmetric clamps and the shared dead zone. Two tests bring `cmr-core` 
 before enabling this branch in the application. Neutral gear now bypasses tracking
 and zeroes all four smoothed speeds, resuming ordinary tracking for a nonzero gear.
 One transition test brings `cmr-core` to 1,373. Driven force/scalar production and
-the separate engine-speed store remain.
+the separate engine-speed store remain. Driven scalar recovery now includes the
+suspension slip gain, clamped engine load, signed speed limit and the longitudinal/
+gear-reciprocal direction gain with native zero and negative-ratio behavior. One
+exact-value test brings `cmr-core` to 1,374. Input population and `force_2c8`
+production remain next.
 
 Exit gate:
 
