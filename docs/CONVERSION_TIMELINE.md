@@ -554,7 +554,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T14:18Z | 144h00m | stabilize-lane-source-s | `8e71bad` | G03 | Recovered and implemented the `+0x5d4` rejection, residual-length blend, response/timestep factor, final normalization and `+0x258` fallback. S now persists in `MotionState`; one test brings `cmr-core` to 1,362. Contact-index validation now precedes all S mutation, preserving rejected-step atomicity. |
 
-| 2026-10-26T14:27Z | 144h09m | wire-four-wheel-windowed-session | _(pending)_ | G09, I03 | The interactive windowed session now uses authenticated four-wheel inputs and `try_advance`; SDL closures stop and return checked errors through `WindowedStageFrameError`. Existing rendering fallback is preserved. Gates pass; no displayed run was performed. |
+| 2026-10-26T14:27Z | 144h09m | wire-four-wheel-windowed-session | `05c5b38` | G09, I03 | The interactive windowed session now uses authenticated four-wheel inputs and `try_advance`; SDL closures stop and return checked errors through `WindowedStageFrameError`. Existing rendering fallback is preserved. Gates pass; no displayed run was performed. |
+
+| 2026-10-26T14:36Z | 144h18m | produce-contact-global-gate-and-enables | _(pending)_ | G03 | Implemented the transformed projection-axis global gate and reused `derive_compiled_lane_thresholds` for all eight enable bytes and the failing count driving `+0x528`. One direct test brings `cmr-core` to 1,363; full-kernel, vertical replay and authenticated tests pass. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

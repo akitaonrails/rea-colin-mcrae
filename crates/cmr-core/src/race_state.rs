@@ -22,7 +22,7 @@
 
 use crate::compiled_car_initializer::{
     CompiledControlClearLoop, CompiledControlFamilies, CompiledHalfSignState,
-    CompiledPostLaneBasisEffects,
+    CompiledLaneThresholdInputs, CompiledPostLaneBasisEffects, derive_compiled_lane_thresholds,
 };
 use crate::drivetrain::{
     FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
@@ -38,9 +38,9 @@ use crate::vehicle_dynamics::{
     apply_angular_orientation_pipeline, apply_contact_vector_updates,
     apply_geometric_lane_postprocess, apply_lateral_grip, apply_translation_step,
     build_contact_basis_vectors, construct_lane_directions, contact_count_scale,
-    derive_lane_direction_pair, drag, net_accel, resolve_lane_direction_mode,
-    stabilize_lane_source_s, sum_contact_moments, sum_translation_lane_forces,
-    transform_contact_force,
+    contact_global_update_gate, derive_lane_direction_pair, drag, net_accel,
+    resolve_lane_direction_mode, stabilize_lane_source_s, sum_contact_moments,
+    sum_translation_lane_forces, transform_contact_force,
 };
 use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
 
@@ -222,6 +222,8 @@ pub struct FourWheelIterationParams<'a> {
     /// Per-tick `FUN_0040d400` scalar/gate inputs; vectors are replaced from the
     /// current contact-basis output before the reverse traversal.
     pub contact_update_inputs: [ContactVectorUpdateInput; 8],
+    /// Lane/source-Y values for the native `FUN_004126b0` enable/count scan.
+    pub lane_threshold_inputs: CompiledLaneThresholdInputs,
     /// Control response and timestep used by the persistent `+0x5d4` stabilizer.
     pub lane_response_2d8: Fixed16,
     pub lane_time_step: Fixed16,
@@ -772,13 +774,13 @@ impl RaceState {
                 return Err(WheelPostprocessError::ContactVectorIndex { lane, vector_index });
             }
         }
-        let contact_count = wheel
-            .postprocess
-            .wheel_contacts
-            .into_iter()
-            .filter(|contact| *contact)
-            .count() as u8;
-        let scale_528 = contact_count_scale(wheel.angular.momentum.moment_scale, contact_count);
+        let thresholds = derive_compiled_lane_thresholds(wheel.lane_threshold_inputs);
+        let scale_528 =
+            contact_count_scale(wheel.angular.momentum.moment_scale, thresholds.count_742);
+        let update_gate = contact_global_update_gate(transform_contact_force(
+            self.car.motion.basis,
+            self.car.motion.projection_axis,
+        ));
         let mut contact_update_inputs = wheel.contact_update_inputs;
         for (index, (input, vector)) in contact_update_inputs
             .iter_mut()
@@ -789,9 +791,8 @@ impl RaceState {
             input.basis = self.car.motion.projection_axis;
             input.scale_528 = scale_528;
             input.extra_vector = Vec3::ZERO;
-            if index < 4 {
-                input.enabled = wheel.postprocess.wheel_contacts[index];
-            }
+            input.update_gate = update_gate;
+            input.enabled = thresholds.flags_73a[index] != 0;
         }
         let source_s = stabilize_lane_source_s(
             self.car.motion.lane_source_s,
@@ -1371,6 +1372,10 @@ mod tests {
                 limit: Fixed16::ONE,
                 threshold: Fixed16::from_raw(0x7fff0000),
             }),
+            lane_threshold_inputs: CompiledLaneThresholdInputs {
+                lane_words: [0; 8],
+                source_y: [0x199a; 8],
+            },
             lane_response_2d8: Fixed16::from_raw(0x8000),
             lane_time_step: Fixed16::from_raw(0x3333),
             lane_direction_angle: 0,
@@ -1458,15 +1463,20 @@ mod tests {
             sample.car.four_wheel.first[3].wheel_speed
         );
         let contact_vectors = build_contact_basis_vectors(car.motion.contact_basis(car.velocity));
+        let thresholds = derive_compiled_lane_thresholds(wheel.lane_threshold_inputs);
+        let update_gate = contact_global_update_gate(transform_contact_force(
+            car.motion.basis,
+            car.motion.projection_axis,
+        ));
         let mut contact_inputs = wheel.contact_update_inputs;
         for (index, (input, vector)) in contact_inputs.iter_mut().zip(contact_vectors).enumerate() {
             input.vector = vector;
             input.basis = car.motion.projection_axis;
-            input.scale_528 = contact_count_scale(wheel.angular.momentum.moment_scale, 4);
+            input.scale_528 =
+                contact_count_scale(wheel.angular.momentum.moment_scale, thresholds.count_742);
             input.extra_vector = Vec3::ZERO;
-            if index < 4 {
-                input.enabled = wheel.postprocess.wheel_contacts[index];
-            }
+            input.update_gate = update_gate;
+            input.enabled = thresholds.flags_73a[index] != 0;
         }
         assert_eq!(
             sample.car.four_wheel.contact_updates,

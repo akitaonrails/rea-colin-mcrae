@@ -1444,6 +1444,30 @@ pub fn build_contact_basis_vectors(input: ContactBasisInput) -> [Vec3; 8] {
     })
 }
 
+/// Resolve the global `FUN_0040d400` update gate after transforming `+0x324`
+/// through the `+0x2a0` matrix. Zero enables updates; one suppresses them.
+#[must_use]
+pub fn contact_global_update_gate(transformed: Vec3) -> i32 {
+    let center = transformed.y.raw();
+    if center < 0x107 {
+        return 0;
+    }
+    let magnitude = center.wrapping_abs();
+    if Fixed16::from_raw(magnitude)
+        .mul(Fixed16::from_raw(0x93cd))
+        .raw()
+        < transformed.x.raw().wrapping_abs()
+    {
+        return 0;
+    }
+    i32::from(
+        Fixed16::from_raw(magnitude)
+            .mul(Fixed16::from_raw(0x1bb67))
+            .raw()
+            >= transformed.z.raw().wrapping_abs(),
+    )
+}
+
 /// Runtime inputs for one `FUN_0040d400` contact-vector update.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContactVectorUpdateInput {
@@ -2213,6 +2237,15 @@ mod tests {
             }),
             [velocity; 8]
         );
+    }
+
+    #[test]
+    fn contact_global_gate_uses_center_and_component_ratios() {
+        assert_eq!(contact_global_update_gate(Vec3::ZERO), 0);
+        assert_eq!(contact_global_update_gate(raw_v(0, 0x107, 0)), 1);
+        assert_eq!(contact_global_update_gate(raw_v(0x20000, 0x10000, 0)), 0);
+        assert_eq!(contact_global_update_gate(raw_v(0, 0x10000, 0x40000)), 0);
+        assert_eq!(contact_global_update_gate(raw_v(0, 0x10000, 0)), 1);
     }
 
     #[test]

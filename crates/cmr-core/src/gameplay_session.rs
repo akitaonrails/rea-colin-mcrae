@@ -363,6 +363,10 @@ mod tests {
                 limit: Fixed16::ONE,
                 threshold: Fixed16::ONE,
             }; 8],
+            lane_threshold_inputs: crate::compiled_car_initializer::CompiledLaneThresholdInputs {
+                lane_words: [0; 8],
+                source_y: [0x199a; 8],
+            },
             lane_response_2d8: Fixed16::ZERO,
             lane_time_step: Fixed16::ZERO,
             lane_direction_angle: 0,
