@@ -224,7 +224,8 @@ cover the recovered pure rules.
   **G03 surface-capability table provenance and extraction (`46db7cd`):** fresh `FUN_00424a40` pseudocode pins sixteen contiguous PE-backed 120-byte capability tables at `0x4ec0f8`, in the consumer order `0x4ec170`, `0x4ec0f8`, `0x4ec1e8`, `0x4ec260`, `DAT_0054f824`, `0x4ec2d8`, `0x4ec350`, `0x4ec3c8`, `0x4ec440`, `0x4ec4b8`, `0x4ec530`, `0x4ec5a8`, `0x4ec620`, `0x4ec710`, `0x4ec698`, `0x4ec788`; the `DAT_0054f824` consumer is a runtime table and is not part of this PE span. `cmr-formats::pe_surface::extract_official_eu_surface_capabilities` decodes exactly the sixteen PE-backed tables (1,920 bytes) in address order without vendoring their values; the counter-to-address consumption order above remains explicit. Two focused tests cover table/entry order and short-span rejection, bringing `cmr-formats` to 160 library tests. Reviewed asset import/store and application wiring remain separate; the runtime-backed fifth consumer is not claimed extracted.
   **G03 reviewed surface-capability import (`2f10ed5`):** `profiles/official-eu-surface-capabilities-v1.json` binds the exact executable identity and the 16-by-120 unsigned-byte shape at `0x4ec0f8`. `cmr-assets extract-surface-capabilities` authenticates the source before PE parsing, rejects linked paths, validates output placement, and atomically publishes `surface-capabilities-u8.bin` plus path-free `surface-capability-import-state.json` under a caller-selected ignored runtime-data directory. Two library tests cover reviewed shape validation and authenticated synthetic extraction; one CLI test covers the real command and path-free metadata, bringing `cmr-assets` to 78 library and nine binary tests. A real authenticated import produced the expected 1,920 bytes without exposing values. The immutable store/counter wiring and the runtime-backed fifth table remain separate.
   **G03 immutable capability store and counter wiring (`44df5c4`):** `SurfaceCapabilityStore` revalidates the bounded state, exact reviewed profile/source identity, output path/size/hash, regular files and persistent symlinks before owning all sixteen address-ordered tables without retaining paths. `SURFACE_EFFECT_PE_TABLE_INDICES` pins the counter map `[1,0,2,3,runtime,4,5,6,7,8,9,10,11,13,12,14]`; only fifteen PE tables are consumed by `FUN_00424a40`, and the trailing PE table is retained but not consumed there. `accumulate_effect_enables_from_extracted` combines those tables with the separately supplied runtime fifth table. Two store tests bring `cmr-assets` to 80 library tests, and one mapping test brings `cmr-core` to 1,315. The opt-in official extraction/reopen smoke passes without exposing values. The runtime fifth table's producer and application/session wiring remain open.
-  **G03 runtime fifth-table zero-initialization boundary (pending milestone):** a complete initialized-memory literal search finds exactly three `DAT_0054f824` sites (`0x4240dd`, `0x424b1d`, `0x425ed6`), all byte reads in `FUN_00424a40`/`FUN_00425e30` or the undecoded read site; no direct writer is present. `address_to_file_offset` reports no authoritative file mapping, so the loader-established value is zero. `ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE` models that startup boundary, with one counter test bringing `cmr-core` to 1,316. Indirect/aliased runtime writes remain unproven; this is not a claim that the table can never change. Application/session wiring remains open.
+  **G03 runtime fifth-table zero-initialization boundary (`e5ab966`):** a complete initialized-memory literal search finds exactly three `DAT_0054f824` sites (`0x4240dd`, `0x424b1d`, `0x425ed6`), all byte reads in `FUN_00424a40`/`FUN_00425e30` or the undecoded read site; no direct writer is present. `address_to_file_offset` reports no authoritative file mapping, so the loader-established value is zero. `ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE` models that startup boundary, with one counter test bringing `cmr-core` to 1,316. Indirect/aliased runtime writes remain unproven; this is not a claim that the table can never change. Application/session wiring remains open.
+  **G03 application session surface-input boundary (pending milestone):** `cmr-app::SessionSurfaceInputs::open` loads `runtime-data/official-eu-surface-capabilities` through the embedded reviewed profile, owns the authenticated store, and pairs it with the zero-initialized runtime fifth table. `effect_enables(stage_surface_ids)` computes the recovered counter vector only for caller-supplied IDs; no IDs are inferred while the stage producer is unrecovered. Two tests cover the full map/invalid IDs and tamper rejection, bringing `cmr-app` to 23 library tests; the opt-in official session-open smoke passes without exposing values. Actual stage-surface-ID extraction and rendering/weather consumption remain open.
 
 
 
@@ -314,13 +315,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T05:18:02Z
-milestone=establish-runtime-fifth-zero-initialization
+updated_utc=2026-10-26T05:28:35Z
+milestone=wire-session-surface-inputs
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-wire-reviewed-surface-inputs-into-the-session
-next_exit_gate=the-session-consumes-reviewed-surface-tables-with-an-explicit-runtime-startup-boundary
+current_focus=G03-recover-stage-surface-id-production
+next_exit_gate=stage-authored-surface-ids-drive-the-reviewed-effect-counters
 <!-- PROGRESS-TAIL-END -->

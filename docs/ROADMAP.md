@@ -1143,6 +1143,12 @@ mapping. The loader-established table is therefore zero.
 `ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE` exposes that value and one
 test brings `cmr-core` to 1,316. Indirect runtime writes remain unknown;
 application/session wiring is still separate.
+G03 adds `cmr-app::SessionSurfaceInputs`, which owns the reviewed capability
+store and its zero-initialized runtime fifth table. Its `effect_enables` method
+computes counters only for caller-supplied stage IDs; no stage IDs are invented.
+Two tests bring `cmr-app` to 23 library tests, and the opt-in official
+session-open smoke passes. Actual stage-ID extraction and weather/render
+consumption remain open.
 
 Exit gate:
 

@@ -1572,6 +1572,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   `ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE`; one test brings `cmr-core`
   to 1,316. Indirect runtime writes remain unknown and application wiring is
   separate.
+  G03 application session surface inputs: `cmr-app::SessionSurfaceInputs` owns
+  the reviewed store and zero-initialized runtime table, and computes counters
+  only for caller-supplied stage IDs. Two tests cover the full map, invalid IDs,
+  and tamper rejection, bringing `cmr-app` to 23 library tests; the opt-in
+  official session-open smoke passes. Stage-ID production and weather/render
+  consumption remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

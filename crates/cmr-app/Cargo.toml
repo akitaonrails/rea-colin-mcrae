@@ -17,3 +17,5 @@ cmr-video-wgpu = { path = "../cmr-video-wgpu" }
 
 [dev-dependencies]
 cmr-test-support = { path = "../cmr-test-support" }
+serde_json.workspace = true
+sha2.workspace = true

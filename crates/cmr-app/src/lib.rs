@@ -9,7 +9,11 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use cmr_assets::{AssetStore, AssetStoreError, ReviewedProfile, ReviewedProfileError};
+use cmr_assets::{
+    AssetStore, AssetStoreError, ReviewedProfile, ReviewedProfileError,
+    ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfileError, SurfaceCapabilityStore,
+    SurfaceTableStoreError,
+};
 use cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
 use cmr_core::c3d_render::VERTEXTYPE_LVERTEX;
 use cmr_core::c3d_stage_scene::{StageScene, StageSceneError};
@@ -18,6 +22,10 @@ use cmr_core::camera_view::ViewController;
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
 use cmr_core::drive_controls::DriveResponse;
+use cmr_core::drivetrain::{
+    SURFACE_CAPABILITY_COUNT, SURFACE_ID_COUNT, ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE,
+    accumulate_effect_enables_from_extracted,
+};
 use cmr_core::fixed_point::{Fixed16, Vec3};
 use cmr_core::frontend::{FrontendPhase, RootSelection};
 use cmr_core::game_menu_flow::MenuFlowInputs;
@@ -82,6 +90,9 @@ pub const SOURCE_ENV: &str = "CMR_ORIGINAL_DIR";
 
 const REVIEWED_PROFILE: &[u8] =
     include_bytes!("../../../profiles/installed-eu-derived-assets-v2.json");
+const REVIEWED_SURFACE_CAPABILITY_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-surface-capabilities-v1.json");
+const SURFACE_CAPABILITY_STORE_DIRECTORY: &str = "official-eu-surface-capabilities";
 const ROOT_EXTENT: DisplayExtent = DisplayExtent {
     width: 640,
     height: 480,
@@ -1662,6 +1673,68 @@ struct GameFrameOutcome {
     music_active: bool,
 }
 
+/// Reviewed surface inputs owned by a game session.
+#[derive(Debug)]
+pub struct SessionSurfaceInputs {
+    store: SurfaceCapabilityStore,
+    runtime_fifth: [u8; SURFACE_ID_COUNT],
+}
+
+#[derive(Debug)]
+pub enum SessionSurfaceInputsError {
+    Profile(ReviewedSurfaceProfileError),
+    Store(SurfaceTableStoreError),
+}
+
+impl fmt::Display for SessionSurfaceInputsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Profile(error) => write!(formatter, "invalid reviewed surface profile: {error}"),
+            Self::Store(error) => write!(formatter, "cannot open surface inputs: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for SessionSurfaceInputsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Profile(error) => Some(error),
+            Self::Store(error) => Some(error),
+        }
+    }
+}
+
+impl SessionSurfaceInputs {
+    pub fn open(runtime_data: &Path) -> Result<Self, SessionSurfaceInputsError> {
+        let reviewed =
+            ReviewedSurfaceCapabilityProfile::from_json(REVIEWED_SURFACE_CAPABILITY_PROFILE)
+                .map_err(SessionSurfaceInputsError::Profile)?;
+        let store = SurfaceCapabilityStore::open(
+            &runtime_data.join(SURFACE_CAPABILITY_STORE_DIRECTORY),
+            &reviewed,
+        )
+        .map_err(SessionSurfaceInputsError::Store)?;
+        Ok(Self {
+            store,
+            runtime_fifth: ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE,
+        })
+    }
+
+    /// Compute effect enables for stage-authored surface IDs. The IDs come from
+    /// the caller until the stage producer is recovered; no IDs are inferred here.
+    #[must_use]
+    pub fn effect_enables(
+        &self,
+        stage_surface_ids: &[u8],
+    ) -> Option<[u32; SURFACE_CAPABILITY_COUNT]> {
+        accumulate_effect_enables_from_extracted(
+            stage_surface_ids,
+            self.store.tables(),
+            &self.runtime_fifth,
+        )
+    }
+}
+
 pub fn run_windowed_game_session(
     media_root: &Path,
     runtime_data: &Path,
@@ -1924,6 +1997,102 @@ mod tests {
 
     fn arguments(values: &[&str]) -> impl Iterator<Item = OsString> {
         values.iter().map(OsString::from)
+    }
+
+    static NEXT_SURFACE_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    struct SurfaceTemp(PathBuf);
+
+    impl Drop for SurfaceTemp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn surface_runtime() -> SurfaceTemp {
+        use cmr_assets::{
+            SURFACE_CAPABILITY_DATA_FILE, SURFACE_CAPABILITY_STATE_FILE,
+            SurfaceCapabilityImportSummary, SurfaceImportFile,
+        };
+        use sha2::{Digest, Sha256};
+
+        let root = std::env::temp_dir().join(format!(
+            "cmr-app-surface-inputs-{}-{}",
+            std::process::id(),
+            NEXT_SURFACE_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let store = root.join(SURFACE_CAPABILITY_STORE_DIRECTORY);
+        std::fs::create_dir_all(&store).unwrap();
+        let reviewed =
+            ReviewedSurfaceCapabilityProfile::from_json(REVIEWED_SURFACE_CAPABILITY_PROFILE)
+                .unwrap();
+        let data: Vec<u8> = (0..16)
+            .flat_map(|table| vec![(table + 1) as u8; SURFACE_ID_COUNT])
+            .collect();
+        std::fs::write(store.join(SURFACE_CAPABILITY_DATA_FILE), &data).unwrap();
+        let digest = |bytes: &[u8]| {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let summary = SurfaceCapabilityImportSummary {
+            schema_version: 1,
+            profile: reviewed.profile().id.clone(),
+            profile_sha256: reviewed.sha256().into(),
+            source: SurfaceImportFile {
+                path: reviewed.profile().executable.path.clone(),
+                size: reviewed.profile().executable.size,
+                sha256: reviewed.profile().executable.sha256.clone(),
+            },
+            output: SurfaceImportFile {
+                path: SURFACE_CAPABILITY_DATA_FILE.into(),
+                size: data.len() as u64,
+                sha256: digest(&data),
+            },
+        };
+        std::fs::write(
+            store.join(SURFACE_CAPABILITY_STATE_FILE),
+            serde_json::to_vec(&summary).unwrap(),
+        )
+        .unwrap();
+        SurfaceTemp(root)
+    }
+
+    #[test]
+    fn session_surface_inputs_load_reviewed_tables_and_compute_counters() {
+        let temp = surface_runtime();
+        let inputs = SessionSurfaceInputs::open(&temp.0).unwrap();
+        assert_eq!(
+            inputs.effect_enables(&[3, 3]),
+            Some([2, 1, 3, 4, 0, 5, 6, 7, 8, 9, 10, 11, 12, 14, 13, 15])
+        );
+        assert_eq!(inputs.effect_enables(&[120]), None);
+    }
+
+    #[test]
+    fn session_surface_inputs_reject_tampered_data() {
+        let temp = surface_runtime();
+        let path = temp
+            .0
+            .join(SURFACE_CAPABILITY_STORE_DIRECTORY)
+            .join(cmr_assets::SURFACE_CAPABILITY_DATA_FILE);
+        let mut data = std::fs::read(&path).unwrap();
+        data[0] ^= 1;
+        std::fs::write(path, data).unwrap();
+        assert!(SessionSurfaceInputs::open(&temp.0).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires reviewed user-derived data selected only by CMR_RUNTIME_DATA"]
+    fn official_session_surface_inputs_open_without_exposing_values() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .expect("CMR_RUNTIME_DATA must select the reviewed runtime-data root");
+        let inputs = SessionSurfaceInputs::open(Path::new(&root)).unwrap();
+        assert_eq!(
+            inputs.effect_enables(&[]),
+            Some([0; SURFACE_CAPABILITY_COUNT])
+        );
     }
 
     #[test]

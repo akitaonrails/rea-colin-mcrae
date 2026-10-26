@@ -236,6 +236,9 @@ trailing PE table in `FUN_00424a40`. An opt-in official extraction/reopen smoke
 also passes without exposing values. All three literal runtime-table sites are
 reads and no file mapping or direct writer exists, so the adapter also exposes
 the loader-zero startup table; indirect runtime mutation remains unknown.
+`cmr-app::SessionSurfaceInputs` loads this store from the explicit runtime-data
+root and computes effect counters only for caller-supplied stage surface IDs;
+it does not invent a stage-ID producer or a live weather/render path.
 
 ## Executable-derived compiled car cases
 
