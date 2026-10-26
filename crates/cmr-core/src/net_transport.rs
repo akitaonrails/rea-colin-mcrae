@@ -164,6 +164,74 @@ pub struct PlayerInfo {
     pub name: PlayerName,
 }
 
+/// Type-specific per-player record messages accepted by `FUN_0045abf0`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlayerRecordMessage {
+    Ready([i32; 15]),
+    Active([i32; 16]),
+    Done {
+        words: [i32; 17],
+        auxiliary_0: i32,
+        auxiliary_1: i32,
+    },
+    Accumulate([i32; 5]),
+}
+
+/// Recovered record state, with positional words preserved rather than assigned
+/// unsupported semantic names.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PlayerProtocolState {
+    pub present: bool,
+    pub ready: bool,
+    pub active: bool,
+    pub counter: u32,
+    pub auxiliary: [i32; 2],
+    pub last_report: i32,
+    pub accumulator: i32,
+    pub words: Vec<i32>,
+}
+
+/// Apply one positional record message. The accumulator message wraps its
+/// counter like the native dword.
+#[must_use]
+pub fn apply_player_record_message(
+    state: &mut PlayerProtocolState,
+    message: PlayerRecordMessage,
+) -> bool {
+    match message {
+        PlayerRecordMessage::Ready(words) => {
+            state.present = true;
+            state.ready = true;
+            state.active = true;
+            state.words = words.to_vec();
+        }
+        PlayerRecordMessage::Active(words) => {
+            state.ready = true;
+            state.active = true;
+            state.counter = state.counter.wrapping_add(1);
+            state.words = words.to_vec();
+        }
+        PlayerRecordMessage::Done {
+            words,
+            auxiliary_0,
+            auxiliary_1,
+        } => {
+            state.ready = false;
+            state.active = true;
+            state.counter = state.counter.wrapping_add(1);
+            state.auxiliary = [auxiliary_0, auxiliary_1];
+            state.words = words.to_vec();
+        }
+        PlayerRecordMessage::Accumulate(words) => {
+            state.present = true;
+            state.last_report = words[1];
+            state.accumulator = state.accumulator.wrapping_add(words[1]);
+            state.words = words.to_vec();
+        }
+    }
+    true
+}
+
 /// Message destination filters the recovered call sites use.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MessageTarget {
@@ -722,6 +790,46 @@ impl NetworkTransport for LoopbackTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_record_messages_preserve_words_and_native_state_transitions() {
+        let mut state = PlayerProtocolState::default();
+        assert!(apply_player_record_message(
+            &mut state,
+            PlayerRecordMessage::Ready([3; 15])
+        ));
+        assert_eq!(state.words, [3; 15]);
+        assert!(state.present && state.ready && state.active);
+        assert_eq!(state.counter, 0);
+
+        assert!(apply_player_record_message(
+            &mut state,
+            PlayerRecordMessage::Active([4; 16])
+        ));
+        assert_eq!(state.counter, 1);
+        assert!(apply_player_record_message(
+            &mut state,
+            PlayerRecordMessage::Done {
+                words: [5; 17],
+                auxiliary_0: 8,
+                auxiliary_1: 9,
+            }
+        ));
+        assert!(!state.ready && state.active);
+        assert_eq!(state.counter, 2);
+        assert_eq!(state.auxiliary, [8, 9]);
+
+        assert!(apply_player_record_message(
+            &mut state,
+            PlayerRecordMessage::Accumulate([0, 7, 0, 0, 0])
+        ));
+        assert!(apply_player_record_message(
+            &mut state,
+            PlayerRecordMessage::Accumulate([0, -1, 0, 0, 0])
+        ));
+        assert_eq!(state.last_report, -1);
+        assert_eq!(state.accumulator, 6);
+    }
 
     fn provider() -> ProviderId {
         ProviderId([7; 16])

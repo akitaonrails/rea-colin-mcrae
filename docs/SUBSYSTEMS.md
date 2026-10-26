@@ -2399,6 +2399,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Networking covers per-player 15/16/17/5-word record messages with
+  ready/active/done transitions and wrapping accumulation. Unknown fields stay
+  positional. Runtime application/provider GUIDs are external identity; the
+  optional TCP backend remains one-peer.
 - Force feedback includes `SamplePeriodUpdate` and `PeriodicGainUpdate` for the
   final native wrappers, with exact DX7 effect size, set flags and two-byte type
   payload. Runtime surface/car tables remain external inputs.

@@ -674,7 +674,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T20:50Z | 150h32m | complete-music-and-video-backends | `4f4f1b8` | H05, H06, H07 | Closed music and video through the existing tested PCM controller, SDL `AudioHost` integration, MCI state machine and portable `VideoBackend`. CD music and command-line skip remain negative findings; replay trigger, focus suppression, clip suffix/order and a concrete decoder are explicitly unsupported. |
 
-| 2026-10-26T21:00Z | 150h42m | recover-force-feedback-update-wrappers | _(pending)_ | H08 | Implemented `FUN_004abe70` sample-period and `FUN_004abed0` periodic-gain update contracts with exact DX7 effect/set flags and observed two-byte type payload. One test brings `cmr-core` to 1,417 and closes H08. |
+| 2026-10-26T21:00Z | 150h42m | recover-force-feedback-update-wrappers | `ee4607a` | H08 | Implemented `FUN_004abe70` sample-period and `FUN_004abed0` periodic-gain update contracts with exact DX7 effect/set flags and observed two-byte type payload. One test brings `cmr-core` to 1,417 and closes H08. |
+
+| 2026-10-26T21:10Z | 150h52m | complete-network-player-records | _(pending)_ | H09 | Implemented positional per-player 15/16/17/5-word records, ready/active/done state, auxiliary values and wrapping accumulation. One test brings `cmr-core` to 1,418. Runtime GUIDs remain negotiated identity; full synchronization stays outside H10. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

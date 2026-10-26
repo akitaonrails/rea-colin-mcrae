@@ -1576,6 +1576,11 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+H09's reachable DirectPlay scope now includes per-player record messages and
+state transitions, not just the session lifecycle. Positional words are
+preserved and accumulation wraps natively. Application/provider GUIDs stay
+runtime-negotiated; H10 remains a one-peer backend, not full synchronization.
+
 H08 now includes the final DirectInput update wrappers: sample-period and
 periodic-gain `SetParameters` layouts, including exact flags and the observed
 two-byte type payload. Runtime surface/car tables remain external data.
