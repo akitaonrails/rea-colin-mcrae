@@ -464,7 +464,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T06:48Z | 136h30m | reconstruct-sprite-render-reference-queue | `8130895` | E10 | Recovered the `FUN_00429910` bounded render-reference queue: resource identity, depth and sequence order with a 100-entry cap. `SpriteRenderQueue` rejects the 101st entry. One test brings `cmr-core` to 1,325. Pool-field depth mapping and final draw submission remain separate. |
 
-| 2026-10-26T06:54Z | 136h36m | compose-active-particle-render-queue | _(pending)_ | E10 | `ParticlePool::render_queue` emits active records with camera-relative depth using the recovered square-root approximation (`327728` for 3–4–5), excluding deactivated records. One test brings `cmr-core` to 1,326. This is a derived composition; final draw submission remains separate. |
+| 2026-10-26T06:54Z | 136h36m | compose-active-particle-render-queue | `7a07139` | E10 | `ParticlePool::render_queue` emits active records with camera-relative depth using the recovered square-root approximation (`327728` for 3–4–5), excluding deactivated records. One test brings `cmr-core` to 1,326. This is a derived composition; final draw submission remains separate. |
+
+| 2026-10-26T07:19Z | 137h01m | recover-final-sprite-draw-submission | _(pending)_ | E10 | Recovered `FUN_00427c50`/`FUN_004a4330` final submission: 84-byte records with packet/resource fields, overlapping kind bytes and tag, and the 600th single-primitive rejection. `SpriteDrawSubmissions` reproduces the layout. One byte-for-byte test brings `cmr-core` to 1,327. Backend submission remains behind this contract. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

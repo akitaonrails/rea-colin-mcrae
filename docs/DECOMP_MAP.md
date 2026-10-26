@@ -233,7 +233,8 @@ cover the recovered pure rules.
   **E10 common particle-pool update traversal (`d2bf168`):** `FUN_00427d20` traverses all 100 records in a pool, integrating position and `0xf333`-damped velocity for types `1/5/6/7/8/9/0xc/0x16/0x18`, subtracting `0x34` from vertical velocity for `1/6/0x16/0x18`, decrementing selected `u16` lifetimes, advancing `word_38` by the injected step, incrementing age, and deactivating at signed-negative lifetime, type-`0x1b` age above 1, or age above 5000. `advance_common` reproduces this shared path and preserves `word_38` on respawn, as the native spawn writer leaves it untouched. Two tests cover integration, lifetime/age deactivation and inactive/other types, bringing `cmr-core` to 1,322. Type-specific physics and final sprite rendering remain separate.
   **E10 type-specific clod and splash updates (`6062804`):** the clod branch (`2/0x15/0x1a/0x17`) applies `FUN_004281f0`'s Q16 polynomial to `qmul(clod_base, word_38)`, computes the ground-relative factor, moves relative to the initial position, damps and resets on downward motion, or deactivates using the threshold/counter gate. Splash (`0x0b`) damps its vector by `0xcccc`, applies the two random-delta adjustments when `word_38 > 0x60000`, integrates position, and deactivates below `-0x140000` relative Y. `advance_type_specific` composes these before the common update; deactivation now also clears `word_30/word_34`, type/flag and sets the recovered Y sentinel. Two tests cover polynomial endpoints, movement/reset/deactivation and splash adjustment, bringing `cmr-core` to 1,324. Final sprite rendering and other render-time branches remain separate.
   **E10 sprite render-reference queue (`8130895`):** `FUN_00429910` appends a resource ID, depth and sequence index only while fewer than 100 entries are present, rejecting the new reference at capacity. `SpriteRenderQueue` reproduces that contract with typed sprite identities. One test covers all 100 entries, depth/sequence order and the 101st rejection, bringing `cmr-core` to 1,325. The pool-field-to-depth mapping and actual draw submission are not inferred by this queue milestone.
-  **E10 active-particle render-queue composition (pending milestone):** `ParticlePool::render_queue` now emits only active records, using the recovered camera-relative vector-length calculation and generated square-root approximation for depth rather than aliasing an unproven record field. The 3–4–5 test vector produces the recovered approximation `327728`; a deactivated record is excluded. One focused test brings `cmr-core` to 1,326. This is a derived pool-to-queue composition; final draw submission remains separate.
+  **E10 active-particle render-queue composition (`7a07139`):** `ParticlePool::render_queue` now emits only active records, using the recovered camera-relative vector-length calculation and generated square-root approximation for depth rather than aliasing an unproven record field. The 3–4–5 test vector produces the recovered approximation `327728`; a deactivated record is excluded. One focused test brings `cmr-core` to 1,326. This is a derived pool-to-queue composition; final draw submission remains separate.
+  **E10 final sprite draw submission (pending milestone):** `FUN_00427c50` walks the sequence array and calls `FUN_004a4330(packet, 1, resource, 2, tag)`. The final wrapper emits 84-byte records: positional packet fields, resource short/word, overlapping kind/packet bytes at `+0x44`, and the tag at `+0x50`, bounded by the 600-primitive gate (599 accepted single-primitive records). `SpriteDrawSubmissions` reproduces the exact byte layout and rejection. One byte-for-byte test covers every field and the 600th rejection, bringing `cmr-core` to 1,327. Actual GPU/backend submission remains behind this recovered buffer contract.
 
 
 
@@ -323,13 +324,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T06:54:59Z
-milestone=compose-active-particle-render-queue
+updated_utc=2026-10-26T07:19:52Z
+milestone=recover-final-sprite-draw-submission
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=E10-recover-final-sprite-draw-submission
-next_exit_gate=render-queue-entries-drive-the-recovered-sprite-draw-path
+current_focus=G09-wire-recovered-drivetrain-into-race-state
+next_exit_gate=the-deterministic-race-state-uses-the-recovered-drivetrain-steps
 <!-- PROGRESS-TAIL-END -->

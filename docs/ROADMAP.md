@@ -1193,6 +1193,11 @@ length and the recovered square-root approximation for depth.
 `ParticlePool::render_queue` excludes deactivated records and produces typed
 resource/depth/sequence entries. One test brings `cmr-core` to 1,326. Final draw
 submission remains separate.
+E10 recovers final sprite draw submission: `FUN_00427c50` walks the queue into
+`FUN_004a4330`, whose 84-byte records contain positional packet/resource fields,
+overlapping kind bytes and the tag. `SpriteDrawSubmissions` reproduces the exact
+layout and the 600th single-primitive rejection. One byte-level test brings
+`cmr-core` to 1,327. Backend submission remains behind this contract.
 
 Exit gate:
 

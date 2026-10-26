@@ -1620,6 +1620,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   square-root approximation. One test checks that approximation and excludes a
   deactivated record, bringing `cmr-core` to 1,326. Final draw submission
   remains separate.
+  E10 final sprite submission: `SpriteDrawSubmissions` reproduces the 84-byte
+  `FUN_004a4330` record layout, including packet/resource fields, overlapping
+  kind bytes and tag, plus the 600th rejection. One byte-for-byte test brings
+  `cmr-core` to 1,327. Backend submission remains behind this contract.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

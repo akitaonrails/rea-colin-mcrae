@@ -249,7 +249,8 @@ splash branches, then `advance_common` applies position/velocity, lifetime and
 age updates. `SpriteRenderQueue` holds the recovered resource/depth/sequence
 references up to 100 entries. `ParticlePool::render_queue` supplies active
 records with camera-relative depth using the recovered square-root
-approximation; final drawing remains separate.
+approximation. `SpriteDrawSubmissions` encodes the recovered 84-byte final
+records and capacity gate; backend drawing remains separate.
 
 ## Executable-derived compiled car cases
 

@@ -612,6 +612,69 @@ pub mod particles {
         }
     }
 
+    pub const SPRITE_DRAW_RECORD_BYTES: usize = 84;
+    pub const SPRITE_DRAW_RECORD_LIMIT: usize = 599;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct SpriteDrawPacket {
+        pub words: [i32; 16],
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct SpriteDrawResource {
+        pub short_0: u16,
+        pub word_10: i32,
+    }
+
+    /// The 84-byte draw-submission record from `FUN_004a4330`.
+    pub type SpriteDrawRecord = [u8; SPRITE_DRAW_RECORD_BYTES];
+
+    #[derive(Debug, Default)]
+    pub struct SpriteDrawSubmissions {
+        records: Vec<SpriteDrawRecord>,
+    }
+
+    impl SpriteDrawSubmissions {
+        #[must_use]
+        pub fn records(&self) -> &[SpriteDrawRecord] {
+            &self.records
+        }
+
+        /// Submit one primitive with `(packet, resource, kind=2, tag)`.
+        pub fn submit_one(
+            &mut self,
+            packet: SpriteDrawPacket,
+            resource: SpriteDrawResource,
+            tag: i32,
+        ) -> bool {
+            if self.records.len() >= SPRITE_DRAW_RECORD_LIMIT {
+                return false;
+            }
+            fn word(record: &mut SpriteDrawRecord, index: usize, value: i32) {
+                record[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            let mut record = [0; SPRITE_DRAW_RECORD_BYTES];
+            for (index, source) in [5, 4, 3, 8, 4, 6, 5, 7, 3, 8, 7, 6].into_iter().enumerate() {
+                word(&mut record, index, packet.words[source]);
+            }
+            word(&mut record, 11, resource.word_10);
+            record[48..50].copy_from_slice(&resource.short_0.to_le_bytes());
+            word(&mut record, 13, packet.words[0]);
+            word(&mut record, 14, packet.words[1]);
+            word(&mut record, 15, packet.words[2]);
+            word(&mut record, 16, packet.words[2]);
+            word(&mut record, 17, packet.words[0xd]);
+            record[68] = 2;
+            record[69] = packet.words[0xc] as u8;
+            record[70] = packet.words[0xe] as u8;
+            word(&mut record, 18, packet.words[9]);
+            word(&mut record, 19, packet.words[9]);
+            word(&mut record, 20, tag);
+            self.records.push(record);
+            true
+        }
+    }
+
     /// The initial animation frame at spawn (`FUN_00424f40` / `FUN_004a96e0`):
     /// the average of the three low bytes of a random word, or the fixed
     /// low-detail frame when the detail level is lowest.
@@ -1105,6 +1168,39 @@ mod tests {
         assert_eq!(queue.entries()[0].resource, ParticleSpriteTable::Type6);
         assert_eq!(queue.entries()[0].depth, 327728);
         assert_eq!(queue.entries()[0].sequence, 0);
+    }
+
+    #[test]
+    fn sprite_draw_submission_encodes_the_84_byte_record_and_limit() {
+        use particles::{SpriteDrawPacket, SpriteDrawResource, SpriteDrawSubmissions};
+        let packet = SpriteDrawPacket {
+            words: std::array::from_fn(|index| (index + 1) as i32),
+        };
+        let resource = SpriteDrawResource {
+            short_0: 0xabcd,
+            word_10: 99,
+        };
+        let mut submissions = SpriteDrawSubmissions::default();
+        assert!(submissions.submit_one(packet, resource, 0x12345678));
+        let record = submissions.records()[0];
+        let word =
+            |index: usize| i32::from_le_bytes(record[index * 4..index * 4 + 4].try_into().unwrap());
+        let expected = [
+            6, 5, 4, 9, 5, 7, 6, 8, 4, 9, 8, 99, 0xabcd, 1, 2, 3, 3, 0xf0d02, 10, 10, 0x12345678,
+        ];
+        for (index, expected) in expected.into_iter().enumerate() {
+            assert_eq!(word(index), expected, "word {index}");
+        }
+        assert_eq!(&record[48..50], &[0xcd, 0xab]);
+        assert_eq!(&record[50..52], &[0, 0]);
+        assert_eq!(&record[68..71], &[2, 13, 15]);
+        assert_eq!(&record[80..84], &0x12345678i32.to_le_bytes());
+        let mut submissions = SpriteDrawSubmissions::default();
+        for _ in 0..599 {
+            assert!(submissions.submit_one(packet, resource, 0));
+        }
+        assert!(!submissions.submit_one(packet, resource, 0));
+        assert_eq!(submissions.records().len(), 599);
     }
 
     #[test]
