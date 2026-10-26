@@ -2399,6 +2399,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Music/video are portable contract implementations: PCM selection/loop/fade
+  runs through `AudioHost`, while `VideoBackend` covers open, bounds, play,
+  pause, skip and close with tests. CD music and command-line intro skip are
+  negative findings. Replay trigger, focus suppression, exact clip suffix/order,
+  and a real video decoder remain explicitly unsupported.
 - `audio_surface` implements collision impact speed bucketing, primary and
   secondary volumes, sub-wave offset, and the `>333` listener-volume curve with
   native integer order. Vendor units and 3D coordinate meanings stay explicit.

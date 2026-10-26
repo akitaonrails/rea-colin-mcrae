@@ -1576,6 +1576,12 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+H05–H07 are closed by the existing PCM music and portable video contracts.
+The native frontend drives looping/fading PCM through `AudioHost`; video has a
+tested open/play/pause/skip/close interface. No CD music or command-line skip is
+added. Replay trigger, focus suppression, clip suffix/order, and a concrete
+video decoder remain explicit unsupported boundaries.
+
 H03 now includes the exact collision impact bucket and both volume formulas,
 plus the strict listener-curve threshold. Vendor post-scale units and 3D
 coordinates remain explicit unsupported boundaries.

@@ -670,7 +670,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T20:30Z | 150h12m | complete-audio-abi-and-wave-loading | `9ae3243` | H01, H02 | Closed H01 through B03's 16-import scope. Recovered both `QSWaveMixOpenWave` flag forms exactly (`8` named PCM and `0x10` managed) in `WaveOpenCall`; unsupported vendor flag semantics stay explicit. One test brings `cmr-core` to 1,415. |
 
-| 2026-10-26T20:40Z | 150h22m | recover-impact-volume-and-listener-curve | _(pending)_ | H03 | Implemented exact collision impact speed bucketing, primary/secondary volume formulas, sub-wave offset and listener curve. One test brings `cmr-core` to 1,416; vendor units and 3D coordinates remain explicit. |
+| 2026-10-26T20:40Z | 150h22m | recover-impact-volume-and-listener-curve | `15effa1` | H03 | Implemented exact collision impact speed bucketing, primary/secondary volume formulas, sub-wave offset and listener curve. One test brings `cmr-core` to 1,416; vendor units and 3D coordinates remain explicit. |
+
+| 2026-10-26T20:50Z | 150h32m | complete-music-and-video-backends | _(pending)_ | H05, H06, H07 | Closed music and video through the existing tested PCM controller, SDL `AudioHost` integration, MCI state machine and portable `VideoBackend`. CD music and command-line skip remain negative findings; replay trigger, focus suppression, clip suffix/order and a concrete decoder are explicitly unsupported. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
