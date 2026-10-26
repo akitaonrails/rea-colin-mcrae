@@ -1468,6 +1468,9 @@ the indexed sampler rather than quantized; animation clocks remain caller input.
 E02 is complete: consumer evidence proves every vertex/face field role, on-disk
 RGBA order, and that `field_22` is not a rasterizer input. Group-2 binding is
 covered by E03; no new duplicate implementation is needed.
+B03 is complete: all 16 reachable QMixer imports have recovered contracts and a
+software/SDL playback path. The remaining 46 exports are explicitly unreferenced.
+Unknown units stay verbatim instead of becoming invented conversion rules.
 
 Exit gate:
 

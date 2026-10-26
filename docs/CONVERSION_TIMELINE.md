@@ -630,7 +630,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T18:48Z | 148h30m | complete-material-variants | `14e76a5` | E03 | Implemented truecolor 4/8-bit indexed sampling with aligned pad preservation and caller-selected `ANIM` frame targets. Three video tests cover padded rows and animation selection/rejection; direct 24-bit is explicitly unsupported in the indexed sampler. |
 
-| 2026-10-26T18:51Z | 148h33m | complete-entry-field-semantics | _(pending)_ | E02 | Closed all vertex/face field roles using existing consumer evidence: RGBA order is proven, `field_22` is not a rasterizer input, and E03 resolves group-2 binding. |
+| 2026-10-26T18:51Z | 148h33m | complete-entry-field-semantics | `d5720de` | E02 | Closed all vertex/face field roles using existing consumer evidence: RGBA order is proven, `field_22` is not a rasterizer input, and E03 resolves group-2 binding. |
+
+| 2026-10-26T18:54Z | 148h36m | complete-qmixer-abi-scope | _(pending)_ | B03 | Closed all 16 reachable QMixer imports through the recovered contract and software/SDL playback. The remaining 46 exports are explicitly unreferenced, not requirements. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

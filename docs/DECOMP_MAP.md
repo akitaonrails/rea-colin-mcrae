@@ -30,7 +30,7 @@ Status markers:
 
 - [~] `B01` Map `Rally.exe` functions, globals, imports, and call clusters.
 - [~] `B02` Map `Game.exe` launcher/video lifecycle and executable handoff.
-- [~] `B03` Map `qmixer.dll` ABI and the reachable imported subset.
+- [x] `B03` Map `qmixer.dll` ABI and the reachable imported subset (all 16 imported `QSWaveMix*` calls are recovered through the shared mixer contract and software playback backend; the DLL's remaining 46 exports are explicitly unreferenced, not reconstruction requirements. Unknown QMixer units are carried verbatim, and no proprietary backend is loaded).
 - [x] `B04` Recover legacy window/message/focus/presentation decisions.
 - [x] `B05` Recover deterministic timing and scheduler rules as pure plans.
 - [x] `B06` Recover keyboard/joystick state and frontend input rules.
@@ -324,13 +324,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T18:51:25Z
-milestone=complete-entry-field-semantics
-completed=77
-partial=41
+updated_utc=2026-10-26T18:53:47Z
+milestone=complete-qmixer-abi-scope
+completed=78
+partial=40
 not_started=0
 blocked=0
 total=118
-current_focus=E01-close-general-bitmap-surface-rules
-next_exit_gate=general-bitmap-conversion-composition-and-padding-are-covered
+current_focus=B02-map-launcher-video-lifecycle
+next_exit_gate=launcher-handoff-and-video-lifecycle-are-evidenced
 <!-- PROGRESS-TAIL-END -->

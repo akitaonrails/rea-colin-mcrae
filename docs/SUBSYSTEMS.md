@@ -786,7 +786,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   the 22050 Hz/30-channel cap, the incrementing wave-slot table, the PCM
   `WAVEFORMATEX` build, and the per-channel volume/frequency/3D-position/stop
   records as emitted `MixerCommand`s, all checked by a shared
-  `check_audio_mixer_contract`. A QMixer-faithful backend and a portable/SDL
+  `check_audio_mixer_contract`. B03 covers all 16 reachable imports; the other
+  46 exports are explicitly unreferenced. The software/SDL
   audio backend both remain to be implemented against this interface. See
   evidence `impl.audio-mixer-contract`.
 - The weather/crowd ambience loader `0x41cd30`/`FUN_0041cd30` registers six
