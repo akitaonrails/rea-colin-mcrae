@@ -1175,6 +1175,52 @@ pub fn clamp_angular_velocity(velocity: Vec3, enabled: bool) -> Vec3 {
     Vec3::new(clamp(velocity.x), clamp(velocity.y), clamp(velocity.z))
 }
 
+/// Control flags selecting the angular reset branches in `FUN_0040a4a0`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControlAxisFlags {
+    pub mode_3ec: i32,
+    pub axis_3f4: i32,
+    pub axis_3f8: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControlAxisResetOutcome {
+    pub angular_velocity: Vec3,
+    pub angle_increments: [i16; 3],
+}
+
+/// Apply the recovered control-axis reset priority. The `+0x3f4` branch clears
+/// X/Z velocity and angles 0/2; otherwise `+0x3f8` clears X/Y velocity and
+/// angles 0/1. Both require nonzero `+0x3ec`.
+#[must_use]
+pub fn apply_control_axis_resets(
+    mut angular_velocity: Vec3,
+    mut angle_increments: [i16; 3],
+    flags: ControlAxisFlags,
+) -> ControlAxisResetOutcome {
+    if flags.mode_3ec == 0 {
+        return ControlAxisResetOutcome {
+            angular_velocity,
+            angle_increments,
+        };
+    }
+    if flags.axis_3f4 != 0 {
+        angular_velocity.x = Fixed16::ZERO;
+        angular_velocity.z = Fixed16::ZERO;
+        angle_increments[0] = 0;
+        angle_increments[2] = 0;
+    } else if flags.axis_3f8 != 0 {
+        angular_velocity.x = Fixed16::ZERO;
+        angular_velocity.y = Fixed16::ZERO;
+        angle_increments[0] = 0;
+        angle_increments[1] = 0;
+    }
+    ControlAxisResetOutcome {
+        angular_velocity,
+        angle_increments,
+    }
+}
+
 /// Runtime inputs for one `FUN_0040d400` contact-vector update.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContactVectorUpdateInput {
@@ -1590,6 +1636,34 @@ mod tests {
         // drag = v * speed.
         let d = drag(v(1, 0, 0), Fixed16::from_raw(0x8000));
         assert_eq!(d.x, Fixed16::from_raw(0x8000));
+    }
+
+    #[test]
+    fn control_axis_resets_cover_priority_and_every_gate() {
+        let velocity = raw_v(1, 2, 3);
+        let angles = [4, 5, 6];
+        let reset = |mode_3ec, axis_3f4, axis_3f8| {
+            apply_control_axis_resets(
+                velocity,
+                angles,
+                ControlAxisFlags {
+                    mode_3ec,
+                    axis_3f4,
+                    axis_3f8,
+                },
+            )
+        };
+        assert_eq!(reset(0, 1, 1).angular_velocity, velocity);
+        assert_eq!(reset(0, 1, 1).angle_increments, angles);
+        assert_eq!(reset(1, 0, 0).angular_velocity, velocity);
+        assert_eq!(reset(1, 0, 0).angle_increments, angles);
+        let first = reset(1, 1, 0);
+        assert_eq!(first.angular_velocity, raw_v(0, 2, 0));
+        assert_eq!(first.angle_increments, [0, 5, 0]);
+        let second = reset(1, 0, 1);
+        assert_eq!(second.angular_velocity, raw_v(0, 0, 3));
+        assert_eq!(second.angle_increments, [0, 0, 6]);
+        assert_eq!(reset(1, 1, 1), first);
     }
 
     #[test]

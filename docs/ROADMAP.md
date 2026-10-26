@@ -1245,8 +1245,9 @@ wrapping-absolute semantics, bringing `cmr-core` to 1,338. The generalized
 and normalizes the basis in native `1,2,0` order, bringing `cmr-core` to 1,339.
 `orientation_angle_increment` and `integrate_orientation_from_velocities` now
 connect the half-delta angular rate through the single `0x28b` conversion to that
-sequence, bringing `cmr-core` to 1,340. Other angular special cases, eight-record
-wiring and complete four-lane production remain open.
+sequence, bringing `cmr-core` to 1,340. `apply_control_axis_resets` now covers
+both selective angular reset branches and their priority, bringing `cmr-core` to
+1,341. Eight-record wiring and complete four-lane production remain open.
 
 Exit gate:
 

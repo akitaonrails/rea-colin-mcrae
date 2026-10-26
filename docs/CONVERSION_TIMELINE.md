@@ -498,7 +498,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T09:56Z | 139h38m | recover-axis-angle-orientation-update | `1b7eab4` | G04 | Generalized `FUN_004184e0` into `rotate_basis_axis_angle` and `integrate_orientation`: runtime-trig axis-angle matrix, basis transform, legacy normalization and native `1,2,0` order. One test covers zero stages, short tables, quarter turns and `0xfff2` normalization; `cmr-core` has 1,339 tests. Angular-velocity-to-angle conversion and race-state storage remain open. |
 
-| 2026-10-26T10:01Z | 139h43m | recover-angular-velocity-angle-conversion | _(pending)_ | G04 | Added `orientation_angle_increment` and `integrate_orientation_from_velocities`: current scale minus half delta scale, then one raw `0x28b` conversion and 16-bit truncation before the recovered orientation sequence. One focused test brings `cmr-core` to 1,340. Angular special-case gating and race-state orientation storage remain open. |
+| 2026-10-26T10:01Z | 139h43m | recover-angular-velocity-angle-conversion | `cc3d34d` | G04 | Added `orientation_angle_increment` and `integrate_orientation_from_velocities`: current scale minus half delta scale, then one raw `0x28b` conversion and 16-bit truncation before the recovered orientation sequence. One focused test brings `cmr-core` to 1,340. Angular special-case gating and race-state orientation storage remain open. |
+
+| 2026-10-26T10:06Z | 139h48m | recover-control-axis-resets | _(pending)_ | G04 | Added `apply_control_axis_resets`: `+0x3f4` clears X/Z velocity and angles 0/2, otherwise `+0x3f8` clears X/Y velocity and angles 0/1, under `+0x3ec` with first-branch priority. One all-gates test brings `cmr-core` to 1,341. Full angular composition and eight-contact traversal remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
