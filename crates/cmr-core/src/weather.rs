@@ -549,6 +549,42 @@ pub mod particles {
         }
     }
 
+    pub const SPRITE_RENDER_QUEUE_CAPACITY: usize = 100;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct SpriteRenderEntry {
+        pub resource: ParticleSpriteTable,
+        pub depth: i32,
+        pub sequence: usize,
+    }
+
+    /// Bounded render-reference queue from `FUN_00429910`.
+    #[derive(Debug, Default)]
+    pub struct SpriteRenderQueue {
+        entries: Vec<SpriteRenderEntry>,
+    }
+
+    impl SpriteRenderQueue {
+        #[must_use]
+        pub fn entries(&self) -> &[SpriteRenderEntry] {
+            &self.entries
+        }
+
+        /// Append while below 100 entries; full queues reject the new reference.
+        pub fn push(&mut self, resource: ParticleSpriteTable, depth: i32) -> bool {
+            if self.entries.len() == SPRITE_RENDER_QUEUE_CAPACITY {
+                return false;
+            }
+            let sequence = self.entries.len();
+            self.entries.push(SpriteRenderEntry {
+                resource,
+                depth,
+                sequence,
+            });
+            true
+        }
+    }
+
     /// The initial animation frame at spawn (`FUN_00424f40` / `FUN_004a96e0`):
     /// the average of the three low bytes of a random word, or the fixed
     /// low-detail frame when the detail level is lowest.
@@ -990,6 +1026,22 @@ mod tests {
         assert_eq!(record.flags & 1, 1);
         assert_eq!(pools.advance_common(0, 1), Some(1));
         assert_eq!(pools.pool(0).unwrap().records()[0].flags & 1, 0);
+    }
+
+    #[test]
+    fn sprite_render_queue_preserves_depth_sequence_and_capacity() {
+        use particles::{ParticleSpriteTable, SpriteRenderQueue};
+        let mut queue = SpriteRenderQueue::default();
+        for index in 0..100 {
+            assert!(queue.push(ParticleSpriteTable::Type7, index * 10));
+        }
+        assert!(!queue.push(ParticleSpriteTable::Type8, 1000));
+        assert_eq!(queue.entries().len(), 100);
+        for (index, entry) in queue.entries().iter().enumerate() {
+            assert_eq!(entry.sequence, index);
+            assert_eq!(entry.depth, (index * 10) as i32);
+            assert_eq!(entry.resource, ParticleSpriteTable::Type7);
+        }
     }
 
     #[test]

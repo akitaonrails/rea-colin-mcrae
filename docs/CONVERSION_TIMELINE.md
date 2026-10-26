@@ -460,7 +460,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T06:16Z | 135h58m | reconstruct-common-particle-pool-update | `d2bf168` | E10 | Recovered the common `FUN_00427d20` active-record update: position/velocity integration, selected vertical/lifetime decrements, `word_38` advance, age increment and deactivation. `advance_common` implements it and preserves `word_38` on respawn. Two tests bring `cmr-core` to 1,322. Type-specific physics and final sprite rendering remain separate. |
 
-| 2026-10-26T06:36Z | 136h18m | recover-type-specific-particle-updates | _(pending)_ | E10 | Recovered clod polynomial ground-relative motion/reset/deactivation and splash damping/random adjustment. `advance_type_specific` composes them before the common update; deactivation clears the recovered fields and Y sentinel. Two tests bring `cmr-core` to 1,324. Final sprite rendering remains separate. |
+| 2026-10-26T06:36Z | 136h18m | recover-type-specific-particle-updates | `6062804` | E10 | Recovered clod polynomial ground-relative motion/reset/deactivation and splash damping/random adjustment. `advance_type_specific` composes them before the common update; deactivation clears the recovered fields and Y sentinel. Two tests bring `cmr-core` to 1,324. Final sprite rendering remains separate. |
+
+| 2026-10-26T06:48Z | 136h30m | reconstruct-sprite-render-reference-queue | _(pending)_ | E10 | Recovered the `FUN_00429910` bounded render-reference queue: resource identity, depth and sequence order with a 100-entry cap. `SpriteRenderQueue` rejects the 101st entry. One test brings `cmr-core` to 1,325. Pool-field depth mapping and final draw submission remain separate. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

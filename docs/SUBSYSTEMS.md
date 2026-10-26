@@ -1611,6 +1611,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   motion/reset/deactivation and splash damping/random adjustment before the
   common update. Deactivation clears the recovered fields and Y sentinel. Two
   tests bring `cmr-core` to 1,324. Final sprite rendering remains separate.
+  E10 sprite render queue: `SpriteRenderQueue` reproduces the recovered
+  resource/depth/sequence append contract and its 100-entry cap. One test brings
+  `cmr-core` to 1,325. Pool-field depth mapping and final draw submission remain
+  separate.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

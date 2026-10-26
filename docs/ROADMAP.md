@@ -1184,6 +1184,10 @@ random-delta adjustment and relative-Y deactivation.
 `advance_type_specific` runs them before the common update, and deactivation
 now clears the recovered fields and Y sentinel. Two tests bring `cmr-core` to
 1,324. Final sprite rendering remains separate.
+E10 recovers the bounded `FUN_00429910` render-reference queue: typed resource
+identity, depth and sequence order with a 100-entry cap.
+`SpriteRenderQueue` rejects the 101st reference. One test brings `cmr-core` to
+1,325. Pool-field depth mapping and final draw submission remain separate.
 
 Exit gate:
 
