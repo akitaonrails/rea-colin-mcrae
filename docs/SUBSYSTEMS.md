@@ -1945,8 +1945,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   completes the same vertical path and reproduces the identical replay outcome,
   with actual prior speed used for low-speed gating.
   `populate_compiled_gear_ratio` maps the selected compiled control-family word
-  into both wheel parameter sets without mutating on invalid gears. Other runtime
-  inputs and application wiring remain open. See evidence
+  into both wheel parameter sets without mutating on invalid gears.
+  `derive_force_pass_scales` and `derive_alternate_force_pass_factor` reproduce
+  the main-head scale products and early factor. Runtime scalars remain injected;
+  application wiring and remaining input provenance stay open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

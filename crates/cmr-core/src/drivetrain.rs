@@ -940,6 +940,35 @@ pub const fn surface_bump_value(surface_flag: bool) -> Fixed16 {
     }
 }
 
+/// Scale values produced by the main `FUN_0040d810` force-pass head.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ForcePassScales {
+    pub scale_c5c4: Fixed16,
+    pub scale_c600: Fixed16,
+    pub factor_c5c0: Fixed16,
+}
+
+/// Derive `qmul(+0x52c,DAT_004eac70)`, `qmul(DAT_004eac70,0xf000)`, and
+/// `qmul(DAT_004eac6c,0x11113)` from the main force-pass head.
+#[must_use]
+pub fn derive_force_pass_scales(
+    state_52c: Fixed16,
+    scale_eac70: Fixed16,
+    step_eac6c: Fixed16,
+) -> ForcePassScales {
+    ForcePassScales {
+        scale_c5c4: state_52c.mul(scale_eac70),
+        scale_c600: scale_eac70.mul(Fixed16::from_raw(0xf000)),
+        factor_c5c0: step_eac6c.mul(Fixed16::from_raw(0x11113)),
+    }
+}
+
+/// Alternate early force-pass wheel factor `qmul(DAT_004eac6c,0xa003c)`.
+#[must_use]
+pub fn derive_alternate_force_pass_factor(step_eac6c: Fixed16) -> Fixed16 {
+    step_eac6c.mul(Fixed16::from_raw(0xa003c))
+}
+
 /// Runtime values needed to derive one lane's two force candidates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SecondWheelCandidateInputs {
@@ -2092,6 +2121,22 @@ mod tests {
         for pair in HEAD_BASIS_STORE_OFFSETS.windows(2) {
             assert!(pair[0][2] + 4 <= pair[1][0]);
         }
+    }
+
+    #[test]
+    fn force_pass_scales_follow_the_head_formulas() {
+        let scales = derive_force_pass_scales(
+            Fixed16::from_raw(0x30000),
+            Fixed16::from_raw(0x20000),
+            Fixed16::from_raw(0x40000),
+        );
+        assert_eq!(scales.scale_c5c4, Fixed16::from_raw(0x60000));
+        assert_eq!(scales.scale_c600, Fixed16::from_raw(0x1e000));
+        assert_eq!(scales.factor_c5c0, Fixed16::from_raw(0x4444c));
+        assert_eq!(
+            derive_alternate_force_pass_factor(Fixed16::from_raw(0x40000)),
+            Fixed16::from_raw(0x2800f0)
+        );
     }
 
     #[test]

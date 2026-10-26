@@ -1263,7 +1263,10 @@ vertical stage and reproduces the identical outcome on replay, using actual prio
 speed for low-speed gating. One test brings `cmr-core` to 1,347.
 `populate_compiled_gear_ratio` now maps the selected compiled control-family word
 into both wheel parameter sets with invalid-gear atomicity, bringing `cmr-core`
-to 1,348. Other runtime inputs and application wiring remain open.
+to 1,348. `derive_force_pass_scales` and
+`derive_alternate_force_pass_factor` now recover the three main scale products
+and the early factor, bringing `cmr-core` to 1,349. Runtime scalars remain
+injected; application wiring and remaining input provenance stay open.
 
 Exit gate:
 

@@ -514,7 +514,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T10:50Z | 140h32m | wire-four-wheel-producer-into-vertical-path | `c9dffcd` | G10 | Added `drive_stage_with_all_four_wheels` over the shared checkpoint/finish/replay logic. The recovered force path now uses actual prior speed for low-speed gating. One test brings `cmr-core` to 1,347: finish succeeds, lane forces remain nonzero, and replay is identical. Car-data population and application wiring remain open. |
 
-| 2026-10-26T10:56Z | 140h38m | populate-compiled-wheel-gear-ratio | _(pending)_ | G03 | Added `populate_compiled_gear_ratio`: select `raw_copy[gear]`, derive the ratio, and update both wheel parameter sets atomically. One selection/invalid-gear test brings `cmr-core` to 1,348. Other runtime inputs and application wiring remain open. |
+| 2026-10-26T10:56Z | 140h38m | populate-compiled-wheel-gear-ratio | `94a5255` | G03 | Added `populate_compiled_gear_ratio`: select `raw_copy[gear]`, derive the ratio, and update both wheel parameter sets atomically. One selection/invalid-gear test brings `cmr-core` to 1,348. Other runtime inputs and application wiring remain open. |
+
+| 2026-10-26T11:04Z | 140h46m | recover-force-pass-scales | _(pending)_ | G03 | Recovered the main force-pass scale products `+0x52c*DAT_004eac70`, `DAT_004eac70*0xf000`, `DAT_004eac6c*0x11113`, and the early `0xa003c` factor. Added pure derivations with one exact-Q16 test; `cmr-core` has 1,349 tests. Application wiring and remaining input provenance remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
