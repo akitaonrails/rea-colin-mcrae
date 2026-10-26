@@ -749,6 +749,28 @@ pub fn derive_axle_factor(constant: Fixed16, travel: Fixed16) -> Fixed16 {
     constant.mul(travel)
 }
 
+/// The per-car-type runtime defaults written by `FUN_0041e3f0` for every car
+/// type: the front and rear factor constants and the initial travel are all
+/// `0x10000` (1.0), and the per-wheel constant is `0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CarTypeDefaults {
+    pub front_factor_constant: Fixed16,
+    pub rear_factor_constant: Fixed16,
+    pub initial_travel: Fixed16,
+    pub wheel_constant: i32,
+}
+
+/// The recovered per-car-type defaults from the loader.
+#[must_use]
+pub const fn default_car_type_constants() -> CarTypeDefaults {
+    CarTypeDefaults {
+        front_factor_constant: Fixed16::ONE,
+        rear_factor_constant: Fixed16::ONE,
+        initial_travel: Fixed16::ONE,
+        wheel_constant: 0,
+    }
+}
+
 /// The travel update of `FUN_00420260` when the normalized length exceeds 1.0:
 /// `excess = length - 0x10000`; `decrement = min(0x10000, qmul(excess, 0x8000))`;
 /// `travel = max(0, travel - decrement)`; and the `DAT_0050e504` flag is set.
@@ -1719,6 +1741,24 @@ mod tests {
         assert_eq!(
             derive_axle_factor(Fixed16::from_raw(0x10000), Fixed16::ZERO),
             Fixed16::ZERO
+        );
+    }
+
+    #[test]
+    fn car_type_defaults_match_the_loader() {
+        let defaults = default_car_type_constants();
+        assert_eq!(defaults.front_factor_constant, Fixed16::ONE);
+        assert_eq!(defaults.rear_factor_constant, Fixed16::ONE);
+        assert_eq!(defaults.initial_travel, Fixed16::ONE);
+        assert_eq!(defaults.wheel_constant, 0);
+        // With these defaults the axle factors are simply the travel value.
+        assert_eq!(
+            derive_axle_factor(defaults.front_factor_constant, defaults.initial_travel),
+            Fixed16::ONE
+        );
+        assert_eq!(
+            derive_axle_factor(defaults.rear_factor_constant, defaults.initial_travel),
+            Fixed16::ONE
         );
     }
 

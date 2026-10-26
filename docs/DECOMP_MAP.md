@@ -215,7 +215,9 @@ cover the recovered pure rules.
   **G03 second-loop cosine modulation (`3e8b7ee`):** the second per-wheel loop computes `modulated = qmul(coefficient, angle_cos)`, then `root = legacy_sqrt(qmul(angle_cos, angle_cos) + qmul(modulated, modulated))`, and finally `qmul(root, config_scale)`. The cosine comes from the injected runtime-built cosine table at `sVar8 + 0x400 & 0xfff`. `cmr-core::drivetrain::cosine_modulated_component` reproduces it. One focused test covers the modulated root, the zero-coefficient cosine-square case (root 65550), and zero cosine, bringing `cmr-core` to 1,304. The second-loop composition and runtime table wiring remain.
   **G03 second-wheel core composition (`a048740`):** `execute_second_wheel_core` composes the second per-wheel iteration from the recovered rules: ratio and residuals, the residual saturation and gear-ratio gate, the two residuals, direction normalization (with the large/small-ratio branch selection), arctan folding, and cosine modulation. The independent re-derivation test checks every stage against the recovered rules, bringing `cmr-core` to 1,305. The full second-loop accumulation and runtime table wiring remain.
   **G03 full second-loop accumulation (`151e36c`):** `execute_second_wheel_core` now also applies both accumulation stages: the `ctl+0x420`-gated factor (sign-matched speed delta and gear ratio, scaled and clamped) and the final table-driven factor (`dot >> 2` scaled by the table factor or `0x8000`, negated). Both accumulate `qmul(component, factor)` into the three force accumulators with wrapping addition, using the head's first direction source. The independent re-derivation test additionally checks both factors and the exact accumulator values, bringing `cmr-core` to 1,305. Runtime table wiring is next.
-  **G03 axle factor and travel update (pending milestone):** the front/rear drive factors are `qmul(car_type_constant, travel)` (front `DAT_0050e19c`, rear `DAT_0050e1a0`, travel `DAT_0050e184`), derived by `FUN_00420260`. Its travel update, when the normalized length exceeds 1.0, decrements by `min(0x10000, qmul(excess, 0x8000))` and sets `DAT_0050e504`, then bumps `DAT_0050e160` by `min(0x10000, qmul(excess, 0xccc))`; the additional surface bump is `0x147` when `param_2+0x308` is nonzero else `0x20`, capped at `0x10000` with the flag cleared. `cmr-core::drivetrain` gains `derive_axle_factor`, `update_travel_on_excess`, `apply_surface_bump`, and `surface_bump_value`. Three focused tests cover the factor formula, excess decrement/bump caps, and the surface bump cap/flag, bringing `cmr-core` to 1,308. The per-car-type loader `FUN_0041e3f0` initializes these records from car data (linked meshes and defaults); recovering its constant sources is next.
+  **G03 axle factor and travel update (`1935467`):** the front/rear drive factors are `qmul(car_type_constant, travel)` (front `DAT_0050e19c`, rear `DAT_0050e1a0`, travel `DAT_0050e184`), derived by `FUN_00420260`. Its travel update, when the normalized length exceeds 1.0, decrements by `min(0x10000, qmul(excess, 0x8000))` and sets `DAT_0050e504`, then bumps `DAT_0050e160` by `min(0x10000, qmul(excess, 0xccc))`; the additional surface bump is `0x147` when `param_2+0x308` is nonzero else `0x20`, capped at `0x10000` with the flag cleared. `cmr-core::drivetrain` gains `derive_axle_factor`, `update_travel_on_excess`, `apply_surface_bump`, and `surface_bump_value`. Three focused tests cover the factor formula, excess decrement/bump caps, and the surface bump cap/flag, bringing `cmr-core` to 1,308. The per-car-type loader `FUN_0041e3f0` initializes these records from car data (linked meshes and defaults); recovering its constant sources is next.
+  **G03 car-type runtime defaults (pending milestone):** `FUN_0041e3f0` initializes every car-type record with `DAT_0050e19c = 0x10000` (front factor constant), `DAT_0050e1a0 = 0x10000` (rear factor constant), `DAT_0050e184 = 0x10000` (initial travel), and `DAT_0050e18c = 0` (per-wheel constant). With these defaults the axle factors are simply the travel value, and the wheel drive adds no per-wheel bias. `default_car_type_constants` returns them. Two focused tests cover the defaults and the derived factors, bringing `cmr-core` to 1,309. `DAT_0050e160` and `DAT_0050e504` are runtime values whose initial values are not established by this loader; the engine/gear and per-surface capability tables remain to be sourced.
+
 
 
 
@@ -301,13 +303,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T01:45:37Z
-milestone=recover-axle-factor-and-travel-update
+updated_utc=2026-10-26T01:49:28Z
+milestone=recover-car-type-runtime-defaults
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-recover-car-data-constant-sources
-next_exit_gate=the-car-data-constant-sources-are-identified-and-loaded-from-reviewed-assets
+current_focus=G03-source-engine-gear-and-surface-capability-tables
+next_exit_gate=the-engine-gear-and-surface-capability-tables-are-sourced-from-reviewed-assets
 <!-- PROGRESS-TAIL-END -->

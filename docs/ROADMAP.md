@@ -1080,8 +1080,14 @@ travel `DAT_0050e184`), and the travel update decrements by
 (`0x147`/`0x20` by the surface flag), capped at `0x10000` with the flag
 cleared. `cmr-core::drivetrain` gains `derive_axle_factor`,
 `update_travel_on_excess`, `apply_surface_bump`, and `surface_bump_value`.
-Three focused tests bring `cmr-core` to 1,308. The per-car-type loader's
-constant sources are next.
+G03 recovers the car-type runtime defaults: `DAT_0050e19c = 0x10000`
+(front), `DAT_0050e1a0 = 0x10000` (rear), `DAT_0050e184 = 0x10000` (initial
+travel), and `DAT_0050e18c = 0` (per-wheel constant), all written by
+`FUN_0041e3f0` for every car type. With these defaults the axle factors are
+simply the travel value and the wheel drive adds no per-wheel bias.
+`default_car_type_constants` returns them. Two focused tests bring `cmr-core`
+to 1,309. The engine/gear and per-surface capability tables remain to be
+sourced.
 
 Exit gate:
 
