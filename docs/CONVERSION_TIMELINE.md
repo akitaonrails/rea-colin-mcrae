@@ -646,7 +646,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T19:09Z | 148h51m | complete-host-lifecycle | `e1c6c38` | B12 | Confirmed focus loss pauses, focus gain restores surfaces, and close shuts down through `HostLifecycle` in both SDL loops. Fullscreen uses the same live windows. |
 
-| 2026-10-26T19:11Z | 148h53m | complete-portable-settings-paths | _(pending)_ | C05 | Closed the portable settings/path backend: explicit roots, exact-size settings, record storage and profile paths without registry or absolute-path dependencies. Remaining field semantics belong to C06. |
+| 2026-10-26T19:11Z | 148h53m | complete-portable-settings-paths | `990e693` | C05 | Closed the portable settings/path backend: explicit roots, exact-size settings, record storage and profile paths without registry or absolute-path dependencies. Remaining field semantics belong to C06. |
+
+| 2026-10-26T19:12Z | 148h54m | complete-profile-save-formats | _(pending)_ | C06 | Closed exact settings/profile formats with record, progression and load-apply semantics plus round-trip coverage. Unassigned fields remain explicitly opaque and preserved. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

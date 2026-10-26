@@ -48,7 +48,7 @@ Status markers:
 - [x] `C03` Implement safe exact-record configuration writing.
 - [x] `C04` Recover registry language/hardware/path value policies.
 - [x] `C05` Provide the portable settings/path backend (recovered: the options/config blob is a single fixed `0x1e20`-byte structure persisted verbatim to `save\cmRally.cfg` under the writable base; the loader `FUN_004b9e70` accepts the file only when its length is **exactly `0x1e20`** - else the statically-initialized defaults stand - copies it in, then zeroes a runtime region at `+0x184` for `0x450` bytes and re-derives runtime state; the saver `FUN_004ba5e0` writes the full blob unless the do-not-save flag at byte `+0x08` bit `0` is set; there is no header/magic/version/checksum, only the exact-length gate. Save games are `SAVE\SAVESLOT<n>.cms`, 12 slots of exactly `0x6ac` bytes under the writable base (`FUN_0044edac`), a wrong-sized slot treated as empty (`FUN_0044f2f0`, "EMPTY SLOT"). The I/O helpers are `FUN_00495ed0` (open/read, CMPR-archive-aware then Win16 `OpenFile`) / `FUN_00496580` (write, `OpenFile` `OF_CREATE`). **Path strategy in the shipped build is registry-driven** - `FUN_00496b50` reads `HKLM\SOFTWARE\Codemasters\Rally\1.00\{CDPath,HDPath}` (and `Hardware` via `FUN_00496740`, seeding `blob[0x12]` when no file loads), with absolute fallbacks (`c:\codemast\cmrally`, `q:\new_fe`, `Q:\Game`) and fixed subdirs `\new_fe` (front-end, `FUN_004c31a0`) / `\game` (in-game, `FUN_0043bb60`), media reads behind an ESC-cancellable insert-CD wait. **Reconstruction policy (AGENTS.md)**: the registry + absolute-path strategy is NOT reproduced; `cmr-core::settings_store` takes explicit roots (a `--source`/`CMR_ORIGINAL_DIR` media root + a writable user-data root) and builds every path portably with `std::path`, preserving the recovered layout - `DataPaths` (`settings_file`, `save_slot`, `frontend_root`/`game_root`), the `SettingsImage` exact-length gate + `should_save` flag + `clear_runtime_region`, `save_slot_is_occupied`, and the recovered constants (blob/slot lengths, slot count, `save`/`SAVE`/`new_fe`/`game` subdirs, player stride `0x9c`x2). 7 tests. The shipped default blob is game data in `.data` and is NOT vendored (a caller supplies its own default image). Observed reconciliation: the recovered blob base `0x00d3ac60` is exactly one blob-length (`0x1e20`) below the project's `DAT_00d3ca80` symbol - a build/anchor difference; the project's offsets are blob-relative and unaffected. Unknowns: the full `0x1e20` field layout and the `0x6ac` slot record layout beyond the touched offsets, `FUN_004d1b90` (Hardware-value parse), and whether a separate high-score file exists (`CONTROL.DAT`/`m:\jonw\points.dat` are dead strings).
-- [~] `C06` Recover complete profile/save formats beyond known config fields.
+- [x] `C06` Recover complete profile/save formats beyond known config fields (the `0x1e20` settings and `0x6ac` save records are byte-exact and round-trip tested; record tables, progression, result slots and load-apply are recovered. Remaining unassigned fields are explicitly opaque and preserved, never invented).
 - [x] `C07` Parse frontend and game localization tables.
 - [x] `C08` Load localization through the verified asset store.
 - [x] `C09` Parse legacy font atlases, metrics, and raw signed glyph records.
@@ -324,13 +324,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T19:10:59Z
-milestone=complete-portable-settings-paths
-completed=85
-partial=33
+updated_utc=2026-10-26T19:12:21Z
+milestone=complete-profile-save-formats
+completed=86
+partial=32
 not_started=0
 blocked=0
 total=118
-current_focus=C06-close-profile-save-formats
-next_exit_gate=profile-settings-and-save-formats-are-explicitly-bounded
+current_focus=F01-recover-screen-specific-callbacks
+next_exit_gate=remaining-screen-graph-and-callbacks-are-evidenced
 <!-- PROGRESS-TAIL-END -->

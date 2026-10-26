@@ -1492,6 +1492,9 @@ same live windows, so no lifecycle path remains unwired.
 C05 is complete: explicit roots drive exact-size settings persistence, record
 storage and profile paths without registry or absolute-path dependencies. The
 remaining opaque field semantics are tracked by C06.
+C06 is complete: exact settings/profile formats and their record, progression and
+load-apply semantics round-trip safely. Unassigned fields remain explicitly
+opaque and preserved, not guessed or dropped.
 
 Exit gate:
 
