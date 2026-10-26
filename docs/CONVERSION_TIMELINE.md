@@ -650,7 +650,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T19:12Z | 148h54m | complete-profile-save-formats | `194ddc3` | C06 | Closed exact settings/profile formats with record, progression and load-apply semantics plus round-trip coverage. Unassigned fields remain explicitly opaque and preserved. |
 
-| 2026-10-26T19:17Z | 148h59m | complete-frontend-menus | _(pending)_ | F01, F04 | Implemented the generic widget callback router for adjustments, accept, cancel and screen links, completing the descriptor-driven root/options/profile/championship menus. One test brings `cmr-core` to 1,409. |
+| 2026-10-26T19:17Z | 148h59m | complete-frontend-menus | `02a2991` | F01, F04 | Implemented the generic widget callback router for adjustments, accept, cancel and screen links, completing the descriptor-driven root/options/profile/championship menus. One test brings `cmr-core` to 1,409. |
+
+| 2026-10-26T19:19Z | 149h01m | complete-native-startup | _(pending)_ | C13 | Ran the real headless session to completion (23 frames, 16 sim ticks, final state 0, finished, 63 cs) and verified native lifecycle integration. Optional official coefficient fixtures remain a separate provisioning limitation. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

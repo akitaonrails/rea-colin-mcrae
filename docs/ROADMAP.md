@@ -1499,6 +1499,9 @@ F01 and F04 are complete: the generic callback router joins the four-phase
 transition, root graph, options, profile and championship setup. One test brings
 `cmr-core` to 1,409. Menu families share the recovered descriptor engine rather
 than invented mode-specific algorithms.
+C13 is complete: the real headless session starts and finishes with the recovered
+FSM, and the native window lifecycle is wired. Optional official wheel fixtures
+need separate derived coefficient files, which does not block startup.
 
 Exit gate:
 
