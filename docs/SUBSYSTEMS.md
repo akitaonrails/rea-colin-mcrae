@@ -1411,6 +1411,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   the legacy generated-table rule, and compute `length = qmul(square_sum,
   normalizer)`. Two additional focused tests bring `cmr-core` to 1,286. The
   post-normalization force-pass stages remain open.
+  G03 post-normalization arctan index fold: a zero product yields `0`, a zero
+  denominator with a nonzero product yields `0x400`; otherwise the ratio is
+  folded into the first octant (`min/max`, never above `1.0`), indexed by
+  `(numerator << 16) / denominator >> 7`, complemented (`0x400 - index`) when
+  the original ratio exceeded `1.0`, and negated on opposite signs.
+  `cmr-core::drivetrain::arctan_ratio_index` reproduces it with the
+  runtime-built arctan table injected. Two focused tests bring `cmr-core` to
+  1,288. The cosine modulation and remaining force accumulation remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

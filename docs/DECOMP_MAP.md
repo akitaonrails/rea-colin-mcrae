@@ -203,7 +203,9 @@ cover the recovered pure rules.
   **G03 second-loop ratio gate and residual saturation (`f51e7b7`):** the second per-wheel loop of `FUN_0040d810` gates on `|dot * 4 - speed| < 0x10000` using pseudo-absolute magnitude (so `i32::MIN` passes the signed test). Its residual saturation then keeps the residual only when it shares a sign with the force term and the force magnitude is smaller (`residual - force`), otherwise it zeroes the residual when the magnitudes match or the force is larger, and leaves opposite signs and zero values unchanged. The gear-ratio gate zeroes the residual when `ctl+0x2ec == 0` and the gear ratio is zero or has the opposite sign to the residual. `cmr-core::drivetrain` gains `wheel_ratio_within_unit`, `residual_with_saturation`, and `gate_residual_by_gear_ratio`. Three focused tests cover the unit gate including `i32::MIN`, same-sign magnitude cases, opposite signs and zeros, and the gear-ratio gate, bringing `cmr-core` to 1,278. The remaining second-loop normalization stages remain.
   **G03 second-loop residual computation and ratio gate (`a27f0a5`):** the second residual is `-qmul(qmul(ratio, 0x4000), DAT_0050c5c4)`, then `qmul(..., 0x147a)` when the per-wheel flag is set; the third residual is `-qmul(dot, DAT_0050c5c4)`. Negation and multiplication wrap (so `i32::MIN` negates to itself). The normalization stage is selected when the residual exceeds the unit gate `|residual| > 0x10000` using pseudo-absolute magnitude (so `i32::MIN` is not large). `cmr-core::drivetrain` gains `second_loop_residual`, `second_loop_axis_residual`, and `second_loop_ratio_is_large`. Three focused tests cover scaling/negation and the optional `0x147a` factor, wrapping extremes, and the ratio gate, bringing `cmr-core` to 1,281. The remaining normalization stages remain.
   **G03 second-loop large-ratio normalization (`b7b8807`):** the large-ratio branch of the second per-wheel loop computes `normalizer = |local_30|` (pseudo-absolute) and `reciprocal = 2^32 / normalizer` (signed 64-bit division, `-1` when the normalizer is zero), scales the two direction sources by `qmul(local_2c, reciprocal)` and `qmul(local_30, reciprocal)`, sums them componentwise, and normalizes the sum with the legacy generated-table rule (zero square sum yields zero direction, otherwise each component is multiplied by `2^32/root`). The length is `qmul(square_sum, normalizer)`. `cmr-core::drivetrain::normalize_second_loop_direction` reproduces it, reusing the shared legacy vector normalization. Three focused tests cover a normalized axis with hard-coded generated-table values, a zero square sum, and the zero-normalizer reciprocal, bringing `cmr-core` to 1,284. The small-ratio path and the remaining force-pass stages remain.
-  **G03 second-loop small-ratio branch selection (pending milestone):** the normalizer is `|local_30|` when `|local_2c| < 0x10001` or `|local_2c| < |local_30|` (the large-ratio branch), and `|local_2c|` otherwise (the small-ratio branch). Both branches scale the two direction sources by `qmul(local_2c, reciprocal)` and `qmul(local_30, reciprocal)`, sum them, normalize with the legacy generated-table rule, and compute `length = qmul(square_sum, normalizer)`. `normalize_second_loop_direction` now selects the normalizer by that rule. Two additional focused tests cover the small-ratio normalizer and the branch-preference boundaries, bringing `cmr-core` to 1,286. The post-normalization force-pass stages remain.
+  **G03 second-loop small-ratio branch selection (`2f7197e`):** the normalizer is `|local_30|` when `|local_2c| < 0x10001` or `|local_2c| < |local_30|` (the large-ratio branch), and `|local_2c|` otherwise (the small-ratio branch). Both branches scale the two direction sources by `qmul(local_2c, reciprocal)` and `qmul(local_30, reciprocal)`, sum them, normalize with the legacy generated-table rule, and compute `length = qmul(square_sum, normalizer)`. `normalize_second_loop_direction` now selects the normalizer by that rule. Two additional focused tests cover the small-ratio normalizer and the branch-preference boundaries, bringing `cmr-core` to 1,286. The post-normalization force-pass stages remain.
+  **G03 post-normalization arctan index fold (pending milestone):** the post-normalization stage folds the 64-bit `local_2c * local_34` product and `local_30` into an arctan table index: a zero product yields `0`, a zero denominator with a nonzero product yields `0x400`; otherwise the ratio is folded into the first octant (`min/max`, never above `1.0`), indexed by `(numerator << 16) / denominator >> 7`, complemented (`0x400 - index`) when the original ratio exceeded `1.0`, and negated when product and denominator have opposite signs. `cmr-core::drivetrain::arctan_ratio_index` reproduces it with the runtime-built arctan table injected (like the cosine table). Two focused tests cover the special cases, first-octant folding and complement, and sign handling, bringing `cmr-core` to 1,288. The cosine modulation and remaining force accumulation remain.
+
 
 
 
@@ -277,13 +279,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T00:44:58Z
-milestone=recover-second-loop-small-ratio-branch
+updated_utc=2026-10-26T00:49:12Z
+milestone=recover-post-normalization-arctan-fold
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-recover-post-normalization-force-stages
-next_exit_gate=the-post-normalization-force-stages-have-exact-tested-contracts
+current_focus=G03-recover-cosine-modulation-and-force-accumulation
+next_exit_gate=the-cosine-modulation-and-force-accumulation-have-exact-tested-contracts
 <!-- PROGRESS-TAIL-END -->

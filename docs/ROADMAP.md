@@ -1011,8 +1011,14 @@ G03 recovers the small-ratio branch selection: the normalizer is `|local_30|`
 when `|local_2c| < 0x10001` or `|local_2c| < |local_30|`, and `|local_2c|`
 otherwise. Both branches scale and sum the direction sources, normalize with
 the legacy rule, and compute `length = qmul(square_sum, normalizer)`. Two
-additional focused tests bring `cmr-core` to 1,286. The post-normalization
-force-pass stages remain open.
+G03 recovers the post-normalization arctan index fold: a zero product yields
+`0`, a zero denominator with a nonzero product yields `0x400`; otherwise the
+ratio is folded into the first octant (`min/max`, never above `1.0`), indexed
+by `(numerator << 16) / denominator >> 7`, complemented (`0x400 - index`) when
+the original ratio exceeded `1.0`, and negated on opposite signs.
+`cmr-core::drivetrain::arctan_ratio_index` reproduces it with the runtime-built
+arctan table injected. Two focused tests bring `cmr-core` to 1,288. The cosine
+modulation and remaining force accumulation remain open.
 
 Exit gate:
 

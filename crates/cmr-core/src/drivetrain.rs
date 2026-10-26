@@ -507,6 +507,43 @@ pub fn normalize_second_loop_direction(
     }
 }
 
+/// Reconstructs the arctan index fold used after the second-loop normalization.
+///
+/// `product` is the 64-bit `local_2c * local_34` product and `denominator` is
+/// `local_30`. A zero product yields `0`; a zero denominator with a nonzero
+/// product yields `0x400`. Otherwise the ratio is folded into the first octant
+/// (`min/max`, so it never exceeds `1.0`), the table is indexed by
+/// `(numerator << 16) / denominator >> 7`, the index is complemented
+/// (`0x400 - index`) when the original ratio exceeded `1.0`, and negated when
+/// the product and denominator have opposite signs. The table is supplied by
+/// the caller because it is runtime-built, like the cosine table.
+#[must_use]
+pub fn arctan_ratio_index(product: i64, denominator: i32, table: &[i16]) -> i16 {
+    if product == 0 {
+        return 0;
+    }
+    if denominator == 0 {
+        return 0x400;
+    }
+    let negative = (product < 0) ^ (denominator < 0);
+    let product_abs = product.abs();
+    let denominator_abs = i64::from(denominator).abs();
+    let (numerator, divisor, complement) = if denominator_abs < product_abs {
+        (denominator_abs, product_abs, true)
+    } else {
+        (product_abs, denominator_abs, false)
+    };
+    let ratio = (numerator << 16) / divisor;
+    let mut index = table[(ratio >> 7) as usize];
+    if complement {
+        index = 0x400 - index;
+    }
+    if negative {
+        index = -index;
+    }
+    index
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -951,5 +988,30 @@ mod tests {
         let result = normalize_second_loop_direction([0; 3], [0; 3], 0x10000, 0x8000);
         assert_eq!(result.normalizer, 0x8000);
         assert_eq!(result.reciprocal, 0x20000);
+    }
+
+    #[test]
+    fn arctan_index_handles_zero_and_folds_ratios_into_the_first_octant() {
+        let table: Vec<i16> = (0..=0x1000).collect();
+        // Zero product and zero denominator special cases.
+        assert_eq!(arctan_ratio_index(0, 0x20000, &table), 0);
+        assert_eq!(arctan_ratio_index(0x10000, 0, &table), 0x400);
+        // ratio = 0.5: index = table[(0x10000 << 16) / 0x20000 >> 7] = table[0x100].
+        assert_eq!(arctan_ratio_index(0x10000, 0x20000, &table), 0x100);
+        // ratio = 4: reciprocal fold, then complement.
+        assert_eq!(arctan_ratio_index(0x40000, 0x10000, &table), 0x400 - 0x80);
+    }
+
+    #[test]
+    fn arctan_index_negates_on_opposite_signs_and_complements() {
+        let table: Vec<i16> = (0..=0x1000).collect();
+        assert_eq!(arctan_ratio_index(-0x10000, 0x20000, &table), -0x100);
+        assert_eq!(arctan_ratio_index(0x10000, -0x20000, &table), -0x100);
+        assert_eq!(arctan_ratio_index(-0x10000, -0x20000, &table), 0x100);
+        // A complemented index is negated after the complement.
+        assert_eq!(
+            arctan_ratio_index(-0x40000, 0x10000, &table),
+            -(0x400 - 0x80)
+        );
     }
 }
