@@ -1307,7 +1307,12 @@ gear ratios, force scales and compiled offsets, with atomic surface-index reject
 `run_headless_four_wheel_game_session` drives the complete FSM using those inputs and
 checked errors. A synthetic authenticated finish/replay test and an opt-in real-store
 smoke bring `cmr-app` to 29 library tests. The remaining scalar tuning and start state
-are explicit harness inputs, not a trajectory-equivalence claim.
+are explicit harness inputs, not a trajectory-equivalence claim. The complete producer
+now also runs `apply_contact_vector_updates` after lane postprocessing and before
+translation/moment integration, replacing all eight input vectors from the current
+contact basis and preserving skipped destinations in `FourWheelState`. The composition
+test compares against the independent kernel; scalar/projection-axis provenance remains
+explicit.
 
 Exit gate:
 

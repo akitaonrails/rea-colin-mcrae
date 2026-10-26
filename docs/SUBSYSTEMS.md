@@ -1981,9 +1981,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   the complete wheel parameters from reviewed coefficients and compiled state, and
   `run_headless_four_wheel_game_session` drives the FSM through them with checked
   errors. Synthetic authenticated finish/replay and real-store opt-in coverage pass;
-  scalar tuning and start-state values remain explicit harness inputs. See evidence
-  `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
-  `impl.sim-full-second-accumulation`.
+  scalar tuning and start-state values remain explicit harness inputs. After lane
+  postprocessing and before translation, `apply_contact_vector_updates` now traverses
+  all eight records with current contact-basis vectors and persistent skipped-state
+  preservation. The update scales, gates, extra vector and separate projection axis
+  remain explicit inputs. See evidence `impl.sim-race-state-trace`,
+  `impl.sim-translation-step`, and `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

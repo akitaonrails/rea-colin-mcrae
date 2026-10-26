@@ -29,11 +29,12 @@ use crate::drivetrain::{
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::vehicle_dynamics::{
-    AngularOrientationInput, ContactBasisInput, GeometricPostprocessError,
-    GeometricPostprocessLane, LookupDependentCandidateError, SurfaceCoefficientIndexError,
-    TranslationStepInput, apply_angular_orientation_pipeline, apply_geometric_lane_postprocess,
-    apply_lateral_grip, apply_translation_step, build_contact_basis_vectors, drag, net_accel,
-    sum_contact_moments, sum_translation_lane_forces, transform_contact_force,
+    AngularOrientationInput, ContactBasisInput, ContactVectorUpdateInput,
+    GeometricPostprocessError, GeometricPostprocessLane, LookupDependentCandidateError,
+    SurfaceCoefficientIndexError, TranslationStepInput, apply_angular_orientation_pipeline,
+    apply_contact_vector_updates, apply_geometric_lane_postprocess, apply_lateral_grip,
+    apply_translation_step, build_contact_basis_vectors, drag, net_accel, sum_contact_moments,
+    sum_translation_lane_forces, transform_contact_force,
 };
 use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
 
@@ -212,6 +213,9 @@ pub struct FourWheelIterationParams<'a> {
     pub second: [SecondWheelParams<'a>; 4],
     pub contact_vector_indices: [usize; 4],
     pub contact_offsets: [Vec3; 4],
+    /// Per-tick `FUN_0040d400` scalar/gate inputs; vectors are replaced from the
+    /// current contact-basis output before the reverse traversal.
+    pub contact_update_inputs: [ContactVectorUpdateInput; 8],
     pub postprocess: FourWheelPostprocessParams<'a>,
     /// Moment scales/base contact input and angular gates; stateful vectors come
     /// from `MotionState` at each step.
@@ -260,6 +264,8 @@ pub struct FourWheelState {
     pub first: [FirstWheelState; 4],
     pub second: [SecondWheelState; 4],
     pub postprocess: FourWheelPostprocessState,
+    /// Persistent `FUN_0040d400` destinations, including skipped records.
+    pub contact_updates: [Vec3; 8],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -397,6 +403,7 @@ impl CarState {
                     qualified: [false; 4],
                     angle_measures: [Fixed16::ZERO; 4],
                 },
+                contact_updates: [Vec3::ZERO; 8],
             },
         }
     }
@@ -691,7 +698,7 @@ impl RaceState {
 
     /// Rebuild contact vectors from the pre-step velocity, run all four first
     /// iterations in reverse order, equalize each axle, run all second iterations
-    /// in reverse order, then postprocess and translate.
+    /// in reverse order, postprocess, update all eight contacts, then translate.
     ///
     /// # Errors
     ///
@@ -709,6 +716,10 @@ impl RaceState {
         }
         let contact_vectors =
             build_contact_basis_vectors(self.car.motion.contact_basis(self.car.velocity));
+        let mut contact_update_inputs = wheel.contact_update_inputs;
+        for (input, vector) in contact_update_inputs.iter_mut().zip(contact_vectors) {
+            input.vector = vector;
+        }
         let mut second = wheel.second.clone();
         for (lane, vector_index) in wheel.contact_vector_indices.into_iter().enumerate() {
             let Some(vector) = contact_vectors.get(vector_index) else {
@@ -756,6 +767,10 @@ impl RaceState {
             qualified: outcome.qualified,
             angle_measures: outcome.angle_measures,
         };
+        self.car.four_wheel.contact_updates = apply_contact_vector_updates(
+            contact_update_inputs,
+            self.car.four_wheel.contact_updates,
+        );
         let force = sum_translation_lane_forces(
             wheel.postprocess.base_force,
             wheel.postprocess.non_wheel_forces,
@@ -1215,6 +1230,16 @@ mod tests {
             second: std::array::from_fn(|_| second_wheel_params(&trig)),
             contact_vector_indices: [2, 3, 6, 7],
             contact_offsets: [Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, vector([0, 0x10000, 0])],
+            contact_update_inputs: std::array::from_fn(|index| ContactVectorUpdateInput {
+                update_gate: 0,
+                enabled: index == 0,
+                vector: Vec3::ZERO,
+                basis: Vec3::ZERO,
+                scale_528: Fixed16::ONE,
+                extra_vector: Vec3::ZERO,
+                limit: Fixed16::ONE,
+                threshold: Fixed16::from_raw(0x7fff0000),
+            }),
             postprocess: FourWheelPostprocessParams {
                 lanes,
                 current_lane: 3,
@@ -1277,6 +1302,15 @@ mod tests {
         assert_eq!(
             sample.car.four_wheel.first[2].wheel_speed,
             sample.car.four_wheel.first[3].wheel_speed
+        );
+        let contact_vectors = build_contact_basis_vectors(car.motion.contact_basis(car.velocity));
+        let mut contact_inputs = wheel.contact_update_inputs;
+        for (input, vector) in contact_inputs.iter_mut().zip(contact_vectors) {
+            input.vector = vector;
+        }
+        assert_eq!(
+            sample.car.four_wheel.contact_updates,
+            apply_contact_vector_updates(contact_inputs, [Vec3::ZERO; 8])
         );
         let mut expected_lanes = lanes;
         for (index, lane) in expected_lanes.iter_mut().enumerate() {

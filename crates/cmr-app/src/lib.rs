@@ -1917,6 +1917,16 @@ impl SessionWheelInputs {
             }),
             contact_vector_indices: [2, 3, 6, 7],
             contact_offsets: [Vec3::ZERO; 4],
+            contact_update_inputs: [cmr_core::vehicle_dynamics::ContactVectorUpdateInput {
+                update_gate: 0,
+                enabled: false,
+                vector: Vec3::ZERO,
+                basis: Vec3::ZERO,
+                scale_528: Fixed16::ONE,
+                extra_vector: Vec3::ZERO,
+                limit: Fixed16::ONE,
+                threshold: Fixed16::ONE,
+            }; 8],
             postprocess: FourWheelPostprocessParams {
                 lanes: [inactive; 4],
                 current_lane: 0,
