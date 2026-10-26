@@ -1576,6 +1576,13 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+The native game session is now a playable single-player stage: authored `.cat`
+checkpoints replace the synthetic line, a real country palette is loaded before
+software/GPU preparation, and one coherent node-zero spawn drives the car and
+first chase camera. Spawn is explicitly approximate because the shipped writer
+is unrecovered; post-race sequencer flags remain harness inputs. AU1 software
+composition and GPU preparation pass on the imported assets.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

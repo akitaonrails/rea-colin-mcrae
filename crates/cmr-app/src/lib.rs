@@ -63,7 +63,7 @@ use cmr_core::vehicle_dynamics::{
 use cmr_core::weather::{StageWeatherEffects, particles};
 use cmr_formats::bitmap::BitmapLimits;
 use cmr_formats::c3d::C3dLimits;
-use cmr_formats::riff_palette::PaletteEntry;
+use cmr_formats::riff_palette::{PaletteEntry, PaletteError, parse_legacy_palette_256};
 use cmr_formats::stage::CatNode;
 use cmr_formats::stage::{
     C3D_EXTENSION, CAT_EXTENSION, StageBundle, StageLoadError, StageSectionSource, load_stage,
@@ -1072,6 +1072,12 @@ pub enum StageFrameError {
     Compose(StageSceneComposeError),
     /// The composed frame could not be bridged to the presentation type.
     Present(SoftwareRgba8Error),
+    MissingNodes,
+    DegenerateSpawn,
+    UnknownPaletteStage(String),
+    Palette(AssetStoreError),
+    PaletteFormat(PaletteError),
+    Profile(ReviewedProfileError),
     /// The raw-GPU stage adapter rejected the scene.
     GpuPrepare(PreparedRawStageError),
     /// The selected GPU backend could not be initialized (or its persistent
@@ -1093,6 +1099,12 @@ impl StageFrameError {
             Self::Texture(_) => "texture",
             Self::Compose(_) => "compose",
             Self::Present(_) => "present",
+            Self::MissingNodes => "missing-nodes",
+            Self::DegenerateSpawn => "degenerate-spawn",
+            Self::UnknownPaletteStage(_) => "unknown-palette-stage",
+            Self::Palette(_) => "palette",
+            Self::PaletteFormat(_) => "palette-format",
+            Self::Profile(_) => "profile",
             Self::GpuPrepare(_) => "gpu-prepare",
             Self::GpuInit(_) => "gpu-init",
             Self::GpuCompose(_) => "gpu-compose",
@@ -1117,6 +1129,14 @@ impl fmt::Display for StageFrameError {
             Self::Texture(error) => write!(formatter, "cannot prepare stage textures: {error}"),
             Self::Compose(error) => write!(formatter, "cannot compose stage frame: {error}"),
             Self::Present(error) => write!(formatter, "cannot present stage frame: {error}"),
+            Self::MissingNodes => write!(formatter, "stage has no checkpoint nodes"),
+            Self::DegenerateSpawn => write!(formatter, "stage spawn has no horizontal direction"),
+            Self::UnknownPaletteStage(stage) => {
+                write!(formatter, "no country palette mapping for stage {stage}")
+            }
+            Self::Palette(error) => write!(formatter, "cannot load stage palette: {error}"),
+            Self::PaletteFormat(error) => write!(formatter, "cannot parse stage palette: {error}"),
+            Self::Profile(error) => write!(formatter, "cannot read reviewed profile: {error}"),
             Self::GpuPrepare(error) => write!(formatter, "cannot prepare raw GPU stage: {error}"),
             Self::GpuInit(detail) => {
                 write!(
@@ -1141,8 +1161,15 @@ impl std::error::Error for StageFrameError {
             Self::Texture(error) => Some(error),
             Self::Compose(error) => Some(error),
             Self::Present(error) => Some(error),
+            Self::Palette(error) => Some(error),
+            Self::PaletteFormat(error) => Some(error),
+            Self::Profile(error) => Some(error),
             Self::GpuPrepare(error) => Some(error),
-            Self::GpuInit(_) | Self::GpuCompose(_) => None,
+            Self::MissingNodes
+            | Self::DegenerateSpawn
+            | Self::UnknownPaletteStage(_)
+            | Self::GpuInit(_)
+            | Self::GpuCompose(_) => None,
         }
     }
 }
@@ -1179,6 +1206,76 @@ fn stage_placeholder_palette() -> [PaletteEntry; 256] {
         };
     }
     palette
+}
+
+fn native_stage_palette_path(stage: &str) -> Result<String, StageFrameError> {
+    let code = stage.get(..2).unwrap_or(stage).to_ascii_uppercase();
+    let country = match code.as_str() {
+        "AU" => "aus",
+        "CO" => "cor",
+        "GR" => "gre",
+        "IN" => "ind",
+        "MC" => "mon",
+        "NZ" => "nz",
+        "SW" => "swe",
+        "UK" => "uk",
+        "SC" => "school",
+        _ => return Err(StageFrameError::UnknownPaletteStage(stage.to_owned())),
+    };
+    Ok(format!("Game/Palettes/Countries/{country}.pal"))
+}
+
+fn load_native_stage_palette(
+    runtime_data: &Path,
+    stage: &str,
+) -> Result<[PaletteEntry; 256], StageFrameError> {
+    let reviewed =
+        ReviewedProfile::from_json(REVIEWED_PROFILE).map_err(StageFrameError::Profile)?;
+    let store = AssetStore::open(runtime_data, &reviewed, DecodeLimits::default())
+        .map_err(StageFrameError::Palette)?;
+    let path = native_stage_palette_path(stage)?;
+    let bytes = store.load(&path).map_err(StageFrameError::Palette)?;
+    Ok(parse_legacy_palette_256(&bytes)
+        .map_err(StageFrameError::PaletteFormat)?
+        .entries)
+}
+
+fn native_stage_start(nodes: &[CatNode]) -> Result<(CarState, [i32; 16]), StageFrameError> {
+    let node = nodes.first().ok_or(StageFrameError::MissingNodes)?;
+    let [dir_x, dir_y, dir_z] = node.direction;
+    if dir_x == 0 && dir_z == 0 {
+        return Err(StageFrameError::DegenerateSpawn);
+    }
+    let position = Vec3::new(
+        Fixed16::from_raw(node.position[0]),
+        Fixed16::from_raw(node.position[1]),
+        Fixed16::from_raw(node.position[2]),
+    );
+    let heading =
+        ((dir_z as f64).atan2(dir_x as f64) * (4096.0 / std::f64::consts::TAU)).round() as i64;
+    let heading = heading.rem_euclid(4096) as u16;
+    let trig = cmr_core::fixed_point::build_sine_table();
+    let world = cmr_core::gameplay_camera::car_world_q16(&trig, position, heading);
+    let column = |index: usize| {
+        Vec3::new(
+            Fixed16::from_raw(world[index]),
+            Fixed16::from_raw(world[index + 4]),
+            Fixed16::from_raw(world[index + 8]),
+        )
+    };
+    let mut start = CarState::at_rest();
+    start.position = position;
+    start.heading = heading;
+    start.motion.basis = [column(0), column(1), column(2)];
+    start.motion.projection_axis = Vec3::new(
+        Fixed16::from_raw(dir_x),
+        Fixed16::from_raw(dir_y),
+        Fixed16::from_raw(dir_z),
+    );
+    start.motion.lane_source_s = column(2);
+    let mut camera = ViewHarness::new();
+    let initial_camera = camera.update(false, position, heading, false);
+    Ok((start, initial_camera))
 }
 
 /// A composed stage frame plus its scene statistics, for a caller-owned
@@ -1310,11 +1407,21 @@ impl StageRenderResources {
         stage: &str,
         choice: StageRendererChoice,
     ) -> Result<Self, StageFrameError> {
+        Self::load_with_palette(media_root, stage, choice, stage_placeholder_palette())
+    }
+
+    /// Loads a stage with a caller-selected active palette before preparing
+    /// either renderer.
+    pub fn load_with_palette(
+        media_root: &Path,
+        stage: &str,
+        choice: StageRendererChoice,
+        palette: [PaletteEntry; 256],
+    ) -> Result<Self, StageFrameError> {
         let source = FsStageSectionSource::read(media_root, stage, DecodeLimits::default())?;
         let bundle = load_stage(&source, C3dLimits::default()).map_err(StageFrameError::Load)?;
         let textures = StageC3dTextures::prepare(bundle.scene(), BitmapLimits::default())
             .map_err(StageFrameError::Texture)?;
-        let palette = stage_placeholder_palette();
         let scene = StageScene::from_c3d(bundle.scene(), &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX)
             .map_err(StageFrameError::Scene)?;
         let node_count = scene.node_count();
@@ -2023,14 +2130,32 @@ impl SessionWheelInputs {
     }
 }
 
+fn native_stage_setup(
+    media_root: &Path,
+    runtime_data: &Path,
+    stage: &str,
+    renderer: StageRendererChoice,
+) -> Result<(StageRenderResources, Vec<CatNode>, CarState, [i32; 16]), StageFrameError> {
+    let palette = load_native_stage_palette(runtime_data, stage)?;
+    let resources = StageRenderResources::load_with_palette(media_root, stage, renderer, palette)?;
+    let nodes = resources
+        .bundle
+        .nodes()
+        .ok_or(StageFrameError::MissingNodes)?
+        .to_vec();
+    let (start, initial_camera) = native_stage_start(&nodes)?;
+    Ok((resources, nodes, start, initial_camera))
+}
+
 pub fn run_windowed_game_session(
     media_root: &Path,
     runtime_data: &Path,
     stage: &str,
     renderer: StageRendererChoice,
 ) -> Result<(), WindowedStageFrameError> {
-    let mut resources = StageRenderResources::load_with(media_root, stage, renderer)?;
-    let initial = resources.compose(&stage_placeholder_camera())?;
+    let (mut resources, nodes, start, initial_camera) =
+        native_stage_setup(media_root, runtime_data, stage, renderer)?;
+    let initial = resources.compose(&initial_camera)?;
 
     let inputs = SessionWheelInputs::open(runtime_data).map_err(SessionFourWheelError::Inputs)?;
     let trig = cmr_core::fixed_point::build_sine_table();
@@ -2050,8 +2175,6 @@ pub fn run_windowed_game_session(
         inverse_mass: Fixed16::from_raw(0x8000),
         gravity: Vec3::ZERO,
     };
-    let mut start = CarState::at_rest();
-    start.motion.angular_velocity = Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE);
     let mut session = GameplaySession::new_with_four_wheel_and_car(
         params,
         InRaceScript::frontend_harness(),
@@ -2070,7 +2193,6 @@ pub fn run_windowed_game_session(
         screen_graph_ready: true,
         ..MenuFlowInputs::default()
     };
-    let nodes = headless_checkpoint_line();
     let mut progress = StageProgress::new(&nodes, 0);
     let clock = WallClock::new();
     let mut camera = ViewHarness::new();
@@ -2403,6 +2525,142 @@ mod tests {
 
     fn arguments(values: &[&str]) -> impl Iterator<Item = OsString> {
         values.iter().map(OsString::from)
+    }
+
+    fn native_test_node(position: [i32; 3], direction: [i32; 3], split_flag: u8) -> CatNode {
+        CatNode {
+            position,
+            direction,
+            split_flag,
+            reserved: 0,
+            seq_index: 0,
+        }
+    }
+
+    #[test]
+    fn native_spawn_uses_node_position_heading_basis_and_first_camera() {
+        let nodes = [native_test_node(
+            [10 << 16, 0, 20 << 16],
+            [0, 0, 0x10000],
+            1,
+        )];
+        let (start, camera) = native_stage_start(&nodes).unwrap();
+        assert_eq!(start.position.x.raw(), 10 << 16);
+        assert_eq!(start.position.z.raw(), 20 << 16);
+        assert_eq!(start.heading, 0x400);
+        assert_eq!(start.motion.basis[2].z.raw(), 0x10000);
+        assert_eq!(start.motion.angular_velocity, Vec3::ZERO);
+        assert_ne!(camera, stage_placeholder_camera());
+        assert_ne!(&camera[12..15], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn native_spawn_covers_cardinal_headings_and_rejects_bad_inputs() {
+        for (direction, expected) in [
+            ([0x10000, 0, 0], 0),
+            ([0, 0, 0x10000], 0x400),
+            ([-0x10000, 0, 0], 0x800),
+            ([0, 0, -0x10000], 0xc00),
+        ] {
+            let (start, _) = native_stage_start(&[native_test_node([0; 3], direction, 0)])
+                .expect("cardinal spawn");
+            assert_eq!(start.heading, expected);
+        }
+        assert!(matches!(
+            native_stage_start(&[]),
+            Err(StageFrameError::MissingNodes)
+        ));
+        assert!(matches!(
+            native_stage_start(&[native_test_node([0; 3], [0, 0x10000, 0], 0)]),
+            Err(StageFrameError::DegenerateSpawn)
+        ));
+    }
+
+    #[test]
+    fn native_palette_mapping_is_explicit_and_fail_closed() {
+        for (stage, country) in [
+            ("AU1", "aus"),
+            ("CO7", "cor"),
+            ("GR4", "gre"),
+            ("IN8", "ind"),
+            ("MC5", "mon"),
+            ("NZ2", "nz"),
+            ("SW4", "swe"),
+            ("UK2", "uk"),
+            ("SC1", "school"),
+        ] {
+            assert_eq!(
+                native_stage_palette_path(stage).unwrap(),
+                format!("Game/Palettes/Countries/{country}.pal")
+            );
+        }
+        assert!(matches!(
+            native_stage_palette_path("XX1"),
+            Err(StageFrameError::UnknownPaletteStage(_))
+        ));
+    }
+
+    #[test]
+    fn authored_curved_nodes_drive_checkpoint_progression() {
+        let nodes = vec![
+            native_test_node([0x10000, 0, 0], [0x10000, 0, 0], 1),
+            native_test_node([0x10000, 0, 0x10000], [0, 0, 0x10000], 1),
+            native_test_node([0x20000, 0, 0x10000], [0x10000, 0, 0], 1),
+        ];
+        let mut progress = StageProgress::new(&nodes, 0);
+        let car = Vec3::new(Fixed16::from_int(2), Fixed16::ZERO, Fixed16::from_int(2));
+        assert!(matches!(
+            progress.update(car, 10),
+            cmr_core::stage_checkpoints::StageEvent::Split { node: 0, .. }
+        ));
+        assert!(matches!(
+            progress.update(car, 20),
+            cmr_core::stage_checkpoints::StageEvent::Split { node: 1, .. }
+        ));
+        let car = Vec3::new(Fixed16::from_int(3), Fixed16::ZERO, Fixed16::from_int(2));
+        let third = progress.update(car, 30);
+        assert!(
+            matches!(
+                third,
+                cmr_core::stage_checkpoints::StageEvent::Finished { node: 2, .. }
+            ),
+            "{third:?}"
+        );
+        assert!(matches!(
+            progress.update(car, 40),
+            cmr_core::stage_checkpoints::StageEvent::Idle
+        ));
+        assert_eq!(progress.split_times(), &[10, 20, 30]);
+        assert_eq!(progress.finish_centiseconds(), Some(30));
+    }
+
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data"]
+    fn imported_au1_native_setup_composes_from_the_real_spawn_and_palette() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let (mut resources, nodes, start, initial_camera) = native_stage_setup(
+            &root.join("Game/Au/1"),
+            &root,
+            "AU1",
+            StageRendererChoice::Software,
+        )
+        .unwrap();
+        assert!(!nodes.is_empty());
+        assert_ne!(start.position, Vec3::ZERO);
+        assert_ne!(initial_camera, stage_placeholder_camera());
+        assert_ne!(resources.palette, stage_placeholder_palette());
+        resources.compose(&initial_camera).unwrap();
+
+        let (gpu_resources, _, _, _) = native_stage_setup(
+            &root.join("Game/Au/1"),
+            &root,
+            "AU1",
+            StageRendererChoice::Gpu,
+        )
+        .unwrap();
+        assert_eq!(gpu_resources.palette, resources.palette);
     }
 
     static NEXT_SURFACE_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

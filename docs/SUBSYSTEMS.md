@@ -2399,6 +2399,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Native playable setup uses authored `.cat` nodes, real country palettes and a
+  coherent node-zero spawn for both car and first camera. The same spawn feeds
+  the live four-wheel session and `ViewController`. Node-zero startup is a
+  documented approximation; post-race sequencer flags remain harness inputs.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

@@ -24,6 +24,11 @@ DirectPlay session/player records, and opt-in direct TCP transport. Native
 DirectX/QMixer/DirectInput/DirectPlay DLLs are not required by the portable
 build.
 
+The native single-player session is playable with live controls, authored
+`.cat` checkpoints and the real stage palette. Node-zero startup is an explicit
+approximation, not a recovered spawn claim; post-race sequencing remains a
+harness boundary.
+
 Unsupported boundaries are explicit: native driver-owned padding and exact
 font/filter/alpha output, alternate type-1 lighting, a concrete video decoder
 and FFB device, other section formats/editions, full multi-peer synchronization,

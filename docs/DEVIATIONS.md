@@ -70,6 +70,11 @@ unsupported. Networking covers recovered player records and the session
 lifecycle, but full multi-peer synchronization is not claimed by the one-peer
 TCP backend. Other editions/locales are unsupported until separately evidenced.
 
+Native stage startup uses node-zero pose and direction as a documented playable
+approximation; the shipped spawn writer remains unrecovered. Post-race replay/
+flyby/fade/quit flags remain harness inputs. Actual `.cat` checkpoints, live
+controls, and real country palettes are used, and no multiplayer is required.
+
 Verification boundaries are environmental, not silent passes: original-written
 save comparison requires user-owned files; native Windows execution and GitHub
 Actions provisioning are unrun here; a real video decoder and native driver-
