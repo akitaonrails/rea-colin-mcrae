@@ -729,6 +729,109 @@ pub fn select_head_vector_path(
     HeadVectorSelection::KeepInitial
 }
 
+/// Inputs for one first-loop per-wheel iteration of the force pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirstWheelInputs {
+    /// The force accumulator at `+0x540` before the iteration.
+    pub force: i32,
+    /// The wheel speed at `+0x2b4` before integration.
+    pub wheel_speed: i32,
+    /// The axle split for this wheel (front or rear).
+    pub split: i32,
+    /// The per-car-type wheel constant `DAT_0050e18c`.
+    pub wheel_constant: i32,
+    /// The precomputed wheel vector.
+    pub wheel_vector: [i32; 3],
+    /// The per-wheel state vector.
+    pub state_vector: [i32; 3],
+    /// The slip scale `DAT_0050c600`.
+    pub scale_c600: i32,
+    /// The slip limit at `ctl+0x378`.
+    pub limit: i32,
+    /// The downshift from [`wheel_slip_shift`].
+    pub shift: u32,
+    /// The handbrake value at `ctl+0x30c`.
+    pub handbrake: i32,
+    /// The wheel-speed integration factor `DAT_0050c5c0`.
+    pub factor_c5c0: i32,
+    /// The gear byte at `ctl+0x43a`.
+    pub gear: i32,
+    /// The config dword at `ctl+0x40c`.
+    pub config_40c: i32,
+    /// The config dword at `ctl+0x158`.
+    pub config_158: i32,
+    /// The gear ratio at `ctl+0x1d0[gear*4]`.
+    pub gear_ratio: i32,
+    /// Whether this is a front wheel (the slip gate applies always).
+    pub is_front_wheel: bool,
+}
+
+/// Effects of one first-loop per-wheel iteration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirstWheelEffects {
+    /// The final force stored at `+0x2d4`.
+    pub force_at_2d4: i32,
+    /// The force accumulator at `+0x540` after the iteration.
+    pub force_at_540: i32,
+    /// The integrated and gated wheel speed at `+0x2b4`.
+    pub wheel_speed: i32,
+    /// Whether the slip contribution was applied (vs zeroed and redriven).
+    pub slip_applied: bool,
+}
+
+/// Composes one first-loop per-wheel iteration of the force pass from the
+/// recovered rules, in native order: drive application, slip candidate and
+/// sign-disagreement, the slip gate and clamped/downshifted slip force (or a
+/// zeroed redrive), wheel-speed integration, and the zeroing gate.
+#[must_use]
+pub fn execute_first_wheel_iteration(input: FirstWheelInputs) -> FirstWheelEffects {
+    let mut force = apply_wheel_drive(
+        input.force,
+        input.split,
+        input.wheel_constant,
+        input.wheel_speed,
+    );
+    let dot = (0..3).fold(0_i32, |sum, index| {
+        sum.wrapping_add(q16_mul(
+            input.wheel_vector[index],
+            input.state_vector[index],
+        ))
+    });
+    let slip = wheel_slip_candidate(dot, input.wheel_speed);
+    let disagreement = slip_sign_disagreement(dot, slip);
+    let slip_applied = apply_wheel_slip(input.is_front_wheel, input.handbrake, disagreement);
+    if slip_applied {
+        let slip_force = clamp_wheel_slip_force(
+            Fixed16::from_raw(slip),
+            Fixed16::from_raw(input.scale_c600),
+            input.limit,
+        ) >> input.shift;
+        force = force.wrapping_add(slip_force);
+    } else {
+        force = 0;
+        force = apply_wheel_drive(force, input.split, input.wheel_constant, input.wheel_speed);
+    }
+    let integrated = integrate_wheel_speed(
+        input.wheel_speed,
+        Fixed16::from_raw(force),
+        Fixed16::from_raw(input.factor_c5c0),
+    );
+    FirstWheelEffects {
+        force_at_2d4: force,
+        force_at_540: force,
+        wheel_speed: gate_wheel_speed(
+            input.wheel_speed,
+            integrated,
+            input.gear,
+            input.config_40c,
+            input.config_158,
+            input.gear_ratio,
+            !input.is_front_wheel,
+        ),
+        slip_applied,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1408,5 +1511,61 @@ mod tests {
         for pair in HEAD_BASIS_STORE_OFFSETS.windows(2) {
             assert!(pair[0][2] + 4 <= pair[1][0]);
         }
+    }
+
+    fn first_wheel_input() -> FirstWheelInputs {
+        FirstWheelInputs {
+            force: 10,
+            wheel_speed: 1,
+            split: 100,
+            wheel_constant: 5,
+            wheel_vector: [0x10000, 0, 0],
+            state_vector: [0x10000, 0, 0],
+            scale_c600: 0x10000,
+            limit: 0x10000,
+            shift: 2,
+            handbrake: 0,
+            factor_c5c0: 0x10000,
+            gear: 0,
+            config_40c: 0,
+            config_158: 0,
+            gear_ratio: 0x10000,
+            is_front_wheel: true,
+        }
+    }
+
+    #[test]
+    fn first_wheel_iteration_applies_drive_slip_integration_and_gate() {
+        let effects = execute_first_wheel_iteration(first_wheel_input());
+        // Drive: 10 - 100 - 5 = -95. Slip clamp: 0x10000 >> 2 = 0x4000, so the
+        // final force is 16289 and the integrated speed is 16290 (no flip).
+        assert_eq!(effects.force_at_2d4, 16289);
+        assert_eq!(effects.force_at_540, 16289);
+        assert_eq!(effects.wheel_speed, 16290);
+        assert!(effects.slip_applied);
+    }
+
+    #[test]
+    fn first_wheel_iteration_redrives_when_the_slip_gate_closes() {
+        let mut input = first_wheel_input();
+        input.is_front_wheel = false;
+        input.handbrake = 1;
+        let effects = execute_first_wheel_iteration(input);
+        // The slip gate closes (rear + handbrake + no disagreement), so the
+        // force is zeroed and redriven: 0 - 100 - 5 = -105. The speed flips to zero.
+        assert_eq!(effects.force_at_2d4, -105);
+        assert_eq!(effects.wheel_speed, 0);
+        assert!(!effects.slip_applied);
+    }
+
+    #[test]
+    fn first_wheel_iteration_applies_slip_on_rear_without_handbrake() {
+        let mut input = first_wheel_input();
+        input.is_front_wheel = false;
+        let effects = execute_first_wheel_iteration(input);
+        // Handbrake off means the rear slip gate opens too.
+        assert!(effects.slip_applied);
+        assert_eq!(effects.force_at_2d4, 16289);
+        assert_eq!(effects.wheel_speed, 16290);
     }
 }

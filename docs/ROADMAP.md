@@ -1051,8 +1051,14 @@ projection results replace the initial direction sources only when
 `DAT_00d3ca80+0x25 & 0x10` is set. `select_head_vector_path` reproduces the
 branch selection, and `HEAD_BASIS_STORE_OFFSETS` pins the four basis rows at
 `0x380`, `0x38c`, `0x398`, and `0x3a4`. Two focused tests bring `cmr-core` to
-1,300. The force-pass head and both per-wheel loops are now contracted;
-runtime sim-input wiring is next.
+G03 composes the first per-wheel iteration: `execute_first_wheel_iteration`
+applies the drive, slip candidate and sign-disagreement, the slip gate and
+clamped/downshifted slip force (or a zeroed redrive), wheel-speed integration,
+and the zeroing gate in native order. Three focused tests cover the full slip
+path, the closed-gate redrive and speed flip, and the rear handbrake-off slip
+path, bringing `cmr-core` to 1,303. The recovered rules are now a coherent
+per-wheel sim step with injected runtime inputs; the second-loop composition
+and real car-data tables remain open.
 
 Exit gate:
 
