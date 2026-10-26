@@ -2268,9 +2268,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   `+0x170`. Both record tables are inside the `0x1e20` settings image saved as
   `cmRally.cfg`; checked ranges and a settings round-trip cover that persistence.
   `FUN_0044da00` derives rival selection from country and live standings, with
-  the forced-country lookup implemented. Custom-mode scheduling and exhaustive
-  menu-unlock verification remain. See the championship progression, stage-commit
-  and record-persistence evidence rows.
+  the forced-country lookup implemented. Sub-mode 1 and sparse custom sub-mode 2
+  scheduling are implemented with fixed/variable limits, forced countries,
+  two-player reset, exhaustion and safe invalid-table rejection. F06 is complete;
+  availability globals and table contents remain caller/game inputs. See the
+  championship progression, stage-commit, record-persistence and custom-schedule
+  evidence rows.
 - The F02 frontend-configuration structure spans three modules.
   `cmr-core::options_screen` models the settings-header encoding the options
   screens edit (volume channels `0x0c..0x0f` 7-bit + master flag, display-flags

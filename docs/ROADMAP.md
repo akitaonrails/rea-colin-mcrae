@@ -1414,6 +1414,10 @@ image saved as `cmRally.cfg`; checked ranges reject invalid inputs and record
 bytes survive `SettingsImage`. `FUN_0044da00` establishes dynamic country/
 standings-driven rival selection, with its forced-country lookup implemented.
 Two tests bring `cmr-core` to 1,390. Custom scheduling remains next.
+F06 is complete: sub-mode 1 now honors fixed/variable limits and forced
+countries, while sub-mode 2 scans sparse stage masks, applies two-player and
+special-country rules, and rejects invalid table indices safely. Three tests
+bring `cmr-core` to 1,395. Availability globals and table values remain inputs.
 
 Exit gate:
 

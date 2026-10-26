@@ -264,6 +264,114 @@ pub fn commit_ordinary_stage(progress: u8, cursor: u8) -> StageCommit {
     }
 }
 
+/// Commit the sub-mode-1 stage path (`FUN_00436ff0`), including the parent's
+/// progress-counter increment. `stage_count` is the low nibble of `+0x165`;
+/// `difficulty_flags` is live `+0x18`. With [`MODE_SUBFLAG`] clear, the limit is
+/// three stages when the difficulty bits are zero and `stage_count` otherwise.
+/// With it set, the advanced progress counter selects a forced country and any
+/// value above three completes the event without changing the cursor.
+#[must_use]
+pub fn commit_submode_one_stage(
+    progress: u8,
+    cursor: u8,
+    mode: u8,
+    difficulty_flags: u8,
+    stage_count: u8,
+    forced_countries: &[u8; 4],
+) -> StageCommit {
+    let progress = (progress & 0xc0) | (progress.wrapping_add(1) & 0x3f);
+    if mode & MODE_SUBFLAG != 0 {
+        let index = usize::from(progress & 0x3f);
+        if index > 3 {
+            return StageCommit {
+                progress,
+                cursor,
+                event_complete: true,
+            };
+        }
+        return StageCommit {
+            progress,
+            cursor: (cursor & 0xf0) | (forced_countries[index] & 0x0f),
+            event_complete: false,
+        };
+    }
+    let cursor = (cursor & 0xf0).wrapping_add(0x10) | (cursor & 0x0f);
+    let variable_limit = difficulty_flags & 0x18 != 0;
+    let event_complete = if variable_limit {
+        stage_index(cursor) >= stage_count
+    } else {
+        cursor & 0xf0 >= 0x30
+    };
+    StageCommit {
+        progress,
+        cursor,
+        event_complete,
+    }
+}
+
+/// Inputs to the sparse custom-stage scheduler `FUN_00436e20`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CustomStageState {
+    /// Live `+0x167`, before the parent's progress increment.
+    pub progress: u8,
+    /// Live `+0x168` country/stage cursor.
+    pub cursor: u8,
+    /// Live `+0x166` mode flags.
+    pub mode: u8,
+    /// Enabled-stage mask from `+0x164`.
+    pub stage_mask: u16,
+    /// Number of stages from the low nibble of `+0x165`.
+    pub stage_count: u8,
+}
+
+/// Advance through an enabled custom-stage mask, counting only enabled stages
+/// against the incremented progress counter. `two_player` represents the native
+/// `DAT_00d3ca94` reset branch. Exhaustion reports completion without a cursor
+/// write; an out-of-table forced-country request is rejected rather than
+/// reading beyond the supplied four-entry table.
+#[must_use]
+pub fn commit_custom_stage(
+    state: CustomStageState,
+    two_player: bool,
+    forced_countries: &[u8; 4],
+) -> StageCommit {
+    let mut result = StageCommit {
+        progress: (state.progress & 0xc0) | (state.progress.wrapping_add(1) & 0x3f),
+        cursor: state.cursor,
+        event_complete: true,
+    };
+    let mut enabled_index = 0u8;
+    for stage in 0..state.stage_count.min(16) {
+        if state.stage_mask & (1u16 << stage) == 0 {
+            continue;
+        }
+        if two_player {
+            result.progress &= 0xc0;
+            result.cursor = (result.cursor & 0x0f) | (stage << 4);
+            result.event_complete = false;
+            break;
+        }
+        if enabled_index == result.progress & 0x3f {
+            if state.mode & MODE_SUBFLAG != 0 {
+                if state.mode & CHAMPIONSHIP_TYPE_FLAG == 0 {
+                    let Some(&country) = forced_countries.get(usize::from(stage)) else {
+                        break;
+                    };
+                    result.cursor = 0x60 | (country & 0x0f);
+                    result.event_complete = false;
+                    break;
+                }
+                result.cursor = (result.cursor & 0xf8) | 8;
+            }
+            result.cursor = (result.cursor & 0x0f) | (stage << 4);
+            result.event_complete = false;
+            break;
+        }
+        enabled_index += 1;
+    }
+    result
+}
+
 /// Advance to the next country at its first stage (`FUN_00437090`).
 ///
 /// `can_continue` is the native country-range and external-availability gate.
@@ -449,6 +557,74 @@ mod tests {
         let mut times = [7; RESULT_SLOT_COUNT];
         clear_cumulative_times(&mut times);
         assert_eq!(times, [0; RESULT_SLOT_COUNT]);
+    }
+
+    #[test]
+    fn submode_one_commit_honors_limits_and_forced_countries() {
+        let next = commit_submode_one_stage(0, 0x13, 0, 0, 6, &[1, 3, 6, 8]);
+        assert_eq!(
+            (next.progress, next.cursor, next.event_complete),
+            (1, 0x23, false)
+        );
+        let complete = commit_submode_one_stage(0, 0x13, 0, 8, 2, &[1, 3, 6, 8]);
+        assert_eq!((complete.cursor, complete.event_complete), (0x23, true));
+
+        let forced = commit_submode_one_stage(0, 0x13, MODE_SUBFLAG, 0, 6, &[1, 3, 6, 8]);
+        assert_eq!((forced.progress, forced.cursor), (1, 0x13));
+        let exhausted = commit_submode_one_stage(3, 0x13, MODE_SUBFLAG, 0, 6, &[1, 3, 6, 8]);
+        assert_eq!((exhausted.progress, exhausted.cursor), (4, 0x13));
+        assert!(exhausted.event_complete);
+    }
+
+    #[test]
+    fn custom_commit_selects_sparse_stages_and_resets_two_player_progress() {
+        let state = CustomStageState {
+            progress: 0,
+            cursor: 0x23,
+            mode: 0,
+            stage_mask: 0b1010,
+            stage_count: 4,
+        };
+        let next = commit_custom_stage(state, false, &[1, 3, 6, 8]);
+        assert_eq!(
+            (next.progress, next.cursor, next.event_complete),
+            (1, 0x33, false)
+        );
+        let two_player = commit_custom_stage(state, true, &[1, 3, 6, 8]);
+        assert_eq!((two_player.progress, two_player.cursor), (0, 0x13));
+        let exhausted = commit_custom_stage(
+            CustomStageState {
+                stage_mask: 0,
+                ..state
+            },
+            false,
+            &[1, 3, 6, 8],
+        );
+        assert_eq!((exhausted.progress, exhausted.cursor), (1, 0x23));
+        assert!(exhausted.event_complete);
+    }
+
+    #[test]
+    fn custom_commit_applies_special_country_rules_safely() {
+        let state = CustomStageState {
+            progress: 0,
+            cursor: 0x23,
+            mode: MODE_SUBFLAG,
+            stage_mask: 0b101,
+            stage_count: 5,
+        };
+        let special = commit_custom_stage(state, false, &[1, 3, 6, 8]);
+        assert_eq!((special.cursor, special.event_complete), (0x66, false));
+
+        let invalid = commit_custom_stage(
+            CustomStageState {
+                stage_mask: 0b1_0001,
+                ..state
+            },
+            false,
+            &[1, 3, 6, 8],
+        );
+        assert_eq!((invalid.cursor, invalid.event_complete), (0x23, true));
     }
 
     #[test]
