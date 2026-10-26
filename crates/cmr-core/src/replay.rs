@@ -26,10 +26,9 @@
 //! `>>10` quantization + XOR-delta codec, the `.SSR` extension and `"CMPR"`
 //! container magic, and the snapshot record shape/capacity/compression.
 //! Inferences: Region A is the deterministic re-sim seed; track/car identity is
-//! carried in the `.SSR` filename. Unknowns (not reproduced): the exact bit
-//! assignment of the four record bytes to each actuator, the internal layout of
-//! the `0x151ec`-byte Region-A block, the explicit `.SSR` write path, and the
-//! network wire framing.
+//! carried in the `.SSR` filename. The four record-byte assignments are recovered.
+//! Unknowns (not reproduced): the internal layout of the `0x151ec`-byte Region-A
+//! block, the explicit `.SSR` write path, and the network wire framing.
 
 use crate::fixed_point::Fixed16;
 
@@ -144,6 +143,134 @@ pub fn delta_decode(previous: u8, encoded: u8) -> u8 {
     (previous ^ encoded) & ACTUATOR_QUANT_MASK
 }
 
+/// Native control fields consumed by `FUN_0046cd70`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReplayActuators {
+    pub steer: i32,
+    pub steer_alternate: i32,
+    pub throttle: i32,
+    pub brake: i32,
+    pub handbrake: bool,
+    pub flag_310: bool,
+    pub gear: i32,
+    pub analog_steer: bool,
+    pub analog_throttle: bool,
+    pub analog_brake: bool,
+}
+
+/// One four-byte input-trace record.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReplayControlRecord(pub [u8; REPLAY_TICK_RECORD_BYTES]);
+
+/// Encode one record; the double-XOR steer/gear sequences become their current
+/// values, while the repeat counter alone retains history.
+#[must_use]
+pub fn encode_replay_control(
+    input: ReplayActuators,
+    previous: ReplayControlRecord,
+    recording_active: bool,
+) -> ReplayControlRecord {
+    let analog_steer = input.analog_steer && recording_active;
+    let analog_throttle = input.analog_throttle && recording_active;
+    let analog_brake = input.analog_brake && recording_active;
+    let mut steer_byte = (previous.0[3] & 0x7f) | u8::from(analog_steer) << 7;
+    let steer_value = if input.steer < 1 {
+        steer_byte = (previous.0[3] & 0x3f) | u8::from(analog_steer) << 7;
+        if analog_steer {
+            quantize_actuator(input.steer_alternate)
+        } else {
+            u8::from(input.steer_alternate != 0)
+        }
+    } else {
+        steer_byte |= 0x40;
+        if analog_steer {
+            quantize_actuator(input.steer)
+        } else {
+            u8::from(input.steer != 0)
+        }
+    };
+    steer_byte = (steer_byte & 0xc0) | (steer_value & 0x3f);
+    let throttle = if analog_throttle {
+        quantize_actuator(input.throttle)
+    } else {
+        u8::from(input.throttle != 0)
+    };
+    let brake = if analog_brake {
+        quantize_actuator(input.brake)
+    } else {
+        u8::from(input.brake != 0)
+    };
+    let gear = (input.gear.wrapping_add(1) as u8) & 3;
+    let repeat = previous.0[2].wrapping_add(1) & 0x3f;
+    ReplayControlRecord([
+        u8::from(analog_throttle) | u8::from(analog_brake) << 1 | (throttle & 0x3f) << 2,
+        (brake & 0x3f) << 2 | gear,
+        u8::from(input.handbrake) << 7 | u8::from(input.flag_310) << 6 | repeat,
+        steer_byte,
+    ])
+}
+
+/// Decoded actuator/mode values and the native repeat-counter outcome.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReplayDecodedControl {
+    pub actuators: ReplayActuators,
+    pub control_410: bool,
+    pub control_414: bool,
+    pub control_418: bool,
+    pub next_repeat: u8,
+    pub repeat_complete: bool,
+}
+
+/// Decode a record and advance the independent repeat counter.
+#[must_use]
+pub fn decode_replay_control(
+    record: ReplayControlRecord,
+    previous_repeat: u8,
+) -> ReplayDecodedControl {
+    let steer_byte = record.0[3];
+    let steer = if steer_byte & 0x80 == 0 {
+        if steer_byte & 0x3f == 0 { 0 } else { -66 }
+    } else {
+        i32::from(steer_byte & 0x3f) << 10
+    };
+    let (steer, steer_alternate) = if steer_byte & 0x40 == 0 {
+        (0, steer)
+    } else {
+        (steer, 0)
+    };
+    let throttle = if record.0[0] & 1 == 0 {
+        if record.0[0] & 0xfc == 0 { 0 } else { -66 }
+    } else {
+        i32::from(record.0[0] >> 2) << 10
+    };
+    let brake = if record.0[0] & 2 == 0 {
+        if record.0[1] & 0xfc == 0 { 0 } else { -66 }
+    } else {
+        i32::from(record.0[1] >> 2) << 10
+    };
+    let next_repeat = previous_repeat.wrapping_add(1);
+    let repeat_complete = next_repeat >= record.0[2] & 0x3f;
+    ReplayDecodedControl {
+        actuators: ReplayActuators {
+            steer,
+            steer_alternate,
+            throttle,
+            brake,
+            handbrake: record.0[2] & 0x80 != 0,
+            flag_310: record.0[2] & 0x40 != 0,
+            gear: i32::from(record.0[1] & 3) - 1,
+            analog_steer: steer_byte & 0x80 != 0,
+            analog_throttle: record.0[0] & 1 != 0,
+            analog_brake: record.0[0] & 2 != 0,
+        },
+        control_410: steer_byte & 0x80 != 0,
+        control_414: record.0[0] & 1 != 0,
+        control_418: record.0[0] & 2 != 0,
+        next_repeat: if repeat_complete { 0 } else { next_repeat },
+        repeat_complete,
+    }
+}
+
 /// Parse a `"CMPR"` container header, returning the payload size, or `None` if
 /// the magic is absent or the slice is too short.
 pub fn parse_cmpr_header(bytes: &[u8]) -> Option<u32> {
@@ -224,6 +351,67 @@ mod tests {
         assert_eq!(delta_decode(prev, encoded), cur);
         // A field equal to the previous encodes as zero (the delta's purpose).
         assert_eq!(delta_encode(0x3f, 0x3f), 0);
+    }
+
+    #[test]
+    fn analog_control_record_is_byte_exact_and_round_trips() {
+        let input = ReplayActuators {
+            steer: 0x8c00,
+            steer_alternate: 0,
+            throttle: 0x4c00,
+            brake: 0x2c00,
+            handbrake: true,
+            flag_310: true,
+            gear: 2,
+            analog_steer: true,
+            analog_throttle: true,
+            analog_brake: true,
+        };
+        let record =
+            encode_replay_control(input, ReplayControlRecord([0x55, 0x02, 0x10, 0x20]), true);
+        assert_eq!(record.0, [0x4f, 0x2f, 0xd1, 0xe3]);
+        let decoded = decode_replay_control(record, 0x10);
+        assert_eq!(decoded.actuators, input);
+        assert!(decoded.control_410);
+        assert!(decoded.control_414);
+        assert!(decoded.control_418);
+        assert!(decoded.repeat_complete);
+        assert_eq!(decoded.next_repeat, 0);
+    }
+
+    #[test]
+    fn digital_controls_decode_to_minus_66_and_repeat_uses_history() {
+        let input = ReplayActuators {
+            steer: 0,
+            steer_alternate: 1,
+            throttle: 1,
+            brake: 1,
+            handbrake: true,
+            flag_310: true,
+            gear: -1,
+            analog_steer: true,
+            analog_throttle: true,
+            analog_brake: true,
+        };
+        let record = encode_replay_control(input, ReplayControlRecord::default(), false);
+        assert_eq!(record.0, [0x04, 0x04, 0xc1, 0x01]);
+        let decoded = decode_replay_control(record, 0);
+        assert_eq!(decoded.actuators.steer, 0);
+        assert_eq!(decoded.actuators.steer_alternate, -66);
+        assert_eq!(decoded.actuators.throttle, -66);
+        assert_eq!(decoded.actuators.brake, -66);
+        assert_eq!(decoded.actuators.gear, -1);
+        assert!(!decoded.control_410);
+        assert!(!decoded.control_414);
+        assert!(!decoded.control_418);
+        assert!(decoded.repeat_complete);
+        let two_ticks = ReplayControlRecord([0, 0, 2, 0]);
+        let first = decode_replay_control(two_ticks, 0);
+        assert!(!first.repeat_complete);
+        assert_eq!(first.next_repeat, 1);
+        let second = decode_replay_control(two_ticks, first.next_repeat);
+        assert!(second.repeat_complete);
+        assert_eq!(second.next_repeat, 0);
     }
 
     #[test]

@@ -1387,6 +1387,10 @@ remain. The nonzero-idle oscillation now replaces RPM through the generated sine
 phase, decrements its countdown and writes `+0x2d8` at the native threshold.
 Persistent response state feeds lane stabilization and engine force. One exact
 sine/threshold test brings `cmr-core` to 1,379. `force_2c8` production remains.
+G08's four-byte actuator record is now recovered and implemented with digital
+`-66` decoding, mode flags, double-XOR current-field semantics and the repeat
+counter. Two byte-exact tests plus native vertical trace decoding bring `cmr-core`
+to 1,381. Region-A layout, explicit `.SSR` writing and network framing remain.
 
 Exit gate:
 

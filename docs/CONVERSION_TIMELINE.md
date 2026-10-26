@@ -588,7 +588,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T16:25Z | 146h07m | wire-idle-reset-countdown | `fc39b6e` | G03 | Wired the `6e8 != 0` reset: signed countdowns below two clear the flag and reload 25, larger values decrement, and RPM remains unchanged before rev limiting. One boundary test brings `cmr-core` to 1,378. |
 
-| 2026-10-26T16:30Z | 146h13m | recover-idle-oscillation | _(pending)_ | G03 | Recovered the nonzero-idle sine/RPM oscillation, countdown and `+0x2d8` response threshold. Persistent response now feeds lane stabilization and engine force. One exact sine/threshold test brings `cmr-core` to 1,379; four-wheel and authenticated-session tests pass. |
+| 2026-10-26T16:30Z | 146h13m | recover-idle-oscillation | `1b358f6` | G03 | Recovered the nonzero-idle sine/RPM oscillation, countdown and `+0x2d8` response threshold. Persistent response now feeds lane stabilization and engine force. One exact sine/threshold test brings `cmr-core` to 1,379; four-wheel and authenticated-session tests pass. |
+
+| 2026-10-26T16:39Z | 146h21m | recover-replay-control-record | _(pending)_ | G08, G10 | Recovered the exact four-byte actuator layout, digital `-66` decoding, mode flags and repeat counter. Preserved native double-XOR current-field semantics instead of inventing steer/gear deltas. Two byte-exact tests and native vertical trace decoding bring `cmr-core` to 1,381. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

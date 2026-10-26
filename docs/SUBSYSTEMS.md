@@ -1883,11 +1883,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   render snapshot buffer (`0x46c7d0`, gated by the record flag) captures 24-byte
   pos+compressed-orientation keyframes at 6.25 Hz (cap 0x8ca x 6 cars) and
   interpolates them into the render transforms for smooth display only - it
-  never feeds physics. Reconstructed the object sizing/region layout, the
-  actuator quantize/XOR-delta codec, the CMPR header, and the snapshot
-  indexing/compression/interpolation in `cmr-core::replay`. The per-byte actuator
-  bit assignment, the Region-A layout, the save path, and the wire framing
-  remain. See evidence `rea.official-eu.sim-replay`.
+  never feeds physics. Reconstructed the object sizing/region layout, exact
+  four-byte actuator records, digital `-66` decoding, double-XOR current fields,
+  repeat counting, CMPR header and snapshot math in `cmr-core::replay`. The
+  vertical trace now uses those native records and rejects partial input. Region-A
+  layout, the save path and wire framing remain. See evidence
+  `rea.official-eu.sim-replay` and `rea.official-eu.replay-control-record`.
 - `cmr-core::race_state` composes the recovered fixed-step pieces (`fixed_point`
   BAM trig + `Vec3`, `vehicle_dynamics` lateral-grip/net-accel/drag/integration,
   and the `stage_timing` stage clock) into a deterministic offline race-state

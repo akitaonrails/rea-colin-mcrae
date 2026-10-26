@@ -18,9 +18,8 @@
 //! Faithful here: the composition order, the checkpoint de-dup, the timing
 //! readout, the replay codec primitives, and the re-sim determinism. A harness
 //! simplification (documented, not claimed as original behaviour): the stage is a
-//! 1-D gate line along +x, and the serialized actuator byte uses the recovered
-//! `quantize_actuator`/`delta_encode` over the forward-force channel only - the
-//! exact per-byte record bit layout is a G08 unknown.
+//! 1-D gate line along +x, and only the forward-force channel is mapped into the
+//! recovered four-byte native control record as analog throttle.
 //!
 //! See evidence `impl.sim-vertical-path`.
 
@@ -29,7 +28,9 @@ use crate::race_state::{
     CarState, Controls, FourWheelIterationParams, RaceState, SimParams, TraceSample,
     WheelPostprocessError,
 };
-use crate::replay::{delta_decode, delta_encode, quantize_actuator};
+use crate::replay::{
+    ReplayActuators, ReplayControlRecord, decode_replay_control, encode_replay_control,
+};
 use crate::stage_timing::{checkpoint_passed, mark_checkpoint_passed};
 
 /// A checkpoint gate on the +x stage line.
@@ -112,18 +113,24 @@ fn drive_stage_with_step(
     let mut finished = false;
     let mut finish_centiseconds = None;
     let mut ticks = 0usize;
-    let mut trace = Vec::with_capacity(controls.len());
-    let mut previous_byte = 0u8;
+    let mut trace = Vec::with_capacity(controls.len() * 4);
+    let mut previous_record = ReplayControlRecord::default();
 
     for control in controls {
         let sample = step(&mut state, control)?;
         ticks += 1;
 
-        // Save the forward actuator into the replay trace (quantize + XOR-delta).
-        let quantized = quantize_actuator(control.forward_force.raw());
-        let encoded = delta_encode(previous_byte, quantized);
-        trace.push(encoded);
-        previous_byte = quantized;
+        let record = encode_replay_control(
+            ReplayActuators {
+                throttle: control.forward_force.raw(),
+                analog_throttle: true,
+                ..ReplayActuators::default()
+            },
+            previous_record,
+            true,
+        );
+        trace.extend_from_slice(&record.0);
+        previous_record = record;
 
         // Checkpoint crossings (de-duplicated per car via the passed-bitmask).
         for (index, checkpoint) in config.checkpoints.iter().enumerate() {
@@ -160,18 +167,21 @@ fn drive_stage_with_step(
     })
 }
 
-/// Decode a saved forward-actuator trace back to the quantized values, the
-/// inverse of the XOR-delta save in [`drive_stage`] (a self-consistency check on
-/// the replay codec; the quantization itself is lossy).
-pub fn decode_trace(trace: &[u8]) -> Vec<u8> {
-    let mut previous = 0u8;
-    let mut out = Vec::with_capacity(trace.len());
-    for &encoded in trace {
-        let value = delta_decode(previous, encoded);
-        out.push(value);
-        previous = value;
+/// Decode native four-byte records back to the harness's quantized throttle
+/// channel, rejecting a trailing partial record.
+#[must_use]
+pub fn decode_trace(trace: &[u8]) -> Option<Vec<u8>> {
+    if !trace.len().is_multiple_of(4) {
+        return None;
     }
-    out
+    let mut previous_repeat = 0;
+    let mut out = Vec::with_capacity(trace.len() / 4);
+    for record in trace.as_chunks::<4>().0 {
+        let decoded = decode_replay_control(ReplayControlRecord(*record), previous_repeat);
+        out.push((decoded.actuators.throttle >> 10) as u8);
+        previous_repeat = decoded.next_repeat;
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -183,6 +193,7 @@ mod tests {
         populate_compiled_contact_offsets, populate_compiled_contact_update_inputs,
         populate_force_pass_scales, populate_surface_table_factor,
     };
+    use crate::replay::quantize_actuator;
     use crate::vehicle_dynamics::GeometricPostprocessLane;
     use cmr_formats::pe_surface::{SurfaceCoefficientFamilies, SurfaceCoefficientFamily};
 
@@ -429,12 +440,20 @@ mod tests {
     #[test]
     fn the_saved_trace_round_trips_through_the_codec() {
         let outcome = drive_stage(CarState::at_rest(), &full_throttle(32), &stage(), &params());
-        // The XOR-delta save decodes back to a constant quantized forward value
-        // (constant full throttle -> zero deltas after the first).
-        let decoded = decode_trace(&outcome.trace);
+        let decoded = decode_trace(&outcome.trace).unwrap();
         let expected = quantize_actuator(Fixed16::ONE.raw());
         assert!(decoded.iter().all(|&v| v == expected));
-        // Constant input -> every delta after the first is zero.
-        assert!(outcome.trace[1..].iter().all(|&d| d == 0));
+        assert_eq!(outcome.trace.len(), outcome.ticks * 4);
+        assert!(
+            outcome.trace.as_chunks::<4>().0.iter().all(|record| {
+                record[0] == 1 && record[1] & 0xfc == 0 && record[1] & 3 == 1 && record[3] == 0
+            }),
+            "{:02x?}",
+            outcome.trace
+        );
+        assert_eq!(
+            decode_trace(&outcome.trace[..outcome.trace.len() - 1]),
+            None
+        );
     }
 }
