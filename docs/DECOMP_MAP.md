@@ -206,7 +206,9 @@ cover the recovered pure rules.
   **G03 second-loop small-ratio branch selection (`2f7197e`):** the normalizer is `|local_30|` when `|local_2c| < 0x10001` or `|local_2c| < |local_30|` (the large-ratio branch), and `|local_2c|` otherwise (the small-ratio branch). Both branches scale the two direction sources by `qmul(local_2c, reciprocal)` and `qmul(local_30, reciprocal)`, sum them, normalize with the legacy generated-table rule, and compute `length = qmul(square_sum, normalizer)`. `normalize_second_loop_direction` now selects the normalizer by that rule. Two additional focused tests cover the small-ratio normalizer and the branch-preference boundaries, bringing `cmr-core` to 1,286. The post-normalization force-pass stages remain.
   **G03 post-normalization arctan index fold (`06ef61c`):** the post-normalization stage folds the 64-bit `local_2c * local_34` product and `local_30` into an arctan table index: a zero product yields `0`, a zero denominator with a nonzero product yields `0x400`; otherwise the ratio is folded into the first octant (`min/max`, never above `1.0`), indexed by `(numerator << 16) / denominator >> 7`, complemented (`0x400 - index`) when the original ratio exceeded `1.0`, and negated when product and denominator have opposite signs. `cmr-core::drivetrain::arctan_ratio_index` reproduces it with the runtime-built arctan table injected (like the cosine table). Two focused tests cover the special cases, first-octant folding and complement, and sign handling, bringing `cmr-core` to 1,288. The cosine modulation and remaining force accumulation remain.
   **G03 second-loop gated accumulation factor (`11c1a31`):** the `ctl+0x420`-gated accumulation produces a factor only when the speed delta and the gear ratio share a nonzero sign: `qmul(qmul(delta, 0x4000), qmul(DAT_0050c5c4, 0x1999))`. When the per-wheel limit at `ctl+0x35c` is below the result's magnitude, the result is replaced by the signed limit (`-limit` when the result is below `1`, otherwise `limit`). `second_loop_accumulation_factor` reproduces the gate, scaling, and clamp; `accumulate_direction_force` reproduces the `accumulator += qmul(component, factor)` accumulation with wrapping addition. Two focused tests cover sign gating, scaling and clamping, and accumulation, bringing `cmr-core` to 1,290. The table-driven final accumulation and the force-pass head remain.
-  **G03 final table-driven accumulation factor (pending milestone):** the final accumulation of the second per-wheel loop produces no factor when the direction dot is zero; otherwise it shifts the dot right by two (`dot >> 2`), scales by `qmul(DAT_0050c5c4, table_factor)` when the table entry is present or `qmul(DAT_0050c5c4, 0x8000)` otherwise, and negates the result with wrapping. `final_loop_accumulation_factor` reproduces it. One focused test covers the zero-dot case, table and constant factors, and negative-dot arithmetic shifting, bringing `cmr-core` to 1,291. The force-pass head computations remain.
+  **G03 final table-driven accumulation factor (`ac298da`):** the final accumulation of the second per-wheel loop produces no factor when the direction dot is zero; otherwise it shifts the dot right by two (`dot >> 2`), scales by `qmul(DAT_0050c5c4, table_factor)` when the table entry is present or `qmul(DAT_0050c5c4, 0x8000)` otherwise, and negates the result with wrapping. `final_loop_accumulation_factor` reproduces it. One focused test covers the zero-dot case, table and constant factors, and negative-dot arithmetic shifting, bringing `cmr-core` to 1,291. The force-pass head computations remain.
+  **G03 force-pass head projection-normalization (pending milestone):** the force-pass head computes two direction sources with the same projection-normalization: `dot = qdot(state, normal)`, `rejected = state - normal * dot` with wrapping Q16.16 arithmetic, then the legacy generated-table normalization (zero square sum yields a zero vector). The normal is the AK11 final vector at `+0x324/+0x328/+0x32c`; the two state vectors are at `+0x550/+0x554/+0x558` and `+0x544/+0x548/+0x54c`. `cmr-core::drivetrain::project_and_normalize` reproduces the Gram-Schmidt rejection and normalization. Two focused tests cover parallel/orthogonal/projected states and zero normal/state, bringing `cmr-core` to 1,293. The first-loop drive factor and remaining head computations remain.
+
 
 
 
@@ -283,13 +285,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T00:55:14Z
-milestone=recover-final-loop-accumulation-factor
+updated_utc=2026-10-26T00:57:56Z
+milestone=recover-force-head-projection-normalization
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-recover-the-force-pass-head-computations
-next_exit_gate=the-force-pass-head-computations-have-exact-tested-contracts
+current_focus=G03-recover-the-first-loop-drive-factor-and-head-stages
+next_exit_gate=the-first-loop-drive-factor-and-head-stages-have-exact-tested-contracts
 <!-- PROGRESS-TAIL-END -->

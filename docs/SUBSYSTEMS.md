@@ -1433,6 +1433,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   0x8000)` otherwise, then negated with wrapping.
   `final_loop_accumulation_factor` reproduces it. One focused test brings
   `cmr-core` to 1,291. The force-pass head computations remain open.
+  G03 force-pass head projection-normalization:
+  `rejected = state - normal * dot(state, normal)` with wrapping Q16.16
+  arithmetic, then the legacy generated-table normalization (zero square sum
+  yields a zero vector). The normal is the AK11 final vector at
+  `+0x324/+0x328/+0x32c`; the two state vectors are at `+0x550/+0x554/+0x558`
+  and `+0x544/+0x548/+0x54c`. `cmr-core::drivetrain::project_and_normalize`
+  reproduces it. Two focused tests bring `cmr-core` to 1,293. The first-loop
+  drive factor and remaining head computations remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

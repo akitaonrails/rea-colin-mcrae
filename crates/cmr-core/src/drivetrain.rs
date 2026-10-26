@@ -603,6 +603,22 @@ pub fn final_loop_accumulation_factor(
     Some(q16_mul(scaled, factor.raw()).wrapping_neg())
 }
 
+/// Reconstructs the projection-normalization used twice in the force-pass
+/// head: `rejected = state - normal * dot(state, normal)` with wrapping Q16.16
+/// arithmetic, then the legacy generated-table normalization (zero square sum
+/// yields a zero vector). This is the Gram-Schmidt rejection of the AK11
+/// normal at `+0x324/+0x328/+0x32c` out of the state vector, producing the two
+/// per-wheel direction sources.
+#[must_use]
+pub fn project_and_normalize(state: [i32; 3], normal: [i32; 3]) -> [i32; 3] {
+    let dot = (0..3).fold(0_i32, |sum, index| {
+        sum.wrapping_add(q16_mul(state[index], normal[index]))
+    });
+    let rejected =
+        std::array::from_fn(|index| state[index].wrapping_sub(q16_mul(normal[index], dot)));
+    crate::compiled_car_initializer::normalize_compiled_lane_vector(rejected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1137,5 +1153,40 @@ mod tests {
             final_loop_accumulation_factor(-0x10000, Fixed16::ONE, None),
             Some(0x2000)
         );
+    }
+
+    #[test]
+    fn projection_normalization_rejects_the_normal_component() {
+        // Parallel state and normal: the rejection is zero.
+        assert_eq!(
+            project_and_normalize([0x10000, 0, 0], [0x10000, 0, 0]),
+            [0; 3]
+        );
+        // Orthogonal state: it is unchanged before normalization.
+        assert_eq!(
+            project_and_normalize([0, 0x10000, 0], [0x10000, 0, 0]),
+            [0, 65_522, 0]
+        );
+        // Nonzero projection is removed exactly.
+        assert_eq!(
+            project_and_normalize([0x8000, 0x10000, 0], [0x10000, 0, 0]),
+            [0, 65_522, 0]
+        );
+        // The other axis is rejected out of a mixed state.
+        assert_eq!(
+            project_and_normalize([0x10000, 0x10000, 0], [0, 0x10000, 0]),
+            [65_522, 0, 0]
+        );
+    }
+
+    #[test]
+    fn projection_normalization_handles_zero_normal_and_zero_state() {
+        // A zero normal leaves the state unchanged before normalization.
+        assert_eq!(
+            project_and_normalize([0, 0, 0x10000], [0; 3]),
+            [0, 0, 65_522]
+        );
+        // A zero state stays zero even with a nonzero normal.
+        assert_eq!(project_and_normalize([0; 3], [0x10000, 0, 0]), [0; 3]);
     }
 }

@@ -1028,7 +1028,14 @@ direction dot is zero; otherwise `dot >> 2` scaled by
 `qmul(DAT_0050c5c4, table_factor)` when the table entry is present, or
 `qmul(DAT_0050c5c4, 0x8000)` otherwise, then negated with wrapping.
 `final_loop_accumulation_factor` reproduces it. One focused test brings
-`cmr-core` to 1,291. The force-pass head computations remain open.
+G03 recovers the force-pass head projection-normalization:
+`rejected = state - normal * dot(state, normal)` with wrapping Q16.16
+arithmetic, then the legacy generated-table normalization (zero square sum
+yields a zero vector). The normal is the AK11 final vector; the two state
+vectors are at `+0x550..+0x558` and `+0x544..+0x54c`.
+`cmr-core::drivetrain::project_and_normalize` reproduces it. Two focused tests
+bring `cmr-core` to 1,293. The first-loop drive factor and remaining head
+computations remain open.
 
 Exit gate:
 
