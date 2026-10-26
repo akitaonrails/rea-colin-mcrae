@@ -2047,7 +2047,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   and advance the common neutral/idle branch before rev limiting. `idle_6e8` and
   `idle_countdown_6ec` guard unrecovered special states. `advance_idle_reset` now
   handles the `6e8 != 0` clear/reload/decrement transition before rev limiting;
-  the separate nonzero-idle oscillation remains open.
+  the separate nonzero-idle oscillation remains open. `advance_idle_oscillation` now
+  covers that branch, including sine/RPM replacement, countdown and optional response
+  write. Persistent `response_2d8` is initialized once and shared with lane stabilization
+  and engine force.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

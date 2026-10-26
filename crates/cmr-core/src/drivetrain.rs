@@ -436,6 +436,37 @@ pub fn advance_idle_reset(idle_6e8: i32, countdown_6ec: i16) -> (i32, i16) {
     }
 }
 
+/// Result of the `6e8 == 0`, positive-`6ec` oscillation branch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IdleOscillation {
+    pub engine_2e0: i32,
+    pub countdown_6ec: i16,
+    pub response_2d8: Option<i32>,
+}
+
+/// Advance the sine-driven idle oscillation and its optional response write.
+#[must_use]
+pub fn advance_idle_oscillation(
+    redline_15c: i32,
+    countdown_6ec: i16,
+    trig: &[i32],
+) -> IdleOscillation {
+    let phase = q16_mul(
+        i32::from(countdown_6ec)
+            .wrapping_mul(-0x10000)
+            .wrapping_add(0x190000),
+        0xa3d,
+    )
+    .wrapping_mul(0x638);
+    let phase_index = phase >> 16;
+    let sine = trig[(phase_index as usize) & 0xfff];
+    IdleOscillation {
+        engine_2e0: q16_mul(q16_mul(sine, 0x10000), redline_15c),
+        countdown_6ec: countdown_6ec.wrapping_sub(1),
+        response_2d8: (phase_index < 0x400).then_some(0x10000),
+    }
+}
+
 /// Inputs for the driven `FUN_004088c0` integration branch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DrivenWheelSmoothingInput {
@@ -2112,6 +2143,25 @@ mod tests {
         assert_eq!(advance_idle_reset(1, -1), (0, 25));
         assert_eq!(advance_idle_reset(1, 2), (1, 1));
         assert_eq!(advance_idle_reset(1, 25), (1, 24));
+    }
+
+    #[test]
+    fn idle_oscillation_uses_sine_phase_and_response_threshold() {
+        let trig = crate::fixed_point::build_sine_table();
+        let oscillation = advance_idle_oscillation(0x10000, 9, &trig);
+        assert_eq!(oscillation.countdown_6ec, 8);
+        assert_eq!(oscillation.response_2d8, Some(0x10000));
+        assert_eq!(
+            oscillation.engine_2e0,
+            ((i64::from(trig[0x3fa]) * 0x10000) >> 16) as i32
+        );
+        let later = advance_idle_oscillation(0x10000, 8, &trig);
+        assert_eq!(later.countdown_6ec, 7);
+        assert_eq!(later.response_2d8, None);
+        assert_eq!(
+            later.engine_2e0,
+            ((i64::from(trig[0x43a]) * 0x10000) >> 16) as i32
+        );
     }
 
     fn fx(raw: i32) -> Fixed16 {

@@ -1383,7 +1383,10 @@ test brings `cmr-core` to 1,377. Countdown special cases and runtime response/br
 production remain. The `6e8 != 0` reset now clears/reloads at signed countdowns
 below two and decrements larger values before rev limiting. One boundary test
 brings `cmr-core` to 1,378. Nonzero-idle oscillation and `force_2c8` production
-remain.
+remain. The nonzero-idle oscillation now replaces RPM through the generated sine
+phase, decrements its countdown and writes `+0x2d8` at the native threshold.
+Persistent response state feeds lane stabilization and engine force. One exact
+sine/threshold test brings `cmr-core` to 1,379. `force_2c8` production remains.
 
 Exit gate:
 

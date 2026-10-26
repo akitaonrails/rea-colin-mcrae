@@ -26,11 +26,11 @@ use crate::compiled_car_initializer::{
 };
 use crate::drivetrain::{
     EngineForceInput, FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
-    SecondWheelInputs, SmoothedEngineSpeedInput, advance_idle_reset, advance_residual_enable,
-    apply_rev_limiter, derive_engine_force, derive_force_pass_scales, derive_gear_ratio,
-    derive_smoothed_engine_speed, equalize_wheel_speeds, execute_first_wheel_iteration,
-    execute_second_wheel_core, integrate_engine_from_raw_wheels, integrate_idle_engine,
-    track_smoothed_wheel_speed,
+    SecondWheelInputs, SmoothedEngineSpeedInput, advance_idle_oscillation, advance_idle_reset,
+    advance_residual_enable, apply_rev_limiter, derive_engine_force, derive_force_pass_scales,
+    derive_gear_ratio, derive_smoothed_engine_speed, equalize_wheel_speeds,
+    execute_first_wheel_iteration, execute_second_wheel_core, integrate_engine_from_raw_wheels,
+    integrate_idle_engine, track_smoothed_wheel_speed,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::legacy_math::sqrt_q16;
@@ -367,6 +367,9 @@ pub struct FourWheelState {
     pub engine_force_530: i32,
     pub idle_6e8: i32,
     pub idle_countdown_6ec: i16,
+    /// Persistent response at `control+0x2d8`, initialized from wheel params.
+    pub response_2d8: i32,
+    pub engine_inputs_initialized: bool,
 }
 
 /// Apply neutral-gear zeroing or the ordinary post-step tracking update.
@@ -555,6 +558,8 @@ impl CarState {
                 engine_force_530: 0,
                 idle_6e8: 0,
                 idle_countdown_6ec: 0,
+                response_2d8: 0,
+                engine_inputs_initialized: false,
             },
         }
     }
@@ -872,6 +877,10 @@ impl RaceState {
                 return Err(WheelPostprocessError::ContactVectorIndex { lane, vector_index });
             }
         }
+        if !self.car.four_wheel.engine_inputs_initialized {
+            self.car.four_wheel.response_2d8 = wheel.lane_response_2d8.raw();
+            self.car.four_wheel.engine_inputs_initialized = true;
+        }
         self.car.four_wheel.residual_enable = advance_residual_enable(
             self.car.four_wheel.residual_enable,
             wheel.first[0].config_158,
@@ -903,7 +912,7 @@ impl RaceState {
             self.car.motion.lane_source_s,
             self.car.motion.basis[0],
             self.car.motion.basis[1],
-            wheel.lane_response_2d8,
+            Fixed16::from_raw(self.car.four_wheel.response_2d8),
             wheel.lane_time_step,
         );
         self.car.motion.lane_source_s = source_s;
@@ -1029,7 +1038,7 @@ impl RaceState {
             redline_15c: wheel.engine_smoothing.redline_15c,
             gear: first[0].gear,
             config_40c: first[0].config_40c,
-            response_2d8: wheel.lane_response_2d8.raw(),
+            response_2d8: self.car.four_wheel.response_2d8,
             ..wheel.engine_force
         });
         self.car.four_wheel.engine_force_530 = engine_force.force_530;
@@ -1046,6 +1055,17 @@ impl RaceState {
                 self.car.four_wheel.engine_2e0,
                 self.car.four_wheel.engine_force_530,
             );
+        } else if self.car.four_wheel.idle_6e8 == 0 && self.car.four_wheel.idle_countdown_6ec > 0 {
+            let oscillation = advance_idle_oscillation(
+                wheel.engine_smoothing.redline_15c,
+                self.car.four_wheel.idle_countdown_6ec,
+                &self.trig,
+            );
+            self.car.four_wheel.engine_2e0 = oscillation.engine_2e0;
+            self.car.four_wheel.idle_countdown_6ec = oscillation.countdown_6ec;
+            if let Some(response) = oscillation.response_2d8 {
+                self.car.four_wheel.response_2d8 = response;
+            }
         } else if self.car.four_wheel.idle_6e8 != 0 {
             (
                 self.car.four_wheel.idle_6e8,
