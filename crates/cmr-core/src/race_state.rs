@@ -26,8 +26,9 @@ use crate::drivetrain::{
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::vehicle_dynamics::{
-    GeometricPostprocessError, GeometricPostprocessLane, TranslationStepInput,
-    apply_geometric_lane_postprocess, apply_lateral_grip, apply_translation_step, drag, net_accel,
+    GeometricPostprocessError, GeometricPostprocessLane, LookupDependentCandidateError,
+    TranslationStepInput, apply_geometric_lane_postprocess, apply_lateral_grip,
+    apply_translation_step, drag, net_accel,
 };
 
 /// Fixed per-tick parameters of the integration harness (not recovered game
@@ -98,7 +99,10 @@ pub struct SecondWheelParams<'a> {
     pub arctan_table: &'a [i16],
     pub cos_table: &'a [i32],
     pub config_scale: i32,
-    pub selected_scalar: i32,
+    pub transition_gain: i32,
+    pub transition_base: i32,
+    pub alternate_gain: i32,
+    pub alternate_base: i32,
     pub correction_gate: i32,
     pub accumulation_limit: i32,
     pub correction_alternate: i32,
@@ -125,7 +129,14 @@ pub struct FourWheelPostprocessState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WheelPostprocessError {
     LaneIndex(usize),
+    Candidate(LookupDependentCandidateError),
     Geometry(GeometricPostprocessError),
+}
+
+impl From<LookupDependentCandidateError> for WheelPostprocessError {
+    fn from(error: LookupDependentCandidateError) -> Self {
+        Self::Candidate(error)
+    }
 }
 
 impl From<GeometricPostprocessError> for WheelPostprocessError {
@@ -300,13 +311,17 @@ impl RaceState {
     }
 
     /// Compose the second-wheel core after the first iteration and translation.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a checked candidate-lookup failure.
     pub fn step_with_second_wheel(
         &mut self,
         controls: &Controls,
         params: &SimParams,
         first: &FirstWheelParams,
         second: &SecondWheelParams<'_>,
-    ) -> TraceSample {
+    ) -> Result<TraceSample, LookupDependentCandidateError> {
         let prior_speed = self.car.first_wheel.wheel_speed;
         let mut sample = self.step_with_first_wheel(controls, params, first);
         let dot = (0..3).fold(0_i32, |sum, index| {
@@ -332,13 +347,16 @@ impl RaceState {
             arctan_table: second.arctan_table,
             cos_table: second.cos_table,
             config_scale: second.config_scale,
-            selected_scalar: second.selected_scalar,
+            transition_gain: second.transition_gain,
+            transition_base: second.transition_base,
+            alternate_gain: second.alternate_gain,
+            alternate_base: second.alternate_base,
             correction_gate: second.correction_gate,
             accumulation_limit: second.accumulation_limit,
             correction_alternate: second.correction_alternate,
             surface_vector: second.surface_vector,
             table_factor: second.table_factor,
-        });
+        })?;
         sample.car.second_wheel = SecondWheelState {
             ratio_at_3b0: effects.ratio_at_3b0,
             angle: effects.angle,
@@ -346,7 +364,7 @@ impl RaceState {
             accumulators: effects.accumulators,
         };
         self.car.second_wheel = sample.car.second_wheel;
-        sample
+        Ok(sample)
     }
 
     /// Feed the current second-core lane and the other three lanes through the
@@ -362,7 +380,7 @@ impl RaceState {
         if postprocess.current_lane >= postprocess.lanes.len() {
             return Err(WheelPostprocessError::LaneIndex(postprocess.current_lane));
         }
-        let mut sample = self.step_with_second_wheel(controls, params, first, second);
+        let mut sample = self.step_with_second_wheel(controls, params, first, second)?;
         let current = sample.car.second_wheel.accumulators;
         let mut lanes = postprocess.lanes;
         lanes[postprocess.current_lane].accumulator = Vec3::new(
@@ -521,19 +539,24 @@ mod tests {
             arctan_table: &[],
             cos_table: &trig,
             config_scale: 1,
-            selected_scalar: 0x10000,
+            transition_gain: 0,
+            transition_base: 0,
+            alternate_gain: 0,
+            alternate_base: 0,
             correction_gate: 1,
             accumulation_limit: 0x10000,
             correction_alternate: 0x10000,
             surface_vector: [0x10000, 0, 0],
             table_factor: None,
         };
-        let sample = state.step_with_second_wheel(
-            &straight_throttle(1)[0],
-            &params(),
-            &first_wheel_params(),
-            &second,
-        );
+        let sample = state
+            .step_with_second_wheel(
+                &straight_throttle(1)[0],
+                &params(),
+                &first_wheel_params(),
+                &second,
+            )
+            .unwrap();
         assert_eq!(sample.car.second_wheel.ratio_at_3b0, -0x10003);
         assert_eq!(sample.car.second_wheel.angle, 0);
         assert_eq!(sample.car.second_wheel.component, 1);
@@ -584,7 +607,10 @@ mod tests {
             arctan_table: &[],
             cos_table: &trig,
             config_scale: 1,
-            selected_scalar: 0x10000,
+            transition_gain: 0,
+            transition_base: 0,
+            alternate_gain: 0,
+            alternate_base: 0,
             correction_gate: 1,
             accumulation_limit: 0x10000,
             correction_alternate: 0x10000,

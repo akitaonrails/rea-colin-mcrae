@@ -1027,8 +1027,11 @@ pub struct SecondWheelInputs<'a> {
     pub cos_table: &'a [i32],
     /// The config scale at `+0x35c` or `+0x36c`.
     pub config_scale: i32,
-    /// The signed candidate selected for the normalized lane accumulator.
-    pub selected_scalar: i32,
+    /// Per-wheel candidate gains and runtime bases (`+0x35c`/`+0x36c`).
+    pub transition_gain: i32,
+    pub transition_base: i32,
+    pub alternate_gain: i32,
+    pub alternate_base: i32,
     /// The nonzero `ctl+0x420` correction gate.
     pub correction_gate: i32,
     /// The per-wheel limit at `ctl+0x35c` for the gated accumulation.
@@ -1061,10 +1064,16 @@ pub struct SecondWheelCoreEffects {
 }
 
 /// Composes the second per-wheel iteration's core from the recovered rules:
-/// ratio and residuals, direction normalization, candidate modulation, and the
-/// ordered lane accumulation tail.
-#[must_use]
-pub fn execute_second_wheel_core(input: SecondWheelInputs<'_>) -> SecondWheelCoreEffects {
+/// ratio and residuals, direction normalization, candidate derivation and
+/// selection, then the ordered lane accumulation tail.
+///
+/// # Errors
+///
+/// Propagates a checked signed-ratio lookup domain failure from candidate
+/// production.
+pub fn execute_second_wheel_core(
+    input: SecondWheelInputs<'_>,
+) -> Result<SecondWheelCoreEffects, LookupDependentCandidateError> {
     let ratio = wheel_slip_candidate(input.dot, input.speed_at_2a8);
     let residual_ac = if wheel_ratio_within_unit(ratio) {
         gate_residual_by_gear_ratio(
@@ -1101,6 +1110,15 @@ pub fn execute_second_wheel_core(input: SecondWheelInputs<'_>) -> SecondWheelCor
         input.arctan_table,
     );
     let angle_cos = input.cos_table[((i32::from(angle) + 0x400) & 0xfff) as usize];
+    let selected_scalar = select_second_wheel_candidate(SecondWheelCandidateInputs {
+        component_a: residual_2c.wrapping_abs(),
+        component_b: residual_30.wrapping_abs(),
+        transition_gain: input.transition_gain,
+        transition_base: input.transition_base,
+        alternate_gain: input.alternate_gain,
+        alternate_base: input.alternate_base,
+        normalization_length: normalization.length,
+    })?;
     let vector = |components: [i32; 3]| {
         Vec3::new(
             Fixed16::from_raw(components[0]),
@@ -1110,7 +1128,7 @@ pub fn execute_second_wheel_core(input: SecondWheelInputs<'_>) -> SecondWheelCor
     };
     let lane = apply_lane_accumulation(LaneAccumulationInput {
         accumulator: vector(normalization.direction),
-        selected_scalar: Fixed16::from_raw(input.selected_scalar),
+        selected_scalar,
         direction_a: vector(input.local_68),
         direction_b: vector(input.local_98),
         surface_vector: vector(input.surface_vector),
@@ -1125,7 +1143,7 @@ pub fn execute_second_wheel_core(input: SecondWheelInputs<'_>) -> SecondWheelCor
         surface_coefficient: Fixed16::from_raw(input.table_factor.unwrap_or(0)),
         surface_override: i32::from(input.table_factor.is_none()),
     });
-    SecondWheelCoreEffects {
+    Ok(SecondWheelCoreEffects {
         ratio_at_3b0: wheel_slip_candidate(input.dot, input.speed_at_2b8),
         residual_2c,
         residual_30,
@@ -1137,7 +1155,7 @@ pub fn execute_second_wheel_core(input: SecondWheelInputs<'_>) -> SecondWheelCor
             lane.accumulator.y.raw(),
             lane.accumulator.z.raw(),
         ],
-    }
+    })
 }
 
 /// Inputs for one first-loop per-wheel iteration of the force pass.
@@ -2140,7 +2158,10 @@ mod tests {
             arctan_table: &[],
             cos_table: &[],
             config_scale: 0x10000,
-            selected_scalar: 0x8000,
+            transition_gain: 0x10000,
+            transition_base: 0x8000,
+            alternate_gain: 0x10000,
+            alternate_base: 0x10000,
             correction_gate: 1,
             accumulation_limit: 0x1000,
             correction_alternate: 0x2000,
@@ -2158,7 +2179,7 @@ mod tests {
             cos_table: &cos,
             ..second_wheel_input()
         };
-        let effects = execute_second_wheel_core(input.clone());
+        let effects = execute_second_wheel_core(input.clone()).unwrap();
 
         // Independently derive every stage from the inputs.
         let ratio = wheel_slip_candidate(input.dot, input.speed_at_2a8);
@@ -2216,10 +2237,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(final_factor, -0x8000);
+        let selected = select_second_wheel_candidate(SecondWheelCandidateInputs {
+            component_a: expected_2c.wrapping_abs(),
+            component_b: expected_30.wrapping_abs(),
+            transition_gain: input.transition_gain,
+            transition_base: input.transition_base,
+            alternate_gain: input.alternate_gain,
+            alternate_base: input.alternate_base,
+            normalization_length: effects.normalization.length,
+        })
+        .unwrap();
         let mut expected = effects
             .normalization
             .direction
-            .map(|component| q16_mul(component, input.selected_scalar));
+            .map(|component| q16_mul(component, selected.raw()));
         accumulate_direction_force(&mut expected, input.local_68, final_factor);
         assert_eq!(effects.accumulators, expected);
         assert_ne!(expected[0], 0);

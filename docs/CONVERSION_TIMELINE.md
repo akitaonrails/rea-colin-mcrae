@@ -478,7 +478,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T08:37Z | 138h19m | wire-four-lane-geometric-postprocess | `cf4f261` | G03, G09 | Added `step_with_four_wheel_postprocess`: the selected second-core lane joins the other three runtime lanes in `FUN_0040fbe0`; all accumulators and qualification results are retained. Invalid lane indices are rejected before tick work. One direct-kernel comparison test brings `cmr-core` to 1,331. Full candidate production and downstream consumption remain open. |
 
-| 2026-10-26T08:42Z | 138h24m | derive-second-wheel-force-candidate | _(pending)_ | G03 | Added `select_second_wheel_candidate`, composing lookup-free or lookup-dependent candidate derivation with the strict normalization-length signed selection. One test covers both paths, equality retention and direct dependent-candidate equivalence; `cmr-core` has 1,332 tests. Second-core integration and the full four-lane producer remain open. |
+| 2026-10-26T08:42Z | 138h24m | derive-second-wheel-force-candidate | `f4c3389` | G03 | Added `select_second_wheel_candidate`, composing lookup-free or lookup-dependent candidate derivation with the strict normalization-length signed selection. One test covers both paths, equality retention and direct dependent-candidate equivalence; `cmr-core` has 1,332 tests. Second-core integration and the full four-lane producer remain open. |
+
+| 2026-10-26T08:57Z | 138h39m | wire-derived-candidate-into-second-core | _(pending)_ | G03, G09 | Replaced the second core's caller-selected scalar with derivation from residuals, normalization length and runtime bases. Checked lookup failures now propagate through `execute_second_wheel_core` and both race-state methods. Existing direct re-derivation and composition tests pass with `cmr-core` at 1,332. Full four-lane production and downstream accumulator consumption remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

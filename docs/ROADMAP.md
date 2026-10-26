@@ -1222,8 +1222,10 @@ qualification results; invalid lane selection is rejected before tick work. One
 composition test brings `cmr-core` to 1,331. G03 now composes per-lane candidate
 production through `select_second_wheel_candidate`, covering both lookup paths
 and the strict normalization-length selection boundary with one additional test.
-Wiring that derived scalar into the second core, completing the four-lane producer,
-and consuming the postprocessed accumulators downstream remain open.
+The second core now derives that scalar internally from residuals and runtime
+bases, with checked lookup failures propagated through both race-state methods.
+Completing the four-lane producer and consuming the postprocessed accumulators
+downstream remain open.
 
 Exit gate:
 
