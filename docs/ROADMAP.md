@@ -1455,6 +1455,9 @@ on this checkpoint; no additional fixture layer is needed.
 E07 is complete: transform, clipping, culling, Z-buffer occlusion and real stage
 composition are implemented and self-verified. Only legacy differential capture
 is unsupported under the static policy; no original binary is run to create it.
+E06 is complete: primitive batching/order, Z-buffer behavior, transparency and
+blending have a shared submission contract and the concrete E07 renderer. The
+capability level, alpha gate and force-draw override are resolved.
 
 Exit gate:
 

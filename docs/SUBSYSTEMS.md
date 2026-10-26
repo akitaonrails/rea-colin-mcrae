@@ -2101,6 +2101,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   clamp. Thirty-four tests cover particles, render queues, shadows, fog and
   tuning. Surface and sprite tables remain caller-supplied data; E10 is complete.
   See evidence `impl.weather-effects`.
+- E06's primitive batching, ordering, depth, transparency and blending contract
+  is complete alongside E07's concrete renderer. Capability level, alpha gate
+  and force-draw override are resolved.
 - E07's deterministic renderer/oracle is complete through transform, clipping,
   culling, Z-buffer occlusion and real stage composition. Shipped-binary
   differential capture is explicitly unsupported under the static policy.
