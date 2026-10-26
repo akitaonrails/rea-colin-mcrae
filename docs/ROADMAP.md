@@ -1345,7 +1345,11 @@ The second-wheel adapter now derives wheel/state and direction/contact Q16 dot
 products and the independent `0x147a` residual enable. Static review corrected the
 lane split to 0/1 versus 2/3 and established that `+0x43b` plus `+0x158` controls
 this flag without the separate slip-sign disagreement. One focused test brings
-`cmr-core` to 1,365. Original wheel/state vector production remains open.
+`cmr-core` to 1,365. Constructed A directions and current contact vectors now feed
+both wheel loops through `populate_wheel_vector_inputs`. The existing canonical
+source-owned arctangent table is exposed with its exact-1.0 adjacent zero sentinel,
+replacing empty producer/application tables. Two focused tests bring `cmr-core` to
+1,367. Remaining scalar and configuration producers continue under G03.
 
 Exit gate:
 

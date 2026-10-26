@@ -339,7 +339,7 @@ mod tests {
                 config_2ec: 1,
                 gear_ratio: 1,
                 coefficient_34: 0x10000,
-                arctan_table: &[],
+                arctan_table: &crate::legacy_math::SECOND_WHEEL_ARCTAN_TABLE,
                 cos_table: trig,
                 config_scale: 1,
                 transition_gain: 0,

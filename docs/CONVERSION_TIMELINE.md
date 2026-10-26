@@ -564,7 +564,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T14:52Z | 144h34m | recover-solver-global-constants | `18498b7` | G03 | Recovered `DAT_004eac6c/70/74` as static `0x10000` constants and wired them into lane stabilization, angular timestep and force scaling. One exact-value test brings `cmr-core` to 1,364; native four-wheel and authenticated session tests pass. |
 
-| 2026-10-26T15:10Z | 144h52m | recover-derived-second-wheel-inputs | _(pending)_ | G03 | Derived wheel/state and direction/contact Q16 dot products before each second-wheel iteration, plus the independent `0x147a` residual enable from `+0x43b` and the lane-0/1 versus lane-2/3 `+0x158` branches. Static review established that slip-sign disagreement is separate. One test brings `cmr-core` to 1,365; four-wheel and authenticated-session tests pass. |
+| 2026-10-26T15:10Z | 144h52m | recover-derived-second-wheel-inputs | `7c2ccba` | G03 | Derived wheel/state and direction/contact Q16 dot products before each second-wheel iteration, plus the independent `0x147a` residual enable from `+0x43b` and the lane-0/1 versus lane-2/3 `+0x158` branches. Static review established that slip-sign disagreement is separate. One test brings `cmr-core` to 1,365; four-wheel and authenticated-session tests pass. |
+
+| 2026-10-26T15:17Z | 144h59m | produce-native-wheel-vector-inputs | _(pending)_ | G03 | Wired constructed A directions and current contact vectors into both wheel loops. Exposed the canonical generated 512-word arctangent table with its exact-1.0 adjacent zero sentinel, replacing empty tables in producer/application paths. Two tests bring `cmr-core` to 1,367; four-wheel and authenticated-session tests pass. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

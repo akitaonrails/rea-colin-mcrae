@@ -166,6 +166,21 @@ fn raw_dot(left: [i32; 3], right: [i32; 3]) -> i32 {
     })
 }
 
+/// Populate the shared first/second-loop vectors from constructed directions
+/// and the current per-wheel contact vector.
+pub fn populate_wheel_vector_inputs(
+    first: &mut FirstWheelParams,
+    second: &SecondWheelParams<'_>,
+    direction_a: Vec3,
+) {
+    first.wheel_vector = [
+        direction_a.x.raw(),
+        direction_a.y.raw(),
+        direction_a.z.raw(),
+    ];
+    first.state_vector = second.surface_vector;
+}
+
 /// Derive second-core wheel projection and `0x147a` inputs from native state.
 pub fn populate_derived_second_inputs(
     first: &FirstWheelParams,
@@ -853,6 +868,7 @@ impl RaceState {
             },
             resolve_lane_direction_mode(wheel.lane_rebuild, wheel.lane_exchange),
         );
+        let mut first = wheel.first;
         let mut second = wheel.second.clone();
         for (lane, vector_index) in wheel.contact_vector_indices.into_iter().enumerate() {
             let Some(vector) = contact_vectors.get(vector_index) else {
@@ -869,6 +885,11 @@ impl RaceState {
                 directions.direction_b[lane].y.raw(),
                 directions.direction_b[lane].z.raw(),
             ];
+            populate_wheel_vector_inputs(
+                &mut first[lane],
+                &second[lane],
+                directions.direction_a[lane],
+            );
         }
         let mut prior_speeds = [0; 4];
         for index in (0..4).rev() {
@@ -876,7 +897,7 @@ impl RaceState {
             Self::execute_first_wheel_state(
                 &mut self.car.four_wheel.first[index],
                 controls.handbrake,
-                &wheel.first[index],
+                &first[index],
             );
         }
         for axle in [0, 2] {
@@ -894,7 +915,7 @@ impl RaceState {
         }
         for index in (0..4).rev() {
             populate_derived_second_inputs(
-                &wheel.first[index],
+                &first[index],
                 &mut second[index],
                 directions.direction_b[index],
                 index,
@@ -903,7 +924,7 @@ impl RaceState {
                 &mut self.car.four_wheel.second[index],
                 prior_speeds[index],
                 self.car.four_wheel.first[index].wheel_speed,
-                &wheel.first[index],
+                &first[index],
                 &second[index],
             )?;
             let current = self.car.four_wheel.second[index].accumulators;
@@ -1093,7 +1114,7 @@ mod tests {
             config_2ec: 1,
             gear_ratio: 1,
             coefficient_34: 0x10000,
-            arctan_table: &[],
+            arctan_table: &crate::legacy_math::SECOND_WHEEL_ARCTAN_TABLE,
             cos_table: trig,
             config_scale: 1,
             transition_gain: 0,
@@ -1133,6 +1154,25 @@ mod tests {
         second.surface_vector = [7, 8, 9];
         assert_eq!(populate_contact_basis_vector(&mut second, input, 8), None);
         assert_eq!(second.surface_vector, [7, 8, 9]);
+    }
+
+    #[test]
+    fn wheel_vector_inputs_share_direction_and_contact_vector() {
+        let trig = build_sine_table();
+        let mut first = first_wheel_params();
+        let mut second = second_wheel_params(&trig);
+        second.surface_vector = [3, 4, 5];
+        populate_wheel_vector_inputs(
+            &mut first,
+            &second,
+            Vec3::new(
+                Fixed16::from_raw(0x10000),
+                Fixed16::from_raw(-0x20000),
+                Fixed16::from_raw(0x30000),
+            ),
+        );
+        assert_eq!(first.wheel_vector, [0x10000, -0x20000, 0x30000]);
+        assert_eq!(first.state_vector, [3, 4, 5]);
     }
 
     #[test]

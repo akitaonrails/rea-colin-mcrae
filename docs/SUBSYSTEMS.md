@@ -2012,8 +2012,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   and direction-B/contact-vector Q16 dot products before each second-wheel iteration,
   plus the residual-enable flag from `+0x43b` and lane-split `+0x158` checks. The flag
   is independent of slip-sign disagreement; lanes 0/1 and 2/3 use different disabling
-  values. See evidence `impl.sim-race-state-trace`, `impl.sim-derived-second-inputs`,
-  `impl.sim-translation-step`, and `impl.sim-full-second-accumulation`.
+  values. `populate_wheel_vector_inputs` now copies each constructed A direction and
+  current contact vector into both wheel loops before iteration. The recovered
+  arctangent lookup uses `SECOND_WHEEL_ARCTAN_TABLE`, the canonical 512 source-owned
+  words plus the native exact-1.0 adjacent zero sentinel. See evidence
+  `impl.sim-race-state-trace`, `impl.sim-derived-second-inputs`,
+  `impl.sim-wheel-vector-inputs`, `impl.sim-translation-step`, and
+  `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

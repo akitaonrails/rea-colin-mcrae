@@ -12,6 +12,20 @@ const TRIG_QUARTER: [i32; 1025] = include!("root_menu_c3d_trig_quarter.in");
 const SIGNED_ARCSINE_TABLE: [u16; 4096] = include!("signed_arcsine_table.in");
 const SIGNED_RATIO_ANGLE_TABLE: [u16; 512] = include!("signed_ratio_angle_table.in");
 
+/// The generated second-wheel arctangent table plus the adjacent zero word
+/// read for an exact 1.0 ratio.
+pub const SECOND_WHEEL_ARCTAN_TABLE: [i16; 513] = second_wheel_arctan_table();
+
+const fn second_wheel_arctan_table() -> [i16; 513] {
+    let mut table = [0; 513];
+    let mut index = 0;
+    while index < SIGNED_RATIO_ANGLE_TABLE.len() {
+        table[index] = SIGNED_RATIO_ANGLE_TABLE[index] as i16;
+        index += 1;
+    }
+    table
+}
+
 /// Input-domain failure for [`signed_arcsine_phase`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SignedArcsinePhaseError {
@@ -369,6 +383,20 @@ mod tests {
             hex_sha256(&bytes),
             "50604018fd3b52b579c3a26dc571d1d71f0db3a3f08faf706367fc84eb278150"
         );
+    }
+
+    #[test]
+    fn second_wheel_arctan_table_preserves_the_adjacent_zero_sentinel() {
+        assert_eq!(SECOND_WHEEL_ARCTAN_TABLE.len(), 513);
+        assert_eq!(SECOND_WHEEL_ARCTAN_TABLE[0], 0);
+        assert_eq!(SECOND_WHEEL_ARCTAN_TABLE[511], 0x1ff);
+        assert_eq!(SECOND_WHEEL_ARCTAN_TABLE[512], 0);
+        for index in 0..512 {
+            assert_eq!(
+                SECOND_WHEEL_ARCTAN_TABLE[index],
+                SIGNED_RATIO_ANGLE_TABLE[index] as i16
+            );
+        }
     }
 
     #[test]
