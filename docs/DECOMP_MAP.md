@@ -196,7 +196,9 @@ cover the recovered pure rules.
   **G03-AK23 callee `FUN_0046eda0` global copy gate (`4636f8d`):** when `DAT_00550c08 == 1`, the callee copies `0x119` dwords from `DAT_005fffc8` to `DAT_0060042c` and `0x1da` dwords from `DAT_00700300` to `DAT_00700a68`; every other value copies nothing. Each destination begins immediately after its source range, so the blocks never overlap. `compiled_special_copy_required` and `COMPILED_SPECIAL_COPY_BLOCKS` reproduce the gate and descriptors. One focused test covers the gate values and exact block bounds, bringing `cmr-core` to 1,260. The copied global tables are runtime data, not vendored.
   **G03-AK24 callee `FUN_00492050` chain flag walk (`acfe6c5`):** the callee follows the node link at `+0x8` and sets the flag at `+0x170` to `1` on every node until the null link; a null initial pointer writes nothing. `apply_compiled_92050` reproduces the effect over an injected flag slice (empty means a null initial pointer), avoiding raw pointer chasing in the safe contract. One focused test covers the offsets, an empty chain, and multi-node flags, bringing `cmr-core` to 1,261.
   **G03-AK25 composed post-lane spine (`acfe6c5`):** `execute_compiled_spine_post` composes the recovered post-lane stages in native order: the eight-lane executor (whose failure aborts the spine), AK11 from original source vectors and final lane words, AK13 from its final publication, the AK14 publication into an injected destination, the adjustment using lane zero's word (`+0x2e4`) and source Y (`+0x100`), the adjustment publication, `FUN_00492770`, the `FUN_004126b0` thresholds, the reset, the control flags, `+0x6f8`/`+0x6f0`/`+0x6e8`/`+0x6ec`, the copies (source vectors, the AK13 rows, and the AK11 final vector), `DAT_0050c5fc`, and the final call gate. Every effect is derived through the pure callee contracts, not by executing native code. Two focused tests independently re-derive the full bundle and verify lane-failure aborts before any post effect, bringing `cmr-core` to 1,263. Progressive faults, pointer rebinding, and the early initializer stages remain separate.
-  **G03-AK26 complete initializer composition (pending milestone):** `compose_compiled_initializer` chains the early post-dispatch stages, the `FUN_00409c10`/`FUN_00418120` basis transform, the call-spine locals, and the eight-lane/post-lane spine into one typed result. An early failure returns before any lane runs; a lane failure aborts before the post-lane spine. Every stage derives its effects through the recovered pure contracts with injected inputs, so the exact native dataflow into those inputs remains a separate boundary rather than invented behavior. Three focused tests cover independent re-derivation of the whole bundle, early failure with no lane provider activity, and lane-failure abort, bringing `cmr-core` to 1,266. Progressive faults and pointer rebinding remain limitations; wiring the composition to real imported stage and car/config inputs is next.
+  **G03-AK26 complete initializer composition (`989398b`):** `compose_compiled_initializer` chains the early post-dispatch stages, the `FUN_00409c10`/`FUN_00418120` basis transform, the call-spine locals, and the eight-lane/post-lane spine into one typed result. An early failure returns before any lane runs; a lane failure aborts before the post-lane spine. Every stage derives its effects through the recovered pure contracts with injected inputs, so the exact native dataflow into those inputs remains a separate boundary rather than invented behavior. Three focused tests cover independent re-derivation of the whole bundle, early failure with no lane provider activity, and lane-failure abort, bringing `cmr-core` to 1,266. Progressive faults and pointer rebinding remain limitations; wiring the composition to real imported stage and car/config inputs is next.
+  **G03-AK27 authenticated end-to-end initializer run (pending milestone):** `composed_initializer_runs_over_an_authenticated_stage_snapshot` loads a CMPR-wrapped reviewed `.hpc` through `StageCompiledGeometry` and drives `compose_compiled_initializer` with the reviewed synthetic config. All eight lanes complete with the decoded record type `0x1234` and the built output vector, and the AK11 normal, AK13 basis, and copies are independently re-derived from the final lane words. One focused test brings `cmr-core` to 1,267. The car config record remains a reviewed synthetic fixture, not a recovered car-data input; live stage identity and actual sim inputs remain open.
+
 
 
 
@@ -263,13 +265,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T00:13:11Z
-milestone=compose-the-complete-car-initializer
+updated_utc=2026-10-26T00:17:04Z
+milestone=run-initializer-over-authenticated-stage
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-wire-the-composed-initializer-to-runtime-inputs
-next_exit_gate=the-composed-initializer-runs-over-a-real-imported-stage-with-reviewed-config-inputs
+current_focus=G03-recover-the-car-config-record-source
+next_exit_gate=the-car-config-records-are-loaded-from-reviewed-car-data-rather-than-synthetic-fixtures
 <!-- PROGRESS-TAIL-END -->

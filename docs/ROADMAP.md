@@ -957,6 +957,15 @@ focused tests bring `cmr-core` to 1,266. The exact native dataflow into the
 injected inputs remains a separate boundary; wiring the composition to real
 imported stage and car/config inputs is next.
 
+G03-AK27 proves the composed initializer over an authenticated snapshot: a
+CMPR-wrapped reviewed `.hpc` loads through `StageCompiledGeometry` and drives
+`compose_compiled_initializer` to completion with the reviewed synthetic
+config. All eight lanes finish with the decoded record type and built output
+vector, and the AK11 normal, AK13 basis, and copies are independently
+re-derived from the final lane words. One focused test brings `cmr-core` to
+1,267. The car config record remains a reviewed synthetic fixture; recovering
+its car-data source and live stage identity is next.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

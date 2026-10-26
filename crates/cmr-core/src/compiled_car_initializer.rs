@@ -8605,6 +8605,183 @@ mod tests {
     }
 
     #[test]
+    fn composed_initializer_runs_over_an_authenticated_stage_snapshot() {
+        use std::fs;
+        use std::io::Write;
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use cmr_assets::{AssetFile, AssetProfile, AssetStore, ReviewedProfile, StorageEncoding};
+        use cmr_formats::stored_asset::DecodeLimits;
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        use crate::stage_compiled_geometry::StageCompiledGeometry;
+
+        static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+        struct TestDirectory(PathBuf);
+        impl TestDirectory {
+            fn new() -> Self {
+                let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+                let path = std::env::temp_dir().join(format!(
+                    "cmr-initializer-authenticated-{}-{id}",
+                    std::process::id()
+                ));
+                fs::create_dir(&path).unwrap();
+                Self(path)
+            }
+        }
+        impl Drop for TestDirectory {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        fn sha256(bytes: &[u8]) -> String {
+            use std::fmt::Write as _;
+            let mut output = String::with_capacity(64);
+            for byte in Sha256::digest(bytes) {
+                write!(output, "{byte:02x}").unwrap();
+            }
+            output
+        }
+        fn cmpr(payload: &[u8]) -> Vec<u8> {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(b"CMPR").unwrap();
+            encoder
+                .write_all(&(payload.len() as u32).to_le_bytes())
+                .unwrap();
+            encoder.write_all(payload).unwrap();
+            encoder.finish().unwrap()
+        }
+        fn triangle_hpc() -> Vec<u8> {
+            let vertices: [[i32; 3]; 3] = [
+                [0, 0x2_0000, 0],
+                [0, 0x2_0000, 0x1_0000],
+                [0x1_0000, 0x2_0000, 0],
+            ];
+            let mut payload = Vec::new();
+            for word in [0_i32, 0] {
+                payload.extend_from_slice(&word.to_le_bytes());
+            }
+            for count in [1_i16, 0, 0, 0, 0] {
+                payload.extend_from_slice(&count.to_le_bytes());
+            }
+            payload.extend_from_slice(&0_u16.to_le_bytes());
+            payload.extend_from_slice(&1_i16.to_le_bytes());
+            payload.extend_from_slice(&0_u16.to_le_bytes());
+            payload.extend_from_slice(&0_i32.to_le_bytes());
+            payload.extend_from_slice(&3_u16.to_le_bytes());
+            payload.extend_from_slice(&0_u16.to_le_bytes());
+            for vertex in vertices {
+                for component in vertex {
+                    payload.extend_from_slice(&component.to_le_bytes());
+                }
+            }
+            payload.extend_from_slice(&1_u16.to_le_bytes());
+            payload.extend_from_slice(&0_u16.to_le_bytes());
+            for word in [0_u16, 1, 2, 0x1234] {
+                payload.extend_from_slice(&word.to_le_bytes());
+            }
+            payload.extend_from_slice(&1_u32.to_le_bytes());
+            payload.extend_from_slice(&0_i16.to_le_bytes());
+            payload.extend_from_slice(&1_i16.to_le_bytes());
+            payload.extend_from_slice(&1_i16.to_le_bytes());
+            payload
+        }
+
+        let temp = TestDirectory::new();
+        let source_dir = temp.0.join("source");
+        let stage_dir = source_dir.join("Game/Test");
+        fs::create_dir_all(&stage_dir).unwrap();
+        let stored = cmpr(&triangle_hpc());
+        fs::write(stage_dir.join("TEST.hpc"), &stored).unwrap();
+        let profile = AssetProfile {
+            schema_version: 1,
+            id: "synthetic-initializer-hpc".to_owned(),
+            roots: vec!["Game".to_owned()],
+            empty_directories: Vec::new(),
+            sentinels: Vec::new(),
+            files: vec![AssetFile {
+                path: "Game/Test/TEST.hpc".to_owned(),
+                size: stored.len() as u64,
+                sha256: sha256(&stored),
+                encoding: StorageEncoding::GzipCmpr,
+            }],
+        };
+        let reviewed = ReviewedProfile::from_json(&serde_json::to_vec(&profile).unwrap()).unwrap();
+        let imported = temp.0.join("runtime-data");
+        cmr_assets::import_source(&source_dir, &imported, &reviewed).unwrap();
+        let store = AssetStore::open(
+            &imported,
+            &reviewed,
+            DecodeLimits {
+                max_stored_bytes: 1024 * 1024,
+                max_payload_bytes: 1024 * 1024,
+            },
+        )
+        .unwrap();
+        let geometry = StageCompiledGeometry::load(&store, "Game/Test/TEST").unwrap();
+        let mut providers = geometry.eight_lane_providers();
+
+        let direct_cases = CompiledDirectCaseSet {
+            cases: synthetic_cases(),
+        };
+        let aux_constants = AuxControlConstantSet {
+            constants: aux_constants(),
+        };
+        let config = compiled_stage_config(1, 0, 1, 1, 0, false);
+        let mut input = full_initializer_input(&config);
+        let source = [0x4000, i32::MIN, 0x4000];
+        input.spine.execution.source_vectors = [source; 8];
+        let state = CompiledEightLaneExecutionState {
+            handles: [0; 8],
+            type_words: [u16::MAX; 8],
+            output_vectors: [[i32::MIN; 3]; 8],
+            lane_words: [-99; 8],
+            accumulator_words: [0; 8],
+            latch_67c: 0,
+        };
+        let mut lane_config = |_lane| -> Result<u8, &'static str> { Ok(0) };
+        let success = compose_compiled_initializer(
+            &direct_cases,
+            &aux_constants,
+            input.clone(),
+            state,
+            &mut providers,
+            &mut lane_config,
+        )
+        .unwrap();
+
+        assert_eq!(success.spine.lanes.state.handles, [0; 8]);
+        assert_eq!(success.spine.lanes.state.type_words, [0x1234; 8]);
+        assert_eq!(
+            success.spine.lanes.state.output_vectors,
+            [[0, 0x1_0000, 0]; 8]
+        );
+        let normal = derive_compiled_post_lane_global_normal(CompiledPostLaneNormalInput {
+            source_vectors: [source; 8],
+            lane_words: success.spine.lanes.state.lane_words,
+            selector_words: [0, 0, 9],
+        });
+        let basis = derive_compiled_post_lane_basis(CompiledPostLaneBasisInputs {
+            vector_324: normal.final_published_normal,
+            vector_258: [0, 0x10000, 0],
+        });
+        assert_eq!(success.spine.normal, normal);
+        assert_eq!(success.spine.basis, basis);
+        assert_eq!(
+            success.spine.copies.block_24c,
+            normal.final_published_normal
+        );
+        assert_eq!(success.spine.copies.block_240, [100, success.spine.cc, 300]);
+        assert_eq!(
+            success.basis,
+            derive_compiled_state_basis_effects(input.basis)
+        );
+        assert_eq!(success.locals, derive_compiled_call_spine_local_effects());
+    }
+
+    #[test]
     fn decoded_geometry_provider_preserves_lazy_search_failure_and_miss_prefixes() {
         let vertices = [
             [0, 0x2_0000, 0],
