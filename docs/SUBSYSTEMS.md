@@ -1893,14 +1893,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   and the `stage_timing` stage clock) into a deterministic offline race-state
   trace: one `step` advances a 40 ms / 25 Hz tick in its documented harness order (steer ->
   forward vector -> net force = drive force minus recovered drag -> integrate ->
-  lateral grip -> `position += velocity*dt` -> advance clock), and all-integer
+  recovered half-delta position update -> lateral grip -> advance clock), and all-integer
   `Fixed16` state makes the trace bit-for-bit reproducible. This is a
   composition/determinism harness, not trajectory-accurate: the drive force,
   mass and gravity are explicit parameters because the drive-torque->force
-  wiring remains unresolved. The exact translation kernel is recovered in
-  `apply_translation_step`, but has not yet replaced this harness's simpler
-  update; a byte-exact differential fixture is still gated on force production
-  and that integration wiring. See evidence `impl.sim-race-state-trace` and
+  wiring remains unresolved. The exact translation kernel is now called with
+  zero damping after acceleration is computed, preserving the grip order while
+  replacing the plain position update. A byte-exact differential fixture is
+  still gated on force production. See evidence `impl.sim-race-state-trace` and
   `impl.sim-translation-step`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a

@@ -13,18 +13,18 @@
 //! force that drives the car, the inverse mass, and gravity are explicit harness
 //! parameters ([`SimParams`]), because the original force-production wiring
 //! (drive torque -> contact force) remains a G02/G03 unknown. The recovered
-//! translation half-delta kernel is now available in `vehicle_dynamics`, but it
-//! is not yet wired into this older harness because this harness applies lateral
-//! grip between velocity and position updates. What is faithful here is the
-//! deterministic composition of its recovered primitives; the force model and
-//! plain `position += velocity * dt` update remain documented harness choices.
+//! translation half-delta kernel is wired with zero damping after acceleration
+//! is computed, so the existing lateral-grip order is preserved while position
+//! uses `new_velocity - delta_velocity / 2`. The force model remains a documented
+//! harness choice, not a recovered trajectory claim.
 //!
 //! See evidence `impl.sim-race-state-trace`.
 
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
-use crate::sim_clock::SIM_STEP_SECONDS;
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
-use crate::vehicle_dynamics::{apply_lateral_grip, drag, integrate_velocity, net_accel};
+use crate::vehicle_dynamics::{
+    TranslationStepInput, apply_lateral_grip, apply_translation_step, drag, net_accel,
+};
 
 /// Fixed per-tick parameters of the integration harness (not recovered game
 /// data - explicit inputs that stand in for the unrecovered force wiring).
@@ -122,8 +122,8 @@ impl RaceState {
     /// Advance one fixed tick, composing the recovered formulas in their
     /// observed order: steer, build the forward vector, form the net force
     /// (drive force minus the recovered quadratic drag), integrate acceleration
-    /// into velocity, apply the lateral-grip constraint, advance the position by
-    /// `velocity * dt`, and advance the stage clock.
+    /// into velocity, apply the recovered half-delta position update, apply the
+    /// lateral-grip constraint, and advance the stage clock.
     pub fn step(&mut self, controls: &Controls, params: &SimParams) -> TraceSample {
         self.car.heading = self.car.heading.wrapping_add(controls.steer_rate as u16);
         let forward = self.forward_unit();
@@ -133,13 +133,17 @@ impl RaceState {
         let net_force = drive_force.sub(drag(self.car.velocity, speed));
 
         let accel = net_accel(net_force, params.inverse_mass, params.gravity);
-        self.car.velocity = integrate_velocity(self.car.velocity, accel);
-        self.car.velocity = apply_lateral_grip(self.car.velocity, forward, controls.handbrake);
+        let translation = apply_translation_step(TranslationStepInput {
+            position: self.car.position,
+            velocity: self.car.velocity,
+            cached_speed: Fixed16::ZERO,
+            accumulated_force: accel,
+            inverse_mass: Fixed16::ONE,
+            additive_acceleration: Vec3::ZERO,
+        });
+        self.car.position = translation.position;
+        self.car.velocity = apply_lateral_grip(translation.velocity, forward, controls.handbrake);
 
-        self.car.position = self
-            .car
-            .position
-            .add(self.car.velocity.scale(SIM_STEP_SECONDS));
         self.clock = advance_stage_clock(self.clock, stage_clock_step(false));
 
         TraceSample {
@@ -215,6 +219,22 @@ mod tests {
         // The car has moved forward (position integrated from velocity).
         assert!(last.position.x > Fixed16::ZERO);
         assert_eq!(last.position.z, Fixed16::ZERO);
+    }
+
+    #[test]
+    fn position_uses_the_recovered_half_delta_translation() {
+        let mut state = RaceState::new(CarState::at_rest());
+        let sample = state.step(&straight_throttle(1)[0], &params());
+        let acceleration = net_accel(
+            Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
+            params().inverse_mass,
+            Vec3::ZERO,
+        );
+        let velocity = crate::vehicle_dynamics::integrate_velocity(Vec3::ZERO, acceleration);
+        let delta = velocity.sub(Vec3::ZERO);
+        let expected_position = velocity.sub(delta.scale(Fixed16::from_raw(0x8000)));
+        assert_eq!(sample.car.position, expected_position);
+        assert_eq!(sample.car.velocity, velocity);
     }
 
     #[test]

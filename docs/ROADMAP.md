@@ -1198,6 +1198,12 @@ E10 recovers final sprite draw submission: `FUN_00427c50` walks the queue into
 overlapping kind bytes and the tag. `SpriteDrawSubmissions` reproduces the exact
 layout and the 600th single-primitive rejection. One byte-level test brings
 `cmr-core` to 1,327. Backend submission remains behind this contract.
+G09 now wires the recovered half-delta translation into `race_state`: the
+already-computed acceleration drives `apply_translation_step` with zero damping,
+then lateral grip is applied. This preserves the harness order while replacing
+`position += velocity * dt` with the official position formula. One independent
+test pins the formula, bringing `cmr-core` to 1,328. The force model remains an
+explicit harness input; drive-torque-to-contact-force wiring remains open.
 
 Exit gate:
 

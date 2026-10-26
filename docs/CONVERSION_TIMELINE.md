@@ -466,7 +466,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T06:54Z | 136h36m | compose-active-particle-render-queue | `7a07139` | E10 | `ParticlePool::render_queue` emits active records with camera-relative depth using the recovered square-root approximation (`327728` for 3–4–5), excluding deactivated records. One test brings `cmr-core` to 1,326. This is a derived composition; final draw submission remains separate. |
 
-| 2026-10-26T07:19Z | 137h01m | recover-final-sprite-draw-submission | _(pending)_ | E10 | Recovered `FUN_00427c50`/`FUN_004a4330` final submission: 84-byte records with packet/resource fields, overlapping kind bytes and tag, and the 600th single-primitive rejection. `SpriteDrawSubmissions` reproduces the layout. One byte-for-byte test brings `cmr-core` to 1,327. Backend submission remains behind this contract. |
+| 2026-10-26T07:19Z | 137h01m | recover-final-sprite-draw-submission | `4eeefc7` | E10 | Recovered `FUN_00427c50`/`FUN_004a4330` final submission: 84-byte records with packet/resource fields, overlapping kind bytes and tag, and the 600th single-primitive rejection. `SpriteDrawSubmissions` reproduces the layout. One byte-for-byte test brings `cmr-core` to 1,327. Backend submission remains behind this contract. |
+
+| 2026-10-26T07:27Z | 137h09m | wire-half-delta-translation-into-race-state | _(pending)_ | G09 | Wired `apply_translation_step` into `race_state` with zero damping after acceleration, preserving lateral-grip order while replacing the plain position update with the recovered half-delta formula. One independent formula test brings `cmr-core` to 1,328. The force model remains an explicit harness input; drive-torque-to-contact-force wiring remains open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
