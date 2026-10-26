@@ -619,6 +619,21 @@ pub fn project_and_normalize(state: [i32; 3], normal: [i32; 3]) -> [i32; 3] {
     crate::compiled_car_initializer::normalize_compiled_lane_vector(rejected)
 }
 
+/// The Q16.16 cross product used by the force-pass head: `v x u` in exact
+/// right-handed order with wrapping products and subtractions.
+#[must_use]
+pub fn cross_q16(v: [i32; 3], u: [i32; 3]) -> [i32; 3] {
+    crate::compiled_car_initializer::compiled_post_lane_cross_v_by_u(v, u)
+}
+
+/// Reconstructs the cross-then-project-normalize sequence of the force-pass
+/// head: the cross `v x u` is projected against the AK11 normal and normalized
+/// with the legacy generated-table rule.
+#[must_use]
+pub fn cross_and_project_normalize(v: [i32; 3], u: [i32; 3], normal: [i32; 3]) -> [i32; 3] {
+    project_and_normalize(cross_q16(v, u), normal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1188,5 +1203,29 @@ mod tests {
         );
         // A zero state stays zero even with a nonzero normal.
         assert_eq!(project_and_normalize([0; 3], [0x10000, 0, 0]), [0; 3]);
+    }
+
+    #[test]
+    fn cross_q16_is_right_handed_with_wrapping_products() {
+        assert_eq!(cross_q16([0x10000, 0, 0], [0, 0x10000, 0]), [0, 0, 0x10000]);
+        assert_eq!(
+            cross_q16([0, 0x10000, 0], [0x10000, 0, 0]),
+            [0, 0, -0x10000]
+        );
+        assert_eq!(cross_q16([0x10000, 0, 0], [0x10000, 0, 0]), [0; 3]);
+    }
+
+    #[test]
+    fn cross_and_project_normalize_projects_the_cross_against_the_normal() {
+        // Parallel cross and normal: the rejection is zero.
+        assert_eq!(
+            cross_and_project_normalize([0x10000, 0, 0], [0, 0x10000, 0], [0, 0, 0x10000]),
+            [0; 3]
+        );
+        // Orthogonal normal: the cross is normalized directly.
+        assert_eq!(
+            cross_and_project_normalize([0x10000, 0, 0], [0, 0x10000, 0], [0x10000, 0, 0]),
+            [0, 0, 65_522]
+        );
     }
 }

@@ -1441,6 +1441,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   and `+0x544/+0x548/+0x54c`. `cmr-core::drivetrain::project_and_normalize`
   reproduces it. Two focused tests bring `cmr-core` to 1,293. The first-loop
   drive factor and remaining head computations remain open.
+  G03 force-pass head cross-projection: `cross = v x u` with exact
+  right-handed Q16.16 products and wrapping subtractions, then projected
+  against the AK11 normal with the same rejection and legacy normalization.
+  `cmr-core::drivetrain` gains `cross_q16` and `cross_and_project_normalize`.
+  Two focused tests bring `cmr-core` to 1,295. The config-gated vector
+  selection and the first-loop drive factor remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

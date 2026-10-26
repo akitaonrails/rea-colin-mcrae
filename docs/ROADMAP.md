@@ -1034,8 +1034,12 @@ arithmetic, then the legacy generated-table normalization (zero square sum
 yields a zero vector). The normal is the AK11 final vector; the two state
 vectors are at `+0x550..+0x558` and `+0x544..+0x54c`.
 `cmr-core::drivetrain::project_and_normalize` reproduces it. Two focused tests
-bring `cmr-core` to 1,293. The first-loop drive factor and remaining head
-computations remain open.
+bring G03 recovers the force-pass head cross-projection: `cross = v x u` with exact
+right-handed Q16.16 products and wrapping subtractions, then projected against
+the AK11 normal with the same rejection and legacy normalization.
+`cmr-core::drivetrain` gains `cross_q16` and `cross_and_project_normalize`.
+Two focused tests bring `cmr-core` to 1,295. The config-gated vector selection
+and the first-loop drive factor remain open.
 
 Exit gate:
 

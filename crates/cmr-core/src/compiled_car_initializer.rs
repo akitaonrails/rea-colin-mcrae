@@ -1928,7 +1928,7 @@ fn select_compiled_post_lane_quad(selector_words: [i32; 3]) -> CompiledPostLaneQ
     }
 }
 
-fn compiled_post_lane_cross_v_by_u(v: [i32; 3], u: [i32; 3]) -> [i32; 3] {
+pub(crate) fn compiled_post_lane_cross_v_by_u(v: [i32; 3], u: [i32; 3]) -> [i32; 3] {
     [
         common_prefix_q16_mul(v[1], u[2]).wrapping_sub(common_prefix_q16_mul(v[2], u[1])),
         common_prefix_q16_mul(v[2], u[0]).wrapping_sub(common_prefix_q16_mul(v[0], u[2])),
