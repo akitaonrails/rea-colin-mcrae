@@ -1955,7 +1955,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   reopens and feeds the adapter. `cmr-app::SessionWheelInputs` exposes the same
   authenticated store to second-core callers. The strict `0xcccc` distance gate,
   count scaling and four response-word timestep products are now reconstructed.
-  Contact-vector production and live application-loop wiring remain open. See evidence
+  `build_contact_basis_vectors` reconstructs the twelve primary scalar dwords,
+  mirrored negatives, eight-vector layout and velocity translation. Contact-input
+  wiring and live application-loop integration remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

@@ -1317,6 +1317,67 @@ pub fn scale_contact_response_words(words: [Fixed16; 4], time_step: Fixed16) -> 
     words.map(|word| word.mul(time_step))
 }
 
+/// Matrix and motion inputs for the 24-dword layout in `FUN_00409f90`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContactBasisInput {
+    pub rows: [Vec3; 3],
+    /// `+0xf0`, `+0xf4`, `+0xf8`, `+0x2c`, `+0x30`, `+0x34`.
+    pub angular: [Fixed16; 6],
+    pub velocity: Vec3,
+}
+
+/// Build twelve primary dwords, mirror them with modular negation, assemble
+/// eight vectors, and add velocity to every result.
+#[must_use]
+pub fn build_contact_basis_vectors(input: ContactBasisInput) -> [Vec3; 8] {
+    let mut output = [0; 24];
+    for (row_index, row) in input.rows.into_iter().enumerate() {
+        let [f0, f4, f8, f2c, f30, f34] = input.angular;
+        let a = row.x.mul(f4).mul(f34).raw();
+        let b = row.x.mul(f8).mul(f30).raw();
+        let c = row.y.mul(f8).mul(f2c).raw();
+        let d = row.y.mul(f0).mul(f34).raw();
+        let e = row.z.mul(f0).mul(f30).raw();
+        let f = row.z.mul(f4).mul(f2c).raw();
+        let primary = [
+            c.wrapping_sub(f)
+                .wrapping_sub(e)
+                .wrapping_sub(d)
+                .wrapping_add(b)
+                .wrapping_add(a),
+            d.wrapping_sub(f)
+                .wrapping_sub(e)
+                .wrapping_sub(a)
+                .wrapping_add(c)
+                .wrapping_add(b),
+            f.wrapping_sub(e)
+                .wrapping_sub(d)
+                .wrapping_sub(c)
+                .wrapping_add(b)
+                .wrapping_add(a),
+            f.wrapping_sub(e)
+                .wrapping_sub(c)
+                .wrapping_sub(a)
+                .wrapping_add(d)
+                .wrapping_add(b),
+        ];
+        let base = row_index * 4;
+        output[base..base + 4].copy_from_slice(&primary);
+    }
+    for index in 0..12 {
+        output[12 + index] = output[11 - index].wrapping_neg();
+    }
+    std::array::from_fn(|index| {
+        let source = (index & 3) + if index < 4 { 0 } else { 12 };
+        Vec3::new(
+            Fixed16::from_raw(output[source]),
+            Fixed16::from_raw(output[source + 4]),
+            Fixed16::from_raw(output[source + 8]),
+        )
+        .add(input.velocity)
+    })
+}
+
 /// Runtime inputs for one `FUN_0040d400` contact-vector update.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContactVectorUpdateInput {
@@ -1987,6 +2048,38 @@ mod tests {
         assert_eq!(
             transformed_contact_moment(identity, raw_v(0x10000, 0, 0), raw_v(0, 0x10000, 0),),
             raw_v(0, 0, 0x10000)
+        );
+    }
+
+    #[test]
+    fn contact_basis_vectors_preserve_primary_mirror_and_velocity_layout() {
+        let identity = [
+            raw_v(0x10000, 0, 0),
+            raw_v(0, 0x10000, 0),
+            raw_v(0, 0, 0x10000),
+        ];
+        let vectors = build_contact_basis_vectors(ContactBasisInput {
+            rows: identity,
+            angular: [Fixed16::ONE; 6],
+            velocity: Vec3::ZERO,
+        });
+        assert_eq!(vectors[0], raw_v(0x20000, 0, -0x20000));
+        assert_eq!(vectors[1], raw_v(0, 0x20000, -0x20000));
+        assert_eq!(vectors[2], raw_v(0x20000, -0x20000, 0));
+        assert_eq!(vectors[3], Vec3::ZERO);
+        assert_eq!(vectors[4], Vec3::ZERO);
+        assert_eq!(vectors[5], raw_v(0, 0x20000, -0x20000));
+        assert_eq!(vectors[6], raw_v(0x20000, -0x20000, 0));
+        assert_eq!(vectors[7], raw_v(0x20000, 0, -0x20000));
+
+        let velocity = raw_v(1, 2, 3);
+        assert_eq!(
+            build_contact_basis_vectors(ContactBasisInput {
+                rows: identity,
+                angular: [Fixed16::ZERO; 6],
+                velocity,
+            }),
+            [velocity; 8]
         );
     }
 

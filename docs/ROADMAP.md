@@ -1275,8 +1275,11 @@ store also reopens and feeds the adapter. One synthetic and one opt-in test brin
 coefficient store to second-core callers; its official opt-in smoke passes,
 bringing `cmr-app` to 27 library tests. G03 now recovers the strict `0xcccc`
 distance gate, count scaling, and four response-word timestep products with three
-focused tests, bringing `cmr-core` to 1,355. Contact-vector production and
-live-loop wiring remain open.
+focused tests, bringing `cmr-core` to 1,355.
+`build_contact_basis_vectors` now reconstructs the twelve primary scalar dwords,
+mirrored negatives, eight-vector layout and velocity translation from
+`FUN_00409f90`, bringing `cmr-core` to 1,356. Contact-input wiring and live-loop
+integration remain open.
 
 Exit gate:
 
