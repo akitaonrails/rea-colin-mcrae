@@ -729,6 +729,19 @@ pub fn select_head_vector_path(
     HeadVectorSelection::KeepInitial
 }
 
+/// Reconstructs the cosine-modulated force component of the second per-wheel
+/// loop: `modulated = qmul(coefficient, angle_cos)`, then
+/// `root = legacy_sqrt(qmul(angle_cos, angle_cos) + qmul(modulated, modulated))`,
+/// and finally `qmul(root, config_scale)`. The cosine comes from the injected
+/// runtime-built cosine table at `sVar8 + 0x400 & 0xfff`.
+#[must_use]
+pub fn cosine_modulated_component(coefficient: i32, angle_cos: i32, config_scale: i32) -> i32 {
+    let modulated = q16_mul(coefficient, angle_cos);
+    let sum = q16_mul(angle_cos, angle_cos).wrapping_add(q16_mul(modulated, modulated));
+    let root = crate::legacy_math::sqrt_q16(sum as u32) as i32;
+    q16_mul(root, config_scale)
+}
+
 /// Inputs for one first-loop per-wheel iteration of the force pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FirstWheelInputs {
@@ -1495,6 +1508,19 @@ mod tests {
             select_head_vector_path(0, 0, 0, 0),
             HeadVectorSelection::KeepInitial
         );
+    }
+
+    #[test]
+    fn cosine_modulated_component_computes_the_modulated_root_and_scale() {
+        // angle_cos = 0.5: modulated = 0x8000, sum = 0x8000, root = sqrt_q16(sum).
+        assert_eq!(
+            cosine_modulated_component(0x10000, 0x8000, 0x10000),
+            crate::legacy_math::sqrt_q16(0x8000) as i32
+        );
+        // Zero coefficient: only the cosine square remains, root = 65550.
+        assert_eq!(cosine_modulated_component(0, 0x10000, 0x10000), 65_550);
+        // Zero cosine: the sum and root are zero.
+        assert_eq!(cosine_modulated_component(0x10000, 0, 0x10000), 0);
     }
 
     #[test]

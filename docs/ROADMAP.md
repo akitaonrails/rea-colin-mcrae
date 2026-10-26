@@ -1057,8 +1057,13 @@ clamped/downshifted slip force (or a zeroed redrive), wheel-speed integration,
 and the zeroing gate in native order. Three focused tests cover the full slip
 path, the closed-gate redrive and speed flip, and the rear handbrake-off slip
 path, bringing `cmr-core` to 1,303. The recovered rules are now a coherent
-per-wheel sim step with injected runtime inputs; the second-loop composition
-and real car-data tables remain open.
+G03 recovers the second-loop cosine modulation:
+`modulated = qmul(coefficient, angle_cos)`, then
+`root = legacy_sqrt(qmul(angle_cos, angle_cos) + qmul(modulated, modulated))`,
+and finally `qmul(root, config_scale)`, with the cosine supplied by the
+injected runtime-built table. `cmr-core::drivetrain::cosine_modulated_component`
+reproduces it. One focused test brings `cmr-core` to 1,304. The second-loop
+composition and runtime table wiring remain open.
 
 Exit gate:
 
