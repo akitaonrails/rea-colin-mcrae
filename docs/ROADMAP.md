@@ -1576,6 +1576,11 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+G11's camera controller is complete through the unified `ViewController`: all
+recovered placements, cycling, trackside/reset behavior, and dual-slot crossfade
+are wired into the native session. Runtime camera data and the uncovered helmet
+overlay/remap/director pieces remain explicit unsupported boundaries.
+
 G05 is closed at the evidenced timing/results boundary. Checkpoint deltas now
 use the recovered normalizing pre-transform, best times use the checked settings
 record backend, and result rows have the recovered 18x20-byte/TTL lifecycle.

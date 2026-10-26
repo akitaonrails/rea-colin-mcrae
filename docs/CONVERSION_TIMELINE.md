@@ -664,7 +664,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T20:00Z | 149h42m | recover-collision-reset-and-countdown | `2d3e137` | G04 | Implemented the signed out-of-bounds timer and crash reset orientation modes from `FUN_00407690`/`FUN_004115d0`: timeout sound, terminal latch, normal negation, snap/blend, legacy normalization/cross and countdown completion. Two tests bring `cmr-core` to 1,412; reset triggering and unsupported position/time penalties remain explicit. |
 
-| 2026-10-26T20:10Z | 149h52m | complete-stage-timing-and-results | _(pending)_ | G05 | Implemented the exact checkpoint delta normalizer and result-row TTL lifecycle, confirmed best-time persistence through the checked settings backend, and corrected `FUN_00472809` as a print call site. The spawn writer is explicitly unsupported by current evidence. Two tests bring `cmr-core` to 1,414. |
+| 2026-10-26T20:10Z | 149h52m | complete-stage-timing-and-results | `40ba03b` | G05 | Implemented the exact checkpoint delta normalizer and result-row TTL lifecycle, confirmed best-time persistence through the checked settings backend, and corrected `FUN_00472809` as a print call site. The spawn writer is explicitly unsupported by current evidence. Two tests bring `cmr-core` to 1,414. |
+
+| 2026-10-26T20:20Z | 150h02m | complete-camera-controller | _(pending)_ | G11 | Closed G11 through the unified `ViewController` and its native integration: all recovered placements, cycling, trackside/reset behavior and dual-slot crossfades. Runtime data and uncovered remap/ride-height/helmet-overlay and `.cat` director paths are explicit unsupported boundaries. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

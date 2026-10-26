@@ -2399,6 +2399,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- `camera_view::ViewController` unifies recovered chase/cockpit/helmet/cinematic
+  placements, trackside and reset behavior, view cycling, and dual-slot
+  re-orthonormalized crossfades. The SDL session drives it from the live car.
+  Runtime camera data and the uncovered remap/ride-height/helmet-overlay and
+  `.cat` director paths remain explicit boundaries.
 - Stage timing now includes `FUN_00461e90` delta normalization before
   checkpoint dots, the existing checked settings-record best-time path, and
   18x20-byte per-driver result rows with decrement/hide-at-zero TTLs. The
