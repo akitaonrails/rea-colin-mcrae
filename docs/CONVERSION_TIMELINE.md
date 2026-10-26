@@ -592,7 +592,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T16:39Z | 146h21m | recover-replay-control-record | `19aadf9` | G08, G10 | Recovered the exact four-byte actuator layout, digital `-66` decoding, mode flags and repeat counter. Preserved native double-XOR current-field semantics instead of inventing steer/gear deltas. Two byte-exact tests and native vertical trace decoding bring `cmr-core` to 1,381. |
 
-| 2026-10-26T16:49Z | 146h31m | recover-replay-region-a-layout | _(pending)_ | G08 | Pinned Region A into car-type, control, physics, 500 bounded objects and trailing state/timer fields with checked offsets. One layout test brings `cmr-core` to 1,382. `.SSR` writing is explicitly unsupported by resolved static callers, with indirect-call caveats; network framing remains. |
+| 2026-10-26T16:49Z | 146h31m | recover-replay-region-a-layout | `d9d5e74` | G08 | Pinned Region A into car-type, control, physics, 500 bounded objects and trailing state/timer fields with checked offsets. One layout test brings `cmr-core` to 1,382. `.SSR` writing is explicitly unsupported by resolved static callers, with indirect-call caveats; network framing remains. |
+
+| 2026-10-26T16:53Z | 146h35m | complete-replay-format | _(pending)_ | G08 | Recovered network replay's shared four-byte records and exact duplicate-suppression masks. One test brings `cmr-core` to 1,383. G08 is complete: Region A and records implemented, `.SSR` writing explicitly unsupported, transport envelopes assigned to networking. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

@@ -1889,8 +1889,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   vertical trace now uses those native records and rejects partial input. Region A
   is sectioned into car-type, control, physics, 500 bounded objects and trailing
   state/timer fields. `.SSR` writing is explicitly unsupported by resolved static
-  callers; network framing remains. See evidence `rea.official-eu.sim-replay`,
-  `rea.official-eu.replay-control-record`, and `rea.official-eu.replay-region-a-layout`.
+  callers; network replay uses the same four-byte records with native duplicate
+  suppression, completing G08. Transport envelopes remain networking work. See
+  evidence `rea.official-eu.sim-replay`, `rea.official-eu.replay-control-record`,
+  `rea.official-eu.replay-region-a-layout`, and
+  `rea.official-eu.network-replay-records`.
 - `cmr-core::race_state` composes the recovered fixed-step pieces (`fixed_point`
   BAM trig + `Vec3`, `vehicle_dynamics` lateral-grip/net-accel/drag/integration,
   and the `stage_timing` stage clock) into a deterministic offline race-state

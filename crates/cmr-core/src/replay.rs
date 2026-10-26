@@ -295,6 +295,33 @@ pub fn decode_replay_control(
     }
 }
 
+/// Whether the network replay consumer accepts a record instead of suppressing
+/// it as a duplicate. Repeat `0` suppresses unconditionally; `0x3f` always accepts.
+#[must_use]
+pub fn network_replay_record_accepted(
+    previous: ReplayControlRecord,
+    current: ReplayControlRecord,
+) -> bool {
+    let repeat = current.0[2] & 0x3f;
+    if repeat == 0 {
+        return false;
+    }
+    if repeat == 0x3f {
+        return true;
+    }
+    let throttle = previous.0[0] ^ current.0[0];
+    let brake_gear = previous.0[1] ^ current.0[1];
+    let steer = previous.0[3] ^ current.0[3];
+    let flags = previous.0[2] ^ current.0[2];
+    !(throttle & 0xfc == 0
+        && brake_gear & 0xfc == 0
+        && steer & 0x7f == 0
+        && flags & 0xc0 == 0
+        && brake_gear & 3 == 0
+        && throttle & 3 == 0
+        && steer & 0x80 == 0)
+}
+
 /// Parse a `"CMPR"` container header, returning the payload size, or `None` if
 /// the magic is absent or the slice is too short.
 pub fn parse_cmpr_header(bytes: &[u8]) -> Option<u32> {
@@ -453,6 +480,28 @@ mod tests {
         let second = decode_replay_control(two_ticks, first.next_repeat);
         assert!(second.repeat_complete);
         assert_eq!(second.next_repeat, 0);
+    }
+
+    #[test]
+    fn network_replay_suppresses_only_duplicate_records() {
+        let previous = ReplayControlRecord([0x4f, 0x2f, 0xd1, 0xe3]);
+        assert!(!network_replay_record_accepted(previous, previous));
+        assert!(!network_replay_record_accepted(
+            previous,
+            ReplayControlRecord([0x4f, 0x2f, 0xd2, 0xe3])
+        ));
+        assert!(network_replay_record_accepted(
+            previous,
+            ReplayControlRecord([0x4f, 0x2f, 0xff, 0xe3])
+        ));
+        assert!(network_replay_record_accepted(
+            previous,
+            ReplayControlRecord([0x50, 0x2f, 0xd1, 0xe3])
+        ));
+        assert!(network_replay_record_accepted(
+            previous,
+            ReplayControlRecord([0x4f, 0x2f, 0xd1, 0xe2])
+        ));
     }
 
     #[test]
