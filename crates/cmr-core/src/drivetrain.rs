@@ -371,6 +371,47 @@ pub fn gate_wheel_speed(
     new_speed
 }
 
+/// Whether the per-wheel ratio candidate is inside the unit gate used by the
+/// second force-pass loop: `|dot * 4 - speed| < 0x10000` (pseudo-absolute).
+#[must_use]
+pub fn wheel_ratio_within_unit(ratio: i32) -> bool {
+    ratio.wrapping_abs() < 0x10000
+}
+
+/// The sign-aware residual saturation of the second per-wheel loop.
+///
+/// When the residual and the force term share a sign (both positive or both
+/// negative), the residual is reduced by the force term only when the force's
+/// magnitude is smaller; otherwise it is zeroed. Opposite signs (or either
+/// value being zero) leave the residual unchanged. Magnitudes use the native
+/// pseudo-absolute rule, so `i32::MIN` keeps its sign under wrapping.
+#[must_use]
+pub fn residual_with_saturation(residual: i32, force: i32) -> i32 {
+    let same_sign = (residual > 0 && force > 0) || (residual < 0 && force < 0);
+    if !same_sign {
+        return residual;
+    }
+    if force.wrapping_abs() < residual.wrapping_abs() {
+        residual.wrapping_sub(force)
+    } else {
+        0
+    }
+}
+
+/// The gear-ratio residual gate of the second per-wheel loop: when
+/// `ctl+0x2ec` is zero and the gear ratio is zero or has the opposite sign to
+/// the residual, the residual is zeroed; otherwise it passes through.
+#[must_use]
+pub fn gate_residual_by_gear_ratio(residual: i32, gear_ratio: i32, config_2ec: i32) -> i32 {
+    if config_2ec != 0 {
+        return residual;
+    }
+    if (gear_ratio > 0 && residual < 0) || (gear_ratio < 0 && residual > 0) || gear_ratio == 0 {
+        return 0;
+    }
+    residual
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,5 +730,37 @@ mod tests {
         assert!(apply_wheel_slip(false, 0, false));
         assert!(apply_wheel_slip(false, 1, true));
         assert!(!apply_wheel_slip(false, 1, false));
+    }
+
+    #[test]
+    fn wheel_ratio_gate_uses_pseudo_absolute_unit_bound() {
+        assert!(wheel_ratio_within_unit(0x10000 - 1));
+        assert!(!wheel_ratio_within_unit(0x10000));
+        assert!(wheel_ratio_within_unit(-(0x10000 - 1)));
+        assert!(!wheel_ratio_within_unit(-0x10000));
+        // Pseudo-absolute of INT_MIN stays INT_MIN, which passes the signed test.
+        assert!(wheel_ratio_within_unit(i32::MIN));
+    }
+
+    #[test]
+    fn residual_saturation_shares_sign_and_compares_magnitudes() {
+        assert_eq!(residual_with_saturation(100, 40), 60);
+        assert_eq!(residual_with_saturation(100, 100), 0);
+        assert_eq!(residual_with_saturation(100, 200), 0);
+        assert_eq!(residual_with_saturation(-100, -40), -60);
+        assert_eq!(residual_with_saturation(-100, -100), 0);
+        assert_eq!(residual_with_saturation(100, -40), 100);
+        assert_eq!(residual_with_saturation(0, 40), 0);
+        assert_eq!(residual_with_saturation(100, 0), 100);
+    }
+
+    #[test]
+    fn residual_gear_ratio_gate_zeroes_zero_and_opposite_sign_ratios() {
+        assert_eq!(gate_residual_by_gear_ratio(100, 0, 1), 100);
+        assert_eq!(gate_residual_by_gear_ratio(100, 0, 0), 0);
+        assert_eq!(gate_residual_by_gear_ratio(-100, 1, 0), 0);
+        assert_eq!(gate_residual_by_gear_ratio(100, -1, 0), 0);
+        assert_eq!(gate_residual_by_gear_ratio(100, 1, 0), 100);
+        assert_eq!(gate_residual_by_gear_ratio(-100, -1, 0), -100);
     }
 }

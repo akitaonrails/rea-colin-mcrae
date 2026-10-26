@@ -986,6 +986,16 @@ equals the per-wheel constant; otherwise a gear-ratio sign mismatch).
 `integrate_wheel_speed`, and `gate_wheel_speed`. Four focused tests bring
 `cmr-core` to 1,275. The second per-wheel force loop remains open.
 
+G03 recovers the second-loop ratio gate `|dot * 4 - speed| < 0x10000`
+(pseudo-absolute, so `i32::MIN` passes), the sign-aware residual saturation
+(residual reduced by the force only when they share sign and the force is
+smaller in magnitude, zeroed when it is not smaller, unchanged on opposite
+signs or zeros), and the gear-ratio gate (residual zeroed when `ctl+0x2ec == 0`
+and the ratio is zero or has the opposite sign). `cmr-core::drivetrain` gains
+`wheel_ratio_within_unit`, `residual_with_saturation`, and
+`gate_residual_by_gear_ratio`. Three focused tests bring `cmr-core` to 1,278.
+The remaining second-loop normalization stages remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

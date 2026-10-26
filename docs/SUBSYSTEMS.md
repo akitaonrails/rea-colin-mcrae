@@ -1377,6 +1377,16 @@ languages rather than fabricating or silently aliasing Italian assets.
   `apply_wheel_drive`, `apply_wheel_slip`, `integrate_wheel_speed`, and
   `gate_wheel_speed`. Four focused tests bring `cmr-core` to 1,275. The second
   per-wheel force loop remains open.
+  G03 second-loop ratio gate and residual saturation: the second loop gates
+  on `|dot * 4 - speed| < 0x10000` (pseudo-absolute, so `i32::MIN` passes).
+  The residual is reduced by the force only when they share sign and the
+  force is smaller in magnitude, zeroed otherwise when the force is not
+  smaller, and left unchanged on opposite signs or zeros. The gear-ratio gate
+  zeroes the residual when `ctl+0x2ec == 0` and the ratio is zero or has the
+  opposite sign. `cmr-core::drivetrain` gains `wheel_ratio_within_unit`,
+  `residual_with_saturation`, and `gate_residual_by_gear_ratio`. Three focused
+  tests bring `cmr-core` to 1,278. The remaining normalization stages remain
+  open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
