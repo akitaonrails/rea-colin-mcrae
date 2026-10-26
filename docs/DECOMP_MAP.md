@@ -226,7 +226,8 @@ cover the recovered pure rules.
   **G03 immutable capability store and counter wiring (`44df5c4`):** `SurfaceCapabilityStore` revalidates the bounded state, exact reviewed profile/source identity, output path/size/hash, regular files and persistent symlinks before owning all sixteen address-ordered tables without retaining paths. `SURFACE_EFFECT_PE_TABLE_INDICES` pins the counter map `[1,0,2,3,runtime,4,5,6,7,8,9,10,11,13,12,14]`; only fifteen PE tables are consumed by `FUN_00424a40`, and the trailing PE table is retained but not consumed there. `accumulate_effect_enables_from_extracted` combines those tables with the separately supplied runtime fifth table. Two store tests bring `cmr-assets` to 80 library tests, and one mapping test brings `cmr-core` to 1,315. The opt-in official extraction/reopen smoke passes without exposing values. The runtime fifth table's producer and application/session wiring remain open.
   **G03 runtime fifth-table zero-initialization boundary (`e5ab966`):** a complete initialized-memory literal search finds exactly three `DAT_0054f824` sites (`0x4240dd`, `0x424b1d`, `0x425ed6`), all byte reads in `FUN_00424a40`/`FUN_00425e30` or the undecoded read site; no direct writer is present. `address_to_file_offset` reports no authoritative file mapping, so the loader-established value is zero. `ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE` models that startup boundary, with one counter test bringing `cmr-core` to 1,316. Indirect/aliased runtime writes remain unproven; this is not a claim that the table can never change. Application/session wiring remains open.
   **G03 application session surface-input boundary (`96b0c9d`):** `cmr-app::SessionSurfaceInputs::open` loads `runtime-data/official-eu-surface-capabilities` through the embedded reviewed profile, owns the authenticated store, and pairs it with the zero-initialized runtime fifth table. `effect_enables(stage_surface_ids)` computes the recovered counter vector only for caller-supplied IDs; no IDs are inferred while the stage producer is unrecovered. Two tests cover the full map/invalid IDs and tamper rejection, bringing `cmr-app` to 23 library tests; the opt-in official session-open smoke passes without exposing values. Actual stage-surface-ID extraction and rendering/weather consumption remain open.
-  **G03 stage `.srf` surface-ID production (pending milestone):** `FUN_00480a10` appends `.srf`, loads it through shared CMPR-capable `FUN_00495ed0`, and passes the decoded allocation plus `DAT_00a1f950` directly to `FUN_00424a40`; the count is the loader's byte count. The IDs are therefore the decoded `.srf` bytes, not a C3D/CAT-derived list. `SessionSurfaceInputs::open_stage` uses the existing bounded CMPR-aware section reader and `stage_effect_enables` consumes those bytes with safe out-of-range rejection. One test covers raw IDs, duplicates, invalid IDs and missing siblings, bringing `cmr-app` to 24 library tests; the real AU1 opt-in path passes. Weather/render consumption of the counters remains open.
+  **G03 stage `.srf` surface-ID production (`9c749ea`):** `FUN_00480a10` appends `.srf`, loads it through shared CMPR-capable `FUN_00495ed0`, and passes the decoded allocation plus `DAT_00a1f950` directly to `FUN_00424a40`; the count is the loader's byte count. The IDs are therefore the decoded `.srf` bytes, not a C3D/CAT-derived list. `SessionSurfaceInputs::open_stage` uses the existing bounded CMPR-aware section reader and `stage_effect_enables` consumes those bytes with safe out-of-range rejection. One test covers raw IDs, duplicates, invalid IDs and missing siblings, bringing `cmr-app` to 24 library tests; the real AU1 opt-in path passes. Weather/render consumption of the counters remains open.
+  **G03 stage weather-effect gating (pending milestone):** the recovered counter globals pin splash `DAT_005240b0` at index 0, dust `DAT_0054f820` at index 2, and snow `DAT_0054ba84` at index 5. `cmr-core::weather::StageWeatherEffects::from_counters` converts those counters to boolean gates, and `SessionSurfaceInputs::stage_weather_effects` composes them from the actual `.srf` bytes and reviewed tables. One core test covers zero/positive gates and an unrelated counter, bringing `cmr-core` to 1,317; the app test checks all three gates and invalid-ID propagation, and the real AU1 path passes. Other counters remain unnamed, and particle/render spawning is still separate.
 
 
 
@@ -316,13 +317,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T05:36:55Z
-milestone=recover-stage-srf-surface-id-production
+updated_utc=2026-10-26T05:44:10Z
+milestone=wire-stage-weather-effect-gates
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-wire-stage-effect-counters-into-weather
-next_exit_gate=stage-effect-counters-gate-the-reconstructed-weather-effects
+current_focus=E10-wire-stage-weather-gates-into-particle-spawning
+next_exit_gate=weather-gates-control-the-reconstructed-particle-effects
 <!-- PROGRESS-TAIL-END -->

@@ -1583,6 +1583,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   `SessionSurfaceInputs::open_stage` loads those bytes through the bounded CMPR
   decoder and `stage_effect_enables` consumes them. One test brings `cmr-app`
   to 24 library tests; real AU1 passes. Weather/render consumption remains open.
+  G03 stage weather gating: `StageWeatherEffects` maps the recovered splash (0),
+  dust (2), and snow (5) counters to booleans.
+  `SessionSurfaceInputs::stage_weather_effects` composes them from the `.srf`
+  bytes and reviewed tables. One core test brings `cmr-core` to 1,317; app
+  assertions and real AU1 pass. Other counters remain unnamed and actual
+  particle/render spawning is separate.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

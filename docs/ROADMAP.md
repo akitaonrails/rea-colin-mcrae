@@ -1155,6 +1155,11 @@ passes its decoded bytes and loader byte count directly to `FUN_00424a40`.
 CMPR-aware reader, and `stage_effect_enables` computes the counters. One test
 brings `cmr-app` to 24 library tests; the real AU1 path passes. Weather/render
 consumption remains open.
+G03 wires the recovered weather counter identities into `StageWeatherEffects`:
+splash index 0, dust index 2, and snow index 5 become boolean gates from the
+`.srf`-driven counters. `SessionSurfaceInputs::stage_weather_effects` composes
+them. One core test brings `cmr-core` to 1,317; app coverage and the real AU1
+path pass. Other counters remain unnamed and particle/render spawning is separate.
 
 Exit gate:
 

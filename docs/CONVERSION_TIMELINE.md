@@ -450,7 +450,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T05:28Z | 135h10m | wire-session-surface-inputs | `96b0c9d` | G03 | Added `cmr-app::SessionSurfaceInputs`: reviewed store ownership, zero-initialized runtime fifth table, and counter computation for caller-supplied stage IDs only. Two tests cover the map, invalid IDs and tamper rejection, bringing `cmr-app` to 23 library tests; the opt-in official session-open smoke passes. Actual stage-ID extraction and weather/render consumption remain open. |
 
-| 2026-10-26T05:36Z | 135h18m | recover-stage-srf-surface-id-production | _(pending)_ | G03 | `FUN_00480a10` passes the CMPR-decoded `.srf` allocation and loader byte count directly to `FUN_00424a40`, identifying the stage IDs as the `.srf` bytes. `SessionSurfaceInputs::open_stage` and `stage_effect_enables` reproduce the path with safe bounds rejection. One test brings `cmr-app` to 24 library tests; real AU1 passes. Weather/render consumption remains open. |
+| 2026-10-26T05:36Z | 135h18m | recover-stage-srf-surface-id-production | `9c749ea` | G03 | `FUN_00480a10` passes the CMPR-decoded `.srf` allocation and loader byte count directly to `FUN_00424a40`, identifying the stage IDs as the `.srf` bytes. `SessionSurfaceInputs::open_stage` and `stage_effect_enables` reproduce the path with safe bounds rejection. One test brings `cmr-app` to 24 library tests; real AU1 passes. Weather/render consumption remains open. |
+
+| 2026-10-26T05:44Z | 135h26m | wire-stage-weather-effect-gates | _(pending)_ | G03/E10 | Wired the recovered splash (0), dust (2), and snow (5) counters into `StageWeatherEffects` and `SessionSurfaceInputs::stage_weather_effects`. One core test brings `cmr-core` to 1,317; app assertions and the real AU1 path pass. Other counters remain unnamed and particle/render spawning remains separate. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

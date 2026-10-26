@@ -51,6 +51,7 @@ use cmr_core::startup_display::{
     StartupDisplay, StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
 };
 use cmr_core::surface::PaletteMapping;
+use cmr_core::weather::StageWeatherEffects;
 use cmr_formats::bitmap::BitmapLimits;
 use cmr_formats::c3d::C3dLimits;
 use cmr_formats::riff_palette::PaletteEntry;
@@ -1769,6 +1770,12 @@ impl SessionSurfaceInputs {
     pub fn stage_effect_enables(&self) -> Option<[u32; SURFACE_CAPABILITY_COUNT]> {
         self.effect_enables(&self.stage_surface_ids)
     }
+
+    #[must_use]
+    pub fn stage_weather_effects(&self) -> Option<StageWeatherEffects> {
+        self.stage_effect_enables()
+            .map(|counters| StageWeatherEffects::from_counters(&counters))
+    }
 }
 
 pub fn run_windowed_game_session(
@@ -2120,11 +2127,14 @@ mod tests {
             inputs.stage_effect_enables(),
             Some([2, 1, 3, 4, 0, 5, 6, 7, 8, 9, 10, 11, 12, 14, 13, 15])
         );
+        let weather = inputs.stage_weather_effects().unwrap();
+        assert!(weather.splash && weather.dust && weather.snow);
         std::fs::write(media.join("AU1.srf"), [120]).unwrap();
         let inputs =
             SessionSurfaceInputs::open_stage(&media, &temp.0, "AU1", DecodeLimits::default())
                 .unwrap();
         assert_eq!(inputs.stage_effect_enables(), None);
+        assert_eq!(inputs.stage_weather_effects(), None);
         assert!(matches!(
             SessionSurfaceInputs::open_stage(&media, &temp.0, "MISSING", DecodeLimits::default()),
             Err(SessionSurfaceInputsError::MissingStageSurfaceData)
@@ -2173,6 +2183,7 @@ mod tests {
         .unwrap();
         assert!(!inputs.stage_surface_ids().is_empty());
         assert!(inputs.stage_effect_enables().is_some());
+        assert!(inputs.stage_weather_effects().is_some());
     }
 
     #[test]

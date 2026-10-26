@@ -240,7 +240,9 @@ the loader-zero startup table; indirect runtime mutation remains unknown.
 root. `open_stage` also reads the stage's `.srf` sibling through the bounded
 CMPR-aware decoder and uses those decoded bytes as the surface IDs, matching the
 original caller. `stage_effect_enables` computes the counters with safe
-out-of-range rejection; weather/render consumption remains separate.
+out-of-range rejection. `stage_weather_effects` maps the recovered splash (0),
+dust (2), and snow (5) counters to boolean gates; other counters remain unnamed
+and particle/render spawning is separate.
 
 ## Executable-derived compiled car cases
 

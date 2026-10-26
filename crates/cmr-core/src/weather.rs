@@ -89,6 +89,29 @@ pub fn accumulate_effect_enable(present_surface_ids: &[usize], capability: &[u8]
     total
 }
 
+pub const SPLASH_EFFECT_COUNTER: usize = 0;
+pub const DUST_EFFECT_COUNTER: usize = 2;
+pub const SNOW_EFFECT_COUNTER: usize = 5;
+
+/// Weather gates whose global counter identities are statically recovered.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StageWeatherEffects {
+    pub splash: bool,
+    pub dust: bool,
+    pub snow: bool,
+}
+
+impl StageWeatherEffects {
+    #[must_use]
+    pub fn from_counters(counters: &[u32; crate::drivetrain::SURFACE_CAPABILITY_COUNT]) -> Self {
+        Self {
+            splash: counters[SPLASH_EFFECT_COUNTER] > 0,
+            dust: counters[DUST_EFFECT_COUNTER] > 0,
+            snow: counters[SNOW_EFFECT_COUNTER] > 0,
+        }
+    }
+}
+
 /// Named defaults from the particle/track tuning block (`0x4ebe00`, stride
 /// `0x28`, name + value; a text tuning file overrides these at load). These are
 /// engine behavior constants, encoded like the drivetrain/grip constants.
@@ -347,6 +370,25 @@ mod tests {
         assert_eq!(accumulate_effect_enable(&[0, 2, 4], &capability), 0);
         // Out-of-range ids are ignored.
         assert_eq!(accumulate_effect_enable(&[99], &capability), 0);
+    }
+
+    #[test]
+    fn stage_weather_gates_use_the_recovered_counter_indices() {
+        let mut counters = [0; crate::drivetrain::SURFACE_CAPABILITY_COUNT];
+        assert_eq!(
+            StageWeatherEffects::from_counters(&counters),
+            StageWeatherEffects {
+                splash: false,
+                dust: false,
+                snow: false,
+            }
+        );
+        counters[SPLASH_EFFECT_COUNTER] = 1;
+        counters[DUST_EFFECT_COUNTER] = 2;
+        counters[SNOW_EFFECT_COUNTER] = 3;
+        counters[1] = 99;
+        let effects = StageWeatherEffects::from_counters(&counters);
+        assert!(effects.splash && effects.dust && effects.snow);
     }
 
     #[test]
