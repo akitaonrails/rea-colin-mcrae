@@ -1542,6 +1542,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   the resulting control families. One focused test brings `cmr-core` to 1,314.
   The reviewed store and runtime inputs are synthetic fixtures, not a live
   car-data run; per-surface capability tables remain caller-supplied game data.
+  G03 surface-capability provenance: fresh `FUN_00424a40` pseudocode identifies
+  sixteen contiguous PE-backed 120-byte tables at `0x4ec0f8`, while the fifth
+  enable counter reads runtime-backed `DAT_0054f824` outside that span.
+  `extract_official_eu_surface_capabilities` recovers the PE-backed tables in
+  address order through the checked PE32 mapping, without embedding values.
+  Two tests bring `cmr-formats` to 160 library tests. Reviewed import/store and
+  application wiring remain separate; the runtime fifth table is not extracted.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

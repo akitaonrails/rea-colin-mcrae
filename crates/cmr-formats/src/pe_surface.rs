@@ -12,12 +12,20 @@ use crate::pe32::{Pe32Error, Pe32Image};
 
 /// Number of signed little-endian dwords in each recovered family.
 pub const SURFACE_COEFFICIENT_COUNT: usize = 120;
+/// Number of per-effect capability tables consumed by `FUN_00424a40`.
+pub const SURFACE_CAPABILITY_COUNT: usize = 16;
+/// Number of surface ids in each capability table.
+pub const SURFACE_CAPABILITY_ENTRIES: usize = 120;
 
 /// Virtual address of the first family in the reviewed official-EU profile.
 pub const OFFICIAL_EU_SURFACE_FAMILY_VA: u32 = 0x004f_72cc;
+/// Virtual address of the first capability table in the reviewed official-EU profile.
+pub const OFFICIAL_EU_SURFACE_CAPABILITY_VA: u32 = 0x004e_c0f8;
 
 const FAMILY_BYTES: usize = SURFACE_COEFFICIENT_COUNT * size_of::<i32>();
 const BOTH_FAMILIES_BYTES: usize = FAMILY_BYTES * 2;
+/// Byte length of the sixteen contiguous capability tables.
+pub const SURFACE_CAPABILITY_BYTES: usize = SURFACE_CAPABILITY_COUNT * SURFACE_CAPABILITY_ENTRIES;
 
 /// One neutral 120-entry coefficient family from the executable image.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,6 +39,12 @@ pub struct SurfaceCoefficientFamily {
 pub struct SurfaceCoefficientFamilies {
     pub first: SurfaceCoefficientFamily,
     pub second: SurfaceCoefficientFamily,
+}
+
+/// Sixteen neutral per-effect capability tables in consumer order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SurfaceCapabilityTables {
+    pub values: [[u8; SURFACE_CAPABILITY_ENTRIES]; SURFACE_CAPABILITY_COUNT],
 }
 
 /// Structural failures while locating or decoding the bounded PE span.
@@ -211,6 +225,24 @@ pub fn extract_official_eu_surface_coefficients(
     Ok(SurfaceCoefficientFamilies { first, second })
 }
 
+/// Extract the sixteen per-effect capability tables consumed by `FUN_00424a40`.
+///
+/// Table and entry order are preserved exactly. The caller must establish the
+/// supported artifact identity before calling this bounded parser.
+pub fn extract_official_eu_surface_capabilities(
+    input: &[u8],
+) -> Result<SurfaceCapabilityTables, PeSurfaceError> {
+    let image = Pe32Image::parse(input)?;
+    let encoded =
+        image.read_va_range(OFFICIAL_EU_SURFACE_CAPABILITY_VA, SURFACE_CAPABILITY_BYTES)?;
+    let mut values = [[0; SURFACE_CAPABILITY_ENTRIES]; SURFACE_CAPABILITY_COUNT];
+    for (table_index, table) in values.iter_mut().enumerate() {
+        let offset = table_index * SURFACE_CAPABILITY_ENTRIES;
+        table.copy_from_slice(&encoded[offset..offset + SURFACE_CAPABILITY_ENTRIES]);
+    }
+    Ok(SurfaceCapabilityTables { values })
+}
+
 fn decode_family(input: &[u8]) -> SurfaceCoefficientFamily {
     debug_assert_eq!(input.len(), FAMILY_BYTES);
     let mut values = [0; SURFACE_COEFFICIENT_COUNT];
@@ -252,13 +284,15 @@ mod tests {
 
     fn synthetic_pe() -> Vec<u8> {
         let raw_size = 0x800usize;
-        let mut bytes = vec![0; RAW_OFFSET + raw_size];
+        let capability_raw = RAW_OFFSET + raw_size;
+        let capability_raw_size = 0x900usize;
+        let mut bytes = vec![0; capability_raw + capability_raw_size];
         bytes[0..2].copy_from_slice(b"MZ");
         put_u32(&mut bytes, DOS_LFANEW_OFFSET, PE_OFFSET as u32);
         bytes[PE_OFFSET..PE_OFFSET + 4].copy_from_slice(b"PE\0\0");
         let coff = PE_OFFSET + 4;
         put_u16(&mut bytes, coff, I386_MACHINE);
-        put_u16(&mut bytes, coff + 2, 1);
+        put_u16(&mut bytes, coff + 2, 2);
         put_u16(&mut bytes, coff + 16, OPTIONAL_SIZE as u16);
         let optional = coff + COFF_HEADER_SIZE;
         put_u16(&mut bytes, optional, PE32_MAGIC);
@@ -269,6 +303,20 @@ mod tests {
         put_u32(&mut bytes, SECTION_TABLE + 12, SECTION_RVA);
         put_u32(&mut bytes, SECTION_TABLE + 16, raw_size as u32);
         put_u32(&mut bytes, SECTION_TABLE + 20, RAW_OFFSET as u32);
+        let capability_section = SECTION_TABLE + SECTION_HEADER_SIZE;
+        bytes[capability_section..capability_section + 8].copy_from_slice(b".data\0\0\0");
+        put_u32(
+            &mut bytes,
+            capability_section + 8,
+            capability_raw_size as u32,
+        );
+        put_u32(&mut bytes, capability_section + 12, 0x000e_c000);
+        put_u32(
+            &mut bytes,
+            capability_section + 16,
+            capability_raw_size as u32,
+        );
+        put_u32(&mut bytes, capability_section + 20, capability_raw as u32);
 
         let target = RAW_OFFSET + TARGET_DELTA;
         for index in 0..SURFACE_COEFFICIENT_COUNT {
@@ -284,6 +332,13 @@ mod tests {
             target + FAMILY_BYTES + (SURFACE_COEFFICIENT_COUNT - 1) * 4,
             i32::MAX as u32,
         );
+        let capability_target = capability_raw + 0xf8;
+        for table in 0..SURFACE_CAPABILITY_COUNT {
+            for entry in 0..SURFACE_CAPABILITY_ENTRIES {
+                bytes[capability_target + table * SURFACE_CAPABILITY_ENTRIES + entry] =
+                    (table * 17 + entry) as u8;
+            }
+        }
         bytes
     }
 
@@ -295,6 +350,35 @@ mod tests {
         assert_eq!(parsed.first.values[119], 59);
         assert_eq!(parsed.second.values[0], i32::MIN);
         assert_eq!(parsed.second.values[119], i32::MAX);
+    }
+
+    #[test]
+    fn extracts_sixteen_capability_tables_in_address_order() {
+        let parsed = extract_official_eu_surface_capabilities(&synthetic_pe()).unwrap();
+        for table in 0..SURFACE_CAPABILITY_COUNT {
+            for entry in 0..SURFACE_CAPABILITY_ENTRIES {
+                assert_eq!(parsed.values[table][entry], (table * 17 + entry) as u8);
+            }
+        }
+        assert_eq!(parsed.values[15][119], 118);
+    }
+
+    #[test]
+    fn capability_extraction_rejects_a_short_mapped_span() {
+        let mut pe = synthetic_pe();
+        let capability_section = SECTION_TABLE + SECTION_HEADER_SIZE;
+        put_u32(
+            &mut pe,
+            capability_section + 16,
+            0xf8 + SURFACE_CAPABILITY_BYTES as u32 - 1,
+        );
+        assert_eq!(
+            extract_official_eu_surface_capabilities(&pe),
+            Err(PeSurfaceError::UnmappedRange {
+                virtual_address: OFFICIAL_EU_SURFACE_CAPABILITY_VA,
+                byte_len: SURFACE_CAPABILITY_BYTES,
+            })
+        );
     }
 
     #[test]

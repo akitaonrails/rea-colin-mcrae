@@ -1113,6 +1113,14 @@ and derives the gear ratio and auxiliary value from the resulting control
 families, bringing `cmr-core` to 1,314. Reviewed synthetic inputs prove the
 storage-to-consumer contract; they are not a live car-data run, and the
 per-surface capability tables remain caller-supplied game data.
+G03 establishes the capability-table provenance: fresh `FUN_00424a40`
+pseudocode identifies sixteen contiguous PE-backed 120-byte tables at
+`0x4ec0f8`; the fifth enable counter instead reads runtime-backed
+`DAT_0054f824` and is outside that span.
+`cmr-formats::pe_surface::extract_official_eu_surface_capabilities` performs a
+bounded 1,920-byte extraction in address order, with two synthetic tests for
+exact ordering and malformed spans. `cmr-formats` now has 160 library tests.
+Reviewed import/store wiring and the separate runtime-backed table remain open.
 
 Exit gate:
 
