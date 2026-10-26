@@ -600,7 +600,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T17:17Z | 146h59m | complete-rival-participants | `8244b76` | G06 | Recovered replay data-slot versus simulated-car counts and the full procedural rival-time generator: tier curves, LCG jitter, exclusions, remap and difficulty placement. One setup test and two generator tests bring `cmr-core` to 1,386. G06 is complete without inventing on-track AI. |
 
-| 2026-10-26T17:29Z | 147h11m | recover-stage-advance-writer | _(pending)_ | F06 | Pinned `FUN_00436f00` ordinary stage/progress commit, `FUN_00437090` country advance/time clearing, and direct `+0x16c` time versus `+0x170` position bases. Two tests bring `cmr-core` to 1,388. Custom scheduling and record/unlock residuals remain. |
+| 2026-10-26T17:29Z | 147h11m | recover-stage-advance-writer | `42d7eed` | F06 | Pinned `FUN_00436f00` ordinary stage/progress commit, `FUN_00437090` country advance/time clearing, and direct `+0x16c` time versus `+0x170` position bases. Two tests bring `cmr-core` to 1,388. Custom scheduling and record/unlock residuals remain. |
+
+| 2026-10-26T17:36Z | 147h18m | resolve-record-persistence | _(pending)_ | F06 | Proved both record tables persist in the `0x1e20` `cmRally.cfg` image, added checked ranges and a settings round-trip, and implemented forced-country rival lookup from the dynamic `FUN_0044da00` path. Two tests bring `cmr-core` to 1,390. Custom scheduling remains. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

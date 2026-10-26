@@ -179,6 +179,41 @@ pub fn alt_record_offset(stage: usize) -> usize {
     stage * RECORD_STRIDE + ALT_RECORD_BASE
 }
 
+/// Bounds-checked byte range of a championship record in the persisted
+/// `cmRally.cfg` image. Both record tables share this settings allocation;
+/// there is no separate record file.
+#[must_use]
+pub fn championship_record_range(country: usize, stage: usize) -> Option<std::ops::Range<usize>> {
+    if country >= crate::championship_model::COUNTRY_COUNT || stage >= STAGES_PER_RECORD_COUNTRY {
+        return None;
+    }
+    let index = country
+        .checked_mul(STAGES_PER_RECORD_COUNTRY)?
+        .checked_add(stage)?;
+    settings_record_range(index, CHAMPIONSHIP_RECORD_BASE)
+}
+
+/// Bounds-checked byte range of an alternate-mode record in `cmRally.cfg`.
+#[must_use]
+pub fn alt_record_range(stage: usize) -> Option<std::ops::Range<usize>> {
+    settings_record_range(stage, ALT_RECORD_BASE)
+}
+
+fn settings_record_range(index: usize, base: usize) -> Option<std::ops::Range<usize>> {
+    let start = index.checked_mul(RECORD_STRIDE)?.checked_add(base)?;
+    let end = start.checked_add(RECORD_STRIDE)?;
+    (end <= crate::settings_store::SETTINGS_BLOB_LEN).then_some(start..end)
+}
+
+/// Return the forced rival car for a country in the four-entry native table,
+/// or `None` when the country has no forced entry (`FUN_0044da00`).
+#[must_use]
+pub fn forced_country_car(country: u8, entries: &[(u8, u8); 4]) -> Option<u8> {
+    entries
+        .iter()
+        .find_map(|&(entry_country, car)| (entry_country == country).then_some(car))
+}
+
 // --- Mode / flag decode -------------------------------------------------------
 
 /// Mask selecting the game-mode enum within the `+0x166` flag byte.
@@ -357,6 +392,27 @@ mod tests {
         assert_eq!(alt_record_offset(4), 4 * 0x1e + 0x175e);
         // Record tables address all countries.
         assert!(championship_record_offset(COUNTRY_COUNT - 1, 6) > CHAMPIONSHIP_RECORD_BASE);
+    }
+
+    #[test]
+    fn record_ranges_stay_inside_the_persisted_settings_image() {
+        let last = championship_record_range(COUNTRY_COUNT - 1, 6).unwrap();
+        assert_eq!(last.end, ALT_RECORD_BASE);
+        assert!(championship_record_range(COUNTRY_COUNT, 0).is_none());
+        assert!(alt_record_range(56).is_some());
+        assert!(alt_record_range(57).is_none());
+
+        let mut raw = vec![0; crate::settings_store::SETTINGS_BLOB_LEN];
+        raw[last.clone()].fill(0x5a);
+        let image = crate::settings_store::SettingsImage::from_file_bytes(&raw).unwrap();
+        assert!(image.as_bytes()[last].iter().all(|&byte| byte == 0x5a));
+    }
+
+    #[test]
+    fn forced_country_car_requires_a_matching_table_entry() {
+        let entries = [(1, 9), (3, 10), (6, 11), (8, 12)];
+        assert_eq!(forced_country_car(3, &entries), Some(10));
+        assert_eq!(forced_country_car(4, &entries), None);
     }
 
     #[test]

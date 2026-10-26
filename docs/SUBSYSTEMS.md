@@ -2265,9 +2265,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   and reporting completion without rollback; `FUN_00437090` handles country
   advance/reset and clears all 16 cumulative-time slots. The direct ranking
   accesses resolve the former base ambiguity: time is `+0x16c`, positions are
-  `+0x170`. Custom-mode scheduling, record-image persistence and exhaustive
-  unlock gating remain. See evidence `rea.official-eu.championship-progression`,
-  `rea.official-eu.championship-stage-commit` and their implementation rows.
+  `+0x170`. Both record tables are inside the `0x1e20` settings image saved as
+  `cmRally.cfg`; checked ranges and a settings round-trip cover that persistence.
+  `FUN_0044da00` derives rival selection from country and live standings, with
+  the forced-country lookup implemented. Custom-mode scheduling and exhaustive
+  menu-unlock verification remain. See the championship progression, stage-commit
+  and record-persistence evidence rows.
 - The F02 frontend-configuration structure spans three modules.
   `cmr-core::options_screen` models the settings-header encoding the options
   screens edit (volume channels `0x0c..0x0f` 7-bit + master flag, display-flags

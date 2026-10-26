@@ -1409,6 +1409,11 @@ commit increments progress and the packed stage without rollback, country
 advance resets the stage and clears cumulative times, and direct ranking
 accesses resolve time at `+0x16c` versus positions at `+0x170`. Two tests bring
 `cmr-core` to 1,388. Custom scheduling and record/unlock residuals remain.
+Both record tables are now proven to persist inside the same `0x1e20` settings
+image saved as `cmRally.cfg`; checked ranges reject invalid inputs and record
+bytes survive `SettingsImage`. `FUN_0044da00` establishes dynamic country/
+standings-driven rival selection, with its forced-country lookup implemented.
+Two tests bring `cmr-core` to 1,390. Custom scheduling remains next.
 
 Exit gate:
 
