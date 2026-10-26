@@ -1974,6 +1974,15 @@ impl SessionWheelInputs {
                 },
                 basis: [Vec3::ZERO; 3],
             },
+            engine_smoothing: cmr_core::drivetrain::SmoothedEngineSpeedInput {
+                wheel_speeds: [0; 4],
+                config_158: 1,
+                gear_ratio: 0x10000,
+                engine_2e0: 0,
+                redline_15c: 0x10000,
+                slip_gain: 0,
+                engine_load: 0x10000,
+            },
         };
         for index in 0..4 {
             populate_compiled_gear_ratio(

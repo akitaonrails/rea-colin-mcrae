@@ -2037,6 +2037,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `derive_driven_smoothing_scalars` now supplies slip, direction, signed speed limit
   and engine load with the recovered reciprocal/clamp order. Native runtime input
   population and `force_2c8` production remain separate.
+  `derive_smoothed_engine_speed` now produces `engine_speed_2e8` from the smoothed
+  axle averages and load cap after the wheel update, while neutral copies `engine_2e0`.
+  Engine-control and redline/slip/load inputs remain explicit.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

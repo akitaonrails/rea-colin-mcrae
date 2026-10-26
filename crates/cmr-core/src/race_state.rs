@@ -26,9 +26,9 @@ use crate::compiled_car_initializer::{
 };
 use crate::drivetrain::{
     FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
-    SecondWheelInputs, advance_residual_enable, derive_force_pass_scales, derive_gear_ratio,
-    equalize_wheel_speeds, execute_first_wheel_iteration, execute_second_wheel_core,
-    track_smoothed_wheel_speed,
+    SecondWheelInputs, SmoothedEngineSpeedInput, advance_residual_enable, derive_force_pass_scales,
+    derive_gear_ratio, derive_smoothed_engine_speed, equalize_wheel_speeds,
+    execute_first_wheel_iteration, execute_second_wheel_core, track_smoothed_wheel_speed,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::legacy_math::sqrt_q16;
@@ -286,6 +286,9 @@ pub struct FourWheelIterationParams<'a> {
     /// Moment scales/base contact input and angular gates; stateful vectors come
     /// from `MotionState` at each step.
     pub angular: AngularOrientationInput,
+    /// Explicit engine redline/slip/load inputs; speeds and gear/mode fields are
+    /// replaced from current native state before each update.
+    pub engine_smoothing: SmoothedEngineSpeedInput,
 }
 
 /// Populate wheel contact offsets from the compiled sign vectors at native state
@@ -350,6 +353,9 @@ pub struct FourWheelState {
     pub speed_ec: i32,
     /// Per-frame residual-enable countdown at `control+0x43b`.
     pub residual_enable: u8,
+    /// Engine-speed input at `control+0x2e0` and smoothed output at `+0x2e8`.
+    pub engine_2e0: i32,
+    pub engine_speed_2e8: i32,
 }
 
 /// Apply neutral-gear zeroing or the ordinary post-step tracking update.
@@ -531,6 +537,8 @@ impl CarState {
                 contact_updates: [Vec3::ZERO; 8],
                 speed_ec: 0,
                 residual_enable: 10,
+                engine_2e0: 0,
+                engine_speed_2e8: 0,
             },
         }
     }
@@ -999,6 +1007,18 @@ impl RaceState {
         self.car.four_wheel.speed_ec =
             sqrt_q16(self.car.velocity.dot(self.car.velocity).raw() as u32) as i32;
         update_smoothed_wheel_speeds(&mut self.car.four_wheel, first[0].gear_ratio);
+        if first[0].gear_ratio == 0 {
+            self.car.four_wheel.engine_speed_2e8 = self.car.four_wheel.engine_2e0;
+        } else {
+            let engine = derive_smoothed_engine_speed(SmoothedEngineSpeedInput {
+                wheel_speeds: self.car.four_wheel.smoothed_wheel_speeds,
+                config_158: first[0].config_158,
+                gear_ratio: first[0].gear_ratio,
+                engine_2e0: self.car.four_wheel.engine_2e0,
+                ..wheel.engine_smoothing
+            });
+            self.car.four_wheel.engine_speed_2e8 = engine.speed_2e8;
+        }
         let mut angular = wheel.angular;
         angular.basis = self.car.motion.basis;
         angular.momentum.angular_velocity = self.car.motion.angular_velocity;
@@ -1569,6 +1589,15 @@ mod tests {
                 },
                 basis: [Vec3::ZERO; 3],
             },
+            engine_smoothing: SmoothedEngineSpeedInput {
+                wheel_speeds: [0; 4],
+                config_158: 1,
+                gear_ratio: 0x10000,
+                engine_2e0: 0,
+                redline_15c: 0x10000,
+                slip_gain: 0,
+                engine_load: 0x10000,
+            },
         };
         populate_compiled_contact_offsets(
             &mut wheel,
@@ -1637,6 +1666,17 @@ mod tests {
                 track_smoothed_wheel_speed(sample.car.four_wheel.first[index].wheel_speed, 0)
             );
         }
+        assert_eq!(
+            sample.car.four_wheel.engine_speed_2e8,
+            derive_smoothed_engine_speed(SmoothedEngineSpeedInput {
+                wheel_speeds: sample.car.four_wheel.smoothed_wheel_speeds,
+                config_158: wheel.first[0].config_158,
+                gear_ratio: wheel.first[0].gear_ratio,
+                engine_2e0: 0,
+                ..wheel.engine_smoothing
+            })
+            .speed_2e8
+        );
         let contact_vectors = build_contact_basis_vectors(car.motion.contact_basis(car.velocity));
         let thresholds = derive_compiled_lane_thresholds(wheel.lane_threshold_inputs);
         let update_gate = contact_global_update_gate(transform_contact_force(

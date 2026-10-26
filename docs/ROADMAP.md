@@ -1370,7 +1370,10 @@ the separate engine-speed store remain. Driven scalar recovery now includes the
 suspension slip gain, clamped engine load, signed speed limit and the longitudinal/
 gear-reciprocal direction gain with native zero and negative-ratio behavior. One
 exact-value test brings `cmr-core` to 1,374. Input population and `force_2c8`
-production remain next.
+production remain next. Smoothed engine `+0x2e8` now comes from the native axle
+blend and load-dependent acceleration cap, with neutral copying `+0x2e0`; both
+engine fields persist in `FourWheelState`. One formula/cap test brings `cmr-core`
+to 1,375. Engine-control input production and `force_2c8` remain.
 
 Exit gate:
 

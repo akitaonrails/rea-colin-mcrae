@@ -288,6 +288,54 @@ pub fn derive_driven_smoothing_scalars(
     }
 }
 
+/// Inputs for the smoothed axle blend and engine acceleration cap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SmoothedEngineSpeedInput {
+    pub wheel_speeds: [i32; 4],
+    pub config_158: i32,
+    pub gear_ratio: i32,
+    pub engine_2e0: i32,
+    pub redline_15c: i32,
+    pub slip_gain: i32,
+    pub engine_load: i32,
+}
+
+/// Native engine-speed result and the response load used by its cap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SmoothedEngineSpeed {
+    pub speed_2e8: i32,
+    pub response_load: i32,
+}
+
+/// Blend smoothed axle speeds and apply the load-dependent acceleration cap.
+#[must_use]
+pub fn derive_smoothed_engine_speed(input: SmoothedEngineSpeedInput) -> SmoothedEngineSpeed {
+    let rear = input.wheel_speeds[2].wrapping_add(input.wheel_speeds[3]) >> 1;
+    let front = input.wheel_speeds[0].wrapping_add(input.wheel_speeds[1]) >> 1;
+    let axle_blend = q16_mul(front.wrapping_sub(rear), input.config_158).wrapping_add(rear);
+    let mut speed_2e8 = q16_mul(axle_blend, input.gear_ratio);
+    let response_delta = q16_mul(input.slip_gain, 0x1ab85)
+        .wrapping_sub(0x10000)
+        .max(0);
+    let response_load = input
+        .engine_load
+        .wrapping_add(q16_mul(q16_mul(response_delta, 0x1ab85), 0x4000))
+        .min(0x10000);
+    if input.engine_2e0 < speed_2e8 {
+        let allowance = q16_mul(
+            input.redline_15c.wrapping_sub(input.engine_2e0),
+            response_load,
+        );
+        if allowance < speed_2e8.wrapping_sub(input.engine_2e0) {
+            speed_2e8 = input.engine_2e0.wrapping_add(allowance);
+        }
+    }
+    SmoothedEngineSpeed {
+        speed_2e8,
+        response_load,
+    }
+}
+
 /// Inputs for the driven `FUN_004088c0` integration branch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DrivenWheelSmoothingInput {
@@ -1851,6 +1899,44 @@ mod tests {
             })
             .engine_load,
             0x10000
+        );
+    }
+
+    #[test]
+    fn smoothed_engine_speed_blends_axles_and_caps_acceleration() {
+        let input = SmoothedEngineSpeedInput {
+            wheel_speeds: [0; 4],
+            config_158: 0x10000,
+            gear_ratio: 0x10000,
+            engine_2e0: 0,
+            redline_15c: 0x10000,
+            slip_gain: 0,
+            engine_load: 0x10000,
+        };
+        assert_eq!(
+            derive_smoothed_engine_speed(input),
+            SmoothedEngineSpeed {
+                speed_2e8: 0,
+                response_load: 0x10000,
+            }
+        );
+        assert_eq!(
+            derive_smoothed_engine_speed(SmoothedEngineSpeedInput {
+                wheel_speeds: [0x20000, 0x20000, 0, 0],
+                ..input
+            }),
+            SmoothedEngineSpeed {
+                speed_2e8: 0x10000,
+                response_load: 0x10000,
+            }
+        );
+        assert_eq!(
+            derive_smoothed_engine_speed(SmoothedEngineSpeedInput {
+                engine_load: 0,
+                ..input
+            })
+            .response_load,
+            0
         );
     }
 
