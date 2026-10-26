@@ -206,6 +206,7 @@ mod tests {
                 factor_c5c0: 0x10000,
                 gear: 1,
                 config_40c: 0,
+                flag_43b: 0,
                 config_158: 1,
                 gear_ratio: 1,
                 is_front_wheel: true,

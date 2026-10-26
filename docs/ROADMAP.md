@@ -1341,6 +1341,11 @@ save/replay, the complete producer and application wiring are all covered. Stati
 `DAT_004eac6c/70/74` are now recovered as `SOLVER_GLOBAL_CONSTANTS` (all `0x10000`)
 and drive lane stabilization, angular timestep and force scaling in the native
 application path. One constant-evidence test brings `cmr-core` to 1,364.
+The second-wheel adapter now derives wheel/state and direction/contact Q16 dot
+products and the independent `0x147a` residual enable. Static review corrected the
+lane split to 0/1 versus 2/3 and established that `+0x43b` plus `+0x158` controls
+this flag without the separate slip-sign disagreement. One focused test brings
+`cmr-core` to 1,365. Original wheel/state vector production remains open.
 
 Exit gate:
 

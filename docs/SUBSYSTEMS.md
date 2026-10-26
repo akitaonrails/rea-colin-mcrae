@@ -2008,7 +2008,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   checkpoint finish, save/replay, complete production and application wiring are all
   covered. `SOLVER_GLOBAL_CONSTANTS` pins the static `DAT_004eac6c/70/74` values to
   `0x10000` and uses them for lane stabilization, angular timestep and force scaling in
-  the application path. See evidence `impl.sim-race-state-trace`,
+  the application path. `populate_derived_second_inputs` now supplies the wheel/state
+  and direction-B/contact-vector Q16 dot products before each second-wheel iteration,
+  plus the residual-enable flag from `+0x43b` and lane-split `+0x158` checks. The flag
+  is independent of slip-sign disagreement; lanes 0/1 and 2/3 use different disabling
+  values. See evidence `impl.sim-race-state-trace`, `impl.sim-derived-second-inputs`,
   `impl.sim-translation-step`, and `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a

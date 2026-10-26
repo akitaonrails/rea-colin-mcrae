@@ -84,6 +84,7 @@ pub struct FirstWheelParams {
     pub factor_c5c0: i32,
     pub gear: i32,
     pub config_40c: i32,
+    pub flag_43b: i32,
     pub config_158: i32,
     pub gear_ratio: i32,
     pub is_front_wheel: bool,
@@ -153,6 +154,39 @@ pub fn populate_force_pass_scales(
     first.factor_c5c0 = scales.factor_c5c0.raw();
     second.scale_c5c4 = scales.scale_c5c4.raw();
     scales
+}
+
+fn raw_dot(left: [i32; 3], right: [i32; 3]) -> i32 {
+    (0..3).fold(0_i32, |sum, index| {
+        sum.wrapping_add(
+            Fixed16::from_raw(left[index])
+                .mul(Fixed16::from_raw(right[index]))
+                .raw(),
+        )
+    })
+}
+
+/// Derive second-core wheel projection and `0x147a` inputs from native state.
+pub fn populate_derived_second_inputs(
+    first: &FirstWheelParams,
+    second: &mut SecondWheelParams<'_>,
+    direction_b: Vec3,
+    lane: usize,
+) {
+    second.wheel_e8 = raw_dot(first.wheel_vector, first.state_vector);
+    second.axis_dot = direction_b
+        .dot(Vec3::new(
+            Fixed16::from_raw(second.surface_vector[0]),
+            Fixed16::from_raw(second.surface_vector[1]),
+            Fixed16::from_raw(second.surface_vector[2]),
+        ))
+        .raw();
+    let config_gate = if lane < 2 {
+        first.config_158 != 0
+    } else {
+        first.config_158 != 0x10000
+    };
+    second.residual_flag_147a = first.flag_43b != 0 && config_gate;
 }
 
 /// Populate the second-core surface coefficient from the reviewed first family.
@@ -859,6 +893,12 @@ impl RaceState {
             output.vector_b = directions.direction_b[lane];
         }
         for index in (0..4).rev() {
+            populate_derived_second_inputs(
+                &wheel.first[index],
+                &mut second[index],
+                directions.direction_b[index],
+                index,
+            );
             Self::execute_second_wheel_state(
                 &mut self.car.four_wheel.second[index],
                 prior_speeds[index],
@@ -952,6 +992,7 @@ mod tests {
             factor_c5c0: 0x10000,
             gear: 1,
             config_40c: 0,
+            flag_43b: 0,
             config_158: 1,
             gear_ratio: 1,
             is_front_wheel: true,
@@ -1092,6 +1133,34 @@ mod tests {
         second.surface_vector = [7, 8, 9];
         assert_eq!(populate_contact_basis_vector(&mut second, input, 8), None);
         assert_eq!(second.surface_vector, [7, 8, 9]);
+    }
+
+    #[test]
+    fn derived_second_inputs_use_native_dot_products_and_residual_gates() {
+        let trig = build_sine_table();
+        let mut first = first_wheel_params();
+        first.wheel_vector = [0x10000, 0, 0];
+        first.state_vector = [0x20000, 0, 0];
+        first.flag_43b = 1;
+        let mut second = second_wheel_params(&trig);
+        second.surface_vector = [3, 0, 0];
+        populate_derived_second_inputs(
+            &first,
+            &mut second,
+            Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
+            0,
+        );
+        assert_eq!(second.wheel_e8, 0x20000);
+        assert_eq!(second.axis_dot, 3);
+        assert!(second.residual_flag_147a);
+        first.config_158 = 0x10000;
+        populate_derived_second_inputs(
+            &first,
+            &mut second,
+            Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
+            2,
+        );
+        assert!(!second.residual_flag_147a);
     }
 
     #[test]
@@ -1407,6 +1476,9 @@ mod tests {
                 basis: [Vec3::ZERO; 3],
             },
         };
+        for first in &mut wheel.first {
+            first.flag_43b = 1;
+        }
         populate_compiled_contact_offsets(
             &mut wheel,
             &crate::compiled_car_initializer::derive_compiled_half_sign_state([
