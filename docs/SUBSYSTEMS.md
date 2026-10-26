@@ -1342,6 +1342,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   the final call gate, all through the pure callee contracts. Two focused
   tests bring `cmr-core` to 1,263. Progressive faults, pointer rebinding, and
   the early initializer stages remain open.
+  G03-AK26 completes the composition: `compose_compiled_initializer` chains
+  the early post-dispatch stages, the basis transform, the call-spine locals,
+  and the eight-lane/post-lane spine into one typed result. An early failure
+  returns before any lane runs; a lane failure aborts before the post-lane
+  spine. Three focused tests bring `cmr-core` to 1,266. The exact native
+  dataflow into the injected inputs remains a separate boundary; wiring to
+  real imported stage and car/config inputs is next.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

@@ -949,6 +949,14 @@ final call gate, all through the pure callee contracts. Two focused tests
 bring `cmr-core` to 1,263. Progressive faults, pointer rebinding, and the
 early initializer stages remain open.
 
+G03-AK26 completes the composition. `compose_compiled_initializer` chains the
+early post-dispatch stages, the basis transform, the call-spine locals, and
+the eight-lane/post-lane spine into one typed result. An early failure returns
+before any lane runs; a lane failure aborts before the post-lane spine. Three
+focused tests bring `cmr-core` to 1,266. The exact native dataflow into the
+injected inputs remains a separate boundary; wiring the composition to real
+imported stage and car/config inputs is next.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

@@ -2752,6 +2752,70 @@ where
     })
 }
 
+/// Inputs for the complete recovered initializer composition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledInitializerInputs<'a> {
+    /// Early post-dispatch stages (case words, config, and tail effects).
+    pub early: RecoveredCompiledStageInputs<'a>,
+    /// Inputs for the `FUN_00409c10`/`FUN_00418120` basis transform.
+    pub basis: CompiledStateBasisInputs,
+    /// Inputs for the eight-lane and post-lane spine.
+    pub spine: CompiledSpineInputs,
+}
+
+/// The complete recovered initializer effects, in native stage order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledInitializerEffects {
+    pub early: RecoveredCompiledStageEffects,
+    pub basis: CompiledStateBasisEffects,
+    pub locals: CompiledCallSpineLocalEffects,
+    pub spine: CompiledSpineEffects,
+}
+
+/// Failures of the complete initializer composition, in stage order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompiledInitializerError<ProviderError, ConfigError> {
+    /// An early post-dispatch stage failed before any lane ran.
+    Early(RecoveredCompiledStageError),
+    /// The eight-lane executor failed, aborting before the post-lane spine.
+    Lanes(CompiledEightLaneExecutionFailure<ProviderError, ConfigError>),
+}
+
+/// Composes the whole recovered initializer: early post-dispatch stages, the
+/// basis transform, the call-spine locals, then the eight-lane/post-lane
+/// spine.
+///
+/// An early failure returns before any lane runs; a lane failure aborts before
+/// the post-lane spine. All stages derive their effects through the recovered
+/// pure contracts with injected inputs, so progressive faults, pointer
+/// rebinding, and the exact native dataflow into those inputs remain separate
+/// boundaries rather than invented behavior.
+pub fn compose_compiled_initializer<P, C>(
+    direct_cases: &CompiledDirectCaseSet,
+    aux_constants: &AuxControlConstantSet,
+    input: CompiledInitializerInputs<'_>,
+    state: CompiledEightLaneExecutionState,
+    providers: &mut [P; 8],
+    config: &mut C,
+) -> Result<CompiledInitializerEffects, CompiledInitializerError<P::Error, C::Error>>
+where
+    P: CompiledLaneGeometryProvider,
+    C: CompiledLaneConfigProvider,
+{
+    let early = compose_recovered_compiled_stage_effects(direct_cases, aux_constants, input.early)
+        .map_err(CompiledInitializerError::Early)?;
+    let basis = derive_compiled_state_basis_effects(input.basis);
+    let locals = derive_compiled_call_spine_local_effects();
+    let spine = execute_compiled_spine_post(input.spine, state, providers, config)
+        .map_err(CompiledInitializerError::Lanes)?;
+    Ok(CompiledInitializerEffects {
+        early,
+        basis,
+        locals,
+        spine,
+    })
+}
+
 fn solve_compiled_lane_plane(
     source_vector: [i32; 3],
     fallback: i32,
@@ -8393,6 +8457,150 @@ mod tests {
         assert!(matches!(
             failure,
             CompiledEightLaneExecutionFailure::Dispatch { failed_lane: 7, .. }
+        ));
+    }
+
+    fn full_initializer_input(config: &[u8]) -> CompiledInitializerInputs<'_> {
+        CompiledInitializerInputs {
+            early: RecoveredCompiledStageInputs {
+                prior_case_words: synthetic_case(-7),
+                selector: 3,
+                config,
+                state_slot: 1,
+                global_word: 0x1_0000,
+                state_758_context_nonzero: false,
+                state_758_table: &[],
+            },
+            basis: state_basis_input(),
+            spine: spine_input(),
+        }
+    }
+
+    #[test]
+    fn full_initializer_composes_early_basis_locals_and_spine_in_order() {
+        let direct_cases = CompiledDirectCaseSet {
+            cases: synthetic_cases(),
+        };
+        let aux_constants = AuxControlConstantSet {
+            constants: aux_constants(),
+        };
+        let config = compiled_stage_config(1, 0, 1, 1, 0, false);
+        let input = full_initializer_input(&config);
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| IntegratedLaneMode::Built(if lane == 2 { 0x51 } else { 0 })),
+        );
+        let mut lane_config =
+            |lane| -> Result<u8, &'static str> { Ok(if lane == 2 { 0x02 } else { 0 }) };
+        let success = compose_compiled_initializer(
+            &direct_cases,
+            &aux_constants,
+            input.clone(),
+            integrated_execution_state(),
+            &mut providers,
+            &mut lane_config,
+        )
+        .unwrap();
+
+        assert_eq!(
+            success.early,
+            compose_recovered_compiled_stage_effects(&direct_cases, &aux_constants, input.early)
+                .unwrap()
+        );
+        assert_eq!(
+            success.basis,
+            derive_compiled_state_basis_effects(input.basis)
+        );
+        assert_eq!(success.locals, derive_compiled_call_spine_local_effects());
+        let mut replay_providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| IntegratedLaneMode::Built(if lane == 2 { 0x51 } else { 0 })),
+        );
+        assert_eq!(
+            success.spine,
+            execute_compiled_spine_post(
+                input.spine,
+                integrated_execution_state(),
+                &mut replay_providers,
+                &mut lane_config,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn full_initializer_early_failure_returns_before_any_lane() {
+        let direct_cases = CompiledDirectCaseSet {
+            cases: synthetic_cases(),
+        };
+        let aux_constants = AuxControlConstantSet {
+            constants: aux_constants(),
+        };
+        let config = compiled_stage_config(1, 0, 1, 1, 0, false);
+        let mut input = full_initializer_input(&config);
+        input.early.state_758_context_nonzero = true;
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(&events, [IntegratedLaneMode::Built(0); 8]);
+        let mut lane_config = |_lane| -> Result<u8, &'static str> { Ok(0) };
+        let failure = compose_compiled_initializer(
+            &direct_cases,
+            &aux_constants,
+            input,
+            integrated_execution_state(),
+            &mut providers,
+            &mut lane_config,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            failure,
+            CompiledInitializerError::Early(RecoveredCompiledStageError::State758Selection(_))
+        ));
+        assert!(
+            events.borrow().is_empty(),
+            "no lane provider ran after the early failure"
+        );
+    }
+
+    #[test]
+    fn full_initializer_lane_failure_aborts_before_the_post_spine() {
+        let direct_cases = CompiledDirectCaseSet {
+            cases: synthetic_cases(),
+        };
+        let aux_constants = AuxControlConstantSet {
+            constants: aux_constants(),
+        };
+        let config = compiled_stage_config(1, 0, 1, 1, 0, false);
+        let input = full_initializer_input(&config);
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(
+            &events,
+            std::array::from_fn(|lane| {
+                if lane == 7 {
+                    IntegratedLaneMode::SearchThenBuildFailure
+                } else {
+                    IntegratedLaneMode::Built(0)
+                }
+            }),
+        );
+        let mut state = integrated_execution_state();
+        state.handles[7] = -1;
+        let mut lane_config = |_lane| -> Result<u8, &'static str> { Ok(0) };
+        let failure = compose_compiled_initializer(
+            &direct_cases,
+            &aux_constants,
+            input,
+            state,
+            &mut providers,
+            &mut lane_config,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            failure,
+            CompiledInitializerError::Lanes(CompiledEightLaneExecutionFailure::Dispatch {
+                failed_lane: 7,
+                ..
+            })
         ));
     }
 
