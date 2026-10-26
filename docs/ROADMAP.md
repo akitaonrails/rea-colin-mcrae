@@ -1335,7 +1335,9 @@ transformed projection axis, and all eight enable bytes come from
 rather than active-wheel count. One direct gate test brings `cmr-core` to 1,363.
 G09 is complete as a deterministic offline-trace contract: the full four-wheel producer,
 checked errors, start/finish/replay and authenticated sessions are covered. Explicit
-harness tuning is documented and does not imply trajectory equivalence.
+harness tuning is documented and does not imply trajectory equivalence. G10 is also
+complete under its documented harness contract: start, drive, checkpoint finish,
+save/replay, the complete producer and application wiring are all covered.
 
 Exit gate:
 

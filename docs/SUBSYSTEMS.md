@@ -2004,7 +2004,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   count drives `+0x528`. G09 is complete as a deterministic offline-trace contract:
   the complete producer, checked errors, start/finish/replay and authenticated sessions
   are covered, with explicit harness tuning documented rather than trajectory-equivalent
-  behavior. See evidence `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
+  behavior. G10 is complete under its documented harness contract: start, drive,
+  checkpoint finish, save/replay, complete production and application wiring are all
+  covered. See evidence `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
