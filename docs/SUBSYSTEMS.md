@@ -2278,9 +2278,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   evidence rows.
 - `cmr-core::frontend_menu` reconstructs the F01 four-phase screen-transition
   spine: interactive descriptor result, transition setup, fade-out and fade-in.
-  It emits explicit next-screen, enter, quit and save-and-quit actions; three
-  tests cover complete handoff, terminal results and phase gating. Descriptor
-  navigation and screen-specific callbacks remain.
+  It emits explicit next-screen, enter, quit and save-and-quit actions. Its
+  descriptor walker skips invisible/unselectable widgets, handles wrapping and
+  screen links, and edits type-3/6 values with native edge behavior. Six tests
+  cover transitions, navigation and values. F02 is complete; F01 retains
+  screen-specific graph/callback recovery.
 - The F02 frontend-configuration structure spans three modules.
   `cmr-core::options_screen` models the settings-header encoding the options
   screens edit (volume channels `0x0c..0x0f` 7-bit + master flag, display-flags

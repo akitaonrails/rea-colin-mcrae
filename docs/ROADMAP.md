@@ -1432,6 +1432,10 @@ External `.TIM` content remains data; the Rally-School selector persists in
 F01 now has its four-phase frontend transition spine in `frontend_menu`, with
 explicit next-screen, quit and save-and-quit actions. Three tests bring
 `cmr-core` to 1,399. Descriptor navigation and screen-specific callbacks remain.
+F02 is complete: descriptor initialization, vertical navigation, boundary links
+and type-3/6 value editing now complement the options/binding/calibration field
+models. Three tests bring `cmr-core` to 1,402. F01 still owns screen-specific
+callback and graph recovery.
 
 Exit gate:
 
