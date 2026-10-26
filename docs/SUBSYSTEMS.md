@@ -2101,6 +2101,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   clamp. Thirty-four tests cover particles, render queues, shadows, fog and
   tuning. Surface and sprite tables remain caller-supplied data; E10 is complete.
   See evidence `impl.weather-effects`.
+- E07's deterministic renderer/oracle is complete through transform, clipping,
+  culling, Z-buffer occlusion and real stage composition. Shipped-binary
+  differential capture is explicitly unsupported under the static policy.
 - The imported-stage benchmark supplies representative render comparisons with
   a documented 0.1% sampling-tie budget; both opt-in GPU conformance tests pass
   alongside the 9 source-owned image tests. E11 is complete.

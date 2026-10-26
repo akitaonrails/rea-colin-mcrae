@@ -1452,6 +1452,9 @@ E11 is complete: the source-owned RGB/tolerance fixtures and imported-stage
 benchmark provide representative comparisons, including the documented 0.1%
 sampling-tie budget. All 9 image tests and both opt-in GPU conformance tests pass
 on this checkpoint; no additional fixture layer is needed.
+E07 is complete: transform, clipping, culling, Z-buffer occlusion and real stage
+composition are implemented and self-verified. Only legacy differential capture
+is unsupported under the static policy; no original binary is run to create it.
 
 Exit gate:
 
