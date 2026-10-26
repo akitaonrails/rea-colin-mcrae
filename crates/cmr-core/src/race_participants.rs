@@ -61,6 +61,52 @@ pub const BEST_TIME_RECORD_COUNT: usize = 0x12;
 /// Stride of a best-time record entry.
 pub const BEST_TIME_RECORD_STRIDE: usize = 0x15;
 
+/// Native setup predicates for replay-slot and simulated-car counts.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ParticipantSetupInput {
+    pub replay: bool,
+    pub record_mode: bool,
+    pub special_514478: bool,
+    pub head_to_head: bool,
+    pub branch_443b00: bool,
+    pub replay_car_count: u32,
+    pub championship: bool,
+    pub network: bool,
+    pub two_player: bool,
+    pub config_mode: u8,
+}
+
+/// Distinct replay data-slot and physically simulated car counts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParticipantSetupCounts {
+    pub data_slots: u32,
+    pub simulated_cars: u32,
+}
+
+/// Recover `FUN_00481350`'s distinct `DAT_004f6844` and `DAT_00550e90` counts.
+#[must_use]
+pub fn participant_setup_counts(input: ParticipantSetupInput) -> ParticipantSetupCounts {
+    let (data_slots, simulated_cars) = if input.replay || input.record_mode {
+        (1, 1)
+    } else if input.special_514478 {
+        (3, 1)
+    } else if input.head_to_head {
+        (3, 2)
+    } else if input.branch_443b00 || (input.replay_car_count != 0 && input.championship) {
+        if !input.championship || input.network || input.config_mode != 2 {
+            (2, 2)
+        } else {
+            (1, 1)
+        }
+    } else {
+        (input.replay_car_count, input.replay_car_count)
+    };
+    ParticipantSetupCounts {
+        data_slots: data_slots * if input.two_player { 2 } else { 1 },
+        simulated_cars,
+    }
+}
+
 /// The active simulated-car count (`DAT_00550e90`), reproducing the confident
 /// branches of the race setup `FUN_00481350`: replay or single-car mode gives
 /// one car; split-screen (when its config gate is set) gives two; otherwise one.
@@ -139,6 +185,70 @@ mod tests {
         assert!(!car_collision_enabled(2, true, true, true));
         // Two cars but neither split nor network (cannot normally occur): off.
         assert!(!car_collision_enabled(2, false, false, false));
+    }
+
+    #[test]
+    fn participant_setup_distinguishes_replay_slots_and_simulated_cars() {
+        let base = ParticipantSetupInput::default();
+        assert_eq!(
+            participant_setup_counts(ParticipantSetupInput {
+                replay: true,
+                ..base
+            }),
+            ParticipantSetupCounts {
+                data_slots: 1,
+                simulated_cars: 1,
+            }
+        );
+        assert_eq!(
+            participant_setup_counts(ParticipantSetupInput {
+                special_514478: true,
+                ..base
+            })
+            .data_slots,
+            3
+        );
+        assert_eq!(
+            participant_setup_counts(ParticipantSetupInput {
+                head_to_head: true,
+                two_player: true,
+                ..base
+            }),
+            ParticipantSetupCounts {
+                data_slots: 6,
+                simulated_cars: 2,
+            }
+        );
+        assert_eq!(
+            participant_setup_counts(ParticipantSetupInput {
+                replay_car_count: 1,
+                championship: true,
+                config_mode: 2,
+                ..base
+            })
+            .data_slots,
+            1
+        );
+        assert_eq!(
+            participant_setup_counts(ParticipantSetupInput {
+                replay_car_count: 1,
+                championship: true,
+                network: true,
+                config_mode: 2,
+                ..base
+            })
+            .data_slots,
+            2
+        );
+        assert_eq!(
+            participant_setup_counts(ParticipantSetupInput {
+                replay_car_count: 2,
+                ..base
+            })
+            .simulated_cars,
+            2
+        );
+        assert_eq!(participant_setup_counts(base).data_slots, 0);
     }
 
     #[test]

@@ -99,6 +99,7 @@ pub mod race_state;
 pub mod render_compose;
 pub mod render_route;
 pub mod replay;
+pub mod rival_times;
 pub mod root_menu_animation;
 pub mod root_menu_assets;
 pub mod root_menu_bitmap_assets;

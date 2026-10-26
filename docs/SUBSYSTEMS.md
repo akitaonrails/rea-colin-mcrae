@@ -1896,7 +1896,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.network-replay-records`. Co-driver display records now round-trip
   all 20 bytes, the visual FIFO implements rotation, TTL eviction and wrapping
   modifier accumulation, and audio routing uses native replay-car/active-player
-  counts, completing G07.
+  counts, completing G07. `participant_setup_counts` separates replay data slots
+  from simulated cars with two-player doubling. `generate_rival_times` recovers
+  the procedural tier/RNG/remap/difficulty algorithm without inventing an on-track
+  AI, completing G06.
 - `cmr-core::race_state` composes the recovered fixed-step pieces (`fixed_point`
   BAM trig + `Vec3`, `vehicle_dynamics` lateral-grip/net-accel/drag/integration,
   and the `stage_timing` stage clock) into a deterministic offline race-state

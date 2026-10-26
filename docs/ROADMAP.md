@@ -1400,6 +1400,10 @@ and transport packet envelopes assigned to networking. G07 is complete: the
 20-byte display record round-trips, the visual FIFO rotates/evicts/accumulates
 with native depth behavior, and audio routing uses replay-car and active-player
 counts. Two display/FIFO tests plus count-gate coverage bring `cmr-core` to 1,385.
+G06 is complete: replay data slots and simulated cars have separate recovered
+counts, and `generate_rival_times` covers tier curves, LCG jitter, exclusions,
+remapping and difficulty placement. One setup test and two generator tests bring
+`cmr-core` to 1,386. No on-track AI is inferred.
 
 Exit gate:
 
