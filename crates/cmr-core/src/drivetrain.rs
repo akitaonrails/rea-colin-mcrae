@@ -456,20 +456,22 @@ pub struct SecondLoopNormalization {
     pub direction: [i32; 3],
     /// `qmul(square_sum, normalizer)`.
     pub length: i32,
-    /// `|local_30|` (pseudo-absolute), the normalizer.
+    /// The selected normalizer: `|local_30|` or `|local_2c|` by the branch rule.
     pub normalizer: i32,
     /// `2^32 / normalizer`, or `-1` when the normalizer is zero.
     pub reciprocal: i32,
 }
 
-/// Reconstructs the large-ratio normalization branch of the second per-wheel
-/// loop.
+/// Reconstructs the normalization branch of the second per-wheel loop.
 ///
-/// With `normalizer = |local_30|`, the two direction sources are scaled by
-/// `qmul(local_2c, reciprocal)` and `qmul(local_30, reciprocal)`, summed
-/// componentwise, and normalized with the legacy generated-table rule: a zero
-/// square sum yields a zero direction, otherwise each component is multiplied
-/// by `2^32/root`. `length` is `qmul(square_sum, normalizer)`.
+/// The normalizer is `|local_30|` when `|local_2c| < 0x10001` or
+/// `|local_2c| < |local_30|` (the large-ratio branch), and `|local_2c|`
+/// otherwise (the small-ratio branch). Both branches then scale the two
+/// direction sources by `qmul(local_2c, reciprocal)` and
+/// `qmul(local_30, reciprocal)`, sum them componentwise, and normalize the sum
+/// with the legacy generated-table rule: a zero square sum yields a zero
+/// direction, otherwise each component is multiplied by `2^32/root`. `length`
+/// is `qmul(square_sum, normalizer)`.
 #[must_use]
 pub fn normalize_second_loop_direction(
     local_68: [i32; 3],
@@ -477,7 +479,13 @@ pub fn normalize_second_loop_direction(
     local_2c: i32,
     local_30: i32,
 ) -> SecondLoopNormalization {
-    let normalizer = local_30.wrapping_abs();
+    let abs_2c = local_2c.wrapping_abs();
+    let abs_30 = local_30.wrapping_abs();
+    let normalizer = if abs_2c < 0x10001 || abs_2c < abs_30 {
+        abs_30
+    } else {
+        abs_2c
+    };
     let reciprocal = if normalizer == 0 {
         -1
     } else {
@@ -915,5 +923,33 @@ mod tests {
         assert_eq!(result.reciprocal, -1);
         assert_eq!(result.direction, [-0x10000, 0, 0]);
         assert_eq!(result.length, 0);
+    }
+
+    #[test]
+    fn second_loop_normalization_selects_the_small_ratio_normalizer() {
+        // |local_2c| = 4.0 exceeds |local_30| = 2.0 and the unit gate, so the
+        // small-ratio branch normalizes with |local_2c|.
+        let result =
+            normalize_second_loop_direction([0x10000, 0, 0], [0, 0x10000, 0], 0x40000, 0x20000);
+        assert_eq!(result.normalizer, 0x40000);
+        assert_eq!(result.reciprocal, 0x4000);
+        assert_eq!(result.length, 0x50000);
+        assert_eq!(
+            result.direction,
+            crate::compiled_car_initializer::normalize_compiled_lane_vector([0x10000, 0x8000, 0])
+        );
+    }
+
+    #[test]
+    fn second_loop_normalization_branch_prefers_the_larger_residual_magnitude() {
+        // |local_2c| = 2.0 is above the unit gate but below |local_30| = 4.0,
+        // so the large-ratio branch still uses |local_30|.
+        let result = normalize_second_loop_direction([0; 3], [0; 3], 0x20000, 0x40000);
+        assert_eq!(result.normalizer, 0x40000);
+        // |local_2c| = 1.0 is below the unit gate: |local_30| is used even
+        // though it is smaller.
+        let result = normalize_second_loop_direction([0; 3], [0; 3], 0x10000, 0x8000);
+        assert_eq!(result.normalizer, 0x8000);
+        assert_eq!(result.reciprocal, 0x20000);
     }
 }

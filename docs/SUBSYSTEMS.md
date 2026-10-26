@@ -1405,6 +1405,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   `cmr-core::drivetrain::normalize_second_loop_direction` reproduces it. Three
   focused tests bring `cmr-core` to 1,284. The small-ratio path and the
   remaining force-pass stages remain open.
+  G03 second-loop small-ratio branch selection: the normalizer is `|local_30|`
+  when `|local_2c| < 0x10001` or `|local_2c| < |local_30|`, and `|local_2c|`
+  otherwise. Both branches scale and sum the direction sources, normalize with
+  the legacy generated-table rule, and compute `length = qmul(square_sum,
+  normalizer)`. Two additional focused tests bring `cmr-core` to 1,286. The
+  post-normalization force-pass stages remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
