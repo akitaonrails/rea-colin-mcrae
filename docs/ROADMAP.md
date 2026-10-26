@@ -1486,6 +1486,9 @@ to enumeration, and no legacy input backend is loaded.
 B11 is complete: `physical_drawable_size` exposes real pixel dimensions and F11
 toggles fullscreen in every SDL loop. An offscreen smoke test proves enter/exit
 fullscreen alongside the shared presentation-scaling contract.
+B12 is complete: both SDL loops pause on focus loss, resume and restore surfaces
+on focus gain, and close through `HostLifecycle`. Fullscreen toggling uses the
+same live windows, so no lifecycle path remains unwired.
 
 Exit gate:
 

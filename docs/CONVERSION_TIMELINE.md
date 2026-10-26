@@ -642,7 +642,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T19:00Z | 148h42m | complete-native-input-acquisition | `8be3789` | B10 | Confirmed SDL keyboard/gamepad polling feeds the recovered mapper and drivetrain with analog dead-zones and hotplug support. DirectInput remains enumeration-only. |
 
-| 2026-10-26T19:07Z | 148h49m | complete-window-presentation | _(pending)_ | B11 | Added physical drawable-size queries and F11 fullscreen toggling to all SDL loops. One event test and an offscreen enter/exit smoke test pass. |
+| 2026-10-26T19:07Z | 148h49m | complete-window-presentation | `82faac2` | B11 | Added physical drawable-size queries and F11 fullscreen toggling to all SDL loops. One event test and an offscreen enter/exit smoke test pass. |
+
+| 2026-10-26T19:09Z | 148h51m | complete-host-lifecycle | _(pending)_ | B12 | Confirmed focus loss pauses, focus gain restores surfaces, and close shuts down through `HostLifecycle` in both SDL loops. Fullscreen uses the same live windows. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
