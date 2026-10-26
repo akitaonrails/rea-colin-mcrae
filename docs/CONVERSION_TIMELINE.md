@@ -506,7 +506,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T10:16Z | 139h58m | compose-angular-orientation-pipeline | `45bb095` | G04 | Added `apply_angular_orientation_pipeline`: momentum integration, optional clamp, half-delta conversion, selective resets and three-stage orientation in native order. One independent-stage comparison test brings `cmr-core` to 1,343. Low-speed suppression, contact-state population and race-state storage remain open. |
 
-| 2026-10-26T10:20Z | 140h02m | recover-low-speed-position-suppression | _(pending)_ | G03, G04 | Added `suppress_low_speed_position_delta` for the active-contact `speed < 0xccc` position gate, with velocity left untouched. One exact-boundary test brings `cmr-core` to 1,344. Translation integration and contact-state population remain open. |
+| 2026-10-26T10:20Z | 140h02m | recover-low-speed-position-suppression | `a030f68` | G03, G04 | Added `suppress_low_speed_position_delta` for the active-contact `speed < 0xccc` position gate, with velocity left untouched. One exact-boundary test brings `cmr-core` to 1,344. Translation integration and contact-state population remain open. |
+
+| 2026-10-26T10:29Z | 140h11m | wire-low-speed-suppression-into-translation | _(pending)_ | G03, G09 | Added `contacts_active` to `TranslationStepInput` and applied suppression after half-delta calculation. Four-lane activity comes from contact flags; ordinary paths remain unsuppressed. One direct velocity/position test brings `cmr-core` to 1,345. Contact-state population and full lane production remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

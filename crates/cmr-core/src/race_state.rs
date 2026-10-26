@@ -248,7 +248,7 @@ impl RaceState {
     /// into velocity, apply the recovered half-delta position update, apply the
     /// lateral-grip constraint, and advance the stage clock.
     pub fn step(&mut self, controls: &Controls, params: &SimParams) -> TraceSample {
-        self.step_with_optional_world_force(controls, params, None)
+        self.step_with_optional_world_force(controls, params, None, false)
     }
 
     fn step_with_optional_world_force(
@@ -256,6 +256,7 @@ impl RaceState {
         controls: &Controls,
         params: &SimParams,
         world_force: Option<Vec3>,
+        contacts_active: bool,
     ) -> TraceSample {
         self.car.heading = self.car.heading.wrapping_add(controls.steer_rate as u16);
         let forward = self.forward_unit();
@@ -269,6 +270,7 @@ impl RaceState {
             position: self.car.position,
             velocity: self.car.velocity,
             cached_speed: Fixed16::ZERO,
+            contacts_active,
             accumulated_force: accel,
             inverse_mass: Fixed16::ONE,
             additive_acceleration: Vec3::ZERO,
@@ -440,7 +442,12 @@ impl RaceState {
                 (postprocess.wheel_contacts[index], lanes[index].accumulator)
             }),
         );
-        Ok(self.step_with_optional_world_force(controls, params, Some(force)))
+        Ok(self.step_with_optional_world_force(
+            controls,
+            params,
+            Some(force),
+            postprocess.wheel_contacts.contains(&true),
+        ))
     }
 
     /// Run a scripted control sequence, returning the per-tick trace.
@@ -691,7 +698,7 @@ mod tests {
         );
 
         assert!(sample.car.velocity.x < Fixed16::ZERO);
-        assert!(sample.car.position.x < Fixed16::ZERO);
+        assert_eq!(sample.car.position, Vec3::ZERO);
 
         let before = state.car;
         let invalid = FourWheelPostprocessParams {

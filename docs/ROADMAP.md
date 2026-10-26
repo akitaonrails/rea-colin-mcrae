@@ -1252,9 +1252,10 @@ order while preserving skipped destinations, bringing `cmr-core` to 1,342.
 `apply_angular_orientation_pipeline` now composes momentum, clamp, angle
 conversion, selective resets and orientation in native order, bringing `cmr-core`
 to 1,343. `suppress_low_speed_position_delta` now reproduces the active-contact
-`0xccc` gate without changing velocity, bringing `cmr-core` to 1,344. Translation
-integration, contact-state population and complete four-lane production remain
-open.
+`0xccc` gate without changing velocity, bringing `cmr-core` to 1,344. The gate
+now runs inside `apply_translation_step`, with four-lane activity derived from
+contact flags and ordinary harness paths unsuppressed, bringing `cmr-core` to
+1,345. Contact-state population and complete four-lane production remain open.
 
 Exit gate:
 

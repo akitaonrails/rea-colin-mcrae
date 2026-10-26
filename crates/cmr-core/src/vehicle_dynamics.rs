@@ -194,6 +194,7 @@ pub struct TranslationStepInput {
     pub position: Vec3,
     pub velocity: Vec3,
     pub cached_speed: Fixed16,
+    pub contacts_active: bool,
     pub accumulated_force: Vec3,
     pub inverse_mass: Fixed16,
     pub additive_acceleration: Vec3,
@@ -1376,6 +1377,11 @@ pub fn apply_translation_step(input: TranslationStepInput) -> TranslationStepOut
     let velocity = input.velocity.add(delta_velocity);
     let scaled_velocity = velocity.scale(Fixed16::ONE);
     let position_delta = scaled_velocity.sub(delta_velocity.scale(POSITION_HALF_DELTA));
+    let position_delta = suppress_low_speed_position_delta(
+        position_delta,
+        input.contacts_active,
+        input.cached_speed,
+    );
 
     TranslationStepOutcome {
         position: input.position.add(position_delta),
@@ -1434,6 +1440,7 @@ mod tests {
             position: Vec3::ZERO,
             velocity: Vec3::ZERO,
             cached_speed: Fixed16::ZERO,
+            contacts_active: false,
             accumulated_force: Vec3::ZERO,
             inverse_mass: Fixed16::ONE,
             additive_acceleration: Vec3::ZERO,
@@ -2087,6 +2094,23 @@ mod tests {
     }
 
     #[test]
+    fn translation_step_suppresses_only_position_for_low_speed_contacts() {
+        let unsuppressed = apply_translation_step(TranslationStepInput {
+            accumulated_force: raw_v(0x10000, 0, 0),
+            ..translation_step_input()
+        });
+        let suppressed = apply_translation_step(TranslationStepInput {
+            accumulated_force: raw_v(0x10000, 0, 0),
+            contacts_active: true,
+            ..translation_step_input()
+        });
+        assert_eq!(suppressed.velocity, unsuppressed.velocity);
+        assert_ne!(suppressed.velocity, Vec3::ZERO);
+        assert_eq!(unsuppressed.position, raw_v(0x199a, 0, 0));
+        assert_eq!(suppressed.position, Vec3::ZERO);
+    }
+
+    #[test]
     fn translation_step_uses_cached_speed_before_moving() {
         let outcome = apply_translation_step(TranslationStepInput {
             velocity: raw_v(65_536, -131_072, 32_768),
@@ -2144,6 +2168,7 @@ mod tests {
             position: raw_v(i32::MAX - 7, i32::MIN + 8, 123),
             velocity: raw_v(i32::MAX - 7, i32::MIN + 8, 1_879_048_192),
             cached_speed: Fixed16::ONE,
+            contacts_active: false,
             accumulated_force: raw_v(i32::MIN + 8, i32::MAX - 7, -1_879_048_192),
             inverse_mass: Fixed16::from_raw(i32::MIN),
             additive_acceleration: raw_v(i32::MAX - 7, i32::MIN + 8, i32::MAX),
