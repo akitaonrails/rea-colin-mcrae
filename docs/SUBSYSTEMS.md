@@ -1996,8 +1996,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   `stabilize_lane_source_s` now rejects/normalizes S, blends it toward `+0x258` by the
   recovered root/response/timestep factor, normalizes below 1.0 or uses the axis
   verbatim above it. S persists in `MotionState`; contact indices are validated before
-  any S mutation. See evidence `impl.sim-race-state-trace`, `impl.sim-translation-step`,
-  and `impl.sim-full-second-accumulation`.
+  any S mutation. The interactive windowed session uses the same authenticated
+  four-wheel constructor and fallible advance, returning checked producer errors after
+  the SDL loop stops. Displayed execution remains unverified here. See evidence
+  `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
+  `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

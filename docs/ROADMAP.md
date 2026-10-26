@@ -1326,7 +1326,10 @@ axis-angle matrix before the raw R cross. Two tests bring `cmr-core` to 1,361.
 response/timestep blend, final normalization and verbatim `+0x258` fallback, with S
 persistent in `MotionState` for the next tick. One normalization/fallback test brings
 `cmr-core` to 1,362. Contact-index validation occurs before any S mutation, preserving
-rejected-step atomicity.
+rejected-step atomicity. The interactive windowed session now uses the same
+authenticated four-wheel constructor and `try_advance`; SDL frame closures stop and
+return checked producer errors through `WindowedStageFrameError`. A displayed run is
+not verified in this environment.
 
 Exit gate:
 

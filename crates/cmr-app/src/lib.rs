@@ -1453,6 +1453,8 @@ pub fn run_headless_stage_frame(
 pub enum WindowedStageFrameError {
     /// Loading or composing the stage frame failed.
     Setup(StageFrameError),
+    /// Authenticated session input or four-wheel production failed.
+    Session(SessionFourWheelError),
     /// The SDL host failed to present the composed frame.
     Present(SdlHostError),
 }
@@ -1463,6 +1465,7 @@ impl WindowedStageFrameError {
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::Setup(source) => source.kind(),
+            Self::Session(_) => "four-wheel-session",
             Self::Present(_) => "present-host",
         }
     }
@@ -1474,10 +1477,17 @@ impl From<StageFrameError> for WindowedStageFrameError {
     }
 }
 
+impl From<SessionFourWheelError> for WindowedStageFrameError {
+    fn from(source: SessionFourWheelError) -> Self {
+        Self::Session(source)
+    }
+}
+
 impl fmt::Display for WindowedStageFrameError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Setup(source) => source.fmt(formatter),
+            Self::Session(source) => write!(formatter, "four-wheel session failed: {source}"),
             Self::Present(source) => write!(formatter, "cannot present stage frame: {source}"),
         }
     }
@@ -1487,6 +1497,7 @@ impl std::error::Error for WindowedStageFrameError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Setup(source) => Some(source),
+            Self::Session(source) => Some(source),
             Self::Present(source) => Some(source),
         }
     }
@@ -1617,7 +1628,7 @@ fn advance_game_frame<C: HostClock>(
     camera: &mut ViewHarness,
     fade: &mut Option<ScalarTween>,
     input: WindowedInput,
-) -> GameFrameOutcome {
+) -> Result<GameFrameOutcome, WheelPostprocessError> {
     let controls = if let Some(pad) = input.gamepad {
         analog
             .poll(
@@ -1633,7 +1644,7 @@ fn advance_game_frame<C: HostClock>(
             .poll(|vk| input.keys.is_down(vk), response, true)
             .controls
     };
-    let advanced = session.advance(clock, menu_inputs, controls, progress);
+    let advanced = session.try_advance(clock, menu_inputs, controls, progress)?;
     let world = if advanced.route.is_some_and(presents_world_scene) {
         // Compose the live world for every route that reaches the shared viewport
         // compositor 0x422ca0: the in-race StageWorld states and the overlay
@@ -1669,13 +1680,13 @@ fn advance_game_frame<C: HostClock>(
         *fade = None;
         world
     };
-    GameFrameOutcome {
+    Ok(GameFrameOutcome {
         route: advanced.route,
         world,
         stopped: session.is_stopped(),
         // The recovered front-end music plays during the menu band (states 1..4).
         music_active: matches!(advanced.band, SessionBand::Menu),
-    }
+    })
 }
 
 /// What one [`advance_game_frame`] produced for the windowed loop.
@@ -1993,11 +2004,32 @@ pub fn run_windowed_game_session(
     let mut resources = StageRenderResources::load_with(media_root, stage, renderer)?;
     let initial = resources.compose(&stage_placeholder_camera())?;
 
+    let inputs = SessionWheelInputs::open(runtime_data).map_err(SessionFourWheelError::Inputs)?;
+    let trig = cmr_core::fixed_point::build_sine_table();
+    let families = CompiledControlFamilies {
+        post_processed_raw: [0; 8],
+        reciprocal: [0; 8],
+        raw_copy: [0x10000; 8],
+        reciprocal_copy: [0; 8],
+    };
+    let half_state = cmr_core::compiled_car_initializer::derive_compiled_half_sign_state([
+        0x40000, -0x60000, 0x80000,
+    ]);
+    let wheel = inputs
+        .four_wheel_params(&trig, &families, &half_state, Fixed16::ONE, [0; 4])
+        .map_err(SessionFourWheelError::Surface)?;
     let params = SimParams {
-        inverse_mass: Fixed16::ONE,
+        inverse_mass: Fixed16::from_raw(0x8000),
         gravity: Vec3::ZERO,
     };
-    let mut session = GameplaySession::new(params, InRaceScript::frontend_harness());
+    let mut start = CarState::at_rest();
+    start.motion.angular_velocity = Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE);
+    let mut session = GameplaySession::new_with_four_wheel_and_car(
+        params,
+        InRaceScript::frontend_harness(),
+        wheel,
+        start,
+    );
     let mut keyboard = KeyboardDriver::player_one();
     let mut analog = AnalogDriver::new();
     let response = DriveResponse {
@@ -2015,6 +2047,7 @@ pub fn run_windowed_game_session(
     let clock = WallClock::new();
     let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
+    let mut producer_error = None;
 
     // Best-effort: open the recovered front-end root-menu compositor from the
     // runtime-data root so the interactive front-end route (state 2) presents the
@@ -2035,7 +2068,7 @@ pub fn run_windowed_game_session(
                 &initial.frame,
                 Some(media_root),
                 |input: WindowedInput| {
-                    let outcome = advance_game_frame(
+                    match advance_game_frame(
                         &mut session,
                         &mut keyboard,
                         &mut analog,
@@ -2047,37 +2080,50 @@ pub fn run_windowed_game_session(
                         &mut camera,
                         &mut fade,
                         input,
-                    );
-                    // A composed world frame wins; otherwise the interactive front-end
-                    // route presents the recovered root-menu frame (steady initial
-                    // input - live menu navigation is the separate windowed root-frame
-                    // command). Any render failure drops the frame.
-                    let present = if outcome.world.is_some() {
-                        outcome.world
-                    } else if outcome.route.is_some_and(composes_frontend_root) {
-                        root.render(initial_root_input())
-                            .ok()
-                            .and_then(|_| root.backend().presented_frame().cloned())
-                    } else {
-                        None
-                    };
-                    WindowedGameFrame {
-                        present,
-                        stopped: outcome.stopped,
-                        music_active: outcome.music_active,
+                    ) {
+                        Ok(outcome) => {
+                            // A composed world frame wins; otherwise the interactive
+                            // front-end route presents the recovered root-menu frame.
+                            let present = if outcome.world.is_some() {
+                                outcome.world
+                            } else if outcome.route.is_some_and(composes_frontend_root) {
+                                root.render(initial_root_input())
+                                    .ok()
+                                    .and_then(|_| root.backend().presented_frame().cloned())
+                            } else {
+                                None
+                            };
+                            WindowedGameFrame {
+                                present,
+                                stopped: outcome.stopped,
+                                music_active: outcome.music_active,
+                            }
+                        }
+                        Err(error) => {
+                            producer_error = Some(SessionFourWheelError::Producer(error));
+                            WindowedGameFrame {
+                                present: None,
+                                stopped: true,
+                                music_active: false,
+                            }
+                        }
                     }
                 },
             )
         });
         if let Ok(run) = built {
-            return run.output.map_err(WindowedStageFrameError::Present);
+            run.output.map_err(WindowedStageFrameError::Present)?;
+            if let Some(error) = producer_error {
+                return Err(error.into());
+            }
+            return Ok(());
         }
         // The front-end session could not be built after its inputs opened; fall
         // through to the world-only loop below rather than failing the session.
     }
 
     run_windowed_game_session_loop(&initial.frame, Some(media_root), |input: WindowedInput| {
-        let outcome = advance_game_frame(
+        match advance_game_frame(
             &mut session,
             &mut keyboard,
             &mut analog,
@@ -2089,14 +2135,27 @@ pub fn run_windowed_game_session(
             &mut camera,
             &mut fade,
             input,
-        );
-        WindowedGameFrame {
-            present: outcome.world,
-            stopped: outcome.stopped,
-            music_active: outcome.music_active,
+        ) {
+            Ok(outcome) => WindowedGameFrame {
+                present: outcome.world,
+                stopped: outcome.stopped,
+                music_active: outcome.music_active,
+            },
+            Err(error) => {
+                producer_error = Some(SessionFourWheelError::Producer(error));
+                WindowedGameFrame {
+                    present: None,
+                    stopped: true,
+                    music_active: false,
+                }
+            }
         }
     })
-    .map_err(WindowedStageFrameError::Present)
+    .map_err(WindowedStageFrameError::Present)?;
+    if let Some(error) = producer_error {
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 /// A stationary host clock: it never advances within a frame, so the

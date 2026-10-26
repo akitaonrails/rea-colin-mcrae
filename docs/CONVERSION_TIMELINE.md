@@ -552,7 +552,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T13:59Z | 143h41m | resolve-lane-mode-and-source-pair | `2552bdf` | G03 | Recovered the Rebuild-first selector and `FUN_0042a840`'s simple global read. Added `resolve_lane_direction_mode` and `derive_lane_direction_pair`: zero-angle S copy or recovered rotation, then raw R cross. Two tests bring `cmr-core` to 1,361; the four-wheel producer consumes both. S stabilization remains next. |
 
-| 2026-10-26T14:18Z | 144h00m | stabilize-lane-source-s | _(pending)_ | G03 | Recovered and implemented the `+0x5d4` rejection, residual-length blend, response/timestep factor, final normalization and `+0x258` fallback. S now persists in `MotionState`; one test brings `cmr-core` to 1,362. Contact-index validation now precedes all S mutation, preserving rejected-step atomicity. |
+| 2026-10-26T14:18Z | 144h00m | stabilize-lane-source-s | `8e71bad` | G03 | Recovered and implemented the `+0x5d4` rejection, residual-length blend, response/timestep factor, final normalization and `+0x258` fallback. S now persists in `MotionState`; one test brings `cmr-core` to 1,362. Contact-index validation now precedes all S mutation, preserving rejected-step atomicity. |
+
+| 2026-10-26T14:27Z | 144h09m | wire-four-wheel-windowed-session | _(pending)_ | G09, I03 | The interactive windowed session now uses authenticated four-wheel inputs and `try_advance`; SDL closures stop and return checked errors through `WindowedStageFrameError`. Existing rendering fallback is preserved. Gates pass; no displayed run was performed. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
