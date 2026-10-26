@@ -2032,6 +2032,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   `smoothed_speed_uses_tracking` and `integrate_driven_wheel_speed` now recover the
   driven branch as pure contracts, but are not connected to the unrelated `+0x540`
   force. Native `+0x2c8` force and global scalar production remain open.
+  `update_smoothed_wheel_speeds` handles the neutral-gear zero branch before any
+  tracking, then resumes ordinary tracking for a nonzero gear ratio.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

@@ -352,6 +352,20 @@ pub struct FourWheelState {
     pub residual_enable: u8,
 }
 
+/// Apply neutral-gear zeroing or the ordinary post-step tracking update.
+pub fn update_smoothed_wheel_speeds(state: &mut FourWheelState, gear_ratio: i32) {
+    if gear_ratio == 0 {
+        state.smoothed_wheel_speeds = [0; 4];
+        return;
+    }
+    for index in 0..4 {
+        state.smoothed_wheel_speeds[index] = track_smoothed_wheel_speed(
+            state.first[index].wheel_speed,
+            state.smoothed_wheel_speeds[index],
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WheelPostprocessError {
     LaneIndex(usize),
@@ -984,12 +998,7 @@ impl RaceState {
         );
         self.car.four_wheel.speed_ec =
             sqrt_q16(self.car.velocity.dot(self.car.velocity).raw() as u32) as i32;
-        for index in 0..4 {
-            self.car.four_wheel.smoothed_wheel_speeds[index] = track_smoothed_wheel_speed(
-                self.car.four_wheel.first[index].wheel_speed,
-                self.car.four_wheel.smoothed_wheel_speeds[index],
-            );
-        }
+        update_smoothed_wheel_speeds(&mut self.car.four_wheel, first[0].gear_ratio);
         let mut angular = wheel.angular;
         angular.basis = self.car.motion.basis;
         angular.momentum.angular_velocity = self.car.motion.angular_velocity;
@@ -1202,6 +1211,22 @@ mod tests {
         );
         assert_eq!(first.wheel_vector, [0x10000, -0x20000, 0x30000]);
         assert_eq!(first.state_vector, [3, 4, 5]);
+    }
+
+    #[test]
+    fn neutral_gear_zeroes_smoothed_speeds_before_any_tracking() {
+        let mut state = FourWheelState {
+            first: [FirstWheelState {
+                force: 0,
+                wheel_speed: 0x20000,
+            }; 4],
+            smoothed_wheel_speeds: [0x10000; 4],
+            ..FourWheelState::default()
+        };
+        update_smoothed_wheel_speeds(&mut state, 0);
+        assert_eq!(state.smoothed_wheel_speeds, [0; 4]);
+        update_smoothed_wheel_speeds(&mut state, 1);
+        assert_eq!(state.smoothed_wheel_speeds, [0x10000; 4]);
     }
 
     #[test]

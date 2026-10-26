@@ -1363,7 +1363,10 @@ integration and neutral-gear handling remain. The driven gate and integration ar
 now pure recovered contracts, including mode-dependent throttle/brake mismatches,
 raw/sign/asymmetric clamps and the shared dead zone. Two tests bring `cmr-core` to
 1,372. The distinct `+0x2c8` force array and global scalar producers must be wired
-before enabling this branch in the application.
+before enabling this branch in the application. Neutral gear now bypasses tracking
+and zeroes all four smoothed speeds, resuming ordinary tracking for a nonzero gear.
+One transition test brings `cmr-core` to 1,373. Driven force/scalar production and
+the separate engine-speed store remain.
 
 Exit gate:
 

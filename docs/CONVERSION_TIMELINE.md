@@ -574,7 +574,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T15:45Z | 145h35m | recover-smoothed-wheel-tracking | `b6c63af` | G03 | Added distinct persistent smoothed speeds and the ordinary `FUN_004088c0` tracking/dead-zone rules. Second-core execution now consumes prior smoothed values instead of raw speed. One threshold/dead-zone test brings `cmr-core` to 1,370; composition checks all four updates. Driven integration and neutral-gear handling remain. |
 
-| 2026-10-26T15:52Z | 145h42m | recover-driven-wheel-smoothing | _(pending)_ | G03 | Recovered the tracking-vs-driven gate and driven integration, including native raw/sign/asymmetric clamps and common dead zone. Two tests bring `cmr-core` to 1,372. Kept the distinct `+0x2c8` force array and scalar production unwired rather than substituting `+0x540`. |
+| 2026-10-26T15:52Z | 145h42m | recover-driven-wheel-smoothing | `e6bf9fc` | G03 | Recovered the tracking-vs-driven gate and driven integration, including native raw/sign/asymmetric clamps and common dead zone. Two tests bring `cmr-core` to 1,372. Kept the distinct `+0x2c8` force array and scalar production unwired rather than substituting `+0x540`. |
+
+| 2026-10-26T15:55Z | 145h48m | wire-neutral-smoothed-speed-reset | _(pending)_ | G03 | Added `update_smoothed_wheel_speeds`: zero all smoothed speeds in neutral and resume ordinary tracking for a nonzero gear. One transition test brings `cmr-core` to 1,373; four-wheel and authenticated-session tests pass. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
