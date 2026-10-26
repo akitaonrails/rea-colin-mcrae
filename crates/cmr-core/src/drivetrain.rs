@@ -308,6 +308,69 @@ pub const fn wheel_slip_shift(flag: i32, config_304: i32, config_308: i32) -> u3
     }
 }
 
+/// Whether the slip force is applied this iteration: always for front wheels,
+/// otherwise only when the handbrake (`ctl+0x30c`) is off or the slip sign
+/// disagrees. When it is not applied, the wheel force is zeroed and the drive
+/// split is reapplied instead.
+#[must_use]
+pub fn apply_wheel_slip(is_front_wheel: bool, handbrake: i32, sign_disagreement: bool) -> bool {
+    is_front_wheel || handbrake == 0 || sign_disagreement
+}
+
+/// The per-wheel drive application of `FUN_0040d810`: a negative wheel speed
+/// adds the axle split and the per-car-type wheel constant, a zero wheel speed
+/// leaves the force unchanged, and a positive wheel speed subtracts them.
+#[must_use]
+pub fn apply_wheel_drive(force: i32, split: i32, wheel_constant: i32, wheel_speed: i32) -> i32 {
+    if wheel_speed < 0 {
+        force.wrapping_add(split).wrapping_add(wheel_constant)
+    } else if wheel_speed >= 1 {
+        force.wrapping_sub(split).wrapping_sub(wheel_constant)
+    } else {
+        force
+    }
+}
+
+/// Wheel-speed integration: `speed + qmul(force, DAT_0050c5c0)` with wrapping
+/// addition. The factor is the global value computed earlier in the pass.
+#[must_use]
+pub fn integrate_wheel_speed(speed: i32, force: Fixed16, factor: Fixed16) -> i32 {
+    speed.wrapping_add(force.mul(factor).raw())
+}
+
+/// The wheel-speed zeroing gate after integration.
+///
+/// When `gear == 0`, `ctl+0x40c != 0`, or `ctl+0x158` equals the per-wheel
+/// constant (`0x10000` for rear wheels, `0` for front wheels), a sign flip
+/// from positive to negative or negative to positive zeroes the new speed.
+/// Otherwise the new speed is zeroed when its sign differs from the gear
+/// ratio's sign (the XOR sign-bit test). A speed of zero never counts as a
+/// flip.
+#[must_use]
+pub fn gate_wheel_speed(
+    old_speed: i32,
+    new_speed: i32,
+    gear: i32,
+    config_40c: i32,
+    config_158: i32,
+    gear_ratio: i32,
+    is_rear_wheel: bool,
+) -> i32 {
+    let flip = (old_speed > 0 && new_speed < 0) || (old_speed < 0 && new_speed > 0);
+    let gate =
+        gear == 0 || config_40c != 0 || config_158 == if is_rear_wheel { 0x10000 } else { 0 };
+    if gate {
+        if flip {
+            return 0;
+        }
+        return new_speed;
+    }
+    if (gear_ratio ^ new_speed) & 0x8000_0000u32 as i32 != 0 {
+        return 0;
+    }
+    new_speed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,5 +642,52 @@ mod tests {
         assert_eq!(wheel_slip_shift(0, 1, 0), 3);
         assert_eq!(wheel_slip_shift(0, 0, 1), 3);
         assert_eq!(wheel_slip_shift(-1, 1, 1), 5);
+    }
+
+    #[test]
+    fn wheel_drive_applies_split_and_constant_by_speed_sign() {
+        assert_eq!(apply_wheel_drive(10, 100, 5, -1), 115);
+        assert_eq!(apply_wheel_drive(10, 100, 5, 0), 10);
+        assert_eq!(apply_wheel_drive(10, 100, 5, 1), -95);
+        assert_eq!(apply_wheel_drive(i32::MAX, 1, 1, -1), i32::MIN + 1);
+        assert_eq!(apply_wheel_drive(i32::MIN, 1, 1, 1), i32::MAX - 1);
+    }
+
+    #[test]
+    fn wheel_speed_integration_adds_the_scaled_force_with_wrapping() {
+        assert_eq!(
+            integrate_wheel_speed(10, fx(0x20000), Fixed16::from_raw(0x8000)),
+            10 + 0x10000
+        );
+        assert_eq!(integrate_wheel_speed(7, Fixed16::ZERO, Fixed16::ONE), 7);
+        assert_eq!(
+            integrate_wheel_speed(i32::MAX, Fixed16::ONE, Fixed16::ONE),
+            i32::MIN + 0xffff
+        );
+    }
+
+    #[test]
+    fn wheel_speed_gate_zeroes_sign_flips_and_ratio_mismatches() {
+        // Gear zero takes the flip gate; no flip leaves the speed alone.
+        assert_eq!(gate_wheel_speed(1, -1, 0, 0, 0, 0x10000, false), 0);
+        assert_eq!(gate_wheel_speed(1, 2, 0, 0, 0, 0x10000, false), 2);
+        // Front wheel with config_158 == 0 also takes the flip gate.
+        assert_eq!(gate_wheel_speed(-1, 1, 1, 0, 0, 0x10000, false), 0);
+        // Rear wheel needs config_158 == 0x10000 for that gate.
+        assert_eq!(gate_wheel_speed(1, 2, 1, 0, 0x10000, 0x10000, true), 2);
+        // With the gate untaken (config_158 differs from the rear constant),
+        // the gear-ratio sign decides instead.
+        assert_eq!(gate_wheel_speed(1, -2, 1, 0, 0, 0x10000, true), 0);
+        assert_eq!(gate_wheel_speed(1, -2, 1, 0, 0, -0x10000, true), -2);
+        // A nonzero +0x40c takes the flip gate too.
+        assert_eq!(gate_wheel_speed(1, -1, 1, 1, 0x10000, 0x10000, true), 0);
+    }
+
+    #[test]
+    fn slip_gate_applies_front_always_and_rear_only_without_handbrake_or_disagreement() {
+        assert!(apply_wheel_slip(true, 1, false));
+        assert!(apply_wheel_slip(false, 0, false));
+        assert!(apply_wheel_slip(false, 1, true));
+        assert!(!apply_wheel_slip(false, 1, false));
     }
 }

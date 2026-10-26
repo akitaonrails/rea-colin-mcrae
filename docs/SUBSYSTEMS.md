@@ -1366,6 +1366,17 @@ languages rather than fabricating or silently aliasing Italian assets.
   and `wheel_slip_shift`. Four focused tests bring `cmr-core` to 1,271. The
   slip-force gate, per-wheel drive application, and wheel-speed integration
   remain open.
+  G03 wheel drive application, slip gate, and speed integration: the drive
+  application adds the axle split and wheel constant on negative speed,
+  leaves force unchanged at zero, and subtracts on positive. The slip gate
+  applies slip for front wheels always and rear wheels only without handbrake
+  or with sign disagreement. Integration is `speed + qmul(force,
+  DAT_0050c5c0)`, followed by the zeroing gate (sign flip when `gear == 0`,
+  `ctl+0x40c != 0`, or `ctl+0x158` equals the per-wheel constant; otherwise a
+  gear-ratio sign mismatch). `cmr-core::drivetrain` gains
+  `apply_wheel_drive`, `apply_wheel_slip`, `integrate_wheel_speed`, and
+  `gate_wheel_speed`. Four focused tests bring `cmr-core` to 1,275. The second
+  per-wheel force loop remains open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
