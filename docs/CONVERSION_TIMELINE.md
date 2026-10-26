@@ -470,7 +470,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T07:27Z | 137h09m | wire-half-delta-translation-into-race-state | `c970616` | G09 | Wired `apply_translation_step` into `race_state` with zero damping after acceleration, preserving lateral-grip order while replacing the plain position update with the recovered half-delta formula. One independent formula test brings `cmr-core` to 1,328. The force model remains an explicit harness input; drive-torque-to-contact-force wiring remains open. |
 
-| 2026-10-26T07:46Z | 137h28m | wire-first-wheel-into-race-state | _(pending)_ | G09 | Added `step_with_first_wheel`: the recovered first-wheel force pass runs with explicit runtime inputs and its force drives the existing translation. A two-tick test checks split, slip clamp, integrated speed and movement, bringing `cmr-core` to 1,329. Full force production remains open. |
+| 2026-10-26T07:46Z | 137h28m | wire-first-wheel-into-race-state | `92d3e89` | G09 | Added `step_with_first_wheel`: the recovered first-wheel force pass runs with explicit runtime inputs and its force drives the existing translation. A two-tick test checks split, slip clamp, integrated speed and movement, bringing `cmr-core` to 1,329. Full force production remains open. |
+
+| 2026-10-26T08:03Z | 137h45m | wire-second-wheel-core-into-race-state | _(pending)_ | G09 | Added `step_with_second_wheel`: the second core consumes the first-wheel speed delta and explicit vector/table inputs, recording residual, angle, component and accumulators. Its composition test brings `cmr-core` to 1,330. Full force production and accumulator feedback remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

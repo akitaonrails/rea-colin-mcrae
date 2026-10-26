@@ -1208,6 +1208,10 @@ G09 adds `step_with_first_wheel`: the recovered first-wheel force pass runs
 with explicit runtime inputs and its force drives the existing translation.
 A two-tick test checks split, slip clamp, integrated speed and vehicle movement,
 bringing `cmr-core` to 1,329. Full force production remains open.
+G09 adds `step_with_second_wheel`: the second core consumes the first-wheel
+speed delta and explicit vector/table inputs, recording residual, angle,
+component and accumulators. Its composition test brings `cmr-core` to 1,330.
+Full force production and accumulator feedback remain open.
 
 Exit gate:
 

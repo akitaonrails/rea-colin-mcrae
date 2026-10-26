@@ -1903,8 +1903,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   still gated on force production. `step_with_first_wheel` now executes the
   recovered first-wheel force pass with explicit runtime inputs and uses its
   force for that translation; a two-tick test covers split, slip clamp, speed
-  integration and movement. See evidence `impl.sim-race-state-trace` and
-  `impl.sim-translation-step`.
+  integration and movement. `step_with_second_wheel` also composes the second
+  core from the first-wheel speed delta and explicit vector/table inputs,
+  recording residual, angle, component and accumulators. See evidence
+  `impl.sim-race-state-trace` and `impl.sim-translation-step`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

@@ -20,7 +20,9 @@
 //!
 //! See evidence `impl.sim-race-state-trace`.
 
-use crate::drivetrain::{FirstWheelInputs, execute_first_wheel_iteration};
+use crate::drivetrain::{
+    FirstWheelInputs, SecondWheelInputs, execute_first_wheel_iteration, execute_second_wheel_core,
+};
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::vehicle_dynamics::{
@@ -72,6 +74,34 @@ pub struct FirstWheelParams {
     pub is_front_wheel: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SecondWheelState {
+    pub ratio_at_3b0: i32,
+    pub angle: i16,
+    pub component: i32,
+    pub accumulators: [i32; 3],
+}
+
+/// Runtime inputs for the second per-wheel core after the first iteration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecondWheelParams<'a> {
+    pub axis_dot: i32,
+    pub local_68: [i32; 3],
+    pub local_98: [i32; 3],
+    pub wheel_e8: i32,
+    pub scale_c5c4: i32,
+    pub residual_flag_147a: bool,
+    pub config_2ec: i32,
+    pub gear_ratio: i32,
+    pub coefficient_34: i32,
+    pub arctan_table: &'a [i16],
+    pub cos_table: &'a [i32],
+    pub config_scale: i32,
+    pub accumulation_limit: i32,
+    pub final_dot: i32,
+    pub table_factor: Option<i32>,
+}
+
 /// The minimal per-car state the harness integrates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CarState {
@@ -83,6 +113,8 @@ pub struct CarState {
     pub heading: u16,
     /// Recovered first-wheel force and speed state.
     pub first_wheel: FirstWheelState,
+    /// Residual, angle, component and accumulators from the second core.
+    pub second_wheel: SecondWheelState,
 }
 
 impl CarState {
@@ -95,6 +127,12 @@ impl CarState {
             first_wheel: FirstWheelState {
                 force: 0,
                 wheel_speed: 0,
+            },
+            second_wheel: SecondWheelState {
+                ratio_at_3b0: 0,
+                angle: 0,
+                component: 0,
+                accumulators: [0; 3],
             },
         }
     }
@@ -222,6 +260,54 @@ impl RaceState {
         )
     }
 
+    /// Compose the second-wheel core after the first iteration and translation.
+    pub fn step_with_second_wheel(
+        &mut self,
+        controls: &Controls,
+        params: &SimParams,
+        first: &FirstWheelParams,
+        second: &SecondWheelParams<'_>,
+    ) -> TraceSample {
+        let prior_speed = self.car.first_wheel.wheel_speed;
+        let mut sample = self.step_with_first_wheel(controls, params, first);
+        let dot = (0..3).fold(0_i32, |sum, index| {
+            sum.wrapping_add(
+                Fixed16::from_raw(first.wheel_vector[index])
+                    .mul(Fixed16::from_raw(first.state_vector[index]))
+                    .raw(),
+            )
+        });
+        let effects = execute_second_wheel_core(SecondWheelInputs {
+            dot,
+            speed_at_2a8: prior_speed,
+            speed_at_2b8: sample.car.first_wheel.wheel_speed,
+            axis_dot: second.axis_dot,
+            local_68: second.local_68,
+            local_98: second.local_98,
+            wheel_e8: second.wheel_e8,
+            scale_c5c4: second.scale_c5c4,
+            residual_flag_147a: second.residual_flag_147a,
+            config_2ec: second.config_2ec,
+            gear_ratio: second.gear_ratio,
+            coefficient_34: second.coefficient_34,
+            arctan_table: second.arctan_table,
+            cos_table: second.cos_table,
+            config_scale: second.config_scale,
+            speed_delta: sample.car.first_wheel.wheel_speed.wrapping_sub(prior_speed),
+            accumulation_limit: second.accumulation_limit,
+            final_dot: second.final_dot,
+            table_factor: second.table_factor,
+        });
+        sample.car.second_wheel = SecondWheelState {
+            ratio_at_3b0: effects.ratio_at_3b0,
+            angle: effects.angle,
+            component: effects.component,
+            accumulators: effects.accumulators,
+        };
+        self.car.second_wheel = sample.car.second_wheel;
+        sample
+    }
+
     /// Run a scripted control sequence, returning the per-tick trace.
     pub fn run_trace(&mut self, controls: &[Controls], params: &SimParams) -> Vec<TraceSample> {
         controls.iter().map(|c| self.step(c, params)).collect()
@@ -338,6 +424,42 @@ mod tests {
         assert_eq!(second.car.first_wheel.force, -0xfffc);
         assert_eq!(second.car.first_wheel.wheel_speed, 7);
         assert!(second.car.position.x > first.car.position.x);
+    }
+
+    #[test]
+    fn second_wheel_core_composes_after_the_first_iteration() {
+        let mut car = CarState::at_rest();
+        car.first_wheel.wheel_speed = -1;
+        let mut state = RaceState::new(car);
+        let trig = build_sine_table();
+        let second = SecondWheelParams {
+            axis_dot: 0,
+            local_68: [0x10000, 0, 0],
+            local_98: [0; 3],
+            wheel_e8: 0,
+            scale_c5c4: 0x10000,
+            residual_flag_147a: false,
+            config_2ec: 1,
+            gear_ratio: 1,
+            coefficient_34: 0x10000,
+            arctan_table: &[],
+            cos_table: &trig,
+            config_scale: 1,
+            accumulation_limit: 0x10000,
+            final_dot: 1,
+            table_factor: None,
+        };
+        let sample = state.step_with_second_wheel(
+            &straight_throttle(1)[0],
+            &params(),
+            &first_wheel_params(),
+            &second,
+        );
+        assert_eq!(sample.car.second_wheel.ratio_at_3b0, -0x10003);
+        assert_eq!(sample.car.second_wheel.angle, 0);
+        assert_eq!(sample.car.second_wheel.component, 1);
+        assert_eq!(sample.car.second_wheel.accumulators, [1638, 0, 0]);
+        assert!(sample.car.velocity.x > Fixed16::ZERO);
     }
 
     #[test]
