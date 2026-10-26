@@ -262,6 +262,12 @@ impl GamepadDrivingState {
         gamepad_trigger_pedal(self.throttle, self.brake)
     }
 
+    /// Whether any driving axis or action is non-neutral.
+    #[must_use]
+    pub fn has_driving_input(&self) -> bool {
+        self.steer_axis() != 0x8000 || self.pedal_axis() != 0x8000 || self.buttons != 0
+    }
+
     /// The held driving-action button bits.
     #[must_use]
     pub fn buttons(&self) -> u32 {
@@ -438,6 +444,14 @@ mod tests {
         assert_eq!(state.buttons() & 0x100, 0x100);
         state.apply_button(Button::South, false);
         assert_eq!(state.buttons() & 0x100, 0);
+    }
+
+    #[test]
+    fn gamepad_driving_activity_requires_a_nonneutral_axis_or_button() {
+        let mut state = GamepadDrivingState::new();
+        assert!(!state.has_driving_input());
+        state.apply_axis(Axis::TriggerRight, 0x4000);
+        assert!(state.has_driving_input());
     }
 
     #[test]

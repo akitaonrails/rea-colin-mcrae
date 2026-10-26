@@ -690,7 +690,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T22:10Z | 151h52m | complete-build-and-verification-infrastructure | `171f12a` | I01, I03, I04, I05, I07, I12, I13 | Verified reviewed-import/offscreen SDL on Linux and `cargo check --target x86_64-pc-windows-gnu` for the portable slice. Updated CI/comparison/deviation matrices and README. All 118 roadmap items are complete or explicitly unsupported; native Windows and Actions provisioning remain unrun. |
 
-| 2026-10-26T23:32Z | 152h14m | implement-native-playable-stage | _(pending)_ | G01, I03, I07 | Replaced native harness checkpoints with authored `.cat` nodes, loaded real country palettes before software/GPU preparation, and derived a coherent node-zero spawn and first chase camera. Four focused tests cover spawn, errors, mapping and curved progression; imported AU1 composition and GPU preparation pass. Node-zero startup is explicitly approximate and post-race sequencer flags remain harness inputs. |
+| 2026-10-26T23:32Z | 152h14m | implement-native-playable-stage | `9b2cd72` | G01, I03, I07 | Replaced native harness checkpoints with authored `.cat` nodes, loaded real country palettes before software/GPU preparation, and derived a coherent node-zero spawn and first chase camera. Four focused tests cover spawn, errors, mapping and curved progression; imported AU1 composition and GPU preparation pass. Node-zero startup is explicitly approximate and post-race sequencer flags remain harness inputs. |
+
+| 2026-10-26T23:57Z | 152h39m | fix-idle-gamepad-keyboard-fallback | _(pending)_ | B10, I07 | Analog driving now requires non-neutral pad input. Idle connected gamepads no longer mask keyboard throttle. Added SDL activity and app fallback tests; full workspace gates pass. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

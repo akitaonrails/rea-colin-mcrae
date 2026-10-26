@@ -1576,6 +1576,10 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+Input selection now falls back to the keyboard when a connected gamepad is
+idle. Only non-neutral pad axes/buttons select analog driving, so a gamepad
+cannot leave the car static by overriding keyboard throttle.
+
 The native game session is now a playable single-player stage: authored `.cat`
 checkpoints replace the synthetic line, a real country palette is loaded before
 software/GPU preparation, and one coherent node-zero spawn drives the car and

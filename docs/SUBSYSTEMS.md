@@ -2399,6 +2399,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- `GamepadDrivingState::has_driving_input` gates analog selection: idle pads
+  fall back to keyboard, while non-neutral axes/buttons use the recovered analog
+  driver. This fixes connected-gamepad keyboard masking without altering either
+  mapper.
 - Native playable setup uses authored `.cat` nodes, real country palettes and a
   coherent node-zero spawn for both car and first camera. The same spawn feeds
   the live four-wheel session and `ViewController`. Node-zero startup is a

@@ -324,13 +324,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T23:32:04Z
-milestone=implement-native-playable-stage
+updated_utc=2026-10-26T23:57:54Z
+milestone=fix-idle-gamepad-keyboard-fallback
 completed=118
 partial=0
 not_started=0
 blocked=0
 total=118
-current_focus=post-race-sequencer-and-runtime-verification
-next_exit_gate=native-playable-stage-and-full-workspace-gates-pass
+current_focus=player-car-and-hud-scene-coverage
+next_exit_gate=live-driving-input-and-native-scene-updates-are-verified
 <!-- PROGRESS-TAIL-END -->

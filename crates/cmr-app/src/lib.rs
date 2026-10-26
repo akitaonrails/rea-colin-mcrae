@@ -71,6 +71,7 @@ use cmr_formats::stage::{
 use cmr_formats::stored_asset::{DecodeError, DecodeLimits, decode_stored_asset};
 use cmr_gpu_contract::{PersistentRawC3dGpuBackend, PersistentRawC3dIndexedBackend};
 use cmr_gpu_stage::{PreparedRawStage, PreparedRawStageError, PreparedRawStageStats};
+use cmr_platform_sdl3::input::GamepadDrivingState;
 use cmr_platform_sdl3::{
     InteractiveRootError, SdlHostError, WindowedGameFrame, WindowedInput, present_software_frame,
     run_interactive_root_frame, run_windowed_game_session as run_windowed_game_session_loop,
@@ -1711,11 +1712,15 @@ impl ViewHarness {
     }
 }
 
+fn analog_driving_is_active(pad: &GamepadDrivingState) -> bool {
+    pad.has_driving_input()
+}
+
 /// One windowed-game-session frame of the input/advance/world-compose work the
 /// two loop variants share.
 ///
 /// It maps the live input through the recovered control map (the analog driver
-/// when a gamepad is connected, the keyboard driver otherwise), advances the FSM
+/// when a gamepad has driving input, the keyboard driver otherwise), advances the FSM
 /// one frame stepping the race sim in the driving state, and - only when the
 /// route is a `StageWorld`-family route - composes the stage from the follow
 /// camera. A compose failure drops the world frame rather than killing the loop.
@@ -1736,7 +1741,7 @@ fn advance_game_frame<C: HostClock>(
     fade: &mut Option<ScalarTween>,
     input: WindowedInput,
 ) -> Result<GameFrameOutcome, WheelPostprocessError> {
-    let controls = if let Some(pad) = input.gamepad {
+    let controls = if let Some(pad) = input.gamepad.filter(|pad| analog_driving_is_active(pad)) {
         analog
             .poll(
                 pad.steer_axis(),
@@ -2525,6 +2530,11 @@ mod tests {
 
     fn arguments(values: &[&str]) -> impl Iterator<Item = OsString> {
         values.iter().map(OsString::from)
+    }
+
+    #[test]
+    fn idle_gamepad_does_not_mask_keyboard_driving_input() {
+        assert!(!analog_driving_is_active(&GamepadDrivingState::new()));
     }
 
     fn native_test_node(position: [i32; 3], direction: [i32; 3], split_flag: u8) -> CatNode {
