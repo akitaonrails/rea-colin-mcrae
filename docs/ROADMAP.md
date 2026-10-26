@@ -1349,7 +1349,10 @@ this flag without the separate slip-sign disagreement. One focused test brings
 both wheel loops through `populate_wheel_vector_inputs`. The existing canonical
 source-owned arctangent table is exposed with its exact-1.0 adjacent zero sentinel,
 replacing empty producer/application tables. Two focused tests bring `cmr-core` to
-1,367. Remaining scalar and configuration producers continue under G03.
+1,367. `reset_wheel_speed_state` now recovers the reset/respawn speed writes and
+unconditional `+0x43b=10`; application parameters use that post-reset enable while
+zero start speeds remain explicit harness input. One all-branch test brings
+`cmr-core` to 1,368. Per-frame raw-speed production remains separate.
 
 Exit gate:
 

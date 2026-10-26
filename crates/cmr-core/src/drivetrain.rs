@@ -109,6 +109,50 @@ pub fn equalize_wheel_speeds(left: Fixed16, right: Fixed16) -> (Fixed16, Fixed16
     (average, average)
 }
 
+/// Inputs and prior storage for the recovered `FUN_00407590` speed reset.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WheelSpeedResetInput {
+    pub config_158: i32,
+    pub source_2e0: i32,
+    pub response_1f0: i32,
+    pub prior_raw_front: [i32; 2],
+    pub prior_wheel_speeds: [i32; 4],
+}
+
+/// Observable speed-reset stores and the residual-enable byte.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WheelSpeedReset {
+    pub raw_front: [i32; 2],
+    pub wheel_speeds: [i32; 4],
+    pub flag_43b: u8,
+}
+
+/// Reproduce the reset's mode-dependent writes without inventing writes to
+/// fields that the native early return leaves untouched.
+#[must_use]
+pub fn reset_wheel_speed_state(input: WheelSpeedResetInput) -> WheelSpeedReset {
+    let value = q16_mul(input.source_2e0, input.response_1f0);
+    let mut raw_front = input.prior_raw_front;
+    let mut wheel_speeds = input.prior_wheel_speeds;
+    match input.config_158 {
+        0 => wheel_speeds = [value; 4],
+        0x10000 => {
+            wheel_speeds[2] = value;
+            wheel_speeds[3] = value;
+            raw_front = [value; 2];
+        }
+        _ => {
+            wheel_speeds = [value; 4];
+            raw_front = [value; 2];
+        }
+    }
+    WheelSpeedReset {
+        raw_front,
+        wheel_speeds,
+        flag_43b: 10,
+    }
+}
+
 /// The coasting split: [`COAST_DRAG_TORQUE`] distributed directly by the centre
 /// split (the recovered in-gear, no-throttle/no-brake branch of
 /// `FUN_0040d810`). This branch bypasses the per-car front/rear factors used by
@@ -1409,6 +1453,47 @@ mod tests {
         assert_eq!(
             equalize_wheel_speeds(fx(i32::MIN), Fixed16::ZERO),
             (fx(i32::MIN), Fixed16::ZERO)
+        );
+    }
+
+    #[test]
+    fn wheel_speed_reset_preserves_unselected_native_stores() {
+        let input = WheelSpeedResetInput {
+            config_158: 0,
+            source_2e0: 0x20000,
+            response_1f0: 0x30000,
+            prior_raw_front: [7, 8],
+            prior_wheel_speeds: [1, 2, 3, 4],
+        };
+        assert_eq!(
+            reset_wheel_speed_state(input),
+            WheelSpeedReset {
+                raw_front: [7, 8],
+                wheel_speeds: [0x60000; 4],
+                flag_43b: 10,
+            }
+        );
+        assert_eq!(
+            reset_wheel_speed_state(WheelSpeedResetInput {
+                config_158: 0x10000,
+                ..input
+            }),
+            WheelSpeedReset {
+                raw_front: [0x60000; 2],
+                wheel_speeds: [1, 2, 0x60000, 0x60000],
+                flag_43b: 10,
+            }
+        );
+        assert_eq!(
+            reset_wheel_speed_state(WheelSpeedResetInput {
+                config_158: 1,
+                ..input
+            }),
+            WheelSpeedReset {
+                raw_front: [0x60000; 2],
+                wheel_speeds: [0x60000; 4],
+                flag_43b: 10,
+            }
         );
     }
 

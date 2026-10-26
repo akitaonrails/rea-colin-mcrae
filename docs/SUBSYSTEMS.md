@@ -2018,7 +2018,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   words plus the native exact-1.0 adjacent zero sentinel. See evidence
   `impl.sim-race-state-trace`, `impl.sim-derived-second-inputs`,
   `impl.sim-wheel-vector-inputs`, `impl.sim-translation-step`, and
-  `impl.sim-full-second-accumulation`.
+  `impl.sim-full-second-accumulation`. `reset_wheel_speed_state` separately models
+  the reset/respawn `+0x158` mode writes, including untouched raw/smoothed fields,
+  and the unconditional residual-enable value `10` used by application parameters.
+  Its scalar and zero application start speeds remain explicit inputs.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

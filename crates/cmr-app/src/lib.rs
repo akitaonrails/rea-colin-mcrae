@@ -1899,7 +1899,7 @@ impl SessionWheelInputs {
                 factor_c5c0: 0x10000,
                 gear: 1,
                 config_40c: 0,
-                flag_43b: 0,
+                flag_43b: 10,
                 config_158: 1,
                 gear_ratio: 1,
                 is_front_wheel: true,
@@ -2594,6 +2594,10 @@ mod tests {
                 .err(),
             Some(SurfaceCoefficientIndexError { index: 120 })
         );
+        let wheel = inputs
+            .four_wheel_params(&trig, &families, &half_state, Fixed16::ONE, [0; 4])
+            .unwrap();
+        assert!(wheel.first.iter().all(|first| first.flag_43b == 10));
 
         let first = run_headless_four_wheel_game_session(&temp.0, &families, &half_state).unwrap();
         let second = run_headless_four_wheel_game_session(&temp.0, &families, &half_state).unwrap();
