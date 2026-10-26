@@ -1535,6 +1535,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   duplicate ids enabled once). `accumulate_effect_enables` reproduces it with
   a safe-contract out-of-range rejection. Two focused tests bring `cmr-core`
   to 1,313. The per-surface capability tables are game data (not vendored).
+  G03 reviewed-store initializer composition: the integration test opens a
+  synthetic CMPR-style reviewed store, constructs `CompiledDirectCaseSet`, and
+  runs the complete composed initializer. It independently checks the selected
+  direct state/control case and derives the gear ratio and auxiliary value from
+  the resulting control families. One focused test brings `cmr-core` to 1,314.
+  The reviewed store and runtime inputs are synthetic fixtures, not a live
+  car-data run; per-surface capability tables remain caller-supplied game data.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

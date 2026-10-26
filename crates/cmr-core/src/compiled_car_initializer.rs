@@ -9368,6 +9368,169 @@ mod tests {
     }
 
     #[test]
+    fn composed_initializer_runs_from_a_reviewed_case_store() {
+        use std::fs;
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use cmr_formats::pe_compiled_initializer::{
+            OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT, encode_compiled_cases,
+        };
+        use sha2::{Digest, Sha256};
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        struct Temp(PathBuf);
+        impl Temp {
+            fn new() -> Self {
+                let path = std::env::temp_dir().join(format!(
+                    "cmr-initializer-store-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                fs::create_dir(&path).unwrap();
+                Self(path)
+            }
+        }
+        impl Drop for Temp {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        fn sha256(bytes: &[u8]) -> String {
+            let digest = Sha256::digest(bytes);
+            let mut encoded = String::with_capacity(digest.len() * 2);
+            for byte in digest {
+                encoded.push_str(&format!("{byte:02x}"));
+            }
+            encoded
+        }
+        fn cases() -> [FormatCompiledCaseWords; COMPILED_CASE_COUNT] {
+            let mut cases = std::array::from_fn(|selector| FormatCompiledCaseWords {
+                state_words: std::array::from_fn(|index| selector as i32 * 100 + index as i32),
+                control_words: std::array::from_fn(|index| -(selector as i32 * 100 + index as i32)),
+            });
+            cases[0].state_words[0] = i32::MIN;
+            cases[13].control_words[22] = i32::MAX;
+            cases
+        }
+
+        let temp = Temp::new();
+        let root = temp.0.join("store");
+        fs::create_dir(&root).unwrap();
+        let executable = b"synthetic";
+        let reviewed = ReviewedCompiledInitializerProfile::from_json(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "id": "synthetic-compiled-cases",
+                "executable": {
+                    "path": "Rally.exe",
+                    "size": executable.len() as u64,
+                    "sha256": sha256(executable),
+                },
+                "initializer": {
+                    "image_base": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.image_base,
+                    "zero_seed_va": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.zero_seed_va,
+                    "esi_seed_va": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.esi_seed_va,
+                    "edi_seed_va": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.edi_seed_va,
+                    "seed_call_targets": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.seed_call_targets,
+                    "dispatch_va": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.dispatch_va,
+                    "jump_table_va": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.jump_table_va,
+                    "first_case_va": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.first_case_va,
+                    "common_join_va": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.common_join_va,
+                    "state_pointer_va": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.state_pointer_va,
+                    "control_pointer_va": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.control_pointer_va,
+                    "selectors": 14,
+                    "state_offsets": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.state_offsets,
+                    "control_offsets": OFFICIAL_EU_COMPILED_INITIALIZER_LAYOUT.control_offsets,
+                    "output_encoding": "cmr-ccase-v1",
+                },
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let cases = cases();
+        let data = encode_compiled_cases(&cases);
+        fs::write(root.join(COMPILED_INITIALIZER_DATA_FILE), data).unwrap();
+        let summary = serde_json::json!({
+            "schema_version": 1,
+            "profile": reviewed.profile().id.clone(),
+            "profile_sha256": reviewed.sha256(),
+            "source": {
+                "path": "Rally.exe",
+                "size": executable.len() as u64,
+                "sha256": sha256(executable),
+            },
+            "output": {
+                "path": "compiled-car-cases-v1.bin",
+                "size": data.len() as u64,
+                "sha256": sha256(&data),
+            },
+            "shape": {
+                "format_version": 1,
+                "selectors": 14,
+                "state_words_per_selector": 8,
+                "control_words_per_selector": 23,
+                "encoding": "cmr-ccase-v1",
+            },
+        });
+        fs::write(
+            root.join(COMPILED_INITIALIZER_STATE_FILE),
+            serde_json::to_vec(&summary).unwrap(),
+        )
+        .unwrap();
+
+        let store = CompiledInitializerStore::open(&root, &reviewed).unwrap();
+        let direct_cases = CompiledDirectCaseSet::from_store(&store).unwrap();
+        let aux_constants = AuxControlConstantSet {
+            constants: aux_constants(),
+        };
+        let config = compiled_stage_config(1, 0, 1, 1, 0, false);
+        let input = full_initializer_input(&config);
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(&events, [IntegratedLaneMode::Built(0); 8]);
+        let mut lane_config = |_lane| -> Result<u8, &'static str> { Ok(0) };
+        let success = compose_compiled_initializer(
+            &direct_cases,
+            &aux_constants,
+            input,
+            integrated_execution_state(),
+            &mut providers,
+            &mut lane_config,
+        )
+        .unwrap();
+
+        assert_eq!(
+            success.early.direct_case_stores.words.state_words,
+            store.case(3).unwrap().state_words
+        );
+        assert_eq!(
+            success.early.direct_case_stores.words.control_words,
+            store.case(3).unwrap().control_words
+        );
+        let (ratio, aux) = crate::drivetrain::derive_gear_ratio_and_aux_from_families(
+            &success.early.control_families,
+            crate::fixed_point::Fixed16::from_raw(0x8000),
+            crate::fixed_point::Fixed16::from_raw(0x8000),
+        );
+        assert_eq!(
+            ratio,
+            crate::drivetrain::derive_gear_ratio(
+                crate::fixed_point::Fixed16::from_raw(success.early.control_families.raw_copy[0]),
+                crate::fixed_point::Fixed16::from_raw(0x8000)
+            )
+        );
+        assert_eq!(
+            aux,
+            crate::drivetrain::derive_gear_aux_value(
+                crate::fixed_point::Fixed16::from_raw(
+                    success.early.control_families.reciprocal_copy[0]
+                ),
+                crate::fixed_point::Fixed16::from_raw(0x8000)
+            )
+        );
+    }
+
+    #[test]
     fn recovered_stage_bundle_pins_separate_destination_relationships() {
         let family_offsets = &COMPILED_CONTROL_WORD_OFFSETS
             [CONTROL_FAMILY_START..CONTROL_FAMILY_START + COMPILED_CONTROL_FAMILY_WORD_COUNT];

@@ -1105,6 +1105,14 @@ over 120 surface ids, duplicate ids enabled once).
 `accumulate_effect_enables` reproduces it with a safe-contract out-of-range
 rejection. Two focused tests bring `cmr-core` to 1,313. The per-surface
 capability tables are game data (not vendored).
+G03 composes the initializer from a reviewed case store: a synthetic
+CMPR-style store is opened through `CompiledInitializerStore`, converted to a
+`CompiledDirectCaseSet`, and run through `compose_compiled_initializer`. The
+integration test independently checks the selected direct state/control case
+and derives the gear ratio and auxiliary value from the resulting control
+families, bringing `cmr-core` to 1,314. Reviewed synthetic inputs prove the
+storage-to-consumer contract; they are not a live car-data run, and the
+per-surface capability tables remain caller-supplied game data.
 
 Exit gate:
 
