@@ -1066,6 +1066,31 @@ pub fn apply_angular_momentum_step(input: AngularMomentumStepInput) -> AngularMo
     }
 }
 
+/// Symmetric angular-velocity limit applied when either `+0x734` or `+0x736`
+/// is nonzero in `FUN_0040a4a0`.
+pub const ANGULAR_VELOCITY_LIMIT: Fixed16 = Fixed16::from_raw(0x3333);
+
+/// Apply the recovered per-component angular clamp. The comparison uses
+/// wrapping absolute value, so `i32::MIN` is deliberately left unchanged.
+#[must_use]
+pub fn clamp_angular_velocity(velocity: Vec3, enabled: bool) -> Vec3 {
+    if !enabled {
+        return velocity;
+    }
+    let clamp = |value: Fixed16| {
+        if value.raw().wrapping_abs() > ANGULAR_VELOCITY_LIMIT.raw() {
+            if value.raw() < 1 {
+                ANGULAR_VELOCITY_LIMIT.neg()
+            } else {
+                ANGULAR_VELOCITY_LIMIT
+            }
+        } else {
+            value
+        }
+    };
+    Vec3::new(clamp(velocity.x), clamp(velocity.y), clamp(velocity.z))
+}
+
 /// Runtime inputs for one `FUN_0040d400` contact-vector update.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContactVectorUpdateInput {
@@ -1481,6 +1506,18 @@ mod tests {
         // drag = v * speed.
         let d = drag(v(1, 0, 0), Fixed16::from_raw(0x8000));
         assert_eq!(d.x, Fixed16::from_raw(0x8000));
+    }
+
+    #[test]
+    fn angular_velocity_clamp_respects_boundaries_and_wrapping_abs() {
+        let velocity = raw_v(0x3334, -0x3334, i32::MIN);
+        assert_eq!(
+            clamp_angular_velocity(velocity, true),
+            raw_v(0x3333, -0x3333, i32::MIN)
+        );
+        let boundaries = raw_v(0x3333, -0x3333, 0);
+        assert_eq!(clamp_angular_velocity(boundaries, true), boundaries);
+        assert_eq!(clamp_angular_velocity(velocity, false), velocity);
     }
 
     #[test]

@@ -1926,8 +1926,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   dot products, and `transformed_contact_moment` applies that transform before the
   cross product. `apply_angular_momentum_step` scales and combines moments,
   applies componentwise inertia, and negatively integrates angular velocity.
-  Orientation updates, angular special cases, eight-record traversal, and full
-  four-iteration production remain open. See evidence
+  `clamp_angular_velocity` reproduces the gated signed `0x3333` clamp including
+  wrapping-absolute behavior. Orientation updates, other angular special cases,
+  eight-record traversal, and full four-iteration production remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

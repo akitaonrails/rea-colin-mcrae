@@ -492,7 +492,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T09:37Z | 139h19m | recover-contact-force-transform | `b094b65` | G03 | Recovered `FUN_0048e100` as three row-wise Q16.16 dot products. Added `transform_contact_force` and `transformed_contact_moment` with identity, row-permutation and transform-before-cross coverage; `cmr-core` has 1,336 tests. Angular integration and full lane production remain open. |
 
-| 2026-10-26T09:42Z | 139h24m | recover-angular-momentum-step | _(pending)_ | G04 | Added `apply_angular_momentum_step`: prior-moment scaling, contact addition, componentwise inertia and negative time-step integration from `FUN_0040a4a0`. One intermediate/final-vector test brings `cmr-core` to 1,337. Orientation updates, angular special cases and full lane production remain open. |
+| 2026-10-26T09:42Z | 139h24m | recover-angular-momentum-step | `f9c0939` | G04 | Added `apply_angular_momentum_step`: prior-moment scaling, contact addition, componentwise inertia and negative time-step integration from `FUN_0040a4a0`. One intermediate/final-vector test brings `cmr-core` to 1,337. Orientation updates, angular special cases and full lane production remain open. |
+
+| 2026-10-26T09:47Z | 139h29m | recover-angular-velocity-clamp | _(pending)_ | G04 | Added `clamp_angular_velocity` for the `+0x734`/`+0x736`-gated signed `0x3333` clamp, including exact boundaries and `i32::MIN` wrapping behavior. One focused test brings `cmr-core` to 1,338. Orientation updates and other angular special cases remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

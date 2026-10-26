@@ -1239,8 +1239,10 @@ contact filtering, bringing `cmr-core` to 1,335. `transform_contact_force` and
 before the cross product, with one additional test bringing `cmr-core` to 1,336.
 `apply_angular_momentum_step` now scales and combines moments, applies per-axis
 inertia, and negatively integrates angular velocity, bringing `cmr-core` to 1,337.
-Orientation updates, angular special cases, eight-record wiring and complete
-four-lane production remain open.
+`clamp_angular_velocity` now applies the gated signed `0x3333` special case with
+wrapping-absolute semantics, bringing `cmr-core` to 1,338. Orientation updates,
+other angular special cases, eight-record wiring and complete four-lane production
+remain open.
 
 Exit gate:
 
