@@ -125,6 +125,19 @@ impl<'a> GameplaySession<'a> {
         Self::with_optional_wheel(params, script, Some(wheel))
     }
 
+    /// A complete four-wheel session with an explicit recovered/harness start.
+    #[must_use]
+    pub fn new_with_four_wheel_and_car(
+        params: SimParams,
+        script: InRaceScript,
+        wheel: FourWheelIterationParams<'a>,
+        car: CarState,
+    ) -> Self {
+        let mut session = Self::with_optional_wheel(params, script, Some(wheel));
+        session.race = RaceState::new(car);
+        session
+    }
+
     fn with_optional_wheel(
         params: SimParams,
         script: InRaceScript,

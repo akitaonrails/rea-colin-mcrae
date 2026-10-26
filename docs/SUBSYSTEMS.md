@@ -1977,9 +1977,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   covered. `GameplaySession::new_with_four_wheel` selects this complete producer;
   `try_advance` performs the state-5 driving step before the FSM frame, preserving
   checked errors without advancing the FSM, checkpoint progress or tick count. The
-  existing simplified session remains available. Authenticated runtime-data wiring
-  into this session remains open. See evidence `impl.sim-race-state-trace`,
-  `impl.sim-translation-step`, and `impl.sim-full-second-accumulation`.
+  existing simplified session remains available. `SessionWheelInputs` now constructs
+  the complete wheel parameters from reviewed coefficients and compiled state, and
+  `run_headless_four_wheel_game_session` drives the FSM through them with checked
+  errors. Synthetic authenticated finish/replay and real-store opt-in coverage pass;
+  scalar tuning and start-state values remain explicit harness inputs. See evidence
+  `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
+  `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

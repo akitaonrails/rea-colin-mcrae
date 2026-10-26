@@ -540,7 +540,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T12:48Z | 142h30m | populate-compiled-contact-offsets | `577e8cc` | G03 | Mapped the recovered `+0x5c/+0x68/+0x74/+0x80` half-sign vectors into all four wheel contact offsets. Exact sign and Q16-scaled angular coverage pass, including the nonzero derived moment; vertical replay remains deterministic. Application-session wiring of the complete producer remains open. |
 
-| 2026-10-26T12:57Z | 142h39m | wire-four-wheel-gameplay-session | _(pending)_ | G09 | Added `GameplaySession::new_with_four_wheel` and fallible `try_advance`. State-5 production runs before the FSM frame, so checked errors leave the FSM, checkpoint progress and tick count unchanged. One success/error test brings `cmr-core` to 1,359; simplified sessions are unchanged. Authenticated runtime-data wiring remains open. |
+| 2026-10-26T12:57Z | 142h39m | wire-four-wheel-gameplay-session | `34938d6` | G09 | Added `GameplaySession::new_with_four_wheel` and fallible `try_advance`. State-5 production runs before the FSM frame, so checked errors leave the FSM, checkpoint progress and tick count unchanged. One success/error test brings `cmr-core` to 1,359; simplified sessions are unchanged. Authenticated runtime-data wiring remains open. |
+
+| 2026-10-26T13:11Z | 142h53m | connect-authenticated-four-wheel-session | _(pending)_ | G09 | `SessionWheelInputs` now builds complete wheel parameters with reviewed coefficients, compiled gear ratios, scales and offsets. Added the fallible headless four-wheel FSM driver. Synthetic authenticated finish/replay and real-store opt-in coverage pass; `cmr-app` has 29 library tests. Scalar/start tuning remains explicit harness input. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

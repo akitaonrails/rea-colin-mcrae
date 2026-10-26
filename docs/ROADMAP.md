@@ -1301,8 +1301,13 @@ wheel inputs, with exact signs and Q16-scaled angular coverage.
 `GameplaySession::new_with_four_wheel` now selects the complete producer, and
 `try_advance` runs a state-5 step before the FSM frame so checked failures leave the
 FSM, checkpoint progress and tick count untouched. One success/error test brings
-`cmr-core` to 1,359; the simplified session API remains unchanged. Authenticated
-runtime-data wiring into this session remains open.
+`cmr-core` to 1,359; the simplified session API remains unchanged.
+`SessionWheelInputs::four_wheel_params` now supplies reviewed coefficients, compiled
+gear ratios, force scales and compiled offsets, with atomic surface-index rejection.
+`run_headless_four_wheel_game_session` drives the complete FSM using those inputs and
+checked errors. A synthetic authenticated finish/replay test and an opt-in real-store
+smoke bring `cmr-app` to 29 library tests. The remaining scalar tuning and start state
+are explicit harness inputs, not a trajectory-equivalence claim.
 
 Exit gate:
 

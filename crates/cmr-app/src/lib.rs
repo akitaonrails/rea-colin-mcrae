@@ -19,6 +19,7 @@ use cmr_core::c3d_render::VERTEXTYPE_LVERTEX;
 use cmr_core::c3d_stage_scene::{StageScene, StageSceneError};
 use cmr_core::camera_mode::{CameraMode, ViewGate};
 use cmr_core::camera_view::ViewController;
+use cmr_core::compiled_car_initializer::{CompiledControlFamilies, CompiledHalfSignState};
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
 use cmr_core::drive_controls::DriveResponse;
@@ -35,7 +36,11 @@ use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
 use cmr_core::gameplay_session::{GameplaySession, InRaceScript};
 use cmr_core::host_loop::HostClock;
 use cmr_core::localization::Language;
-use cmr_core::race_state::{Controls, SecondWheelParams, SimParams, populate_surface_table_factor};
+use cmr_core::race_state::{
+    CarState, Controls, FirstWheelParams, FourWheelIterationParams, FourWheelPostprocessParams,
+    SecondWheelParams, SimParams, WheelPostprocessError, populate_compiled_contact_offsets,
+    populate_compiled_gear_ratio, populate_force_pass_scales, populate_surface_table_factor,
+};
 use cmr_core::render_compose::{fade_duration_frames, fade_level_to_modulation_byte, fade_out};
 use cmr_core::render_route::{RenderRoute, composes_frontend_root, presents_world_scene};
 use cmr_core::root_menu_assets::VisualVariant;
@@ -51,7 +56,10 @@ use cmr_core::startup_display::{
     StartupDisplay, StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
 };
 use cmr_core::surface::PaletteMapping;
-use cmr_core::vehicle_dynamics::SurfaceCoefficientIndexError;
+use cmr_core::vehicle_dynamics::{
+    AngularMomentumStepInput, AngularOrientationInput, ControlAxisFlags, GeometricPostprocessLane,
+    SurfaceCoefficientIndexError,
+};
 use cmr_core::weather::{StageWeatherEffects, particles};
 use cmr_formats::bitmap::BitmapLimits;
 use cmr_formats::c3d::C3dLimits;
@@ -1827,6 +1835,134 @@ impl SessionWheelInputs {
     ) -> Result<(), SurfaceCoefficientIndexError> {
         populate_surface_table_factor(second, self.store.families(), surface_index)
     }
+
+    /// Populate all second-wheel coefficients atomically from the reviewed store.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first invalid surface index without modifying the wheel inputs.
+    pub fn populate_four_wheel(
+        &self,
+        wheel: &mut FourWheelIterationParams<'_>,
+        surface_indices: [usize; 4],
+    ) -> Result<(), SurfaceCoefficientIndexError> {
+        let mut second = wheel.second.clone();
+        for (index, surface_index) in surface_indices.into_iter().enumerate() {
+            self.populate_second_wheel(&mut second[index], surface_index)?;
+        }
+        wheel.second = second;
+        Ok(())
+    }
+
+    /// Build complete four-wheel inputs from authenticated coefficients and the
+    /// caller's recovered compiled state. Remaining scalar tuning is explicit
+    /// harness input, not a claim of trajectory-equivalent car data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid stage surface index before publishing the parameters.
+    pub fn four_wheel_params<'a>(
+        &self,
+        trig: &'a [i32],
+        families: &CompiledControlFamilies,
+        half_state: &CompiledHalfSignState,
+        factor_c860: Fixed16,
+        surface_indices: [usize; 4],
+    ) -> Result<FourWheelIterationParams<'a>, SurfaceCoefficientIndexError> {
+        let inactive = GeometricPostprocessLane {
+            active: false,
+            vector_a: Vec3::ZERO,
+            vector_b: Vec3::ZERO,
+            vector_c: Vec3::ZERO,
+            accumulator: Vec3::ZERO,
+        };
+        let mut wheel = FourWheelIterationParams {
+            first: [FirstWheelParams {
+                split: 0x10000,
+                wheel_constant: 0,
+                wheel_vector: [0; 3],
+                state_vector: [0; 3],
+                scale_c600: 0x10000,
+                limit: 0x10000,
+                shift: 0,
+                factor_c5c0: 0x10000,
+                gear: 1,
+                config_40c: 0,
+                config_158: 1,
+                gear_ratio: 1,
+                is_front_wheel: true,
+            }; 4],
+            second: std::array::from_fn(|_| SecondWheelParams {
+                axis_dot: 0,
+                local_68: [0x10000, 0, 0],
+                local_98: [0; 3],
+                wheel_e8: 0,
+                scale_c5c4: 0x10000,
+                residual_flag_147a: false,
+                config_2ec: 1,
+                gear_ratio: 1,
+                coefficient_34: 0x10000,
+                arctan_table: &[],
+                cos_table: trig,
+                config_scale: 1,
+                transition_gain: 0,
+                transition_base: 0,
+                alternate_gain: 0,
+                alternate_base: 0,
+                correction_gate: 1,
+                accumulation_limit: 0x10000,
+                correction_alternate: 0x10000,
+                surface_vector: [0; 3],
+                table_factor: None,
+            }),
+            contact_vector_indices: [2, 3, 6, 7],
+            contact_offsets: [Vec3::ZERO; 4],
+            postprocess: FourWheelPostprocessParams {
+                lanes: [inactive; 4],
+                current_lane: 0,
+                argument_scale: Fixed16::ONE,
+                base_force: Vec3::ZERO,
+                non_wheel_forces: &[],
+                wheel_contacts: [true; 4],
+            },
+            angular: AngularOrientationInput {
+                momentum: AngularMomentumStepInput {
+                    prior_moment: Vec3::ZERO,
+                    contact_moment: Vec3::ZERO,
+                    moment_scale: Fixed16::ONE,
+                    inertia_scale: Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE),
+                    angular_velocity: Vec3::ZERO,
+                    time_step: Fixed16::ZERO,
+                },
+                clamp_enabled: false,
+                control: ControlAxisFlags {
+                    mode_3ec: 0,
+                    axis_3f4: 0,
+                    axis_3f8: 0,
+                },
+                basis: [Vec3::ZERO; 3],
+            },
+        };
+        for index in 0..4 {
+            populate_compiled_gear_ratio(
+                &mut wheel.first[index],
+                &mut wheel.second[index],
+                families,
+                factor_c860,
+            )
+            .expect("gear one is valid in the compiled family");
+            let _ = populate_force_pass_scales(
+                &mut wheel.first[index],
+                &mut wheel.second[index],
+                Fixed16::from_raw(0x30000),
+                Fixed16::from_raw(0x20000),
+                Fixed16::from_raw(0x40000),
+            );
+        }
+        self.populate_four_wheel(&mut wheel, surface_indices)?;
+        populate_compiled_contact_offsets(&mut wheel, half_state);
+        Ok(wheel)
+    }
 }
 
 pub fn run_windowed_game_session(
@@ -2043,7 +2179,6 @@ impl HeadlessGameSessionOutput {
 /// checkpoint line, and the scripted front-end sequencer inputs (the replay/
 /// fade/quit flags) are documented **harness** stand-ins for the real subsystems.
 pub fn run_headless_game_session() -> HeadlessGameSessionOutput {
-    let clock = StationaryClock;
     let params = SimParams {
         inverse_mass: Fixed16::ONE,
         gravity: Vec3::ZERO,
@@ -2054,27 +2189,28 @@ pub fn run_headless_game_session() -> HeadlessGameSessionOutput {
         forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
         handbrake: false,
     };
+    drive_headless_session(&mut session, controls).expect("the simplified session is infallible")
+}
 
-    // Front-end menu inputs route the menu band 1 -> 2 -> 3 -> 4 -> 7.
+fn drive_headless_session(
+    session: &mut GameplaySession<'_>,
+    controls: Controls,
+) -> Result<HeadlessGameSessionOutput, WheelPostprocessError> {
+    let clock = StationaryClock;
     let menu_inputs = MenuFlowInputs {
         frontend_active: true,
         root_menu_ready: true,
         screen_graph_ready: true,
         ..MenuFlowInputs::default()
     };
-
     let nodes = headless_checkpoint_line();
     let mut progress = StageProgress::new(&nodes, 0);
-
     let mut frames = 0u32;
     while !session.is_stopped() && frames < GAME_SESSION_MAX_FRAMES {
         frames += 1;
-        // Fixed forward controls each frame: the deterministic demonstration
-        // drive. The windowed session injects live controls here instead.
-        session.advance(&clock, menu_inputs, controls, &mut progress);
+        session.try_advance(&clock, menu_inputs, controls, &mut progress)?;
     }
-
-    HeadlessGameSessionOutput {
+    Ok(HeadlessGameSessionOutput {
         frames,
         sim_ticks: session.sim_ticks(),
         final_state: session.state().id(),
@@ -2082,7 +2218,77 @@ pub fn run_headless_game_session() -> HeadlessGameSessionOutput {
         finish_centiseconds: progress.finish_centiseconds(),
         final_position_x_q16: session.car().position.x.raw(),
         stage_clock_q16: session.stage_clock().raw(),
+    })
+}
+
+#[derive(Debug)]
+pub enum SessionFourWheelError {
+    Inputs(SessionSurfaceInputsError),
+    Surface(SurfaceCoefficientIndexError),
+    Producer(WheelPostprocessError),
+}
+
+impl fmt::Display for SessionFourWheelError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Inputs(error) => write!(formatter, "session wheel inputs failed: {error}"),
+            Self::Surface(error) => write!(formatter, "invalid wheel surface index: {error:?}"),
+            Self::Producer(error) => write!(formatter, "four-wheel producer failed: {error:?}"),
+        }
     }
+}
+
+impl std::error::Error for SessionFourWheelError {}
+
+impl From<SessionSurfaceInputsError> for SessionFourWheelError {
+    fn from(error: SessionSurfaceInputsError) -> Self {
+        Self::Inputs(error)
+    }
+}
+
+impl From<SurfaceCoefficientIndexError> for SessionFourWheelError {
+    fn from(error: SurfaceCoefficientIndexError) -> Self {
+        Self::Surface(error)
+    }
+}
+
+impl From<WheelPostprocessError> for SessionFourWheelError {
+    fn from(error: WheelPostprocessError) -> Self {
+        Self::Producer(error)
+    }
+}
+
+/// Run the headless FSM with authenticated coefficients and compiled geometry.
+///
+/// # Errors
+///
+/// Returns store/profile, surface-index, or checked producer failures.
+pub fn run_headless_four_wheel_game_session(
+    runtime_data: &Path,
+    families: &CompiledControlFamilies,
+    half_state: &CompiledHalfSignState,
+) -> Result<HeadlessGameSessionOutput, SessionFourWheelError> {
+    let inputs = SessionWheelInputs::open(runtime_data)?;
+    let trig = cmr_core::fixed_point::build_sine_table();
+    let wheel = inputs.four_wheel_params(&trig, families, half_state, Fixed16::ONE, [0; 4])?;
+    let params = SimParams {
+        inverse_mass: Fixed16::from_raw(0x8000),
+        gravity: Vec3::ZERO,
+    };
+    let mut start = CarState::at_rest();
+    start.motion.angular_velocity = Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE);
+    let mut session = GameplaySession::new_with_four_wheel_and_car(
+        params,
+        InRaceScript::frontend_harness(),
+        wheel,
+        start,
+    );
+    let controls = Controls {
+        steer_rate: 0,
+        forward_force: Fixed16::ONE,
+        handbrake: false,
+    };
+    Ok(drive_headless_session(&mut session, controls)?)
 }
 
 #[cfg(test)]
@@ -2147,6 +2353,51 @@ mod tests {
         };
         std::fs::write(
             store.join(SURFACE_CAPABILITY_STATE_FILE),
+            serde_json::to_vec(&summary).unwrap(),
+        )
+        .unwrap();
+        SurfaceTemp(root)
+    }
+
+    fn wheel_runtime() -> SurfaceTemp {
+        use cmr_assets::{
+            SURFACE_DATA_FILE, SURFACE_STATE_FILE, SurfaceImportFile, SurfaceImportSummary,
+        };
+        use sha2::{Digest, Sha256};
+
+        let root = std::env::temp_dir().join(format!(
+            "cmr-app-wheel-inputs-{}-{}",
+            std::process::id(),
+            NEXT_SURFACE_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let store = root.join(SURFACE_TABLE_STORE_DIRECTORY);
+        std::fs::create_dir_all(&store).unwrap();
+        let reviewed = ReviewedSurfaceProfile::from_json(REVIEWED_SURFACE_TABLE_PROFILE).unwrap();
+        let data: Vec<u8> = (0..240).flat_map(|_| 0x20000i32.to_le_bytes()).collect();
+        std::fs::write(store.join(SURFACE_DATA_FILE), &data).unwrap();
+        let digest = |bytes: &[u8]| {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let summary = SurfaceImportSummary {
+            schema_version: 1,
+            profile: reviewed.profile().id.clone(),
+            profile_sha256: reviewed.sha256().into(),
+            source: SurfaceImportFile {
+                path: reviewed.profile().executable.path.clone(),
+                size: reviewed.profile().executable.size,
+                sha256: reviewed.profile().executable.sha256.clone(),
+            },
+            output: SurfaceImportFile {
+                path: SURFACE_DATA_FILE.into(),
+                size: data.len() as u64,
+                sha256: digest(&data),
+            },
+        };
+        std::fs::write(
+            store.join(SURFACE_STATE_FILE),
             serde_json::to_vec(&summary).unwrap(),
         )
         .unwrap();
@@ -2240,6 +2491,34 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_four_wheel_session_finishes_deterministically() {
+        let temp = wheel_runtime();
+        let families = CompiledControlFamilies {
+            post_processed_raw: [0; 8],
+            reciprocal: [0; 8],
+            raw_copy: [0x10000; 8],
+            reciprocal_copy: [0; 8],
+        };
+        let half_state = cmr_core::compiled_car_initializer::derive_compiled_half_sign_state([
+            0x40000, -0x60000, 0x80000,
+        ]);
+        let inputs = SessionWheelInputs::open(&temp.0).unwrap();
+        let trig = cmr_core::fixed_point::build_sine_table();
+        assert_eq!(
+            inputs
+                .four_wheel_params(&trig, &families, &half_state, Fixed16::ONE, [0, 0, 0, 120])
+                .err(),
+            Some(SurfaceCoefficientIndexError { index: 120 })
+        );
+
+        let first = run_headless_four_wheel_game_session(&temp.0, &families, &half_state).unwrap();
+        let second = run_headless_four_wheel_game_session(&temp.0, &families, &half_state).unwrap();
+        assert_eq!(first, second);
+        assert!(first.finished);
+        assert!(first.sim_ticks > 0);
+    }
+
+    #[test]
     #[ignore = "requires an authenticated coefficient store under CMR_RUNTIME_DATA"]
     fn official_session_wheel_inputs_populate_second_core() {
         let root = std::env::var_os("CMR_RUNTIME_DATA").expect("CMR_RUNTIME_DATA");
@@ -2277,6 +2556,24 @@ mod tests {
             inputs.populate_second_wheel(&mut second, 120),
             Err(SurfaceCoefficientIndexError { index: 120 })
         );
+    }
+
+    #[test]
+    #[ignore = "requires an authenticated coefficient store under CMR_RUNTIME_DATA"]
+    fn official_four_wheel_session_uses_authenticated_store() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA").expect("CMR_RUNTIME_DATA");
+        let families = CompiledControlFamilies {
+            post_processed_raw: [0; 8],
+            reciprocal: [0; 8],
+            raw_copy: [0x10000; 8],
+            reciprocal_copy: [0; 8],
+        };
+        let half_state = cmr_core::compiled_car_initializer::derive_compiled_half_sign_state([
+            0x40000, -0x60000, 0x80000,
+        ]);
+        let output =
+            run_headless_four_wheel_game_session(Path::new(&root), &families, &half_state).unwrap();
+        assert!(output.sim_ticks > 0);
     }
 
     #[test]
