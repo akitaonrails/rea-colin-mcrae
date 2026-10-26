@@ -33,12 +33,13 @@ use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_ba
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::vehicle_dynamics::{
     AngularOrientationInput, ContactBasisInput, ContactVectorUpdateInput,
-    GeometricPostprocessError, GeometricPostprocessLane, LaneDirectionMode, LaneDirectionSources,
+    GeometricPostprocessError, GeometricPostprocessLane, LaneDirectionSources,
     LookupDependentCandidateError, SurfaceCoefficientIndexError, TranslationStepInput,
     apply_angular_orientation_pipeline, apply_contact_vector_updates,
     apply_geometric_lane_postprocess, apply_lateral_grip, apply_translation_step,
-    build_contact_basis_vectors, construct_lane_directions, contact_count_scale, drag, net_accel,
-    sum_contact_moments, sum_translation_lane_forces, transform_contact_force,
+    build_contact_basis_vectors, construct_lane_directions, contact_count_scale,
+    derive_lane_direction_pair, drag, net_accel, resolve_lane_direction_mode, sum_contact_moments,
+    sum_translation_lane_forces, transform_contact_force,
 };
 use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
 
@@ -220,10 +221,12 @@ pub struct FourWheelIterationParams<'a> {
     /// Per-tick `FUN_0040d400` scalar/gate inputs; vectors are replaced from the
     /// current contact-basis output before the reverse traversal.
     pub contact_update_inputs: [ContactVectorUpdateInput; 8],
-    /// Other native direction sources; projection axis and `+0x264` cross operand
-    /// are replaced from `MotionState` on every step.
-    pub lane_direction_sources: LaneDirectionSources,
-    pub lane_direction_mode: LaneDirectionMode,
+    /// Current `+0x5d4` source and control angle used to derive P/R.
+    pub lane_source_s: Vec3,
+    pub lane_direction_angle: i16,
+    /// Resolved global/callback inputs; Rebuild takes precedence over Exchange.
+    pub lane_rebuild: bool,
+    pub lane_exchange: bool,
     pub postprocess: FourWheelPostprocessParams<'a>,
     /// Moment scales/base contact input and angular gates; stateful vectors come
     /// from `MotionState` at each step.
@@ -780,13 +783,22 @@ impl RaceState {
                 input.enabled = wheel.postprocess.wheel_contacts[index];
             }
         }
+        let (source_p, source_r) = derive_lane_direction_pair(
+            wheel.lane_source_s,
+            self.car.motion.basis[1],
+            wheel.lane_direction_angle,
+            &self.trig,
+        )
+        .expect("the race-state trig table is complete");
         let directions = construct_lane_directions(
             LaneDirectionSources {
                 projection_axis: self.car.motion.projection_axis,
+                source_a0: source_p,
+                source_b0: source_r,
+                source_a2: wheel.lane_source_s,
                 cross_operand: self.car.motion.basis[1],
-                ..wheel.lane_direction_sources
             },
-            wheel.lane_direction_mode,
+            resolve_lane_direction_mode(wheel.lane_rebuild, wheel.lane_exchange),
         );
         let mut second = wheel.second.clone();
         for (lane, vector_index) in wheel.contact_vector_indices.into_iter().enumerate() {
@@ -1341,14 +1353,10 @@ mod tests {
                 limit: Fixed16::ONE,
                 threshold: Fixed16::from_raw(0x7fff0000),
             }),
-            lane_direction_sources: LaneDirectionSources {
-                projection_axis: Vec3::ZERO,
-                source_a0: vector([0x10000, 0, 0]),
-                source_b0: vector([0, 0x10000, 0]),
-                source_a2: vector([0x10000, 0, 0]),
-                cross_operand: Vec3::ZERO,
-            },
-            lane_direction_mode: LaneDirectionMode::Preserve,
+            lane_source_s: vector([0x10000, 0, 0]),
+            lane_direction_angle: 0,
+            lane_rebuild: false,
+            lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
                 lanes,
                 current_lane: 3,
@@ -1446,13 +1454,22 @@ mod tests {
             apply_contact_vector_updates(contact_inputs, [Vec3::ZERO; 8])
         );
         let mut expected_lanes = lanes;
+        let (source_p, source_r) = derive_lane_direction_pair(
+            wheel.lane_source_s,
+            car.motion.basis[1],
+            wheel.lane_direction_angle,
+            &trig,
+        )
+        .unwrap();
         let expected_directions = construct_lane_directions(
             LaneDirectionSources {
                 projection_axis: car.motion.projection_axis,
+                source_a0: source_p,
+                source_b0: source_r,
+                source_a2: wheel.lane_source_s,
                 cross_operand: car.motion.basis[1],
-                ..wheel.lane_direction_sources
             },
-            wheel.lane_direction_mode,
+            resolve_lane_direction_mode(wheel.lane_rebuild, wheel.lane_exchange),
         );
         for (index, lane) in expected_lanes.iter_mut().enumerate() {
             lane.vector_a = expected_directions.direction_a[index];

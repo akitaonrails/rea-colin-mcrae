@@ -1990,9 +1990,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   the global update gate and non-wheel enables remain explicit. Every step also runs
   `construct_lane_directions` once and shares its four A/B outputs between second-wheel
   accumulation and the geometric lanes, leaving independent C vectors and active flags
-  intact. Other native direction sources and mode resolution remain caller inputs. See
-  evidence `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
-  `impl.sim-full-second-accumulation`.
+  intact. `resolve_lane_direction_mode` implements the native Rebuild-first selector;
+  `derive_lane_direction_pair` copies or rotates S before forming raw R. Two focused
+  tests cover selector priority and copy/rotate/cross behavior. The separate S
+  stabilization producer remains next. See evidence `impl.sim-race-state-trace`,
+  `impl.sim-translation-step`, and `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

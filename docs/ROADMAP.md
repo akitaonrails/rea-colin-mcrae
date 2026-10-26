@@ -1318,8 +1318,11 @@ compiled control-clear loop. Only the global update gate and non-wheel enable fl
 remain explicit in this path. Each four-wheel step now also constructs all four A/B
 lane-direction pairs and uses the same outputs for second-wheel accumulation and
 geometric postprocessing, preserving independent C vectors and active flags. The
-projection axis and `+0x264` cross operand come from `MotionState`; other sources and
-mode selection remain explicit.
+projection axis and `+0x264` cross operand come from `MotionState`.
+`resolve_lane_direction_mode` now implements Rebuild-before-Exchange/Preserve, and
+`derive_lane_direction_pair` copies S at zero angle or rotates it through the recovered
+axis-angle matrix before the raw R cross. Two tests bring `cmr-core` to 1,361. The
+separate `+0x5d4` stabilization producer remains next.
 
 Exit gate:
 

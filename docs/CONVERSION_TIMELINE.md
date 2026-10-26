@@ -548,7 +548,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T13:34Z | 143h16m | produce-contact-update-inputs | `b83fedf` | G03 | Sourced the update projection axis from compiled AK11/basis output, `+0x528` from contact-count scaling, extra reset and wheel enables from current state, and limits/thresholds from the compiled control-clear loop. Exact mapping, kernel, vertical replay and authenticated session tests pass. Global gate and non-wheel enables remain explicit. |
 
-| 2026-10-26T13:45Z | 143h27m | wire-lane-direction-construction | _(pending)_ | G03 | Each four-wheel step now constructs all four A/B direction pairs once and shares them between second-wheel accumulation and geometric postprocessing, preserving C vectors and active flags. Projection axis and `+0x264` come from `MotionState`; other sources and mode remain explicit. Composition, vertical replay and authenticated tests pass. |
+| 2026-10-26T13:45Z | 143h27m | wire-lane-direction-construction | `f0e6879` | G03 | Each four-wheel step now constructs all four A/B direction pairs once and shares them between second-wheel accumulation and geometric postprocessing, preserving C vectors and active flags. Projection axis and `+0x264` come from `MotionState`; other sources and mode remain explicit. Composition, vertical replay and authenticated tests pass. |
+
+| 2026-10-26T13:59Z | 143h41m | resolve-lane-mode-and-source-pair | _(pending)_ | G03 | Recovered the Rebuild-first selector and `FUN_0042a840`'s simple global read. Added `resolve_lane_direction_mode` and `derive_lane_direction_pair`: zero-angle S copy or recovered rotation, then raw R cross. Two tests bring `cmr-core` to 1,361; the four-wheel producer consumes both. S stabilization remains next. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

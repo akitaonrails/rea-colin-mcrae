@@ -141,11 +141,11 @@ pub struct SurfaceCoefficientIndexError {
 /// in `FUN_0040d810` (`0x40f24f..0x40f2c7`).
 pub const CANDIDATE_COMPONENT_THRESHOLD: Fixed16 = Fixed16::from_raw(0x6666);
 
-/// Already-resolved control mode for [`construct_lane_directions`].
+/// Control mode for [`construct_lane_directions`].
 ///
 /// These names describe only the observed movement of the two packed lane
-/// groups. The globals, config bits, and callback that select the mode remain
-/// outside this pure reconstruction boundary.
+/// groups. [`resolve_lane_direction_mode`] implements the native precedence;
+/// their physical meanings remain unassigned.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LaneDirectionMode {
     /// Retain the initially constructed lane groups.
@@ -154,6 +154,35 @@ pub enum LaneDirectionMode {
     Exchange,
     /// Replace the second A/B group using the recovered dependent transform.
     Rebuild,
+}
+
+/// Resolve the native selector with Rebuild taking precedence over Exchange.
+#[must_use]
+pub const fn resolve_lane_direction_mode(rebuild: bool, exchange: bool) -> LaneDirectionMode {
+    if rebuild {
+        LaneDirectionMode::Rebuild
+    } else if exchange {
+        LaneDirectionMode::Exchange
+    } else {
+        LaneDirectionMode::Preserve
+    }
+}
+
+/// Produce P/R from S and `+0x264`: copy S for a zero angle, otherwise rotate it
+/// through the recovered axis-angle matrix, then form the unnormalized raw cross.
+#[must_use]
+pub fn derive_lane_direction_pair(
+    source_s: Vec3,
+    cross_operand: Vec3,
+    angle: i16,
+    trig: &[i32],
+) -> Option<(Vec3, Vec3)> {
+    let source_p = if angle == 0 {
+        source_s
+    } else {
+        integrate_orientation([source_s; 3], [0, angle, 0], trig)?[0]
+    };
+    Some((source_p, wrapping_cross(source_p, cross_operand)))
 }
 
 /// Neutral vector sources consumed by [`construct_lane_directions`].
@@ -234,9 +263,9 @@ impl LaneDirectionOutcome {
 /// Every normalization uses the recovered square-root lookup and maps a zero
 /// root to the zero vector.
 ///
-/// The caller resolves [`LaneDirectionMode`] because the original selector
-/// conditionally invokes an opaque callback. No physical meaning is assigned
-/// to the modes or vectors.
+/// The caller supplies [`LaneDirectionMode`], commonly through
+/// [`resolve_lane_direction_mode`]. No physical meaning is assigned to the
+/// modes or vectors.
 #[must_use]
 pub fn construct_lane_directions(
     sources: LaneDirectionSources,
@@ -1584,6 +1613,43 @@ mod tests {
             source_a2,
             cross_operand,
         }
+    }
+
+    #[test]
+    fn lane_direction_mode_resolution_gives_rebuild_priority() {
+        assert_eq!(
+            resolve_lane_direction_mode(false, false),
+            LaneDirectionMode::Preserve
+        );
+        assert_eq!(
+            resolve_lane_direction_mode(false, true),
+            LaneDirectionMode::Exchange
+        );
+        assert_eq!(
+            resolve_lane_direction_mode(true, false),
+            LaneDirectionMode::Rebuild
+        );
+        assert_eq!(
+            resolve_lane_direction_mode(true, true),
+            LaneDirectionMode::Rebuild
+        );
+    }
+
+    #[test]
+    fn lane_direction_pair_copies_rotates_and_crosses_native_sources() {
+        let source = raw_v(0x10000, 0, 0);
+        let axis = raw_v(0, 0x10000, 0);
+        assert_eq!(
+            derive_lane_direction_pair(source, axis, 0, &[]),
+            Some((source, raw_v(0, 0, 0x10000)))
+        );
+        let trig = crate::fixed_point::build_sine_table();
+        let rotated = integrate_orientation([source; 3], [0, 0x400, 0], &trig).unwrap()[0];
+        assert_eq!(
+            derive_lane_direction_pair(source, axis, 0x400, &trig),
+            Some((rotated, wrapping_cross(rotated, axis)))
+        );
+        assert_eq!(derive_lane_direction_pair(source, axis, 1, &[]), None);
     }
 
     #[test]

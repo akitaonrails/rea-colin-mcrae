@@ -1927,14 +1927,10 @@ impl SessionWheelInputs {
                 limit: Fixed16::ONE,
                 threshold: Fixed16::ONE,
             }; 8],
-            lane_direction_sources: cmr_core::vehicle_dynamics::LaneDirectionSources {
-                projection_axis: Vec3::ZERO,
-                source_a0: Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
-                source_b0: Vec3::ZERO,
-                source_a2: Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
-                cross_operand: Vec3::ZERO,
-            },
-            lane_direction_mode: cmr_core::vehicle_dynamics::LaneDirectionMode::Preserve,
+            lane_source_s: Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
+            lane_direction_angle: 0,
+            lane_rebuild: false,
+            lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
                 lanes: [inactive; 4],
                 current_lane: 0,
