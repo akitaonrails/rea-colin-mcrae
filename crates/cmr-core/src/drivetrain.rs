@@ -544,6 +544,42 @@ pub fn arctan_ratio_index(product: i64, denominator: i32, table: &[i16]) -> i16 
     index
 }
 
+/// The `ctl+0x420`-gated accumulation factor of the second per-wheel loop.
+///
+/// The factor is produced only when the speed delta and the gear ratio have
+/// the same nonzero sign: `qmul(qmul(delta, 0x4000), qmul(DAT_0050c5c4,
+/// 0x1999))`. When the per-wheel limit at `ctl+0x35c` is below the result's
+/// magnitude, the result is replaced by the signed limit (`-limit` when the
+/// result is below `1`, otherwise `limit`). Returns `None` on a sign mismatch
+/// or a zero delta/ratio.
+#[must_use]
+pub fn second_loop_accumulation_factor(
+    speed_delta: i32,
+    gear_ratio: i32,
+    scale_c5c4: Fixed16,
+    limit: i32,
+) -> Option<i32> {
+    let sign_match = (speed_delta > 0 && gear_ratio > 0) || (speed_delta < 0 && gear_ratio < 0);
+    if !sign_match {
+        return None;
+    }
+    let factor = scale_c5c4.mul(Fixed16::from_raw(0x1999));
+    let scaled = q16_mul(speed_delta, 0x4000);
+    let mut value = q16_mul(scaled, factor.raw());
+    if limit < value.wrapping_abs() {
+        value = if value < 1 { -limit } else { limit };
+    }
+    Some(value)
+}
+
+/// Accumulates one direction's force into the three accumulators:
+/// `accumulator += qmul(component, factor)` with wrapping addition.
+pub fn accumulate_direction_force(accumulators: &mut [i32; 3], direction: [i32; 3], factor: i32) {
+    for (accumulator, component) in accumulators.iter_mut().zip(direction) {
+        *accumulator = accumulator.wrapping_add(q16_mul(component, factor));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1013,5 +1049,46 @@ mod tests {
             arctan_ratio_index(-0x40000, 0x10000, &table),
             -(0x400 - 0x80)
         );
+    }
+
+    #[test]
+    fn second_loop_accumulation_factor_gates_scales_and_clamps() {
+        // Sign mismatches and zero delta/ratio produce no factor.
+        assert_eq!(
+            second_loop_accumulation_factor(0x10000, -1, Fixed16::ONE, 0x1000),
+            None
+        );
+        assert_eq!(
+            second_loop_accumulation_factor(0, 0x10000, Fixed16::ONE, 0x1000),
+            None
+        );
+        assert_eq!(
+            second_loop_accumulation_factor(0x10000, 0, Fixed16::ONE, 0x1000),
+            None
+        );
+        // qmul(qmul(delta, 0x4000), qmul(scale, 0x1999)) within the limit.
+        assert_eq!(
+            second_loop_accumulation_factor(0x10000, 0x10000, Fixed16::ONE, 0x10000),
+            Some(0x666)
+        );
+        // Above the limit it is replaced by the signed limit.
+        assert_eq!(
+            second_loop_accumulation_factor(0x100000, 1, Fixed16::ONE, 0x1000),
+            Some(0x1000)
+        );
+        assert_eq!(
+            second_loop_accumulation_factor(-0x100000, -1, Fixed16::ONE, 0x1000),
+            Some(-0x1000)
+        );
+    }
+
+    #[test]
+    fn accumulate_direction_force_adds_scaled_components_with_wrapping() {
+        let mut accumulators = [1, 2, 3];
+        accumulate_direction_force(&mut accumulators, [0x10000; 3], 0x8000);
+        assert_eq!(accumulators, [0x8001, 0x8002, 0x8003]);
+        let mut accumulators = [i32::MAX; 3];
+        accumulate_direction_force(&mut accumulators, [0x10000; 3], 0x10000);
+        assert_eq!(accumulators, [i32::MIN + 0xffff; 3]);
     }
 }

@@ -1419,6 +1419,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   `cmr-core::drivetrain::arctan_ratio_index` reproduces it with the
   runtime-built arctan table injected. Two focused tests bring `cmr-core` to
   1,288. The cosine modulation and remaining force accumulation remain open.
+  G03 second-loop gated accumulation factor: produced only when the speed
+  delta and gear ratio share a nonzero sign, `qmul(qmul(delta, 0x4000),
+  qmul(DAT_0050c5c4, 0x1999))`, with the result replaced by the signed limit
+  when the per-wheel limit is below its magnitude.
+  `accumulate_direction_force` reproduces the wrapping
+  `accumulator += qmul(component, factor)` accumulation. Two focused tests
+  bring `cmr-core` to 1,290. The table-driven final accumulation and the
+  force-pass head remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

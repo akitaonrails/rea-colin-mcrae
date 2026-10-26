@@ -1017,8 +1017,13 @@ ratio is folded into the first octant (`min/max`, never above `1.0`), indexed
 by `(numerator << 16) / denominator >> 7`, complemented (`0x400 - index`) when
 the original ratio exceeded `1.0`, and negated on opposite signs.
 `cmr-core::drivetrain::arctan_ratio_index` reproduces it with the runtime-built
-arctan table injected. Two focused tests bring `cmr-core` to 1,288. The cosine
-modulation and remaining force accumulation remain open.
+G03 recovers the gated accumulation factor: produced only when the speed
+delta and gear ratio share a nonzero sign, `qmul(qmul(delta, 0x4000),
+qmul(DAT_0050c5c4, 0x1999))`, with the result replaced by the signed limit
+when the per-wheel limit is below its magnitude. `accumulate_direction_force`
+reproduces the wrapping `accumulator += qmul(component, factor)` accumulation.
+Two focused tests bring `cmr-core` to 1,290. The table-driven final
+accumulation and the force-pass head remain open.
 
 Exit gate:
 
