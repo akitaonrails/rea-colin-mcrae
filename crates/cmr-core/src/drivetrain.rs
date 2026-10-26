@@ -412,6 +412,39 @@ pub fn gate_residual_by_gear_ratio(residual: i32, gear_ratio: i32, config_2ec: i
     residual
 }
 
+/// The second residual of the second per-wheel loop:
+/// `-qmul(qmul(ratio, 0x4000), DAT_0050c5c4)`, then `qmul(..., 0x147a)` when
+/// the per-wheel flag is set. Negation and multiplication wrap.
+#[must_use]
+pub fn second_loop_residual(ratio: Fixed16, scale: Fixed16, flagged: bool) -> Fixed16 {
+    let residual = Fixed16::from_raw(
+        ratio
+            .mul(Fixed16::from_raw(0x4000))
+            .mul(scale)
+            .raw()
+            .wrapping_neg(),
+    );
+    if flagged {
+        residual.mul(Fixed16::from_raw(0x147a))
+    } else {
+        residual
+    }
+}
+
+/// The third residual of the second per-wheel loop: `-qmul(dot, DAT_0050c5c4)`
+/// with wrapping negation.
+#[must_use]
+pub fn second_loop_axis_residual(dot: Fixed16, scale: Fixed16) -> Fixed16 {
+    Fixed16::from_raw(dot.mul(scale).raw().wrapping_neg())
+}
+
+/// Whether the residual exceeds the unit gate used to select the second-loop
+/// normalization stage: `|residual| > 0x10000` (pseudo-absolute).
+#[must_use]
+pub fn second_loop_ratio_is_large(residual: i32) -> bool {
+    residual.wrapping_abs() > 0x10000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -762,5 +795,43 @@ mod tests {
         assert_eq!(gate_residual_by_gear_ratio(100, -1, 0), 0);
         assert_eq!(gate_residual_by_gear_ratio(100, 1, 0), 100);
         assert_eq!(gate_residual_by_gear_ratio(-100, -1, 0), -100);
+    }
+
+    #[test]
+    fn second_loop_residual_scales_negates_and_optionally_applies_147a() {
+        assert_eq!(
+            second_loop_residual(fx(0x20000), Fixed16::ONE, false),
+            fx(-0x8000)
+        );
+        assert_eq!(
+            second_loop_residual(fx(0x20000), Fixed16::ONE, true),
+            fx(-2621)
+        );
+        assert_eq!(
+            second_loop_residual(fx(i32::MAX), Fixed16::ONE, false),
+            fx(-536_870_911)
+        );
+    }
+
+    #[test]
+    fn second_loop_axis_residual_negates_the_scaled_dot() {
+        assert_eq!(
+            second_loop_axis_residual(fx(0x10000), Fixed16::ONE),
+            fx(-0x10000)
+        );
+        // The wrapping negation of INT_MIN stays INT_MIN.
+        assert_eq!(
+            second_loop_axis_residual(fx(i32::MIN), Fixed16::ONE),
+            fx(i32::MIN)
+        );
+    }
+
+    #[test]
+    fn second_loop_ratio_gate_uses_pseudo_absolute_bound() {
+        assert!(!second_loop_ratio_is_large(0x10000));
+        assert!(second_loop_ratio_is_large(0x10001));
+        assert!(second_loop_ratio_is_large(-0x10001));
+        // Pseudo-absolute of INT_MIN stays INT_MIN, which is not large.
+        assert!(!second_loop_ratio_is_large(i32::MIN));
     }
 }

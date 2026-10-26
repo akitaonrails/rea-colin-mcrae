@@ -994,7 +994,15 @@ signs or zeros), and the gear-ratio gate (residual zeroed when `ctl+0x2ec == 0`
 and the ratio is zero or has the opposite sign). `cmr-core::drivetrain` gains
 `wheel_ratio_within_unit`, `residual_with_saturation`, and
 `gate_residual_by_gear_ratio`. Three focused tests bring `cmr-core` to 1,278.
-The remaining second-loop normalization stages remain open.
+G03 recovers the second-loop residual computation: `-qmul(qmul(ratio,
+0x4000), DAT_0050c5c4)` with an optional `0x147a` factor when the per-wheel
+flag is set, and `-qmul(dot, DAT_0050c5c4)` for the third residual, all with
+wrapping negation and multiplication. The normalization stage is selected when
+`|residual| > 0x10000` (pseudo-absolute, so `i32::MIN` is not large).
+`cmr-core::drivetrain` gains `second_loop_residual`,
+`second_loop_axis_residual`, and `second_loop_ratio_is_large`. Three focused
+tests bring `cmr-core` to 1,281. The remaining normalization stages remain
+open.
 
 Exit gate:
 

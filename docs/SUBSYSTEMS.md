@@ -1387,6 +1387,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   `residual_with_saturation`, and `gate_residual_by_gear_ratio`. Three focused
   tests bring `cmr-core` to 1,278. The remaining normalization stages remain
   open.
+  G03 second-loop residual computation and ratio gate: the second residual
+  is `-qmul(qmul(ratio, 0x4000), DAT_0050c5c4)` with an optional `0x147a`
+  factor when the per-wheel flag is set; the third residual is
+  `-qmul(dot, DAT_0050c5c4)`. Negation and multiplication wrap. The
+  normalization stage is selected when `|residual| > 0x10000` (pseudo-absolute,
+  so `i32::MIN` is not large). `cmr-core::drivetrain` gains
+  `second_loop_residual`, `second_loop_axis_residual`, and
+  `second_loop_ratio_is_large`. Three focused tests bring `cmr-core` to 1,281.
+  The remaining normalization stages remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
