@@ -2022,6 +2022,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   the reset/respawn `+0x158` mode writes, including untouched raw/smoothed fields,
   and the unconditional residual-enable value `10` used by application parameters.
   Its scalar and zero application start speeds remain explicit inputs.
+  `FourWheelState` now persists the residual countdown and native `state+0xec` speed.
+  Each step applies the mode-selected raw-speed threshold before wheel production,
+  then updates speed with `sqrt_q16` after translation. The reset value `10` is no
+  longer treated as a permanent enable; separate smoothed speeds remain distinct.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

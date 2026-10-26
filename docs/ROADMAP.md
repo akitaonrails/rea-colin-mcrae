@@ -1352,7 +1352,11 @@ replacing empty producer/application tables. Two focused tests bring `cmr-core` 
 1,367. `reset_wheel_speed_state` now recovers the reset/respawn speed writes and
 unconditional `+0x43b=10`; application parameters use that post-reset enable while
 zero start speeds remain explicit harness input. One all-branch test brings
-`cmr-core` to 1,368. Per-frame raw-speed production remains separate.
+`cmr-core` to 1,368. The per-frame residual enable now persists as a countdown:
+mode-selected raw speed and prior `state+0xec` drive the strict `-0x1998` branch,
+and translation updates that speed through the legacy square root. One focused
+boundary/mode test brings `cmr-core` to 1,369. Smoothed-speed production remains
+separate.
 
 Exit gate:
 

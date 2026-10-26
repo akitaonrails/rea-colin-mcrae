@@ -26,10 +26,11 @@ use crate::compiled_car_initializer::{
 };
 use crate::drivetrain::{
     FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
-    SecondWheelInputs, derive_force_pass_scales, derive_gear_ratio, equalize_wheel_speeds,
-    execute_first_wheel_iteration, execute_second_wheel_core,
+    SecondWheelInputs, advance_residual_enable, derive_force_pass_scales, derive_gear_ratio,
+    equalize_wheel_speeds, execute_first_wheel_iteration, execute_second_wheel_core,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
+use crate::legacy_math::sqrt_q16;
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::vehicle_dynamics::{
     AngularOrientationInput, ContactBasisInput, ContactVectorUpdateInput,
@@ -342,6 +343,10 @@ pub struct FourWheelState {
     pub postprocess: FourWheelPostprocessState,
     /// Persistent `FUN_0040d400` destinations, including skipped records.
     pub contact_updates: [Vec3; 8],
+    /// Prior native velocity magnitude at `state+0xec`.
+    pub speed_ec: i32,
+    /// Per-frame residual-enable countdown at `control+0x43b`.
+    pub residual_enable: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -506,6 +511,8 @@ impl CarState {
                     angle_measures: [Fixed16::ZERO; 4],
                 },
                 contact_updates: [Vec3::ZERO; 8],
+                speed_ec: 0,
+                residual_enable: 10,
             },
         }
     }
@@ -823,6 +830,13 @@ impl RaceState {
                 return Err(WheelPostprocessError::ContactVectorIndex { lane, vector_index });
             }
         }
+        self.car.four_wheel.residual_enable = advance_residual_enable(
+            self.car.four_wheel.residual_enable,
+            wheel.first[0].config_158,
+            self.car.four_wheel.first[0].wheel_speed,
+            self.car.four_wheel.first[2].wheel_speed,
+            self.car.four_wheel.speed_ec,
+        );
         let thresholds = derive_compiled_lane_thresholds(wheel.lane_threshold_inputs);
         let scale_528 =
             contact_count_scale(wheel.angular.momentum.moment_scale, thresholds.count_742);
@@ -869,6 +883,9 @@ impl RaceState {
             resolve_lane_direction_mode(wheel.lane_rebuild, wheel.lane_exchange),
         );
         let mut first = wheel.first;
+        for input in &mut first {
+            input.flag_43b = i32::from(self.car.four_wheel.residual_enable);
+        }
         let mut second = wheel.second.clone();
         for (lane, vector_index) in wheel.contact_vector_indices.into_iter().enumerate() {
             let Some(vector) = contact_vectors.get(vector_index) else {
@@ -961,6 +978,8 @@ impl RaceState {
             Some(force),
             wheel.postprocess.wheel_contacts.contains(&true),
         );
+        self.car.four_wheel.speed_ec =
+            sqrt_q16(self.car.velocity.dot(self.car.velocity).raw() as u32) as i32;
         let mut angular = wheel.angular;
         angular.basis = self.car.motion.basis;
         angular.momentum.angular_velocity = self.car.motion.angular_velocity;
@@ -1516,9 +1535,6 @@ mod tests {
                 basis: [Vec3::ZERO; 3],
             },
         };
-        for first in &mut wheel.first {
-            first.flag_43b = 1;
-        }
         populate_compiled_contact_offsets(
             &mut wheel,
             &crate::compiled_car_initializer::derive_compiled_half_sign_state([
@@ -1573,6 +1589,12 @@ mod tests {
         assert_eq!(
             sample.car.four_wheel.first[2].wheel_speed,
             sample.car.four_wheel.first[3].wheel_speed
+        );
+        assert_eq!(car.four_wheel.residual_enable, 10);
+        assert_eq!(sample.car.four_wheel.residual_enable, 0);
+        assert_eq!(
+            sample.car.four_wheel.speed_ec,
+            sqrt_q16(sample.car.velocity.dot(sample.car.velocity).raw() as u32) as i32
         );
         let contact_vectors = build_contact_basis_vectors(car.motion.contact_basis(car.velocity));
         let thresholds = derive_compiled_lane_thresholds(wheel.lane_threshold_inputs);

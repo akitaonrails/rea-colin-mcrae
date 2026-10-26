@@ -568,7 +568,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T15:17Z | 144h59m | produce-native-wheel-vector-inputs | `a326219` | G03 | Wired constructed A directions and current contact vectors into both wheel loops. Exposed the canonical generated 512-word arctangent table with its exact-1.0 adjacent zero sentinel, replacing empty tables in producer/application paths. Two tests bring `cmr-core` to 1,367; four-wheel and authenticated-session tests pass. |
 
-| 2026-10-26T15:29Z | 145h11m | recover-wheel-speed-reset | _(pending)_ | G03 | Recovered `FUN_00407590`'s mode-dependent raw/smoothed speed stores and unconditional `+0x43b=10` on reset/respawn paths. Added `reset_wheel_speed_state`, preserving unselected fields, and set application residual enables to `10`. One all-branch test brings `cmr-core` to 1,368; authenticated and four-wheel tests pass. |
+| 2026-10-26T15:29Z | 145h11m | recover-wheel-speed-reset | `1d8ec52` | G03 | Recovered `FUN_00407590`'s mode-dependent raw/smoothed speed stores and unconditional `+0x43b=10` on reset/respawn paths. Added `reset_wheel_speed_state`, preserving unselected fields, and set application residual enables to `10`. One all-branch test brings `cmr-core` to 1,368; authenticated and four-wheel tests pass. |
+
+| 2026-10-26T15:38Z | 145h21m | wire-residual-enable-countdown | _(pending)_ | G03 | Recovered and wired the per-frame `+0x43b` countdown using mode-selected raw speed and prior `state+0xec`; translation now stores the legacy velocity magnitude for the next tick. One boundary/mode test brings `cmr-core` to 1,369; composition verifies reset-to-cleared state and speed storage. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

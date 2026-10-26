@@ -153,6 +153,24 @@ pub fn reset_wheel_speed_state(input: WheelSpeedResetInput) -> WheelSpeedReset {
     }
 }
 
+/// Advance the per-frame residual-enable countdown from the prior native speed
+/// and the selected raw wheel speed.
+#[must_use]
+pub fn advance_residual_enable(
+    enable: u8,
+    config_158: i32,
+    raw_front: i32,
+    raw_rear: i32,
+    speed_ec: i32,
+) -> u8 {
+    if enable == 0 {
+        return 0;
+    }
+    let wheel_speed = if config_158 == 0 { raw_rear } else { raw_front };
+    let difference = speed_ec.wrapping_mul(4).wrapping_sub(wheel_speed);
+    if difference < -0x1998 { enable - 1 } else { 0 }
+}
+
 /// The coasting split: [`COAST_DRAG_TORQUE`] distributed directly by the centre
 /// split (the recovered in-gear, no-throttle/no-brake branch of
 /// `FUN_0040d810`). This branch bypasses the per-car front/rear factors used by
@@ -1495,6 +1513,16 @@ mod tests {
                 flag_43b: 10,
             }
         );
+    }
+
+    #[test]
+    fn residual_enable_uses_the_mode_speed_and_strict_countdown_threshold() {
+        assert_eq!(advance_residual_enable(0, 0, 0, 0, i32::MAX), 0);
+        assert_eq!(advance_residual_enable(10, 1, 0x1999, 0, 0), 9);
+        assert_eq!(advance_residual_enable(10, 0, 0, 0x1999, 0), 9);
+        assert_eq!(advance_residual_enable(10, 0, 0x1999, 0, 0), 0);
+        assert_eq!(advance_residual_enable(10, 1, 0x1998, 0, 0), 0);
+        assert_eq!(advance_residual_enable(10, 1, -4, 0, 1), 0);
     }
 
     fn fx(raw: i32) -> Fixed16 {
