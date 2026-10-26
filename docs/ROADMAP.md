@@ -1001,8 +1001,14 @@ wrapping negation and multiplication. The normalization stage is selected when
 `|residual| > 0x10000` (pseudo-absolute, so `i32::MIN` is not large).
 `cmr-core::drivetrain` gains `second_loop_residual`,
 `second_loop_axis_residual`, and `second_loop_ratio_is_large`. Three focused
-tests bring `cmr-core` to 1,281. The remaining normalization stages remain
-open.
+G03 recovers the large-ratio normalization branch: `normalizer = |local_30|`
+and `reciprocal = 2^32 / normalizer` (signed division, `-1` when zero), the two
+direction sources scaled by `qmul(local_2c, reciprocal)` and `qmul(local_30,
+reciprocal)` and summed, then normalized with the legacy generated-table rule
+(zero square sum yields zero direction). The length is `qmul(square_sum,
+normalizer)`. `cmr-core::drivetrain::normalize_second_loop_direction`
+reproduces it. Three focused tests bring `cmr-core` to 1,284. The small-ratio
+path and the remaining force-pass stages remain open.
 
 Exit gate:
 

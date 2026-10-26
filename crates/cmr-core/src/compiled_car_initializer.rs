@@ -1849,7 +1849,7 @@ pub const COMPILED_LANE_BUILD_STORE_ORDER: [CompiledLaneBuildStore; 7] = [
     CompiledLaneBuildStore::FinalOutputZ,
 ];
 
-fn normalize_compiled_lane_vector(vector: [i32; 3]) -> [i32; 3] {
+pub(crate) fn normalize_compiled_lane_vector(vector: [i32; 3]) -> [i32; 3] {
     let square_sum = vector.into_iter().fold(0_i32, |sum, component| {
         sum.wrapping_add(common_prefix_q16_mul(component, component))
     });

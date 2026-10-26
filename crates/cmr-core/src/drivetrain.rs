@@ -445,6 +445,60 @@ pub fn second_loop_ratio_is_large(residual: i32) -> bool {
     residual.wrapping_abs() > 0x10000
 }
 
+fn q16_mul(left: i32, right: i32) -> i32 {
+    ((i64::from(left) * i64::from(right)) >> 16) as i32
+}
+
+/// The large-ratio normalization result of the second per-wheel loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SecondLoopNormalization {
+    /// The normalized summed direction (zero when its square sum is zero).
+    pub direction: [i32; 3],
+    /// `qmul(square_sum, normalizer)`.
+    pub length: i32,
+    /// `|local_30|` (pseudo-absolute), the normalizer.
+    pub normalizer: i32,
+    /// `2^32 / normalizer`, or `-1` when the normalizer is zero.
+    pub reciprocal: i32,
+}
+
+/// Reconstructs the large-ratio normalization branch of the second per-wheel
+/// loop.
+///
+/// With `normalizer = |local_30|`, the two direction sources are scaled by
+/// `qmul(local_2c, reciprocal)` and `qmul(local_30, reciprocal)`, summed
+/// componentwise, and normalized with the legacy generated-table rule: a zero
+/// square sum yields a zero direction, otherwise each component is multiplied
+/// by `2^32/root`. `length` is `qmul(square_sum, normalizer)`.
+#[must_use]
+pub fn normalize_second_loop_direction(
+    local_68: [i32; 3],
+    local_98: [i32; 3],
+    local_2c: i32,
+    local_30: i32,
+) -> SecondLoopNormalization {
+    let normalizer = local_30.wrapping_abs();
+    let reciprocal = if normalizer == 0 {
+        -1
+    } else {
+        (0x1_0000_0000_i64 / i64::from(normalizer)) as i32
+    };
+    let scale_2c = q16_mul(local_2c, reciprocal);
+    let scale_30 = q16_mul(local_30, reciprocal);
+    let summed = std::array::from_fn(|index| {
+        q16_mul(local_68[index], scale_2c).wrapping_add(q16_mul(local_98[index], scale_30))
+    });
+    let square_sum = summed.into_iter().fold(0_i32, |sum, component| {
+        sum.wrapping_add(q16_mul(component, component))
+    });
+    SecondLoopNormalization {
+        direction: crate::compiled_car_initializer::normalize_compiled_lane_vector(summed),
+        length: q16_mul(square_sum, normalizer),
+        normalizer,
+        reciprocal,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -833,5 +887,33 @@ mod tests {
         assert!(second_loop_ratio_is_large(-0x10001));
         // Pseudo-absolute of INT_MIN stays INT_MIN, which is not large.
         assert!(!second_loop_ratio_is_large(i32::MIN));
+    }
+
+    #[test]
+    fn second_loop_normalization_normalizes_the_summed_direction() {
+        // local_30 = 2.0: normalizer 0x20000, reciprocal 0x8000. The summed
+        // direction is the third source alone, a unit Z vector.
+        let result = normalize_second_loop_direction([0; 3], [0, 0, 0x10000], 0, 0x20000);
+        assert_eq!(result.direction, [0, 0, 65_522]);
+        assert_eq!(result.length, 0x20000);
+        assert_eq!(result.normalizer, 0x20000);
+        assert_eq!(result.reciprocal, 0x8000);
+    }
+
+    #[test]
+    fn second_loop_normalization_zero_square_sum_yields_zero_direction() {
+        let result = normalize_second_loop_direction([0; 3], [0; 3], 0x10000, 0x20000);
+        assert_eq!(result.direction, [0; 3]);
+        assert_eq!(result.length, 0);
+        assert_eq!(result.reciprocal, 0x8000);
+    }
+
+    #[test]
+    fn second_loop_normalization_zero_normalizer_uses_minus_one_reciprocal() {
+        let result = normalize_second_loop_direction([0x1000000, 0, 0], [0; 3], 0x10000, 0);
+        assert_eq!(result.normalizer, 0);
+        assert_eq!(result.reciprocal, -1);
+        assert_eq!(result.direction, [-0x10000, 0, 0]);
+        assert_eq!(result.length, 0);
     }
 }

@@ -1396,6 +1396,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   `second_loop_residual`, `second_loop_axis_residual`, and
   `second_loop_ratio_is_large`. Three focused tests bring `cmr-core` to 1,281.
   The remaining normalization stages remain open.
+  G03 second-loop large-ratio normalization: the large-ratio branch computes
+  `normalizer = |local_30|` and `reciprocal = 2^32 / normalizer` (signed
+  division, `-1` when zero), scales and sums the two direction sources by
+  `qmul(local_2c, reciprocal)` and `qmul(local_30, reciprocal)`, and normalizes
+  the sum with the legacy generated-table rule (zero square sum yields zero
+  direction). The length is `qmul(square_sum, normalizer)`.
+  `cmr-core::drivetrain::normalize_second_loop_direction` reproduces it. Three
+  focused tests bring `cmr-core` to 1,284. The small-ratio path and the
+  remaining force-pass stages remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
