@@ -218,6 +218,22 @@ pub struct FourWheelIterationParams<'a> {
     pub angular: AngularOrientationInput,
 }
 
+/// Populate wheel contact offsets from the compiled sign vectors at native state
+/// offsets `+0x5c`, `+0x68`, `+0x74`, and `+0x80`.
+pub fn populate_compiled_contact_offsets(
+    wheel: &mut FourWheelIterationParams<'_>,
+    state: &CompiledHalfSignState,
+) {
+    const INDICES: [[usize; 3]; 4] = [[6, 7, 8], [3, 4, 5], [9, 10, 11], [12, 13, 14]];
+    wheel.contact_offsets = INDICES.map(|[x, y, z]| {
+        Vec3::new(
+            Fixed16::from_raw(state.words[x]),
+            Fixed16::from_raw(state.words[y]),
+            Fixed16::from_raw(state.words[z]),
+        )
+    });
+}
+
 /// Transform current postprocessed wheel forces through the pre-update basis and
 /// accumulate their contact moments in native lane order.
 #[must_use]
@@ -1194,7 +1210,7 @@ mod tests {
             accumulator: Vec3::ZERO,
         };
         let trig = build_sine_table();
-        let wheel = FourWheelIterationParams {
+        let mut wheel = FourWheelIterationParams {
             first: [first_wheel_params(); 4],
             second: std::array::from_fn(|_| second_wheel_params(&trig)),
             contact_vector_indices: [2, 3, 6, 7],
@@ -1225,6 +1241,21 @@ mod tests {
                 basis: [Vec3::ZERO; 3],
             },
         };
+        populate_compiled_contact_offsets(
+            &mut wheel,
+            &crate::compiled_car_initializer::derive_compiled_half_sign_state([
+                0x40000, -0x60000, 0x80000,
+            ]),
+        );
+        assert_eq!(
+            wheel.contact_offsets,
+            [
+                vector([0x20000, 0x30000, 0x40000]),
+                vector([0x20000, 0x30000, -0x40000]),
+                vector([-0x20000, 0x30000, 0x40000]),
+                vector([-0x20000, 0x30000, -0x40000]),
+            ]
+        );
         let mut car = CarState::at_rest();
         car.motion.basis = [
             vector([0x10000, 0, 0]),

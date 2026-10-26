@@ -536,7 +536,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T12:33Z | 142h15m | integrate-angular-pipeline-into-motion-state | `7390b49` | G03, G09 | The four-wheel step now applies the recovered momentum/clamp/reset/orientation pipeline after translation and stores basis, angular velocity and scaled prior moment into `MotionState` for the next contact tick. Extended native-order coverage checks basis/angular mutation; deterministic vertical replay still passes with zero fixture timestep. Contact-moment derivation and application-loop wiring remain open. |
 
-| 2026-10-26T12:40Z | 142h22m | derive-contact-moments-from-lane-forces | _(pending)_ | G03 | Added `derive_wheel_contact_moment`: transform current postprocessed wheel forces through the pre-update basis, cross with contact offsets, filter contacts, and add the explicit base moment before angular integration. The composition test independently verifies the complete angular result. Compiled contact-offset provenance and application-loop wiring remain open. |
+| 2026-10-26T12:40Z | 142h22m | derive-contact-moments-from-lane-forces | `29ec7f4` | G03 | Added `derive_wheel_contact_moment`: transform current postprocessed wheel forces through the pre-update basis, cross with contact offsets, filter contacts, and add the explicit base moment before angular integration. The composition test independently verifies the complete angular result. Compiled contact-offset provenance and application-loop wiring remain open. |
+
+| 2026-10-26T12:48Z | 142h30m | populate-compiled-contact-offsets | _(pending)_ | G03 | Mapped the recovered `+0x5c/+0x68/+0x74/+0x80` half-sign vectors into all four wheel contact offsets. Exact sign and Q16-scaled angular coverage pass, including the nonzero derived moment; vertical replay remains deterministic. Application-session wiring of the complete producer remains open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

@@ -1971,8 +1971,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   therefore use the updated orientation state. The current postprocessed wheel forces
   are transformed through the pre-update basis, crossed with their contact offsets,
   filtered by contact flags, and added to the explicit base moment before that angular
-  update. Compiled contact-offset provenance and application-loop integration remain
-  open. See evidence `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
+  update. Those offsets now come from the compiled half-sign vectors at native
+  `+0x5c/+0x68/+0x74/+0x80`, mapped in wheel-lane order by
+  `populate_compiled_contact_offsets`; exact sign and Q16-scaled angular behavior is
+  covered. Application-session integration remains open. See evidence
+  `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a

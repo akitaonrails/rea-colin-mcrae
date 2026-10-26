@@ -180,7 +180,8 @@ mod tests {
     use crate::fixed_point::{Vec3, build_sine_table};
     use crate::race_state::{
         FirstWheelParams, FourWheelPostprocessParams, SecondWheelParams,
-        populate_force_pass_scales, populate_surface_table_factor,
+        populate_compiled_contact_offsets, populate_force_pass_scales,
+        populate_surface_table_factor,
     };
     use crate::vehicle_dynamics::GeometricPostprocessLane;
     use cmr_formats::pe_surface::{SurfaceCoefficientFamilies, SurfaceCoefficientFamily};
@@ -276,6 +277,10 @@ mod tests {
             );
             populate_surface_table_factor(&mut wheel.second[index], &families, 0).unwrap();
         }
+        populate_compiled_contact_offsets(
+            &mut wheel,
+            &crate::compiled_car_initializer::derive_compiled_half_sign_state([4, -6, 8]),
+        );
         wheel
     }
 

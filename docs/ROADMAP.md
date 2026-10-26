@@ -1295,8 +1295,10 @@ the next contact-production tick consumes the updated native state. Current
 postprocessed wheel forces are now transformed through that pre-update basis and
 crossed with contact offsets, contact-filtered, and added to the explicit base moment
 before angular integration. The composition test independently recomputes this complete
-moment/orientation result. Compiled contact-offset provenance and application-loop
-wiring remain open.
+moment/orientation result. `populate_compiled_contact_offsets` now maps the recovered
+`+0x5c/+0x68/+0x74/+0x80` sign vectors from `CompiledHalfSignState` into all four
+wheel inputs, with exact signs and Q16-scaled angular coverage. Application-session
+wiring of the complete motion producer remains open.
 
 Exit gate:
 
