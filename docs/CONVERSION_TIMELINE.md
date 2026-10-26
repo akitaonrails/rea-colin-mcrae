@@ -636,7 +636,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T18:56Z | 148h38m | complete-launcher-lifecycle | `05c4bfd` | B02 | Recovered the launcher's video teardown, configured `Rally.exe` path construction, `CreateProcessA`, failure reporting and quit. Successful process execution remains outside static analysis. |
 
-| 2026-10-26T18:57Z | 148h39m | complete-executable-map | _(pending)_ | B01 | Recorded the current complete provider inventory: 2,168 procedures, 32,530 symbols and 2,310 defined strings across six blocks. Indirect calls and uncarved code remain explicit unknowns. |
+| 2026-10-26T18:57Z | 148h39m | complete-executable-map | `d3e9d0b` | B01 | Recorded the current complete provider inventory: 2,168 procedures, 32,530 symbols and 2,310 defined strings across six blocks. Indirect calls and uncarved code remain explicit unknowns. |
+
+| 2026-10-26T18:59Z | 148h41m | complete-native-host-loop | _(pending)_ | B09 | Confirmed the native `WallClock` drives the recovered frame driver, 25 Hz catch-up, render skipping and windowed lifecycle. Busy-wait timing and the event pump remain host policy. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

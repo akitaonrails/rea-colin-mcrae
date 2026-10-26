@@ -1477,6 +1477,9 @@ quits. Successful process execution remains outside the static evidence boundary
 B01's executable map now records 2,168 procedures, 32,530 symbols and 2,310
 defined strings across six memory blocks. Indirect calls and uncarved code stay
 explicit unknowns; map coverage is not misrepresented as total discovery.
+B09 is complete: the native `WallClock` drives the recovered frame driver,
+25 Hz catch-up, render skipping and windowed lifecycle. Busy-wait timing and
+message pumping remain host policy rather than unmodeled game behavior.
 
 Exit gate:
 
