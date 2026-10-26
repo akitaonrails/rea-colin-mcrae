@@ -197,7 +197,9 @@ cover the recovered pure rules.
   **G03-AK24 callee `FUN_00492050` chain flag walk (`acfe6c5`):** the callee follows the node link at `+0x8` and sets the flag at `+0x170` to `1` on every node until the null link; a null initial pointer writes nothing. `apply_compiled_92050` reproduces the effect over an injected flag slice (empty means a null initial pointer), avoiding raw pointer chasing in the safe contract. One focused test covers the offsets, an empty chain, and multi-node flags, bringing `cmr-core` to 1,261.
   **G03-AK25 composed post-lane spine (`acfe6c5`):** `execute_compiled_spine_post` composes the recovered post-lane stages in native order: the eight-lane executor (whose failure aborts the spine), AK11 from original source vectors and final lane words, AK13 from its final publication, the AK14 publication into an injected destination, the adjustment using lane zero's word (`+0x2e4`) and source Y (`+0x100`), the adjustment publication, `FUN_00492770`, the `FUN_004126b0` thresholds, the reset, the control flags, `+0x6f8`/`+0x6f0`/`+0x6e8`/`+0x6ec`, the copies (source vectors, the AK13 rows, and the AK11 final vector), `DAT_0050c5fc`, and the final call gate. Every effect is derived through the pure callee contracts, not by executing native code. Two focused tests independently re-derive the full bundle and verify lane-failure aborts before any post effect, bringing `cmr-core` to 1,263. Progressive faults, pointer rebinding, and the early initializer stages remain separate.
   **G03-AK26 complete initializer composition (`989398b`):** `compose_compiled_initializer` chains the early post-dispatch stages, the `FUN_00409c10`/`FUN_00418120` basis transform, the call-spine locals, and the eight-lane/post-lane spine into one typed result. An early failure returns before any lane runs; a lane failure aborts before the post-lane spine. Every stage derives its effects through the recovered pure contracts with injected inputs, so the exact native dataflow into those inputs remains a separate boundary rather than invented behavior. Three focused tests cover independent re-derivation of the whole bundle, early failure with no lane provider activity, and lane-failure abort, bringing `cmr-core` to 1,266. Progressive faults and pointer rebinding remain limitations; wiring the composition to real imported stage and car/config inputs is next.
-  **G03-AK27 authenticated end-to-end initializer run (pending milestone):** `composed_initializer_runs_over_an_authenticated_stage_snapshot` loads a CMPR-wrapped reviewed `.hpc` through `StageCompiledGeometry` and drives `compose_compiled_initializer` with the reviewed synthetic config. All eight lanes complete with the decoded record type `0x1234` and the built output vector, and the AK11 normal, AK13 basis, and copies are independently re-derived from the final lane words. One focused test brings `cmr-core` to 1,267. The car config record remains a reviewed synthetic fixture, not a recovered car-data input; live stage identity and actual sim inputs remain open.
+  **G03-AK27 authenticated end-to-end initializer run (`9a49f69`):** `composed_initializer_runs_over_an_authenticated_stage_snapshot` loads a CMPR-wrapped reviewed `.hpc` through `StageCompiledGeometry` and drives `compose_compiled_initializer` with the reviewed synthetic config. All eight lanes complete with the decoded record type `0x1234` and the built output vector, and the AK11 normal, AK13 basis, and copies are independently re-derived from the final lane words. One focused test brings `cmr-core` to 1,267. The car config record remains a reviewed synthetic fixture, not a recovered car-data input; live stage identity and actual sim inputs remain open.
+  **G03 wheel-slip force and saturation (pending milestone):** the per-wheel loop of `FUN_0040d810` projects the precomputed wheel vector onto the per-wheel axis into a Q16.16 dot product, forms `slip = dot * 4 - wheel_speed` (wrapping), then computes `qmul(slip, DAT_0050c600) * 4` and clamps it symmetrically to the per-wheel limit at `ctl+0x378` before downshifting. The clamp is the exact two-condition form (`limit < value` selects `limit`, else `value < -limit` selects `-limit`, strict at the bounds). The downshift is `5` when the per-wheel flag is set, else `2` when both config dwords `+0x304/+0x308` are zero, else `3`. The sign-disagreement flag between the dot and the slip candidate is also recovered. `cmr-core::drivetrain` gains `wheel_slip_candidate`, `slip_sign_disagreement`, `clamp_wheel_slip_force`, and `wheel_slip_shift`. Four focused tests cover wrapping arithmetic, sign cases, clamp bounds and the negative-limit edge, and shift selection, bringing `cmr-core` to 1,271. The slip-force gate, the per-wheel drive application, and the wheel-speed integration remain.
+
 
 
 
@@ -265,13 +267,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T00:17:04Z
-milestone=run-initializer-over-authenticated-stage
+updated_utc=2026-10-26T00:23:13Z
+milestone=recover-wheel-slip-force-and-saturation
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-recover-the-car-config-record-source
-next_exit_gate=the-car-config-records-are-loaded-from-reviewed-car-data-rather-than-synthetic-fixtures
+current_focus=G03-recover-wheel-drive-application-and-speed-integration
+next_exit_gate=the-wheel-drive-application-and-speed-integration-have-exact-tested-contracts
 <!-- PROGRESS-TAIL-END -->

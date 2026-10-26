@@ -966,6 +966,16 @@ re-derived from the final lane words. One focused test brings `cmr-core` to
 1,267. The car config record remains a reviewed synthetic fixture; recovering
 its car-data source and live stage identity is next.
 
+G03 continues into the per-wheel force pass. The slip candidate is
+`dot * 4 - wheel_speed` (wrapping), the slip force is
+`qmul(slip, DAT_0050c600) * 4` clamped symmetrically to the per-wheel limit at
+`ctl+0x378`, and the downshift is `5` with the per-wheel flag set, else `2`
+when both config dwords are zero, else `3`. `cmr-core::drivetrain` gains
+`wheel_slip_candidate`, `slip_sign_disagreement`, `clamp_wheel_slip_force`,
+and `wheel_slip_shift`. Four focused tests bring `cmr-core` to 1,271. The
+slip-force gate, per-wheel drive application, and wheel-speed integration
+remain open.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

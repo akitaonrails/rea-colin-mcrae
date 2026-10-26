@@ -34,9 +34,10 @@
 //! neutral; the display-RPM literals map engine load to a 2000..8500 tach.
 //! The per-wheel arrays are now distinguished: raw speeds at `+0x2a8[4]`,
 //! smoothed/current speeds at `+0x2b8[4]`, and smoothing gains at `+0x2c8[4]`.
-//! Unknowns (not reproduced): force-candidate derivation and remaining
-//! per-wheel accumulation, parts of the torque-to-velocity integration, and
-//! the loader that copies per-gear ratio tables into the control struct.
+//! Unknowns (not reproduced): the slip-force gate and per-wheel drive
+//! application, the remaining per-wheel accumulation, parts of the
+//! torque-to-velocity integration, and the loader that copies per-gear ratio
+//! tables into the control struct.
 
 use crate::fixed_point::Fixed16;
 
@@ -261,6 +262,52 @@ pub fn display_rpm(normalized_load: Fixed16) -> i32 {
     (scaled + DISPLAY_RPM_MIN).clamp(DISPLAY_RPM_MIN, DISPLAY_RPM_MAX)
 }
 
+/// The slip candidate computed per wheel by `FUN_0040d810`:
+/// `dot * 4 - wheel_speed` with wrapping 32-bit arithmetic. `dot` is the Q16.16
+/// projection of the precomputed wheel vector onto the per-wheel axis.
+#[must_use]
+pub fn wheel_slip_candidate(dot: i32, wheel_speed: i32) -> i32 {
+    dot.wrapping_mul(4).wrapping_sub(wheel_speed)
+}
+
+/// The sign-disagreement flag between the wheel dot product and the slip
+/// candidate: set when they have opposite signs. Zero never disagrees.
+#[must_use]
+pub fn slip_sign_disagreement(dot: i32, slip: i32) -> bool {
+    (dot > 0 && slip < 0) || (dot < 0 && slip > 0)
+}
+
+/// The slip force before the downshift: `qmul(slip, DAT_0050c600) * 4`
+/// clamped symmetrically to the per-wheel limit at `ctl+0x378`.
+///
+/// The clamp is the exact native two-condition form: `limit < value` selects
+/// `limit`, otherwise `value < -limit` selects `-limit`; values at or inside
+/// the bounds pass through unchanged (including the negative-limit edge case).
+#[must_use]
+pub fn clamp_wheel_slip_force(slip: Fixed16, scale: Fixed16, limit: i32) -> i32 {
+    let value = slip.mul(scale).raw().wrapping_mul(4);
+    if limit < value {
+        limit
+    } else if value < -limit {
+        -limit
+    } else {
+        value
+    }
+}
+
+/// The downshift applied to the clamped slip force: `5` when the per-wheel
+/// flag is set, otherwise `2` when both config dwords are zero, else `3`.
+#[must_use]
+pub const fn wheel_slip_shift(flag: i32, config_304: i32, config_308: i32) -> u32 {
+    if flag != 0 {
+        5
+    } else if config_304 == 0 && config_308 == 0 {
+        2
+    } else {
+        3
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,5 +523,61 @@ mod tests {
         assert_eq!(display_rpm(fx(0x8000)), 2000 + 3250); // half load
         // Over-unit load clamps to the max.
         assert_eq!(display_rpm(Fixed16::from_int(2)), DISPLAY_RPM_MAX);
+    }
+
+    #[test]
+    fn slip_candidate_is_dot_times_four_minus_wheel_speed_with_wrapping() {
+        assert_eq!(wheel_slip_candidate(100, 20), 380);
+        assert_eq!(wheel_slip_candidate(-100, 20), -420);
+        assert_eq!(wheel_slip_candidate(100, -20), 420);
+        // dot * 4 wraps before the subtraction.
+        assert_eq!(wheel_slip_candidate(i32::MAX, 0), -4);
+        assert_eq!(wheel_slip_candidate(i32::MAX, 1), -5);
+    }
+
+    #[test]
+    fn slip_sign_disagreement_requires_opposite_nonzero_signs() {
+        assert!(slip_sign_disagreement(1, -1));
+        assert!(slip_sign_disagreement(-1, 1));
+        assert!(!slip_sign_disagreement(1, 1));
+        assert!(!slip_sign_disagreement(-1, -1));
+        assert!(!slip_sign_disagreement(0, -1));
+        assert!(!slip_sign_disagreement(1, 0));
+        assert!(!slip_sign_disagreement(0, 0));
+    }
+
+    #[test]
+    fn slip_force_clamps_symmetrically_to_the_wheel_limit() {
+        // qmul(slip, scale) * 4: within the limit it passes through.
+        assert_eq!(clamp_wheel_slip_force(fx(1), Fixed16::ONE, 100), 4);
+        assert_eq!(
+            clamp_wheel_slip_force(Fixed16::ONE, Fixed16::ONE, 0x40000),
+            0x40000
+        );
+        // Above and below the bounds it clamps.
+        assert_eq!(
+            clamp_wheel_slip_force(Fixed16::from_int(100), Fixed16::ONE, 50),
+            50
+        );
+        assert_eq!(
+            clamp_wheel_slip_force(Fixed16::from_int(-100), Fixed16::ONE, 50),
+            -50
+        );
+        // Exact boundaries pass through (the comparisons are strict).
+        assert_eq!(clamp_wheel_slip_force(fx(12), Fixed16::ONE, 48), 48);
+        assert_eq!(clamp_wheel_slip_force(fx(-12), Fixed16::ONE, 48), -48);
+        // The native negative-limit edge case is preserved.
+        assert_eq!(clamp_wheel_slip_force(Fixed16::ONE, Fixed16::ONE, -50), -50);
+        // The multiply-by-four wraps before the clamp.
+        assert_eq!(clamp_wheel_slip_force(fx(i32::MAX), Fixed16::ONE, 100), -4);
+    }
+
+    #[test]
+    fn slip_shift_selects_five_two_or_three_by_flag_and_config() {
+        assert_eq!(wheel_slip_shift(1, 0, 0), 5);
+        assert_eq!(wheel_slip_shift(0, 0, 0), 2);
+        assert_eq!(wheel_slip_shift(0, 1, 0), 3);
+        assert_eq!(wheel_slip_shift(0, 0, 1), 3);
+        assert_eq!(wheel_slip_shift(-1, 1, 1), 5);
     }
 }

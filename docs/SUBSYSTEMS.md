@@ -1357,6 +1357,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   independently re-derived from the final lane words. One focused test brings
   `cmr-core` to 1,267. The car config record remains a reviewed synthetic
   fixture; recovering its car-data source and live stage identity is next.
+  G03 wheel-slip force and saturation: the per-wheel loop of `FUN_0040d810`
+  forms `slip = dot * 4 - wheel_speed` (wrapping), computes
+  `qmul(slip, DAT_0050c600) * 4`, clamps it symmetrically to the per-wheel
+  limit at `ctl+0x378`, then downshifts by `5`, `2`, or `3` depending on the
+  per-wheel flag and the two config dwords. `cmr-core::drivetrain` gains
+  `wheel_slip_candidate`, `slip_sign_disagreement`, `clamp_wheel_slip_force`,
+  and `wheel_slip_shift`. Four focused tests bring `cmr-core` to 1,271. The
+  slip-force gate, per-wheel drive application, and wheel-speed integration
+  remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
