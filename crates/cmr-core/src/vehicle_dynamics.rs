@@ -1267,6 +1267,21 @@ pub fn apply_contact_vector_update(input: ContactVectorUpdateInput) -> Option<Ve
     Some(residual.scale(reciprocal).scale(magnitude))
 }
 
+/// Apply all eight contact updates in reverse native record order, preserving
+/// the previous destination for skipped or zero-residual records.
+#[must_use]
+pub fn apply_contact_vector_updates(
+    inputs: [ContactVectorUpdateInput; 8],
+    mut previous: [Vec3; 8],
+) -> [Vec3; 8] {
+    for (input, destination) in inputs.into_iter().zip(previous.iter_mut()).rev() {
+        if let Some(updated) = apply_contact_vector_update(input) {
+            *destination = updated;
+        }
+    }
+    previous
+}
+
 /// Apply the recovered official-EU translational damping, velocity, and
 /// position update from `FUN_0040a4a0`.
 ///
@@ -1804,6 +1819,36 @@ mod tests {
                 [(false, Vec3::ZERO, Vec3::ZERO); 4],
             ),
             raw_v(0, 0, -2)
+        );
+    }
+
+    #[test]
+    fn eight_contact_updates_replace_only_produced_destinations() {
+        let input = ContactVectorUpdateInput {
+            update_gate: 0,
+            enabled: false,
+            vector: raw_v(0, 0x10000, 0),
+            basis: raw_v(0x10000, 0, 0),
+            scale_528: Fixed16::ONE,
+            extra_vector: Vec3::ZERO,
+            limit: Fixed16::from_raw(0x20000),
+            threshold: Fixed16::from_raw(0x30000),
+        };
+        let previous = [raw_v(7, 8, 9); 8];
+        let mut inputs = [input; 8];
+        inputs[3].enabled = true;
+        let mut expected = previous;
+        expected[3] = raw_v(0, -0x10000, 0);
+        assert_eq!(apply_contact_vector_updates(inputs, previous), expected);
+        assert_eq!(
+            apply_contact_vector_updates(
+                inputs.map(|input| ContactVectorUpdateInput {
+                    update_gate: 1,
+                    ..input
+                }),
+                previous,
+            ),
+            previous
         );
     }
 

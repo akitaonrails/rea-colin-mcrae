@@ -1932,8 +1932,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   native `1,2,0` update order. `orientation_angle_increment` and
   `integrate_orientation_from_velocities` now connect half-delta angular velocity
   through the single `0x28b` conversion. `apply_control_axis_resets` covers both
-  selective angular reset branches and their priority. Eight-record traversal and
-  full four-iteration production remain open. See evidence
+  selective angular reset branches and their priority.
+  `apply_contact_vector_updates` now traverses all eight records in reverse order
+  and preserves skipped destinations. Contact-state population and full
+  four-iteration production remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
