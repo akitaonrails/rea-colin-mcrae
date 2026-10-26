@@ -1086,8 +1086,14 @@ travel), and `DAT_0050e18c = 0` (per-wheel constant), all written by
 `FUN_0041e3f0` for every car type. With these defaults the axle factors are
 simply the travel value and the wheel drive adds no per-wheel bias.
 `default_car_type_constants` returns them. Two focused tests bring `cmr-core`
-to 1,309. The engine/gear and per-surface capability tables remain to be
-sourced.
+G03 derives the gear ratio and auxiliary values:
+`ratio = qmul(original_at_0x40, DAT_0050c860)` and
+`value = qmul(original_at_0x60, reciprocal)`, with the reciprocal
+`0x100000000 / iVar12` or `-1` when `iVar12 == 0`. The original ratio values
+are runtime car data. `cmr-core::drivetrain` gains `derive_gear_ratio`,
+`derive_gear_aux_value`, and `reciprocal_or_minus_one`. One focused test
+brings `cmr-core` to 1,310. The original ratio tables' loader and the
+per-surface capability tables remain to be sourced.
 
 Exit gate:
 

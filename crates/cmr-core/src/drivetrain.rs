@@ -771,6 +771,31 @@ pub const fn default_car_type_constants() -> CarTypeDefaults {
     }
 }
 
+/// The gear ratio derivation of `FUN_00420740`:
+/// `ratio = qmul(original_at_0x40, DAT_0050c860)`.
+#[must_use]
+pub fn derive_gear_ratio(original_at_0x40: Fixed16, factor_c860: Fixed16) -> Fixed16 {
+    original_at_0x40.mul(factor_c860)
+}
+
+/// The gear auxiliary value derivation of `FUN_00420740`:
+/// `value = qmul(original_at_0x60, reciprocal)`.
+#[must_use]
+pub fn derive_gear_aux_value(original_at_0x60: Fixed16, reciprocal: Fixed16) -> Fixed16 {
+    original_at_0x60.mul(reciprocal)
+}
+
+/// The reciprocal used by `FUN_00420740`: `0x100000000 / value`, or `-1` when
+/// the value is zero.
+#[must_use]
+pub fn reciprocal_or_minus_one(value: i32) -> i32 {
+    if value == 0 {
+        -1
+    } else {
+        (0x1_0000_0000_i64 / i64::from(value)) as i32
+    }
+}
+
 /// The travel update of `FUN_00420260` when the normalized length exceeds 1.0:
 /// `excess = length - 0x10000`; `decrement = min(0x10000, qmul(excess, 0x8000))`;
 /// `travel = max(0, travel - decrement)`; and the `DAT_0050e504` flag is set.
@@ -1760,6 +1785,22 @@ mod tests {
             derive_axle_factor(defaults.rear_factor_constant, defaults.initial_travel),
             Fixed16::ONE
         );
+    }
+
+    #[test]
+    fn gear_ratio_and_aux_value_derivations() {
+        assert_eq!(
+            derive_gear_ratio(Fixed16::from_raw(0x8000), Fixed16::from_raw(0x8000)),
+            Fixed16::from_raw(0x4000)
+        );
+        assert_eq!(
+            derive_gear_aux_value(Fixed16::from_raw(0x10000), Fixed16::from_raw(0x8000)),
+            Fixed16::from_raw(0x8000)
+        );
+        assert_eq!(reciprocal_or_minus_one(0), -1);
+        assert_eq!(reciprocal_or_minus_one(0x10000), 0x10000);
+        assert_eq!(reciprocal_or_minus_one(4), 0x4000_0000);
+        assert_eq!(reciprocal_or_minus_one(2), i32::MIN);
     }
 
     #[test]

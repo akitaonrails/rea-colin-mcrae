@@ -1513,6 +1513,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   `default_car_type_constants` returns them. Two focused tests bring
   `cmr-core` to 1,309. The engine/gear and per-surface capability tables
   remain to be sourced.
+  G03 gear ratio and auxiliary value derivation:
+  `ratio = qmul(original_at_0x40, DAT_0050c860)` and
+  `value = qmul(original_at_0x60, reciprocal)`, with the reciprocal
+  `0x100000000 / iVar12` or `-1` when `iVar12 == 0`. The original ratio values
+  are runtime car data. `cmr-core::drivetrain` gains `derive_gear_ratio`,
+  `derive_gear_aux_value`, and `reciprocal_or_minus_one`. One focused test
+  brings `cmr-core` to 1,310. The original ratio tables' loader and the
+  per-surface capability tables remain to be sourced.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
