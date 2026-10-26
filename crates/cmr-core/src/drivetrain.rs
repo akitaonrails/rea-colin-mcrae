@@ -776,6 +776,15 @@ pub struct SecondWheelInputs<'a> {
     pub cos_table: &'a [i32],
     /// The config scale at `+0x35c` or `+0x36c`.
     pub config_scale: i32,
+    /// The speed delta `speed_at_2b8 - speed_at_2a8` for the gated accumulation.
+    pub speed_delta: i32,
+    /// The per-wheel limit at `ctl+0x35c` for the gated accumulation.
+    pub accumulation_limit: i32,
+    /// The direction dot for the final table-driven accumulation (nonzero to
+    /// produce a factor).
+    pub final_dot: i32,
+    /// The table factor for the final accumulation; `None` selects `0x8000`.
+    pub table_factor: Option<i32>,
 }
 
 /// Effects of the second per-wheel iteration's core.
@@ -793,6 +802,8 @@ pub struct SecondWheelCoreEffects {
     pub angle: i16,
     /// The cosine-modulated force component.
     pub component: i32,
+    /// The three force accumulators after both accumulation stages.
+    pub accumulators: [i32; 3],
 }
 
 /// Composes the second per-wheel iteration's core from the recovered rules:
@@ -836,6 +847,22 @@ pub fn execute_second_wheel_core(input: SecondWheelInputs<'_>) -> SecondWheelCor
         input.arctan_table,
     );
     let angle_cos = input.cos_table[((i32::from(angle) + 0x400) & 0xfff) as usize];
+    let mut accumulators = [0; 3];
+    if let Some(factor) = second_loop_accumulation_factor(
+        input.speed_delta,
+        input.gear_ratio,
+        Fixed16::from_raw(input.scale_c5c4),
+        input.accumulation_limit,
+    ) {
+        accumulate_direction_force(&mut accumulators, input.local_68, factor);
+    }
+    if let Some(factor) = final_loop_accumulation_factor(
+        input.final_dot,
+        Fixed16::from_raw(input.scale_c5c4),
+        input.table_factor,
+    ) {
+        accumulate_direction_force(&mut accumulators, input.local_68, factor);
+    }
     SecondWheelCoreEffects {
         ratio_at_3b0: wheel_slip_candidate(input.dot, input.speed_at_2b8),
         residual_2c,
@@ -843,6 +870,7 @@ pub fn execute_second_wheel_core(input: SecondWheelInputs<'_>) -> SecondWheelCor
         normalization,
         angle,
         component: cosine_modulated_component(input.coefficient_34, angle_cos, input.config_scale),
+        accumulators,
     }
 }
 
@@ -1660,6 +1688,10 @@ mod tests {
             arctan_table: &[],
             cos_table: &[],
             config_scale: 0x10000,
+            speed_delta: 0x10000,
+            accumulation_limit: 0x1000,
+            final_dot: 0x10000,
+            table_factor: Some(0x20000),
         }
     }
 
@@ -1721,6 +1753,27 @@ mod tests {
             effects.component,
             cosine_modulated_component(input.coefficient_34, angle_cos, input.config_scale)
         );
+        // Both accumulation stages use the head's first direction source.
+        let gated = second_loop_accumulation_factor(
+            input.speed_delta,
+            input.gear_ratio,
+            Fixed16::from_raw(input.scale_c5c4),
+            input.accumulation_limit,
+        )
+        .unwrap();
+        assert_eq!(gated, 0x666);
+        let final_factor = final_loop_accumulation_factor(
+            input.final_dot,
+            Fixed16::from_raw(input.scale_c5c4),
+            input.table_factor,
+        )
+        .unwrap();
+        assert_eq!(final_factor, -0x8000);
+        let mut expected = [0; 3];
+        accumulate_direction_force(&mut expected, input.local_68, gated);
+        accumulate_direction_force(&mut expected, input.local_68, final_factor);
+        assert_eq!(effects.accumulators, expected);
+        assert_eq!(expected, [-0x799a, 0, 0]);
     }
 
     fn first_wheel_input() -> FirstWheelInputs {

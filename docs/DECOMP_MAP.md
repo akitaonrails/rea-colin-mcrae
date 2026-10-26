@@ -213,7 +213,9 @@ cover the recovered pure rules.
   **G03 config-gated vector selection and basis stores (`b338f99`):** the alternate pair-orthogonalization branch runs when `DAT_00d3ca80+0x26 & 0x80` is set, or when `DAT_00d3ca88 == 0` and `FUN_0042a840()` returns nonzero (the helper is not called when `DAT_00d3ca88 != 0`). Otherwise the projection results replace the initial direction sources only when `DAT_00d3ca80+0x25 & 0x10` is set. `select_head_vector_path` reproduces the branch selection, and `HEAD_BASIS_STORE_OFFSETS` pins the four three-dword basis rows at `0x380`, `0x38c`, `0x398`, and `0x3a4` in the control struct. Two focused tests cover every gate branch and the disjoint store layout, bringing `cmr-core` to 1,300. The force-pass head and both per-wheel loops are now contracted by pure rules; runtime sim-input wiring remains.
   **G03 first per-wheel iteration composition (`0d4b88b`):** `execute_first_wheel_iteration` composes the recovered first-loop rules in native order: drive application, slip candidate and sign-disagreement, the slip gate and clamped/downshifted slip force (or a zeroed redrive), wheel-speed integration, and the zeroing gate. Three focused tests cover the full slip path, the closed-gate redrive and speed flip, and the rear handbrake-off slip path, bringing `cmr-core` to 1,303. This makes the recovered rules a coherent per-wheel sim step with injected runtime inputs; the second-loop composition and real car-data tables remain.
   **G03 second-loop cosine modulation (`3e8b7ee`):** the second per-wheel loop computes `modulated = qmul(coefficient, angle_cos)`, then `root = legacy_sqrt(qmul(angle_cos, angle_cos) + qmul(modulated, modulated))`, and finally `qmul(root, config_scale)`. The cosine comes from the injected runtime-built cosine table at `sVar8 + 0x400 & 0xfff`. `cmr-core::drivetrain::cosine_modulated_component` reproduces it. One focused test covers the modulated root, the zero-coefficient cosine-square case (root 65550), and zero cosine, bringing `cmr-core` to 1,304. The second-loop composition and runtime table wiring remain.
-  **G03 second-wheel core composition (pending milestone):** `execute_second_wheel_core` composes the second per-wheel iteration from the recovered rules: ratio and residuals, the residual saturation and gear-ratio gate, the two residuals, direction normalization (with the large/small-ratio branch selection), arctan folding, and cosine modulation. The independent re-derivation test checks every stage against the recovered rules, bringing `cmr-core` to 1,305. The full second-loop accumulation and runtime table wiring remain.
+  **G03 second-wheel core composition (`a048740`):** `execute_second_wheel_core` composes the second per-wheel iteration from the recovered rules: ratio and residuals, the residual saturation and gear-ratio gate, the two residuals, direction normalization (with the large/small-ratio branch selection), arctan folding, and cosine modulation. The independent re-derivation test checks every stage against the recovered rules, bringing `cmr-core` to 1,305. The full second-loop accumulation and runtime table wiring remain.
+  **G03 full second-loop accumulation (pending milestone):** `execute_second_wheel_core` now also applies both accumulation stages: the `ctl+0x420`-gated factor (sign-matched speed delta and gear ratio, scaled and clamped) and the final table-driven factor (`dot >> 2` scaled by the table factor or `0x8000`, negated). Both accumulate `qmul(component, factor)` into the three force accumulators with wrapping addition, using the head's first direction source. The independent re-derivation test additionally checks both factors and the exact accumulator values, bringing `cmr-core` to 1,305. Runtime table wiring is next.
+
 
 
 
@@ -297,13 +299,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T01:31:09Z
-milestone=compose-second-wheel-core
+updated_utc=2026-10-26T01:37:06Z
+milestone=compose-full-second-wheel-accumulation
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-wire-runtime-tables-and-compose-the-full-second-iteration
-next_exit_gate=the-full-second-iteration-and-runtime-table-wiring-have-exact-tested-contracts
+current_focus=G03-wire-runtime-tables
+next_exit_gate=the-runtime-car-and-surface-tables-are-loaded-from-reviewed-assets
 <!-- PROGRESS-TAIL-END -->

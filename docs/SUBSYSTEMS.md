@@ -1487,6 +1487,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   native order. The independent re-derivation test checks every stage, bringing
   `cmr-core` to 1,305. The full second-loop accumulation and runtime table
   wiring remain open.
+  G03 full second-loop accumulation: the `ctl+0x420`-gated factor
+  (sign-matched speed delta and gear ratio, scaled and clamped) and the final
+  table-driven factor (`dot >> 2` scaled by the table factor or `0x8000`,
+  negated), both accumulating `qmul(component, factor)` into the three force
+  accumulators with wrapping addition, using the head's first direction
+  source. The independent re-derivation test additionally checks both factors
+  and the exact accumulator values, bringing `cmr-core` to 1,305. Runtime
+  table wiring is next.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
