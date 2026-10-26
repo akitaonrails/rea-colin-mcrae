@@ -967,6 +967,28 @@ pub fn integrate_velocity(velocity: Vec3, accel: Vec3) -> Vec3 {
     velocity.add(accel.scale(VELOCITY_GAIN))
 }
 
+/// Sum the lane forces consumed by `FUN_0040a4a0` before translational damping.
+///
+/// Non-wheel lanes are included unconditionally. Wheel lanes are included only
+/// when their contact flag at `+0x698+4*wheel` is set; iteration and addition
+/// follow native wheel order. The moment/cross-product accumulation is separate.
+#[must_use]
+pub fn sum_translation_lane_forces(
+    base: Vec3,
+    non_wheel_lanes: &[Vec3],
+    wheel_lanes: [(bool, Vec3); 4],
+) -> Vec3 {
+    non_wheel_lanes
+        .iter()
+        .copied()
+        .chain(
+            wheel_lanes
+                .into_iter()
+                .filter_map(|(contact, force)| contact.then_some(force)),
+        )
+        .fold(base, Vec3::add)
+}
+
 /// Apply the recovered official-EU translational damping, velocity, and
 /// position update from `FUN_0040a4a0`.
 ///
@@ -1336,6 +1358,25 @@ mod tests {
         // drag = v * speed.
         let d = drag(v(1, 0, 0), Fixed16::from_raw(0x8000));
         assert_eq!(d.x, Fixed16::from_raw(0x8000));
+    }
+
+    #[test]
+    fn translation_force_sum_filters_wheel_contacts_and_wraps() {
+        let summed = sum_translation_lane_forces(
+            raw_v(i32::MAX, 1, -1),
+            &[raw_v(1, 2, 3), raw_v(4, 5, 6)],
+            [
+                (true, raw_v(10, 20, 30)),
+                (false, raw_v(100, 200, 300)),
+                (true, raw_v(-10, -20, -30)),
+                (false, raw_v(1000, 2000, 3000)),
+            ],
+        );
+        assert_eq!(summed, raw_v(i32::MIN + 4, 8, 8));
+        assert_eq!(
+            sum_translation_lane_forces(Vec3::ZERO, &[], [(false, raw_v(1, 1, 1)); 4]),
+            Vec3::ZERO
+        );
     }
 
     #[test]

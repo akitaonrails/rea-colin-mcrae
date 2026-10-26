@@ -1224,8 +1224,11 @@ production through `select_second_wheel_candidate`, covering both lookup paths
 and the strict normalization-length selection boundary with one additional test.
 The second core now derives that scalar internally from residuals and runtime
 bases, with checked lookup failures propagated through both race-state methods.
-Completing the four-lane producer and consuming the postprocessed accumulators
-downstream remain open.
+The downstream order is now pinned through `FUN_0040ce40` -> `FUN_0040d810` ->
+`FUN_0040d400` -> `FUN_0040a4a0`. `sum_translation_lane_forces` reproduces the
+consumer's base/non-wheel/contacted-wheel net-force sum, with one additional test
+bringing `cmr-core` to 1,333. Race-state ordering, `FUN_0040d400`, the moment path,
+and complete four-lane production remain open.
 
 Exit gate:
 

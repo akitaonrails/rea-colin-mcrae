@@ -1914,8 +1914,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   derives the transition/alternate pair through the appropriate lookup path and
   applies the strict normalization-length selection. The second core now derives
   that scalar from residuals and runtime bases and propagates checked lookup
-  failures through race state. Full four-iteration production and downstream
-  consumption remain separate. See evidence
+  failures through race state. The downstream consumer is now identified:
+  `sum_translation_lane_forces` sums base and non-wheel forces, then only
+  contacted wheel accumulators, before translation damping. The separate
+  `FUN_0040d400` update, moment path, race-state ordering, and full four-iteration
+  production remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
