@@ -1288,8 +1288,11 @@ mutation. `MotionState` now owns the native basis, primary angular velocity and
 compiled half-word inputs, replacing the duplicated contact template; its adapter
 forms the six angular words and uses actual pre-step velocity. One native-field test
 brings `cmr-core` to 1,358. Composition coverage proves velocity provenance,
-invalid-index atomicity and deterministic finish/replay. Angular-pipeline integration
-into this state and application-loop wiring remain open.
+invalid-index atomicity and deterministic finish/replay. The four-wheel step now also
+runs the recovered momentum/clamp/reset/orientation pipeline after translation and
+stores basis, angular velocity and scaled prior moment back into `MotionState`, so
+the next contact-production tick consumes the updated native state. Contact-moment
+derivation from lane forces and application-loop wiring remain open.
 
 Exit gate:
 

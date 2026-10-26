@@ -241,6 +241,23 @@ mod tests {
                 non_wheel_forces: &[],
                 wheel_contacts: [true; 4],
             },
+            angular: crate::vehicle_dynamics::AngularOrientationInput {
+                momentum: crate::vehicle_dynamics::AngularMomentumStepInput {
+                    prior_moment: Vec3::ZERO,
+                    contact_moment: Vec3::ZERO,
+                    moment_scale: Fixed16::ONE,
+                    inertia_scale: Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE),
+                    angular_velocity: Vec3::ZERO,
+                    time_step: Fixed16::ZERO,
+                },
+                clamp_enabled: false,
+                control: crate::vehicle_dynamics::ControlAxisFlags {
+                    mode_3ec: 0,
+                    axis_3f4: 0,
+                    axis_3f8: 0,
+                },
+                basis: [Vec3::ZERO; 3],
+            },
         };
         let families = SurfaceCoefficientFamilies {
             first: SurfaceCoefficientFamily {

@@ -29,10 +29,11 @@ use crate::drivetrain::{
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::vehicle_dynamics::{
-    ContactBasisInput, GeometricPostprocessError, GeometricPostprocessLane,
-    LookupDependentCandidateError, SurfaceCoefficientIndexError, TranslationStepInput,
-    apply_geometric_lane_postprocess, apply_lateral_grip, apply_translation_step,
-    build_contact_basis_vectors, drag, net_accel, sum_translation_lane_forces,
+    AngularOrientationInput, ContactBasisInput, GeometricPostprocessError,
+    GeometricPostprocessLane, LookupDependentCandidateError, SurfaceCoefficientIndexError,
+    TranslationStepInput, apply_angular_orientation_pipeline, apply_geometric_lane_postprocess,
+    apply_lateral_grip, apply_translation_step, build_contact_basis_vectors, drag, net_accel,
+    sum_translation_lane_forces,
 };
 use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
 
@@ -211,6 +212,9 @@ pub struct FourWheelIterationParams<'a> {
     pub second: [SecondWheelParams<'a>; 4],
     pub contact_vector_indices: [usize; 4],
     pub postprocess: FourWheelPostprocessParams<'a>,
+    /// Moment scales/contact input and angular gates; stateful vectors come from
+    /// `MotionState` at each step.
+    pub angular: AngularOrientationInput,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -247,6 +251,8 @@ pub struct MotionState {
     pub basis: [Vec3; 3],
     /// Primary angular velocity at `+0xf0/+0xf4/+0xf8`.
     pub angular_velocity: Vec3,
+    /// Persistent prior moment at `+0x3d8/+0x3dc/+0x3e0`.
+    pub moment: Vec3,
     /// Arithmetic-half state at `+0x2c/+0x30/+0x34` from the compiled initializer.
     pub compiled_half_words: Vec3,
 }
@@ -261,6 +267,7 @@ impl MotionState {
                 Vec3::new(Fixed16::ZERO, Fixed16::ZERO, Fixed16::ONE.neg()),
             ],
             angular_velocity: Vec3::ZERO,
+            moment: Vec3::ZERO,
             compiled_half_words: Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE),
         }
     }
@@ -721,12 +728,23 @@ impl RaceState {
                 )
             }),
         );
-        Ok(self.step_with_optional_world_force(
+        let mut sample = self.step_with_optional_world_force(
             controls,
             params,
             Some(force),
             wheel.postprocess.wheel_contacts.contains(&true),
-        ))
+        );
+        let mut angular = wheel.angular;
+        angular.basis = self.car.motion.basis;
+        angular.momentum.angular_velocity = self.car.motion.angular_velocity;
+        angular.momentum.prior_moment = self.car.motion.moment;
+        let orientation = apply_angular_orientation_pipeline(angular, &self.trig)
+            .expect("the race-state trig table is complete");
+        self.car.motion.basis = orientation.basis;
+        self.car.motion.angular_velocity = orientation.angular_velocity;
+        self.car.motion.moment = orientation.momentum.scaled_prior_moment;
+        sample.car = self.car;
+        Ok(sample)
     }
 
     /// Run a scripted control sequence, returning the per-tick trace.
@@ -1156,6 +1174,23 @@ mod tests {
                 non_wheel_forces: &[],
                 wheel_contacts: [true; 4],
             },
+            angular: AngularOrientationInput {
+                momentum: crate::vehicle_dynamics::AngularMomentumStepInput {
+                    prior_moment: Vec3::ZERO,
+                    contact_moment: vector([0x10000, 0x20000, 0x30000]),
+                    moment_scale: Fixed16::ONE,
+                    inertia_scale: Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE),
+                    angular_velocity: Vec3::ZERO,
+                    time_step: Fixed16::from_raw(0x3333),
+                },
+                clamp_enabled: false,
+                control: crate::vehicle_dynamics::ControlAxisFlags {
+                    mode_3ec: 0,
+                    axis_3f4: 0,
+                    axis_3f8: 0,
+                },
+                basis: [Vec3::ZERO; 3],
+            },
         };
         let mut car = CarState::at_rest();
         car.motion.basis = [
@@ -1194,6 +1229,15 @@ mod tests {
         );
         assert!(sample.car.velocity.x < Fixed16::ZERO);
         assert_eq!(sample.car.position, Vec3::ZERO);
+        assert_ne!(sample.car.motion.basis, car.motion.basis);
+        assert_ne!(
+            sample.car.motion.angular_velocity,
+            car.motion.angular_velocity
+        );
+        assert_ne!(
+            sample.car.motion.contact_basis(sample.car.velocity).rows,
+            car.motion.contact_basis(car.velocity).rows
+        );
 
         let mut moving_car = car;
         moving_car.velocity = vector([0x20000, 0, 0]);

@@ -1965,8 +1965,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   mutation. `MotionState` now owns the three native basis axes, primary angular
   velocity and compiled half-words, and forms the six angular inputs plus actual
   pre-step velocity without a duplicated template. The compiled initializer's first
-  three half-words feed that state directly. Angular-pipeline integration into this
-  state and application-loop integration remain open. See evidence
+  three half-words feed that state directly. After force/translation, the complete
+  step applies the recovered angular pipeline and stores basis, angular velocity and
+  scaled prior moment back into `MotionState`; the following tick's contact vectors
+  therefore use the updated orientation state. Contact-moment derivation from lane
+  forces and application-loop integration remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
