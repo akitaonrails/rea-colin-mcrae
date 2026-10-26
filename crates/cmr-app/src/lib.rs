@@ -1678,12 +1678,15 @@ struct GameFrameOutcome {
 pub struct SessionSurfaceInputs {
     store: SurfaceCapabilityStore,
     runtime_fifth: [u8; SURFACE_ID_COUNT],
+    stage_surface_ids: Vec<u8>,
 }
 
 #[derive(Debug)]
 pub enum SessionSurfaceInputsError {
     Profile(ReviewedSurfaceProfileError),
     Store(SurfaceTableStoreError),
+    Stage(StageFrameError),
+    MissingStageSurfaceData,
 }
 
 impl fmt::Display for SessionSurfaceInputsError {
@@ -1691,6 +1694,8 @@ impl fmt::Display for SessionSurfaceInputsError {
         match self {
             Self::Profile(error) => write!(formatter, "invalid reviewed surface profile: {error}"),
             Self::Store(error) => write!(formatter, "cannot open surface inputs: {error}"),
+            Self::Stage(error) => write!(formatter, "cannot read stage surface data: {error}"),
+            Self::MissingStageSurfaceData => write!(formatter, "stage .srf sibling is missing"),
         }
     }
 }
@@ -1700,7 +1705,15 @@ impl std::error::Error for SessionSurfaceInputsError {
         match self {
             Self::Profile(error) => Some(error),
             Self::Store(error) => Some(error),
+            Self::Stage(error) => Some(error),
+            Self::MissingStageSurfaceData => None,
         }
+    }
+}
+
+impl From<StageFrameError> for SessionSurfaceInputsError {
+    fn from(error: StageFrameError) -> Self {
+        Self::Stage(error)
     }
 }
 
@@ -1717,11 +1730,24 @@ impl SessionSurfaceInputs {
         Ok(Self {
             store,
             runtime_fifth: ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE,
+            stage_surface_ids: Vec::new(),
         })
     }
 
-    /// Compute effect enables for stage-authored surface IDs. The IDs come from
-    /// the caller until the stage producer is recovered; no IDs are inferred here.
+    /// Open the reviewed tables and the stage's CMPR-aware `.srf` sibling.
+    pub fn open_stage(
+        media_root: &Path,
+        runtime_data: &Path,
+        stage: &str,
+        limits: DecodeLimits,
+    ) -> Result<Self, SessionSurfaceInputsError> {
+        let mut inputs = Self::open(runtime_data)?;
+        inputs.stage_surface_ids = read_decoded_section(media_root, stage, ".srf", limits)?
+            .ok_or(SessionSurfaceInputsError::MissingStageSurfaceData)?;
+        Ok(inputs)
+    }
+
+    /// Compute effect enables for stage-authored surface IDs.
     #[must_use]
     pub fn effect_enables(
         &self,
@@ -1732,6 +1758,16 @@ impl SessionSurfaceInputs {
             self.store.tables(),
             &self.runtime_fifth,
         )
+    }
+
+    #[must_use]
+    pub fn stage_surface_ids(&self) -> &[u8] {
+        &self.stage_surface_ids
+    }
+
+    #[must_use]
+    pub fn stage_effect_enables(&self) -> Option<[u32; SURFACE_CAPABILITY_COUNT]> {
+        self.effect_enables(&self.stage_surface_ids)
     }
 }
 
@@ -2071,6 +2107,31 @@ mod tests {
     }
 
     #[test]
+    fn session_stage_surface_ids_come_from_the_srf_bytes() {
+        let temp = surface_runtime();
+        let media = temp.0.join("media");
+        std::fs::create_dir(&media).unwrap();
+        std::fs::write(media.join("AU1.srf"), [3, 3]).unwrap();
+        let inputs =
+            SessionSurfaceInputs::open_stage(&media, &temp.0, "AU1", DecodeLimits::default())
+                .unwrap();
+        assert_eq!(inputs.stage_surface_ids(), &[3, 3]);
+        assert_eq!(
+            inputs.stage_effect_enables(),
+            Some([2, 1, 3, 4, 0, 5, 6, 7, 8, 9, 10, 11, 12, 14, 13, 15])
+        );
+        std::fs::write(media.join("AU1.srf"), [120]).unwrap();
+        let inputs =
+            SessionSurfaceInputs::open_stage(&media, &temp.0, "AU1", DecodeLimits::default())
+                .unwrap();
+        assert_eq!(inputs.stage_effect_enables(), None);
+        assert!(matches!(
+            SessionSurfaceInputs::open_stage(&media, &temp.0, "MISSING", DecodeLimits::default()),
+            Err(SessionSurfaceInputsError::MissingStageSurfaceData)
+        ));
+    }
+
+    #[test]
     fn session_surface_inputs_reject_tampered_data() {
         let temp = surface_runtime();
         let path = temp
@@ -2093,6 +2154,25 @@ mod tests {
             inputs.effect_enables(&[]),
             Some([0; SURFACE_CAPABILITY_COUNT])
         );
+    }
+
+    #[test]
+    #[ignore = "requires user media and reviewed data selected by CMR_ORIGINAL_DIR/CMR_RUNTIME_DATA"]
+    fn official_stage_surface_inputs_compute_without_exposing_values() {
+        let media = std::env::var_os("CMR_ORIGINAL_DIR")
+            .expect("CMR_ORIGINAL_DIR must select a stage media directory");
+        let runtime = std::env::var_os("CMR_RUNTIME_DATA")
+            .expect("CMR_RUNTIME_DATA must select the reviewed runtime-data root");
+        let stage = std::env::var("CMR_STAGE").unwrap_or_else(|_| "AU1".into());
+        let inputs = SessionSurfaceInputs::open_stage(
+            Path::new(&media),
+            Path::new(&runtime),
+            &stage,
+            DecodeLimits::default(),
+        )
+        .unwrap();
+        assert!(!inputs.stage_surface_ids().is_empty());
+        assert!(inputs.stage_effect_enables().is_some());
     }
 
     #[test]

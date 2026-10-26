@@ -1578,6 +1578,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   and tamper rejection, bringing `cmr-app` to 23 library tests; the opt-in
   official session-open smoke passes. Stage-ID production and weather/render
   consumption remain open.
+  G03 stage `.srf` production: `FUN_00480a10` passes the shared loader's decoded
+  `.srf` allocation and byte count directly to `FUN_00424a40`.
+  `SessionSurfaceInputs::open_stage` loads those bytes through the bounded CMPR
+  decoder and `stage_effect_enables` consumes them. One test brings `cmr-app`
+  to 24 library tests; real AU1 passes. Weather/render consumption remains open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

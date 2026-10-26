@@ -448,7 +448,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T05:18Z | 135h00m | establish-runtime-fifth-zero-initialization | `e5ab966` | G03 | All three literal `DAT_0054f824` sites are reads, no direct writer is analyzed, and the address has no file mapping. Established the loader-zero startup boundary as `ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE`, with one full-vector test bringing `cmr-core` to 1,316. Indirect runtime writes remain unknown; application/session wiring remains open. |
 
-| 2026-10-26T05:28Z | 135h10m | wire-session-surface-inputs | _(pending)_ | G03 | Added `cmr-app::SessionSurfaceInputs`: reviewed store ownership, zero-initialized runtime fifth table, and counter computation for caller-supplied stage IDs only. Two tests cover the map, invalid IDs and tamper rejection, bringing `cmr-app` to 23 library tests; the opt-in official session-open smoke passes. Actual stage-ID extraction and weather/render consumption remain open. |
+| 2026-10-26T05:28Z | 135h10m | wire-session-surface-inputs | `96b0c9d` | G03 | Added `cmr-app::SessionSurfaceInputs`: reviewed store ownership, zero-initialized runtime fifth table, and counter computation for caller-supplied stage IDs only. Two tests cover the map, invalid IDs and tamper rejection, bringing `cmr-app` to 23 library tests; the opt-in official session-open smoke passes. Actual stage-ID extraction and weather/render consumption remain open. |
+
+| 2026-10-26T05:36Z | 135h18m | recover-stage-srf-surface-id-production | _(pending)_ | G03 | `FUN_00480a10` passes the CMPR-decoded `.srf` allocation and loader byte count directly to `FUN_00424a40`, identifying the stage IDs as the `.srf` bytes. `SessionSurfaceInputs::open_stage` and `stage_effect_enables` reproduce the path with safe bounds rejection. One test brings `cmr-app` to 24 library tests; real AU1 passes. Weather/render consumption remains open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

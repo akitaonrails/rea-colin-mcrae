@@ -1149,6 +1149,12 @@ computes counters only for caller-supplied stage IDs; no stage IDs are invented.
 Two tests bring `cmr-app` to 23 library tests, and the opt-in official
 session-open smoke passes. Actual stage-ID extraction and weather/render
 consumption remain open.
+G03 recovers the stage-ID producer: `FUN_00480a10` loads a `.srf` sibling and
+passes its decoded bytes and loader byte count directly to `FUN_00424a40`.
+`SessionSurfaceInputs::open_stage` reproduces that input through the bounded
+CMPR-aware reader, and `stage_effect_enables` computes the counters. One test
+brings `cmr-app` to 24 library tests; the real AU1 path passes. Weather/render
+consumption remains open.
 
 Exit gate:
 

@@ -237,8 +237,10 @@ also passes without exposing values. All three literal runtime-table sites are
 reads and no file mapping or direct writer exists, so the adapter also exposes
 the loader-zero startup table; indirect runtime mutation remains unknown.
 `cmr-app::SessionSurfaceInputs` loads this store from the explicit runtime-data
-root and computes effect counters only for caller-supplied stage surface IDs;
-it does not invent a stage-ID producer or a live weather/render path.
+root. `open_stage` also reads the stage's `.srf` sibling through the bounded
+CMPR-aware decoder and uses those decoded bytes as the surface IDs, matching the
+original caller. `stage_effect_enables` computes the counters with safe
+out-of-range rejection; weather/render consumption remains separate.
 
 ## Executable-derived compiled car cases
 
