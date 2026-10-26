@@ -458,7 +458,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T05:59Z | 135h41m | reconstruct-particle-pool-spawn-records | `6322172` | E10 | Recovered the 80-byte `FUN_00424f40` spawn record and eight 100-slot pools: copied vectors/scalars, sprite/tuning switch, frame/flags, and modulo-100 advancement. `stage_spawn_particle` applies weather gates before record creation. Two tests bring `cmr-core` to 1,320; app coverage checks creation and suppression. Unknown fields use neutral names and render traversal remains separate. |
 
-| 2026-10-26T06:16Z | 135h58m | reconstruct-common-particle-pool-update | _(pending)_ | E10 | Recovered the common `FUN_00427d20` active-record update: position/velocity integration, selected vertical/lifetime decrements, `word_38` advance, age increment and deactivation. `advance_common` implements it and preserves `word_38` on respawn. Two tests bring `cmr-core` to 1,322. Type-specific physics and final sprite rendering remain separate. |
+| 2026-10-26T06:16Z | 135h58m | reconstruct-common-particle-pool-update | `d2bf168` | E10 | Recovered the common `FUN_00427d20` active-record update: position/velocity integration, selected vertical/lifetime decrements, `word_38` advance, age increment and deactivation. `advance_common` implements it and preserves `word_38` on respawn. Two tests bring `cmr-core` to 1,322. Type-specific physics and final sprite rendering remain separate. |
+
+| 2026-10-26T06:36Z | 136h18m | recover-type-specific-particle-updates | _(pending)_ | E10 | Recovered clod polynomial ground-relative motion/reset/deactivation and splash damping/random adjustment. `advance_type_specific` composes them before the common update; deactivation clears the recovered fields and Y sentinel. Two tests bring `cmr-core` to 1,324. Final sprite rendering remains separate. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

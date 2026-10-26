@@ -1606,6 +1606,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   `word_38` advance, age increment and deactivation rules from `FUN_00427d20`.
   Respawn preserves `word_38`. Two tests bring `cmr-core` to 1,322. Type-specific
   physics and final sprite rendering remain separate.
+  E10 type-specific updates: `particle_clod_polynomial` and
+  `advance_type_specific` reproduce the clod ground-relative
+  motion/reset/deactivation and splash damping/random adjustment before the
+  common update. Deactivation clears the recovered fields and Y sentinel. Two
+  tests bring `cmr-core` to 1,324. Final sprite rendering remains separate.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

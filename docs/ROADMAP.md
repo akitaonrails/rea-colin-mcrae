@@ -1178,6 +1178,12 @@ position and `0xf333`-damped velocity, selected vertical velocities gain the
 rules deactivate records. `advance_common` implements the shared path and
 preserves `word_38` on respawn. Two tests bring `cmr-core` to 1,322.
 Type-specific physics and final sprite rendering remain separate.
+E10 recovers the clod and splash branches: the Q16 polynomial and
+ground-relative clod motion/reset/deactivation, plus splash damping,
+random-delta adjustment and relative-Y deactivation.
+`advance_type_specific` runs them before the common update, and deactivation
+now clears the recovered fields and Y sentinel. Two tests bring `cmr-core` to
+1,324. Final sprite rendering remains separate.
 
 Exit gate:
 

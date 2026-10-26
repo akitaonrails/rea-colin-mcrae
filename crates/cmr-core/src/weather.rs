@@ -261,6 +261,7 @@ pub mod particles {
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     pub struct ParticleRecord {
         pub position: [i32; 3],
+        pub initial_position: [i32; 3],
         pub vector_24: [i32; 3],
         pub word_30: i32,
         pub word_34: i32,
@@ -288,6 +289,41 @@ pub mod particles {
         pub global_flag: bool,
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct ParticleTypeUpdate {
+        pub clod_base: i32,
+        pub clod_ground: [i32; 3],
+        pub clod_reset_threshold: i32,
+        pub clod_reset_counter: i32,
+        pub random: [i32; 4],
+    }
+
+    /// The Q16 polynomial used by the clod motion factor (`FUN_004281f0`).
+    #[must_use]
+    pub fn particle_clod_polynomial(value: i32) -> i32 {
+        let value = Fixed16::from_raw(value);
+        let squared = value.mul(value);
+        let cubed = squared.mul(value);
+        let fourth = squared.mul(squared);
+        let fifth = fourth.mul(value);
+        (i64::from(fourth.raw()) / 0x180000
+            - i64::from(fifth.raw()) / 0x780000
+            - i64::from(cubed.raw()) / 0x60000
+            - i64::from(value.raw())
+            + 0x10000
+            + i64::from(squared.raw()) / 0x20000) as i32
+    }
+
+    impl ParticleRecord {
+        fn deactivate(&mut self) {
+            self.word_30 = 0;
+            self.word_34 = 0;
+            self.flags &= !1;
+            self.type_byte = 0;
+            self.position[1] = 0xff9c_0000u32 as i32;
+        }
+    }
+
     #[derive(Debug)]
     pub struct ParticlePool {
         records: [ParticleRecord; BILLBOARD_RECORDS_PER_POOL],
@@ -309,6 +345,10 @@ pub mod particles {
             &self.records
         }
 
+        pub fn records_mut(&mut self) -> &mut [ParticleRecord; BILLBOARD_RECORDS_PER_POOL] {
+            &mut self.records
+        }
+
         #[must_use]
         pub fn next_index(&self) -> usize {
             self.next
@@ -326,6 +366,7 @@ pub mod particles {
             };
             self.records[index] = ParticleRecord {
                 position: input.position,
+                initial_position: input.position,
                 vector_24: input.vector_24,
                 word_30: input.word_30,
                 word_34: input.word_34,
@@ -339,6 +380,88 @@ pub mod particles {
                 flags: ((input.global_flag as u8) << 1) | (previous.flags & 0xfd) | 1,
             };
             (wrapped, &self.records[index])
+        }
+
+        /// Apply the clod and splash branches before [`Self::advance_common`].
+        pub fn advance_type_specific(&mut self, update: &ParticleTypeUpdate) -> usize {
+            let mut deactivated = 0;
+            for record in &mut self.records {
+                if record.flags & 1 == 0 {
+                    continue;
+                }
+                record.initial_position = record.position;
+                if matches!(record.type_byte, 2 | 0x15 | 0x1a | 0x17) {
+                    let root = particle_clod_polynomial(
+                        Fixed16::from_raw(update.clod_base)
+                            .mul(Fixed16::from_raw(record.word_38))
+                            .raw(),
+                    );
+                    let factor = if update.clod_base == 0 {
+                        -1
+                    } else {
+                        (i64::from(0x10000i32.wrapping_sub(root)) / i64::from(update.clod_base))
+                            as i32
+                    };
+                    for axis in 0..3 {
+                        record.position[axis] = record.initial_position[axis]
+                            .wrapping_add(
+                                Fixed16::from_raw(update.clod_ground[axis])
+                                    .mul(Fixed16::from_raw(record.word_38))
+                                    .raw(),
+                            )
+                            .wrapping_add(
+                                Fixed16::from_raw(
+                                    record.vector_24[axis].wrapping_sub(update.clod_ground[axis]),
+                                )
+                                .mul(Fixed16::from_raw(factor))
+                                .raw(),
+                            );
+                    }
+                    if record.position[1].wrapping_sub(record.initial_position[1]) < 0 {
+                        for velocity in &mut record.vector_24 {
+                            *velocity = Fixed16::from_raw(*velocity)
+                                .mul(Fixed16::from_raw(0xcccc))
+                                .raw();
+                        }
+                        record.position[1] = record.initial_position[1];
+                        let threshold = (update.clod_reset_threshold
+                            + ((update.clod_reset_threshold >> 31) & 3))
+                            >> 2;
+                        if threshold < update.clod_reset_counter {
+                            record.word_38 = 0;
+                        } else {
+                            record.deactivate();
+                            deactivated += 1;
+                        }
+                    }
+                }
+                if record.type_byte == 0x0b {
+                    for velocity in &mut record.vector_24 {
+                        *velocity = Fixed16::from_raw(*velocity)
+                            .mul(Fixed16::from_raw(0xcccc))
+                            .raw();
+                    }
+                    if record.word_38 > 0x60000 {
+                        let factor =
+                            update.random[0].wrapping_sub(update.random[1]) / 0x28 + 0x10000;
+                        record.word_34 = Fixed16::from_raw(record.word_34)
+                            .mul(Fixed16::from_raw(factor))
+                            .raw();
+                        record.word_34 = record
+                            .word_34
+                            .wrapping_add(update.random[2].wrapping_sub(update.random[3]) / 0x28);
+                    }
+                    for axis in 0..3 {
+                        record.position[axis] =
+                            record.position[axis].wrapping_add(record.vector_24[axis]);
+                    }
+                    if record.position[1].wrapping_sub(record.initial_position[1]) < -0x140000 {
+                        record.deactivate();
+                        deactivated += 1;
+                    }
+                }
+            }
+            deactivated
         }
 
         /// Apply the common active-record update from `FUN_00427d20`.
@@ -365,18 +488,18 @@ pub mod particles {
                 if matches!(record.type_byte, 1 | 6 | 7 | 0xb | 0x16 | 0x18) {
                     record.word_46 = record.word_46.wrapping_sub(record.tuning_48);
                     if record.word_46 as i16 <= -1 {
-                        record.flags &= !1;
+                        record.deactivate();
                         deactivate_record = true;
                     }
                 }
                 if record.type_byte == 0x1b && record.word_3c > 1 {
-                    record.flags &= !1;
+                    record.deactivate();
                     deactivate_record = true;
                 }
                 record.word_38 = record.word_38.wrapping_add(word_38_step);
                 record.word_3c = record.word_3c.wrapping_add(1);
                 if record.word_3c > 5000 {
-                    record.flags &= !1;
+                    record.deactivate();
                     deactivate_record = true;
                 }
                 if deactivate_record {
@@ -394,6 +517,20 @@ pub mod particles {
         #[must_use]
         pub fn pool(&self, index: usize) -> Option<&ParticlePool> {
             self.0.get(index)
+        }
+
+        pub fn pool_mut(&mut self, index: usize) -> Option<&mut ParticlePool> {
+            self.0.get_mut(index)
+        }
+
+        pub fn advance_type_specific(
+            &mut self,
+            pool: usize,
+            update: &ParticleTypeUpdate,
+        ) -> Option<usize> {
+            self.0
+                .get_mut(pool)
+                .map(|pool| pool.advance_type_specific(update))
         }
 
         pub fn advance_common(&mut self, pool: usize, word_38_step: i32) -> Option<usize> {
@@ -710,6 +847,90 @@ mod tests {
         assert_eq!(record.flags, 1);
     }
 
+    fn type_update_input(type_byte: u8) -> particles::ParticleSpawn {
+        particles::ParticleSpawn {
+            position: [10, 20, 30],
+            vector_24: [1, 2, 3],
+            word_30: 7,
+            word_34: 0x10000,
+            word_46: 10,
+            type_byte,
+            tuning: [2, 11],
+            random: 0,
+            low_detail: false,
+            global_flag: true,
+        }
+    }
+
+    #[test]
+    fn clod_polynomial_motion_reset_and_deactivation_follow_recovery() {
+        use particles::{ParticlePools, ParticleTypeUpdate, particle_clod_polynomial};
+        assert_eq!(particle_clod_polynomial(0), 0x10000);
+        assert_eq!(particle_clod_polynomial(0x10000), 0);
+        let update = ParticleTypeUpdate {
+            clod_base: 0x10000,
+            clod_ground: [100, 200, 300],
+            clod_reset_threshold: 0,
+            clod_reset_counter: 1,
+            random: [0; 4],
+        };
+        let mut pools = ParticlePools::default();
+        pools.spawn(0, type_update_input(2)).unwrap();
+        pools.pool_mut(0).unwrap().records_mut()[0].word_38 = 0x10000;
+        assert_eq!(pools.advance_type_specific(0, &update), Some(0));
+        let record = pools.pool(0).unwrap().records()[0];
+        assert_eq!(record.position, [109, 219, 329]);
+        assert_eq!(record.initial_position, [10, 20, 30]);
+        pools.pool_mut(0).unwrap().records_mut()[0].vector_24 = [-1, -0x1000000, -3];
+        assert_eq!(pools.advance_type_specific(0, &update), Some(0));
+        let record = pools.pool(0).unwrap().records()[0];
+        assert_eq!(record.position, [208, 219, 628]);
+        assert_eq!(record.word_38, 0);
+        assert_eq!(record.vector_24[1], -0xcccc00);
+        let record = &mut pools.pool_mut(0).unwrap().records_mut()[0];
+        record.vector_24 = [-1, -0x1000000, -3];
+        record.word_38 = 0x10000;
+        assert_eq!(
+            pools.advance_type_specific(
+                0,
+                &ParticleTypeUpdate {
+                    clod_reset_counter: 0,
+                    ..update
+                }
+            ),
+            Some(1)
+        );
+        let record = pools.pool(0).unwrap().records()[0];
+        assert_eq!(record.flags & 1, 0);
+        assert_eq!(record.type_byte, 0);
+        assert_eq!(record.position[1], 0xff9c_0000u32 as i32);
+        assert_eq!(record.word_34, 0);
+    }
+
+    #[test]
+    fn splash_update_damps_and_applies_random_adjustment() {
+        use particles::{ParticlePools, ParticleTypeUpdate};
+        let update = ParticleTypeUpdate {
+            clod_base: 0x10000,
+            clod_ground: [0; 3],
+            clod_reset_threshold: 0,
+            clod_reset_counter: 0,
+            random: [40, 0, 80, 0],
+        };
+        let mut pools = ParticlePools::default();
+        pools.spawn(0, type_update_input(0x0b)).unwrap();
+        let record = &mut pools.pool_mut(0).unwrap().records_mut()[0];
+        record.position = [0, 0, 0];
+        record.vector_24 = [0x10000; 3];
+        record.word_38 = 0x60001;
+        assert_eq!(pools.advance_type_specific(0, &update), Some(0));
+        let record = pools.pool(0).unwrap().records()[0];
+        assert_eq!(record.vector_24, [0xcccc; 3]);
+        assert_eq!(record.position, [0xcccc; 3]);
+        assert_eq!(record.word_34, 0x10003);
+        assert_eq!(record.flags & 1, 1);
+    }
+
     #[test]
     fn particle_common_update_integrates_ages_and_deactivates() {
         use particles::{ParticlePools, ParticleSpawn};
@@ -730,7 +951,7 @@ mod tests {
         let deactivated = pools.advance_common(0, 9).unwrap();
         assert_eq!(deactivated, 1);
         let record = &pools.pool(0).unwrap().records()[0];
-        assert_eq!(record.position, [0x10001, -0xfffe, 0x8003]);
+        assert_eq!(record.position, [0x10001, 0xff9c_0000u32 as i32, 0x8003]);
         assert_eq!(record.vector_24[0], 0xf333);
         assert_eq!(
             record.vector_24[1],
