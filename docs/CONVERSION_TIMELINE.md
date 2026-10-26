@@ -456,7 +456,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T05:51Z | 135h33m | apply-weather-gates-to-particle-dispatch | `00505b6` | E10 | Added `StageWeatherEffects::allows` and `gated_particle_effect`: dust, snow/snow-cloud, and splash are suppressed when disabled, while unrelated classes remain unchanged. `SessionSurfaceInputs::stage_particle_effect` composes the `.srf`-driven path. One focused test brings `cmr-core` to 1,318; app composition and invalid IDs are covered. Actual particle pool/render spawning remains separate. |
 
-| 2026-10-26T05:59Z | 135h41m | reconstruct-particle-pool-spawn-records | _(pending)_ | E10 | Recovered the 80-byte `FUN_00424f40` spawn record and eight 100-slot pools: copied vectors/scalars, sprite/tuning switch, frame/flags, and modulo-100 advancement. `stage_spawn_particle` applies weather gates before record creation. Two tests bring `cmr-core` to 1,320; app coverage checks creation and suppression. Unknown fields use neutral names and render traversal remains separate. |
+| 2026-10-26T05:59Z | 135h41m | reconstruct-particle-pool-spawn-records | `6322172` | E10 | Recovered the 80-byte `FUN_00424f40` spawn record and eight 100-slot pools: copied vectors/scalars, sprite/tuning switch, frame/flags, and modulo-100 advancement. `stage_spawn_particle` applies weather gates before record creation. Two tests bring `cmr-core` to 1,320; app coverage checks creation and suppression. Unknown fields use neutral names and render traversal remains separate. |
+
+| 2026-10-26T06:16Z | 135h58m | reconstruct-common-particle-pool-update | _(pending)_ | E10 | Recovered the common `FUN_00427d20` active-record update: position/velocity integration, selected vertical/lifetime decrements, `word_38` advance, age increment and deactivation. `advance_common` implements it and preserves `word_38` on respawn. Two tests bring `cmr-core` to 1,322. Type-specific physics and final sprite rendering remain separate. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

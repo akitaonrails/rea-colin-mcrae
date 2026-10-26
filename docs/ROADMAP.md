@@ -1172,6 +1172,12 @@ flags, and modulo-100 advancement. `stage_spawn_particle` applies weather gates
 before creating records. Two tests bring `cmr-core` to 1,320; app coverage checks
 creation and suppression. Unknown fields keep neutral offset names and render
 traversal remains separate.
+E10 recovers the common `FUN_00427d20` update traversal: active records integrate
+position and `0xf333`-damped velocity, selected vertical velocities gain the
+`-0x34` term, selected lifetimes decrement, `word_38` advances, and age/lifetime
+rules deactivate records. `advance_common` implements the shared path and
+preserves `word_38` on respawn. Two tests bring `cmr-core` to 1,322.
+Type-specific physics and final sprite rendering remain separate.
 
 Exit gate:
 

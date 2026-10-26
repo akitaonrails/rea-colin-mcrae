@@ -264,6 +264,7 @@ pub mod particles {
         pub vector_24: [i32; 3],
         pub word_30: i32,
         pub word_34: i32,
+        pub word_38: i32,
         pub word_3c: i32,
         pub sprite_table: ParticleSpriteTable,
         pub word_46: u16,
@@ -316,7 +317,7 @@ pub mod particles {
         /// Overwrite the next slot, advance modulo 100, and report whether it wrapped.
         pub fn spawn(&mut self, input: ParticleSpawn) -> (bool, &ParticleRecord) {
             let index = self.next;
-            let previous_flags = self.records[index].flags;
+            let previous = self.records[index];
             self.next = (index + 1) % BILLBOARD_RECORDS_PER_POOL;
             let wrapped = self.next == 0;
             let tuning_48 = match input.type_byte {
@@ -328,15 +329,61 @@ pub mod particles {
                 vector_24: input.vector_24,
                 word_30: input.word_30,
                 word_34: input.word_34,
+                word_38: previous.word_38,
                 word_3c: 0,
                 sprite_table: particle_sprite_table(input.type_byte),
                 word_46: input.word_46,
                 tuning_48,
                 type_byte: input.type_byte,
                 frame: initial_anim_frame(input.random, input.low_detail),
-                flags: ((input.global_flag as u8) << 1) | (previous_flags & 0xfd) | 1,
+                flags: ((input.global_flag as u8) << 1) | (previous.flags & 0xfd) | 1,
             };
             (wrapped, &self.records[index])
+        }
+
+        /// Apply the common active-record update from `FUN_00427d20`.
+        /// Type-specific physics and final sprite drawing are separate.
+        pub fn advance_common(&mut self, word_38_step: i32) -> usize {
+            let mut deactivated = 0;
+            for record in &mut self.records {
+                if record.flags & 1 == 0 {
+                    continue;
+                }
+                let mut deactivate_record = false;
+                if matches!(record.type_byte, 1 | 5 | 6 | 7 | 8 | 9 | 0xc | 0x16 | 0x18) {
+                    for axis in 0..3 {
+                        record.position[axis] =
+                            record.position[axis].wrapping_add(record.vector_24[axis]);
+                        record.vector_24[axis] = Fixed16::from_raw(record.vector_24[axis])
+                            .mul(Fixed16::from_raw(0xf333))
+                            .raw();
+                    }
+                    if matches!(record.type_byte, 1 | 6 | 0x16 | 0x18) {
+                        record.vector_24[1] = record.vector_24[1].wrapping_sub(0x34);
+                    }
+                }
+                if matches!(record.type_byte, 1 | 6 | 7 | 0xb | 0x16 | 0x18) {
+                    record.word_46 = record.word_46.wrapping_sub(record.tuning_48);
+                    if record.word_46 as i16 <= -1 {
+                        record.flags &= !1;
+                        deactivate_record = true;
+                    }
+                }
+                if record.type_byte == 0x1b && record.word_3c > 1 {
+                    record.flags &= !1;
+                    deactivate_record = true;
+                }
+                record.word_38 = record.word_38.wrapping_add(word_38_step);
+                record.word_3c = record.word_3c.wrapping_add(1);
+                if record.word_3c > 5000 {
+                    record.flags &= !1;
+                    deactivate_record = true;
+                }
+                if deactivate_record {
+                    deactivated += 1;
+                }
+            }
+            deactivated
         }
     }
 
@@ -347,6 +394,12 @@ pub mod particles {
         #[must_use]
         pub fn pool(&self, index: usize) -> Option<&ParticlePool> {
             self.0.get(index)
+        }
+
+        pub fn advance_common(&mut self, pool: usize, word_38_step: i32) -> Option<usize> {
+            self.0
+                .get_mut(pool)
+                .map(|pool| pool.advance_common(word_38_step))
         }
 
         /// Spawn into one of the eight pools; an out-of-range pool is rejected safely.
@@ -655,6 +708,67 @@ mod tests {
             )
             .unwrap();
         assert_eq!(record.flags, 1);
+    }
+
+    #[test]
+    fn particle_common_update_integrates_ages_and_deactivates() {
+        use particles::{ParticlePools, ParticleSpawn};
+        let input = ParticleSpawn {
+            position: [1, 2, 3],
+            vector_24: [0x10000, -0x10000, 0x8000],
+            word_30: 7,
+            word_34: 8,
+            word_46: 1,
+            type_byte: 1,
+            tuning: [2, 11],
+            random: 0,
+            low_detail: false,
+            global_flag: true,
+        };
+        let mut pools = ParticlePools::default();
+        pools.spawn(0, input).unwrap();
+        let deactivated = pools.advance_common(0, 9).unwrap();
+        assert_eq!(deactivated, 1);
+        let record = &pools.pool(0).unwrap().records()[0];
+        assert_eq!(record.position, [0x10001, -0xfffe, 0x8003]);
+        assert_eq!(record.vector_24[0], 0xf333);
+        assert_eq!(
+            record.vector_24[1],
+            (-0x10000i64 * 0xf333 / 0x10000 - 0x34) as i32
+        );
+        assert_eq!(record.vector_24[2], 0x7999);
+        assert_eq!((record.word_38, record.word_3c), (9, 1));
+        assert_eq!(record.word_46, 0xffff);
+        assert_eq!(record.flags & 1, 0);
+        assert_eq!(pools.advance_common(0, 9), Some(0));
+    }
+
+    #[test]
+    fn particle_common_update_enforces_age_cap_and_leaves_other_types_active() {
+        use particles::{ParticlePools, ParticleSpawn};
+        let input = ParticleSpawn {
+            position: [1, 2, 3],
+            vector_24: [4, 5, 6],
+            word_30: 0,
+            word_34: 0,
+            word_46: 10,
+            type_byte: 2,
+            tuning: [1, 1],
+            random: 0,
+            low_detail: false,
+            global_flag: true,
+        };
+        let mut pools = ParticlePools::default();
+        pools.spawn(0, input).unwrap();
+        for _ in 0..5000 {
+            assert_eq!(pools.advance_common(0, 1), Some(0));
+        }
+        let record = &pools.pool(0).unwrap().records()[0];
+        assert_eq!(record.position, [1, 2, 3]);
+        assert_eq!((record.word_38, record.word_3c), (5000, 5000));
+        assert_eq!(record.flags & 1, 1);
+        assert_eq!(pools.advance_common(0, 1), Some(1));
+        assert_eq!(pools.pool(0).unwrap().records()[0].flags & 1, 0);
     }
 
     #[test]

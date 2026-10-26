@@ -1601,6 +1601,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   `stage_spawn_particle` applies weather gates before record creation. Two tests
   bring `cmr-core` to 1,320; app coverage checks creation and suppression.
   Unknown fields use neutral offset names and render traversal remains separate.
+  E10 common pool update: `advance_common` reproduces the active-record position
+  and `0xf333` velocity integration, selected vertical/lifetime decrements,
+  `word_38` advance, age increment and deactivation rules from `FUN_00427d20`.
+  Respawn preserves `word_38`. Two tests bring `cmr-core` to 1,322. Type-specific
+  physics and final sprite rendering remain separate.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
