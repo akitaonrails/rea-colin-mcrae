@@ -25,7 +25,9 @@ use crate::game_race_flow::{InRaceInputs, race_flow_next};
 use crate::game_session::{GameSession, SessionBand};
 use crate::game_state::GameState;
 use crate::host_loop::HostClock;
-use crate::race_state::{CarState, Controls, RaceState, SimParams};
+use crate::race_state::{
+    CarState, Controls, FourWheelIterationParams, RaceState, SimParams, WheelPostprocessError,
+};
 use crate::render_route::{RenderRoute, render_route};
 use crate::stage_checkpoints::StageProgress;
 
@@ -97,30 +99,49 @@ pub struct GameplayFrame {
 }
 
 /// The driven session: the recovered FSM plus the deterministic race sim.
-pub struct GameplaySession {
+pub struct GameplaySession<'a> {
     session: GameSession,
     race: RaceState,
     params: SimParams,
     script: InRaceScript,
+    wheel: Option<FourWheelIterationParams<'a>>,
     sim_ticks: u32,
 }
 
-impl GameplaySession {
-    /// A fresh session at the boot state with the car at rest.
+impl<'a> GameplaySession<'a> {
+    /// A fresh simplified session at the boot state with the car at rest.
     #[must_use]
     pub fn new(params: SimParams, script: InRaceScript) -> Self {
+        Self::with_optional_wheel(params, script, None)
+    }
+
+    /// A fresh session driven by the complete four-wheel producer.
+    #[must_use]
+    pub fn new_with_four_wheel(
+        params: SimParams,
+        script: InRaceScript,
+        wheel: FourWheelIterationParams<'a>,
+    ) -> Self {
+        Self::with_optional_wheel(params, script, Some(wheel))
+    }
+
+    fn with_optional_wheel(
+        params: SimParams,
+        script: InRaceScript,
+        wheel: Option<FourWheelIterationParams<'a>>,
+    ) -> Self {
         GameplaySession {
             session: GameSession::new(),
             race: RaceState::new(CarState::at_rest()),
             params,
             script,
+            wheel,
             sim_ticks: 0,
         }
     }
 
-    /// Advance one frame: run the FSM under `menu_inputs`, step the race sim with
-    /// `controls` when the live state is the driving tick (`5`), advance the
-    /// caller's checkpoint `progress`, and report the frame's render route.
+    /// Advance a simplified session. Four-wheel sessions use [`Self::try_advance`]
+    /// to preserve checked producer failures.
     pub fn advance<C: HostClock>(
         &mut self,
         clock: &C,
@@ -128,17 +149,46 @@ impl GameplaySession {
         controls: Controls,
         progress: &mut StageProgress,
     ) -> GameplayFrame {
-        // Disjoint field borrows so the in-race closure can touch the sim while
-        // the session borrows itself to run the frame.
-        let race = &mut self.race;
-        let params = &self.params;
+        assert!(
+            self.wheel.is_none(),
+            "four-wheel sessions must use try_advance"
+        );
+        self.try_advance(clock, menu_inputs, controls, progress)
+            .expect("the simplified race step is infallible")
+    }
+
+    /// Advance one frame, preserving checked four-wheel producer failures. When
+    /// already in state 5, the driving step completes before the FSM frame, so an
+    /// error does not advance the FSM, stage progress, or simulation tick count.
+    ///
+    /// # Errors
+    ///
+    /// Returns contact-index, candidate lookup, or geometric postprocess failures.
+    pub fn try_advance<C: HostClock>(
+        &mut self,
+        clock: &C,
+        menu_inputs: MenuFlowInputs,
+        controls: Controls,
+        progress: &mut StageProgress,
+    ) -> Result<GameplayFrame, WheelPostprocessError> {
+        let driving_sample = if self.session.current().id() == 5 {
+            Some(match &self.wheel {
+                Some(wheel) => {
+                    self.race
+                        .step_with_all_four_wheels(&controls, &self.params, wheel)?
+                }
+                None => self.race.step(&controls, &self.params),
+            })
+        } else {
+            None
+        };
         let script = self.script;
         let sim_ticks = &mut self.sim_ticks;
         let mut stepped = false;
 
         let frame = self.session.run_frame(clock, menu_inputs, |state| {
             if state.id() == 5 {
-                let sample = race.step(&controls, params);
+                let sample = driving_sample.expect("state-5 sample was produced");
                 *sim_ticks += 1;
                 progress.update(sample.car.position, sample.centiseconds);
                 stepped = true;
@@ -147,11 +197,11 @@ impl GameplaySession {
             race_flow_next(state, inputs).unwrap_or(state)
         });
 
-        GameplayFrame {
+        Ok(GameplayFrame {
             band: frame.band,
             route: frame.plan.render.map(render_route),
             stepped,
-        }
+        })
     }
 
     /// Report the planned render's overrun to the driver's render-skip gate.
@@ -239,6 +289,129 @@ mod tests {
             forward_force: Fixed16::from_raw(8 << 16),
             handbrake: false,
         }
+    }
+
+    fn four_wheel_params(trig: &[i32]) -> FourWheelIterationParams<'_> {
+        let inactive = crate::vehicle_dynamics::GeometricPostprocessLane {
+            active: false,
+            vector_a: Vec3::ZERO,
+            vector_b: Vec3::ZERO,
+            vector_c: Vec3::ZERO,
+            accumulator: Vec3::ZERO,
+        };
+        FourWheelIterationParams {
+            first: [crate::race_state::FirstWheelParams {
+                split: 0x10000,
+                wheel_constant: 0,
+                wheel_vector: [0; 3],
+                state_vector: [0; 3],
+                scale_c600: 0x10000,
+                limit: 0x10000,
+                shift: 0,
+                factor_c5c0: 0x10000,
+                gear: 1,
+                config_40c: 0,
+                config_158: 1,
+                gear_ratio: 1,
+                is_front_wheel: true,
+            }; 4],
+            second: std::array::from_fn(|_| crate::race_state::SecondWheelParams {
+                axis_dot: 0,
+                local_68: [0x10000, 0, 0],
+                local_98: [0; 3],
+                wheel_e8: 0,
+                scale_c5c4: 0x10000,
+                residual_flag_147a: false,
+                config_2ec: 1,
+                gear_ratio: 1,
+                coefficient_34: 0x10000,
+                arctan_table: &[],
+                cos_table: trig,
+                config_scale: 1,
+                transition_gain: 0,
+                transition_base: 0,
+                alternate_gain: 0,
+                alternate_base: 0,
+                correction_gate: 1,
+                accumulation_limit: 0x10000,
+                correction_alternate: 0x10000,
+                surface_vector: [0; 3],
+                table_factor: None,
+            }),
+            contact_vector_indices: [2, 3, 6, 7],
+            contact_offsets: [Vec3::ZERO; 4],
+            postprocess: crate::race_state::FourWheelPostprocessParams {
+                lanes: [inactive; 4],
+                current_lane: 0,
+                argument_scale: Fixed16::ONE,
+                base_force: Vec3::ZERO,
+                non_wheel_forces: &[],
+                wheel_contacts: [true; 4],
+            },
+            angular: crate::vehicle_dynamics::AngularOrientationInput {
+                momentum: crate::vehicle_dynamics::AngularMomentumStepInput {
+                    prior_moment: Vec3::ZERO,
+                    contact_moment: Vec3::ZERO,
+                    moment_scale: Fixed16::ONE,
+                    inertia_scale: Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE),
+                    angular_velocity: Vec3::ZERO,
+                    time_step: Fixed16::ZERO,
+                },
+                clamp_enabled: false,
+                control: crate::vehicle_dynamics::ControlAxisFlags {
+                    mode_3ec: 0,
+                    axis_3f4: 0,
+                    axis_3f8: 0,
+                },
+                basis: [Vec3::ZERO; 3],
+            },
+        }
+    }
+
+    #[test]
+    fn four_wheel_session_steps_and_preserves_checked_errors() {
+        let trig = crate::fixed_point::build_sine_table();
+        let wheel = four_wheel_params(&trig);
+        let mut session =
+            GameplaySession::new_with_four_wheel(params(), InRaceScript::frontend_harness(), wheel);
+        let nodes = line();
+        let mut progress = StageProgress::new(&nodes, 0);
+        for _ in 0..1000 {
+            session
+                .try_advance(&StationaryClock, frontend_menu(), forward(), &mut progress)
+                .unwrap();
+            if session.sim_ticks() != 0 {
+                break;
+            }
+        }
+        assert_eq!(session.sim_ticks(), 1);
+
+        let mut invalid = four_wheel_params(&trig);
+        invalid.contact_vector_indices[0] = 8;
+        let mut session = GameplaySession::new_with_four_wheel(
+            params(),
+            InRaceScript::frontend_harness(),
+            invalid,
+        );
+        let mut progress = StageProgress::new(&nodes, 0);
+        let mut failure = None;
+        for _ in 0..1000 {
+            if let Err(error) =
+                session.try_advance(&StationaryClock, frontend_menu(), forward(), &mut progress)
+            {
+                failure = Some(error);
+                break;
+            }
+        }
+        assert_eq!(
+            failure,
+            Some(WheelPostprocessError::ContactVectorIndex {
+                lane: 0,
+                vector_index: 8,
+            })
+        );
+        assert_eq!(session.sim_ticks(), 0);
+        assert!(!progress.finished());
     }
 
     #[test]

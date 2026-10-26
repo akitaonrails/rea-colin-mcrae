@@ -1297,8 +1297,12 @@ crossed with contact offsets, contact-filtered, and added to the explicit base m
 before angular integration. The composition test independently recomputes this complete
 moment/orientation result. `populate_compiled_contact_offsets` now maps the recovered
 `+0x5c/+0x68/+0x74/+0x80` sign vectors from `CompiledHalfSignState` into all four
-wheel inputs, with exact signs and Q16-scaled angular coverage. Application-session
-wiring of the complete motion producer remains open.
+wheel inputs, with exact signs and Q16-scaled angular coverage.
+`GameplaySession::new_with_four_wheel` now selects the complete producer, and
+`try_advance` runs a state-5 step before the FSM frame so checked failures leave the
+FSM, checkpoint progress and tick count untouched. One success/error test brings
+`cmr-core` to 1,359; the simplified session API remains unchanged. Authenticated
+runtime-data wiring into this session remains open.
 
 Exit gate:
 
