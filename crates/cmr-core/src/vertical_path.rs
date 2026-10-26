@@ -233,6 +233,7 @@ mod tests {
                 table_factor: None,
             }),
             contact_vector_indices: [2, 3, 6, 7],
+            contact_offsets: [Vec3::ZERO; 4],
             postprocess: FourWheelPostprocessParams {
                 lanes: [inactive; 4],
                 current_lane: 0,

@@ -33,7 +33,7 @@ use crate::vehicle_dynamics::{
     GeometricPostprocessLane, LookupDependentCandidateError, SurfaceCoefficientIndexError,
     TranslationStepInput, apply_angular_orientation_pipeline, apply_geometric_lane_postprocess,
     apply_lateral_grip, apply_translation_step, build_contact_basis_vectors, drag, net_accel,
-    sum_translation_lane_forces,
+    sum_contact_moments, sum_translation_lane_forces, transform_contact_force,
 };
 use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
 
@@ -211,10 +211,32 @@ pub struct FourWheelIterationParams<'a> {
     pub first: [FirstWheelParams; 4],
     pub second: [SecondWheelParams<'a>; 4],
     pub contact_vector_indices: [usize; 4],
+    pub contact_offsets: [Vec3; 4],
     pub postprocess: FourWheelPostprocessParams<'a>,
-    /// Moment scales/contact input and angular gates; stateful vectors come from
-    /// `MotionState` at each step.
+    /// Moment scales/base contact input and angular gates; stateful vectors come
+    /// from `MotionState` at each step.
     pub angular: AngularOrientationInput,
+}
+
+/// Transform current postprocessed wheel forces through the pre-update basis and
+/// accumulate their contact moments in native lane order.
+#[must_use]
+pub fn derive_wheel_contact_moment(
+    basis: [Vec3; 3],
+    lanes: &[GeometricPostprocessLane; 4],
+    contacts: [bool; 4],
+    offsets: [Vec3; 4],
+) -> Vec3 {
+    sum_contact_moments(
+        &[],
+        std::array::from_fn(|index| {
+            (
+                contacts[index],
+                transform_contact_force(basis, lanes[index].accumulator),
+                offsets[index],
+            )
+        }),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -738,6 +760,16 @@ impl RaceState {
         angular.basis = self.car.motion.basis;
         angular.momentum.angular_velocity = self.car.motion.angular_velocity;
         angular.momentum.prior_moment = self.car.motion.moment;
+        angular.momentum.contact_moment =
+            angular
+                .momentum
+                .contact_moment
+                .add(derive_wheel_contact_moment(
+                    self.car.motion.basis,
+                    &lanes,
+                    wheel.postprocess.wheel_contacts,
+                    wheel.contact_offsets,
+                ));
         let orientation = apply_angular_orientation_pipeline(angular, &self.trig)
             .expect("the race-state trig table is complete");
         self.car.motion.basis = orientation.basis;
@@ -1166,6 +1198,7 @@ mod tests {
             first: [first_wheel_params(); 4],
             second: std::array::from_fn(|_| second_wheel_params(&trig)),
             contact_vector_indices: [2, 3, 6, 7],
+            contact_offsets: [Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, vector([0, 0x10000, 0])],
             postprocess: FourWheelPostprocessParams {
                 lanes,
                 current_lane: 3,
@@ -1177,7 +1210,7 @@ mod tests {
             angular: AngularOrientationInput {
                 momentum: crate::vehicle_dynamics::AngularMomentumStepInput {
                     prior_moment: Vec3::ZERO,
-                    contact_moment: vector([0x10000, 0x20000, 0x30000]),
+                    contact_moment: vector([1, 2, 3]),
                     moment_scale: Fixed16::ONE,
                     inertia_scale: Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE),
                     angular_velocity: Vec3::ZERO,
@@ -1229,6 +1262,32 @@ mod tests {
         );
         assert!(sample.car.velocity.x < Fixed16::ZERO);
         assert_eq!(sample.car.position, Vec3::ZERO);
+        let mut expected_angular = wheel.angular;
+        expected_angular.basis = car.motion.basis;
+        expected_angular.momentum.angular_velocity = car.motion.angular_velocity;
+        expected_angular.momentum.prior_moment = car.motion.moment;
+        expected_angular.momentum.contact_moment =
+            wheel
+                .angular
+                .momentum
+                .contact_moment
+                .add(derive_wheel_contact_moment(
+                    car.motion.basis,
+                    &expected_lanes,
+                    wheel.postprocess.wheel_contacts,
+                    wheel.contact_offsets,
+                ));
+        let expected_orientation =
+            apply_angular_orientation_pipeline(expected_angular, &trig).unwrap();
+        assert_eq!(sample.car.motion.basis, expected_orientation.basis);
+        assert_eq!(
+            sample.car.motion.angular_velocity,
+            expected_orientation.angular_velocity
+        );
+        assert_eq!(
+            sample.car.motion.moment,
+            expected_orientation.momentum.scaled_prior_moment
+        );
         assert_ne!(sample.car.motion.basis, car.motion.basis);
         assert_ne!(
             sample.car.motion.angular_velocity,

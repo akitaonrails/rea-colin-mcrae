@@ -1291,8 +1291,12 @@ brings `cmr-core` to 1,358. Composition coverage proves velocity provenance,
 invalid-index atomicity and deterministic finish/replay. The four-wheel step now also
 runs the recovered momentum/clamp/reset/orientation pipeline after translation and
 stores basis, angular velocity and scaled prior moment back into `MotionState`, so
-the next contact-production tick consumes the updated native state. Contact-moment
-derivation from lane forces and application-loop wiring remain open.
+the next contact-production tick consumes the updated native state. Current
+postprocessed wheel forces are now transformed through that pre-update basis and
+crossed with contact offsets, contact-filtered, and added to the explicit base moment
+before angular integration. The composition test independently recomputes this complete
+moment/orientation result. Compiled contact-offset provenance and application-loop
+wiring remain open.
 
 Exit gate:
 

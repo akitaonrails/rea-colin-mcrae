@@ -1968,9 +1968,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   three half-words feed that state directly. After force/translation, the complete
   step applies the recovered angular pipeline and stores basis, angular velocity and
   scaled prior moment back into `MotionState`; the following tick's contact vectors
-  therefore use the updated orientation state. Contact-moment derivation from lane
-  forces and application-loop integration remain open. See evidence
-  `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
+  therefore use the updated orientation state. The current postprocessed wheel forces
+  are transformed through the pre-update basis, crossed with their contact offsets,
+  filtered by contact flags, and added to the explicit base moment before that angular
+  update. Compiled contact-offset provenance and application-loop integration remain
+  open. See evidence `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
