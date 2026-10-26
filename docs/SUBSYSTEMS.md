@@ -2276,6 +2276,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   availability globals and table contents remain caller/game inputs. See the
   championship progression, stage-commit, record-persistence and custom-schedule
   evidence rows.
+- `cmr-core::frontend_menu` reconstructs the F01 four-phase screen-transition
+  spine: interactive descriptor result, transition setup, fade-out and fade-in.
+  It emits explicit next-screen, enter, quit and save-and-quit actions; three
+  tests cover complete handoff, terminal results and phase gating. Descriptor
+  navigation and screen-specific callbacks remain.
 - The F02 frontend-configuration structure spans three modules.
   `cmr-core::options_screen` models the settings-header encoding the options
   screens edit (volume channels `0x0c..0x0f` 7-bit + master flag, display-flags

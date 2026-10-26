@@ -608,7 +608,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T17:45Z | 147h27m | complete-persistence-verification | `bd9051f` | F07 | Added championship-record bytes to repeated settings round-trip coverage. Nine integration tests now cover persistence and failure recovery. Original-written differential fixtures are explicitly unsupported without a supplied original save and no shipped-binary execution. |
 
-| 2026-10-26T17:50Z | 147h32m | complete-championship-data-model | _(pending)_ | F05 | Corrected the shared result-slot layout: eight positions, entry/order flag, tiebreak and six preserved trailing bytes; replaced the false completed-stage cursor with the native order-zero selection. One test brings `cmr-core` to 1,396. External `.TIM` content stays data and Rally-School settings persist in `cmRally.cfg`. |
+| 2026-10-26T17:50Z | 147h32m | complete-championship-data-model | `46bd99e` | F05 | Corrected the shared result-slot layout: eight positions, entry/order flag, tiebreak and six preserved trailing bytes; replaced the false completed-stage cursor with the native order-zero selection. One test brings `cmr-core` to 1,396. External `.TIM` content stays data and Rally-School settings persist in `cmRally.cfg`. |
+
+| 2026-10-26T17:55Z | 147h37m | recover-frontend-menu-transition | _(pending)_ | F01 | Reconstructed the four-phase frontend transition spine with next-screen installation and distinct quit/save-and-quit actions. Three tests bring `cmr-core` to 1,399. Descriptor navigation remains. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

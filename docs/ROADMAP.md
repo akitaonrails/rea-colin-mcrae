@@ -1429,6 +1429,9 @@ opaque. `leading_result_slot` now matches the native order-zero scan instead of
 claiming a completed-stage counter. One layout test brings `cmr-core` to 1,396.
 External `.TIM` content remains data; the Rally-School selector persists in
 `cmRally.cfg`, outside the championship save-slot payload.
+F01 now has its four-phase frontend transition spine in `frontend_menu`, with
+explicit next-screen, quit and save-and-quit actions. Three tests bring
+`cmr-core` to 1,399. Descriptor navigation and screen-specific callbacks remain.
 
 Exit gate:
 
