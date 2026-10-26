@@ -526,7 +526,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T11:38Z | 141h20m | recover-contact-input-scaling | `40699fa` | G03 | Recovered `FUN_0040d740`'s strict `0xcccc` distance gate and count scaling, the analogous `FUN_004095e0` count rule, and `FUN_00415d20`'s four response-word timestep products. Three focused tests bring `cmr-core` to 1,355. Contact-vector production and live-loop wiring remain open. |
 
-| 2026-10-26T11:52Z | 141h34m | recover-contact-basis-construction | _(pending)_ | G03 | Recovered `FUN_00409f90`: twelve primary scalar dwords, mirrored negatives, eight-vector assembly and velocity translation. Added `build_contact_basis_vectors` with primary/mirror/cancellation coverage; `cmr-core` has 1,356 tests. Contact-input wiring and live-loop integration remain open. |
+| 2026-10-26T11:52Z | 141h34m | recover-contact-basis-construction | `bc21f07` | G03 | Recovered `FUN_00409f90`: twelve primary scalar dwords, mirrored negatives, eight-vector assembly and velocity translation. Added `build_contact_basis_vectors` with primary/mirror/cancellation coverage; `cmr-core` has 1,356 tests. Contact-input wiring and live-loop integration remain open. |
+
+| 2026-10-26T12:05Z | 141h47m | wire-contact-basis-vectors | _(pending)_ | G03, G10 | Added `populate_contact_basis_vector` with checked selection and invalid-index atomicity. The four-wheel vertical fixture now derives every second-wheel surface vector through the adapter and still finishes/replays exactly. One focused test brings `cmr-core` to 1,357. Live motion-state and application-loop wiring remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

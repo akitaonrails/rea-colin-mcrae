@@ -180,9 +180,9 @@ mod tests {
     use crate::fixed_point::{Vec3, build_sine_table};
     use crate::race_state::{
         FirstWheelParams, FourWheelPostprocessParams, SecondWheelParams,
-        populate_force_pass_scales, populate_surface_table_factor,
+        populate_contact_basis_vector, populate_force_pass_scales, populate_surface_table_factor,
     };
-    use crate::vehicle_dynamics::GeometricPostprocessLane;
+    use crate::vehicle_dynamics::{ContactBasisInput, GeometricPostprocessLane};
     use cmr_formats::pe_surface::{SurfaceCoefficientFamilies, SurfaceCoefficientFamily};
 
     fn four_wheel_params(trig: &[i32]) -> FourWheelIterationParams<'_> {
@@ -247,7 +247,17 @@ mod tests {
             },
             second: SurfaceCoefficientFamily { values: [0; 120] },
         };
-        for index in 0..4 {
+        let contact_basis = ContactBasisInput {
+            rows: [
+                Vec3::new(Fixed16::ONE.neg(), Fixed16::ZERO, Fixed16::ZERO),
+                Vec3::new(Fixed16::ZERO, Fixed16::ONE.neg(), Fixed16::ZERO),
+                Vec3::new(Fixed16::ZERO, Fixed16::ZERO, Fixed16::ONE.neg()),
+            ],
+            angular: [Fixed16::ONE; 6],
+            velocity: Vec3::ZERO,
+        };
+        let contact_indices = [2, 3, 6, 7];
+        for (index, contact_index) in contact_indices.into_iter().enumerate() {
             let _ = populate_force_pass_scales(
                 &mut wheel.first[index],
                 &mut wheel.second[index],
@@ -256,6 +266,8 @@ mod tests {
                 Fixed16::from_raw(0x40000),
             );
             populate_surface_table_factor(&mut wheel.second[index], &families, 0).unwrap();
+            populate_contact_basis_vector(&mut wheel.second[index], contact_basis, contact_index)
+                .unwrap();
         }
         wheel
     }

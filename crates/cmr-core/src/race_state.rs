@@ -29,9 +29,10 @@ use crate::drivetrain::{
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::vehicle_dynamics::{
-    GeometricPostprocessError, GeometricPostprocessLane, LookupDependentCandidateError,
-    SurfaceCoefficientIndexError, TranslationStepInput, apply_geometric_lane_postprocess,
-    apply_lateral_grip, apply_translation_step, drag, net_accel, sum_translation_lane_forces,
+    ContactBasisInput, GeometricPostprocessError, GeometricPostprocessLane,
+    LookupDependentCandidateError, SurfaceCoefficientIndexError, TranslationStepInput,
+    apply_geometric_lane_postprocess, apply_lateral_grip, apply_translation_step,
+    build_contact_basis_vectors, drag, net_accel, sum_translation_lane_forces,
 };
 use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
 
@@ -167,6 +168,21 @@ pub fn populate_surface_table_factor(
             })?;
     second.table_factor = Some(coefficient);
     Ok(())
+}
+
+/// Build the contact vectors and select one for a second-wheel surface input.
+#[must_use]
+pub fn populate_contact_basis_vector(
+    second: &mut SecondWheelParams<'_>,
+    input: ContactBasisInput,
+    vector_index: usize,
+) -> Option<Vec3> {
+    if vector_index >= 8 {
+        return None;
+    }
+    let vector = build_contact_basis_vectors(input)[vector_index];
+    second.surface_vector = [vector.x.raw(), vector.y.raw(), vector.z.raw()];
+    Some(vector)
 }
 
 /// Runtime vector lanes for the recovered four-lane postprocess. The current
@@ -788,6 +804,33 @@ mod tests {
             surface_vector: [0x10000, 0, 0],
             table_factor: None,
         }
+    }
+
+    #[test]
+    fn contact_basis_vectors_populate_second_wheel_with_checked_indices() {
+        let trig = build_sine_table();
+        let mut second = second_wheel_params(&trig);
+        let input = ContactBasisInput {
+            rows: [
+                Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
+                Vec3::new(Fixed16::ZERO, Fixed16::ONE, Fixed16::ZERO),
+                Vec3::new(Fixed16::ZERO, Fixed16::ZERO, Fixed16::ONE),
+            ],
+            angular: [Fixed16::ONE; 6],
+            velocity: Vec3::ZERO,
+        };
+        assert_eq!(
+            populate_contact_basis_vector(&mut second, input, 5),
+            Some(Vec3::new(
+                Fixed16::ZERO,
+                Fixed16::from_raw(0x20000),
+                Fixed16::from_raw(-0x20000),
+            ))
+        );
+        assert_eq!(second.surface_vector, [0, 0x20000, -0x20000]);
+        second.surface_vector = [7, 8, 9];
+        assert_eq!(populate_contact_basis_vector(&mut second, input, 8), None);
+        assert_eq!(second.surface_vector, [7, 8, 9]);
     }
 
     #[test]

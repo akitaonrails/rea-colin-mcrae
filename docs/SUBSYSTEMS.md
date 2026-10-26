@@ -1956,10 +1956,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   authenticated store to second-core callers. The strict `0xcccc` distance gate,
   count scaling and four response-word timestep products are now reconstructed.
   `build_contact_basis_vectors` reconstructs the twelve primary scalar dwords,
-  mirrored negatives, eight-vector layout and velocity translation. Contact-input
-  wiring and live application-loop integration remain open. See evidence
-  `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
-  `impl.sim-full-second-accumulation`.
+  mirrored negatives, eight-vector layout and velocity translation.
+  `populate_contact_basis_vector` selects those vectors into second-wheel surface
+  inputs with checked indices and no mutation on rejection; the complete vertical
+  fixture now derives all four contact inputs through this adapter and retains its
+  deterministic finish/replay contract. Live motion-state and application-loop
+  integration remain open. See evidence `impl.sim-race-state-trace`,
+  `impl.sim-translation-step`, and `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

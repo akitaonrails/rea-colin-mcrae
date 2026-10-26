@@ -1278,8 +1278,12 @@ distance gate, count scaling, and four response-word timestep products with thre
 focused tests, bringing `cmr-core` to 1,355.
 `build_contact_basis_vectors` now reconstructs the twelve primary scalar dwords,
 mirrored negatives, eight-vector layout and velocity translation from
-`FUN_00409f90`, bringing `cmr-core` to 1,356. Contact-input wiring and live-loop
-integration remain open.
+`FUN_00409f90`, bringing `cmr-core` to 1,356.
+`populate_contact_basis_vector` now selects a checked vector into each second-wheel
+surface input, with invalid-index atomicity; the four-wheel vertical fixture derives
+all four contact inputs through this adapter and still finishes/replays exactly.
+One focused test brings `cmr-core` to 1,357. Live motion-state and application-loop
+wiring remain open.
 
 Exit gate:
 
