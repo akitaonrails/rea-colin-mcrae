@@ -1576,6 +1576,10 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+H03 now includes the exact collision impact bucket and both volume formulas,
+plus the strict listener-curve threshold. Vendor post-scale units and 3D
+coordinates remain explicit unsupported boundaries.
+
 H01 is closed by B03's complete 16-import ABI scope. H02 now records both
 `QSWaveMixOpenWave` forms exactly (`8` named PCM, `0x10` managed); unsupported
 vendor priority/lifetime and memory-versus-file meanings remain explicit rather

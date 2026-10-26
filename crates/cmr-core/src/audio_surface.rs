@@ -49,14 +49,64 @@ pub const SURFACE_OBJECT_TYPE_COUNT: u32 = 0x78;
 pub const SURFACE_WAVE_RATE_HZ: u32 = 11_025;
 pub const SURFACE_WAVE_BITS: u16 = 16;
 
-// NOTE: the impact sub-wave selection and the impact volume scaling in
-// `FUN_00469e80` are observed (speed selects a sub-wave within the collision
-// bank and scales the one-shot volume between ~half and ~full, with a named
-// material wave layered on `channel+1` for hard objects `0 < objType < 0x11`),
-// but the exact integer bit-expression is not yet transcribed with confidence
-// from the delegated decompile, so it is documented in the evidence ledger
-// (`rea.official-eu.audio-surface-collision`) rather than encoded here. Only the
-// relations recovered unambiguously are implemented below.
+/// Exact impact-speed substitution from `FUN_00469e80`.
+#[must_use]
+pub fn normalized_impact_speed(speed: i32) -> i32 {
+    if speed == 0x10000 { 0xfd70 } else { speed }
+}
+
+fn impact_q16(speed: i32, scale: i32) -> i32 {
+    crate::fixed_point::Fixed16::from_raw(speed)
+        .mul(crate::fixed_point::Fixed16::from_raw(scale))
+        .raw()
+}
+
+/// The signed `(speed * 100 >> 16) % 10` impact-strength bucket.
+#[must_use]
+pub fn impact_speed_bucket(speed: i32) -> i32 {
+    (impact_q16(normalized_impact_speed(speed), 0x640000) >> 16) % 10
+}
+
+/// The one-shot sub-wave slot offset `(speed * 10 >> 16) >> 16`.
+#[must_use]
+pub fn impact_subwave_offset(speed: i32) -> i32 {
+    impact_q16(normalized_impact_speed(speed), 0xa0000) >> 16 >> 16
+}
+
+/// Primary impact volume: below bucket 11, half volume plus `bucket/20`;
+/// otherwise full volume. Signed remainder by 10 makes the first arm the only
+/// reachable branch for every input, including negative values.
+#[must_use]
+pub fn impact_primary_volume(speed: i32, full_volume: i32) -> i32 {
+    let bucket = impact_speed_bucket(speed);
+    if bucket < 11 {
+        full_volume * bucket / 20 + full_volume / 2
+    } else {
+        full_volume
+    }
+}
+
+/// Secondary material volume: below bucket 11, `full*bucket/10`; otherwise full.
+#[must_use]
+pub fn impact_secondary_volume(speed: i32, full_volume: i32) -> i32 {
+    let bucket = impact_speed_bucket(speed);
+    if bucket < 11 {
+        full_volume * bucket / 10
+    } else {
+        full_volume
+    }
+}
+
+/// Apply `FUN_0047f9c0`: above listener value 333, scale by listener/1000;
+/// otherwise return one third, preserving signed integer division.
+#[must_use]
+pub fn scaled_volume_curve(listener_value: i32, volume: i32) -> i32 {
+    if listener_value > 0x14d {
+        listener_value * volume / 1000
+    } else {
+        volume / 3
+    }
+}
 
 /// The surface-roll volume for a wheel's contact-sample counter, reproducing
 /// `FUN_0046a030`: it ramps as `base/3 + (count-5)*base/0x2d` until `count`
@@ -114,6 +164,18 @@ mod tests {
         assert_eq!(ROLL_BANK_OFFSET, 0x1b);
         assert_eq!(SURFACE_OBJECT_TYPE_COUNT, 120);
         assert_eq!(SURFACE_WAVE_RATE_HZ, 11_025);
+    }
+
+    #[test]
+    fn impact_speed_volume_and_curve_match_native_integer_order() {
+        assert_eq!(impact_speed_bucket(0x10000), 8);
+        assert_eq!(impact_primary_volume(0x10000, 32_000), 28_800);
+        assert_eq!(impact_secondary_volume(0x10000, 32_000), 25_600);
+        assert_eq!(impact_subwave_offset(0x10000), 0);
+        assert_eq!(impact_speed_bucket(0), 0);
+        assert_eq!(impact_primary_volume(0, 32_000), 16_000);
+        assert_eq!(scaled_volume_curve(334, 30_000), 10_020);
+        assert_eq!(scaled_volume_curve(333, 30_000), 10_000);
     }
 
     #[test]

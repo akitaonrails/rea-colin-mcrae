@@ -2399,6 +2399,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- `audio_surface` implements collision impact speed bucketing, primary and
+  secondary volumes, sub-wave offset, and the `>333` listener-volume curve with
+  native integer order. Vendor units and 3D coordinate meanings stay explicit.
 - Audio ABI/loading is bounded by the completed 16-import scope and the two
   exact open-wave forms (`8` named PCM, `0x10` managed). `WaveOpenCall` preserves
   those values without inventing QMixer's vendor flag meanings.
