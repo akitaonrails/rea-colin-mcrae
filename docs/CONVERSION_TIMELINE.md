@@ -666,7 +666,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T20:10Z | 149h52m | complete-stage-timing-and-results | `40ba03b` | G05 | Implemented the exact checkpoint delta normalizer and result-row TTL lifecycle, confirmed best-time persistence through the checked settings backend, and corrected `FUN_00472809` as a print call site. The spawn writer is explicitly unsupported by current evidence. Two tests bring `cmr-core` to 1,414. |
 
-| 2026-10-26T20:20Z | 150h02m | complete-camera-controller | _(pending)_ | G11 | Closed G11 through the unified `ViewController` and its native integration: all recovered placements, cycling, trackside/reset behavior and dual-slot crossfades. Runtime data and uncovered remap/ride-height/helmet-overlay and `.cat` director paths are explicit unsupported boundaries. |
+| 2026-10-26T20:20Z | 150h02m | complete-camera-controller | `b9f7886` | G11 | Closed G11 through the unified `ViewController` and its native integration: all recovered placements, cycling, trackside/reset behavior and dual-slot crossfades. Runtime data and uncovered remap/ride-height/helmet-overlay and `.cat` director paths are explicit unsupported boundaries. |
+
+| 2026-10-26T20:30Z | 150h12m | complete-audio-abi-and-wave-loading | _(pending)_ | H01, H02 | Closed H01 through B03's 16-import scope. Recovered both `QSWaveMixOpenWave` flag forms exactly (`8` named PCM and `0x10` managed) in `WaveOpenCall`; unsupported vendor flag semantics stay explicit. One test brings `cmr-core` to 1,415. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

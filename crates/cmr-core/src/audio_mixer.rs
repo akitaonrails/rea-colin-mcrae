@@ -49,6 +49,16 @@ pub const PLAY_LOOPING: u32 = 0xffff_ffff;
 /// `FUN_00495a30(slot, channel, 0)` in `FUN_0041cfe0`.
 pub const PLAY_ONE_SHOT: u32 = 0;
 
+/// The two observed `QSWaveMixOpenWave` wrapper forms and their exact flag
+/// values. Their vendor-specific flag semantics remain outside the recovered
+/// contract; no memory-versus-file meaning is assigned without QMixer evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum WaveOpenCall {
+    NamedPcm = 8,
+    Managed = 0x10,
+}
+
 /// Apply the recovered master-volume percentage layer that sits above the
 /// per-channel volume wrapper.
 ///
@@ -573,6 +583,12 @@ mod tests {
         assert_eq!(scale_volume_by_master_percent(50, 32_000), 16_000);
         assert_eq!(scale_volume_by_master_percent(0, 32_000), 0);
         assert_eq!(scale_volume_by_master_percent(75, 101), 75); // 7575 / 100
+    }
+
+    #[test]
+    fn open_wave_calls_preserve_exact_vendor_flags_without_inventing_meanings() {
+        assert_eq!(WaveOpenCall::NamedPcm as u32, 8);
+        assert_eq!(WaveOpenCall::Managed as u32, 0x10);
     }
 
     #[test]

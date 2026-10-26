@@ -1576,6 +1576,11 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+H01 is closed by B03's complete 16-import ABI scope. H02 now records both
+`QSWaveMixOpenWave` forms exactly (`8` named PCM, `0x10` managed); unsupported
+vendor priority/lifetime and memory-versus-file meanings remain explicit rather
+than inferred from those constants.
+
 G11's camera controller is complete through the unified `ViewController`: all
 recovered placements, cycling, trackside/reset behavior, and dual-slot crossfade
 are wired into the native session. Runtime camera data and the uncovered helmet

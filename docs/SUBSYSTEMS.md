@@ -2399,6 +2399,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Audio ABI/loading is bounded by the completed 16-import scope and the two
+  exact open-wave forms (`8` named PCM, `0x10` managed). `WaveOpenCall` preserves
+  those values without inventing QMixer's vendor flag meanings.
 - `camera_view::ViewController` unifies recovered chase/cockpit/helmet/cinematic
   placements, trackside and reset behavior, view cycling, and dual-slot
   re-orthonormalized crossfades. The SDL session drives it from the live car.
