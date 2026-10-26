@@ -658,7 +658,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T19:30Z | 149h12m | complete-fixed-step-session-orchestration | `9142c47` | G01 | Closed G01 through the existing shared `GameplaySession`: recovered race-flow transitions, state-5 sim stepping, live checkpoints, checked four-wheel integration and render routing drive both headless and native SDL sessions. Harness-owned drive, checkpoint and cinematic inputs remain with the later gameplay items. |
 
-| 2026-10-26T19:44Z | 149h26m | wire-driven-wheel-force-smoothing | _(pending)_ | G02, G03 | Wired each first-loop `+0x540` force into the corresponding `+0x2c8` smoothing input, with recovered branch gates, live scalar derivation and shared engine-load inputs. Added `DrivenWheelUpdateParams` for runtime-only values and one composition test for force integration, ordinary tracking and neutral reset; `cmr-core` now has 1,410 tests. G02 is complete. |
+| 2026-10-26T19:44Z | 149h26m | wire-driven-wheel-force-smoothing | `4e926f7` | G02, G03 | Wired each first-loop `+0x540` force into the corresponding `+0x2c8` smoothing input, with recovered branch gates, live scalar derivation and shared engine-load inputs. Added `DrivenWheelUpdateParams` for runtime-only values and one composition test for force integration, ordinary tracking and neutral reset; `cmr-core` now has 1,410 tests. G02 is complete. |
+
+| 2026-10-26T19:50Z | 149h32m | complete-suspension-and-surface-response | _(pending)_ | G03 | Closed G03 through the authenticated eight-lane HPC/initializer composition and complete four-wheel producer. Confirmed cached-speed damping, semi-implicit position and Rebuild-first direction selection are implemented; runtime car/config/surface data and native pointer-fault behavior remain explicit safe-contract boundaries. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

@@ -2399,6 +2399,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Suspension/surface recovery is composed end to end: authenticated HPC data
+  feeds the complete eight-lane initializer, and the four-wheel producer shares
+  its force/contact results with geometric postprocess, translation, angular
+  integration and driven smoothing. `apply_translation_step` covers cached-speed
+  damping and the semi-implicit position term. Runtime car/config/surface data
+  and native pointer-fault/rebinding behavior remain explicit safe-contract
+  boundaries.
 - Driven wheel smoothing uses the first-loop `+0x540` force as native `+0x2c8`
   input rather than a placeholder. The complete four-wheel step selects the
   recovered ordinary/driven/neutral branch per lane, derives slip, direction,

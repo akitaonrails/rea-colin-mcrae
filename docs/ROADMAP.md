@@ -1576,6 +1576,13 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+G03 is complete at the safe portable-contract boundary. The authenticated HPC
+provider runs the complete compiled-initializer spine, and the four-wheel
+producer includes contact/force/postprocess, translation, angular and smoothing
+stages. Cached-speed damping, the semi-implicit position term, and direction
+selection are implemented. Runtime car/surface values and native pointer-fault
+behavior remain explicit inputs/limitations rather than unrecovered formulas.
+
 G02's driven smoothing now consumes the actual per-wheel force produced by the
 first wheel loop. `DrivenWheelUpdateParams` separates recovered formulas from
 runtime suspension/longitudinal/response data; the shared scalars also feed the
