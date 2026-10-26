@@ -482,7 +482,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T08:57Z | 138h39m | wire-derived-candidate-into-second-core | `f6c61a7` | G03, G09 | Replaced the second core's caller-selected scalar with derivation from residuals, normalization length and runtime bases. Checked lookup failures now propagate through `execute_second_wheel_core` and both race-state methods. Existing direct re-derivation and composition tests pass with `cmr-core` at 1,332. Full four-lane production and downstream accumulator consumption remain open. |
 
-| 2026-10-26T09:08Z | 138h50m | recover-translation-lane-force-sum | _(pending)_ | G03, G09 | Traced `FUN_0040ce40` -> `FUN_0040d810` -> `FUN_0040d400` -> `FUN_0040a4a0`. Recovered the net-force consumer as base plus non-wheel lanes and contacted wheel lanes, before cached-speed damping. Added `sum_translation_lane_forces` with contact/wrapping coverage; `cmr-core` has 1,333 tests. Race-state ordering, `FUN_0040d400`, moments, and full lane production remain open. |
+| 2026-10-26T09:08Z | 138h50m | recover-translation-lane-force-sum | `9604fb9` | G03, G09 | Traced `FUN_0040ce40` -> `FUN_0040d810` -> `FUN_0040d400` -> `FUN_0040a4a0`. Recovered the net-force consumer as base plus non-wheel lanes and contacted wheel lanes, before cached-speed damping. Added `sum_translation_lane_forces` with contact/wrapping coverage; `cmr-core` has 1,333 tests. Race-state ordering, `FUN_0040d400`, moments, and full lane production remain open. |
+
+| 2026-10-26T09:17Z | 138h59m | order-postprocessed-forces-before-translation | _(pending)_ | G03, G09 | Refactored first/second wheel helpers so the four-lane path postprocesses before translating. Base, non-wheel and contacted postprocessed lane forces now drive the same tick's world-force translation. The test checks negative velocity/position and kernel equivalence; `cmr-core` has 1,333 tests. `FUN_0040d400`, moments and full lane production remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

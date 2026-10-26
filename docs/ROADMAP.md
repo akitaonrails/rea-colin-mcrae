@@ -1227,8 +1227,10 @@ bases, with checked lookup failures propagated through both race-state methods.
 The downstream order is now pinned through `FUN_0040ce40` -> `FUN_0040d810` ->
 `FUN_0040d400` -> `FUN_0040a4a0`. `sum_translation_lane_forces` reproduces the
 consumer's base/non-wheel/contacted-wheel net-force sum, with one additional test
-bringing `cmr-core` to 1,333. Race-state ordering, `FUN_0040d400`, the moment path,
-and complete four-lane production remain open.
+bringing `cmr-core` to 1,333. The four-lane race-state path now performs that sum
+after postprocessing and translates with the resulting world force in the same
+tick; its test checks negative motion from the negative contacted lane. The
+`FUN_0040d400` update, moment path, and complete four-lane production remain open.
 
 Exit gate:
 

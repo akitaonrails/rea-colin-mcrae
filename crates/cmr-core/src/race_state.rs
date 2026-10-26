@@ -21,14 +21,15 @@
 //! See evidence `impl.sim-race-state-trace`.
 
 use crate::drivetrain::{
-    FirstWheelInputs, SecondWheelInputs, execute_first_wheel_iteration, execute_second_wheel_core,
+    FirstWheelEffects, FirstWheelInputs, SecondWheelCoreEffects, SecondWheelInputs,
+    execute_first_wheel_iteration, execute_second_wheel_core,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::vehicle_dynamics::{
     GeometricPostprocessError, GeometricPostprocessLane, LookupDependentCandidateError,
     TranslationStepInput, apply_geometric_lane_postprocess, apply_lateral_grip,
-    apply_translation_step, drag, net_accel,
+    apply_translation_step, drag, net_accel, sum_translation_lane_forces,
 };
 
 /// Fixed per-tick parameters of the integration harness (not recovered game
@@ -112,11 +113,14 @@ pub struct SecondWheelParams<'a> {
 
 /// Runtime vector lanes for the recovered four-lane postprocess. The current
 /// second-core result replaces `lanes[current_lane].accumulator` before it runs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FourWheelPostprocessParams {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FourWheelPostprocessParams<'a> {
     pub lanes: [GeometricPostprocessLane; 4],
     pub current_lane: usize,
     pub argument_scale: Fixed16,
+    pub base_force: Vec3,
+    pub non_wheel_forces: &'a [Vec3],
+    pub wheel_contacts: [bool; 4],
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -244,10 +248,19 @@ impl RaceState {
     /// into velocity, apply the recovered half-delta position update, apply the
     /// lateral-grip constraint, and advance the stage clock.
     pub fn step(&mut self, controls: &Controls, params: &SimParams) -> TraceSample {
+        self.step_with_optional_world_force(controls, params, None)
+    }
+
+    fn step_with_optional_world_force(
+        &mut self,
+        controls: &Controls,
+        params: &SimParams,
+        world_force: Option<Vec3>,
+    ) -> TraceSample {
         self.car.heading = self.car.heading.wrapping_add(controls.steer_rate as u16);
         let forward = self.forward_unit();
 
-        let drive_force = forward.scale(controls.forward_force);
+        let drive_force = world_force.unwrap_or_else(|| forward.scale(controls.forward_force));
         let speed = self.car.velocity.length();
         let net_force = drive_force.sub(drag(self.car.velocity, speed));
 
@@ -272,13 +285,7 @@ impl RaceState {
         }
     }
 
-    /// Run the recovered first-wheel force pass, then translate with its force.
-    pub fn step_with_first_wheel(
-        &mut self,
-        controls: &Controls,
-        params: &SimParams,
-        wheel: &FirstWheelParams,
-    ) -> TraceSample {
+    fn run_first_wheel(&mut self, handbrake: bool, wheel: &FirstWheelParams) -> FirstWheelEffects {
         let effects = execute_first_wheel_iteration(FirstWheelInputs {
             force: self.car.first_wheel.force,
             wheel_speed: self.car.first_wheel.wheel_speed,
@@ -289,7 +296,7 @@ impl RaceState {
             scale_c600: wheel.scale_c600,
             limit: wheel.limit,
             shift: wheel.shift,
-            handbrake: i32::from(controls.handbrake),
+            handbrake: i32::from(handbrake),
             factor_c5c0: wheel.factor_c5c0,
             gear: wheel.gear,
             config_40c: wheel.config_40c,
@@ -301,6 +308,17 @@ impl RaceState {
             force: effects.force_at_540,
             wheel_speed: effects.wheel_speed,
         };
+        effects
+    }
+
+    /// Run the recovered first-wheel force pass, then translate with its force.
+    pub fn step_with_first_wheel(
+        &mut self,
+        controls: &Controls,
+        params: &SimParams,
+        wheel: &FirstWheelParams,
+    ) -> TraceSample {
+        let effects = self.run_first_wheel(controls.handbrake, wheel);
         self.step(
             &Controls {
                 forward_force: Fixed16::from_raw(effects.force_at_540),
@@ -310,20 +328,12 @@ impl RaceState {
         )
     }
 
-    /// Compose the second-wheel core after the first iteration and translation.
-    ///
-    /// # Errors
-    ///
-    /// Propagates a checked candidate-lookup failure.
-    pub fn step_with_second_wheel(
+    fn run_second_wheel(
         &mut self,
-        controls: &Controls,
-        params: &SimParams,
+        prior_speed: i32,
         first: &FirstWheelParams,
         second: &SecondWheelParams<'_>,
-    ) -> Result<TraceSample, LookupDependentCandidateError> {
-        let prior_speed = self.car.first_wheel.wheel_speed;
-        let mut sample = self.step_with_first_wheel(controls, params, first);
+    ) -> Result<SecondWheelCoreEffects, LookupDependentCandidateError> {
         let dot = (0..3).fold(0_i32, |sum, index| {
             sum.wrapping_add(
                 Fixed16::from_raw(first.wheel_vector[index])
@@ -334,7 +344,7 @@ impl RaceState {
         let effects = execute_second_wheel_core(SecondWheelInputs {
             dot,
             speed_at_2a8: prior_speed,
-            speed_at_2b8: sample.car.first_wheel.wheel_speed,
+            speed_at_2b8: self.car.first_wheel.wheel_speed,
             axis_dot: second.axis_dot,
             local_68: second.local_68,
             local_98: second.local_98,
@@ -357,14 +367,37 @@ impl RaceState {
             surface_vector: second.surface_vector,
             table_factor: second.table_factor,
         })?;
-        sample.car.second_wheel = SecondWheelState {
+        self.car.second_wheel = SecondWheelState {
             ratio_at_3b0: effects.ratio_at_3b0,
             angle: effects.angle,
             component: effects.component,
             accumulators: effects.accumulators,
         };
-        self.car.second_wheel = sample.car.second_wheel;
-        Ok(sample)
+        Ok(effects)
+    }
+
+    /// Compose the second-wheel core after the first iteration, then translate.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a checked candidate-lookup failure.
+    pub fn step_with_second_wheel(
+        &mut self,
+        controls: &Controls,
+        params: &SimParams,
+        first: &FirstWheelParams,
+        second: &SecondWheelParams<'_>,
+    ) -> Result<TraceSample, LookupDependentCandidateError> {
+        let prior_speed = self.car.first_wheel.wheel_speed;
+        let first_effects = self.run_first_wheel(controls.handbrake, first);
+        self.run_second_wheel(prior_speed, first, second)?;
+        Ok(self.step(
+            &Controls {
+                forward_force: Fixed16::from_raw(first_effects.force_at_540),
+                ..*controls
+            },
+            params,
+        ))
     }
 
     /// Feed the current second-core lane and the other three lanes through the
@@ -380,8 +413,10 @@ impl RaceState {
         if postprocess.current_lane >= postprocess.lanes.len() {
             return Err(WheelPostprocessError::LaneIndex(postprocess.current_lane));
         }
-        let mut sample = self.step_with_second_wheel(controls, params, first, second)?;
-        let current = sample.car.second_wheel.accumulators;
+        let prior_speed = self.car.first_wheel.wheel_speed;
+        self.run_first_wheel(controls.handbrake, first);
+        self.run_second_wheel(prior_speed, first, second)?;
+        let current = self.car.second_wheel.accumulators;
         let mut lanes = postprocess.lanes;
         lanes[postprocess.current_lane].accumulator = Vec3::new(
             Fixed16::from_raw(current[0]),
@@ -389,17 +424,23 @@ impl RaceState {
             Fixed16::from_raw(current[2]),
         );
         let outcome = apply_geometric_lane_postprocess(&mut lanes, postprocess.argument_scale)?;
-        sample.car.postprocess = FourWheelPostprocessState {
+        self.car.postprocess = FourWheelPostprocessState {
             accumulators: lanes.map(|lane| lane.accumulator),
             qualified: outcome.qualified,
             angle_measures: outcome.angle_measures,
         };
-        sample.car.second_wheel.accumulators = {
-            let current = sample.car.postprocess.accumulators[postprocess.current_lane];
+        self.car.second_wheel.accumulators = {
+            let current = self.car.postprocess.accumulators[postprocess.current_lane];
             [current.x.raw(), current.y.raw(), current.z.raw()]
         };
-        self.car = sample.car;
-        Ok(sample)
+        let force = sum_translation_lane_forces(
+            postprocess.base_force,
+            postprocess.non_wheel_forces,
+            std::array::from_fn(|index| {
+                (postprocess.wheel_contacts[index], lanes[index].accumulator)
+            }),
+        );
+        Ok(self.step_with_optional_world_force(controls, params, Some(force)))
     }
 
     /// Run a scripted control sequence, returning the per-tick trace.
@@ -592,6 +633,9 @@ mod tests {
             lanes,
             current_lane: 3,
             argument_scale: Fixed16::ONE,
+            base_force: Vec3::ZERO,
+            non_wheel_forces: &[],
+            wheel_contacts: [false, false, false, true],
         };
         let trig = build_sine_table();
         let second = SecondWheelParams {
@@ -645,6 +689,9 @@ mod tests {
             sample.car.second_wheel.accumulators,
             [current.x.raw(), current.y.raw(), current.z.raw()]
         );
+
+        assert!(sample.car.velocity.x < Fixed16::ZERO);
+        assert!(sample.car.position.x < Fixed16::ZERO);
 
         let before = state.car;
         let invalid = FourWheelPostprocessParams {
