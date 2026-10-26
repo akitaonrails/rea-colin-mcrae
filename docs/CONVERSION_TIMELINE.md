@@ -654,7 +654,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T19:19Z | 149h01m | complete-native-startup | `335ff96` | C13 | Ran the real headless session to completion (23 frames, 16 sim ticks, final state 0, finished, 63 cs) and verified native lifecycle integration. Optional official coefficient fixtures remain a separate provisioning limitation. |
 
-| 2026-10-26T19:25Z | 149h07m | bound-rectangular-surface-padding | _(pending)_ | E01 | Rechecked allocation, layout and exact decoder instructions: square expansion leaves added surface pixels to native DirectDraw allocation state. GR4's 32x64 padded case remains explicitly unsupported by the deterministic sampler rather than being assigned an invented fill. |
+| 2026-10-26T19:25Z | 149h07m | bound-rectangular-surface-padding | `07d7e3b` | E01 | Rechecked allocation, layout and exact decoder instructions: square expansion leaves added surface pixels to native DirectDraw allocation state. GR4's 32x64 padded case remains explicitly unsupported by the deterministic sampler rather than being assigned an invented fill. |
+
+| 2026-10-26T19:30Z | 149h12m | complete-fixed-step-session-orchestration | _(pending)_ | G01 | Closed G01 through the existing shared `GameplaySession`: recovered race-flow transitions, state-5 sim stepping, live checkpoints, checked four-wheel integration and render routing drive both headless and native SDL sessions. Harness-owned drive, checkpoint and cinematic inputs remain with the later gameplay items. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

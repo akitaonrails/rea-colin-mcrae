@@ -2399,6 +2399,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- The fixed-step session composition is `cmr-core::gameplay_session`: it plugs
+  `race_flow_next` into the top-level `GameSession`, steps the race only in
+  state 5, updates checkpoint progress, and exposes the recovered render route.
+  Both the deterministic headless command and native SDL loop use it, including
+  the checked four-wheel path. Synthetic drive/checkpoint/cinematic inputs stay
+  explicit harness boundaries rather than fixed-step orchestration gaps.
 - Rectangular C3D surface expansion does not define the contents of added
   padding. `FUN_0049e960` allocates a DirectDraw surface and `FUN_00499320`
   writes source-derived pixels only, so the indexed sampler keeps GR4's padded

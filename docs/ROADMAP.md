@@ -1576,6 +1576,12 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+G01's fixed-step world update is wired end to end through the shared
+`GameplaySession`: the recovered FSM and race-flow tables, state-5 simulation,
+checkpoint finish tracking, and render routing drive both headless and native
+SDL sessions. The synthetic checkpoints, drive response, and scripted cinematic
+flags remain explicit harness inputs owned by later gameplay items.
+
 The rectangular C3D surface boundary is now explicit: DirectDraw owns the
 initial contents of padding introduced by square expansion, and the recovered
 copy loops never initialize it. The deterministic indexed sampler therefore
