@@ -680,7 +680,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T21:20Z | 151h02m | complete-present-and-native-root-lifecycle | `cd0ceff` | D16, D18 | Closed final presentation through owned indexed/RGBA frames, render-route selection and shared SDL presentation, and the interactive root through descriptor menus plus focus/pause/restore/quit handling. Native flip timing and display-server behavior remain backend boundaries. |
 
-| 2026-10-26T21:30Z | 151h12m | bound-type1-lighting-support | _(pending)_ | D14, D15 | Closed type-1 resources and branch-zero flat/COPY rendering. General lighting and alternate Gouraud/modulate output are explicitly unsupported by current evidence and are not replaced by type-2 semantics. |
+| 2026-10-26T21:30Z | 151h12m | bound-type1-lighting-support | `3a2201b` | D14, D15 | Closed type-1 resources and branch-zero flat/COPY rendering. General lighting and alternate Gouraud/modulate output are explicitly unsupported by current evidence and are not replaced by type-2 semantics. |
+
+| 2026-10-26T21:40Z | 151h22m | close-bitmap-conversion-boundaries | _(pending)_ | E01 | Closed E01 at the deterministic indexed contract. Supported BM/palette/row/composition/font paths remain tested; native padding, direct 24-bit, driver-exact filtering, device-owned formats and alternate-font pixels are explicitly unsupported. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

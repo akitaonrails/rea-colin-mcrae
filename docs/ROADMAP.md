@@ -1576,6 +1576,11 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+E01 is closed at its deterministic indexed boundary. Supported BM, palette,
+row, composition, and queued-font paths are implemented; native padding,
+24-bit, driver-exact filtering, device-owned formats, and alternate-font final
+pixels are explicitly unsupported rather than approximated.
+
 D14/D15 now close the supported type-1 boundary: geometry/resources and the
 flat/COPY renderer are implemented. General lighting and alternate
 Gouraud/modulate output are explicitly unsupported and are not replaced by the
