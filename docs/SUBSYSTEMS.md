@@ -2001,8 +2001,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   the SDL loop stops. Displayed execution remains unverified here. The global update
   gate is computed from the transformed projection axis, and all eight `+0x73a` flags
   plus the `+0x742` failing count come from `derive_compiled_lane_thresholds`; that
-  count drives `+0x528`. See evidence `impl.sim-race-state-trace`,
-  `impl.sim-translation-step`, and `impl.sim-full-second-accumulation`.
+  count drives `+0x528`. G09 is complete as a deterministic offline-trace contract:
+  the complete producer, checked errors, start/finish/replay and authenticated sessions
+  are covered, with explicit harness tuning documented rather than trajectory-equivalent
+  behavior. See evidence `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
+  `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

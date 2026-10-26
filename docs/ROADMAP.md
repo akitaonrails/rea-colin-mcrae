@@ -1333,6 +1333,9 @@ not verified in this environment. The global contact-update gate now comes from 
 transformed projection axis, and all eight enable bytes come from
 `derive_compiled_lane_thresholds`; `+0x528` now correctly uses the failing-lane count
 rather than active-wheel count. One direct gate test brings `cmr-core` to 1,363.
+G09 is complete as a deterministic offline-trace contract: the full four-wheel producer,
+checked errors, start/finish/replay and authenticated sessions are covered. Explicit
+harness tuning is documented and does not imply trajectory equivalence.
 
 Exit gate:
 
