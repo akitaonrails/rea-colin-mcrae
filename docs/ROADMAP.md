@@ -1359,7 +1359,11 @@ boundary/mode test brings `cmr-core` to 1,369. Smoothed speeds now have separate
 persistent state and ordinary native tracking: snap below `0x10000`, otherwise step
 one Q16 unit, then apply the strict `0x7ae` dead zone. The second loop reads those
 values rather than raw speed. One focused test brings `cmr-core` to 1,370; driven
-integration and neutral-gear handling remain.
+integration and neutral-gear handling remain. The driven gate and integration are
+now pure recovered contracts, including mode-dependent throttle/brake mismatches,
+raw/sign/asymmetric clamps and the shared dead zone. Two tests bring `cmr-core` to
+1,372. The distinct `+0x2c8` force array and global scalar producers must be wired
+before enabling this branch in the application.
 
 Exit gate:
 

@@ -187,6 +187,82 @@ pub fn track_smoothed_wheel_speed(raw: i32, current: i32) -> i32 {
     if next.wrapping_abs() < 0x7ae { 0 } else { next }
 }
 
+/// Native controls selecting the ordinary tracking branch of `FUN_004088c0`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SmoothedSpeedGateInput {
+    pub lane: usize,
+    pub mode_408: i32,
+    pub throttle_304: i32,
+    pub brake_308: i32,
+    pub handbrake_30c: i32,
+    pub config_158: i32,
+    pub split_170: i32,
+    pub limiter_444: i32,
+}
+
+/// Select ordinary tracking when the handbrake/drive gates allow it or the
+/// limiter forces that branch.
+#[must_use]
+pub fn smoothed_speed_uses_tracking(input: SmoothedSpeedGateInput) -> bool {
+    let mode = if input.lane < 2 { 0 } else { 0x10000 };
+    let mismatched_drive = if input.mode_408 == 0 {
+        (input.throttle_304 != 0 && input.config_158 != mode)
+            || (input.brake_308 != 0 && input.split_170 != mode)
+    } else {
+        (input.brake_308 != 0 && input.config_158 != mode)
+            || (input.throttle_304 != 0 && input.split_170 != mode)
+    };
+    input.limiter_444 != 0 || ((input.handbrake_30c == 0 || input.lane < 2) && !mismatched_drive)
+}
+
+/// Inputs for the driven `FUN_004088c0` integration branch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DrivenWheelSmoothingInput {
+    pub raw: i32,
+    pub current: i32,
+    pub drive_force_2c8: i32,
+    pub slip_gain: i32,
+    pub direction_gain: i32,
+    pub time_step: i32,
+    pub signed_speed_limit: i32,
+    pub gear: i32,
+    pub config_40c: i32,
+    pub config_158: i32,
+    pub gear_ratio: i32,
+    pub is_rear_wheel: bool,
+}
+
+/// Integrate and clamp one driven smoothed speed in native order.
+#[must_use]
+pub fn integrate_driven_wheel_speed(input: DrivenWheelSmoothingInput) -> i32 {
+    let drive_scale = q16_mul(input.slip_gain, input.direction_gain);
+    let drive = q16_mul(input.drive_force_2c8, drive_scale);
+    let timestep = q16_mul(input.time_step, 0x11113);
+    let integrated = input.current.wrapping_add(q16_mul(drive, timestep));
+    let mut next = gate_wheel_speed(
+        input.raw,
+        integrated,
+        input.gear,
+        input.config_40c,
+        input.config_158,
+        input.gear_ratio,
+        input.is_rear_wheel,
+    );
+    if (input.drive_force_2c8 > 0 && next < input.raw)
+        || (input.drive_force_2c8 < 0 && input.raw < next)
+    {
+        next = input.raw;
+    }
+    if input.signed_speed_limit < 1 {
+        if next < input.signed_speed_limit {
+            next = input.signed_speed_limit;
+        }
+    } else if input.signed_speed_limit < next {
+        next = input.signed_speed_limit;
+    }
+    if next.wrapping_abs() < 0x7ae { 0 } else { next }
+}
+
 /// The coasting split: [`COAST_DRAG_TORQUE`] distributed directly by the centre
 /// split (the recovered in-gear, no-throttle/no-brake branch of
 /// `FUN_0040d810`). This branch bypasses the per-car front/rear factors used by
@@ -1552,6 +1628,110 @@ mod tests {
         assert_eq!(track_smoothed_wheel_speed(0x7ae, 0), 0x7ae);
         assert_eq!(track_smoothed_wheel_speed(-0x7ad, 0), 0);
         assert_eq!(track_smoothed_wheel_speed(i32::MIN, 0), 0);
+    }
+
+    #[test]
+    fn smoothed_speed_gate_covers_drive_modes_handbrake_and_limiter() {
+        let input = SmoothedSpeedGateInput {
+            lane: 0,
+            mode_408: 0,
+            throttle_304: 0,
+            brake_308: 0,
+            handbrake_30c: 0,
+            config_158: 0,
+            split_170: 0,
+            limiter_444: 0,
+        };
+        assert!(smoothed_speed_uses_tracking(input));
+        assert!(smoothed_speed_uses_tracking(SmoothedSpeedGateInput {
+            handbrake_30c: 1,
+            ..input
+        }));
+        assert!(!smoothed_speed_uses_tracking(SmoothedSpeedGateInput {
+            lane: 2,
+            handbrake_30c: 1,
+            ..input
+        }));
+        assert!(smoothed_speed_uses_tracking(SmoothedSpeedGateInput {
+            lane: 2,
+            handbrake_30c: 1,
+            limiter_444: 1,
+            ..input
+        }));
+        assert!(!smoothed_speed_uses_tracking(SmoothedSpeedGateInput {
+            throttle_304: 1,
+            config_158: 1,
+            ..input
+        }));
+        assert!(!smoothed_speed_uses_tracking(SmoothedSpeedGateInput {
+            brake_308: 1,
+            split_170: 1,
+            ..input
+        }));
+        assert!(smoothed_speed_uses_tracking(SmoothedSpeedGateInput {
+            mode_408: 1,
+            throttle_304: 1,
+            config_158: 1,
+            ..input
+        }));
+        assert!(!smoothed_speed_uses_tracking(SmoothedSpeedGateInput {
+            mode_408: 1,
+            brake_308: 1,
+            config_158: 1,
+            ..input
+        }));
+    }
+
+    #[test]
+    fn driven_smoothing_integrates_gates_and_clamps_in_native_order() {
+        let input = DrivenWheelSmoothingInput {
+            raw: 0,
+            current: 0,
+            drive_force_2c8: 0x10000,
+            slip_gain: 0x10000,
+            direction_gain: 0x10000,
+            time_step: 0x10000,
+            signed_speed_limit: 0x20000,
+            gear: 1,
+            config_40c: 0,
+            config_158: 1,
+            gear_ratio: 1,
+            is_rear_wheel: false,
+        };
+        assert_eq!(integrate_driven_wheel_speed(input), 0x11113);
+        assert_eq!(
+            integrate_driven_wheel_speed(DrivenWheelSmoothingInput {
+                raw: -0x20000,
+                drive_force_2c8: -0x10000,
+                signed_speed_limit: -0x30000,
+                ..input
+            }),
+            -0x20000
+        );
+        assert_eq!(
+            integrate_driven_wheel_speed(DrivenWheelSmoothingInput {
+                signed_speed_limit: 0x8000,
+                ..input
+            }),
+            0x8000
+        );
+        assert_eq!(
+            integrate_driven_wheel_speed(DrivenWheelSmoothingInput {
+                drive_force_2c8: -0x10000,
+                signed_speed_limit: 0,
+                ..input
+            }),
+            0
+        );
+        assert_eq!(
+            integrate_driven_wheel_speed(DrivenWheelSmoothingInput {
+                raw: 1,
+                drive_force_2c8: -0x10000,
+                gear: 0,
+                ..input
+            }),
+            0
+        );
     }
 
     fn fx(raw: i32) -> Fixed16 {

@@ -572,7 +572,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T15:38Z | 145h21m | wire-residual-enable-countdown | `29a520e` | G03 | Recovered and wired the per-frame `+0x43b` countdown using mode-selected raw speed and prior `state+0xec`; translation now stores the legacy velocity magnitude for the next tick. One boundary/mode test brings `cmr-core` to 1,369; composition verifies reset-to-cleared state and speed storage. |
 
-| 2026-10-26T15:45Z | 145h35m | recover-smoothed-wheel-tracking | _(pending)_ | G03 | Added distinct persistent smoothed speeds and the ordinary `FUN_004088c0` tracking/dead-zone rules. Second-core execution now consumes prior smoothed values instead of raw speed. One threshold/dead-zone test brings `cmr-core` to 1,370; composition checks all four updates. Driven integration and neutral-gear handling remain. |
+| 2026-10-26T15:45Z | 145h35m | recover-smoothed-wheel-tracking | `b6c63af` | G03 | Added distinct persistent smoothed speeds and the ordinary `FUN_004088c0` tracking/dead-zone rules. Second-core execution now consumes prior smoothed values instead of raw speed. One threshold/dead-zone test brings `cmr-core` to 1,370; composition checks all four updates. Driven integration and neutral-gear handling remain. |
+
+| 2026-10-26T15:52Z | 145h42m | recover-driven-wheel-smoothing | _(pending)_ | G03 | Recovered the tracking-vs-driven gate and driven integration, including native raw/sign/asymmetric clamps and common dead zone. Two tests bring `cmr-core` to 1,372. Kept the distinct `+0x2c8` force array and scalar production unwired rather than substituting `+0x540`. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

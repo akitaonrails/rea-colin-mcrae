@@ -2029,6 +2029,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   raw wheel state: second-core execution reads its prior values, and post-translation
   tracking applies the recovered snap/step and `0x7ae` dead-zone rules. The driven
   integration and neutral-gear branches of `FUN_004088c0` remain separate.
+  `smoothed_speed_uses_tracking` and `integrate_driven_wheel_speed` now recover the
+  driven branch as pure contracts, but are not connected to the unrelated `+0x540`
+  force. Native `+0x2c8` force and global scalar production remain open.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing
