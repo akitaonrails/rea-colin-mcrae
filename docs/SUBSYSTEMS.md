@@ -1595,6 +1595,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   `SessionSurfaceInputs::stage_particle_effect` composes the same path. One test
   brings `cmr-core` to 1,318; app assertions cover composition and invalid IDs.
   Actual particle pool/render spawning remains separate.
+  E10 particle-pool records: `ParticleRecord`, `ParticlePool`, and
+  `ParticlePools` reproduce the recovered 80-byte field writes, type-selected
+  sprite/tuning values, frame/flags and 100-slot wrapping across eight pools.
+  `stage_spawn_particle` applies weather gates before record creation. Two tests
+  bring `cmr-core` to 1,320; app coverage checks creation and suppression.
+  Unknown fields use neutral offset names and render traversal remains separate.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

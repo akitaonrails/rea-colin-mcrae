@@ -1166,6 +1166,12 @@ splash are suppressed when disabled, while unrelated classes remain unchanged.
 `.srf` inputs. One focused test brings `cmr-core` to 1,318; app composition and
 invalid-ID propagation are covered. Actual particle pool/render spawning remains
 separate.
+E10 reconstructs the 80-byte `FUN_00424f40` spawn record and its eight
+100-slot pools: copied vectors/scalars, sprite/tuning type selection, frame and
+flags, and modulo-100 advancement. `stage_spawn_particle` applies weather gates
+before creating records. Two tests bring `cmr-core` to 1,320; app coverage checks
+creation and suppression. Unknown fields keep neutral offset names and render
+traversal remains separate.
 
 Exit gate:
 

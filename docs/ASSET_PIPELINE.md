@@ -242,8 +242,9 @@ CMPR-aware decoder and uses those decoded bytes as the surface IDs, matching the
 original caller. `stage_effect_enables` computes the counters with safe
 out-of-range rejection. `stage_weather_effects` maps the recovered splash (0),
 dust (2), and snow (5) counters to boolean gates; other counters remain unnamed.
-`stage_particle_effect` applies those gates to the recovered type dispatch,
-without yet creating particle-pool or render records.
+`stage_particle_effect` applies those gates to the recovered type dispatch.
+`stage_spawn_particle` then creates the recovered 80-byte pool record only when
+that dispatch succeeds; render traversal remains separate.
 
 ## Executable-derived compiled car cases
 

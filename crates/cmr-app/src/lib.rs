@@ -1782,6 +1782,17 @@ impl SessionSurfaceInputs {
         self.stage_weather_effects()
             .and_then(|effects| particles::gated_particle_effect(type_byte, effects))
     }
+
+    #[must_use]
+    pub fn stage_spawn_particle<'a>(
+        &self,
+        pools: &'a mut particles::ParticlePools,
+        pool: usize,
+        input: particles::ParticleSpawn,
+    ) -> Option<(bool, &'a particles::ParticleRecord)> {
+        self.stage_particle_effect(input.type_byte)?;
+        pools.spawn(pool, input)
+    }
 }
 
 pub fn run_windowed_game_session(
@@ -2139,6 +2150,22 @@ mod tests {
             inputs.stage_particle_effect(0x01),
             Some(particles::ParticleEffect::Dust)
         );
+        let spawn = particles::ParticleSpawn {
+            position: [1, 2, 3],
+            vector_24: [4, 5, 6],
+            word_30: 7,
+            word_34: 8,
+            word_46: 9,
+            type_byte: 1,
+            tuning: [10, 11],
+            random: 0x090603,
+            low_detail: false,
+            global_flag: true,
+        };
+        let mut pools = particles::ParticlePools::default();
+        let (_, record) = inputs.stage_spawn_particle(&mut pools, 0, spawn).unwrap();
+        assert_eq!(record.position, [1, 2, 3]);
+        assert_eq!(record.flags, 3);
         std::fs::write(media.join("AU1.srf"), [120]).unwrap();
         let inputs =
             SessionSurfaceInputs::open_stage(&media, &temp.0, "AU1", DecodeLimits::default())
@@ -2146,6 +2173,7 @@ mod tests {
         assert_eq!(inputs.stage_effect_enables(), None);
         assert_eq!(inputs.stage_weather_effects(), None);
         assert_eq!(inputs.stage_particle_effect(0x01), None);
+        assert!(inputs.stage_spawn_particle(&mut pools, 0, spawn).is_none());
         assert!(matches!(
             SessionSurfaceInputs::open_stage(&media, &temp.0, "MISSING", DecodeLimits::default()),
             Err(SessionSurfaceInputsError::MissingStageSurfaceData)

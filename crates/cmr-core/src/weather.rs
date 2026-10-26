@@ -229,6 +229,136 @@ pub mod particles {
         particle_effect(type_byte).filter(|effect| effects.allows(*effect))
     }
 
+    /// Type-selected sprite-table identity from `FUN_00424f40`.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum ParticleSpriteTable {
+        #[default]
+        Default,
+        Type6,
+        Type7,
+        Type8,
+        Type9,
+        Type16,
+        Type18,
+        Type1b,
+    }
+
+    #[must_use]
+    pub fn particle_sprite_table(type_byte: u8) -> ParticleSpriteTable {
+        match type_byte {
+            6 => ParticleSpriteTable::Type6,
+            7 => ParticleSpriteTable::Type7,
+            8 => ParticleSpriteTable::Type8,
+            9 => ParticleSpriteTable::Type9,
+            0x16 => ParticleSpriteTable::Type16,
+            0x18 => ParticleSpriteTable::Type18,
+            0x1b => ParticleSpriteTable::Type1b,
+            _ => ParticleSpriteTable::Default,
+        }
+    }
+
+    /// The recovered 80-byte spawn record; unknown scalar semantics retain offsets.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub struct ParticleRecord {
+        pub position: [i32; 3],
+        pub vector_24: [i32; 3],
+        pub word_30: i32,
+        pub word_34: i32,
+        pub word_3c: i32,
+        pub sprite_table: ParticleSpriteTable,
+        pub word_46: u16,
+        pub tuning_48: u16,
+        pub type_byte: u8,
+        pub frame: u8,
+        pub flags: u8,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct ParticleSpawn {
+        pub position: [i32; 3],
+        pub vector_24: [i32; 3],
+        pub word_30: i32,
+        pub word_34: i32,
+        pub word_46: u16,
+        pub type_byte: u8,
+        pub tuning: [u16; 2],
+        pub random: u32,
+        pub low_detail: bool,
+        pub global_flag: bool,
+    }
+
+    #[derive(Debug)]
+    pub struct ParticlePool {
+        records: [ParticleRecord; BILLBOARD_RECORDS_PER_POOL],
+        next: usize,
+    }
+
+    impl Default for ParticlePool {
+        fn default() -> Self {
+            Self {
+                records: [ParticleRecord::default(); BILLBOARD_RECORDS_PER_POOL],
+                next: 0,
+            }
+        }
+    }
+
+    impl ParticlePool {
+        #[must_use]
+        pub fn records(&self) -> &[ParticleRecord; BILLBOARD_RECORDS_PER_POOL] {
+            &self.records
+        }
+
+        #[must_use]
+        pub fn next_index(&self) -> usize {
+            self.next
+        }
+
+        /// Overwrite the next slot, advance modulo 100, and report whether it wrapped.
+        pub fn spawn(&mut self, input: ParticleSpawn) -> (bool, &ParticleRecord) {
+            let index = self.next;
+            let previous_flags = self.records[index].flags;
+            self.next = (index + 1) % BILLBOARD_RECORDS_PER_POOL;
+            let wrapped = self.next == 0;
+            let tuning_48 = match input.type_byte {
+                6 | 7 | 8 | 9 | 0x1b => input.tuning[1],
+                _ => input.tuning[0],
+            };
+            self.records[index] = ParticleRecord {
+                position: input.position,
+                vector_24: input.vector_24,
+                word_30: input.word_30,
+                word_34: input.word_34,
+                word_3c: 0,
+                sprite_table: particle_sprite_table(input.type_byte),
+                word_46: input.word_46,
+                tuning_48,
+                type_byte: input.type_byte,
+                frame: initial_anim_frame(input.random, input.low_detail),
+                flags: ((input.global_flag as u8) << 1) | (previous_flags & 0xfd) | 1,
+            };
+            (wrapped, &self.records[index])
+        }
+    }
+
+    #[derive(Debug, Default)]
+    pub struct ParticlePools([ParticlePool; BILLBOARD_POOLS]);
+
+    impl ParticlePools {
+        #[must_use]
+        pub fn pool(&self, index: usize) -> Option<&ParticlePool> {
+            self.0.get(index)
+        }
+
+        /// Spawn into one of the eight pools; an out-of-range pool is rejected safely.
+        pub fn spawn(
+            &mut self,
+            pool: usize,
+            input: ParticleSpawn,
+        ) -> Option<(bool, &ParticleRecord)> {
+            self.0.get_mut(pool).map(|pool| pool.spawn(input))
+        }
+    }
+
     /// The initial animation frame at spawn (`FUN_00424f40` / `FUN_004a96e0`):
     /// the average of the three low bytes of a random word, or the fixed
     /// low-detail frame when the detail level is lowest.
@@ -449,6 +579,82 @@ mod tests {
             Some(ParticleEffect::Splash)
         );
         assert_eq!(gated_particle_effect(0x7f, enabled), None);
+    }
+
+    #[test]
+    fn particle_sprite_table_and_tuning_follow_the_type_switch() {
+        use particles::{ParticlePools, ParticleSpawn, ParticleSpriteTable, particle_sprite_table};
+        let cases = [
+            (1, ParticleSpriteTable::Default),
+            (6, ParticleSpriteTable::Type6),
+            (7, ParticleSpriteTable::Type7),
+            (8, ParticleSpriteTable::Type8),
+            (9, ParticleSpriteTable::Type9),
+            (0x16, ParticleSpriteTable::Type16),
+            (0x18, ParticleSpriteTable::Type18),
+            (0x1b, ParticleSpriteTable::Type1b),
+            (0x7f, ParticleSpriteTable::Default),
+        ];
+        for (type_byte, expected) in cases {
+            assert_eq!(particle_sprite_table(type_byte), expected);
+        }
+        let input = ParticleSpawn {
+            position: [1, 2, 3],
+            vector_24: [4, 5, 6],
+            word_30: 7,
+            word_34: 8,
+            word_46: 9,
+            type_byte: 6,
+            tuning: [10, 11],
+            random: 0x0603,
+            low_detail: false,
+            global_flag: true,
+        };
+        let mut pools = ParticlePools::default();
+        let (wrapped, record) = pools.spawn(0, input).unwrap();
+        assert!(!wrapped);
+        assert_eq!(record.position, [1, 2, 3]);
+        assert_eq!(record.vector_24, [4, 5, 6]);
+        assert_eq!((record.word_30, record.word_34, record.word_3c), (7, 8, 0));
+        assert_eq!((record.word_46, record.tuning_48), (9, 11));
+        assert_eq!((record.type_byte, record.frame, record.flags), (6, 3, 3));
+        assert_eq!(pools.pool(0).unwrap().next_index(), 1);
+        assert!(pools.spawn(8, input).is_none());
+    }
+
+    #[test]
+    fn particle_pool_wraps_at_one_hundred_and_preserves_only_expected_flags() {
+        use particles::{ParticlePools, ParticleSpawn};
+        let input = ParticleSpawn {
+            position: [0; 3],
+            vector_24: [0; 3],
+            word_30: 0,
+            word_34: 0,
+            word_46: 0,
+            type_byte: 0x16,
+            tuning: [10, 11],
+            random: 0,
+            low_detail: true,
+            global_flag: true,
+        };
+        let mut pools = ParticlePools::default();
+        for index in 0..100 {
+            let (wrapped, record) = pools.spawn(0, input).unwrap();
+            assert_eq!(wrapped, index == 99);
+            assert_eq!(record.tuning_48, 10);
+            assert_eq!(record.frame, 0x32);
+        }
+        assert_eq!(pools.pool(0).unwrap().next_index(), 0);
+        let (_, record) = pools
+            .spawn(
+                0,
+                ParticleSpawn {
+                    global_flag: false,
+                    ..input
+                },
+            )
+            .unwrap();
+        assert_eq!(record.flags, 1);
     }
 
     #[test]
