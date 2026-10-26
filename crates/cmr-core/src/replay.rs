@@ -26,9 +26,9 @@
 //! `>>10` quantization + XOR-delta codec, the `.SSR` extension and `"CMPR"`
 //! container magic, and the snapshot record shape/capacity/compression.
 //! Inferences: Region A is the deterministic re-sim seed; track/car identity is
-//! carried in the `.SSR` filename. The four record-byte assignments are recovered.
-//! Unknowns (not reproduced): the internal layout of the `0x151ec`-byte Region-A
-//! block, the explicit `.SSR` write path, and the network wire framing.
+//! carried in the `.SSR` filename. The four record-byte assignments and Region-A
+//! section layout are recovered. Unknowns (not reproduced): the explicit `.SSR`
+//! write path and the network wire framing.
 
 use crate::fixed_point::Fixed16;
 
@@ -46,6 +46,30 @@ pub const REPLAY_INITIAL_STATE_BYTES: usize = 0x151ec;
 
 /// Dwords of the Region-A block (`0x151ec / 4 = 0x547b`).
 pub const REPLAY_INITIAL_STATE_DWORDS: usize = 0x547b;
+
+/// Region-A car-type block size (`0xcd0`).
+pub const REPLAY_CAR_TYPE_BYTES: usize = 0xcd0;
+/// Region-A control-block offset (`0xcd0`) and size (`0x464`).
+pub const REPLAY_CONTROL_OFFSET: usize = 0xcd0;
+pub const REPLAY_CONTROL_BYTES: usize = 0x464;
+/// Region-A physics-block offset (`0x11f4`) and size (`0x768`).
+pub const REPLAY_PHYSICS_OFFSET: usize = 0x11f4;
+pub const REPLAY_PHYSICS_BYTES: usize = 0x768;
+/// Region-A object-record offset (`0x195c`) and stride (`0xa0`).
+pub const REPLAY_OBJECTS_OFFSET: usize = 0x195c;
+pub const REPLAY_OBJECT_RECORD_BYTES: usize = 0xa0;
+/// Region-A trailing state/timer offsets (`0x151dc`/`0x151e8`).
+pub const REPLAY_TRAILING_STATE_OFFSET: usize = 0x151dc;
+pub const REPLAY_TIMER_OFFSET: usize = 0x151e8;
+/// Maximum object records before the trailing 12-byte state block (`0x1f4`).
+pub const REPLAY_MAX_OBJECTS: usize = 0x1f4;
+
+/// Checked offset of one Region-A object record.
+#[must_use]
+pub fn replay_object_record_offset(index: usize) -> Option<usize> {
+    (index < REPLAY_MAX_OBJECTS)
+        .then_some(REPLAY_OBJECTS_OFFSET + index * REPLAY_OBJECT_RECORD_BYTES)
+}
 
 /// Bytes of one per-tick control record (Region B element).
 pub const REPLAY_TICK_RECORD_BYTES: usize = 4;
@@ -335,6 +359,23 @@ mod tests {
             replay_region_b_offset(1),
             REPLAY_OBJECT_HEADER_BYTES + REPLAY_INITIAL_STATE_BYTES
         );
+    }
+
+    #[test]
+    fn region_a_sections_and_object_bounds_match_the_copy_routines() {
+        assert_eq!(REPLAY_CAR_TYPE_BYTES, REPLAY_CONTROL_OFFSET);
+        assert_eq!(REPLAY_CONTROL_OFFSET + REPLAY_CONTROL_BYTES, 0x1134);
+        assert_eq!(
+            REPLAY_PHYSICS_OFFSET + REPLAY_PHYSICS_BYTES,
+            REPLAY_OBJECTS_OFFSET
+        );
+        assert_eq!(replay_object_record_offset(0), Some(REPLAY_OBJECTS_OFFSET));
+        assert_eq!(
+            replay_object_record_offset(REPLAY_MAX_OBJECTS - 1),
+            Some(REPLAY_TRAILING_STATE_OFFSET - REPLAY_OBJECT_RECORD_BYTES)
+        );
+        assert_eq!(replay_object_record_offset(REPLAY_MAX_OBJECTS), None);
+        assert_eq!(REPLAY_TIMER_OFFSET + 4, REPLAY_INITIAL_STATE_BYTES);
     }
 
     #[test]

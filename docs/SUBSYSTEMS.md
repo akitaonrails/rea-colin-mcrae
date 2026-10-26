@@ -1886,9 +1886,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   never feeds physics. Reconstructed the object sizing/region layout, exact
   four-byte actuator records, digital `-66` decoding, double-XOR current fields,
   repeat counting, CMPR header and snapshot math in `cmr-core::replay`. The
-  vertical trace now uses those native records and rejects partial input. Region-A
-  layout, the save path and wire framing remain. See evidence
-  `rea.official-eu.sim-replay` and `rea.official-eu.replay-control-record`.
+  vertical trace now uses those native records and rejects partial input. Region A
+  is sectioned into car-type, control, physics, 500 bounded objects and trailing
+  state/timer fields. `.SSR` writing is explicitly unsupported by resolved static
+  callers; network framing remains. See evidence `rea.official-eu.sim-replay`,
+  `rea.official-eu.replay-control-record`, and `rea.official-eu.replay-region-a-layout`.
 - `cmr-core::race_state` composes the recovered fixed-step pieces (`fixed_point`
   BAM trig + `Vec3`, `vehicle_dynamics` lateral-grip/net-accel/drag/integration,
   and the `stage_timing` stage clock) into a deterministic offline race-state

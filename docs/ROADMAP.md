@@ -1390,7 +1390,10 @@ sine/threshold test brings `cmr-core` to 1,379. `force_2c8` production remains.
 G08's four-byte actuator record is now recovered and implemented with digital
 `-66` decoding, mode flags, double-XOR current-field semantics and the repeat
 counter. Two byte-exact tests plus native vertical trace decoding bring `cmr-core`
-to 1,381. Region-A layout, explicit `.SSR` writing and network framing remain.
+to 1,381. Region A is now fully sectioned with checked offsets and an exact
+500-object bound; one layout test brings `cmr-core` to 1,382. `.SSR` writing is
+explicitly unsupported by the resolved static callers (save-slot/config only),
+with indirect-call coverage caveats. Network framing remains.
 
 Exit gate:
 
