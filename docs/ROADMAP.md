@@ -1243,7 +1243,9 @@ inertia, and negatively integrates angular velocity, bringing `cmr-core` to 1,33
 wrapping-absolute semantics, bringing `cmr-core` to 1,338. The generalized
 `FUN_004184e0` orientation update now builds each axis-angle matrix, transforms
 and normalizes the basis in native `1,2,0` order, bringing `cmr-core` to 1,339.
-Angular-velocity-to-angle conversion, other angular special cases, eight-record
+`orientation_angle_increment` and `integrate_orientation_from_velocities` now
+connect the half-delta angular rate through the single `0x28b` conversion to that
+sequence, bringing `cmr-core` to 1,340. Other angular special cases, eight-record
 wiring and complete four-lane production remain open.
 
 Exit gate:

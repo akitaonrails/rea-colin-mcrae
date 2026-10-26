@@ -1053,6 +1053,32 @@ pub fn integrate_orientation(
     Some(basis)
 }
 
+/// Convert one angular-velocity component to the native 16-bit angle increment:
+/// `(qmul(current,scale) - qmul(delta,scale/2)) * 0x28b >> 16`.
+#[must_use]
+pub fn orientation_angle_increment(current: Fixed16, delta: Fixed16, scale: Fixed16) -> i16 {
+    let half_delta = delta.mul(Fixed16::from_raw(scale.raw() / 2));
+    let half_delta_velocity = current.mul(scale).sub(half_delta);
+    (half_delta_velocity.raw().wrapping_mul(0x28b) >> 16) as i16
+}
+
+/// Compose angular-velocity conversion with the recovered three-stage update.
+#[must_use]
+pub fn integrate_orientation_from_velocities(
+    basis: [Vec3; 3],
+    current: Vec3,
+    delta: Vec3,
+    scale: Fixed16,
+    trig: &[i32],
+) -> Option<[Vec3; 3]> {
+    let angles = [
+        orientation_angle_increment(current.x, delta.x, scale),
+        orientation_angle_increment(current.y, delta.y, scale),
+        orientation_angle_increment(current.z, delta.z, scale),
+    ];
+    integrate_orientation(basis, angles, trig)
+}
+
 /// Transform a contact force before its recovered moment cross product.
 #[must_use]
 pub fn transformed_contact_moment(rows: [Vec3; 3], force: Vec3, offset: Vec3) -> Vec3 {
@@ -1594,6 +1620,38 @@ mod tests {
         assert_eq!(
             outcome.angular_velocity,
             raw_v(-0x38000, -0x20000, -0xe0000)
+        );
+    }
+
+    #[test]
+    fn angular_velocity_half_delta_feeds_orientation_angles() {
+        assert_eq!(
+            orientation_angle_increment(Fixed16::ONE, Fixed16::ZERO, Fixed16::ONE),
+            0x28b
+        );
+        assert_eq!(
+            orientation_angle_increment(Fixed16::ONE, Fixed16::from_raw(0x20000), Fixed16::ONE,),
+            0
+        );
+        assert_eq!(
+            orientation_angle_increment(Fixed16::ZERO, Fixed16::from_raw(0x10001), Fixed16::ONE,),
+            -326
+        );
+        let basis = [
+            raw_v(0x10000, 0, 0),
+            raw_v(0, 0x10000, 0),
+            raw_v(0, 0, 0x10000),
+        ];
+        let trig = crate::fixed_point::build_sine_table();
+        assert_eq!(
+            integrate_orientation_from_velocities(
+                basis,
+                raw_v(0x10000, 0, 0),
+                Vec3::ZERO,
+                Fixed16::ONE,
+                &trig,
+            ),
+            integrate_orientation(basis, [0x28b, 0, 0], &trig)
         );
     }
 
