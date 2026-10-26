@@ -989,6 +989,52 @@ pub fn sum_translation_lane_forces(
         .fold(base, Vec3::add)
 }
 
+/// Runtime inputs for one `FUN_0040d400` contact-vector update.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContactVectorUpdateInput {
+    pub update_gate: i32,
+    pub enabled: bool,
+    pub vector: Vec3,
+    pub basis: Vec3,
+    pub scale_528: Fixed16,
+    pub extra_vector: Vec3,
+    pub limit: Fixed16,
+    pub threshold: Fixed16,
+}
+
+/// Project and scale one contact vector through the recovered `FUN_0040d400`
+/// rule. `None` preserves the destination when the global gate or contact flag
+/// rejects the update, or when the projected vector has zero length.
+#[must_use]
+pub fn apply_contact_vector_update(input: ContactVectorUpdateInput) -> Option<Vec3> {
+    if input.update_gate != 0 || !input.enabled {
+        return None;
+    }
+    let projection = input.basis.dot(input.vector);
+    let residual = input.vector.sub(input.basis.scale(projection));
+    let root = Fixed16::from_raw(sqrt_q16(residual.dot(residual).raw() as u32) as i32);
+    if root.raw() <= 0 {
+        return None;
+    }
+
+    let reciprocal = Fixed16::from_raw(((1_u64 << 32) / u64::from(root.raw() as u32)) as i32);
+    let mut magnitude = root.mul(input.scale_528).neg();
+    if root < Fixed16::ONE {
+        let extra = Fixed16::from_raw(sqrt_q16(
+            input.extra_vector.dot(input.extra_vector).raw() as u32
+        ) as i32);
+        magnitude = magnitude.sub(extra);
+    }
+    if magnitude.raw().wrapping_abs() > input.threshold.raw() {
+        magnitude = if magnitude.raw() < 1 {
+            input.limit.neg()
+        } else {
+            input.limit
+        };
+    }
+    Some(residual.scale(reciprocal).scale(magnitude))
+}
+
 /// Apply the recovered official-EU translational damping, velocity, and
 /// position update from `FUN_0040a4a0`.
 ///
@@ -1358,6 +1404,61 @@ mod tests {
         // drag = v * speed.
         let d = drag(v(1, 0, 0), Fixed16::from_raw(0x8000));
         assert_eq!(d.x, Fixed16::from_raw(0x8000));
+    }
+
+    #[test]
+    fn contact_vector_update_projects_scales_and_preserves_skips() {
+        let input = ContactVectorUpdateInput {
+            update_gate: 0,
+            enabled: true,
+            vector: raw_v(0x20000, 0x10000, 0),
+            basis: raw_v(0x10000, 0, 0),
+            scale_528: Fixed16::ONE,
+            extra_vector: Vec3::ZERO,
+            limit: Fixed16::from_raw(0x20000),
+            threshold: Fixed16::from_raw(0x30000),
+        };
+        assert_eq!(
+            apply_contact_vector_update(input),
+            Some(raw_v(0, -0x10000, 0))
+        );
+        assert_eq!(
+            apply_contact_vector_update(ContactVectorUpdateInput {
+                threshold: Fixed16::ZERO,
+                ..input
+            }),
+            Some(raw_v(0, -0x1ffe4, 0))
+        );
+        assert_eq!(
+            apply_contact_vector_update(ContactVectorUpdateInput {
+                vector: raw_v(0, 0x8000, 0),
+                scale_528: Fixed16::ZERO,
+                extra_vector: raw_v(0x10000, 0, 0),
+                ..input
+            }),
+            Some(raw_v(0, -0x10000, 0))
+        );
+        assert_eq!(
+            apply_contact_vector_update(ContactVectorUpdateInput {
+                enabled: false,
+                ..input
+            }),
+            None
+        );
+        assert_eq!(
+            apply_contact_vector_update(ContactVectorUpdateInput {
+                update_gate: 1,
+                ..input
+            }),
+            None
+        );
+        assert_eq!(
+            apply_contact_vector_update(ContactVectorUpdateInput {
+                vector: raw_v(0x10000, 0, 0),
+                ..input
+            }),
+            None
+        );
     }
 
     #[test]

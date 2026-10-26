@@ -1229,8 +1229,11 @@ The downstream order is now pinned through `FUN_0040ce40` -> `FUN_0040d810` ->
 consumer's base/non-wheel/contacted-wheel net-force sum, with one additional test
 bringing `cmr-core` to 1,333. The four-lane race-state path now performs that sum
 after postprocessing and translates with the resulting world force in the same
-tick; its test checks negative motion from the negative contacted lane. The
-`FUN_0040d400` update, moment path, and complete four-lane production remain open.
+tick; its test checks negative motion from the negative contacted lane.
+`apply_contact_vector_update` now reconstructs one `FUN_0040d400` projection,
+normalization, extra-length subtraction and distinct threshold/limit clamp, with
+one additional test bringing `cmr-core` to 1,334. Eight-record wiring, the moment
+path, and complete four-lane production remain open.
 
 Exit gate:
 

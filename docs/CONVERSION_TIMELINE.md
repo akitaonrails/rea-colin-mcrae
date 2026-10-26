@@ -484,7 +484,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T09:08Z | 138h50m | recover-translation-lane-force-sum | `9604fb9` | G03, G09 | Traced `FUN_0040ce40` -> `FUN_0040d810` -> `FUN_0040d400` -> `FUN_0040a4a0`. Recovered the net-force consumer as base plus non-wheel lanes and contacted wheel lanes, before cached-speed damping. Added `sum_translation_lane_forces` with contact/wrapping coverage; `cmr-core` has 1,333 tests. Race-state ordering, `FUN_0040d400`, moments, and full lane production remain open. |
 
-| 2026-10-26T09:17Z | 138h59m | order-postprocessed-forces-before-translation | _(pending)_ | G03, G09 | Refactored first/second wheel helpers so the four-lane path postprocesses before translating. Base, non-wheel and contacted postprocessed lane forces now drive the same tick's world-force translation. The test checks negative velocity/position and kernel equivalence; `cmr-core` has 1,333 tests. `FUN_0040d400`, moments and full lane production remain open. |
+| 2026-10-26T09:17Z | 138h59m | order-postprocessed-forces-before-translation | `62ecad9` | G03, G09 | Refactored first/second wheel helpers so the four-lane path postprocesses before translating. Base, non-wheel and contacted postprocessed lane forces now drive the same tick's world-force translation. The test checks negative velocity/position and kernel equivalence; `cmr-core` has 1,333 tests. `FUN_0040d400`, moments and full lane production remain open. |
+
+| 2026-10-26T09:27Z | 139h09m | recover-contact-vector-update | _(pending)_ | G03 | Added `apply_contact_vector_update`: gate/contact skips, basis projection, legacy normalization, extra-length subtraction and the distinct threshold/limit clamp from `FUN_0040d400`. One focused test covers all branches and normalization truncation; `cmr-core` has 1,334 tests. Eight-record wiring and moments remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

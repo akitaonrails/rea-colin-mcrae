@@ -1918,8 +1918,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `sum_translation_lane_forces` sums base and non-wheel forces, then only
   contacted wheel accumulators, before translation damping. The four-lane path
   now performs that sum after postprocessing and translates with the resulting
-  world force in the same tick. The separate `FUN_0040d400` update, moment path,
-  and full four-iteration production remain open. See evidence
+  world force in the same tick. `apply_contact_vector_update` reconstructs one
+  `FUN_0040d400` record with basis projection, legacy normalization, extra-length
+  subtraction and the distinct threshold/limit clamp. Eight-record traversal,
+  the moment path, and full four-iteration production remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
