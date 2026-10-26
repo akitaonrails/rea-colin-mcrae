@@ -58,7 +58,7 @@ pub struct MenuFlowInputs {
     /// State 2, interactive path: the root-menu controller produced a result
     /// (`FUN_00470e20 != 0`); while clear the menu stays on `2`.
     pub root_menu_ready: bool,
-    /// State 2, interactive path: the screen-graph stepper is healthy
+    /// State 2, interactive path: the auxiliary status predicate succeeds
     /// (`FUN_0046f650 != 0`); clear drives the quit funnel (`0xc`).
     pub screen_graph_ready: bool,
     /// State 2, interactive path: the packed menu-status byte selected quit

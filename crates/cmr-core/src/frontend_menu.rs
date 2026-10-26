@@ -268,6 +268,72 @@ impl ValueWidget {
     }
 }
 
+/// The widget categories that change callback ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WidgetKind {
+    Button,
+    Action,
+    Value,
+    ValueAlternate,
+}
+
+/// Descriptor and widget link targets exposed to the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WidgetLinks {
+    pub previous_screen: bool,
+    pub next_screen: bool,
+    pub accept: bool,
+    pub cancel: bool,
+}
+
+/// One callback selected by the descriptor engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WidgetCallback {
+    PreviousScreen,
+    NextScreen,
+    Accept,
+    Cancel,
+    Adjust(ValueDirection),
+}
+
+/// Route one widget input to the native callback class. The host performs the
+/// returned callback; descriptor pointers are not converted into behavior here.
+#[must_use]
+pub fn widget_callback(
+    kind: WidgetKind,
+    links: WidgetLinks,
+    confirm: bool,
+    cancel: bool,
+    adjust: Option<ValueDirection>,
+) -> Option<WidgetCallback> {
+    if let Some(direction) = adjust {
+        if matches!(kind, WidgetKind::Value | WidgetKind::ValueAlternate) {
+            return Some(WidgetCallback::Adjust(direction));
+        }
+        return match direction {
+            ValueDirection::Decrement if links.previous_screen => {
+                Some(WidgetCallback::PreviousScreen)
+            }
+            ValueDirection::Increment if links.next_screen => Some(WidgetCallback::NextScreen),
+            _ => None,
+        };
+    }
+    if confirm {
+        return match kind {
+            WidgetKind::Button if links.accept => Some(WidgetCallback::Accept),
+            WidgetKind::Action if links.next_screen => Some(WidgetCallback::NextScreen),
+            WidgetKind::Value | WidgetKind::ValueAlternate if links.accept => {
+                Some(WidgetCallback::Accept)
+            }
+            _ => None,
+        };
+    }
+    if cancel && links.cancel {
+        return Some(WidgetCallback::Cancel);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +455,48 @@ mod tests {
                 current: 0,
                 moved: false,
             }
+        );
+    }
+
+    #[test]
+    fn callback_router_preserves_widget_and_descriptor_ownership() {
+        let links = WidgetLinks {
+            previous_screen: true,
+            next_screen: true,
+            accept: true,
+            cancel: true,
+        };
+        assert_eq!(
+            widget_callback(WidgetKind::Button, links, true, false, None),
+            Some(WidgetCallback::Accept)
+        );
+        assert_eq!(
+            widget_callback(WidgetKind::Action, links, true, false, None),
+            Some(WidgetCallback::NextScreen)
+        );
+        assert_eq!(
+            widget_callback(WidgetKind::Value, links, false, true, None),
+            Some(WidgetCallback::Cancel)
+        );
+        assert_eq!(
+            widget_callback(
+                WidgetKind::ValueAlternate,
+                links,
+                false,
+                false,
+                Some(ValueDirection::Decrement),
+            ),
+            Some(WidgetCallback::Adjust(ValueDirection::Decrement))
+        );
+        assert_eq!(
+            widget_callback(
+                WidgetKind::Button,
+                links,
+                false,
+                false,
+                Some(ValueDirection::Increment),
+            ),
+            Some(WidgetCallback::NextScreen)
         );
     }
 

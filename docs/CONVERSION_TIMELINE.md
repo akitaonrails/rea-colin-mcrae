@@ -648,7 +648,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T19:11Z | 148h53m | complete-portable-settings-paths | `990e693` | C05 | Closed the portable settings/path backend: explicit roots, exact-size settings, record storage and profile paths without registry or absolute-path dependencies. Remaining field semantics belong to C06. |
 
-| 2026-10-26T19:12Z | 148h54m | complete-profile-save-formats | _(pending)_ | C06 | Closed exact settings/profile formats with record, progression and load-apply semantics plus round-trip coverage. Unassigned fields remain explicitly opaque and preserved. |
+| 2026-10-26T19:12Z | 148h54m | complete-profile-save-formats | `194ddc3` | C06 | Closed exact settings/profile formats with record, progression and load-apply semantics plus round-trip coverage. Unassigned fields remain explicitly opaque and preserved. |
+
+| 2026-10-26T19:17Z | 148h59m | complete-frontend-menus | _(pending)_ | F01, F04 | Implemented the generic widget callback router for adjustments, accept, cancel and screen links, completing the descriptor-driven root/options/profile/championship menus. One test brings `cmr-core` to 1,409. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

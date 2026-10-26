@@ -1495,6 +1495,10 @@ remaining opaque field semantics are tracked by C06.
 C06 is complete: exact settings/profile formats and their record, progression and
 load-apply semantics round-trip safely. Unassigned fields remain explicitly
 opaque and preserved, not guessed or dropped.
+F01 and F04 are complete: the generic callback router joins the four-phase
+transition, root graph, options, profile and championship setup. One test brings
+`cmr-core` to 1,409. Menu families share the recovered descriptor engine rather
+than invented mode-specific algorithms.
 
 Exit gate:
 

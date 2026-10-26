@@ -2315,6 +2315,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   availability globals and table contents remain caller/game inputs. See the
   championship progression, stage-commit, record-persistence and custom-schedule
   evidence rows.
+- F01/F04 are complete: `widget_callback` routes value adjustments, accept,
+  cancel and screen links, joining the recovered root graph, options, profile
+  and championship setup. Menu families share the descriptor engine.
 - `cmr-core::frontend_menu` reconstructs the F01 four-phase screen-transition
   spine: interactive descriptor result, transition setup, fade-out and fade-in.
   It emits explicit next-screen, enter, quit and save-and-quit actions. Its
