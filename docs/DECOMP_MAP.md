@@ -192,7 +192,9 @@ cover the recovered pure rules.
   **G03-AK19 initializer copies and final writes (`5d0ce3b`):** the closing copy loops move 24 dwords from `+0xfc..+0x15c` to `+0x1bc..+0x21c` and 9 dwords from `+0x258..+0x27c` down to `+0x21c..+0x240`; then `+0x240/+0x244/+0x248` receive `+0xc8/+0xcc/+0xd0` and `+0x24c/+0x250/+0x254` receive the AK11 final vector. State bytes `+0x74d/+0x74e` and control byte `+0x428` are zeroed, control dword `+0x420` becomes `1`, `DAT_0050c5fc = ((~config_25 & 1) << 0xf) | 0x1999` (only inverted config bit zero participates), and `FUN_0046eda0()` runs only when `DAT_00d3ca88 != 0`. `derive_compiled_initializer_copies`, `derive_compiled_initializer_5fc`, and `compiled_initializer_final_call_required` reproduce them. Three focused tests cover verbatim copies and disjoint ranges, config-bit inversion, and the final flags/call gate, bringing `cmr-core` to 1,255. The direct effects of `FUN_00404440` are now fully contracted; the remaining callees `FUN_00492770`, `FUN_004126b0`, `FUN_0046b240`, `FUN_0048d2d0`, `FUN_004cfac0`, and `FUN_0046eda0` and the full call-spine composition remain.
   **G03-AK20 weather/detail predicate `FUN_0048d2d0` (`c27b7a1`):** the result is false when the detail level (`DAT_00592f00`, getter `FUN_0046b240`) is `8`; otherwise, when the weather type (`DAT_00592ef8`, getter `FUN_0046b220`) is `3` or `4`, the result is `DAT_00592efc != 1` (getter `FUN_0046b230`); when it is `5`, the result is true; every other input is false. The weather getter is only evaluated when the detail level differs from `8`, and the intensity getter only when the weather type is `3` or `4`. `derive_compiled_initializer_48d2d0` reproduces the branches. One focused test covers detail `8`, weather outside `3..=5`, intensity selection, and the weather-`5` true case, bringing `cmr-core` to 1,256. `FUN_0046b240` is confirmed as the `DAT_00592f00` getter and `FUN_004cfac0` as the already reconstructed game LCG.
   **G03-AK21 callee `FUN_00492770` switch vector stores (`1a1c4d7`):** the switch reads `param_1+0x180`. Cases `0` and `3` store the three source dwords only at `+0xc4/+0xc8/+0xcc`; cases `1` and `2` additionally store them at `+0x10/+0x14/+0x18`; every other switch value stores no vector. Every path zeroes `param_1+0x188` and then invokes `FUN_00492050(param_1)`. `derive_compiled_92770` reproduces the stores and `COMPILED_92770_NEXT_CALL` pins the callee. One focused test covers every switch branch and the unconditional zero, bringing `cmr-core` to 1,257. `FUN_00492050` remains unreconstructed.
-  **G03-AK22 callee `FUN_004126b0` lane threshold scan (pending milestone):** `FUN_004126b0` initializes `+0x742 = 0` and `+0x743 = 1`, then scans lanes `7` down to `0`, comparing `lane_word + 0x1999 < source_y` with wrapping addition and a strict signed test (lane `i` reads `+0x2e4 + 4*i` and `+0x100 + 0x0c*i`). A passing lane sets its `+0x73a+i` flag; a failing lane clears it, clears `+0x743`, appends the lane index at `+0x744 + count`, and increments `+0x742`. `derive_compiled_lane_thresholds` reproduces the flags, count, and descending index list. Two focused tests cover all-pass, mixed pass/fail with strict-equality failure, all-fail ordering, and wrapping lane-word addition, bringing `cmr-core` to 1,258.
+  **G03-AK22 callee `FUN_004126b0` lane threshold scan (`d8c76b6`):** `FUN_004126b0` initializes `+0x742 = 0` and `+0x743 = 1`, then scans lanes `7` down to `0`, comparing `lane_word + 0x1999 < source_y` with wrapping addition and a strict signed test (lane `i` reads `+0x2e4 + 4*i` and `+0x100 + 0x0c*i`). A passing lane sets its `+0x73a+i` flag; a failing lane clears it, clears `+0x743`, appends the lane index at `+0x744 + count`, and increments `+0x742`. `derive_compiled_lane_thresholds` reproduces the flags, count, and descending index list. Two focused tests cover all-pass, mixed pass/fail with strict-equality failure, all-fail ordering, and wrapping lane-word addition, bringing `cmr-core` to 1,258.
+  **G03-AK23 callee `FUN_0046eda0` global copy gate (pending milestone):** when `DAT_00550c08 == 1`, the callee copies `0x119` dwords from `DAT_005fffc8` to `DAT_0060042c` and `0x1da` dwords from `DAT_00700300` to `DAT_00700a68`; every other value copies nothing. Each destination begins immediately after its source range, so the blocks never overlap. `compiled_special_copy_required` and `COMPILED_SPECIAL_COPY_BLOCKS` reproduce the gate and descriptors. One focused test covers the gate values and exact block bounds, bringing `cmr-core` to 1,259. The copied global tables are runtime data, not vendored.
+
 
 
 
@@ -256,13 +258,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T00:00:18Z
-milestone=reconstruct-callee-4126b0-lane-thresholds
+updated_utc=2026-10-26T00:01:00Z
+milestone=reconstruct-callee-46eda0-global-copies
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-recover-callee-46eda0-global-copies
-next_exit_gate=the-46eda0-global-copy-gate-and-blocks-have-exact-tested-contracts
+current_focus=G03-compose-the-full-initializer-call-spine
+next_exit_gate=the-initializer-call-spine-composes-all-recovered-stages-with-tested-ordering
 <!-- PROGRESS-TAIL-END -->

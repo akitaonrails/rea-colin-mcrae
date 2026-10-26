@@ -927,6 +927,14 @@ G03-AK22 reconstructs `FUN_004126b0`: starting from `+0x742 = 0` and
 `+0x744 + count`, and increment `+0x742`. Two focused tests bring `cmr-core`
 to 1,258. The `FUN_0046eda0` global copy gate follows.
 
+G03-AK23 reconstructs `FUN_0046eda0`: only when `DAT_00550c08 == 1`, it copies
+`0x119` dwords from `DAT_005fffc8` to `DAT_0060042c` and `0x1da` dwords from
+`DAT_00700300` to `DAT_00700a68`. Each destination begins immediately after
+its source range, so the blocks never overlap. One focused test brings
+`cmr-core` to 1,259. The copied global tables are runtime data. All direct
+effects and callees of the initializer are now contracted; full call-spine
+composition follows.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

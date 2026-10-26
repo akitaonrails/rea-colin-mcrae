@@ -1323,6 +1323,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   their `+0x73a` flags; failing lanes clear them and `+0x743`, append their
   indices at `+0x744 + count`, and increment `+0x742`. Two focused tests
   bring `cmr-core` to 1,258. The `FUN_0046eda0` global copy gate remains open.
+  G03-AK23 reconstructs `FUN_0046eda0`: only when `DAT_00550c08 == 1`, it
+  copies `0x119` dwords from `DAT_005fffc8` to `DAT_0060042c` and `0x1da`
+  dwords from `DAT_00700300` to `DAT_00700a68`, each destination beginning
+  immediately after its source range. One focused test brings `cmr-core` to
+  1,259. The copied global tables are runtime data; full call-spine
+  composition follows.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
