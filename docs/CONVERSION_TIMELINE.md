@@ -652,7 +652,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T19:17Z | 148h59m | complete-frontend-menus | `02a2991` | F01, F04 | Implemented the generic widget callback router for adjustments, accept, cancel and screen links, completing the descriptor-driven root/options/profile/championship menus. One test brings `cmr-core` to 1,409. |
 
-| 2026-10-26T19:19Z | 149h01m | complete-native-startup | _(pending)_ | C13 | Ran the real headless session to completion (23 frames, 16 sim ticks, final state 0, finished, 63 cs) and verified native lifecycle integration. Optional official coefficient fixtures remain a separate provisioning limitation. |
+| 2026-10-26T19:19Z | 149h01m | complete-native-startup | `335ff96` | C13 | Ran the real headless session to completion (23 frames, 16 sim ticks, final state 0, finished, 63 cs) and verified native lifecycle integration. Optional official coefficient fixtures remain a separate provisioning limitation. |
+
+| 2026-10-26T19:25Z | 149h07m | bound-rectangular-surface-padding | _(pending)_ | E01 | Rechecked allocation, layout and exact decoder instructions: square expansion leaves added surface pixels to native DirectDraw allocation state. GR4's 32x64 padded case remains explicitly unsupported by the deterministic sampler rather than being assigned an invented fill. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

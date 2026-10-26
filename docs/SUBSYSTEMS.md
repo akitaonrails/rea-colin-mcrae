@@ -2399,6 +2399,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Rectangular C3D surface expansion does not define the contents of added
+  padding. `FUN_0049e960` allocates a DirectDraw surface and `FUN_00499320`
+  writes source-derived pixels only, so the indexed sampler keeps GR4's padded
+  32x64 resource fail-closed instead of assigning zero, edge, or color-key
+  pixels. This is an explicit native-driver ownership boundary; deterministic
+  emulation of that allocation state is not supported by current evidence.
 - The canonical code reference is the official EU updater payload. The
   installed EU-derived executable, official US payload, and unofficial xdelta
   results are tracked comparison variants.

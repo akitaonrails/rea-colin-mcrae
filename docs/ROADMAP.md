@@ -1576,6 +1576,13 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+The rectangular C3D surface boundary is now explicit: DirectDraw owns the
+initial contents of padding introduced by square expansion, and the recovered
+copy loops never initialize it. The deterministic indexed sampler therefore
+continues to reject GR4's 32x64-to-64x64 case rather than invent a fill. This is
+an evidenced unsupported native-driver case, not a remaining formula to guess;
+driver-exact Stretch and alternate-font final pixels remain bounded E01 work.
+
 An original-compatible audio lane can begin with a narrow shim for the 16
 `QSWaveMix*` APIs the game imports. The shipped DLL's complete 62-export surface
 is an ABI oracle, but unreferenced exports are not automatically reconstruction
