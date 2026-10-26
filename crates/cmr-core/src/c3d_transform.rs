@@ -166,6 +166,71 @@ pub fn scene_world_transforms<'a>(
     propagate_world_transforms(&inputs, root_world)
 }
 
+/// Margin used by the native spatial-section neighbor test (`FUN_00490bb0`).
+pub const SECTION_NEIGHBOR_MARGIN: i32 = 0x4_8000;
+
+/// Compute the two neighboring section links and the unused `-1` sentinel.
+/// The native margin appears on both sides of each comparison and cancels, so
+/// the cell-center sign determines the transition. Link zero is the Z neighbor;
+/// link one is the diagonal with the X direction applied.
+#[must_use]
+pub fn section_neighbors(
+    x: i32,
+    z: i32,
+    center_x: i32,
+    center_z: i32,
+    section: i16,
+    row_count: i16,
+) -> [i16; 3] {
+    let x_direction = if x < center_x {
+        -1
+    } else if x >= center_x {
+        1
+    } else {
+        0
+    };
+    let z_direction = if center_z < z { -1 } else { 1 };
+    let z_neighbor = section + z_direction * row_count;
+    [z_neighbor, z_neighbor + x_direction, -1]
+}
+
+/// Move an object to the tail of a different section, preserving every other
+/// object's order. Invalid targets and same-section moves leave lists unchanged.
+pub fn relocate_section(sections: &mut [Vec<usize>], object: usize, target: usize) -> bool {
+    let Some(source) = sections
+        .iter()
+        .position(|objects| objects.contains(&object))
+    else {
+        return false;
+    };
+    if source == target || target >= sections.len() {
+        return false;
+    }
+    let position = sections[source]
+        .iter()
+        .position(|&candidate| candidate == object)
+        .unwrap();
+    sections[source].remove(position);
+    sections[target].push(object);
+    true
+}
+
+/// Mark a node and every ancestor dirty (`FUN_00492050`). The bounded walk
+/// rejects malformed cycles rather than looping forever.
+pub fn mark_world_dirty(dirty: &mut [bool], node: usize, parents: &[Option<usize>]) {
+    let mut current = Some(node);
+    for _ in 0..=parents.len() {
+        let Some(index) = current else {
+            return;
+        };
+        if index >= dirty.len() {
+            return;
+        }
+        dirty[index] = true;
+        current = parents.get(index).copied().flatten();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +379,29 @@ mod tests {
         let world = scene_world_transforms(file.group0_records(), &MATRIX_IDENTITY_Q16);
         assert_eq!(world[0], translate(3 * ONE, 0, 0));
         assert_eq!(world[1], translate(3 * ONE, 0, 4 * ONE));
+    }
+
+    #[test]
+    fn spatial_neighbors_and_relink_follow_section_transitions() {
+        assert_eq!(section_neighbors(1, 1, 0, 0, 5, 8), [-3, -2, -1]);
+        assert_eq!(section_neighbors(-1, -1, 0, 0, 5, 8), [13, 12, -1]);
+        assert_eq!(section_neighbors(-1, 1, 0, 0, 5, 8), [-3, -4, -1]);
+        assert_eq!(section_neighbors(1, -1, 0, 0, 5, 8), [13, 14, -1]);
+
+        let mut sections = vec![vec![0, 1], vec![2], Vec::new()];
+        assert!(relocate_section(&mut sections, 1, 2));
+        assert_eq!(sections, vec![vec![0], vec![2], vec![1]]);
+        assert!(!relocate_section(&mut sections, 1, 2));
+        assert!(!relocate_section(&mut sections, 1, 3));
+        assert!(!relocate_section(&mut sections, 99, 0));
+    }
+
+    #[test]
+    fn dirty_mark_covers_node_and_ancestors() {
+        let parents = [None, Some(0), Some(1), Some(0)];
+        let mut dirty = [false; 4];
+        mark_world_dirty(&mut dirty, 2, &parents);
+        assert_eq!(dirty, [true, true, true, false]);
     }
 
     #[test]

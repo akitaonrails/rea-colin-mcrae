@@ -624,7 +624,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T18:23Z | 148h05m | complete-renderer-oracle | `44c4697` | E07 | Closed the deterministic renderer/oracle through existing transform, culling, Z-buffer and real-scene coverage. Shipped-binary differential capture is explicitly unsupported under the static policy, not an implementation gap. |
 
-| 2026-10-26T18:25Z | 148h07m | complete-render-submission-contract | _(pending)_ | E06 | Closed primitive batching/order, Z-buffer, transparency and blending through the existing shared contract and E07 renderer. Capability level, alpha gate and force-draw override are resolved. |
+| 2026-10-26T18:25Z | 148h07m | complete-render-submission-contract | `89c319c` | E06 | Closed primitive batching/order, Z-buffer, transparency and blending through the existing shared contract and E07 renderer. Capability level, alpha gate and force-draw override are resolved. |
+
+| 2026-10-26T18:31Z | 148h13m | complete-object-animation-state | _(pending)_ | E04 | Implemented spatial section neighbors, ordered section relocation and ancestor dirty propagation. Two tests bring `cmr-core` to 1,408 and the transform module to 19; E04 is complete. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

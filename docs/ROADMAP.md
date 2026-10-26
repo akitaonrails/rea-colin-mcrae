@@ -1458,6 +1458,9 @@ is unsupported under the static policy; no original binary is run to create it.
 E06 is complete: primitive batching/order, Z-buffer behavior, transparency and
 blending have a shared submission contract and the concrete E07 renderer. The
 capability level, alpha gate and force-draw override are resolved.
+E04 is complete: spatial section neighbors, ordered relocation and ancestor dirty
+propagation complement the recovered world-transform hierarchy. Two tests bring
+`cmr-core` to 1,408; runtime section tables remain inputs.
 
 Exit gate:
 

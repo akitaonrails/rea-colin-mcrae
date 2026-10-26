@@ -2101,6 +2101,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   clamp. Thirty-four tests cover particles, render queues, shadows, fog and
   tuning. Surface and sprite tables remain caller-supplied data; E10 is complete.
   See evidence `impl.weather-effects`.
+- E04's object transform/animation state is complete: `section_neighbors`
+  computes Z/X/diagonal links, `relocate_section` preserves list order while
+  moving objects, and `mark_world_dirty` propagates through ancestors. Nineteen
+  tests cover hierarchy, spatial transitions and dirty state.
 - E06's primitive batching, ordering, depth, transparency and blending contract
   is complete alongside E07's concrete renderer. Capability level, alpha gate
   and force-draw override are resolved.
