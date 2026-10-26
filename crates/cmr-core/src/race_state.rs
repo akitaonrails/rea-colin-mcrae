@@ -26,10 +26,11 @@ use crate::compiled_car_initializer::{
 };
 use crate::drivetrain::{
     EngineForceInput, FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
-    SecondWheelInputs, SmoothedEngineSpeedInput, advance_residual_enable, apply_rev_limiter,
-    derive_engine_force, derive_force_pass_scales, derive_gear_ratio, derive_smoothed_engine_speed,
-    equalize_wheel_speeds, execute_first_wheel_iteration, execute_second_wheel_core,
-    integrate_engine_from_raw_wheels, integrate_idle_engine, track_smoothed_wheel_speed,
+    SecondWheelInputs, SmoothedEngineSpeedInput, advance_idle_reset, advance_residual_enable,
+    apply_rev_limiter, derive_engine_force, derive_force_pass_scales, derive_gear_ratio,
+    derive_smoothed_engine_speed, equalize_wheel_speeds, execute_first_wheel_iteration,
+    execute_second_wheel_core, integrate_engine_from_raw_wheels, integrate_idle_engine,
+    track_smoothed_wheel_speed,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::legacy_math::sqrt_q16;
@@ -1044,6 +1045,14 @@ impl RaceState {
             self.car.four_wheel.engine_2e0 = integrate_idle_engine(
                 self.car.four_wheel.engine_2e0,
                 self.car.four_wheel.engine_force_530,
+            );
+        } else if self.car.four_wheel.idle_6e8 != 0 {
+            (
+                self.car.four_wheel.idle_6e8,
+                self.car.four_wheel.idle_countdown_6ec,
+            ) = advance_idle_reset(
+                self.car.four_wheel.idle_6e8,
+                self.car.four_wheel.idle_countdown_6ec,
             );
         }
         let rev_limit = apply_rev_limiter(

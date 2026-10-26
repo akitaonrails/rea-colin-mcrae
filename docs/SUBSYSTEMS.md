@@ -2045,7 +2045,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   special cases and `force_2c8` production remain separate.
   `derive_engine_force` and `integrate_idle_engine` now produce `engine_force_530`
   and advance the common neutral/idle branch before rev limiting. `idle_6e8` and
-  `idle_countdown_6ec` guard unrecovered special states.
+  `idle_countdown_6ec` guard unrecovered special states. `advance_idle_reset` now
+  handles the `6e8 != 0` clear/reload/decrement transition before rev limiting;
+  the separate nonzero-idle oscillation remains open.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

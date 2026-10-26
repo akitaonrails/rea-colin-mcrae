@@ -584,7 +584,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T16:13Z | 145h55m | integrate-ordinary-engine-update | `3b62937` | G03 | Wired the ordinary raw-axle engine update and existing rev limiter before smoothing, preserving native middle-16-bit arithmetic and storing limiter state/cut. One fractional-update test brings `cmr-core` to 1,376; composition checks both engine outputs. |
 
-| 2026-10-26T16:21Z | 146h03m | recover-neutral-idle-engine-update | _(pending)_ | G03 | Recovered `FUN_0040ce40`'s ordinary engine force and the common neutral/idle update (`6e8==0`, `6ec==0`), including limiter cut and over-redline branches. Wired guarded state and rev limiting. One branch test brings `cmr-core` to 1,377; four-wheel and authenticated-session tests pass. |
+| 2026-10-26T16:21Z | 146h03m | recover-neutral-idle-engine-update | `5372d98` | G03 | Recovered `FUN_0040ce40`'s ordinary engine force and the common neutral/idle update (`6e8==0`, `6ec==0`), including limiter cut and over-redline branches. Wired guarded state and rev limiting. One branch test brings `cmr-core` to 1,377; four-wheel and authenticated-session tests pass. |
+
+| 2026-10-26T16:25Z | 146h07m | wire-idle-reset-countdown | _(pending)_ | G03 | Wired the `6e8 != 0` reset: signed countdowns below two clear the flag and reload 25, larger values decrement, and RPM remains unchanged before rev limiting. One boundary test brings `cmr-core` to 1,378. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

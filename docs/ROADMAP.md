@@ -1380,7 +1380,10 @@ Neutral/idle special cases and `force_2c8` production remain. The ordinary
 `state+0x530` force and common neutral/idle update are now wired with guarded
 `6e8/6ec` state, over-redline handling, limiter cut and rev limiting. One branch
 test brings `cmr-core` to 1,377. Countdown special cases and runtime response/brake
-production remain.
+production remain. The `6e8 != 0` reset now clears/reloads at signed countdowns
+below two and decrements larger values before rev limiting. One boundary test
+brings `cmr-core` to 1,378. Nonzero-idle oscillation and `force_2c8` production
+remain.
 
 Exit gate:
 

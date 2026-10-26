@@ -422,6 +422,20 @@ pub fn integrate_idle_engine(engine_2e0: i32, force_530: i32) -> i32 {
     engine_2e0.wrapping_add(q16_mul(force_530, 0xa0000))
 }
 
+/// Advance the `6e8 != 0` reset branch: reload at countdowns below two and
+/// decrement larger values without changing engine RPM.
+#[must_use]
+pub fn advance_idle_reset(idle_6e8: i32, countdown_6ec: i16) -> (i32, i16) {
+    if idle_6e8 == 0 {
+        return (idle_6e8, countdown_6ec);
+    }
+    if countdown_6ec < 2 {
+        (0, 25)
+    } else {
+        (idle_6e8, countdown_6ec - 1)
+    }
+}
+
 /// Inputs for the driven `FUN_004088c0` integration branch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DrivenWheelSmoothingInput {
@@ -2089,6 +2103,15 @@ mod tests {
         );
         assert_eq!(integrate_idle_engine(0, 0x10000), 0xa0000);
         assert_eq!(integrate_idle_engine(0x20000, -0x10000), -0x80000);
+    }
+
+    #[test]
+    fn idle_reset_reloads_below_two_and_decrements_otherwise() {
+        assert_eq!(advance_idle_reset(0, 0), (0, 0));
+        assert_eq!(advance_idle_reset(1, 1), (0, 25));
+        assert_eq!(advance_idle_reset(1, -1), (0, 25));
+        assert_eq!(advance_idle_reset(1, 2), (1, 1));
+        assert_eq!(advance_idle_reset(1, 25), (1, 24));
     }
 
     fn fx(raw: i32) -> Fixed16 {
