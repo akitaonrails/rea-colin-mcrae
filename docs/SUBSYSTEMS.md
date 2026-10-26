@@ -2102,6 +2102,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   clamp. Thirty-four tests cover particles, render queues, shadows, fog and
   tuning. Surface and sprite tables remain caller-supplied data; E10 is complete.
   See evidence `impl.weather-effects`.
+- B10's native keyboard/gamepad acquisition is complete through the recovered
+  mapper, analog dead-zones and hotplug handling; DirectInput is enumeration-only.
 - B09's native host clock and event loop are complete: `WallClock` drives the
   recovered frame driver, 25 Hz catch-up, render skipping and windowed lifecycle.
 - B01's executable map covers 2,168 procedures, 32,530 symbols and 2,310

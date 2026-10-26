@@ -1480,6 +1480,9 @@ explicit unknowns; map coverage is not misrepresented as total discovery.
 B09 is complete: the native `WallClock` drives the recovered frame driver,
 25 Hz catch-up, render skipping and windowed lifecycle. Busy-wait timing and
 message pumping remain host policy rather than unmodeled game behavior.
+B10 is complete: SDL keyboard and gamepad polling feed the recovered mapper and
+drivetrain with analog dead-zones and hotplug handling. DirectInput is confined
+to enumeration, and no legacy input backend is loaded.
 
 Exit gate:
 
