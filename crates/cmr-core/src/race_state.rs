@@ -33,10 +33,11 @@ use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_ba
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::vehicle_dynamics::{
     AngularOrientationInput, ContactBasisInput, ContactVectorUpdateInput,
-    GeometricPostprocessError, GeometricPostprocessLane, LookupDependentCandidateError,
-    SurfaceCoefficientIndexError, TranslationStepInput, apply_angular_orientation_pipeline,
-    apply_contact_vector_updates, apply_geometric_lane_postprocess, apply_lateral_grip,
-    apply_translation_step, build_contact_basis_vectors, contact_count_scale, drag, net_accel,
+    GeometricPostprocessError, GeometricPostprocessLane, LaneDirectionMode, LaneDirectionSources,
+    LookupDependentCandidateError, SurfaceCoefficientIndexError, TranslationStepInput,
+    apply_angular_orientation_pipeline, apply_contact_vector_updates,
+    apply_geometric_lane_postprocess, apply_lateral_grip, apply_translation_step,
+    build_contact_basis_vectors, construct_lane_directions, contact_count_scale, drag, net_accel,
     sum_contact_moments, sum_translation_lane_forces, transform_contact_force,
 };
 use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
@@ -219,6 +220,10 @@ pub struct FourWheelIterationParams<'a> {
     /// Per-tick `FUN_0040d400` scalar/gate inputs; vectors are replaced from the
     /// current contact-basis output before the reverse traversal.
     pub contact_update_inputs: [ContactVectorUpdateInput; 8],
+    /// Other native direction sources; projection axis and `+0x264` cross operand
+    /// are replaced from `MotionState` on every step.
+    pub lane_direction_sources: LaneDirectionSources,
+    pub lane_direction_mode: LaneDirectionMode,
     pub postprocess: FourWheelPostprocessParams<'a>,
     /// Moment scales/base contact input and angular gates; stateful vectors come
     /// from `MotionState` at each step.
@@ -775,12 +780,30 @@ impl RaceState {
                 input.enabled = wheel.postprocess.wheel_contacts[index];
             }
         }
+        let directions = construct_lane_directions(
+            LaneDirectionSources {
+                projection_axis: self.car.motion.projection_axis,
+                cross_operand: self.car.motion.basis[1],
+                ..wheel.lane_direction_sources
+            },
+            wheel.lane_direction_mode,
+        );
         let mut second = wheel.second.clone();
         for (lane, vector_index) in wheel.contact_vector_indices.into_iter().enumerate() {
             let Some(vector) = contact_vectors.get(vector_index) else {
                 return Err(WheelPostprocessError::ContactVectorIndex { lane, vector_index });
             };
             second[lane].surface_vector = [vector.x.raw(), vector.y.raw(), vector.z.raw()];
+            second[lane].local_68 = [
+                directions.direction_a[lane].x.raw(),
+                directions.direction_a[lane].y.raw(),
+                directions.direction_a[lane].z.raw(),
+            ];
+            second[lane].local_98 = [
+                directions.direction_b[lane].x.raw(),
+                directions.direction_b[lane].y.raw(),
+                directions.direction_b[lane].z.raw(),
+            ];
         }
         let mut prior_speeds = [0; 4];
         for index in (0..4).rev() {
@@ -800,6 +823,10 @@ impl RaceState {
             self.car.four_wheel.first[axle + 1].wheel_speed = right.raw();
         }
         let mut lanes = wheel.postprocess.lanes;
+        for (lane, output) in lanes.iter_mut().enumerate() {
+            output.vector_a = directions.direction_a[lane];
+            output.vector_b = directions.direction_b[lane];
+        }
         for index in (0..4).rev() {
             Self::execute_second_wheel_state(
                 &mut self.car.four_wheel.second[index],
@@ -1314,6 +1341,14 @@ mod tests {
                 limit: Fixed16::ONE,
                 threshold: Fixed16::from_raw(0x7fff0000),
             }),
+            lane_direction_sources: LaneDirectionSources {
+                projection_axis: Vec3::ZERO,
+                source_a0: vector([0x10000, 0, 0]),
+                source_b0: vector([0, 0x10000, 0]),
+                source_a2: vector([0x10000, 0, 0]),
+                cross_operand: Vec3::ZERO,
+            },
+            lane_direction_mode: LaneDirectionMode::Preserve,
             postprocess: FourWheelPostprocessParams {
                 lanes,
                 current_lane: 3,
@@ -1411,7 +1446,17 @@ mod tests {
             apply_contact_vector_updates(contact_inputs, [Vec3::ZERO; 8])
         );
         let mut expected_lanes = lanes;
+        let expected_directions = construct_lane_directions(
+            LaneDirectionSources {
+                projection_axis: car.motion.projection_axis,
+                cross_operand: car.motion.basis[1],
+                ..wheel.lane_direction_sources
+            },
+            wheel.lane_direction_mode,
+        );
         for (index, lane) in expected_lanes.iter_mut().enumerate() {
+            lane.vector_a = expected_directions.direction_a[index];
+            lane.vector_b = expected_directions.direction_b[index];
             lane.accumulator = vector(sample.car.four_wheel.second[index].accumulators);
         }
         let outcome = apply_geometric_lane_postprocess(&mut expected_lanes, Fixed16::ONE).unwrap();

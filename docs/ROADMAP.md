@@ -1315,7 +1315,11 @@ test compares against the independent kernel. The update projection axis now com
 from the compiled AK11 normal/basis, `+0x528` is count-scaled `+0x48`, the extra vector
 is reset, wheel enables come from contact flags, and limits/thresholds come from the
 compiled control-clear loop. Only the global update gate and non-wheel enable flags
-remain explicit in this path.
+remain explicit in this path. Each four-wheel step now also constructs all four A/B
+lane-direction pairs and uses the same outputs for second-wheel accumulation and
+geometric postprocessing, preserving independent C vectors and active flags. The
+projection axis and `+0x264` cross operand come from `MotionState`; other sources and
+mode selection remain explicit.
 
 Exit gate:
 

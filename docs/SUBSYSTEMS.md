@@ -1987,8 +1987,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   preservation. Their projection axis and rebuilt basis come from compiled post-lane
   outputs, `+0x528` is count-scaled `+0x48`, extra vectors reset, wheel enables follow
   contact flags, and limits/thresholds come from the compiled control-clear loop. Only
-  the global update gate and non-wheel enables remain explicit. See evidence
-  `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
+  the global update gate and non-wheel enables remain explicit. Every step also runs
+  `construct_lane_directions` once and shares its four A/B outputs between second-wheel
+  accumulation and the geometric lanes, leaving independent C vectors and active flags
+  intact. Other native direction sources and mode resolution remain caller inputs. See
+  evidence `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
