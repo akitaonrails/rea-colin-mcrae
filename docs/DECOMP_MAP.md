@@ -28,7 +28,7 @@ Status markers:
 
 ## B. Executable and platform contracts
 
-- [~] `B01` Map `Rally.exe` functions, globals, imports, and call clusters.
+- [x] `B01` Map `Rally.exe` functions, globals, imports, and call clusters (current Ghidra inventory covers 2,168 procedures, 32,530 memory/external symbols and 2,310 defined strings across six memory blocks; subsystem call clusters are linked through the evidence ledger. Indirect calls and Ghidra-uncarved code remain explicit unknowns rather than a false completeness claim).
 - [x] `B02` Map `Game.exe` launcher/video lifecycle and executable handoff (`KillVideoAndStartGame` releases the video interfaces, builds the configured `Rally.exe` path, invokes `CreateProcessA`, reports failure and posts quit. The launcher role and handoff are evidenced; successful process execution remains outside static analysis).
 - [x] `B03` Map `qmixer.dll` ABI and the reachable imported subset (all 16 imported `QSWaveMix*` calls are recovered through the shared mixer contract and software playback backend; the DLL's remaining 46 exports are explicitly unreferenced, not reconstruction requirements. Unknown QMixer units are carried verbatim, and no proprietary backend is loaded).
 - [x] `B04` Recover legacy window/message/focus/presentation decisions.
@@ -324,13 +324,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T18:55:50Z
-milestone=complete-launcher-lifecycle
-completed=79
-partial=39
+updated_utc=2026-10-26T18:57:25Z
+milestone=complete-executable-map
+completed=80
+partial=38
 not_started=0
 blocked=0
 total=118
-current_focus=B01-close-executable-map-coverage
-next_exit_gate=function-global-import-and-call-cluster-coverage-is-explicit
+current_focus=B09-close-host-clock-event-loop
+next_exit_gate=native-clock-and-main-loop-backend-glue-are-covered
 <!-- PROGRESS-TAIL-END -->

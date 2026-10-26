@@ -1474,6 +1474,9 @@ Unknown units stay verbatim instead of becoming invented conversion rules.
 B02 is complete: `KillVideoAndStartGame` releases video interfaces, constructs
 the configured `Rally.exe` path, calls `CreateProcessA`, and reports failure then
 quits. Successful process execution remains outside the static evidence boundary.
+B01's executable map now records 2,168 procedures, 32,530 symbols and 2,310
+defined strings across six memory blocks. Indirect calls and uncarved code stay
+explicit unknowns; map coverage is not misrepresented as total discovery.
 
 Exit gate:
 

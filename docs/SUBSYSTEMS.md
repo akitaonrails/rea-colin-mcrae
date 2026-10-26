@@ -2102,6 +2102,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   clamp. Thirty-four tests cover particles, render queues, shadows, fog and
   tuning. Surface and sprite tables remain caller-supplied data; E10 is complete.
   See evidence `impl.weather-effects`.
+- B01's executable map covers 2,168 procedures, 32,530 symbols and 2,310
+  defined strings across six memory blocks. Indirect calls and uncarved code
+  remain explicit unknowns rather than a false completeness claim.
 - B02's launcher lifecycle is recovered: video teardown, configured `Rally.exe`
   path construction, `CreateProcessA`, failure reporting and quit. Successful
   process execution remains outside static analysis.

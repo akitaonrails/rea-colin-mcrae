@@ -634,7 +634,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T18:54Z | 148h36m | complete-qmixer-abi-scope | `b51cd25` | B03 | Closed all 16 reachable QMixer imports through the recovered contract and software/SDL playback. The remaining 46 exports are explicitly unreferenced, not requirements. |
 
-| 2026-10-26T18:56Z | 148h38m | complete-launcher-lifecycle | _(pending)_ | B02 | Recovered the launcher's video teardown, configured `Rally.exe` path construction, `CreateProcessA`, failure reporting and quit. Successful process execution remains outside static analysis. |
+| 2026-10-26T18:56Z | 148h38m | complete-launcher-lifecycle | `05c4bfd` | B02 | Recovered the launcher's video teardown, configured `Rally.exe` path construction, `CreateProcessA`, failure reporting and quit. Successful process execution remains outside static analysis. |
+
+| 2026-10-26T18:57Z | 148h39m | complete-executable-map | _(pending)_ | B01 | Recorded the current complete provider inventory: 2,168 procedures, 32,530 symbols and 2,310 defined strings across six blocks. Indirect calls and uncarved code remain explicit unknowns. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
