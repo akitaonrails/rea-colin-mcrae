@@ -1910,8 +1910,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   corrects the former zero-initialized accumulator composition. The four-lane
   `step_with_four_wheel_postprocess` now feeds the selected second-core lane and
   the other three runtime lanes through `FUN_0040fbe0`, retaining all four
-  accumulators and qualification results. Full four-iteration candidate
-  production and downstream consumption remain separate. See evidence
+  accumulators and qualification results. `select_second_wheel_candidate` now
+  derives the transition/alternate pair through the appropriate lookup path and
+  applies the strict normalization-length selection. Its integration into the
+  second core, full four-iteration production, and downstream consumption remain
+  separate. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

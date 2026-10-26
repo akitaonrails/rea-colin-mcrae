@@ -41,7 +41,11 @@
 
 use crate::compiled_car_initializer::CompiledControlFamilies;
 use crate::fixed_point::{Fixed16, Vec3};
-use crate::vehicle_dynamics::{LaneAccumulationInput, apply_lane_accumulation};
+use crate::vehicle_dynamics::{
+    LaneAccumulationInput, LookupDependentCandidateError, apply_lane_accumulation,
+    derive_lookup_dependent_candidates, derive_lookup_free_candidates,
+    select_signed_force_candidate,
+};
 use cmr_formats::pe_surface::SurfaceCapabilityTables;
 
 /// Coasting drag torque (`0x1999` ~ 0.1 in Q16.16) that `FUN_0040d810`
@@ -934,6 +938,59 @@ pub const fn surface_bump_value(surface_flag: bool) -> Fixed16 {
     } else {
         Fixed16::from_raw(0x20)
     }
+}
+
+/// Runtime values needed to derive one lane's two force candidates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SecondWheelCandidateInputs {
+    pub component_a: i32,
+    pub component_b: i32,
+    pub transition_gain: i32,
+    pub transition_base: i32,
+    pub alternate_gain: i32,
+    pub alternate_base: i32,
+    pub normalization_length: i32,
+}
+
+/// Derive the transition/alternate pair through the appropriate recovered path,
+/// then select the alternate only when the transition exceeds the lane length.
+///
+/// # Errors
+///
+/// Propagates the checked signed-ratio lookup domain failure for inputs that
+/// belong to the lookup-dependent branch.
+pub fn select_second_wheel_candidate(
+    input: SecondWheelCandidateInputs,
+) -> Result<Fixed16, LookupDependentCandidateError> {
+    let fixed = Fixed16::from_raw;
+    let transition_length = fixed(input.normalization_length);
+    if let Some((transition, alternate)) = derive_lookup_free_candidates(
+        fixed(input.component_a),
+        fixed(input.component_b),
+        fixed(input.transition_gain),
+        fixed(input.transition_base),
+        fixed(input.alternate_gain),
+        fixed(input.alternate_base),
+    ) {
+        return Ok(select_signed_force_candidate(
+            transition,
+            transition_length,
+            alternate,
+        ));
+    }
+    let (transition, alternate) = derive_lookup_dependent_candidates(
+        fixed(input.component_a),
+        fixed(input.component_b),
+        fixed(input.transition_gain),
+        fixed(input.transition_base),
+        fixed(input.alternate_gain),
+        fixed(input.alternate_base),
+    )?;
+    Ok(select_signed_force_candidate(
+        transition,
+        transition_length,
+        alternate,
+    ))
 }
 
 /// Inputs for the second per-wheel iteration's core (residuals, normalization,
@@ -2017,6 +2074,53 @@ mod tests {
         for pair in HEAD_BASIS_STORE_OFFSETS.windows(2) {
             assert!(pair[0][2] + 4 <= pair[1][0]);
         }
+    }
+
+    #[test]
+    fn second_wheel_candidate_selects_both_derivation_paths() {
+        let lookup_free = SecondWheelCandidateInputs {
+            component_a: 0x1000,
+            component_b: 0,
+            transition_gain: 0x20000,
+            transition_base: 0x10000,
+            alternate_gain: 0x30000,
+            alternate_base: 0x10000,
+            normalization_length: 0x20000,
+        };
+        assert_eq!(
+            select_second_wheel_candidate(lookup_free),
+            Ok(Fixed16::from_raw(0x20000))
+        );
+        assert_eq!(
+            select_second_wheel_candidate(SecondWheelCandidateInputs {
+                normalization_length: 0x1ffff,
+                ..lookup_free
+            }),
+            Ok(Fixed16::from_raw(0x30000))
+        );
+
+        let lookup_dependent = SecondWheelCandidateInputs {
+            component_a: 0x10000,
+            component_b: 0x10000,
+            transition_gain: 0x20000,
+            transition_base: 0x40000,
+            alternate_gain: 0x30000,
+            alternate_base: 0x50000,
+            normalization_length: 0,
+        };
+        let (_, alternate) = derive_lookup_dependent_candidates(
+            Fixed16::from_raw(0x10000),
+            Fixed16::from_raw(0x10000),
+            Fixed16::from_raw(0x20000),
+            Fixed16::from_raw(0x40000),
+            Fixed16::from_raw(0x30000),
+            Fixed16::from_raw(0x50000),
+        )
+        .unwrap();
+        assert_eq!(
+            select_second_wheel_candidate(lookup_dependent),
+            Ok(alternate)
+        );
     }
 
     fn second_wheel_input() -> SecondWheelInputs<'static> {

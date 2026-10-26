@@ -1219,8 +1219,11 @@ This corrects the previous zero-initialized composition. The remaining consumer 
 the four-lane `FUN_0040fbe0` postprocess, not direct translation. G09 now wires
 that postprocess after the second core, retaining every lane accumulator and the
 qualification results; invalid lane selection is rejected before tick work. One
-composition test brings `cmr-core` to 1,331. Full four-iteration candidate
-production and downstream accumulator consumption remain open.
+composition test brings `cmr-core` to 1,331. G03 now composes per-lane candidate
+production through `select_second_wheel_candidate`, covering both lookup paths
+and the strict normalization-length selection boundary with one additional test.
+Wiring that derived scalar into the second core, completing the four-lane producer,
+and consuming the postprocessed accumulators downstream remain open.
 
 Exit gate:
 
