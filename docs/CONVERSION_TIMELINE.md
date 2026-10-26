@@ -490,7 +490,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T09:33Z | 139h15m | recover-contact-moment-aggregation | `44c9ba1` | G03 | Added `sum_contact_moments`: transformed force cross contact offset with non-wheel inclusion and contacted-wheel filtering. One focused test covers handedness, cancellation, filtering and wrapping; `cmr-core` has 1,335 tests. `FUN_0048e100` composition, angular integration and full lane production remain open. |
 
-| 2026-10-26T09:37Z | 139h19m | recover-contact-force-transform | _(pending)_ | G03 | Recovered `FUN_0048e100` as three row-wise Q16.16 dot products. Added `transform_contact_force` and `transformed_contact_moment` with identity, row-permutation and transform-before-cross coverage; `cmr-core` has 1,336 tests. Angular integration and full lane production remain open. |
+| 2026-10-26T09:37Z | 139h19m | recover-contact-force-transform | `b094b65` | G03 | Recovered `FUN_0048e100` as three row-wise Q16.16 dot products. Added `transform_contact_force` and `transformed_contact_moment` with identity, row-permutation and transform-before-cross coverage; `cmr-core` has 1,336 tests. Angular integration and full lane production remain open. |
+
+| 2026-10-26T09:42Z | 139h24m | recover-angular-momentum-step | _(pending)_ | G04 | Added `apply_angular_momentum_step`: prior-moment scaling, contact addition, componentwise inertia and negative time-step integration from `FUN_0040a4a0`. One intermediate/final-vector test brings `cmr-core` to 1,337. Orientation updates, angular special cases and full lane production remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

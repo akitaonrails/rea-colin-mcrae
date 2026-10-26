@@ -1924,7 +1924,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   crosses each transformed force with its contact offset under the native contact
   gates. `transform_contact_force` reproduces the three row-wise `FUN_0048e100`
   dot products, and `transformed_contact_moment` applies that transform before the
-  cross product. Angular integration, eight-record traversal, and full
+  cross product. `apply_angular_momentum_step` scales and combines moments,
+  applies componentwise inertia, and negatively integrates angular velocity.
+  Orientation updates, angular special cases, eight-record traversal, and full
   four-iteration production remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.

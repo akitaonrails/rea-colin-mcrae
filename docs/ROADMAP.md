@@ -1237,8 +1237,10 @@ reproduces transformed-force cross contact-offset accumulation with the same
 contact filtering, bringing `cmr-core` to 1,335. `transform_contact_force` and
 `transformed_contact_moment` now reproduce the row-wise `FUN_0048e100` transform
 before the cross product, with one additional test bringing `cmr-core` to 1,336.
-Angular integration, eight-record wiring and complete four-lane production remain
-open.
+`apply_angular_momentum_step` now scales and combines moments, applies per-axis
+inertia, and negatively integrates angular velocity, bringing `cmr-core` to 1,337.
+Orientation updates, angular special cases, eight-record wiring and complete
+four-lane production remain open.
 
 Exit gate:
 

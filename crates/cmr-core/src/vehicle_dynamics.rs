@@ -1022,6 +1022,50 @@ pub fn sum_contact_moments(
         })
 }
 
+/// Inputs to the angular momentum update in `FUN_0040a4a0`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AngularMomentumStepInput {
+    pub prior_moment: Vec3,
+    pub contact_moment: Vec3,
+    pub moment_scale: Fixed16,
+    pub inertia_scale: Vec3,
+    pub angular_velocity: Vec3,
+    pub time_step: Fixed16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AngularMomentumStepOutcome {
+    pub scaled_prior_moment: Vec3,
+    pub acceleration: Vec3,
+    pub delta_velocity: Vec3,
+    pub angular_velocity: Vec3,
+}
+
+/// Scale the prior moment, add the contact moment, apply componentwise inertia,
+/// and negatively integrate the result into angular velocity.
+#[must_use]
+pub fn apply_angular_momentum_step(input: AngularMomentumStepInput) -> AngularMomentumStepOutcome {
+    let scaled_prior_moment = input.prior_moment.scale(input.moment_scale);
+    let combined = scaled_prior_moment.add(input.contact_moment);
+    let acceleration = Vec3::new(
+        combined.x.mul(input.inertia_scale.x),
+        combined.y.mul(input.inertia_scale.y),
+        combined.z.mul(input.inertia_scale.z),
+    );
+    let scaled_delta = acceleration.scale(input.time_step);
+    let delta_velocity = Vec3::new(
+        scaled_delta.x.neg(),
+        scaled_delta.y.neg(),
+        scaled_delta.z.neg(),
+    );
+    AngularMomentumStepOutcome {
+        scaled_prior_moment,
+        acceleration,
+        delta_velocity,
+        angular_velocity: input.angular_velocity.add(delta_velocity),
+    }
+}
+
 /// Runtime inputs for one `FUN_0040d400` contact-vector update.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContactVectorUpdateInput {
@@ -1437,6 +1481,25 @@ mod tests {
         // drag = v * speed.
         let d = drag(v(1, 0, 0), Fixed16::from_raw(0x8000));
         assert_eq!(d.x, Fixed16::from_raw(0x8000));
+    }
+
+    #[test]
+    fn angular_momentum_scales_combines_and_negatively_integrates() {
+        let outcome = apply_angular_momentum_step(AngularMomentumStepInput {
+            prior_moment: raw_v(0x10000, 0x20000, 0x30000),
+            contact_moment: raw_v(0x40000, 0x50000, 0x60000),
+            moment_scale: Fixed16::from_raw(0x8000),
+            inertia_scale: raw_v(0x10000, 0x8000, 0x20000),
+            angular_velocity: raw_v(0x10000, 0x10000, 0x10000),
+            time_step: Fixed16::ONE,
+        });
+        assert_eq!(outcome.scaled_prior_moment, raw_v(0x8000, 0x10000, 0x18000));
+        assert_eq!(outcome.acceleration, raw_v(0x48000, 0x30000, 0xf0000));
+        assert_eq!(outcome.delta_velocity, raw_v(-0x48000, -0x30000, -0xf0000));
+        assert_eq!(
+            outcome.angular_velocity,
+            raw_v(-0x38000, -0x20000, -0xe0000)
+        );
     }
 
     #[test]
