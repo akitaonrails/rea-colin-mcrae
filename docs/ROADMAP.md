@@ -1355,8 +1355,11 @@ zero start speeds remain explicit harness input. One all-branch test brings
 `cmr-core` to 1,368. The per-frame residual enable now persists as a countdown:
 mode-selected raw speed and prior `state+0xec` drive the strict `-0x1998` branch,
 and translation updates that speed through the legacy square root. One focused
-boundary/mode test brings `cmr-core` to 1,369. Smoothed-speed production remains
-separate.
+boundary/mode test brings `cmr-core` to 1,369. Smoothed speeds now have separate
+persistent state and ordinary native tracking: snap below `0x10000`, otherwise step
+one Q16 unit, then apply the strict `0x7ae` dead zone. The second loop reads those
+values rather than raw speed. One focused test brings `cmr-core` to 1,370; driven
+integration and neutral-gear handling remain.
 
 Exit gate:
 

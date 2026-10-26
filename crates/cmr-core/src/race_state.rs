@@ -28,6 +28,7 @@ use crate::drivetrain::{
     FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
     SecondWheelInputs, advance_residual_enable, derive_force_pass_scales, derive_gear_ratio,
     equalize_wheel_speeds, execute_first_wheel_iteration, execute_second_wheel_core,
+    track_smoothed_wheel_speed,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::legacy_math::sqrt_q16;
@@ -340,6 +341,8 @@ pub fn derive_wheel_contact_moment(
 pub struct FourWheelState {
     pub first: [FirstWheelState; 4],
     pub second: [SecondWheelState; 4],
+    /// Separate smoothed speeds at `control+0x2b8..+0x2c4`.
+    pub smoothed_wheel_speeds: [i32; 4],
     pub postprocess: FourWheelPostprocessState,
     /// Persistent `FUN_0040d400` destinations, including skipped records.
     pub contact_updates: [Vec3; 8],
@@ -505,6 +508,7 @@ impl CarState {
                     component: 0,
                     accumulators: [0; 3],
                 }; 4],
+                smoothed_wheel_speeds: [0; 4],
                 postprocess: FourWheelPostprocessState {
                     accumulators: [Vec3::ZERO; 4],
                     qualified: [false; 4],
@@ -940,7 +944,7 @@ impl RaceState {
             Self::execute_second_wheel_state(
                 &mut self.car.four_wheel.second[index],
                 prior_speeds[index],
-                self.car.four_wheel.first[index].wheel_speed,
+                self.car.four_wheel.smoothed_wheel_speeds[index],
                 &first[index],
                 &second[index],
             )?;
@@ -980,6 +984,12 @@ impl RaceState {
         );
         self.car.four_wheel.speed_ec =
             sqrt_q16(self.car.velocity.dot(self.car.velocity).raw() as u32) as i32;
+        for index in 0..4 {
+            self.car.four_wheel.smoothed_wheel_speeds[index] = track_smoothed_wheel_speed(
+                self.car.four_wheel.first[index].wheel_speed,
+                self.car.four_wheel.smoothed_wheel_speeds[index],
+            );
+        }
         let mut angular = wheel.angular;
         angular.basis = self.car.motion.basis;
         angular.momentum.angular_velocity = self.car.motion.angular_velocity;
@@ -1596,6 +1606,12 @@ mod tests {
             sample.car.four_wheel.speed_ec,
             sqrt_q16(sample.car.velocity.dot(sample.car.velocity).raw() as u32) as i32
         );
+        for index in 0..4 {
+            assert_eq!(
+                sample.car.four_wheel.smoothed_wheel_speeds[index],
+                track_smoothed_wheel_speed(sample.car.four_wheel.first[index].wheel_speed, 0)
+            );
+        }
         let contact_vectors = build_contact_basis_vectors(car.motion.contact_basis(car.velocity));
         let thresholds = derive_compiled_lane_thresholds(wheel.lane_threshold_inputs);
         let update_gate = contact_global_update_gate(transform_contact_force(

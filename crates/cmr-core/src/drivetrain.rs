@@ -171,6 +171,22 @@ pub fn advance_residual_enable(
     if difference < -0x1998 { enable - 1 } else { 0 }
 }
 
+/// Track one smoothed wheel speed through the ordinary `FUN_004088c0` branch,
+/// including the final sub-`0x7ae` dead zone.
+#[must_use]
+pub fn track_smoothed_wheel_speed(raw: i32, current: i32) -> i32 {
+    let difference = raw.wrapping_sub(current);
+    let magnitude = difference.wrapping_abs();
+    let next = if magnitude < 0x10000 {
+        raw
+    } else if difference < 1 {
+        current.wrapping_sub(0x10000)
+    } else {
+        current.wrapping_add(0x10000)
+    };
+    if next.wrapping_abs() < 0x7ae { 0 } else { next }
+}
+
 /// The coasting split: [`COAST_DRAG_TORQUE`] distributed directly by the centre
 /// split (the recovered in-gear, no-throttle/no-brake branch of
 /// `FUN_0040d810`). This branch bypasses the per-car front/rear factors used by
@@ -1523,6 +1539,19 @@ mod tests {
         assert_eq!(advance_residual_enable(10, 0, 0x1999, 0, 0), 0);
         assert_eq!(advance_residual_enable(10, 1, 0x1998, 0, 0), 0);
         assert_eq!(advance_residual_enable(10, 1, -4, 0, 1), 0);
+    }
+
+    #[test]
+    fn smoothed_wheel_tracking_preserves_native_thresholds_and_dead_zone() {
+        assert_eq!(track_smoothed_wheel_speed(0xffff, 0), 0xffff);
+        assert_eq!(track_smoothed_wheel_speed(0x10000, 0), 0x10000);
+        assert_eq!(track_smoothed_wheel_speed(-0x10000, 0), -0x10000);
+        assert_eq!(track_smoothed_wheel_speed(0x20000, 0x18000), 0x20000);
+        assert_eq!(track_smoothed_wheel_speed(0x30000, 0x18000), 0x28000);
+        assert_eq!(track_smoothed_wheel_speed(0x7ad, 0), 0);
+        assert_eq!(track_smoothed_wheel_speed(0x7ae, 0), 0x7ae);
+        assert_eq!(track_smoothed_wheel_speed(-0x7ad, 0), 0);
+        assert_eq!(track_smoothed_wheel_speed(i32::MIN, 0), 0);
     }
 
     fn fx(raw: i32) -> Fixed16 {

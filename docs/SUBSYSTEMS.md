@@ -2025,7 +2025,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `FourWheelState` now persists the residual countdown and native `state+0xec` speed.
   Each step applies the mode-selected raw-speed threshold before wheel production,
   then updates speed with `sqrt_q16` after translation. The reset value `10` is no
-  longer treated as a permanent enable; separate smoothed speeds remain distinct.
+  longer treated as a permanent enable. `smoothed_wheel_speeds` is now separate from
+  raw wheel state: second-core execution reads its prior values, and post-translation
+  tracking applies the recovered snap/step and `0x7ae` dead-zone rules. The driven
+  integration and neutral-gear branches of `FUN_004088c0` remain separate.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing
