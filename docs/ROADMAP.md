@@ -1072,8 +1072,16 @@ table-driven factor (`dot >> 2` scaled by the table factor or `0x8000`,
 negated), both accumulating `qmul(component, factor)` into the three force
 accumulators with wrapping addition, using the head's first direction source.
 The independent re-derivation test additionally checks both factors and the
-exact accumulator values, bringing `cmr-core` to 1,305. Runtime table wiring
-is next.
+G03 recovers the axle factor and travel update: the front/rear factors are
+`qmul(car_type_constant, travel)` (front `DAT_0050e19c`, rear `DAT_0050e1a0`,
+travel `DAT_0050e184`), and the travel update decrements by
+`min(0x10000, qmul(excess, 0x8000))` on excess, bumps `DAT_0050e160` by
+`min(0x10000, qmul(excess, 0xccc))`, then applies the surface bump
+(`0x147`/`0x20` by the surface flag), capped at `0x10000` with the flag
+cleared. `cmr-core::drivetrain` gains `derive_axle_factor`,
+`update_travel_on_excess`, `apply_surface_bump`, and `surface_bump_value`.
+Three focused tests bring `cmr-core` to 1,308. The per-car-type loader's
+constant sources are next.
 
 Exit gate:
 

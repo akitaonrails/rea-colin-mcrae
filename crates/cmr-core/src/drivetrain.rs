@@ -742,6 +742,57 @@ pub fn cosine_modulated_component(coefficient: i32, angle_cos: i32, config_scale
     q16_mul(root, config_scale)
 }
 
+/// The front/rear axle factor derivation of `FUN_00420260`:
+/// `factor = qmul(car_type_constant, travel)`.
+#[must_use]
+pub fn derive_axle_factor(constant: Fixed16, travel: Fixed16) -> Fixed16 {
+    constant.mul(travel)
+}
+
+/// The travel update of `FUN_00420260` when the normalized length exceeds 1.0:
+/// `excess = length - 0x10000`; `decrement = min(0x10000, qmul(excess, 0x8000))`;
+/// `travel = max(0, travel - decrement)`; and the `DAT_0050e504` flag is set.
+/// The `DAT_0050e160` bump is `min(0x10000, qmul(excess, 0xccc))`.
+/// Returns `None` when the length does not exceed 1.0.
+#[must_use]
+pub fn update_travel_on_excess(
+    travel: Fixed16,
+    length: Fixed16,
+) -> Option<(Fixed16, Fixed16, bool)> {
+    if length <= Fixed16::ONE {
+        return None;
+    }
+    let excess = length.sub(Fixed16::ONE);
+    let decrement = excess.mul(Fixed16::from_raw(0x8000)).min(Fixed16::ONE);
+    let new_travel = travel.sub(decrement).max(Fixed16::ZERO);
+    let bump = excess.mul(Fixed16::from_raw(0xccc)).min(Fixed16::ONE);
+    Some((new_travel, bump, true))
+}
+
+/// The additional surface bump when the `DAT_0050e504` flag is set:
+/// `travel + bump`, capped at `0x10000`; when the bumped travel exceeds
+/// `0xffff`, the flag is cleared. The bump is `0x147` when `param_2+0x308` is
+/// nonzero, otherwise `0x20`.
+#[must_use]
+pub fn apply_surface_bump(travel: Fixed16, bump: Fixed16) -> (Fixed16, bool) {
+    let updated = travel.add(bump);
+    if updated.raw() > 0xffff {
+        (Fixed16::ONE, true)
+    } else {
+        (updated, false)
+    }
+}
+
+/// The surface bump value: `0x147` when `param_2+0x308` is nonzero, else `0x20`.
+#[must_use]
+pub const fn surface_bump_value(surface_flag: bool) -> Fixed16 {
+    if surface_flag {
+        Fixed16::from_raw(0x147)
+    } else {
+        Fixed16::from_raw(0x20)
+    }
+}
+
 /// Inputs for the second per-wheel iteration's core (residuals, normalization,
 /// arctan, and cosine modulation). Runtime tables are injected, not vendored.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1653,6 +1704,52 @@ mod tests {
         assert_eq!(cosine_modulated_component(0, 0x10000, 0x10000), 65_550);
         // Zero cosine: the sum and root are zero.
         assert_eq!(cosine_modulated_component(0x10000, 0, 0x10000), 0);
+    }
+
+    #[test]
+    fn axle_factor_is_the_constant_times_travel() {
+        assert_eq!(
+            derive_axle_factor(Fixed16::from_raw(0x8000), Fixed16::ONE),
+            Fixed16::from_raw(0x8000)
+        );
+        assert_eq!(
+            derive_axle_factor(Fixed16::from_raw(0x8000), Fixed16::from_raw(0x8000)),
+            Fixed16::from_raw(0x4000)
+        );
+        assert_eq!(
+            derive_axle_factor(Fixed16::from_raw(0x10000), Fixed16::ZERO),
+            Fixed16::ZERO
+        );
+    }
+
+    #[test]
+    fn travel_excess_decrements_and_bumps_with_caps() {
+        // No excess: no update and no flag.
+        assert_eq!(update_travel_on_excess(Fixed16::ONE, Fixed16::ONE), None);
+        // Excess of 1.0: decrement 0.5 and bump 0.05.
+        assert_eq!(
+            update_travel_on_excess(Fixed16::from_raw(0x18000), Fixed16::from_int(2)),
+            Some((Fixed16::ONE, Fixed16::from_raw(0xccc), true))
+        );
+        // Excess of 2.0: the decrement caps at 1.0, the bump is 0x1998, and travel floors at 0.
+        assert_eq!(
+            update_travel_on_excess(Fixed16::ONE, Fixed16::from_int(3)),
+            Some((Fixed16::ZERO, Fixed16::from_raw(0x1998), true))
+        );
+    }
+
+    #[test]
+    fn surface_bump_caps_at_one_and_clears_the_flag() {
+        assert_eq!(
+            apply_surface_bump(Fixed16::from_raw(0x8000), surface_bump_value(false)),
+            (Fixed16::from_raw(0x8020), false)
+        );
+        assert_eq!(
+            apply_surface_bump(Fixed16::ONE, surface_bump_value(true)),
+            (Fixed16::ONE, true)
+        );
+        assert_eq!(surface_bump_value(true), Fixed16::from_raw(0x147));
+        assert_eq!(surface_bump_value(false), Fixed16::from_raw(0x20));
     }
 
     #[test]
