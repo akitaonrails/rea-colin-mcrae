@@ -2102,6 +2102,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   clamp. Thirty-four tests cover particles, render queues, shadows, fog and
   tuning. Surface and sprite tables remain caller-supplied data; E10 is complete.
   See evidence `impl.weather-effects`.
+- C05's portable settings/path backend is complete: explicit roots, exact-size
+  settings, record tables and profile paths work without registry dependencies.
 - B12's lifecycle is complete in both SDL loops: focus loss pauses, focus gain
   restores surfaces, close shuts down, and fullscreen uses the same live windows.
 - B11's native presentation is complete: physical pixel-size queries and F11

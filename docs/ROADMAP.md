@@ -1489,6 +1489,9 @@ fullscreen alongside the shared presentation-scaling contract.
 B12 is complete: both SDL loops pause on focus loss, resume and restore surfaces
 on focus gain, and close through `HostLifecycle`. Fullscreen toggling uses the
 same live windows, so no lifecycle path remains unwired.
+C05 is complete: explicit roots drive exact-size settings persistence, record
+storage and profile paths without registry or absolute-path dependencies. The
+remaining opaque field semantics are tracked by C06.
 
 Exit gate:
 
