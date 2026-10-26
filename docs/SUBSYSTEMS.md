@@ -1961,10 +1961,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   inputs with checked indices and no mutation on rejection; the complete vertical
   fixture derives all four contact inputs through this adapter and retains its
   deterministic finish/replay contract. The complete four-wheel step now rebuilds
-  those vectors each tick using the recovered matrix/angular fields and actual
-  pre-step velocity, with lane/indexed validation before any wheel-state mutation.
-  The stored template velocity is deliberately ignored. Live orientation/angular
-  production and application-loop integration remain open. See evidence
+  those vectors each tick with lane/indexed validation before any wheel-state
+  mutation. `MotionState` now owns the three native basis axes, primary angular
+  velocity and compiled half-words, and forms the six angular inputs plus actual
+  pre-step velocity without a duplicated template. The compiled initializer's first
+  three half-words feed that state directly. Angular-pipeline integration into this
+  state and application-loop integration remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

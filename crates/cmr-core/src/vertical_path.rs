@@ -182,7 +182,7 @@ mod tests {
         FirstWheelParams, FourWheelPostprocessParams, SecondWheelParams,
         populate_force_pass_scales, populate_surface_table_factor,
     };
-    use crate::vehicle_dynamics::{ContactBasisInput, GeometricPostprocessLane};
+    use crate::vehicle_dynamics::GeometricPostprocessLane;
     use cmr_formats::pe_surface::{SurfaceCoefficientFamilies, SurfaceCoefficientFamily};
 
     fn four_wheel_params(trig: &[i32]) -> FourWheelIterationParams<'_> {
@@ -232,15 +232,6 @@ mod tests {
                 surface_vector: [-0x10000, 0, 0],
                 table_factor: None,
             }),
-            contact_basis: ContactBasisInput {
-                rows: [
-                    Vec3::new(Fixed16::ONE.neg(), Fixed16::ZERO, Fixed16::ZERO),
-                    Vec3::new(Fixed16::ZERO, Fixed16::ONE.neg(), Fixed16::ZERO),
-                    Vec3::new(Fixed16::ZERO, Fixed16::ZERO, Fixed16::ONE.neg()),
-                ],
-                angular: [Fixed16::ONE; 6],
-                velocity: Vec3::ZERO,
-            },
             contact_vector_indices: [2, 3, 6, 7],
             postprocess: FourWheelPostprocessParams {
                 lanes: [inactive; 4],
@@ -347,14 +338,10 @@ mod tests {
         let trig = build_sine_table();
         let wheel = four_wheel_params(&trig);
         let script = full_throttle(400);
-        let first = drive_stage_with_all_four_wheels(
-            CarState::at_rest(),
-            &script,
-            &stage(),
-            &params(),
-            &wheel,
-        )
-        .unwrap();
+        let mut start = CarState::at_rest();
+        start.motion.angular_velocity = Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE);
+        let first =
+            drive_stage_with_all_four_wheels(start, &script, &stage(), &params(), &wheel).unwrap();
         assert!(first.finished);
         assert!(first.ticks < 400);
         assert!(
@@ -366,14 +353,8 @@ mod tests {
                 .iter()
                 .any(|force| *force != Vec3::ZERO)
         );
-        let replay = drive_stage_with_all_four_wheels(
-            CarState::at_rest(),
-            &script,
-            &stage(),
-            &params(),
-            &wheel,
-        )
-        .unwrap();
+        let replay =
+            drive_stage_with_all_four_wheels(start, &script, &stage(), &params(), &wheel).unwrap();
         assert_eq!(first, replay);
     }
 

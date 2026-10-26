@@ -20,7 +20,7 @@
 //!
 //! See evidence `impl.sim-race-state-trace`.
 
-use crate::compiled_car_initializer::CompiledControlFamilies;
+use crate::compiled_car_initializer::{CompiledControlFamilies, CompiledHalfSignState};
 use crate::drivetrain::{
     FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
     SecondWheelInputs, derive_force_pass_scales, derive_gear_ratio, equalize_wheel_speeds,
@@ -209,9 +209,6 @@ pub struct FourWheelPostprocessState {
 pub struct FourWheelIterationParams<'a> {
     pub first: [FirstWheelParams; 4],
     pub second: [SecondWheelParams<'a>; 4],
-    /// Matrix/angular inputs from physics `+0x2a0` and the six angular words.
-    /// The velocity member is replaced by the car's pre-step `+0xd4` velocity.
-    pub contact_basis: ContactBasisInput,
     pub contact_vector_indices: [usize; 4],
     pub postprocess: FourWheelPostprocessParams<'a>,
 }
@@ -243,6 +240,58 @@ impl From<GeometricPostprocessError> for WheelPostprocessError {
     }
 }
 
+/// Orientation and angular inputs shared by the native motion/contact passes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MotionState {
+    /// The three axes published through physics `+0x2a0`.
+    pub basis: [Vec3; 3],
+    /// Primary angular velocity at `+0xf0/+0xf4/+0xf8`.
+    pub angular_velocity: Vec3,
+    /// Arithmetic-half state at `+0x2c/+0x30/+0x34` from the compiled initializer.
+    pub compiled_half_words: Vec3,
+}
+
+impl MotionState {
+    /// Neutral harness values; no physical orientation or trajectory is claimed.
+    pub const fn harness_default() -> Self {
+        Self {
+            basis: [
+                Vec3::new(Fixed16::ONE.neg(), Fixed16::ZERO, Fixed16::ZERO),
+                Vec3::new(Fixed16::ZERO, Fixed16::ONE.neg(), Fixed16::ZERO),
+                Vec3::new(Fixed16::ZERO, Fixed16::ZERO, Fixed16::ONE.neg()),
+            ],
+            angular_velocity: Vec3::ZERO,
+            compiled_half_words: Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE),
+        }
+    }
+
+    /// Copy the first three recovered half-words from the compiled state record.
+    pub fn apply_compiled_half_state(&mut self, state: &CompiledHalfSignState) {
+        self.compiled_half_words = Vec3::new(
+            Fixed16::from_raw(state.words[0]),
+            Fixed16::from_raw(state.words[1]),
+            Fixed16::from_raw(state.words[2]),
+        );
+    }
+
+    /// Form the six angular inputs and add the current native velocity field.
+    #[must_use]
+    pub fn contact_basis(self, velocity: Vec3) -> ContactBasisInput {
+        ContactBasisInput {
+            rows: self.basis,
+            angular: [
+                self.angular_velocity.x,
+                self.angular_velocity.y,
+                self.angular_velocity.z,
+                self.compiled_half_words.x,
+                self.compiled_half_words.y,
+                self.compiled_half_words.z,
+            ],
+            velocity,
+        }
+    }
+}
+
 /// The minimal per-car state the harness integrates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CarState {
@@ -252,6 +301,8 @@ pub struct CarState {
     pub velocity: Vec3,
     /// Heading as a 16-bit BAM angle about the y axis.
     pub heading: u16,
+    /// Orientation and angular state consumed by contact production.
+    pub motion: MotionState,
     /// Recovered first-wheel force and speed state.
     pub first_wheel: FirstWheelState,
     /// Residual, angle, component and accumulators from the second core.
@@ -269,6 +320,7 @@ impl CarState {
             position: Vec3::ZERO,
             velocity: Vec3::ZERO,
             heading: 0,
+            motion: MotionState::harness_default(),
             first_wheel: FirstWheelState {
                 force: 0,
                 wheel_speed: 0,
@@ -610,10 +662,8 @@ impl RaceState {
                 wheel.postprocess.current_lane,
             ));
         }
-        let contact_vectors = build_contact_basis_vectors(ContactBasisInput {
-            velocity: self.car.velocity,
-            ..wheel.contact_basis
-        });
+        let contact_vectors =
+            build_contact_basis_vectors(self.car.motion.contact_basis(self.car.velocity));
         let mut second = wheel.second.clone();
         for (lane, vector_index) in wheel.contact_vector_indices.into_iter().enumerate() {
             let Some(vector) = contact_vectors.get(vector_index) else {
@@ -851,6 +901,28 @@ mod tests {
     }
 
     #[test]
+    fn motion_state_forms_contact_inputs_from_native_fields() {
+        let mut motion = MotionState::harness_default();
+        motion.angular_velocity = Vec3::new(
+            Fixed16::from_raw(3),
+            Fixed16::from_raw(4),
+            Fixed16::from_raw(5),
+        );
+        motion.apply_compiled_half_state(
+            &crate::compiled_car_initializer::derive_compiled_half_sign_state([4, -6, 8]),
+        );
+        let velocity = Vec3::new(
+            Fixed16::from_raw(9),
+            Fixed16::from_raw(10),
+            Fixed16::from_raw(11),
+        );
+        let input = motion.contact_basis(velocity);
+        assert_eq!(input.rows, motion.basis);
+        assert_eq!(input.angular, [3, 4, 5, 2, -3, 4].map(Fixed16::from_raw));
+        assert_eq!(input.velocity, velocity);
+    }
+
+    #[test]
     fn reviewed_surface_family_populates_table_factor_with_checked_indices() {
         let families = SurfaceCoefficientFamilies {
             first: cmr_formats::pe_surface::SurfaceCoefficientFamily {
@@ -1075,15 +1147,6 @@ mod tests {
         let wheel = FourWheelIterationParams {
             first: [first_wheel_params(); 4],
             second: std::array::from_fn(|_| second_wheel_params(&trig)),
-            contact_basis: ContactBasisInput {
-                rows: [
-                    vector([0x10000, 0, 0]),
-                    vector([0, 0x10000, 0]),
-                    vector([0, 0, 0x10000]),
-                ],
-                angular: [Fixed16::ONE; 6],
-                velocity: Vec3::ZERO,
-            },
             contact_vector_indices: [2, 3, 6, 7],
             postprocess: FourWheelPostprocessParams {
                 lanes,
@@ -1095,6 +1158,12 @@ mod tests {
             },
         };
         let mut car = CarState::at_rest();
+        car.motion.basis = [
+            vector([0x10000, 0, 0]),
+            vector([0, 0x10000, 0]),
+            vector([0, 0, 0x10000]),
+        ];
+        car.motion.angular_velocity = vector([0x10000, 0x10000, 0x10000]);
         for (index, speed) in [-1, 0x10000, -1, -1].into_iter().enumerate() {
             car.four_wheel.first[index].wheel_speed = speed;
         }
@@ -1125,17 +1194,6 @@ mod tests {
         );
         assert!(sample.car.velocity.x < Fixed16::ZERO);
         assert_eq!(sample.car.position, Vec3::ZERO);
-
-        let mut ignored_template_velocity = wheel.clone();
-        ignored_template_velocity.contact_basis.velocity = vector([0x70000, 0x60000, 0x50000]);
-        let replay = RaceState::new(car)
-            .step_with_all_four_wheels(
-                &straight_throttle(1)[0],
-                &params(),
-                &ignored_template_velocity,
-            )
-            .unwrap();
-        assert_eq!(replay, sample);
 
         let mut moving_car = car;
         moving_car.velocity = vector([0x20000, 0, 0]);

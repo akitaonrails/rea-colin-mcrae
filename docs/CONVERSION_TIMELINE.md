@@ -530,7 +530,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T12:05Z | 141h47m | wire-contact-basis-vectors | `c9f5772` | G03, G10 | Added `populate_contact_basis_vector` with checked selection and invalid-index atomicity. The four-wheel vertical fixture now derives every second-wheel surface vector through the adapter and still finishes/replays exactly. One focused test brings `cmr-core` to 1,357. Live motion-state and application-loop wiring remain open. |
 
-| 2026-10-26T12:14Z | 141h56m | produce-contact-inputs-from-motion | _(pending)_ | G03, G09 | Mapped the `FUN_00407690` caller and exact `FUN_00409f90` matrix/angular/velocity fields. The four-wheel step now rebuilds all contact vectors every tick with actual pre-step velocity and atomically validates lane selectors. Extended coverage proves velocity provenance and rejection atomicity; finish/replay remains exact. Live orientation/angular production and application-loop wiring remain open. |
+| 2026-10-26T12:14Z | 141h56m | produce-contact-inputs-from-motion | `80706bc` | G03, G09 | Mapped the `FUN_00407690` caller and exact `FUN_00409f90` matrix/angular/velocity fields. The four-wheel step now rebuilds all contact vectors every tick with actual pre-step velocity and atomically validates lane selectors. Extended coverage proves velocity provenance and rejection atomicity; finish/replay remains exact. Live orientation/angular production and application-loop wiring remain open. |
+
+| 2026-10-26T12:25Z | 142h07m | produce-contact-matrix-and-angular-inputs | _(pending)_ | G03 | Pinned native basis publication and primary/secondary angular provenance. Added `MotionState` for basis, primary angular velocity and compiled half-words; contact production now consumes it directly with current velocity. One exact native-field mapping test brings `cmr-core` to 1,358; four-wheel and vertical replay tests pass. Angular-pipeline state integration and application-loop wiring remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
