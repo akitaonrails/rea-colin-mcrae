@@ -407,6 +407,7 @@ mod tests {
                 slip_gain: 0,
                 engine_load: 0x10000,
             },
+            driven_smoothing: crate::race_state::DrivenWheelUpdateParams::default(),
             engine_force: crate::drivetrain::EngineForceInput {
                 limiter_444: false,
                 cut_448: 0,

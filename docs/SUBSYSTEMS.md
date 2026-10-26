@@ -2399,6 +2399,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Driven wheel smoothing uses the first-loop `+0x540` force as native `+0x2c8`
+  input rather than a placeholder. The complete four-wheel step selects the
+  recovered ordinary/driven/neutral branch per lane, derives slip, direction,
+  speed-limit and engine-load scalars, and feeds those scalars to engine-speed
+  smoothing. External suspension/longitudinal/response values remain explicit
+  inputs in `DrivenWheelUpdateParams`.
 - The fixed-step session composition is `cmr-core::gameplay_session`: it plugs
   `race_flow_next` into the top-level `GameSession`, steps the race only in
   state 5, updates checkpoint progress, and exposes the recovered render route.

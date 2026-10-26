@@ -25,12 +25,15 @@ use crate::compiled_car_initializer::{
     CompiledLaneThresholdInputs, CompiledPostLaneBasisEffects, derive_compiled_lane_thresholds,
 };
 use crate::drivetrain::{
+    DrivenSmoothingScalarInput, DrivenSmoothingScalars, DrivenWheelSmoothingInput,
     EngineForceInput, FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
-    SecondWheelInputs, SmoothedEngineSpeedInput, advance_idle_oscillation, advance_idle_reset,
-    advance_residual_enable, apply_rev_limiter, derive_engine_force, derive_force_pass_scales,
+    SecondWheelInputs, SmoothedEngineSpeedInput, SmoothedSpeedGateInput, advance_idle_oscillation,
+    advance_idle_reset, advance_residual_enable, apply_rev_limiter,
+    derive_driven_smoothing_scalars, derive_engine_force, derive_force_pass_scales,
     derive_gear_ratio, derive_smoothed_engine_speed, equalize_wheel_speeds,
-    execute_first_wheel_iteration, execute_second_wheel_core, integrate_engine_from_raw_wheels,
-    integrate_idle_engine, track_smoothed_wheel_speed,
+    execute_first_wheel_iteration, execute_second_wheel_core, integrate_driven_wheel_speed,
+    integrate_engine_from_raw_wheels, integrate_idle_engine, smoothed_speed_uses_tracking,
+    track_smoothed_wheel_speed,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::legacy_math::sqrt_q16;
@@ -265,6 +268,40 @@ pub struct FourWheelPostprocessState {
     pub angle_measures: [Fixed16; 4],
 }
 
+/// Runtime gates and scalar sources for the driven `FUN_004088c0` smoothing path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DrivenWheelUpdateParams {
+    pub scalars: DrivenSmoothingScalarInput,
+    pub mode_408: i32,
+    pub throttle_304: i32,
+    pub brake_308: i32,
+    pub split_170: i32,
+    pub time_step: i32,
+}
+
+impl Default for DrivenWheelUpdateParams {
+    fn default() -> Self {
+        Self {
+            scalars: DrivenSmoothingScalarInput {
+                suspension_298: [0; 4],
+                longitudinal: 0,
+                gear_index: 0,
+                gear_ratio: 0,
+                gear_ratio_190: 0,
+                redline_15c: 0,
+                response_1f0: 0,
+                engine_2e0: 0,
+                response_160: 0,
+            },
+            mode_408: 0,
+            throttle_304: 0,
+            brake_308: 0,
+            split_170: 0,
+            time_step: 0x10000,
+        }
+    }
+}
+
 /// Complete per-wheel runtime inputs for one native-order force tick.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FourWheelIterationParams<'a> {
@@ -291,6 +328,9 @@ pub struct FourWheelIterationParams<'a> {
     /// Explicit engine redline/slip/load inputs; speeds and gear/mode fields are
     /// replaced from current native state before each update.
     pub engine_smoothing: SmoothedEngineSpeedInput,
+    /// Suspension/engine/gate inputs; wheel forces, speeds, gear, limiter and
+    /// handbrake come from the current tick.
+    pub driven_smoothing: DrivenWheelUpdateParams,
     /// Explicit engine response/brake inputs for the `state+0x530` producer.
     pub engine_force: EngineForceInput,
 }
@@ -383,6 +423,64 @@ pub fn update_smoothed_wheel_speeds(state: &mut FourWheelState, gear_ratio: i32)
             state.first[index].wheel_speed,
             state.smoothed_wheel_speeds[index],
         );
+    }
+}
+
+fn driven_smoothing_scalars(
+    state: &FourWheelState,
+    first: &FirstWheelParams,
+    params: &DrivenWheelUpdateParams,
+) -> DrivenSmoothingScalars {
+    derive_driven_smoothing_scalars(DrivenSmoothingScalarInput {
+        gear_index: first.gear,
+        gear_ratio: first.gear_ratio,
+        engine_2e0: state.engine_2e0,
+        ..params.scalars
+    })
+}
+
+fn update_driven_wheel_speeds(
+    state: &mut FourWheelState,
+    first: &[FirstWheelParams; 4],
+    handbrake: bool,
+    params: &DrivenWheelUpdateParams,
+    scalars: DrivenSmoothingScalars,
+) {
+    if first[0].gear_ratio == 0 {
+        state.smoothed_wheel_speeds = [0; 4];
+        return;
+    }
+    for (lane, wheel) in first.iter().enumerate() {
+        let raw = state.first[lane].wheel_speed;
+        let current = state.smoothed_wheel_speeds[lane];
+        state.smoothed_wheel_speeds[lane] =
+            if smoothed_speed_uses_tracking(SmoothedSpeedGateInput {
+                lane,
+                mode_408: params.mode_408,
+                throttle_304: params.throttle_304,
+                brake_308: params.brake_308,
+                handbrake_30c: i32::from(handbrake),
+                config_158: wheel.config_158,
+                split_170: params.split_170,
+                limiter_444: i32::from(state.limiter_444),
+            }) {
+                track_smoothed_wheel_speed(raw, current)
+            } else {
+                integrate_driven_wheel_speed(DrivenWheelSmoothingInput {
+                    raw,
+                    current,
+                    drive_force_2c8: state.first[lane].force,
+                    slip_gain: scalars.slip_gain,
+                    direction_gain: scalars.direction_gain,
+                    time_step: params.time_step,
+                    signed_speed_limit: scalars.signed_speed_limit,
+                    gear: wheel.gear,
+                    config_40c: wheel.config_40c,
+                    config_158: wheel.config_158,
+                    gear_ratio: wheel.gear_ratio,
+                    is_rear_wheel: lane >= 2,
+                })
+            };
     }
 }
 
@@ -1082,7 +1180,15 @@ impl RaceState {
         self.car.four_wheel.engine_2e0 = rev_limit.rpm.raw();
         self.car.four_wheel.limiter_444 = rev_limit.active;
         self.car.four_wheel.limiter_cut_448 = rev_limit.cut.raw();
-        update_smoothed_wheel_speeds(&mut self.car.four_wheel, first[0].gear_ratio);
+        let driven_scalars =
+            driven_smoothing_scalars(&self.car.four_wheel, &first[0], &wheel.driven_smoothing);
+        update_driven_wheel_speeds(
+            &mut self.car.four_wheel,
+            &first,
+            controls.handbrake,
+            &wheel.driven_smoothing,
+            driven_scalars,
+        );
         if first[0].gear_ratio == 0 {
             self.car.four_wheel.engine_speed_2e8 = self.car.four_wheel.engine_2e0;
         } else {
@@ -1091,6 +1197,8 @@ impl RaceState {
                 config_158: first[0].config_158,
                 gear_ratio: first[0].gear_ratio,
                 engine_2e0: self.car.four_wheel.engine_2e0,
+                slip_gain: driven_scalars.slip_gain,
+                engine_load: driven_scalars.engine_load,
                 ..wheel.engine_smoothing
             });
             self.car.four_wheel.engine_speed_2e8 = engine.speed_2e8;
@@ -1323,6 +1431,67 @@ mod tests {
         assert_eq!(state.smoothed_wheel_speeds, [0; 4]);
         update_smoothed_wheel_speeds(&mut state, 1);
         assert_eq!(state.smoothed_wheel_speeds, [0x10000; 4]);
+    }
+
+    #[test]
+    fn driven_smoothing_consumes_each_first_loop_force_and_derived_scalars() {
+        let first = [FirstWheelParams {
+            gear: 4,
+            gear_ratio: 0x10000,
+            config_158: 1,
+            ..first_wheel_params()
+        }; 4];
+        let mut state = FourWheelState {
+            first: [FirstWheelState {
+                force: 0x20000,
+                wheel_speed: 0x10000,
+            }; 4],
+            smoothed_wheel_speeds: [0x10000; 4],
+            ..FourWheelState::default()
+        };
+        let params = DrivenWheelUpdateParams {
+            scalars: DrivenSmoothingScalarInput {
+                redline_15c: 0x10000,
+                response_1f0: 0x20000,
+                gear_ratio_190: 0x10000,
+                suspension_298: [0x40000, 0, 0, 0],
+                ..DrivenWheelUpdateParams::default().scalars
+            },
+            throttle_304: 1,
+            split_170: 0x10000,
+            ..DrivenWheelUpdateParams::default()
+        };
+        let scalars = driven_smoothing_scalars(&state, &first[0], &params);
+        assert_eq!(scalars.slip_gain, 0x9999);
+        assert_eq!(scalars.direction_gain, 0x10000);
+        assert_eq!(scalars.signed_speed_limit, 0x20000);
+        update_driven_wheel_speeds(&mut state, &first, false, &params, scalars);
+        assert!(
+            state
+                .smoothed_wheel_speeds
+                .iter()
+                .all(|speed| *speed > 0x10000)
+        );
+
+        state.smoothed_wheel_speeds = [0; 4];
+        update_driven_wheel_speeds(
+            &mut state,
+            &first,
+            false,
+            &DrivenWheelUpdateParams {
+                throttle_304: 0,
+                ..params
+            },
+            scalars,
+        );
+        assert_eq!(state.smoothed_wheel_speeds, [0x10000; 4]);
+
+        let neutral = [FirstWheelParams {
+            gear_ratio: 0,
+            ..first[0]
+        }; 4];
+        update_driven_wheel_speeds(&mut state, &neutral, false, &params, scalars);
+        assert_eq!(state.smoothed_wheel_speeds, [0; 4]);
     }
 
     #[test]
@@ -1674,6 +1843,7 @@ mod tests {
                 slip_gain: 0,
                 engine_load: 0x10000,
             },
+            driven_smoothing: DrivenWheelUpdateParams::default(),
             engine_force: EngineForceInput {
                 limiter_444: false,
                 cut_448: 0,

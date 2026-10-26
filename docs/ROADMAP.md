@@ -1576,6 +1576,12 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+G02's driven smoothing now consumes the actual per-wheel force produced by the
+first wheel loop. `DrivenWheelUpdateParams` separates recovered formulas from
+runtime suspension/longitudinal/response data; the shared scalars also feed the
+smoothed engine-speed cap. Neutral and ordinary branches remain covered, and
+`cmr-core` has 1,410 tests.
+
 G01's fixed-step world update is wired end to end through the shared
 `GameplaySession`: the recovered FSM and race-flow tables, state-5 simulation,
 checkpoint finish tracking, and render routing drive both headless and native

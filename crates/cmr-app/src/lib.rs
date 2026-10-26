@@ -1983,6 +1983,7 @@ impl SessionWheelInputs {
                 slip_gain: 0,
                 engine_load: 0x10000,
             },
+            driven_smoothing: cmr_core::race_state::DrivenWheelUpdateParams::default(),
             engine_force: cmr_core::drivetrain::EngineForceInput {
                 limiter_444: false,
                 cut_448: 0,
