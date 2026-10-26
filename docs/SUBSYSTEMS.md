@@ -1941,8 +1941,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   now applies it after the half-delta calculation, and the four-lane path derives
   activity from contact flags. `step_with_all_four_wheels` runs all first and
   second iterations in native reverse order with axle equalization before the
-  geometric postprocess and translation. Contact-state population and
-  vertical/application wiring remain open. See evidence
+  geometric postprocess and translation. `drive_stage_with_all_four_wheels`
+  completes the same vertical path and reproduces the identical replay outcome,
+  with actual prior speed used for low-speed gating. Car-data population and
+  application wiring remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

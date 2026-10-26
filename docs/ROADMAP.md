@@ -1258,8 +1258,10 @@ contact flags and ordinary harness paths unsuppressed, bringing `cmr-core` to
 1,345. `step_with_all_four_wheels` now runs all first iterations in reverse,
 equalizes axles, runs all second iterations in reverse, then postprocesses and
 translates, bringing `cmr-core` to 1,346. This is complete composition over
-explicit runtime inputs; contact-state population and vertical/application wiring
-remain open.
+explicit runtime inputs. `drive_stage_with_all_four_wheels` now completes the
+vertical stage and reproduces the identical outcome on replay, using actual prior
+speed for low-speed gating. One test brings `cmr-core` to 1,347. Car-data
+population and application wiring remain open.
 
 Exit gate:
 

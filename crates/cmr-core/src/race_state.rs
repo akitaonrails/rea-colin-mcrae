@@ -295,6 +295,7 @@ impl RaceState {
         self.car.heading = self.car.heading.wrapping_add(controls.steer_rate as u16);
         let forward = self.forward_unit();
 
+        let recovered_force_path = world_force.is_some();
         let drive_force = world_force.unwrap_or_else(|| forward.scale(controls.forward_force));
         let speed = self.car.velocity.length();
         let net_force = drive_force.sub(drag(self.car.velocity, speed));
@@ -303,7 +304,11 @@ impl RaceState {
         let translation = apply_translation_step(TranslationStepInput {
             position: self.car.position,
             velocity: self.car.velocity,
-            cached_speed: Fixed16::ZERO,
+            cached_speed: if recovered_force_path {
+                speed
+            } else {
+                Fixed16::ZERO
+            },
             contacts_active,
             accumulated_force: accel,
             inverse_mass: Fixed16::ONE,

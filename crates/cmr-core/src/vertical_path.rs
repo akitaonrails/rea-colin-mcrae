@@ -25,7 +25,10 @@
 //! See evidence `impl.sim-vertical-path`.
 
 use crate::fixed_point::Fixed16;
-use crate::race_state::{CarState, Controls, RaceState, SimParams};
+use crate::race_state::{
+    CarState, Controls, FourWheelIterationParams, RaceState, SimParams, TraceSample,
+    WheelPostprocessError,
+};
 use crate::replay::{delta_decode, delta_encode, quantize_actuator};
 use crate::stage_timing::{checkpoint_passed, mark_checkpoint_passed};
 
@@ -73,6 +76,35 @@ pub fn drive_stage(
     config: &StageConfig,
     params: &SimParams,
 ) -> StageOutcome {
+    drive_stage_with_step(start, controls, config, |state, control| {
+        Ok(state.step(control, params))
+    })
+    .expect("the simplified step is infallible")
+}
+
+/// Drive the complete four-wheel producer over the same vertical path.
+///
+/// # Errors
+///
+/// Propagates candidate lookup and geometric postprocess failures.
+pub fn drive_stage_with_all_four_wheels(
+    start: CarState,
+    controls: &[Controls],
+    config: &StageConfig,
+    params: &SimParams,
+    wheel: &FourWheelIterationParams<'_>,
+) -> Result<StageOutcome, WheelPostprocessError> {
+    drive_stage_with_step(start, controls, config, |state, control| {
+        state.step_with_all_four_wheels(control, params, wheel)
+    })
+}
+
+fn drive_stage_with_step(
+    start: CarState,
+    controls: &[Controls],
+    config: &StageConfig,
+    mut step: impl FnMut(&mut RaceState, &Controls) -> Result<TraceSample, WheelPostprocessError>,
+) -> Result<StageOutcome, WheelPostprocessError> {
     let mut state = RaceState::new(start);
     // One passed-bitmask per checkpoint (car index 0 here).
     let mut checkpoint_bits = vec![0u32; config.checkpoints.len()];
@@ -84,7 +116,7 @@ pub fn drive_stage(
     let mut previous_byte = 0u8;
 
     for control in controls {
-        let sample = state.step(control, params);
+        let sample = step(&mut state, control)?;
         ticks += 1;
 
         // Save the forward actuator into the replay trace (quantize + XOR-delta).
@@ -107,25 +139,25 @@ pub fn drive_stage(
         if sample.car.position.x >= config.finish_x {
             finished = true;
             finish_centiseconds = Some(sample.centiseconds);
-            return StageOutcome {
+            return Ok(StageOutcome {
                 finished,
                 finish_centiseconds,
                 checkpoints_passed: passed,
                 final_car: sample.car,
                 ticks,
                 trace,
-            };
+            });
         }
     }
 
-    StageOutcome {
+    Ok(StageOutcome {
         finished,
         finish_centiseconds,
         checkpoints_passed: passed,
         final_car: state.car(),
         ticks,
         trace,
-    }
+    })
 }
 
 /// Decode a saved forward-actuator trace back to the quantized values, the
@@ -145,6 +177,67 @@ pub fn decode_trace(trace: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixed_point::{Vec3, build_sine_table};
+    use crate::race_state::{FirstWheelParams, FourWheelPostprocessParams, SecondWheelParams};
+    use crate::vehicle_dynamics::GeometricPostprocessLane;
+
+    fn four_wheel_params(trig: &[i32]) -> FourWheelIterationParams<'_> {
+        let inactive = GeometricPostprocessLane {
+            active: false,
+            vector_a: Vec3::ZERO,
+            vector_b: Vec3::ZERO,
+            vector_c: Vec3::ZERO,
+            accumulator: Vec3::ZERO,
+        };
+        FourWheelIterationParams {
+            first: [FirstWheelParams {
+                split: 0x10000,
+                wheel_constant: 0,
+                wheel_vector: [0; 3],
+                state_vector: [0; 3],
+                scale_c600: 0x10000,
+                limit: 0x10000,
+                shift: 0,
+                factor_c5c0: 0x10000,
+                gear: 1,
+                config_40c: 0,
+                config_158: 1,
+                gear_ratio: 1,
+                is_front_wheel: true,
+            }; 4],
+            second: std::array::from_fn(|_| SecondWheelParams {
+                axis_dot: 0,
+                local_68: [0x10000, 0, 0],
+                local_98: [0; 3],
+                wheel_e8: 0,
+                scale_c5c4: 0x10000,
+                residual_flag_147a: false,
+                config_2ec: 1,
+                gear_ratio: 1,
+                coefficient_34: 0x10000,
+                arctan_table: &[],
+                cos_table: trig,
+                config_scale: 1,
+                transition_gain: 0,
+                transition_base: 0,
+                alternate_gain: 0,
+                alternate_base: 0,
+                correction_gate: 1,
+                accumulation_limit: 0x10000,
+                correction_alternate: 0x10000,
+                surface_vector: [-0x10000, 0, 0],
+                table_factor: None,
+            }),
+            postprocess: FourWheelPostprocessParams {
+                lanes: [inactive; 4],
+                current_lane: 0,
+                argument_scale: Fixed16::ONE,
+                base_force: Vec3::ZERO,
+                non_wheel_forces: &[],
+                wheel_contacts: [true; 4],
+            },
+        }
+    }
 
     fn params() -> SimParams {
         SimParams {
@@ -216,6 +309,41 @@ mod tests {
         assert!(!outcome.finished);
         assert_eq!(outcome.finish_centiseconds, None);
         assert_eq!(outcome.ticks, 5);
+    }
+
+    #[test]
+    fn the_four_wheel_producer_finishes_and_replays_deterministically() {
+        let trig = build_sine_table();
+        let wheel = four_wheel_params(&trig);
+        let script = full_throttle(400);
+        let first = drive_stage_with_all_four_wheels(
+            CarState::at_rest(),
+            &script,
+            &stage(),
+            &params(),
+            &wheel,
+        )
+        .unwrap();
+        assert!(first.finished);
+        assert!(first.ticks < 400);
+        assert!(
+            first
+                .final_car
+                .four_wheel
+                .postprocess
+                .accumulators
+                .iter()
+                .any(|force| *force != Vec3::ZERO)
+        );
+        let replay = drive_stage_with_all_four_wheels(
+            CarState::at_rest(),
+            &script,
+            &stage(),
+            &params(),
+            &wheel,
+        )
+        .unwrap();
+        assert_eq!(first, replay);
     }
 
     #[test]

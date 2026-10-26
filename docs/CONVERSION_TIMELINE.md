@@ -510,7 +510,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T10:29Z | 140h11m | wire-low-speed-suppression-into-translation | `2cec125` | G03, G09 | Added `contacts_active` to `TranslationStepInput` and applied suppression after half-delta calculation. Four-lane activity comes from contact flags; ordinary paths remain unsuppressed. One direct velocity/position test brings `cmr-core` to 1,345. Contact-state population and full lane production remain open. |
 
-| 2026-10-26T10:41Z | 140h23m | compose-all-four-wheel-iterations | _(pending)_ | G03, G09 | Added `FourWheelState` and `step_with_all_four_wheels`: reverse first iterations, axle equalization, reverse second iterations, geometric postprocess and translation. Shared helpers preserve single-wheel behavior. One axle/kernel comparison test brings `cmr-core` to 1,346. Runtime-input population and vertical/application wiring remain open. |
+| 2026-10-26T10:41Z | 140h23m | compose-all-four-wheel-iterations | `589c138` | G03, G09 | Added `FourWheelState` and `step_with_all_four_wheels`: reverse first iterations, axle equalization, reverse second iterations, geometric postprocess and translation. Shared helpers preserve single-wheel behavior. One axle/kernel comparison test brings `cmr-core` to 1,346. Runtime-input population and vertical/application wiring remain open. |
+
+| 2026-10-26T10:50Z | 140h32m | wire-four-wheel-producer-into-vertical-path | _(pending)_ | G10 | Added `drive_stage_with_all_four_wheels` over the shared checkpoint/finish/replay logic. The recovered force path now uses actual prior speed for low-speed gating. One test brings `cmr-core` to 1,347: finish succeeds, lane forces remain nonzero, and replay is identical. Car-data population and application wiring remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
