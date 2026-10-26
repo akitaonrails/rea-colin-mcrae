@@ -1282,7 +1282,12 @@ mirrored negatives, eight-vector layout and velocity translation from
 `populate_contact_basis_vector` now selects a checked vector into each second-wheel
 surface input, with invalid-index atomicity; the four-wheel vertical fixture derives
 all four contact inputs through this adapter and still finishes/replays exactly.
-One focused test brings `cmr-core` to 1,357. Live motion-state and application-loop
+One focused test brings `cmr-core` to 1,357. The complete four-wheel step now
+rebuilds all contact vectors on every tick from the recovered matrix/angular layout
+and the car's actual pre-step velocity, validates all lane indices before wheel-state
+mutation, and ignores the template's stale velocity. The extended composition test
+covers velocity provenance, invalid-index atomicity and native-order production;
+finish/replay remains exact. Live orientation/angular production and application-loop
 wiring remain open.
 
 Exit gate:

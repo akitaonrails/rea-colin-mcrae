@@ -209,6 +209,10 @@ pub struct FourWheelPostprocessState {
 pub struct FourWheelIterationParams<'a> {
     pub first: [FirstWheelParams; 4],
     pub second: [SecondWheelParams<'a>; 4],
+    /// Matrix/angular inputs from physics `+0x2a0` and the six angular words.
+    /// The velocity member is replaced by the car's pre-step `+0xd4` velocity.
+    pub contact_basis: ContactBasisInput,
+    pub contact_vector_indices: [usize; 4],
     pub postprocess: FourWheelPostprocessParams<'a>,
 }
 
@@ -222,6 +226,7 @@ pub struct FourWheelState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WheelPostprocessError {
     LaneIndex(usize),
+    ContactVectorIndex { lane: usize, vector_index: usize },
     Candidate(LookupDependentCandidateError),
     Geometry(GeometricPostprocessError),
 }
@@ -587,12 +592,13 @@ impl RaceState {
         ))
     }
 
-    /// Run all four first iterations in reverse order, equalize each axle, run
-    /// all second iterations in reverse order, then postprocess and translate.
+    /// Rebuild contact vectors from the pre-step velocity, run all four first
+    /// iterations in reverse order, equalize each axle, run all second iterations
+    /// in reverse order, then postprocess and translate.
     ///
     /// # Errors
     ///
-    /// Propagates candidate lookup and geometric postprocess failures.
+    /// Propagates contact-index, candidate lookup and geometric postprocess failures.
     pub fn step_with_all_four_wheels(
         &mut self,
         controls: &Controls,
@@ -603,6 +609,17 @@ impl RaceState {
             return Err(WheelPostprocessError::LaneIndex(
                 wheel.postprocess.current_lane,
             ));
+        }
+        let contact_vectors = build_contact_basis_vectors(ContactBasisInput {
+            velocity: self.car.velocity,
+            ..wheel.contact_basis
+        });
+        let mut second = wheel.second.clone();
+        for (lane, vector_index) in wheel.contact_vector_indices.into_iter().enumerate() {
+            let Some(vector) = contact_vectors.get(vector_index) else {
+                return Err(WheelPostprocessError::ContactVectorIndex { lane, vector_index });
+            };
+            second[lane].surface_vector = [vector.x.raw(), vector.y.raw(), vector.z.raw()];
         }
         let mut prior_speeds = [0; 4];
         for index in (0..4).rev() {
@@ -628,7 +645,7 @@ impl RaceState {
                 prior_speeds[index],
                 self.car.four_wheel.first[index].wheel_speed,
                 &wheel.first[index],
-                &wheel.second[index],
+                &second[index],
             )?;
             let current = self.car.four_wheel.second[index].accumulators;
             lanes[index].accumulator = Vec3::new(
@@ -1058,6 +1075,16 @@ mod tests {
         let wheel = FourWheelIterationParams {
             first: [first_wheel_params(); 4],
             second: std::array::from_fn(|_| second_wheel_params(&trig)),
+            contact_basis: ContactBasisInput {
+                rows: [
+                    vector([0x10000, 0, 0]),
+                    vector([0, 0x10000, 0]),
+                    vector([0, 0, 0x10000]),
+                ],
+                angular: [Fixed16::ONE; 6],
+                velocity: Vec3::ZERO,
+            },
+            contact_vector_indices: [2, 3, 6, 7],
             postprocess: FourWheelPostprocessParams {
                 lanes,
                 current_lane: 3,
@@ -1098,6 +1125,39 @@ mod tests {
         );
         assert!(sample.car.velocity.x < Fixed16::ZERO);
         assert_eq!(sample.car.position, Vec3::ZERO);
+
+        let mut ignored_template_velocity = wheel.clone();
+        ignored_template_velocity.contact_basis.velocity = vector([0x70000, 0x60000, 0x50000]);
+        let replay = RaceState::new(car)
+            .step_with_all_four_wheels(
+                &straight_throttle(1)[0],
+                &params(),
+                &ignored_template_velocity,
+            )
+            .unwrap();
+        assert_eq!(replay, sample);
+
+        let mut moving_car = car;
+        moving_car.velocity = vector([0x20000, 0, 0]);
+        let moving = RaceState::new(moving_car)
+            .step_with_all_four_wheels(&straight_throttle(1)[0], &params(), &wheel)
+            .unwrap();
+        assert_ne!(
+            moving.car.four_wheel.second[0].accumulators,
+            sample.car.four_wheel.second[0].accumulators
+        );
+
+        let mut invalid = wheel.clone();
+        invalid.contact_vector_indices[1] = 8;
+        let before = state.car();
+        assert_eq!(
+            state.step_with_all_four_wheels(&straight_throttle(1)[0], &params(), &invalid),
+            Err(WheelPostprocessError::ContactVectorIndex {
+                lane: 1,
+                vector_index: 8,
+            })
+        );
+        assert_eq!(state.car(), before);
     }
 
     #[test]

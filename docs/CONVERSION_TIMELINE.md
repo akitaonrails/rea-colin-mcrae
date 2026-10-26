@@ -528,7 +528,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T11:52Z | 141h34m | recover-contact-basis-construction | `bc21f07` | G03 | Recovered `FUN_00409f90`: twelve primary scalar dwords, mirrored negatives, eight-vector assembly and velocity translation. Added `build_contact_basis_vectors` with primary/mirror/cancellation coverage; `cmr-core` has 1,356 tests. Contact-input wiring and live-loop integration remain open. |
 
-| 2026-10-26T12:05Z | 141h47m | wire-contact-basis-vectors | _(pending)_ | G03, G10 | Added `populate_contact_basis_vector` with checked selection and invalid-index atomicity. The four-wheel vertical fixture now derives every second-wheel surface vector through the adapter and still finishes/replays exactly. One focused test brings `cmr-core` to 1,357. Live motion-state and application-loop wiring remain open. |
+| 2026-10-26T12:05Z | 141h47m | wire-contact-basis-vectors | `c9f5772` | G03, G10 | Added `populate_contact_basis_vector` with checked selection and invalid-index atomicity. The four-wheel vertical fixture now derives every second-wheel surface vector through the adapter and still finishes/replays exactly. One focused test brings `cmr-core` to 1,357. Live motion-state and application-loop wiring remain open. |
+
+| 2026-10-26T12:14Z | 141h56m | produce-contact-inputs-from-motion | _(pending)_ | G03, G09 | Mapped the `FUN_00407690` caller and exact `FUN_00409f90` matrix/angular/velocity fields. The four-wheel step now rebuilds all contact vectors every tick with actual pre-step velocity and atomically validates lane selectors. Extended coverage proves velocity provenance and rejection atomicity; finish/replay remains exact. Live orientation/angular production and application-loop wiring remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
