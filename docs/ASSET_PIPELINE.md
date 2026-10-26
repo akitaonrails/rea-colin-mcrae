@@ -207,6 +207,30 @@ This is not a claim of race-free path resolution under concurrent adversarial
 filesystem mutation; callers must keep the directory stable while `open`
 runs.
 
+## Executable-derived surface capabilities
+
+The sixteen PE-backed per-effect capability tables consumed by
+`FUN_00424a40` occupy a separate 1,920-byte span at `0x4ec0f8`. Extract them
+from the same authenticated user-owned executable:
+
+```sh
+cargo run -q -p cmr-assets -- extract-surface-capabilities \
+  --source "$CMR_ORIGINAL_DIR" \
+  --profile profiles/official-eu-surface-capabilities-v1.json \
+  --output runtime-data/official-eu-surface-capabilities
+```
+
+The output contains `surface-capabilities-u8.bin` (sixteen 120-byte tables in
+address order) and path-free `surface-capability-import-state.json`. The
+reviewed profile contains metadata only. Authentication, linked-component
+refusal, bounded reads, PE mapping checks, fresh-stage atomic publication, and
+output-exists refusal match the coefficient pipeline. Synthetic tests cover
+profile validation, exact table bytes, CLI behavior, and state metadata; an
+authenticated local smoke import also passed without exposing values. This is
+not the runtime-backed fifth consumer table `DAT_0054f824`, whose producer and
+values remain separate. An immutable store and consumer wiring are the next
+boundary.
+
 ## Executable-derived compiled car cases
 
 The fourteen direct case bodies of official-EU `FUN_00404440` contain tuning

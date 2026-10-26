@@ -55,12 +55,16 @@ pub use schema::{
 };
 pub use store::{AssetStore, AssetStoreError};
 pub use surface_import::{
-    SURFACE_DATA_FILE, SURFACE_IMPORT_SCHEMA_VERSION, SURFACE_STATE_FILE, SurfaceImportError,
-    SurfaceImportFile, SurfaceImportSummary, extract_surface_tables,
+    SURFACE_CAPABILITY_DATA_FILE, SURFACE_CAPABILITY_IMPORT_SCHEMA_VERSION,
+    SURFACE_CAPABILITY_STATE_FILE, SURFACE_DATA_FILE, SURFACE_IMPORT_SCHEMA_VERSION,
+    SURFACE_STATE_FILE, SurfaceCapabilityImportSummary, SurfaceImportError, SurfaceImportFile,
+    SurfaceImportSummary, extract_surface_capabilities, extract_surface_tables,
 };
 pub use surface_profile::{
-    ReviewedSurfaceProfile, ReviewedSurfaceProfileError, SurfaceExecutableProfile,
-    SurfaceProfileError, SurfaceTableEncoding, SurfaceTableProfile, SurfaceTableSpec,
+    ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile, ReviewedSurfaceProfileError,
+    SURFACE_CAPABILITY_PROFILE_SCHEMA_VERSION, SurfaceCapabilityEncoding, SurfaceCapabilityProfile,
+    SurfaceCapabilitySpec, SurfaceExecutableProfile, SurfaceProfileError, SurfaceTableEncoding,
+    SurfaceTableProfile, SurfaceTableSpec,
 };
 pub use surface_store::{
     SurfaceDataError, SurfaceTableStore, SurfaceTableStoreError, decode_surface_table_data,

@@ -1121,6 +1121,14 @@ pseudocode identifies sixteen contiguous PE-backed 120-byte tables at
 bounded 1,920-byte extraction in address order, with two synthetic tests for
 exact ordering and malformed spans. `cmr-formats` now has 160 library tests.
 Reviewed import/store wiring and the separate runtime-backed table remain open.
+G03 adds the reviewed capability import pipeline: a metadata-only official-EU
+profile and `cmr-assets extract-surface-capabilities` authenticate the source,
+check the PE span, and atomically publish the 1,920 user-derived bytes plus
+path-free state beneath an explicit ignored output root. Two library tests and
+one CLI test cover profile shape, synthetic bytes, and command behavior;
+`cmr-assets` now has 78 library and nine binary tests. An authenticated local
+import passed without exposing values. The immutable store/counter wiring and
+runtime-backed fifth table remain open.
 
 Exit gate:
 

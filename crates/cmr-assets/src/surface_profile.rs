@@ -1,6 +1,9 @@
 use std::fmt;
 
-use cmr_formats::pe_surface::{OFFICIAL_EU_SURFACE_FAMILY_VA, SURFACE_COEFFICIENT_COUNT};
+use cmr_formats::pe_surface::{
+    OFFICIAL_EU_SURFACE_CAPABILITY_VA, OFFICIAL_EU_SURFACE_FAMILY_VA, SURFACE_CAPABILITY_COUNT,
+    SURFACE_CAPABILITY_ENTRIES, SURFACE_COEFFICIENT_COUNT,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -121,6 +124,104 @@ impl ReviewedSurfaceProfile {
 
     pub fn sha256(&self) -> &str {
         &self.sha256
+    }
+}
+
+pub const SURFACE_CAPABILITY_PROFILE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SurfaceCapabilityProfile {
+    pub schema_version: u32,
+    pub id: String,
+    pub executable: SurfaceExecutableProfile,
+    pub table: SurfaceCapabilitySpec,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SurfaceCapabilitySpec {
+    pub virtual_address: u32,
+    pub tables: u32,
+    pub entries_per_table: u32,
+    pub entry_encoding: SurfaceCapabilityEncoding,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SurfaceCapabilityEncoding {
+    UnsignedU8,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReviewedSurfaceCapabilityProfile {
+    profile: SurfaceCapabilityProfile,
+    sha256: String,
+}
+
+impl ReviewedSurfaceCapabilityProfile {
+    pub fn from_json(document: &[u8]) -> Result<Self, ReviewedSurfaceProfileError> {
+        let profile: SurfaceCapabilityProfile =
+            serde_json::from_slice(document).map_err(ReviewedSurfaceProfileError::Json)?;
+        profile
+            .validate()
+            .map_err(ReviewedSurfaceProfileError::Profile)?;
+        let sha256 = encode_digest(Sha256::digest(document));
+        Ok(Self { profile, sha256 })
+    }
+
+    pub fn profile(&self) -> &SurfaceCapabilityProfile {
+        &self.profile
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+}
+
+impl SurfaceCapabilityProfile {
+    pub fn validate(&self) -> Result<(), SurfaceProfileError> {
+        if self.schema_version != SURFACE_CAPABILITY_PROFILE_SCHEMA_VERSION {
+            return Err(SurfaceProfileError::UnsupportedSchema(self.schema_version));
+        }
+        if self.id.trim().is_empty() {
+            return Err(SurfaceProfileError::EmptyId);
+        }
+        if normalize_relative_path(&self.executable.path).as_deref()
+            != Some(self.executable.path.as_str())
+        {
+            return Err(SurfaceProfileError::InvalidExecutablePath(
+                self.executable.path.clone(),
+            ));
+        }
+        if self.executable.size == 0 || self.executable.size > MAX_EXECUTABLE_BYTES {
+            return Err(SurfaceProfileError::InvalidExecutableSize(
+                self.executable.size,
+            ));
+        }
+        if self.executable.sha256.len() != 64
+            || !self
+                .executable
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(SurfaceProfileError::InvalidExecutableSha256);
+        }
+        if self.table.virtual_address != OFFICIAL_EU_SURFACE_CAPABILITY_VA {
+            return Err(SurfaceProfileError::UnsupportedVirtualAddress(
+                self.table.virtual_address,
+            ));
+        }
+        if self.table.tables != SURFACE_CAPABILITY_COUNT as u32 {
+            return Err(SurfaceProfileError::UnsupportedFamilyCount(
+                self.table.tables,
+            ));
+        }
+        if self.table.entries_per_table != SURFACE_CAPABILITY_ENTRIES as u32 {
+            return Err(SurfaceProfileError::UnsupportedEntryCount(
+                self.table.entries_per_table,
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -250,6 +351,58 @@ mod tests {
         );
         candidate = profile();
         candidate.table.entries_per_family = 119;
+        assert_eq!(
+            candidate.validate(),
+            Err(SurfaceProfileError::UnsupportedEntryCount(119))
+        );
+    }
+
+    fn capability_profile() -> SurfaceCapabilityProfile {
+        SurfaceCapabilityProfile {
+            schema_version: 1,
+            id: "synthetic-capabilities".to_owned(),
+            executable: SurfaceExecutableProfile {
+                path: "Rally.exe".to_owned(),
+                size: 1234,
+                sha256: "00".repeat(32),
+            },
+            table: SurfaceCapabilitySpec {
+                virtual_address: OFFICIAL_EU_SURFACE_CAPABILITY_VA,
+                tables: 16,
+                entries_per_table: 120,
+                entry_encoding: SurfaceCapabilityEncoding::UnsignedU8,
+            },
+        }
+    }
+
+    #[test]
+    fn capability_profile_is_reviewed_and_shape_checked() {
+        let profile = capability_profile();
+        let compact = serde_json::to_vec(&profile).unwrap();
+        let reviewed = ReviewedSurfaceCapabilityProfile::from_json(&compact).unwrap();
+        assert_eq!(reviewed.profile(), &profile);
+        assert_ne!(
+            reviewed.sha256(),
+            ReviewedSurfaceCapabilityProfile::from_json(
+                &serde_json::to_vec_pretty(&profile).unwrap()
+            )
+            .unwrap()
+            .sha256()
+        );
+        let mut candidate = profile.clone();
+        candidate.table.virtual_address += 1;
+        assert!(matches!(
+            candidate.validate(),
+            Err(SurfaceProfileError::UnsupportedVirtualAddress(_))
+        ));
+        candidate = profile.clone();
+        candidate.table.tables = 15;
+        assert_eq!(
+            candidate.validate(),
+            Err(SurfaceProfileError::UnsupportedFamilyCount(15))
+        );
+        candidate = profile;
+        candidate.table.entries_per_table = 119;
         assert_eq!(
             candidate.validate(),
             Err(SurfaceProfileError::UnsupportedEntryCount(119))

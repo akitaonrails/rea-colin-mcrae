@@ -221,7 +221,8 @@ cover the recovered pure rules.
   **G03 gear ratio wiring from control families (`b40d4ea`):** `FUN_00420740` derives the final gear ratio from `raw_copy` (block `0x210`) with `DAT_0050c860` and the auxiliary value from `reciprocal_copy` (block `0x230`) with the reciprocal. Those blocks are produced by the recovered initializer's control-family stages, so the gear ratio wiring is closed without an external loader. `derive_gear_ratio_and_aux_from_families` composes them. One end-to-end test composes the early stage effects and checks the derived ratio/aux and the raw/reciprocal copies, bringing `cmr-core` to 1,311. The per-surface capability tables remain to be sourced.
   **G03 per-surface capability enable counters (`42c9325`):** `FUN_00424a40` first marks enabled surface ids, then accumulates each enabled id's per-surface capability byte into the corresponding enable counter (16 counters over 120 surface ids, duplicate ids enabled once). `accumulate_effect_enables` reproduces it with a safe-contract out-of-range rejection. Two focused tests cover empty/single/duplicate inputs and out-of-range rejection, bringing `cmr-core` to 1,313. The per-surface capability tables are game data (not vendored).
   **G03 reviewed-store initializer composition (`8b5e063`):** `composed_initializer_runs_from_a_reviewed_case_store` opens a synthetic reviewed CMPR-style case store through `CompiledInitializerStore`, constructs `CompiledDirectCaseSet`, and runs `compose_compiled_initializer` through the early stages, basis, locals, and post-lane spine. It independently checks selector `3`'s state/control stores and derives the gear ratio and auxiliary value from the composed control families. One focused integration test brings `cmr-core` to 1,314. The store and runtime inputs are synthetic/reviewed fixtures, not a live car-data run; actual per-surface capability tables remain caller-supplied game data.
-  **G03 surface-capability table provenance and extraction (pending milestone):** fresh `FUN_00424a40` pseudocode pins sixteen contiguous PE-backed 120-byte capability tables at `0x4ec0f8`, in the consumer order `0x4ec170`, `0x4ec0f8`, `0x4ec1e8`, `0x4ec260`, `DAT_0054f824`, `0x4ec2d8`, `0x4ec350`, `0x4ec3c8`, `0x4ec440`, `0x4ec4b8`, `0x4ec530`, `0x4ec5a8`, `0x4ec620`, `0x4ec710`, `0x4ec698`, `0x4ec788`; the `DAT_0054f824` consumer is a runtime table and is not part of this PE span. `cmr-formats::pe_surface::extract_official_eu_surface_capabilities` decodes exactly the sixteen PE-backed tables (1,920 bytes) in address order without vendoring their values; the counter-to-address consumption order above remains explicit. Two focused tests cover table/entry order and short-span rejection, bringing `cmr-formats` to 160 library tests. Reviewed asset import/store and application wiring remain separate; the runtime-backed fifth consumer is not claimed extracted.
+  **G03 surface-capability table provenance and extraction (`46db7cd`):** fresh `FUN_00424a40` pseudocode pins sixteen contiguous PE-backed 120-byte capability tables at `0x4ec0f8`, in the consumer order `0x4ec170`, `0x4ec0f8`, `0x4ec1e8`, `0x4ec260`, `DAT_0054f824`, `0x4ec2d8`, `0x4ec350`, `0x4ec3c8`, `0x4ec440`, `0x4ec4b8`, `0x4ec530`, `0x4ec5a8`, `0x4ec620`, `0x4ec710`, `0x4ec698`, `0x4ec788`; the `DAT_0054f824` consumer is a runtime table and is not part of this PE span. `cmr-formats::pe_surface::extract_official_eu_surface_capabilities` decodes exactly the sixteen PE-backed tables (1,920 bytes) in address order without vendoring their values; the counter-to-address consumption order above remains explicit. Two focused tests cover table/entry order and short-span rejection, bringing `cmr-formats` to 160 library tests. Reviewed asset import/store and application wiring remain separate; the runtime-backed fifth consumer is not claimed extracted.
+  **G03 reviewed surface-capability import (pending milestone):** `profiles/official-eu-surface-capabilities-v1.json` binds the exact executable identity and the 16-by-120 unsigned-byte shape at `0x4ec0f8`. `cmr-assets extract-surface-capabilities` authenticates the source before PE parsing, rejects linked paths, validates output placement, and atomically publishes `surface-capabilities-u8.bin` plus path-free `surface-capability-import-state.json` under a caller-selected ignored runtime-data directory. Two library tests cover reviewed shape validation and authenticated synthetic extraction; one CLI test covers the real command and path-free metadata, bringing `cmr-assets` to 78 library and nine binary tests. A real authenticated import produced the expected 1,920 bytes without exposing values. The immutable store/counter wiring and the runtime-backed fifth table remain separate.
 
 
 
@@ -311,13 +312,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T04:48:41Z
-milestone=extract-surface-capability-tables
+updated_utc=2026-10-26T05:01:10Z
+milestone=import-reviewed-surface-capabilities
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-add-reviewed-surface-capability-import-and-store
-next_exit_gate=the-pe-backed-capability-tables-flow-from-reviewed-assets-to-the-enable-counters
+current_focus=G03-add-immutable-surface-capability-store-and-counter-wiring
+next_exit_gate=the-reviewed-capability-store-drives-the-enable-counters-with-the-consumption-map
 <!-- PROGRESS-TAIL-END -->

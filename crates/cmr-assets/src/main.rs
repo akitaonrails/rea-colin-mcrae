@@ -7,8 +7,9 @@ use std::process::ExitCode;
 
 use cmr_assets::{
     ReviewedAuxControlProfile, ReviewedCompiledInitializerProfile, ReviewedProfile,
-    ReviewedSurfaceProfile, catalog_standard_source, extract_aux_control_constants,
-    extract_compiled_car_initializer, extract_surface_tables, import_source, verify_source,
+    ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile, catalog_standard_source,
+    extract_aux_control_constants, extract_compiled_car_initializer, extract_surface_capabilities,
+    extract_surface_tables, import_source, verify_source,
 };
 
 fn main() -> ExitCode {
@@ -73,6 +74,16 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<String, String> {
             reject_unknown(&options, &["--source", "--profile", "--output"])?;
             let reviewed = load_surface_profile(&profile_path)?;
             let summary = extract_surface_tables(&source, &output, &reviewed)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_string(&summary).map_err(|error| error.to_string())
+        }
+        Some("extract-surface-capabilities") => {
+            let source = required_path(&options, "--source")?;
+            let profile_path = required_path(&options, "--profile")?;
+            let output = required_path(&options, "--output")?;
+            reject_unknown(&options, &["--source", "--profile", "--output"])?;
+            let reviewed = load_surface_capability_profile(&profile_path)?;
+            let summary = extract_surface_capabilities(&source, &output, &reviewed)
                 .map_err(|error| error.to_string())?;
             serde_json::to_string(&summary).map_err(|error| error.to_string())
         }
@@ -158,6 +169,14 @@ fn load_surface_profile(path: &Path) -> Result<ReviewedSurfaceProfile, String> {
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+fn load_surface_capability_profile(
+    path: &Path,
+) -> Result<ReviewedSurfaceCapabilityProfile, String> {
+    let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    ReviewedSurfaceCapabilityProfile::from_json(&document)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn load_compiled_initializer_profile(
     path: &Path,
 ) -> Result<ReviewedCompiledInitializerProfile, String> {
@@ -183,7 +202,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-compiled-car-initializer|extract-aux-control-constants> [options]".to_owned()
+    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-surface-capabilities|extract-compiled-car-initializer|extract-aux-control-constants> [options]".to_owned()
 }
 
 #[cfg(test)]
@@ -193,7 +212,8 @@ mod tests {
         AUX_CONTROL_DATA_FILE, AUX_CONTROL_STATE_FILE, AuxControlConstantsStore,
         AuxControlImportSummary, AuxControlProfile, CompiledInitializerEncoding,
         CompiledInitializerExecutable, CompiledInitializerProfile, CompiledInitializerSpec,
-        CompiledInitializerStore, ReviewedAuxControlProfile,
+        CompiledInitializerStore, ReviewedAuxControlProfile, SURFACE_CAPABILITY_DATA_FILE,
+        SURFACE_CAPABILITY_STATE_FILE, SurfaceCapabilityImportSummary, SurfaceCapabilityProfile,
     };
     use cmr_formats::pe_aux_control_initializer::{
         AUX_CONTROL_ENCODED_LEN, test_support::synthetic_aux_control_pe,
@@ -355,6 +375,29 @@ mod tests {
         bytes
     }
 
+    fn capability_cli_synthetic_pe() -> Vec<u8> {
+        let mut bytes = vec![0; 0x1000];
+        let pe = 0x80;
+        let optional = pe + 24;
+        let sections = optional + 0xe0;
+        bytes[..2].copy_from_slice(b"MZ");
+        put_u32(&mut bytes, 0x3c, pe as u32);
+        bytes[pe..pe + 4].copy_from_slice(b"PE\0\0");
+        put_u16(&mut bytes, pe + 4, 0x14c);
+        put_u16(&mut bytes, pe + 6, 1);
+        put_u16(&mut bytes, pe + 20, 0xe0);
+        put_u16(&mut bytes, optional, 0x10b);
+        put_u32(&mut bytes, optional + 28, 0x400000);
+        put_u32(&mut bytes, sections + 8, 0x900);
+        put_u32(&mut bytes, sections + 12, 0xec000);
+        put_u32(&mut bytes, sections + 16, 0x900);
+        put_u32(&mut bytes, sections + 20, 0x200);
+        for (index, byte) in bytes[0x2f8..0x2f8 + 1920].iter_mut().enumerate() {
+            *byte = (index % 253) as u8;
+        }
+        bytes
+    }
+
     fn digest(bytes: &[u8]) -> String {
         Sha256::digest(bytes)
             .iter()
@@ -419,6 +462,13 @@ mod tests {
                 "runtime-data/surface",
             ],
             &[
+                "extract-surface-capabilities",
+                "--profile",
+                "surface-capability-profile.json",
+                "--output",
+                "runtime-data/surface-capabilities",
+            ],
+            &[
                 "extract-compiled-car-initializer",
                 "--profile",
                 "compiled-profile.json",
@@ -456,6 +506,51 @@ mod tests {
             ])),
             Err("missing required option --output".to_owned())
         );
+    }
+
+    #[test]
+    fn surface_capability_cli_extracts_reviewed_synthetic_data() {
+        assert_eq!(
+            run(args(&[
+                "extract-surface-capabilities",
+                "--source",
+                "source"
+            ])),
+            Err("missing required option --profile".to_owned())
+        );
+        let temp = Temp::new();
+        let source = temp.0.join("source");
+        fs::create_dir(&source).unwrap();
+        let executable = capability_cli_synthetic_pe();
+        fs::write(source.join("Rally.exe"), &executable).unwrap();
+        let mut profile: SurfaceCapabilityProfile = serde_json::from_slice(include_bytes!(
+            "../../../profiles/official-eu-surface-capabilities-v1.json"
+        ))
+        .unwrap();
+        profile.id = "synthetic-cli-capabilities".into();
+        profile.executable.size = executable.len() as u64;
+        profile.executable.sha256 = digest(&executable);
+        let profile_path = temp.0.join("capability-profile.json");
+        fs::write(&profile_path, serde_json::to_vec(&profile).unwrap()).unwrap();
+        let output = temp.0.join("capability-output");
+        let arguments = [
+            OsString::from("extract-surface-capabilities"),
+            OsString::from("--source"),
+            source.into_os_string(),
+            OsString::from("--profile"),
+            profile_path.into_os_string(),
+            OsString::from("--output"),
+            output.clone().into_os_string(),
+        ];
+        let result = run(arguments.into_iter()).unwrap();
+        let summary: SurfaceCapabilityImportSummary = serde_json::from_str(&result).unwrap();
+        assert_eq!(summary.output.size, 1920);
+        let data = fs::read(output.join(SURFACE_CAPABILITY_DATA_FILE)).unwrap();
+        for (index, byte) in data.iter().enumerate() {
+            assert_eq!(*byte, (index % 253) as u8);
+        }
+        let state = fs::read_to_string(output.join(SURFACE_CAPABILITY_STATE_FILE)).unwrap();
+        assert!(!state.contains(temp.0.to_str().unwrap()));
     }
 
     #[test]

@@ -3,15 +3,21 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use cmr_formats::pe_surface::{PeSurfaceError, extract_official_eu_surface_coefficients};
+use cmr_formats::pe_surface::{
+    PeSurfaceError, SURFACE_CAPABILITY_BYTES, extract_official_eu_surface_capabilities,
+    extract_official_eu_surface_coefficients,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::verify::{require_real_directory, sha256};
-use crate::{ReviewedSurfaceProfile, SurfaceProfileError};
+use crate::{ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile, SurfaceProfileError};
 
 pub const SURFACE_IMPORT_SCHEMA_VERSION: u32 = 1;
 pub const SURFACE_DATA_FILE: &str = "surface-coefficients-q16le.bin";
 pub const SURFACE_STATE_FILE: &str = "surface-import-state.json";
+pub const SURFACE_CAPABILITY_IMPORT_SCHEMA_VERSION: u32 = 1;
+pub const SURFACE_CAPABILITY_DATA_FILE: &str = "surface-capabilities-u8.bin";
+pub const SURFACE_CAPABILITY_STATE_FILE: &str = "surface-capability-import-state.json";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SurfaceImportFile {
@@ -22,6 +28,15 @@ pub struct SurfaceImportFile {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SurfaceImportSummary {
+    pub schema_version: u32,
+    pub profile: String,
+    pub profile_sha256: String,
+    pub source: SurfaceImportFile,
+    pub output: SurfaceImportFile,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SurfaceCapabilityImportSummary {
     pub schema_version: u32,
     pub profile: String,
     pub profile_sha256: String,
@@ -153,6 +168,51 @@ pub fn extract_surface_tables(
         source,
     })?;
     let result = populate_stage(&stage, profile, reviewed.sha256(), &data);
+    match result {
+        Ok(summary) => {
+            if let Err(source) = fs::rename(&stage, output) {
+                cleanup_stage(&stage);
+                return Err(SurfaceImportError::Io {
+                    path: output.to_owned(),
+                    source,
+                });
+            }
+            Ok(summary)
+        }
+        Err(error) => {
+            cleanup_stage(&stage);
+            Err(error)
+        }
+    }
+}
+
+/// Extract the reviewed capability span into a caller-selected new directory.
+pub fn extract_surface_capabilities(
+    source: &Path,
+    output: &Path,
+    reviewed: &ReviewedSurfaceCapabilityProfile,
+) -> Result<SurfaceCapabilityImportSummary, SurfaceImportError> {
+    let profile = reviewed.profile();
+    profile.validate()?;
+    require_directory(source)?;
+    let executable =
+        read_profiled_executable(source, &profile.executable.path, profile.executable.size)?;
+    let actual_hash = sha256(&executable);
+    if actual_hash != profile.executable.sha256 {
+        return Err(SurfaceImportError::HashMismatch {
+            path: profile.executable.path.clone(),
+            expected: profile.executable.sha256.clone(),
+            actual: actual_hash,
+        });
+    }
+    let tables = extract_official_eu_surface_capabilities(&executable)?;
+    let data: Vec<u8> = tables.values.into_iter().flatten().collect();
+    let stage = validate_output(source, output)?;
+    fs::create_dir(&stage).map_err(|source| SurfaceImportError::Io {
+        path: stage.clone(),
+        source,
+    })?;
+    let result = populate_capability_stage(&stage, profile, reviewed.sha256(), &data);
     match result {
         Ok(summary) => {
             if let Err(source) = fs::rename(&stage, output) {
@@ -334,6 +394,56 @@ fn populate_stage(
     Ok(summary)
 }
 
+fn populate_capability_stage(
+    stage: &Path,
+    profile: &crate::SurfaceCapabilityProfile,
+    profile_sha256: &str,
+    data: &[u8],
+) -> Result<SurfaceCapabilityImportSummary, SurfaceImportError> {
+    let data_path = stage.join(SURFACE_CAPABILITY_DATA_FILE);
+    fs::write(&data_path, data).map_err(|source| SurfaceImportError::Io {
+        path: data_path.clone(),
+        source,
+    })?;
+    let written = fs::read(&data_path).map_err(|source| SurfaceImportError::Io {
+        path: data_path.clone(),
+        source,
+    })?;
+    if written != data {
+        return Err(SurfaceImportError::WrittenDataMismatch(data_path));
+    }
+    let summary = SurfaceCapabilityImportSummary {
+        schema_version: SURFACE_CAPABILITY_IMPORT_SCHEMA_VERSION,
+        profile: profile.id.clone(),
+        profile_sha256: profile_sha256.to_owned(),
+        source: SurfaceImportFile {
+            path: profile.executable.path.clone(),
+            size: profile.executable.size,
+            sha256: profile.executable.sha256.clone(),
+        },
+        output: SurfaceImportFile {
+            path: SURFACE_CAPABILITY_DATA_FILE.to_owned(),
+            size: SURFACE_CAPABILITY_BYTES as u64,
+            sha256: sha256(&written),
+        },
+    };
+    let mut state = serde_json::to_vec_pretty(&summary).map_err(SurfaceImportError::Serialize)?;
+    state.push(b'\n');
+    let state_path = stage.join(SURFACE_CAPABILITY_STATE_FILE);
+    fs::write(&state_path, &state).map_err(|source| SurfaceImportError::Io {
+        path: state_path.clone(),
+        source,
+    })?;
+    let read_state = fs::read(&state_path).map_err(|source| SurfaceImportError::Io {
+        path: state_path.clone(),
+        source,
+    })?;
+    if read_state != state {
+        return Err(SurfaceImportError::WrittenDataMismatch(state_path));
+    }
+    Ok(summary)
+}
+
 fn cleanup_stage(stage: &Path) {
     let _ = fs::remove_dir_all(stage);
 }
@@ -395,6 +505,53 @@ mod tests {
         }
         bytes
     }
+
+    fn synthetic_capability_pe() -> Vec<u8> {
+        let mut bytes = vec![0; 0x1000];
+        let pe = 0x80;
+        let optional = pe + 24;
+        let sections = optional + 0xe0;
+        let raw = 0x200;
+        bytes[..2].copy_from_slice(b"MZ");
+        put_u32(&mut bytes, 0x3c, pe as u32);
+        bytes[pe..pe + 4].copy_from_slice(b"PE\0\0");
+        put_u16(&mut bytes, pe + 4, 0x14c);
+        put_u16(&mut bytes, pe + 6, 1);
+        put_u16(&mut bytes, pe + 20, 0xe0);
+        put_u16(&mut bytes, optional, 0x10b);
+        put_u32(&mut bytes, optional + 28, 0x400000);
+        put_u32(&mut bytes, sections + 8, 0x900);
+        put_u32(&mut bytes, sections + 12, 0xec000);
+        put_u32(&mut bytes, sections + 16, 0x900);
+        put_u32(&mut bytes, sections + 20, raw as u32);
+        for (index, byte) in bytes[raw + 0xf8..raw + 0xf8 + SURFACE_CAPABILITY_BYTES]
+            .iter_mut()
+            .enumerate()
+        {
+            *byte = (index % 251) as u8;
+        }
+        bytes
+    }
+
+    fn reviewed_capabilities(bytes: &[u8]) -> ReviewedSurfaceCapabilityProfile {
+        let profile = crate::SurfaceCapabilityProfile {
+            schema_version: 1,
+            id: "synthetic-capabilities".into(),
+            executable: SurfaceExecutableProfile {
+                path: "Rally.exe".into(),
+                size: bytes.len() as u64,
+                sha256: sha256(bytes),
+            },
+            table: crate::SurfaceCapabilitySpec {
+                virtual_address: cmr_formats::pe_surface::OFFICIAL_EU_SURFACE_CAPABILITY_VA,
+                tables: 16,
+                entries_per_table: 120,
+                entry_encoding: crate::SurfaceCapabilityEncoding::UnsignedU8,
+            },
+        };
+        ReviewedSurfaceCapabilityProfile::from_json(&serde_json::to_vec(&profile).unwrap()).unwrap()
+    }
+
     fn reviewed_at(bytes: &[u8], path: &str) -> ReviewedSurfaceProfile {
         let profile = SurfaceTableProfile {
             schema_version: 1,
@@ -436,6 +593,33 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<SurfaceImportSummary>(&state).unwrap(),
             summary
+        );
+    }
+
+    #[test]
+    fn extracts_capabilities_atomically_with_path_free_state() {
+        let temp = Temp::new();
+        let source = temp.0.join("source");
+        fs::create_dir(&source).unwrap();
+        let bytes = synthetic_capability_pe();
+        fs::write(source.join("Rally.exe"), &bytes).unwrap();
+        let output = temp.0.join("runtime-capabilities");
+        let summary =
+            extract_surface_capabilities(&source, &output, &reviewed_capabilities(&bytes)).unwrap();
+        assert_eq!(summary.output.size, SURFACE_CAPABILITY_BYTES as u64);
+        let data = fs::read(output.join(SURFACE_CAPABILITY_DATA_FILE)).unwrap();
+        assert_eq!(data.len(), SURFACE_CAPABILITY_BYTES);
+        for (index, byte) in data.iter().enumerate() {
+            assert_eq!(*byte, (index % 251) as u8);
+        }
+        let state = fs::read_to_string(output.join(SURFACE_CAPABILITY_STATE_FILE)).unwrap();
+        assert!(!state.contains(temp.0.to_str().unwrap()));
+        assert_eq!(
+            serde_json::from_str::<SurfaceCapabilityImportSummary>(&state).unwrap(),
+            summary
+        );
+        assert!(
+            extract_surface_capabilities(&source, &output, &reviewed_capabilities(&bytes)).is_err()
         );
     }
 

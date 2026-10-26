@@ -1549,6 +1549,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   address order through the checked PE32 mapping, without embedding values.
   Two tests bring `cmr-formats` to 160 library tests. Reviewed import/store and
   application wiring remain separate; the runtime fifth table is not extracted.
+  G03 reviewed capability import: the official-EU profile binds the 16-by-120
+  unsigned-byte shape and exact executable identity.
+  `cmr-assets extract-surface-capabilities` authenticates and atomically writes
+  the 1,920 user-derived bytes plus path-free state under an explicit ignored
+  output root. Two library tests and one CLI test bring `cmr-assets` to 78
+  library and nine binary tests; a real authenticated import passed without
+  exposing values. The immutable store/counter wiring and runtime fifth table
+  remain separate.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
