@@ -349,6 +349,33 @@ pub mod particles {
             &mut self.records
         }
 
+        /// Build render references for active records using camera-relative depth.
+        /// This is a derived pool-to-queue composition, not a raw field alias.
+        #[must_use]
+        pub fn render_queue(&self, camera_position: [i32; 3]) -> SpriteRenderQueue {
+            let camera = crate::fixed_point::Vec3::new(
+                Fixed16::from_raw(camera_position[0]),
+                Fixed16::from_raw(camera_position[1]),
+                Fixed16::from_raw(camera_position[2]),
+            );
+            let mut queue = SpriteRenderQueue::default();
+            for record in &self.records {
+                if record.flags & 1 == 0 {
+                    continue;
+                }
+                let position = crate::fixed_point::Vec3::new(
+                    Fixed16::from_raw(record.position[0]),
+                    Fixed16::from_raw(record.position[1]),
+                    Fixed16::from_raw(record.position[2]),
+                );
+                let relative = position.sub(camera);
+                let depth =
+                    crate::legacy_math::sqrt_q16(relative.dot(relative).raw() as u32) as i32;
+                queue.push(record.sprite_table, depth);
+            }
+            queue
+        }
+
         #[must_use]
         pub fn next_index(&self) -> usize {
             self.next
@@ -1042,6 +1069,42 @@ mod tests {
             assert_eq!(entry.depth, (index * 10) as i32);
             assert_eq!(entry.resource, ParticleSpriteTable::Type7);
         }
+    }
+
+    #[test]
+    fn active_records_emit_camera_depth_render_references() {
+        use particles::{ParticlePools, ParticleSpawn, ParticleSpriteTable};
+        let mut pools = ParticlePools::default();
+        let active = ParticleSpawn {
+            position: [0x30000, 0x40000, 0],
+            vector_24: [0; 3],
+            word_30: 0,
+            word_34: 0,
+            word_46: 10,
+            type_byte: 6,
+            tuning: [1, 1],
+            random: 0,
+            low_detail: false,
+            global_flag: true,
+        };
+        pools.spawn(0, active).unwrap();
+        pools
+            .spawn(
+                0,
+                ParticleSpawn {
+                    word_46: 1,
+                    tuning: [2, 1],
+                    type_byte: 1,
+                    ..active
+                },
+            )
+            .unwrap();
+        pools.advance_common(0, 0).unwrap();
+        let queue = pools.pool(0).unwrap().render_queue([0, 0, 0]);
+        assert_eq!(queue.entries().len(), 1);
+        assert_eq!(queue.entries()[0].resource, ParticleSpriteTable::Type6);
+        assert_eq!(queue.entries()[0].depth, 327728);
+        assert_eq!(queue.entries()[0].sequence, 0);
     }
 
     #[test]

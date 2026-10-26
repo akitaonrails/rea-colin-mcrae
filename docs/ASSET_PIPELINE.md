@@ -247,8 +247,9 @@ dust (2), and snow (5) counters to boolean gates; other counters remain unnamed.
 that dispatch succeeds. `advance_type_specific` applies the recovered clod and
 splash branches, then `advance_common` applies position/velocity, lifetime and
 age updates. `SpriteRenderQueue` holds the recovered resource/depth/sequence
-references up to 100 entries; pool-field depth mapping and final drawing remain
-separate.
+references up to 100 entries. `ParticlePool::render_queue` supplies active
+records with camera-relative depth using the recovered square-root
+approximation; final drawing remains separate.
 
 ## Executable-derived compiled car cases
 

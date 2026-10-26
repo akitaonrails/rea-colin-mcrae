@@ -232,7 +232,8 @@ cover the recovered pure rules.
   **E10 particle-pool spawn records (`6322172`):** `FUN_00424f40` writes an 80-byte record with two copied vectors, scalar fields `+0x30/+0x34/+0x3c`, a type-selected sprite-table identity, `u16` fields `+0x46/+0x48`, type/frame/flags bytes, and advances a 100-slot pool modulo 100. `ParticlePool`/`ParticlePools` reconstruct eight pools with safe pool-index rejection; `stage_spawn_particle` applies the weather gate before record creation. Two tests cover every sprite case, field/tuning selection, flags, invalid pools and wraparound, bringing `cmr-core` to 1,320; the app test covers gated creation and suppression. Unknown scalar semantics retain neutral offset names, and render traversal remains separate.
   **E10 common particle-pool update traversal (`d2bf168`):** `FUN_00427d20` traverses all 100 records in a pool, integrating position and `0xf333`-damped velocity for types `1/5/6/7/8/9/0xc/0x16/0x18`, subtracting `0x34` from vertical velocity for `1/6/0x16/0x18`, decrementing selected `u16` lifetimes, advancing `word_38` by the injected step, incrementing age, and deactivating at signed-negative lifetime, type-`0x1b` age above 1, or age above 5000. `advance_common` reproduces this shared path and preserves `word_38` on respawn, as the native spawn writer leaves it untouched. Two tests cover integration, lifetime/age deactivation and inactive/other types, bringing `cmr-core` to 1,322. Type-specific physics and final sprite rendering remain separate.
   **E10 type-specific clod and splash updates (`6062804`):** the clod branch (`2/0x15/0x1a/0x17`) applies `FUN_004281f0`'s Q16 polynomial to `qmul(clod_base, word_38)`, computes the ground-relative factor, moves relative to the initial position, damps and resets on downward motion, or deactivates using the threshold/counter gate. Splash (`0x0b`) damps its vector by `0xcccc`, applies the two random-delta adjustments when `word_38 > 0x60000`, integrates position, and deactivates below `-0x140000` relative Y. `advance_type_specific` composes these before the common update; deactivation now also clears `word_30/word_34`, type/flag and sets the recovered Y sentinel. Two tests cover polynomial endpoints, movement/reset/deactivation and splash adjustment, bringing `cmr-core` to 1,324. Final sprite rendering and other render-time branches remain separate.
-  **E10 sprite render-reference queue (pending milestone):** `FUN_00429910` appends a resource ID, depth and sequence index only while fewer than 100 entries are present, rejecting the new reference at capacity. `SpriteRenderQueue` reproduces that contract with typed sprite identities. One test covers all 100 entries, depth/sequence order and the 101st rejection, bringing `cmr-core` to 1,325. The pool-field-to-depth mapping and actual draw submission are not inferred by this queue milestone.
+  **E10 sprite render-reference queue (`8130895`):** `FUN_00429910` appends a resource ID, depth and sequence index only while fewer than 100 entries are present, rejecting the new reference at capacity. `SpriteRenderQueue` reproduces that contract with typed sprite identities. One test covers all 100 entries, depth/sequence order and the 101st rejection, bringing `cmr-core` to 1,325. The pool-field-to-depth mapping and actual draw submission are not inferred by this queue milestone.
+  **E10 active-particle render-queue composition (pending milestone):** `ParticlePool::render_queue` now emits only active records, using the recovered camera-relative vector-length calculation and generated square-root approximation for depth rather than aliasing an unproven record field. The 3–4–5 test vector produces the recovered approximation `327728`; a deactivated record is excluded. One focused test brings `cmr-core` to 1,326. This is a derived pool-to-queue composition; final draw submission remains separate.
 
 
 
@@ -322,13 +323,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T06:48:08Z
-milestone=reconstruct-sprite-render-reference-queue
+updated_utc=2026-10-26T06:54:59Z
+milestone=compose-active-particle-render-queue
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=E10-map-active-particle-records-into-render-queue
-next_exit_gate=active-particle-records-produce-typed-render-queue-entries
+current_focus=E10-recover-final-sprite-draw-submission
+next_exit_gate=render-queue-entries-drive-the-recovered-sprite-draw-path
 <!-- PROGRESS-TAIL-END -->

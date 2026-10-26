@@ -1615,6 +1615,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   resource/depth/sequence append contract and its 100-entry cap. One test brings
   `cmr-core` to 1,325. Pool-field depth mapping and final draw submission remain
   separate.
+  E10 active-particle render composition: `ParticlePool::render_queue` emits only
+  active records with camera-relative fixed-point depth using the recovered
+  square-root approximation. One test checks that approximation and excludes a
+  deactivated record, bringing `cmr-core` to 1,326. Final draw submission
+  remains separate.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

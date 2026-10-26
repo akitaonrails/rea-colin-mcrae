@@ -1188,6 +1188,11 @@ E10 recovers the bounded `FUN_00429910` render-reference queue: typed resource
 identity, depth and sequence order with a 100-entry cap.
 `SpriteRenderQueue` rejects the 101st reference. One test brings `cmr-core` to
 1,325. Pool-field depth mapping and final draw submission remain separate.
+E10 composes active records into render references using camera-relative vector
+length and the recovered square-root approximation for depth.
+`ParticlePool::render_queue` excludes deactivated records and produces typed
+resource/depth/sequence entries. One test brings `cmr-core` to 1,326. Final draw
+submission remains separate.
 
 Exit gate:
 
