@@ -25,11 +25,11 @@ use crate::compiled_car_initializer::{
     CompiledLaneThresholdInputs, CompiledPostLaneBasisEffects, derive_compiled_lane_thresholds,
 };
 use crate::drivetrain::{
-    FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
+    EngineForceInput, FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
     SecondWheelInputs, SmoothedEngineSpeedInput, advance_residual_enable, apply_rev_limiter,
-    derive_force_pass_scales, derive_gear_ratio, derive_smoothed_engine_speed,
+    derive_engine_force, derive_force_pass_scales, derive_gear_ratio, derive_smoothed_engine_speed,
     equalize_wheel_speeds, execute_first_wheel_iteration, execute_second_wheel_core,
-    integrate_engine_from_raw_wheels, track_smoothed_wheel_speed,
+    integrate_engine_from_raw_wheels, integrate_idle_engine, track_smoothed_wheel_speed,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::legacy_math::sqrt_q16;
@@ -290,6 +290,8 @@ pub struct FourWheelIterationParams<'a> {
     /// Explicit engine redline/slip/load inputs; speeds and gear/mode fields are
     /// replaced from current native state before each update.
     pub engine_smoothing: SmoothedEngineSpeedInput,
+    /// Explicit engine response/brake inputs for the `state+0x530` producer.
+    pub engine_force: EngineForceInput,
 }
 
 /// Populate wheel contact offsets from the compiled sign vectors at native state
@@ -360,6 +362,10 @@ pub struct FourWheelState {
     /// Rev-limiter state and cut at `control+0x444/+0x448`.
     pub limiter_444: bool,
     pub limiter_cut_448: i32,
+    /// Engine force and neutral/idle state at `state+0x530/+0x6e8/+0x6ec`.
+    pub engine_force_530: i32,
+    pub idle_6e8: i32,
+    pub idle_countdown_6ec: i16,
 }
 
 /// Apply neutral-gear zeroing or the ordinary post-step tracking update.
@@ -545,6 +551,9 @@ impl CarState {
                 engine_speed_2e8: 0,
                 limiter_444: false,
                 limiter_cut_448: 0,
+                engine_force_530: 0,
+                idle_6e8: 0,
+                idle_countdown_6ec: 0,
             },
         }
     }
@@ -1012,12 +1021,29 @@ impl RaceState {
         );
         self.car.four_wheel.speed_ec =
             sqrt_q16(self.car.velocity.dot(self.car.velocity).raw() as u32) as i32;
+        let engine_force = derive_engine_force(EngineForceInput {
+            limiter_444: self.car.four_wheel.limiter_444,
+            cut_448: self.car.four_wheel.limiter_cut_448,
+            engine_2e0: self.car.four_wheel.engine_2e0,
+            redline_15c: wheel.engine_smoothing.redline_15c,
+            gear: first[0].gear,
+            config_40c: first[0].config_40c,
+            response_2d8: wheel.lane_response_2d8.raw(),
+            ..wheel.engine_force
+        });
+        self.car.four_wheel.engine_force_530 = engine_force.force_530;
+        self.car.four_wheel.engine_2e0 = engine_force.engine_2e0;
         if first[0].gear_ratio != 0 && first[0].config_40c == 0 {
             self.car.four_wheel.engine_2e0 = integrate_engine_from_raw_wheels(
                 self.car.four_wheel.engine_2e0,
                 std::array::from_fn(|index| self.car.four_wheel.first[index].wheel_speed),
                 first[0].config_158,
                 first[0].gear_ratio,
+            );
+        } else if self.car.four_wheel.idle_6e8 == 0 && self.car.four_wheel.idle_countdown_6ec == 0 {
+            self.car.four_wheel.engine_2e0 = integrate_idle_engine(
+                self.car.four_wheel.engine_2e0,
+                self.car.four_wheel.engine_force_530,
             );
         }
         let rev_limit = apply_rev_limiter(
@@ -1618,6 +1644,18 @@ mod tests {
                 redline_15c: 0x10000,
                 slip_gain: 0,
                 engine_load: 0x10000,
+            },
+            engine_force: EngineForceInput {
+                limiter_444: false,
+                cut_448: 0,
+                engine_2e0: 0,
+                redline_15c: 0x10000,
+                gear: 1,
+                config_40c: 0,
+                response_2d8: 0,
+                response_e1ac: 0,
+                engine_brake_144: 0,
+                throttle_304: 0,
             },
         };
         populate_compiled_contact_offsets(

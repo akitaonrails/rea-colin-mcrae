@@ -356,6 +356,72 @@ pub fn integrate_engine_from_raw_wheels(
     engine_2e0.wrapping_add(delta)
 }
 
+/// Inputs for the ordinary `FUN_0040ce40` engine-force producer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EngineForceInput {
+    pub limiter_444: bool,
+    pub cut_448: i32,
+    pub engine_2e0: i32,
+    pub redline_15c: i32,
+    pub gear: i32,
+    pub config_40c: i32,
+    pub response_2d8: i32,
+    pub response_e1ac: i32,
+    pub engine_brake_144: i32,
+    pub throttle_304: i32,
+}
+
+/// Native engine force and any direct RPM store from the over-redline branch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EngineForce {
+    pub force_530: i32,
+    pub engine_2e0: i32,
+}
+
+/// Produce `state+0x530` before wheel-force execution.
+#[must_use]
+pub fn derive_engine_force(input: EngineForceInput) -> EngineForce {
+    let engine_square = q16_mul(input.engine_2e0, input.engine_2e0);
+    let engine_brake = q16_mul(input.engine_brake_144, engine_square);
+    if input.limiter_444 {
+        return EngineForce {
+            force_530: input.cut_448.wrapping_neg(),
+            engine_2e0: input.engine_2e0,
+        };
+    }
+    if input.engine_2e0 < input.redline_15c {
+        let force_530 = if input.gear == 0 || input.config_40c != 1 {
+            q16_mul(input.response_2d8, input.response_e1ac).wrapping_sub(engine_brake)
+        } else {
+            engine_brake
+        };
+        return EngineForce {
+            force_530,
+            engine_2e0: input.engine_2e0,
+        };
+    }
+    if input.gear == 0 {
+        return EngineForce {
+            force_530: if input.throttle_304 == 0 {
+                engine_brake.wrapping_neg()
+            } else {
+                0
+            },
+            engine_2e0: input.redline_15c,
+        };
+    }
+    EngineForce {
+        force_530: 0,
+        engine_2e0: input.engine_2e0,
+    }
+}
+
+/// Advance the common neutral/idle engine state (`6e8 == 0`, `6ec == 0`).
+#[must_use]
+pub fn integrate_idle_engine(engine_2e0: i32, force_530: i32) -> i32 {
+    engine_2e0.wrapping_add(q16_mul(force_530, 0xa0000))
+}
+
 /// Inputs for the driven `FUN_004088c0` integration branch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DrivenWheelSmoothingInput {
@@ -1978,6 +2044,51 @@ mod tests {
             integrate_engine_from_raw_wheels(0, [0x20000, 0x20000, 0, 0], 0x10000, 0x10000),
             0x20000
         );
+    }
+
+    #[test]
+    fn neutral_idle_force_and_update_cover_native_branches() {
+        let input = EngineForceInput {
+            limiter_444: false,
+            cut_448: 0,
+            engine_2e0: 0,
+            redline_15c: 0x10000,
+            gear: 1,
+            config_40c: 0,
+            response_2d8: 0x20000,
+            response_e1ac: 0x30000,
+            engine_brake_144: 0x10000,
+            throttle_304: 0,
+        };
+        assert_eq!(
+            derive_engine_force(input),
+            EngineForce {
+                force_530: 0x60000,
+                engine_2e0: 0,
+            }
+        );
+        assert_eq!(
+            derive_engine_force(EngineForceInput {
+                engine_2e0: 0x10000,
+                gear: 0,
+                ..input
+            }),
+            EngineForce {
+                force_530: -0x10000,
+                engine_2e0: 0x10000,
+            }
+        );
+        assert_eq!(
+            derive_engine_force(EngineForceInput {
+                limiter_444: true,
+                cut_448: 0x51eb,
+                ..input
+            })
+            .force_530,
+            -0x51eb
+        );
+        assert_eq!(integrate_idle_engine(0, 0x10000), 0xa0000);
+        assert_eq!(integrate_idle_engine(0x20000, -0x10000), -0x80000);
     }
 
     fn fx(raw: i32) -> Fixed16 {

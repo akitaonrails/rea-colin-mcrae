@@ -1376,7 +1376,11 @@ engine fields persist in `FourWheelState`. One formula/cap test brings `cmr-core
 to 1,375. The ordinary engine path now advances `+0x2e0` from raw axle speeds with
 native middle-16-bit arithmetic, applies the rev limiter, stores `+0x444/+0x448`,
 and then performs smoothing. One fractional-update test brings `cmr-core` to 1,376.
-Neutral/idle special cases and `force_2c8` production remain.
+Neutral/idle special cases and `force_2c8` production remain. The ordinary
+`state+0x530` force and common neutral/idle update are now wired with guarded
+`6e8/6ec` state, over-redline handling, limiter cut and rev limiting. One branch
+test brings `cmr-core` to 1,377. Countdown special cases and runtime response/brake
+production remain.
 
 Exit gate:
 

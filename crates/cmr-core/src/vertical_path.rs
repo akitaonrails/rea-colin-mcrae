@@ -289,6 +289,18 @@ mod tests {
                 slip_gain: 0,
                 engine_load: 0x10000,
             },
+            engine_force: crate::drivetrain::EngineForceInput {
+                limiter_444: false,
+                cut_448: 0,
+                engine_2e0: 0,
+                redline_15c: 0x10000,
+                gear: 1,
+                config_40c: 0,
+                response_2d8: 0,
+                response_e1ac: 0,
+                engine_brake_144: 0,
+                throttle_304: 0,
+            },
         };
         let families = SurfaceCoefficientFamilies {
             first: SurfaceCoefficientFamily {
