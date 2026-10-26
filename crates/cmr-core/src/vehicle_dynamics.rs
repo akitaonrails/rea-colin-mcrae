@@ -1221,6 +1221,59 @@ pub fn apply_control_axis_resets(
     }
 }
 
+/// Inputs for the recovered momentum-to-orientation pipeline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AngularOrientationInput {
+    pub momentum: AngularMomentumStepInput,
+    pub clamp_enabled: bool,
+    pub control: ControlAxisFlags,
+    pub basis: [Vec3; 3],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AngularOrientationOutcome {
+    pub momentum: AngularMomentumStepOutcome,
+    pub angular_velocity: Vec3,
+    pub angle_increments: [i16; 3],
+    pub basis: [Vec3; 3],
+}
+
+/// Compose momentum integration, optional clamping, angle conversion, selective
+/// resets, and the three-stage orientation update in native order.
+#[must_use]
+pub fn apply_angular_orientation_pipeline(
+    input: AngularOrientationInput,
+    trig: &[i32],
+) -> Option<AngularOrientationOutcome> {
+    let momentum = apply_angular_momentum_step(input.momentum);
+    let current = clamp_angular_velocity(momentum.angular_velocity, input.clamp_enabled);
+    let angles = [
+        orientation_angle_increment(
+            current.x,
+            momentum.delta_velocity.x,
+            input.momentum.time_step,
+        ),
+        orientation_angle_increment(
+            current.y,
+            momentum.delta_velocity.y,
+            input.momentum.time_step,
+        ),
+        orientation_angle_increment(
+            current.z,
+            momentum.delta_velocity.z,
+            input.momentum.time_step,
+        ),
+    ];
+    let reset = apply_control_axis_resets(current, angles, input.control);
+    let basis = integrate_orientation(input.basis, reset.angle_increments, trig)?;
+    Some(AngularOrientationOutcome {
+        momentum,
+        angular_velocity: reset.angular_velocity,
+        angle_increments: reset.angle_increments,
+        basis,
+    })
+}
+
 /// Runtime inputs for one `FUN_0040d400` contact-vector update.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContactVectorUpdateInput {
@@ -1651,6 +1704,78 @@ mod tests {
         // drag = v * speed.
         let d = drag(v(1, 0, 0), Fixed16::from_raw(0x8000));
         assert_eq!(d.x, Fixed16::from_raw(0x8000));
+    }
+
+    #[test]
+    fn angular_orientation_pipeline_matches_each_independent_stage() {
+        let momentum = AngularMomentumStepInput {
+            prior_moment: raw_v(0x10000, 0x20000, 0x30000),
+            contact_moment: raw_v(0x40000, 0x50000, 0x60000),
+            moment_scale: Fixed16::from_raw(0x8000),
+            inertia_scale: raw_v(0x10000, 0x8000, 0x20000),
+            angular_velocity: raw_v(0x10000, 0x10000, 0x10000),
+            time_step: Fixed16::ONE,
+        };
+        let control = ControlAxisFlags {
+            mode_3ec: 1,
+            axis_3f4: 1,
+            axis_3f8: 0,
+        };
+        let basis = [
+            raw_v(0x10000, 0, 0),
+            raw_v(0, 0x10000, 0),
+            raw_v(0, 0, 0x10000),
+        ];
+        let trig = crate::fixed_point::build_sine_table();
+        let outcome = apply_angular_orientation_pipeline(
+            AngularOrientationInput {
+                momentum,
+                clamp_enabled: false,
+                control,
+                basis,
+            },
+            &trig,
+        )
+        .unwrap();
+        let expected_momentum = apply_angular_momentum_step(momentum);
+        let current = clamp_angular_velocity(expected_momentum.angular_velocity, false);
+        let angles = [
+            orientation_angle_increment(
+                current.x,
+                expected_momentum.delta_velocity.x,
+                Fixed16::ONE,
+            ),
+            orientation_angle_increment(
+                current.y,
+                expected_momentum.delta_velocity.y,
+                Fixed16::ONE,
+            ),
+            orientation_angle_increment(
+                current.z,
+                expected_momentum.delta_velocity.z,
+                Fixed16::ONE,
+            ),
+        ];
+        let reset = apply_control_axis_resets(current, angles, control);
+        assert_eq!(outcome.momentum, expected_momentum);
+        assert_eq!(outcome.angular_velocity, reset.angular_velocity);
+        assert_eq!(outcome.angle_increments, reset.angle_increments);
+        assert_eq!(
+            outcome.basis,
+            integrate_orientation(basis, reset.angle_increments, &trig).unwrap()
+        );
+        assert_eq!(
+            apply_angular_orientation_pipeline(
+                AngularOrientationInput {
+                    momentum,
+                    clamp_enabled: false,
+                    control,
+                    basis,
+                },
+                &trig[..0x100],
+            ),
+            None
+        );
     }
 
     #[test]

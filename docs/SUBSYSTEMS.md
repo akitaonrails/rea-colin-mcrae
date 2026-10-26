@@ -1934,7 +1934,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   through the single `0x28b` conversion. `apply_control_axis_resets` covers both
   selective angular reset branches and their priority.
   `apply_contact_vector_updates` now traverses all eight records in reverse order
-  and preserves skipped destinations. Contact-state population and full
+  and preserves skipped destinations. `apply_angular_orientation_pipeline`
+  composes momentum, clamp, conversion, selective resets and orientation in native
+  order. Low-speed position-update suppression, contact-state population and full
   four-iteration production remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.

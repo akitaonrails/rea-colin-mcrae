@@ -502,7 +502,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T10:06Z | 139h48m | recover-control-axis-resets | `6672987` | G04 | Added `apply_control_axis_resets`: `+0x3f4` clears X/Z velocity and angles 0/2, otherwise `+0x3f8` clears X/Y velocity and angles 0/1, under `+0x3ec` with first-branch priority. One all-gates test brings `cmr-core` to 1,341. Full angular composition and eight-contact traversal remain open. |
 
-| 2026-10-26T10:11Z | 139h53m | compose-eight-contact-updates | _(pending)_ | G03 | Added `apply_contact_vector_updates`: reverse-order traversal of all eight `FUN_0040d400` records with previous destinations retained for every skipped record. One focused test brings `cmr-core` to 1,342. Contact-state population and full lane production remain open. |
+| 2026-10-26T10:11Z | 139h53m | compose-eight-contact-updates | `ee83751` | G03 | Added `apply_contact_vector_updates`: reverse-order traversal of all eight `FUN_0040d400` records with previous destinations retained for every skipped record. One focused test brings `cmr-core` to 1,342. Contact-state population and full lane production remain open. |
+
+| 2026-10-26T10:16Z | 139h58m | compose-angular-orientation-pipeline | _(pending)_ | G04 | Added `apply_angular_orientation_pipeline`: momentum integration, optional clamp, half-delta conversion, selective resets and three-stage orientation in native order. One independent-stage comparison test brings `cmr-core` to 1,343. Low-speed suppression, contact-state population and race-state storage remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

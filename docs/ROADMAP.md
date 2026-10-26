@@ -1249,7 +1249,10 @@ sequence, bringing `cmr-core` to 1,340. `apply_control_axis_resets` now covers
 both selective angular reset branches and their priority, bringing `cmr-core` to
 1,341. `apply_contact_vector_updates` now traverses all eight records in reverse
 order while preserving skipped destinations, bringing `cmr-core` to 1,342.
-Contact-state population and complete four-lane production remain open.
+`apply_angular_orientation_pipeline` now composes momentum, clamp, angle
+conversion, selective resets and orientation in native order, bringing `cmr-core`
+to 1,343. Low-speed position-update suppression, contact-state population and
+complete four-lane production remain open.
 
 Exit gate:
 
