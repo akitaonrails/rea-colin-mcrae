@@ -98,6 +98,8 @@ pub enum ProfileError {
         /// The length supplied.
         actual: usize,
     },
+    /// The size matched but the native validity triple did not.
+    InvalidRecord,
 }
 
 /// Generate a save-slot seed from three RNG words, reproducing `FUN_0044ef50`
@@ -167,6 +169,88 @@ pub fn finalize_slot_for_save(record: &mut [u8], seed: u32) -> Result<(), Profil
     write_u32(record, SLOT_FORMAT_OFFSET, SLOT_FORMAT_MARKER);
     write_u32(record, SLOT_COMPLEMENT_OFFSET, seed_complement(seed));
     Ok(())
+}
+
+/// Number of bytes restored to the live results region at `+0x16c`.
+pub const LIVE_RESULTS_LEN: usize = 0x100;
+/// Record offset of that results region (`live +0x16c` -> record `+0x14c`).
+pub const SLOT_RESULTS_OFFSET: usize = 0x14c;
+/// Record offset of the six-bit progress counter.
+pub const SLOT_PROGRESS_OFFSET: usize = 0x147;
+
+/// Live fields written by the recovered load-apply callback.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveProfileState {
+    pub results: [u8; LIVE_RESULTS_LEN],
+    pub progress: u8,
+    pub mode: u8,
+    pub difficulty: u8,
+}
+
+/// Apply a valid record to the live championship fields. Invalid input is
+/// rejected without mutation. Other live fields and settings remain the
+/// caller's responsibility, matching the callback's bounded writes.
+pub fn apply_slot_to_live(record: &[u8], live: &mut LiveProfileState) -> Result<(), ProfileError> {
+    if record.len() != SAVE_SLOT_LEN {
+        return Err(ProfileError::WrongLength {
+            expected: SAVE_SLOT_LEN,
+            actual: record.len(),
+        });
+    }
+    if !slot_is_valid(record) {
+        return Err(ProfileError::InvalidRecord);
+    }
+    live.results
+        .copy_from_slice(&record[SLOT_RESULTS_OFFSET..SLOT_RESULTS_OFFSET + LIVE_RESULTS_LEN]);
+    live.progress = (live.progress & 0xc0) | (record[SLOT_PROGRESS_OFFSET] & 0x3f);
+    live.mode |= 0x80;
+    live.difficulty = (live.difficulty & !0x18) | (slot_mode(record) << 3);
+    Ok(())
+}
+
+/// Owned equivalent of the 12-record cache built by `FUN_0044ed90`.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProfileSlots {
+    records: Vec<Option<Vec<u8>>>,
+}
+
+impl ProfileSlots {
+    /// Retain only valid records, preserving slot positions. Wrong-sized or
+    /// corrupt records and absent files all behave as empty slots.
+    #[must_use]
+    pub fn from_files(files: &[Option<&[u8]>]) -> Self {
+        Self {
+            records: files
+                .iter()
+                .take(crate::settings_store::SAVE_SLOT_COUNT)
+                .map(|bytes| {
+                    bytes
+                        .filter(|bytes| slot_is_valid(bytes))
+                        .map(<[u8]>::to_vec)
+                })
+                .collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    #[must_use]
+    pub fn record(&self, slot: usize) -> Option<&[u8]> {
+        self.records.get(slot)?.as_deref()
+    }
+
+    /// Release the entire cache (`FUN_0044eeb0`).
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
 }
 
 #[cfg(test)]
@@ -272,6 +356,65 @@ mod tests {
         assert_eq!(slot_mode(&record), 0x02);
         record[SLOT_MODE_OFFSET] = 0x03;
         assert_eq!(slot_mode(&record), 0x03);
+    }
+
+    #[test]
+    fn load_apply_restores_only_the_recovered_live_fields() {
+        let mut record = valid_record(make_seed(1, 2, 3));
+        for (index, byte) in record[SLOT_RESULTS_OFFSET..SLOT_RESULTS_OFFSET + LIVE_RESULTS_LEN]
+            .iter_mut()
+            .enumerate()
+        {
+            *byte = index as u8;
+        }
+        record[SLOT_PROGRESS_OFFSET] = 0x3f;
+        record[SLOT_MODE_OFFSET] = 2;
+        let mut live = LiveProfileState {
+            results: [0xff; LIVE_RESULTS_LEN],
+            progress: 0x80,
+            mode: 1,
+            difficulty: 0xe7,
+        };
+        apply_slot_to_live(&record, &mut live).unwrap();
+        assert_eq!(live.results[0], 0);
+        assert_eq!(live.results[255], 255);
+        assert_eq!(live.progress, 0xbf);
+        assert_eq!(live.mode, 0x81);
+        assert_eq!(live.difficulty, 0xf7);
+
+        let before = live.clone();
+        record[SLOT_MAGIC_OFFSET] ^= 1;
+        assert_eq!(
+            apply_slot_to_live(&record, &mut live),
+            Err(ProfileError::InvalidRecord)
+        );
+        assert_eq!(live, before);
+    }
+
+    #[test]
+    fn slot_cache_retains_valid_positions_and_releases_together() {
+        let valid = valid_record(make_seed(1, 2, 3));
+        let invalid = vec![0; SAVE_SLOT_LEN];
+        let files = [
+            None,
+            None,
+            Some(valid.as_slice()),
+            Some(invalid.as_slice()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ];
+        let mut slots = ProfileSlots::from_files(&files);
+        assert_eq!(slots.len(), 12);
+        assert_eq!(slots.record(2), Some(valid.as_slice()));
+        assert_eq!(slots.record(3), None);
+        slots.clear();
+        assert!(slots.is_empty());
     }
 
     #[test]

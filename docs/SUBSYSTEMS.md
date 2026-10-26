@@ -2211,8 +2211,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `slot_is_valid`, `classify_slot`, `slot_mode`, `finalize_slot_for_save`)
   while treating the `0x690` payload as opaque game state (offset/length only,
   not vendored). It builds on `settings_store`'s slot length/count and pairs
-  with the `DataPaths::save_slot` path builder. See evidence
-  `rea.official-eu.save-slots` and `impl.profile-store`.
+  with the `DataPaths::save_slot` path builder. `apply_slot_to_live` restores the
+  256-byte results region, six-bit progress, difficulty and loaded flag without
+  mutating on invalid input; `ProfileSlots` owns the 12-record cache and release.
+  F03 is complete. See `rea.official-eu.save-slots` and `impl.profile-store`.
 - The persistence round-trip suite
   (`crates/cmr-core/tests/persistence_round_trip.rs`, F07) verifies the settings
   image (C05) and the save-slot record (F03) together: a valid write survives a

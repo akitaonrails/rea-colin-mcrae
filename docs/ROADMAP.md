@@ -1436,6 +1436,10 @@ F02 is complete: descriptor initialization, vertical navigation, boundary links
 and type-3/6 value editing now complement the options/binding/calibration field
 models. Three tests bring `cmr-core` to 1,402. F01 still owns screen-specific
 callback and graph recovery.
+F03 is complete: the load-apply callback restores the 256-byte results region,
+six-bit progress and difficulty, and sets the loaded flag. The owned 12-slot
+cache retains valid positions and releases together; invalid records cannot
+mutate live state. Two tests bring `cmr-core` to 1,404.
 
 Exit gate:
 
