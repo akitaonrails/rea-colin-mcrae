@@ -12,7 +12,7 @@ use crate::pe32::{Pe32Error, Pe32Image};
 
 /// Number of signed little-endian dwords in each recovered family.
 pub const SURFACE_COEFFICIENT_COUNT: usize = 120;
-/// Number of per-effect capability tables consumed by `FUN_00424a40`.
+/// Number of per-effect contiguous capability tables in the reviewed PE span.
 pub const SURFACE_CAPABILITY_COUNT: usize = 16;
 /// Number of surface ids in each capability table.
 pub const SURFACE_CAPABILITY_ENTRIES: usize = 120;
@@ -41,7 +41,7 @@ pub struct SurfaceCoefficientFamilies {
     pub second: SurfaceCoefficientFamily,
 }
 
-/// Sixteen neutral per-effect capability tables in consumer order.
+/// Sixteen neutral capability tables in address order; fifteen are consumed by `FUN_00424a40`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SurfaceCapabilityTables {
     pub values: [[u8; SURFACE_CAPABILITY_ENTRIES]; SURFACE_CAPABILITY_COUNT],
@@ -225,7 +225,7 @@ pub fn extract_official_eu_surface_coefficients(
     Ok(SurfaceCoefficientFamilies { first, second })
 }
 
-/// Extract the sixteen per-effect capability tables consumed by `FUN_00424a40`.
+/// Extract the sixteen per-effect contiguous capability tables in the reviewed PE span.
 ///
 /// Table and entry order are preserved exactly. The caller must establish the
 /// supported artifact identity before calling this bounded parser.

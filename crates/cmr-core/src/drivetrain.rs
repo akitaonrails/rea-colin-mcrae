@@ -41,6 +41,7 @@
 
 use crate::compiled_car_initializer::CompiledControlFamilies;
 use crate::fixed_point::Fixed16;
+use cmr_formats::pe_surface::SurfaceCapabilityTables;
 
 /// Coasting drag torque (`0x1999` ~ 0.1 in Q16.16) that `FUN_0040d810`
 /// substitutes for the engine torque when the car is in gear with neither the
@@ -805,6 +806,42 @@ pub fn accumulate_effect_enables(
         }
     }
     Some(counters)
+}
+
+/// PE table index for each enable counter; `None` is runtime `DAT_0054f824`.
+/// The trailing sixteenth PE table is not consumed by `FUN_00424a40`.
+pub const SURFACE_EFFECT_PE_TABLE_INDICES: [Option<usize>; SURFACE_CAPABILITY_COUNT] = [
+    Some(1),
+    Some(0),
+    Some(2),
+    Some(3),
+    None,
+    Some(4),
+    Some(5),
+    Some(6),
+    Some(7),
+    Some(8),
+    Some(9),
+    Some(10),
+    Some(11),
+    Some(13),
+    Some(12),
+    Some(14),
+];
+
+/// Accumulate enable counters from the address-ordered PE tables and the
+/// separately supplied runtime-backed fifth table.
+#[must_use]
+pub fn accumulate_effect_enables_from_extracted(
+    surface_ids: &[u8],
+    extracted: &SurfaceCapabilityTables,
+    runtime_fifth: &[u8; SURFACE_ID_COUNT],
+) -> Option<[u32; SURFACE_CAPABILITY_COUNT]> {
+    let tables = std::array::from_fn(|counter| {
+        SURFACE_EFFECT_PE_TABLE_INDICES[counter]
+            .map_or(*runtime_fifth, |index| extracted.values[index])
+    });
+    accumulate_effect_enables(surface_ids, &tables)
 }
 
 /// The gear ratio derivation of `FUN_00420740`:
@@ -1882,6 +1919,20 @@ mod tests {
         for (index, &counter) in counters.iter().enumerate() {
             assert_eq!(counter, (index + 1 + index + 3) as u32);
         }
+    }
+
+    #[test]
+    fn extracted_effect_enables_use_the_counter_consumption_map() {
+        let extracted = SurfaceCapabilityTables {
+            values: std::array::from_fn(|table| [(table + 1) as u8; SURFACE_ID_COUNT]),
+        };
+        let counters =
+            accumulate_effect_enables_from_extracted(&[3, 3], &extracted, &[99; 120]).unwrap();
+        assert_eq!(
+            counters,
+            [2, 1, 3, 4, 99, 5, 6, 7, 8, 9, 10, 11, 12, 14, 13, 15],
+        );
+        assert!(accumulate_effect_enables_from_extracted(&[120], &extracted, &[99; 120]).is_none());
     }
 
     #[test]

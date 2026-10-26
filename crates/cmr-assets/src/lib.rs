@@ -67,6 +67,7 @@ pub use surface_profile::{
     SurfaceTableProfile, SurfaceTableSpec,
 };
 pub use surface_store::{
-    SurfaceDataError, SurfaceTableStore, SurfaceTableStoreError, decode_surface_table_data,
+    SurfaceCapabilityStore, SurfaceDataError, SurfaceTableStore, SurfaceTableStoreError,
+    decode_surface_capability_data, decode_surface_table_data,
 };
 pub use verify::{VerificationError, VerificationSummary, verify_source};

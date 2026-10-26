@@ -4,12 +4,16 @@ use std::io::Read;
 use std::path::Path;
 
 use cmr_formats::pe_surface::{
-    SURFACE_COEFFICIENT_COUNT, SurfaceCoefficientFamilies, SurfaceCoefficientFamily,
+    SURFACE_CAPABILITY_BYTES, SURFACE_CAPABILITY_COUNT, SURFACE_CAPABILITY_ENTRIES,
+    SURFACE_COEFFICIENT_COUNT, SurfaceCapabilityTables, SurfaceCoefficientFamilies,
+    SurfaceCoefficientFamily,
 };
 
 use crate::verify::{require_real_directory, sha256};
 use crate::{
-    ReviewedSurfaceProfile, SURFACE_DATA_FILE, SURFACE_IMPORT_SCHEMA_VERSION, SURFACE_STATE_FILE,
+    ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile, SURFACE_CAPABILITY_DATA_FILE,
+    SURFACE_CAPABILITY_IMPORT_SCHEMA_VERSION, SURFACE_CAPABILITY_STATE_FILE, SURFACE_DATA_FILE,
+    SURFACE_IMPORT_SCHEMA_VERSION, SURFACE_STATE_FILE, SurfaceCapabilityImportSummary,
     SurfaceImportSummary, VerificationError,
 };
 
@@ -63,6 +67,24 @@ pub fn decode_surface_table_data(
         first: SurfaceCoefficientFamily { values: first },
         second: SurfaceCoefficientFamily { values: second },
     })
+}
+
+/// Decode the project-owned capability extraction into sixteen address-ordered tables.
+pub fn decode_surface_capability_data(
+    input: &[u8],
+) -> Result<SurfaceCapabilityTables, SurfaceDataError> {
+    if input.len() != SURFACE_CAPABILITY_BYTES {
+        return Err(SurfaceDataError::Length {
+            expected: SURFACE_CAPABILITY_BYTES,
+            actual: input.len(),
+        });
+    }
+    let mut values = [[0; SURFACE_CAPABILITY_ENTRIES]; SURFACE_CAPABILITY_COUNT];
+    for (index, table) in values.iter_mut().enumerate() {
+        let offset = index * SURFACE_CAPABILITY_ENTRIES;
+        table.copy_from_slice(&input[offset..offset + SURFACE_CAPABILITY_ENTRIES]);
+    }
+    Ok(SurfaceCapabilityTables { values })
 }
 
 /// A verified, immutable view of one completed local surface-table extraction.
@@ -175,6 +197,85 @@ impl SurfaceTableStore {
             _ => None,
         }
     }
+}
+
+/// A verified, immutable, address-ordered view of the extracted capability tables.
+#[derive(Debug)]
+pub struct SurfaceCapabilityStore {
+    tables: SurfaceCapabilityTables,
+}
+
+impl SurfaceCapabilityStore {
+    /// Open and authenticate a completed capability extraction.
+    ///
+    /// The caller keeps `root` stable for this call. Persistent symlinks and
+    /// special files are rejected; concurrent adversarial mutation is out of scope.
+    pub fn open(
+        root: &Path,
+        reviewed: &ReviewedSurfaceCapabilityProfile,
+    ) -> Result<Self, SurfaceTableStoreError> {
+        require_real_directory(root)?;
+        let state_path = root.join(SURFACE_CAPABILITY_STATE_FILE);
+        reject_link_or_special(&state_path)?;
+        let state_bytes = read_bounded(&state_path, MAX_SURFACE_STATE_BYTES)?;
+        let state: SurfaceCapabilityImportSummary =
+            serde_json::from_slice(&state_bytes).map_err(SurfaceTableStoreError::StateJson)?;
+        validate_capability_state(&state, reviewed)?;
+        let data_path = root.join(SURFACE_CAPABILITY_DATA_FILE);
+        reject_link_or_special(&data_path)?;
+        let data = read_exact(&data_path, SURFACE_CAPABILITY_BYTES as u64)?;
+        if sha256(&data) != state.output.sha256 {
+            return Err(SurfaceTableStoreError::InvalidState {
+                field: "output.sha256",
+            });
+        }
+        Ok(Self {
+            tables: decode_surface_capability_data(&data)?,
+        })
+    }
+
+    pub fn tables(&self) -> &SurfaceCapabilityTables {
+        &self.tables
+    }
+
+    pub fn table(&self, index: usize) -> Option<&[u8; SURFACE_CAPABILITY_ENTRIES]> {
+        self.tables.values.get(index)
+    }
+}
+
+fn validate_capability_state(
+    state: &SurfaceCapabilityImportSummary,
+    reviewed: &ReviewedSurfaceCapabilityProfile,
+) -> Result<(), SurfaceTableStoreError> {
+    let profile = reviewed.profile();
+    let checks = [
+        (
+            state.schema_version == SURFACE_CAPABILITY_IMPORT_SCHEMA_VERSION,
+            "schema_version",
+        ),
+        (state.profile == profile.id, "profile"),
+        (state.profile_sha256 == reviewed.sha256(), "profile_sha256"),
+        (state.source.path == profile.executable.path, "source.path"),
+        (state.source.size == profile.executable.size, "source.size"),
+        (
+            state.source.sha256 == profile.executable.sha256,
+            "source.sha256",
+        ),
+        (
+            state.output.path == SURFACE_CAPABILITY_DATA_FILE,
+            "output.path",
+        ),
+        (
+            state.output.size == SURFACE_CAPABILITY_BYTES as u64,
+            "output.size",
+        ),
+    ];
+    for (matches, field) in checks {
+        if !matches {
+            return Err(SurfaceTableStoreError::InvalidState { field });
+        }
+    }
+    Ok(())
 }
 
 fn validate_state(
@@ -404,6 +505,97 @@ mod tests {
 
     fn read_state(root: &Path) -> SurfaceImportSummary {
         serde_json::from_slice(&fs::read(root.join(SURFACE_STATE_FILE)).unwrap()).unwrap()
+    }
+
+    fn capability_store(temp: &Temp) -> (PathBuf, ReviewedSurfaceCapabilityProfile, Vec<u8>) {
+        let root = temp.0.join("capability-store");
+        fs::create_dir(&root).unwrap();
+        let executable = b"synthetic-capability-executable";
+        let reviewed = ReviewedSurfaceCapabilityProfile::from_json(
+            &serde_json::to_vec(&crate::SurfaceCapabilityProfile {
+                schema_version: 1,
+                id: "synthetic-capabilities".into(),
+                executable: SurfaceExecutableProfile {
+                    path: "Rally.exe".into(),
+                    size: executable.len() as u64,
+                    sha256: sha256(executable),
+                },
+                table: crate::SurfaceCapabilitySpec {
+                    virtual_address: cmr_formats::pe_surface::OFFICIAL_EU_SURFACE_CAPABILITY_VA,
+                    tables: 16,
+                    entries_per_table: 120,
+                    entry_encoding: crate::SurfaceCapabilityEncoding::UnsignedU8,
+                },
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let data: Vec<u8> = (0..SURFACE_CAPABILITY_BYTES)
+            .map(|index| (index % 239) as u8)
+            .collect();
+        fs::write(root.join(SURFACE_CAPABILITY_DATA_FILE), &data).unwrap();
+        let summary = SurfaceCapabilityImportSummary {
+            schema_version: SURFACE_CAPABILITY_IMPORT_SCHEMA_VERSION,
+            profile: reviewed.profile().id.clone(),
+            profile_sha256: reviewed.sha256().into(),
+            source: crate::SurfaceImportFile {
+                path: "Rally.exe".into(),
+                size: executable.len() as u64,
+                sha256: sha256(executable),
+            },
+            output: crate::SurfaceImportFile {
+                path: SURFACE_CAPABILITY_DATA_FILE.into(),
+                size: data.len() as u64,
+                sha256: sha256(&data),
+            },
+        };
+        fs::write(
+            root.join(SURFACE_CAPABILITY_STATE_FILE),
+            serde_json::to_vec_pretty(&summary).unwrap(),
+        )
+        .unwrap();
+        (root, reviewed, data)
+    }
+
+    #[test]
+    fn capability_decoder_and_store_preserve_address_order() {
+        let temp = Temp::new();
+        let (root, reviewed, data) = capability_store(&temp);
+        let decoded = decode_surface_capability_data(&data).unwrap();
+        assert_eq!(decoded.values[15][119], data[data.len() - 1]);
+        assert!(decode_surface_capability_data(&data[..data.len() - 1]).is_err());
+        let store = SurfaceCapabilityStore::open(&root, &reviewed).unwrap();
+        assert_eq!(store.tables(), &decoded);
+        assert_eq!(store.table(15), Some(&decoded.values[15]));
+        assert_eq!(store.table(16), None);
+        fs::remove_file(root.join(SURFACE_CAPABILITY_DATA_FILE)).unwrap();
+        assert_eq!(store.tables(), &decoded);
+    }
+
+    #[test]
+    fn capability_store_rejects_data_tampering_and_profile_mismatch() {
+        let temp = Temp::new();
+        let (root, reviewed, mut data) = capability_store(&temp);
+        data[0] ^= 1;
+        fs::write(root.join(SURFACE_CAPABILITY_DATA_FILE), data).unwrap();
+        assert!(matches!(
+            SurfaceCapabilityStore::open(&root, &reviewed),
+            Err(SurfaceTableStoreError::InvalidState {
+                field: "output.sha256"
+            })
+        ));
+        let other_document = serde_json::to_vec(&crate::SurfaceCapabilityProfile {
+            schema_version: 1,
+            id: "different".into(),
+            executable: reviewed.profile().executable.clone(),
+            table: reviewed.profile().table.clone(),
+        })
+        .unwrap();
+        let other = ReviewedSurfaceCapabilityProfile::from_json(&other_document).unwrap();
+        assert!(matches!(
+            SurfaceCapabilityStore::open(&root, &other),
+            Err(SurfaceTableStoreError::InvalidState { .. })
+        ));
     }
 
     #[test]

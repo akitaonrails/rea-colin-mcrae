@@ -1557,6 +1557,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   library and nine binary tests; a real authenticated import passed without
   exposing values. The immutable store/counter wiring and runtime fifth table
   remain separate.
+  G03 capability store and counter wiring: `SurfaceCapabilityStore` revalidates
+  the import before owning all sixteen address-ordered tables without retaining
+  paths. `SURFACE_EFFECT_PE_TABLE_INDICES` and
+  `accumulate_effect_enables_from_extracted` map fifteen PE tables plus the
+  injected runtime fifth table into the sixteen counters; the trailing PE table
+  is not consumed by `FUN_00424a40`. Two store tests bring `cmr-assets` to 80
+  library tests and one mapping test brings `cmr-core` to 1,315. The opt-in
+  official extraction/reopen smoke passes. Runtime production and application
+  wiring remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

@@ -209,9 +209,10 @@ runs.
 
 ## Executable-derived surface capabilities
 
-The sixteen PE-backed per-effect capability tables consumed by
-`FUN_00424a40` occupy a separate 1,920-byte span at `0x4ec0f8`. Extract them
-from the same authenticated user-owned executable:
+Sixteen contiguous capability tables occupy a separate 1,920-byte PE span at
+`0x4ec0f8`. `FUN_00424a40` consumes fifteen of them plus the runtime-backed
+`DAT_0054f824`; the trailing PE table is not consumed by that function. Extract
+the complete span from the same authenticated user-owned executable:
 
 ```sh
 cargo run -q -p cmr-assets -- extract-surface-capabilities \
@@ -228,8 +229,11 @@ output-exists refusal match the coefficient pipeline. Synthetic tests cover
 profile validation, exact table bytes, CLI behavior, and state metadata; an
 authenticated local smoke import also passed without exposing values. This is
 not the runtime-backed fifth consumer table `DAT_0054f824`, whose producer and
-values remain separate. An immutable store and consumer wiring are the next
-boundary.
+values remain separate. `SurfaceCapabilityStore` revalidates the import and owns
+the complete span without retaining paths. The core counter adapter maps fifteen
+PE tables plus the separately injected runtime table; it does not consume the
+trailing PE table in `FUN_00424a40`. An opt-in official extraction/reopen smoke
+also passes without exposing values.
 
 ## Executable-derived compiled car cases
 

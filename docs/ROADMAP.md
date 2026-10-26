@@ -1129,6 +1129,14 @@ one CLI test cover profile shape, synthetic bytes, and command behavior;
 `cmr-assets` now has 78 library and nine binary tests. An authenticated local
 import passed without exposing values. The immutable store/counter wiring and
 runtime-backed fifth table remain open.
+G03 adds the immutable capability store and counter adapter. The store owns all
+sixteen address-ordered tables after authentication and shape checks. The
+adapter maps counter indices to PE tables `[1,0,2,3,runtime,4..11,13,12,14]`,
+with the separately supplied runtime fifth table; the trailing PE table is not
+consumed by `FUN_00424a40`. Two store tests bring `cmr-assets` to 80 library
+tests, one adapter test brings `cmr-core` to 1,315, and the opt-in official
+extraction/reopen smoke passes. Runtime-table production and application/session
+wiring remain open.
 
 Exit gate:
 
