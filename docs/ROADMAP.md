@@ -920,6 +920,13 @@ Every path zeroes `param_1+0x188` and calls `FUN_00492050`. One focused test
 brings `cmr-core` to 1,257. `FUN_00492050` remains unreconstructed; the
 `FUN_004126b0` lane threshold scan follows.
 
+G03-AK22 reconstructs `FUN_004126b0`: starting from `+0x742 = 0` and
+`+0x743 = 1`, it scans lanes `7` down to `0` with the strict signed test
+`lane_word + 0x1999 < source_y` (wrapping addition). Passing lanes set their
+`+0x73a` flags; failing lanes clear them and `+0x743`, append their indices at
+`+0x744 + count`, and increment `+0x742`. Two focused tests bring `cmr-core`
+to 1,258. The `FUN_0046eda0` global copy gate follows.
+
 Exit gate:
 
 - a complete offline race can be started, driven, finished, saved, and replayed

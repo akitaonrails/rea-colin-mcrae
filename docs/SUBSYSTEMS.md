@@ -1317,6 +1317,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   `+0x10/+0x14/+0x18`, other values store none, and every path zeroes
   `param_1+0x188` and calls `FUN_00492050`. One focused test brings
   `cmr-core` to 1,257. `FUN_00492050` remains unreconstructed.
+  G03-AK22 reconstructs `FUN_004126b0`: starting from `+0x742 = 0` and
+  `+0x743 = 1`, it scans lanes `7` down to `0` with the strict signed test
+  `lane_word + 0x1999 < source_y` (wrapping addition). Passing lanes set
+  their `+0x73a` flags; failing lanes clear them and `+0x743`, append their
+  indices at `+0x744 + count`, and increment `+0x742`. Two focused tests
+  bring `cmr-core` to 1,258. The `FUN_0046eda0` global copy gate remains open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
