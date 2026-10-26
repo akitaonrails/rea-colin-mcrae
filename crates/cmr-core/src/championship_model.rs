@@ -5,7 +5,7 @@
 //! The actual content tables - country/stage/car names, car codes, BHP/stat
 //! figures, difficulty labels, points - are game data and are **not** vendored.
 //! This module reconstructs only the *structure* that addresses them: the model
-//! dimensions, the save-record <-> live-struct offset mapping, the event-progress
+//! dimensions, the save-record <-> live-struct offset mapping, the result-slot
 //! element decode, the per-slot display descriptor packing, and the
 //! Rally-School / difficulty selector bit layout. Display names are
 //! runtime-loaded localized strings (`FUN_0049b010(id)`), not static tables, so
@@ -24,10 +24,10 @@
 //!   (`>>3 & 3`), and the persisted mode/difficulty proxy is live `+0x18 >>3 & 3`.
 //! - The save record mirrors the live struct: `record_off = live_off - 0x20`
 //!   and `payload_off = live_off - 0x2c` (verified against the car nibble, the
-//!   country index, and the event-progress array).
-//! - Event progress is a `0x10`-stride array (<= 16 events) at record `+0x150`
-//!   (live `+0x170`); each element's flag byte at `+0x08` carries bit `0x10`
-//!   (started) and a low-nibble completed-stage count.
+//!   country index, and the result-slot array).
+//! - The result table is a `0x10`-stride array (<= 16 car slots) at record
+//!   `+0x150` (live `+0x170`); each flag byte at `+0x08` carries bit `0x10`
+//!   (entered) and a low-nibble entrant/provisional order, shared with F06.
 //!
 //! See evidence `rea.official-eu.championship-model`.
 
@@ -60,7 +60,7 @@ pub const LIVE_CAR_NIBBLE_OFFSET: usize = 0xb6;
 pub const LIVE_ACTIVE_CAR_NIBBLE_OFFSET: usize = 0x2fe;
 /// Live-struct offset of the country index.
 pub const LIVE_COUNTRY_OFFSET: usize = 0x168;
-/// Live-struct offset of the event-progress array.
+/// Live-struct offset of the result-slot array.
 pub const LIVE_PROGRESS_OFFSET: usize = 0x170;
 /// Live-struct offset of the mode/difficulty tier byte.
 pub const LIVE_MODE_TIER_OFFSET: usize = 0x18;
@@ -77,38 +77,66 @@ pub fn payload_offset(live_offset: usize) -> Option<usize> {
     live_offset.checked_sub(PAYLOAD_LIVE_DELTA)
 }
 
-// --- Event-progress array -----------------------------------------------------
+// --- Persisted result-slot array ----------------------------------------------
 
-/// Record offset of the event-progress array.
+/// Record offset of the 16 result slots shared with F06.
 pub const PROGRESS_RECORD_OFFSET: usize = 0x150;
-/// Stride of one event-progress element.
+/// Stride of one result slot.
 pub const PROGRESS_ELEMENT_STRIDE: usize = 0x10;
-/// Maximum number of event-progress elements scanned.
+/// Maximum number of result slots scanned.
 pub const PROGRESS_ELEMENT_MAX: usize = 16;
-/// Offset of the state flag within an event-progress element.
+/// Number of per-stage finishing-position bytes at the start of a result slot.
+pub const RESULT_POSITION_COUNT: usize = 8;
+/// Offset of the state flag within a result slot.
 pub const PROGRESS_FLAG_OFFSET: usize = 0x08;
-/// Flag bit meaning the event has been started/entered.
+/// Offset of the standings tiebreak byte within a result slot.
+pub const RESULT_TIEBREAK_OFFSET: usize = 0x09;
+/// Number of trailing bytes whose native roles remain unassigned and preserved.
+pub const RESULT_TRAILING_UNASSIGNED: usize = 6;
+/// Flag bit meaning the car entered the current stage's field.
 pub const PROGRESS_FLAG_STARTED: u8 = 0x10;
-/// Low-nibble mask of the completed-stage count within the flag byte.
-pub const PROGRESS_COMPLETED_MASK: u8 = 0x0f;
+/// Low-nibble mask of the entrant/provisional-order value.
+pub const PROGRESS_ORDER_MASK: u8 = 0x0f;
 
-/// Whether an event-progress flag marks the event as started.
-pub fn event_started(flag: u8) -> bool {
+/// Whether a result-slot flag marks the car as entered in the current stage.
+pub fn result_slot_entered(flag: u8) -> bool {
     flag & PROGRESS_FLAG_STARTED != 0
 }
 
-/// The completed-stage count encoded in an event-progress flag.
-pub fn event_completed_stages(flag: u8) -> u8 {
-    flag & PROGRESS_COMPLETED_MASK
+/// The entrant/provisional-order value encoded in a result-slot flag.
+pub fn result_slot_order(flag: u8) -> u8 {
+    flag & PROGRESS_ORDER_MASK
 }
 
-/// The current/next event cursor: the first started-but-not-completed event,
-/// reproducing the scan in `FUN_0044f210`.
-pub fn current_event_index(flags: &[u8]) -> Option<usize> {
+/// Split a result slot into positions, entry/order flag, tiebreak and the
+/// unassigned trailing bytes without discarding unknown data.
+#[must_use]
+pub fn result_slot_parts(
+    slot: &[u8; PROGRESS_ELEMENT_STRIDE],
+) -> (
+    &[u8; RESULT_POSITION_COUNT],
+    u8,
+    u8,
+    &[u8; RESULT_TRAILING_UNASSIGNED],
+) {
+    let positions = slot[..RESULT_POSITION_COUNT].try_into().unwrap();
+    let trailing = slot[RESULT_TIEBREAK_OFFSET + 1..].try_into().unwrap();
+    (
+        positions,
+        slot[PROGRESS_FLAG_OFFSET],
+        slot[RESULT_TIEBREAK_OFFSET],
+        trailing,
+    )
+}
+
+/// The first entered result slot with provisional order zero, reproduced from
+/// `FUN_0044f210`. This is a results-table selection, not an event cursor or a
+/// completed-stage counter.
+pub fn leading_result_slot(flags: &[u8]) -> Option<usize> {
     flags
         .iter()
         .take(PROGRESS_ELEMENT_MAX)
-        .position(|&flag| event_started(flag) && event_completed_stages(flag) == 0)
+        .position(|&flag| result_slot_entered(flag) && result_slot_order(flag) == 0)
 }
 
 // --- Display descriptor packing (FUN_0044f210) --------------------------------
@@ -225,29 +253,34 @@ mod tests {
     }
 
     #[test]
-    fn event_progress_flag_decode() {
-        // Started with 2 completed stages.
+    fn result_flag_decodes_entry_and_provisional_order() {
         let flag = PROGRESS_FLAG_STARTED | 0x02;
-        assert!(event_started(flag));
-        assert_eq!(event_completed_stages(flag), 2);
-        // Not started.
-        assert!(!event_started(0x02));
+        assert!(result_slot_entered(flag));
+        assert_eq!(result_slot_order(flag), 2);
+        assert!(!result_slot_entered(0x02));
     }
 
     #[test]
-    fn current_event_cursor_is_first_started_but_incomplete() {
-        // Event 0 done (started + completed), event 1 started + 0 completed.
+    fn result_slot_split_preserves_positions_tiebreak_and_unknown_tail() {
+        let slot = [1, 2, 3, 4, 5, 6, 7, 8, 0x12, 9, 10, 11, 12, 13, 14, 15];
+        let (positions, flag, tiebreak, trailing) = result_slot_parts(&slot);
+        assert_eq!(positions, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(flag, 0x12);
+        assert_eq!(tiebreak, 9);
+        assert_eq!(trailing, &[10, 11, 12, 13, 14, 15]);
+    }
+
+    #[test]
+    fn leading_result_slot_is_first_entered_with_order_zero() {
         let flags = [
             PROGRESS_FLAG_STARTED | 0x03,
             PROGRESS_FLAG_STARTED,
             PROGRESS_FLAG_STARTED | 0x01,
         ];
-        assert_eq!(current_event_index(&flags), Some(1));
-        // Nothing started -> no cursor.
-        assert_eq!(current_event_index(&[0, 0, 0]), None);
-        // All completed -> no cursor.
+        assert_eq!(leading_result_slot(&flags), Some(1));
+        assert_eq!(leading_result_slot(&[0, 0, 0]), None);
         assert_eq!(
-            current_event_index(&[PROGRESS_FLAG_STARTED | 1, PROGRESS_FLAG_STARTED | 2]),
+            leading_result_slot(&[PROGRESS_FLAG_STARTED | 1, PROGRESS_FLAG_STARTED | 2]),
             None
         );
     }

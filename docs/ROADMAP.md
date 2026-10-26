@@ -1423,6 +1423,12 @@ survive repeated settings round trips. Nine integration tests cover persistence
 and failure recovery. Original-written differential fixtures are explicitly
 unsupported without a supplied original save; the static policy forbids running
 the shipped binary to create one.
+F05 is complete after correcting its result-slot interpretation: eight position
+bytes precede the entry/order flag and tiebreak, with six trailing bytes kept
+opaque. `leading_result_slot` now matches the native order-zero scan instead of
+claiming a completed-stage counter. One layout test brings `cmr-core` to 1,396.
+External `.TIM` content remains data; the Rally-School selector persists in
+`cmRally.cfg`, outside the championship save-slot payload.
 
 Exit gate:
 

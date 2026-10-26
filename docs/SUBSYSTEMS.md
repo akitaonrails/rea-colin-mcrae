@@ -2233,18 +2233,18 @@ languages rather than fabricating or silently aliasing Italian assets.
   secondary/"MM", a 3-way class enum), and 3 difficulties. The save record
   mirrors the live struct by `record_off = live_off - 0x20` /
   `payload_off = live_off - 0x2c` (verified against the car nibble, country
-  index, and the event-progress array). Event progress is a `0x10`-stride array
-  (<=16 events) whose element flag byte `+0x08` carries a started bit (`0x10`)
-  and a low-nibble completed-stage count; the current-event cursor is the first
-  started-but-incomplete element. The per-slot display descriptor packs
-  `(country&7) | ((stage&7)<<3) | (mode<<6)` and maps localized string ids
-  (location base `0x3c`, mode base `0x2f`); the Rally-School selector `cfg[0x6c0]`
-  packs task (`>>5`) and difficulty (`(>>3)&3`), and the persisted mode proxy is
-  live `+0x18 (>>3)&3`. The country/car/stage names, car codes, stat figures,
-  difficulty labels, and `.TIM` stage tables are game data and are not modeled or
-  vendored - only the offsets, strides, bit layouts, and string-id bases. The
-  event-progress write path and the full payload semantics (F06) remain. See
-  evidence `rea.official-eu.championship-model` and `impl.championship-model`.
+  index, and the result-slot array). The `0x10`-stride result slots contain
+  eight position bytes, an entered/order flag at `+0x08`, a tiebreak at `+0x09`,
+  and six preserved unassigned bytes; cumulative time immediately precedes each
+  slot. `leading_result_slot` selects the first entered order-zero slot. The
+  per-slot display descriptor packs `(country&7) | ((stage&7)<<3) | (mode<<6)`
+  and maps localized string ids (location base `0x3c`, mode base `0x2f`); the
+  Rally-School selector `cfg[0x6c0]` packs task (`>>5`) and difficulty
+  (`(>>3)&3`), persists in `cmRally.cfg`, and is outside the championship save
+  payload. The mode proxy is live `+0x18 (>>3)&3`. Country/car/stage names, car
+  codes, stat figures, difficulty labels and `.TIM` tables remain game data.
+  F05 is complete. See `rea.official-eu.championship-model` and
+  `impl.championship-model`.
 - `cmr-core::championship_progression` recovers the progression/standings/records
   structure over that model (F06). The live struct holds a 16-slot, `0x10`-stride
   results table keyed by car-type slot - cumulative time at `+0x16c + slot*0x10`,
