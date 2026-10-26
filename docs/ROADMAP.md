@@ -1266,7 +1266,10 @@ into both wheel parameter sets with invalid-gear atomicity, bringing `cmr-core`
 to 1,348. `derive_force_pass_scales` and
 `derive_alternate_force_pass_factor` now recover the three main scale products
 and the early factor, bringing `cmr-core` to 1,349. Runtime scalars remain
-injected; application wiring and remaining input provenance stay open.
+injected. `populate_force_pass_scales` now applies one derived bundle to both
+wheel parameter sets, and the vertical path uses it for every wheel, bringing
+`cmr-core` to 1,350. Other coefficient/vector/contact provenance and application
+wiring remain open.
 
 Exit gate:
 

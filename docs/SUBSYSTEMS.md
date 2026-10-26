@@ -1948,7 +1948,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   into both wheel parameter sets without mutating on invalid gears.
   `derive_force_pass_scales` and `derive_alternate_force_pass_factor` reproduce
   the main-head scale products and early factor. Runtime scalars remain injected;
-  application wiring and remaining input provenance stay open. See evidence
+  `populate_force_pass_scales` applies the derived bundle to both wheel parameter
+  sets, and the vertical path uses it for every wheel. Other coefficient, vector
+  and contact provenance and application wiring remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

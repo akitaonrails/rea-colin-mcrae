@@ -22,9 +22,9 @@
 
 use crate::compiled_car_initializer::CompiledControlFamilies;
 use crate::drivetrain::{
-    FirstWheelEffects, FirstWheelInputs, SecondWheelCoreEffects, SecondWheelInputs,
-    derive_gear_ratio, equalize_wheel_speeds, execute_first_wheel_iteration,
-    execute_second_wheel_core,
+    FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
+    SecondWheelInputs, derive_force_pass_scales, derive_gear_ratio, equalize_wheel_speeds,
+    execute_first_wheel_iteration, execute_second_wheel_core,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
@@ -127,6 +127,22 @@ pub fn populate_compiled_gear_ratio(
     first.gear_ratio = ratio.raw();
     second.gear_ratio = ratio.raw();
     Some(ratio)
+}
+
+/// Derive the main force-pass scales once and apply them to both wheel inputs.
+#[must_use]
+pub fn populate_force_pass_scales(
+    first: &mut FirstWheelParams,
+    second: &mut SecondWheelParams<'_>,
+    state_52c: Fixed16,
+    scale_eac70: Fixed16,
+    step_eac6c: Fixed16,
+) -> ForcePassScales {
+    let scales = derive_force_pass_scales(state_52c, scale_eac70, step_eac6c);
+    first.scale_c600 = scales.scale_c600.raw();
+    first.factor_c5c0 = scales.factor_c5c0.raw();
+    second.scale_c5c4 = scales.scale_c5c4.raw();
+    scales
 }
 
 /// Runtime vector lanes for the recovered four-lane postprocess. The current
@@ -748,6 +764,24 @@ mod tests {
             surface_vector: [0x10000, 0, 0],
             table_factor: None,
         }
+    }
+
+    #[test]
+    fn force_pass_scales_populate_both_wheel_parameter_sets() {
+        let trig = build_sine_table();
+        let mut first = first_wheel_params();
+        let mut second = second_wheel_params(&trig);
+        let scales = populate_force_pass_scales(
+            &mut first,
+            &mut second,
+            Fixed16::from_raw(0x30000),
+            Fixed16::from_raw(0x20000),
+            Fixed16::from_raw(0x40000),
+        );
+        assert_eq!(first.scale_c600, 0x1e000);
+        assert_eq!(first.factor_c5c0, 0x4444c);
+        assert_eq!(second.scale_c5c4, 0x60000);
+        assert_eq!(scales.scale_c5c4, Fixed16::from_raw(0x60000));
     }
 
     #[test]

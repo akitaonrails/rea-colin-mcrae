@@ -178,7 +178,9 @@ pub fn decode_trace(trace: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::fixed_point::{Vec3, build_sine_table};
-    use crate::race_state::{FirstWheelParams, FourWheelPostprocessParams, SecondWheelParams};
+    use crate::race_state::{
+        FirstWheelParams, FourWheelPostprocessParams, SecondWheelParams, populate_force_pass_scales,
+    };
     use crate::vehicle_dynamics::GeometricPostprocessLane;
 
     fn four_wheel_params(trig: &[i32]) -> FourWheelIterationParams<'_> {
@@ -189,7 +191,7 @@ mod tests {
             vector_c: Vec3::ZERO,
             accumulator: Vec3::ZERO,
         };
-        FourWheelIterationParams {
+        let mut wheel = FourWheelIterationParams {
             first: [FirstWheelParams {
                 split: 0x10000,
                 wheel_constant: 0,
@@ -236,7 +238,17 @@ mod tests {
                 non_wheel_forces: &[],
                 wheel_contacts: [true; 4],
             },
+        };
+        for index in 0..4 {
+            let _ = populate_force_pass_scales(
+                &mut wheel.first[index],
+                &mut wheel.second[index],
+                Fixed16::from_raw(0x30000),
+                Fixed16::from_raw(0x20000),
+                Fixed16::from_raw(0x40000),
+            );
         }
+        wheel
     }
 
     fn params() -> SimParams {
