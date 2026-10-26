@@ -2399,6 +2399,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Stage/championship coverage includes sibling scene loading, presentation,
+  transform/visibility/mutation and retained setup sessions. The other 12
+  section formats and native device/font/filter/alpha behavior are explicit
+  unsupported boundaries, not guessed from extension names.
 - Bitmap conversion has an explicit deterministic indexed boundary: 4/8-bit
   BM, palettes, stored rows, composition, and queued fonts are supported;
   native padding, 24-bit, driver filtering, device-owned formats, and alternate

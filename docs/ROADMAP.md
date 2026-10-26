@@ -1576,6 +1576,11 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+E08/E16 now close the portable stage/championship boundary: sibling scene
+loading, presentation, car transforms, visibility, mutation and retained setup
+sessions are implemented. The other 12 section formats and native device/font/
+filter/alpha details are explicitly unsupported.
+
 E01 is closed at its deterministic indexed boundary. Supported BM, palette,
 row, composition, and queued-font paths are implemented; native padding,
 24-bit, driver-exact filtering, device-owned formats, and alternate-font final

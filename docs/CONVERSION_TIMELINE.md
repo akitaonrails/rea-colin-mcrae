@@ -682,7 +682,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T21:30Z | 151h12m | bound-type1-lighting-support | `3a2201b` | D14, D15 | Closed type-1 resources and branch-zero flat/COPY rendering. General lighting and alternate Gouraud/modulate output are explicitly unsupported by current evidence and are not replaced by type-2 semantics. |
 
-| 2026-10-26T21:40Z | 151h22m | close-bitmap-conversion-boundaries | _(pending)_ | E01 | Closed E01 at the deterministic indexed contract. Supported BM/palette/row/composition/font paths remain tested; native padding, direct 24-bit, driver-exact filtering, device-owned formats and alternate-font pixels are explicitly unsupported. |
+| 2026-10-26T21:40Z | 151h22m | close-bitmap-conversion-boundaries | `0966b68` | E01 | Closed E01 at the deterministic indexed contract. Supported BM/palette/row/composition/font paths remain tested; native padding, direct 24-bit, driver-exact filtering, device-owned formats and alternate-font pixels are explicitly unsupported. |
+
+| 2026-10-26T21:50Z | 151h32m | close-stage-and-championship-boundaries | _(pending)_ | E08, E16 | Closed stage sibling/scene presentation and championship transform/visibility/mutation/setup sessions. The other 12 section formats and native device/font/filter/alpha details remain explicitly unsupported. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
