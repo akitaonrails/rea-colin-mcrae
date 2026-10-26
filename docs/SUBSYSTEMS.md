@@ -1936,8 +1936,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   `apply_contact_vector_updates` now traverses all eight records in reverse order
   and preserves skipped destinations. `apply_angular_orientation_pipeline`
   composes momentum, clamp, conversion, selective resets and orientation in native
-  order. Low-speed position-update suppression, contact-state population and full
-  four-iteration production remain open. See evidence
+  order. `suppress_low_speed_position_delta` reproduces the active-contact
+  low-speed position gate without changing velocity. Translation integration,
+  contact-state population and full four-iteration production remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

@@ -1335,6 +1335,24 @@ pub fn apply_contact_vector_updates(
     previous
 }
 
+/// Speed below which an active contact set suppresses the position increment.
+pub const LOW_SPEED_POSITION_SUPPRESSION: Fixed16 = Fixed16::from_raw(0xccc);
+
+/// Reproduce the active-contact low-speed position-delta suppression without
+/// changing velocity or angular state.
+#[must_use]
+pub fn suppress_low_speed_position_delta(
+    position_delta: Vec3,
+    contacts_active: bool,
+    speed: Fixed16,
+) -> Vec3 {
+    if contacts_active && speed < LOW_SPEED_POSITION_SUPPRESSION {
+        Vec3::ZERO
+    } else {
+        position_delta
+    }
+}
+
 /// Apply the recovered official-EU translational damping, velocity, and
 /// position update from `FUN_0040a4a0`.
 ///
@@ -2048,6 +2066,23 @@ mod tests {
         assert_eq!(
             sum_translation_lane_forces(Vec3::ZERO, &[], [(false, raw_v(1, 1, 1)); 4]),
             Vec3::ZERO
+        );
+    }
+
+    #[test]
+    fn low_speed_suppression_only_zeroes_active_contact_position_delta() {
+        let delta = raw_v(1, 2, 3);
+        assert_eq!(
+            suppress_low_speed_position_delta(delta, true, Fixed16::from_raw(0xccb)),
+            Vec3::ZERO
+        );
+        assert_eq!(
+            suppress_low_speed_position_delta(delta, true, LOW_SPEED_POSITION_SUPPRESSION),
+            delta
+        );
+        assert_eq!(
+            suppress_low_speed_position_delta(delta, false, Fixed16::ZERO),
+            delta
         );
     }
 

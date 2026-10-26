@@ -1251,8 +1251,10 @@ both selective angular reset branches and their priority, bringing `cmr-core` to
 order while preserving skipped destinations, bringing `cmr-core` to 1,342.
 `apply_angular_orientation_pipeline` now composes momentum, clamp, angle
 conversion, selective resets and orientation in native order, bringing `cmr-core`
-to 1,343. Low-speed position-update suppression, contact-state population and
-complete four-lane production remain open.
+to 1,343. `suppress_low_speed_position_delta` now reproduces the active-contact
+`0xccc` gate without changing velocity, bringing `cmr-core` to 1,344. Translation
+integration, contact-state population and complete four-lane production remain
+open.
 
 Exit gate:
 

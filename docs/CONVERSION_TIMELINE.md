@@ -504,7 +504,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T10:11Z | 139h53m | compose-eight-contact-updates | `ee83751` | G03 | Added `apply_contact_vector_updates`: reverse-order traversal of all eight `FUN_0040d400` records with previous destinations retained for every skipped record. One focused test brings `cmr-core` to 1,342. Contact-state population and full lane production remain open. |
 
-| 2026-10-26T10:16Z | 139h58m | compose-angular-orientation-pipeline | _(pending)_ | G04 | Added `apply_angular_orientation_pipeline`: momentum integration, optional clamp, half-delta conversion, selective resets and three-stage orientation in native order. One independent-stage comparison test brings `cmr-core` to 1,343. Low-speed suppression, contact-state population and race-state storage remain open. |
+| 2026-10-26T10:16Z | 139h58m | compose-angular-orientation-pipeline | `45bb095` | G04 | Added `apply_angular_orientation_pipeline`: momentum integration, optional clamp, half-delta conversion, selective resets and three-stage orientation in native order. One independent-stage comparison test brings `cmr-core` to 1,343. Low-speed suppression, contact-state population and race-state storage remain open. |
+
+| 2026-10-26T10:20Z | 140h02m | recover-low-speed-position-suppression | _(pending)_ | G03, G04 | Added `suppress_low_speed_position_delta` for the active-contact `speed < 0xccc` position gate, with velocity left untouched. One exact-boundary test brings `cmr-core` to 1,344. Translation integration and contact-state population remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
