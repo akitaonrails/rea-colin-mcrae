@@ -179,9 +179,11 @@ mod tests {
     use super::*;
     use crate::fixed_point::{Vec3, build_sine_table};
     use crate::race_state::{
-        FirstWheelParams, FourWheelPostprocessParams, SecondWheelParams, populate_force_pass_scales,
+        FirstWheelParams, FourWheelPostprocessParams, SecondWheelParams,
+        populate_force_pass_scales, populate_surface_table_factor,
     };
     use crate::vehicle_dynamics::GeometricPostprocessLane;
+    use cmr_formats::pe_surface::{SurfaceCoefficientFamilies, SurfaceCoefficientFamily};
 
     fn four_wheel_params(trig: &[i32]) -> FourWheelIterationParams<'_> {
         let inactive = GeometricPostprocessLane {
@@ -239,6 +241,12 @@ mod tests {
                 wheel_contacts: [true; 4],
             },
         };
+        let families = SurfaceCoefficientFamilies {
+            first: SurfaceCoefficientFamily {
+                values: [0x20000; 120],
+            },
+            second: SurfaceCoefficientFamily { values: [0; 120] },
+        };
         for index in 0..4 {
             let _ = populate_force_pass_scales(
                 &mut wheel.first[index],
@@ -247,6 +255,7 @@ mod tests {
                 Fixed16::from_raw(0x20000),
                 Fixed16::from_raw(0x40000),
             );
+            populate_surface_table_factor(&mut wheel.second[index], &families, 0).unwrap();
         }
         wheel
     }

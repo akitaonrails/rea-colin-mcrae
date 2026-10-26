@@ -1949,8 +1949,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   `derive_force_pass_scales` and `derive_alternate_force_pass_factor` reproduce
   the main-head scale products and early factor. Runtime scalars remain injected;
   `populate_force_pass_scales` applies the derived bundle to both wheel parameter
-  sets, and the vertical path uses it for every wheel. Other coefficient, vector
-  and contact provenance and application wiring remain open. See evidence
+  sets, and the vertical path uses it for every wheel.
+  `populate_surface_table_factor` maps the reviewed first coefficient family into
+  second-core accumulation with checked indices; an authenticated real store also
+  reopens and feeds the adapter. Other vector/contact provenance and application
+  wiring remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

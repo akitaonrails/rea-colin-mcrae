@@ -30,9 +30,10 @@ use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_ba
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::vehicle_dynamics::{
     GeometricPostprocessError, GeometricPostprocessLane, LookupDependentCandidateError,
-    TranslationStepInput, apply_geometric_lane_postprocess, apply_lateral_grip,
-    apply_translation_step, drag, net_accel, sum_translation_lane_forces,
+    SurfaceCoefficientIndexError, TranslationStepInput, apply_geometric_lane_postprocess,
+    apply_lateral_grip, apply_translation_step, drag, net_accel, sum_translation_lane_forces,
 };
+use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
 
 /// Fixed per-tick parameters of the integration harness (not recovered game
 /// data - explicit inputs that stand in for the unrecovered force wiring).
@@ -143,6 +144,29 @@ pub fn populate_force_pass_scales(
     first.factor_c5c0 = scales.factor_c5c0.raw();
     second.scale_c5c4 = scales.scale_c5c4.raw();
     scales
+}
+
+/// Populate the second-core surface coefficient from the reviewed first family.
+/// Invalid surface indices leave the existing table/override selection unchanged.
+///
+/// # Errors
+///
+/// Returns the shared surface-index error for indices outside the 120-entry table.
+pub fn populate_surface_table_factor(
+    second: &mut SecondWheelParams<'_>,
+    families: &SurfaceCoefficientFamilies,
+    surface_index: usize,
+) -> Result<(), SurfaceCoefficientIndexError> {
+    let coefficient =
+        *families
+            .first
+            .values
+            .get(surface_index)
+            .ok_or(SurfaceCoefficientIndexError {
+                index: surface_index,
+            })?;
+    second.table_factor = Some(coefficient);
+    Ok(())
 }
 
 /// Runtime vector lanes for the recovered four-lane postprocess. The current
@@ -764,6 +788,49 @@ mod tests {
             surface_vector: [0x10000, 0, 0],
             table_factor: None,
         }
+    }
+
+    #[test]
+    fn reviewed_surface_family_populates_table_factor_with_checked_indices() {
+        let families = SurfaceCoefficientFamilies {
+            first: cmr_formats::pe_surface::SurfaceCoefficientFamily {
+                values: [0x20000; 120],
+            },
+            second: cmr_formats::pe_surface::SurfaceCoefficientFamily { values: [0; 120] },
+        };
+        let trig = build_sine_table();
+        let mut second = second_wheel_params(&trig);
+        populate_surface_table_factor(&mut second, &families, 3).unwrap();
+        assert_eq!(second.table_factor, Some(0x20000));
+        second.table_factor = None;
+        assert_eq!(
+            populate_surface_table_factor(&mut second, &families, 120),
+            Err(SurfaceCoefficientIndexError { index: 120 })
+        );
+        assert_eq!(second.table_factor, None);
+    }
+
+    #[test]
+    #[ignore = "requires an authenticated surface store under CMR_RUNTIME_DATA"]
+    fn official_surface_store_feeds_second_core_without_exposing_values() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA").expect("CMR_RUNTIME_DATA");
+        let reviewed = cmr_assets::ReviewedSurfaceProfile::from_json(
+            &std::fs::read(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../profiles/official-eu-surface-tables-v1.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let store = cmr_assets::SurfaceTableStore::open(
+            &std::path::Path::new(&root).join("official-eu-surface-coefficients"),
+            &reviewed,
+        )
+        .unwrap();
+        let trig = build_sine_table();
+        let mut second = second_wheel_params(&trig);
+        populate_surface_table_factor(&mut second, store.families(), 0).unwrap();
+        assert_eq!(second.table_factor, Some(store.families().first.values[0]));
     }
 
     #[test]
