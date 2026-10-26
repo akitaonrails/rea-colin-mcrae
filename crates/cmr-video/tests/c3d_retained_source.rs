@@ -921,6 +921,49 @@ fn stage_textures_decode_an_inline_engine_paletted_blob_positionally() {
     );
 }
 
+#[test]
+fn stage_textures_select_animation_frames_and_reject_bad_frames() {
+    let first = engine_paletted_blob();
+    let mut second = engine_paletted_blob();
+    second[0x16..0x18].copy_from_slice(&0x03e0u16.to_le_bytes());
+    let mut input = one_resource_c3d(&first);
+    input[16..18].copy_from_slice(&3u16.to_le_bytes());
+    input.extend_from_slice(b"SECOND-TEX!!");
+    input.extend_from_slice(&(second.len() as u32).to_le_bytes());
+    input.extend_from_slice(&second);
+    input.extend_from_slice(b"ANIM-TEST!!!");
+    input.extend_from_slice(&16u32.to_le_bytes());
+    input.extend_from_slice(b"ANIM");
+    input.extend_from_slice(&2u32.to_le_bytes());
+    input.extend_from_slice(&0u32.to_le_bytes());
+    input.extend_from_slice(&1u32.to_le_bytes());
+    let file = parse_c3d(&input, C3dLimits::default()).unwrap();
+
+    let static_textures = StageC3dTextures::prepare(&file, BitmapLimits::default()).unwrap();
+    assert_eq!(
+        static_textures.texture_for_ordinal(0).unwrap().palette()[1].red,
+        248
+    );
+    let animated =
+        StageC3dTextures::prepare_with_animation_frames(&file, BitmapLimits::default(), &[0, 0, 1])
+            .unwrap();
+    assert_eq!(
+        animated.texture_for_ordinal(2).unwrap().palette()[1].green,
+        248
+    );
+    let error =
+        StageC3dTextures::prepare_with_animation_frames(&file, BitmapLimits::default(), &[0, 0, 2])
+            .unwrap_err();
+    assert!(matches!(
+        error,
+        cmr_video::software_stage_scene::StageC3dTextureError::AnimationFrame {
+            ordinal: 2,
+            frame: 2,
+            frame_count: 2,
+        }
+    ));
+}
+
 /// A 16-entry indexed display palette (the rest white), matching the synthetic
 /// `indexed_bitmap_4x4` source colors used by the pixel-path tests.
 fn active_palette_16() -> [PaletteEntry; 256] {

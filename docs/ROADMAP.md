@@ -1461,6 +1461,10 @@ capability level, alpha gate and force-draw override are resolved.
 E04 is complete: spatial section neighbors, ordered relocation and ancestor dirty
 propagation complement the recovered world-transform hierarchy. Two tests bring
 `cmr-core` to 1,408; runtime section tables remain inputs.
+E03 is complete: truecolor 4/8-bit indexed rows preserve four-pixel alignment
+and `ANIM` composites support caller-selected frames with checked targets.
+Three video tests cover those paths. Direct 24-bit is explicitly unsupported in
+the indexed sampler rather than quantized; animation clocks remain caller input.
 
 Exit gate:
 

@@ -26,7 +26,7 @@ use cmr_core::display::DisplayExtent;
 use cmr_core::root_menu_c3d_resources::FrontendC3dOwner;
 use cmr_core::root_menu_c3d_transform::RootMenuC3dViewportError;
 use cmr_formats::bitmap::BitmapLimits;
-use cmr_formats::c3d::{C3dFile, C3dResourceError, C3dResourceView};
+use cmr_formats::c3d::{C3dAnimationReferenceError, C3dFile, C3dResourceError, C3dResourceView};
 use cmr_formats::riff_palette::PaletteEntry;
 
 use crate::c3d_software::{SoftwareC3dBitmapError, SoftwareC3dSampledTexture};
@@ -237,12 +237,9 @@ impl std::error::Error for StageSceneComposeError {
 ///
 /// Each group-2 record is classified and decoded in place, so `by_ordinal` is
 /// positional (one slot per group-2 record): a slot holds the sampled texture
-/// when it decoded, or `None` when the record is not a drawable texture (an
-/// `ANIM` composite) or carries an engine texture the software sampler does not
-/// yet decode (truecolor, or a palette-less paletted blob). An inline `BM`
-/// bitmap (the shipped frontend assets) must decode or the whole preparation
-/// fails closed; the shipped stage/car engine paletted blobs decode when they
-/// carry an inline palette.
+/// when it decoded, or `None` for an unsupported palette-less/direct-24-bit
+/// source. An inline `BM` bitmap must decode or preparation fails closed.
+/// `ANIM` composites resolve their selected target frame.
 #[derive(Clone, Debug)]
 pub struct StageC3dTextures {
     by_ordinal: Vec<Option<SoftwareC3dSampledTexture>>,
@@ -257,11 +254,9 @@ impl StageC3dTextures {
     ///   succeed, or the whole preparation fails
     ///   ([`StageC3dTextureError::Bitmap`]) - a malformed shipped-format bitmap
     ///   is a real defect, not a material to drop.
-    /// - A non-`BM`/non-`ANIM` blob is the engine inline texture format; it is
-    ///   decoded best-effort, and a record the engine parser or software sampler
-    ///   cannot yet handle (truecolor, palette-less) becomes an empty slot rather
-    ///   than aborting the scene.
-    /// - An `ANIM` composite is not a bitmap and becomes an empty slot.
+    /// - A non-`BM`/non-`ANIM` blob is the engine inline texture format; indexed
+    ///   variants decode, while direct 24-bit and palette-less sources stay empty.
+    /// - An `ANIM` composite resolves frame zero unless the caller selects another.
     ///
     /// A record whose `ANIM` framing is itself malformed aborts preparation
     /// ([`StageC3dTextureError::Classify`]), since that is corrupt input, not an
@@ -270,29 +265,70 @@ impl StageC3dTextures {
         scene: &C3dFile,
         bitmap_limits: BitmapLimits,
     ) -> Result<Self, StageC3dTextureError> {
+        Self::prepare_with_animation_frames(scene, bitmap_limits, &[])
+    }
+
+    /// Prepare materials with a caller-selected frame per `ANIM` ordinal.
+    /// Missing entries select frame zero, the static-loading baseline.
+    pub fn prepare_with_animation_frames(
+        scene: &C3dFile,
+        bitmap_limits: BitmapLimits,
+        animation_frames: &[usize],
+    ) -> Result<Self, StageC3dTextureError> {
         let mut by_ordinal = Vec::with_capacity(scene.blob_records().len());
         for (ordinal, record) in scene.blob_records().enumerate() {
-            let texture = match record
-                .classify_resource()
-                .map_err(|source| StageC3dTextureError::Classify { ordinal, source })?
-            {
-                C3dResourceView::BitmapBytes(bytes) => Some(
-                    SoftwareC3dSampledTexture::from_bm_blob(
-                        bytes,
-                        FrontendC3dOwner::Stage,
-                        bitmap_limits,
-                    )
-                    .map_err(|source| StageC3dTextureError::Bitmap { ordinal, source })?,
-                ),
-                C3dResourceView::Unknown(_) => record.engine_bitmap().ok().and_then(|bitmap| {
-                    SoftwareC3dSampledTexture::from_engine_bitmap(&bitmap, FrontendC3dOwner::Stage)
-                        .ok()
-                }),
-                C3dResourceView::Animation(_) => None,
-            };
-            by_ordinal.push(texture);
+            if matches!(
+                record.classify_resource(),
+                Ok(C3dResourceView::Animation(_))
+            ) {
+                let frame = animation_frames.get(ordinal).copied().unwrap_or(0);
+                let mut frames = scene
+                    .animation_frame_references(ordinal)
+                    .map_err(|source| StageC3dTextureError::Animation { ordinal, source })?;
+                let frame_count = frames.len();
+                let target = frames
+                    .nth(frame)
+                    .ok_or(StageC3dTextureError::AnimationFrame {
+                        ordinal,
+                        frame,
+                        frame_count,
+                    })?
+                    .map_err(|_| StageC3dTextureError::AnimationFrame {
+                        ordinal,
+                        frame,
+                        frame_count,
+                    })?
+                    .target();
+                by_ordinal.push(Self::sample_material(target, ordinal, bitmap_limits)?);
+            } else {
+                by_ordinal.push(Self::sample_material(record, ordinal, bitmap_limits)?);
+            }
         }
         Ok(StageC3dTextures { by_ordinal })
+    }
+
+    fn sample_material(
+        record: cmr_formats::c3d::C3dBlobRecord<'_>,
+        ordinal: usize,
+        bitmap_limits: BitmapLimits,
+    ) -> Result<Option<SoftwareC3dSampledTexture>, StageC3dTextureError> {
+        match record
+            .classify_resource()
+            .map_err(|source| StageC3dTextureError::Classify { ordinal, source })?
+        {
+            C3dResourceView::BitmapBytes(bytes) => Ok(Some(
+                SoftwareC3dSampledTexture::from_bm_blob(
+                    bytes,
+                    FrontendC3dOwner::Stage,
+                    bitmap_limits,
+                )
+                .map_err(|source| StageC3dTextureError::Bitmap { ordinal, source })?,
+            )),
+            C3dResourceView::Unknown(_) => Ok(record.engine_bitmap().ok().and_then(|bitmap| {
+                SoftwareC3dSampledTexture::from_engine_bitmap(&bitmap, FrontendC3dOwner::Stage).ok()
+            })),
+            C3dResourceView::Animation(_) => Ok(None),
+        }
     }
 
     /// The sampled texture for a face's group-2 ordinal, or `None` for the
@@ -325,6 +361,17 @@ pub enum StageC3dTextureError {
         ordinal: usize,
         source: C3dResourceError,
     },
+    /// An `ANIM` selection could not be resolved.
+    Animation {
+        ordinal: usize,
+        source: C3dAnimationReferenceError,
+    },
+    /// The selected frame or its target ordinal was invalid.
+    AnimationFrame {
+        ordinal: usize,
+        frame: usize,
+        frame_count: usize,
+    },
     /// A group-2 `BM` bitmap blob could not be decoded or sampled.
     Bitmap {
         ordinal: usize,
@@ -338,6 +385,17 @@ impl fmt::Display for StageC3dTextureError {
             StageC3dTextureError::Classify { ordinal, source } => {
                 write!(f, "stage C3D group-2 ordinal {ordinal} classify: {source}")
             }
+            StageC3dTextureError::Animation { ordinal, source } => {
+                write!(f, "stage C3D group-2 ordinal {ordinal} animation: {source}")
+            }
+            StageC3dTextureError::AnimationFrame {
+                ordinal,
+                frame,
+                frame_count,
+            } => write!(
+                f,
+                "stage C3D group-2 ordinal {ordinal} frame {frame} outside {frame_count} frames or invalid target"
+            ),
             StageC3dTextureError::Bitmap { ordinal, source } => {
                 write!(f, "stage C3D group-2 ordinal {ordinal} bitmap: {source}")
             }
@@ -349,6 +407,8 @@ impl std::error::Error for StageC3dTextureError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             StageC3dTextureError::Classify { source, .. } => Some(source),
+            StageC3dTextureError::Animation { source, .. } => Some(source),
+            StageC3dTextureError::AnimationFrame { .. } => None,
             StageC3dTextureError::Bitmap { source, .. } => Some(source),
         }
     }

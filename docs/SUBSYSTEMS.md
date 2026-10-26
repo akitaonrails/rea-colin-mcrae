@@ -2101,6 +2101,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   clamp. Thirty-four tests cover particles, render queues, shadows, fog and
   tuning. Surface and sprite tables remain caller-supplied data; E10 is complete.
   See evidence `impl.weather-effects`.
+- E03's material variants are complete: indexed truecolor rows preserve
+  four-pixel alignment and animation composites resolve selected frames.
+  Direct 24-bit is explicitly unsupported in the indexed sampler, not quantized.
 - E04's object transform/animation state is complete: `section_neighbors`
   computes Z/X/diagonal links, `relocate_section` preserves list order while
   moving objects, and `mark_world_dirty` propagates through ancestors. Nineteen

@@ -24,7 +24,7 @@ use cmr_core::root_menu_c3d_topology::RootMenuC3dTopology;
 use cmr_formats::bitmap::{
     BitmapError, BitmapLimits, BitmapPaletteEntry, IndexedBitmap, parse_indexed_bitmap,
 };
-use cmr_formats::c3d::{C3dEngineBitmap, C3dPalettedBitmap};
+use cmr_formats::c3d::{C3dEngineBitmap, C3dPalettedBitmap, C3dTruecolorBitmap};
 
 #[derive(Debug, Eq, PartialEq)]
 struct RetainedC3dSourceInner {
@@ -78,8 +78,8 @@ pub enum SoftwareC3dSamplingError {
     /// A paletted engine texture carried no inline palette (its palette comes
     /// from a separate device palette resource, not yet recovered).
     EnginePaletteMissing,
-    /// The engine texture layout is not yet decodable into an indexed source
-    /// (the truecolor layouts, pending their own sampler).
+    /// The engine texture is direct-color or otherwise cannot be represented by
+    /// the indexed sampler without inventing a palette.
     UnsupportedEngineTexture,
 }
 
@@ -237,21 +237,78 @@ impl SoftwareC3dSampledTexture {
     /// Builds a sampled texture from a parsed C3D engine inline texture blob
     /// (the real stage/car group-2 material format).
     ///
-    /// Only the paletted layout carrying an inline palette is decoded here; the
-    /// truecolor layouts and palette-less paletted blobs (whose palette comes
-    /// from a separate device palette resource) are rejected with
-    /// [`SoftwareC3dSamplingError::UnsupportedEngineTexture`] /
-    /// [`SoftwareC3dSamplingError::EnginePaletteMissing`] rather than guessed.
+    /// Paletted and indexed truecolor layouts are decoded here. Palette-less
+    /// sources need a separate device palette; direct 24-bit pixels are not
+    /// quantized into an indexed texture.
     pub fn from_engine_bitmap(
         bitmap: &C3dEngineBitmap<'_>,
         owner: FrontendC3dOwner,
     ) -> Result<Self, SoftwareC3dSamplingError> {
         match bitmap {
             C3dEngineBitmap::Paletted(paletted) => Self::from_engine_paletted(paletted, owner),
-            C3dEngineBitmap::Truecolor(_) => {
-                Err(SoftwareC3dSamplingError::UnsupportedEngineTexture)
+            C3dEngineBitmap::Truecolor(truecolor) => Self::from_engine_truecolor(truecolor, owner),
+        }
+    }
+
+    fn from_engine_truecolor(
+        bitmap: &C3dTruecolorBitmap<'_>,
+        owner: FrontendC3dOwner,
+    ) -> Result<Self, SoftwareC3dSamplingError> {
+        if !bitmap.is_indexed() {
+            return Err(SoftwareC3dSamplingError::UnsupportedEngineTexture);
+        }
+        let palette = (0..bitmap.palette_entry_count())
+            .map(|index| {
+                let [red, green, blue] = bitmap
+                    .inline_palette_entry(index)
+                    .ok_or(SoftwareC3dSamplingError::EnginePaletteMissing)?;
+                Ok(BitmapPaletteEntry {
+                    red,
+                    green,
+                    blue,
+                    reserved: 0,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if palette.is_empty() {
+            return Err(SoftwareC3dSamplingError::EnginePaletteMissing);
+        }
+
+        let height = usize::from(bitmap.height());
+        let width = bitmap.padded_width();
+        let row_bytes = if bitmap.bits_per_pixel() == 4 {
+            width / 2
+        } else {
+            width
+        };
+        let required = row_bytes * height;
+        let source = bitmap.pixel_data();
+        if source.len() < required {
+            return Err(SoftwareC3dSamplingError::InvalidNormalizedIndexLength {
+                expected: required,
+                actual: source.len(),
+            });
+        }
+        let mut pixels = Vec::with_capacity(width * height);
+        for row in source[..required].chunks_exact(row_bytes) {
+            if bitmap.bits_per_pixel() == 4 {
+                for &byte in row {
+                    pixels.push(byte & 0x0f);
+                    pixels.push(byte >> 4);
+                }
+            } else {
+                pixels.extend_from_slice(row);
             }
         }
+
+        let source = SoftwareC3dRetainedSource::from_engine_indexed(
+            owner,
+            width as u32,
+            height as u32,
+            pixels,
+            palette,
+        );
+        Self::from_retained_with_alignment(source, C3dSurfaceLayoutGates::default(), false)
     }
 
     /// Decodes a paletted engine texture into an indexed sampled texture, scaling
@@ -304,7 +361,7 @@ impl SoftwareC3dSampledTexture {
             pixels,
             palette,
         );
-        Self::from_retained(source, C3dSurfaceLayoutGates::default())
+        Self::from_retained_with_alignment(source, C3dSurfaceLayoutGates::default(), false)
     }
 
     /// Builds only the statically proven square, aligned root texture subset.
@@ -329,6 +386,14 @@ impl SoftwareC3dSampledTexture {
         source: SoftwareC3dRetainedSource,
         gates: C3dSurfaceLayoutGates,
     ) -> Result<Self, SoftwareC3dSamplingError> {
+        Self::from_retained_with_alignment(source, gates, true)
+    }
+
+    fn from_retained_with_alignment(
+        source: SoftwareC3dRetainedSource,
+        gates: C3dSurfaceLayoutGates,
+        require_aligned_width: bool,
+    ) -> Result<Self, SoftwareC3dSamplingError> {
         let raw = source.source_dib_extent_low16();
         let normalized = source.extent();
         if source.source_was_top_down() {
@@ -340,7 +405,7 @@ impl SoftwareC3dSampledTexture {
                 raw_low16: raw,
             });
         }
-        if raw[0] & 3 != 0 {
+        if require_aligned_width && raw[0] & 3 != 0 {
             return Err(SoftwareC3dSamplingError::UnalignedSourceWidth(raw[0]));
         }
         let expected_source_len = usize::from(raw[0]) * usize::from(raw[1]);
@@ -572,6 +637,47 @@ mod tests {
                 reserved: 0,
             }
         );
+    }
+
+    fn truecolor_indexed_blob(bits: u16, width: u16, height: u16, pixels: &[u8]) -> Vec<u8> {
+        let pixel_offset = 0x80usize;
+        let mut blob = vec![0u8; pixel_offset + pixels.len()];
+        blob[0] = 5;
+        blob[0x0a..0x0e].copy_from_slice(&(pixel_offset as u32).to_le_bytes());
+        blob[0x12..0x14].copy_from_slice(&width.to_le_bytes());
+        blob[0x16..0x18].copy_from_slice(&height.to_le_bytes());
+        blob[0x1c..0x1e].copy_from_slice(&bits.to_le_bytes());
+        blob[0x2e..0x32].copy_from_slice(&2u32.to_le_bytes());
+        blob[0x3a..0x3e].copy_from_slice(&[3, 2, 1, 0]);
+        blob[pixel_offset..].copy_from_slice(pixels);
+        blob
+    }
+
+    #[test]
+    fn truecolor_four_bit_rows_unpack_with_four_pixel_alignment() {
+        use cmr_formats::c3d::parse_c3d_engine_bitmap;
+        let blob = truecolor_indexed_blob(4, 3, 2, &[0x21, 0x43, 0x65, 0x87]);
+        let bitmap = parse_c3d_engine_bitmap(&blob).unwrap();
+        let texture =
+            SoftwareC3dSampledTexture::from_engine_bitmap(&bitmap, FrontendC3dOwner::Stage)
+                .unwrap();
+        assert_eq!(texture.extent(), [4, 2]);
+        assert_eq!(texture.indices(), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(texture.palette()[1].red, 1);
+        assert_eq!(texture.palette()[1].green, 2);
+        assert_eq!(texture.palette()[1].blue, 3);
+    }
+
+    #[test]
+    fn truecolor_eight_bit_rows_skip_four_pixel_padding() {
+        use cmr_formats::c3d::parse_c3d_engine_bitmap;
+        let blob = truecolor_indexed_blob(8, 3, 2, &[1, 1, 1, 0, 1, 1, 1, 0]);
+        let bitmap = parse_c3d_engine_bitmap(&blob).unwrap();
+        let texture =
+            SoftwareC3dSampledTexture::from_engine_bitmap(&bitmap, FrontendC3dOwner::Stage)
+                .unwrap();
+        assert_eq!(texture.extent(), [4, 2]);
+        assert_eq!(texture.indices(), [1, 1, 1, 0, 1, 1, 1, 0]);
     }
 
     #[test]

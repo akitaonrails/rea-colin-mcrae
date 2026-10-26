@@ -626,7 +626,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T18:25Z | 148h07m | complete-render-submission-contract | `89c319c` | E06 | Closed primitive batching/order, Z-buffer, transparency and blending through the existing shared contract and E07 renderer. Capability level, alpha gate and force-draw override are resolved. |
 
-| 2026-10-26T18:31Z | 148h13m | complete-object-animation-state | _(pending)_ | E04 | Implemented spatial section neighbors, ordered section relocation and ancestor dirty propagation. Two tests bring `cmr-core` to 1,408 and the transform module to 19; E04 is complete. |
+| 2026-10-26T18:31Z | 148h13m | complete-object-animation-state | `4bdc225` | E04 | Implemented spatial section neighbors, ordered section relocation and ancestor dirty propagation. Two tests bring `cmr-core` to 1,408 and the transform module to 19; E04 is complete. |
+
+| 2026-10-26T18:48Z | 148h30m | complete-material-variants | _(pending)_ | E03 | Implemented truecolor 4/8-bit indexed sampling with aligned pad preservation and caller-selected `ANIM` frame targets. Three video tests cover padded rows and animation selection/rejection; direct 24-bit is explicitly unsupported in the indexed sampler. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
