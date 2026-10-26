@@ -209,7 +209,9 @@ cover the recovered pure rules.
   **G03 final table-driven accumulation factor (`ac298da`):** the final accumulation of the second per-wheel loop produces no factor when the direction dot is zero; otherwise it shifts the dot right by two (`dot >> 2`), scales by `qmul(DAT_0050c5c4, table_factor)` when the table entry is present or `qmul(DAT_0050c5c4, 0x8000)` otherwise, and negates the result with wrapping. `final_loop_accumulation_factor` reproduces it. One focused test covers the zero-dot case, table and constant factors, and negative-dot arithmetic shifting, bringing `cmr-core` to 1,291. The force-pass head computations remain.
   **G03 force-pass head projection-normalization (`8a56446`):** the force-pass head computes two direction sources with the same projection-normalization: `dot = qdot(state, normal)`, `rejected = state - normal * dot` with wrapping Q16.16 arithmetic, then the legacy generated-table normalization (zero square sum yields a zero vector). The normal is the AK11 final vector at `+0x324/+0x328/+0x32c`; the two state vectors are at `+0x550/+0x554/+0x558` and `+0x544/+0x548/+0x54c`. `cmr-core::drivetrain::project_and_normalize` reproduces the Gram-Schmidt rejection and normalization. Two focused tests cover parallel/orthogonal/projected states and zero normal/state, bringing `cmr-core` to 1,293. The first-loop drive factor and remaining head computations remain.
   **G03 force-pass head cross-projection (`be69362`):** the head also computes `cross = v x u` with exact right-handed Q16.16 products and wrapping subtractions, then projects the cross against the AK11 normal with the same rejection and legacy normalization. `cmr-core::drivetrain` gains `cross_q16` (reusing the shared cross helper) and `cross_and_project_normalize`. Two focused tests cover right-handedness, zero/parallel cases, and cross projection, bringing `cmr-core` to 1,295. The config-gated vector selection and the first-loop drive factor remain.
-  **G03 drive factors and pair orthogonalization (pending milestone):** the force-pass head computes three global drive factors: `DAT_0050c5c4 = qmul(state+0x52c, DAT_004eac70)`, `DAT_0050c600 = qmul(DAT_004eac70, 0xf000)`, and `DAT_0050c5c0 = qmul(DAT_004eac6c, 0x11113)`. Its alternate branch orthogonalizes a vector pair: `scaled_dot = qmul(qdot(v, w), 0x20000)`, `rejected = w - v * scaled_dot`, then `result = v - rejected * qdot(v, rejected)`, normalized with the legacy generated-table rule (zero square sum yields a zero vector). `cmr-core::drivetrain` gains `compute_drive_factors` and `orthonormalize_pair`. Four focused tests cover the factor formulas, parallel/orthogonal pairs, and zero inputs, bringing `cmr-core` to 1,298. The config-gated vector selection remains.
+  **G03 drive factors and pair orthogonalization (`cdf092d`):** the force-pass head computes three global drive factors: `DAT_0050c5c4 = qmul(state+0x52c, DAT_004eac70)`, `DAT_0050c600 = qmul(DAT_004eac70, 0xf000)`, and `DAT_0050c5c0 = qmul(DAT_004eac6c, 0x11113)`. Its alternate branch orthogonalizes a vector pair: `scaled_dot = qmul(qdot(v, w), 0x20000)`, `rejected = w - v * scaled_dot`, then `result = v - rejected * qdot(v, rejected)`, normalized with the legacy generated-table rule (zero square sum yields a zero vector). `cmr-core::drivetrain` gains `compute_drive_factors` and `orthonormalize_pair`. Four focused tests cover the factor formulas, parallel/orthogonal pairs, and zero inputs, bringing `cmr-core` to 1,298. The config-gated vector selection remains.
+  **G03 config-gated vector selection and basis stores (pending milestone):** the alternate pair-orthogonalization branch runs when `DAT_00d3ca80+0x26 & 0x80` is set, or when `DAT_00d3ca88 == 0` and `FUN_0042a840()` returns nonzero (the helper is not called when `DAT_00d3ca88 != 0`). Otherwise the projection results replace the initial direction sources only when `DAT_00d3ca80+0x25 & 0x10` is set. `select_head_vector_path` reproduces the branch selection, and `HEAD_BASIS_STORE_OFFSETS` pins the four three-dword basis rows at `0x380`, `0x38c`, `0x398`, and `0x3a4` in the control struct. Two focused tests cover every gate branch and the disjoint store layout, bringing `cmr-core` to 1,300. The force-pass head and both per-wheel loops are now contracted by pure rules; runtime sim-input wiring remains.
+
 
 
 
@@ -289,13 +291,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T01:06:14Z
-milestone=recover-drive-factors-and-pair-orthogonalization
+updated_utc=2026-10-26T01:11:56Z
+milestone=recover-config-gated-vector-selection
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-recover-config-gated-vector-selection
-next_exit_gate=the-config-gated-vector-selection-has-an-exact-tested-contract
+current_focus=G03-wire-the-recovered-force-pass-to-runtime-sim-inputs
+next_exit_gate=the-recovered-force-pass-runs-over-reviewed-sim-inputs
 <!-- PROGRESS-TAIL-END -->

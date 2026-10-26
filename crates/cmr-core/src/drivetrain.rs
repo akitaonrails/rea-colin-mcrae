@@ -680,6 +680,55 @@ pub fn orthonormalize_pair(v: [i32; 3], w: [i32; 3]) -> [i32; 3] {
     crate::compiled_car_initializer::normalize_compiled_lane_vector(result)
 }
 
+/// The control-struct store offsets of the four three-dword basis rows
+/// produced by the force-pass head: the initial direction sources, the first
+/// projection results, the second direction sources, and the second
+/// projection results.
+pub const HEAD_BASIS_STORE_OFFSETS: [[u16; 3]; 4] = [
+    [0x380, 0x384, 0x388],
+    [0x38c, 0x390, 0x394],
+    [0x398, 0x39c, 0x3a0],
+    [0x3a4, 0x3a8, 0x3ac],
+];
+
+/// The config-gated vector-selection branch of the force-pass head.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeadVectorSelection {
+    /// The alternate pair-orthogonalization branch (`LAB_0040e18d`).
+    Orthogonalize,
+    /// The projection results replace the initial direction sources when
+    /// `DAT_00d3ca80+0x25 & 0x10` is set.
+    SwapProjection,
+    /// The initial direction sources are kept.
+    KeepInitial,
+}
+
+/// Reconstructs the config-gated vector selection of the force-pass head.
+///
+/// The alternate orthogonalization branch runs when `DAT_00d3ca80+0x26 & 0x80`
+/// is set, or when `DAT_00d3ca88 == 0` and `FUN_0042a840()` returns nonzero.
+/// Otherwise the projection results replace the initial sources only when
+/// `DAT_00d3ca80+0x25 & 0x10` is set. `FUN_0042a840` is not called when
+/// `DAT_00d3ca88 != 0`.
+#[must_use]
+pub fn select_head_vector_path(
+    config_26: u8,
+    special_stage: i32,
+    helper_42a840: i32,
+    config_25: u8,
+) -> HeadVectorSelection {
+    if config_26 & 0x80 != 0 {
+        return HeadVectorSelection::Orthogonalize;
+    }
+    if special_stage == 0 && helper_42a840 != 0 {
+        return HeadVectorSelection::Orthogonalize;
+    }
+    if config_25 & 0x10 != 0 {
+        return HeadVectorSelection::SwapProjection;
+    }
+    HeadVectorSelection::KeepInitial
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1311,5 +1360,53 @@ mod tests {
     fn pair_orthogonalization_handles_zero_inputs() {
         assert_eq!(orthonormalize_pair([0; 3], [0x10000, 0, 0]), [0; 3]);
         assert_eq!(orthonormalize_pair([0x10000, 0, 0], [0; 3]), [65_522, 0, 0]);
+    }
+
+    #[test]
+    fn head_vector_selection_follows_the_config_gates() {
+        // The mirror bit forces the orthogonalization branch.
+        assert_eq!(
+            select_head_vector_path(0x80, 1, 1, 0),
+            HeadVectorSelection::Orthogonalize
+        );
+        // A nonzero helper also selects it (only when the special stage is zero).
+        assert_eq!(
+            select_head_vector_path(0, 0, 1, 0),
+            HeadVectorSelection::Orthogonalize
+        );
+        // With a special stage the helper is not called, so the projection flag decides.
+        assert_eq!(
+            select_head_vector_path(0, 1, 1, 0x10),
+            HeadVectorSelection::SwapProjection
+        );
+        assert_eq!(
+            select_head_vector_path(0, 1, 1, 0),
+            HeadVectorSelection::KeepInitial
+        );
+        // The projection flag alone also swaps.
+        assert_eq!(
+            select_head_vector_path(0, 0, 0, 0x10),
+            HeadVectorSelection::SwapProjection
+        );
+        assert_eq!(
+            select_head_vector_path(0, 0, 0, 0),
+            HeadVectorSelection::KeepInitial
+        );
+    }
+
+    #[test]
+    fn head_basis_store_offsets_are_four_disjoint_three_dword_rows() {
+        assert_eq!(
+            HEAD_BASIS_STORE_OFFSETS,
+            [
+                [0x380, 0x384, 0x388],
+                [0x38c, 0x390, 0x394],
+                [0x398, 0x39c, 0x3a0],
+                [0x3a4, 0x3a8, 0x3ac],
+            ]
+        );
+        for pair in HEAD_BASIS_STORE_OFFSETS.windows(2) {
+            assert!(pair[0][2] + 4 <= pair[1][0]);
+        }
     }
 }

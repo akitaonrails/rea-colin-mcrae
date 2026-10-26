@@ -1456,6 +1456,16 @@ languages rather than fabricating or silently aliasing Italian assets.
   generated-table rule. `cmr-core::drivetrain` gains `compute_drive_factors`
   and `orthonormalize_pair`. Four focused tests bring `cmr-core` to 1,298. The
   config-gated vector selection remains open.
+  G03 config-gated vector selection and basis stores: the alternate
+  pair-orthogonalization branch runs when `DAT_00d3ca80+0x26 & 0x80` is set,
+  or when `DAT_00d3ca88 == 0` and `FUN_0042a840()` returns nonzero (the helper
+  is not called when `DAT_00d3ca88 != 0`). Otherwise the projection results
+  replace the initial direction sources only when `DAT_00d3ca80+0x25 & 0x10`
+  is set. `select_head_vector_path` reproduces the branch selection, and
+  `HEAD_BASIS_STORE_OFFSETS` pins the four three-dword basis rows at `0x380`,
+  `0x38c`, `0x398`, and `0x3a4`. Two focused tests bring `cmr-core` to 1,300.
+  The force-pass head and both per-wheel loops are now contracted; runtime
+  sim-input wiring is next.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,
