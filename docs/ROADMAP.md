@@ -1023,7 +1023,12 @@ qmul(DAT_0050c5c4, 0x1999))`, with the result replaced by the signed limit
 when the per-wheel limit is below its magnitude. `accumulate_direction_force`
 reproduces the wrapping `accumulator += qmul(component, factor)` accumulation.
 Two focused tests bring `cmr-core` to 1,290. The table-driven final
-accumulation and the force-pass head remain open.
+G03 recovers the final table-driven accumulation factor: no factor when the
+direction dot is zero; otherwise `dot >> 2` scaled by
+`qmul(DAT_0050c5c4, table_factor)` when the table entry is present, or
+`qmul(DAT_0050c5c4, 0x8000)` otherwise, then negated with wrapping.
+`final_loop_accumulation_factor` reproduces it. One focused test brings
+`cmr-core` to 1,291. The force-pass head computations remain open.
 
 Exit gate:
 

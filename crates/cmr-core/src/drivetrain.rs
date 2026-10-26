@@ -580,6 +580,29 @@ pub fn accumulate_direction_force(accumulators: &mut [i32; 3], direction: [i32; 
     }
 }
 
+/// The final table-driven accumulation factor of the second per-wheel loop.
+///
+/// A zero dot produces no factor. Otherwise the dot is shifted right by two
+/// (`dot >> 2`), scaled by `qmul(DAT_0050c5c4, table_factor)` when the table
+/// entry is present, or by `qmul(DAT_0050c5c4, 0x8000)` otherwise, and the
+/// result is negated with wrapping.
+#[must_use]
+pub fn final_loop_accumulation_factor(
+    dot: i32,
+    scale_c5c4: Fixed16,
+    table_factor: Option<i32>,
+) -> Option<i32> {
+    if dot == 0 {
+        return None;
+    }
+    let scaled = dot >> 2;
+    let factor = match table_factor {
+        Some(table) => scale_c5c4.mul(Fixed16::from_raw(table)),
+        None => scale_c5c4.mul(Fixed16::from_raw(0x8000)),
+    };
+    Some(q16_mul(scaled, factor.raw()).wrapping_neg())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1090,5 +1113,29 @@ mod tests {
         let mut accumulators = [i32::MAX; 3];
         accumulate_direction_force(&mut accumulators, [0x10000; 3], 0x10000);
         assert_eq!(accumulators, [i32::MIN + 0xffff; 3]);
+    }
+
+    #[test]
+    fn final_loop_accumulation_factor_shifts_scales_and_negates() {
+        // A zero dot produces no factor.
+        assert_eq!(
+            final_loop_accumulation_factor(0, Fixed16::ONE, Some(0x20000)),
+            None
+        );
+        // dot >> 2 then scaled by the table factor.
+        assert_eq!(
+            final_loop_accumulation_factor(0x10000, Fixed16::ONE, Some(0x20000)),
+            Some(-0x8000)
+        );
+        // Without a table entry the 0x8000 constant is used.
+        assert_eq!(
+            final_loop_accumulation_factor(0x10000, Fixed16::ONE, None),
+            Some(-0x2000)
+        );
+        // Negative dots shift arithmetically and the result negates back.
+        assert_eq!(
+            final_loop_accumulation_factor(-0x10000, Fixed16::ONE, None),
+            Some(0x2000)
+        );
     }
 }
