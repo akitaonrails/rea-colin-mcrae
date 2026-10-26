@@ -185,6 +185,43 @@ pub fn derive_lane_direction_pair(
     Some((source_p, wrapping_cross(source_p, cross_operand)))
 }
 
+/// Stabilize the persistent `+0x5d4` source against the `+0x258` axis using the
+/// recovered rejection, residual-length, response/timestep blend, and final
+/// normalization or verbatim fallback.
+#[must_use]
+pub fn stabilize_lane_source_s(
+    source_s: Vec3,
+    prior_axis: Vec3,
+    cross_operand: Vec3,
+    response_2d8: Fixed16,
+    time_step: Fixed16,
+) -> Vec3 {
+    let raw = |vector: Vec3| [vector.x.raw(), vector.y.raw(), vector.z.raw()];
+    let stabilized = crate::drivetrain::project_and_normalize(raw(source_s), raw(cross_operand));
+    let stabilized = Vec3::new(
+        Fixed16::from_raw(stabilized[0]),
+        Fixed16::from_raw(stabilized[1]),
+        Fixed16::from_raw(stabilized[2]),
+    );
+    let residual = prior_axis.sub(stabilized);
+    let root = Fixed16::from_raw(sqrt_q16(residual.dot(residual).raw() as u32) as i32);
+    let response = response_2d8
+        .mul(Fixed16::from_raw(0xcccd))
+        .add(Fixed16::from_raw(0x3333))
+        .mul(time_step);
+    let blend = root.mul(Fixed16::from_raw(0x13333)).mul(response);
+    if blend >= Fixed16::ONE {
+        return prior_axis;
+    }
+    let blended = stabilized.add(residual.scale(blend));
+    let normalized = crate::drivetrain::project_and_normalize(raw(blended), [0; 3]);
+    Vec3::new(
+        Fixed16::from_raw(normalized[0]),
+        Fixed16::from_raw(normalized[1]),
+        Fixed16::from_raw(normalized[2]),
+    )
+}
+
 /// Neutral vector sources consumed by [`construct_lane_directions`].
 ///
 /// The field names express only their roles in the recovered arithmetic. No
@@ -1650,6 +1687,35 @@ mod tests {
             Some((rotated, wrapping_cross(rotated, axis)))
         );
         assert_eq!(derive_lane_direction_pair(source, axis, 1, &[]), None);
+    }
+
+    #[test]
+    fn lane_source_stabilization_blends_or_uses_the_prior_axis() {
+        let source = raw_v(0x10000, 0, 0);
+        let prior = raw_v(-0x10000, 0, 0);
+        let normalized = crate::drivetrain::project_and_normalize(
+            crate::drivetrain::project_and_normalize([0x10000, 0, 0], [0; 3]),
+            [0; 3],
+        );
+        let normalized_source = raw_v(normalized[0], normalized[1], normalized[2]);
+        assert_eq!(
+            stabilize_lane_source_s(source, prior, Vec3::ZERO, Fixed16::ZERO, Fixed16::ZERO),
+            normalized_source
+        );
+        assert_eq!(
+            stabilize_lane_source_s(source, prior, Vec3::ZERO, Fixed16::ONE, Fixed16::ONE),
+            prior
+        );
+        assert_eq!(
+            stabilize_lane_source_s(
+                source,
+                prior,
+                Vec3::ZERO,
+                Fixed16::from_raw(0x8000),
+                Fixed16::from_raw(0x3333),
+            ),
+            raw_v(65535, 0, 0)
+        );
     }
 
     #[test]

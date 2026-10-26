@@ -1321,8 +1321,12 @@ geometric postprocessing, preserving independent C vectors and active flags. The
 projection axis and `+0x264` cross operand come from `MotionState`.
 `resolve_lane_direction_mode` now implements Rebuild-before-Exchange/Preserve, and
 `derive_lane_direction_pair` copies S at zero angle or rotates it through the recovered
-axis-angle matrix before the raw R cross. Two tests bring `cmr-core` to 1,361. The
-separate `+0x5d4` stabilization producer remains next.
+axis-angle matrix before the raw R cross. Two tests bring `cmr-core` to 1,361.
+`stabilize_lane_source_s` now reproduces the rejection, residual-length,
+response/timestep blend, final normalization and verbatim `+0x258` fallback, with S
+persistent in `MotionState` for the next tick. One normalization/fallback test brings
+`cmr-core` to 1,362. Contact-index validation occurs before any S mutation, preserving
+rejected-step atomicity.
 
 Exit gate:
 

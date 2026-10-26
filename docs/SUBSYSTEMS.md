@@ -1992,9 +1992,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   accumulation and the geometric lanes, leaving independent C vectors and active flags
   intact. `resolve_lane_direction_mode` implements the native Rebuild-first selector;
   `derive_lane_direction_pair` copies or rotates S before forming raw R. Two focused
-  tests cover selector priority and copy/rotate/cross behavior. The separate S
-  stabilization producer remains next. See evidence `impl.sim-race-state-trace`,
-  `impl.sim-translation-step`, and `impl.sim-full-second-accumulation`.
+  tests cover selector priority and copy/rotate/cross behavior.
+  `stabilize_lane_source_s` now rejects/normalizes S, blends it toward `+0x258` by the
+  recovered root/response/timestep factor, normalizes below 1.0 or uses the axis
+  verbatim above it. S persists in `MotionState`; contact indices are validated before
+  any S mutation. See evidence `impl.sim-race-state-trace`, `impl.sim-translation-step`,
+  and `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing
