@@ -662,7 +662,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T19:50Z | 149h32m | complete-suspension-and-surface-response | `3f5510a` | G03 | Closed G03 through the authenticated eight-lane HPC/initializer composition and complete four-wheel producer. Confirmed cached-speed damping, semi-implicit position and Rebuild-first direction selection are implemented; runtime car/config/surface data and native pointer-fault behavior remain explicit safe-contract boundaries. |
 
-| 2026-10-26T20:00Z | 149h42m | recover-collision-reset-and-countdown | _(pending)_ | G04 | Implemented the signed out-of-bounds timer and crash reset orientation modes from `FUN_00407690`/`FUN_004115d0`: timeout sound, terminal latch, normal negation, snap/blend, legacy normalization/cross and countdown completion. Two tests bring `cmr-core` to 1,412; reset triggering and unsupported position/time penalties remain explicit. |
+| 2026-10-26T20:00Z | 149h42m | recover-collision-reset-and-countdown | `2d3e137` | G04 | Implemented the signed out-of-bounds timer and crash reset orientation modes from `FUN_00407690`/`FUN_004115d0`: timeout sound, terminal latch, normal negation, snap/blend, legacy normalization/cross and countdown completion. Two tests bring `cmr-core` to 1,412; reset triggering and unsupported position/time penalties remain explicit. |
+
+| 2026-10-26T20:10Z | 149h52m | complete-stage-timing-and-results | _(pending)_ | G05 | Implemented the exact checkpoint delta normalizer and result-row TTL lifecycle, confirmed best-time persistence through the checked settings backend, and corrected `FUN_00472809` as a print call site. The spawn writer is explicitly unsupported by current evidence. Two tests bring `cmr-core` to 1,414. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

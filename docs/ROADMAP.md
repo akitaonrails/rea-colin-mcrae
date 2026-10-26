@@ -1576,6 +1576,12 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+G05 is closed at the evidenced timing/results boundary. Checkpoint deltas now
+use the recovered normalizing pre-transform, best times use the checked settings
+record backend, and result rows have the recovered 18x20-byte/TTL lifecycle.
+The spawn-position writer is explicitly unsupported by current static evidence;
+no camera/object routine is relabeled to fill that gap.
+
 G04 now includes the signed out-of-bounds countdown and the crash reset's two
 orientation modes, not just impact/damage arithmetic. The reset trigger remains
 an explicit input, and no unsupported position-snap, time penalty, or

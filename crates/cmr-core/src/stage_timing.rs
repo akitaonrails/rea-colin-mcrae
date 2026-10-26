@@ -27,9 +27,10 @@
 //! Observations: the clock representation, the step formula and `0xe100000` cap,
 //! the two elapsed readouts, the start latch, the `1 << (car & 0x1f)` passed-bit,
 //! and the `5`/`8` FSM states. Inference: the clock runs continuously, so a reset
-//! or off-course costs real elapsed time implicitly. Unknowns (not reproduced):
-//! the reference-split comparison table (`FUN_00472809`), the persisted
-//! best/record-time write, and the per-driver 0x168-byte results-record layout.
+//! or off-course costs real elapsed time implicitly. Best/record-time writes
+//! use the checked settings-record backend. Each driver's results area contains
+//! 18 rows of 20 bytes; `advance_result_row_ttl` covers the recovered hide path.
+//! `FUN_00472809` is a print call site, not a standalone table-writer function.
 //! Notable negative result: **no additive time-penalty system** (no false-start,
 //! jump-start, missed-checkpoint, or off-course surcharge) was found - the clock
 //! is never paused or incremented by a discrete penalty.
@@ -53,6 +54,22 @@ pub const MAX_FINISHERS: u32 = 8;
 
 /// Results-table byte marking an empty / unset time.
 pub const RESULTS_EMPTY_SENTINEL: u8 = 0xff;
+
+/// Result rows per driver and bytes per row at `DAT_0057c178`.
+pub const RESULT_ROW_COUNT: usize = 18;
+pub const RESULT_ROW_STRIDE: usize = 0x14;
+
+/// Advance one result row's signed TTL. Positive values decrement; reaching
+/// zero hides the row through the recovered `FUN_004619e0` route, while zero
+/// and negative values remain unchanged.
+#[must_use]
+pub fn advance_result_row_ttl(ttl: i8) -> (i8, bool) {
+    if ttl <= 0 {
+        return (ttl, false);
+    }
+    let next = ttl - 1;
+    (next, next == 0)
+}
 
 /// The per-tick stage-clock increment, reproducing the frame driver's
 /// `step = 2^32 / (rate * 0x10000)` with `rate = 25` (or `50` when
@@ -162,6 +179,15 @@ mod tests {
         assert_eq!(elapsed_centiseconds(now2, start), 200);
         // Zero elapsed.
         assert_eq!(elapsed_centiseconds(start, start), 0);
+    }
+
+    #[test]
+    fn result_rows_hide_only_when_positive_ttl_reaches_zero() {
+        assert_eq!(advance_result_row_ttl(2), (1, false));
+        assert_eq!(advance_result_row_ttl(1), (0, true));
+        assert_eq!(advance_result_row_ttl(0), (0, false));
+        assert_eq!(advance_result_row_ttl(-1), (-1, false));
+        assert_eq!(RESULT_ROW_COUNT * RESULT_ROW_STRIDE, 0x168);
     }
 
     #[test]

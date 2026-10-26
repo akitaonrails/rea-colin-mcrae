@@ -31,18 +31,15 @@
 //! be 7" intermediate splits, so 7 splits + finish = 8 gates), or when the
 //! cursor reaches the node count `DAT_0057c448`.
 //!
-//! **INFERENCE.** The shipped code transforms the car->node delta through
-//! `FUN_00461e90` before the dot; per the recovery that transform is an
-//! identity/rotation that does not change the sign of the crossing test, so the
-//! raw horizontal dot reproduces the crossing decision. The bit-clear dedup
+//! **OBSERVATION.** `FUN_00461e90` normalizes the delta before the dot and
+//! pre-scales components outside ±100.0 by signed division by 512;
+//! `normalize_delta_pre_transform` implements that path. The bit-clear dedup
 //! means a node already counted for a car never re-fires, even after a
 //! regression re-crosses it.
 //!
-//! **UNKNOWN (not reproduced here).** `FUN_00461e90`'s exact transform; the
-//! spawn-position writer that seeds the car centre at race load (cursor starts at
-//! node 0, so node 0 is the start reference); whether a fast tick can cross two
-//! nodes at once (the shipped update runs once per physics tick, so this advances
-//! one node per [`StageProgress::update`] call to match that cadence).
+//! **BOUNDARY.** The spawn-position writer is not identified by current static
+//! evidence. One node advances per [`StageProgress::update`] call to match the
+//! shipped once-per-tick cadence.
 
 use crate::fixed_point::{Fixed16, Vec3};
 use cmr_formats::stage::CatNode;
@@ -204,23 +201,55 @@ impl<'a> StageProgress<'a> {
     }
 }
 
-/// The recovered horizontal crossing dot: `(node.pos - car.pos) . node.dir`
-/// taken in the x-z plane only (Y forced to 0), in Q16.16. A negative result
-/// means the car is past the node along its forward direction.
+/// Normalize the checkpoint delta exactly as `FUN_00461e90`. Components outside
+/// the inclusive ±100.0 interval first use signed division by 512, preventing
+/// the square-sum from overflowing before legacy-table normalization.
+#[must_use]
+pub fn normalize_delta_pre_transform(delta: [i32; 3]) -> [i32; 3] {
+    let scaled = if delta
+        .iter()
+        .any(|value| *value > 0x640000 || *value < -0x640000)
+    {
+        delta.map(|value| value.wrapping_add((value >> 31) & 0x1ff) >> 9)
+    } else {
+        delta
+    };
+    crate::compiled_car_initializer::normalize_compiled_lane_vector(scaled)
+}
+
+/// The recovered horizontal crossing dot: the `FUN_00461e90`-normalized
+/// `(node.pos - car.pos)` dotted with node.dir in x-z only, in Q16.16.
 fn horizontal_dot(node: &CatNode, car_pos: Vec3) -> Fixed16 {
-    let node_x = Fixed16::from_raw(node.position[0]);
-    let node_z = Fixed16::from_raw(node.position[2]);
-    let dir_x = Fixed16::from_raw(node.direction[0]);
-    let dir_z = Fixed16::from_raw(node.direction[2]);
-    node_x
-        .sub(car_pos.x)
-        .mul(dir_x)
-        .add(node_z.sub(car_pos.z).mul(dir_z))
+    let delta = normalize_delta_pre_transform([
+        node.position[0].wrapping_sub(car_pos.x.raw()),
+        node.position[1].wrapping_sub(car_pos.y.raw()),
+        node.position[2].wrapping_sub(car_pos.z.raw()),
+    ]);
+    Fixed16::from_raw(delta[0])
+        .mul(Fixed16::from_raw(node.direction[0]))
+        .add(Fixed16::from_raw(delta[2]).mul(Fixed16::from_raw(node.direction[2])))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delta_pre_transform_normalizes_and_prescales_only_large_components() {
+        assert_eq!(normalize_delta_pre_transform([0, 0, 0]), [0, 0, 0]);
+        assert_eq!(
+            normalize_delta_pre_transform([0x10000, 0, 0]),
+            [65522, 0, 0]
+        );
+        assert_eq!(
+            normalize_delta_pre_transform([0x640001, 0, 0]),
+            [65530, 0, 0]
+        );
+        assert_eq!(
+            normalize_delta_pre_transform([i32::MIN, 0, 0]),
+            [-65472, 0, 0]
+        );
+    }
 
     /// A `.cat` node at whole-unit position/direction, Q16.16-encoded.
     fn node(pos: [i32; 3], dir: [i32; 3], split: u8) -> CatNode {

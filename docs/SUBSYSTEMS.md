@@ -2399,6 +2399,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Stage timing now includes `FUN_00461e90` delta normalization before
+  checkpoint dots, the existing checked settings-record best-time path, and
+  18x20-byte per-driver result rows with decrement/hide-at-zero TTLs. The
+  spawn-position writer is explicitly unidentified; result text payloads stay
+  opaque.
 - `cmr-core::collision` now covers the signed out-of-bounds timer and crash
   reset orientation path: positive countdown/timeout sound, negative terminal
   latch, both basis-row modes, snap/blend, normalization and totalled completion.
