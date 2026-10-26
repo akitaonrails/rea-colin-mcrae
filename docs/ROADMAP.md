@@ -1260,8 +1260,10 @@ equalizes axles, runs all second iterations in reverse, then postprocesses and
 translates, bringing `cmr-core` to 1,346. This is complete composition over
 explicit runtime inputs. `drive_stage_with_all_four_wheels` now completes the
 vertical stage and reproduces the identical outcome on replay, using actual prior
-speed for low-speed gating. One test brings `cmr-core` to 1,347. Car-data
-population and application wiring remain open.
+speed for low-speed gating. One test brings `cmr-core` to 1,347.
+`populate_compiled_gear_ratio` now maps the selected compiled control-family word
+into both wheel parameter sets with invalid-gear atomicity, bringing `cmr-core`
+to 1,348. Other runtime inputs and application wiring remain open.
 
 Exit gate:
 

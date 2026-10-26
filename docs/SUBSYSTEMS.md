@@ -1943,8 +1943,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   second iterations in native reverse order with axle equalization before the
   geometric postprocess and translation. `drive_stage_with_all_four_wheels`
   completes the same vertical path and reproduces the identical replay outcome,
-  with actual prior speed used for low-speed gating. Car-data population and
-  application wiring remain open. See evidence
+  with actual prior speed used for low-speed gating.
+  `populate_compiled_gear_ratio` maps the selected compiled control-family word
+  into both wheel parameter sets without mutating on invalid gears. Other runtime
+  inputs and application wiring remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

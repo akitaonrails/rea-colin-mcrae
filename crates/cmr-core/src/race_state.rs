@@ -20,9 +20,11 @@
 //!
 //! See evidence `impl.sim-race-state-trace`.
 
+use crate::compiled_car_initializer::CompiledControlFamilies;
 use crate::drivetrain::{
     FirstWheelEffects, FirstWheelInputs, SecondWheelCoreEffects, SecondWheelInputs,
-    equalize_wheel_speeds, execute_first_wheel_iteration, execute_second_wheel_core,
+    derive_gear_ratio, equalize_wheel_speeds, execute_first_wheel_iteration,
+    execute_second_wheel_core,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
@@ -109,6 +111,22 @@ pub struct SecondWheelParams<'a> {
     pub correction_alternate: i32,
     pub surface_vector: [i32; 3],
     pub table_factor: Option<i32>,
+}
+
+/// Select a compiled control-family word by the first-wheel gear, derive its
+/// ratio, and update both wheel parameter sets. Invalid gears change nothing.
+#[must_use]
+pub fn populate_compiled_gear_ratio(
+    first: &mut FirstWheelParams,
+    second: &mut SecondWheelParams<'_>,
+    families: &CompiledControlFamilies,
+    factor_c860: Fixed16,
+) -> Option<Fixed16> {
+    let raw = *families.raw_copy.get(usize::try_from(first.gear).ok()?)?;
+    let ratio = derive_gear_ratio(Fixed16::from_raw(raw), factor_c860);
+    first.gear_ratio = ratio.raw();
+    second.gear_ratio = ratio.raw();
+    Some(ratio)
 }
 
 /// Runtime vector lanes for the recovered four-lane postprocess. The current
@@ -730,6 +748,36 @@ mod tests {
             surface_vector: [0x10000, 0, 0],
             table_factor: None,
         }
+    }
+
+    #[test]
+    fn compiled_families_populate_the_selected_gear_ratio_atomically() {
+        let families = CompiledControlFamilies {
+            post_processed_raw: [11, 22, 33, 44, 55, 66, 77, 88],
+            reciprocal: [0; 8],
+            raw_copy: [11, 22, 33, 44, 55, 66, 77, 88],
+            reciprocal_copy: [0; 8],
+        };
+        let trig = build_sine_table();
+        let mut first = first_wheel_params();
+        first.gear = 2;
+        let mut second = second_wheel_params(&trig);
+        assert_eq!(
+            populate_compiled_gear_ratio(&mut first, &mut second, &families, Fixed16::ONE),
+            Some(Fixed16::from_raw(33))
+        );
+        assert_eq!(first.gear_ratio, 33);
+        assert_eq!(second.gear_ratio, 33);
+
+        first.gear = 8;
+        first.gear_ratio = 99;
+        second.gear_ratio = 98;
+        assert_eq!(
+            populate_compiled_gear_ratio(&mut first, &mut second, &families, Fixed16::ONE),
+            None
+        );
+        assert_eq!(first.gear_ratio, 99);
+        assert_eq!(second.gear_ratio, 98);
     }
 
     #[test]
