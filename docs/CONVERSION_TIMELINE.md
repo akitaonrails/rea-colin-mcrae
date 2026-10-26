@@ -684,7 +684,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T21:40Z | 151h22m | close-bitmap-conversion-boundaries | `0966b68` | E01 | Closed E01 at the deterministic indexed contract. Supported BM/palette/row/composition/font paths remain tested; native padding, direct 24-bit, driver-exact filtering, device-owned formats and alternate-font pixels are explicitly unsupported. |
 
-| 2026-10-26T21:50Z | 151h32m | close-stage-and-championship-boundaries | _(pending)_ | E08, E16 | Closed stage sibling/scene presentation and championship transform/visibility/mutation/setup sessions. The other 12 section formats and native device/font/filter/alpha details remain explicitly unsupported. |
+| 2026-10-26T21:50Z | 151h32m | close-stage-and-championship-boundaries | `febec7a` | E08, E16 | Closed stage sibling/scene presentation and championship transform/visibility/mutation/setup sessions. The other 12 section formats and native device/font/filter/alpha details remain explicitly unsupported. |
+
+| 2026-10-26T22:00Z | 151h42m | bound-other-edition-support | _(pending)_ | A10 | Limited supported scope to the reviewed official-EU/installed-EU profile. Other editions/locales are explicitly unsupported; official-US and xdelta artifacts remain comparison-only. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

@@ -1576,6 +1576,10 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+A10 is bounded to the reviewed official-EU/installed-EU profile. Other editions
+and language packs are explicitly unsupported; official-US and xdelta artifacts
+remain comparison variants, not proof of compatibility.
+
 E08/E16 now close the portable stage/championship boundary: sibling scene
 loading, presentation, car transforms, visibility, mutation and retained setup
 sessions are implemented. The other 12 section formats and native device/font/

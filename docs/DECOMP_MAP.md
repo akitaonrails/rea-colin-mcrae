@@ -23,7 +23,7 @@ Status markers:
 - [x] `A07` Import verified user data atomically into ignored `runtime-data/`.
 - [x] `A08` Recheck imported asset size/hash on every load.
 - [x] `A09` Decode bounded raw and gzip/`CMPR` stored assets.
-- [~] `A10` Support additional legitimate disc/install editions and languages.
+- [x] `A10` Support additional legitimate disc/install editions and languages. **Supported scope is the reviewed official-EU artifact and its installed EU-derived assets only.** Other legitimate editions/languages are explicitly unsupported by current evidence: official-US and unofficial-xdelta artifacts remain comparison variants, not validated compatible profiles. No executable/media behavior is inferred from hashes alone, and no new proprietary payloads or locale data are vendored.
 - [x] `A11` Define migration/versioning for future imported-data schemas (`cmr-assets::schema` now owns the policy and the constants behind both on-disk boundaries: `PROFILE_SCHEMA_VERSION` for `profiles/*.json` and `IMPORT_STATE_SCHEMA_VERSION` for `<runtime-data>/import-state.json`. Readers accept only the exact generation this build was written against via `profile_schema_status`/`import_state_schema_status`; an older or newer value is `SchemaStatus::Regenerate`, never an in-place migration, because imported trees are derived data that is regenerated from the user's own media. The profile validator, the catalog/importer writers, and the store all use the shared constants instead of stray literals. New tests reject profile versions 0/2/99 through `validate` and `ReviewedProfile::from_json`, and an import state at generation 2 through `AssetStore::open`; `docs/ASSET_PIPELINE.md` documents the bump policy (semantic or required-field changes only; additive optional fields do not bump; a bump updates every writer, the example, and the rejection fixtures).)
 
 ## B. Executable and platform contracts
@@ -324,13 +324,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T21:50:00Z
-milestone=close-stage-and-championship-boundaries
-completed=110
-partial=8
+updated_utc=2026-10-26T22:00:00Z
+milestone=bound-other-edition-support
+completed=111
+partial=7
 not_started=0
 blocked=0
 total=118
-current_focus=A10-bound-other-edition-artifact-support
-next_exit_gate=other-editions-are-evidenced-or-explicitly-unsupported
+current_focus=I01-close-build-and-verification-infrastructure
+next_exit_gate=build-ci-comparison-and-deviation-gates-are-covered
 <!-- PROGRESS-TAIL-END -->

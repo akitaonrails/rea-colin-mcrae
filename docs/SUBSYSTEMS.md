@@ -2399,6 +2399,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Edition support is limited to the reviewed official-EU/installed-EU profile.
+  Other editions and locales are unsupported until separately evidenced;
+  official-US and xdelta files are comparison-only artifacts.
 - Stage/championship coverage includes sibling scene loading, presentation,
   transform/visibility/mutation and retained setup sessions. The other 12
   section formats and native device/font/filter/alpha behavior are explicit
