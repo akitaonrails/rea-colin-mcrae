@@ -1481,6 +1481,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   injected runtime-built table. `cmr-core::drivetrain::cosine_modulated_component`
   reproduces it. One focused test brings `cmr-core` to 1,304. The second-loop
   composition and runtime table wiring remain open.
+  G03 second-wheel core composition: `execute_second_wheel_core` applies the
+  ratio and residuals, residual saturation and gear-ratio gate, the two
+  residuals, direction normalization, arctan folding, and cosine modulation in
+  native order. The independent re-derivation test checks every stage, bringing
+  `cmr-core` to 1,305. The full second-loop accumulation and runtime table
+  wiring remain open.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

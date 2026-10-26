@@ -742,6 +742,110 @@ pub fn cosine_modulated_component(coefficient: i32, angle_cos: i32, config_scale
     q16_mul(root, config_scale)
 }
 
+/// Inputs for the second per-wheel iteration's core (residuals, normalization,
+/// arctan, and cosine modulation). Runtime tables are injected, not vendored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecondWheelInputs<'a> {
+    /// The Q16 projection of the precomputed wheel vector onto the axis.
+    pub dot: i32,
+    /// Raw wheel speed at `+0x2a8`.
+    pub speed_at_2a8: i32,
+    /// Smoothed wheel speed at `+0x2b8`.
+    pub speed_at_2b8: i32,
+    /// The second axis dot (local_98 with the state vector at `+0x12f*4`).
+    pub axis_dot: i32,
+    /// Direction source 1 from the force-pass head.
+    pub local_68: [i32; 3],
+    /// Direction source 2 from the force-pass head.
+    pub local_98: [i32; 3],
+    /// The per-wheel value `local_e8[wheel]` used by the residual saturation.
+    pub wheel_e8: i32,
+    /// The scale `DAT_0050c5c4`.
+    pub scale_c5c4: i32,
+    /// Whether the per-wheel flag applies the `0x147a` factor.
+    pub residual_flag_147a: bool,
+    /// The config dword at `ctl+0x2ec` for the gear-ratio gate.
+    pub config_2ec: i32,
+    /// The gear ratio at `ctl+0x1d0[gear*4]`.
+    pub gear_ratio: i32,
+    /// The per-wheel coefficient `local_34` (a runtime table value).
+    pub coefficient_34: i32,
+    /// The runtime-built arctan table.
+    pub arctan_table: &'a [i16],
+    /// The runtime-built cosine table.
+    pub cos_table: &'a [i32],
+    /// The config scale at `+0x35c` or `+0x36c`.
+    pub config_scale: i32,
+}
+
+/// Effects of the second per-wheel iteration's core.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecondWheelCoreEffects {
+    /// `dot * 4 - speed_at_2b8` stored at `+0x3b0`.
+    pub ratio_at_3b0: i32,
+    /// The second residual after residual accumulation.
+    pub residual_2c: i32,
+    /// The third residual after residual accumulation.
+    pub residual_30: i32,
+    /// The selected direction normalization.
+    pub normalization: SecondLoopNormalization,
+    /// The folded arctan index.
+    pub angle: i16,
+    /// The cosine-modulated force component.
+    pub component: i32,
+}
+
+/// Composes the second per-wheel iteration's core from the recovered rules:
+/// ratio and residuals, residual saturation and gear-ratio gate, the two
+/// residuals, direction normalization, arctan folding, and cosine modulation.
+#[must_use]
+pub fn execute_second_wheel_core(input: SecondWheelInputs<'_>) -> SecondWheelCoreEffects {
+    let ratio = wheel_slip_candidate(input.dot, input.speed_at_2a8);
+    let residual_ac = if wheel_ratio_within_unit(ratio) {
+        gate_residual_by_gear_ratio(
+            residual_with_saturation(-input.axis_dot, q16_mul(input.wheel_e8, input.scale_c5c4)),
+            input.gear_ratio,
+            input.config_2ec,
+        )
+    } else {
+        0
+    };
+    let residual_b0 = if wheel_ratio_within_unit(input.axis_dot) {
+        -input.axis_dot
+    } else {
+        0
+    };
+    let residual_2c = second_loop_residual(
+        Fixed16::from_raw(input.dot),
+        Fixed16::from_raw(input.scale_c5c4),
+        input.residual_flag_147a,
+    )
+    .raw()
+    .wrapping_add(residual_ac);
+    let residual_30 = second_loop_axis_residual(
+        Fixed16::from_raw(input.dot),
+        Fixed16::from_raw(input.scale_c5c4),
+    )
+    .raw()
+    .wrapping_add(residual_b0);
+    let normalization =
+        normalize_second_loop_direction(input.local_68, input.local_98, residual_2c, residual_30);
+    let angle = arctan_ratio_index(
+        i64::from(residual_2c) * i64::from(input.coefficient_34),
+        residual_30,
+        input.arctan_table,
+    );
+    let angle_cos = input.cos_table[((i32::from(angle) + 0x400) & 0xfff) as usize];
+    SecondWheelCoreEffects {
+        ratio_at_3b0: wheel_slip_candidate(input.dot, input.speed_at_2b8),
+        residual_2c,
+        residual_30,
+        normalization,
+        angle,
+        component: cosine_modulated_component(input.coefficient_34, angle_cos, input.config_scale),
+    }
+}
+
 /// Inputs for one first-loop per-wheel iteration of the force pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FirstWheelInputs {
@@ -1537,6 +1641,86 @@ mod tests {
         for pair in HEAD_BASIS_STORE_OFFSETS.windows(2) {
             assert!(pair[0][2] + 4 <= pair[1][0]);
         }
+    }
+
+    fn second_wheel_input() -> SecondWheelInputs<'static> {
+        SecondWheelInputs {
+            dot: 0x10000,
+            speed_at_2a8: 0,
+            speed_at_2b8: 0,
+            axis_dot: 0x8000,
+            local_68: [0x10000, 0, 0],
+            local_98: [0, 0x10000, 0],
+            wheel_e8: 0x10000,
+            scale_c5c4: 0x10000,
+            residual_flag_147a: false,
+            config_2ec: 0,
+            gear_ratio: 0x10000,
+            coefficient_34: 0x10000,
+            arctan_table: &[],
+            cos_table: &[],
+            config_scale: 0x10000,
+        }
+    }
+
+    #[test]
+    fn second_wheel_core_composes_residuals_normalization_arctan_and_cosine() {
+        let arctan: Vec<i16> = (0..=0x1000).collect();
+        let cos: Vec<i32> = (0..=0x1000).map(|index| index * 64).collect();
+        let input = SecondWheelInputs {
+            arctan_table: &arctan,
+            cos_table: &cos,
+            ..second_wheel_input()
+        };
+        let effects = execute_second_wheel_core(input.clone());
+
+        // Independently derive every stage from the inputs.
+        let ratio = wheel_slip_candidate(input.dot, input.speed_at_2a8);
+        assert_eq!(
+            effects.ratio_at_3b0,
+            wheel_slip_candidate(input.dot, input.speed_at_2b8)
+        );
+        assert!(!wheel_ratio_within_unit(ratio));
+        let residual_b0 = if wheel_ratio_within_unit(input.axis_dot) {
+            -input.axis_dot
+        } else {
+            0
+        };
+        assert_eq!(residual_b0, -0x8000);
+        let expected_2c = second_loop_residual(
+            Fixed16::from_raw(input.dot),
+            Fixed16::from_raw(input.scale_c5c4),
+            false,
+        )
+        .raw();
+        let expected_30 = second_loop_axis_residual(
+            Fixed16::from_raw(input.dot),
+            Fixed16::from_raw(input.scale_c5c4),
+        )
+        .raw()
+        .wrapping_add(residual_b0);
+        assert_eq!(effects.residual_2c, expected_2c);
+        assert_eq!(effects.residual_30, expected_30);
+        assert_eq!(
+            effects.normalization,
+            normalize_second_loop_direction(
+                input.local_68,
+                input.local_98,
+                expected_2c,
+                expected_30
+            )
+        );
+        let angle = arctan_ratio_index(
+            i64::from(expected_2c) * i64::from(input.coefficient_34),
+            expected_30,
+            &arctan,
+        );
+        assert_eq!(effects.angle, angle);
+        let angle_cos = cos[(i32::from(angle) + 0x400) as usize & 0xfff];
+        assert_eq!(
+            effects.component,
+            cosine_modulated_component(input.coefficient_34, angle_cos, input.config_scale)
+        );
     }
 
     fn first_wheel_input() -> FirstWheelInputs {
