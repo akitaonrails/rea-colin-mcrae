@@ -1204,6 +1204,10 @@ then lateral grip is applied. This preserves the harness order while replacing
 `position += velocity * dt` with the official position formula. One independent
 test pins the formula, bringing `cmr-core` to 1,328. The force model remains an
 explicit harness input; drive-torque-to-contact-force wiring remains open.
+G09 adds `step_with_first_wheel`: the recovered first-wheel force pass runs
+with explicit runtime inputs and its force drives the existing translation.
+A two-tick test checks split, slip clamp, integrated speed and vehicle movement,
+bringing `cmr-core` to 1,329. Full force production remains open.
 
 Exit gate:
 

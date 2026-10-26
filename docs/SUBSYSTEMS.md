@@ -1900,7 +1900,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   wiring remains unresolved. The exact translation kernel is now called with
   zero damping after acceleration is computed, preserving the grip order while
   replacing the plain position update. A byte-exact differential fixture is
-  still gated on force production. See evidence `impl.sim-race-state-trace` and
+  still gated on force production. `step_with_first_wheel` now executes the
+  recovered first-wheel force pass with explicit runtime inputs and uses its
+  force for that translation; a two-tick test covers split, slip clamp, speed
+  integration and movement. See evidence `impl.sim-race-state-trace` and
   `impl.sim-translation-step`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a

@@ -20,6 +20,7 @@
 //!
 //! See evidence `impl.sim-race-state-trace`.
 
+use crate::drivetrain::{FirstWheelInputs, execute_first_wheel_iteration};
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::vehicle_dynamics::{
@@ -47,6 +48,30 @@ pub struct Controls {
     pub handbrake: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FirstWheelState {
+    pub force: i32,
+    pub wheel_speed: i32,
+}
+
+/// Runtime inputs for the recovered first-wheel force pass.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FirstWheelParams {
+    pub split: i32,
+    pub wheel_constant: i32,
+    pub wheel_vector: [i32; 3],
+    pub state_vector: [i32; 3],
+    pub scale_c600: i32,
+    pub limit: i32,
+    pub shift: u32,
+    pub factor_c5c0: i32,
+    pub gear: i32,
+    pub config_40c: i32,
+    pub config_158: i32,
+    pub gear_ratio: i32,
+    pub is_front_wheel: bool,
+}
+
 /// The minimal per-car state the harness integrates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CarState {
@@ -56,6 +81,8 @@ pub struct CarState {
     pub velocity: Vec3,
     /// Heading as a 16-bit BAM angle about the y axis.
     pub heading: u16,
+    /// Recovered first-wheel force and speed state.
+    pub first_wheel: FirstWheelState,
 }
 
 impl CarState {
@@ -65,6 +92,10 @@ impl CarState {
             position: Vec3::ZERO,
             velocity: Vec3::ZERO,
             heading: 0,
+            first_wheel: FirstWheelState {
+                force: 0,
+                wheel_speed: 0,
+            },
         }
     }
 }
@@ -153,6 +184,44 @@ impl RaceState {
         }
     }
 
+    /// Run the recovered first-wheel force pass, then translate with its force.
+    pub fn step_with_first_wheel(
+        &mut self,
+        controls: &Controls,
+        params: &SimParams,
+        wheel: &FirstWheelParams,
+    ) -> TraceSample {
+        let effects = execute_first_wheel_iteration(FirstWheelInputs {
+            force: self.car.first_wheel.force,
+            wheel_speed: self.car.first_wheel.wheel_speed,
+            split: wheel.split,
+            wheel_constant: wheel.wheel_constant,
+            wheel_vector: wheel.wheel_vector,
+            state_vector: wheel.state_vector,
+            scale_c600: wheel.scale_c600,
+            limit: wheel.limit,
+            shift: wheel.shift,
+            handbrake: i32::from(controls.handbrake),
+            factor_c5c0: wheel.factor_c5c0,
+            gear: wheel.gear,
+            config_40c: wheel.config_40c,
+            config_158: wheel.config_158,
+            gear_ratio: wheel.gear_ratio,
+            is_front_wheel: wheel.is_front_wheel,
+        });
+        self.car.first_wheel = FirstWheelState {
+            force: effects.force_at_540,
+            wheel_speed: effects.wheel_speed,
+        };
+        self.step(
+            &Controls {
+                forward_force: Fixed16::from_raw(effects.force_at_540),
+                ..*controls
+            },
+            params,
+        )
+    }
+
     /// Run a scripted control sequence, returning the per-tick trace.
     pub fn run_trace(&mut self, controls: &[Controls], params: &SimParams) -> Vec<TraceSample> {
         controls.iter().map(|c| self.step(c, params)).collect()
@@ -167,6 +236,24 @@ mod tests {
         SimParams {
             inverse_mass: Fixed16::from_raw(0x8000), // 0.5
             gravity: Vec3::ZERO,
+        }
+    }
+
+    fn first_wheel_params() -> FirstWheelParams {
+        FirstWheelParams {
+            split: 0x10000,
+            wheel_constant: 0,
+            wheel_vector: [0; 3],
+            state_vector: [0; 3],
+            scale_c600: 0x10000,
+            limit: 0x10000,
+            shift: 0,
+            factor_c5c0: 0x10000,
+            gear: 1,
+            config_40c: 0,
+            config_158: 1,
+            gear_ratio: 1,
+            is_front_wheel: true,
         }
     }
 
@@ -235,6 +322,22 @@ mod tests {
         let expected_position = velocity.sub(delta.scale(Fixed16::from_raw(0x8000)));
         assert_eq!(sample.car.position, expected_position);
         assert_eq!(sample.car.velocity, velocity);
+    }
+
+    #[test]
+    fn first_wheel_force_and_speed_drive_the_translation() {
+        let mut car = CarState::at_rest();
+        car.first_wheel.wheel_speed = -1;
+        let mut state = RaceState::new(car);
+        let wheel = first_wheel_params();
+        let first = state.step_with_first_wheel(&straight_throttle(1)[0], &params(), &wheel);
+        assert_eq!(first.car.first_wheel.force, 0x10004);
+        assert_eq!(first.car.first_wheel.wheel_speed, 0x10003);
+        assert!(first.car.velocity.x > Fixed16::ZERO);
+        let second = state.step_with_first_wheel(&straight_throttle(1)[0], &params(), &wheel);
+        assert_eq!(second.car.first_wheel.force, -0xfffc);
+        assert_eq!(second.car.first_wheel.wheel_speed, 7);
+        assert!(second.car.position.x > first.car.position.x);
     }
 
     #[test]
