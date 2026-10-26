@@ -1465,6 +1465,9 @@ E03 is complete: truecolor 4/8-bit indexed rows preserve four-pixel alignment
 and `ANIM` composites support caller-selected frames with checked targets.
 Three video tests cover those paths. Direct 24-bit is explicitly unsupported in
 the indexed sampler rather than quantized; animation clocks remain caller input.
+E02 is complete: consumer evidence proves every vertex/face field role, on-disk
+RGBA order, and that `field_22` is not a rasterizer input. Group-2 binding is
+covered by E03; no new duplicate implementation is needed.
 
 Exit gate:
 
