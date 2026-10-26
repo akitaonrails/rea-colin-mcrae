@@ -474,7 +474,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T08:03Z | 137h45m | wire-second-wheel-core-into-race-state | `f1deb31` | G09 | Added `step_with_second_wheel`: the second core consumes the first-wheel speed delta and explicit vector/table inputs, recording residual, angle, component and accumulators. Its composition test brings `cmr-core` to 1,330. Full force production and accumulator feedback remain open. |
 
-| 2026-10-26T08:28Z | 138h10m | complete-second-wheel-lane-accumulation | _(pending)_ | G03, G09 | Corrected `execute_second_wheel_core` to use the recovered lane tail: selected-scalar scaling of the normalized direction, gated correction, updated-accumulator projection and second correction, then independent surface addition. Removed duplicated speed-delta and surface-dot inputs. Focused arithmetic and race-state tests pass with `cmr-core` at 1,330. The four-lane `FUN_0040fbe0` consumer and candidate production remain open. |
+| 2026-10-26T08:28Z | 138h10m | complete-second-wheel-lane-accumulation | `e47f0b4` | G03, G09 | Corrected `execute_second_wheel_core` to use the recovered lane tail: selected-scalar scaling of the normalized direction, gated correction, updated-accumulator projection and second correction, then independent surface addition. Removed duplicated speed-delta and surface-dot inputs. Focused arithmetic and race-state tests pass with `cmr-core` at 1,330. The four-lane `FUN_0040fbe0` consumer and candidate production remain open. |
+
+| 2026-10-26T08:37Z | 138h19m | wire-four-lane-geometric-postprocess | _(pending)_ | G03, G09 | Added `step_with_four_wheel_postprocess`: the selected second-core lane joins the other three runtime lanes in `FUN_0040fbe0`; all accumulators and qualification results are retained. Invalid lane indices are rejected before tick work. One direct-kernel comparison test brings `cmr-core` to 1,331. Full candidate production and downstream consumption remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

@@ -26,7 +26,8 @@ use crate::drivetrain::{
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::vehicle_dynamics::{
-    TranslationStepInput, apply_lateral_grip, apply_translation_step, drag, net_accel,
+    GeometricPostprocessError, GeometricPostprocessLane, TranslationStepInput,
+    apply_geometric_lane_postprocess, apply_lateral_grip, apply_translation_step, drag, net_accel,
 };
 
 /// Fixed per-tick parameters of the integration harness (not recovered game
@@ -105,6 +106,34 @@ pub struct SecondWheelParams<'a> {
     pub table_factor: Option<i32>,
 }
 
+/// Runtime vector lanes for the recovered four-lane postprocess. The current
+/// second-core result replaces `lanes[current_lane].accumulator` before it runs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FourWheelPostprocessParams {
+    pub lanes: [GeometricPostprocessLane; 4],
+    pub current_lane: usize,
+    pub argument_scale: Fixed16,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FourWheelPostprocessState {
+    pub accumulators: [Vec3; 4],
+    pub qualified: [bool; 4],
+    pub angle_measures: [Fixed16; 4],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WheelPostprocessError {
+    LaneIndex(usize),
+    Geometry(GeometricPostprocessError),
+}
+
+impl From<GeometricPostprocessError> for WheelPostprocessError {
+    fn from(error: GeometricPostprocessError) -> Self {
+        Self::Geometry(error)
+    }
+}
+
 /// The minimal per-car state the harness integrates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CarState {
@@ -118,6 +147,8 @@ pub struct CarState {
     pub first_wheel: FirstWheelState,
     /// Residual, angle, component and accumulators from the second core.
     pub second_wheel: SecondWheelState,
+    /// All four lane accumulators after `FUN_0040fbe0`.
+    pub postprocess: FourWheelPostprocessState,
 }
 
 impl CarState {
@@ -136,6 +167,11 @@ impl CarState {
                 angle: 0,
                 component: 0,
                 accumulators: [0; 3],
+            },
+            postprocess: FourWheelPostprocessState {
+                accumulators: [Vec3::ZERO; 4],
+                qualified: [false; 4],
+                angle_measures: [Fixed16::ZERO; 4],
             },
         }
     }
@@ -313,6 +349,41 @@ impl RaceState {
         sample
     }
 
+    /// Feed the current second-core lane and the other three lanes through the
+    /// recovered `FUN_0040fbe0` postprocess, preserving every lane accumulator.
+    pub fn step_with_four_wheel_postprocess(
+        &mut self,
+        controls: &Controls,
+        params: &SimParams,
+        first: &FirstWheelParams,
+        second: &SecondWheelParams<'_>,
+        postprocess: &FourWheelPostprocessParams,
+    ) -> Result<TraceSample, WheelPostprocessError> {
+        if postprocess.current_lane >= postprocess.lanes.len() {
+            return Err(WheelPostprocessError::LaneIndex(postprocess.current_lane));
+        }
+        let mut sample = self.step_with_second_wheel(controls, params, first, second);
+        let current = sample.car.second_wheel.accumulators;
+        let mut lanes = postprocess.lanes;
+        lanes[postprocess.current_lane].accumulator = Vec3::new(
+            Fixed16::from_raw(current[0]),
+            Fixed16::from_raw(current[1]),
+            Fixed16::from_raw(current[2]),
+        );
+        let outcome = apply_geometric_lane_postprocess(&mut lanes, postprocess.argument_scale)?;
+        sample.car.postprocess = FourWheelPostprocessState {
+            accumulators: lanes.map(|lane| lane.accumulator),
+            qualified: outcome.qualified,
+            angle_measures: outcome.angle_measures,
+        };
+        sample.car.second_wheel.accumulators = {
+            let current = sample.car.postprocess.accumulators[postprocess.current_lane];
+            [current.x.raw(), current.y.raw(), current.z.raw()]
+        };
+        self.car = sample.car;
+        Ok(sample)
+    }
+
     /// Run a scripted control sequence, returning the per-tick trace.
     pub fn run_trace(&mut self, controls: &[Controls], params: &SimParams) -> Vec<TraceSample> {
         controls.iter().map(|c| self.step(c, params)).collect()
@@ -468,6 +539,103 @@ mod tests {
         assert_eq!(sample.car.second_wheel.component, 1);
         assert_eq!(sample.car.second_wheel.accumulators, [-6554, 0, 0]);
         assert!(sample.car.velocity.x > Fixed16::ZERO);
+    }
+
+    #[test]
+    fn four_lane_postprocess_consumes_the_current_second_core_lane() {
+        let vector = |x, y, z| {
+            Vec3::new(
+                Fixed16::from_raw(x),
+                Fixed16::from_raw(y),
+                Fixed16::from_raw(z),
+            )
+        };
+        let inactive = GeometricPostprocessLane {
+            active: false,
+            vector_a: Vec3::ZERO,
+            vector_b: Vec3::ZERO,
+            vector_c: Vec3::ZERO,
+            accumulator: Vec3::ZERO,
+        };
+        let mut lanes = [inactive; 4];
+        lanes[3] = GeometricPostprocessLane {
+            active: true,
+            vector_a: vector(0x8000, -1, 0),
+            vector_b: vector(0x10000, 0, 0),
+            vector_c: vector(0, 0x10000, 0x10000),
+            accumulator: vector(-6554, 0, 0),
+        };
+        let postprocess = FourWheelPostprocessParams {
+            lanes,
+            current_lane: 3,
+            argument_scale: Fixed16::ONE,
+        };
+        let trig = build_sine_table();
+        let second = SecondWheelParams {
+            axis_dot: 0,
+            local_68: [0x10000, 0, 0],
+            local_98: [0; 3],
+            wheel_e8: 0,
+            scale_c5c4: 0x10000,
+            residual_flag_147a: false,
+            config_2ec: 1,
+            gear_ratio: 1,
+            coefficient_34: 0x10000,
+            arctan_table: &[],
+            cos_table: &trig,
+            config_scale: 1,
+            selected_scalar: 0x10000,
+            correction_gate: 1,
+            accumulation_limit: 0x10000,
+            correction_alternate: 0x10000,
+            surface_vector: [0x10000, 0, 0],
+            table_factor: None,
+        };
+        let mut car = CarState::at_rest();
+        car.first_wheel.wheel_speed = -1;
+        let mut state = RaceState::new(car);
+        let sample = state
+            .step_with_four_wheel_postprocess(
+                &straight_throttle(1)[0],
+                &params(),
+                &first_wheel_params(),
+                &second,
+                &postprocess,
+            )
+            .unwrap();
+        let outcome = apply_geometric_lane_postprocess(&mut lanes, Fixed16::ONE).unwrap();
+        assert!(outcome.qualified[3]);
+        assert_eq!(sample.car.postprocess.qualified, outcome.qualified);
+        assert_eq!(
+            sample.car.postprocess.angle_measures,
+            outcome.angle_measures
+        );
+        assert_eq!(
+            sample.car.postprocess.accumulators,
+            lanes.map(|lane| lane.accumulator)
+        );
+        let current = lanes[3].accumulator;
+        assert_eq!(
+            sample.car.second_wheel.accumulators,
+            [current.x.raw(), current.y.raw(), current.z.raw()]
+        );
+
+        let before = state.car;
+        let invalid = FourWheelPostprocessParams {
+            current_lane: 4,
+            ..postprocess
+        };
+        assert_eq!(
+            state.step_with_four_wheel_postprocess(
+                &straight_throttle(1)[0],
+                &params(),
+                &first_wheel_params(),
+                &second,
+                &invalid,
+            ),
+            Err(WheelPostprocessError::LaneIndex(4))
+        );
+        assert_eq!(state.car, before);
     }
 
     #[test]

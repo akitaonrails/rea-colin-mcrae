@@ -1216,8 +1216,11 @@ G09 now completes the second-core lane accumulation in native order: selected-sc
 scaling of the normalized direction, gated correction, projection of that updated
 accumulator for the second correction, then the independent surface addition.
 This corrects the previous zero-initialized composition. The remaining consumer is
-the four-lane `FUN_0040fbe0` postprocess, not direct translation; its wiring and
-candidate production remain open.
+the four-lane `FUN_0040fbe0` postprocess, not direct translation. G09 now wires
+that postprocess after the second core, retaining every lane accumulator and the
+qualification results; invalid lane selection is rejected before tick work. One
+composition test brings `cmr-core` to 1,331. Full four-iteration candidate
+production and downstream accumulator consumption remain open.
 
 Exit gate:
 
