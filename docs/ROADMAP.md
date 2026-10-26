@@ -1576,6 +1576,11 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+D16/D18 now close final presentation and native root interaction: owned indexed
+frames, checked RGBA expansion, render-route selection, descriptor menus, and
+focus/pause/restore/quit lifecycle all share the SDL path. Native flip timing
+and the live display server remain backend boundaries.
+
 H09's reachable DirectPlay scope now includes per-player record messages and
 state transitions, not just the session lifecycle. Positional words are
 preserved and accumulation wraps natively. Application/provider GUIDs stay

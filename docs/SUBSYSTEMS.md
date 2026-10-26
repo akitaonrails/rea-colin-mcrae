@@ -2399,6 +2399,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Final presentation uses owned indexed frames and checked RGBA8 expansion;
+  render routes select composition and lifecycle controls presentation. The
+  native root combines recovered interaction, descriptor menus, and
+  pause/restore/quit handling. DirectDraw flip timing and display-server details
+  remain backend boundaries.
 - Networking covers per-player 15/16/17/5-word record messages with
   ready/active/done transitions and wrapping accumulation. Unknown fields stay
   positional. Runtime application/provider GUIDs are external identity; the
