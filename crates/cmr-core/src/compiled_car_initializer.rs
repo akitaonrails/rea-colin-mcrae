@@ -9241,7 +9241,6 @@ mod tests {
         let aux_constants = AuxControlConstantSet { constants };
         let config = compiled_stage_config(1, 0, 1, 1, 0, false);
         let prior = synthetic_case(-7);
-
         let effects = compose_recovered_compiled_stage_effects(
             &direct_cases,
             &aux_constants,
@@ -9311,6 +9310,60 @@ mod tests {
         assert_eq!(
             effects.control_families,
             derive_compiled_control_families(transformed).unwrap()
+        );
+    }
+
+    #[test]
+    fn gear_ratio_wires_control_families_to_final_ratio_and_aux() {
+        let direct_cases = CompiledDirectCaseSet {
+            cases: synthetic_cases(),
+        };
+        let aux_constants = AuxControlConstantSet {
+            constants: aux_constants(),
+        };
+        let config = compiled_stage_config(1, 0, 1, 1, 0, false);
+        let effects = compose_recovered_compiled_stage_effects(
+            &direct_cases,
+            &aux_constants,
+            RecoveredCompiledStageInputs {
+                prior_case_words: synthetic_case(-7),
+                selector: 3,
+                config: &config,
+                state_slot: 1,
+                global_word: 0x1_0000,
+                state_758_context_nonzero: false,
+                state_758_table: &[],
+            },
+        )
+        .unwrap();
+
+        let (ratio, aux) = crate::drivetrain::derive_gear_ratio_and_aux_from_families(
+            &effects.control_families,
+            crate::fixed_point::Fixed16::from_raw(0x8000),
+            crate::fixed_point::Fixed16::from_raw(0x8000),
+        );
+        assert_eq!(
+            ratio,
+            crate::drivetrain::derive_gear_ratio(
+                crate::fixed_point::Fixed16::from_raw(effects.control_families.raw_copy[0]),
+                crate::fixed_point::Fixed16::from_raw(0x8000)
+            )
+        );
+        assert_eq!(
+            aux,
+            crate::drivetrain::derive_gear_aux_value(
+                crate::fixed_point::Fixed16::from_raw(effects.control_families.reciprocal_copy[0]),
+                crate::fixed_point::Fixed16::from_raw(0x8000)
+            )
+        );
+        // raw_copy and reciprocal_copy are copies of the direct and reciprocal families.
+        assert_eq!(
+            effects.control_families.raw_copy,
+            effects.control_families.post_processed_raw
+        );
+        assert_eq!(
+            effects.control_families.reciprocal_copy,
+            effects.control_families.reciprocal
         );
     }
 

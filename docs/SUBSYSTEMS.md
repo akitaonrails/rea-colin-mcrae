@@ -1521,6 +1521,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   `derive_gear_aux_value`, and `reciprocal_or_minus_one`. One focused test
   brings `cmr-core` to 1,310. The original ratio tables' loader and the
   per-surface capability tables remain to be sourced.
+  G03 gear ratio wiring from control families: `raw_copy` (block `0x210`)
+  feeds the final ratio with `DAT_0050c860`, and `reciprocal_copy` (block
+  `0x230`) feeds the auxiliary value with the reciprocal. Those blocks come
+  from the recovered initializer's control-family stages, so the gear ratio
+  wiring is closed without an external loader.
+  `derive_gear_ratio_and_aux_from_families` composes them. One end-to-end test
+  brings `cmr-core` to 1,311. The per-surface capability tables remain to be
+  sourced.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

@@ -39,6 +39,7 @@
 //! torque-to-velocity integration, and the loader that copies per-gear ratio
 //! tables into the control struct.
 
+use crate::compiled_car_initializer::CompiledControlFamilies;
 use crate::fixed_point::Fixed16;
 
 /// Coasting drag torque (`0x1999` ~ 0.1 in Q16.16) that `FUN_0040d810`
@@ -794,6 +795,23 @@ pub fn reciprocal_or_minus_one(value: i32) -> i32 {
     } else {
         (0x1_0000_0000_i64 / i64::from(value)) as i32
     }
+}
+
+/// Composes the initializer's control families with the gear ratio derivation:
+/// the final ratio is derived from `raw_copy` (block `0x210`) with
+/// `factor_c860`, and the auxiliary value from `reciprocal_copy` (block
+/// `0x230`) with `param_2`. Both use slot 0 of those blocks, matching
+/// `FUN_00420740`.
+#[must_use]
+pub fn derive_gear_ratio_and_aux_from_families(
+    families: &CompiledControlFamilies,
+    factor_c860: Fixed16,
+    param_2: Fixed16,
+) -> (Fixed16, Fixed16) {
+    (
+        derive_gear_ratio(Fixed16::from_raw(families.raw_copy[0]), factor_c860),
+        derive_gear_aux_value(Fixed16::from_raw(families.reciprocal_copy[0]), param_2),
+    )
 }
 
 /// The travel update of `FUN_00420260` when the normalized length exceeds 1.0:

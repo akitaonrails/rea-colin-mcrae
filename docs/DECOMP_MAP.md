@@ -217,7 +217,9 @@ cover the recovered pure rules.
   **G03 full second-loop accumulation (`151e36c`):** `execute_second_wheel_core` now also applies both accumulation stages: the `ctl+0x420`-gated factor (sign-matched speed delta and gear ratio, scaled and clamped) and the final table-driven factor (`dot >> 2` scaled by the table factor or `0x8000`, negated). Both accumulate `qmul(component, factor)` into the three force accumulators with wrapping addition, using the head's first direction source. The independent re-derivation test additionally checks both factors and the exact accumulator values, bringing `cmr-core` to 1,305. Runtime table wiring is next.
   **G03 axle factor and travel update (`1935467`):** the front/rear drive factors are `qmul(car_type_constant, travel)` (front `DAT_0050e19c`, rear `DAT_0050e1a0`, travel `DAT_0050e184`), derived by `FUN_00420260`. Its travel update, when the normalized length exceeds 1.0, decrements by `min(0x10000, qmul(excess, 0x8000))` and sets `DAT_0050e504`, then bumps `DAT_0050e160` by `min(0x10000, qmul(excess, 0xccc))`; the additional surface bump is `0x147` when `param_2+0x308` is nonzero else `0x20`, capped at `0x10000` with the flag cleared. `cmr-core::drivetrain` gains `derive_axle_factor`, `update_travel_on_excess`, `apply_surface_bump`, and `surface_bump_value`. Three focused tests cover the factor formula, excess decrement/bump caps, and the surface bump cap/flag, bringing `cmr-core` to 1,308. The per-car-type loader `FUN_0041e3f0` initializes these records from car data (linked meshes and defaults); recovering its constant sources is next.
   **G03 car-type runtime defaults (`7008351`):** `FUN_0041e3f0` initializes every car-type record with `DAT_0050e19c = 0x10000` (front factor constant), `DAT_0050e1a0 = 0x10000` (rear factor constant), `DAT_0050e184 = 0x10000` (initial travel), and `DAT_0050e18c = 0` (per-wheel constant). With these defaults the axle factors are simply the travel value, and the wheel drive adds no per-wheel bias. `default_car_type_constants` returns them. Two focused tests cover the defaults and the derived factors, bringing `cmr-core` to 1,309. `DAT_0050e160` and `DAT_0050e504` are runtime values whose initial values are not established by this loader; the engine/gear and per-surface capability tables remain to be sourced.
-  **G03 gear ratio and auxiliary value derivation (pending milestone):** `FUN_00420740` derives the gear ratio table as `ratio = qmul(original_at_0x40, DAT_0050c860)` and the auxiliary value as `value = qmul(original_at_0x60, reciprocal)`, where the reciprocal is `0x100000000 / iVar12` or `-1` when `iVar12 == 0`. The original ratio values are runtime car data (zero in the static image). `cmr-core::drivetrain` gains `derive_gear_ratio`, `derive_gear_aux_value`, and `reciprocal_or_minus_one`. One focused test covers the formulas and the zero/nonzero reciprocal, bringing `cmr-core` to 1,310. The original ratio tables' loader and the per-surface capability tables remain to be sourced.
+  **G03 gear ratio and auxiliary value derivation (`11b23cb`):** `FUN_00420740` derives the gear ratio table as `ratio = qmul(original_at_0x40, DAT_0050c860)` and the auxiliary value as `value = qmul(original_at_0x60, reciprocal)`, where the reciprocal is `0x100000000 / iVar12` or `-1` when `iVar12 == 0`. The original ratio values are runtime car data (zero in the static image). `cmr-core::drivetrain` gains `derive_gear_ratio`, `derive_gear_aux_value`, and `reciprocal_or_minus_one`. One focused test covers the formulas and the zero/nonzero reciprocal, bringing `cmr-core` to 1,310. The original ratio tables' loader and the per-surface capability tables remain to be sourced.
+  **G03 gear ratio wiring from control families (pending milestone):** `FUN_00420740` derives the final gear ratio from `raw_copy` (block `0x210`) with `DAT_0050c860` and the auxiliary value from `reciprocal_copy` (block `0x230`) with the reciprocal. Those blocks are produced by the recovered initializer's control-family stages, so the gear ratio wiring is closed without an external loader. `derive_gear_ratio_and_aux_from_families` composes them. One end-to-end test composes the early stage effects and checks the derived ratio/aux and the raw/reciprocal copies, bringing `cmr-core` to 1,311. The per-surface capability tables remain to be sourced.
+
 
 
 
@@ -305,13 +307,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T02:08:43Z
-milestone=derive-gear-ratio-and-aux-values
+updated_utc=2026-10-26T02:20:57Z
+milestone=wire-gear-ratio-from-control-families
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=G03-source-original-gear-ratio-and-surface-capability-tables
-next_exit_gate=the-original-gear-ratio-and-surface-capability-tables-are-sourced-from-reviewed-assets
+current_focus=G03-source-per-surface-capability-tables
+next_exit_gate=the-per-surface-capability-tables-are-sourced-from-reviewed-assets
 <!-- PROGRESS-TAIL-END -->
