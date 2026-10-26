@@ -110,6 +110,18 @@ impl StageWeatherEffects {
             snow: counters[SNOW_EFFECT_COUNTER] > 0,
         }
     }
+
+    #[must_use]
+    pub fn allows(self, effect: particles::ParticleEffect) -> bool {
+        match effect {
+            particles::ParticleEffect::Dust => self.dust,
+            particles::ParticleEffect::Snow | particles::ParticleEffect::SnowCloud => self.snow,
+            particles::ParticleEffect::Splash => self.splash,
+            particles::ParticleEffect::Clods
+            | particles::ParticleEffect::Leaves
+            | particles::ParticleEffect::GravelDryMud => true,
+        }
+    }
 }
 
 /// Named defaults from the particle/track tuning block (`0x4ebe00`, stride
@@ -207,6 +219,14 @@ pub mod particles {
             0x15 | 0x17 | 0x1a => ParticleEffect::GravelDryMud,
             _ => return None,
         })
+    }
+
+    /// Apply the stage weather gates after the recovered type dispatch.
+    pub fn gated_particle_effect(
+        type_byte: u8,
+        effects: StageWeatherEffects,
+    ) -> Option<ParticleEffect> {
+        particle_effect(type_byte).filter(|effect| effects.allows(*effect))
     }
 
     /// The initial animation frame at spawn (`FUN_00424f40` / `FUN_004a96e0`):
@@ -389,6 +409,46 @@ mod tests {
         counters[1] = 99;
         let effects = StageWeatherEffects::from_counters(&counters);
         assert!(effects.splash && effects.dust && effects.snow);
+    }
+
+    #[test]
+    fn particle_dispatch_applies_only_the_matching_weather_gates() {
+        use particles::{ParticleEffect, gated_particle_effect};
+        let disabled = StageWeatherEffects {
+            splash: false,
+            dust: false,
+            snow: false,
+        };
+        assert_eq!(gated_particle_effect(0x01, disabled), None);
+        assert_eq!(gated_particle_effect(0x07, disabled), None);
+        assert_eq!(gated_particle_effect(0x08, disabled), None);
+        assert_eq!(gated_particle_effect(0x0b, disabled), None);
+        assert_eq!(
+            gated_particle_effect(0x02, disabled),
+            Some(ParticleEffect::Clods)
+        );
+        assert_eq!(
+            gated_particle_effect(0x0c, disabled),
+            Some(ParticleEffect::Leaves)
+        );
+        let enabled = StageWeatherEffects {
+            splash: true,
+            dust: true,
+            snow: true,
+        };
+        assert_eq!(
+            gated_particle_effect(0x01, enabled),
+            Some(ParticleEffect::Dust)
+        );
+        assert_eq!(
+            gated_particle_effect(0x07, enabled),
+            Some(ParticleEffect::Snow)
+        );
+        assert_eq!(
+            gated_particle_effect(0x0b, enabled),
+            Some(ParticleEffect::Splash)
+        );
+        assert_eq!(gated_particle_effect(0x7f, enabled), None);
     }
 
     #[test]

@@ -1160,6 +1160,12 @@ splash index 0, dust index 2, and snow index 5 become boolean gates from the
 `.srf`-driven counters. `SessionSurfaceInputs::stage_weather_effects` composes
 them. One core test brings `cmr-core` to 1,317; app coverage and the real AU1
 path pass. Other counters remain unnamed and particle/render spawning is separate.
+E10 applies those gates at particle-type dispatch: dust, snow/snow-cloud, and
+splash are suppressed when disabled, while unrelated classes remain unchanged.
+`SessionSurfaceInputs::stage_particle_effect` composes the same behavior from
+`.srf` inputs. One focused test brings `cmr-core` to 1,318; app composition and
+invalid-ID propagation are covered. Actual particle pool/render spawning remains
+separate.
 
 Exit gate:
 

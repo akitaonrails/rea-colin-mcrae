@@ -1589,6 +1589,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   bytes and reviewed tables. One core test brings `cmr-core` to 1,317; app
   assertions and real AU1 pass. Other counters remain unnamed and actual
   particle/render spawning is separate.
+  E10 weather-gated particle dispatch: `StageWeatherEffects::allows` and
+  `gated_particle_effect` suppress dust, snow/snow-cloud, and splash when their
+  counters are disabled, leaving clods, leaves, and gravel unaffected.
+  `SessionSurfaceInputs::stage_particle_effect` composes the same path. One test
+  brings `cmr-core` to 1,318; app assertions cover composition and invalid IDs.
+  Actual particle pool/render spawning remains separate.
   See
   `rea.official-eu.sim-compiled-car-initializer-schema`,
   `rea.official-eu.sim-compiled-control-run-transform`,

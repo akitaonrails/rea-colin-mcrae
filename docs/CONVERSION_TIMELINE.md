@@ -452,7 +452,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T05:36Z | 135h18m | recover-stage-srf-surface-id-production | `9c749ea` | G03 | `FUN_00480a10` passes the CMPR-decoded `.srf` allocation and loader byte count directly to `FUN_00424a40`, identifying the stage IDs as the `.srf` bytes. `SessionSurfaceInputs::open_stage` and `stage_effect_enables` reproduce the path with safe bounds rejection. One test brings `cmr-app` to 24 library tests; real AU1 passes. Weather/render consumption remains open. |
 
-| 2026-10-26T05:44Z | 135h26m | wire-stage-weather-effect-gates | _(pending)_ | G03/E10 | Wired the recovered splash (0), dust (2), and snow (5) counters into `StageWeatherEffects` and `SessionSurfaceInputs::stage_weather_effects`. One core test brings `cmr-core` to 1,317; app assertions and the real AU1 path pass. Other counters remain unnamed and particle/render spawning remains separate. |
+| 2026-10-26T05:44Z | 135h26m | wire-stage-weather-effect-gates | `553ad2c` | G03/E10 | Wired the recovered splash (0), dust (2), and snow (5) counters into `StageWeatherEffects` and `SessionSurfaceInputs::stage_weather_effects`. One core test brings `cmr-core` to 1,317; app assertions and the real AU1 path pass. Other counters remain unnamed and particle/render spawning remains separate. |
+
+| 2026-10-26T05:51Z | 135h33m | apply-weather-gates-to-particle-dispatch | _(pending)_ | E10 | Added `StageWeatherEffects::allows` and `gated_particle_effect`: dust, snow/snow-cloud, and splash are suppressed when disabled, while unrelated classes remain unchanged. `SessionSurfaceInputs::stage_particle_effect` composes the `.srf`-driven path. One focused test brings `cmr-core` to 1,318; app composition and invalid IDs are covered. Actual particle pool/render spawning remains separate. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

@@ -227,7 +227,8 @@ cover the recovered pure rules.
   **G03 runtime fifth-table zero-initialization boundary (`e5ab966`):** a complete initialized-memory literal search finds exactly three `DAT_0054f824` sites (`0x4240dd`, `0x424b1d`, `0x425ed6`), all byte reads in `FUN_00424a40`/`FUN_00425e30` or the undecoded read site; no direct writer is present. `address_to_file_offset` reports no authoritative file mapping, so the loader-established value is zero. `ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE` models that startup boundary, with one counter test bringing `cmr-core` to 1,316. Indirect/aliased runtime writes remain unproven; this is not a claim that the table can never change. Application/session wiring remains open.
   **G03 application session surface-input boundary (`96b0c9d`):** `cmr-app::SessionSurfaceInputs::open` loads `runtime-data/official-eu-surface-capabilities` through the embedded reviewed profile, owns the authenticated store, and pairs it with the zero-initialized runtime fifth table. `effect_enables(stage_surface_ids)` computes the recovered counter vector only for caller-supplied IDs; no IDs are inferred while the stage producer is unrecovered. Two tests cover the full map/invalid IDs and tamper rejection, bringing `cmr-app` to 23 library tests; the opt-in official session-open smoke passes without exposing values. Actual stage-surface-ID extraction and rendering/weather consumption remain open.
   **G03 stage `.srf` surface-ID production (`9c749ea`):** `FUN_00480a10` appends `.srf`, loads it through shared CMPR-capable `FUN_00495ed0`, and passes the decoded allocation plus `DAT_00a1f950` directly to `FUN_00424a40`; the count is the loader's byte count. The IDs are therefore the decoded `.srf` bytes, not a C3D/CAT-derived list. `SessionSurfaceInputs::open_stage` uses the existing bounded CMPR-aware section reader and `stage_effect_enables` consumes those bytes with safe out-of-range rejection. One test covers raw IDs, duplicates, invalid IDs and missing siblings, bringing `cmr-app` to 24 library tests; the real AU1 opt-in path passes. Weather/render consumption of the counters remains open.
-  **G03 stage weather-effect gating (pending milestone):** the recovered counter globals pin splash `DAT_005240b0` at index 0, dust `DAT_0054f820` at index 2, and snow `DAT_0054ba84` at index 5. `cmr-core::weather::StageWeatherEffects::from_counters` converts those counters to boolean gates, and `SessionSurfaceInputs::stage_weather_effects` composes them from the actual `.srf` bytes and reviewed tables. One core test covers zero/positive gates and an unrelated counter, bringing `cmr-core` to 1,317; the app test checks all three gates and invalid-ID propagation, and the real AU1 path passes. Other counters remain unnamed, and particle/render spawning is still separate.
+  **G03 stage weather-effect gating (`553ad2c`):** the recovered counter globals pin splash `DAT_005240b0` at index 0, dust `DAT_0054f820` at index 2, and snow `DAT_0054ba84` at index 5. `cmr-core::weather::StageWeatherEffects::from_counters` converts those counters to boolean gates, and `SessionSurfaceInputs::stage_weather_effects` composes them from the actual `.srf` bytes and reviewed tables. One core test covers zero/positive gates and an unrelated counter, bringing `cmr-core` to 1,317; the app test checks all three gates and invalid-ID propagation, and the real AU1 path passes. Other counters remain unnamed, and particle/render spawning is still separate.
+  **E10 weather-gated particle dispatch (pending milestone):** `StageWeatherEffects::allows` and `particles::gated_particle_effect` apply the recovered gates after the existing type dispatch: dust, snow/snow-cloud, and splash are suppressed when disabled, while clods, leaves, and gravel/dry-mud remain unaffected. `SessionSurfaceInputs::stage_particle_effect` composes the same path from the `.srf` data. One focused test covers every gated family, an unrelated class, and an unknown type, bringing `cmr-core` to 1,318; app assertions cover composition and invalid-ID propagation. Actual particle pool/render spawning remains a separate backend task.
 
 
 
@@ -317,13 +318,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-26T05:44:10Z
-milestone=wire-stage-weather-effect-gates
+updated_utc=2026-10-26T05:51:29Z
+milestone=apply-weather-gates-to-particle-dispatch
 completed=59
 partial=59
 not_started=0
 blocked=0
 total=118
-current_focus=E10-wire-stage-weather-gates-into-particle-spawning
-next_exit_gate=weather-gates-control-the-reconstructed-particle-effects
+current_focus=E10-reconstruct-particle-pool-spawn-records
+next_exit_gate=gated-particle-types-produce-the-recovered-pool-records
 <!-- PROGRESS-TAIL-END -->
