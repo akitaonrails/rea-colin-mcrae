@@ -1939,8 +1939,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   order. `suppress_low_speed_position_delta` reproduces the active-contact
   low-speed position gate without changing velocity. `apply_translation_step`
   now applies it after the half-delta calculation, and the four-lane path derives
-  activity from contact flags. Contact-state population and full four-iteration
-  production remain open. See evidence
+  activity from contact flags. `step_with_all_four_wheels` runs all first and
+  second iterations in native reverse order with axle equalization before the
+  geometric postprocess and translation. Contact-state population and
+  vertical/application wiring remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish

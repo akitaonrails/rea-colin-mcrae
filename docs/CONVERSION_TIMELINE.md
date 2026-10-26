@@ -508,7 +508,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T10:20Z | 140h02m | recover-low-speed-position-suppression | `a030f68` | G03, G04 | Added `suppress_low_speed_position_delta` for the active-contact `speed < 0xccc` position gate, with velocity left untouched. One exact-boundary test brings `cmr-core` to 1,344. Translation integration and contact-state population remain open. |
 
-| 2026-10-26T10:29Z | 140h11m | wire-low-speed-suppression-into-translation | _(pending)_ | G03, G09 | Added `contacts_active` to `TranslationStepInput` and applied suppression after half-delta calculation. Four-lane activity comes from contact flags; ordinary paths remain unsuppressed. One direct velocity/position test brings `cmr-core` to 1,345. Contact-state population and full lane production remain open. |
+| 2026-10-26T10:29Z | 140h11m | wire-low-speed-suppression-into-translation | `2cec125` | G03, G09 | Added `contacts_active` to `TranslationStepInput` and applied suppression after half-delta calculation. Four-lane activity comes from contact flags; ordinary paths remain unsuppressed. One direct velocity/position test brings `cmr-core` to 1,345. Contact-state population and full lane production remain open. |
+
+| 2026-10-26T10:41Z | 140h23m | compose-all-four-wheel-iterations | _(pending)_ | G03, G09 | Added `FourWheelState` and `step_with_all_four_wheels`: reverse first iterations, axle equalization, reverse second iterations, geometric postprocess and translation. Shared helpers preserve single-wheel behavior. One axle/kernel comparison test brings `cmr-core` to 1,346. Runtime-input population and vertical/application wiring remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

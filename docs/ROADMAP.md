@@ -1255,7 +1255,11 @@ to 1,343. `suppress_low_speed_position_delta` now reproduces the active-contact
 `0xccc` gate without changing velocity, bringing `cmr-core` to 1,344. The gate
 now runs inside `apply_translation_step`, with four-lane activity derived from
 contact flags and ordinary harness paths unsuppressed, bringing `cmr-core` to
-1,345. Contact-state population and complete four-lane production remain open.
+1,345. `step_with_all_four_wheels` now runs all first iterations in reverse,
+equalizes axles, runs all second iterations in reverse, then postprocesses and
+translates, bringing `cmr-core` to 1,346. This is complete composition over
+explicit runtime inputs; contact-state population and vertical/application wiring
+remain open.
 
 Exit gate:
 
