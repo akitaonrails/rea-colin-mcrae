@@ -2101,6 +2101,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   clamp. Thirty-four tests cover particles, render queues, shadows, fog and
   tuning. Surface and sprite tables remain caller-supplied data; E10 is complete.
   See evidence `impl.weather-effects`.
+- The imported-stage benchmark supplies representative render comparisons with
+  a documented 0.1% sampling-tie budget; both opt-in GPU conformance tests pass
+  alongside the 9 source-owned image tests. E11 is complete.
 - `cmr-test-support::image_compare` is the differential-verification primitive
   (E11) that closes the recovered format work. The reconstruction order ends
   each subsystem by verifying behavior against a differential fixture; the

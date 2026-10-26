@@ -1448,6 +1448,10 @@ E10 is complete: `fog_settings` implements every weather/intensity/country fog
 row and low-detail fallback, and `MAX_DUST_SIZE` is the native 2.0 Q16.16 clamp.
 One focused test brings `cmr-core` to 1,406; 34 weather tests pass. Surface and
 sprite tables remain caller-supplied data.
+E11 is complete: the source-owned RGB/tolerance fixtures and imported-stage
+benchmark provide representative comparisons, including the documented 0.1%
+sampling-tie budget. All 9 image tests and both opt-in GPU conformance tests pass
+on this checkpoint; no additional fixture layer is needed.
 
 Exit gate:
 

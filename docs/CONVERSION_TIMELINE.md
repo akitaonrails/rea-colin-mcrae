@@ -618,7 +618,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T18:12Z | 147h54m | complete-car-resources | `a1c9496` | E09 | Recovered the 16-slot car-data free-and-clear teardown and confirmed wheel size/scale roles. One test brings `cmr-core` to 1,405; E09 is complete with variant tables retained as runtime data. |
 
-| 2026-10-26T18:18Z | 148h00m | complete-environment-effects | _(pending)_ | E10 | Implemented the complete weather/intensity/country fog selector and resolved `Max_dust_size` as 2.0 Q16.16. One test brings `cmr-core` to 1,406; all 34 weather tests pass and E10 is complete with external tables kept as data. |
+| 2026-10-26T18:18Z | 148h00m | complete-environment-effects | `9c4623c` | E10 | Implemented the complete weather/intensity/country fog selector and resolved `Max_dust_size` as 2.0 Q16.16. One test brings `cmr-core` to 1,406; all 34 weather tests pass and E10 is complete with external tables kept as data. |
+
+| 2026-10-26T18:20Z | 148h02m | complete-image-comparison-fixtures | _(pending)_ | E11 | Revalidated all 9 source-owned image tests and both opt-in GPU conformance tests. Representative stage comparisons and the 0.1% sampling-tie budget close E11 without duplicate fixtures. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
