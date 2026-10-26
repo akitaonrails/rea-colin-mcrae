@@ -640,7 +640,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T18:59Z | 148h41m | complete-native-host-loop | `40b0db4` | B09 | Confirmed the native `WallClock` drives the recovered frame driver, 25 Hz catch-up, render skipping and windowed lifecycle. Busy-wait timing and the event pump remain host policy. |
 
-| 2026-10-26T19:00Z | 148h42m | complete-native-input-acquisition | _(pending)_ | B10 | Confirmed SDL keyboard/gamepad polling feeds the recovered mapper and drivetrain with analog dead-zones and hotplug support. DirectInput remains enumeration-only. |
+| 2026-10-26T19:00Z | 148h42m | complete-native-input-acquisition | `8be3789` | B10 | Confirmed SDL keyboard/gamepad polling feeds the recovered mapper and drivetrain with analog dead-zones and hotplug support. DirectInput remains enumeration-only. |
+
+| 2026-10-26T19:07Z | 148h49m | complete-window-presentation | _(pending)_ | B11 | Added physical drawable-size queries and F11 fullscreen toggling to all SDL loops. One event test and an offscreen enter/exit smoke test pass. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

@@ -1483,6 +1483,9 @@ message pumping remain host policy rather than unmodeled game behavior.
 B10 is complete: SDL keyboard and gamepad polling feed the recovered mapper and
 drivetrain with analog dead-zones and hotplug handling. DirectInput is confined
 to enumeration, and no legacy input backend is loaded.
+B11 is complete: `physical_drawable_size` exposes real pixel dimensions and F11
+toggles fullscreen in every SDL loop. An offscreen smoke test proves enter/exit
+fullscreen alongside the shared presentation-scaling contract.
 
 Exit gate:
 

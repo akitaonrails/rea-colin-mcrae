@@ -27,7 +27,7 @@ use cmr_core::audio_music_cues::FRONTEND_CONTEXT;
 use cmr_core::frontend::FrontendInput;
 use cmr_core::host_lifecycle::{HostLifecycle, PlatformLifecycleEvent};
 use cmr_core::music_player::MusicController;
-use cmr_core::present_scaling::{DEFAULT_SCALING, PresentationScaling};
+use cmr_core::present_scaling::{DEFAULT_SCALING, PhysicalSize, PresentationScaling};
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::RootRenderInput;
 use cmr_core::window::{WindowEffect, WindowMode};
@@ -56,6 +56,31 @@ fn logical_presentation(
             sdl3::sys::render::SDL_LOGICAL_PRESENTATION_INTEGER_SCALE
         }
     }
+}
+
+/// Query the actual drawable pixel dimensions of the SDL window.
+#[must_use]
+pub fn physical_drawable_size(canvas: &Canvas<Window>) -> PhysicalSize {
+    let (width, height) = canvas.window().size_in_pixels();
+    PhysicalSize { width, height }
+}
+
+fn toggle_fullscreen(canvas: &mut Canvas<Window>) -> Result<(), SdlHostError> {
+    let window = canvas.window_mut();
+    let enable = window.fullscreen_state() == sdl3::video::FullscreenType::Off;
+    window
+        .set_fullscreen(enable)
+        .map_err(|error| SdlHostError::sdl("fullscreen toggle", error))
+}
+
+fn is_fullscreen_toggle(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::KeyDown {
+            keycode: Some(Keycode::F11),
+            ..
+        }
+    )
 }
 
 /// Platform-neutral events relevant to the first native host loop.
@@ -288,6 +313,9 @@ fn present_software_frame_impl(
 
     while !state.exit_requested() {
         let event = events.wait_event();
+        if is_fullscreen_toggle(&event) {
+            toggle_fullscreen(&mut canvas)?;
+        }
         let host_event = map_event(&event);
         let apply_event = match host_event {
             HostEvent::GamepadAdded(id) => {
@@ -578,6 +606,9 @@ pub fn run_interactive_root_frame<E>(
         }
         let mut host_events = Vec::with_capacity(pending.len());
         for event in pending {
+            if is_fullscreen_toggle(&event) {
+                toggle_fullscreen(&mut canvas).map_err(host)?;
+            }
             feed_input_event(&event, &mut mapper);
             let host_event = map_event(&event);
             host_events.push(host_event);
@@ -797,6 +828,9 @@ where
         let mut host_events = Vec::new();
         if let Some(event) = events.wait_event_timeout(INTERACTIVE_FRAME_INTERVAL) {
             for event in std::iter::once(event).chain(events.poll_iter()) {
+                if is_fullscreen_toggle(&event) {
+                    toggle_fullscreen(&mut canvas)?;
+                }
                 match event {
                     Event::KeyDown {
                         keycode: Some(code),
@@ -1081,6 +1115,62 @@ mod tests {
         assert_eq!(
             destination,
             [1, 2, 3, 4, 0xaa, 0xaa, 5, 6, 7, 8, 0xaa, 0xaa]
+        );
+    }
+
+    #[test]
+    fn f11_is_the_fullscreen_toggle() {
+        let event = Event::KeyDown {
+            timestamp: 0,
+            window_id: 1,
+            keycode: Some(Keycode::F11),
+            scancode: None,
+            keymod: sdl3::keyboard::Mod::empty(),
+            repeat: false,
+            raw: 0,
+            which: 0,
+        };
+        assert!(is_fullscreen_toggle(&event));
+        let other = Event::KeyDown {
+            timestamp: 0,
+            window_id: 1,
+            keycode: Some(Keycode::F10),
+            scancode: None,
+            keymod: sdl3::keyboard::Mod::empty(),
+            repeat: false,
+            raw: 0,
+            which: 0,
+        };
+        assert!(!is_fullscreen_toggle(&other));
+    }
+
+    #[test]
+    #[ignore = "requires an SDL video driver"]
+    fn fullscreen_toggle_and_physical_size_work() {
+        let sdl = sdl3::init().unwrap();
+        let video = sdl.video().unwrap();
+        let window = video
+            .window("fullscreen contract", 32, 24)
+            .resizable()
+            .build()
+            .unwrap();
+        let mut canvas = window.into_canvas();
+        assert_eq!(
+            physical_drawable_size(&canvas),
+            PhysicalSize {
+                width: 32,
+                height: 24,
+            }
+        );
+        toggle_fullscreen(&mut canvas).unwrap();
+        assert_ne!(
+            canvas.window().fullscreen_state(),
+            sdl3::video::FullscreenType::Off
+        );
+        toggle_fullscreen(&mut canvas).unwrap();
+        assert_eq!(
+            canvas.window().fullscreen_state(),
+            sdl3::video::FullscreenType::Off
         );
     }
 
