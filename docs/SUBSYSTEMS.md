@@ -2260,10 +2260,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   the `is_championship` and two-player head-to-head predicates. The opponent AI
   time tables (procedurally generated per stage), record times, and stage names
   are game data and are not vendored - only the offsets, strides, ranking
-  formulas, and predicates. No persisted unlock bitfield exists (gating is
-  dynamic over live standings); the post-finish stage-advance writer and the
-  per-slot intra-element base remain open. See evidence
-  `rea.official-eu.championship-progression` and `impl.championship-progression`.
+  formulas, and predicates. The ordinary post-stage writer `FUN_00436f00`
+  increments the six-bit progress counter and packed stage, preserving country
+  and reporting completion without rollback; `FUN_00437090` handles country
+  advance/reset and clears all 16 cumulative-time slots. The direct ranking
+  accesses resolve the former base ambiguity: time is `+0x16c`, positions are
+  `+0x170`. Custom-mode scheduling, record-image persistence and exhaustive
+  unlock gating remain. See evidence `rea.official-eu.championship-progression`,
+  `rea.official-eu.championship-stage-commit` and their implementation rows.
 - The F02 frontend-configuration structure spans three modules.
   `cmr-core::options_screen` models the settings-header encoding the options
   screens edit (volume channels `0x0c..0x0f` 7-bit + master flag, display-flags

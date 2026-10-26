@@ -202,6 +202,59 @@ pub fn stage_index(byte_168: u8) -> u8 {
     byte_168 >> 4
 }
 
+/// Result of the ordinary post-stage commit in `FUN_00436f00`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StageCommit {
+    /// Updated `+0x167`: the low six-bit progress counter advances even when
+    /// the event is complete; the upper two bits are preserved.
+    pub progress: u8,
+    /// Updated `+0x168`: the stage nibble advances and the country is retained.
+    pub cursor: u8,
+    /// The ordinary three-stage event has no following stage.
+    pub event_complete: bool,
+}
+
+/// Commit one finished stage in the ordinary (`+0x166 & 3 == 0`) event path.
+///
+/// The native writer does not restore either counter when the event completes.
+/// Country selection is a separate decision made by `FUN_00437090`.
+#[must_use]
+pub fn commit_ordinary_stage(progress: u8, cursor: u8) -> StageCommit {
+    let progress = (progress & 0xc0) | (progress.wrapping_add(1) & 0x3f);
+    let cursor = (cursor & 0xf0).wrapping_add(0x10) | (cursor & 0x0f);
+    StageCommit {
+        progress,
+        cursor,
+        event_complete: cursor & 0xf0 >= 0x30,
+    }
+}
+
+/// Advance to the next country at its first stage (`FUN_00437090`).
+///
+/// `can_continue` is the native country-range and external-availability gate.
+/// A rejected transition leaves the cursor untouched.
+#[must_use]
+pub fn advance_country(cursor: u8, can_continue: bool) -> Option<u8> {
+    can_continue.then(|| (cursor & 0x0f).wrapping_add(1) & 0x0f)
+}
+
+/// Stage-count value written to the low nibble of `+0x165` after a country
+/// advance: six normally, seven when the next country is in the native
+/// four-entry special-country table (`FUN_00485b80`).
+#[must_use]
+pub fn next_country_stage_count(next_country: u8, special_countries: &[u8; 4]) -> u8 {
+    if special_countries.contains(&next_country) {
+        7
+    } else {
+        6
+    }
+}
+
+/// Clear every cumulative-time slot, as done on a country advance.
+pub fn clear_cumulative_times(times: &mut [u32; RESULT_SLOT_COUNT]) {
+    times.fill(0);
+}
+
 /// The game-mode enum nibble within `+0x166` (`& 0x1c`).
 pub fn game_mode(byte_166: u8) -> u8 {
     byte_166 & MODE_ENUM_MASK
@@ -315,6 +368,31 @@ mod tests {
         assert!(uses_record_path(0x02));
         assert!(!uses_record_path(0x01));
         assert_eq!(game_mode(0xff), 0x1c);
+    }
+
+    #[test]
+    fn ordinary_stage_commit_preserves_country_and_completion_cursor() {
+        let next = commit_ordinary_stage(0x80, 0x13);
+        assert_eq!(next.progress, 0x81);
+        assert_eq!(next.cursor, 0x23);
+        assert!(!next.event_complete);
+
+        let complete = commit_ordinary_stage(0xbf, 0x23);
+        assert_eq!(complete.progress, 0x80);
+        assert_eq!(complete.cursor, 0x33);
+        assert!(complete.event_complete);
+    }
+
+    #[test]
+    fn country_advance_rejects_or_restarts_and_clears_times() {
+        assert_eq!(advance_country(0x23, false), None);
+        assert_eq!(advance_country(0x23, true), Some(0x04));
+        assert_eq!(next_country_stage_count(3, &[1, 3, 6, 8]), 7);
+        assert_eq!(next_country_stage_count(4, &[1, 3, 6, 8]), 6);
+
+        let mut times = [7; RESULT_SLOT_COUNT];
+        clear_cumulative_times(&mut times);
+        assert_eq!(times, [0; RESULT_SLOT_COUNT]);
     }
 
     #[test]

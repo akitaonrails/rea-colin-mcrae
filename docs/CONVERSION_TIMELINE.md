@@ -598,7 +598,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T17:06Z | 146h48m | complete-codriver-scheduling | `2d970f2` | G07 | Recovered the 20-byte display record and depth-2 visual FIFO, including rotation, TTL eviction, modifier accumulation and over-depth behavior. Audio routing now uses replay-car and active-player counts. Two display/FIFO tests bring `cmr-core` to 1,385; G07 is complete. |
 
-| 2026-10-26T17:17Z | 146h59m | complete-rival-participants | _(pending)_ | G06 | Recovered replay data-slot versus simulated-car counts and the full procedural rival-time generator: tier curves, LCG jitter, exclusions, remap and difficulty placement. One setup test and two generator tests bring `cmr-core` to 1,386. G06 is complete without inventing on-track AI. |
+| 2026-10-26T17:17Z | 146h59m | complete-rival-participants | `8244b76` | G06 | Recovered replay data-slot versus simulated-car counts and the full procedural rival-time generator: tier curves, LCG jitter, exclusions, remap and difficulty placement. One setup test and two generator tests bring `cmr-core` to 1,386. G06 is complete without inventing on-track AI. |
+
+| 2026-10-26T17:29Z | 147h11m | recover-stage-advance-writer | _(pending)_ | F06 | Pinned `FUN_00436f00` ordinary stage/progress commit, `FUN_00437090` country advance/time clearing, and direct `+0x16c` time versus `+0x170` position bases. Two tests bring `cmr-core` to 1,388. Custom scheduling and record/unlock residuals remain. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

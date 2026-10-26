@@ -1404,6 +1404,11 @@ G06 is complete: replay data slots and simulated cars have separate recovered
 counts, and `generate_rival_times` covers tier curves, LCG jitter, exclusions,
 remapping and difficulty placement. One setup test and two generator tests bring
 `cmr-core` to 1,386. No on-track AI is inferred.
+F06 now pins the ordinary post-stage writer and country transition: the native
+commit increments progress and the packed stage without rollback, country
+advance resets the stage and clears cumulative times, and direct ranking
+accesses resolve time at `+0x16c` versus positions at `+0x170`. Two tests bring
+`cmr-core` to 1,388. Custom scheduling and record/unlock residuals remain.
 
 Exit gate:
 
