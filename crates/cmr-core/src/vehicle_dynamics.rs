@@ -989,6 +989,18 @@ pub fn sum_translation_lane_forces(
         .fold(base, Vec3::add)
 }
 
+/// Apply the three row-wise Q16.16 dot products of `FUN_0048e100`.
+#[must_use]
+pub fn transform_contact_force(rows: [Vec3; 3], force: Vec3) -> Vec3 {
+    Vec3::new(rows[0].dot(force), rows[1].dot(force), rows[2].dot(force))
+}
+
+/// Transform a contact force before its recovered moment cross product.
+#[must_use]
+pub fn transformed_contact_moment(rows: [Vec3; 3], force: Vec3, offset: Vec3) -> Vec3 {
+    wrapping_cross(transform_contact_force(rows, force), offset)
+}
+
 /// Accumulate the moment portion of `FUN_0040a4a0` as
 /// `transformed_force x contact_offset` with wrapping Q16.16 products.
 /// Non-wheel contacts are unconditional; wheel contacts use their contact flag.
@@ -1425,6 +1437,32 @@ mod tests {
         // drag = v * speed.
         let d = drag(v(1, 0, 0), Fixed16::from_raw(0x8000));
         assert_eq!(d.x, Fixed16::from_raw(0x8000));
+    }
+
+    #[test]
+    fn contact_force_transform_uses_matrix_rows_before_the_cross_product() {
+        let identity = [
+            raw_v(0x10000, 0, 0),
+            raw_v(0, 0x10000, 0),
+            raw_v(0, 0, 0x10000),
+        ];
+        let force = raw_v(0x10000, 0x20000, 0x30000);
+        assert_eq!(transform_contact_force(identity, force), force);
+        assert_eq!(
+            transform_contact_force(
+                [
+                    raw_v(0, 0x10000, 0),
+                    raw_v(0, 0, 0x10000),
+                    raw_v(0x10000, 0, 0),
+                ],
+                force,
+            ),
+            raw_v(0x20000, 0x30000, 0x10000)
+        );
+        assert_eq!(
+            transformed_contact_moment(identity, raw_v(0x10000, 0, 0), raw_v(0, 0x10000, 0),),
+            raw_v(0, 0, 0x10000)
+        );
     }
 
     #[test]

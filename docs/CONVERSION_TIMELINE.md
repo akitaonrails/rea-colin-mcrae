@@ -488,7 +488,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T09:27Z | 139h09m | recover-contact-vector-update | `b3a1604` | G03 | Added `apply_contact_vector_update`: gate/contact skips, basis projection, legacy normalization, extra-length subtraction and the distinct threshold/limit clamp from `FUN_0040d400`. One focused test covers all branches and normalization truncation; `cmr-core` has 1,334 tests. Eight-record wiring and moments remain open. |
 
-| 2026-10-26T09:33Z | 139h15m | recover-contact-moment-aggregation | _(pending)_ | G03 | Added `sum_contact_moments`: transformed force cross contact offset with non-wheel inclusion and contacted-wheel filtering. One focused test covers handedness, cancellation, filtering and wrapping; `cmr-core` has 1,335 tests. `FUN_0048e100` composition, angular integration and full lane production remain open. |
+| 2026-10-26T09:33Z | 139h15m | recover-contact-moment-aggregation | `44c9ba1` | G03 | Added `sum_contact_moments`: transformed force cross contact offset with non-wheel inclusion and contacted-wheel filtering. One focused test covers handedness, cancellation, filtering and wrapping; `cmr-core` has 1,335 tests. `FUN_0048e100` composition, angular integration and full lane production remain open. |
+
+| 2026-10-26T09:37Z | 139h19m | recover-contact-force-transform | _(pending)_ | G03 | Recovered `FUN_0048e100` as three row-wise Q16.16 dot products. Added `transform_contact_force` and `transformed_contact_moment` with identity, row-permutation and transform-before-cross coverage; `cmr-core` has 1,336 tests. Angular integration and full lane production remain open. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

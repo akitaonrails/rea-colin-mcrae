@@ -1234,8 +1234,10 @@ tick; its test checks negative motion from the negative contacted lane.
 normalization, extra-length subtraction and distinct threshold/limit clamp, with
 one additional test bringing `cmr-core` to 1,334. `sum_contact_moments` now
 reproduces transformed-force cross contact-offset accumulation with the same
-contact filtering, bringing `cmr-core` to 1,335. `FUN_0048e100` composition,
-angular integration, eight-record wiring and complete four-lane production remain
+contact filtering, bringing `cmr-core` to 1,335. `transform_contact_force` and
+`transformed_contact_moment` now reproduce the row-wise `FUN_0048e100` transform
+before the cross product, with one additional test bringing `cmr-core` to 1,336.
+Angular integration, eight-record wiring and complete four-lane production remain
 open.
 
 Exit gate:

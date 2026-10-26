@@ -1922,8 +1922,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `FUN_0040d400` record with basis projection, legacy normalization, extra-length
   subtraction and the distinct threshold/limit clamp. `sum_contact_moments`
   crosses each transformed force with its contact offset under the native contact
-  gates. `FUN_0048e100` composition, angular integration, eight-record traversal,
-  and full four-iteration production remain open. See evidence
+  gates. `transform_contact_force` reproduces the three row-wise `FUN_0048e100`
+  dot products, and `transformed_contact_moment` applies that transform before the
+  cross product. Angular integration, eight-record traversal, and full
+  four-iteration production remain open. See evidence
   `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
   `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
