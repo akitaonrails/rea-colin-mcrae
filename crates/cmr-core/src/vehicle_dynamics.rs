@@ -86,6 +86,20 @@ use crate::{
     },
 };
 
+/// Initialized solver globals recovered from official-EU `DAT_004eac6c/70/74`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SolverGlobalConstants {
+    pub time_step: Fixed16,
+    pub force_scale: Fixed16,
+    pub damping: Fixed16,
+}
+
+pub const SOLVER_GLOBAL_CONSTANTS: SolverGlobalConstants = SolverGlobalConstants {
+    time_step: Fixed16::ONE,
+    force_scale: Fixed16::ONE,
+    damping: Fixed16::ONE,
+};
+
 /// Velocity-integration gain applied to acceleration (`0x3333` ~ 0.2); the
 /// fixed 40 ms step is folded into this tuned coefficient.
 pub const VELOCITY_GAIN: Fixed16 = Fixed16::from_raw(0x3333);
@@ -2237,6 +2251,13 @@ mod tests {
             }),
             [velocity; 8]
         );
+    }
+
+    #[test]
+    fn solver_global_constants_are_all_one() {
+        assert_eq!(SOLVER_GLOBAL_CONSTANTS.time_step, Fixed16::ONE);
+        assert_eq!(SOLVER_GLOBAL_CONSTANTS.force_scale, Fixed16::ONE);
+        assert_eq!(SOLVER_GLOBAL_CONSTANTS.damping, Fixed16::ONE);
     }
 
     #[test]

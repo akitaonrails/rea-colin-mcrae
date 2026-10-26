@@ -58,7 +58,7 @@ use cmr_core::startup_display::{
 use cmr_core::surface::PaletteMapping;
 use cmr_core::vehicle_dynamics::{
     AngularMomentumStepInput, AngularOrientationInput, ControlAxisFlags, GeometricPostprocessLane,
-    SurfaceCoefficientIndexError,
+    SOLVER_GLOBAL_CONSTANTS, SurfaceCoefficientIndexError,
 };
 use cmr_core::weather::{StageWeatherEffects, particles};
 use cmr_formats::bitmap::BitmapLimits;
@@ -1944,7 +1944,7 @@ impl SessionWheelInputs {
                     source_y: [0x199a; 8],
                 },
             lane_response_2d8: Fixed16::ZERO,
-            lane_time_step: Fixed16::ZERO,
+            lane_time_step: SOLVER_GLOBAL_CONSTANTS.time_step,
             lane_direction_angle: 0,
             lane_rebuild: false,
             lane_exchange: false,
@@ -1963,7 +1963,7 @@ impl SessionWheelInputs {
                     moment_scale: Fixed16::ONE,
                     inertia_scale: Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE),
                     angular_velocity: Vec3::ZERO,
-                    time_step: Fixed16::ZERO,
+                    time_step: SOLVER_GLOBAL_CONSTANTS.time_step,
                 },
                 clamp_enabled: false,
                 control: ControlAxisFlags {
@@ -1986,7 +1986,7 @@ impl SessionWheelInputs {
                 &mut wheel.first[index],
                 &mut wheel.second[index],
                 Fixed16::from_raw(0x30000),
-                Fixed16::from_raw(0x20000),
+                SOLVER_GLOBAL_CONSTANTS.force_scale,
                 Fixed16::from_raw(0x40000),
             );
         }

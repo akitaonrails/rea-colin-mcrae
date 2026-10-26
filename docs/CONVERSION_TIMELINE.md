@@ -560,7 +560,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T14:40Z | 144h22m | complete-deterministic-offline-trace | `28c3436` | G09 | G09 is complete as a deterministic contract: full four-wheel production, checked errors, start/finish/replay, authenticated sessions and interactive startup are covered. Harness tuning remains explicit and is not trajectory-equivalence evidence. Workspace gates pass. |
 
-| 2026-10-26T14:42Z | 144h24m | complete-vertical-path | _(pending)_ | G10 | G10 is complete under its documented harness contract: start, drive, checkpoint finish, trace decode and exact replay work with the complete producer and application wiring. The 1-D stage and forward-only channel remain explicit simplifications. Workspace gates pass. |
+| 2026-10-26T14:42Z | 144h24m | complete-vertical-path | `04ccd4f` | G10 | G10 is complete under its documented harness contract: start, drive, checkpoint finish, trace decode and exact replay work with the complete producer and application wiring. The 1-D stage and forward-only channel remain explicit simplifications. Workspace gates pass. |
+
+| 2026-10-26T14:52Z | 144h34m | recover-solver-global-constants | _(pending)_ | G03 | Recovered `DAT_004eac6c/70/74` as static `0x10000` constants and wired them into lane stabilization, angular timestep and force scaling. One exact-value test brings `cmr-core` to 1,364; native four-wheel and authenticated session tests pass. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

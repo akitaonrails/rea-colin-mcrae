@@ -2006,8 +2006,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   are covered, with explicit harness tuning documented rather than trajectory-equivalent
   behavior. G10 is complete under its documented harness contract: start, drive,
   checkpoint finish, save/replay, complete production and application wiring are all
-  covered. See evidence `impl.sim-race-state-trace`, `impl.sim-translation-step`, and
-  `impl.sim-full-second-accumulation`.
+  covered. `SOLVER_GLOBAL_CONSTANTS` pins the static `DAT_004eac6c/70/74` values to
+  `0x10000` and uses them for lane stabilization, angular timestep and force scaling in
+  the application path. See evidence `impl.sim-race-state-trace`,
+  `impl.sim-translation-step`, and `impl.sim-full-second-accumulation`.
 - `cmr-core::vertical_path::drive_stage` completes the start -> drive -> finish
   -> save-replay vertical path over the deterministic race state: it starts a
   stage, drives a scripted control sequence at the fixed tick (crossing

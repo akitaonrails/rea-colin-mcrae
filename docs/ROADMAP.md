@@ -1337,7 +1337,10 @@ G09 is complete as a deterministic offline-trace contract: the full four-wheel p
 checked errors, start/finish/replay and authenticated sessions are covered. Explicit
 harness tuning is documented and does not imply trajectory equivalence. G10 is also
 complete under its documented harness contract: start, drive, checkpoint finish,
-save/replay, the complete producer and application wiring are all covered.
+save/replay, the complete producer and application wiring are all covered. Static
+`DAT_004eac6c/70/74` are now recovered as `SOLVER_GLOBAL_CONSTANTS` (all `0x10000`)
+and drive lane stabilization, angular timestep and force scaling in the native
+application path. One constant-evidence test brings `cmr-core` to 1,364.
 
 Exit gate:
 

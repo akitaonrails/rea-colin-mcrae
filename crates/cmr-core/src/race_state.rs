@@ -1377,7 +1377,7 @@ mod tests {
                 source_y: [0x199a; 8],
             },
             lane_response_2d8: Fixed16::from_raw(0x8000),
-            lane_time_step: Fixed16::from_raw(0x3333),
+            lane_time_step: crate::vehicle_dynamics::SOLVER_GLOBAL_CONSTANTS.time_step,
             lane_direction_angle: 0,
             lane_rebuild: false,
             lane_exchange: false,
@@ -1396,7 +1396,7 @@ mod tests {
                     moment_scale: Fixed16::ONE,
                     inertia_scale: Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE),
                     angular_velocity: Vec3::ZERO,
-                    time_step: Fixed16::from_raw(0x3333),
+                    time_step: crate::vehicle_dynamics::SOLVER_GLOBAL_CONSTANTS.time_step,
                 },
                 clamp_enabled: false,
                 control: crate::vehicle_dynamics::ControlAxisFlags {
