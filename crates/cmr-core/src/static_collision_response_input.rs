@@ -46,7 +46,7 @@ pub struct StaticResponseInputProducerState {
     pub existing_normal: Vec3,
     pub contact_3f0: Vec3,
     pub contact_limits_2c: Vec3,
-    pub mode_674: i32,
+    pub contact_count_674: i32,
     pub velocity_normalizer_ec: Fixed16,
     pub velocity_d4: Vec3,
     pub basis_2a0: ResponseBasis,
@@ -102,14 +102,14 @@ fn normalized_body_velocity(
 
 /// Produce the final response normal and the two shared threshold values.
 ///
-/// When `mode_674 != 4`, native code preserves the normal already published by
+/// When `contact_count_674 != 4`, native code preserves the normal already published by
 /// the narrow phase and installs only the fallback thresholds. In mode four,
 /// strict x/z side tests either replace the normal with a transformed canonical
 /// axis and scale the primary threshold, or copy one of the two car axes.
 pub fn produce_static_response_input(
     state: StaticResponseInputProducerState,
 ) -> Result<StaticResponseProducedInput, StaticResponseInputProducerError> {
-    if state.mode_674 != 4 {
+    if state.contact_count_674 != 4 {
         return Ok(StaticResponseProducedInput {
             normal: state.existing_normal,
             primary_limit: PRIMARY_BASE,
@@ -205,7 +205,7 @@ mod tests {
             contact_3f0: v(x, 0, z),
             // These make both reduced boundaries exactly zero.
             contact_limits_2c: v(0x1_8000, 0, 0x9999),
-            mode_674: 4,
+            contact_count_674: 4,
             velocity_normalizer_ec: q(ONE),
             velocity_d4: v(ONE, 0, 0),
             basis_2a0: identity(),
@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn mode_bypass_preserves_existing_normal_and_does_not_divide() {
         let mut input = state(1, 1);
-        input.mode_674 = 3;
+        input.contact_count_674 = 3;
         input.velocity_normalizer_ec = q(1);
         let output = produce_static_response_input(input).unwrap();
         assert_eq!(output.normal_source, StaticResponseNormalSource::Existing);

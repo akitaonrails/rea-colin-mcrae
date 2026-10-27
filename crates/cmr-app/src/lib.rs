@@ -3504,6 +3504,8 @@ fn publish_session_compiled_pose(
     adjusted_center_y: i32,
     final_published_normal: [i32; 3],
     corrected_basis: &CompiledPostLaneBasisEffects,
+    lane_words: [i32; 8],
+    contact_sources: [[i32; 3]; 8],
 ) -> SessionCompiledDeformationScalars {
     let half_state = derive_compiled_half_sign_state([
         effective_state_words[0],
@@ -3515,6 +3517,13 @@ fn publish_session_compiled_pose(
         .motion
         .apply_compiled_post_lane_basis(final_published_normal, corrected_basis);
     start.position.y = Fixed16::from_raw(adjusted_center_y);
+    let (contact_distance_flags, contact_count_674) =
+        cmr_core::vehicle_dynamics::classify_contact_distance_lanes(
+            std::array::from_fn(|index| lane_words[index]),
+            std::array::from_fn(|index| contact_sources[index][1]),
+        );
+    start.motion.contact_distance_flags = contact_distance_flags;
+    start.motion.contact_count_674 = i32::from(contact_count_674);
     SessionCompiledDeformationScalars {
         scale_638: Fixed16::from_raw(effective_state_words[3]),
         scale_63c: Fixed16::from_raw(effective_state_words[4]),
@@ -3610,6 +3619,8 @@ impl SessionCompiledPose {
             effects.adjusted_center[1],
             effects.normal.final_published_normal,
             &effects.corrected_basis,
+            effects.lanes.state.lane_words,
+            effects.sources.contact_basis,
         ))
     }
 }
@@ -4164,6 +4175,17 @@ mod tests {
             -0x2345,
             basis.vector_264,
             &basis,
+            [0, 0xcccc, 0x20000, -1, 0, 0, 0, 0],
+            [
+                [0, 0, 0],
+                [0, 1, 0],
+                [0, 0x20000 - 0xcccb, 0],
+                [0, i32::MAX, 0],
+                [0; 3],
+                [0; 3],
+                [0; 3],
+                [0; 3],
+            ],
         );
 
         assert_eq!(
@@ -4184,6 +4206,11 @@ mod tests {
             ]
         );
         assert_eq!(start.position.y, Fixed16::from_raw(-0x2345));
+        assert_eq!(
+            start.motion.contact_distance_flags,
+            [true, true, true, true]
+        );
+        assert_eq!(start.motion.contact_count_674, 4);
         assert_eq!(
             deformation,
             SessionCompiledDeformationScalars {

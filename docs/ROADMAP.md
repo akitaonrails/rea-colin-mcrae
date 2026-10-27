@@ -1736,7 +1736,9 @@ both response limits after arm finalization, and exact accumulated-correction
 damage severity replaces an arbitrary supplied scalar. Canonical contact axes
 are now derived from their literal normalized seed; damage branch entry is
 retained separately so equality can enter with zero severity while below-
-threshold values cannot produce a handle. Live mode `+0x674`, resumable mutable damage/effect ownership, and session
+threshold values cannot produce a handle. The exact four-lane distance gate now
+publishes setup flags and contact count `+0x674` from authenticated lane/hull
+owners. Ordinary per-tick republishing, resumable mutable damage/effect ownership, and session
 publication remain open; live deformation/basis evolution is also unresolved.
 Render mesh AABBs are not accepted as
 compatibility geometry.

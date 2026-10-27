@@ -519,6 +519,10 @@ pub struct MotionState {
     pub compiled_half_words: Vec3,
     /// Persistent stabilized direction source at `+0x5d4/+0x5d8/+0x5dc`.
     pub lane_source_s: Vec3,
+    /// Four strict contact-distance flags at `+0x68c..+0x698`.
+    pub contact_distance_flags: [bool; 4],
+    /// Count of those flags at `+0x674`, consumed by static response mode 4.
+    pub contact_count_674: i32,
 }
 
 impl MotionState {
@@ -535,6 +539,8 @@ impl MotionState {
             moment: Vec3::ZERO,
             compiled_half_words: Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE),
             lane_source_s: Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
+            contact_distance_flags: [false; 4],
+            contact_count_674: 0,
         }
     }
 

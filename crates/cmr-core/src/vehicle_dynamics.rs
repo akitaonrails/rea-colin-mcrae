@@ -1363,14 +1363,33 @@ pub struct ContactDistanceGateOutcome {
     pub scale_52c: Fixed16,
 }
 
+/// Classify the four live lane/reference pairs consumed by `FUN_0040d740`.
+///
+/// `lane_words` are the values at car `+0x2e4..+0x2f0` and `source_y` are the
+/// Y components at car `+0x100/+0x10c/+0x118/+0x124`. Subtraction and absolute
+/// value retain the native wrapping behavior.
+#[must_use]
+pub fn classify_contact_distance_lanes(
+    lane_words: [i32; 4],
+    source_y: [i32; 4],
+) -> ([bool; 4], u8) {
+    let contacts = std::array::from_fn(|index| {
+        lane_words[index]
+            .wrapping_sub(source_y[index])
+            .wrapping_abs()
+            < 0xcccc
+    });
+    let count = contacts.iter().filter(|&&contact| contact).count() as u8;
+    (contacts, count)
+}
+
 /// Apply the strict `0xcccc` distance gate and the `+0x52c` count scaling.
 #[must_use]
 pub fn evaluate_contact_distance_gate(
     deltas: [i32; 4],
     mass_48: Fixed16,
 ) -> ContactDistanceGateOutcome {
-    let contacts = deltas.map(|delta| delta.wrapping_abs() < 0xcccc);
-    let count_674 = contacts.iter().filter(|&&contact| contact).count() as u8;
+    let (contacts, count_674) = classify_contact_distance_lanes(deltas, [0; 4]);
     ContactDistanceGateOutcome {
         contacts,
         count_674,
@@ -2318,6 +2337,16 @@ mod tests {
             evaluate_contact_distance_gate([0xcccc + 1; 4], Fixed16::from_raw(0x30000)).scale_52c,
             Fixed16::ZERO
         );
+    }
+
+    #[test]
+    fn contact_distance_lane_classification_uses_wrapping_subtraction() {
+        let (contacts, count) = classify_contact_distance_lanes(
+            [0xcccc, 0xcccc, i32::MIN, 7],
+            [0, 1, i32::MAX, 7_i32.wrapping_sub(0xcccc)],
+        );
+        assert_eq!(contacts, [false, true, true, false]);
+        assert_eq!(count, 2);
     }
 
     #[test]

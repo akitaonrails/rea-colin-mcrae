@@ -1875,7 +1875,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   producer, while response derives exact accumulated-correction damage severity.
   Canonical contact axes are now reconstructed from their literal normalized
   seed, with strict damage-branch entry separate from scalar severity. Live
-  mode, resumable damage/effect ownership, live
+  contact count `+0x674` is now published for the authenticated setup snapshot
+  from exact lane/hull owners. Per-tick republishing, resumable damage/effect ownership, live
   basis/scalar evolution and mechanics-session publication remain open.
 - Stage timing uses the global clock `DAT_005ffc00`, a Q16.16 value in seconds
   advanced once per physics tick (step `2^32/(rate*0x10000)` = `0xa3d`~0.04 s at

@@ -53,7 +53,7 @@ pub struct StaticKernelContext {
     pub out_of_control_680: bool,
     pub out_of_control_688: bool,
     pub car_type_738: i8,
-    pub response_mode_674: i32,
+    pub contact_count_674: i32,
     pub velocity_normalizer_ec: Fixed16,
     pub fallback_axis_258: Vec3,
 }
@@ -224,7 +224,7 @@ impl StaticCollisionKernel<StaticNarrowObb> for RecoveredStaticCollisionKernel {
             existing_normal: narrow_normal,
             contact_3f0,
             contact_limits_2c: frame.angular_limit_2c,
-            mode_674: context.response_mode_674,
+            contact_count_674: context.contact_count_674,
             velocity_normalizer_ec: context.velocity_normalizer_ec,
             velocity_d4,
             basis_2a0: context.response_basis_2a0,
@@ -386,7 +386,7 @@ mod tests {
             out_of_control_680: false,
             out_of_control_688: false,
             car_type_738: 0,
-            response_mode_674: 3,
+            contact_count_674: 3,
             velocity_normalizer_ec: q(ONE),
             fallback_axis_258: v(0, 0, ONE),
         }
@@ -531,7 +531,7 @@ mod tests {
     #[test]
     fn normal_hit_uses_post_narrow_producer_normal_and_limits() {
         let mut producer_context = context();
-        producer_context.response_mode_674 = 4;
+        producer_context.contact_count_674 = 4;
         let mut input_frame = frame();
         input_frame.angular_limit_2c.x = q(i32::MIN.wrapping_add(0x1_8000));
         input_frame.angular_limit_2c.z = q(i32::MIN.wrapping_add(0x9999));
@@ -565,7 +565,7 @@ mod tests {
     #[test]
     fn producer_error_is_atomic_and_does_not_consume_external_input() {
         let mut producer_context = context();
-        producer_context.response_mode_674 = 4;
+        producer_context.contact_count_674 = 4;
         producer_context.velocity_normalizer_ec = q(1);
         let mut input_frame = frame();
         input_frame.angular_limit_2c.x = q(i32::MIN.wrapping_add(0x1_8000));
