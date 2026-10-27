@@ -187,6 +187,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   See evidence `rea.official-eu.host-main-loop`.
 - `cmr-formats::font`: bounded fixed-layout indexed FON atlas/trailer decoding
   plus byte-text measurement and backend-neutral glyph layout plans.
+- `cmr-core::race_hud_plan`: pure normal single-player race-HUD command plan.
+  Preserves the recovered gauge/progress/timer draw order, authored source and
+  destination rectangles, Q16/pixel text coordinates, value formatting, and
+  640x480 scaling. Unrecovered bitmap/font raster policies and optional layers
+  are typed gaps rather than guessed pixels.
 - `cmr-formats::stage`: the stage/track bundle (E08). A stage is a set of sibling
   files sharing a base path and differing only by extension (the 14-entry table
   `.c3d`..`.fuz`), each loaded through the shared CMPR-capable loader - no

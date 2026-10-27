@@ -1622,6 +1622,9 @@ consumes `.c3d`, `.dat`, `.obj`, `.sht`, `.ars`, `.hzn`, `.tsc`, `.csp`, and
 trigger-volume decoding, and authored trackside-camera records. `.moj`, `.spl`,
 `.anm`, `.rsf`, and `.fuz` remain unintegrated. The native race path composes the player car but still bypasses
 the recovered menu flow and lacks the recovered race HUD and DAT dispatch.
+The normal single-player HUD now has a pure, test-backed command plan for the
+pinned common gauge core, speed/gear text, progress marker, and late timer
+overlay. Pixel raster policy and live asset binding remain explicit open work.
 
 E01 is closed at its deterministic indexed boundary. Supported BM, palette,
 row, composition, and queued-font paths are implemented; native padding,
