@@ -37,6 +37,12 @@ pub const LOADING_LINE_BMP: &str = r"IMAGES\LOADING\LINE.BMP";
 /// (`0x140` = 320 and `0x200` = 512), from `FUN_0044dea0`.
 pub const LOADING_SCREEN_WIDTHS: [u16; 2] = [320, 512];
 
+/// The normal stage-loading cap passed to `FUN_0044e130` by the state-4 setup
+/// caller at `0x421fd1` (`push 0x1a`). The native app has already completed its
+/// synchronous resource setup before entering the portable window loop, so the
+/// reconstructed frame presents this completed value.
+pub const STAGE_LOADING_PROGRESS_CAP: u8 = 0x1a;
+
 /// Whether the load/interstitial pump draws this frame (`FUN_0044e100`):
 /// `(DAT_00d3ca88 != 0 || DAT_0055001c == 0) && DAT_0055c244 != 0` - i.e. the
 /// front-end/attract context is active (`frontend_active`) or the alternate load
@@ -209,6 +215,7 @@ mod tests {
         assert_eq!(LOADING_BAR_BMP, r"IMAGES\LOADING\BAR.BMP");
         assert_eq!(LOADING_LINE_BMP, r"IMAGES\LOADING\LINE.BMP");
         assert_eq!(LOADING_SCREEN_WIDTHS, [320, 512]);
+        assert_eq!(STAGE_LOADING_PROGRESS_CAP, 0x1a);
     }
 
     #[test]

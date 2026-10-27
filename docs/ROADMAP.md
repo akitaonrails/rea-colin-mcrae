@@ -1657,10 +1657,22 @@ trajectory fidelity or a verified full-race finish.
 The menu-to-race path now presents the selected stage's loading artwork during
 state 4. The app reads `.LOA` directly from the caller-selected media root,
 handles both raw and gzip/CMPR Windows storage, validates the recovered 640x480
-indexed-BMP contract, and keeps missing art non-fatal. The next I14 presentation
-gate is composing the recovered progress-driven `BAR.BMP` fill and static
-`LINE.BMP` rule over that background; PS1's same-role TIM format remains a
-separate reference-only parser boundary.
+indexed-BMP contract, and keeps missing art non-fatal. It authenticates the
+shared `BAR.BMP` and `LINE.BMP` sources through the explicit runtime-data
+`AssetStore` rather than inferring an installation root from the stage-local
+media path, then composes the progress fill followed by the static 1px rule over
+the `.LOA` background. The normal-stage cap is the observed `0x1a` argument at
+callsite `0x421fd1`. Because the native harness completes its synchronous setup
+before the SDL loop, it presents that completed value for the sole state-4 frame
+and advances to state 5 without a simulation tick; it does not synthesize a
+progress animation. Exact clipping, order, key-zero behavior, typed failures,
+and owned-media BAR/LINE metadata are test-backed. Center-nearest stretching and
+active-palette L1 remapping are documented software policy: the ordinary
+RGB555/565 packing formula is recovered elsewhere, but the DX5 stretched raster
+and an RGB16-to-active-indexed presentation bridge are not. PS1's same-role TIM
+format remains a separate reference-only parser boundary. The next I14 gate is
+a controlled native run proving this composed frame hands off to the live stage
+world.
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI

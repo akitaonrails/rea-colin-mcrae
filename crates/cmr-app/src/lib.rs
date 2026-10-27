@@ -37,6 +37,7 @@ use cmr_core::game_session::SessionBand;
 use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
 use cmr_core::gameplay_session::{GameplaySession, InRaceScript};
 use cmr_core::host_loop::HostClock;
+use cmr_core::load_interstitial::{LOADING_BAR_BMP, LOADING_LINE_BMP, STAGE_LOADING_PROGRESS_CAP};
 use cmr_core::localization::Language;
 use cmr_core::race_hud_plan::{
     CommonGaugeInset, RaceHudBitmap, RaceHudFont, RaceHudPlanError, RaceHudPreparedInputs,
@@ -89,6 +90,9 @@ use cmr_platform_sdl3::{
     run_interactive_root_frame, run_windowed_game_session as run_windowed_game_session_loop,
 };
 use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
+use cmr_video::software_load_interstitial::{
+    LoadInterstitialComposeError, compose_load_interstitial,
+};
 use cmr_video::software_race_hud::{RaceHudComposeError, compose_race_hud_commands};
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
@@ -1243,6 +1247,22 @@ pub enum StageFrameError {
     LoadingPalette {
         entries: usize,
     },
+    /// A recovered loading-overlay source could not be loaded from the verified store.
+    LoadingOverlayAsset {
+        bitmap: LoadingOverlayBitmap,
+        error: AssetStoreError,
+    },
+    /// The reviewed runtime-data store could not be opened for loading artwork.
+    LoadingOverlayStore(AssetStoreError),
+    /// A recovered loading-overlay source was not a valid indexed bitmap.
+    LoadingOverlayBitmap {
+        bitmap: LoadingOverlayBitmap,
+        error: BitmapError,
+    },
+    /// The retained loading-overlay sources were absent at composition time.
+    MissingLoadingOverlayAssets,
+    /// The recovered loading-overlay commands could not be composed.
+    LoadingOverlayCompose(LoadInterstitialComposeError),
     MissingNodes,
     DegenerateSpawn,
     UnknownPaletteStage(String),
@@ -1299,6 +1319,11 @@ impl StageFrameError {
             Self::LoadingBitmap(_) => "loading-bitmap",
             Self::LoadingExtent { .. } => "loading-extent",
             Self::LoadingPalette { .. } => "loading-palette",
+            Self::LoadingOverlayAsset { .. } => "loading-overlay-asset",
+            Self::LoadingOverlayStore(_) => "loading-overlay-store",
+            Self::LoadingOverlayBitmap { .. } => "loading-overlay-bitmap",
+            Self::MissingLoadingOverlayAssets => "missing-loading-overlay-assets",
+            Self::LoadingOverlayCompose(_) => "loading-overlay-compose",
             Self::MissingNodes => "missing-nodes",
             Self::DegenerateSpawn => "degenerate-spawn",
             Self::UnknownPaletteStage(_) => "unknown-palette-stage",
@@ -1354,6 +1379,28 @@ impl fmt::Display for StageFrameError {
                 formatter,
                 "selected-stage loading bitmap has {entries} palette entries; expected 256"
             ),
+            Self::LoadingOverlayAsset { bitmap, error } => write!(
+                formatter,
+                "cannot load loading-overlay bitmap {}: {error}",
+                bitmap.store_path()
+            ),
+            Self::LoadingOverlayStore(error) => {
+                write!(
+                    formatter,
+                    "cannot open loading-overlay asset store: {error}"
+                )
+            }
+            Self::LoadingOverlayBitmap { bitmap, error } => write!(
+                formatter,
+                "cannot parse loading-overlay bitmap {}: {error}",
+                bitmap.store_path()
+            ),
+            Self::MissingLoadingOverlayAssets => {
+                write!(formatter, "native loading-overlay assets were not attached")
+            }
+            Self::LoadingOverlayCompose(error) => {
+                write!(formatter, "cannot compose loading overlay: {error}")
+            }
             Self::MissingNodes => write!(formatter, "stage has no checkpoint nodes"),
             Self::DegenerateSpawn => write!(formatter, "stage spawn has no horizontal direction"),
             Self::UnknownPaletteStage(stage) => {
@@ -1413,6 +1460,10 @@ impl std::error::Error for StageFrameError {
             Self::Compose(error) => Some(error),
             Self::Present(error) => Some(error),
             Self::LoadingBitmap(error) => Some(error),
+            Self::LoadingOverlayAsset { error, .. } => Some(error),
+            Self::LoadingOverlayStore(error) => Some(error),
+            Self::LoadingOverlayBitmap { error, .. } => Some(error),
+            Self::LoadingOverlayCompose(error) => Some(error),
             Self::Palette(error) => Some(error),
             Self::PaletteFormat(error) => Some(error),
             Self::Profile(error) => Some(error),
@@ -1432,7 +1483,9 @@ impl std::error::Error for StageFrameError {
             | Self::MissingHorizonSettings
             | Self::HudPlan(_)
             | Self::MissingHudAssets => None,
-            Self::LoadingExtent { .. } | Self::LoadingPalette { .. } => None,
+            Self::LoadingExtent { .. }
+            | Self::LoadingPalette { .. }
+            | Self::MissingLoadingOverlayAssets => None,
         }
     }
 }
@@ -1740,6 +1793,60 @@ impl WgpuStageRenderer {
     }
 }
 
+/// Identity retained on typed loading-overlay failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadingOverlayBitmap {
+    Bar,
+    Line,
+}
+
+impl LoadingOverlayBitmap {
+    #[must_use]
+    pub const fn legacy_relative_path(self) -> &'static str {
+        match self {
+            Self::Bar => LOADING_BAR_BMP,
+            Self::Line => LOADING_LINE_BMP,
+        }
+    }
+
+    #[must_use]
+    pub fn store_path(self) -> String {
+        format!("Game/{}", self.legacy_relative_path().replace('\\', "/"))
+    }
+}
+
+struct LoadingOverlayAssets {
+    bar: IndexedBitmap,
+    line: IndexedBitmap,
+}
+
+impl LoadingOverlayAssets {
+    fn load(store: &AssetStore) -> Result<Self, StageFrameError> {
+        Ok(Self {
+            bar: load_loading_overlay_bitmap(store, LoadingOverlayBitmap::Bar)?,
+            line: load_loading_overlay_bitmap(store, LoadingOverlayBitmap::Line)?,
+        })
+    }
+}
+
+fn load_loading_overlay_bitmap(
+    store: &AssetStore,
+    bitmap: LoadingOverlayBitmap,
+) -> Result<IndexedBitmap, StageFrameError> {
+    let bytes = store
+        .load(&bitmap.store_path())
+        .map_err(|error| StageFrameError::LoadingOverlayAsset { bitmap, error })?;
+    parse_loading_overlay_bitmap(bitmap, &bytes)
+}
+
+fn parse_loading_overlay_bitmap(
+    bitmap: LoadingOverlayBitmap,
+    bytes: &[u8],
+) -> Result<IndexedBitmap, StageFrameError> {
+    parse_indexed_bitmap(bytes, BitmapLimits::default())
+        .map_err(|error| StageFrameError::LoadingOverlayBitmap { bitmap, error })
+}
+
 /// Authenticated, bounded-decoded sources referenced by the recovered normal
 /// single-player race-HUD plan.
 pub struct RaceHudAssets {
@@ -1835,6 +1942,7 @@ pub struct StageRenderResources {
     stage: String,
     bundle: StageBundle,
     loading_background: Option<SoftwarePresentedFrame>,
+    loading_overlay: Option<LoadingOverlayAssets>,
     textures: StageC3dTextures,
     object_textures: Option<StageC3dTextures>,
     scenery_textures: Option<StageC3dTextures>,
@@ -1923,6 +2031,7 @@ impl StageRenderResources {
             stage: stage.to_owned(),
             bundle,
             loading_background,
+            loading_overlay: None,
             textures,
             object_textures,
             scenery_textures,
@@ -2055,6 +2164,18 @@ impl StageRenderResources {
         let store = AssetStore::open(runtime_data, &reviewed, DecodeLimits::default())
             .map_err(StageFrameError::HudAsset)?;
         self.race_hud = Some(RaceHudAssets::load(&store)?);
+        Ok(())
+    }
+
+    /// Load the recovered BAR/LINE loading-overlay sources from authenticated
+    /// user runtime data. This intentionally does not derive an installation
+    /// root from the stage-local `--source` path.
+    pub fn attach_loading_overlay(&mut self, runtime_data: &Path) -> Result<(), StageFrameError> {
+        let reviewed =
+            ReviewedProfile::from_json(REVIEWED_PROFILE).map_err(StageFrameError::Profile)?;
+        let store = AssetStore::open(runtime_data, &reviewed, DecodeLimits::default())
+            .map_err(StageFrameError::LoadingOverlayStore)?;
+        self.loading_overlay = Some(LoadingOverlayAssets::load(&store)?);
         Ok(())
     }
 
@@ -2507,13 +2628,24 @@ where
     }
 }
 
-fn loading_background_for_route(
+fn loading_interstitial_for_route(
     route: Option<RenderRoute>,
     background: Option<&SoftwarePresentedFrame>,
-) -> Option<SoftwarePresentedFrame> {
-    (route == Some(RenderRoute::LoadInterstitial))
-        .then(|| background.cloned())
-        .flatten()
+    overlay: Option<&LoadingOverlayAssets>,
+    progress: u8,
+) -> Result<Option<SoftwarePresentedFrame>, StageFrameError> {
+    if route != Some(RenderRoute::LoadInterstitial) {
+        return Ok(None);
+    }
+    let Some(background) = background else {
+        // Matches the native setup boundary: a failed/missing loading backdrop
+        // never arms the progress compositor.
+        return Ok(None);
+    };
+    let overlay = overlay.ok_or(StageFrameError::MissingLoadingOverlayAssets)?;
+    compose_load_interstitial(background.clone(), &overlay.bar, &overlay.line, progress)
+        .map(Some)
+        .map_err(StageFrameError::LoadingOverlayCompose)
 }
 
 fn root_menu_flow_inputs(state_id: u8, interaction: &RootInteraction) -> MenuFlowInputs {
@@ -2627,12 +2759,16 @@ fn advance_game_frame<C: HostClock>(
         *fade = None;
         world
     };
-    let loading_background =
-        loading_background_for_route(advanced.route, resources.loading_background());
+    let loading_interstitial = loading_interstitial_for_route(
+        advanced.route,
+        resources.loading_background(),
+        resources.loading_overlay.as_ref(),
+        STAGE_LOADING_PROGRESS_CAP,
+    )?;
     Ok(GameFrameOutcome {
         route: advanced.route,
         world,
-        loading_background,
+        loading_interstitial,
         root_render_input: root_tick.render_input,
         stopped: session.is_stopped(),
         // The recovered front-end music plays during the menu band (states 1..4).
@@ -2644,7 +2780,7 @@ fn advance_game_frame<C: HostClock>(
 struct GameFrameOutcome {
     route: Option<RenderRoute>,
     world: Option<SoftwarePresentedFrame>,
-    loading_background: Option<SoftwarePresentedFrame>,
+    loading_interstitial: Option<SoftwarePresentedFrame>,
     root_render_input: Option<RootRenderInput>,
     stopped: bool,
     music_active: bool,
@@ -2989,6 +3125,7 @@ fn native_stage_setup(
     if let Some(car_code) = car_code {
         resources.attach_car(runtime_data, car_code)?;
     }
+    resources.attach_loading_overlay(runtime_data)?;
     resources.attach_race_hud(runtime_data)?;
     let nodes = resources
         .bundle
@@ -3082,8 +3219,8 @@ pub fn run_windowed_game_session(
                         // front-end route presents the recovered root-menu frame.
                         let present = if outcome.world.is_some() {
                             outcome.world
-                        } else if outcome.loading_background.is_some() {
-                            outcome.loading_background
+                        } else if outcome.loading_interstitial.is_some() {
+                            outcome.loading_interstitial
                         } else if outcome.route.is_some_and(composes_frontend_root) {
                             outcome.root_render_input.and_then(|render_input| {
                                 root.render(render_input).ok()?;
@@ -3135,7 +3272,7 @@ pub fn run_windowed_game_session(
             input,
         ) {
             Ok(outcome) => WindowedGameFrame {
-                present: outcome.world.or(outcome.loading_background),
+                present: outcome.world.or(outcome.loading_interstitial),
                 stopped: outcome.stopped,
                 music_active: outcome.music_active,
             },
@@ -3558,12 +3695,30 @@ mod tests {
             Default::default(),
             Default::default(),
         ];
+        let mut transcript = Vec::new();
+        let mut gameplay_calls = 0;
         for (now, pulse) in pulses.into_iter().enumerate() {
             let _ = root.tick_for_game_session(pulse, now as u32 + 1, true);
             let menu = root_menu_flow_inputs(game.current().id(), &root);
-            let _ = game.run_frame(&StationaryClock, menu, |state| state);
+            let frame = game.run_frame(&StationaryClock, menu, |state| {
+                gameplay_calls += 1;
+                state
+            });
+            transcript.push((
+                frame.plan.render.map(cmr_core::game_state::GameState::id),
+                frame.plan.state.id(),
+            ));
         }
         assert_eq!(game.current().id(), 5);
+        assert_eq!(
+            transcript
+                .iter()
+                .filter(|entry| **entry == (Some(4), 5))
+                .count(),
+            1,
+            "state 4 must render exactly once while transitioning to state 5: {transcript:?}"
+        );
+        assert_eq!(gameplay_calls, 0, "state 4->5 must not step the race sim");
     }
 
     fn native_test_node(position: [i32; 3], direction: [i32; 3], split_flag: u8) -> CatNode {
@@ -3711,14 +3866,75 @@ mod tests {
     }
 
     #[test]
-    fn loading_background_is_presented_only_on_the_load_interstitial_route() {
+    fn loading_overlay_is_route_gated_and_missing_inputs_have_native_boundaries() {
         let background = parse_loading_background(&loading_bitmap(640, 480, 256)).unwrap();
-        assert_eq!(
-            loading_background_for_route(Some(RenderRoute::LoadInterstitial), Some(&background)),
-            Some(background.clone())
+        let overlay = LoadingOverlayAssets {
+            bar: parse_indexed_bitmap(&loading_bitmap(267, 13, 256), BitmapLimits::default())
+                .unwrap(),
+            line: parse_indexed_bitmap(&loading_bitmap(8, 8, 256), BitmapLimits::default())
+                .unwrap(),
+        };
+        let composed = loading_interstitial_for_route(
+            Some(RenderRoute::LoadInterstitial),
+            Some(&background),
+            Some(&overlay),
+            STAGE_LOADING_PROGRESS_CAP,
+        )
+        .unwrap()
+        .unwrap();
+        assert_ne!(composed.pixels(), background.pixels());
+
+        // Non-load routes never consult loading assets.
+        assert!(
+            loading_interstitial_for_route(None, Some(&background), None, 255)
+                .unwrap()
+                .is_none()
         );
-        assert!(loading_background_for_route(None, Some(&background)).is_none());
-        assert!(loading_background_for_route(Some(RenderRoute::LoadInterstitial), None).is_none());
+        // The native failed-background path never arms BAR/LINE drawing.
+        assert!(
+            loading_interstitial_for_route(
+                Some(RenderRoute::LoadInterstitial),
+                None,
+                None,
+                STAGE_LOADING_PROGRESS_CAP,
+            )
+            .unwrap()
+            .is_none()
+        );
+        // A present background without its authenticated overlay sources fails
+        // before publishing a partially composed frame.
+        assert!(matches!(
+            loading_interstitial_for_route(
+                Some(RenderRoute::LoadInterstitial),
+                Some(&background),
+                None,
+                STAGE_LOADING_PROGRESS_CAP,
+            ),
+            Err(StageFrameError::MissingLoadingOverlayAssets)
+        ));
+    }
+
+    #[test]
+    fn loading_overlay_paths_and_malformed_sources_retain_identity() {
+        assert_eq!(
+            LoadingOverlayBitmap::Bar.legacy_relative_path(),
+            LOADING_BAR_BMP
+        );
+        assert_eq!(
+            LoadingOverlayBitmap::Line.legacy_relative_path(),
+            LOADING_LINE_BMP
+        );
+        assert_eq!(
+            LoadingOverlayBitmap::Bar.store_path(),
+            "Game/IMAGES/LOADING/BAR.BMP"
+        );
+        assert!(matches!(
+            parse_loading_overlay_bitmap(LoadingOverlayBitmap::Line, b"bad"),
+            Err(StageFrameError::LoadingOverlayBitmap {
+                bitmap: LoadingOverlayBitmap::Line,
+                error: BitmapError::Truncated,
+            })
+        ));
     }
 
     #[test]
@@ -3786,6 +4002,24 @@ mod tests {
         let frame = parse_loading_background(&bytes).unwrap();
         assert_eq!(frame.extent(), ROOT_EXTENT);
         assert_eq!(frame.pixels().len(), 640 * 480);
+
+        let reviewed = ReviewedProfile::from_json(REVIEWED_PROFILE).unwrap();
+        let store = AssetStore::open(&root, &reviewed, DecodeLimits::default()).unwrap();
+        let overlay = LoadingOverlayAssets::load(&store).unwrap();
+        assert_eq!((overlay.bar.width, overlay.bar.height), (267, 13));
+        assert_eq!(overlay.bar.row_stride, 268);
+        assert_eq!((overlay.line.width, overlay.line.height), (8, 8));
+        assert_eq!(overlay.line.row_stride, 8);
+        let original_pixels = frame.pixels().to_vec();
+        let composed = compose_load_interstitial(
+            frame,
+            &overlay.bar,
+            &overlay.line,
+            STAGE_LOADING_PROGRESS_CAP,
+        )
+        .unwrap();
+        assert_eq!(composed.extent(), ROOT_EXTENT);
+        assert_ne!(composed.pixels(), original_pixels);
     }
 
     #[test]

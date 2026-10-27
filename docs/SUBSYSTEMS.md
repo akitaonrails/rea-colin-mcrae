@@ -2351,9 +2351,19 @@ languages rather than fabricating or silently aliasing Italian assets.
 - State-4 loading art is a separate app resource, not one of the stage bundle's
   14 siblings. `StageRenderResources` reads the selected stage's user-owned
   Windows `.LOA` in place (raw or gzip/CMPR), validates its 640x480 indexed-BMP
-  shape, and presents it only on `LoadInterstitial`. The BAR/LINE progress
-  overlay is the remaining compositor layer; PS1 LOA is TIM-based and stays
-  reference-only.
+  shape, and presents it only on `LoadInterstitial`. Shared BAR/LINE artwork is
+  authenticated through the explicit runtime-data `AssetStore` using paths
+  derived from the recovered constants, not from a hard-coded installation
+  root. The software compositor draws the progress-scaled BAR first and the
+  static 1px LINE from a 1x1 source second, using source index zero as the key
+  and the shared recovered clipping plan. The observed normal-stage cap is
+  `0x1a` at callsite `0x421fd1`; the synchronous harness presents it for its one
+  state-4 frame, transitions to state 5, and does not step simulation or invent
+  a progressive delay. Center-nearest sampling and active-palette L1 remapping
+  are deterministic software policy. The ordinary RGB555/565 packing formula
+  is recovered separately; the DX5 stretched raster and an
+  RGB16-to-active-indexed presentation bridge are not. PS1 LOA is TIM-based and
+  stays reference-only.
 - F01/F04 are complete: `widget_callback` routes value adjustments, accept,
   cancel and screen links, joining the recovered root graph, options, profile
   and championship setup. Menu families share the descriptor engine.
