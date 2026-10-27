@@ -69,11 +69,12 @@ struct VertexOutput {
 
 @vertex
 fn vertex_main(
-    @location(0) position_u: vec4i,
-    @location(1) v_normal: vec4i,
+    @location(0) position_q16: vec3i,
+    @location(1) texture_uv: vec2f,
+    @location(2) normal_q16: vec3i,
 ) -> VertexOutput {
     let scale = 1.0 / 65536.0;
-    let model = vec4f(vec3f(position_u.xyz) * scale, 1.0);
+    let model = vec4f(vec3f(position_q16) * scale, 1.0);
     var clip = transform.projection * transform.view * transform.world * model;
     // The recovered D3DVIEWPORT2 clip volume is
     // {-1, 2, width/height, 2*width/height, 0, 1}. X and Z are already in
@@ -81,7 +82,7 @@ fn vertex_main(
     clip.y = clip.y / transform.clip_parameters.x;
     var result: VertexOutput;
     result.position = clip;
-    result.uv = vec2f(f32(position_u.w), f32(v_normal.x)) * scale;
+    result.uv = texture_uv;
     return result;
 }
 
@@ -1611,16 +1612,21 @@ fn create_c3d_pipeline_variant(
     fragment_entry: &str,
     color_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+    const ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
         wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Sint32x4,
+            format: wgpu::VertexFormat::Sint32x3,
             offset: 0,
             shader_location: 0,
         },
         wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Sint32x4,
-            offset: 16,
+            format: wgpu::VertexFormat::Float32x2,
+            offset: 12,
             shader_location: 1,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Sint32x3,
+            offset: 20,
+            shader_location: 2,
         },
     ];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1696,11 +1702,11 @@ fn active_palette_rgba8(palette: &[cmr_formats::riff_palette::PaletteEntry; 256]
     bytes
 }
 
-fn c3d_vertex_bytes(vertices: &[cmr_gpu_contract::C3dVertexQ16]) -> Vec<u8> {
+fn c3d_vertex_bytes(vertices: &[cmr_gpu_contract::C3dStageVertex]) -> Vec<u8> {
     vertices
         .iter()
-        .flat_map(|vertex| vertex.components)
-        .flat_map(i32::to_le_bytes)
+        .flat_map(|vertex| vertex.upload_words())
+        .flat_map(u32::to_le_bytes)
         .collect()
 }
 
@@ -1889,7 +1895,7 @@ mod tests {
     use cmr_formats::riff_palette::PaletteEntry;
     use cmr_gpu_contract::{
         C3dDraw, C3dIndexedTexture, C3dMeshResource, C3dPreparedFrame, C3dRawFrame, C3dResourceSet,
-        C3dRgb8, C3dSceneUpload, C3dSubmissionBracket, C3dVertexQ16, IndexedPaletteGpuBackend,
+        C3dRgb8, C3dSceneUpload, C3dStageVertex, C3dSubmissionBracket, IndexedPaletteGpuBackend,
         PersistentRawC3dGpuBackend, RawC3dGpuBackend,
     };
 
@@ -1920,13 +1926,15 @@ mod tests {
 
     #[test]
     fn raw_c3d_binary_encoders_preserve_exact_words_and_alignment() {
-        let vertices = [C3dVertexQ16 {
-            components: [1, -2, 3, -4, 5, -6, 7, -8],
-        }];
+        let vertices = [C3dStageVertex::from_raw_components([
+            1, -2, 3, -4, 5, -6, 7, -8,
+        ])];
         let bytes = c3d_vertex_bytes(&vertices);
         assert_eq!(bytes.len(), 32);
         assert_eq!(&bytes[0..4], &1i32.to_le_bytes());
         assert_eq!(&bytes[28..32], &(-8i32).to_le_bytes());
+        assert_eq!(&bytes[12..16], &vertices[0].texture_uv()[0].to_le_bytes());
+        assert_eq!(&bytes[16..20], &vertices[0].texture_uv()[1].to_le_bytes());
         assert_eq!(c3d_index_bytes(&[0x1234, 0xabcd]), [0x34, 0x12, 0xcd, 0xab]);
 
         let identity = world_matrix_words(&MATRIX_IDENTITY_Q16).words();
@@ -1973,8 +1981,8 @@ mod tests {
     #[ignore = "requires a Vulkan adapter; run explicitly for raw C3D GPU conformance"]
     fn raw_c3d_triangle_uses_gpu_transform_texture_and_depth_path() {
         const ONE: i32 = 0x1_0000;
-        let vertex = |x: i32, y: i32, z: i32, u: i32, v: i32| C3dVertexQ16 {
-            components: [x, y, z, u, v, 0, 0, ONE],
+        let vertex = |x: i32, y: i32, z: i32, u: i32, v: i32| {
+            C3dStageVertex::from_raw_components([x, y, z, u, v, 0, 0, ONE])
         };
         let triangle = [
             vertex(-ONE / 2, -ONE / 2, 2 * ONE, 0, ONE),
@@ -2109,8 +2117,8 @@ mod tests {
     #[ignore = "requires a Vulkan adapter; run explicitly for keyed C3D GPU conformance"]
     fn keyed_fragment_preserves_prior_color_and_depth() {
         const ONE: i32 = 0x1_0000;
-        let vertex = |x: i32, y: i32, z: i32| C3dVertexQ16 {
-            components: [x, y, z, 0, 0, 0, 0, ONE],
+        let vertex = |x: i32, y: i32, z: i32| {
+            C3dStageVertex::from_raw_components([x, y, z, 0, 0, 0, 0, ONE])
         };
         let triangle_at = |z| {
             C3dMeshResource::new(

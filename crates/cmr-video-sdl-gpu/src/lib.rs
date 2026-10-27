@@ -188,7 +188,7 @@ impl SdlGpuIndexedBackend {
             VertexAttribute::new()
                 .with_location(1)
                 .with_buffer_slot(0)
-                .with_format(VertexElementFormat::Int2)
+                .with_format(VertexElementFormat::Float2)
                 .with_offset(12),
             VertexAttribute::new()
                 .with_location(2)

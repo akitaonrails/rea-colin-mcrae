@@ -815,11 +815,11 @@ impl SdlGpuIndexedBackend {
     }
 }
 
-fn encode_vertices(vertices: &[cmr_gpu_contract::C3dVertexQ16]) -> Vec<u8> {
+fn encode_vertices(vertices: &[cmr_gpu_contract::C3dStageVertex]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(vertices.len() * C3D_VERTEX_BYTES);
     for vertex in vertices {
-        for component in vertex.components {
-            bytes.extend_from_slice(&component.to_le_bytes());
+        for word in vertex.upload_words() {
+            bytes.extend_from_slice(&word.to_le_bytes());
         }
     }
     bytes
@@ -867,7 +867,7 @@ mod tests {
     use cmr_formats::riff_palette::PaletteEntry;
     use cmr_gpu_contract::{
         C3dDraw, C3dIndexedTexture, C3dMeshResource, C3dRawFrame, C3dResourceSet, C3dRgb8,
-        C3dSubmissionBracket, C3dVertexQ16,
+        C3dStageVertex, C3dSubmissionBracket,
     };
 
     use super::*;
@@ -876,13 +876,22 @@ mod tests {
 
     #[test]
     fn raw_vertex_and_index_uploads_are_exact_little_endian() {
-        let vertices = [C3dVertexQ16 {
-            components: [0x0102_0304, -2, 0, 0x10000, -0x10000, i32::MIN, i32::MAX, 7],
-        }];
+        let vertices = [C3dStageVertex::from_raw_components([
+            0x0102_0304,
+            -2,
+            0,
+            0x10000,
+            -0x10000,
+            i32::MIN,
+            i32::MAX,
+            7,
+        ])];
         let encoded = encode_vertices(&vertices);
         assert_eq!(encoded.len(), 32);
         assert_eq!(&encoded[0..4], &[4, 3, 2, 1]);
         assert_eq!(&encoded[4..8], &(-2i32).to_le_bytes());
+        assert_eq!(&encoded[12..16], &1.0f32.to_le_bytes());
+        assert_eq!(&encoded[16..20], &0.0f32.to_le_bytes());
         assert_eq!(encode_indices(&[0x0102, 0xa0b0]), [2, 1, 0xb0, 0xa0]);
     }
 
@@ -951,42 +960,36 @@ mod tests {
         let normal = [0, 0, -(1 << 16)];
         C3dMeshResource::new(
             vec![
-                C3dVertexQ16 {
-                    components: [
-                        -(4 << 16),
-                        -(3 << 16),
-                        0,
-                        0,
-                        0,
-                        normal[0],
-                        normal[1],
-                        normal[2],
-                    ],
-                },
-                C3dVertexQ16 {
-                    components: [
-                        -(4 << 16),
-                        3 << 16,
-                        0,
-                        0,
-                        0,
-                        normal[0],
-                        normal[1],
-                        normal[2],
-                    ],
-                },
-                C3dVertexQ16 {
-                    components: [
-                        4 << 16,
-                        -(3 << 16),
-                        0,
-                        0,
-                        0,
-                        normal[0],
-                        normal[1],
-                        normal[2],
-                    ],
-                },
+                C3dStageVertex::from_raw_components([
+                    -(4 << 16),
+                    -(3 << 16),
+                    0,
+                    0,
+                    0,
+                    normal[0],
+                    normal[1],
+                    normal[2],
+                ]),
+                C3dStageVertex::from_raw_components([
+                    -(4 << 16),
+                    3 << 16,
+                    0,
+                    0,
+                    0,
+                    normal[0],
+                    normal[1],
+                    normal[2],
+                ]),
+                C3dStageVertex::from_raw_components([
+                    4 << 16,
+                    -(3 << 16),
+                    0,
+                    0,
+                    0,
+                    normal[0],
+                    normal[1],
+                    normal[2],
+                ]),
             ],
             indices.to_vec(),
         )

@@ -562,8 +562,8 @@ mod tests {
         C3D_MAGIC, C3dLimits, parse_c3d,
     };
     use cmr_gpu_contract::{
-        BackendKind, C3dSubmissionBracket, ConformanceFrame, FrameTiming, IndexedPaletteGpuBackend,
-        RawC3dGpuBackend,
+        BackendKind, C3dStageVertex, C3dSubmissionBracket, ConformanceFrame, FrameTiming,
+        IndexedPaletteGpuBackend, RawC3dGpuBackend,
     };
     use cmr_video::software_stage_scene::StageC3dTextures;
 
@@ -786,19 +786,14 @@ mod tests {
         assert!(frame.draws()[0].state().depth_write());
         assert_eq!(frame.resources().meshes().len(), 1);
         assert_eq!(frame.resources().textures().len(), 1);
-        let source_vertices: Vec<_> = file
+        let source_vertices: Vec<C3dStageVertex> = file
             .group1_records()
             .next()
             .unwrap()
             .entries_32()
-            .map(|entry| entry.components_q16())
+            .map(C3dStageVertex::from)
             .collect();
-        let packet_vertices: Vec<_> = frame.resources().meshes()[0]
-            .vertices()
-            .iter()
-            .map(|vertex| vertex.components)
-            .collect();
-        assert_eq!(packet_vertices, source_vertices);
+        assert_eq!(frame.resources().meshes()[0].vertices(), source_vertices);
         assert_eq!(frame.resources().meshes()[0].indices(), &[0, 1, 2]);
         assert_eq!(frame.resources().textures()[0].extent().width, 4);
         assert_eq!(

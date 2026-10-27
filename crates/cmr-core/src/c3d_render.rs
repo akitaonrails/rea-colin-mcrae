@@ -87,6 +87,28 @@ pub const DP_DONOTUPDATEEXTENTS: u32 = 8;
 
 /// Stride of one `D3DLVERTEX` (position, reserved, diffuse, specular, tu, tv).
 pub const LVERTEX_STRIDE: usize = 0x20;
+
+/// Converts the raw Q16.16 texture coordinates stored in a C3D vertex into the
+/// values submitted by the retained-primitive builder. U wraps once only when
+/// it is strictly greater than `1.0`. V receives the recovered `+1.0` bias in
+/// the x87 expression before its single final f32 store.
+///
+/// Keeping this as a float-level contract is intentional. The widened integer
+/// sum for V is algebraic folding of exact Q16 `1.0`, not Q16 arithmetic: it
+/// preserves the native single rounding without inventing an `i32` overflow
+/// boundary.
+#[must_use]
+pub fn stage_texture_uv(raw_q16: [i32; 2]) -> [f32; 2] {
+    const Q16_SCALE: f32 = 1.0 / 65_536.0;
+    let [raw_u, raw_v] = raw_q16;
+    let mut u = raw_u as f32 * Q16_SCALE;
+    if u > 1.0 {
+        u -= 1.0;
+    }
+    let v = ((i64::from(raw_v) + 65_536) as f32) * Q16_SCALE;
+    [u, v]
+}
+
 /// The baked diffuse color of an untextured primitive (opaque black, so the
 /// vertex color shows through MODULATE); `FUN_004b1e10` writes this when the
 /// material ordinal is the untextured sentinel.
@@ -250,6 +272,28 @@ pub fn object_drawn_before(a: i64, b: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stage_texture_uv_preserves_the_observed_float_boundaries() {
+        let u_cases = [
+            (0xffff, 0x3f7f_ff00),
+            (0x1_0000, 0x3f80_0000),
+            (0x1_0001, 0x3780_0000),
+            (0x3_0000, 0x4000_0000),
+            (-0x1_0000, 0xbf80_0000),
+        ];
+        for (raw_u, expected_bits) in u_cases {
+            assert_eq!(
+                stage_texture_uv([raw_u, -0x1_0000])[0].to_bits(),
+                expected_bits
+            );
+        }
+
+        assert_eq!(stage_texture_uv([0, -0x1_0000])[1].to_bits(), 0x0000_0000);
+        assert_eq!(stage_texture_uv([0, -0xc000])[1].to_bits(), 0x3e80_0000);
+        assert_eq!(stage_texture_uv([0, 0])[1].to_bits(), 0x3f80_0000);
+        assert_eq!(stage_texture_uv([0, 67_108_565])[1].to_bits(), 0x4480_1fdb);
+    }
 
     #[test]
     fn render_state_codes_are_the_recovered_dx5_values() {

@@ -2430,36 +2430,37 @@ languages rather than fabricating or silently aliasing Italian assets.
   through SDL_GPU's Vulkan backend, keeping its narrow raw-SDL bridge private.
   `cmr-gpu-conformance` validates its all-index and palette-mutation fixture
   against `cmr-video::SoftwarePresentedFrame`, then requires exact readback
-  equality from each candidate and across candidates. This is the Phase 4A
-  presentation primitive only; raw C3D packets, representative-stage timings,
-  device recovery, and a selected backend remain open under I08/I09. See
-  evidence `impl.gpu-indexed-palette-conformance`.
+  equality from each candidate and across candidates. This was the Phase 4A
+  presentation primitive; the later raw-C3D benchmark selected wgpu, while
+  device recovery remains open. See evidence
+  `impl.gpu-indexed-palette-conformance`.
 - The Phase 4B native-geometry slice is `cmr-gpu-contract::C3dRawFrame` and
-  `RawC3dGpuBackend`. It preserves each recovered C3D vertex as eight Q16.16
-  words, compact triangle indices, resource ordinals, draw brackets, and exact
-  matrix words. `cmr-gpu-conformance::PreparedRawStage` builds that stream from
+  `RawC3dGpuBackend`. Its stage-upload vertex retains XYZ and normal as six
+  Q16.16 words and carries the recovered prepared UV pair as exact `f32` bits,
+  alongside compact triangle indices, resource ordinals, draw brackets, and
+  exact matrix words. `cmr-gpu-conformance::PreparedRawStage` builds that stream from
   `StageScene` and `StageC3dTextures` without CPU transform/clip/cull work.
   Both GPU candidates execute the bounded opaque-COPY profile with point/clamp
   indexed materials, exact L1/lowest-index active-palette mapping, perspective
   UV, legacy CCW culling, and writable `LessEqual` depth. Their readbacks match
-  exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
-  ownership and representative imported-stage timing remain the I08 exit gate.
-  See evidence `impl.gpu-raw-c3d-conformance`.
+  exactly on the shared parsed synthetic C3D fixture. Persistent scene ownership
+  and representative imported-stage timing subsequently closed the I08 gate and
+  selected wgpu; this paragraph records the bounded Phase 4B contract. See
+  evidence `impl.gpu-raw-c3d-conformance`.
 - The selected wgpu backend now supports optional source-index color keys with
   an `Rg8Uint` material texture: resolved palette slot plus an independent key
   mask. A keyed fragment is discarded before color and depth writes, and an
   explicitly run Vulkan test proves the resulting depth hole. The software
   multi-graph oracle now follows the same `LessEqual` rule, including later
   submission winning equal-depth ties. The single main-stage adapter remains
-  explicitly unkeyed; combined OBJ/SHT/car preparation and the horizon pass
-  remain open. See evidence `impl.gpu-c3d-color-key`.
-- Horizon-free main/OBJ/SHT/car foregrounds now prepare as one persistent wgpu
+  explicitly unkeyed; the following layered-foreground and horizon milestones
+  close the then-open combined path. See evidence `impl.gpu-c3d-color-key`.
+- Main/OBJ/SHT/car foregrounds prepare as one persistent wgpu
   scene in exact layer order. Resource ordinals remain local to each source C3D
   during resolution and are offset into one upload; only car node WORLD values
   and the camera VIEW change per frame. Exact propagated car node worlds retain
   the WORLD_ROOT_CLASS exception. A Vulkan app test matches the software keyed
-  layered oracle at two cameras. HZN still selects software because it needs a
-  separate projection and depth lifetime. See `impl.gpu-layered-foreground`.
+  layered oracle at two cameras. See `impl.gpu-layered-foreground`.
 - The selected backend now executes that HZN boundary as two ordered GPU
   passes into one indexed attachment: horizon clears color/depth with
   `HORIZON_Z_FAR`; foreground loads color and clears depth; one readback feeds
@@ -2482,14 +2483,22 @@ languages rather than fabricating or silently aliasing Italian assets.
   mapper.
 - Native stage setup uses authored `.cat` nodes, real country palettes, layered
   OBJ/SHT/HZN scenery, ARS horizon settings, and the `.csp` player-one pose for
-  both car and first camera. CAT-derived startup is fallback only. The live
+  both car and first camera. The model adapter now maps local `+X` front and
+  local `-Z` right into the harness with a positive determinant, and the
+  recovered input half-channels change sign only at the explicit planar
+  RaceState control boundary so left/right mean geometric world sides. A
+  controlled native wgpu run confirms the rear-facing chase view, geometric
+  right steering, real-time progression to 43 MPH, and no renderer fallback.
+  CAT-derived startup is fallback only. `FUN_00480890` passes the CSP position
+  directly and supplies no recovered ride-height lift; lower-body terrain
+  occlusion remains open. The live
   executable still uses planar `GameplaySession::new_with_car`; the recovered
   four-wheel producer is not yet the live player path.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning
   are unrun. Comparison/deviation matrices and the README now reflect the full
-  117-complete / 1-partial roadmap.
+  117-complete / 2-partial roadmap.
 - Edition support is limited to the reviewed official-EU/installed-EU profile.
   Other editions and locales are unsupported until separately evidenced;
   official-US and xdelta files are comparison-only artifacts.
@@ -2497,7 +2506,7 @@ languages rather than fabricating or silently aliasing Italian assets.
   presentation, authored starts, transform/visibility/mutation and retained
   setup sessions. The native root now launches the configured race only through
   its recovered Rally selection. MOJ/SPL/ANM/RSF/FUZ, DAT dispatch, remaining
-  layered-GPU work, finish, and post-race behavior remain open. The player car
+  zero-copy GPU presentation, finish, and post-race behavior remain open. The player car
   and normal software race HUD are live.
 - Bitmap conversion has an explicit deterministic indexed boundary: 4/8-bit
   BM, palettes, stored rows, composition, and queued fonts are supported;
@@ -2506,6 +2515,18 @@ languages rather than fabricating or silently aliasing Italian assets.
 - Type-1 C3D support covers decoded XYZ/normal/UV resources and branch-zero
   flat/COPY indexed rendering. General lighting and alternate Gouraud/modulate
   output are explicitly unsupported rather than borrowed from type 2.
+- Raw stage C3D UVs now cross one common preparation contract before software,
+  wgpu, or SDL_GPU sampling: strict one-time U subtraction above one and a
+  single-rounded V-plus-one bias. Parser/raw carriers remain unchanged;
+  frontend-prepared, reflection-generated, and 2D coordinates do not apply it
+  twice. Clamp remains a later sampler state. The coherent AU1 capture confirms
+  the former row-zero collapse is gone without claiming driver-exact pixels.
+- Renderer choice is observable: native startup reports requested/selected
+  renderer and any typed setup/frame fallback without paths, and an `auto`
+  frame failure warns before permanently using software. The slow validation
+  capture explicitly forced software; full-layer AU1 measured about 0.32 s per
+  release frame before car/HUD (~3 FPS), while `auto` successfully selects wgpu
+  on the current host. Software remains the oracle, not the performance path.
 - Final presentation uses owned indexed frames and checked RGBA8 expansion;
   render routes select composition and lifecycle controls presentation. The
   native root combines recovered interaction, descriptor menus, and

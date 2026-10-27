@@ -1,7 +1,7 @@
 #version 450
 
 layout(location = 0) in ivec3 position_q16;
-layout(location = 1) in ivec2 uv_q16;
+layout(location = 1) in vec2 texture_uv_input;
 layout(location = 2) in ivec3 normal_q16;
 
 layout(set = 1, binding = 0, std140) uniform C3dTransforms {
@@ -21,5 +21,5 @@ void main() {
     // recovered clip volume here.
     clip.y = clip.y / clip_parameters.x;
     gl_Position = clip;
-    texture_uv = vec2(uv_q16) / 65536.0;
+    texture_uv = texture_uv_input;
 }

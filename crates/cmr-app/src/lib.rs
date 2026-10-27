@@ -15,12 +15,13 @@ use cmr_assets::{
     SurfaceCapabilityStore, SurfaceTableStore, SurfaceTableStoreError,
 };
 use cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
+use cmr_core::c3d_mesh::node_mesh_vertex_type;
 use cmr_core::c3d_render::VERTEXTYPE_LVERTEX;
 use cmr_core::c3d_stage_scene::{StageScene, StageSceneError};
 use cmr_core::c3d_transform::scene_world_transforms;
 use cmr_core::camera_mode::{CameraMode, ViewGate};
 use cmr_core::camera_view::ViewController;
-use cmr_core::car_resources::car_body_path;
+use cmr_core::car_resources::{InRaceBodyLoadBranch, car_body_path, in_race_car_load_policy};
 use cmr_core::compiled_car_initializer::{CompiledControlFamilies, CompiledHalfSignState};
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
@@ -129,6 +130,11 @@ const ROOT_EXTENT: DisplayExtent = DisplayExtent {
     width: 640,
     height: 480,
 };
+// Temporary native-host policy: the windowed harness does not yet publish the
+// three recovered runtime predicates selecting the mode-5 versus mode-6 body
+// branch. Keep its existing keyed-body behavior explicit; this is not a claim
+// that every ordinary rally takes the native mode-5 branch.
+const WINDOWED_BODY_LOAD_BRANCH: InRaceBodyLoadBranch = InRaceBodyLoadBranch::KeyedMode5;
 const LOADING_BACKGROUND_EXTENSION: &str = ".loa";
 
 /// An executable operation selected on the command line.
@@ -192,6 +198,56 @@ impl StageRendererKind {
             Self::Software => "software",
             Self::Gpu => "gpu",
         }
+    }
+}
+
+/// Where an automatic GPU-to-software fallback occurred.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StageRendererFallbackPhase {
+    /// GPU preparation, device initialization, or persistent upload.
+    Setup,
+    /// Per-frame GPU composition or readback.
+    Frame,
+}
+
+impl StageRendererFallbackPhase {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Setup => "setup",
+            Self::Frame => "frame",
+        }
+    }
+}
+
+/// Path-free reason retained when `auto` falls back to the software oracle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StageRendererFallback {
+    pub phase: StageRendererFallbackPhase,
+    pub reason: &'static str,
+}
+
+/// Stable renderer selection diagnostics for a loaded stage session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StageRendererStatus {
+    pub requested: StageRendererChoice,
+    pub selected: StageRendererKind,
+    pub fallback: Option<StageRendererFallback>,
+}
+
+impl StageRendererStatus {
+    /// A path-free line suitable for native-session startup diagnostics.
+    #[must_use]
+    pub fn stable_summary(self) -> String {
+        let fallback = self.fallback.map_or_else(
+            || "none".to_owned(),
+            |fallback| format!("{}:{}", fallback.phase.name(), fallback.reason),
+        );
+        format!(
+            "renderer requested={} selected={} fallback={fallback}",
+            self.requested.name(),
+            self.selected.name(),
+        )
     }
 }
 
@@ -1609,9 +1665,10 @@ fn native_stage_start_from_csp(start_record: CspStart) -> (CarState, [i32; 16]) 
     let angles = start_record.rotation_bam.map(|angle| angle as i16);
     let native_basis = integrate_orientation(identity_basis, angles, &trig)
         .expect("the complete 4096-entry trig table admits every CSP angle");
-    // The authored car transform uses the model's -X axis as forward.  The
-    // planar gameplay harness uses +Z as forward, so retain the authored
-    // rotation while remapping its axes into the harness convention.
+    // CSP stores the authored actor rotation in the native basis, while the
+    // planar gameplay harness publishes +Z as forward. Retain that rotation
+    // while remapping the CSP basis into the harness convention; the separate
+    // C3D render adapter handles the body model's local +X-forward basis.
     let basis = [
         native_basis[2],
         native_basis[1],
@@ -1634,20 +1691,21 @@ fn native_stage_start_from_csp(start_record: CspStart) -> (CarState, [i32; 16]) 
 }
 
 fn car_model_world_q16(car_world: &[i32; 16]) -> [i32; 16] {
-    // Race-car C3D geometry is authored with local -X forward and +Z right;
-    // the gameplay harness publishes +Z forward and +X right.
+    // Race-car C3D geometry is authored with local +X forward and -Z right;
+    // the gameplay harness publishes +Z forward and +X right. Negating both
+    // transverse columns preserves a proper rotation (and therefore winding).
     [
-        car_world[8].wrapping_neg(),
-        car_world[9].wrapping_neg(),
-        car_world[10].wrapping_neg(),
+        car_world[8],
+        car_world[9],
+        car_world[10],
         0,
         car_world[4],
         car_world[5],
         car_world[6],
         0,
-        car_world[0],
-        car_world[1],
-        car_world[2],
+        car_world[0].wrapping_neg(),
+        car_world[1].wrapping_neg(),
+        car_world[2].wrapping_neg(),
         0,
         car_world[12],
         car_world[13],
@@ -1955,6 +2013,7 @@ pub struct StageRenderResources {
     draw_ops: usize,
     choice: StageRendererChoice,
     gpu: Option<WgpuStageRenderer>,
+    gpu_fallback: Option<StageRendererFallback>,
 }
 
 fn horizon_root_world(camera: &[i32; 16], y_offset_q16: i32) -> [i32; 16] {
@@ -2044,6 +2103,7 @@ impl StageRenderResources {
             draw_ops,
             choice,
             gpu: None,
+            gpu_fallback: None,
         };
         resources.rebuild_gpu_foreground()?;
         Ok(resources)
@@ -2058,6 +2118,7 @@ impl StageRenderResources {
     }
 
     fn prepare_gpu_foreground(&self) -> Result<PreparedRawStage, StageFrameError> {
+        let car_policy = in_race_car_load_policy(WINDOWED_BODY_LOAD_BRANCH, false);
         let main = StageScene::from_c3d(
             self.bundle.scene(),
             &MATRIX_IDENTITY_Q16,
@@ -2079,7 +2140,13 @@ impl StageRenderResources {
         let car = self
             .car_scene
             .as_ref()
-            .map(|file| StageScene::from_c3d(file, &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX))
+            .map(|file| {
+                StageScene::from_c3d(
+                    file,
+                    &MATRIX_IDENTITY_Q16,
+                    node_mesh_vertex_type(car_policy.load_flags),
+                )
+            })
             .transpose()
             .map_err(StageFrameError::Scene)?;
         let mut layers = vec![PreparedRawStageLayer::opaque(&main, &self.textures)];
@@ -2090,7 +2157,14 @@ impl StageRenderResources {
             layers.push(PreparedRawStageLayer::keyed(scene, textures, 0));
         }
         if let (Some(scene), Some(textures)) = (car.as_ref(), self.car_textures.as_ref()) {
-            layers.push(PreparedRawStageLayer::keyed_dynamic(scene, textures, 0, 0));
+            layers.push(PreparedRawStageLayer::keyed_dynamic(
+                scene,
+                textures,
+                car_policy
+                    .body_source_color_key
+                    .expect("the recovered mode-5 body policy is source-keyed"),
+                0,
+            ));
         }
         PreparedRawStage::prepare_layers(layers, ROOT_EXTENT, &self.palette)
             .map_err(StageFrameError::GpuPrepare)
@@ -2115,6 +2189,7 @@ impl StageRenderResources {
 
     fn rebuild_gpu_foreground(&mut self) -> Result<(), StageFrameError> {
         self.gpu = None;
+        self.gpu_fallback = None;
         if self.choice == StageRendererChoice::Software {
             return Ok(());
         }
@@ -2127,7 +2202,13 @@ impl StageRenderResources {
                 self.gpu = Some(renderer);
                 Ok(())
             }
-            Err(_) if self.choice == StageRendererChoice::Auto => Ok(()),
+            Err(error) if self.choice == StageRendererChoice::Auto => {
+                self.gpu_fallback = Some(StageRendererFallback {
+                    phase: StageRendererFallbackPhase::Setup,
+                    reason: error.kind(),
+                });
+                Ok(())
+            }
             Err(error) => Err(error),
         }
     }
@@ -2195,6 +2276,16 @@ impl StageRenderResources {
         }
     }
 
+    /// Requested renderer, actual renderer, and any path-free automatic fallback.
+    #[must_use]
+    pub fn renderer_status(&self) -> StageRendererStatus {
+        StageRendererStatus {
+            requested: self.choice,
+            selected: self.renderer(),
+            fallback: self.gpu_fallback,
+        }
+    }
+
     /// Composes one frame of the retained stage from the given camera world
     /// transform through the selected renderer.
     ///
@@ -2251,7 +2342,17 @@ impl StageRenderResources {
                     }
                     // Auto: fall back to the software oracle for this and every
                     // later frame rather than failing the session.
+                    let fallback = StageRendererFallback {
+                        phase: StageRendererFallbackPhase::Frame,
+                        reason: error.kind(),
+                    };
+                    self.gpu_fallback = Some(fallback);
                     self.gpu = None;
+                    eprintln!(
+                        "cmr-app: renderer fallback phase={} reason={} selected=software",
+                        fallback.phase.name(),
+                        fallback.reason,
+                    );
                 }
             }
         }
@@ -2308,15 +2409,22 @@ impl StageRenderResources {
             self.car_textures.as_ref(),
             car_world,
         ) {
-            let car = StageScene::from_c3d(car_scene, car_world, VERTEXTYPE_LVERTEX)
-                .map_err(StageFrameError::Scene)?;
+            let car_policy = in_race_car_load_policy(WINDOWED_BODY_LOAD_BRANCH, false);
+            let car = StageScene::from_c3d(
+                car_scene,
+                car_world,
+                node_mesh_vertex_type(car_policy.load_flags),
+            )
+            .map_err(StageFrameError::Scene)?;
             let car_frame = compose_stage_scene_frame_color_key(
                 &car,
                 camera,
                 [ROOT_EXTENT.width, ROOT_EXTENT.height],
                 &self.palette,
                 SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
-                0,
+                car_policy
+                    .body_source_color_key
+                    .expect("the recovered mode-5 body policy is source-keyed"),
                 |ordinal| car_textures.texture_for_ordinal(ordinal),
             )
             .map_err(StageFrameError::Compose)?;
@@ -3149,6 +3257,7 @@ pub fn run_windowed_game_session(
 ) -> Result<(), WindowedStageFrameError> {
     let (mut resources, nodes, start, initial_camera) =
         native_stage_setup(media_root, runtime_data, stage, Some(car_code), renderer)?;
+    eprintln!("cmr-app: {}", resources.renderer_status().stable_summary());
     let initial_harness_world = cmr_core::gameplay_camera::car_world_q16(
         &cmr_core::fixed_point::build_sine_table(),
         start.position,
@@ -3765,7 +3874,10 @@ mod tests {
     }
 
     #[test]
-    fn race_car_model_minus_x_axis_maps_to_harness_forward() {
+    fn race_car_positive_x_front_faces_away_from_the_chase_camera() {
+        use cmr_core::c3d_camera::{apply_affine_q16, invert_affine_q16};
+        use cmr_core::gameplay_camera::{ChasePreset, chase_target_world};
+
         let trig = cmr_core::fixed_point::build_sine_table();
         let harness = cmr_core::gameplay_camera::car_world_q16(
             &trig,
@@ -3777,9 +3889,42 @@ mod tests {
             0,
         );
         let model = car_model_world_q16(&harness);
-        assert_eq!(&model[0..3], &[-0x10000, 0, 0]);
-        assert_eq!(&model[8..11], &[0, 0, -0x10000]);
+        // Local +X is the model's front and must map to harness forward. Local
+        // -Z maps to harness right; flipping both axes keeps a proper rotation.
+        assert_eq!(&model[0..3], &[0x10000, 0, 0]);
+        assert_eq!(&model[8..11], &[0, 0, 0x10000]);
         assert_eq!(&model[12..15], &[0x10000, 0x20000, 0x30000]);
+
+        let determinant = i64::from(model[0])
+            * (i64::from(model[5]) * i64::from(model[10])
+                - i64::from(model[9]) * i64::from(model[6]))
+            - i64::from(model[4])
+                * (i64::from(model[1]) * i64::from(model[10])
+                    - i64::from(model[9]) * i64::from(model[2]))
+            + i64::from(model[8])
+                * (i64::from(model[1]) * i64::from(model[6])
+                    - i64::from(model[5]) * i64::from(model[2]));
+        assert!(determinant > 0, "the model adapter must not mirror winding");
+
+        // Source-owned asymmetric front/rear markers: the chase camera is
+        // behind the car, so local -X (rear) must be nearer than local +X.
+        let camera = chase_target_world(&harness, ChasePreset::Near.offset());
+        let view = invert_affine_q16(&camera);
+        let front_world = apply_affine_q16(&model, [2 << 16, 0, 0]);
+        let rear_world = apply_affine_q16(&model, [-2 << 16, 0, 0]);
+        let front_view = apply_affine_q16(&view, front_world);
+        let rear_view = apply_affine_q16(&view, rear_world);
+        assert!(rear_view[2] > 0);
+        assert!(rear_view[2] < front_view[2]);
+
+        let harness_forward = [harness[8], harness[9], harness[10]];
+        let model_forward = [model[0], model[1], model[2]];
+        let forward_dot: i64 = model_forward
+            .into_iter()
+            .zip(harness_forward)
+            .map(|(a, b)| i64::from(a) * i64::from(b))
+            .sum();
+        assert!(forward_dot > 0);
     }
 
     #[test]
@@ -4169,6 +4314,200 @@ mod tests {
         assert!(
             mismatches <= 307,
             "imported AU1 exceeds the established 0.1% GPU/software raster boundary: {mismatches} pixels"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data"]
+    fn imported_au1_reports_car_vertical_clearance_metadata() {
+        use cmr_core::c3d_camera::{apply_affine_q16, invert_affine_q16};
+
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let (resources, nodes, start, _) = native_stage_setup(
+            &root.join("Game/Au/1"),
+            &root,
+            "AU1",
+            Some("Sub"),
+            StageRendererChoice::Software,
+        )
+        .unwrap();
+        let car_file = resources
+            .car_scene
+            .as_ref()
+            .expect("the owned-media setup retains the selected car");
+        let harness_world = cmr_core::gameplay_camera::car_world_q16(
+            &cmr_core::fixed_point::build_sine_table(),
+            start.position,
+            start.heading,
+        );
+        let model_world = car_model_world_q16(&harness_world);
+        let scene = StageScene::from_c3d(car_file, &model_world, VERTEXTYPE_LVERTEX).unwrap();
+        let car_records: Vec<_> = car_file.group0_records().collect();
+        let root_metadata: Vec<_> = car_records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| record.parent_index().is_none())
+            .map(|(index, record)| {
+                let local = record.affine_matrix_q16();
+                (
+                    index,
+                    record.node_class(),
+                    [local[12], local[13], local[14]],
+                )
+            })
+            .collect();
+        let marker_metadata: Vec<_> = car_records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| (1..=6).contains(&record.node_id()))
+            .map(|(index, record)| {
+                let local = record.affine_matrix_q16();
+                (
+                    index,
+                    record.node_id(),
+                    record.parent_index(),
+                    [local[12], local[13], local[14]],
+                )
+            })
+            .collect();
+        let camera = cmr_core::gameplay_camera::chase_target_world(
+            &harness_world,
+            cmr_core::gameplay_camera::CHASE_OFFSETS[0],
+        );
+        let view = invert_affine_q16(&camera);
+
+        let mut min_y = i32::MAX;
+        let mut max_y = i32::MIN;
+        let mut min_view_z = i32::MAX;
+        let mut max_view_z = i32::MIN;
+        let mut vertex_count = 0usize;
+        for op in scene.draw_order() {
+            let Some(lod) = scene.mesh(op.node).and_then(|mesh| mesh.active()) else {
+                continue;
+            };
+            for prim in lod.prims() {
+                for vertex in prim.unique_entries_32() {
+                    let world = apply_affine_q16(scene.world(op.node), vertex.position_q16());
+                    let camera_space = apply_affine_q16(&view, world);
+                    min_y = min_y.min(world[1]);
+                    max_y = max_y.max(world[1]);
+                    min_view_z = min_view_z.min(camera_space[2]);
+                    max_view_z = max_view_z.max(camera_space[2]);
+                    vertex_count += 1;
+                }
+            }
+        }
+        assert!(vertex_count > 0);
+        assert!(min_y <= max_y);
+        assert!(min_view_z >= Fixed16::ONE.raw());
+
+        // Diagnostic only: the native attach path applies the CSP translation
+        // directly, while the later physics-derived vertical pose is not wired
+        // into the planar harness. Do not bless a guessed clearance. Keep the
+        // output path-free and payload-free for a bounded owned-media comparison.
+        let road_reference_y = nodes[0].position[1];
+        let stage_scene = StageScene::from_c3d(
+            resources.bundle.scene(),
+            &MATRIX_IDENTITY_Q16,
+            VERTEXTYPE_LVERTEX,
+        )
+        .unwrap();
+        let mut nearest_stage_vertex_xz_sq = i128::MAX;
+        let mut nearest_stage_vertex = [0i32; 3];
+        for op in stage_scene.draw_order() {
+            let Some(lod) = stage_scene.mesh(op.node).and_then(|mesh| mesh.active()) else {
+                continue;
+            };
+            for prim in lod.prims() {
+                for vertex in prim.unique_entries_32() {
+                    let world = apply_affine_q16(stage_scene.world(op.node), vertex.position_q16());
+                    let dx = i128::from(world[0]) - i128::from(start.position.x.raw());
+                    let dz = i128::from(world[2]) - i128::from(start.position.z.raw());
+                    let distance = dx * dx + dz * dz;
+                    if distance < nearest_stage_vertex_xz_sq {
+                        nearest_stage_vertex_xz_sq = distance;
+                        nearest_stage_vertex = world;
+                    }
+                }
+            }
+        }
+        let stage_frame = compose_stage_scene_frame(
+            &stage_scene,
+            &camera,
+            [ROOT_EXTENT.width, ROOT_EXTENT.height],
+            &resources.palette,
+            SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+            |ordinal| resources.textures.texture_for_ordinal(ordinal),
+        )
+        .unwrap();
+        let car_frame = compose_stage_scene_frame_color_key(
+            &scene,
+            &camera,
+            [ROOT_EXTENT.width, ROOT_EXTENT.height],
+            &resources.palette,
+            SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+            0,
+            |ordinal| {
+                resources
+                    .car_textures
+                    .as_ref()
+                    .and_then(|textures| textures.texture_for_ordinal(ordinal))
+            },
+        )
+        .unwrap();
+        let mut car_depth_pixels = 0usize;
+        let mut car_visible_pixels = 0usize;
+        let mut car_terrain_occluded_pixels = 0usize;
+        let mut car_bbox = [usize::MAX, usize::MAX, 0, 0];
+        let mut visible_bbox = [usize::MAX, usize::MAX, 0, 0];
+        let width = usize::from(ROOT_EXTENT.width);
+        for (index, (&car_depth, &stage_depth)) in car_frame
+            .depth()
+            .values()
+            .iter()
+            .zip(stage_frame.depth().values())
+            .enumerate()
+        {
+            if car_depth == 1.0 {
+                continue;
+            }
+            car_depth_pixels += 1;
+            let x = index % width;
+            let y = index / width;
+            car_bbox[0] = car_bbox[0].min(x);
+            car_bbox[1] = car_bbox[1].min(y);
+            car_bbox[2] = car_bbox[2].max(x);
+            car_bbox[3] = car_bbox[3].max(y);
+            if car_depth <= stage_depth {
+                car_visible_pixels += 1;
+                visible_bbox[0] = visible_bbox[0].min(x);
+                visible_bbox[1] = visible_bbox[1].min(y);
+                visible_bbox[2] = visible_bbox[2].max(x);
+                visible_bbox[3] = visible_bbox[3].max(y);
+            } else {
+                car_terrain_occluded_pixels += 1;
+            }
+        }
+        assert_eq!(
+            car_depth_pixels,
+            car_visible_pixels + car_terrain_occluded_pixels
+        );
+        assert!(car_visible_pixels > 0);
+        assert!(car_terrain_occluded_pixels > 0);
+        eprintln!(
+            "owned-au1 car-clearance nodes={} roots={root_metadata:?} markers={marker_metadata:?} vertices={vertex_count} spawn={:?} min_y_q16={min_y} max_y_q16={max_y} cat_y_q16={road_reference_y} min_vs_cat_q16={} nearest_stage_vertex={nearest_stage_vertex:?} nearest_stage_vertex_xz_sq={nearest_stage_vertex_xz_sq} view_z_q16={min_view_z}..={max_view_z} car_prims={} car_fragments={} car_self_depth_rejected={} car_depth_pixels={car_depth_pixels} car_visible_pixels={car_visible_pixels} car_terrain_occluded_pixels={car_terrain_occluded_pixels} car_bbox={car_bbox:?} visible_bbox={visible_bbox:?}",
+            car_records.len(),
+            [
+                start.position.x.raw(),
+                start.position.y.raw(),
+                start.position.z.raw()
+            ],
+            min_y.wrapping_sub(road_reference_y),
+            car_frame.stats().prims_composed,
+            car_frame.stats().covered,
+            car_frame.stats().depth_rejected,
         );
     }
 
@@ -4607,6 +4946,31 @@ mod tests {
         assert_eq!(config.runtime_data(), Path::new("explicit-data"));
         assert_eq!(config.command(), AppCommand::HeadlessRootFrame);
         assert_eq!(config.runtime_data_source(), RuntimeDataSource::CommandLine);
+    }
+
+    #[test]
+    fn renderer_status_summaries_are_stable_and_path_free() {
+        assert_eq!(
+            StageRendererStatus {
+                requested: StageRendererChoice::Auto,
+                selected: StageRendererKind::Gpu,
+                fallback: None,
+            }
+            .stable_summary(),
+            "renderer requested=auto selected=gpu fallback=none"
+        );
+        assert_eq!(
+            StageRendererStatus {
+                requested: StageRendererChoice::Auto,
+                selected: StageRendererKind::Software,
+                fallback: Some(StageRendererFallback {
+                    phase: StageRendererFallbackPhase::Frame,
+                    reason: "gpu-compose",
+                }),
+            }
+            .stable_summary(),
+            "renderer requested=auto selected=software fallback=frame:gpu-compose"
+        );
     }
 
     #[test]

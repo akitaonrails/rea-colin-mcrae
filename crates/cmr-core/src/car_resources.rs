@@ -76,6 +76,95 @@ pub const DAY_TAG: &str = "DAY";
 /// Night model tag (selected when the recovered night-mode predicate holds).
 pub const NIGHT_TAG: &str = "NIGHT";
 
+/// Keyed C3D loader mode used by one in-race body branch and the reflection.
+pub const IN_RACE_KEYED_LOAD_MODE: i32 = 5;
+/// Unkeyed C3D loader mode used by the other in-race body branch.
+pub const IN_RACE_UNKEYED_LOAD_MODE: i32 = 6;
+/// The fourth `FUN_004a2b70` argument used by both in-race actors.
+pub const IN_RACE_CALLER_OPTION: i32 = 1;
+/// Daytime/detail flags passed to both in-race actor loads.
+pub const IN_RACE_DAY_LOAD_FLAGS: u8 = 8;
+/// Night-time/detail flags passed to both in-race actor loads.
+pub const IN_RACE_NIGHT_LOAD_FLAGS: u8 = 2;
+
+/// The observed body-loader branch selected by `FUN_00480e60`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InRaceBodyLoadBranch {
+    /// Mode 5, followed by `FUN_0045bb70(actor, 0xff)`.
+    KeyedMode5,
+    /// Mode 6, without the actor-alpha call.
+    UnkeyedMode6,
+}
+
+/// Neutral inputs to the body-mode predicate at `0x48106c..0x48108e`.
+///
+/// The field names retain addresses because the runtime meanings of these
+/// globals and queries are not yet established.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InRaceBodyLoadContext {
+    pub global_d3ca88_nonzero: bool,
+    pub query_485bb0_nonzero: bool,
+    pub query_401060_nonzero: bool,
+    pub global_514478_nonzero: bool,
+}
+
+/// Resolves the exact observed body-mode branch from its neutral inputs.
+#[must_use]
+pub const fn in_race_body_load_branch(context: InRaceBodyLoadContext) -> InRaceBodyLoadBranch {
+    if !context.global_d3ca88_nonzero
+        && (context.query_485bb0_nonzero
+            || context.query_401060_nonzero
+            || context.global_514478_nonzero)
+    {
+        InRaceBodyLoadBranch::KeyedMode5
+    } else {
+        InRaceBodyLoadBranch::UnkeyedMode6
+    }
+}
+
+/// Resolved loader policy for an in-race body/reflection pair.
+///
+/// The body conditionally uses mode 5 or 6. Mode 5 installs a zero
+/// `DDCKEY_SRCBLT` color key, while mode 6 does not. The separate reflection
+/// resource always uses mode 5 and is therefore also zero-keyed. Both observed
+/// flag values have bit zero clear, so
+/// [`crate::c3d_mesh::node_mesh_vertex_type`] selects lit LVERTEX geometry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InRaceCarLoadPolicy {
+    pub body_mode: i32,
+    pub reflection_mode: i32,
+    pub caller_option: i32,
+    pub load_flags: u8,
+    pub body_source_color_key: Option<u8>,
+    pub reflection_source_color_key: Option<u8>,
+    pub body_sets_actor_alpha_ff: bool,
+}
+
+/// Returns the observed in-race loader policy for a body branch and day/night.
+#[must_use]
+pub const fn in_race_car_load_policy(
+    body_branch: InRaceBodyLoadBranch,
+    night: bool,
+) -> InRaceCarLoadPolicy {
+    let (body_mode, body_source_color_key, body_sets_actor_alpha_ff) = match body_branch {
+        InRaceBodyLoadBranch::KeyedMode5 => (IN_RACE_KEYED_LOAD_MODE, Some(0), true),
+        InRaceBodyLoadBranch::UnkeyedMode6 => (IN_RACE_UNKEYED_LOAD_MODE, None, false),
+    };
+    InRaceCarLoadPolicy {
+        body_mode,
+        reflection_mode: IN_RACE_KEYED_LOAD_MODE,
+        caller_option: IN_RACE_CALLER_OPTION,
+        load_flags: if night {
+            IN_RACE_NIGHT_LOAD_FLAGS
+        } else {
+            IN_RACE_DAY_LOAD_FLAGS
+        },
+        body_source_color_key,
+        reflection_source_color_key: Some(0),
+        body_sets_actor_alpha_ff,
+    }
+}
+
 /// Byte offset of a player's settings within `DAT_00d3ca80`.
 pub fn player_settings_offset(player: usize) -> usize {
     player * PER_PLAYER_SETTINGS_STRIDE
@@ -299,6 +388,70 @@ mod tests {
             r"OBJECTS\CARS\XYZDAYref.c3d"
         );
         assert_eq!(car_reflection_map_path(), r"OBJECTS\CARS\ref_map.bmp");
+    }
+
+    #[test]
+    fn in_race_body_branches_and_reflection_keep_their_observed_loader_policies() {
+        use crate::c3d_mesh::node_mesh_vertex_type;
+        use crate::c3d_render::VERTEXTYPE_LVERTEX;
+
+        let keyed = in_race_car_load_policy(InRaceBodyLoadBranch::KeyedMode5, false);
+        assert_eq!(keyed.body_mode, IN_RACE_KEYED_LOAD_MODE);
+        assert_eq!(keyed.reflection_mode, IN_RACE_KEYED_LOAD_MODE);
+        assert_eq!(keyed.caller_option, 1);
+        assert_eq!(keyed.load_flags, IN_RACE_DAY_LOAD_FLAGS);
+        assert_eq!(keyed.body_source_color_key, Some(0));
+        assert_eq!(keyed.reflection_source_color_key, Some(0));
+        assert!(keyed.body_sets_actor_alpha_ff);
+        assert_eq!(node_mesh_vertex_type(keyed.load_flags), VERTEXTYPE_LVERTEX);
+
+        let unkeyed = in_race_car_load_policy(InRaceBodyLoadBranch::UnkeyedMode6, true);
+        assert_eq!(unkeyed.body_mode, IN_RACE_UNKEYED_LOAD_MODE);
+        assert_eq!(unkeyed.reflection_mode, IN_RACE_KEYED_LOAD_MODE);
+        assert_eq!(unkeyed.load_flags, IN_RACE_NIGHT_LOAD_FLAGS);
+        assert_eq!(unkeyed.body_source_color_key, None);
+        assert_eq!(unkeyed.reflection_source_color_key, Some(0));
+        assert!(!unkeyed.body_sets_actor_alpha_ff);
+        assert_eq!(
+            node_mesh_vertex_type(unkeyed.load_flags),
+            VERTEXTYPE_LVERTEX
+        );
+    }
+
+    #[test]
+    fn in_race_body_branch_follows_the_recovered_runtime_predicate() {
+        let branch = |global_d3ca88_nonzero,
+                      query_485bb0_nonzero,
+                      query_401060_nonzero,
+                      global_514478_nonzero| {
+            in_race_body_load_branch(InRaceBodyLoadContext {
+                global_d3ca88_nonzero,
+                query_485bb0_nonzero,
+                query_401060_nonzero,
+                global_514478_nonzero,
+            })
+        };
+
+        assert_eq!(
+            branch(false, true, false, false),
+            InRaceBodyLoadBranch::KeyedMode5
+        );
+        assert_eq!(
+            branch(false, false, true, false),
+            InRaceBodyLoadBranch::KeyedMode5
+        );
+        assert_eq!(
+            branch(false, false, false, true),
+            InRaceBodyLoadBranch::KeyedMode5
+        );
+        assert_eq!(
+            branch(false, false, false, false),
+            InRaceBodyLoadBranch::UnkeyedMode6
+        );
+        assert_eq!(
+            branch(true, true, true, true),
+            InRaceBodyLoadBranch::UnkeyedMode6
+        );
     }
 
     fn sample_car() -> CarSceneNode {

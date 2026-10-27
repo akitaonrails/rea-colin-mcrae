@@ -25,7 +25,7 @@ use cmr_core::display::DisplayExtent;
 use cmr_formats::riff_palette::PaletteEntry;
 use cmr_gpu_contract::{
     C3dDraw, C3dIndexedTexture, C3dMeshResource, C3dPreparedFrame, C3dRawFrame, C3dResourceSet,
-    C3dRgb8, C3dSceneUpload, C3dSubmissionBracket, C3dVertexQ16, RawC3dContractError,
+    C3dRgb8, C3dSceneUpload, C3dStageVertex, C3dSubmissionBracket, RawC3dContractError,
 };
 use cmr_video::software_stage_scene::StageC3dTextures;
 
@@ -226,7 +226,7 @@ impl PreparedRawStage {
                         prim.unique_entries_32()
                             .iter()
                             .copied()
-                            .map(C3dVertexQ16::from)
+                            .map(C3dStageVertex::from)
                             .collect::<Vec<_>>(),
                         prim.indices().to_vec(),
                     )?);

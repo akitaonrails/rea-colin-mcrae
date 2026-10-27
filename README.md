@@ -129,11 +129,12 @@ select the candidates. Stage output is path-free, reports timings and
 `winner=not-selected`, and needs an otherwise idle GPU for meaningful numbers.
 
 The application's stage commands accept an explicit renderer choice. The wgpu
-path prepares and uploads a supported single scene once, updates the camera VIEW
-matrix per frame, and rasterizes into the 8-bit palette-index target. The full
-native AU1 session currently needs layered HZN/OBJ/SHT/car composition, so
-`auto` selects the software compatibility oracle for that path until the shared
-layered GPU compositor is implemented:
+path prepares and uploads the layered stage, HZN, OBJ, SHT, and car scenes once,
+updates dynamic world and camera VIEW matrices per frame, and rasterizes into
+the 8-bit palette-index target. `auto` selects that GPU path when setup succeeds
+and falls back to the software compatibility oracle on a typed setup or frame
+failure. The native session prints a path-free startup line with the requested
+and actual renderer plus any fallback category:
 
 ```sh
 cargo run --release -q -p cmr-app -- \
@@ -146,13 +147,13 @@ cargo run --release -q -p cmr-app -- \
 ```
 
 `--car-code` is the asset code selected by the caller/menu; the reconstruction
-does not embed the original car table. `auto` (default) uses the GPU for the
-currently supported single-graph path and software for layered HZN/OBJ/SHT/car
-composition; `software` forces the oracle compositor; `gpu` fails closed when
-the requested scene contract is unavailable. Measured per composed 640x480 stage
-frame on this host: AU1 79.6 ms (software) vs 0.75 ms (GPU), NZ2 67.9 vs 1.07,
-MC5 101.4 vs 1.11, IN8 7.2 vs 0.16. The GPU index frame is held to the
-software oracle by the shared raw-C3D contract (hardware-gated test).
+does not embed the original car table. `auto` is the default; `software` forces
+the much slower oracle compositor and is intended for differential checks;
+`gpu` fails closed if setup or a frame fails. The raw-C3D candidate benchmark
+(not the full layered native loop or SDL presentation) measured these 640x480
+frames on this host: AU1 79.6 ms (software) vs 0.75 ms (GPU), NZ2 67.9 vs 1.07,
+MC5 101.4 vs 1.11, IN8 7.2 vs 0.16. The GPU index frame is held to the software
+oracle by the shared raw-C3D contract (hardware-gated test).
 
 Verify the currently cataloged source corpus, then import exact asset bytes into
 the ignored runtime directory:

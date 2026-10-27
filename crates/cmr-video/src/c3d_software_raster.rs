@@ -1949,7 +1949,7 @@ impl RasterInputVertex {
                 .map(|component| component as f32 * Q16_SCALE),
             diffuse: 0,
             specular: 0,
-            uv: entry.uv_q16().map(|component| component as f32 * Q16_SCALE),
+            uv: cmr_core::c3d_render::stage_texture_uv(entry.uv_q16()),
         }
     }
 }
@@ -2028,7 +2028,10 @@ mod tests {
     };
     use cmr_formats::{
         bitmap::BitmapLimits,
-        c3d::{C3D_FORMAT_VERSION, C3D_MAGIC, C3dLimits, parse_c3d},
+        c3d::{
+            C3D_FORMAT_VERSION, C3D_GROUP1_ENTRY32_LEN, C3D_GROUP1_FIXED_LEN, C3D_HEADER_LEN,
+            C3D_MAGIC, C3dFile, C3dLimits, parse_c3d,
+        },
     };
 
     use super::*;
@@ -2053,6 +2056,31 @@ mod tests {
             specular_argb: [1.0, 0.0, 0.0, 0.0],
             uv,
         }
+    }
+
+    fn one_vertex_c3d(uv_q16: [i32; 2]) -> C3dFile {
+        let record_len = C3D_GROUP1_FIXED_LEN + C3D_GROUP1_ENTRY32_LEN;
+        let mut record = vec![0u8; record_len];
+        record[12..16].copy_from_slice(&(record_len as u32).to_le_bytes());
+        record[16..18].copy_from_slice(&1u16.to_le_bytes());
+        for (index, component) in [0, 0, 0, uv_q16[0], uv_q16[1], 0, 0, 0]
+            .into_iter()
+            .enumerate()
+        {
+            let offset = C3D_GROUP1_FIXED_LEN + index * 4;
+            record[offset..offset + 4].copy_from_slice(&component.to_le_bytes());
+        }
+
+        let mut bytes = vec![0u8; C3D_HEADER_LEN];
+        bytes[0..4].copy_from_slice(&C3D_MAGIC);
+        bytes[4..8].copy_from_slice(&C3D_FORMAT_VERSION.to_le_bytes());
+        bytes[8..12].copy_from_slice(&(C3D_HEADER_LEN as u32).to_le_bytes());
+        bytes[14..16].copy_from_slice(&1u16.to_le_bytes());
+        bytes[20..24].copy_from_slice(&(C3D_HEADER_LEN as u32).to_le_bytes());
+        bytes[24..28].copy_from_slice(&(C3D_HEADER_LEN as u32).to_le_bytes());
+        bytes[28..32].copy_from_slice(&((C3D_HEADER_LEN + record_len) as u32).to_le_bytes());
+        bytes.extend_from_slice(&record);
+        parse_c3d(&bytes, C3dLimits::default()).unwrap()
     }
 
     fn raw(position: [f32; 3], diffuse: u32, uv: [f32; 2]) -> RasterInputVertex {
@@ -2778,6 +2806,62 @@ mod tests {
         assert_near(fragment.diffuse_argb()[0], 0.25);
         assert_near(fragment.diffuse_argb()[1], 0.375);
         assert_near(fragment.diffuse_argb()[2], 0.375);
+    }
+
+    #[test]
+    fn mesh_entry_uses_the_shared_stage_uv_preprocessing() {
+        let file = one_vertex_c3d([0x1_0001, -0x8000]);
+        let entry = file
+            .group1_records()
+            .next()
+            .unwrap()
+            .entries_32()
+            .next()
+            .unwrap();
+        let vertex = RasterInputVertex::from_mesh_entry(entry);
+        assert_eq!(
+            vertex.uv,
+            cmr_core::c3d_render::stage_texture_uv([0x1_0001, -0x8000])
+        );
+    }
+
+    #[test]
+    fn corrected_stage_uvs_cover_a_quadrant_texture_without_an_internal_crack() {
+        let uv00 = cmr_core::c3d_render::stage_texture_uv([0, -0x1_0000]);
+        let uv10 = cmr_core::c3d_render::stage_texture_uv([0x1_0000, -0x1_0000]);
+        let uv01 = cmr_core::c3d_render::stage_texture_uv([0, 0]);
+        let uv11 = cmr_core::c3d_render::stage_texture_uv([0x1_0000, 0]);
+        let at = |x, y, uv| screen([x, y, 0.5], 1.0, uv, [0.0; 4]);
+        let batch = prepared_batch(vec![
+            triangle(
+                [at(0.0, 0.0, uv00), at(4.0, 0.0, uv10), at(0.0, 4.0, uv01)],
+                0,
+            ),
+            triangle(
+                [at(4.0, 0.0, uv10), at(4.0, 4.0, uv11), at(0.0, 4.0, uv01)],
+                0,
+            ),
+        ]);
+        let mut depth = SoftwareC3dDepthBuffer::new_far([4, 4]).unwrap();
+        let mut sampled = [u8::MAX; 16];
+
+        rasterize_fragments(
+            &batch,
+            texture([2, 2], &[10, 11, 20, 21]),
+            &mut depth,
+            |fragment| {
+                let [x, y] = fragment.position();
+                sampled[usize::from(y) * 4 + usize::from(x)] = fragment.texture_index();
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            sampled,
+            [
+                10, 10, 11, 11, 10, 10, 11, 11, 20, 20, 21, 21, 20, 20, 21, 21
+            ]
+        );
     }
 
     #[test]
@@ -3961,6 +4045,23 @@ mod tests {
         for (uv, expected) in cases {
             assert_eq!(sample_point_clamped(texture, uv), expected, "{uv:?}");
         }
+    }
+
+    #[test]
+    fn stage_uv_preprocessing_is_neither_raw_clamp_nor_generic_repeat() {
+        let indices: Vec<u8> = (0..16).collect();
+        let texture = texture([4, 4], &indices);
+
+        let first_raw = [1.25, -0.75];
+        let first_corrected = cmr_core::c3d_render::stage_texture_uv([0x1_4000, -0xc000]);
+        assert_eq!(first_corrected, [0.25, 0.25]);
+        assert_eq!(sample_point_clamped(texture, first_corrected), 5);
+        assert_eq!(sample_point_clamped(texture, first_raw), 3);
+
+        let second_corrected = cmr_core::c3d_render::stage_texture_uv([0x2_4000, 0x4000]);
+        assert_eq!(second_corrected, [1.25, 1.25]);
+        assert_eq!(sample_point_clamped(texture, second_corrected), 15);
+        assert_eq!(sample_point_clamped(texture, [0.25, 0.25]), 5);
     }
 
     #[test]

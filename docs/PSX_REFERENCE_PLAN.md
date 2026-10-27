@@ -22,6 +22,7 @@ the completion counters in [DECOMP_MAP.md](DECOMP_MAP.md).
 | Binary/overlay splitting | Splat | Produce a reproducible section/overlay map and GNU-style MIPS assembly | Generated target-derived output stays under `.work/` |
 | Selected matching work | local `m2c`, `maspsx`, and local/self-hosted decomp.me | Draft and byte-compare only high-value PS1 functions | Never upload proprietary code or bytes to a public service |
 | PS1 runtime oracle | PCSX-Redux | Controlled GDB/Lua tracing, memory watchpoints, and frame/input observations | Shipped code executes only in an explicitly scoped experiment |
+| PS1 rendering oracle | DuckStation | Pinned-build, controlled baseline/enhancement A/B captures | Enhanced output is diagnostic, never Windows compatibility evidence |
 | Experimental native oracle | PSXRecomp | Test whether a user-owned PS1 disc can provide a quick native comparison build | Alpha accelerator, not compatibility evidence or project foundation |
 | Synthetic hardware probes | PSn00bSDK | Build redistributable tests for GPU/GTE/controller assumptions when needed | Not a drop-in PsyQ replacement and not a source of game behavior |
 
@@ -194,7 +195,7 @@ decompilation; it would compete with the Windows deliverable.
 Gate: every selected function has a written question, a bounded input range,
 and a result that changes or verifies a Windows reconstruction task.
 
-### P4 — controlled PCSX-Redux observations
+### P4 — controlled runtime observations
 
 Runtime work requires a short experiment document before launch containing:
 
@@ -203,9 +204,39 @@ Runtime work requires a short experiment document before launch containing:
 - initial state, input script, frame/time bound, and expected outputs;
 - files the experiment may write and the cleanup procedure.
 
-Prefer interpreter/debug mode when execution breakpoints are required. Export
-only concise derived traces, addresses, counts, hashes, and screenshots that do
-not reproduce proprietary payloads.
+Use PCSX-Redux as the debugger and memory oracle; prefer its interpreter/debug
+mode when execution breakpoints are required. Use an exact pinned DuckStation
+build only as the rendering oracle. Its [official settings documentation in
+source at the reviewed `d3818375` commit](https://github.com/stenzek/duckstation/blob/d3818375481051003e84c8483aa313b14f79cae6/src/duckstation-qt/graphicssettingswidget.cpp#L408-L575)
+distinguishes the software compatibility renderer from hardware enhancements
+and warns that widescreen, PGXP geometry correction, and PGXP depth may be
+incompatible. PGXP itself produces precision data unavailable on original
+hardware, so its output is diagnostic rather than a native reference; see the
+[technical overview based on iCatButler's original post at the reviewed
+`2ba074e8` commit](https://github.com/libretro/beetle-psx-libretro/blob/2ba074e8f5914a033b7865e0fae8cd07f0e9c3dc/pgxp/README.md#L4-L15).
+
+For every DuckStation experiment, capture these arms from the same initial
+state, input script, and bounded frame:
+
+| Arm | Settings | Evidence label |
+| --- | --- | --- |
+| Authoritative baseline | Native resolution/aspect and nearest sampling; PGXP geometry, perspective correction, culling correction, depth buffer, widescreen, and other enhancements off | `observed/psx` |
+| Geometry diagnostic | Baseline plus PGXP geometry correction only | `observed/psx-enhanced` |
+| Texture diagnostic | Geometry arm plus perspective-correct textures | `observed/psx-enhanced` |
+| Culling diagnostic | Geometry arm plus culling correction | `observed/psx-enhanced` |
+| Exceptional diagnostic | One named CPU-mode, vertex-cache, depth, filtering, or widescreen change, only when a written question requires it | `observed/psx-enhanced` |
+
+Keep the pinned build identity, complete settings, initial-state hash, input
+script hash, target frame, and output hashes under ignored `.work/psx/`. Change
+only the named setting between paired arms. Export only concise derived traces,
+addresses, counts, hashes, and screenshots that do not reproduce proprietary
+payloads.
+
+No PS1 enhancement may establish or alter a Windows compatibility claim. It
+may only suggest a Windows REA query or falsifying test. Filtering, widescreen,
+or higher-precision projection/depth may later be offered by a modern Windows
+backend only as explicit optional flags after the backend passes the unchanged
+Windows-derived baseline contracts.
 
 Gate: the observation is repeatable from the documented initial state and is
 clearly labelled `observed/psx`; it is not silently substituted for Windows
@@ -259,5 +290,6 @@ trace or matching-decomp target.
 - [`maspsx`](https://github.com/mkst/maspsx)
 - [decomp.me source](https://github.com/decompme/decomp.me)
 - [PCSX-Redux](https://github.com/pcsx-redux/pcsx-redux)
+- [DuckStation reviewed source pin `d3818375481051003e84c8483aa313b14f79cae6`](https://github.com/stenzek/duckstation/tree/d3818375481051003e84c8483aa313b14f79cae6)
 - [PSXRecomp](https://github.com/RetroPortingToolKit/psxrecomp)
 - [PSn00bSDK](https://github.com/Lameguy64/PSn00bSDK)

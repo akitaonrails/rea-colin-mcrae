@@ -95,6 +95,28 @@ fn composes_a_drawable_stage_from_a_source_root() {
 }
 
 #[test]
+fn forced_software_resources_report_the_actual_renderer_without_a_fallback() {
+    let media = MediaDir::new();
+    media.write_section(
+        "rendererstatus",
+        C3D_EXTENSION,
+        &drawable_c3d(&indexed_bitmap_4x4(), [0, 0, -(1 << 16)]),
+    );
+    let resources = StageRenderResources::load_with(
+        media.root(),
+        "rendererstatus",
+        StageRendererChoice::Software,
+    )
+    .unwrap();
+
+    assert_eq!(resources.renderer(), StageRendererKind::Software);
+    assert_eq!(
+        resources.renderer_status().stable_summary(),
+        "renderer requested=software selected=software fallback=none"
+    );
+}
+
+#[test]
 #[ignore = "requires an SDL video driver; run with SDL_VIDEODRIVER=dummy"]
 fn sdl_host_presents_a_composed_stage_frame() {
     let media = MediaDir::new();

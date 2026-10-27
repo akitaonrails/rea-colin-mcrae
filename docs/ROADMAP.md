@@ -1591,13 +1591,13 @@ which grows with prepared draw count, dominates. I09 therefore selects
 **wgpu**, which also avoids SDL_GPU's external `glslangValidator` runtime
 dependency, and wires it behind the shared contracts. The application's stage
 and windowed-session commands now render through the persistent wgpu path by
-default (`--renderer auto`) for single-graph scenes, with the software
-compositor as the oracle and automatic fallback. Layered OBJ/SHT/HZN stages
-currently select software under `auto` and reject explicit GPU until the shared
-multi-graph contract is implemented. For a single graph, the scene is converted and uploaded once, each frame only
-updates the camera VIEW matrix, and the GPU rasterizes into an 8-bit
-palette-index target that the recovered indexed host presents unchanged.
-Measured per 640x480 stage frame, the same workload composes in 79.6 ms
+default (`--renderer auto`), with the software compositor as the oracle and
+automatic fallback. Layered main/OBJ/SHT/car foreground plus the separate HZN
+projection/depth pass are implemented behind the same indexed-frame contract.
+The native session now reports the requested and actual renderer and a typed,
+path-free setup/frame fallback category, so an automatic software fallback is
+no longer silent. The raw candidate benchmark (not the full layered native loop
+or SDL presentation) measured per 640x480 frame 79.6 ms
 (software) vs 0.75 ms (GPU) on AU1, 67.9 vs 1.07 on NZ2, 101.4 vs 1.11 on
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
@@ -1620,11 +1620,28 @@ state-2 leave pulse. The front-end gate is cleared before state 4, so the
 explicitly configured stage and car arm state 5 instead of auto-advancing at
 boot. Other unreconstructed destinations remain pending.
 
+The common C3D vertex-preparation UV rule is now shared by the software, wgpu,
+and SDL_GPU paths before sampler clamp: raw Q16 U is converted to `f32` and
+subtracts one exactly once only when strictly greater than one; V adds one in
+the native x87 expression before its single final `f32` store. Parser/raw
+carriers remain raw, while already-prepared frontend, generated reflection, and
+2D UVs are not transformed again. AU1 corpus evidence shows the former missing
+V bias collapsed the main scene to texture row zero; the latest controlled
+capture confirms coherent stage textures after the correction. This is not a
+claim of DX5 raster-exact pixels.
+
 The native game session is a drivable stage harness. Authored `.cat`
 checkpoints replace the synthetic line, a real country palette is loaded, and
 the `.csp` player-one pose drives the car and first chase camera. The native
-car-model `-X` forward basis is explicitly remapped into the planar harness
-convention; CAT-derived startup is retained only for stages without CSP. AU1's
+car adapter now treats local `+X` as front and local `-Z` as right, maps those
+axes into the planar harness while flipping two transverse columns to preserve a
+positive determinant, and adapts steering sign only at the explicit
+`CarControls -> RaceState::Controls` harness boundary so requested world-side
+turns agree for keyboard and analog input. The full suite passes, and a
+controlled native wgpu run now shows the car rear toward the chase camera and
+a held right input moving the car geometrically right; the same run advanced in
+real time to 43 MPH without renderer fallback. CAT-derived startup is retained
+only for stages without CSP. AU1's
 layered software composition and CSP-to-checkpoint drive regression pass on the
 imported assets. The first layered-GPU prerequisite is complete: wgpu material
 textures carry the resolved active-palette slot and a distinct source-key mask,
@@ -1649,10 +1666,16 @@ checks prove input-driven world/frame changes, steering and checkpoint progress;
 controlled Xvfb captures verify visible throttle, steering and coasting. The
 caller-selected in-race C3D car is now depth-composed with the stage under its
 live pose. The normal single-player race HUD is composed over every live world
-frame from the authenticated bitmap/font inputs. Controlled Xvfb release captures
-show a visible gauge, timer, gear/speed readout, player car, and a changed world
-frame after a real throttle event. This does not claim complete four-wheel
-trajectory fidelity or a verified full-race finish.
+frame from the authenticated bitmap/font inputs. Controlled Xvfb release
+captures show a visible gauge, timer, gear/speed readout, player car, and
+changed world frames after real throttle and steering events. The post-UV
+controlled wgpu capture confirms coherent road, sky, scenery, and car textures,
+the corrected rear-facing chase view, geometric right steering, real-time
+progression, and no renderer fallback. Static `FUN_00480890` evidence passes the
+CSP position directly and supplies no justified body lift, so lower-body
+terrain occlusion and ride-height ownership remain open rather than receiving a
+cosmetic offset. This does not claim complete four-wheel trajectory fidelity or
+a verified full-race finish.
 
 The menu-to-race path now presents the selected stage's loading artwork during
 state 4. The app reads `.LOA` directly from the caller-selected media root,
@@ -1670,9 +1693,12 @@ and owned-media BAR/LINE metadata are test-backed. Center-nearest stretching and
 active-palette L1 remapping are documented software policy: the ordinary
 RGB555/565 packing formula is recovered elsewhere, but the DX5 stretched raster
 and an RGB16-to-active-indexed presentation bridge are not. PS1's same-role TIM
-format remains a separate reference-only parser boundary. The next I14 gate is
-a controlled native run proving this composed frame hands off to the live stage
-world.
+format remains a separate reference-only parser boundary. The controlled native
+run now reaches a coherent live stage after this frame. The GPU/auto visual gate
+has passed with the determinant-preserving car adapter, geometric steering
+direction, and real-time wgpu pacing. The next I14 gate is authenticated
+vertical/contact setup that resolves the still-explicit ride-height boundary
+without a cosmetic lift.
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
@@ -1689,8 +1715,9 @@ consumes `.c3d`, `.dat`, `.obj`, `.sht`, `.ars`, `.hzn`, `.tsc`, `.csp`, and
 `.cat`, with layered software presentation, authored starts, bounded
 trigger-volume decoding, and authored trackside-camera records. `.moj`, `.spl`,
 `.anm`, `.rsf`, and `.fuz` remain unintegrated. The native race path composes the
-player car and normal race HUD but still bypasses recovered menu selection and
-lacks DAT dispatch.
+player car and normal race HUD and enters the configured race through the
+recovered Rally root selection. Stage and car remain explicit caller inputs
+until their setup screens are reconstructed, and DAT dispatch remains open.
 The normal single-player HUD now has a pure, test-backed command plan for the
 pinned common gauge core including all 15 strict-threshold rev segments,
 speed/gear text, progress marker, and late timer

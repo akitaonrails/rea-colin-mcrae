@@ -486,6 +486,70 @@ mod tests {
     }
 
     #[test]
+    fn nominal_sdl_stick_directions_match_keyboard_steering_semantics() {
+        use cmr_core::drive_controls::DriveResponse;
+        use cmr_core::fixed_point::Fixed16;
+        use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
+
+        let response = DriveResponse {
+            max_forward_force: Fixed16::from_raw(8 << 16),
+            max_steer_rate: 0x200,
+        };
+        let mut state = GamepadDrivingState::new();
+        let mut analog = AnalogDriver::new();
+
+        // SDL's standard LeftX convention is negative for a physical left
+        // deflection and positive for right.  Pin the full adapter -> recovered
+        // analog-driver chain to the same geometric turn signs as the
+        // independently recovered keyboard path. Positive BAM turns left in
+        // the simplified RaceState convention.
+        state.apply_axis(Axis::LeftX, i16::MIN);
+        let stick_left = analog.poll(
+            state.steer_axis(),
+            state.pedal_axis(),
+            state.buttons(),
+            &response,
+            true,
+        );
+        state.apply_axis(Axis::LeftX, i16::MAX);
+        let stick_right = analog.poll(
+            state.steer_axis(),
+            state.pedal_axis(),
+            state.buttons(),
+            &response,
+            true,
+        );
+
+        let mut keyboard = KeyboardDriver::player_one();
+        let keyboard_left = keyboard.poll(|vk| vk == 0x25, &response, true);
+        let keyboard_right = keyboard.poll(|vk| vk == 0x27, &response, true);
+
+        assert!(stick_left.car.steer_left > 0);
+        assert_eq!(stick_left.car.steer_right, 0);
+        assert!(stick_left.controls.steer_rate > 0);
+        assert_eq!(
+            stick_left.controls.steer_rate.signum(),
+            keyboard_left.controls.steer_rate.signum()
+        );
+        let stick_left_heading = 0_u16.wrapping_add(stick_left.controls.steer_rate as u16);
+        let keyboard_left_heading = 0_u16.wrapping_add(keyboard_left.controls.steer_rate as u16);
+        assert!((stick_left_heading as i16) > 0);
+        assert!((keyboard_left_heading as i16) > 0);
+
+        assert!(stick_right.car.steer_right > 0);
+        assert_eq!(stick_right.car.steer_left, 0);
+        assert!(stick_right.controls.steer_rate < 0);
+        assert_eq!(
+            stick_right.controls.steer_rate.signum(),
+            keyboard_right.controls.steer_rate.signum()
+        );
+        let stick_right_heading = 0_u16.wrapping_add(stick_right.controls.steer_rate as u16);
+        let keyboard_right_heading = 0_u16.wrapping_add(keyboard_right.controls.steer_rate as u16);
+        assert!((stick_right_heading as i16) < 0);
+        assert!((keyboard_right_heading as i16) < 0);
+    }
+
+    #[test]
     fn sdl_keys_translate_to_the_recovered_vk_codes() {
         // Player 1 arrows + numpad.
         assert_eq!(sdl_keycode_to_vk(Keycode::Left), Some(0x25));

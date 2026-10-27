@@ -322,30 +322,78 @@ pub trait IndexedPaletteGpuBackend {
     ) -> Result<ConformanceFrame, Self::Error>;
 }
 
-/// One raw recovered C3D vertex, before host floating-point conversion,
-/// transformation, clipping, or culling.
+/// One recovered stage C3D vertex ready for a native GPU upload.
 ///
-/// Components are the eight signed Q16.16 words stored by a C3D 32-byte entry:
-/// model-space XYZ, UV, and the lighting normal. Candidate vertex shaders own
-/// the Q16.16 conversion so this boundary cannot accidentally benchmark the
-/// software rasterizer's prepared geometry.
+/// Position and normal remain the six signed Q16.16 source words. UV is the
+/// shared recovered float submission value, stored as IEEE-754 bits so this
+/// carrier remains exactly comparable and hashable across backends.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct C3dVertexQ16 {
-    pub components: [i32; 8],
+pub struct C3dStageVertex {
+    position_q16: [i32; 3],
+    texture_uv_bits: [u32; 2],
+    normal_q16: [i32; 3],
 }
 
-impl From<cmr_formats::c3d::C3dEntry32<'_>> for C3dVertexQ16 {
-    fn from(entry: cmr_formats::c3d::C3dEntry32<'_>) -> Self {
+impl C3dStageVertex {
+    /// Builds the mixed stage-upload carrier from the eight raw C3D Q16.16
+    /// components, applying the shared draw-time UV preprocessing contract.
+    #[must_use]
+    pub fn from_raw_components(components: [i32; 8]) -> Self {
+        let uv = cmr_core::c3d_render::stage_texture_uv([components[3], components[4]]);
         Self {
-            components: entry.components_q16(),
+            position_q16: [components[0], components[1], components[2]],
+            texture_uv_bits: uv.map(f32::to_bits),
+            normal_q16: [components[5], components[6], components[7]],
         }
+    }
+
+    #[must_use]
+    pub const fn position_q16(self) -> [i32; 3] {
+        self.position_q16
+    }
+
+    #[must_use]
+    pub fn texture_uv(self) -> [f32; 2] {
+        self.texture_uv_bits.map(f32::from_bits)
+    }
+
+    #[must_use]
+    pub const fn texture_uv_bits(self) -> [u32; 2] {
+        self.texture_uv_bits
+    }
+
+    #[must_use]
+    pub const fn normal_q16(self) -> [i32; 3] {
+        self.normal_q16
+    }
+
+    /// The exact 32-byte mixed vertex layout consumed by both native backends:
+    /// three Q16 position words, two float UV words, three Q16 normal words.
+    #[must_use]
+    pub const fn upload_words(self) -> [u32; 8] {
+        [
+            self.position_q16[0] as u32,
+            self.position_q16[1] as u32,
+            self.position_q16[2] as u32,
+            self.texture_uv_bits[0],
+            self.texture_uv_bits[1],
+            self.normal_q16[0] as u32,
+            self.normal_q16[1] as u32,
+            self.normal_q16[2] as u32,
+        ]
+    }
+}
+
+impl From<cmr_formats::c3d::C3dEntry32<'_>> for C3dStageVertex {
+    fn from(entry: cmr_formats::c3d::C3dEntry32<'_>) -> Self {
+        Self::from_raw_components(entry.components_q16())
     }
 }
 
 /// Validated owned raw geometry for one recovered C3D primitive batch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct C3dMeshResource {
-    vertices: Box<[C3dVertexQ16]>,
+    vertices: Box<[C3dStageVertex]>,
     indices: Box<[u16]>,
 }
 
@@ -353,7 +401,7 @@ impl C3dMeshResource {
     /// Admits a non-empty indexed triangle list whose compact indices all
     /// address the supplied raw vertices.
     pub fn new(
-        vertices: impl Into<Box<[C3dVertexQ16]>>,
+        vertices: impl Into<Box<[C3dStageVertex]>>,
         indices: impl Into<Box<[u16]>>,
     ) -> Result<Self, RawC3dContractError> {
         let vertices = vertices.into();
@@ -376,7 +424,7 @@ impl C3dMeshResource {
     }
 
     #[must_use]
-    pub fn vertices(&self) -> &[C3dVertexQ16] {
+    pub fn vertices(&self) -> &[C3dStageVertex] {
         &self.vertices
     }
 
@@ -1501,10 +1549,8 @@ mod tests {
         assert_eq!(timing.gpu_timestamp_ns, Some(17));
     }
 
-    fn raw_vertex(seed: i32) -> C3dVertexQ16 {
-        C3dVertexQ16 {
-            components: std::array::from_fn(|index| seed + index as i32),
-        }
+    fn raw_vertex(seed: i32) -> C3dStageVertex {
+        C3dStageVertex::from_raw_components(std::array::from_fn(|index| seed + index as i32))
     }
 
     fn raw_resources() -> C3dResourceSet {
@@ -1538,7 +1584,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_mesh_preserves_q16_words_and_validates_triangle_indices() {
+    fn raw_mesh_preserves_stage_vertex_carriers_and_validates_triangle_indices() {
         let vertices = [
             raw_vertex(i32::MIN),
             raw_vertex(7),
@@ -1563,6 +1609,22 @@ mod tests {
                 index: 3,
                 vertex_count: 3,
             })
+        );
+    }
+
+    #[test]
+    fn stage_vertex_carrier_uses_the_shared_recovered_uv_contract() {
+        let raw = [11, 12, 13, 0x1_0001, -0x8000, 15, 16, 17];
+        let vertex = C3dStageVertex::from_raw_components(raw);
+        assert_eq!(vertex.position_q16(), [11, 12, 13]);
+        assert_eq!(vertex.normal_q16(), [15, 16, 17]);
+        assert_eq!(
+            vertex.texture_uv(),
+            cmr_core::c3d_render::stage_texture_uv([raw[3], raw[4]])
+        );
+        assert_eq!(
+            &vertex.upload_words()[3..5],
+            &vertex.texture_uv().map(f32::to_bits)
         );
     }
 
