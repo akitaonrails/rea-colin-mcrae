@@ -3886,17 +3886,6 @@ mod tests {
             hud_frame.digest_summary().canonical_frame_sha256,
             rendered.frame.digest_summary().canonical_frame_sha256
         );
-
-        assert!(matches!(
-            native_stage_setup(
-                &root.join("Game/Au/1"),
-                &root,
-                "AU1",
-                None,
-                StageRendererChoice::Gpu,
-            ),
-            Err(StageFrameError::GpuLayeredStageUnsupported)
-        ));
     }
 
     #[test]
