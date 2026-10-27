@@ -6,6 +6,13 @@
 //! its per-player rev, speed, gear, progress, and timer values explicitly.
 //! Unrecovered optional layers remain typed plan gaps instead of guessed draw
 //! commands.
+//!
+//! The complete fifteen-segment 640x480 rev strip and its strict threshold
+//! chain are observed in `FUN_0045f530` (REA Evidence
+//! `ev_610f7816ee6dc0dcaf81f71233b97871fea7570f5a9dfc817f563f2ebd14ee24`);
+//! its packed source/destination descriptors are initialized by
+//! `FUN_0045dda0` (REA Evidence
+//! `ev_74e424d7591426f4eaba851dca243dfac707dcf112a6a1f805f413fcaa11caa0`).
 
 use std::fmt::Write;
 
@@ -184,7 +191,6 @@ pub struct RaceHudPreparedInputs {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RaceHudIncomplete {
     CommonGaugeBorderFragments,
-    CommonRevSegments { first_unplanned_threshold_q16: i32 },
     ProgressAuxiliaryMarkers,
     ProgressOutsideRecoveredRange { progress_q16: i32 },
     BitmapRasterPolicy,
@@ -214,6 +220,91 @@ pub enum RaceHudPlanError {
     EmptyViewport,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RevSegment {
+    threshold_q16: Option<i32>,
+    source: HudRect,
+    destination: HudRect,
+}
+
+const REV_SEGMENTS: [RevSegment; 15] = [
+    RevSegment {
+        threshold_q16: None,
+        source: HudRect::new(3, 119, 14, 6),
+        destination: HudRect::new(492, 464, 14, 6),
+    },
+    RevSegment {
+        threshold_q16: Some(0x2000),
+        source: HudRect::new(19, 114, 25, 11),
+        destination: HudRect::new(498, 459, 25, 11),
+    },
+    RevSegment {
+        threshold_q16: Some(0x3000),
+        source: HudRect::new(51, 112, 34, 13),
+        destination: HudRect::new(508, 457, 34, 13),
+    },
+    RevSegment {
+        threshold_q16: Some(0x4000),
+        source: HudRect::new(89, 112, 42, 13),
+        destination: HudRect::new(523, 457, 42, 13),
+    },
+    RevSegment {
+        threshold_q16: Some(0x5000),
+        source: HudRect::new(3, 96, 46, 13),
+        destination: HudRect::new(546, 457, 46, 13),
+    },
+    RevSegment {
+        threshold_q16: Some(0x6000),
+        source: HudRect::new(51, 91, 48, 18),
+        destination: HudRect::new(570, 452, 48, 18),
+    },
+    RevSegment {
+        threshold_q16: Some(0x7000),
+        source: HudRect::new(3, 72, 44, 21),
+        destination: HudRect::new(584, 444, 44, 21),
+    },
+    RevSegment {
+        threshold_q16: Some(0x8000),
+        source: HudRect::new(89, 71, 42, 22),
+        destination: HudRect::new(589, 433, 42, 22),
+    },
+    RevSegment {
+        threshold_q16: Some(0x9000),
+        source: HudRect::new(3, 51, 41, 20),
+        destination: HudRect::new(590, 422, 41, 20),
+    },
+    RevSegment {
+        threshold_q16: Some(0xa000),
+        source: HudRect::new(51, 51, 41, 19),
+        destination: HudRect::new(590, 411, 41, 19),
+    },
+    RevSegment {
+        threshold_q16: Some(0xb000),
+        source: HudRect::new(3, 31, 41, 17),
+        destination: HudRect::new(590, 400, 41, 17),
+    },
+    RevSegment {
+        threshold_q16: Some(0xc000),
+        source: HudRect::new(51, 30, 41, 15),
+        destination: HudRect::new(590, 389, 41, 15),
+    },
+    RevSegment {
+        threshold_q16: Some(0xd000),
+        source: HudRect::new(3, 15, 41, 14),
+        destination: HudRect::new(590, 378, 41, 14),
+    },
+    RevSegment {
+        threshold_q16: Some(0xe000),
+        source: HudRect::new(51, 17, 41, 12),
+        destination: HudRect::new(590, 368, 41, 12),
+    },
+    RevSegment {
+        threshold_q16: Some(0xf000),
+        source: HudRect::new(3, 2, 41, 11),
+        destination: HudRect::new(590, 357, 41, 11),
+    },
+];
+
 /// Plans the exact recovered subset in native source order.
 pub fn plan_normal_single_player_race_hud(
     input: RaceHudPreparedInputs,
@@ -222,7 +313,7 @@ pub fn plan_normal_single_player_race_hud(
         return Err(RaceHudPlanError::EmptyViewport);
     }
 
-    let mut commands = Vec::with_capacity(12);
+    let mut commands = Vec::with_capacity(24);
     let mut incomplete = vec![
         RaceHudIncomplete::CommonGaugeBorderFragments,
         RaceHudIncomplete::ProgressAuxiliaryMarkers,
@@ -260,24 +351,19 @@ pub fn plan_normal_single_player_race_hud(
         inset_destination,
     );
 
-    push_tinted_bitmap(
-        &mut commands,
-        input.viewport,
-        HudRect::new(3, 119, 14, 6),
-        HudRect::new(492, 464, 14, 6),
-    );
-    if input.rev_q16 > 0x2000 {
+    for segment in REV_SEGMENTS {
+        if segment
+            .threshold_q16
+            .is_some_and(|threshold| input.rev_q16 <= threshold)
+        {
+            continue;
+        }
         push_tinted_bitmap(
             &mut commands,
             input.viewport,
-            HudRect::new(19, 114, 25, 11),
-            HudRect::new(498, 459, 25, 11),
+            segment.source,
+            segment.destination,
         );
-    }
-    if input.rev_q16 > 0x3000 {
-        incomplete.push(RaceHudIncomplete::CommonRevSegments {
-            first_unplanned_threshold_q16: 0x3000,
-        });
     }
 
     commands.push(RaceHudCommand::Text {
@@ -554,18 +640,52 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_rev_and_progress_paths_are_typed_and_not_fabricated() {
+    fn complete_rev_segments_preserve_recovered_order_and_descriptors() {
+        let mut case = input();
+        case.rev_q16 = 0x1_0000;
+        let plan = plan_normal_single_player_race_hud(case).unwrap();
+
+        let actual: Vec<_> = plan.commands[3..3 + REV_SEGMENTS.len()]
+            .iter()
+            .map(|command| match command {
+                RaceHudCommand::TintedBitmap {
+                    source,
+                    destination,
+                    ..
+                } => (*source, *destination),
+                _ => panic!("rev command must be a tinted bitmap"),
+            })
+            .collect();
+        let expected: Vec<_> = REV_SEGMENTS
+            .iter()
+            .map(|segment| (segment.source, segment.destination))
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn rev_thresholds_are_strict_and_add_one_segment_at_a_time() {
+        for threshold_step in 2..=15 {
+            let threshold = threshold_step * 0x1000;
+            let mut at_threshold = input();
+            at_threshold.rev_q16 = threshold;
+            let at_threshold = plan_normal_single_player_race_hud(at_threshold).unwrap();
+            assert_eq!(tinted_count(&at_threshold), threshold_step as usize - 1);
+
+            let mut above_threshold = input();
+            above_threshold.rev_q16 = threshold + 1;
+            let above_threshold = plan_normal_single_player_race_hud(above_threshold).unwrap();
+            assert_eq!(tinted_count(&above_threshold), threshold_step as usize);
+        }
+    }
+
+    #[test]
+    fn incomplete_progress_path_is_typed_and_not_fabricated() {
         let mut case = input();
         case.rev_q16 = 0x4000;
         case.progress_q16 = -1;
         let plan = plan_normal_single_player_race_hud(case).unwrap();
 
-        assert!(
-            plan.incomplete
-                .contains(&RaceHudIncomplete::CommonRevSegments {
-                    first_unplanned_threshold_q16: 0x3000,
-                })
-        );
         assert!(
             plan.incomplete
                 .contains(&RaceHudIncomplete::ProgressOutsideRecoveredRange { progress_q16: -1 })
@@ -621,5 +741,12 @@ mod tests {
             color,
             flags: LEGACY_TEXT_FLAGS,
         }
+    }
+
+    fn tinted_count(plan: &RaceHudPlan) -> usize {
+        plan.commands
+            .iter()
+            .filter(|command| matches!(command, RaceHudCommand::TintedBitmap { .. }))
+            .count()
     }
 }

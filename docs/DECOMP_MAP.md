@@ -325,8 +325,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-27T18:35:47Z
-milestone=retain-authenticated-race-hud-assets
+updated_utc=2026-10-27T18:40:54Z
+milestone=complete-common-hud-rev-plan
 completed=117
 partial=2
 not_started=0

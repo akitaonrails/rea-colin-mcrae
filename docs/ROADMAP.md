@@ -1623,7 +1623,8 @@ trigger-volume decoding, and authored trackside-camera records. `.moj`, `.spl`,
 `.anm`, `.rsf`, and `.fuz` remain unintegrated. The native race path composes the player car but still bypasses
 the recovered menu flow and lacks the recovered race HUD and DAT dispatch.
 The normal single-player HUD now has a pure, test-backed command plan for the
-pinned common gauge core, speed/gear text, progress marker, and late timer
+pinned common gauge core including all 15 strict-threshold rev segments,
+speed/gear text, progress marker, and late timer
 overlay. Pixel raster policy and live asset binding remain explicit open work.
 Native setup now authenticates, decodes, bounds-parses, and retains all six
 source-owned HUD bitmap/font inputs. Live raster composition remains open.
