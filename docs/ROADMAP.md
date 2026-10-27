@@ -1625,6 +1625,8 @@ the recovered menu flow and lacks the recovered race HUD and DAT dispatch.
 The normal single-player HUD now has a pure, test-backed command plan for the
 pinned common gauge core, speed/gear text, progress marker, and late timer
 overlay. Pixel raster policy and live asset binding remain explicit open work.
+Native setup now authenticates, decodes, bounds-parses, and retains all six
+source-owned HUD bitmap/font inputs. Live raster composition remains open.
 
 E01 is closed at its deterministic indexed boundary. Supported BM, palette,
 row, composition, and queued-font paths are implemented; native padding,

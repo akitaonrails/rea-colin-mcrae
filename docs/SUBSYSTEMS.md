@@ -192,6 +192,9 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   destination rectangles, Q16/pixel text coordinates, value formatting, and
   640x480 scaling. Unrecovered bitmap/font raster policies and optional layers
   are typed gaps rather than guessed pixels.
+  `cmr-app::RaceHudAssets` resolves the plan's identities through the reviewed
+  user-owned asset store, CMPR-decodes and bounds-parses four indexed bitmaps
+  and two FON atlases, and retains them with the native stage resources.
 - `cmr-formats::stage`: the stage/track bundle (E08). A stage is a set of sibling
   files sharing a base path and differing only by extension (the 14-entry table
   `.c3d`..`.fuz`), each loaded through the shared CMPR-capable loader - no

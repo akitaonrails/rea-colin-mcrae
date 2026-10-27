@@ -37,6 +37,7 @@ use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
 use cmr_core::gameplay_session::{GameplaySession, InRaceScript};
 use cmr_core::host_loop::HostClock;
 use cmr_core::localization::Language;
+use cmr_core::race_hud_plan::{RaceHudBitmap, RaceHudFont};
 use cmr_core::race_state::{
     CarState, Controls, FirstWheelParams, FourWheelIterationParams, FourWheelPostprocessParams,
     SecondWheelParams, SimParams, WheelPostprocessError, populate_compiled_contact_offsets,
@@ -62,8 +63,9 @@ use cmr_core::vehicle_dynamics::{
     SOLVER_GLOBAL_CONSTANTS, SurfaceCoefficientIndexError, integrate_orientation,
 };
 use cmr_core::weather::{StageWeatherEffects, particles};
-use cmr_formats::bitmap::BitmapLimits;
+use cmr_formats::bitmap::{BitmapError, BitmapLimits, IndexedBitmap, parse_indexed_bitmap};
 use cmr_formats::c3d::{C3dError, C3dFile, C3dLimits, parse_c3d};
+use cmr_formats::font::{BitmapFont, FontError, FontLimits, parse_legacy_font};
 use cmr_formats::riff_palette::{PaletteEntry, PaletteError, parse_legacy_palette_256};
 use cmr_formats::stage::CatNode;
 use cmr_formats::stage::{
@@ -1156,6 +1158,18 @@ pub enum StageFrameError {
     CarAsset(AssetStoreError),
     /// The selected car body is not a valid C3D scene.
     CarScene(C3dError),
+    /// A race-HUD source asset could not be loaded from the verified store.
+    HudAsset(AssetStoreError),
+    /// A race-HUD bitmap failed bounded indexed-bitmap parsing.
+    HudBitmap {
+        bitmap: RaceHudBitmap,
+        error: BitmapError,
+    },
+    /// A race-HUD font failed bounded legacy-font parsing.
+    HudFont {
+        font: RaceHudFont,
+        error: FontError,
+    },
     /// The raw-GPU stage adapter rejected the scene.
     GpuPrepare(PreparedRawStageError),
     /// The selected GPU backend could not be initialized (or its persistent
@@ -1189,6 +1203,9 @@ impl StageFrameError {
             Self::Profile(_) => "profile",
             Self::CarAsset(_) => "car-asset",
             Self::CarScene(_) => "car-scene",
+            Self::HudAsset(_) => "hud-asset",
+            Self::HudBitmap { .. } => "hud-bitmap",
+            Self::HudFont { .. } => "hud-font",
             Self::GpuPrepare(_) => "gpu-prepare",
             Self::GpuInit(_) => "gpu-init",
             Self::GpuCompose(_) => "gpu-compose",
@@ -1225,6 +1242,17 @@ impl fmt::Display for StageFrameError {
             Self::Profile(error) => write!(formatter, "cannot read reviewed profile: {error}"),
             Self::CarAsset(error) => write!(formatter, "cannot load in-race car: {error}"),
             Self::CarScene(error) => write!(formatter, "cannot parse in-race car: {error}"),
+            Self::HudAsset(error) => write!(formatter, "cannot load race HUD asset: {error}"),
+            Self::HudBitmap { bitmap, error } => write!(
+                formatter,
+                "cannot parse race HUD bitmap {}: {error}",
+                bitmap.relative_path()
+            ),
+            Self::HudFont { font, error } => write!(
+                formatter,
+                "cannot parse race HUD font {}: {error}",
+                font.relative_path()
+            ),
             Self::GpuPrepare(error) => write!(formatter, "cannot prepare raw GPU stage: {error}"),
             Self::GpuInit(detail) => {
                 write!(
@@ -1264,6 +1292,9 @@ impl std::error::Error for StageFrameError {
             Self::Profile(error) => Some(error),
             Self::CarAsset(error) => Some(error),
             Self::CarScene(error) => Some(error),
+            Self::HudAsset(error) => Some(error),
+            Self::HudBitmap { error, .. } => Some(error),
+            Self::HudFont { error, .. } => Some(error),
             Self::GpuPrepare(error) => Some(error),
             Self::MissingNodes
             | Self::DegenerateSpawn
@@ -1530,6 +1561,87 @@ impl WgpuStageRenderer {
     }
 }
 
+/// Authenticated, bounded-decoded sources referenced by the recovered normal
+/// single-player race-HUD plan.
+pub struct RaceHudAssets {
+    common_gauge: IndexedBitmap,
+    progress_red_spot: IndexedBitmap,
+    horizontal_bar: IndexedBitmap,
+    horizontal_bar_end: IndexedBitmap,
+    numbers: BitmapFont,
+    time_numbers: BitmapFont,
+}
+
+impl RaceHudAssets {
+    fn load(store: &AssetStore) -> Result<Self, StageFrameError> {
+        Ok(Self {
+            common_gauge: load_race_hud_bitmap(store, RaceHudBitmap::CommonGauge640)?,
+            progress_red_spot: load_race_hud_bitmap(store, RaceHudBitmap::ProgressRedSpot)?,
+            horizontal_bar: load_race_hud_bitmap(store, RaceHudBitmap::HorizontalBar)?,
+            horizontal_bar_end: load_race_hud_bitmap(store, RaceHudBitmap::HorizontalBarEnd)?,
+            numbers: load_race_hud_font(store, RaceHudFont::Numbers640)?,
+            time_numbers: load_race_hud_font(store, RaceHudFont::TimeNumbers640)?,
+        })
+    }
+
+    /// Return the decoded bitmap selected by a plan command.
+    #[must_use]
+    pub fn bitmap(&self, bitmap: RaceHudBitmap) -> &IndexedBitmap {
+        match bitmap {
+            RaceHudBitmap::CommonGauge640 => &self.common_gauge,
+            RaceHudBitmap::ProgressRedSpot => &self.progress_red_spot,
+            RaceHudBitmap::HorizontalBar => &self.horizontal_bar,
+            RaceHudBitmap::HorizontalBarEnd => &self.horizontal_bar_end,
+        }
+    }
+
+    /// Return the decoded font selected by a plan command.
+    #[must_use]
+    pub fn font(&self, font: RaceHudFont) -> &BitmapFont {
+        match font {
+            RaceHudFont::Numbers640 => &self.numbers,
+            RaceHudFont::TimeNumbers640 => &self.time_numbers,
+        }
+    }
+}
+
+fn race_hud_store_path(relative: &str) -> String {
+    format!("Game/{relative}")
+}
+
+fn load_race_hud_bitmap(
+    store: &AssetStore,
+    bitmap: RaceHudBitmap,
+) -> Result<IndexedBitmap, StageFrameError> {
+    let bytes = store
+        .load(&race_hud_store_path(bitmap.relative_path()))
+        .map_err(StageFrameError::HudAsset)?;
+    parse_race_hud_bitmap(bitmap, &bytes)
+}
+
+fn parse_race_hud_bitmap(
+    bitmap: RaceHudBitmap,
+    bytes: &[u8],
+) -> Result<IndexedBitmap, StageFrameError> {
+    parse_indexed_bitmap(bytes, BitmapLimits::default())
+        .map_err(|error| StageFrameError::HudBitmap { bitmap, error })
+}
+
+fn load_race_hud_font(
+    store: &AssetStore,
+    font: RaceHudFont,
+) -> Result<BitmapFont, StageFrameError> {
+    let bytes = store
+        .load(&race_hud_store_path(font.relative_path()))
+        .map_err(StageFrameError::HudAsset)?;
+    parse_race_hud_font(font, &bytes)
+}
+
+fn parse_race_hud_font(font: RaceHudFont, bytes: &[u8]) -> Result<BitmapFont, StageFrameError> {
+    parse_legacy_font(bytes, FontLimits::default())
+        .map_err(|error| StageFrameError::HudFont { font, error })
+}
+
 /// A loaded stage's retained render inputs: the owned bundle and prepared
 /// textures, so a caller can recompose the scene every frame with a new camera
 /// (the windowed session's follow camera) without reloading.
@@ -1549,6 +1661,7 @@ pub struct StageRenderResources {
     horizon_textures: Option<StageC3dTextures>,
     car_scene: Option<C3dFile>,
     car_textures: Option<StageC3dTextures>,
+    race_hud: Option<RaceHudAssets>,
     palette: [PaletteEntry; 256],
     node_count: usize,
     draw_ops: usize,
@@ -1658,6 +1771,7 @@ impl StageRenderResources {
             horizon_textures,
             car_scene: None,
             car_textures: None,
+            race_hud: None,
             palette,
             node_count,
             draw_ops,
@@ -1687,6 +1801,24 @@ impl StageRenderResources {
         self.car_scene = Some(scene);
         self.car_textures = Some(textures);
         Ok(())
+    }
+
+    /// Load and retain every source-owned bitmap/font referenced by the
+    /// recovered normal single-player HUD plan. Pixel policy is deliberately
+    /// separate: this method authenticates and parses assets only.
+    pub fn attach_race_hud(&mut self, runtime_data: &Path) -> Result<(), StageFrameError> {
+        let reviewed =
+            ReviewedProfile::from_json(REVIEWED_PROFILE).map_err(StageFrameError::Profile)?;
+        let store = AssetStore::open(runtime_data, &reviewed, DecodeLimits::default())
+            .map_err(StageFrameError::HudAsset)?;
+        self.race_hud = Some(RaceHudAssets::load(&store)?);
+        Ok(())
+    }
+
+    /// Retained authenticated HUD sources, once native race setup attached them.
+    #[must_use]
+    pub fn race_hud(&self) -> Option<&RaceHudAssets> {
+        self.race_hud.as_ref()
     }
 
     /// Which renderer will compose the next frame.
@@ -2500,6 +2632,7 @@ fn native_stage_setup(
     if let Some(car_code) = car_code {
         resources.attach_car(runtime_data, car_code)?;
     }
+    resources.attach_race_hud(runtime_data)?;
     let nodes = resources
         .bundle
         .nodes()
@@ -2878,6 +3011,33 @@ mod tests {
     }
 
     #[test]
+    fn race_hud_asset_paths_and_parse_failures_retain_source_identity() {
+        assert_eq!(
+            race_hud_store_path(RaceHudBitmap::CommonGauge640.relative_path()),
+            "Game/images/osdnew/revs/640x480.bmp"
+        );
+        let bitmap = parse_race_hud_bitmap(RaceHudBitmap::ProgressRedSpot, b"bad").unwrap_err();
+        assert_eq!(bitmap.kind(), "hud-bitmap");
+        assert!(matches!(
+            bitmap,
+            StageFrameError::HudBitmap {
+                bitmap: RaceHudBitmap::ProgressRedSpot,
+                error: BitmapError::Truncated,
+            }
+        ));
+
+        let font = parse_race_hud_font(RaceHudFont::TimeNumbers640, b"bad").unwrap_err();
+        assert_eq!(font.kind(), "hud-font");
+        assert!(matches!(
+            font,
+            StageFrameError::HudFont {
+                font: RaceHudFont::TimeNumbers640,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn idle_gamepad_does_not_mask_keyboard_driving_input() {
         assert!(!analog_driving_is_active(&GamepadDrivingState::new()));
     }
@@ -3095,6 +3255,29 @@ mod tests {
         assert!(resources.horizon_textures.is_some());
         assert!(resources.car_scene.is_some());
         assert!(resources.car_textures.is_some());
+        let hud = resources
+            .race_hud()
+            .expect("native setup retains HUD assets");
+        let gauge = hud.bitmap(RaceHudBitmap::CommonGauge640);
+        assert_eq!([gauge.width, gauge.height], [256, 256]);
+        let marker = hud.bitmap(RaceHudBitmap::ProgressRedSpot);
+        assert!(marker.width >= 32 && marker.height >= 32);
+        let bar = hud.bitmap(RaceHudBitmap::HorizontalBar);
+        let bar_end = hud.bitmap(RaceHudBitmap::HorizontalBarEnd);
+        assert!(bar.width >= 4 && bar.height >= 4);
+        assert!(bar_end.width >= 4 && bar_end.height >= 4);
+        let numbers = hud.font(RaceHudFont::Numbers640);
+        assert!(
+            b"0123456789NR"
+                .iter()
+                .all(|code| numbers.glyph(*code).is_some())
+        );
+        let timer = hud.font(RaceHudFont::TimeNumbers640);
+        assert!(
+            b"0123456789:."
+                .iter()
+                .all(|code| timer.glyph(*code).is_some())
+        );
         let harness_car_world = cmr_core::gameplay_camera::car_world_q16(
             &cmr_core::fixed_point::build_sine_table(),
             start.position,
