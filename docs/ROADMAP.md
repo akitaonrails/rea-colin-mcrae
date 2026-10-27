@@ -27,6 +27,22 @@ The compatibility backend exists to establish the original contract. The
 modern backend is allowed to differ internally, not observably where the
 compatibility specification applies.
 
+### Auxiliary PS1 reference lane
+
+The PlayStation release may be analyzed as a separately identified reference
+edition using PS1-specific tooling. It is not a second compatibility target and
+does not replace Windows evidence. The selected lane is: `dumpsxiso` for disc
+layout, Ghidra plus `ghidra_psx_ldr` and PsyQ signatures for static recovery,
+Splat for executable/overlay accounting, local `m2c`/`maspsx` matching only for
+selected questions, and PCSX-Redux for explicitly scoped runtime observations.
+PSXRecomp is an optional alpha proof of concept, not an evidence authority.
+
+Cross-edition findings must preserve separate artifact/tool identities and be
+promoted only when an independent Windows observation supports the same
+contract. The staged procedure and gates are in
+[PSX_REFERENCE_PLAN.md](PSX_REFERENCE_PLAN.md). This auxiliary lane does not
+change the completion counters in [DECOMP_MAP.md](DECOMP_MAP.md).
+
 ## Milestone 0 — provenance and safe workspace
 
 Deliverables:

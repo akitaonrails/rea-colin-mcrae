@@ -345,8 +345,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-27T19:17:33Z
-milestone=map-windowed-frontend-input
+updated_utc=2026-10-27T19:53:23Z
+milestone=plan-psx-reference-lane
 completed=117
 partial=2
 not_started=0
@@ -354,4 +354,5 @@ blocked=0
 total=119
 current_focus=recovered-menu-to-race-selection
 next_exit_gate=native-root-menu-launches-configured-race
+auxiliary_reference=psx-p0-artifact-and-tool-identification
 <!-- PROGRESS-TAIL-END -->

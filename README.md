@@ -39,6 +39,11 @@ and native Windows or GitHub Actions execution not run locally. See
 [DECOMP_MAP.md](docs/DECOMP_MAP.md), [COMPARISON.md](docs/COMPARISON.md), and
 [DEVIATIONS.md](docs/DEVIATIONS.md) for the evidence and current limits.
 
+The optional PlayStation reference-edition workflow is documented in
+[PSX_REFERENCE_PLAN.md](docs/PSX_REFERENCE_PLAN.md). It uses PS1-specific tools
+to narrow Windows questions while keeping artifact provenance and compatibility
+claims separate; it is not a second supported target.
+
 Known artifacts from the initial local installation:
 
 | Role | Size | SHA-256 |

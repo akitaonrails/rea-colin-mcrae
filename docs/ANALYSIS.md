@@ -163,3 +163,22 @@ Never bulk-promote every candidate. Preserve the unseeded REA snapshot, compare
 the seeded result against it, and record the SuperGhidra report digest and its
 limitations when a cross-check materially changes a reconstruction claim.
 
+## PS1 reference-edition analysis
+
+The PlayStation release is a separate reference edition, not a replacement for
+the Windows artifact selected above. Its PS-X EXE, overlays, disc metadata, and
+runtime observations require PS1-specific tools and their own artifact/tool
+identities. Use `CMR_PSX_DISC` for a user-selected CUE and keep static output
+under `.work/psx/`; extracted user data belongs under
+`runtime-data/psx-reference/`.
+
+The selected workflow uses `dumpsxiso`, Ghidra with `ghidra_psx_ldr`, PsyQ
+signatures, Splat, and—only for named questions—local `m2c`/`maspsx`. Controlled
+execution uses PCSX-Redux only after an experiment is explicitly scoped and
+documented. Do not upload proprietary function bytes to a public decompilation
+service. SuperGhidra remains on the Windows PE lane unless a bounded probe first
+establishes correct PS-X EXE and overlay handling.
+
+See [PSX_REFERENCE_PLAN.md](PSX_REFERENCE_PLAN.md) for tool roles, evidence
+labels, phase gates, local data layout, and the first bounded experiment.
+
