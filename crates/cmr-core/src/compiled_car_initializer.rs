@@ -744,7 +744,7 @@ pub fn derive_compiled_state_basis_effects(
             word
         })
     };
-    let primary = [
+    let primary: [[i32; 3]; 4] = [
         combine(true, true, true),
         combine(true, true, false),
         combine(false, true, true),
@@ -753,8 +753,11 @@ pub fn derive_compiled_state_basis_effects(
     let reflected = [primary[3], primary[2], primary[1], primary[0]].map(|vector| {
         std::array::from_fn(|component| input.center[component].wrapping_sub(vector[component]))
     });
+    let translated_primary = primary.map(|vector| {
+        std::array::from_fn(|component| input.center[component].wrapping_add(vector[component]))
+    });
     let adjusted = apply_compiled_state_basis_adjustment(
-        primary,
+        translated_primary,
         input.adjustment_u,
         input.adjustment_v,
         input.scale_638,
@@ -5148,10 +5151,10 @@ mod tests {
                 [12, 17, 25],
                 [8, 17, 35],
                 [8, 17, 25],
-                [2, 3, 5],
-                [2, 3, -5],
-                [-2, 3, 5],
-                [-2, 3, -5],
+                [12, 23, 35],
+                [12, 23, 25],
+                [8, 23, 35],
+                [8, 23, 25],
             ]
         );
     }
@@ -5193,18 +5196,28 @@ mod tests {
         assert_eq!(&effects.vectors[..4], &baseline.vectors[..4]);
         assert_eq!(
             &effects.vectors[4..],
-            &[[-3, -4, -4], [5, 6, -2], [-5, 0, 2], [3, 10, 4]]
+            &[[7, 16, 26], [15, 26, 28], [5, 20, 32], [13, 30, 34]]
         );
     }
 
     #[test]
-    fn state_basis_center_changes_only_reflected_vectors() {
+    fn state_basis_center_translates_all_eight_world_points() {
         let baseline = derive_compiled_state_basis_effects(state_basis_input());
         let mut input = state_basis_input();
         input.center = [-100, 200, -300];
         let changed = derive_compiled_state_basis_effects(input);
         assert_ne!(&changed.vectors[..4], &baseline.vectors[..4]);
-        assert_eq!(&changed.vectors[4..], &baseline.vectors[4..]);
+        assert_ne!(&changed.vectors[4..], &baseline.vectors[4..]);
+        for index in 0..8 {
+            assert_eq!(
+                changed.vectors[index],
+                std::array::from_fn(|component| {
+                    baseline.vectors[index][component].wrapping_add(
+                        input.center[component] - state_basis_input().center[component],
+                    )
+                })
+            );
+        }
     }
 
     #[test]
@@ -5230,10 +5243,10 @@ mod tests {
                 [-3, -1, 2_147_483_646],
                 [1, 1, -2_147_483_646],
                 [-1, -1, i32::MIN],
-                [-2_147_483_647, i32::MIN, i32::MIN],
-                [i32::MAX, 2_147_483_646, 2_147_483_646],
-                [-2_147_483_645, i32::MIN, -2_147_483_646],
-                [-2_147_483_647, 2_147_483_646, i32::MIN],
+                [1, -1, i32::MIN],
+                [-1, -3, 2_147_483_646],
+                [3, -1, -2_147_483_646],
+                [1, -3, i32::MIN],
             ]
         );
     }

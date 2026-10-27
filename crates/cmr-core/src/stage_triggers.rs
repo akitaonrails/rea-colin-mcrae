@@ -8,10 +8,9 @@
 //!
 //! The event classification below is the side-effect-free portion of
 //! `FUN_00403a00`. Its mode, race-state, geometry, and already-consumed gates
-//! remain caller responsibilities. In particular, this module does not invent
-//! a centre-point trigger test: the recovered geometry routines sample several
-//! native car-bound points whose correspondence to the reconstructed
-//! [`crate::race_state::CarState`] has not yet been proven.
+//! remain caller responsibilities. The recovered geometry contract uses the
+//! native current and prior eight-point car bounds rather than substituting a
+//! centre point.
 //!
 //! Static evidence (Ghidra pseudocode, not original source):
 //! - loader reset: `ev_62b90e76060f94cdbb6eb452de97cb67e7f7b8f98f856b978cc57df3a30c8c54`;
@@ -20,6 +19,155 @@
 //! - event dispatch: `ev_e01ae13bfe6696b542ccfcfd54c06d8a56e4aa5cc2d58496a6eacc288dbc7853`.
 
 use cmr_formats::stage::TriggerVolume;
+
+#[cfg(test)]
+const Q16_ONE: i32 = 0x1_0000;
+const Q16_TWO: i32 = 0x2_0000;
+
+/// Native selector passed to `FUN_00403980` by the trigger dispatcher.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TriggerGeometryMode {
+    /// Native parameter zero: reject when the saved centre is on the positive
+    /// side of the trigger plane.
+    RequireSavedNonPositive,
+    /// Native nonzero parameter: do not apply that directional precondition.
+    Bidirectional,
+}
+
+/// Exact car-state inputs sampled by the native DAT geometry routines.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TriggerCarBounds {
+    /// Physics state `+0xc8..+0xd0`.
+    pub current_position: [i32; 3],
+    /// Position snapshot at `+0x3e4..+0x3ec`, taken before the physics step.
+    pub saved_position: [i32; 3],
+    /// Physics state `+0x44`; native thickness is its Q16 product with 2.0.
+    pub radius_q16: i32,
+    /// Eight world-space points at `+0xfc..+0x158`.
+    pub current_points: [[i32; 3]; 8],
+    /// Previous trigger-query snapshot at `+0x15c..+0x1b8`.
+    pub prior_points: [[i32; 3]; 8],
+}
+
+impl TriggerCarBounds {
+    /// Reproduce the frame driver's post-query 24-dword copy.
+    pub fn snapshot_current_points(&mut self) {
+        self.prior_points = self.current_points;
+    }
+}
+
+fn q16_mul(left: i32, right: i32) -> i32 {
+    ((i64::from(left) * i64::from(right)) >> 16) as i32
+}
+
+fn dot_from_point(point: [i32; 3], probe: [i32; 3], normal: [i32; 3]) -> i32 {
+    (0..3).fold(0_i32, |sum, component| {
+        sum.wrapping_add(q16_mul(
+            point[component].wrapping_sub(probe[component]),
+            normal[component],
+        ))
+    })
+}
+
+fn inside_xz_segment(
+    point_a: [i32; 3],
+    point_b: [i32; 3],
+    normal: [i32; 3],
+    probe: [i32; 3],
+) -> bool {
+    let edge = |point: [i32; 3]| {
+        q16_mul(normal[2].wrapping_neg(), point[0].wrapping_sub(probe[0]))
+            .wrapping_add(q16_mul(normal[0], point[2].wrapping_sub(probe[2])))
+    };
+    let edge_a = edge(point_a);
+    let edge_b = edge(point_b);
+    edge_a == 0 || edge_b == 0 || edge_a.is_negative() != edge_b.is_negative()
+}
+
+/// Exact side/crossing predicate used by `FUN_00403470`/`FUN_004035a0`,
+/// `FUN_004036e0`, and `FUN_00403980`.
+#[must_use]
+pub fn trigger_geometry_contains(
+    volume: &TriggerVolume,
+    car: &TriggerCarBounds,
+    mode: TriggerGeometryMode,
+) -> bool {
+    let saved_side = dot_from_point(volume.point_a, car.saved_position, volume.normal_q16);
+    if mode == TriggerGeometryMode::RequireSavedNonPositive && saved_side > 0 {
+        return false;
+    }
+    let current_center_side =
+        dot_from_point(volume.point_a, car.current_position, volume.normal_q16);
+    let thickness = q16_mul(car.radius_q16, Q16_TWO);
+    if current_center_side.wrapping_abs() > thickness {
+        return false;
+    }
+
+    let saved_nonnegative = saved_side >= 0;
+    let mut negative_total = 0_u8;
+    let mut selected_negative = 0_u8;
+    let mut selected_nonnegative = 0_u8;
+    for index in 0..8 {
+        let current_side =
+            dot_from_point(volume.point_a, car.current_points[index], volume.normal_q16);
+        if current_side < 0 {
+            negative_total += 1;
+        }
+        if !inside_xz_segment(
+            volume.point_a,
+            volume.point_b,
+            volume.normal_q16,
+            car.current_points[index],
+        ) {
+            continue;
+        }
+
+        let needs_prior = (current_side < 0) == saved_nonnegative;
+        if needs_prior {
+            let prior_side =
+                dot_from_point(volume.point_a, car.prior_points[index], volume.normal_q16);
+            let advances_on_side = current_side == 0
+                || (current_side < 0 && current_side <= prior_side)
+                || (current_side > 0 && prior_side <= current_side);
+            if !advances_on_side {
+                continue;
+            }
+        }
+        if current_side < 0 {
+            selected_negative += 1;
+        } else {
+            selected_nonnegative += 1;
+        }
+    }
+
+    (selected_negative != 0 && selected_nonnegative != 0)
+        || (selected_negative != 0 && negative_total == 8 && saved_nonnegative)
+}
+
+/// Evaluate against the old snapshot, then perform the native post-query copy.
+pub fn trigger_geometry_contains_then_snapshot(
+    volume: &TriggerVolume,
+    car: &mut TriggerCarBounds,
+    mode: TriggerGeometryMode,
+) -> bool {
+    let result = trigger_geometry_contains(volume, car, mode);
+    car.snapshot_current_points();
+    result
+}
+
+/// `FUN_00403e00` succeeds for dispatch when at least one current probe lies
+/// strictly between the record's two Y endpoints. Equality is outside.
+#[must_use]
+pub fn current_points_intersect_open_y_span(
+    volume: &TriggerVolume,
+    car: &TriggerCarBounds,
+) -> bool {
+    let low = volume.point_a[1].min(volume.point_b[1]);
+    let high = volume.point_a[1].max(volume.point_b[1]);
+    car.current_points
+        .iter()
+        .any(|point| point[1] > low && point[1] < high)
+}
 
 /// Number of player bits available in the native one-byte consumed mask.
 pub const TRIGGER_CONSUMED_PLAYER_CAPACITY: u8 = u8::BITS as u8;
@@ -296,5 +444,138 @@ mod tests {
                 },
             ]
         );
+    }
+
+    fn geometry_volume() -> TriggerVolume {
+        TriggerVolume {
+            point_a: [0, 0, 0],
+            point_b: [0, 0, 10 * Q16_ONE],
+            normal_q16: [Q16_ONE, 0, 0],
+            ..volume(0, 0)
+        }
+    }
+
+    fn point(x: i32, y: i32, z: i32) -> [i32; 3] {
+        [x, y, z]
+    }
+
+    fn crossing_bounds() -> TriggerCarBounds {
+        TriggerCarBounds {
+            current_position: [0; 3],
+            saved_position: [-Q16_ONE, 0, 0],
+            radius_q16: Q16_ONE,
+            current_points: [point(Q16_ONE, 0, 5 * Q16_ONE); 8],
+            prior_points: [point(-Q16_ONE, 0, 5 * Q16_ONE); 8],
+        }
+    }
+
+    #[test]
+    fn geometry_detects_whole_hull_crossing_and_straddling() {
+        let volume = geometry_volume();
+        let mut car = crossing_bounds();
+        assert!(trigger_geometry_contains(
+            &volume,
+            &car,
+            TriggerGeometryMode::Bidirectional
+        ));
+
+        for point in &mut car.current_points[4..] {
+            point[0] = -Q16_ONE;
+        }
+        assert!(trigger_geometry_contains(
+            &volume,
+            &car,
+            TriggerGeometryMode::Bidirectional
+        ));
+    }
+
+    #[test]
+    fn geometry_preserves_direction_thickness_and_segment_boundaries() {
+        let volume = geometry_volume();
+        let mut car = crossing_bounds();
+        assert!(!trigger_geometry_contains(
+            &volume,
+            &car,
+            TriggerGeometryMode::RequireSavedNonPositive
+        ));
+
+        car.current_position[0] = 2 * Q16_ONE;
+        assert!(trigger_geometry_contains(
+            &volume,
+            &car,
+            TriggerGeometryMode::Bidirectional
+        ));
+        car.current_position[0] += 1;
+        assert!(!trigger_geometry_contains(
+            &volume,
+            &car,
+            TriggerGeometryMode::Bidirectional
+        ));
+
+        car.current_position = [0; 3];
+        for point in &mut car.current_points {
+            point[2] = -1;
+        }
+        assert!(!trigger_geometry_contains(
+            &volume,
+            &car,
+            TriggerGeometryMode::Bidirectional
+        ));
+        for point in &mut car.current_points {
+            point[2] = 0;
+        }
+        assert!(trigger_geometry_contains(
+            &volume,
+            &car,
+            TriggerGeometryMode::Bidirectional
+        ));
+    }
+
+    #[test]
+    fn geometry_uses_prior_points_before_the_post_query_snapshot() {
+        let volume = geometry_volume();
+        let mut car = crossing_bounds();
+        car.prior_points = [point(2 * Q16_ONE, 0, 5 * Q16_ONE); 8];
+
+        assert!(!trigger_geometry_contains_then_snapshot(
+            &volume,
+            &mut car,
+            TriggerGeometryMode::Bidirectional
+        ));
+        assert_eq!(car.prior_points, car.current_points);
+        assert!(trigger_geometry_contains(
+            &volume,
+            &car,
+            TriggerGeometryMode::Bidirectional
+        ));
+    }
+
+    #[test]
+    fn geometry_keeps_native_wrapping_abs_minimum_boundary() {
+        let volume = geometry_volume();
+        let mut car = crossing_bounds();
+        car.current_position[0] = i32::MIN;
+        car.radius_q16 = 0;
+        assert!(trigger_geometry_contains(
+            &volume,
+            &car,
+            TriggerGeometryMode::Bidirectional
+        ));
+    }
+
+    #[test]
+    fn open_y_span_excludes_endpoints_in_either_endpoint_order() {
+        let mut volume = geometry_volume();
+        volume.point_a[1] = -Q16_ONE;
+        volume.point_b[1] = Q16_ONE;
+        let mut car = crossing_bounds();
+        assert!(current_points_intersect_open_y_span(&volume, &car));
+        for point in &mut car.current_points {
+            point[1] = Q16_ONE;
+        }
+        assert!(!current_points_intersect_open_y_span(&volume, &car));
+        std::mem::swap(&mut volume.point_a[1], &mut volume.point_b[1]);
+        car.current_points[3][1] = 0;
+        assert!(current_points_intersect_open_y_span(&volume, &car));
     }
 }

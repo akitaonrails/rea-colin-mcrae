@@ -37,7 +37,10 @@ use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
 use cmr_core::gameplay_session::{GameplaySession, InRaceScript};
 use cmr_core::host_loop::HostClock;
 use cmr_core::localization::Language;
-use cmr_core::race_hud_plan::{RaceHudBitmap, RaceHudFont};
+use cmr_core::race_hud_plan::{
+    CommonGaugeInset, RaceHudBitmap, RaceHudFont, RaceHudPlanError, RaceHudPreparedInputs,
+    plan_normal_single_player_race_hud,
+};
 use cmr_core::race_state::{
     CarState, Controls, FirstWheelParams, FourWheelIterationParams, FourWheelPostprocessParams,
     SecondWheelParams, SimParams, WheelPostprocessError, populate_compiled_contact_offsets,
@@ -53,6 +56,7 @@ use cmr_core::root_menu_visual::{
 use cmr_core::scalar_tween::ScalarTween;
 use cmr_core::settings_store::{DataPaths, SettingsError, SettingsImage};
 use cmr_core::stage_checkpoints::StageProgress;
+use cmr_core::stage_timing::elapsed_centiseconds;
 use cmr_core::startup::{StartupLanguage, StartupScreen};
 use cmr_core::startup_display::{
     StartupDisplay, StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
@@ -82,6 +86,7 @@ use cmr_platform_sdl3::{
     run_interactive_root_frame, run_windowed_game_session as run_windowed_game_session_loop,
 };
 use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
+use cmr_video::software_race_hud::{RaceHudComposeError, compose_race_hud_commands};
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
     with_software_root_menu_session,
@@ -1170,6 +1175,12 @@ pub enum StageFrameError {
         font: RaceHudFont,
         error: FontError,
     },
+    /// A race-HUD plan could not be produced for the live viewport.
+    HudPlan(RaceHudPlanError),
+    /// The recovered HUD commands could not be composed over the world frame.
+    HudCompose(RaceHudComposeError),
+    /// Native setup did not retain the authenticated HUD sources.
+    MissingHudAssets,
     /// The raw-GPU stage adapter rejected the scene.
     GpuPrepare(PreparedRawStageError),
     /// The selected GPU backend could not be initialized (or its persistent
@@ -1206,6 +1217,9 @@ impl StageFrameError {
             Self::HudAsset(_) => "hud-asset",
             Self::HudBitmap { .. } => "hud-bitmap",
             Self::HudFont { .. } => "hud-font",
+            Self::HudPlan(_) => "hud-plan",
+            Self::HudCompose(_) => "hud-compose",
+            Self::MissingHudAssets => "missing-hud-assets",
             Self::GpuPrepare(_) => "gpu-prepare",
             Self::GpuInit(_) => "gpu-init",
             Self::GpuCompose(_) => "gpu-compose",
@@ -1253,6 +1267,9 @@ impl fmt::Display for StageFrameError {
                 "cannot parse race HUD font {}: {error}",
                 font.relative_path()
             ),
+            Self::HudPlan(error) => write!(formatter, "cannot plan race HUD: {error:?}"),
+            Self::HudCompose(error) => write!(formatter, "cannot compose race HUD: {error}"),
+            Self::MissingHudAssets => write!(formatter, "native race HUD assets were not attached"),
             Self::GpuPrepare(error) => write!(formatter, "cannot prepare raw GPU stage: {error}"),
             Self::GpuInit(detail) => {
                 write!(
@@ -1295,6 +1312,7 @@ impl std::error::Error for StageFrameError {
             Self::HudAsset(error) => Some(error),
             Self::HudBitmap { error, .. } => Some(error),
             Self::HudFont { error, .. } => Some(error),
+            Self::HudCompose(error) => Some(error),
             Self::GpuPrepare(error) => Some(error),
             Self::MissingNodes
             | Self::DegenerateSpawn
@@ -1302,7 +1320,9 @@ impl std::error::Error for StageFrameError {
             | Self::GpuInit(_)
             | Self::GpuCompose(_)
             | Self::GpuLayeredStageUnsupported
-            | Self::MissingHorizonSettings => None,
+            | Self::MissingHorizonSettings
+            | Self::HudPlan(_)
+            | Self::MissingHudAssets => None,
         }
     }
 }
@@ -2183,6 +2203,62 @@ fn analog_driving_is_active(pad: &GamepadDrivingState) -> bool {
     pad.has_driving_input()
 }
 
+/// Recovered speed-display multiplier applied to the reconstructed Q16 velocity
+/// magnitude by the normal HUD preparation path.
+const RACE_HUD_SPEED_MULTIPLIER_Q16: i32 = 0x431168;
+
+/// Adapt the currently reconstructed session state to the recovered HUD input
+/// contract. Timer and speed conversion use recovered arithmetic. Until the
+/// live gearbox/rev producer is connected, first gear and zero rev are explicit
+/// native-session harness values; progress uses the active CAT cursor fraction.
+fn live_race_hud_inputs(
+    car: CarState,
+    progress: &StageProgress<'_>,
+    node_count: usize,
+    stage_clock: Fixed16,
+) -> RaceHudPreparedInputs {
+    let speed_q16 = car.velocity.length();
+    let speed = speed_q16
+        .mul(Fixed16::from_raw(RACE_HUD_SPEED_MULTIPLIER_Q16))
+        .raw()
+        .max(0)
+        >> 16;
+    let progress_q16 = if node_count <= 1 {
+        0
+    } else {
+        let numerator = (progress.cursor().min(node_count - 1) as u64) << 16;
+        (numerator / (node_count - 1) as u64) as i32
+    };
+    RaceHudPreparedInputs {
+        viewport: ROOT_EXTENT,
+        rev_q16: 0,
+        speed: speed as u32,
+        gear: 1,
+        progress_q16,
+        elapsed_centiseconds: elapsed_centiseconds(stage_clock, Fixed16::ZERO).max(0) as u32,
+        gauge_inset: CommonGaugeInset::ConfigLowThreeBitsZero,
+    }
+}
+
+fn compose_live_race_hud(
+    resources: &StageRenderResources,
+    frame: SoftwarePresentedFrame,
+    input: RaceHudPreparedInputs,
+) -> Result<SoftwarePresentedFrame, StageFrameError> {
+    let assets = resources
+        .race_hud()
+        .ok_or(StageFrameError::MissingHudAssets)?;
+    let plan = plan_normal_single_player_race_hud(input).map_err(StageFrameError::HudPlan)?;
+    compose_race_hud_commands(
+        frame,
+        plan.commands(),
+        |font| assets.font(font),
+        |bitmap| assets.bitmap(bitmap),
+    )
+    .map(|(frame, _)| frame)
+    .map_err(StageFrameError::HudCompose)
+}
+
 fn compose_world_for_route<F>(
     route: Option<RenderRoute>,
     compose: F,
@@ -2257,9 +2333,16 @@ fn advance_game_frame<C: HostClock>(
         let camera_world = camera.update(change_view_down, car.position, car.heading, false);
         let harness_car_world = camera.car_world(car.position, car.heading);
         let car_world = car_model_world_q16(&harness_car_world);
-        resources
+        let hud_input = live_race_hud_inputs(
+            car,
+            progress,
+            resources.bundle.nodes().map_or(0, <[CatNode]>::len),
+            session.stage_clock(),
+        );
+        let world = resources
             .compose_with_car(&camera_world, Some(&car_world))
-            .map(|rendered| rendered.frame)
+            .map(|rendered| rendered.frame)?;
+        compose_live_race_hud(resources, world, hud_input)
     })?;
     // Race-end fade (state 0xb, FadeComposite): the recovered linear brightness
     // tween drives a fullscreen modulate of the composed world toward black. The
@@ -2661,7 +2744,9 @@ pub fn run_windowed_game_session(
         start.heading,
     );
     let initial_car_world = car_model_world_q16(&initial_harness_world);
-    let initial = resources.compose_with_car(&initial_camera, Some(&initial_car_world))?;
+    let initial_world = resources
+        .compose_with_car(&initial_camera, Some(&initial_car_world))?
+        .frame;
 
     let params = SimParams {
         inverse_mass: Fixed16::from_raw(0x8000),
@@ -2677,6 +2762,11 @@ pub fn run_windowed_game_session(
     };
     let menu_inputs = MenuFlowInputs::default();
     let mut progress = StageProgress::new(&nodes, 0);
+    let initial = compose_live_race_hud(
+        &resources,
+        initial_world,
+        live_race_hud_inputs(start, &progress, nodes.len(), Fixed16::ZERO),
+    )?;
     let clock = WallClock::new();
     let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
@@ -2697,52 +2787,48 @@ pub fn run_windowed_game_session(
             VisualVariant::Normal,
         );
         let built = with_software_root_menu_session(&store, startup, request, |root| {
-            run_windowed_game_session_loop(
-                &initial.frame,
-                Some(media_root),
-                |input: WindowedInput| {
-                    match advance_game_frame(
-                        &mut session,
-                        &mut keyboard,
-                        &mut analog,
-                        &response,
-                        menu_inputs,
-                        &mut progress,
-                        &clock,
-                        &mut resources,
-                        &mut camera,
-                        &mut fade,
-                        input,
-                    ) {
-                        Ok(outcome) => {
-                            // A composed world frame wins; otherwise the interactive
-                            // front-end route presents the recovered root-menu frame.
-                            let present = if outcome.world.is_some() {
-                                outcome.world
-                            } else if outcome.route.is_some_and(composes_frontend_root) {
-                                root.render(initial_root_input())
-                                    .ok()
-                                    .and_then(|_| root.backend().presented_frame().cloned())
-                            } else {
-                                None
-                            };
-                            WindowedGameFrame {
-                                present,
-                                stopped: outcome.stopped,
-                                music_active: outcome.music_active,
-                            }
-                        }
-                        Err(error) => {
-                            runtime_error = Some(error);
-                            WindowedGameFrame {
-                                present: None,
-                                stopped: true,
-                                music_active: false,
-                            }
+            run_windowed_game_session_loop(&initial, Some(media_root), |input: WindowedInput| {
+                match advance_game_frame(
+                    &mut session,
+                    &mut keyboard,
+                    &mut analog,
+                    &response,
+                    menu_inputs,
+                    &mut progress,
+                    &clock,
+                    &mut resources,
+                    &mut camera,
+                    &mut fade,
+                    input,
+                ) {
+                    Ok(outcome) => {
+                        // A composed world frame wins; otherwise the interactive
+                        // front-end route presents the recovered root-menu frame.
+                        let present = if outcome.world.is_some() {
+                            outcome.world
+                        } else if outcome.route.is_some_and(composes_frontend_root) {
+                            root.render(initial_root_input())
+                                .ok()
+                                .and_then(|_| root.backend().presented_frame().cloned())
+                        } else {
+                            None
+                        };
+                        WindowedGameFrame {
+                            present,
+                            stopped: outcome.stopped,
+                            music_active: outcome.music_active,
                         }
                     }
-                },
-            )
+                    Err(error) => {
+                        runtime_error = Some(error);
+                        WindowedGameFrame {
+                            present: None,
+                            stopped: true,
+                            music_active: false,
+                        }
+                    }
+                }
+            })
         });
         if let Ok(run) = built {
             run.output.map_err(WindowedStageFrameError::Present)?;
@@ -2755,7 +2841,7 @@ pub fn run_windowed_game_session(
         // through to the world-only loop below rather than failing the session.
     }
 
-    run_windowed_game_session_loop(&initial.frame, Some(media_root), |input: WindowedInput| {
+    run_windowed_game_session_loop(&initial, Some(media_root), |input: WindowedInput| {
         match advance_game_frame(
             &mut session,
             &mut keyboard,
@@ -3221,6 +3307,24 @@ mod tests {
     }
 
     #[test]
+    fn live_hud_adapter_uses_recovered_timer_and_speed_arithmetic() {
+        let nodes = [
+            native_test_node([0, 0, 0], [0x10000, 0, 0], 1),
+            native_test_node([0x10000, 0, 0], [0x10000, 0, 0], 1),
+        ];
+        let progress = StageProgress::new(&nodes, 0);
+        let mut car = CarState::at_rest();
+        car.velocity = Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO);
+
+        let input = live_race_hud_inputs(car, &progress, nodes.len(), Fixed16::from_raw(0x1_8000));
+        assert_eq!(input.speed, 0x43);
+        assert_eq!(input.elapsed_centiseconds, 150);
+        assert_eq!(input.progress_q16, 0);
+        assert_eq!(input.rev_q16, 0);
+        assert_eq!(input.gear, 1);
+    }
+
+    #[test]
     #[ignore = "requires the reviewed installed-EU runtime data"]
     fn imported_au1_native_setup_composes_from_the_real_spawn_and_palette() {
         let root = std::env::var_os("CMR_RUNTIME_DATA")
@@ -3296,6 +3400,21 @@ mod tests {
             rendered.stats,
             StageRenderStats::Software(stats) if stats.prims_composed >= 3
         ));
+        let hud_frame = compose_live_race_hud(
+            &resources,
+            rendered.frame.clone(),
+            live_race_hud_inputs(
+                start,
+                &StageProgress::new(&nodes, 0),
+                nodes.len(),
+                Fixed16::ZERO,
+            ),
+        )
+        .unwrap();
+        assert_ne!(
+            hud_frame.digest_summary().canonical_frame_sha256,
+            rendered.frame.digest_summary().canonical_frame_sha256
+        );
 
         assert!(matches!(
             native_stage_setup(

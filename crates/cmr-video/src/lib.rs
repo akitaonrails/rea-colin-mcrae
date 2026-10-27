@@ -30,6 +30,7 @@ pub mod software_queued_font_flush;
 pub mod software_queued_font_glyphs;
 pub mod software_queued_font_quad;
 pub mod software_queued_font_queue;
+pub mod software_race_hud;
 pub mod software_root_menu_session;
 pub mod software_stage_scene;
 

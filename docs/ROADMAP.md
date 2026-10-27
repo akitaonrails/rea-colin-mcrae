@@ -1603,8 +1603,11 @@ calculation at the renderer's actual output extent. Imported AU1 integration
 checks prove input-driven world/frame changes, steering and checkpoint progress;
 controlled Xvfb captures verify visible throttle, steering and coasting. The
 caller-selected in-race C3D car is now depth-composed with the stage under its
-live pose. This does not add an in-race HUD and does not claim complete
-four-wheel trajectory fidelity or a verified full-race finish.
+live pose. The normal single-player race HUD is composed over every live world
+frame from the authenticated bitmap/font inputs. Controlled Xvfb release captures
+show a visible gauge, timer, gear/speed readout, player car, and a changed world
+frame after a real throttle event. This does not claim complete four-wheel
+trajectory fidelity or a verified full-race finish.
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
@@ -1620,14 +1623,24 @@ E16 closes the championship boundary; E08 remains partial. Stage loading now
 consumes `.c3d`, `.dat`, `.obj`, `.sht`, `.ars`, `.hzn`, `.tsc`, `.csp`, and
 `.cat`, with layered software presentation, authored starts, bounded
 trigger-volume decoding, and authored trackside-camera records. `.moj`, `.spl`,
-`.anm`, `.rsf`, and `.fuz` remain unintegrated. The native race path composes the player car but still bypasses
-the recovered menu flow and lacks the recovered race HUD and DAT dispatch.
+`.anm`, `.rsf`, and `.fuz` remain unintegrated. The native race path composes the
+player car and normal race HUD but still bypasses recovered menu selection and
+lacks DAT dispatch.
 The normal single-player HUD now has a pure, test-backed command plan for the
 pinned common gauge core including all 15 strict-threshold rev segments,
 speed/gear text, progress marker, and late timer
-overlay. Pixel raster policy and live asset binding remain explicit open work.
-Native setup now authenticates, decodes, bounds-parses, and retains all six
-source-owned HUD bitmap/font inputs. Live raster composition remains open.
+overlay. Native setup authenticates, decodes, bounds-parses, and retains all six
+source-owned HUD bitmap/font inputs. The indexed software compositor preserves
+command order, color-keying, diffuse/tinted blending, nearest stretching, and
+the recovered direct-index font behavior, then quantizes blended RGB through a
+deterministic full-palette oracle. The live adapter uses recovered speed/timer
+arithmetic; first gear, zero revs, and CAT-cursor progress remain explicit
+harness inputs until their runtime producers are connected.
+
+DAT trigger geometry is now reconstructed over the native current/prior
+eight-point world-space car bounds, including directional gating, thickness,
+open-Y span, and evaluate-before-snapshot ordering. Live dispatcher side effects
+and first-frame prior-array initialization remain open.
 
 E01 is closed at its deterministic indexed boundary. Supported BM, palette,
 row, composition, and queued-font paths are implemented; native padding,

@@ -190,11 +190,17 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::race_hud_plan`: pure normal single-player race-HUD command plan.
   Preserves the recovered gauge/progress/timer draw order, authored source and
   destination rectangles, Q16/pixel text coordinates, value formatting, and
-  640x480 scaling. Unrecovered bitmap/font raster policies and optional layers
-  are typed gaps rather than guessed pixels.
+  640x480 scaling. Optional layers remain typed gaps rather than guessed pixels.
   `cmr-app::RaceHudAssets` resolves the plan's identities through the reviewed
   user-owned asset store, CMPR-decodes and bounds-parses four indexed bitmaps
   and two FON atlases, and retains them with the native stage resources.
+- `cmr-video::software_race_hud`: ordered indexed HUD compositor for the shared
+  software frame. It implements source-index-zero transparency, ordinary and
+  tinted diffuse behavior, center-nearest stretch, deterministic full-palette
+  RGB quantization, direct-index FON glyphs, clipping, and checked source
+  rectangles. `cmr-app` applies the planned HUD to initial and live world frames;
+  the live speed/timer adapter uses recovered arithmetic while gear/revs and CAT
+  progress remain explicit harness boundaries.
 - `cmr-formats::stage`: the stage/track bundle (E08). A stage is a set of sibling
   files sharing a base path and differing only by extension (the 14-entry table
   `.c3d`..`.fuz`), each loaded through the shared CMPR-capable loader - no
@@ -216,6 +222,11 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   remaining `.moj`, `.spl`, `.anm`, `.rsf`, and `.fuz` consumers plus DAT
   runtime dispatch, TSC director binding, and runtime fix-up/relocation remain. See
   evidence `rea.official-eu.stage-bundle`.
+- `cmr-core::stage_triggers`: separates immutable DAT records from initialized
+  runtime state; classifies recovered event families and evaluates the exact
+  Q16 plane/XZ-segment crossing contract over current and prior eight-point car
+  bounds. The compiled basis producer now translates all eight probes into
+  world space, and the snapshot helper preserves evaluate-before-copy order.
 - `cmr-core::car_resources`: the car-resource composition (E09). A car is a set
   of sibling `.C3D` resources under `OBJECTS\CARS\` (body `<code><DAY|NIGHT>.C3D`,
   reflection `<code><tag>ref.c3d`, shared `ref_map.bmp`, low-detail `med`/
@@ -2431,10 +2442,11 @@ languages rather than fabricating or silently aliasing Italian assets.
 - Edition support is limited to the reviewed official-EU/installed-EU profile.
   Other editions and locales are unsupported until separately evidenced;
   official-US and xdelta files are comparison-only artifacts.
-- Stage/championship coverage includes seven stage siblings, layered software
+- Stage/championship coverage includes nine stage siblings, layered software
   presentation, authored starts, transform/visibility/mutation and retained
-  setup sessions. DAT/MOJ/TSC/SPL/ANM/RSF/FUZ, layered GPU, player-car/HUD,
-  menu-to-race boot, finish, and post-race behavior remain open.
+  setup sessions. MOJ/SPL/ANM/RSF/FUZ, DAT dispatch, layered GPU, recovered
+  menu-to-race selection, finish, and post-race behavior remain open. The
+  player car and normal software race HUD are live.
 - Bitmap conversion has an explicit deterministic indexed boundary: 4/8-bit
   BM, palettes, stored rows, composition, and queued fonts are supported;
   native padding, 24-bit, driver filtering, device-owned formats, and alternate
@@ -2503,7 +2515,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   vertical-force integration cannot destabilize live driving. Authored `.cat`
   checkpoints drive progress; spawn, dynamics and post-race inputs remain
   explicit harness boundaries. The explicit caller-selected in-race C3D car is
-  depth-composed under the live pose; HUD composition remains open.
+  depth-composed under the live pose, and the normal race HUD is applied to each
+  presented world frame.
 - Rectangular C3D surface expansion does not define the contents of added
   padding. `FUN_0049e960` allocates a DirectDraw surface and `FUN_00499320`
   writes source-derived pixels only, so the indexed sampler keeps GR4's padded
