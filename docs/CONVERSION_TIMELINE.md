@@ -694,7 +694,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T23:57Z | 152h39m | fix-idle-gamepad-keyboard-fallback | `f7038db` | B10, I07 | Analog driving now requires non-neutral pad input. Idle connected gamepads no longer mask keyboard throttle. Added SDL activity and app fallback tests; full workspace gates pass. |
 
-| 2026-10-27T00:59Z | 153h41m | apply-native-throttle-to-world-motion | _(pending)_ | G01, G03, I07 | Four-wheel stepping now adds live forward force along the car heading before lane-force summation, and native boot enters the stage directly instead of auto-advancing the menu. A new motion test proves positive displacement; `cmr-core` has 1,419 tests and full workspace gates pass. This is explicit playable policy, not recovered original force production. |
+| 2026-10-27T00:59Z | 153h41m | apply-native-throttle-to-world-motion | `a42b42f` | G01, G03, I07 | Four-wheel stepping now adds live forward force along the car heading before lane-force summation, and native boot enters the stage directly instead of auto-advancing the menu. A new motion test proves positive displacement; `cmr-core` has 1,419 tests and full workspace gates pass. This is explicit playable policy, not recovered original force production. |
+
+| 2026-10-27T02:57Z | 156h38m | stabilize-native-playable-driving | _(pending)_ | G01, I03, I07 | Uses the existing planar model and controllable harness strengths for native play, computes SDL presentation from the actual render-output viewport, and adds an imported AU1 live-input/checkpoint regression. Controlled Xvfb captures verify visible throttle, steering and coasting; player-car/HUD composition and full-race completion remain outside the verified baseline. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

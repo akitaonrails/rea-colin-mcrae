@@ -24,9 +24,11 @@ DirectPlay session/player records, and opt-in direct TCP transport. Native
 DirectX/QMixer/DirectInput/DirectPlay DLLs are not required by the portable
 build.
 
-The native single-player session is playable with live controls, authored
-`.cat` checkpoints and the real stage palette. Node-zero startup is an explicit
-approximation, not a recovered spawn claim; post-race sequencing remains a
+The native single-player stage supports live keyboard/gamepad driving, authored
+`.cat` checkpoints, the real stage palette, and a live follow camera. Its
+node-zero spawn, planar dynamics, and control strengths are explicit playable
+harness approximations, not recovered vehicle or spawn behavior. The player-car
+model and in-race HUD are not yet composed, and post-race sequencing remains a
 harness boundary.
 
 Unsupported boundaries are explicit: native driver-owned padding and exact

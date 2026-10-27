@@ -115,6 +115,14 @@ impl<'a> GameplaySession<'a> {
         Self::with_optional_wheel(params, script, None)
     }
 
+    /// A simplified session with an explicit stage start.
+    #[must_use]
+    pub fn new_with_car(params: SimParams, script: InRaceScript, car: CarState) -> Self {
+        let mut session = Self::new(params, script);
+        session.race = RaceState::new(car);
+        session
+    }
+
     /// A fresh session driven by the complete four-wheel producer.
     #[must_use]
     pub fn new_with_four_wheel(

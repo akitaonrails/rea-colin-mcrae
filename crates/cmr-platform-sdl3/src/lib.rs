@@ -24,10 +24,11 @@ use cmr_core::audio_assets::{FRONTEND_MUSIC, MENU_WAVE_FILES};
 use cmr_core::audio_menu::{MenuChannel, menu_sound_for_input, play_menu_sound};
 use cmr_core::audio_mixer::{AudioMixer, ChannelId, WaveSlotId, apply_commands};
 use cmr_core::audio_music_cues::FRONTEND_CONTEXT;
+use cmr_core::display::DisplayExtent;
 use cmr_core::frontend::FrontendInput;
 use cmr_core::host_lifecycle::{HostLifecycle, PlatformLifecycleEvent};
 use cmr_core::music_player::MusicController;
-use cmr_core::present_scaling::{DEFAULT_SCALING, PhysicalSize, PresentationScaling};
+use cmr_core::present_scaling::{DEFAULT_SCALING, LogicalSize, PhysicalSize, fit_viewport};
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::RootRenderInput;
 use cmr_core::window::{WindowEffect, WindowMode};
@@ -35,33 +36,18 @@ use cmr_video::{SoftwarePresentedFrame, SoftwareRgba8Error, SoftwareRgba8Frame};
 use sdl3::event::{Event, WindowEvent};
 use sdl3::keyboard::Keycode;
 use sdl3::pixels::PixelFormat;
-use sdl3::render::{Canvas, ScaleMode, Texture};
+use sdl3::render::{Canvas, FRect, ScaleMode, Texture};
 use sdl3::video::Window;
 
 /// Target frame interval for the interactive loop's event wait (~60 Hz).
 const INTERACTIVE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
-/// Map the project's backend-neutral presentation scaling
-/// ([`cmr_core::present_scaling`]) onto the SDL logical-presentation mode. This
-/// is how the SDL backend implements that contract; a later GPU backend instead
-/// computes its viewport from `cmr_core::present_scaling::fit_viewport`. The two
-/// must agree, which is why the geometry is defined once in `cmr-core`.
-fn logical_presentation(
-    scaling: PresentationScaling,
-) -> sdl3::sys::render::SDL_RendererLogicalPresentation {
-    match scaling {
-        PresentationScaling::Stretch => sdl3::sys::render::SDL_LOGICAL_PRESENTATION_STRETCH,
-        PresentationScaling::Letterbox => sdl3::sys::render::SDL_LOGICAL_PRESENTATION_LETTERBOX,
-        PresentationScaling::IntegerScale => {
-            sdl3::sys::render::SDL_LOGICAL_PRESENTATION_INTEGER_SCALE
-        }
-    }
-}
-
 /// Query the actual drawable pixel dimensions of the SDL window.
 #[must_use]
 pub fn physical_drawable_size(canvas: &Canvas<Window>) -> PhysicalSize {
-    let (width, height) = canvas.window().size_in_pixels();
+    let (width, height) = canvas
+        .output_size()
+        .unwrap_or_else(|_| canvas.window().size_in_pixels());
     PhysicalSize { width, height }
 }
 
@@ -269,13 +255,6 @@ fn present_software_frame_impl(
         .build()
         .map_err(|error| SdlHostError::sdl("window creation", error))?;
     let mut canvas = window.into_canvas();
-    canvas
-        .set_logical_size(
-            u32::from(extent.width),
-            u32::from(extent.height),
-            logical_presentation(DEFAULT_SCALING),
-        )
-        .map_err(|error| SdlHostError::sdl("logical presentation setup", error))?;
     let texture_creator = canvas.texture_creator();
     let mut texture = texture_creator
         .create_texture_streaming(
@@ -286,13 +265,7 @@ fn present_software_frame_impl(
         .map_err(|error| SdlHostError::sdl("streaming texture creation", error))?;
     texture.set_scale_mode(ScaleMode::Nearest);
     upload_rgba_frame(&mut texture, &rgba)?;
-    canvas.clear();
-    canvas
-        .copy(&texture, None, None)
-        .map_err(|error| SdlHostError::sdl("frame copy", error))?;
-    if !canvas.present() {
-        return Err(SdlHostError::sdl("frame presentation", sdl3::get_error()));
-    }
+    redraw_present(&mut canvas, &texture, extent)?;
     if !wait_for_exit {
         return Ok(());
     }
@@ -340,11 +313,11 @@ fn present_software_frame_impl(
                     .map_err(|error| SdlHostError::sdl("streaming texture recreation", error))?;
                 texture.set_scale_mode(ScaleMode::Nearest);
                 upload_rgba_frame(&mut texture, &rgba)?;
-                redraw_present(&mut canvas, &texture)?;
+                redraw_present(&mut canvas, &texture, extent)?;
                 true
             }
             HostEvent::RedrawRequested => {
-                redraw_present(&mut canvas, &texture)?;
+                redraw_present(&mut canvas, &texture, extent)?;
                 true
             }
             _ => true,
@@ -357,10 +330,25 @@ fn present_software_frame_impl(
     Ok(())
 }
 
-fn redraw_present(canvas: &mut Canvas<Window>, texture: &Texture<'_>) -> Result<(), SdlHostError> {
+fn redraw_present(
+    canvas: &mut Canvas<Window>,
+    texture: &Texture<'_>,
+    extent: DisplayExtent,
+) -> Result<(), SdlHostError> {
+    let logical = LogicalSize {
+        width: u32::from(extent.width),
+        height: u32::from(extent.height),
+    };
+    let viewport = fit_viewport(logical, physical_drawable_size(canvas), DEFAULT_SCALING);
+    let destination = FRect::new(
+        viewport.x as f32,
+        viewport.y as f32,
+        viewport.width as f32,
+        viewport.height as f32,
+    );
     canvas.clear();
     canvas
-        .copy(texture, None, None)
+        .copy(texture, None, destination)
         .map_err(|error| SdlHostError::sdl("frame redraw", error))?;
     if !canvas.present() {
         return Err(SdlHostError::sdl("frame redraw", sdl3::get_error()));
@@ -537,13 +525,6 @@ pub fn run_interactive_root_frame<E>(
         .build()
         .map_err(|error| host(SdlHostError::sdl("window creation", error)))?;
     let mut canvas = window.into_canvas();
-    canvas
-        .set_logical_size(
-            u32::from(extent.width),
-            u32::from(extent.height),
-            logical_presentation(DEFAULT_SCALING),
-        )
-        .map_err(|error| host(SdlHostError::sdl("logical presentation setup", error)))?;
     let texture_creator = canvas.texture_creator();
     let mut texture = texture_creator
         .create_texture_streaming(
@@ -554,7 +535,7 @@ pub fn run_interactive_root_frame<E>(
         .map_err(|error| host(SdlHostError::sdl("streaming texture creation", error)))?;
     texture.set_scale_mode(ScaleMode::Nearest);
     upload_rgba_frame(&mut texture, &rgba).map_err(InteractiveRootError::Host)?;
-    redraw_present(&mut canvas, &texture).map_err(InteractiveRootError::Host)?;
+    redraw_present(&mut canvas, &texture, extent).map_err(InteractiveRootError::Host)?;
 
     let mut open_gamepads = BTreeMap::new();
     for id in gamepad
@@ -635,10 +616,12 @@ pub fn run_interactive_root_frame<E>(
                         })?;
                     texture.set_scale_mode(ScaleMode::Nearest);
                     upload_rgba_frame(&mut texture, &rgba).map_err(InteractiveRootError::Host)?;
-                    redraw_present(&mut canvas, &texture).map_err(InteractiveRootError::Host)?;
+                    redraw_present(&mut canvas, &texture, extent)
+                        .map_err(InteractiveRootError::Host)?;
                 }
                 HostEvent::RedrawRequested => {
-                    redraw_present(&mut canvas, &texture).map_err(InteractiveRootError::Host)?;
+                    redraw_present(&mut canvas, &texture, extent)
+                        .map_err(InteractiveRootError::Host)?;
                 }
                 other => host_state.apply(other),
             }
@@ -648,7 +631,7 @@ pub fn run_interactive_root_frame<E>(
             break;
         }
         if decision.restore_surfaces {
-            redraw_present(&mut canvas, &texture).map_err(InteractiveRootError::Host)?;
+            redraw_present(&mut canvas, &texture, extent).map_err(InteractiveRootError::Host)?;
         }
         if !decision.active {
             // Unfocused: pause ticking and rendering; block on the next event.
@@ -675,7 +658,7 @@ pub fn run_interactive_root_frame<E>(
             current_input = render_input;
             rgba = rendered_rgba(render(&current_input).map_err(InteractiveRootError::Render)?)?;
             upload_rgba_frame(&mut texture, &rgba).map_err(InteractiveRootError::Host)?;
-            redraw_present(&mut canvas, &texture).map_err(InteractiveRootError::Host)?;
+            redraw_present(&mut canvas, &texture, extent).map_err(InteractiveRootError::Host)?;
         }
     }
 
@@ -760,13 +743,6 @@ where
         .build()
         .map_err(|error| SdlHostError::sdl("window creation", error))?;
     let mut canvas = window.into_canvas();
-    canvas
-        .set_logical_size(
-            u32::from(extent.width),
-            u32::from(extent.height),
-            logical_presentation(DEFAULT_SCALING),
-        )
-        .map_err(|error| SdlHostError::sdl("logical presentation setup", error))?;
     let texture_creator = canvas.texture_creator();
     let mut texture = texture_creator
         .create_texture_streaming(
@@ -777,7 +753,7 @@ where
         .map_err(|error| SdlHostError::sdl("streaming texture creation", error))?;
     texture.set_scale_mode(ScaleMode::Nearest);
     upload_rgba_frame(&mut texture, &rgba)?;
-    redraw_present(&mut canvas, &texture)?;
+    redraw_present(&mut canvas, &texture, extent)?;
 
     let mut events = sdl
         .event_pump()
@@ -861,7 +837,7 @@ where
             break;
         }
         if decision.restore_surfaces {
-            redraw_present(&mut canvas, &texture)?;
+            redraw_present(&mut canvas, &texture, extent)?;
         }
         if !decision.active {
             // Unfocused: pause stepping and presenting; block on the next event.
@@ -902,7 +878,7 @@ where
                     .expand_rgba8()
                     .map_err(SdlHostError::FrameConversion)?;
                 upload_rgba_frame(&mut texture, &rgba)?;
-                redraw_present(&mut canvas, &texture)?;
+                redraw_present(&mut canvas, &texture, extent)?;
             }
             None => {
                 // A route that composes no world scene: clear to black until the
@@ -1049,31 +1025,6 @@ mod tests {
         state.apply(HostEvent::FocusGained);
         assert!(state.focused());
         assert!(!state.exit_requested());
-    }
-
-    #[test]
-    fn presentation_scaling_maps_to_sdl_logical_presentation() {
-        use sdl3::sys::render::{
-            SDL_LOGICAL_PRESENTATION_INTEGER_SCALE, SDL_LOGICAL_PRESENTATION_LETTERBOX,
-            SDL_LOGICAL_PRESENTATION_STRETCH,
-        };
-        assert_eq!(
-            logical_presentation(PresentationScaling::Stretch),
-            SDL_LOGICAL_PRESENTATION_STRETCH
-        );
-        assert_eq!(
-            logical_presentation(PresentationScaling::Letterbox),
-            SDL_LOGICAL_PRESENTATION_LETTERBOX
-        );
-        assert_eq!(
-            logical_presentation(PresentationScaling::IntegerScale),
-            SDL_LOGICAL_PRESENTATION_INTEGER_SCALE
-        );
-        // The backend presents with the project-default scaling.
-        assert_eq!(
-            logical_presentation(DEFAULT_SCALING),
-            SDL_LOGICAL_PRESENTATION_INTEGER_SCALE
-        );
     }
 
     #[test]

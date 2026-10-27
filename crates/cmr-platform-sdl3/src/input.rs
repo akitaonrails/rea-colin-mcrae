@@ -151,6 +151,11 @@ impl KeyboardVkState {
         let Some(vk) = sdl_keycode_to_vk(keycode) else {
             return;
         };
+        self.apply_vk(vk, pressed);
+    }
+
+    /// Apply a key-down or key-up event already translated to its VK code.
+    pub fn apply_vk(&mut self, vk: u8, pressed: bool) {
         if pressed {
             self.held.insert(vk);
         } else {

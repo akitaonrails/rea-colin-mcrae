@@ -2485,9 +2485,12 @@ languages rather than fabricating or silently aliasing Italian assets.
 - The fixed-step session composition is `cmr-core::gameplay_session`: it plugs
   `race_flow_next` into the top-level `GameSession`, steps the race only in
   state 5, updates checkpoint progress, and exposes the recovered render route.
-  Both the deterministic headless command and native SDL loop use it, including
-  the checked four-wheel path. Synthetic drive/checkpoint/cinematic inputs stay
-  explicit harness boundaries rather than fixed-step orchestration gaps.
+  Both the deterministic headless command and native SDL loop use it; the
+  checked four-wheel path remains covered separately. The playable stage uses
+  the existing planar dynamics and explicit control strengths so incomplete
+  vertical-force integration cannot destabilize live driving. Authored `.cat`
+  checkpoints drive progress; spawn, dynamics and post-race inputs remain
+  explicit harness boundaries. Player-car and in-race HUD composition remain.
 - Rectangular C3D surface expansion does not define the contents of added
   padding. `FUN_0049e960` allocates a DirectDraw surface and `FUN_00499320`
   writes source-derived pixels only, so the indexed sampler keeps GR4's padded

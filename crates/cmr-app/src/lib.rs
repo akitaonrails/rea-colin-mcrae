@@ -1653,22 +1653,21 @@ impl HostClock for WallClock {
 /// keyboard driver ([`KeyboardDriver`]) turns into sim [`Controls`], which drive
 /// the fixed-step race sim inside the recovered FSM ([`GameplaySession`]); the
 /// loop presents the composed stage frame whenever the state's render route
-/// composes the in-race world and clears otherwise. The drive-force and
-/// steer-rate magnitudes are the documented harness [`DriveResponse`] (the real
-/// values are runtime car/surface-table quantities), the checkpoint line is the
-/// synthetic [`headless_checkpoint_line`], and the per-route recovered
-/// compositors + a live follow camera remain to be wired - but the FSM, the
-/// input chain, and the render-route routing are all the recovered behavior.
-/// The windowed session's camera state: the recovered multi-mode view
-/// controller plus the harness view-cycle binding.
+/// composes the in-race world and clears otherwise. The playable baseline uses
+/// the existing planar dynamics and documented harness [`DriveResponse`] values
+/// rather than claiming complete four-wheel trajectory fidelity. Stage checkpoints
+/// come from the authored `.cat` nodes, the camera follows the live car, and the
+/// recovered FSM, input chain, and render routes drive the session. Player-car
+/// rendering and the in-race HUD remain separate composition work.
 ///
-/// The view modes, their placement math, and the cycle order are all recovered
-/// behavior ([`ViewController`]/[`cmr_core::camera_view`]). What is *not*
-/// recovered is the shipped camera-change input binding, so this harness cycles
-/// the modes on the rising edge of a documented key (VK `0x43` / `C`, matching
+/// The windowed session's camera state is the recovered multi-mode view
+/// controller plus a harness view-cycle binding. The view modes, their placement
+/// math, and the cycle order are recovered behavior
+/// ([`ViewController`]/[`cmr_core::camera_view`]). What is not recovered is the
+/// shipped camera-change input binding, so this harness cycles modes on the
+/// rising edge of a documented key (VK `0x43` / `C`, matching
 /// `cmr_platform_sdl3::input::sdl_keycode_to_vk`) seeded from a fixed harness
-/// seed - the same documented-stand-in pattern as the loop's synthetic drive
-/// force and checkpoint line. Only the trigger key and seed are harness policy.
+/// seed. Only the trigger key and seed are harness policy.
 struct ViewHarness {
     controller: ViewController,
     rng: GameLcg,
@@ -2162,30 +2161,12 @@ pub fn run_windowed_game_session(
         native_stage_setup(media_root, runtime_data, stage, renderer)?;
     let initial = resources.compose(&initial_camera)?;
 
-    let inputs = SessionWheelInputs::open(runtime_data).map_err(SessionFourWheelError::Inputs)?;
-    let trig = cmr_core::fixed_point::build_sine_table();
-    let families = CompiledControlFamilies {
-        post_processed_raw: [0; 8],
-        reciprocal: [0; 8],
-        raw_copy: [0x10000; 8],
-        reciprocal_copy: [0; 8],
-    };
-    let half_state = cmr_core::compiled_car_initializer::derive_compiled_half_sign_state([
-        0x40000, -0x60000, 0x80000,
-    ]);
-    let wheel = inputs
-        .four_wheel_params(&trig, &families, &half_state, Fixed16::ONE, [0; 4])
-        .map_err(SessionFourWheelError::Surface)?;
     let params = SimParams {
         inverse_mass: Fixed16::from_raw(0x8000),
         gravity: Vec3::ZERO,
     };
-    let mut session = GameplaySession::new_with_four_wheel_and_car(
-        params,
-        InRaceScript::frontend_harness(),
-        wheel,
-        start,
-    );
+    let mut session =
+        GameplaySession::new_with_car(params, InRaceScript::frontend_harness(), start);
     let mut keyboard = KeyboardDriver::player_one();
     let mut analog = AnalogDriver::new();
     let response = DriveResponse {
@@ -2324,12 +2305,12 @@ impl HostClock for StationaryClock {
 /// The forward drive force (Q16.16) the headless session applies each in-race
 /// tick. A **harness constant** for the demonstration drive, not a recovered
 /// value.
-const GAME_SESSION_DRIVE_FORCE_Q16: i32 = 8 << 16;
+const GAME_SESSION_DRIVE_FORCE_Q16: i32 = 0x8000;
 /// The heading rate (signed 16-bit BAM per tick) at full steer for the windowed
 /// session's live-input drive. A **harness constant**, not a recovered value:
 /// the shipped steer authority is a runtime car/surface-table quantity
 /// (`rea.official-eu.drivetrain-actuator-chain`).
-const GAME_SESSION_MAX_STEER_RATE: i16 = 0x200;
+const GAME_SESSION_MAX_STEER_RATE: i16 = 8;
 /// A safety cap on frames so a mis-tuned drive cannot loop forever.
 const GAME_SESSION_MAX_FRAMES: u32 = 100_000;
 
@@ -2666,6 +2647,102 @@ mod tests {
         )
         .unwrap();
         assert_eq!(gpu_resources.palette, resources.palette);
+    }
+
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data"]
+    fn imported_au1_live_input_moves_the_world_and_advances_checkpoints() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let (mut resources, nodes, start, _) = native_stage_setup(
+            &root.join("Game/Au/1"),
+            &root,
+            "AU1",
+            StageRendererChoice::Software,
+        )
+        .unwrap();
+        let mut session = GameplaySession::new_with_car(
+            SimParams {
+                inverse_mass: Fixed16::from_raw(0x8000),
+                gravity: Vec3::ZERO,
+            },
+            InRaceScript::frontend_harness(),
+            start,
+        );
+        let mut keyboard = KeyboardDriver::player_one();
+        let mut analog = AnalogDriver::new();
+        let response = DriveResponse {
+            max_forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
+            max_steer_rate: GAME_SESSION_MAX_STEER_RATE,
+        };
+        let mut progress = StageProgress::new(&nodes, 0);
+        let mut camera = ViewHarness::new();
+        let mut fade = None;
+        let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
+        macro_rules! advance {
+            ($keys:expr) => {
+                advance_game_frame(
+                    &mut session,
+                    &mut keyboard,
+                    &mut analog,
+                    &response,
+                    MenuFlowInputs::default(),
+                    &mut progress,
+                    &StationaryClock,
+                    &mut resources,
+                    &mut camera,
+                    &mut fade,
+                    WindowedInput {
+                        keys: $keys,
+                        gamepad: None,
+                    },
+                )
+                .unwrap()
+            };
+        }
+
+        for _ in 0..8 {
+            if session.state().id() == 5 {
+                break;
+            }
+            advance!(&keys);
+        }
+        assert_eq!(session.state().id(), 5);
+        let initial = advance!(&keys).world.unwrap().digest_summary();
+        let initial_car = session.car();
+        keys.apply_vk(0x26, true);
+        for _ in 0..25 {
+            advance!(&keys);
+        }
+        keys.apply_vk(0x26, false);
+        let driven = advance!(&keys).world.unwrap().digest_summary();
+        let driven_car = session.car();
+        assert_ne!(driven_car.position, initial_car.position);
+        assert_eq!(driven_car.heading, initial_car.heading);
+        assert_ne!(
+            driven.canonical_frame_sha256,
+            initial.canonical_frame_sha256
+        );
+        assert!(progress.cursor() > 0);
+
+        keys.apply_vk(0x25, true);
+        for _ in 0..5 {
+            advance!(&keys);
+        }
+        keys.apply_vk(0x25, false);
+        let steered_car = session.car();
+        assert_eq!(
+            steered_car.heading.wrapping_sub(driven_car.heading) as i16,
+            -5 * GAME_SESSION_MAX_STEER_RATE
+        );
+        eprintln!(
+            "native AU1: position={:?} velocity={:?} checkpoint={} splits={}",
+            steered_car.position,
+            steered_car.velocity,
+            progress.cursor(),
+            progress.splits_passed()
+        );
     }
 
     static NEXT_SURFACE_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

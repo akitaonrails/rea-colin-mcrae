@@ -1593,6 +1593,15 @@ first chase camera. Spawn is explicitly approximate because the shipped writer
 is unrecovered; post-race sequencer flags remain harness inputs. AU1 software
 composition and GPU preparation pass on the imported assets.
 
+The native playable baseline now uses the existing planar dynamics and bounded
+harness control strengths instead of feeding live play through incomplete
+vertical-force integration. The SDL presenter uses the shared explicit viewport
+calculation at the renderer's actual output extent. Imported AU1 integration
+checks prove input-driven world/frame changes, steering and checkpoint progress;
+controlled Xvfb captures verify visible throttle, steering and coasting. This
+does not add player-car rendering or an in-race HUD, and does not claim complete
+four-wheel trajectory fidelity or a verified full-race finish.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions
