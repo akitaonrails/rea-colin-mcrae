@@ -40,6 +40,9 @@ pub const Z_NEAR: f32 = 1.0;
 /// The default far plane (overridden per track and scaled by the view-distance
 /// setting).
 pub const Z_FAR_DEFAULT: f32 = 250.0;
+/// Temporary far plane used while drawing the camera-centered horizon root
+/// (`FUN_004a1780`, Q16.16 `0x61a8_0000`).
+pub const HORIZON_Z_FAR: f32 = 25_000.0;
 
 /// Per-detail-level far-plane multipliers (`FUN_00435d10`, cases 0..6).
 pub const DETAIL_FAR_MULTIPLIERS: [f32; 7] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];

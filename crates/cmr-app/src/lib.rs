@@ -58,7 +58,7 @@ use cmr_core::startup_display::{
 use cmr_core::surface::PaletteMapping;
 use cmr_core::vehicle_dynamics::{
     AngularMomentumStepInput, AngularOrientationInput, ControlAxisFlags, GeometricPostprocessLane,
-    SOLVER_GLOBAL_CONSTANTS, SurfaceCoefficientIndexError,
+    SOLVER_GLOBAL_CONSTANTS, SurfaceCoefficientIndexError, integrate_orientation,
 };
 use cmr_core::weather::{StageWeatherEffects, particles};
 use cmr_formats::bitmap::BitmapLimits;
@@ -66,7 +66,8 @@ use cmr_formats::c3d::C3dLimits;
 use cmr_formats::riff_palette::{PaletteEntry, PaletteError, parse_legacy_palette_256};
 use cmr_formats::stage::CatNode;
 use cmr_formats::stage::{
-    C3D_EXTENSION, CAT_EXTENSION, StageBundle, StageLoadError, StageSectionSource, load_stage,
+    ARS_EXTENSION, C3D_EXTENSION, CAT_EXTENSION, CSP_EXTENSION, CspStart, HZN_EXTENSION,
+    OBJ_EXTENSION, SHT_EXTENSION, StageBundle, StageLoadError, StageSectionSource, load_stage,
 };
 use cmr_formats::stored_asset::{DecodeError, DecodeLimits, decode_stored_asset};
 use cmr_gpu_contract::{PersistentRawC3dGpuBackend, PersistentRawC3dIndexedBackend};
@@ -83,7 +84,8 @@ use cmr_video::software_root_menu_session::{
 };
 use cmr_video::software_stage_scene::{
     StageC3dTextureError, StageC3dTextures, StageSceneComposeError, StageSceneFrameStats,
-    compose_stage_scene_frame,
+    compose_stage_scene_frame, compose_stage_scene_frame_color_key,
+    compose_stage_scene_frame_with_projection,
 };
 use cmr_video::{
     SoftwareIndexedBackend, SoftwarePresentedFrame, SoftwarePresentedFrameDigest,
@@ -938,6 +940,11 @@ fn initial_root_input() -> RootRenderInput {
 pub struct FsStageSectionSource {
     c3d: Option<Vec<u8>>,
     cat: Option<Vec<u8>>,
+    hzn: Option<Vec<u8>>,
+    ars: Option<Vec<u8>>,
+    obj: Option<Vec<u8>>,
+    sht: Option<Vec<u8>>,
+    csp: Option<Vec<u8>>,
 }
 
 impl FsStageSectionSource {
@@ -950,6 +957,11 @@ impl FsStageSectionSource {
         Ok(Self {
             c3d: read_decoded_section(media_root, stage, C3D_EXTENSION, limits)?,
             cat: read_decoded_section(media_root, stage, CAT_EXTENSION, limits)?,
+            hzn: read_decoded_section(media_root, stage, HZN_EXTENSION, limits)?,
+            ars: read_decoded_section(media_root, stage, ARS_EXTENSION, limits)?,
+            obj: read_decoded_section(media_root, stage, OBJ_EXTENSION, limits)?,
+            sht: read_decoded_section(media_root, stage, SHT_EXTENSION, limits)?,
+            csp: read_decoded_section(media_root, stage, CSP_EXTENSION, limits)?,
         })
     }
 }
@@ -959,6 +971,11 @@ impl StageSectionSource for FsStageSectionSource {
         match extension {
             C3D_EXTENSION => self.c3d.as_deref(),
             CAT_EXTENSION => self.cat.as_deref(),
+            HZN_EXTENSION => self.hzn.as_deref(),
+            ARS_EXTENSION => self.ars.as_deref(),
+            OBJ_EXTENSION => self.obj.as_deref(),
+            SHT_EXTENSION => self.sht.as_deref(),
+            CSP_EXTENSION => self.csp.as_deref(),
             _ => None,
         }
     }
@@ -1086,6 +1103,10 @@ pub enum StageFrameError {
     GpuInit(String),
     /// The selected GPU backend failed to render or read back a frame.
     GpuCompose(String),
+    /// The current GPU contract cannot yet express the separate horizon pass.
+    GpuLayeredStageUnsupported,
+    /// A horizon scene was present without the settings needed to place it.
+    MissingHorizonSettings,
 }
 
 impl StageFrameError {
@@ -1109,6 +1130,8 @@ impl StageFrameError {
             Self::GpuPrepare(_) => "gpu-prepare",
             Self::GpuInit(_) => "gpu-init",
             Self::GpuCompose(_) => "gpu-compose",
+            Self::GpuLayeredStageUnsupported => "gpu-layered-stage-unsupported",
+            Self::MissingHorizonSettings => "missing-horizon-settings",
         }
     }
 }
@@ -1148,6 +1171,16 @@ impl fmt::Display for StageFrameError {
             Self::GpuCompose(detail) => {
                 write!(formatter, "cannot compose the GPU stage frame: {detail}")
             }
+            Self::GpuLayeredStageUnsupported => write!(
+                formatter,
+                "the GPU stage contract does not yet implement the recovered multi-graph stage passes"
+            ),
+            Self::MissingHorizonSettings => {
+                write!(
+                    formatter,
+                    "stage has a horizon but no .ars placement settings"
+                )
+            }
         }
     }
 }
@@ -1170,7 +1203,9 @@ impl std::error::Error for StageFrameError {
             | Self::DegenerateSpawn
             | Self::UnknownPaletteStage(_)
             | Self::GpuInit(_)
-            | Self::GpuCompose(_) => None,
+            | Self::GpuCompose(_)
+            | Self::GpuLayeredStageUnsupported
+            | Self::MissingHorizonSettings => None,
         }
     }
 }
@@ -1279,6 +1314,45 @@ fn native_stage_start(nodes: &[CatNode]) -> Result<(CarState, [i32; 16]), StageF
     Ok((start, initial_camera))
 }
 
+fn native_stage_start_from_csp(start_record: CspStart) -> (CarState, [i32; 16]) {
+    let position = Vec3::new(
+        Fixed16::from_raw(start_record.position[0]),
+        Fixed16::from_raw(start_record.position[1]),
+        Fixed16::from_raw(start_record.position[2]),
+    );
+    let trig = cmr_core::fixed_point::build_sine_table();
+    let identity_basis = [
+        Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
+        Vec3::new(Fixed16::ZERO, Fixed16::ONE, Fixed16::ZERO),
+        Vec3::new(Fixed16::ZERO, Fixed16::ZERO, Fixed16::ONE),
+    ];
+    let angles = start_record.rotation_bam.map(|angle| angle as i16);
+    let native_basis = integrate_orientation(identity_basis, angles, &trig)
+        .expect("the complete 4096-entry trig table admits every CSP angle");
+    // The authored car transform uses the model's -X axis as forward.  The
+    // planar gameplay harness uses +Z as forward, so retain the authored
+    // rotation while remapping its axes into the harness convention.
+    let basis = [
+        native_basis[2],
+        native_basis[1],
+        Vec3::new(
+            Fixed16::from_raw(native_basis[0].x.raw().wrapping_neg()),
+            Fixed16::from_raw(native_basis[0].y.raw().wrapping_neg()),
+            Fixed16::from_raw(native_basis[0].z.raw().wrapping_neg()),
+        ),
+    ];
+    let heading = start_record.rotation_bam[1].wrapping_add(0x800) & 0x0fff;
+    let mut start = CarState::at_rest();
+    start.position = position;
+    start.heading = heading;
+    start.motion.basis = basis;
+    start.motion.projection_axis = basis[2];
+    start.motion.lane_source_s = basis[2];
+    let mut camera = ViewHarness::new();
+    let initial_camera = camera.update(false, position, heading, false);
+    (start, initial_camera)
+}
+
 /// A composed stage frame plus its scene statistics, for a caller-owned
 /// presenter (the native window host or the headless digest path).
 #[derive(Clone, Debug)]
@@ -1381,11 +1455,22 @@ pub struct StageRenderResources {
     stage: String,
     bundle: StageBundle,
     textures: StageC3dTextures,
+    object_textures: Option<StageC3dTextures>,
+    scenery_textures: Option<StageC3dTextures>,
+    horizon_textures: Option<StageC3dTextures>,
     palette: [PaletteEntry; 256],
     node_count: usize,
     draw_ops: usize,
     choice: StageRendererChoice,
     gpu: Option<WgpuStageRenderer>,
+}
+
+fn horizon_root_world(camera: &[i32; 16], y_offset_q16: i32) -> [i32; 16] {
+    let mut root = MATRIX_IDENTITY_Q16;
+    root[12] = camera[12];
+    root[13] = camera[13].wrapping_add(y_offset_q16);
+    root[14] = camera[14];
+    root
 }
 
 impl StageRenderResources {
@@ -1423,6 +1508,24 @@ impl StageRenderResources {
         let bundle = load_stage(&source, C3dLimits::default()).map_err(StageFrameError::Load)?;
         let textures = StageC3dTextures::prepare(bundle.scene(), BitmapLimits::default())
             .map_err(StageFrameError::Texture)?;
+        let horizon_textures = bundle
+            .horizon()
+            .map(|horizon| StageC3dTextures::prepare(horizon, BitmapLimits::default()))
+            .transpose()
+            .map_err(StageFrameError::Texture)?;
+        let object_textures = bundle
+            .objects()
+            .map(|scene| StageC3dTextures::prepare(scene, BitmapLimits::default()))
+            .transpose()
+            .map_err(StageFrameError::Texture)?;
+        let scenery_textures = bundle
+            .scenery()
+            .map(|scene| StageC3dTextures::prepare(scene, BitmapLimits::default()))
+            .transpose()
+            .map_err(StageFrameError::Texture)?;
+        if bundle.horizon().is_some() && bundle.ars().is_none() {
+            return Err(StageFrameError::MissingHorizonSettings);
+        }
         let scene = StageScene::from_c3d(bundle.scene(), &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX)
             .map_err(StageFrameError::Scene)?;
         let node_count = scene.node_count();
@@ -1430,12 +1533,26 @@ impl StageRenderResources {
 
         let gpu = match choice {
             StageRendererChoice::Software => None,
+            StageRendererChoice::Gpu
+                if bundle.horizon().is_some()
+                    || bundle.objects().is_some()
+                    || bundle.scenery().is_some() =>
+            {
+                return Err(StageFrameError::GpuLayeredStageUnsupported);
+            }
             StageRendererChoice::Gpu => Some(WgpuStageRenderer::new(
                 &scene,
                 &textures,
                 ROOT_EXTENT,
                 &palette,
             )?),
+            StageRendererChoice::Auto
+                if bundle.horizon().is_some()
+                    || bundle.objects().is_some()
+                    || bundle.scenery().is_some() =>
+            {
+                None
+            }
             StageRendererChoice::Auto => {
                 WgpuStageRenderer::new(&scene, &textures, ROOT_EXTENT, &palette).ok()
             }
@@ -1445,6 +1562,9 @@ impl StageRenderResources {
             stage: stage.to_owned(),
             bundle,
             textures,
+            object_textures,
+            scenery_textures,
+            horizon_textures,
             palette,
             node_count,
             draw_ops,
@@ -1509,7 +1629,7 @@ impl StageRenderResources {
             VERTEXTYPE_LVERTEX,
         )
         .map_err(StageFrameError::Scene)?;
-        let frame = compose_stage_scene_frame(
+        let mut frame = compose_stage_scene_frame(
             &scene,
             camera,
             [ROOT_EXTENT.width, ROOT_EXTENT.height],
@@ -1518,6 +1638,61 @@ impl StageRenderResources {
             |ordinal| self.textures.texture_for_ordinal(ordinal),
         )
         .map_err(StageFrameError::Compose)?;
+
+        for (graph, graph_textures) in [
+            (self.bundle.objects(), self.object_textures.as_ref()),
+            (self.bundle.scenery(), self.scenery_textures.as_ref()),
+        ] {
+            let (Some(graph), Some(graph_textures)) = (graph, graph_textures) else {
+                continue;
+            };
+            let graph_scene = StageScene::from_c3d(graph, &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX)
+                .map_err(StageFrameError::Scene)?;
+            let graph_frame = compose_stage_scene_frame_color_key(
+                &graph_scene,
+                camera,
+                [ROOT_EXTENT.width, ROOT_EXTENT.height],
+                &self.palette,
+                SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+                0,
+                |ordinal| graph_textures.texture_for_ordinal(ordinal),
+            )
+            .map_err(StageFrameError::Compose)?;
+            frame = frame
+                .merge_nearest(&graph_frame)
+                .map_err(StageFrameError::Compose)?;
+        }
+
+        let frame = if let (Some(horizon), Some(horizon_textures), Some(ars)) = (
+            self.bundle.horizon(),
+            self.horizon_textures.as_ref(),
+            self.bundle.ars(),
+        ) {
+            // The shipped shared compositor re-centers the horizon root on the
+            // current viewport camera and adds the stage-specific ARS Y offset.
+            // The root basis remains identity; rendering it through the normal
+            // camera view therefore preserves camera rotation but cancels
+            // translation.
+            let horizon_root = horizon_root_world(camera, ars.horizon_y_offset_q16());
+            let horizon_scene = StageScene::from_c3d(horizon, &horizon_root, VERTEXTYPE_LVERTEX)
+                .map_err(StageFrameError::Scene)?;
+            let (w, h, z_near, _) = cmr_core::c3d_camera::PROJECTION_BASELINE;
+            let background = compose_stage_scene_frame_with_projection(
+                &horizon_scene,
+                camera,
+                [ROOT_EXTENT.width, ROOT_EXTENT.height],
+                &self.palette,
+                SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+                (w, h, z_near, cmr_core::c3d_camera::HORIZON_Z_FAR),
+                |ordinal| horizon_textures.texture_for_ordinal(ordinal),
+            )
+            .map_err(StageFrameError::Compose)?;
+            frame
+                .over_background(&background)
+                .map_err(StageFrameError::Compose)?
+        } else {
+            frame
+        };
 
         let presented = frame
             .to_presented_frame()
@@ -1715,6 +1890,20 @@ fn analog_driving_is_active(pad: &GamepadDrivingState) -> bool {
     pad.has_driving_input()
 }
 
+fn compose_world_for_route<F>(
+    route: Option<RenderRoute>,
+    compose: F,
+) -> Result<Option<SoftwarePresentedFrame>, StageFrameError>
+where
+    F: FnOnce() -> Result<SoftwarePresentedFrame, StageFrameError>,
+{
+    if route.is_some_and(presents_world_scene) {
+        compose().map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
 /// One windowed-game-session frame of the input/advance/world-compose work the
 /// two loop variants share.
 ///
@@ -1722,7 +1911,9 @@ fn analog_driving_is_active(pad: &GamepadDrivingState) -> bool {
 /// when a gamepad has driving input, the keyboard driver otherwise), advances the FSM
 /// one frame stepping the race sim in the driving state, and - only when the
 /// route is a `StageWorld`-family route - composes the stage from the follow
-/// camera. A compose failure drops the world frame rather than killing the loop.
+/// camera. A compose failure stops the loop and is surfaced to the caller;
+/// silently replacing it with a black frame made renderer regressions appear
+/// to be a static game screen.
 /// It returns the frame's render route (so the caller can decide any non-world
 /// presentation), the composed world frame (if any), and whether the FSM has
 /// reached the stopped state.
@@ -1739,7 +1930,7 @@ fn advance_game_frame<C: HostClock>(
     camera: &mut ViewHarness,
     fade: &mut Option<ScalarTween>,
     input: WindowedInput,
-) -> Result<GameFrameOutcome, WheelPostprocessError> {
+) -> Result<GameFrameOutcome, WindowedStageFrameError> {
     let controls = if let Some(pad) = input.gamepad.filter(|pad| analog_driving_is_active(pad)) {
         analog
             .poll(
@@ -1755,8 +1946,10 @@ fn advance_game_frame<C: HostClock>(
             .poll(|vk| input.keys.is_down(vk), response, true)
             .controls
     };
-    let advanced = session.try_advance(clock, menu_inputs, controls, progress)?;
-    let world = if advanced.route.is_some_and(presents_world_scene) {
+    let advanced = session
+        .try_advance(clock, menu_inputs, controls, progress)
+        .map_err(SessionFourWheelError::Producer)?;
+    let world = compose_world_for_route(advanced.route, || {
         // Compose the live world for every route that reaches the shared viewport
         // compositor 0x422ca0: the in-race StageWorld states and the overlay
         // (0xa) / fade (0xb) routes, which composite the same world frame (the
@@ -1771,11 +1964,8 @@ fn advance_game_frame<C: HostClock>(
         let camera_world = camera.update(change_view_down, car.position, car.heading, false);
         resources
             .compose(&camera_world)
-            .ok()
             .map(|rendered| rendered.frame)
-    } else {
-        None
-    };
+    })?;
     // Race-end fade (state 0xb, FadeComposite): the recovered linear brightness
     // tween drives a fullscreen modulate of the composed world toward black. The
     // shipped fade is triggered by the in-race transition handlers; this windowed
@@ -2147,7 +2337,11 @@ fn native_stage_setup(
         .nodes()
         .ok_or(StageFrameError::MissingNodes)?
         .to_vec();
-    let (start, initial_camera) = native_stage_start(&nodes)?;
+    let (start, initial_camera) = if let Some(starts) = resources.bundle.starts() {
+        native_stage_start_from_csp(starts.normal()[0])
+    } else {
+        native_stage_start(&nodes)?
+    };
     Ok((resources, nodes, start, initial_camera))
 }
 
@@ -2178,7 +2372,7 @@ pub fn run_windowed_game_session(
     let clock = WallClock::new();
     let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
-    let mut producer_error = None;
+    let mut runtime_error = None;
 
     // Best-effort: open the recovered front-end root-menu compositor from the
     // runtime-data root so the interactive front-end route (state 2) presents the
@@ -2231,7 +2425,7 @@ pub fn run_windowed_game_session(
                             }
                         }
                         Err(error) => {
-                            producer_error = Some(SessionFourWheelError::Producer(error));
+                            runtime_error = Some(error);
                             WindowedGameFrame {
                                 present: None,
                                 stopped: true,
@@ -2244,8 +2438,8 @@ pub fn run_windowed_game_session(
         });
         if let Ok(run) = built {
             run.output.map_err(WindowedStageFrameError::Present)?;
-            if let Some(error) = producer_error {
-                return Err(error.into());
+            if let Some(error) = runtime_error {
+                return Err(error);
             }
             return Ok(());
         }
@@ -2273,7 +2467,7 @@ pub fn run_windowed_game_session(
                 music_active: outcome.music_active,
             },
             Err(error) => {
-                producer_error = Some(SessionFourWheelError::Producer(error));
+                runtime_error = Some(error);
                 WindowedGameFrame {
                     present: None,
                     stopped: true,
@@ -2283,8 +2477,8 @@ pub fn run_windowed_game_session(
         }
     })
     .map_err(WindowedStageFrameError::Present)?;
-    if let Some(error) = producer_error {
-        return Err(error.into());
+    if let Some(error) = runtime_error {
+        return Err(error);
     }
     Ok(())
 }
@@ -2541,6 +2735,39 @@ mod tests {
     }
 
     #[test]
+    fn csp_spawn_uses_authored_position_and_yaw() {
+        let (start, camera) = native_stage_start_from_csp(CspStart {
+            position: [10 << 16, 2 << 16, -4 << 16],
+            rotation_bam: [0, 0x400, 0],
+            reserved: 0xbeef,
+        });
+        assert_eq!(start.position.x.raw(), 10 << 16);
+        assert_eq!(start.position.y.raw(), 2 << 16);
+        assert_eq!(start.position.z.raw(), -4 << 16);
+        assert_eq!(start.heading, 0xc00);
+        assert_eq!(start.motion.projection_axis, start.motion.basis[2]);
+        assert!(start.motion.basis[2].z.raw() < -0xff00);
+        assert_ne!(camera, stage_placeholder_camera());
+    }
+
+    #[test]
+    fn horizon_root_tracks_camera_position_with_identity_basis_and_ars_height() {
+        let mut camera = MATRIX_IDENTITY_Q16;
+        camera[0] = 0;
+        camera[2] = -0x10000;
+        camera[8] = 0x10000;
+        camera[10] = 0;
+        camera[12] = 0x120000;
+        camera[13] = -0x30000;
+        camera[14] = 0x450000;
+
+        let root = horizon_root_world(&camera, 0x8000);
+        assert_eq!(&root[..12], &MATRIX_IDENTITY_Q16[..12]);
+        assert_eq!(&root[12..15], &[0x120000, -0x28000, 0x450000]);
+        assert_eq!(root[15], 0x10000);
+    }
+
+    #[test]
     fn native_spawn_covers_cardinal_headings_and_rejects_bad_inputs() {
         for (direction, expected) in [
             ([0x10000, 0, 0], 0),
@@ -2584,6 +2811,26 @@ mod tests {
             native_stage_palette_path("XX1"),
             Err(StageFrameError::UnknownPaletteStage(_))
         ));
+    }
+
+    #[test]
+    fn world_route_surfaces_composition_failures_instead_of_dropping_the_frame() {
+        let error = compose_world_for_route(
+            Some(RenderRoute::StageWorld(cmr_core::render_route::StageView {
+                status_banner: true,
+                consume_overlay_dirty: true,
+                resource_prestage: false,
+            })),
+            || Err(StageFrameError::DegenerateSpawn),
+        )
+        .unwrap_err();
+        assert!(matches!(error, StageFrameError::DegenerateSpawn));
+
+        let skipped = compose_world_for_route(None, || {
+            panic!("non-world routes must not compose a stage frame")
+        })
+        .unwrap();
+        assert!(skipped.is_none());
     }
 
     #[test]
@@ -2637,16 +2884,24 @@ mod tests {
         assert_ne!(start.position, Vec3::ZERO);
         assert_ne!(initial_camera, stage_placeholder_camera());
         assert_ne!(resources.palette, stage_placeholder_palette());
-        resources.compose(&initial_camera).unwrap();
+        assert!(resources.bundle.horizon().is_some());
+        assert!(resources.bundle.ars().is_some());
+        assert!(resources.horizon_textures.is_some());
+        let rendered = resources.compose(&initial_camera).unwrap();
+        assert!(matches!(
+            rendered.stats,
+            StageRenderStats::Software(stats) if stats.prims_composed >= 3
+        ));
 
-        let (gpu_resources, _, _, _) = native_stage_setup(
-            &root.join("Game/Au/1"),
-            &root,
-            "AU1",
-            StageRendererChoice::Gpu,
-        )
-        .unwrap();
-        assert_eq!(gpu_resources.palette, resources.palette);
+        assert!(matches!(
+            native_stage_setup(
+                &root.join("Game/Au/1"),
+                &root,
+                "AU1",
+                StageRendererChoice::Gpu,
+            ),
+            Err(StageFrameError::GpuLayeredStageUnsupported)
+        ));
     }
 
     #[test]

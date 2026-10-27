@@ -228,10 +228,16 @@ impl SoftwareC3dSampledTexture {
             u16::from_le_bytes([bytes[18], bytes[19]]),
             u16::from_le_bytes([bytes[22], bytes[23]]),
         ];
+        let zero_fill_stage_padding = owner == FrontendC3dOwner::Stage;
         let source =
             SoftwareC3dRetainedSource::from_bitmap(owner, &bitmap, source_dib_extent_low16, None);
-        Self::from_retained(source, C3dSurfaceLayoutGates::default())
-            .map_err(SoftwareC3dBitmapError::Sampling)
+        Self::from_retained_with_alignment(
+            source,
+            C3dSurfaceLayoutGates::default(),
+            true,
+            zero_fill_stage_padding,
+        )
+        .map_err(SoftwareC3dBitmapError::Sampling)
     }
 
     /// Builds a sampled texture from a parsed C3D engine inline texture blob
@@ -308,7 +314,7 @@ impl SoftwareC3dSampledTexture {
             pixels,
             palette,
         );
-        Self::from_retained_with_alignment(source, C3dSurfaceLayoutGates::default(), false)
+        Self::from_retained_with_alignment(source, C3dSurfaceLayoutGates::default(), false, false)
     }
 
     /// Decodes a paletted engine texture into an indexed sampled texture, scaling
@@ -361,7 +367,7 @@ impl SoftwareC3dSampledTexture {
             pixels,
             palette,
         );
-        Self::from_retained_with_alignment(source, C3dSurfaceLayoutGates::default(), false)
+        Self::from_retained_with_alignment(source, C3dSurfaceLayoutGates::default(), false, false)
     }
 
     /// Builds only the statically proven square, aligned root texture subset.
@@ -386,13 +392,14 @@ impl SoftwareC3dSampledTexture {
         source: SoftwareC3dRetainedSource,
         gates: C3dSurfaceLayoutGates,
     ) -> Result<Self, SoftwareC3dSamplingError> {
-        Self::from_retained_with_alignment(source, gates, true)
+        Self::from_retained_with_alignment(source, gates, true, false)
     }
 
     fn from_retained_with_alignment(
         source: SoftwareC3dRetainedSource,
         gates: C3dSurfaceLayoutGates,
         require_aligned_width: bool,
+        zero_fill_padding: bool,
     ) -> Result<Self, SoftwareC3dSamplingError> {
         let raw = source.source_dib_extent_low16();
         let normalized = source.extent();
@@ -417,7 +424,9 @@ impl SoftwareC3dSampledTexture {
         }
         let layout =
             resolve_c3d_surface_layout(raw, gates).map_err(SoftwareC3dSamplingError::Layout)?;
-        if layout.horizontal_padding() != 0 || layout.vertical_padding() != 0 {
+        if !zero_fill_padding
+            && (layout.horizontal_padding() != 0 || layout.vertical_padding() != 0)
+        {
             return Err(SoftwareC3dSamplingError::UnsupportedPadding {
                 horizontal: layout.horizontal_padding(),
                 vertical: layout.vertical_padding(),
@@ -433,11 +442,25 @@ impl SoftwareC3dSampledTexture {
         }
         let divisor = usize::from(layout.reduction().divisor());
         let source_width = usize::from(raw[0]);
-        let mut indices =
-            Vec::with_capacity(usize::from(target_width) * usize::from(target_height));
-        for y in 0..usize::from(target_height) {
-            for x in 0..usize::from(target_width) {
-                indices.push(source.indices()[(y * divisor) * source_width + x * divisor]);
+        let target_width_usize = usize::from(target_width);
+        let target_height_usize = usize::from(target_height);
+        let content_width = target_width_usize
+            .checked_sub(layout.horizontal_padding().max(0) as usize)
+            .ok_or(SoftwareC3dSamplingError::UnsupportedPadding {
+                horizontal: layout.horizontal_padding(),
+                vertical: layout.vertical_padding(),
+            })?;
+        let content_height = target_height_usize
+            .checked_sub(layout.vertical_padding().max(0) as usize)
+            .ok_or(SoftwareC3dSamplingError::UnsupportedPadding {
+                horizontal: layout.horizontal_padding(),
+                vertical: layout.vertical_padding(),
+            })?;
+        let mut indices = vec![0; target_width_usize * target_height_usize];
+        for y in 0..content_height {
+            for x in 0..content_width {
+                indices[y * target_width_usize + x] =
+                    source.indices()[(y * divisor) * source_width + x * divisor];
             }
         }
 
@@ -1064,6 +1087,39 @@ mod tests {
                 actual: 31,
             })
         );
+    }
+
+    #[test]
+    fn stage_texture_policy_zero_fills_unwritten_surface_padding() {
+        let bitmap = IndexedBitmap {
+            width: 4,
+            height: 8,
+            source_was_top_down: false,
+            palette: Vec::new(),
+            pixels: vec![7; 32],
+            row_stride: 4,
+            stored_pixels: vec![7; 32],
+            metadata: BitmapMetadata {
+                reserved_1: 0,
+                reserved_2: 0,
+                x_pixels_per_meter: 0,
+                y_pixels_per_meter: 0,
+                important_colors: 0,
+            },
+        };
+        let source =
+            SoftwareC3dRetainedSource::from_bitmap(FrontendC3dOwner::Stage, &bitmap, [4, 8], None);
+        let sampled = SoftwareC3dSampledTexture::from_retained_with_alignment(
+            source,
+            C3dSurfaceLayoutGates::default(),
+            true,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(sampled.extent(), [8, 8]);
+        assert_eq!(&sampled.indices()[..3], &[7; 3]);
+        assert_eq!(&sampled.indices()[3..8], &[0; 5]);
     }
 
     fn indexed_bmp_8x8() -> Vec<u8> {

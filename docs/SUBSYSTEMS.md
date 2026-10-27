@@ -199,11 +199,13 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   with length+stride; the raw trigger type is classified by
   `cmr-core::collision::TriggerType`. The bundle front half ties these together:
   `load_stage(source: &impl StageSectionSource, c3d_limits) -> StageBundle` parses
-  the mandatory `.c3d` scene and the optional `.cat` nodes from an abstract
+  the mandatory `.c3d` scene plus optional `.cat`, `.obj`, `.sht`, `.hzn`,
+  `.ars`, and `.csp` sections from an abstract
   per-extension byte source (base-path resolution + file IO + CMPR decode stay in
   the caller), so a resolved stage base yields a scene ready for
   `cmr-core::c3d_mesh::assemble_scene_meshes` (`impl.stage-bundle-loader`). The
-  other 12 section interiors and the runtime fix-up/relocation remain. See
+  remaining `.dat`, `.moj`, `.tsc`, `.spl`, `.anm`, `.rsf`, and `.fuz`
+  consumers plus the runtime fix-up/relocation remain. See
   evidence `rea.official-eu.stage-bundle`.
 - `cmr-core::car_resources`: the car-resource composition (E09). A car is a set
   of sibling `.C3D` resources under `OBJECTS\CARS\` (body `<code><DAY|NIGHT>.C3D`,
@@ -2407,22 +2409,23 @@ languages rather than fabricating or silently aliasing Italian assets.
   fall back to keyboard, while non-neutral axes/buttons use the recovered analog
   driver. This fixes connected-gamepad keyboard masking without altering either
   mapper.
-- Native playable setup uses authored `.cat` nodes, real country palettes and a
-  coherent node-zero spawn for both car and first camera. The same spawn feeds
-  the live four-wheel session and `ViewController`. Node-zero startup is a
-  documented approximation; post-race sequencer flags remain harness inputs.
+- Native stage setup uses authored `.cat` nodes, real country palettes, layered
+  OBJ/SHT/HZN scenery, ARS horizon settings, and the `.csp` player-one pose for
+  both car and first camera. CAT-derived startup is fallback only. The live
+  executable still uses planar `GameplaySession::new_with_car`; the recovered
+  four-wheel producer is not yet the live player path.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning
   are unrun. Comparison/deviation matrices and the README now reflect the full
-  118-item completed/bounded roadmap.
+  117-complete / 1-partial roadmap.
 - Edition support is limited to the reviewed official-EU/installed-EU profile.
   Other editions and locales are unsupported until separately evidenced;
   official-US and xdelta files are comparison-only artifacts.
-- Stage/championship coverage includes sibling scene loading, presentation,
-  transform/visibility/mutation and retained setup sessions. The other 12
-  section formats and native device/font/filter/alpha behavior are explicit
-  unsupported boundaries, not guessed from extension names.
+- Stage/championship coverage includes seven stage siblings, layered software
+  presentation, authored starts, transform/visibility/mutation and retained
+  setup sessions. DAT/MOJ/TSC/SPL/ANM/RSF/FUZ, layered GPU, player-car/HUD,
+  menu-to-race boot, finish, and post-race behavior remain open.
 - Bitmap conversion has an explicit deterministic indexed boundary: 4/8-bit
   BM, palettes, stored rows, composition, and queued fonts are supported;
   native padding, 24-bit, driver filtering, device-owned formats, and alternate

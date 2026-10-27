@@ -32,8 +32,8 @@ use cmr_formats::riff_palette::PaletteEntry;
 use crate::c3d_software::{SoftwareC3dBitmapError, SoftwareC3dSampledTexture};
 use crate::c3d_software_raster::{
     SoftwareC3dComposeError, SoftwareC3dDepthBuffer, SoftwareC3dIndexedQuantization,
-    SoftwareC3dRasterError, SoftwareC3dTransformState, compose_root_c3d_indexed_copy_no_blend,
-    preflight_mesh_lod_prim,
+    SoftwareC3dRasterError, SoftwareC3dTransformState, compose_root_c3d_indexed_copy_color_key,
+    compose_root_c3d_indexed_copy_no_blend, preflight_mesh_lod_prim,
 };
 use crate::{SoftwarePresentedFrame, SoftwareRgba8Error};
 
@@ -66,6 +66,15 @@ pub struct StageSceneFrame {
 }
 
 impl StageSceneFrame {
+    fn add_stats(&mut self, other: &StageSceneFrame) {
+        self.stats.prims_composed += other.stats.prims_composed;
+        self.stats.unresolved_prims += other.stats.unresolved_prims;
+        self.stats.empty_lod_nodes += other.stats.empty_lod_nodes;
+        self.stats.covered += other.stats.covered;
+        self.stats.depth_passed += other.stats.depth_passed;
+        self.stats.depth_rejected += other.stats.depth_rejected;
+    }
+
     /// The frame extent `[width, height]`.
     pub fn extent(&self) -> [u16; 2] {
         self.extent
@@ -102,6 +111,64 @@ impl StageSceneFrame {
             self.palette.clone(),
         )
     }
+
+    /// Places this world/foreground pass over an independently rendered
+    /// background pass. Pixels whose foreground depth remains at the clear
+    /// value (`1.0`) retain the background; every depth-writing foreground
+    /// fragment replaces it. This models the shipped horizon as a background
+    /// C3D pass without treating palette index zero as transparency.
+    pub fn over_background(
+        mut self,
+        background: &StageSceneFrame,
+    ) -> Result<Self, StageSceneComposeError> {
+        if self.extent != background.extent {
+            return Err(StageSceneComposeError::LayerExtentMismatch {
+                foreground: self.extent,
+                background: background.extent,
+            });
+        }
+        for ((pixel, depth), background_pixel) in self
+            .pixels
+            .iter_mut()
+            .zip(self.depth.values())
+            .zip(background.pixels.iter())
+        {
+            if *depth == 1.0 {
+                *pixel = *background_pixel;
+            }
+        }
+        self.add_stats(background);
+        Ok(self)
+    }
+
+    /// Depth-composites another independently rendered opaque world graph into
+    /// this frame. The closer depth wins per pixel, reproducing the result of
+    /// submitting the graphs to one shared depth buffer while keeping their
+    /// C3D resource namespaces independent.
+    pub fn merge_nearest(
+        mut self,
+        other: &StageSceneFrame,
+    ) -> Result<Self, StageSceneComposeError> {
+        if self.extent != other.extent {
+            return Err(StageSceneComposeError::LayerExtentMismatch {
+                foreground: self.extent,
+                background: other.extent,
+            });
+        }
+        for ((pixel, depth), (other_pixel, other_depth)) in self
+            .pixels
+            .iter_mut()
+            .zip(self.depth.values_mut())
+            .zip(other.pixels.iter().zip(other.depth.values()))
+        {
+            if other_depth < depth {
+                *pixel = *other_pixel;
+                *depth = *other_depth;
+            }
+        }
+        self.add_stats(other);
+        Ok(self)
+    }
 }
 
 /// Composites a walkable stage scene into a software frame.
@@ -120,6 +187,84 @@ pub fn compose_stage_scene_frame<'tex, R>(
     extent: [u16; 2],
     active_palette: &[PaletteEntry; 256],
     quantization: SoftwareC3dIndexedQuantization,
+    resolve_texture: R,
+) -> Result<StageSceneFrame, StageSceneComposeError>
+where
+    R: FnMut(i16) -> Option<&'tex SoftwareC3dSampledTexture>,
+{
+    compose_stage_scene_frame_with_projection(
+        scene,
+        camera_world_q16,
+        extent,
+        active_palette,
+        quantization,
+        cmr_core::c3d_camera::PROJECTION_BASELINE,
+        resolve_texture,
+    )
+}
+
+/// Composes a stage scene using one of the recovered projection parameter
+/// sets. This is used by the horizon pass, whose native renderer temporarily
+/// raises the far plane to 25000 world units.
+pub fn compose_stage_scene_frame_with_projection<'tex, R>(
+    scene: &StageScene<'_>,
+    camera_world_q16: &[i32; 16],
+    extent: [u16; 2],
+    active_palette: &[PaletteEntry; 256],
+    quantization: SoftwareC3dIndexedQuantization,
+    projection: (f32, f32, f32, f32),
+    resolve_texture: R,
+) -> Result<StageSceneFrame, StageSceneComposeError>
+where
+    R: FnMut(i16) -> Option<&'tex SoftwareC3dSampledTexture>,
+{
+    compose_stage_scene_frame_profile(
+        scene,
+        camera_world_q16,
+        extent,
+        active_palette,
+        quantization,
+        projection,
+        None,
+        resolve_texture,
+    )
+}
+
+/// Composes a world graph with the recovered stage index-zero color key. A
+/// keyed texel updates neither color nor depth.
+pub fn compose_stage_scene_frame_color_key<'tex, R>(
+    scene: &StageScene<'_>,
+    camera_world_q16: &[i32; 16],
+    extent: [u16; 2],
+    active_palette: &[PaletteEntry; 256],
+    quantization: SoftwareC3dIndexedQuantization,
+    color_key: u8,
+    resolve_texture: R,
+) -> Result<StageSceneFrame, StageSceneComposeError>
+where
+    R: FnMut(i16) -> Option<&'tex SoftwareC3dSampledTexture>,
+{
+    compose_stage_scene_frame_profile(
+        scene,
+        camera_world_q16,
+        extent,
+        active_palette,
+        quantization,
+        cmr_core::c3d_camera::PROJECTION_BASELINE,
+        Some(color_key),
+        resolve_texture,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compose_stage_scene_frame_profile<'tex, R>(
+    scene: &StageScene<'_>,
+    camera_world_q16: &[i32; 16],
+    extent: [u16; 2],
+    active_palette: &[PaletteEntry; 256],
+    quantization: SoftwareC3dIndexedQuantization,
+    projection: (f32, f32, f32, f32),
+    color_key: Option<u8>,
     mut resolve_texture: R,
 ) -> Result<StageSceneFrame, StageSceneComposeError>
 where
@@ -141,8 +286,13 @@ where
         };
         // The transform state depends only on the node (its world matrix), so it
         // is built once and reused across the node's prims.
-        let transforms =
-            SoftwareC3dTransformState::for_gameplay_scene(width, height, camera_world_q16, world)?;
+        let transforms = SoftwareC3dTransformState::for_gameplay_scene_with_projection(
+            width,
+            height,
+            camera_world_q16,
+            world,
+            projection,
+        )?;
         for prim in draw_group.prims() {
             let Some(texture) = resolve_texture(prim.selector()) else {
                 stats.unresolved_prims += 1;
@@ -150,15 +300,27 @@ where
             };
             let batch =
                 preflight_mesh_lod_prim(prim.unique_entries_32(), prim.indices(), transforms)?;
-            let outcome = compose_root_c3d_indexed_copy_no_blend(
-                &batch,
-                texture,
-                &mut depth,
-                extent,
-                &mut pixels,
-                active_palette,
-                quantization,
-            )?;
+            let outcome = if let Some(color_key) = color_key {
+                compose_root_c3d_indexed_copy_color_key(
+                    &batch,
+                    texture,
+                    &mut depth,
+                    extent,
+                    &mut pixels,
+                    active_palette,
+                    color_key,
+                )?
+            } else {
+                compose_root_c3d_indexed_copy_no_blend(
+                    &batch,
+                    texture,
+                    &mut depth,
+                    extent,
+                    &mut pixels,
+                    active_palette,
+                    quantization,
+                )?
+            };
             stats.prims_composed += 1;
             stats.covered += outcome.covered();
             stats.depth_passed += outcome.depth_passed();
@@ -184,6 +346,11 @@ pub enum StageSceneComposeError {
     Raster(SoftwareC3dRasterError),
     /// A prim could not be composited into the target.
     Compose(SoftwareC3dComposeError),
+    /// Independently rendered layers did not use the same target size.
+    LayerExtentMismatch {
+        foreground: [u16; 2],
+        background: [u16; 2],
+    },
 }
 
 impl From<RootMenuC3dViewportError> for StageSceneComposeError {
@@ -210,6 +377,13 @@ impl fmt::Display for StageSceneComposeError {
             StageSceneComposeError::Viewport(error) => write!(f, "stage scene viewport: {error}"),
             StageSceneComposeError::Raster(error) => write!(f, "stage scene prim raster: {error}"),
             StageSceneComposeError::Compose(error) => write!(f, "stage scene compose: {error}"),
+            StageSceneComposeError::LayerExtentMismatch {
+                foreground,
+                background,
+            } => write!(
+                f,
+                "stage scene layer extents differ: foreground {foreground:?}, background {background:?}"
+            ),
         }
     }
 }
@@ -220,7 +394,63 @@ impl std::error::Error for StageSceneComposeError {
             StageSceneComposeError::Viewport(error) => Some(error),
             StageSceneComposeError::Raster(error) => Some(error),
             StageSceneComposeError::Compose(error) => Some(error),
+            StageSceneComposeError::LayerExtentMismatch { .. } => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(extent: [u16; 2], pixels: &[u8], depth: &[f32], prims: usize) -> StageSceneFrame {
+        StageSceneFrame {
+            extent,
+            pixels: pixels.to_vec(),
+            palette: Box::new(
+                [PaletteEntry {
+                    red: 0,
+                    green: 0,
+                    blue: 0,
+                    flags: 0,
+                }; 256],
+            ),
+            depth: SoftwareC3dDepthBuffer::from_test_values(extent, depth),
+            stats: StageSceneFrameStats {
+                prims_composed: prims,
+                ..StageSceneFrameStats::default()
+            },
+        }
+    }
+
+    #[test]
+    fn foreground_depth_not_palette_zero_selects_layer_coverage() {
+        let background = frame([3, 1], &[3, 4, 5], &[0.5, 0.5, 0.5], 1);
+        let foreground = frame([3, 1], &[0, 0, 9], &[1.0, 0.25, 0.25], 2);
+
+        let composited = foreground.over_background(&background).unwrap();
+        assert_eq!(composited.pixels(), &[3, 0, 9]);
+        assert_eq!(composited.stats().prims_composed, 3);
+    }
+
+    #[test]
+    fn layered_frames_require_matching_extents() {
+        let background = frame([1, 1], &[3], &[0.5], 1);
+        let foreground = frame([2, 1], &[0, 0], &[1.0, 1.0], 2);
+        assert!(matches!(
+            foreground.over_background(&background),
+            Err(StageSceneComposeError::LayerExtentMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn independently_rendered_world_graphs_merge_by_nearest_depth() {
+        let base = frame([3, 1], &[1, 2, 3], &[0.8, 0.2, 1.0], 1);
+        let objects = frame([3, 1], &[4, 5, 6], &[0.4, 0.7, 0.9], 2);
+        let merged = base.merge_nearest(&objects).unwrap();
+        assert_eq!(merged.pixels(), &[4, 2, 6]);
+        assert_eq!(merged.depth().values(), &[0.4, 0.2, 0.9]);
+        assert_eq!(merged.stats().prims_composed, 3);
     }
 }
 

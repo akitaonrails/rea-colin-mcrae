@@ -1567,8 +1567,10 @@ which grows with prepared draw count, dominates. I09 therefore selects
 **wgpu**, which also avoids SDL_GPU's external `glslangValidator` runtime
 dependency, and wires it behind the shared contracts. The application's stage
 and windowed-session commands now render through the persistent wgpu path by
-default (`--renderer auto`), with the software compositor as the oracle and
-automatic fallback: the scene is converted and uploaded once, each frame only
+default (`--renderer auto`) for single-graph scenes, with the software
+compositor as the oracle and automatic fallback. Layered OBJ/SHT/HZN stages
+currently select software under `auto` and reject explicit GPU until the shared
+multi-graph contract is implemented. For a single graph, the scene is converted and uploaded once, each frame only
 updates the camera VIEW matrix, and the GPU rasterizes into an 8-bit
 palette-index target that the recovered indexed host presents unchanged.
 Measured per 640x480 stage frame, the same workload composes in 79.6 ms
@@ -1586,12 +1588,13 @@ Input selection now falls back to the keyboard when a connected gamepad is
 idle. Only non-neutral pad axes/buttons select analog driving, so a gamepad
 cannot leave the car static by overriding keyboard throttle.
 
-The native game session is now a playable single-player stage: authored `.cat`
-checkpoints replace the synthetic line, a real country palette is loaded before
-software/GPU preparation, and one coherent node-zero spawn drives the car and
-first chase camera. Spawn is explicitly approximate because the shipped writer
-is unrecovered; post-race sequencer flags remain harness inputs. AU1 software
-composition and GPU preparation pass on the imported assets.
+The native game session is a drivable stage harness. Authored `.cat`
+checkpoints replace the synthetic line, a real country palette is loaded, and
+the `.csp` player-one pose drives the car and first chase camera. The native
+car-model `-X` forward basis is explicitly remapped into the planar harness
+convention; CAT-derived startup is retained only for stages without CSP. AU1's
+layered software composition and CSP-to-checkpoint drive regression pass on the
+imported assets. Layered GPU rendering is not yet implemented.
 
 The native playable baseline now uses the existing planar dynamics and bounded
 harness control strengths instead of feeding live play through incomplete
@@ -1606,16 +1609,17 @@ The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions
 provisioning remain explicitly unrun. Comparison/deviation matrices and the
-README describe all 118 completed or explicitly unsupported roadmap items.
+README describe the current 117 complete / 1 partial roadmap state.
 
 A10 is bounded to the reviewed official-EU/installed-EU profile. Other editions
 and language packs are explicitly unsupported; official-US and xdelta artifacts
 remain comparison variants, not proof of compatibility.
 
-E08/E16 now close the portable stage/championship boundary: sibling scene
-loading, presentation, car transforms, visibility, mutation and retained setup
-sessions are implemented. The other 12 section formats and native device/font/
-filter/alpha details are explicitly unsupported.
+E16 closes the championship boundary; E08 remains partial. Stage loading now
+consumes `.c3d`, `.cat`, `.obj`, `.sht`, `.ars`, `.hzn`, and `.csp`, with
+layered software presentation and authored starts. `.dat`, `.moj`, `.tsc`,
+`.spl`, `.anm`, `.rsf`, and `.fuz` remain unintegrated. The executable still
+bypasses the recovered menu flow and lacks player-car/HUD composition.
 
 E01 is closed at its deterministic indexed boundary. Supported BM, palette,
 row, composition, and queued-font paths are implemented; native padding,

@@ -395,9 +395,25 @@ impl SoftwareC3dDepthBuffer {
         &self.values
     }
 
+    pub(crate) fn values_mut(&mut self) -> &mut [f32] {
+        &mut self.values
+    }
+
     /// Performs the recovered depth-only clear without touching color.
     pub fn clear_far(&mut self) {
         self.values.fill(1.0);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_values(extent: [u16; 2], values: &[f32]) -> Self {
+        assert_eq!(
+            values.len(),
+            usize::from(extent[0]) * usize::from(extent[1])
+        );
+        Self {
+            extent,
+            values: values.to_vec().into_boxed_slice(),
+        }
     }
 }
 
@@ -509,6 +525,26 @@ impl SoftwareC3dTransformState {
         node_world_q16: &[i32; 16],
     ) -> Result<Self, RootMenuC3dViewportError> {
         let (w, h, zn, zf) = cmr_core::c3d_camera::PROJECTION_BASELINE;
+        Self::for_gameplay_scene_with_projection(
+            width,
+            height,
+            camera_world_q16,
+            node_world_q16,
+            (w, h, zn, zf),
+        )
+    }
+
+    /// Gameplay transform builder with a caller-selected recovered projection.
+    /// The horizon pass uses the shipped 25000-unit far-plane override while
+    /// ordinary world geometry uses [`Self::for_gameplay_scene`].
+    pub fn for_gameplay_scene_with_projection(
+        width: u16,
+        height: u16,
+        camera_world_q16: &[i32; 16],
+        node_world_q16: &[i32; 16],
+        projection: (f32, f32, f32, f32),
+    ) -> Result<Self, RootMenuC3dViewportError> {
+        let (w, h, zn, zf) = projection;
         Ok(Self::new(
             cmr_core::c3d_camera::world_matrix_words(node_world_q16),
             cmr_core::c3d_camera::view_matrix_words(camera_world_q16),
@@ -876,6 +912,38 @@ pub fn compose_root_c3d_indexed_copy_no_blend(
         target_pixels,
         active_palette,
         quantization,
+    )
+}
+
+/// Opaque COPY composition with the recovered stage color-key test. Fragments
+/// sampling `color_key` do not update either color or depth.
+pub fn compose_root_c3d_indexed_copy_color_key(
+    batch: &SoftwareC3dPreparedCopyBatch,
+    texture: &SoftwareC3dSampledTexture,
+    depth: &mut SoftwareC3dDepthBuffer,
+    target_extent: [u16; 2],
+    target_pixels: &mut [u8],
+    active_palette: &[PaletteEntry; 256],
+    color_key: u8,
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dComposeError> {
+    compose_indexed_copy_no_blend_with_color_key(
+        &batch.0,
+        IndexedTextureView {
+            raster: TextureView {
+                extent: texture.extent(),
+                indices: texture.indices(),
+                palette_len: texture.palette().len(),
+            },
+            palette: texture.palette(),
+        },
+        depth,
+        target_extent,
+        target_pixels,
+        active_palette,
+        IndexedCopyOptions {
+            quantization: SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+            color_key: Some(color_key),
+        },
     )
 }
 
@@ -1369,6 +1437,12 @@ struct IndexedTextureView<'a> {
     palette: &'a [BitmapPaletteEntry],
 }
 
+#[derive(Clone, Copy)]
+struct IndexedCopyOptions {
+    quantization: SoftwareC3dIndexedQuantization,
+    color_key: Option<u8>,
+}
+
 fn compose_indexed_copy_no_blend(
     batch: &SoftwareC3dPreparedBatch,
     texture: IndexedTextureView<'_>,
@@ -1378,18 +1452,47 @@ fn compose_indexed_copy_no_blend(
     active_palette: &[PaletteEntry; 256],
     quantization: SoftwareC3dIndexedQuantization,
 ) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dComposeError> {
+    compose_indexed_copy_no_blend_with_color_key(
+        batch,
+        texture,
+        depth,
+        target_extent,
+        target_pixels,
+        active_palette,
+        IndexedCopyOptions {
+            quantization,
+            color_key: None,
+        },
+    )
+}
+
+fn compose_indexed_copy_no_blend_with_color_key(
+    batch: &SoftwareC3dPreparedBatch,
+    texture: IndexedTextureView<'_>,
+    depth: &mut SoftwareC3dDepthBuffer,
+    target_extent: [u16; 2],
+    target_pixels: &mut [u8],
+    active_palette: &[PaletteEntry; 256],
+    options: IndexedCopyOptions,
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dComposeError> {
     validate_indexed_target(target_extent, target_pixels, depth.extent())?;
-    let palette_map = match quantization {
+    let palette_map = match options.quantization {
         SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither => {
             full_palette_manhattan_map(texture.palette, active_palette)
         }
     };
     let target_width = usize::from(target_extent[0]);
-    rasterize_fragments(batch, texture.raster, depth, |fragment| {
-        let [x, y] = fragment.position();
-        let target_index = usize::from(y) * target_width + usize::from(x);
-        target_pixels[target_index] = palette_map[usize::from(fragment.texture_index())];
-    })
+    rasterize_fragments_with_color_key(
+        batch,
+        texture.raster,
+        depth,
+        options.color_key,
+        |fragment| {
+            let [x, y] = fragment.position();
+            let target_index = usize::from(y) * target_width + usize::from(x);
+            target_pixels[target_index] = palette_map[usize::from(fragment.texture_index())];
+        },
+    )
     .map_err(SoftwareC3dComposeError::Raster)
 }
 
@@ -1516,7 +1619,18 @@ fn rasterize_fragments(
     visit: impl FnMut(SoftwareC3dFragment),
 ) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dRasterError> {
     validate_texture(texture)?;
-    rasterize_fragments_with_optional_index(batch, Some(texture), depth, visit)
+    rasterize_fragments_with_optional_index(batch, Some(texture), None, depth, visit)
+}
+
+fn rasterize_fragments_with_color_key(
+    batch: &SoftwareC3dPreparedBatch,
+    texture: TextureView<'_>,
+    depth: &mut SoftwareC3dDepthBuffer,
+    color_key: Option<u8>,
+    visit: impl FnMut(SoftwareC3dFragment),
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dRasterError> {
+    validate_texture(texture)?;
+    rasterize_fragments_with_optional_index(batch, Some(texture), color_key, depth, visit)
 }
 
 fn rasterize_fragments_extent_only(
@@ -1528,12 +1642,13 @@ fn rasterize_fragments_extent_only(
     if texture_extent[0] == 0 || texture_extent[1] == 0 {
         return Err(SoftwareC3dRasterError::InvalidTextureExtent(texture_extent));
     }
-    rasterize_fragments_with_optional_index(batch, None, depth, visit)
+    rasterize_fragments_with_optional_index(batch, None, None, depth, visit)
 }
 
 fn rasterize_fragments_with_optional_index(
     batch: &SoftwareC3dPreparedBatch,
     indexed_texture: Option<TextureView<'_>>,
+    color_key: Option<u8>,
     depth: &mut SoftwareC3dDepthBuffer,
     mut visit: impl FnMut(SoftwareC3dFragment),
 ) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dRasterError> {
@@ -1603,6 +1718,10 @@ fn rasterize_fragments_with_optional_index(
                 let texture_index = indexed_texture
                     .map(|texture| sample_point_clamped(texture, uv))
                     .unwrap_or(0);
+
+                if color_key == Some(texture_index) {
+                    continue;
+                }
 
                 depth.values[target_index] = interpolated_depth;
                 outcome.depth_passed += 1;
@@ -2851,6 +2970,51 @@ mod tests {
         )
         .unwrap();
         assert_eq!(target, [99, 99, 99, 99, 0, 99, 99, 99, 99]);
+    }
+
+    #[test]
+    fn indexed_color_key_skips_both_color_and_depth_writes() {
+        let batch = prepared_batch(vec![triangle(
+            [
+                screen([0.0, 0.0, 0.5], 1.0, [0.0, 0.0], [0.0; 4]),
+                screen([2.0, 0.0, 0.5], 1.0, [0.0, 0.0], [0.0; 4]),
+                screen([0.0, 2.0, 0.5], 1.0, [0.0, 0.0], [0.0; 4]),
+            ],
+            0,
+        )]);
+        let texture_palette = [BitmapPaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            reserved: 0,
+        }];
+        let active = [PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        }; 256];
+        let mut depth = SoftwareC3dDepthBuffer::new_far([1, 1]).unwrap();
+        let mut target = [77];
+
+        let outcome = compose_indexed_copy_no_blend_with_color_key(
+            &batch,
+            indexed_texture([1, 1], &[0], &texture_palette),
+            &mut depth,
+            [1, 1],
+            &mut target,
+            &active,
+            IndexedCopyOptions {
+                quantization: SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+                color_key: Some(0),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome.covered(), 1);
+        assert_eq!(outcome.depth_passed(), 0);
+        assert_eq!(target, [77]);
+        assert_eq!(depth.values(), [1.0]);
     }
 
     #[test]

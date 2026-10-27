@@ -65,6 +65,22 @@ pub const STAGE_EXTENSIONS: [&str; 14] = [
 pub const CAT_EXTENSION: &str = ".cat";
 /// Extension of the 3D world-mesh section.
 pub const C3D_EXTENSION: &str = ".c3d";
+/// Extension of the horizon/background scene. The shipped loader sends this
+/// payload through the same C3D parser as the world scene (`FUN_00480d80`),
+/// with render mode 4 and lit vertices.
+pub const HZN_EXTENSION: &str = ".hzn";
+/// Extension of the four-word stage projection/horizon settings record.
+pub const ARS_EXTENSION: &str = ".ars";
+/// Bytes consumed by the shipped `.ars` loader (`FUN_00480960`).
+pub const ARS_SETTINGS_LEN: usize = 16;
+/// Extension of the primary object/scenery C3D graph (parser mode 2).
+pub const OBJ_EXTENSION: &str = ".obj";
+/// Extension of the secondary object/scenery C3D graph (parser mode 3).
+pub const SHT_EXTENSION: &str = ".sht";
+/// Extension of the authored car-start records.
+pub const CSP_EXTENSION: &str = ".csp";
+/// One normal or mirrored `.csp` block: two positions and two rotations.
+pub const CSP_BLOCK_LEN: usize = 0x28;
 
 /// Rally-School stage directory template (`%s` = track name, `%d` = task index).
 pub const STAGE_DIR_TEMPLATE: &str = r"RALLSCHL\TRACKS\%s\TASK%d\";
@@ -99,6 +115,11 @@ pub enum StageError {
     TriggerNotAligned { len: usize, stride: usize },
     /// A single trigger-volume slice of the wrong length.
     TriggerRecordLen { len: usize, expected: usize },
+    /// An `.ars` payload shorter than the four dwords consumed by the loader.
+    ArsTooShort { len: usize, needed: usize },
+    /// A present `.csp` payload was neither one complete normal block nor a
+    /// complete normal+mirrored pair.
+    CspInvalidLength { len: usize },
 }
 
 impl fmt::Display for StageError {
@@ -124,6 +145,17 @@ impl fmt::Display for StageError {
                     "trigger-volume record length {len} is not {expected} bytes"
                 )
             }
+            StageError::ArsTooShort { len, needed } => {
+                write!(
+                    f,
+                    "ars settings length {len} is shorter than {needed} bytes"
+                )
+            }
+            StageError::CspInvalidLength { len } => write!(
+                f,
+                "csp start-position length {len} is not {CSP_BLOCK_LEN} bytes or at least {} bytes",
+                CSP_BLOCK_LEN * 2
+            ),
         }
     }
 }
@@ -145,7 +177,8 @@ pub trait StageSectionSource {
 }
 
 /// The decoded sections of one stage needed to render and navigate it: the
-/// `.c3d` scene (always present) and the `.cat` node spline (optional).
+/// `.c3d` scene (always present), optional `.hzn` background scene, and the
+/// `.cat` node spline (optional).
 ///
 /// This is the recovered front half of the stage bundle (`FUN_004228d0` walks
 /// the 14-extension sibling set): it ties the per-section decoders to one stage,
@@ -155,6 +188,11 @@ pub trait StageSectionSource {
 #[derive(Debug)]
 pub struct StageBundle {
     scene: C3dFile,
+    objects: Option<C3dFile>,
+    scenery: Option<C3dFile>,
+    horizon: Option<C3dFile>,
+    ars: Option<ArsSettings>,
+    starts: Option<CspStarts>,
     nodes: Option<Vec<CatNode>>,
 }
 
@@ -163,6 +201,36 @@ impl StageBundle {
     #[must_use]
     pub fn scene(&self) -> &C3dFile {
         &self.scene
+    }
+
+    /// The parsed `.obj` object/scenery graph, if present.
+    #[must_use]
+    pub fn objects(&self) -> Option<&C3dFile> {
+        self.objects.as_ref()
+    }
+
+    /// The parsed `.sht` secondary scenery graph, if present.
+    #[must_use]
+    pub fn scenery(&self) -> Option<&C3dFile> {
+        self.scenery.as_ref()
+    }
+
+    /// The parsed `.hzn` background scene, if the stage carried one.
+    #[must_use]
+    pub fn horizon(&self) -> Option<&C3dFile> {
+        self.horizon.as_ref()
+    }
+
+    /// The parsed `.ars` stage projection/horizon settings, if present.
+    #[must_use]
+    pub fn ars(&self) -> Option<&ArsSettings> {
+        self.ars.as_ref()
+    }
+
+    /// Authored normal/mirrored car-start records from `.csp`, if present.
+    #[must_use]
+    pub fn starts(&self) -> Option<&CspStarts> {
+        self.starts.as_ref()
     }
 
     /// The parsed `.cat` node spline, if the stage carried a `.cat` sibling.
@@ -179,6 +247,16 @@ pub enum StageLoadError {
     MissingScene,
     /// The `.c3d` scene payload failed to parse.
     Scene(C3dError),
+    /// The optional `.hzn` background scene payload failed to parse.
+    Horizon(C3dError),
+    /// The optional `.obj` scene payload failed to parse.
+    Objects(C3dError),
+    /// The optional `.sht` scene payload failed to parse.
+    Scenery(C3dError),
+    /// The optional `.ars` settings payload failed to decode.
+    Ars(StageError),
+    /// The optional `.csp` start-position payload failed to decode.
+    Starts(StageError),
     /// The `.cat` node-spline payload failed to decode.
     Nodes(StageError),
 }
@@ -188,6 +266,11 @@ impl fmt::Display for StageLoadError {
         match self {
             StageLoadError::MissingScene => write!(f, "stage has no .c3d scene section"),
             StageLoadError::Scene(error) => write!(f, "stage .c3d scene: {error}"),
+            StageLoadError::Horizon(error) => write!(f, "stage .hzn horizon: {error}"),
+            StageLoadError::Objects(error) => write!(f, "stage .obj objects: {error}"),
+            StageLoadError::Scenery(error) => write!(f, "stage .sht scenery: {error}"),
+            StageLoadError::Ars(error) => write!(f, "stage .ars settings: {error}"),
+            StageLoadError::Starts(error) => write!(f, "stage .csp starts: {error}"),
             StageLoadError::Nodes(error) => write!(f, "stage .cat nodes: {error}"),
         }
     }
@@ -197,6 +280,11 @@ impl std::error::Error for StageLoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             StageLoadError::Scene(error) => Some(error),
+            StageLoadError::Horizon(error) => Some(error),
+            StageLoadError::Objects(error) => Some(error),
+            StageLoadError::Scenery(error) => Some(error),
+            StageLoadError::Ars(error) => Some(error),
+            StageLoadError::Starts(error) => Some(error),
             StageLoadError::Nodes(error) => Some(error),
             StageLoadError::MissingScene => None,
         }
@@ -217,12 +305,160 @@ pub fn load_stage(
         .section(C3D_EXTENSION)
         .ok_or(StageLoadError::MissingScene)?;
     let scene = parse_c3d(scene_bytes, c3d_limits).map_err(StageLoadError::Scene)?;
+    let objects = source
+        .section(OBJ_EXTENSION)
+        .map(|bytes| parse_c3d(bytes, c3d_limits))
+        .transpose()
+        .map_err(StageLoadError::Objects)?;
+    let scenery = source
+        .section(SHT_EXTENSION)
+        .map(|bytes| parse_c3d(bytes, c3d_limits))
+        .transpose()
+        .map_err(StageLoadError::Scenery)?;
+    let horizon = source
+        .section(HZN_EXTENSION)
+        .map(|bytes| parse_c3d(bytes, c3d_limits))
+        .transpose()
+        .map_err(StageLoadError::Horizon)?;
+    let ars = source
+        .section(ARS_EXTENSION)
+        .map(parse_ars_settings)
+        .transpose()
+        .map_err(StageLoadError::Ars)?;
+    let starts = source
+        .section(CSP_EXTENSION)
+        .map(parse_csp_starts)
+        .transpose()
+        .map_err(StageLoadError::Starts)?;
     let nodes = source
         .section(CAT_EXTENSION)
         .map(parse_cat_nodes)
         .transpose()
         .map_err(StageLoadError::Nodes)?;
-    Ok(StageBundle { scene, nodes })
+    Ok(StageBundle {
+        scene,
+        objects,
+        scenery,
+        horizon,
+        ars,
+        starts,
+        nodes,
+    })
+}
+
+/// Four little-endian Q16.16 dwords consumed from a stage `.ars` payload.
+///
+/// Word zero is observed as the horizon Y offset. The remaining words feed the
+/// projection/culling setup, but their exact semantic names are not yet proven,
+/// so they remain indexed. Trailing bytes are preserved for later recovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArsSettings {
+    words: [i32; 4],
+    trailing: Vec<u8>,
+}
+
+impl ArsSettings {
+    #[must_use]
+    pub const fn words(&self) -> &[i32; 4] {
+        &self.words
+    }
+
+    #[must_use]
+    pub const fn horizon_y_offset_q16(&self) -> i32 {
+        self.words[0]
+    }
+
+    #[must_use]
+    pub fn trailing(&self) -> &[u8] {
+        &self.trailing
+    }
+}
+
+/// Decodes the four dwords the shipped `.ars` loader consumes and preserves
+/// any unconsumed tail. Missing data is handled by the bundle as `None`; a
+/// present but truncated record fails closed with its observed length.
+pub fn parse_ars_settings(bytes: &[u8]) -> Result<ArsSettings, StageError> {
+    if bytes.len() < ARS_SETTINGS_LEN {
+        return Err(StageError::ArsTooShort {
+            len: bytes.len(),
+            needed: ARS_SETTINGS_LEN,
+        });
+    }
+    let mut words = [0i32; 4];
+    for (index, word) in words.iter_mut().enumerate() {
+        *word = read_i32(bytes, index * 4);
+    }
+    Ok(ArsSettings {
+        words,
+        trailing: bytes[ARS_SETTINGS_LEN..].to_vec(),
+    })
+}
+
+/// One authored car start: Q16.16 position and three 12-bit BAM rotations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CspStart {
+    pub position: [i32; 3],
+    pub rotation_bam: [u16; 3],
+    pub reserved: u16,
+}
+
+/// The two player starts for normal direction and, when present, reverse.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CspStarts {
+    normal: [CspStart; 2],
+    mirrored: Option<[CspStart; 2]>,
+    trailing: Vec<u8>,
+}
+
+impl CspStarts {
+    #[must_use]
+    pub const fn normal(&self) -> &[CspStart; 2] {
+        &self.normal
+    }
+
+    #[must_use]
+    pub const fn mirrored(&self) -> Option<&[CspStart; 2]> {
+        self.mirrored.as_ref()
+    }
+
+    #[must_use]
+    pub fn trailing(&self) -> &[u8] {
+        &self.trailing
+    }
+}
+
+fn parse_csp_block(bytes: &[u8]) -> [CspStart; 2] {
+    std::array::from_fn(|player| {
+        let position_offset = player * 12;
+        let rotation_offset = 24 + player * 8;
+        CspStart {
+            position: std::array::from_fn(|axis| read_i32(bytes, position_offset + axis * 4)),
+            rotation_bam: std::array::from_fn(|axis| read_u16(bytes, rotation_offset + axis * 2)),
+            reserved: read_u16(bytes, rotation_offset + 6),
+        }
+    })
+}
+
+/// Decodes the native `.csp` layout selected by `FUN_00486110`: one 0x28-byte
+/// block is the normal direction; any longer form must contain the second
+/// 0x28-byte mirrored block. Extra bytes beyond those blocks are preserved.
+pub fn parse_csp_starts(bytes: &[u8]) -> Result<CspStarts, StageError> {
+    if bytes.len() != CSP_BLOCK_LEN && bytes.len() < CSP_BLOCK_LEN * 2 {
+        return Err(StageError::CspInvalidLength { len: bytes.len() });
+    }
+    let normal = parse_csp_block(&bytes[..CSP_BLOCK_LEN]);
+    let mirrored = (bytes.len() >= CSP_BLOCK_LEN * 2)
+        .then(|| parse_csp_block(&bytes[CSP_BLOCK_LEN..CSP_BLOCK_LEN * 2]));
+    let consumed = if mirrored.is_some() {
+        CSP_BLOCK_LEN * 2
+    } else {
+        CSP_BLOCK_LEN
+    };
+    Ok(CspStarts {
+        normal,
+        mirrored,
+        trailing: bytes[consumed..].to_vec(),
+    })
 }
 
 /// One `.cat` node: a position, a tangent/direction, a split flag, and a
@@ -586,7 +822,147 @@ mod tests {
 
         let bundle = load_stage(&source, C3dLimits::default()).unwrap();
         assert_eq!(bundle.scene().group0_records().count(), 0);
+        assert!(bundle.objects().is_none());
+        assert!(bundle.scenery().is_none());
+        assert!(bundle.horizon().is_none());
+        assert!(bundle.ars().is_none());
+        assert!(bundle.starts().is_none());
         assert_eq!(bundle.nodes().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn load_stage_parses_an_optional_horizon_as_c3d() {
+        let mut sections = std::collections::HashMap::new();
+        sections.insert(C3D_EXTENSION, empty_scene_bytes());
+        sections.insert(HZN_EXTENSION, empty_scene_bytes());
+        let source = MapSource(sections);
+
+        let bundle = load_stage(&source, C3dLimits::default()).unwrap();
+        assert_eq!(bundle.horizon().unwrap().group0_records().count(), 0);
+    }
+
+    #[test]
+    fn load_stage_parses_optional_object_and_scenery_c3d_graphs() {
+        let mut sections = std::collections::HashMap::new();
+        sections.insert(C3D_EXTENSION, empty_scene_bytes());
+        sections.insert(OBJ_EXTENSION, empty_scene_bytes());
+        sections.insert(SHT_EXTENSION, empty_scene_bytes());
+        let source = MapSource(sections);
+
+        let bundle = load_stage(&source, C3dLimits::default()).unwrap();
+        assert_eq!(bundle.objects().unwrap().group0_records().count(), 0);
+        assert_eq!(bundle.scenery().unwrap().group0_records().count(), 0);
+    }
+
+    #[test]
+    fn load_stage_identifies_the_malformed_optional_c3d_graph() {
+        for (extension, is_expected) in [
+            (
+                OBJ_EXTENSION,
+                StageLoadError::Objects as fn(C3dError) -> StageLoadError,
+            ),
+            (
+                SHT_EXTENSION,
+                StageLoadError::Scenery as fn(C3dError) -> StageLoadError,
+            ),
+        ] {
+            let mut sections = std::collections::HashMap::new();
+            sections.insert(C3D_EXTENSION, empty_scene_bytes());
+            sections.insert(extension, b"short".to_vec());
+            let error = load_stage(&MapSource(sections), C3dLimits::default()).unwrap_err();
+            assert_eq!(
+                error,
+                is_expected(C3dError::TruncatedHeader {
+                    actual: 5,
+                    required: 32,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn load_stage_propagates_a_malformed_horizon_section() {
+        let mut sections = std::collections::HashMap::new();
+        sections.insert(C3D_EXTENSION, empty_scene_bytes());
+        sections.insert(HZN_EXTENSION, b"not a c3d".to_vec());
+        let source = MapSource(sections);
+
+        assert!(matches!(
+            load_stage(&source, C3dLimits::default()).unwrap_err(),
+            StageLoadError::Horizon(C3dError::TruncatedHeader { .. })
+        ));
+    }
+
+    #[test]
+    fn ars_settings_decode_four_words_and_preserve_the_tail() {
+        let mut bytes = Vec::new();
+        for word in [-0x20000i32, 0x960000, 0xc80000, 0x640000] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0xaa, 0xbb]);
+        let settings = parse_ars_settings(&bytes).unwrap();
+        assert_eq!(settings.words(), &[-0x20000, 0x960000, 0xc80000, 0x640000]);
+        assert_eq!(settings.horizon_y_offset_q16(), -0x20000);
+        assert_eq!(settings.trailing(), &[0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn load_stage_rejects_a_present_but_truncated_ars_section() {
+        let mut sections = std::collections::HashMap::new();
+        sections.insert(C3D_EXTENSION, empty_scene_bytes());
+        sections.insert(ARS_EXTENSION, vec![0u8; ARS_SETTINGS_LEN - 1]);
+        let source = MapSource(sections);
+        assert_eq!(
+            load_stage(&source, C3dLimits::default()).unwrap_err(),
+            StageLoadError::Ars(StageError::ArsTooShort {
+                len: ARS_SETTINGS_LEN - 1,
+                needed: ARS_SETTINGS_LEN,
+            })
+        );
+    }
+
+    fn csp_block(base: i32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for player in 0..2 {
+            for axis in 0..3 {
+                bytes.extend_from_slice(&(base + player * 10 + axis).to_le_bytes());
+            }
+        }
+        for player in 0..2u16 {
+            for axis in 0..3u16 {
+                bytes.extend_from_slice(&(0x100 + player * 10 + axis).to_le_bytes());
+            }
+            bytes.extend_from_slice(&(0x9000 + player).to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn csp_decodes_two_normal_and_optional_mirrored_starts() {
+        let normal = csp_block(100);
+        let starts = parse_csp_starts(&normal).unwrap();
+        assert_eq!(starts.normal()[0].position, [100, 101, 102]);
+        assert_eq!(starts.normal()[1].position, [110, 111, 112]);
+        assert_eq!(starts.normal()[0].rotation_bam, [0x100, 0x101, 0x102]);
+        assert_eq!(starts.normal()[1].reserved, 0x9001);
+        assert!(starts.mirrored().is_none());
+
+        let mut both = normal;
+        both.extend_from_slice(&csp_block(200));
+        both.extend_from_slice(&[0xaa, 0xbb]);
+        let starts = parse_csp_starts(&both).unwrap();
+        assert_eq!(starts.mirrored().unwrap()[0].position, [200, 201, 202]);
+        assert_eq!(starts.trailing(), &[0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn csp_rejects_truncated_second_block() {
+        assert_eq!(
+            parse_csp_starts(&[0; CSP_BLOCK_LEN + 1]).unwrap_err(),
+            StageError::CspInvalidLength {
+                len: CSP_BLOCK_LEN + 1
+            }
+        );
     }
 
     #[test]
