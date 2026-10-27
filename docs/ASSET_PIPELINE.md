@@ -171,7 +171,7 @@ positively identified executable into a separate ignored runtime-data store:
 cargo run -q -p cmr-assets -- extract-surface-tables \
   --source "$CMR_ORIGINAL_DIR" \
   --profile profiles/official-eu-surface-tables-v1.json \
-  --output runtime-data/official-eu-surface-tables
+  --output runtime-data/official-eu-surface-coefficients
 ```
 
 All three paths are explicit. The reviewed profile contains metadata only: a
@@ -181,7 +181,7 @@ the read, verifies the hash before PE parsing, validates the complete PE32
 virtual/raw mapping, and atomically promotes a fresh sibling stage. It writes:
 
 ```text
-runtime-data/official-eu-surface-tables/
+runtime-data/official-eu-surface-coefficients/
   surface-coefficients-q16le.bin
   surface-import-state.json
 ```

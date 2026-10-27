@@ -176,7 +176,7 @@ ignored, profile-bound runtime-data store (no game values are bundled):
 cargo run -q -p cmr-assets -- extract-surface-tables \
   --source "$CMR_ORIGINAL_DIR" \
   --profile profiles/official-eu-surface-tables-v1.json \
-  --output runtime-data/official-eu-surface-tables
+  --output runtime-data/official-eu-surface-coefficients
 ```
 
 This command requires the exact executable identified by the reviewed profile,
