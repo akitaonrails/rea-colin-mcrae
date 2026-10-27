@@ -48,6 +48,7 @@ fn fragment_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
 const C3D_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// The presentation readback target: one active-palette index per pixel.
 const C3D_INDEX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Uint;
+const C3D_MATERIAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Uint;
 
 const C3D_SHADER: &str = r#"
 struct Transform {
@@ -103,7 +104,13 @@ fn resolve_palette_index(input: VertexOutput) -> u32 {
     let dimensions = vec2f(textureDimensions(material_indices));
     let bounded = clamp(input.uv, vec2f(0.0), vec2f(1.0));
     let coordinate = min(vec2i(floor(bounded * dimensions)), vec2i(dimensions) - vec2i(1));
-    return textureLoad(material_indices, coordinate, 0).r;
+    let material = textureLoad(material_indices, coordinate, 0);
+    // R stores the active-palette slot and G is a precomputed source-key mask.
+    // Discard occurs before the fragment can update either color or depth.
+    if material.g != 0u {
+        discard;
+    }
+    return material.r;
 }
 "#;
 
@@ -746,21 +753,16 @@ impl RawC3dGpuBackend for WgpuIndexedPaletteBackend {
                 &self.device,
                 "cmr raw C3D mapped material",
                 material_size,
-                wgpu::TextureFormat::R8Uint,
+                C3D_MATERIAL_FORMAT,
                 wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             );
-            let palette_map = c3d_active_palette_l1_map(texture, frame.active_palette());
-            let mapped_indices: Vec<u8> = texture
-                .indices()
-                .iter()
-                .map(|&index| palette_map[usize::from(index)])
-                .collect();
+            let mapped_indices = c3d_mapped_material_texels(texture, frame.active_palette());
             self.queue.write_texture(
                 texture_copy(&material_texture),
                 &mapped_indices,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(u32::from(material_extent.width)),
+                    bytes_per_row: Some(u32::from(material_extent.width) * 2),
                     rows_per_image: Some(u32::from(material_extent.height)),
                 },
                 material_size,
@@ -998,21 +1000,16 @@ impl PersistentRawC3dGpuBackend for WgpuIndexedPaletteBackend {
                     &self.device,
                     "cmr prepared C3D mapped material",
                     size,
-                    wgpu::TextureFormat::R8Uint,
+                    C3D_MATERIAL_FORMAT,
                     wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 );
-                let palette_map = c3d_active_palette_l1_map(texture, source.active_palette());
-                let mapped = texture
-                    .indices()
-                    .iter()
-                    .map(|&index| palette_map[usize::from(index)])
-                    .collect::<Vec<_>>();
+                let mapped = c3d_mapped_material_texels(texture, source.active_palette());
                 self.queue.write_texture(
                     texture_copy(&native),
                     &mapped,
                     wgpu::TexelCopyBufferLayout {
                         offset: 0,
-                        bytes_per_row: Some(u32::from(extent.width)),
+                        bytes_per_row: Some(u32::from(extent.width) * 2),
                         rows_per_image: Some(u32::from(extent.height)),
                     },
                     size,
@@ -1542,6 +1539,26 @@ fn create_c3d_pipeline_variant(
     })
 }
 
+/// Packs one material texel as `[active_palette_index, keyed]` for the WGSL
+/// integer texture. Keeping the key bit separate avoids collisions when a
+/// non-keyed source color quantizes to the same active-palette slot as the key.
+fn c3d_mapped_material_texels(
+    texture: &cmr_gpu_contract::C3dIndexedTexture,
+    active_palette: &[cmr_formats::riff_palette::PaletteEntry; 256],
+) -> Vec<u8> {
+    let palette_map = c3d_active_palette_l1_map(texture, active_palette);
+    texture
+        .indices()
+        .iter()
+        .flat_map(|&source_index| {
+            [
+                palette_map[usize::from(source_index)],
+                u8::from(texture.color_key_index() == Some(source_index)),
+            ]
+        })
+        .collect()
+}
+
 fn active_palette_rgba8(palette: &[cmr_formats::riff_palette::PaletteEntry; 256]) -> [u8; 1024] {
     let mut bytes = [0; 1024];
     for (chunk, entry) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(palette) {
@@ -1786,6 +1803,39 @@ mod tests {
     }
 
     #[test]
+    fn mapped_material_texels_keep_key_identity_separate_from_palette_mapping() {
+        let texture = C3dIndexedTexture::new(
+            DisplayExtent {
+                width: 2,
+                height: 1,
+            },
+            [0, 1],
+            [
+                C3dRgb8 {
+                    red: 10,
+                    green: 20,
+                    blue: 30,
+                },
+                C3dRgb8 {
+                    red: 10,
+                    green: 20,
+                    blue: 30,
+                },
+            ],
+            Some(0),
+        )
+        .unwrap();
+        let palette = std::array::from_fn(|index| PaletteEntry {
+            red: if index == 7 { 10 } else { 0 },
+            green: if index == 7 { 20 } else { 0 },
+            blue: if index == 7 { 30 } else { 0 },
+            flags: 0,
+        });
+
+        assert_eq!(c3d_mapped_material_texels(&texture, &palette), [7, 1, 7, 0]);
+    }
+
+    #[test]
     #[ignore = "requires a Vulkan adapter; run explicitly for raw C3D GPU conformance"]
     fn raw_c3d_triangle_uses_gpu_transform_texture_and_depth_path() {
         const ONE: i32 = 0x1_0000;
@@ -1919,6 +1969,113 @@ mod tests {
         assert!(first_timing.submit_to_completion_ns > 0);
         assert!(second_timing.cpu_encode_submit_ns > 0);
         assert!(second_timing.submit_to_completion_ns > 0);
+    }
+
+    #[test]
+    #[ignore = "requires a Vulkan adapter; run explicitly for keyed C3D GPU conformance"]
+    fn keyed_fragment_preserves_prior_color_and_depth() {
+        const ONE: i32 = 0x1_0000;
+        let vertex = |x: i32, y: i32, z: i32| C3dVertexQ16 {
+            components: [x, y, z, 0, 0, 0, 0, ONE],
+        };
+        let triangle_at = |z| {
+            C3dMeshResource::new(
+                [
+                    vertex(-ONE / 2, -ONE / 2, z),
+                    vertex(0, ONE / 2, z),
+                    vertex(ONE / 2, -ONE / 2, z),
+                ],
+                [0, 1, 2],
+            )
+            .unwrap()
+        };
+        let texture = |rgb, color_key_index| {
+            C3dIndexedTexture::new(
+                DisplayExtent {
+                    width: 1,
+                    height: 1,
+                },
+                [0],
+                [rgb],
+                color_key_index,
+            )
+            .unwrap()
+        };
+        let red = C3dRgb8 {
+            red: 250,
+            green: 4,
+            blue: 3,
+        };
+        let keyed = C3dRgb8 {
+            red: 220,
+            green: 220,
+            blue: 220,
+        };
+        let green = C3dRgb8 {
+            red: 5,
+            green: 240,
+            blue: 7,
+        };
+        let resources = C3dResourceSet::new(
+            [
+                triangle_at(3 * ONE),
+                triangle_at(2 * ONE),
+                triangle_at(5 * ONE / 2),
+            ],
+            [
+                texture(red, None),
+                texture(keyed, Some(0)),
+                texture(green, None),
+            ],
+        );
+        let identity = world_matrix_words(&MATRIX_IDENTITY_Q16);
+        let draws = [
+            C3dDraw::new(0, 0, identity, C3dSubmissionBracket::Normal).unwrap(),
+            C3dDraw::new(1, 1, identity, C3dSubmissionBracket::Normal).unwrap(),
+            C3dDraw::new(2, 2, identity, C3dSubmissionBracket::Normal).unwrap(),
+        ];
+        let active_palette: [PaletteEntry; 256] = std::array::from_fn(|index| {
+            let (red, green, blue) = match index {
+                7 => (red.red, red.green, red.blue),
+                8 => (keyed.red, keyed.green, keyed.blue),
+                9 => (green.red, green.green, green.blue),
+                _ => (0, 0, 0),
+            };
+            PaletteEntry {
+                red,
+                green,
+                blue,
+                flags: 0,
+            }
+        });
+        let extent = DisplayExtent {
+            width: 64,
+            height: 64,
+        };
+        let config = WgpuBackendConfig {
+            adapter_name_contains: std::env::var("CMR_WGPU_TEST_ADAPTER").ok(),
+            ..WgpuBackendConfig::default()
+        };
+        let mut backend = WgpuIndexedPaletteBackend::new(&config).unwrap();
+        let upload = C3dSceneUpload::new(extent, &resources, &active_palette).unwrap();
+        let mut prepared = backend.prepare_c3d_scene(upload).unwrap();
+        let frame = C3dPreparedFrame::new(
+            WgpuIndexedPaletteBackend::prepared_layout(&prepared),
+            view_matrix_words(&MATRIX_IDENTITY_Q16),
+            projection_matrix_words(2.0, 2.4, 1.0, 250.0),
+            &draws,
+        )
+        .unwrap();
+
+        let indices = backend
+            .render_prepared_indexed_readback(&mut prepared, frame)
+            .unwrap();
+        let center = usize::from(extent.height / 2) * usize::from(extent.width)
+            + usize::from(extent.width / 2);
+        assert_eq!(indices.indices()[center], 9);
+        assert!(indices.indices().contains(&9));
+        assert!(!indices.indices().contains(&7));
+        assert!(!indices.indices().contains(&8));
     }
 
     #[test]

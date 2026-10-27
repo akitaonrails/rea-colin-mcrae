@@ -141,10 +141,10 @@ impl StageSceneFrame {
         Ok(self)
     }
 
-    /// Depth-composites another independently rendered opaque world graph into
-    /// this frame. The closer depth wins per pixel, reproducing the result of
-    /// submitting the graphs to one shared depth buffer while keeping their
-    /// C3D resource namespaces independent.
+    /// Depth-composites a later independently rendered opaque world graph into
+    /// this frame. The nearer depth wins per pixel and `other` wins equal-depth
+    /// ties, reproducing `LessEqual` submission to one shared depth buffer while
+    /// keeping the graphs' C3D resource namespaces independent.
     pub fn merge_nearest(
         mut self,
         other: &StageSceneFrame,
@@ -161,7 +161,7 @@ impl StageSceneFrame {
             .zip(self.depth.values_mut())
             .zip(other.pixels.iter().zip(other.depth.values()))
         {
-            if other_depth < depth {
+            if other_depth <= depth {
                 *pixel = *other_pixel;
                 *depth = *other_depth;
             }
@@ -445,11 +445,11 @@ mod tests {
 
     #[test]
     fn independently_rendered_world_graphs_merge_by_nearest_depth() {
-        let base = frame([3, 1], &[1, 2, 3], &[0.8, 0.2, 1.0], 1);
-        let objects = frame([3, 1], &[4, 5, 6], &[0.4, 0.7, 0.9], 2);
+        let base = frame([4, 1], &[1, 2, 3, 7], &[0.8, 0.2, 1.0, 0.5], 1);
+        let objects = frame([4, 1], &[4, 5, 6, 8], &[0.4, 0.7, 0.9, 0.5], 2);
         let merged = base.merge_nearest(&objects).unwrap();
-        assert_eq!(merged.pixels(), &[4, 2, 6]);
-        assert_eq!(merged.depth().values(), &[0.4, 0.2, 0.9]);
+        assert_eq!(merged.pixels(), &[4, 2, 6, 8]);
+        assert_eq!(merged.depth().values(), &[0.4, 0.2, 0.9, 0.5]);
         assert_eq!(merged.stats().prims_composed, 3);
     }
 }

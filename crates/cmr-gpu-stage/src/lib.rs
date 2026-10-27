@@ -99,7 +99,11 @@ impl PreparedRawStage {
                             .copied()
                             .map(C3dRgb8::from)
                             .collect::<Vec<_>>(),
-                        sampled.color_key_index(),
+                        // The established single-stage path is the opaque main
+                        // graph. Layered preparation opts OBJ/SHT/car into
+                        // their recovered key explicitly instead of changing
+                        // this compatibility contract implicitly.
+                        None,
                     )?;
                     let id = u32::try_from(prepared_textures.len()).map_err(|_| {
                         PreparedRawStageError::ResourceCountOverflow {

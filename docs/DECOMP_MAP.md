@@ -316,6 +316,15 @@ force sources, not the generated square-root entries themselves.
 - [x] `I13` Publish a supported-edition and known-deviation matrix ([docs/DEVIATIONS.md](DEVIATIONS.md) publishes two matrices. The **supported-edition** matrix fixes the canonical EU updater payload as the sole recovery baseline and tracks the installed EU-derived executable, the official US payload, and the unofficial xdelta result as comparison variants only, with the explicit `--source`/`CMR_ORIGINAL_DIR` edition policy and the no-shipped-payload rule. The **known-deviation** matrix enumerates every intentional/necessary divergence with original mechanism, replacement, reason, and roadmap item: media/path resolution (registry->explicit roots), save/config location, presentation/3D (DirectX->SDL3/GPU), audio (QMixer->software mixer), music (PCM path, no CD - a recovered fact), video (MCI avivideo->portable backend), input (WinMM->portable mapper), calibration/rebinding (faithful to the absent UIs), force feedback (DirectInput->recovered semantics), required DLLs (none in the portable slice), packaging (no payloads), launcher/CLI (recovered no-CLI negative result), and the retained fixed-base assumption. Classifies them as portability deviations, backend deviations (each held to the same contract tests), and faithful non-deviations (recorded to pre-empt "missing feature" reports), and explicit unsupported boundaries. Linked from the README. **I13 -> complete**: the matrix covers GPU selection, FFB, networking, other editions, and unrun environment limits.)
 - [~] `I14` Deliver a verified native menu-to-race playable build. The direct-to-stage harness now loads an explicit caller-selected in-race car code from authenticated runtime data, parses its full-detail daytime C3D, remaps the recovered model `-X` forward basis into the gameplay convention, and depth-composes it with the layered stage. An X11/SDL release capture verifies the correctly aligned rear view and visible motion under a real throttle event. The normal single-player race HUD command plan is recovered and test-backed, all six source-owned inputs are authenticated/parsed/retained, and the ordered indexed compositor is wired into initial and live world frames. An imported-AU1 regression proves the overlay changes the composed digest; controlled X11/SDL release captures verify visible gauge/timer/gear/speed pixels and a changed frame after throttle. Still open: recovered menu-to-race selection, live gear/rev producers, live four-wheel producer, DAT dispatch, layered GPU rendering, full finish/post-race flow, car palette/livery fidelity, reflection/wheel/damage animation, and equivalent native-Windows execution.
 
+Layered-GPU progress for `I14`: the selected wgpu backend now carries an
+independent source-index key mask beside each mapped palette slot and discards
+keyed fragments before either color or depth writes. A synthetic Vulkan
+three-layer test proves the depth hole, while the software multi-graph oracle
+now matches the recovered `LessEqual` equal-depth rule (later main -> OBJ ->
+SHT -> car submission wins). The single main-stage adapter remains explicitly
+opaque. Combined layered preparation, GPU/software imported-stage equivalence,
+and the separate horizon pass remain open.
+
 ## Update rules
 
 Update this file in every milestone commit that completes or materially advances
@@ -325,13 +334,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-27T18:56:47Z
-milestone=recover-dat-dispatch-spatial-gates
+updated_utc=2026-10-27T19:10:36Z
+milestone=enable-gpu-c3d-color-key
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
-current_focus=live-dat-dispatch-and-menu-to-race-selection
-next_exit_gate=verified-native-trigger-events-and-recovered-menu-race-entry
+current_focus=layered-gpu-foreground
+next_exit_gate=gpu-software-keyed-layer-equivalence
 <!-- PROGRESS-TAIL-END -->

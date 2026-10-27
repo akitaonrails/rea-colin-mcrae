@@ -2425,6 +2425,14 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- The selected wgpu backend now supports optional source-index color keys with
+  an `Rg8Uint` material texture: resolved palette slot plus an independent key
+  mask. A keyed fragment is discarded before color and depth writes, and an
+  explicitly run Vulkan test proves the resulting depth hole. The software
+  multi-graph oracle now follows the same `LessEqual` rule, including later
+  submission winning equal-depth ties. The single main-stage adapter remains
+  explicitly unkeyed; combined OBJ/SHT/car preparation and the horizon pass
+  remain open. See evidence `impl.gpu-c3d-color-key`.
 - Four-wheel stepping adds live forward force along the current heading before
   summing lane forces, so throttle produces world displacement. The native
   session boots directly into the stage rather than auto-advancing the menu.

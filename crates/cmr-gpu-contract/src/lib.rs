@@ -406,9 +406,10 @@ impl From<cmr_formats::bitmap::BitmapPaletteEntry> for C3dRgb8 {
 
 /// Validated owned indexed texture referenced by raw C3D draw packets.
 ///
-/// `color_key_index` is retained for later recovered profiles. The bounded
-/// [`C3dPipelineState::OPAQUE_COPY`] stage profile intentionally treats every
-/// index as opaque, matching the established software stage composer.
+/// `color_key_index`, when present, discards that source index before either a
+/// color or depth write. Callers choose opacity explicitly by supplying `None`;
+/// this lets the main stage remain opaque while keyed OBJ/SHT/car layers share
+/// one depth buffer without occluding geometry through transparent texels.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct C3dIndexedTexture {
     extent: DisplayExtent,
@@ -561,8 +562,8 @@ pub enum C3dBlendMode {
 ///
 /// Fields are private and the sole value keeps depth writes enabled. Broader
 /// recovered blend/filter profiles require their own contract milestone rather
-/// than silently changing this benchmark. A retained material color key is not
-/// active in this profile.
+/// than silently changing this benchmark. Texture-level color-key discard is
+/// applied before this opaque-copy state writes color or depth.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct C3dPipelineState {
     depth_compare: C3dDepthCompare,
