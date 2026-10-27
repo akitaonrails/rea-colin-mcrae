@@ -1,10 +1,11 @@
 //! Reconstruction of the collision/damage response and the stage trigger-volume
 //! types (the confidently-recovered G04 pieces).
 //!
-//! The per-car collision step is `FUN_00410a60` (from Mechanics `FUN_0043afd0`),
-//! which delegates the crash path to `FUN_004115d0` once the out-of-control flag
-//! `car+0x680` is set. The cleanly-transcribable Q16.16 arithmetic recovered
-//! from that path is reconstructed here:
+//! Static scenery collision is produced earlier in Mechanics by
+//! `FUN_0043d5d0 -> FUN_0043e640 -> FUN_0043d760`. The later per-car step
+//! `FUN_00410a60` delegates the crash path to `FUN_004115d0` once the
+//! out-of-control flag `car+0x680` is set. The cleanly-transcribable Q16.16
+//! damage/reset arithmetic from that downstream path is reconstructed here:
 //!
 //! - **Impact strength** (`FUN_0041f630`): the contact impulse is accumulated
 //!   into a vec3 (`car+0x3cc..`); its magnitude is thresholded at `0x2624` and

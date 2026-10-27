@@ -1827,9 +1827,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   `rea.official-eu.sim-runtime-math-tables`, and
   `impl.legacy-math-tables`, `rea.official-eu.sim-runtime-table-provenance`,
   `impl.sim-surface-table-extractor`, and `impl.sim-surface-table-store`.
-- Collision/damage runs from `0x410a60` (Mechanics callee), which delegates the
-  crash path to `0x4115d0` once the out-of-control flag `car+0x680` is set. The
-  contact impulse accumulates into `car+0x3cc..`; its magnitude feeds the impact
+- Static scenery collision runs before per-car mechanics through
+  `0x43d5d0 -> 0x43e640 -> 0x43d760`; the later `0x410a60` step delegates the
+  crash path to `0x4115d0` once the out-of-control flag `car+0x680` is set.
+  Linear impulse accumulates at `car+0x3cc..`, angular impulse at `+0x3d8..`,
+  and `+0x3f0..` is persistent angular state rather than a contact normal. The
+  linear impulse magnitude feeds the impact
   computer `0x41f630` (threshold `0x2624`, slope `0xf536`, clamp 1.0), and the
   same 0..1 impact drives the pitched impact sound (`0x469e80`), force feedback,
   and damage. Damage is tracked twice: a coarse crash counter `car+0x678` (+1 per
@@ -1842,10 +1845,16 @@ languages rather than fabricating or silently aliasing Italian assets.
   (`car+0x67c`), 0x15 arms the `car+0x75c` countdown, 7..=0xB switch surfaces.
   Reconstructed the impact, crash counter, deform/region accumulate, damage
   level, materials, and trigger types in `cmr-core::collision` (with
-  `Fixed16::sqrt`/`Vec3::length` added to `fixed_point`). The geometry
-  intersection, the re-righting blend, the reset trigger (`ctrl+0x3ec` only read,
-  no position-snap/penalty confirmed), the damage->performance read site, and the
-  `car+0x75c` countdown remain. See evidence `rea.official-eu.sim-collision`.
+  `Fixed16::sqrt`/`Vec3::length` added to `fixed_point`).
+  `cmr-core::static_world_collision` now owns the tested 4,096-cell ordered
+  provider boundary, current/previous five-ID history, raw material propagation
+  and distinct linear/angular/angular-state effects. Static recovery now pins
+  OBJ-only OBB sources, point/projection helpers, grid provenance, prepend order
+  and literal-zero history identity. Exact center/extents, cell emission,
+  current-pose overlap/response arithmetic and session integration remain open;
+  renderer bounds are not substituted. See
+  evidence `rea.official-eu.sim-collision` and
+  `impl.static-world-collision-orchestration`.
 - Stage timing uses the global clock `DAT_005ffc00`, a Q16.16 value in seconds
   advanced once per physics tick (step `2^32/(rate*0x10000)` = `0xa3d`~0.04 s at
   25 Hz, the same dt as `sim_clock`; `0x51e` at 50 Hz), saturating at

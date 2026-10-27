@@ -1707,6 +1707,17 @@ live authenticated collision/contact response; car and wheel animation remain
 explicit follow-ups. The controlled transform A/B confirms the retained chase
 view shows the rear of the car.
 
+Static recovery has now placed scenery collision before per-car mechanics at
+`FUN_0043d5d0 -> FUN_0043e640 -> FUN_0043d760`, corrected `+0x3f0` to angular
+state, and established current-pose overlap with prior-position-informed
+depenetration rather than swept CCD. Builder recovery identifies OBJ-only OBB
+records, exact point/projection helpers, main-C3D grid provenance, native list
+prepend order and literal-zero static history identity. A tested provider
+boundary owns those 4,096 cell lists, raw materials, sequential accumulator
+state and five-ID history. Exact center/extents, cell emission and
+narrow/response arithmetic remain the next gate; render mesh AABBs are not
+accepted as compatibility collision geometry.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

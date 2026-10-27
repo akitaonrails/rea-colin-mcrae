@@ -46,31 +46,32 @@ pub const CELL_RECORD_STRIDE: usize = 0x8c;
 /// `width`/`height` are the cell counts per axis (`DAT_00869798`/`DAT_008f59b4`),
 /// `cell_count` the total addressable cells (`DAT_008f57a0`), `cell_size` the
 /// world units per cell (`DAT_008f57a8`), and the anchors place the grid in
-/// world space (`anchor_x = DAT_00839788`, `anchor_z = DAT_008f57a4`,
-/// `anchor_z2 = DAT_0083978c`).
+/// world space (`min_x = DAT_00839788`, `half_cell = DAT_008f57a4`,
+/// `max_z = DAT_0083978c`). `half_cell` is derived as half the adjacent-cell
+/// spacing by `FUN_004904e0`; it is not an independent Z anchor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CellGrid {
     pub width: i32,
     pub height: i32,
     pub cell_count: i32,
     pub cell_size: i32,
-    pub anchor_x: i32,
-    pub anchor_z: i32,
-    pub anchor_z2: i32,
+    pub min_x: i32,
+    pub half_cell: i32,
+    pub max_z: i32,
 }
 
 impl CellGrid {
     /// Maps a world XZ point to its cell index (`FUN_00490af0`):
-    /// `row = |z - anchor_z - anchor_z2| / cell_size`,
-    /// `col = |x - anchor_x + anchor_z| / cell_size`,
+    /// `row = |z - half_cell - max_z| / cell_size`,
+    /// `col = |x - min_x + half_cell| / cell_size`,
     /// `cell = width * row + col`. An out-of-range result (or a zero cell size)
     /// clamps to `0`, matching the shipped fallback.
     pub fn cell_of_point(&self, x: i32, z: i32) -> i32 {
         if self.cell_size == 0 {
             return 0;
         }
-        let row = self.axis_cell((z - self.anchor_z - self.anchor_z2).unsigned_abs());
-        let col = self.axis_cell((x - self.anchor_x + self.anchor_z).unsigned_abs());
+        let row = self.axis_cell((z - self.half_cell - self.max_z).unsigned_abs());
+        let col = self.axis_cell((x - self.min_x + self.half_cell).unsigned_abs());
         let cell = self.width * row + col;
         if cell < 0 || self.cell_count <= cell {
             0
@@ -251,9 +252,9 @@ mod tests {
             height: 8,
             cell_count: 64,
             cell_size: 10,
-            anchor_x: 0,
-            anchor_z: 0,
-            anchor_z2: 0,
+            min_x: 0,
+            half_cell: 0,
+            max_z: 0,
         }
     }
 
@@ -279,6 +280,17 @@ mod tests {
         let mut degenerate = g;
         degenerate.cell_size = 0;
         assert_eq!(degenerate.cell_of_point(25, 35), 0);
+    }
+
+    #[test]
+    fn cell_mapping_uses_derived_half_cell_not_a_second_z_anchor() {
+        let g = CellGrid {
+            min_x: 100,
+            half_cell: 5,
+            max_z: 200,
+            ..grid()
+        };
+        assert_eq!(g.cell_of_point(105, 195), 9);
     }
 
     #[test]
