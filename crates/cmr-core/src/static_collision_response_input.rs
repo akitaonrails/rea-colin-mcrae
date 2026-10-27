@@ -11,6 +11,35 @@ const CORNER_PROJECTED_LIMIT: Fixed16 = Fixed16::from_raw(0x8000);
 const FALLBACK_PROJECTED_LIMIT: Fixed16 = Fixed16::from_raw(0xa_0000);
 const X_MARGIN: Fixed16 = Fixed16::from_raw(0x1_8000);
 const Z_MARGIN: Fixed16 = Fixed16::from_raw(0x9999);
+const CANONICAL_SEED: Vec3 = Vec3::new(
+    Fixed16::from_raw(0x1_8000),
+    Fixed16::ZERO,
+    Fixed16::from_raw(0x9999),
+);
+
+/// Literal-derived canonical axes written to globals `0x552f28/0x552f34`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StaticResponseCanonicalAxes {
+    pub axis_552f28: Vec3,
+    pub axis_552f34: Vec3,
+}
+
+/// Rebuild the two canonical response axes without reading game payloads.
+///
+/// Native `FUN_0043c010` constructs these once during race/session setup from
+/// literal seed `(0x18000, 0, 0x9999)`. Regenerating the pure value is
+/// equivalent; it is not per-car or per-frame mutable state.
+#[must_use]
+pub const fn static_response_canonical_axes() -> StaticResponseCanonicalAxes {
+    let square_sum = CANONICAL_SEED.dot(CANONICAL_SEED).raw() as u32;
+    let length = crate::legacy_math::sqrt_q16(square_sum) as i32;
+    let reciprocal = ((1_i64 << 32) / length as i64) as i32;
+    let normalized = CANONICAL_SEED.scale(Fixed16::from_raw(reciprocal));
+    StaticResponseCanonicalAxes {
+        axis_552f28: Vec3::new(normalized.z.neg(), Fixed16::ZERO, normalized.x.neg()),
+        axis_552f34: Vec3::new(normalized.z.neg(), Fixed16::ZERO, normalized.x),
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StaticResponseInputProducerState {
@@ -185,6 +214,33 @@ mod tests {
             fallback_axis_258: v(2, 5, 8),
             fallback_axis_270: v(3, 6, 9),
         }
+    }
+
+    #[test]
+    fn canonical_axes_match_literal_seed_formula_signs_and_setup_lifetime() {
+        let square_sum = CANONICAL_SEED.dot(CANONICAL_SEED).raw() as u32;
+        let length = crate::legacy_math::sqrt_q16(square_sum) as i32;
+        let reciprocal = ((1_i64 << 32) / i64::from(length)) as i32;
+        let normalized = CANONICAL_SEED.scale(q(reciprocal));
+        let axes = static_response_canonical_axes();
+
+        assert_eq!(
+            axes.axis_552f28,
+            v(
+                normalized.z.raw().wrapping_neg(),
+                0,
+                normalized.x.raw().wrapping_neg()
+            )
+        );
+        assert_eq!(
+            axes.axis_552f34,
+            v(normalized.z.raw().wrapping_neg(), 0, normalized.x.raw())
+        );
+        assert_eq!(axes.axis_552f28.x, axes.axis_552f34.x);
+        assert_eq!(axes.axis_552f28.z, axes.axis_552f34.z.neg());
+        assert_eq!(axes.axis_552f28, v(-0x5f13, 0, -0xedb2));
+        assert_eq!(axes.axis_552f34, v(-0x5f13, 0, 0xedb2));
+        assert_eq!(static_response_canonical_axes(), axes);
     }
 
     #[test]

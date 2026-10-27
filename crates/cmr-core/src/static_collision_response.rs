@@ -4,10 +4,11 @@
 //! The native routine consumes a normal left in globals by the narrow phase,
 //! mutates the car's pending linear/angular corrections and emits damage,
 //! sound, and force-feedback calls. This module keeps those external calls as
-//! ordered [`StaticResponseEvent`] values. Damage severity is pure recovered
-//! arithmetic. The supplied effect handle is a FIFO replay/test seam for the
-//! still-external mutable damage subsystem, not a complete live owner. A live
-//! integration needs a future resumable boundary around that mutation.
+//! ordered [`StaticResponseEvent`] values. Damage threshold entry and severity
+//! are pure recovered arithmetic. The supplied effect handle is a FIFO
+//! replay/test seam for the still-external mutable damage subsystem, not a
+//! complete live owner. A live integration needs a future resumable boundary
+//! around that mutation.
 //!
 //! The narrow-phase output pointer passed as the native third argument is not
 //! represented: the response routine does not read it. The square-root table
@@ -167,23 +168,66 @@ pub struct StaticCollisionResponseOutcome {
     /// Exact pure severity computed by `FUN_0041f630` for a new contact. A
     /// repeated previous-tick contact does not invoke that routine.
     pub damage_severity: Option<Fixed16>,
+    /// Whether the new-contact call entered `FUN_0041f630`'s mutable damage
+    /// sequence. Exact threshold equality enters with zero severity.
+    pub damage_sequence_invoked: bool,
 }
 
-/// Pure scalar portion of `FUN_0041f630`, computed from the current total
+/// Pure threshold/severity portion of `FUN_0041f630`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StaticDamageEvaluation {
+    pub severity: Fixed16,
+    /// The native `length >= 0x2624` branch enters the mutable damage sequence.
+    pub damage_sequence_invoked: bool,
+}
+
+/// Compute damage threshold entry and severity from the current total
 /// accumulated linear correction at `car+0x3cc`.
 #[must_use]
-pub const fn static_damage_severity(linear_correction_3cc: Vec3) -> Fixed16 {
+pub const fn evaluate_static_damage(linear_correction_3cc: Vec3) -> StaticDamageEvaluation {
     let square_sum = linear_correction_3cc.dot(linear_correction_3cc).raw() as u32;
     let length = crate::legacy_math::sqrt_q16(square_sum) as i32;
+    evaluate_static_damage_length(length)
+}
+
+/// Evaluate the recovered strict threshold branch from its native square-root
+/// output. Keeping this scalar boundary explicit preserves the exact equality
+/// contract even if the lookup table does not publish every integer length.
+#[must_use]
+pub const fn evaluate_static_damage_length(length: i32) -> StaticDamageEvaluation {
     if length < 0x2624 {
-        return Fixed16::ZERO;
+        return StaticDamageEvaluation {
+            severity: Fixed16::ZERO,
+            damage_sequence_invoked: false,
+        };
     }
     let severity = Fixed16::from_raw(length.wrapping_sub(0x2624)).mul(Fixed16::from_raw(0xf536));
-    if severity.raw() > 0x1_0000 {
+    let severity = if severity.raw() > 0x1_0000 {
         Fixed16::ONE
     } else {
         severity
+    };
+    StaticDamageEvaluation {
+        severity,
+        damage_sequence_invoked: true,
     }
+}
+
+/// Whether the native mutable damage sequence may return a contact-effect
+/// handle for this threshold evaluation.
+#[must_use]
+pub const fn static_damage_emits_contact_effect(
+    evaluation: StaticDamageEvaluation,
+    effect_handle: i32,
+) -> bool {
+    evaluation.damage_sequence_invoked && effect_handle != 0
+}
+
+/// Exact severity projection retained for callers that do not need the
+/// distinct threshold-entry bit.
+#[must_use]
+pub const fn static_damage_severity(linear_correction_3cc: Vec3) -> Fixed16 {
+    evaluate_static_damage(linear_correction_3cc).severity
 }
 
 const fn abs_wrapping(value: Fixed16) -> Fixed16 {
@@ -265,11 +309,15 @@ pub fn apply_static_collision_response(
     state.linear_correction_3cc = state.linear_correction_3cc.add(full_world_correction);
 
     let previous_contact = state.history.contained_last_tick(input.contact_id);
-    let damage_severity = if previous_contact {
+    let damage_evaluation = if previous_contact {
         None
     } else {
-        Some(static_damage_severity(state.linear_correction_3cc))
+        Some(evaluate_static_damage(state.linear_correction_3cc))
     };
+    let damage_severity = damage_evaluation.map(|evaluation| evaluation.severity);
+    let damage_sequence_invoked = damage_evaluation
+        .map(|evaluation| evaluation.damage_sequence_invoked)
+        .unwrap_or(false);
     if !previous_contact {
         events.push(StaticResponseEvent::RequestDamage {
             linear_correction: state.linear_correction_3cc,
@@ -294,11 +342,13 @@ pub fn apply_static_collision_response(
             }
         } else {
             let damage = input.damage_result;
-            // Native damage cannot publish a handle for zero recovered
-            // severity. The kernel rejects such replay inputs up front; keep
-            // this direct pure entry point defensive as well.
             let severity = damage_severity.expect("new contact computes damage severity");
-            if severity.raw() > 0 && damage.effect_handle != 0 {
+            // Handle production follows threshold-branch entry, not positive
+            // severity: exact equality enters the mutable sequence at zero.
+            if static_damage_emits_contact_effect(
+                damage_evaluation.expect("new contact computes damage evaluation"),
+                damage.effect_handle,
+            ) {
                 events.push(StaticResponseEvent::ContactEffect {
                     handle: damage.effect_handle,
                     world_contact,
@@ -387,6 +437,7 @@ pub fn apply_static_collision_response(
         debug_material_write,
         discarded_material_tangent_measure,
         damage_severity,
+        damage_sequence_invoked,
     }
 }
 
@@ -439,6 +490,12 @@ mod tests {
             damage_result: DamageResult::default(),
             capture_debug_material: false,
         }
+    }
+
+    fn first_damage_sequence_input() -> i32 {
+        (0..0x4000)
+            .find(|raw| evaluate_static_damage(v(*raw, 0, 0)).damage_sequence_invoked)
+            .expect("the searched scalar range crosses the native threshold")
     }
 
     #[test]
@@ -498,6 +555,7 @@ mod tests {
         car.history.previous_len = 1;
         let hit = apply_static_collision_response(car, input());
         assert!(hit.previous_contact);
+        assert!(!hit.damage_sequence_invoked);
         assert!(hit.events.is_empty());
         assert_eq!(hit.state.history.current_ids[0], 0);
         assert_eq!(hit.state.history.current_len, 1);
@@ -566,17 +624,41 @@ mod tests {
     }
 
     #[test]
-    fn zero_severity_defensively_suppresses_impossible_effect_handle() {
+    fn below_threshold_suppresses_impossible_effect_handle() {
         let mut request = input();
         request.damage_result = DamageResult { effect_handle: 9 };
         let hit = apply_static_collision_response(state(), request);
         assert_eq!(hit.damage_severity, Some(ZERO));
+        assert!(!hit.damage_sequence_invoked);
         assert_eq!(
             hit.events,
             [StaticResponseEvent::RequestDamage {
                 linear_correction: Vec3::ZERO,
             }]
         );
+    }
+
+    #[test]
+    fn threshold_equality_enters_damage_sequence_with_zero_severity() {
+        let below = evaluate_static_damage_length(0x2623);
+        assert_eq!(
+            below,
+            StaticDamageEvaluation {
+                severity: ZERO,
+                damage_sequence_invoked: false,
+            }
+        );
+        let equality = evaluate_static_damage_length(0x2624);
+        assert_eq!(
+            equality,
+            StaticDamageEvaluation {
+                severity: ZERO,
+                damage_sequence_invoked: true,
+            }
+        );
+        assert!(!static_damage_emits_contact_effect(below, 9));
+        assert!(static_damage_emits_contact_effect(equality, 9));
+        assert!(!static_damage_emits_contact_effect(equality, 0));
     }
 
     #[test]
@@ -674,27 +756,33 @@ mod tests {
 
     #[test]
     fn damage_severity_obeys_native_sqrt_threshold_scale_and_cap() {
-        assert_eq!(static_damage_severity(Vec3::ZERO), ZERO);
-
-        let first_above_threshold = (0..0x4000)
-            .find(|raw| {
-                let value = v(*raw, 0, 0);
-                crate::legacy_math::sqrt_q16(value.dot(value).raw() as u32) >= 0x2624
-            })
-            .unwrap();
         assert_eq!(
-            static_damage_severity(v(first_above_threshold - 1, 0, 0)),
-            ZERO
+            evaluate_static_damage(Vec3::ZERO),
+            StaticDamageEvaluation {
+                severity: ZERO,
+                damage_sequence_invoked: false,
+            }
+        );
+
+        let first_above_threshold = first_damage_sequence_input();
+        assert_eq!(
+            evaluate_static_damage(v(first_above_threshold - 1, 0, 0)),
+            StaticDamageEvaluation {
+                severity: ZERO,
+                damage_sequence_invoked: false,
+            }
         );
         let length = crate::legacy_math::sqrt_q16(
             v(first_above_threshold, 0, 0)
                 .dot(v(first_above_threshold, 0, 0))
                 .raw() as u32,
         ) as i32;
+        let equality = evaluate_static_damage(v(first_above_threshold, 0, 0));
         assert_eq!(
-            static_damage_severity(v(first_above_threshold, 0, 0)),
+            equality.severity,
             q(length.wrapping_sub(0x2624)).mul(q(0xf536))
         );
+        assert!(equality.damage_sequence_invoked);
         assert_eq!(static_damage_severity(v(0x2_0000, 0, 0)), ONE);
     }
 

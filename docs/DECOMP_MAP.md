@@ -395,14 +395,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T01:20:00Z
-milestone=recover-static-response-live-inputs
+updated_utc=2026-10-28T01:40:00Z
+milestone=derive-canonical-contact-axes-and-damage-branch
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
-current_focus=canonical-contact-axes-mode-damage-resume-and-session-publication
+current_focus=contact-count-674-damage-resume-and-session-publication
 next_exit_gate=controlled-live-static-object-contact-and-depenetration
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

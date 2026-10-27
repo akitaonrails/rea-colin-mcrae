@@ -9,11 +9,12 @@ use crate::{
     static_collision_response::{
         DamageResult, ResponseBasis, STATIC_RESPONSE_CONTACT_ID, StaticCollisionResponseInput,
         StaticCollisionResponseOutcome, StaticCollisionResponseState,
-        apply_static_collision_response, static_damage_severity,
+        apply_static_collision_response, evaluate_static_damage,
+        static_damage_emits_contact_effect,
     },
     static_collision_response_input::{
         StaticResponseInputProducerError, StaticResponseInputProducerState,
-        StaticResponseProducedInput, produce_static_response_input,
+        StaticResponseProducedInput, produce_static_response_input, static_response_canonical_axes,
     },
     static_world_collision::{
         AlternateStaticNarrowResult, StaticCarCollisionFrame, StaticCarNarrowInput,
@@ -54,8 +55,6 @@ pub struct StaticKernelContext {
     pub car_type_738: i8,
     pub response_mode_674: i32,
     pub velocity_normalizer_ec: Fixed16,
-    pub canonical_axis_552f28: Vec3,
-    pub canonical_axis_552f34: Vec3,
     pub fallback_axis_258: Vec3,
 }
 
@@ -111,6 +110,8 @@ pub enum StaticKernelError {
         collision_ordinal: u16,
         source: StaticResponseInputProducerError,
     },
+    /// Replay supplied a handle although the strict native threshold branch
+    /// did not enter the external mutable damage sequence.
     ImpossibleEffectHandle {
         collision_ordinal: u16,
         effect_handle: i32,
@@ -218,6 +219,7 @@ impl StaticCollisionKernel<StaticNarrowObb> for RecoveredStaticCollisionKernel {
             .as_ref()
             .expect("narrow input initializes state")
             .velocity_d4;
+        let canonical_axes = static_response_canonical_axes();
         let produced_input = produce_static_response_input(StaticResponseInputProducerState {
             existing_normal: narrow_normal,
             contact_3f0,
@@ -226,8 +228,8 @@ impl StaticCollisionKernel<StaticNarrowObb> for RecoveredStaticCollisionKernel {
             velocity_normalizer_ec: context.velocity_normalizer_ec,
             velocity_d4,
             basis_2a0: context.response_basis_2a0,
-            canonical_axis_552f28: context.canonical_axis_552f28,
-            canonical_axis_552f34: context.canonical_axis_552f34,
+            canonical_axis_552f28: canonical_axes.axis_552f28,
+            canonical_axis_552f34: canonical_axes.axis_552f34,
             fallback_axis_258: context.fallback_axis_258,
             fallback_axis_270: context.projected_axis_270,
         })
@@ -256,9 +258,14 @@ impl StaticCollisionKernel<StaticNarrowObb> for RecoveredStaticCollisionKernel {
         let previous_contact = running
             .history
             .contained_last_tick(STATIC_RESPONSE_CONTACT_ID);
+        let damage_evaluation =
+            (!previous_contact).then(|| evaluate_static_damage(prospective_linear_correction));
         if !previous_contact
-            && static_damage_severity(prospective_linear_correction) == Fixed16::ZERO
             && external.damage_result.effect_handle != 0
+            && !static_damage_emits_contact_effect(
+                damage_evaluation.expect("new contact computes damage evaluation"),
+                external.damage_result.effect_handle,
+            )
         {
             return Err(StaticKernelError::ImpossibleEffectHandle {
                 collision_ordinal: record.collision_ordinal,
@@ -319,7 +326,7 @@ impl StaticCollisionKernel<StaticNarrowObb> for RecoveredStaticCollisionKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::static_collision_response::StaticResponseEvent;
+    use crate::static_collision_response::{StaticResponseEvent, static_damage_severity};
 
     const ONE: i32 = 0x1_0000;
 
@@ -381,8 +388,6 @@ mod tests {
             car_type_738: 0,
             response_mode_674: 3,
             velocity_normalizer_ec: q(ONE),
-            canonical_axis_552f28: v(ONE, 0, 0),
-            canonical_axis_552f34: v(0, 0, ONE),
             fallback_axis_258: v(0, 0, ONE),
         }
     }
@@ -527,7 +532,6 @@ mod tests {
     fn normal_hit_uses_post_narrow_producer_normal_and_limits() {
         let mut producer_context = context();
         producer_context.response_mode_674 = 4;
-        producer_context.canonical_axis_552f28 = v(0, ONE, 0);
         let mut input_frame = frame();
         input_frame.angular_limit_2c.x = q(i32::MIN.wrapping_add(0x1_8000));
         input_frame.angular_limit_2c.z = q(i32::MIN.wrapping_add(0x9999));
@@ -550,11 +554,12 @@ mod tests {
         else {
             unreachable!()
         };
-        assert_ne!(narrow.contact_normal, Some(v(0, ONE, 0)));
-        assert_eq!(produced_input.normal, v(0, ONE, 0));
+        let canonical = static_response_canonical_axes().axis_552f28;
+        assert_ne!(narrow.contact_normal, Some(canonical));
+        assert_eq!(produced_input.normal, canonical);
         assert_eq!(produced_input.projected_limit, q(0x8000));
         assert_eq!(contribution.contact_normal, produced_input.normal);
-        assert_eq!(response.full_world_correction, Vec3::ZERO);
+        assert_eq!(response.body_correction, response.full_world_correction);
     }
 
     #[test]
@@ -587,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn impossible_zero_severity_effect_handle_is_rejected_atomically() {
+    fn below_threshold_effect_handle_is_rejected_atomically() {
         let mut zero_context = context();
         zero_context.velocity_d4 = Vec3::ZERO;
         let external = StaticKernelExternalInputs {
@@ -613,6 +618,51 @@ mod tests {
         let state = kernel.state.unwrap();
         assert_eq!(state.position, input_frame.center);
         assert_eq!(state.velocity_d4, Vec3::ZERO);
+    }
+
+    #[test]
+    fn first_entered_damage_branch_effect_handle_commits_atomically() {
+        let threshold_input = (0..0x4000)
+            .find(|raw| evaluate_static_damage(v(*raw, 0, 0)).damage_sequence_invoked)
+            .expect("threshold must be reachable on one axis");
+        let damage = evaluate_static_damage(v(threshold_input, 0, 0));
+        assert!(damage.damage_sequence_invoked);
+        assert!(damage.severity > Fixed16::ZERO);
+
+        let mut zero_context = context();
+        zero_context.velocity_d4 = Vec3::ZERO;
+        let external = StaticKernelExternalInputs {
+            damage_result: DamageResult { effect_handle: 9 },
+            ..Default::default()
+        };
+        let mut entered_running = running();
+        entered_running.linear_impulse_3cc = v(threshold_input, 0, 0);
+        let input_frame = frame();
+        let mut kernel = RecoveredStaticCollisionKernel::new(zero_context, [external]);
+        let StaticCollisionResolution::Normal(_) = kernel
+            .resolve(&input_frame, &record(5, object(0)), entered_running)
+            .unwrap()
+        else {
+            panic!("the first entered damage branch must commit");
+        };
+        assert!(kernel.external_inputs.is_empty());
+        let StaticKernelHit::Normal {
+            narrow, response, ..
+        } = &kernel.hits[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(kernel.state().unwrap().position, narrow.final_position);
+        assert!(response.damage_sequence_invoked);
+        assert_eq!(response.damage_severity, Some(damage.severity));
+        assert!(
+            response
+                .events
+                .contains(&StaticResponseEvent::ContactEffect {
+                    handle: 9,
+                    world_contact: response.world_contact,
+                })
+        );
     }
 
     #[test]
