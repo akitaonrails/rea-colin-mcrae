@@ -5,14 +5,17 @@
 //! environment fallback explicitly, which keeps data selection deterministic
 //! and straightforward to exercise in contract tests.
 
+use std::convert::Infallible;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use cmr_assets::{
-    AssetStore, AssetStoreError, ReviewedProfile, ReviewedProfileError,
-    ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile, ReviewedSurfaceProfileError,
-    SurfaceCapabilityStore, SurfaceTableStore, SurfaceTableStoreError,
+    AssetStore, AssetStoreError, CarSelectorStore, CarSelectorStoreError, CompiledInitializerStore,
+    CompiledInitializerStoreError, ReviewedCarSelectorProfile, ReviewedCarSelectorProfileError,
+    ReviewedCompiledInitializerProfile, ReviewedCompiledInitializerProfileError, ReviewedProfile,
+    ReviewedProfileError, ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile,
+    ReviewedSurfaceProfileError, SurfaceCapabilityStore, SurfaceTableStore, SurfaceTableStoreError,
 };
 use cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
 use cmr_core::c3d_mesh::node_mesh_vertex_type;
@@ -22,7 +25,13 @@ use cmr_core::c3d_transform::scene_world_transforms;
 use cmr_core::camera_mode::{CameraMode, ViewGate};
 use cmr_core::camera_view::ViewController;
 use cmr_core::car_resources::{InRaceBodyLoadBranch, car_body_path, in_race_car_load_policy};
-use cmr_core::compiled_car_initializer::{CompiledControlFamilies, CompiledHalfSignState};
+use cmr_core::compiled_car_initializer::{
+    CompiledCaseWords, CompiledControlFamilies, CompiledDirectCaseSet, CompiledDirectCaseSetError,
+    CompiledEightLaneExecutionFailure, CompiledEightLaneExecutionState, CompiledHalfSignState,
+    CompiledLaneDispatchFailurePhase, CompiledSetupPoseError, CompiledSetupPoseInputs,
+    CompiledSetupPoseLaneInputs, DecodedCompiledLaneGeometryError,
+    execute_stage_compiled_setup_pose,
+};
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
 use cmr_core::drive_controls::DriveResponse;
@@ -59,6 +68,7 @@ use cmr_core::root_menu_visual::{
 use cmr_core::scalar_tween::ScalarTween;
 use cmr_core::settings_store::{DataPaths, SettingsError, SettingsImage};
 use cmr_core::stage_checkpoints::StageProgress;
+use cmr_core::stage_compiled_geometry::{StageCompiledGeometry, StageCompiledGeometryLoadError};
 use cmr_core::stage_timing::elapsed_centiseconds;
 use cmr_core::startup::{StartupLanguage, StartupScreen};
 use cmr_core::startup_display::{
@@ -126,6 +136,12 @@ const SURFACE_CAPABILITY_STORE_DIRECTORY: &str = "official-eu-surface-capabiliti
 const REVIEWED_SURFACE_TABLE_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-surface-tables-v1.json");
 const SURFACE_TABLE_STORE_DIRECTORY: &str = "official-eu-surface-coefficients";
+const REVIEWED_COMPILED_INITIALIZER_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-compiled-car-initializer-v1.json");
+const COMPILED_INITIALIZER_STORE_DIRECTORY: &str = "official-eu-compiled-car-initializer";
+const REVIEWED_CAR_SELECTOR_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-car-selector-map-v1.json");
+const CAR_SELECTOR_STORE_DIRECTORY: &str = "official-eu-car-selectors";
 const ROOT_EXTENT: DisplayExtent = DisplayExtent {
     width: 640,
     height: 480,
@@ -1612,7 +1628,17 @@ fn load_native_stage_palette(
         .entries)
 }
 
-fn native_stage_start(nodes: &[CatNode]) -> Result<(CarState, [i32; 16]), StageFrameError> {
+type ActorMatrixRows = [[i32; 3]; 3];
+type NativeStageStart = (CarState, [i32; 16], ActorMatrixRows);
+type NativeStageSetup = (
+    StageRenderResources,
+    Vec<CatNode>,
+    CarState,
+    [i32; 16],
+    ActorMatrixRows,
+);
+
+fn native_stage_start(nodes: &[CatNode]) -> Result<NativeStageStart, StageFrameError> {
     let node = nodes.first().ok_or(StageFrameError::MissingNodes)?;
     let [dir_x, dir_y, dir_z] = node.direction;
     if dir_x == 0 && dir_z == 0 {
@@ -1647,10 +1673,24 @@ fn native_stage_start(nodes: &[CatNode]) -> Result<(CarState, [i32; 16]), StageF
     start.motion.lane_source_s = column(2);
     let mut camera = ViewHarness::new();
     let initial_camera = camera.update(false, position, heading, false);
-    Ok((start, initial_camera))
+    let harness = start.motion.basis;
+    let negate = |vector: Vec3| {
+        [
+            vector.x.raw().wrapping_neg(),
+            vector.y.raw().wrapping_neg(),
+            vector.z.raw().wrapping_neg(),
+        ]
+    };
+    let components = |vector: Vec3| [vector.x.raw(), vector.y.raw(), vector.z.raw()];
+    let actor_rows = [
+        negate(harness[2]),
+        components(harness[1]),
+        components(harness[0]),
+    ];
+    Ok((start, initial_camera, actor_rows))
 }
 
-fn native_stage_start_from_csp(start_record: CspStart) -> (CarState, [i32; 16]) {
+fn native_stage_start_from_csp(start_record: CspStart) -> NativeStageStart {
     let position = Vec3::new(
         Fixed16::from_raw(start_record.position[0]),
         Fixed16::from_raw(start_record.position[1]),
@@ -1687,13 +1727,16 @@ fn native_stage_start_from_csp(start_record: CspStart) -> (CarState, [i32; 16]) 
     start.motion.lane_source_s = basis[2];
     let mut camera = ViewHarness::new();
     let initial_camera = camera.update(false, position, heading, false);
-    (start, initial_camera)
+    let actor_rows = native_basis.map(|vector| [vector.x.raw(), vector.y.raw(), vector.z.raw()]);
+    (start, initial_camera, actor_rows)
 }
 
 fn car_model_world_q16(car_world: &[i32; 16]) -> [i32; 16] {
-    // Race-car C3D geometry is authored with local +X forward and -Z right;
-    // the gameplay harness publishes +Z forward and +X right. Negating both
-    // transverse columns preserves a proper rotation (and therefore winding).
+    // A controlled chase-camera differential identifies this as the rear-view
+    // orientation: local +X maps to harness forward and local -Z maps to
+    // harness right. Negating two transverse axes preserves a proper rotation
+    // (and therefore winding). Wheel-node positions alone do not establish
+    // front/rear semantics and are not used by this adapter.
     [
         car_world[8],
         car_world[9],
@@ -2506,6 +2549,8 @@ pub fn run_headless_stage_frame(
 pub enum WindowedStageFrameError {
     /// Loading or composing the stage frame failed.
     Setup(StageFrameError),
+    /// Authenticated compiled setup-time pose inputs could not be applied.
+    CompiledPose(SessionCompiledPoseError),
     /// Authenticated session input or four-wheel production failed.
     Session(SessionFourWheelError),
     /// The SDL host failed to present the composed frame.
@@ -2515,9 +2560,10 @@ pub enum WindowedStageFrameError {
 impl WindowedStageFrameError {
     /// Stable error category for path-free process diagnostics.
     #[must_use]
-    pub const fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> &'static str {
         match self {
             Self::Setup(source) => source.kind(),
+            Self::CompiledPose(source) => source.kind(),
             Self::Session(_) => "four-wheel-session",
             Self::Present(_) => "present-host",
         }
@@ -2540,6 +2586,7 @@ impl fmt::Display for WindowedStageFrameError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Setup(source) => source.fmt(formatter),
+            Self::CompiledPose(source) => write!(formatter, "compiled pose setup failed: {source}"),
             Self::Session(source) => write!(formatter, "four-wheel session failed: {source}"),
             Self::Present(source) => write!(formatter, "cannot present stage frame: {source}"),
         }
@@ -2550,6 +2597,7 @@ impl std::error::Error for WindowedStageFrameError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Setup(source) => Some(source),
+            Self::CompiledPose(source) => Some(source),
             Self::Session(source) => Some(source),
             Self::Present(source) => Some(source),
         }
@@ -3220,13 +3268,319 @@ impl SessionWheelInputs {
     }
 }
 
+/// Loader-zeroed lane state owned for the lifetime of one native game session.
+///
+/// The shipped PE loader establishes these zeros once. Per-car setup only
+/// re-zeroes the eight handles, so repeated setup on the same owner preserves
+/// every other lane field until the recovered executor changes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FreshProcessLaneState {
+    state: CompiledEightLaneExecutionState,
+    gate_words: [i32; 8],
+    drive_words: [i32; 8],
+    first_four_subtractions: [i32; 4],
+}
+
+impl FreshProcessLaneState {
+    fn new() -> Self {
+        Self {
+            state: CompiledEightLaneExecutionState {
+                handles: [0; 8],
+                type_words: [0; 8],
+                output_vectors: [[0; 3]; 8],
+                lane_words: [0; 8],
+                accumulator_words: [0; 8],
+                latch_67c: 0,
+            },
+            gate_words: [0; 8],
+            drive_words: [0; 8],
+            first_four_subtractions: [0; 4],
+        }
+    }
+
+    fn begin_car_setup(&mut self) -> CompiledEightLaneExecutionState {
+        self.state.handles = [0; 8];
+        self.state
+    }
+
+    fn publish(&mut self, state: CompiledEightLaneExecutionState) {
+        self.state = state;
+    }
+
+    fn inputs(&self) -> CompiledSetupPoseLaneInputs {
+        CompiledSetupPoseLaneInputs {
+            gate_words: self.gate_words,
+            drive_words: self.drive_words,
+            first_four_subtractions: self.first_four_subtractions,
+        }
+    }
+}
+
+pub type SessionCompiledPoseCoreError =
+    CompiledSetupPoseError<DecodedCompiledLaneGeometryError, Infallible>;
+
+#[derive(Debug)]
+pub enum SessionCompiledPoseError {
+    AssetProfile(ReviewedProfileError),
+    AssetStore(AssetStoreError),
+    CompiledProfile(ReviewedCompiledInitializerProfileError),
+    CompiledStore(CompiledInitializerStoreError),
+    DirectCases(CompiledDirectCaseSetError),
+    SelectorProfile(ReviewedCarSelectorProfileError),
+    SelectorStore(CarSelectorStoreError),
+    UnknownCarCode(String),
+    UnsupportedStage(String),
+    Geometry(StageCompiledGeometryLoadError),
+    Execution(SessionCompiledPoseCoreError),
+}
+
+fn compiled_setup_failure_metadata<ProviderError, ConfigError>(
+    error: &CompiledSetupPoseError<ProviderError, ConfigError>,
+) -> (&'static str, Option<usize>) {
+    match error {
+        CompiledSetupPoseError::CommonPrefix(_) => ("compiled-pose-common-prefix", None),
+        CompiledSetupPoseError::Lanes(CompiledEightLaneExecutionFailure::Dispatch {
+            failed_lane,
+            failure,
+            ..
+        }) => {
+            let kind = match failure.phase {
+                CompiledLaneDispatchFailurePhase::Validate => "compiled-pose-lane-validate",
+                CompiledLaneDispatchFailurePhase::Search => "compiled-pose-lane-search",
+                CompiledLaneDispatchFailurePhase::Build => "compiled-pose-lane-build",
+            };
+            (kind, Some(*failed_lane))
+        }
+        CompiledSetupPoseError::Lanes(CompiledEightLaneExecutionFailure::Config {
+            failed_lane,
+            ..
+        }) => ("compiled-pose-lane-config", Some(*failed_lane)),
+    }
+}
+
+impl SessionCompiledPoseError {
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::AssetProfile(_) => "compiled-pose-asset-profile",
+            Self::AssetStore(_) => "compiled-pose-asset-store",
+            Self::CompiledProfile(_) => "compiled-pose-case-profile",
+            Self::CompiledStore(_) => "compiled-pose-case-store",
+            Self::DirectCases(_) => "compiled-pose-case-schema",
+            Self::SelectorProfile(_) => "compiled-pose-selector-profile",
+            Self::SelectorStore(_) => "compiled-pose-selector-store",
+            Self::UnknownCarCode(_) => "compiled-pose-unknown-car",
+            Self::UnsupportedStage(_) => "compiled-pose-unsupported-stage",
+            Self::Geometry(_) => "compiled-pose-geometry",
+            Self::Execution(error) => compiled_setup_failure_metadata(error).0,
+        }
+    }
+
+    #[must_use]
+    pub fn failed_lane(&self) -> Option<usize> {
+        match self {
+            Self::Execution(error) => compiled_setup_failure_metadata(error).1,
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for SessionCompiledPoseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AssetProfile(error) => {
+                write!(formatter, "invalid reviewed asset profile: {error}")
+            }
+            Self::AssetStore(error) => {
+                write!(formatter, "cannot open authenticated asset store: {error}")
+            }
+            Self::CompiledProfile(error) => {
+                write!(formatter, "invalid compiled-case profile: {error}")
+            }
+            Self::CompiledStore(error) => {
+                write!(formatter, "cannot open compiled-case store: {error}")
+            }
+            Self::DirectCases(error) => write!(formatter, "cannot bind compiled cases: {error}"),
+            Self::SelectorProfile(error) => {
+                write!(formatter, "invalid car-selector profile: {error}")
+            }
+            Self::SelectorStore(error) => {
+                write!(formatter, "cannot open car-selector store: {error}")
+            }
+            Self::UnknownCarCode(code) => write!(
+                formatter,
+                "car code {code:?} has no recovered initializer selector"
+            ),
+            Self::UnsupportedStage(stage) => write!(
+                formatter,
+                "stage {stage:?} has no ordinary-stage authenticated geometry identity"
+            ),
+            Self::Geometry(error) => error.fmt(formatter),
+            Self::Execution(CompiledSetupPoseError::CommonPrefix(error)) => error.fmt(formatter),
+            Self::Execution(CompiledSetupPoseError::Lanes(
+                CompiledEightLaneExecutionFailure::Dispatch {
+                    failed_lane,
+                    failure,
+                    ..
+                },
+            )) => write!(
+                formatter,
+                "compiled setup-time pose lane {failed_lane} {:?} failed: {:?}",
+                failure.phase, failure.provider_error
+            ),
+            Self::Execution(CompiledSetupPoseError::Lanes(
+                CompiledEightLaneExecutionFailure::Config { config_error, .. },
+            )) => match *config_error {},
+        }
+    }
+}
+
+impl std::error::Error for SessionCompiledPoseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::AssetProfile(error) => Some(error),
+            Self::AssetStore(error) => Some(error),
+            Self::CompiledProfile(error) => Some(error),
+            Self::CompiledStore(error) => Some(error),
+            Self::DirectCases(error) => Some(error),
+            Self::SelectorProfile(error) => Some(error),
+            Self::SelectorStore(error) => Some(error),
+            Self::Geometry(error) => Some(error),
+            Self::Execution(CompiledSetupPoseError::CommonPrefix(error)) => Some(error),
+            Self::UnknownCarCode(_)
+            | Self::UnsupportedStage(_)
+            | Self::Execution(CompiledSetupPoseError::Lanes(_)) => None,
+        }
+    }
+}
+
+/// Authenticated compiled inputs and mutable loader-zero state for one window.
+struct SessionCompiledPose {
+    direct_cases: CompiledDirectCaseSet,
+    geometry: StageCompiledGeometry,
+    selector: u32,
+    lanes: FreshProcessLaneState,
+}
+
+impl SessionCompiledPose {
+    fn open(
+        runtime_data: &Path,
+        stage: &str,
+        car_code: &str,
+    ) -> Result<Self, SessionCompiledPoseError> {
+        let reviewed_assets = ReviewedProfile::from_json(REVIEWED_PROFILE)
+            .map_err(SessionCompiledPoseError::AssetProfile)?;
+        let assets = AssetStore::open(runtime_data, &reviewed_assets, DecodeLimits::default())
+            .map_err(SessionCompiledPoseError::AssetStore)?;
+
+        let reviewed_cases =
+            ReviewedCompiledInitializerProfile::from_json(REVIEWED_COMPILED_INITIALIZER_PROFILE)
+                .map_err(SessionCompiledPoseError::CompiledProfile)?;
+        let case_store = CompiledInitializerStore::open(
+            &session_sidecar_store(runtime_data, COMPILED_INITIALIZER_STORE_DIRECTORY),
+            &reviewed_cases,
+        )
+        .map_err(SessionCompiledPoseError::CompiledStore)?;
+        let direct_cases = CompiledDirectCaseSet::from_store(&case_store)
+            .map_err(SessionCompiledPoseError::DirectCases)?;
+
+        let reviewed_selectors =
+            ReviewedCarSelectorProfile::from_json(REVIEWED_CAR_SELECTOR_PROFILE)
+                .map_err(SessionCompiledPoseError::SelectorProfile)?;
+        let selector_store = CarSelectorStore::open(
+            &session_sidecar_store(runtime_data, CAR_SELECTOR_STORE_DIRECTORY),
+            &reviewed_selectors,
+        )
+        .map_err(SessionCompiledPoseError::SelectorStore)?;
+        let selector = selector_store
+            .selector_for_code(car_code)
+            .ok_or_else(|| SessionCompiledPoseError::UnknownCarCode(car_code.to_owned()))?;
+
+        let stage_base = ordinary_stage_asset_base(stage)
+            .ok_or_else(|| SessionCompiledPoseError::UnsupportedStage(stage.to_owned()))?;
+        let geometry = StageCompiledGeometry::load(&assets, &stage_base)
+            .map_err(SessionCompiledPoseError::Geometry)?;
+        Ok(Self {
+            direct_cases,
+            geometry,
+            selector: u32::from(selector),
+            lanes: FreshProcessLaneState::new(),
+        })
+    }
+
+    fn adjust_spawn(
+        &mut self,
+        start: &mut CarState,
+        actor_rows: ActorMatrixRows,
+    ) -> Result<(), SessionCompiledPoseError> {
+        let center = [
+            start.position.x.raw(),
+            start.position.y.raw(),
+            start.position.z.raw(),
+        ];
+        let input = CompiledSetupPoseInputs {
+            prior_case_words: CompiledCaseWords::default(),
+            selector: self.selector,
+            center,
+            matrix_rows: actor_rows,
+            common_config_25: 0,
+            lane: self.lanes.inputs(),
+        };
+        let state = self.lanes.begin_car_setup();
+        let mut config = |_lane: usize| Ok::<u8, std::convert::Infallible>(0);
+        let effects = execute_stage_compiled_setup_pose(
+            &self.direct_cases,
+            input,
+            state,
+            &self.geometry,
+            &mut config,
+        )
+        .map_err(SessionCompiledPoseError::Execution)?;
+        self.lanes.publish(effects.lanes.state);
+        start.position.y = Fixed16::from_raw(effects.adjusted_center[1]);
+        Ok(())
+    }
+}
+
+fn session_sidecar_store(runtime_data: &Path, directory: &str) -> PathBuf {
+    let nested = runtime_data.join(directory);
+    if nested.is_dir() {
+        nested
+    } else {
+        runtime_data
+            .parent()
+            .unwrap_or(runtime_data)
+            .join(directory)
+    }
+}
+
+fn ordinary_stage_asset_base(stage: &str) -> Option<String> {
+    let stage = stage.to_ascii_uppercase();
+    let bytes = stage.as_bytes();
+    if bytes.len() != 3 || !bytes[2].is_ascii_digit() {
+        return None;
+    }
+    let country = match &stage[..2] {
+        "AU" => "Au",
+        "CO" => "Co",
+        "GR" => "Gr",
+        "IN" => "In",
+        "MC" => "MC",
+        "NZ" => "NZ",
+        "SW" => "Sw",
+        "UK" => "UK",
+        _ => return None,
+    };
+    Some(format!("Game/{country}/{}/{stage}", bytes[2] as char))
+}
+
 fn native_stage_setup(
     media_root: &Path,
     runtime_data: &Path,
     stage: &str,
     car_code: Option<&str>,
     renderer: StageRendererChoice,
-) -> Result<(StageRenderResources, Vec<CatNode>, CarState, [i32; 16]), StageFrameError> {
+) -> Result<NativeStageSetup, StageFrameError> {
     let palette = load_native_stage_palette(runtime_data, stage)?;
     let mut resources =
         StageRenderResources::load_with_palette(media_root, stage, renderer, palette)?;
@@ -3240,12 +3594,12 @@ fn native_stage_setup(
         .nodes()
         .ok_or(StageFrameError::MissingNodes)?
         .to_vec();
-    let (start, initial_camera) = if let Some(starts) = resources.bundle.starts() {
+    let (start, initial_camera, actor_rows) = if let Some(starts) = resources.bundle.starts() {
         native_stage_start_from_csp(starts.normal()[0])
     } else {
         native_stage_start(&nodes)?
     };
-    Ok((resources, nodes, start, initial_camera))
+    Ok((resources, nodes, start, initial_camera, actor_rows))
 }
 
 pub fn run_windowed_game_session(
@@ -3255,8 +3609,18 @@ pub fn run_windowed_game_session(
     car_code: &str,
     renderer: StageRendererChoice,
 ) -> Result<(), WindowedStageFrameError> {
-    let (mut resources, nodes, start, initial_camera) =
+    let (mut resources, nodes, mut start, _, actor_rows) =
         native_stage_setup(media_root, runtime_data, stage, Some(car_code), renderer)?;
+    // This owner models one fresh process/session: its lane arrays are
+    // loader-zeroed once, authenticated setup runs once, and only the recovered
+    // setup-time center-Y publication is fed into the existing planar session.
+    let mut compiled_pose = SessionCompiledPose::open(runtime_data, stage, car_code)
+        .map_err(WindowedStageFrameError::CompiledPose)?;
+    compiled_pose
+        .adjust_spawn(&mut start, actor_rows)
+        .map_err(WindowedStageFrameError::CompiledPose)?;
+    let mut initial_view = ViewHarness::new();
+    let initial_camera = initial_view.update(false, start.position, start.heading, false);
     eprintln!("cmr-app: {}", resources.renderer_status().stable_summary());
     let initial_harness_world = cmr_core::gameplay_camera::car_world_q16(
         &cmr_core::fixed_point::build_sine_table(),
@@ -3668,6 +4032,124 @@ mod tests {
     }
 
     #[test]
+    fn fresh_process_lane_state_is_zeroed_once_and_only_handles_reset_per_setup() {
+        let mut owner = FreshProcessLaneState::new();
+        assert_eq!(
+            owner.begin_car_setup(),
+            CompiledEightLaneExecutionState {
+                handles: [0; 8],
+                type_words: [0; 8],
+                output_vectors: [[0; 3]; 8],
+                lane_words: [0; 8],
+                accumulator_words: [0; 8],
+                latch_67c: 0,
+            }
+        );
+
+        owner.publish(CompiledEightLaneExecutionState {
+            handles: [7; 8],
+            type_words: [0x52; 8],
+            output_vectors: [[1, 2, 3]; 8],
+            lane_words: [4; 8],
+            accumulator_words: [5; 8],
+            latch_67c: 1,
+        });
+        owner.gate_words = [6; 8];
+        owner.drive_words = [7; 8];
+        owner.first_four_subtractions = [8; 4];
+        let repeated = owner.begin_car_setup();
+        assert_eq!(repeated.handles, [0; 8]);
+        assert_eq!(repeated.type_words, [0x52; 8]);
+        assert_eq!(repeated.output_vectors, [[1, 2, 3]; 8]);
+        assert_eq!(repeated.lane_words, [4; 8]);
+        assert_eq!(repeated.accumulator_words, [5; 8]);
+        assert_eq!(repeated.latch_67c, 1);
+        assert_eq!(
+            owner.inputs(),
+            CompiledSetupPoseLaneInputs {
+                gate_words: [6; 8],
+                drive_words: [7; 8],
+                first_four_subtractions: [8; 4],
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_pose_failures_retain_stable_phase_and_lane_metadata() {
+        let common = SessionCompiledPoseError::Execution(CompiledSetupPoseError::CommonPrefix(
+            cmr_core::compiled_car_initializer::CompiledCommonPrefixReciprocalOverflow {
+                state_word_48: 1,
+            },
+        ));
+        assert_eq!(common.kind(), "compiled-pose-common-prefix");
+        assert_eq!(common.failed_lane(), None);
+        assert!(common.to_string().contains("state +0x48 value 1"));
+        assert!(std::error::Error::source(&common).is_some());
+
+        let lane =
+            CompiledSetupPoseError::<(), ()>::Lanes(CompiledEightLaneExecutionFailure::Dispatch {
+                failed_lane: 3,
+                progress: Box::new(
+                    cmr_core::compiled_car_initializer::CompiledEightLaneExecutionProgress {
+                        completed_lanes: 3,
+                        state: FreshProcessLaneState::new().begin_car_setup(),
+                        lanes: [None; 8],
+                    },
+                ),
+                failure: cmr_core::compiled_car_initializer::CompiledLaneDispatchFailure {
+                    phase: CompiledLaneDispatchFailurePhase::Search,
+                    handle_writes:
+                        cmr_core::compiled_car_initializer::CompiledLaneHandleWriteTrace::default(),
+                    provider_error: (),
+                },
+            });
+        assert_eq!(
+            compiled_setup_failure_metadata(&lane),
+            ("compiled-pose-lane-search", Some(3))
+        );
+    }
+
+    #[test]
+    fn ordinary_stage_geometry_identity_is_explicit_and_path_relative() {
+        assert_eq!(
+            ordinary_stage_asset_base("au1").as_deref(),
+            Some("Game/Au/1/AU1")
+        );
+        assert_eq!(
+            ordinary_stage_asset_base("NZ8").as_deref(),
+            Some("Game/NZ/8/NZ8")
+        );
+        assert_eq!(ordinary_stage_asset_base("TASK1"), None);
+        assert_eq!(ordinary_stage_asset_base("../AU1"), None);
+    }
+
+    #[test]
+    fn session_sidecar_store_supports_canonical_sibling_and_nested_layouts() {
+        let root = std::env::temp_dir().join(format!(
+            "cmr-app-sidecar-layout-{}-{}",
+            std::process::id(),
+            NEXT_SURFACE_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let temp = SurfaceTemp(root);
+        let runtime_data = temp.0.join("installed-eu-derived-assets-v2");
+        let sibling = temp.0.join("official-eu-car-selectors");
+        std::fs::create_dir_all(&runtime_data).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+
+        assert_eq!(
+            session_sidecar_store(&runtime_data, "official-eu-car-selectors"),
+            sibling
+        );
+
+        let nested = runtime_data.join("official-eu-car-selectors");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(
+            session_sidecar_store(&runtime_data, "official-eu-car-selectors"),
+            nested
+        );
+    }
+
+    #[test]
     fn selected_stage_loading_bitmap_becomes_a_full_palette_frame() {
         let frame = parse_loading_background(&loading_bitmap(640, 480, 256)).unwrap();
         assert_eq!(frame.extent(), ROOT_EXTENT);
@@ -3847,11 +4329,31 @@ mod tests {
             [0, 0, 0x10000],
             1,
         )];
-        let (start, camera) = native_stage_start(&nodes).unwrap();
+        let (start, camera, actor_rows) = native_stage_start(&nodes).unwrap();
         assert_eq!(start.position.x.raw(), 10 << 16);
         assert_eq!(start.position.z.raw(), 20 << 16);
         assert_eq!(start.heading, 0x400);
         assert_eq!(start.motion.basis[2].z.raw(), 0x10000);
+        assert_eq!(
+            actor_rows,
+            [
+                [
+                    start.motion.basis[2].x.raw().wrapping_neg(),
+                    start.motion.basis[2].y.raw().wrapping_neg(),
+                    start.motion.basis[2].z.raw().wrapping_neg(),
+                ],
+                [
+                    start.motion.basis[1].x.raw(),
+                    start.motion.basis[1].y.raw(),
+                    start.motion.basis[1].z.raw(),
+                ],
+                [
+                    start.motion.basis[0].x.raw(),
+                    start.motion.basis[0].y.raw(),
+                    start.motion.basis[0].z.raw(),
+                ],
+            ]
+        );
         assert_eq!(start.motion.angular_velocity, Vec3::ZERO);
         assert_ne!(camera, stage_placeholder_camera());
         assert_ne!(&camera[12..15], &[0, 0, 0]);
@@ -3859,7 +4361,7 @@ mod tests {
 
     #[test]
     fn csp_spawn_uses_authored_position_and_yaw() {
-        let (start, camera) = native_stage_start_from_csp(CspStart {
+        let (start, camera, actor_rows) = native_stage_start_from_csp(CspStart {
             position: [10 << 16, 2 << 16, -4 << 16],
             rotation_bam: [0, 0x400, 0],
             reserved: 0xbeef,
@@ -3871,10 +4373,34 @@ mod tests {
         assert_eq!(start.motion.projection_axis, start.motion.basis[2]);
         assert!(start.motion.basis[2].z.raw() < -0xff00);
         assert_ne!(camera, stage_placeholder_camera());
+        let native = actor_rows.map(|row| {
+            Vec3::new(
+                Fixed16::from_raw(row[0]),
+                Fixed16::from_raw(row[1]),
+                Fixed16::from_raw(row[2]),
+            )
+        });
+        assert_eq!(start.motion.basis[0], native[2]);
+        assert_eq!(start.motion.basis[1], native[1]);
+        assert_eq!(
+            start.motion.basis[2],
+            Vec3::new(
+                Fixed16::from_raw(native[0].x.raw().wrapping_neg()),
+                Fixed16::from_raw(native[0].y.raw().wrapping_neg()),
+                Fixed16::from_raw(native[0].z.raw().wrapping_neg()),
+            )
+        );
+        assert_ne!(
+            actor_rows,
+            start
+                .motion
+                .basis
+                .map(|vector| [vector.x.raw(), vector.y.raw(), vector.z.raw()])
+        );
     }
 
     #[test]
-    fn race_car_positive_x_front_faces_away_from_the_chase_camera() {
+    fn race_car_local_positive_x_end_faces_away_from_the_chase_camera() {
         use cmr_core::c3d_camera::{apply_affine_q16, invert_affine_q16};
         use cmr_core::gameplay_camera::{ChasePreset, chase_target_world};
 
@@ -3889,8 +4415,8 @@ mod tests {
             0,
         );
         let model = car_model_world_q16(&harness);
-        // Local +X is the model's front and must map to harness forward. Local
-        // -Z maps to harness right; flipping both axes keeps a proper rotation.
+        // Pin only the observed transform: local +X maps to harness forward and
+        // local -Z maps to harness right. No wheel-node role is inferred here.
         assert_eq!(&model[0..3], &[0x10000, 0, 0]);
         assert_eq!(&model[8..11], &[0, 0, 0x10000]);
         assert_eq!(&model[12..15], &[0x10000, 0x20000, 0x30000]);
@@ -3906,16 +4432,16 @@ mod tests {
                     - i64::from(model[5]) * i64::from(model[2]));
         assert!(determinant > 0, "the model adapter must not mirror winding");
 
-        // Source-owned asymmetric front/rear markers: the chase camera is
-        // behind the car, so local -X (rear) must be nearer than local +X.
+        // The chase camera is behind the car. Under the observed mapping, the
+        // local -X endpoint is nearer and local +X is farther along view Z.
         let camera = chase_target_world(&harness, ChasePreset::Near.offset());
         let view = invert_affine_q16(&camera);
-        let front_world = apply_affine_q16(&model, [2 << 16, 0, 0]);
-        let rear_world = apply_affine_q16(&model, [-2 << 16, 0, 0]);
-        let front_view = apply_affine_q16(&view, front_world);
-        let rear_view = apply_affine_q16(&view, rear_world);
-        assert!(rear_view[2] > 0);
-        assert!(rear_view[2] < front_view[2]);
+        let positive_x_world = apply_affine_q16(&model, [2 << 16, 0, 0]);
+        let negative_x_world = apply_affine_q16(&model, [-2 << 16, 0, 0]);
+        let positive_x_view = apply_affine_q16(&view, positive_x_world);
+        let negative_x_view = apply_affine_q16(&view, negative_x_world);
+        assert!(negative_x_view[2] > 0);
+        assert!(negative_x_view[2] < positive_x_view[2]);
 
         let harness_forward = [harness[8], harness[9], harness[10]];
         let model_forward = [model[0], model[1], model[2]];
@@ -3952,7 +4478,7 @@ mod tests {
             ([-0x10000, 0, 0], 0x800),
             ([0, 0, -0x10000], 0xc00),
         ] {
-            let (start, _) = native_stage_start(&[native_test_node([0; 3], direction, 0)])
+            let (start, _, _) = native_stage_start(&[native_test_node([0; 3], direction, 0)])
                 .expect("cardinal spawn");
             assert_eq!(start.heading, expected);
         }
@@ -4173,7 +4699,7 @@ mod tests {
         let root = std::env::var_os("CMR_RUNTIME_DATA")
             .map(PathBuf::from)
             .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
-        let (mut resources, nodes, start, initial_camera) = native_stage_setup(
+        let (mut resources, nodes, start, initial_camera, _) = native_stage_setup(
             &root.join("Game/Au/1"),
             &root,
             "AU1",
@@ -4268,12 +4794,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the reviewed installed-EU runtime data and a Vulkan adapter"]
-    fn imported_au1_layered_gpu_matches_software_with_horizon_and_car() {
+    #[ignore = "requires reviewed owned AU1, compiled-case, and car-selector runtime data"]
+    fn imported_au1_compiled_pose_adjusts_spawn_before_first_composition() {
         let root = std::env::var_os("CMR_RUNTIME_DATA")
             .map(PathBuf::from)
             .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
-        let (mut software, _, start, camera) = native_stage_setup(
+        let (mut resources, _, mut start, _, actor_rows) = native_stage_setup(
             &root.join("Game/Au/1"),
             &root,
             "AU1",
@@ -4281,7 +4807,48 @@ mod tests {
             StageRendererChoice::Software,
         )
         .unwrap();
-        let (mut gpu, _, gpu_start, gpu_camera) = native_stage_setup(
+        let authored_y = start.position.y;
+        let mut pose = SessionCompiledPose::open(&root, "AU1", "Sub").unwrap();
+        pose.adjust_spawn(&mut start, actor_rows).unwrap();
+        assert_ne!(start.position.y, authored_y);
+        eprintln!(
+            "owned-au1 setup-pose authored_y_q16={} adjusted_y_q16={} delta_y_q16={}",
+            authored_y.raw(),
+            start.position.y.raw(),
+            start.position.y.raw().wrapping_sub(authored_y.raw())
+        );
+
+        let mut view = ViewHarness::new();
+        let camera = view.update(false, start.position, start.heading, false);
+        let harness_world = cmr_core::gameplay_camera::car_world_q16(
+            &cmr_core::fixed_point::build_sine_table(),
+            start.position,
+            start.heading,
+        );
+        let frame = resources
+            .compose_with_car(&camera, Some(&car_model_world_q16(&harness_world)))
+            .unwrap();
+        assert!(matches!(
+            frame.stats,
+            StageRenderStats::Software(stats) if stats.prims_composed >= 3
+        ));
+    }
+
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data and a Vulkan adapter"]
+    fn imported_au1_layered_gpu_matches_software_with_horizon_and_car() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let (mut software, _, start, camera, _) = native_stage_setup(
+            &root.join("Game/Au/1"),
+            &root,
+            "AU1",
+            Some("Sub"),
+            StageRendererChoice::Software,
+        )
+        .unwrap();
+        let (mut gpu, _, gpu_start, gpu_camera, _) = native_stage_setup(
             &root.join("Game/Au/1"),
             &root,
             "AU1",
@@ -4325,7 +4892,7 @@ mod tests {
         let root = std::env::var_os("CMR_RUNTIME_DATA")
             .map(PathBuf::from)
             .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
-        let (resources, nodes, start, _) = native_stage_setup(
+        let (resources, nodes, start, _, _) = native_stage_setup(
             &root.join("Game/Au/1"),
             &root,
             "AU1",
@@ -4517,7 +5084,7 @@ mod tests {
         let root = std::env::var_os("CMR_RUNTIME_DATA")
             .map(PathBuf::from)
             .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
-        let (mut resources, nodes, start, _) = native_stage_setup(
+        let (mut resources, nodes, start, _, _) = native_stage_setup(
             &root.join("Game/Au/1"),
             &root,
             "AU1",

@@ -2653,6 +2653,169 @@ pub struct CompiledSpineEffects {
     pub final_call_required: bool,
 }
 
+/// Lane inputs whose source vectors are produced by the first basis rebuild.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledSetupPoseLaneInputs {
+    pub gate_words: [i32; 8],
+    pub drive_words: [i32; 8],
+    pub first_four_subtractions: [i32; 4],
+}
+
+/// Stable setup-time pose snapshot entering the recovered compiled spine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledSetupPoseInputs {
+    /// Destination words retained when `selector` is outside `0..14`.
+    pub prior_case_words: CompiledCaseWords,
+    pub selector: u32,
+    pub center: [i32; 3],
+    /// Actor matrix rows after the caller's rotation composition.
+    pub matrix_rows: [[i32; 3]; 3],
+    /// Fresh read of the common configuration byte at offset `+0x25`.
+    pub common_config_25: u8,
+    pub lane: CompiledSetupPoseLaneInputs,
+}
+
+/// The two corner-vector snapshots observed before adjusted-center publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledSetupPoseSourceMetadata {
+    /// Initial actor basis, consumed by the eight-lane geometry pass.
+    pub initial: [[i32; 3]; 8],
+    /// Contact-normal basis before the road-plane center-Y adjustment.
+    pub contact_basis: [[i32; 3]; 8],
+}
+
+/// Successful setup-time pose composition plus inspectable lane/source data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledSetupPoseEffects {
+    pub selected_case: Option<u8>,
+    pub effective_state_words: [i32; COMPILED_STATE_WORD_COUNT],
+    pub initial_basis: CompiledStateBasisEffects,
+    pub sources: CompiledSetupPoseSourceMetadata,
+    pub adjusted_center: [i32; 3],
+    pub lanes: CompiledEightLaneExecutionSuccess,
+    pub normal: CompiledPostLaneNormalEffects,
+    pub corrected_basis: CompiledPostLaneBasisEffects,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompiledSetupPoseError<ProviderError, ConfigError> {
+    CommonPrefix(CompiledCommonPrefixReciprocalOverflow),
+    Lanes(CompiledEightLaneExecutionFailure<ProviderError, ConfigError>),
+}
+
+/// Compose the setup-time actor pose with injected geometry providers.
+///
+/// The first corner rebuild uses actor matrix row zero and row two as the
+/// `FUN_00418120` adjustment vectors. After the lane pass, the recovered
+/// contact-normal basis drives a second rebuild used by the road-plane Y
+/// correction. The result stops at the adjusted-center publication boundary;
+/// later actor updates, corner rebuilds, thresholds, copies, and global flags
+/// are deliberately outside this adapter.
+///
+/// State is accepted by value and no effect bundle is returned on failure.
+/// Provider/config side effects remain owned by those injected interfaces.
+pub fn execute_compiled_setup_pose<P, C>(
+    direct_cases: &CompiledDirectCaseSet,
+    input: CompiledSetupPoseInputs,
+    state: CompiledEightLaneExecutionState,
+    providers: &mut [P; 8],
+    config: &mut C,
+) -> Result<CompiledSetupPoseEffects, CompiledSetupPoseError<P::Error, C::Error>>
+where
+    P: CompiledLaneGeometryProvider,
+    C: CompiledLaneConfigProvider,
+{
+    let direct = direct_cases.apply(input.prior_case_words, input.selector);
+    let common = derive_compiled_common_prefix(direct.words, input.common_config_25)
+        .map_err(CompiledSetupPoseError::CommonPrefix)?;
+    let effective_state_words = common.state_words.unwrap_or(direct.words.state_words);
+    let halves = derive_compiled_half_sign_state([
+        effective_state_words[0],
+        effective_state_words[1],
+        effective_state_words[2],
+    ]);
+    let basis_input = CompiledStateBasisInputs {
+        half_words: [halves.words[0], halves.words[1], halves.words[2]],
+        matrix_rows: input.matrix_rows,
+        center: input.center,
+        adjustment_u: input.matrix_rows[0],
+        adjustment_v: input.matrix_rows[2],
+        scale_638: effective_state_words[3],
+        scale_63c: effective_state_words[4],
+        scale_640: effective_state_words[5],
+    };
+    let initial_basis = derive_compiled_state_basis_effects(basis_input);
+    let execution = CompiledEightLaneExecutionInputs {
+        source_vectors: initial_basis.vectors,
+        gate_words: input.lane.gate_words,
+        drive_words: input.lane.drive_words,
+        first_four_subtractions: input.lane.first_four_subtractions,
+    };
+    let lanes = execute_compiled_eight_lanes(execution, state, providers, config)
+        .map_err(CompiledSetupPoseError::Lanes)?;
+
+    let normal_selector_words = input.matrix_rows.map(|row| row[1]);
+    let normal = derive_compiled_post_lane_global_normal(CompiledPostLaneNormalInput {
+        source_vectors: initial_basis.vectors,
+        lane_words: lanes.state.lane_words,
+        selector_words: normal_selector_words,
+    });
+    let basis = derive_compiled_post_lane_basis(CompiledPostLaneBasisInputs {
+        vector_324: normal.final_published_normal,
+        vector_258: input.matrix_rows[0],
+    });
+    let corrected_rows = [basis.vector_258, basis.vector_264, basis.vector_270];
+    let corrected_basis_input = CompiledStateBasisInputs {
+        matrix_rows: corrected_rows,
+        adjustment_u: corrected_rows[0],
+        adjustment_v: corrected_rows[2],
+        ..basis_input
+    };
+    let contact_sources = derive_compiled_state_basis_effects(corrected_basis_input).vectors;
+    let cc = derive_compiled_state_adjustment_cc(CompiledStateAdjustmentInputs {
+        prior_cc: input.center[1],
+        word_2e4: lanes.state.lane_words[0],
+        word_100: contact_sources[0][1],
+    });
+    let adjusted_center = [input.center[0], cc, input.center[2]];
+
+    Ok(CompiledSetupPoseEffects {
+        selected_case: direct.selected_case,
+        effective_state_words,
+        initial_basis,
+        sources: CompiledSetupPoseSourceMetadata {
+            initial: initial_basis.vectors,
+            contact_basis: contact_sources,
+        },
+        adjusted_center,
+        lanes,
+        normal,
+        corrected_basis: basis,
+    })
+}
+
+/// Ordinary authenticated-stage entry point for [`execute_compiled_setup_pose`].
+///
+/// All eight lane providers borrow the same validated `.hpc` snapshot. The
+/// config reader remains injected because the native loop reloads that view on
+/// every lane and may fail independently of geometry.
+pub fn execute_stage_compiled_setup_pose<C>(
+    direct_cases: &CompiledDirectCaseSet,
+    input: CompiledSetupPoseInputs,
+    state: CompiledEightLaneExecutionState,
+    geometry: &crate::stage_compiled_geometry::StageCompiledGeometry,
+    config: &mut C,
+) -> Result<
+    CompiledSetupPoseEffects,
+    CompiledSetupPoseError<DecodedCompiledLaneGeometryError, C::Error>,
+>
+where
+    C: CompiledLaneConfigProvider,
+{
+    let mut providers = geometry.eight_lane_providers();
+    execute_compiled_setup_pose(direct_cases, input, state, &mut providers, config)
+}
+
 /// Composes the recovered post-lane spine in native order.
 ///
 /// The eight-lane executor runs first; its failure aborts the spine before any
@@ -8365,6 +8528,95 @@ mod tests {
             random: 1,
             config_25: 0,
         }
+    }
+
+    fn setup_pose_fixture() -> (CompiledDirectCaseSet, CompiledSetupPoseInputs) {
+        let mut cases = synthetic_cases();
+        cases[0] = CompiledCaseWords {
+            state_words: [0x2_0000, 0x2_0000, 0x2_0000, 0x2000, 0x3000, 0x4000, 0, 0],
+            control_words: [0; COMPILED_CONTROL_WORD_COUNT],
+        };
+        (
+            CompiledDirectCaseSet { cases },
+            CompiledSetupPoseInputs {
+                prior_case_words: synthetic_case(-1),
+                selector: 0,
+                center: [0x10_0000, 0x20_0000, 0x30_0000],
+                matrix_rows: [[0x1_0000, 0, 0], [0, 0x1_0000, 0], [0, 0, 0x1_0000]],
+                common_config_25: 0,
+                lane: CompiledSetupPoseLaneInputs {
+                    gate_words: [0; 8],
+                    drive_words: [0; 8],
+                    first_four_subtractions: [0; 4],
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn setup_pose_derives_all_source_snapshots_and_uses_contact_source_for_lane0_y() {
+        let (cases, mut input) = setup_pose_fixture();
+        input.common_config_25 = COMPILED_COMMON_STATE_SCALE_MASK;
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(&events, [IntegratedLaneMode::Built(0); 8]);
+        let mut config = |_lane| -> Result<u8, &'static str> { Ok(0) };
+        let effects = execute_compiled_setup_pose(
+            &cases,
+            input,
+            integrated_execution_state(),
+            &mut providers,
+            &mut config,
+        )
+        .unwrap();
+
+        assert_eq!(effects.selected_case, Some(0));
+        assert_eq!(
+            effects.effective_state_words,
+            [0x1_0000, 0x1_0000, 0x1_0000, 0x1000, 0x1800, 0x2000, 0, 0]
+        );
+        assert_eq!(effects.sources.initial, effects.initial_basis.vectors);
+        assert_eq!(
+            effects.adjusted_center[1],
+            input.center[1]
+                .wrapping_add(effects.lanes.state.lane_words[0])
+                .wrapping_sub(effects.sources.contact_basis[0][1])
+        );
+        assert_eq!(
+            effects.corrected_basis,
+            derive_compiled_post_lane_basis(CompiledPostLaneBasisInputs {
+                vector_324: effects.normal.final_published_normal,
+                vector_258: input.matrix_rows[0],
+            })
+        );
+    }
+
+    #[test]
+    fn setup_pose_config_failure_returns_no_pose_and_preserves_caller_state() {
+        let (cases, input) = setup_pose_fixture();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut providers = integrated_providers(&events, [IntegratedLaneMode::Built(0); 8]);
+        let state = integrated_execution_state();
+        let retained_state = state;
+        let mut config = |lane| -> Result<u8, &'static str> {
+            if lane == 0 {
+                Err("fresh config")
+            } else {
+                Ok(0)
+            }
+        };
+
+        let failure =
+            execute_compiled_setup_pose(&cases, input, state, &mut providers, &mut config)
+                .unwrap_err();
+
+        assert_eq!(state, retained_state);
+        assert!(matches!(
+            failure,
+            CompiledSetupPoseError::Lanes(CompiledEightLaneExecutionFailure::Config {
+                failed_lane: 0,
+                ..
+            })
+        ));
     }
 
     #[test]

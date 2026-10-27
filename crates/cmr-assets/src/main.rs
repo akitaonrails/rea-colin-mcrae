@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cmr_assets::{
-    ReviewedAuxControlProfile, ReviewedCompiledInitializerProfile, ReviewedProfile,
-    ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile, catalog_standard_source,
-    extract_aux_control_constants, extract_compiled_car_initializer, extract_surface_capabilities,
-    extract_surface_tables, import_source, verify_source,
+    ReviewedAuxControlProfile, ReviewedCarSelectorProfile, ReviewedCompiledInitializerProfile,
+    ReviewedProfile, ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile,
+    catalog_standard_source, extract_aux_control_constants, extract_car_selectors,
+    extract_compiled_car_initializer, extract_surface_capabilities, extract_surface_tables,
+    import_source, verify_source,
 };
 
 fn main() -> ExitCode {
@@ -94,6 +95,16 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<String, String> {
             reject_unknown(&options, &["--source", "--profile", "--output"])?;
             let reviewed = load_compiled_initializer_profile(&profile_path)?;
             let summary = extract_compiled_car_initializer(&source, &output, &reviewed)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_string(&summary).map_err(|error| error.to_string())
+        }
+        Some("extract-car-selectors") => {
+            let source = required_path(&options, "--source")?;
+            let profile_path = required_path(&options, "--profile")?;
+            let output = required_path(&options, "--output")?;
+            reject_unknown(&options, &["--source", "--profile", "--output"])?;
+            let reviewed = load_car_selector_profile(&profile_path)?;
+            let summary = extract_car_selectors(&source, &output, &reviewed)
                 .map_err(|error| error.to_string())?;
             serde_json::to_string(&summary).map_err(|error| error.to_string())
         }
@@ -185,6 +196,12 @@ fn load_compiled_initializer_profile(
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+fn load_car_selector_profile(path: &Path) -> Result<ReviewedCarSelectorProfile, String> {
+    let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    ReviewedCarSelectorProfile::from_json(&document)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn load_aux_control_profile(path: &Path) -> Result<ReviewedAuxControlProfile, String> {
     let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     ReviewedAuxControlProfile::from_json(&document)
@@ -202,7 +219,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-surface-capabilities|extract-compiled-car-initializer|extract-aux-control-constants> [options]".to_owned()
+    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-surface-capabilities|extract-compiled-car-initializer|extract-car-selectors|extract-aux-control-constants> [options]".to_owned()
 }
 
 #[cfg(test)]
@@ -476,6 +493,13 @@ mod tests {
                 "runtime-data/compiled-cases",
             ],
             &[
+                "extract-car-selectors",
+                "--profile",
+                "selector-profile.json",
+                "--output",
+                "runtime-data/car-selectors",
+            ],
+            &[
                 "extract-aux-control-constants",
                 "--profile",
                 "aux-profile.json",
@@ -566,6 +590,24 @@ mod tests {
         assert_eq!(
             run(args(&[
                 "extract-compiled-car-initializer",
+                "--source",
+                "source",
+                "--profile",
+                "profile.json",
+            ])),
+            Err("missing required option --output".to_owned())
+        );
+    }
+
+    #[test]
+    fn car_selector_extraction_requires_profile_and_output() {
+        assert_eq!(
+            run(args(&["extract-car-selectors", "--source", "source"])),
+            Err("missing required option --profile".to_owned())
+        );
+        assert_eq!(
+            run(args(&[
+                "extract-car-selectors",
                 "--source",
                 "source",
                 "--profile",

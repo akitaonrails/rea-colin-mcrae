@@ -128,33 +128,6 @@ boundaries. `--backend wgpu|sdl-gpu|both`, `--wgpu-adapter`, and `--low-power`
 select the candidates. Stage output is path-free, reports timings and
 `winner=not-selected`, and needs an otherwise idle GPU for meaningful numbers.
 
-The application's stage commands accept an explicit renderer choice. The wgpu
-path prepares and uploads the layered stage, HZN, OBJ, SHT, and car scenes once,
-updates dynamic world and camera VIEW matrices per frame, and rasterizes into
-the 8-bit palette-index target. `auto` selects that GPU path when setup succeeds
-and falls back to the software compatibility oracle on a typed setup or frame
-failure. The native session prints a path-free startup line with the requested
-and actual renderer plus any fallback category:
-
-```sh
-cargo run --release -q -p cmr-app -- \
-  --windowed-game-session \
-  --runtime-data runtime-data \
-  --source "$CMR_ORIGINAL_DIR/Game/Au/1" \
-  --stage AU1 \
-  --car-code Sub \
-  --renderer auto        # auto | software | gpu
-```
-
-`--car-code` is the asset code selected by the caller/menu; the reconstruction
-does not embed the original car table. `auto` is the default; `software` forces
-the much slower oracle compositor and is intended for differential checks;
-`gpu` fails closed if setup or a frame fails. The raw-C3D candidate benchmark
-(not the full layered native loop or SDL presentation) measured these 640x480
-frames on this host: AU1 79.6 ms (software) vs 0.75 ms (GPU), NZ2 67.9 vs 1.07,
-MC5 101.4 vs 1.11, IN8 7.2 vs 0.16. The GPU index frame is held to the software
-oracle by the shared raw-C3D contract (hardware-gated test).
-
 Verify the currently cataloged source corpus, then import exact asset bytes into
 the ignored runtime directory:
 
@@ -183,6 +156,49 @@ This command requires the exact executable identified by the reviewed profile,
 checks its hash before parsing, and records no absolute source path. It is
 separate from the installed-media import above.
 
+Extract the fourteen authenticated compiled initializer cases required by the
+native setup path into a sibling ignored store:
+
+```sh
+cargo run -q -p cmr-assets -- extract-compiled-car-initializer \
+  --source "$CMR_ORIGINAL_DIR" \
+  --profile profiles/official-eu-compiled-car-initializer-v1.json \
+  --output runtime-data/official-eu-compiled-car-initializer
+```
+
+Extract the authenticated car-code-to-selector mapping used to choose the
+fourteen compiled car cases into another ignored store:
+
+```sh
+cargo run -q -p cmr-assets -- extract-car-selectors \
+  --source "$CMR_ORIGINAL_DIR" \
+  --profile profiles/official-eu-car-selector-map-v1.json \
+  --output runtime-data/official-eu-car-selectors
+```
+
+The windowed session expects those two executable-derived stores as siblings of
+`runtime-data/installed-eu-derived-assets-v2`. With that layout in place, run:
+
+```sh
+cargo run --release -q -p cmr-app -- \
+  --windowed-game-session \
+  --runtime-data runtime-data/installed-eu-derived-assets-v2 \
+  --source "$CMR_ORIGINAL_DIR/Game/Au/1" \
+  --stage AU1 \
+  --car-code Sub \
+  --renderer auto        # auto | software | gpu
+```
+
+The wgpu path prepares and uploads the layered stage, HZN, OBJ, SHT, and car
+scenes once, updates dynamic world and camera matrices per frame, and renders
+into the palette-index target. `auto` selects that path when setup succeeds and
+falls back to the software compatibility oracle on a typed setup or frame
+failure. `--car-code` is selected by the caller/menu; the reconstruction does
+not embed the original selector table. `software` forces the much slower oracle
+compositor for differential checks, while `gpu` fails closed. The session logs
+the requested and actual renderer plus any fallback category without printing
+local paths.
+
 Render one complete deterministic root-menu frame through the native
 application boundary (headless for now):
 
@@ -195,8 +211,9 @@ cargo run -q -p cmr-app -- \
 `--runtime-data` takes precedence over the optional `CMR_RUNTIME_DATA`
 fallback. The command prints only the reviewed profile ID, render counters,
 frame extent, and deterministic indexed-frame checksums; it never prints or
-embeds the selected local path. Native SDL window/input/audio presentation is
-the next host milestone.
+embeds the selected local path. The SDL3 host now provides window, input, audio,
+GPU presentation, and fixed-step session pacing; gameplay compatibility remains
+partial as tracked below.
 
 Run the opt-in reviewed-import root-session smoke with:
 

@@ -2487,13 +2487,22 @@ languages rather than fabricating or silently aliasing Italian assets.
   local `-Z` right into the harness with a positive determinant, and the
   recovered input half-channels change sign only at the explicit planar
   RaceState control boundary so left/right mean geometric world sides. A
-  controlled native wgpu run confirms the rear-facing chase view, geometric
-  right steering, real-time progression to 43 MPH, and no renderer fallback.
-  CAT-derived startup is fallback only. `FUN_00480890` passes the CSP position
-  directly and supplies no recovered ride-height lift; lower-body terrain
-  occlusion remains open. The live
-  executable still uses planar `GameplaySession::new_with_car`; the recovered
-  four-wheel producer is not yet the live player path.
+  controlled native wgpu run confirms geometric right steering, progression to
+  43 MPH, and no renderer fallback. The latest user capture withdraws that
+  run's earlier rear-facing and stable-pacing interpretations.
+  CAT-derived startup is fallback only. Follow-up static recovery shows that
+  `FUN_00480890` passes the CSP position into `FUN_00404440`, which constructs
+  native-basis corners, solves authenticated HPC lanes and applies
+  `center_y += lane0_road_y - lane0_corner_y`. The app authenticates the
+  extracted selector map and compiled case, owns fresh-process zero-filled lane
+  state, and applies only this setup-time Y before the first camera/render.
+  Owned AU1 raises Y by `40857` Q16 (~0.6234); forced wgpu then shows the full
+  body above the road. The live executable still uses planar
+  `GameplaySession::new_with_car`; the SDL host now gates it to one 25 Hz tick
+  per 40 ms monotonic deadline, but absent collision/contact and static
+  car/wheel animation remain active native defects, and the
+  recovered four-wheel producer is not yet the live path. A controlled A/B crop
+  confirms the retained adapter shows the rear; the inverse shows the front.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

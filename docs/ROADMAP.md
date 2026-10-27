@@ -1638,9 +1638,9 @@ axes into the planar harness while flipping two transverse columns to preserve a
 positive determinant, and adapts steering sign only at the explicit
 `CarControls -> RaceState::Controls` harness boundary so requested world-side
 turns agree for keyboard and analog input. The full suite passes, and a
-controlled native wgpu run now shows the car rear toward the chase camera and
-a held right input moving the car geometrically right; the same run advanced in
-real time to 43 MPH without renderer fallback. CAT-derived startup is retained
+controlled native wgpu run moved the car geometrically right and advanced to
+43 MPH without renderer fallback. A controlled transform A/B confirms the
+retained adapter shows the rear; the inverse shows the front. CAT-derived startup is retained
 only for stages without CSP. AU1's
 layered software composition and CSP-to-checkpoint drive regression pass on the
 imported assets. The first layered-GPU prerequisite is complete: wgpu material
@@ -1670,12 +1670,18 @@ frame from the authenticated bitmap/font inputs. Controlled Xvfb release
 captures show a visible gauge, timer, gear/speed readout, player car, and
 changed world frames after real throttle and steering events. The post-UV
 controlled wgpu capture confirms coherent road, sky, scenery, and car textures,
-the corrected rear-facing chase view, geometric right steering, real-time
-progression, and no renderer fallback. Static `FUN_00480890` evidence passes the
-CSP position directly and supplies no justified body lift, so lower-body
-terrain occlusion and ride-height ownership remain open rather than receiving a
-cosmetic offset. This does not claim complete four-wheel trajectory fidelity or
-a verified full-race finish.
+geometric right steering, progression, and no renderer fallback; the latest
+user capture withdraws the earlier rear-facing and stable-pacing interpretations. Static `FUN_00480890` evidence passes the
+CSP position into the compiled initializer, whose recovered HPC lane-zero step
+then applies `center_y += road_y - lower_corner_y`. The native session now
+authenticates the car selector, compiled case and stage HPC, owns fresh-process
+zero-filled lane state, and publishes only that setup-time Y before the first
+camera/render/session frame. Owned AU1 raises the center by `40857` Q16
+(~0.6234), and the controlled wgpu capture shows the complete body above the
+road without a cosmetic lift. This does not claim complete four-wheel
+trajectory fidelity or a verified full-race finish. The subsequent host pacing
+fix enforces one simulation tick per 40 ms deadline; world collision/contact
+and car/wheel animation remain absent.
 
 The menu-to-race path now presents the selected stage's loading artwork during
 state 4. The app reads `.LOA` directly from the caller-selected media root,
@@ -1695,10 +1701,11 @@ RGB555/565 packing formula is recovered elsewhere, but the DX5 stretched raster
 and an RGB16-to-active-indexed presentation bridge are not. PS1's same-role TIM
 format remains a separate reference-only parser boundary. The controlled native
 run now reaches a coherent live stage after this frame. The GPU/auto visual gate
-has passed with the determinant-preserving car adapter, geometric steering
-direction, and real-time wgpu pacing. The next I14 gate is authenticated
-vertical/contact setup that resolves the still-explicit ride-height boundary
-without a cosmetic lift.
+has passed for GPU selection and geometric steering, and the authenticated
+setup-time spawn-height gate now passes too. The next I14 gate is fixed-step
+live authenticated collision/contact response; car and wheel animation remain
+explicit follow-ups. The controlled transform A/B confirms the retained chase
+view shows the rear of the car.
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI

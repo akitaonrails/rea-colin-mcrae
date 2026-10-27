@@ -42,6 +42,77 @@ use sdl3::video::Window;
 /// Target frame interval for the interactive loop's event wait (~60 Hz).
 const INTERACTIVE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
+/// Recovered fixed simulation cadence for the native game session (25 Hz).
+///
+/// This is deliberately separate from [`INTERACTIVE_FRAME_INTERVAL`]: the root
+/// menu host may redraw at its own cadence, while one game-session callback
+/// advances exactly one recovered fixed simulation tick.
+const GAME_SESSION_TICK_INTERVAL: Duration = Duration::from_millis(40);
+
+/// Monotonic one-tick deadline used by the SDL game-session host.
+///
+/// Input events may wake the host before the deadline, but cannot create an
+/// extra simulation tick. If rendering overruns by one or more whole periods,
+/// the next deadline is resynchronized from `now`; missed ticks are not replayed
+/// in a catch-up spiral. Losing focus disarms the deadline and gaining focus
+/// starts a fresh full interval.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FixedStepDeadline {
+    interval: Duration,
+    next: Option<Duration>,
+}
+
+impl FixedStepDeadline {
+    fn new(now: Duration, interval: Duration) -> Self {
+        Self {
+            interval,
+            next: Some(now.saturating_add(interval)),
+        }
+    }
+
+    fn wait_duration(self, now: Duration) -> Option<Duration> {
+        self.next.map(|next| next.saturating_sub(now))
+    }
+
+    fn set_active(&mut self, active: bool, now: Duration) {
+        match (active, self.next) {
+            (false, Some(_)) => self.next = None,
+            (true, None) => self.next = Some(now.saturating_add(self.interval)),
+            _ => {}
+        }
+    }
+
+    /// Consume at most one due tick and schedule the next deadline.
+    fn consume_due(&mut self, now: Duration) -> bool {
+        let Some(deadline) = self.next else {
+            return false;
+        };
+        if now < deadline {
+            return false;
+        }
+
+        let next_regular = deadline.saturating_add(self.interval);
+        self.next = Some(if next_regular <= now {
+            now.saturating_add(self.interval)
+        } else {
+            next_regular
+        });
+        true
+    }
+}
+
+/// SDL's timeout bridge truncates [`Duration`] to whole milliseconds. Round a
+/// positive remainder up so the final sub-millisecond interval does not become
+/// a zero-time busy poll.
+fn sdl_wait_duration(wait: Duration) -> Duration {
+    if wait.is_zero() {
+        return Duration::ZERO;
+    }
+    let whole = wait.as_millis();
+    let rounded = whole + u128::from(!wait.subsec_nanos().is_multiple_of(1_000_000));
+    Duration::from_millis(u64::try_from(rounded).unwrap_or(u64::MAX))
+}
+
 /// Query the actual drawable pixel dimensions of the SDL window.
 #[must_use]
 pub fn physical_drawable_size(canvas: &Canvas<Window>) -> PhysicalSize {
@@ -803,9 +874,17 @@ where
         Some((host, music))
     });
 
+    let pacing_clock = Instant::now();
+    let mut pacing = FixedStepDeadline::new(Duration::ZERO, GAME_SESSION_TICK_INTERVAL);
+
     loop {
         let mut host_events = Vec::new();
-        if let Some(event) = events.wait_event_timeout(INTERACTIVE_FRAME_INTERVAL) {
+        let now = pacing_clock.elapsed();
+        let first_event = match pacing.wait_duration(now) {
+            Some(wait) => events.wait_event_timeout(sdl_wait_duration(wait)),
+            None => Some(events.wait_event()),
+        };
+        if let Some(event) = first_event {
             for event in std::iter::once(event).chain(events.poll_iter()) {
                 feed_input_event(&event, &mut frontend);
                 if is_fullscreen_toggle(&event) {
@@ -843,8 +922,15 @@ where
         if decision.restore_surfaces {
             redraw_present(&mut canvas, &texture, extent)?;
         }
+        let now = pacing_clock.elapsed();
+        pacing.set_active(decision.active, now);
         if !decision.active {
             // Unfocused: pause stepping and presenting; block on the next event.
+            continue;
+        }
+        if !pacing.consume_due(now) {
+            // Input and window events remain responsive, but an early wakeup
+            // cannot advance the fixed-step game clock.
             continue;
         }
 
@@ -959,6 +1045,96 @@ fn feed_input_event(event: &Event, mapper: &mut FrontendInputMapper) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_step_deadline_ignores_early_event_wakeups() {
+        let mut pacing = FixedStepDeadline::new(Duration::ZERO, GAME_SESSION_TICK_INTERVAL);
+
+        assert_eq!(
+            pacing.wait_duration(Duration::ZERO),
+            Some(Duration::from_millis(40))
+        );
+        assert!(!pacing.consume_due(Duration::from_millis(7)));
+        assert_eq!(
+            pacing.wait_duration(Duration::from_millis(7)),
+            Some(Duration::from_millis(33))
+        );
+        assert!(!pacing.consume_due(Duration::from_millis(39)));
+    }
+
+    #[test]
+    fn fixed_step_deadline_ticks_once_at_the_exact_deadline() {
+        let mut pacing = FixedStepDeadline::new(Duration::ZERO, GAME_SESSION_TICK_INTERVAL);
+
+        assert!(pacing.consume_due(Duration::from_millis(40)));
+        assert_eq!(
+            pacing.wait_duration(Duration::from_millis(40)),
+            Some(Duration::from_millis(40))
+        );
+        assert!(!pacing.consume_due(Duration::from_millis(40)));
+        assert!(pacing.consume_due(Duration::from_millis(80)));
+    }
+
+    #[test]
+    fn fixed_step_deadline_resynchronizes_an_overrun_without_catchup() {
+        let mut pacing = FixedStepDeadline::new(Duration::ZERO, GAME_SESSION_TICK_INTERVAL);
+
+        assert!(pacing.consume_due(Duration::from_millis(130)));
+        assert_eq!(
+            pacing.wait_duration(Duration::from_millis(130)),
+            Some(Duration::from_millis(40))
+        );
+        assert!(!pacing.consume_due(Duration::from_millis(130)));
+        assert!(!pacing.consume_due(Duration::from_millis(169)));
+        assert!(pacing.consume_due(Duration::from_millis(170)));
+    }
+
+    #[test]
+    fn fixed_step_deadline_pauses_and_restarts_after_focus_gain() {
+        let mut pacing = FixedStepDeadline::new(Duration::ZERO, GAME_SESSION_TICK_INTERVAL);
+
+        pacing.set_active(false, Duration::from_millis(15));
+        assert_eq!(pacing.wait_duration(Duration::from_millis(100)), None);
+        assert!(!pacing.consume_due(Duration::from_millis(100)));
+
+        pacing.set_active(true, Duration::from_millis(100));
+        assert_eq!(
+            pacing.wait_duration(Duration::from_millis(100)),
+            Some(Duration::from_millis(40))
+        );
+        assert!(!pacing.consume_due(Duration::from_millis(139)));
+        assert!(pacing.consume_due(Duration::from_millis(140)));
+    }
+
+    #[test]
+    fn repeated_event_checks_at_one_timestamp_never_add_ticks() {
+        let mut pacing = FixedStepDeadline::new(Duration::ZERO, GAME_SESSION_TICK_INTERVAL);
+
+        for _ in 0..100 {
+            assert!(!pacing.consume_due(Duration::from_millis(20)));
+        }
+        assert!(pacing.consume_due(Duration::from_millis(40)));
+        for _ in 0..100 {
+            assert!(!pacing.consume_due(Duration::from_millis(40)));
+        }
+    }
+
+    #[test]
+    fn sdl_wait_rounds_positive_fractional_milliseconds_up() {
+        assert_eq!(sdl_wait_duration(Duration::ZERO), Duration::ZERO);
+        assert_eq!(
+            sdl_wait_duration(Duration::from_nanos(1)),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            sdl_wait_duration(Duration::from_millis(7)),
+            Duration::from_millis(7)
+        );
+        assert_eq!(
+            sdl_wait_duration(Duration::from_micros(7_001)),
+            Duration::from_millis(8)
+        );
+    }
 
     #[test]
     fn interactive_lifecycle_pauses_on_focus_loss_and_resumes_on_gain() {

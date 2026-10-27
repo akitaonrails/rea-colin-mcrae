@@ -306,8 +306,35 @@ mutation.
 
 This extraction is intentionally narrower than the full initializer. It does
 not serialize the option-dependent pre-call transforms, intervening callees,
-reciprocal/copy common tail, later derived words, names, or units. It is not yet
-wired into an application or gameplay session.
+reciprocal/copy common tail, later derived words, names, or units. The native
+session now consumes these direct cases through the recovered setup-pose
+adapter; live play still does not execute the complete original initializer or
+four-wheel trajectory.
+
+## Executable-derived car selector mapping
+
+The compiled case records are indexed by a selector, while the original game
+chooses that selector through a separate fourteen-entry car-code pointer table.
+Authenticate and extract that sibling mapping from the same user-owned
+official-EU executable:
+
+```sh
+export CMR_ORIGINAL_DIR=/path/to/your/CMRally
+cargo run -q -p cmr-assets -- extract-car-selectors \
+  --source "$CMR_ORIGINAL_DIR" \
+  --profile profiles/official-eu-car-selector-map-v1.json \
+  --output runtime-data/official-eu-car-selectors
+```
+
+The committed profile contains only executable identity and reviewed virtual
+addresses. The extractor verifies the exact executable hash before parsing,
+then requires i386 PE32, the reviewed indexed-load instruction, fourteen mapped
+pointers, bounded NUL-terminated safe ASCII codes, and case-insensitive
+uniqueness. It publishes `car-selector-map-v1.bin` and
+`car-selector-import-state.json` under ignored `runtime-data/`; neither file is
+redistributable. `CarSelectorStore` revalidates profile provenance, fixed shape,
+output hash, record padding, and code uniqueness before providing
+case-insensitive code-to-selector lookup.
 
 ## Executable-derived auxiliary control constants
 

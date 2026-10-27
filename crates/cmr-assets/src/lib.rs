@@ -3,6 +3,9 @@
 mod aux_control_import;
 mod aux_control_profile;
 mod aux_control_store;
+mod car_selector_import;
+mod car_selector_profile;
+mod car_selector_store;
 mod catalog;
 mod compiled_initializer_import;
 mod compiled_initializer_profile;
@@ -29,6 +32,17 @@ pub use aux_control_profile::{
     ReviewedAuxControlProfileError,
 };
 pub use aux_control_store::{AuxControlConstantsStore, AuxControlStoreError};
+pub use car_selector_import::{
+    CAR_SELECTOR_DATA_FILE, CAR_SELECTOR_IMPORT_SCHEMA_VERSION, CAR_SELECTOR_STATE_FILE,
+    CarSelectorImportError, CarSelectorImportFile, CarSelectorImportShape,
+    CarSelectorImportSummary, extract_car_selectors,
+};
+pub use car_selector_profile::{
+    CAR_SELECTOR_PROFILE_SCHEMA_VERSION, CarSelectorEncoding, CarSelectorExecutable,
+    CarSelectorProfile, CarSelectorProfileError, CarSelectorSpec, ReviewedCarSelectorProfile,
+    ReviewedCarSelectorProfileError,
+};
+pub use car_selector_store::{CarSelectorStore, CarSelectorStoreError};
 pub use catalog::catalog_standard_source;
 pub use compiled_initializer_import::{
     COMPILED_INITIALIZER_DATA_FILE, COMPILED_INITIALIZER_IMPORT_SCHEMA_VERSION,

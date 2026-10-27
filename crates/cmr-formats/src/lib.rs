@@ -9,6 +9,7 @@ pub mod font;
 pub mod hpc;
 mod pe32;
 pub mod pe_aux_control_initializer;
+pub mod pe_car_selector;
 pub mod pe_compiled_initializer;
 pub mod pe_surface;
 pub mod riff_palette;
