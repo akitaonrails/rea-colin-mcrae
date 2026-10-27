@@ -39,6 +39,11 @@ and native Windows or GitHub Actions execution not run locally. See
 [DECOMP_MAP.md](docs/DECOMP_MAP.md), [COMPARISON.md](docs/COMPARISON.md), and
 [DEVIATIONS.md](docs/DEVIATIONS.md) for the evidence and current limits.
 
+The [public reconstruction survey](docs/UPSTREAM_SURVEY.md) records related
+projects and the searches used to avoid duplicating existing work. The public
+decompilation and portable port found so far target Colin McRae Rally 2.0, not
+this 1998 game; they are methodology references, not compatibility evidence.
+
 The optional PlayStation reference-edition workflow is documented in
 [PSX_REFERENCE_PLAN.md](docs/PSX_REFERENCE_PLAN.md). It uses PS1-specific tools
 to narrow Windows questions while keeping artifact provenance and compatibility
