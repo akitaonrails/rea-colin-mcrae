@@ -94,9 +94,14 @@ The first cross-edition comparison found the same high-level replay object shape
 a header, deterministic seed region, four-byte control slots, and a final
 two-byte field. Sizes differ by edition (`0x2c`/`0x2630`/5,400 ticks on PS1;
 `0x40`/`0x151ec`/7,500 ticks on Windows). This supports a neutral Windows
-trailing-field contract but does not identify that field's semantics or prove
-bit-exact control equivalence. See `psx.usa.replay-object-shape` in the evidence
-ledger.
+trailing-field contract. The follow-up consumer audit now identifies it on both
+editions as a zero-based compressed-record end/write cursor: recording and the
+aggregate scan include the boundary slot, while ordinary playback stops when
+its cursor reaches it. It is deliberately not modeled as a conventional count.
+The PS1 control encoder/decoder is mask-for-mask equivalent to the Windows
+four-byte record, including digital `-66` and analog `<<10`; Windows remains the
+compatibility authority. See `psx.usa.replay-object-shape` and
+`rea.official-eu.replay-record-end-cursor` in the evidence ledger.
 
 The loading-art comparison is also deliberately role-only. PS1 function
 `0x8006217c` displays `%s.LOA;1` before continuing to the VRM load, corroborating

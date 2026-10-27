@@ -14,7 +14,8 @@
 //!   (7500 = 300 s at 25 Hz) or `0x3a98` at the 50 Hz option. Files load through
 //!   the shared loader `FUN_00495ed0`, whose optional archive container carries
 //!   the `"CMPR"` magic + 4-byte size. A final little-endian `u16` follows a
-//!   single frame's records; its consumer and semantic name remain unknown.
+//!   single frame's records. It is the zero-based current/end write cursor:
+//!   aggregate scans include `0..=end`, while playback stops at `0..end`.
 //! - the **render snapshot buffer** (`FUN_0046c7d0` / `FUN_0046ca70`, gated on the
 //!   record flag): 24-byte keyframes (a position vec3 of `i32` plus two
 //!   `3xi16` compressed orientation axes) captured every 4th subframe (6.25 Hz),
@@ -78,15 +79,13 @@ pub const REPLAY_TICK_RECORD_BYTES: usize = 4;
 /// Bytes of the replay-object header prefix.
 pub const REPLAY_OBJECT_HEADER_BYTES: usize = 0x40;
 
-/// Bytes of the semantically-unresolved field after a single frame's Region-B
-/// control records. Static file comparison establishes that these bytes hold a
-/// little-endian `u16`; it is not padding, but its consumer is not yet named.
-pub const REPLAY_TRAILING_FIELD_BYTES: usize = 2;
+/// Bytes of the per-frame compressed-record end/write cursor after Region B.
+pub const REPLAY_RECORD_END_CURSOR_BYTES: usize = 2;
 
-/// Per-frame fixed bytes in the object-size formula: Region A plus the trailing
-/// field (`0x151ec + 2 = 0x151ee`).
+/// Per-frame fixed bytes in the object-size formula: Region A plus the record
+/// end cursor (`0x151ec + 2 = 0x151ee`).
 pub const REPLAY_FRAME_FIXED_BYTES: usize =
-    REPLAY_INITIAL_STATE_BYTES + REPLAY_TRAILING_FIELD_BYTES;
+    REPLAY_INITIAL_STATE_BYTES + REPLAY_RECORD_END_CURSOR_BYTES;
 
 /// The `.SSR` replay/shadow file extension (uppercase, as the format literal
 /// `"%s%s%c%d%c.SSR"` produces).
@@ -150,28 +149,49 @@ pub fn replay_region_b_offset(n_frames: u32) -> usize {
     REPLAY_OBJECT_HEADER_BYTES + n_frames as usize * REPLAY_INITIAL_STATE_BYTES
 }
 
-/// Byte offset of the unresolved trailing `u16` in a one-frame replay object.
+/// Byte offset of the record end/write cursor in a one-frame replay object.
 ///
-/// Multi-frame placement has not been established independently, so this
-/// helper deliberately exposes only the observed single-frame layout.
+/// The native pointer fixup establishes the multi-frame array placement; this
+/// serialized accessor deliberately exposes only the currently needed
+/// one-frame layout.
 #[must_use]
-pub fn replay_single_frame_trailing_field_offset(n_ticks: u32) -> Option<usize> {
+pub fn replay_single_frame_record_end_cursor_offset(n_ticks: u32) -> Option<usize> {
     REPLAY_OBJECT_HEADER_BYTES
         .checked_add(REPLAY_INITIAL_STATE_BYTES)?
         .checked_add((n_ticks as usize).checked_mul(REPLAY_TICK_RECORD_BYTES)?)
 }
 
-/// Read the unresolved trailing `u16` from an exactly-sized one-frame replay.
+/// Read the zero-based record end/write cursor from an exactly-sized one-frame replay.
 /// Truncated and overlong inputs are rejected rather than partially accepted.
 #[must_use]
-pub fn replay_single_frame_trailing_field(bytes: &[u8], n_ticks: u32) -> Option<u16> {
-    let offset = replay_single_frame_trailing_field_offset(n_ticks)?;
-    let end = offset.checked_add(REPLAY_TRAILING_FIELD_BYTES)?;
+pub fn replay_single_frame_record_end_cursor(bytes: &[u8], n_ticks: u32) -> Option<u16> {
+    let offset = replay_single_frame_record_end_cursor_offset(n_ticks)?;
+    let end = offset.checked_add(REPLAY_RECORD_END_CURSOR_BYTES)?;
     if bytes.len() != end {
         return None;
     }
     let raw = bytes.get(offset..end)?;
     Some(u16::from_le_bytes(raw.try_into().ok()?))
+}
+
+/// Record indices included by the duration/sum consumer (`0..=end_cursor`).
+#[must_use]
+pub fn replay_record_aggregate_range(
+    end_cursor: u16,
+    record_capacity: usize,
+) -> Option<std::ops::RangeInclusive<usize>> {
+    let end = usize::from(end_cursor);
+    (end < record_capacity).then_some(0..=end)
+}
+
+/// Record indices decoded by playback before it reaches the boundary (`0..end_cursor`).
+#[must_use]
+pub fn replay_record_playback_range(
+    end_cursor: u16,
+    record_capacity: usize,
+) -> Option<std::ops::Range<usize>> {
+    let end = usize::from(end_cursor);
+    (end < record_capacity).then_some(0..end)
 }
 
 /// Whether a loaded file's size matches the replay object it claims to be
@@ -407,13 +427,13 @@ mod tests {
     #[test]
     fn object_size_and_region_layout_match_the_loader_check() {
         let size = replay_object_size(REPLAY_TICKS_25HZ, 1);
-        // Header + Region A + 7500 control records + trailing u16.
+        // Header + Region A + 7500 control records + end-cursor u16.
         assert_eq!(
             size,
             REPLAY_OBJECT_HEADER_BYTES
                 + REPLAY_INITIAL_STATE_BYTES
                 + 7500 * REPLAY_TICK_RECORD_BYTES
-                + REPLAY_TRAILING_FIELD_BYTES
+                + REPLAY_RECORD_END_CURSOR_BYTES
         );
         assert_eq!(REPLAY_FRAME_FIXED_BYTES, 0x151ee);
         // The loader validates the loaded size against the same formula.
@@ -427,24 +447,52 @@ mod tests {
     }
 
     #[test]
-    fn single_frame_trailing_field_is_distinct_and_bounds_checked() {
+    fn single_frame_record_end_cursor_is_distinct_and_bounds_checked() {
         let n_ticks = 3;
         let size = replay_object_size(n_ticks, 1);
-        let offset = replay_single_frame_trailing_field_offset(n_ticks).unwrap();
-        assert_eq!(offset + REPLAY_TRAILING_FIELD_BYTES, size);
+        let offset = replay_single_frame_record_end_cursor_offset(n_ticks).unwrap();
+        assert_eq!(offset + REPLAY_RECORD_END_CURSOR_BYTES, size);
 
         let mut replay = vec![0; size];
         replay[offset..offset + 2].copy_from_slice(&0x1234_u16.to_le_bytes());
         assert_eq!(
-            replay_single_frame_trailing_field(&replay, n_ticks),
+            replay_single_frame_record_end_cursor(&replay, n_ticks),
             Some(0x1234)
         );
         assert_eq!(
-            replay_single_frame_trailing_field(&replay[..size - 1], n_ticks),
+            replay_single_frame_record_end_cursor(&replay[..size - 1], n_ticks),
             None
         );
         replay.push(0);
-        assert_eq!(replay_single_frame_trailing_field(&replay, n_ticks), None);
+        assert_eq!(
+            replay_single_frame_record_end_cursor(&replay, n_ticks),
+            None
+        );
+    }
+
+    #[test]
+    fn record_end_cursor_has_consumer_specific_inclusive_and_exclusive_ranges() {
+        assert_eq!(
+            replay_record_aggregate_range(2, 4)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(
+            replay_record_playback_range(2, 4)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
+        assert_eq!(
+            replay_record_aggregate_range(0, 4)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            [0]
+        );
+        assert!(replay_record_playback_range(0, 4).unwrap().is_empty());
+        assert!(replay_record_aggregate_range(4, 4).is_none());
+        assert!(replay_record_playback_range(4, 4).is_none());
     }
 
     #[test]
