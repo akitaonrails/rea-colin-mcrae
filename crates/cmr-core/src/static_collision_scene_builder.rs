@@ -27,6 +27,9 @@ const ALTERNATE_COLLISION_FLAG: u8 = 0x80;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsedStaticCollisionScene {
     pub grid: CellGrid,
+    /// Main-C3D cell translations in source order, excluding the container.
+    /// These are parsed metadata, not copied game payload bytes.
+    pub main_cell_centers: Vec<Vec3>,
     pub scene: StaticCollisionScene<StaticNarrowObb>,
 }
 
@@ -92,6 +95,11 @@ pub fn build_parsed_static_collision_scene(
         .collect();
     let grid = derive_cell_grid_from_main_translations(&main_translations)
         .map_err(ParsedStaticCollisionBuildError::Grid)?;
+    let main_cell_centers = main_translations[1..]
+        .iter()
+        .copied()
+        .map(vec3_from_raw)
+        .collect();
 
     let object_records: Vec<_> = objects.group0_records().collect();
     let object_graph = SceneGraph::from_c3d_group0(object_records.iter().copied())
@@ -158,7 +166,11 @@ pub fn build_parsed_static_collision_scene(
 
     let scene = StaticCollisionScene::new(records, memberships)
         .map_err(ParsedStaticCollisionBuildError::Scene)?;
-    Ok(ParsedStaticCollisionScene { grid, scene })
+    Ok(ParsedStaticCollisionScene {
+        grid,
+        main_cell_centers,
+        scene,
+    })
 }
 
 fn admitted_material_flag(class: u32) -> Option<u8> {
@@ -375,6 +387,20 @@ mod tests {
         assert_eq!(records[1].raw_material_flags, 0x85);
         assert_eq!(records[0].collision_ordinal, 0);
         assert_eq!(records[1].collision_ordinal, 1);
+    }
+
+    #[test]
+    fn parsed_scene_retains_source_order_cell_centers_without_container() {
+        let objects = parsed(&[spec(-1, 1 << 29, [0; 3], &[0])], &[[2 * ONE; 3]]);
+        let built = build_parsed_static_collision_scene(&main_grid(), &objects).unwrap();
+        assert_eq!(
+            built.main_cell_centers,
+            [vec3_from_raw([0, 0, ONE]), vec3_from_raw([4 * ONE, 0, ONE]),]
+        );
+        assert_eq!(
+            built.grid.cell_count as usize,
+            built.main_cell_centers.len()
+        );
     }
 
     #[test]

@@ -12,6 +12,7 @@
 //! expansion performed by `FUN_00490e80`.
 
 use crate::{
+    c3d_terrain_cull::{CellGrid, MAX_CELLS},
     compiled_car_initializer::normalize_compiled_lane_vector,
     fixed_point::{Fixed16, Vec3},
 };
@@ -229,6 +230,21 @@ pub struct ActiveCellRecord {
     pub row_stride: i32,
 }
 
+/// Checked failures while binding authored cell centers to aggregate grid
+/// metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActiveCellRecordBuildError {
+    TooManyCellCenters {
+        count: usize,
+        maximum: usize,
+    },
+    CellCountMismatch {
+        grid_count: i32,
+        center_count: usize,
+    },
+    NoPrimaryCell,
+}
+
 impl ActiveCellRecord {
     const fn at_position(self, position: Vec3) -> ActiveCellInput {
         ActiveCellInput {
@@ -240,6 +256,68 @@ impl ActiveCellRecord {
             row_stride: self.row_stride,
         }
     }
+}
+
+/// Select the authored cell nearest to `position` as `FUN_0048fd20` does.
+///
+/// Distances use native wrapping subtraction and branchless signed absolute
+/// value. The sum order is `abs(dz) + abs(dy) + abs(dx)`, followed by signed
+/// Q16 division by `0x30000`. A strict comparison preserves the first index on
+/// ties. An empty slice returns the native sentinel `-1`.
+#[must_use]
+pub fn select_primary_cell(cell_centers: &[Vec3], position: Vec3) -> i16 {
+    let mut selected = -1_i16;
+    let mut best = 0x7fff_0000_i32;
+    for (index, center) in cell_centers.iter().copied().enumerate() {
+        let dx = wrapping_abs(position.x.raw().wrapping_sub(center.x.raw()));
+        let dy = wrapping_abs(position.y.raw().wrapping_sub(center.y.raw()));
+        let dz = wrapping_abs(position.z.raw().wrapping_sub(center.z.raw()));
+        let sum = dz.wrapping_add(dy).wrapping_add(dx);
+        let mean = ((i64::from(sum) << 16) / 0x0003_0000_i64) as i32;
+        if mean < best {
+            best = mean;
+            selected = index as i16;
+        }
+    }
+    selected
+}
+
+const fn wrapping_abs(value: i32) -> i32 {
+    let sign = value >> 31;
+    (value ^ sign).wrapping_sub(sign)
+}
+
+/// Bind exact primary selection to the metadata consumed by neighbor
+/// expansion. `cell_centers` must retain main-C3D source order with the
+/// container record excluded.
+pub fn build_active_cell_record(
+    grid: &CellGrid,
+    cell_centers: &[Vec3],
+    position: Vec3,
+) -> Result<ActiveCellRecord, ActiveCellRecordBuildError> {
+    if cell_centers.len() > MAX_CELLS {
+        return Err(ActiveCellRecordBuildError::TooManyCellCenters {
+            count: cell_centers.len(),
+            maximum: MAX_CELLS,
+        });
+    }
+    if usize::try_from(grid.cell_count).ok() != Some(cell_centers.len()) {
+        return Err(ActiveCellRecordBuildError::CellCountMismatch {
+            grid_count: grid.cell_count,
+            center_count: cell_centers.len(),
+        });
+    }
+    let primary = select_primary_cell(cell_centers, position);
+    let center = cell_centers
+        .get(primary as usize)
+        .ok_or(ActiveCellRecordBuildError::NoPrimaryCell)?;
+    Ok(ActiveCellRecord {
+        primary,
+        primary_center_x: center.x,
+        primary_center_z: center.z,
+        half_cell: Fixed16::from_raw(grid.half_cell),
+        row_stride: grid.width,
+    })
 }
 
 /// Publish primary, horizontal, vertical and diagonal cells in native order.
@@ -354,6 +432,18 @@ mod tests {
     }
 
     const UNIT_BASIS: [Vec3; 3] = [v(0x1_0000, 0, 0), v(0, 0x1_0000, 0), v(0, 0, 0x1_0000)];
+
+    const fn grid(width: i32, count: i32) -> CellGrid {
+        CellGrid {
+            width,
+            height: if width == 0 { 0 } else { count / width },
+            cell_count: count,
+            cell_size: 0x20_0000,
+            min_x: 0,
+            half_cell: 0x10_0000,
+            max_z: 0,
+        }
+    }
 
     #[test]
     fn hull_uses_native_point_order() {
@@ -549,6 +639,80 @@ mod tests {
         let mut id_wrap = cells(v(0xb_8001, 0, 0));
         id_wrap.primary = i16::MAX;
         assert_eq!(derive_active_cells(id_wrap), [i16::MAX, i16::MIN, -1, -1]);
+    }
+
+    #[test]
+    fn primary_selection_uses_authored_y_and_first_wins_ties() {
+        let y_sensitive = [v(0, 0x100_0000, 0), v(0x10_0000, 0, 0)];
+        assert_eq!(select_primary_cell(&y_sensitive, Vec3::ZERO), 1);
+
+        let tied = [v(-0x10_0000, 0, 0), v(0x10_0000, 0, 0)];
+        assert_eq!(select_primary_cell(&tied, Vec3::ZERO), 0);
+    }
+
+    #[test]
+    fn primary_selection_preserves_int_min_wrapping_abs() {
+        let position = v(i32::MIN, 0, 0);
+        let centers = [Vec3::ZERO, position];
+        assert_eq!(select_primary_cell(&centers, position), 0);
+    }
+
+    #[test]
+    fn primary_selection_empty_and_bridge_alignment_errors_are_explicit() {
+        assert_eq!(select_primary_cell(&[], Vec3::ZERO), -1);
+        assert_eq!(
+            build_active_cell_record(&grid(2, 2), &[Vec3::ZERO], Vec3::ZERO),
+            Err(ActiveCellRecordBuildError::CellCountMismatch {
+                grid_count: 2,
+                center_count: 1,
+            })
+        );
+        assert_eq!(
+            build_active_cell_record(&grid(0, 0), &[], Vec3::ZERO),
+            Err(ActiveCellRecordBuildError::NoPrimaryCell)
+        );
+    }
+
+    #[test]
+    fn primary_bridge_retains_selected_authored_xz_and_grid_metadata() {
+        let centers = [
+            v(0, 0, 0),
+            v(0x20_0000, 0, 0),
+            v(0, 0x30_0000, -0x20_0000),
+            v(0x20_0000, 0, -0x20_0000),
+        ];
+        let position = v(1, 0x30_0000, -0x20_0000);
+        assert_eq!(
+            build_active_cell_record(&grid(2, 4), &centers, position),
+            Ok(ActiveCellRecord {
+                primary: 2,
+                primary_center_x: f(0),
+                primary_center_z: f(-0x20_0000),
+                half_cell: f(0x10_0000),
+                row_stride: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn primary_bridge_accepts_4096_cells_and_rejects_one_more() {
+        let mut maximum = vec![v(0x10_0000, 0, 0); MAX_CELLS];
+        maximum[MAX_CELLS - 1] = Vec3::ZERO;
+        assert_eq!(
+            build_active_cell_record(&grid(64, MAX_CELLS as i32), &maximum, Vec3::ZERO)
+                .unwrap()
+                .primary,
+            4095
+        );
+
+        let too_many = vec![Vec3::ZERO; MAX_CELLS + 1];
+        assert_eq!(
+            build_active_cell_record(&grid(64, (MAX_CELLS + 1) as i32), &too_many, Vec3::ZERO,),
+            Err(ActiveCellRecordBuildError::TooManyCellCenters {
+                count: MAX_CELLS + 1,
+                maximum: MAX_CELLS,
+            })
+        );
     }
 
     #[test]

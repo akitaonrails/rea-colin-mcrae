@@ -1724,9 +1724,12 @@ now captures pre-integration X/Z, rebuilds/deforms the eight-point hull, creates
 the horizontal projection cache and expands the strict four-cell neighborhood.
 The concrete kernel distinguishes alternate/miss/normal paths, owns one tick-
 rotated history and consumes ordered per-normal external results; the app now
-retains the parsed scene at stage load. Primary-cell resolution and persistent
-session response publication remain the next gate; render mesh AABBs are not
-accepted as compatibility geometry.
+retains the parsed scene at stage load. The primary-cell selector now scans the
+retained authored XYZ centers with the recovered wrapping Manhattan/divide-by-
+three metric and strict first-wins ties, rather than substituting the analytic
+XZ grid mapper. Authenticated live response inputs and persistent session
+publication remain the next gate; render mesh AABBs are not accepted as
+compatibility geometry.
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI

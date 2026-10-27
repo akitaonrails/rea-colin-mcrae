@@ -1854,8 +1854,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   literal-zero history identity and both reciprocal-corner narrow paths;
   `static_collision_response` pins the direct normal response and exceptional
   branches. Parsed scene construction and the pure live-car hull/projection/
-  neighbor-cell producer are now implemented below; primary-cell resolution
-  and live session integration remain open, and renderer bounds are
+  primary/neighbor-cell producer are now implemented below; authenticated
+  response inputs and live session integration remain open, and renderer bounds are
   not substituted. See
   evidence `rea.official-eu.sim-collision` and
   `impl.static-world-collision-orchestration`.
@@ -1867,7 +1867,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   exact eight-point/deformation arithmetic, projection cache and strict neighbor
   ordering. `static_collision_kernel` composes the normal response with one
   signed tick history while keeping alternate overlap distinct. The app retains
-  the parsed scene; primary-cell and mechanics-session publication remain open.
+  the parsed scene. The exact primary selector scans retained authored XYZ
+  centers with wrapping distance arithmetic and strict first-wins ties;
+  authenticated response inputs and mechanics-session publication remain open.
 - Stage timing uses the global clock `DAT_005ffc00`, a Q16.16 value in seconds
   advanced once per physics tick (step `2^32/(rate*0x10000)` = `0xa3d`~0.04 s at
   25 Hz, the same dt as `sim_clock`; `0x51e` at 50 Hz), saturating at
