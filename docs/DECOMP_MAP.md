@@ -395,14 +395,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T00:35:00Z
-milestone=recover-live-primary-collision-cell
+updated_utc=2026-10-28T00:55:00Z
+milestone=publish-compiled-live-collision-setup
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
-current_focus=authenticated-static-response-inputs-and-session-publication
+current_focus=static-response-thresholds-effects-and-session-publication
 next_exit_gate=controlled-live-static-object-contact-and-depenetration
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

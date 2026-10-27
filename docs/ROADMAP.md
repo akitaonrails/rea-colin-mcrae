@@ -1728,7 +1728,10 @@ retains the parsed scene at stage load. The primary-cell selector now scans the
 retained authored XYZ centers with the recovered wrapping Manhattan/divide-by-
 three metric and strict first-wins ties, rather than substituting the analytic
 XZ grid mapper. Authenticated live response inputs and persistent session
-publication remain the next gate; render mesh AABBs are not accepted as
+publication remain the next gate. The authenticated compiled setup now
+publishes exact collision halves, AK11 projection axis, corrected basis and
+typed deformation scalars into/alongside the start state instead of discarding
+them; their live evolution is still open. Render mesh AABBs are not accepted as
 compatibility geometry.
 
 The build and verification infrastructure is complete. Linux reviewed-import

@@ -28,9 +28,9 @@ use cmr_core::car_resources::{InRaceBodyLoadBranch, car_body_path, in_race_car_l
 use cmr_core::compiled_car_initializer::{
     CompiledCaseWords, CompiledControlFamilies, CompiledDirectCaseSet, CompiledDirectCaseSetError,
     CompiledEightLaneExecutionFailure, CompiledEightLaneExecutionState, CompiledHalfSignState,
-    CompiledLaneDispatchFailurePhase, CompiledSetupPoseError, CompiledSetupPoseInputs,
-    CompiledSetupPoseLaneInputs, DecodedCompiledLaneGeometryError,
-    execute_stage_compiled_setup_pose,
+    CompiledLaneDispatchFailurePhase, CompiledPostLaneBasisEffects, CompiledSetupPoseError,
+    CompiledSetupPoseInputs, CompiledSetupPoseLaneInputs, DecodedCompiledLaneGeometryError,
+    derive_compiled_half_sign_state, execute_stage_compiled_setup_pose,
 };
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
@@ -3489,6 +3489,39 @@ struct SessionCompiledPose {
     lanes: FreshProcessLaneState,
 }
 
+/// Recovered setup-time deformation scalars retained for later collision
+/// ownership. Their evolution after setup remains outside this adapter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SessionCompiledDeformationScalars {
+    scale_638: Fixed16,
+    scale_63c: Fixed16,
+    scale_640: Fixed16,
+}
+
+fn publish_session_compiled_pose(
+    start: &mut CarState,
+    effective_state_words: [i32; 6],
+    adjusted_center_y: i32,
+    final_published_normal: [i32; 3],
+    corrected_basis: &CompiledPostLaneBasisEffects,
+) -> SessionCompiledDeformationScalars {
+    let half_state = derive_compiled_half_sign_state([
+        effective_state_words[0],
+        effective_state_words[1],
+        effective_state_words[2],
+    ]);
+    start.motion.apply_compiled_half_state(&half_state);
+    start
+        .motion
+        .apply_compiled_post_lane_basis(final_published_normal, corrected_basis);
+    start.position.y = Fixed16::from_raw(adjusted_center_y);
+    SessionCompiledDeformationScalars {
+        scale_638: Fixed16::from_raw(effective_state_words[3]),
+        scale_63c: Fixed16::from_raw(effective_state_words[4]),
+        scale_640: Fixed16::from_raw(effective_state_words[5]),
+    }
+}
+
 impl SessionCompiledPose {
     fn open(
         runtime_data: &Path,
@@ -3539,7 +3572,7 @@ impl SessionCompiledPose {
         &mut self,
         start: &mut CarState,
         actor_rows: ActorMatrixRows,
-    ) -> Result<(), SessionCompiledPoseError> {
+    ) -> Result<SessionCompiledDeformationScalars, SessionCompiledPoseError> {
         let center = [
             start.position.x.raw(),
             start.position.y.raw(),
@@ -3564,8 +3597,20 @@ impl SessionCompiledPose {
         )
         .map_err(SessionCompiledPoseError::Execution)?;
         self.lanes.publish(effects.lanes.state);
-        start.position.y = Fixed16::from_raw(effects.adjusted_center[1]);
-        Ok(())
+        Ok(publish_session_compiled_pose(
+            start,
+            [
+                effects.effective_state_words[0],
+                effects.effective_state_words[1],
+                effects.effective_state_words[2],
+                effects.effective_state_words[3],
+                effects.effective_state_words[4],
+                effects.effective_state_words[5],
+            ],
+            effects.adjusted_center[1],
+            effects.normal.final_published_normal,
+            &effects.corrected_basis,
+        ))
     }
 }
 
@@ -3640,10 +3685,12 @@ pub fn run_windowed_game_session(
         native_stage_setup(media_root, runtime_data, stage, Some(car_code), renderer)?;
     // This owner models one fresh process/session: its lane arrays are
     // loader-zeroed once, authenticated setup runs once, and only the recovered
-    // setup-time center-Y publication is fed into the existing planar session.
+    // setup-time center-Y, half state, AK11 normal, and corrected basis are fed
+    // into the existing session. Deformation scalars are retained as an exact
+    // setup result, but live collision does not consume or evolve them yet.
     let mut compiled_pose = SessionCompiledPose::open(runtime_data, stage, car_code)
         .map_err(WindowedStageFrameError::CompiledPose)?;
-    compiled_pose
+    let _compiled_deformation_scalars = compiled_pose
         .adjust_spawn(&mut start, actor_rows)
         .map_err(WindowedStageFrameError::CompiledPose)?;
     let mut initial_view = ViewHarness::new();
@@ -4097,6 +4144,52 @@ mod tests {
                 gate_words: [6; 8],
                 drive_words: [7; 8],
                 first_four_subtractions: [8; 4],
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_pose_publication_updates_motion_and_retains_deformation_scalars() {
+        let mut start = CarState::at_rest();
+        start.position.y = Fixed16::from_raw(0x1234);
+        let basis = CompiledPostLaneBasisEffects {
+            vector_258: [0x10000, 0, 0],
+            vector_264: [0, 0x10000, 0],
+            vector_270: [0, 0, 0x10000],
+        };
+
+        let deformation = publish_session_compiled_pose(
+            &mut start,
+            [8, -10, 12, 13, -14, 15],
+            -0x2345,
+            basis.vector_264,
+            &basis,
+        );
+
+        assert_eq!(
+            start.motion.compiled_half_words,
+            Vec3::new(
+                Fixed16::from_raw(4),
+                Fixed16::from_raw(-5),
+                Fixed16::from_raw(6),
+            )
+        );
+        assert_eq!(start.motion.projection_axis, start.motion.basis[1]);
+        assert_eq!(
+            start.motion.basis,
+            [
+                Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
+                Vec3::new(Fixed16::ZERO, Fixed16::ONE, Fixed16::ZERO),
+                Vec3::new(Fixed16::ZERO, Fixed16::ZERO, Fixed16::ONE),
+            ]
+        );
+        assert_eq!(start.position.y, Fixed16::from_raw(-0x2345));
+        assert_eq!(
+            deformation,
+            SessionCompiledDeformationScalars {
+                scale_638: Fixed16::from_raw(13),
+                scale_63c: Fixed16::from_raw(-14),
+                scale_640: Fixed16::from_raw(15),
             }
         );
     }
@@ -4835,16 +4928,24 @@ mod tests {
         )
         .unwrap();
         let authored_y = start.position.y;
+        let authored_half_words = start.motion.compiled_half_words;
+        let authored_basis = start.motion.basis;
+        let authored_projection_axis = start.motion.projection_axis;
         let mut pose = SessionCompiledPose::open(&root, "AU1", "Sub").unwrap();
-        pose.adjust_spawn(&mut start, actor_rows).unwrap();
+        let deformation = pose.adjust_spawn(&mut start, actor_rows).unwrap();
         assert_ne!(start.position.y, authored_y);
-        eprintln!(
-            "owned-au1 setup-pose authored_y_q16={} adjusted_y_q16={} delta_y_q16={}",
-            authored_y.raw(),
-            start.position.y.raw(),
-            start.position.y.raw().wrapping_sub(authored_y.raw())
+        assert_ne!(start.motion.compiled_half_words, authored_half_words);
+        assert_ne!(start.motion.basis, authored_basis);
+        assert_ne!(start.motion.projection_axis, authored_projection_axis);
+        assert_eq!(start.motion.projection_axis, start.motion.basis[1]);
+        assert_ne!(
+            deformation,
+            SessionCompiledDeformationScalars {
+                scale_638: Fixed16::ZERO,
+                scale_63c: Fixed16::ZERO,
+                scale_640: Fixed16::ZERO,
+            }
         );
-
         let mut view = ViewHarness::new();
         let camera = view.update(false, start.position, start.heading, false);
         let harness_world = cmr_core::gameplay_camera::car_world_q16(

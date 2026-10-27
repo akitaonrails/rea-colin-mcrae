@@ -1869,7 +1869,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   signed tick history while keeping alternate overlap distinct. The app retains
   the parsed scene. The exact primary selector scans retained authored XYZ
   centers with wrapping distance arithmetic and strict first-wins ties;
-  authenticated response inputs and mechanics-session publication remain open.
+  compiled setup now publishes collision halves, AK11 axis, corrected basis and
+  typed deformation scalars. Authenticated response inputs, live basis/scalar
+  evolution and mechanics-session publication remain open.
 - Stage timing uses the global clock `DAT_005ffc00`, a Q16.16 value in seconds
   advanced once per physics tick (step `2^32/(rate*0x10000)` = `0xa3d`~0.04 s at
   25 Hz, the same dt as `sim_clock`; `0x51e` at 50 Hz), saturating at
