@@ -2440,6 +2440,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   the WORLD_ROOT_CLASS exception. A Vulkan app test matches the software keyed
   layered oracle at two cameras. HZN still selects software because it needs a
   separate projection and depth lifetime. See `impl.gpu-layered-foreground`.
+- The selected backend now executes that HZN boundary as two ordered GPU
+  passes into one indexed attachment: horizon clears color/depth with
+  `HORIZON_Z_FAR`; foreground loads color and clears depth; one readback feeds
+  the existing host. Camera+ARS recompute exact horizon node worlds each frame.
+  Synthetic full-layer equality is byte-exact, and authenticated AU1 with the
+  retained car passes the established 0.1% raster boundary. See
+  `impl.gpu-horizon-pass`.
 - Four-wheel stepping adds live forward force along the current heading before
   summing lane forces, so throttle produces world displacement. The native
   session boots directly into the stage rather than auto-advancing the menu.

@@ -1538,21 +1538,33 @@ struct WgpuStageRenderer {
     backend: WgpuIndexedPaletteBackend,
     prepared: PreparedRawStage,
     scene: <WgpuIndexedPaletteBackend as PersistentRawC3dGpuBackend>::PreparedScene,
+    horizon_prepared: Option<PreparedRawStage>,
+    horizon_scene: Option<<WgpuIndexedPaletteBackend as PersistentRawC3dGpuBackend>::PreparedScene>,
     palette: [PaletteEntry; 256],
 }
 
 impl WgpuStageRenderer {
-    fn from_prepared(prepared: PreparedRawStage) -> Result<Self, StageFrameError> {
+    fn from_prepared(
+        prepared: PreparedRawStage,
+        horizon_prepared: Option<PreparedRawStage>,
+    ) -> Result<Self, StageFrameError> {
         let palette = *prepared.upload().active_palette();
         let mut backend = WgpuIndexedPaletteBackend::new(&WgpuBackendConfig::default())
             .map_err(|error| StageFrameError::GpuInit(error.to_string()))?;
         let prepared_scene = backend
             .prepare_c3d_scene(prepared.upload())
             .map_err(|error| StageFrameError::GpuInit(error.to_string()))?;
+        let horizon_scene = horizon_prepared
+            .as_ref()
+            .map(|horizon| backend.prepare_c3d_scene(horizon.upload()))
+            .transpose()
+            .map_err(|error| StageFrameError::GpuInit(error.to_string()))?;
         Ok(Self {
             backend,
             prepared,
             scene: prepared_scene,
+            horizon_prepared,
+            horizon_scene,
             palette,
         })
     }
@@ -1567,6 +1579,7 @@ impl WgpuStageRenderer {
         &mut self,
         camera: &[i32; 16],
         dynamic_worlds: Option<&[[i32; 16]]>,
+        horizon_worlds: Option<&[[i32; 16]]>,
     ) -> Result<SoftwarePresentedFrame, StageFrameError> {
         let frame = if self.prepared.dynamic_world_set_count() == 0 {
             self.prepared.prepared_frame_for(camera)
@@ -1581,10 +1594,36 @@ impl WgpuStageRenderer {
                 .prepared_frame_for_worlds(camera, &[dynamic_worlds])
                 .map_err(StageFrameError::GpuPrepare)?
         };
-        let indexed = self
-            .backend
-            .render_prepared_indexed_readback(&mut self.scene, frame)
-            .map_err(|error| StageFrameError::GpuCompose(error.to_string()))?;
+        let indexed = if let (Some(horizon_prepared), Some(horizon_scene)) =
+            (self.horizon_prepared.as_mut(), self.horizon_scene.as_mut())
+        {
+            let horizon_worlds = horizon_worlds.ok_or(StageFrameError::GpuPrepare(
+                PreparedRawStageError::DynamicWorldSetCount {
+                    expected: 1,
+                    actual: 0,
+                },
+            ))?;
+            let (w, h, z_near, _) = cmr_core::c3d_camera::PROJECTION_BASELINE;
+            let horizon_frame = horizon_prepared
+                .prepared_frame_for_worlds_with_projection(
+                    camera,
+                    &[horizon_worlds],
+                    (w, h, z_near, cmr_core::c3d_camera::HORIZON_Z_FAR),
+                )
+                .map_err(StageFrameError::GpuPrepare)?;
+            self.backend
+                .render_prepared_layered_indexed_readback(
+                    horizon_scene,
+                    horizon_frame,
+                    &mut self.scene,
+                    frame,
+                )
+                .map_err(|error| StageFrameError::GpuCompose(error.to_string()))?
+        } else {
+            self.backend
+                .render_prepared_indexed_readback(&mut self.scene, frame)
+                .map_err(|error| StageFrameError::GpuCompose(error.to_string()))?
+        };
         SoftwarePresentedFrame::from_indexed(
             indexed.extent(),
             indexed.indices().to_vec().into_boxed_slice(),
@@ -1827,21 +1866,32 @@ impl StageRenderResources {
             .map_err(StageFrameError::GpuPrepare)
     }
 
+    fn prepare_gpu_horizon(&self) -> Result<Option<PreparedRawStage>, StageFrameError> {
+        let (Some(horizon), Some(textures)) =
+            (self.bundle.horizon(), self.horizon_textures.as_ref())
+        else {
+            return Ok(None);
+        };
+        let scene = StageScene::from_c3d(horizon, &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX)
+            .map_err(StageFrameError::Scene)?;
+        PreparedRawStage::prepare_layers(
+            [PreparedRawStageLayer::opaque_dynamic(&scene, textures, 0)],
+            ROOT_EXTENT,
+            &self.palette,
+        )
+        .map(Some)
+        .map_err(StageFrameError::GpuPrepare)
+    }
+
     fn rebuild_gpu_foreground(&mut self) -> Result<(), StageFrameError> {
         self.gpu = None;
         if self.choice == StageRendererChoice::Software {
             return Ok(());
         }
-        if self.bundle.horizon().is_some() {
-            return if self.choice == StageRendererChoice::Gpu {
-                Err(StageFrameError::GpuLayeredStageUnsupported)
-            } else {
-                Ok(())
-            };
-        }
-        let renderer = self
-            .prepare_gpu_foreground()
-            .and_then(WgpuStageRenderer::from_prepared);
+        let renderer = self.prepare_gpu_foreground().and_then(|foreground| {
+            let horizon = self.prepare_gpu_horizon()?;
+            WgpuStageRenderer::from_prepared(foreground, horizon)
+        });
         match renderer {
             Ok(renderer) => {
                 self.gpu = Some(renderer);
@@ -1928,8 +1978,20 @@ impl StageRenderResources {
             .as_ref()
             .zip(car_world)
             .map(|(scene, root)| scene_world_transforms(scene.group0_records(), root));
+        let horizon_node_worlds =
+            self.bundle
+                .horizon()
+                .zip(self.bundle.ars())
+                .map(|(horizon, ars)| {
+                    let root = horizon_root_world(camera, ars.horizon_y_offset_q16());
+                    scene_world_transforms(horizon.group0_records(), &root)
+                });
         if let Some(gpu) = self.gpu.as_mut() {
-            match gpu.compose(camera, car_node_worlds.as_deref()) {
+            match gpu.compose(
+                camera,
+                car_node_worlds.as_deref(),
+                horizon_node_worlds.as_deref(),
+            ) {
                 Ok(frame) => {
                     return Ok(RenderedStageFrameOutput {
                         stage: self.stage.clone(),
@@ -3477,6 +3539,56 @@ mod tests {
             ),
             Err(StageFrameError::GpuLayeredStageUnsupported)
         ));
+    }
+
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data and a Vulkan adapter"]
+    fn imported_au1_layered_gpu_matches_software_with_horizon_and_car() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let (mut software, _, start, camera) = native_stage_setup(
+            &root.join("Game/Au/1"),
+            &root,
+            "AU1",
+            Some("Sub"),
+            StageRendererChoice::Software,
+        )
+        .unwrap();
+        let (mut gpu, _, gpu_start, gpu_camera) = native_stage_setup(
+            &root.join("Game/Au/1"),
+            &root,
+            "AU1",
+            Some("Sub"),
+            StageRendererChoice::Gpu,
+        )
+        .unwrap();
+        assert_eq!(gpu_start, start);
+        assert_eq!(gpu_camera, camera);
+        let harness_car_world = cmr_core::gameplay_camera::car_world_q16(
+            &cmr_core::fixed_point::build_sine_table(),
+            start.position,
+            start.heading,
+        );
+        let car_world = car_model_world_q16(&harness_car_world);
+
+        let software_frame = software
+            .compose_with_car(&camera, Some(&car_world))
+            .unwrap();
+        let gpu_frame = gpu.compose_with_car(&camera, Some(&car_world)).unwrap();
+        assert_eq!(gpu_frame.renderer, StageRendererKind::Gpu);
+        assert_eq!(gpu_frame.frame.palette(), software_frame.frame.palette());
+        let mismatches = gpu_frame
+            .frame
+            .pixels()
+            .iter()
+            .zip(software_frame.frame.pixels())
+            .filter(|(gpu, software)| gpu != software)
+            .count();
+        assert!(
+            mismatches <= 307,
+            "imported AU1 exceeds the established 0.1% GPU/software raster boundary: {mismatches} pixels"
+        );
     }
 
     #[test]

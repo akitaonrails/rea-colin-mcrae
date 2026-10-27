@@ -1284,10 +1284,13 @@ impl PersistentRawC3dIndexedBackend for WgpuIndexedPaletteBackend {
         let pitch = scene.index_readback_pitch as usize;
         let mapped_len = pitch * height;
         if mapped.len() != mapped_len {
+            let actual = mapped.len();
+            drop(mapped);
+            scene.index_readback.unmap();
             return Err(WgpuBackendError::Contract(
                 FrameContractError::InvalidReadbackLength {
                     expected: mapped_len,
-                    actual: mapped.len(),
+                    actual,
                 },
             ));
         }
@@ -1304,6 +1307,116 @@ impl PersistentRawC3dIndexedBackend for WgpuIndexedPaletteBackend {
 }
 
 impl WgpuIndexedPaletteBackend {
+    /// Renders an independently prepared background and foreground into one
+    /// indexed target. The background clears color/depth; the foreground loads
+    /// color but clears depth, matching the recovered horizon composition.
+    pub fn render_prepared_layered_indexed_readback(
+        &mut self,
+        background: &mut WgpuPreparedC3dScene,
+        background_frame: C3dPreparedFrame<'_>,
+        foreground: &mut WgpuPreparedC3dScene,
+        foreground_frame: C3dPreparedFrame<'_>,
+    ) -> Result<CanonicalIndexedFrame, WgpuBackendError> {
+        background_frame
+            .ensure_layout(background.layout)
+            .map_err(WgpuBackendError::RawContract)?;
+        foreground_frame
+            .ensure_layout(foreground.layout)
+            .map_err(WgpuBackendError::RawContract)?;
+        let extent = background.layout.extent();
+        if foreground.layout.extent() != extent {
+            return Err(WgpuBackendError::LayeredExtentMismatch {
+                background: [extent.width, extent.height],
+                foreground: [
+                    foreground.layout.extent().width,
+                    foreground.layout.extent().height,
+                ],
+            });
+        }
+        if foreground.active_palette != background.active_palette {
+            return Err(WgpuBackendError::LayeredPaletteMismatch);
+        }
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("cmr layered C3D indexed presentation commands"),
+            });
+        let background_draws = self.encode_prepared_c3d_target_into(
+            background,
+            background,
+            background_frame,
+            &mut encoder,
+            C3dEncodeTarget::PaletteIndex,
+            false,
+        )?;
+        let foreground_draws = self.encode_prepared_c3d_target_into(
+            foreground,
+            background,
+            foreground_frame,
+            &mut encoder,
+            C3dEncodeTarget::PaletteIndex,
+            true,
+        )?;
+        encoder.copy_texture_to_buffer(
+            texture_copy(&background._index_texture),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &background.index_readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(background.index_readback_pitch),
+                    rows_per_image: Some(u32::from(extent.height)),
+                },
+            },
+            wgpu::Extent3d {
+                width: u32::from(extent.width),
+                height: u32::from(extent.height),
+                depth_or_array_layers: 1,
+            },
+        );
+        let submission = self.queue.submit([encoder.finish()]);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        background
+            .index_readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        self.wait_for_submission(submission)?;
+        receiver
+            .recv()
+            .map_err(|error| WgpuBackendError::MapChannel(error.to_string()))?
+            .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
+        let mapped = background
+            .index_readback
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
+        let width = usize::from(extent.width);
+        let height = usize::from(extent.height);
+        let pitch = background.index_readback_pitch as usize;
+        let mapped_len = pitch * height;
+        if mapped.len() != mapped_len {
+            let actual = mapped.len();
+            drop(mapped);
+            background.index_readback.unmap();
+            return Err(WgpuBackendError::Contract(
+                FrameContractError::InvalidReadbackLength {
+                    expected: mapped_len,
+                    actual,
+                },
+            ));
+        }
+        let mut indices = Vec::with_capacity(width * height);
+        for row in 0..height {
+            indices.extend_from_slice(&mapped[row * pitch..row * pitch + width]);
+        }
+        drop(mapped);
+        background.index_readback.unmap();
+        drop((background_draws, foreground_draws));
+        CanonicalIndexedFrame::new(extent, indices.into_boxed_slice())
+            .map_err(WgpuBackendError::Contract)
+    }
+
     fn encode_prepared_c3d(
         &self,
         scene: &WgpuPreparedC3dScene,
@@ -1320,7 +1433,19 @@ impl WgpuIndexedPaletteBackend {
         encoder: &mut wgpu::CommandEncoder,
         target: C3dEncodeTarget,
     ) -> Result<Vec<WgpuFrameDraw>, WgpuBackendError> {
-        let extent = scene.layout.extent();
+        self.encode_prepared_c3d_target_into(scene, scene, frame, encoder, target, false)
+    }
+
+    fn encode_prepared_c3d_target_into(
+        &self,
+        scene: &WgpuPreparedC3dScene,
+        target_scene: &WgpuPreparedC3dScene,
+        frame: C3dPreparedFrame<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+        target: C3dEncodeTarget,
+        load_color: bool,
+    ) -> Result<Vec<WgpuFrameDraw>, WgpuBackendError> {
+        let extent = target_scene.layout.extent();
         if frame.draws().len() > scene.transform_capacity {
             return Err(WgpuBackendError::TransformCapacity {
                 required: frame.draws().len(),
@@ -1353,10 +1478,10 @@ impl WgpuIndexedPaletteBackend {
             self.queue
                 .write_buffer(&scene.transform_buffer, 0, &transform_upload);
         }
-        let clear = scene.active_palette[0];
+        let clear = target_scene.active_palette[0];
         let (target_view, clear_color) = match target {
             C3dEncodeTarget::Rgba => (
-                &scene.output_view,
+                &target_scene.output_view,
                 wgpu::Color {
                     r: f64::from(clear.red) / 255.0,
                     g: f64::from(clear.green) / 255.0,
@@ -1367,7 +1492,7 @@ impl WgpuIndexedPaletteBackend {
             // The software compositor clears its indexed framebuffer to index
             // zero; the presentation target must start from the same index.
             C3dEncodeTarget::PaletteIndex => (
-                &scene.index_view,
+                &target_scene.index_view,
                 wgpu::Color {
                     r: 0.0,
                     g: 0.0,
@@ -1384,12 +1509,16 @@ impl WgpuIndexedPaletteBackend {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear_color),
+                        load: if load_color {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(clear_color)
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &scene.depth_view,
+                    view: &target_scene.depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -1727,6 +1856,11 @@ pub enum WgpuBackendError {
         required: usize,
         capacity: usize,
     },
+    LayeredExtentMismatch {
+        background: [u16; 2],
+        foreground: [u16; 2],
+    },
+    LayeredPaletteMismatch,
 }
 
 impl fmt::Display for WgpuBackendError {

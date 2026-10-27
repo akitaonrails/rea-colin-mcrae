@@ -92,6 +92,20 @@ impl<'a, 'scene> PreparedRawStageLayer<'a, 'scene> {
             dynamic_world_set: Some(dynamic_world_set),
         }
     }
+
+    #[must_use]
+    pub const fn opaque_dynamic(
+        scene: &'a StageScene<'scene>,
+        textures: &'a StageC3dTextures,
+        dynamic_world_set: usize,
+    ) -> Self {
+        Self {
+            scene,
+            textures,
+            color_key_index: None,
+            dynamic_world_set: Some(dynamic_world_set),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -288,6 +302,20 @@ impl PreparedRawStage {
         camera_world_q16: &[i32; 16],
         dynamic_worlds: &[&[[i32; 16]]],
     ) -> Result<C3dPreparedFrame<'_>, PreparedRawStageError> {
+        self.prepared_frame_for_worlds_with_projection(
+            camera_world_q16,
+            dynamic_worlds,
+            PROJECTION_BASELINE,
+        )
+    }
+
+    /// Dynamic-world variant with an explicit recovered projection profile.
+    pub fn prepared_frame_for_worlds_with_projection(
+        &mut self,
+        camera_world_q16: &[i32; 16],
+        dynamic_worlds: &[&[[i32; 16]]],
+        projection: (f32, f32, f32, f32),
+    ) -> Result<C3dPreparedFrame<'_>, PreparedRawStageError> {
         if dynamic_worlds.len() != self.dynamic_world_set_count {
             return Err(PreparedRawStageError::DynamicWorldSetCount {
                 expected: self.dynamic_world_set_count,
@@ -310,11 +338,19 @@ impl PreparedRawStage {
                 old.submission(),
             )?;
         }
-        Ok(self.borrow_prepared_frame(camera_world_q16))
+        Ok(self.borrow_prepared_frame_with_projection(camera_world_q16, projection))
     }
 
     fn borrow_prepared_frame(&self, camera_world_q16: &[i32; 16]) -> C3dPreparedFrame<'_> {
-        let (projection_width, projection_height, z_near, z_far) = PROJECTION_BASELINE;
+        self.borrow_prepared_frame_with_projection(camera_world_q16, PROJECTION_BASELINE)
+    }
+
+    fn borrow_prepared_frame_with_projection(
+        &self,
+        camera_world_q16: &[i32; 16],
+        projection: (f32, f32, f32, f32),
+    ) -> C3dPreparedFrame<'_> {
+        let (projection_width, projection_height, z_near, z_far) = projection;
         C3dPreparedFrame::new(
             self.upload().layout(),
             view_matrix_words(camera_world_q16),

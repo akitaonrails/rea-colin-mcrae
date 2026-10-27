@@ -324,8 +324,12 @@ now matches the recovered `LessEqual` equal-depth rule (later main -> OBJ ->
 SHT -> car submission wins). Horizon-free main/OBJ/SHT/car graphs now prepare
 into one persistent upload with independent source namespaces, explicit keys,
 and exact per-frame car node worlds. A synthetic Vulkan app test matches the
-software keyed-layer oracle at two camera poses. Authenticated imported-stage
-equivalence and the separate horizon projection/depth pass remain open.
+software keyed-layer oracle at two camera poses. The HZN pass now renders first
+with its recovered far projection, then foreground loads color with a cleared
+depth buffer before one indexed readback. Authenticated AU1 with the retained
+car passes the established 0.1% hardware/software raster boundary. Layered GPU
+rendering is wired; native Windows verification and zero-copy presentation
+remain open.
 
 ## Update rules
 
@@ -336,13 +340,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-27T19:14:03Z
-milestone=prepare-layered-gpu-foreground
+updated_utc=2026-10-27T19:16:32Z
+milestone=render-layered-gpu-horizon
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
-current_focus=layered-gpu-horizon-pass
-next_exit_gate=gpu-software-full-layer-equivalence
+current_focus=recovered-menu-to-race-selection
+next_exit_gate=native-root-menu-launches-configured-race
 <!-- PROGRESS-TAIL-END -->

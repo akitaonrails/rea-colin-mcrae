@@ -20,7 +20,8 @@ use cmr_formats::c3d::{
     C3D_MAGIC,
 };
 use cmr_formats::stage::{
-    C3D_EXTENSION, CAT_EXTENSION, CAT_NODE_STRIDE, OBJ_EXTENSION, SHT_EXTENSION,
+    ARS_EXTENSION, C3D_EXTENSION, CAT_EXTENSION, CAT_NODE_STRIDE, HZN_EXTENSION, OBJ_EXTENSION,
+    SHT_EXTENSION,
 };
 use cmr_platform_sdl3::present_software_frame_once;
 
@@ -161,6 +162,8 @@ fn gpu_and_software_render_the_same_synthetic_layered_stage_frame() {
     media.write_section("gpucompare", C3D_EXTENSION, &scene);
     media.write_section("gpucompare", OBJ_EXTENSION, &scene);
     media.write_section("gpucompare", SHT_EXTENSION, &scene);
+    media.write_section("gpucompare", HZN_EXTENSION, &scene);
+    media.write_section("gpucompare", ARS_EXTENSION, &[0; 16]);
 
     let software =
         render_stage_frame(media.root(), "gpucompare", StageRendererChoice::Software).unwrap();
@@ -169,8 +172,9 @@ fn gpu_and_software_render_the_same_synthetic_layered_stage_frame() {
     assert_eq!(software.renderer, StageRendererKind::Software);
     assert_eq!(gpu.renderer, StageRendererKind::Gpu);
     // Both renderers are held to the same source-owned layered fixture
-    // contract. OBJ/SHT source index zero is keyed, later equal-depth geometry
-    // wins, and the host receives the same active-palette index frame.
+    // contract. HZN uses its separate projection/depth pass, OBJ/SHT source
+    // index zero is keyed, later equal-depth geometry wins, and the host
+    // receives the same active-palette index frame.
     assert_eq!(gpu.frame.extent(), software.frame.extent());
     assert_eq!(gpu.frame.pixels(), software.frame.pixels());
     assert_eq!(gpu.frame.palette(), software.frame.palette());
@@ -179,9 +183,9 @@ fn gpu_and_software_render_the_same_synthetic_layered_stage_frame() {
     else {
         panic!("each renderer must report its own statistics");
     };
-    // The prepared adapter retains every drawable prim the software composer
-    // rasterizes, and the same unresolved-slot accounting.
-    assert_eq!(gpu_stats.draws, software_stats.prims_composed);
+    // GPU stats describe the foreground upload; the separate one-draw horizon
+    // pass accounts for the remaining software-composed primitive.
+    assert_eq!(gpu_stats.draws + 1, software_stats.prims_composed);
     assert_eq!(gpu_stats.unresolved_prims, software_stats.unresolved_prims);
     assert_eq!(
         gpu_stats.unique_textures,
