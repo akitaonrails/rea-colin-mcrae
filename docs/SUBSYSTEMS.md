@@ -2550,7 +2550,7 @@ languages rather than fabricating or silently aliasing Italian assets.
   Concrete damage, angular consume/clear, per-tick contact count, four-wheel
   basis evolution and car/wheel animation remain open.
 - `FUN_0040a4a0` decays the prior moment `+0x3d8..+0x3e0` in place by `+0x48`
-  and never clears it. A moment-overflow trigger (wrapping `|x| + |z|` of the
+  and uses the decayed value; its caller `FUN_00407690` then clears it. A moment-overflow trigger (wrapping `|x| + |z|` of the
   decayed moment strictly above `0xbb80000`, only while `+0x680 == 0`) sets
   `+0x680/+0x688` and snapshots the projection axis in the basis frame into
   `+0xbc..+0xc4`; out-of-control ticks convert angles without the half-delta
@@ -2564,6 +2564,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   gates, unwired until the raw steer magnitudes and the control word `+0x404`
   reach the simulation step. The in-race mapper `FUN_00449580` also triggers the
   camera view cycle on a rising edge of device bit `DAT_0055aeb0 >> 16`.
+- The per-car mechanics driver `FUN_00407690` clears `+0x3cc..+0x3e0` after the
+  integrator every tick, so `+0x3d8` accumulates from zero in each collision pass.
+  An end-of-tick clear now runs in every mechanics-tick method; this fixes the
+  four-wheel decayed write-back and the live planar session's compounding
+  angular impulses. The driver also writes `+0x404` (an upright-cone test on the
+  body-frame projection axis, now reconstructed) and cuts steering below
+  `|+0xec| < 0x147` (observed only).
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

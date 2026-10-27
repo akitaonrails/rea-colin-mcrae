@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-10-28 (low-speed gate and angle deadzones)
+Updated: 2026-10-28 (per-tick angular moment clear)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-fix: correct the low-speed gate and recover angle deadzones
+fix: clear the angular moment at the end of each mechanics tick
 ```
 
 Start by confirming the checkout and progress footer:
@@ -36,11 +36,14 @@ It does **not** establish a finished or fully accurate game.
   mutable damage-object implementation open.
 - Pending linear correction `+0x3cc` is consumed once by the next translation
   step and cleared.
-- Angular `+0x3d8` is **decayed in place, never cleared** (instruction-level,
-  `FUN_0040a4a0` `0x40a7af`): `+0x3d8..+0x3e0 <- qmul(component, +0x48)`, then
-  added to the contact moments. The four-wheel step already wrote the decayed
-  value back, so that ownership was correct; the old "consume/clear" premise is
-  withdrawn (`rea.official-eu.angular-moment-lifecycle`).
+- Angular `+0x3d8` lifecycle per tick: the collision pass accumulates from zero;
+  the integrator `FUN_0040a4a0` decays it in place by `+0x48` and uses it; the
+  per-car mechanics driver `FUN_00407690` then clears `+0x3cc..+0x3e0`
+  (`rea.official-eu.mechanics-tick-driver`). `RaceState::finish_mechanics_tick`
+  reproduces the clear at the end of every mechanics-tick method. An earlier
+  milestone wrongly concluded "never cleared" from the integrator alone; that
+  is corrected, along with the two defects it left (the four-wheel decayed
+  write-back, and the live planar session compounding angular impulses).
 - A recovered moment-overflow trigger now runs in the four-wheel angular pass:
   only while `+0x680 == 0`, wrapping `|x| + |z|` of the decayed moment strictly
   above `0xbb80000` sets `+0x680/+0x688` and snapshots `+0xbc..+0xc4`. That
@@ -75,7 +78,7 @@ ef78049 feat: derive canonical collision response state
 
 ## Verification state
 
-Green at handoff (2,313 tests, 35 ignored):
+Green at handoff (2,316 tests, 35 ignored):
 
 ```sh
 cargo test --workspace --all-targets
@@ -86,8 +89,8 @@ Focused collision, session rollback, keyboard/analog, SDL gamepad, app build,
 and full-workspace tests pass. Logs from the last run are ignored under:
 
 ```text
-.work/deadzone-workspace-test.log
-.work/deadzone-clippy.log
+.work/moment-clear-workspace-test.log
+.work/moment-clear-clippy.log
 ```
 
 The authenticated AU1 test was run before the steering correction:
@@ -112,8 +115,12 @@ budget permits; do not represent it as already green.
    - thread the raw steer magnitudes `+0x2fc/+0x300` (already in
      `input_map::CarControls`) into the simulation step, which currently gets
      only the derived `Controls`;
-   - find the writer of control word `DAT_0050c604 +0x404`. It is not the in-race
-     mapper `FUN_00449580`. Do not supply a guessed default.
+   - compute `+0x404` with `upright_flag_404(transform_contact_force(basis,
+     projection_axis))` from the basis at the *start* of the tick (the driver
+     computes it before the integrators);
+   - apply the driver's low-speed steer cut first: `|+0xec| < 0x147` (the
+     previous tick's speed) zeroes `+0x2fc/+0x300`. It is observed at
+     pseudocode level in `FUN_00407690` but not yet reconstructed.
    Use the translation outcome's recomputed `speed` for `+0x700`, not
    `four_wheel.speed_ec`: the four-wheel step recomputes that after the planar
    harness's `apply_lateral_grip`, a stage `FUN_0040a4a0` does not have. Removing

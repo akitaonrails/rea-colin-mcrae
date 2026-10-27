@@ -394,7 +394,11 @@ moment-overflow trigger sets `+0x680/+0x688/+0xbc`, and the momentum order is
 corrected; the four-wheel step publishes all three, while the live planar
 session does not yet run this pass. The low-speed position suppression now
 tests the recomputed new speed under the `+0x742` gate; the angle deadzones and
-`+0x700` are pure tested gates awaiting the raw steer magnitudes and `+0x404`.
+`+0x700` are pure tested gates. The per-car driver `FUN_00407690` clears the
+moment every tick, so an end-of-tick clear now fixes the four-wheel write-back
+and the live planar session's compounding angular impulses; `+0x404` is
+recovered as an upright-cone test. The deadzones still await the raw steer
+magnitudes in the simulation step.
 
 ## Update rules
 
@@ -405,8 +409,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T04:15:00Z
-milestone=correct-low-speed-gate-and-recover-angle-deadzones
+updated_utc=2026-10-28T04:45:00Z
+milestone=clear-angular-moment-each-mechanics-tick
 completed=117
 partial=2
 not_started=0

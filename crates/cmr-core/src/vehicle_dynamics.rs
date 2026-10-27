@@ -1399,9 +1399,42 @@ pub struct AngleDeadzoneInputs {
     pub steer_left_2fc: i32,
     /// Control record `DAT_0050c604 +0x300` (steer-right magnitude).
     pub steer_right_300: i32,
-    /// Control record `DAT_0050c604 +0x404`. Its writer is not yet recovered
-    /// (the in-race control mapper `FUN_00449580` does not write it).
+    /// Control record `DAT_0050c604 +0x404`, written each tick by the
+    /// mechanics driver `FUN_00407690` as [`upright_flag_404`].
     pub word_404: i32,
+}
+
+/// Minimum body-frame Y of the projection axis for the `+0x404` flag
+/// (`FUN_00407690`, signed `y < 0x107` clears it).
+pub const UPRIGHT_MIN_Y: Fixed16 = Fixed16::from_raw(0x107);
+
+/// Bound on `|x|` relative to `|y|` for the `+0x404` flag (`0x93cd`, about
+/// tan 30 degrees).
+pub const UPRIGHT_X_SLOPE: Fixed16 = Fixed16::from_raw(0x93cd);
+
+/// Bound on `|z|` relative to `|y|` for the `+0x404` flag (`0x1bb67`, about
+/// tan 60 degrees).
+pub const UPRIGHT_Z_SLOPE: Fixed16 = Fixed16::from_raw(0x1bb67);
+
+/// The control-record flag `+0x404` the mechanics driver `FUN_00407690`
+/// recomputes each tick before the per-car integrators.
+///
+/// `body_axis` is the projection axis `+0x324` transformed by the published
+/// basis (`FUN_0048e100`, i.e. [`transform_contact_force`]). The flag is set,
+/// then cleared if `y < 0x107`, if `qmul(|y|, 0x93cd) < |x|`, or if
+/// `qmul(|y|, 0x1bb67) < |z|` (signed compares, wrapping absolute values). The
+/// cone shape suggests "the car is roughly upright", but that reading is an
+/// inference from the arithmetic.
+#[must_use]
+pub fn upright_flag_404(body_axis: Vec3) -> bool {
+    if body_axis.y < UPRIGHT_MIN_Y {
+        return false;
+    }
+    let magnitude_y = Fixed16::from_raw(body_axis.y.raw().wrapping_abs());
+    let within = |component: Fixed16, slope: Fixed16| {
+        magnitude_y.mul(slope).raw() >= component.raw().wrapping_abs()
+    };
+    within(body_axis.x, UPRIGHT_X_SLOPE) && within(body_axis.z, UPRIGHT_Z_SLOPE)
 }
 
 /// Apply the three contact-gated angle deadzones, in native order.
@@ -2472,6 +2505,40 @@ mod tests {
             apply_contact_angle_deadzones([i16::MIN, i16::MIN, i16::MIN], deadzone_inputs()),
             [i16::MIN; 3]
         );
+    }
+
+    #[test]
+    fn upright_flag_requires_positive_y_and_both_cone_bounds() {
+        let axis = |x: i32, y: i32, z: i32| upright_flag_404(raw_v(x, y, z));
+        assert!(axis(0, 0x1_0000, 0));
+        // Minimum Y, signed.
+        assert!(axis(0, 0x107, 0));
+        assert!(!axis(0, 0x106, 0));
+        assert!(!axis(0, -0x1_0000, 0));
+        // |x| <= qmul(|y|, 0x93cd), either sign; one LSB past fails.
+        assert!(axis(0x93cd, 0x1_0000, 0));
+        assert!(axis(-0x93cd, 0x1_0000, 0));
+        assert!(!axis(0x93ce, 0x1_0000, 0));
+        // |z| <= qmul(|y|, 0x1bb67).
+        assert!(axis(0, 0x1_0000, 0x1bb67));
+        assert!(!axis(0, 0x1_0000, -0x1bb68));
+        // Wrapping absolute value: i32::MIN components never fail a bound.
+        assert!(axis(i32::MIN, 0x1_0000, i32::MIN));
+    }
+
+    #[test]
+    fn upright_flag_follows_the_basis_transform_of_the_projection_axis() {
+        // World-up projection axis seen through an identity basis is upright;
+        // through a basis rolled 90 degrees (up row now on X) it is not.
+        let up = raw_v(0, 0x1_0000, 0);
+        let identity = standard_basis();
+        let rolled = [
+            raw_v(0, 0x1_0000, 0),
+            raw_v(-0x1_0000, 0, 0),
+            raw_v(0, 0, 0x1_0000),
+        ];
+        assert!(upright_flag_404(transform_contact_force(identity, up)));
+        assert!(!upright_flag_404(transform_contact_force(rolled, up)));
     }
 
     #[test]

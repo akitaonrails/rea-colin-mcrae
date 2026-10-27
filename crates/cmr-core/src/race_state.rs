@@ -895,7 +895,21 @@ impl RaceState {
     /// into velocity, apply the recovered half-delta position update, apply the
     /// lateral-grip constraint, and advance the stage clock.
     pub fn step(&mut self, controls: &Controls, params: &SimParams) -> TraceSample {
-        self.step_with_optional_world_force(controls, params, None, false)
+        let mut sample = self.step_with_optional_world_force(controls, params, None, false);
+        self.finish_mechanics_tick();
+        sample.car = self.car;
+        sample
+    }
+
+    /// The end-of-tick clear the per-car mechanics driver `FUN_00407690` applies
+    /// after `FUN_0040a4a0` and the drivetrain passes `FUN_0040d0c0`/`FUN_004088c0`:
+    /// it zeroes `+0x3cc..+0x3e0`, so the next static collision pass accumulates
+    /// both corrections from zero. The linear words are already consumed and
+    /// cleared by the translation step; the angular moment `+0x3d8` is cleared
+    /// here. Neither drivetrain pass reads `+0x3d8`, so the decayed value
+    /// `FUN_0040a4a0` writes back is dead once the angular pass has used it.
+    fn finish_mechanics_tick(&mut self) {
+        self.car.motion.moment = Vec3::ZERO;
     }
 
     fn step_with_optional_world_force(
@@ -1119,12 +1133,15 @@ impl RaceState {
                 (postprocess.wheel_contacts[index], lanes[index].accumulator)
             }),
         );
-        Ok(self.step_with_optional_world_force(
+        let mut sample = self.step_with_optional_world_force(
             controls,
             params,
             Some(force),
             postprocess.wheel_contacts.contains(&true),
-        ))
+        );
+        self.finish_mechanics_tick();
+        sample.car = self.car;
+        Ok(sample)
     }
 
     /// Rebuild contact vectors from the pre-step velocity, run all four first
@@ -1409,12 +1426,13 @@ impl RaceState {
         .expect("the race-state trig table is complete");
         self.car.motion.basis = orientation.basis;
         self.car.motion.angular_velocity = orientation.angular_velocity;
-        // `+0x3d8` is decayed in place by `+0x48`, never cleared: the next
-        // tick's collision pass accumulates onto this value.
-        self.car.motion.moment = orientation.momentum.scaled_prior_moment;
+        // The angular pass consumed the decayed moment
+        // (`orientation.momentum.scaled_prior_moment`); the mechanics driver
+        // then clears it.
         self.car
             .collision
             .set_out_of_control(orientation.out_of_control);
+        self.finish_mechanics_tick();
         sample.car = self.car;
         Ok(sample)
     }
@@ -1536,6 +1554,23 @@ mod tests {
         assert_eq!(second.car.first_wheel.force, -0xfffc);
         assert_eq!(second.car.first_wheel.wheel_speed, 7);
         assert!(second.car.position.x > first.car.position.x);
+    }
+
+    #[test]
+    fn planar_step_clears_a_collision_moment_at_the_end_of_the_tick() {
+        // The live planar session runs mechanics then collision. A moment the
+        // collision pass published must not survive into the next pass, or
+        // impulses compound across ticks; `FUN_00407690` zeroes it each tick.
+        let mut car = CarState::at_rest();
+        car.motion.moment = Vec3::new(
+            Fixed16::from_raw(0x4_0000),
+            Fixed16::from_raw(-0x2_0000),
+            Fixed16::from_raw(0x1_0000),
+        );
+        let mut state = RaceState::new(car);
+        let sample = state.step(&straight_throttle(1)[0], &params());
+        assert_eq!(sample.car.motion.moment, Vec3::ZERO);
+        assert_eq!(state.car().motion.moment, Vec3::ZERO);
     }
 
     #[test]
@@ -2238,6 +2273,9 @@ mod tests {
             },
         );
         car.motion.angular_velocity = vector([0x10000, 0x10000, 0x10000]);
+        // A nonzero collision moment from the previous tick: the angular pass
+        // must consume it (decayed) and the mechanics driver must clear it.
+        car.motion.moment = vector([0x2_0000, -0x1_0000, 0x3_0000]);
         for (index, speed) in [-1, 0x10000, -1, -1].into_iter().enumerate() {
             car.four_wheel.first[index].wheel_speed = speed;
         }
@@ -2398,10 +2436,13 @@ mod tests {
             sample.car.motion.angular_velocity,
             expected_orientation.angular_velocity
         );
-        assert_eq!(
-            sample.car.motion.moment,
-            expected_orientation.momentum.scaled_prior_moment
+        assert_ne!(
+            expected_orientation.momentum.scaled_prior_moment,
+            Vec3::ZERO,
+            "the fixture must exercise a nonzero decayed moment"
         );
+        assert_eq!(sample.car.motion.moment, Vec3::ZERO);
+        assert_eq!(state.car().motion.moment, Vec3::ZERO);
         assert_eq!(
             sample.car.collision.out_of_control(),
             expected_orientation.out_of_control

@@ -1763,11 +1763,9 @@ angular consume/clear, per-tick contact count, four-wheel basis evolution and
 car/wheel animation remain the next I14 work.
 
 The angular `+0x3d8` lifecycle is now pinned from the shipped integrator
-`FUN_0040a4a0` instead of being modeled as consume/clear. The native code
-decays the prior moment in place (`+0x3d8..+0x3e0 <- qmul(component, +0x48)`)
-and never zeroes it; the next static collision pass accumulates onto the decayed
-value, so the existing write-back was already the right ownership and the clear
-premise is withdrawn. The same reading recovered a missing moment-overflow
+`FUN_0040a4a0`. The integrator decays the prior moment in place
+(`+0x3d8..+0x3e0 <- qmul(component, +0x48)`) and uses the decayed value; its
+caller then clears it (see the correction below). The same reading recovered a missing moment-overflow
 trigger: while not out of control, a wrapping `|x| + |z|` of the decayed moment
 strictly above `0xbb80000` sets `+0x680/+0x688` and records `+0xbc..+0xc4` as the
 projection axis `+0x324` in the pre-rotation basis frame, and that tick's angle
@@ -1794,6 +1792,22 @@ tested gates but not wired: the yaw deadzone needs the raw steer magnitudes
 control word `+0x404`, whose writer is not the in-race mapper. The same mapper
 pass also showed it owns the shipped camera-change input, a rising edge on
 device bit `DAT_0055aeb0 >> 16` (default bit `0x40`) that calls the view cycle.
+
+Correction to the two milestones above. The per-car mechanics driver
+`FUN_00407690`, which calls `FUN_0040a4a0`, zeroes `+0x3cc..+0x3e0` after the
+integrator and the two drivetrain passes, neither of which reads the moment. So
+`+0x3d8` *is* cleared every tick; the earlier "never cleared" conclusion came
+from reading the integrator without its caller. The per-tick lifecycle is
+accumulate-from-zero (collision), consume-decayed (integrator), clear (driver).
+This exposed two real defects, now fixed by an end-of-tick clear in every
+mechanics-tick method: the four-wheel step wrote the decayed moment back, so the
+next collision pass accumulated onto it, and the live planar session never
+cleared the moment at all, so angular impulses compounded across ticks. The four-
+wheel test that should have caught the first defect used a zero moment; it now
+uses a nonzero one. The same driver also yields the writer of `+0x404`, an
+upright-cone test on the projection axis in the body frame, now reconstructed,
+and a low-speed steer cut (`|+0xec| < 0x147` zeroes `+0x2fc/+0x300`), observed
+but not yet reconstructed.
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
