@@ -201,6 +201,25 @@ impl RuntimeTrigger {
         self.state
     }
 
+    /// The byte value read by the dispatcher's outer per-player bit gate.
+    ///
+    /// Type-1 records are intentionally included: the native dispatcher tests
+    /// the ordinal byte before entering its type switch, even though that byte
+    /// is not a consumable mask for type 1.
+    #[must_use]
+    pub const fn runtime_byte(&self) -> u8 {
+        match self.state {
+            TriggerRuntimeState::ConsumedMask(value) | TriggerRuntimeState::Type1Ordinal(value) => {
+                value
+            }
+        }
+    }
+
+    /// Whether the native outer bit gate permits this record for `player`.
+    pub fn player_gate_open(&self, player: u8) -> Result<bool, TriggerStateError> {
+        Ok(self.runtime_byte() & player_bit(player)? == 0)
+    }
+
     /// Whether a consumable trigger has already fired for `player`.
     pub fn consumed_by(&self, player: u8) -> Result<bool, TriggerStateError> {
         let bit = player_bit(player)?;
@@ -257,6 +276,87 @@ impl RuntimeTrigger {
             },
         }
     }
+
+    /// Geometry family selected by the native type switch before side effects.
+    #[must_use]
+    pub const fn spatial_gate(&self) -> TriggerSpatialGate {
+        match self.volume.raw_type {
+            0 | 1 | 3 | 0x15 => TriggerSpatialGate::BidirectionalPlane,
+            2 => TriggerSpatialGate::OpenYSpan,
+            4 | 5 => TriggerSpatialGate::Inert,
+            6 => TriggerSpatialGate::OpenYSpanThenBidirectionalPlane,
+            7..=0x0b => TriggerSpatialGate::DirectionalPlane,
+            _ => TriggerSpatialGate::OpenYSpan,
+        }
+    }
+}
+
+/// Recovered spatial predicate selected by `FUN_00403a00` for a DAT type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TriggerSpatialGate {
+    /// Types 4/5 perform no work.
+    Inert,
+    /// `FUN_00403e00`: any current probe strictly inside the record's Y span.
+    OpenYSpan,
+    /// `FUN_00403980(1)`: plane/segment test without the saved-side prefilter.
+    BidirectionalPlane,
+    /// Type 6: open-Y success followed by `FUN_00403980(1)`.
+    OpenYSpanThenBidirectionalPlane,
+    /// Types 7..=0x0b: `FUN_00403980(0)` with the saved-side prefilter.
+    DirectionalPlane,
+}
+
+impl TriggerSpatialGate {
+    #[must_use]
+    pub fn matches(self, volume: &TriggerVolume, car: &TriggerCarBounds) -> bool {
+        match self {
+            Self::Inert => false,
+            Self::OpenYSpan => current_points_intersect_open_y_span(volume, car),
+            Self::BidirectionalPlane => {
+                trigger_geometry_contains(volume, car, TriggerGeometryMode::Bidirectional)
+            }
+            Self::OpenYSpanThenBidirectionalPlane => {
+                current_points_intersect_open_y_span(volume, car)
+                    && trigger_geometry_contains(volume, car, TriggerGeometryMode::Bidirectional)
+            }
+            Self::DirectionalPlane => {
+                trigger_geometry_contains(volume, car, TriggerGeometryMode::RequireSavedNonPositive)
+            }
+        }
+    }
+}
+
+/// A record that passed the native outer player-bit and spatial gates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TriggerSpatialCandidate {
+    pub record_index: usize,
+    pub dispatch: TriggerDispatch,
+}
+
+/// Evaluate every record against one shared prior-probe snapshot, then perform
+/// the native post-dispatch copy exactly once.
+///
+/// Front-end/race-mode predicates and event side effects remain outside this
+/// pure candidate pass. The result therefore says which records reached those
+/// gates, not that every returned event fired.
+pub fn spatial_candidates_then_snapshot(
+    triggers: &[RuntimeTrigger],
+    car: &mut TriggerCarBounds,
+    player: u8,
+) -> Result<Vec<TriggerSpatialCandidate>, TriggerStateError> {
+    let mut candidates = Vec::new();
+    for (record_index, trigger) in triggers.iter().enumerate() {
+        if trigger.player_gate_open(player)?
+            && trigger.spatial_gate().matches(trigger.volume(), car)
+        {
+            candidates.push(TriggerSpatialCandidate {
+                record_index,
+                dispatch: trigger.dispatch(),
+            });
+        }
+    }
+    car.snapshot_current_points();
+    Ok(candidates)
 }
 
 /// Failure to access the runtime meaning of native byte `+0x2e`.
@@ -446,6 +546,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn spatial_gate_mapping_matches_the_dispatcher_type_switch() {
+        let parsed = [
+            volume(0, 0),
+            volume(1, 0),
+            volume(2, 0),
+            volume(3, 0),
+            volume(4, 0),
+            volume(5, 0),
+            volume(6, 0),
+            volume(7, 0),
+            volume(0x0b, 0),
+            volume(0x15, 0),
+            volume(0x13, 0),
+        ];
+        let runtime = initialize_runtime_triggers(&parsed);
+        assert_eq!(
+            runtime
+                .iter()
+                .map(RuntimeTrigger::spatial_gate)
+                .collect::<Vec<_>>(),
+            vec![
+                TriggerSpatialGate::BidirectionalPlane,
+                TriggerSpatialGate::BidirectionalPlane,
+                TriggerSpatialGate::OpenYSpan,
+                TriggerSpatialGate::BidirectionalPlane,
+                TriggerSpatialGate::Inert,
+                TriggerSpatialGate::Inert,
+                TriggerSpatialGate::OpenYSpanThenBidirectionalPlane,
+                TriggerSpatialGate::DirectionalPlane,
+                TriggerSpatialGate::DirectionalPlane,
+                TriggerSpatialGate::BidirectionalPlane,
+                TriggerSpatialGate::OpenYSpan,
+            ]
+        );
+    }
+
+    #[test]
+    fn outer_player_gate_reads_type1_ordinal_as_the_native_byte() {
+        let runtime = initialize_runtime_triggers(&[volume(1, 0), volume(1, 0)]);
+        assert_eq!(runtime[0].runtime_byte(), 0);
+        assert_eq!(runtime[1].runtime_byte(), 1);
+        assert!(runtime[0].player_gate_open(0).unwrap());
+        assert!(!runtime[1].player_gate_open(0).unwrap());
+        assert!(runtime[1].player_gate_open(1).unwrap());
+        assert_eq!(
+            runtime[0].player_gate_open(8),
+            Err(TriggerStateError::PlayerOutOfRange(8))
+        );
+    }
+
     fn geometry_volume() -> TriggerVolume {
         TriggerVolume {
             point_a: [0, 0, 0],
@@ -467,6 +618,46 @@ mod tests {
             current_points: [point(Q16_ONE, 0, 5 * Q16_ONE); 8],
             prior_points: [point(-Q16_ONE, 0, 5 * Q16_ONE); 8],
         }
+    }
+
+    #[test]
+    fn candidate_pass_shares_prior_points_and_snapshots_once_after_the_table() {
+        let plane = geometry_volume();
+        let open_y = TriggerVolume {
+            point_a: [0, -Q16_ONE, 0],
+            point_b: [0, Q16_ONE, 10 * Q16_ONE],
+            raw_type: 2,
+            ..geometry_volume()
+        };
+        let inert = TriggerVolume {
+            raw_type: 4,
+            ..geometry_volume()
+        };
+        let runtime = initialize_runtime_triggers(&[plane, inert, open_y]);
+        let mut car = crossing_bounds();
+        let prior = car.prior_points;
+
+        let candidates = spatial_candidates_then_snapshot(&runtime, &mut car, 0).unwrap();
+
+        assert_eq!(
+            candidates,
+            vec![
+                TriggerSpatialCandidate {
+                    record_index: 0,
+                    dispatch: TriggerDispatch::SplitCheckpoint { payload: 0 },
+                },
+                TriggerSpatialCandidate {
+                    record_index: 2,
+                    dispatch: TriggerDispatch::Sound {
+                        event_code: 0,
+                        payload: 0,
+                        event_flag: true,
+                    },
+                },
+            ]
+        );
+        assert_ne!(prior, car.current_points);
+        assert_eq!(car.prior_points, car.current_points);
     }
 
     #[test]

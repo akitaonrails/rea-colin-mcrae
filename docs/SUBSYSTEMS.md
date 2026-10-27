@@ -225,8 +225,12 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
 - `cmr-core::stage_triggers`: separates immutable DAT records from initialized
   runtime state; classifies recovered event families and evaluates the exact
   Q16 plane/XZ-segment crossing contract over current and prior eight-point car
-  bounds. The compiled basis producer now translates all eight probes into
-  world space, and the snapshot helper preserves evaluate-before-copy order.
+  bounds. The compiled basis producer translates all eight probes into world
+  space. The exact type-to-spatial-gate mapping and universal outer player-bit
+  test are explicit, including type-1 ordinal-byte behavior. A table evaluator
+  shares one prior snapshot across every record and copies current probes once
+  afterward. Live mode predicates, event side effects, car-bound attachment,
+  and first-frame prior initialization remain outside this pure contract.
 - `cmr-core::car_resources`: the car-resource composition (E09). A car is a set
   of sibling `.C3D` resources under `OBJECTS\CARS\` (body `<code><DAY|NIGHT>.C3D`,
   reflection `<code><tag>ref.c3d`, shared `ref_map.bmp`, low-detail `med`/

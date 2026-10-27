@@ -1639,8 +1639,11 @@ harness inputs until their runtime producers are connected.
 
 DAT trigger geometry is now reconstructed over the native current/prior
 eight-point world-space car bounds, including directional gating, thickness,
-open-Y span, and evaluate-before-snapshot ordering. Live dispatcher side effects
-and first-frame prior-array initialization remain open.
+open-Y span, and evaluate-before-snapshot ordering. The exact type-to-spatial
+gate switch, outer player-bit check (including type-1 ordinal-byte behavior),
+whole-table evaluation, and single post-table snapshot are now test-backed.
+Live mode predicates/side effects, the car-bound producer attachment, and
+first-frame prior-array initialization remain open.
 
 E01 is closed at its deterministic indexed boundary. Supported BM, palette,
 row, composition, and queued-font paths are implemented; native padding,

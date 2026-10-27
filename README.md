@@ -11,10 +11,10 @@ the source version and prepare a local, ignored `runtime-data/` tree.
 
 ## Current status
 
-All 118 reconstruction roadmap items are now complete or explicitly bounded
-with evidence. The supported baseline is the reviewed official-EU executable
-and installed EU-derived assets. Other editions and locales remain unsupported
-until separately validated.
+The reconstruction map currently contains 117 complete and 2 partial items.
+The supported baseline is the reviewed official-EU executable and installed
+EU-derived assets. Other editions and locales remain unsupported until
+separately validated.
 
 The workspace includes the fixed-step game/session orchestration, four-wheel
 physics and surface recovery, collision/timing, championship progression,
@@ -27,9 +27,10 @@ build.
 The native single-player stage supports live keyboard/gamepad driving, authored
 `.csp` starts and `.cat` checkpoints, layered stage scenery, the real stage
 palette, a caller-selected in-race car model, and a live follow camera. Its
-planar dynamics and control strengths remain explicit playable harness
-approximations. The in-race HUD, menu-to-race selection, layered GPU path, and
-post-race sequencing remain open.
+normal single-player HUD is composed from authenticated user-owned bitmap/font
+inputs. Planar dynamics, gear/rev telemetry, and control strengths remain
+explicit playable harness approximations. Recovered menu-to-race selection,
+the layered GPU path, and post-race sequencing remain open.
 
 Unsupported boundaries are explicit: native driver-owned padding and exact
 font/filter/alpha output, alternate type-1 lighting, a concrete video decoder
@@ -117,11 +118,12 @@ boundaries. `--backend wgpu|sdl-gpu|both`, `--wgpu-adapter`, and `--low-power`
 select the candidates. Stage output is path-free, reports timings and
 `winner=not-selected`, and needs an otherwise idle GPU for meaningful numbers.
 
-The application's stage commands use the selected backend (wgpu) by default:
-the stage is prepared and uploaded once, each frame only updates the camera VIEW
-matrix and rasterizes into the 8-bit palette-index target, and the host presents
-that index plane through the recovered indexed display path. The software
-compositor remains the oracle and the automatic fallback:
+The application's stage commands accept an explicit renderer choice. The wgpu
+path prepares and uploads a supported single scene once, updates the camera VIEW
+matrix per frame, and rasterizes into the 8-bit palette-index target. The full
+native AU1 session currently needs layered HZN/OBJ/SHT/car composition, so
+`auto` selects the software compatibility oracle for that path until the shared
+layered GPU compositor is implemented:
 
 ```sh
 cargo run --release -q -p cmr-app -- \
