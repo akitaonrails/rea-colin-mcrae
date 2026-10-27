@@ -787,6 +787,7 @@ impl RaceState {
         let net_force = drive_force.sub(drag(self.car.velocity, speed));
 
         let accel = net_accel(net_force, params.inverse_mass, params.gravity);
+        let pending_collision_acceleration = self.car.collision.consume_pending_linear();
         let translation = apply_translation_step(TranslationStepInput {
             position: self.car.position,
             velocity: self.car.velocity,
@@ -798,7 +799,7 @@ impl RaceState {
             contacts_active,
             accumulated_force: accel,
             inverse_mass: Fixed16::ONE,
-            additive_acceleration: Vec3::ZERO,
+            additive_acceleration: pending_collision_acceleration,
         });
         self.car.position = translation.position;
         self.car.velocity = apply_lateral_grip(translation.velocity, forward, controls.handbrake);
@@ -1420,6 +1421,41 @@ mod tests {
         assert!(collision.response_state_680);
         assert!(collision.recovery_latch_688);
         assert_eq!(collision.consume_pending_linear(), Vec3::ZERO);
+    }
+
+    #[test]
+    fn race_step_consumes_pending_collision_acceleration_before_clearing_it() {
+        let mut car = CarState::at_rest();
+        car.collision.pending_linear_3cc =
+            Vec3::new(Fixed16::from_raw(0x10000), Fixed16::ZERO, Fixed16::ZERO);
+        let mut race = RaceState::new(car);
+        let sample = race.step(
+            &Controls {
+                steer_rate: 0,
+                forward_force: Fixed16::ZERO,
+                handbrake: false,
+            },
+            &SimParams {
+                inverse_mass: Fixed16::ZERO,
+                gravity: Vec3::ZERO,
+            },
+        );
+        assert_eq!(sample.car.velocity.x, Fixed16::from_raw(0x3333));
+        assert_eq!(sample.car.position.x, Fixed16::from_raw(0x199a));
+        assert_eq!(sample.car.collision.pending_linear_3cc, Vec3::ZERO);
+
+        let next = race.step(
+            &Controls {
+                steer_rate: 0,
+                forward_force: Fixed16::ZERO,
+                handbrake: false,
+            },
+            &SimParams {
+                inverse_mass: Fixed16::ZERO,
+                gravity: Vec3::ZERO,
+            },
+        );
+        assert_eq!(next.car.velocity.x, sample.car.velocity.x);
     }
 
     fn second_wheel_params(trig: &[i32]) -> SecondWheelParams<'_> {

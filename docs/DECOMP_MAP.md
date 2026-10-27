@@ -395,8 +395,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T02:20:00Z
-milestone=retain-live-collision-cross-tick-state
+updated_utc=2026-10-28T02:35:00Z
+milestone=consume-prior-static-linear-correction
 completed=117
 partial=2
 not_started=0
