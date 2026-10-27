@@ -321,9 +321,11 @@ independent source-index key mask beside each mapped palette slot and discards
 keyed fragments before either color or depth writes. A synthetic Vulkan
 three-layer test proves the depth hole, while the software multi-graph oracle
 now matches the recovered `LessEqual` equal-depth rule (later main -> OBJ ->
-SHT -> car submission wins). The single main-stage adapter remains explicitly
-opaque. Combined layered preparation, GPU/software imported-stage equivalence,
-and the separate horizon pass remain open.
+SHT -> car submission wins). Horizon-free main/OBJ/SHT/car graphs now prepare
+into one persistent upload with independent source namespaces, explicit keys,
+and exact per-frame car node worlds. A synthetic Vulkan app test matches the
+software keyed-layer oracle at two camera poses. Authenticated imported-stage
+equivalence and the separate horizon projection/depth pass remain open.
 
 ## Update rules
 
@@ -334,13 +336,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-27T19:10:36Z
-milestone=enable-gpu-c3d-color-key
+updated_utc=2026-10-27T19:14:03Z
+milestone=prepare-layered-gpu-foreground
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
-current_focus=layered-gpu-foreground
-next_exit_gate=gpu-software-keyed-layer-equivalence
+current_focus=layered-gpu-horizon-pass
+next_exit_gate=gpu-software-full-layer-equivalence
 <!-- PROGRESS-TAIL-END -->

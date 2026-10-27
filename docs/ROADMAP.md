@@ -1599,8 +1599,11 @@ textures carry the resolved active-palette slot and a distinct source-key mask,
 and keyed fragments discard before color or depth writes. The software oracle
 and GPU now agree that later submissions win `LessEqual` depth ties. The
 existing main-stage adapter remains explicitly opaque. Combined
-stage/OBJ/SHT/car preparation and the separate horizon pass are still required;
-layered GPU rendering is not yet implemented.
+stage/OBJ/SHT/car preparation is now implemented as one persistent foreground
+upload with exact layer-local namespaces and per-frame car node worlds. A
+synthetic Vulkan test matches the software keyed-layer oracle at two camera
+poses. The separate horizon pass is still required, so HZN stages continue to
+use software and full layered GPU rendering is not yet implemented.
 
 The native playable baseline now uses the existing planar dynamics and bounded
 harness control strengths instead of feeding live play through incomplete

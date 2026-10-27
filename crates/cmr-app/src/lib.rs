@@ -17,6 +17,7 @@ use cmr_assets::{
 use cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
 use cmr_core::c3d_render::VERTEXTYPE_LVERTEX;
 use cmr_core::c3d_stage_scene::{StageScene, StageSceneError};
+use cmr_core::c3d_transform::scene_world_transforms;
 use cmr_core::camera_mode::{CameraMode, ViewGate};
 use cmr_core::camera_view::ViewController;
 use cmr_core::car_resources::car_body_path;
@@ -79,7 +80,9 @@ use cmr_formats::stage::{
 };
 use cmr_formats::stored_asset::{DecodeError, DecodeLimits, decode_stored_asset};
 use cmr_gpu_contract::{PersistentRawC3dGpuBackend, PersistentRawC3dIndexedBackend};
-use cmr_gpu_stage::{PreparedRawStage, PreparedRawStageError, PreparedRawStageStats};
+use cmr_gpu_stage::{
+    PreparedRawStage, PreparedRawStageError, PreparedRawStageLayer, PreparedRawStageStats,
+};
 use cmr_platform_sdl3::input::GamepadDrivingState;
 use cmr_platform_sdl3::{
     InteractiveRootError, SdlHostError, WindowedGameFrame, WindowedInput, present_software_frame,
@@ -1539,14 +1542,8 @@ struct WgpuStageRenderer {
 }
 
 impl WgpuStageRenderer {
-    fn new(
-        scene: &StageScene<'_>,
-        textures: &StageC3dTextures,
-        extent: DisplayExtent,
-        palette: &[PaletteEntry; 256],
-    ) -> Result<Self, StageFrameError> {
-        let prepared = PreparedRawStage::prepare(scene, textures, extent, palette)
-            .map_err(StageFrameError::GpuPrepare)?;
+    fn from_prepared(prepared: PreparedRawStage) -> Result<Self, StageFrameError> {
+        let palette = *prepared.upload().active_palette();
         let mut backend = WgpuIndexedPaletteBackend::new(&WgpuBackendConfig::default())
             .map_err(|error| StageFrameError::GpuInit(error.to_string()))?;
         let prepared_scene = backend
@@ -1556,7 +1553,7 @@ impl WgpuStageRenderer {
             backend,
             prepared,
             scene: prepared_scene,
-            palette: *palette,
+            palette,
         })
     }
 
@@ -1566,8 +1563,24 @@ impl WgpuStageRenderer {
 
     /// Rasterizes one camera frame and returns it as the recovered indexed
     /// presentation value (active-palette slots + the active palette).
-    fn compose(&mut self, camera: &[i32; 16]) -> Result<SoftwarePresentedFrame, StageFrameError> {
-        let frame = self.prepared.prepared_frame_for(camera);
+    fn compose(
+        &mut self,
+        camera: &[i32; 16],
+        dynamic_worlds: Option<&[[i32; 16]]>,
+    ) -> Result<SoftwarePresentedFrame, StageFrameError> {
+        let frame = if self.prepared.dynamic_world_set_count() == 0 {
+            self.prepared.prepared_frame_for(camera)
+        } else {
+            let dynamic_worlds = dynamic_worlds.ok_or(StageFrameError::GpuPrepare(
+                PreparedRawStageError::DynamicWorldSetCount {
+                    expected: 1,
+                    actual: 0,
+                },
+            ))?;
+            self.prepared
+                .prepared_frame_for_worlds(camera, &[dynamic_worlds])
+                .map_err(StageFrameError::GpuPrepare)?
+        };
         let indexed = self
             .backend
             .render_prepared_indexed_readback(&mut self.scene, frame)
@@ -1755,34 +1768,7 @@ impl StageRenderResources {
         let node_count = scene.node_count();
         let draw_ops = scene.draw_order().len();
 
-        let gpu = match choice {
-            StageRendererChoice::Software => None,
-            StageRendererChoice::Gpu
-                if bundle.horizon().is_some()
-                    || bundle.objects().is_some()
-                    || bundle.scenery().is_some() =>
-            {
-                return Err(StageFrameError::GpuLayeredStageUnsupported);
-            }
-            StageRendererChoice::Gpu => Some(WgpuStageRenderer::new(
-                &scene,
-                &textures,
-                ROOT_EXTENT,
-                &palette,
-            )?),
-            StageRendererChoice::Auto
-                if bundle.horizon().is_some()
-                    || bundle.objects().is_some()
-                    || bundle.scenery().is_some() =>
-            {
-                None
-            }
-            StageRendererChoice::Auto => {
-                WgpuStageRenderer::new(&scene, &textures, ROOT_EXTENT, &palette).ok()
-            }
-        };
-
-        Ok(StageRenderResources {
+        let mut resources = StageRenderResources {
             stage: stage.to_owned(),
             bundle,
             textures,
@@ -1796,8 +1782,74 @@ impl StageRenderResources {
             node_count,
             draw_ops,
             choice,
-            gpu,
-        })
+            gpu: None,
+        };
+        resources.rebuild_gpu_foreground()?;
+        Ok(resources)
+    }
+
+    fn prepare_gpu_foreground(&self) -> Result<PreparedRawStage, StageFrameError> {
+        let main = StageScene::from_c3d(
+            self.bundle.scene(),
+            &MATRIX_IDENTITY_Q16,
+            VERTEXTYPE_LVERTEX,
+        )
+        .map_err(StageFrameError::Scene)?;
+        let objects = self
+            .bundle
+            .objects()
+            .map(|file| StageScene::from_c3d(file, &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX))
+            .transpose()
+            .map_err(StageFrameError::Scene)?;
+        let scenery = self
+            .bundle
+            .scenery()
+            .map(|file| StageScene::from_c3d(file, &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX))
+            .transpose()
+            .map_err(StageFrameError::Scene)?;
+        let car = self
+            .car_scene
+            .as_ref()
+            .map(|file| StageScene::from_c3d(file, &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX))
+            .transpose()
+            .map_err(StageFrameError::Scene)?;
+        let mut layers = vec![PreparedRawStageLayer::opaque(&main, &self.textures)];
+        if let (Some(scene), Some(textures)) = (objects.as_ref(), self.object_textures.as_ref()) {
+            layers.push(PreparedRawStageLayer::keyed(scene, textures, 0));
+        }
+        if let (Some(scene), Some(textures)) = (scenery.as_ref(), self.scenery_textures.as_ref()) {
+            layers.push(PreparedRawStageLayer::keyed(scene, textures, 0));
+        }
+        if let (Some(scene), Some(textures)) = (car.as_ref(), self.car_textures.as_ref()) {
+            layers.push(PreparedRawStageLayer::keyed_dynamic(scene, textures, 0, 0));
+        }
+        PreparedRawStage::prepare_layers(layers, ROOT_EXTENT, &self.palette)
+            .map_err(StageFrameError::GpuPrepare)
+    }
+
+    fn rebuild_gpu_foreground(&mut self) -> Result<(), StageFrameError> {
+        self.gpu = None;
+        if self.choice == StageRendererChoice::Software {
+            return Ok(());
+        }
+        if self.bundle.horizon().is_some() {
+            return if self.choice == StageRendererChoice::Gpu {
+                Err(StageFrameError::GpuLayeredStageUnsupported)
+            } else {
+                Ok(())
+            };
+        }
+        let renderer = self
+            .prepare_gpu_foreground()
+            .and_then(WgpuStageRenderer::from_prepared);
+        match renderer {
+            Ok(renderer) => {
+                self.gpu = Some(renderer);
+                Ok(())
+            }
+            Err(_) if self.choice == StageRendererChoice::Auto => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     /// Attach the caller-selected full-detail daytime race car from the
@@ -1820,7 +1872,7 @@ impl StageRenderResources {
             .map_err(StageFrameError::Texture)?;
         self.car_scene = Some(scene);
         self.car_textures = Some(textures);
-        Ok(())
+        self.rebuild_gpu_foreground()
     }
 
     /// Load and retain every source-owned bitmap/font referenced by the
@@ -1871,14 +1923,13 @@ impl StageRenderResources {
         camera: &[i32; 16],
         car_world: Option<&[i32; 16]>,
     ) -> Result<RenderedStageFrameOutput, StageFrameError> {
-        if car_world.is_some() && self.gpu.is_some() {
-            if self.choice == StageRendererChoice::Gpu {
-                return Err(StageFrameError::GpuLayeredStageUnsupported);
-            }
-            self.gpu = None;
-        }
+        let car_node_worlds = self
+            .car_scene
+            .as_ref()
+            .zip(car_world)
+            .map(|(scene, root)| scene_world_transforms(scene.group0_records(), root));
         if let Some(gpu) = self.gpu.as_mut() {
-            match gpu.compose(camera) {
+            match gpu.compose(camera, car_node_worlds.as_deref()) {
                 Ok(frame) => {
                     return Ok(RenderedStageFrameOutput {
                         stage: self.stage.clone(),

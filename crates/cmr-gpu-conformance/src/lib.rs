@@ -29,7 +29,9 @@ const DEFAULT_WARMUP: usize = 2;
 const DEFAULT_FRAMES: usize = 8;
 const MAX_ITERATIONS: usize = 100_000;
 
-pub use cmr_gpu_stage::{PreparedRawStage, PreparedRawStageError, PreparedRawStageStats};
+pub use cmr_gpu_stage::{
+    PreparedRawStage, PreparedRawStageError, PreparedRawStageLayer, PreparedRawStageStats,
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum BackendSelection {
@@ -822,6 +824,85 @@ mod tests {
         assert_eq!(persistent_frame.projection(), frame.projection());
         assert_eq!(persistent_frame.draws(), frame.draws());
         persistent_frame.ensure_layout(upload.layout()).unwrap();
+    }
+
+    #[test]
+    fn layered_stage_adapter_keeps_namespaces_keys_and_dynamic_worlds_exact() {
+        let bytes = drawable_stage_c3d(&indexed_bitmap_4x4());
+        let file = parse_c3d(&bytes, C3dLimits::default()).unwrap();
+        let scene = StageScene::from_c3d(&file, &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX).unwrap();
+        let textures = StageC3dTextures::prepare(&file, BitmapLimits::default()).unwrap();
+        let active_palette = active_palette();
+        let mut prepared = PreparedRawStage::prepare_layers(
+            [
+                PreparedRawStageLayer::opaque(&scene, &textures),
+                PreparedRawStageLayer::keyed(&scene, &textures, 0),
+                PreparedRawStageLayer::keyed(&scene, &textures, 0),
+                PreparedRawStageLayer::keyed_dynamic(&scene, &textures, 0, 0),
+            ],
+            DisplayExtent {
+                width: 64,
+                height: 48,
+            },
+            &active_palette,
+        )
+        .unwrap();
+
+        assert_eq!(prepared.stats().draws, 4);
+        assert_eq!(prepared.stats().unique_textures, 4);
+        assert_eq!(prepared.dynamic_world_set_count(), 1);
+        let resources = prepared.upload().resources();
+        assert_eq!(resources.meshes().len(), 4);
+        assert_eq!(resources.textures().len(), 4);
+        assert_eq!(
+            resources
+                .textures()
+                .iter()
+                .map(|texture| texture.color_key_index())
+                .collect::<Vec<_>>(),
+            [None, Some(0), Some(0), Some(0)]
+        );
+
+        let mut car_world = MATRIX_IDENTITY_Q16;
+        car_world[12] = 17 << 16;
+        car_world[14] = -(3 << 16);
+        let frame = prepared
+            .prepared_frame_for_worlds(&MATRIX_IDENTITY_Q16, &[&[car_world]])
+            .unwrap();
+        assert_eq!(
+            frame
+                .draws()
+                .iter()
+                .map(|draw| (draw.mesh(), draw.texture()))
+                .collect::<Vec<_>>(),
+            [(0, 0), (1, 1), (2, 2), (3, 3)]
+        );
+        for draw in &frame.draws()[..3] {
+            assert_eq!(
+                draw.world().words(),
+                world_matrix_words(scene.world(0)).words()
+            );
+        }
+        assert_eq!(
+            frame.draws()[3].world().words(),
+            world_matrix_words(&car_world).words()
+        );
+
+        assert!(matches!(
+            prepared.prepared_frame_for_worlds(&MATRIX_IDENTITY_Q16, &[]),
+            Err(PreparedRawStageError::DynamicWorldSetCount {
+                expected: 1,
+                actual: 0
+            })
+        ));
+        assert!(matches!(
+            prepared.prepared_frame_for_worlds(&MATRIX_IDENTITY_Q16, &[&[]]),
+            Err(PreparedRawStageError::DynamicWorldNodeCount {
+                world_set: 0,
+                required_node: 0,
+                actual: 0
+            })
+        ));
     }
 
     #[test]

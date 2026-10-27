@@ -19,7 +19,9 @@ use cmr_formats::c3d::{
     C3D_GROUP1_ENTRY24_LEN, C3D_GROUP1_ENTRY32_LEN, C3D_GROUP1_FIXED_LEN, C3D_HEADER_LEN,
     C3D_MAGIC,
 };
-use cmr_formats::stage::{C3D_EXTENSION, CAT_EXTENSION, CAT_NODE_STRIDE};
+use cmr_formats::stage::{
+    C3D_EXTENSION, CAT_EXTENSION, CAT_NODE_STRIDE, OBJ_EXTENSION, SHT_EXTENSION,
+};
 use cmr_platform_sdl3::present_software_frame_once;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -153,13 +155,12 @@ fn a_malformed_scene_is_a_load_error() {
 
 #[test]
 #[ignore = "requires a Vulkan adapter; run explicitly for the GPU stage-renderer contract"]
-fn gpu_and_software_render_the_same_synthetic_stage_frame() {
+fn gpu_and_software_render_the_same_synthetic_layered_stage_frame() {
     let media = MediaDir::new();
-    media.write_section(
-        "gpucompare",
-        C3D_EXTENSION,
-        &drawable_c3d(&indexed_bitmap_4x4(), [0, 0, -(1 << 16)]),
-    );
+    let scene = drawable_c3d(&indexed_bitmap_4x4(), [0, 0, -(1 << 16)]);
+    media.write_section("gpucompare", C3D_EXTENSION, &scene);
+    media.write_section("gpucompare", OBJ_EXTENSION, &scene);
+    media.write_section("gpucompare", SHT_EXTENSION, &scene);
 
     let software =
         render_stage_frame(media.root(), "gpucompare", StageRendererChoice::Software).unwrap();
@@ -167,9 +168,9 @@ fn gpu_and_software_render_the_same_synthetic_stage_frame() {
 
     assert_eq!(software.renderer, StageRendererKind::Software);
     assert_eq!(gpu.renderer, StageRendererKind::Gpu);
-    // Both renderers are held to the same source-owned fixture contract: the
-    // persistent GPU path must reproduce the software oracle index frame and
-    // use the same active palette, so the host presents the same image.
+    // Both renderers are held to the same source-owned layered fixture
+    // contract. OBJ/SHT source index zero is keyed, later equal-depth geometry
+    // wins, and the host receives the same active-palette index frame.
     assert_eq!(gpu.frame.extent(), software.frame.extent());
     assert_eq!(gpu.frame.pixels(), software.frame.pixels());
     assert_eq!(gpu.frame.palette(), software.frame.palette());
@@ -184,7 +185,7 @@ fn gpu_and_software_render_the_same_synthetic_stage_frame() {
     assert_eq!(gpu_stats.unresolved_prims, software_stats.unresolved_prims);
     assert_eq!(
         gpu_stats.unique_textures,
-        software_stats.empty_lod_nodes + 1
+        software_stats.empty_lod_nodes + 3
     );
 
     // A second camera pose proves the persistent scene takes its VIEW matrix

@@ -2433,6 +2433,13 @@ languages rather than fabricating or silently aliasing Italian assets.
   submission winning equal-depth ties. The single main-stage adapter remains
   explicitly unkeyed; combined OBJ/SHT/car preparation and the horizon pass
   remain open. See evidence `impl.gpu-c3d-color-key`.
+- Horizon-free main/OBJ/SHT/car foregrounds now prepare as one persistent wgpu
+  scene in exact layer order. Resource ordinals remain local to each source C3D
+  during resolution and are offset into one upload; only car node WORLD values
+  and the camera VIEW change per frame. Exact propagated car node worlds retain
+  the WORLD_ROOT_CLASS exception. A Vulkan app test matches the software keyed
+  layered oracle at two cameras. HZN still selects software because it needs a
+  separate projection and depth lifetime. See `impl.gpu-layered-foreground`.
 - Four-wheel stepping adds live forward force along the current heading before
   summing lane forces, so throttle produces world displacement. The native
   session boots directly into the stage rather than auto-advancing the menu.
