@@ -1762,6 +1762,26 @@ with keyboard/analog tests pinning the correction. Owned-media contact accuracy,
 angular consume/clear, per-tick contact count, four-wheel basis evolution and
 car/wheel animation remain the next I14 work.
 
+The angular `+0x3d8` lifecycle is now pinned from the shipped integrator
+`FUN_0040a4a0` instead of being modeled as consume/clear. The native code
+decays the prior moment in place (`+0x3d8..+0x3e0 <- qmul(component, +0x48)`)
+and never zeroes it; the next static collision pass accumulates onto the decayed
+value, so the existing write-back was already the right ownership and the clear
+premise is withdrawn. The same reading recovered a missing moment-overflow
+trigger: while not out of control, a wrapping `|x| + |z|` of the decayed moment
+strictly above `0xbb80000` sets `+0x680/+0x688` and records `+0xbc..+0xc4` as the
+projection axis `+0x324` in the pre-rotation basis frame, and that tick's angle
+conversion already uses the out-of-control form without the half-delta term.
+Instruction-level reading also corrected the momentum order to
+`qmul(-qmul(combined, inertia), dt)`; the old negate-after form was off by one
+LSB whenever the time-step product had low bits, which ONE-timestep tests could
+not see. All three are reconstructed and published by the four-wheel step into
+the existing `LiveCollisionState` owners. The live windowed session still runs
+the planar path and so does not yet decay `+0x3d8`; the recovered angle
+deadzones and resting flag `+0x700` from the same function, the four-wheel
+transition, per-tick contact count, the `+0xbc` consumer, damage, and car/wheel
+animation remain.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

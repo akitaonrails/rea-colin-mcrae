@@ -1208,6 +1208,11 @@ pub struct AngularMomentumStepOutcome {
 
 /// Scale the prior moment, add the contact moment, apply componentwise inertia,
 /// and negatively integrate the result into angular velocity.
+///
+/// The native order is `qmul(-qmul(combined, inertia), time_step)`: the
+/// inertia product is negated (`0x40aa90`) *before* the time-step multiply
+/// (`0x40ac5a`). Because each Q16.16 multiply floors, negating afterwards would
+/// differ by one LSB whenever the time-step product has nonzero low bits.
 #[must_use]
 pub fn apply_angular_momentum_step(input: AngularMomentumStepInput) -> AngularMomentumStepOutcome {
     let scaled_prior_moment = input.prior_moment.scale(input.moment_scale);
@@ -1217,12 +1222,12 @@ pub fn apply_angular_momentum_step(input: AngularMomentumStepInput) -> AngularMo
         combined.y.mul(input.inertia_scale.y),
         combined.z.mul(input.inertia_scale.z),
     );
-    let scaled_delta = acceleration.scale(input.time_step);
     let delta_velocity = Vec3::new(
-        scaled_delta.x.neg(),
-        scaled_delta.y.neg(),
-        scaled_delta.z.neg(),
-    );
+        acceleration.x.neg(),
+        acceleration.y.neg(),
+        acceleration.z.neg(),
+    )
+    .scale(input.time_step);
     AngularMomentumStepOutcome {
         scaled_prior_moment,
         acceleration,
@@ -1302,6 +1307,68 @@ pub fn apply_control_axis_resets(
     }
 }
 
+/// Bound on the decayed prior moment `|+0x3d8| + |+0x3e0|` above which
+/// `FUN_0040a4a0` sends the car out of control (`0x40a81f`).
+pub const MOMENT_OVERFLOW_THRESHOLD: Fixed16 = Fixed16::from_raw(0xbb8_0000);
+
+/// The live out-of-control words the angular pass reads and may set.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OutOfControlState {
+    /// `+0x680`: out of control.
+    pub out_of_control_680: bool,
+    /// `+0x688`: recovery latch, set together with `+0x680` by the trigger.
+    pub recovery_latch_688: bool,
+    /// `+0xbc/+0xc0/+0xc4`: the projection axis expressed in the basis frame,
+    /// written only when the moment overflow trips. Its consumer is not yet
+    /// recovered.
+    pub axis_snapshot_bc: Vec3,
+}
+
+/// Apply the moment-overflow trigger of `FUN_0040a4a0` (`0x40a7f5..0x40a92d`).
+///
+/// Runs only while not already out of control. It reads the *decayed* prior
+/// moment, so it follows the `+0x48` scaling. The magnitude uses wrapping
+/// absolute values and a wrapping sum of only the X and Z components, compared
+/// signed and strictly greater than [`MOMENT_OVERFLOW_THRESHOLD`]. When it
+/// trips, both flags are set and the snapshot becomes the pre-rotation basis rows
+/// dotted with the projection axis `+0x324`.
+#[must_use]
+pub fn apply_moment_overflow_trigger(
+    state: OutOfControlState,
+    decayed_moment: Vec3,
+    basis: [Vec3; 3],
+    projection_axis: Vec3,
+) -> OutOfControlState {
+    if state.out_of_control_680 {
+        return state;
+    }
+    let magnitude = decayed_moment
+        .x
+        .raw()
+        .wrapping_abs()
+        .wrapping_add(decayed_moment.z.raw().wrapping_abs());
+    if magnitude <= MOMENT_OVERFLOW_THRESHOLD.raw() {
+        return state;
+    }
+    OutOfControlState {
+        out_of_control_680: true,
+        recovery_latch_688: true,
+        axis_snapshot_bc: Vec3::new(
+            projection_axis.dot(basis[0]),
+            projection_axis.dot(basis[1]),
+            projection_axis.dot(basis[2]),
+        ),
+    }
+}
+
+/// Convert one angular-velocity component to its angle increment while out of
+/// control (`0x40af35`): `qmul(current, scale) * 0x28b >> 16`, without the
+/// half-delta correction the in-control path applies.
+#[must_use]
+pub fn orientation_angle_increment_out_of_control(current: Fixed16, scale: Fixed16) -> i16 {
+    (current.mul(scale).raw().wrapping_mul(0x28b) >> 16) as i16
+}
+
 /// Inputs for the recovered momentum-to-orientation pipeline.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AngularOrientationInput {
@@ -1314,41 +1381,53 @@ pub struct AngularOrientationInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AngularOrientationOutcome {
     pub momentum: AngularMomentumStepOutcome,
+    pub out_of_control: OutOfControlState,
     pub angular_velocity: Vec3,
     pub angle_increments: [i16; 3],
     pub basis: [Vec3; 3],
 }
 
-/// Compose momentum integration, optional clamping, angle conversion, selective
-/// resets, and the three-stage orientation update in native order.
+/// Compose momentum integration, the moment-overflow trigger, optional
+/// clamping, angle conversion, selective resets, and the three-stage
+/// orientation update in native order.
+///
+/// `out_of_control` is the live `+0x680/+0x688/+0xbc` state and
+/// `projection_axis` the live `+0x324` axis. The angle conversion branches on
+/// `+0x680` *after* the trigger, so the tick that trips it already uses the
+/// out-of-control conversion.
 #[must_use]
 pub fn apply_angular_orientation_pipeline(
     input: AngularOrientationInput,
+    out_of_control: OutOfControlState,
+    projection_axis: Vec3,
     trig: &[i32],
 ) -> Option<AngularOrientationOutcome> {
     let momentum = apply_angular_momentum_step(input.momentum);
+    let out_of_control = apply_moment_overflow_trigger(
+        out_of_control,
+        momentum.scaled_prior_moment,
+        input.basis,
+        projection_axis,
+    );
     let current = clamp_angular_velocity(momentum.angular_velocity, input.clamp_enabled);
+    let time_step = input.momentum.time_step;
+    let angle = |current: Fixed16, delta: Fixed16| {
+        if out_of_control.out_of_control_680 {
+            orientation_angle_increment_out_of_control(current, time_step)
+        } else {
+            orientation_angle_increment(current, delta, time_step)
+        }
+    };
     let angles = [
-        orientation_angle_increment(
-            current.x,
-            momentum.delta_velocity.x,
-            input.momentum.time_step,
-        ),
-        orientation_angle_increment(
-            current.y,
-            momentum.delta_velocity.y,
-            input.momentum.time_step,
-        ),
-        orientation_angle_increment(
-            current.z,
-            momentum.delta_velocity.z,
-            input.momentum.time_step,
-        ),
+        angle(current.x, momentum.delta_velocity.x),
+        angle(current.y, momentum.delta_velocity.y),
+        angle(current.z, momentum.delta_velocity.z),
     ];
     let reset = apply_control_axis_resets(current, angles, input.control);
     let basis = integrate_orientation(input.basis, reset.angle_increments, trig)?;
     Some(AngularOrientationOutcome {
         momentum,
+        out_of_control,
         angular_velocity: reset.angular_velocity,
         angle_increments: reset.angle_increments,
         basis,
@@ -2051,6 +2130,8 @@ mod tests {
                 control,
                 basis,
             },
+            OutOfControlState::default(),
+            Vec3::ZERO,
             &trig,
         )
         .unwrap();
@@ -2089,6 +2170,8 @@ mod tests {
                     control,
                     basis,
                 },
+                OutOfControlState::default(),
+                Vec3::ZERO,
                 &trig[..0x100],
             ),
             None
@@ -2133,6 +2216,165 @@ mod tests {
         let boundaries = raw_v(0x3333, -0x3333, 0);
         assert_eq!(clamp_angular_velocity(boundaries, true), boundaries);
         assert_eq!(clamp_angular_velocity(velocity, false), velocity);
+    }
+
+    #[test]
+    fn angular_momentum_negates_before_the_time_step_multiply() {
+        // acceleration.x = 1 LSB, dt = 0.5. Native qmul(-1, 0x8000) floors to
+        // -1; negating after the multiply would give -(floor(0.5)) = 0.
+        let outcome = apply_angular_momentum_step(AngularMomentumStepInput {
+            prior_moment: Vec3::ZERO,
+            contact_moment: raw_v(1, 3, -1),
+            moment_scale: Fixed16::ONE,
+            inertia_scale: raw_v(0x10000, 0x10000, 0x10000),
+            angular_velocity: Vec3::ZERO,
+            time_step: Fixed16::from_raw(0x8000),
+        });
+        assert_eq!(outcome.acceleration, raw_v(1, 3, -1));
+        // -3*0.5 = -1.5 floors to -2; +1*0.5 = 0.5 floors to 0.
+        assert_eq!(outcome.delta_velocity, raw_v(-1, -2, 0));
+        assert_eq!(outcome.angular_velocity, raw_v(-1, -2, 0));
+    }
+
+    fn standard_basis() -> [Vec3; 3] {
+        [
+            raw_v(0x10000, 0, 0),
+            raw_v(0, 0x10000, 0),
+            raw_v(0, 0, 0x10000),
+        ]
+    }
+
+    #[test]
+    fn moment_overflow_trips_only_strictly_above_the_x_z_threshold() {
+        let basis = standard_basis();
+        let axis = raw_v(0x4000, 0x8000, -0xc000);
+        let at = |x: i32, y: i32, z: i32| {
+            apply_moment_overflow_trigger(OutOfControlState::default(), raw_v(x, y, z), basis, axis)
+        };
+        // Exactly at the threshold (split across X and Z) does not trip.
+        assert_eq!(at(0x5dc_0000, 0, -0x5dc_0000), OutOfControlState::default());
+        // One LSB above trips, setting both flags and the basis-frame snapshot.
+        assert_eq!(
+            at(0x5dc_0001, 0, -0x5dc_0000),
+            OutOfControlState {
+                out_of_control_680: true,
+                recovery_latch_688: true,
+                axis_snapshot_bc: axis,
+            }
+        );
+        // Y is not part of the magnitude, however large.
+        assert_eq!(at(0, i32::MAX, 0), OutOfControlState::default());
+        // Wrapping absolute value: i32::MIN stays negative and never trips.
+        assert_eq!(at(i32::MIN, 0, 0), OutOfControlState::default());
+    }
+
+    #[test]
+    fn moment_overflow_snapshot_uses_the_basis_rows_and_skips_when_already_out() {
+        // Swap X and Z rows: the snapshot expresses the axis in that frame.
+        let basis = [
+            raw_v(0, 0, 0x10000),
+            raw_v(0, 0x10000, 0),
+            raw_v(0x10000, 0, 0),
+        ];
+        let axis = raw_v(0x1000, 0x2000, 0x3000);
+        let tripped = apply_moment_overflow_trigger(
+            OutOfControlState::default(),
+            raw_v(0xc00_0000, 0, 0),
+            basis,
+            axis,
+        );
+        assert_eq!(tripped.axis_snapshot_bc, raw_v(0x3000, 0x2000, 0x1000));
+
+        // Already out of control: nothing changes, including a stale snapshot.
+        let prior = OutOfControlState {
+            out_of_control_680: true,
+            recovery_latch_688: false,
+            axis_snapshot_bc: raw_v(7, 8, 9),
+        };
+        assert_eq!(
+            apply_moment_overflow_trigger(prior, raw_v(0xc00_0000, 0, 0), basis, axis),
+            prior
+        );
+    }
+
+    #[test]
+    fn out_of_control_angle_increment_omits_the_half_delta() {
+        let current = Fixed16::from_raw(0x2_0000);
+        let delta = Fixed16::from_raw(0x1_0000);
+        let dt = Fixed16::from_raw(0x8000);
+        // qmul(2.0, 0.5) = 1.0 -> 0x10000 * 0x28b >> 16 = 0x28b.
+        assert_eq!(
+            orientation_angle_increment_out_of_control(current, dt),
+            0x28b
+        );
+        // The in-control path subtracts qmul(delta, dt/2) = 0.25 first.
+        assert_eq!(orientation_angle_increment(current, delta, dt), 0x1e8);
+    }
+
+    #[test]
+    fn pipeline_trips_on_the_decayed_moment_and_uses_out_of_control_angles() {
+        let trig = crate::fixed_point::build_sine_table();
+        let input = |prior_x: i32| AngularOrientationInput {
+            momentum: AngularMomentumStepInput {
+                prior_moment: raw_v(prior_x, 0, 0),
+                contact_moment: Vec3::ZERO,
+                moment_scale: Fixed16::from_raw(0x8000),
+                inertia_scale: raw_v(0x100, 0, 0),
+                angular_velocity: raw_v(0x2_0000, 0, 0),
+                time_step: Fixed16::from_raw(0x8000),
+            },
+            clamp_enabled: false,
+            control: ControlAxisFlags {
+                mode_3ec: 0,
+                axis_3f4: 0,
+                axis_3f8: 0,
+            },
+            basis: standard_basis(),
+        };
+        let run = |prior_x: i32| {
+            apply_angular_orientation_pipeline(
+                input(prior_x),
+                OutOfControlState::default(),
+                raw_v(0, 0, 0x10000),
+                &trig,
+            )
+            .unwrap()
+        };
+
+        // 0x1700_0000 decays by 0.5 to 0xb80_0000: at or below the threshold.
+        let calm = run(0x1700_0000);
+        assert_eq!(calm.momentum.scaled_prior_moment.x.raw(), 0xb80_0000);
+        assert!(!calm.out_of_control.out_of_control_680);
+
+        let dt = Fixed16::from_raw(0x8000);
+        let in_control = orientation_angle_increment(
+            calm.angular_velocity.x,
+            calm.momentum.delta_velocity.x,
+            dt,
+        );
+        assert_eq!(calm.angle_increments[0], in_control);
+
+        // 0x1780_0002 decays to 0xbc0_0001, strictly above: trips this tick, and
+        // the same tick's angle already uses the out-of-control conversion.
+        let tripped = run(0x1780_0002);
+        assert_eq!(tripped.momentum.scaled_prior_moment.x.raw(), 0xbc0_0001);
+        assert!(tripped.out_of_control.out_of_control_680);
+        assert!(tripped.out_of_control.recovery_latch_688);
+        assert_eq!(
+            tripped.out_of_control.axis_snapshot_bc,
+            raw_v(0, 0, 0x10000)
+        );
+        let current = tripped.angular_velocity.x;
+        let delta = tripped.momentum.delta_velocity.x;
+        assert_ne!(delta, Fixed16::ZERO, "the branches must diverge");
+        assert_eq!(
+            tripped.angle_increments[0],
+            orientation_angle_increment_out_of_control(current, dt)
+        );
+        assert_ne!(
+            tripped.angle_increments[0],
+            orientation_angle_increment(current, delta, dt)
+        );
     }
 
     #[test]

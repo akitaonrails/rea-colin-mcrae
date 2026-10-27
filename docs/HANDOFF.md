@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-10-28
+Updated: 2026-10-28 (angular moment lifecycle)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: wire live static collision session
+feat: recover the angular moment lifecycle and overflow trigger
 ```
 
 Start by confirming the checkout and progress footer:
@@ -35,8 +35,19 @@ It does **not** establish a finished or fully accurate game.
   It currently supplies `NoStaticDamageOwner`, explicitly leaving the recovered
   mutable damage-object implementation open.
 - Pending linear correction `+0x3cc` is consumed once by the next translation
-  step and cleared. Angular `+0x3d8` is published but is not yet consumed/cleared
-  by the live orientation path.
+  step and cleared.
+- Angular `+0x3d8` is **decayed in place, never cleared** (instruction-level,
+  `FUN_0040a4a0` `0x40a7af`): `+0x3d8..+0x3e0 <- qmul(component, +0x48)`, then
+  added to the contact moments. The four-wheel step already wrote the decayed
+  value back, so that ownership was correct; the old "consume/clear" premise is
+  withdrawn (`rea.official-eu.angular-moment-lifecycle`).
+- A recovered moment-overflow trigger now runs in the four-wheel angular pass:
+  only while `+0x680 == 0`, wrapping `|x| + |z|` of the decayed moment strictly
+  above `0xbb80000` sets `+0x680/+0x688` and snapshots `+0xbc..+0xc4`. That
+  tick's angle conversion already uses the out-of-control form (no half-delta).
+  The momentum order was also corrected to `qmul(-qmul(combined, inertia), dt)`
+  (the old form was one LSB off whenever the time-step product had low bits).
+  The live planar windowed path still does not run this pass.
 - The explicit planar `CarControls -> Controls` bridge now preserves the
   recovered `right - left` command. Keyboard, analog, and SDL adapter tests pin
   right-positive, left-negative, and cancellation.
@@ -56,7 +67,7 @@ ef78049 feat: derive canonical collision response state
 
 ## Verification state
 
-Green at handoff:
+Green at handoff (2,307 tests, 35 ignored):
 
 ```sh
 cargo test --workspace --all-targets
@@ -67,8 +78,8 @@ Focused collision, session rollback, keyboard/analog, SDL gamepad, app build,
 and full-workspace tests pass. Logs from the last run are ignored under:
 
 ```text
-.work/handoff-workspace-test.log
-.work/handoff-clippy.log
+.work/angular-workspace-test.log
+.work/angular-clippy.log
 ```
 
 The authenticated AU1 test was run before the steering correction:
@@ -88,8 +99,14 @@ budget permits; do not represent it as already green.
 
 ## Highest-priority remaining work
 
-1. Recover and wire angular `+0x3d8` consumption/clear into the exact orientation
-   pipeline. Do not apply it as a guessed planar heading increment.
+1. Reconstruct the rest of the `FUN_0040a4a0` angular tail, already read at
+   instruction level and recorded in `rea.official-eu.angular-moment-lifecycle`:
+   the three angle deadzones (gated by `+0x742 > 0`, `|angle| < 10`, the
+   `dot(+0x324, +0x264) > 0xcccc` test, and `DAT_0050c604 +0x2fc/+0x300/+0x404`)
+   and the resting flag `+0x700` (all angles zero and `+0xec < 0xa3d` sets it and
+   skips `FUN_004184e0`). First confirm which `+0xec` value the four-wheel step
+   holds at that point: the native code uses the speed recomputed earlier in the
+   same tick. Do not apply `+0x3d8` as a guessed planar heading increment.
 2. Move the windowed session from `GameplaySession::new_with_car` to the already
    recovered four-wheel path only after supplying its authenticated runtime
    inputs. The current planar path changes heading but does not evolve the full

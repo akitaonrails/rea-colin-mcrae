@@ -54,8 +54,8 @@ use crate::static_world_collision::{
 use crate::vehicle_dynamics::{
     AngularOrientationInput, ContactBasisInput, ContactVectorUpdateInput,
     GeometricPostprocessError, GeometricPostprocessLane, LaneDirectionSources,
-    LookupDependentCandidateError, SurfaceCoefficientIndexError, TranslationStepInput,
-    apply_angular_orientation_pipeline, apply_contact_vector_updates,
+    LookupDependentCandidateError, OutOfControlState, SurfaceCoefficientIndexError,
+    TranslationStepInput, apply_angular_orientation_pipeline, apply_contact_vector_updates,
     apply_geometric_lane_postprocess, apply_lateral_grip, apply_translation_step,
     build_contact_basis_vectors, construct_lane_directions, contact_count_scale,
     contact_global_update_gate, derive_lane_direction_pair, drag, net_accel,
@@ -549,9 +549,29 @@ pub struct LiveCollisionState {
     pub history: StaticContactHistory,
     pub response_state_680: bool,
     pub recovery_latch_688: bool,
+    /// `+0xbc/+0xc0/+0xc4`, written by the angular pass's moment-overflow
+    /// trigger when it sets `+0x680/+0x688`.
+    pub out_of_control_axis_bc: Vec3,
 }
 
 impl LiveCollisionState {
+    /// The out-of-control words in the shape the angular pass reads and sets.
+    #[must_use]
+    pub fn out_of_control(&self) -> OutOfControlState {
+        OutOfControlState {
+            out_of_control_680: self.response_state_680,
+            recovery_latch_688: self.recovery_latch_688,
+            axis_snapshot_bc: self.out_of_control_axis_bc,
+        }
+    }
+
+    /// Publish the angular pass's out-of-control result back into the owners.
+    pub fn set_out_of_control(&mut self, state: OutOfControlState) {
+        self.response_state_680 = state.out_of_control_680;
+        self.recovery_latch_688 = state.recovery_latch_688;
+        self.out_of_control_axis_bc = state.axis_snapshot_bc;
+    }
+
     /// Snapshot and clear the three linear words before any collision pass can
     /// accumulate their replacements for the next tick.
     #[must_use]
@@ -673,6 +693,7 @@ impl CarState {
                 },
                 response_state_680: false,
                 recovery_latch_688: false,
+                out_of_control_axis_bc: Vec3::ZERO,
             },
             first_wheel: FirstWheelState {
                 force: 0,
@@ -1377,11 +1398,21 @@ impl RaceState {
                     wheel.postprocess.wheel_contacts,
                     wheel.contact_offsets,
                 ));
-        let orientation = apply_angular_orientation_pipeline(angular, &self.trig)
-            .expect("the race-state trig table is complete");
+        let orientation = apply_angular_orientation_pipeline(
+            angular,
+            self.car.collision.out_of_control(),
+            self.car.motion.projection_axis,
+            &self.trig,
+        )
+        .expect("the race-state trig table is complete");
         self.car.motion.basis = orientation.basis;
         self.car.motion.angular_velocity = orientation.angular_velocity;
+        // `+0x3d8` is decayed in place by `+0x48`, never cleared: the next
+        // tick's collision pass accumulates onto this value.
         self.car.motion.moment = orientation.momentum.scaled_prior_moment;
+        self.car
+            .collision
+            .set_out_of_control(orientation.out_of_control);
         sample.car = self.car;
         Ok(sample)
     }
@@ -1506,6 +1537,26 @@ mod tests {
     }
 
     #[test]
+    fn live_collision_out_of_control_words_round_trip_through_their_owners() {
+        let mut collision = CarState::at_rest().collision;
+        assert_eq!(collision.out_of_control(), OutOfControlState::default());
+        let tripped = OutOfControlState {
+            out_of_control_680: true,
+            recovery_latch_688: true,
+            axis_snapshot_bc: Vec3::new(
+                Fixed16::from_raw(1),
+                Fixed16::from_raw(-2),
+                Fixed16::from_raw(3),
+            ),
+        };
+        collision.set_out_of_control(tripped);
+        assert!(collision.response_state_680);
+        assert!(collision.recovery_latch_688);
+        assert_eq!(collision.out_of_control_axis_bc, tripped.axis_snapshot_bc);
+        assert_eq!(collision.out_of_control(), tripped);
+    }
+
+    #[test]
     fn live_collision_pending_linear_is_consumed_once_without_clearing_persistent_state() {
         let pending = Vec3::new(
             Fixed16::from_raw(1),
@@ -1520,6 +1571,7 @@ mod tests {
             },
             response_state_680: true,
             recovery_latch_688: true,
+            out_of_control_axis_bc: Vec3::ZERO,
         };
         assert_eq!(collision.consume_pending_linear(), pending);
         assert_eq!(collision.pending_linear_3cc, Vec3::ZERO);
@@ -2310,8 +2362,13 @@ mod tests {
                     wheel.postprocess.wheel_contacts,
                     wheel.contact_offsets,
                 ));
-        let expected_orientation =
-            apply_angular_orientation_pipeline(expected_angular, &trig).unwrap();
+        let expected_orientation = apply_angular_orientation_pipeline(
+            expected_angular,
+            car.collision.out_of_control(),
+            car.motion.projection_axis,
+            &trig,
+        )
+        .unwrap();
         assert_eq!(sample.car.motion.basis, expected_orientation.basis);
         assert_eq!(
             sample.car.motion.angular_velocity,
@@ -2320,6 +2377,10 @@ mod tests {
         assert_eq!(
             sample.car.motion.moment,
             expected_orientation.momentum.scaled_prior_moment
+        );
+        assert_eq!(
+            sample.car.collision.out_of_control(),
+            expected_orientation.out_of_control
         );
         assert_ne!(sample.car.motion.basis, car.motion.basis);
         assert_ne!(

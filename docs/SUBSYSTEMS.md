@@ -2549,6 +2549,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   recovered right-minus-left is now preserved and pinned for keyboard/analog.
   Concrete damage, angular consume/clear, per-tick contact count, four-wheel
   basis evolution and car/wheel animation remain open.
+- `FUN_0040a4a0` decays the prior moment `+0x3d8..+0x3e0` in place by `+0x48`
+  and never clears it. A moment-overflow trigger (wrapping `|x| + |z|` of the
+  decayed moment strictly above `0xbb80000`, only while `+0x680 == 0`) sets
+  `+0x680/+0x688` and snapshots the projection axis in the basis frame into
+  `+0xbc..+0xc4`; out-of-control ticks convert angles without the half-delta
+  term. The momentum order is `qmul(-qmul(combined, inertia), dt)`. These are
+  reconstructed and published by the four-wheel step. The angle deadzones and
+  resting flag `+0x700` are observed but not yet reconstructed, and the live
+  planar session does not yet run this pass.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

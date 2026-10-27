@@ -387,8 +387,12 @@ expected; the planar bridge now preserves recovered right-minus-left, with
 focused keyboard/analog tests green. The authenticated setup-time spawn-height
 gate now passes. I14 remains
 partial after the first atomic planar static-collision pass: owned-media contact
-accuracy, angular consume/clear, per-tick contact publication, suspension,
-animation, and the other race-completion boundaries remain.
+accuracy, per-tick contact publication, suspension, animation, and the other
+race-completion boundaries remain. The angular `+0x3d8` lifecycle is now
+recovered: it decays in place by `+0x48` rather than clearing, a recovered
+moment-overflow trigger sets `+0x680/+0x688/+0xbc`, and the momentum order is
+corrected; the four-wheel step publishes all three, while the live planar
+session does not yet run this pass and the angle deadzones/`+0x700` remain.
 
 ## Update rules
 
@@ -399,14 +403,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T03:15:00Z
-milestone=wire-atomic-live-static-collision-session
+updated_utc=2026-10-28T03:45:00Z
+milestone=recover-angular-moment-lifecycle-and-overflow-trigger
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-window-path-angular-collision-and-car-animation
-next_exit_gate=controlled-owned-media-static-contact-and-angular-consume-clear
+next_exit_gate=controlled-owned-media-static-contact-and-angle-deadzone-resting-flag
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->
