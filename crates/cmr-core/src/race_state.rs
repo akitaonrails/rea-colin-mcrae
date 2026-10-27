@@ -1302,11 +1302,13 @@ impl RaceState {
                 )
             }),
         );
+        // The native low-speed suppression is gated on the threshold scan's
+        // contact count `+0x742 > 0` (`0x40afcc`), not on the wheel flags.
         let mut sample = self.step_with_optional_world_force(
             controls,
             params,
             Some(force),
-            wheel.postprocess.wheel_contacts.contains(&true),
+            thresholds.count_742 > 0,
         );
         self.car.four_wheel.speed_ec =
             sqrt_q16(self.car.velocity.dot(self.car.velocity).raw() as u32) as i32;
@@ -2346,7 +2348,29 @@ mod tests {
             outcome.qualified
         );
         assert!(sample.car.velocity.x > Fixed16::ZERO);
-        assert_eq!(sample.car.position, Vec3::ZERO);
+        // Every lane passes `0 + 0x1999 < 0x199a`, so `+0x742 == 0` and the
+        // native low-speed suppression is off even though the wheel flags are
+        // set: the position advances.
+        assert_eq!(
+            derive_compiled_lane_thresholds(wheel.lane_threshold_inputs).count_742,
+            0
+        );
+        assert_ne!(sample.car.position, Vec3::ZERO);
+
+        // With contacting lanes (`+0x742 > 0`) and a new speed below `0xccc`, the
+        // same tick keeps velocity but suppresses the position increment.
+        let mut contacting = wheel.clone();
+        contacting.lane_threshold_inputs.source_y = [0; 8];
+        assert!(derive_compiled_lane_thresholds(contacting.lane_threshold_inputs).count_742 > 0);
+        let suppressed = RaceState::new(car)
+            .step_with_all_four_wheels(&straight_throttle(1)[0], &params(), &contacting)
+            .unwrap();
+        assert!(suppressed.car.velocity.x > Fixed16::ZERO);
+        assert!(
+            suppressed.car.velocity.length()
+                < crate::vehicle_dynamics::LOW_SPEED_POSITION_SUPPRESSION
+        );
+        assert_eq!(suppressed.car.position, Vec3::ZERO);
         let mut expected_angular = wheel.angular;
         expected_angular.basis = car.motion.basis;
         expected_angular.momentum.angular_velocity = car.motion.angular_velocity;

@@ -2558,6 +2558,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   reconstructed and published by the four-wheel step. The angle deadzones and
   resting flag `+0x700` are observed but not yet reconstructed, and the live
   planar session does not yet run this pass.
+- The low-speed position suppression reads the new `+0xec`, recomputed from the
+  new velocity before the test, and the four-wheel step gates it on `+0x742 > 0`;
+  both inputs are corrected. The angle deadzones and `+0x700` are now pure tested
+  gates, unwired until the raw steer magnitudes and the control word `+0x404`
+  reach the simulation step. The in-race mapper `FUN_00449580` also triggers the
+  camera view cycle on a rising edge of device bit `DAT_0055aeb0 >> 16`.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

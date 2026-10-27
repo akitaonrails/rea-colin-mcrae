@@ -392,7 +392,9 @@ race-completion boundaries remain. The angular `+0x3d8` lifecycle is now
 recovered: it decays in place by `+0x48` rather than clearing, a recovered
 moment-overflow trigger sets `+0x680/+0x688/+0xbc`, and the momentum order is
 corrected; the four-wheel step publishes all three, while the live planar
-session does not yet run this pass and the angle deadzones/`+0x700` remain.
+session does not yet run this pass. The low-speed position suppression now
+tests the recomputed new speed under the `+0x742` gate; the angle deadzones and
+`+0x700` are pure tested gates awaiting the raw steer magnitudes and `+0x404`.
 
 ## Update rules
 
@@ -403,14 +405,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T03:45:00Z
-milestone=recover-angular-moment-lifecycle-and-overflow-trigger
+updated_utc=2026-10-28T04:15:00Z
+milestone=correct-low-speed-gate-and-recover-angle-deadzones
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-window-path-angular-collision-and-car-animation
-next_exit_gate=controlled-owned-media-static-contact-and-angle-deadzone-resting-flag
+next_exit_gate=controlled-owned-media-static-contact-and-raw-steer-to-sim-threading
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

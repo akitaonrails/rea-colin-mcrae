@@ -266,9 +266,12 @@ pub struct LaneDirectionOutcome {
 /// `FUN_0040a4a0` integration chain.
 ///
 /// `cached_speed` is the magnitude cached by the preceding tick. The shipped
-/// function reads it before updating velocity and recomputes the cache only
-/// afterward, so this contract deliberately does not derive it from
-/// `velocity`.
+/// function reads it for damping before updating velocity and recomputes the
+/// cache only afterward, so this contract deliberately does not derive it from
+/// `velocity`. The low-speed position suppression runs after that recompute
+/// (`0x40b08e`) and therefore tests the *new* speed, which the outcome returns.
+///
+/// `contacts_active` is the native `+0x742 > 0` gate (`0x40afcc`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TranslationStepInput {
     pub position: Vec3,
@@ -287,6 +290,9 @@ pub struct TranslationStepOutcome {
     pub velocity: Vec3,
     pub prior_velocity: Vec3,
     pub acceleration: Vec3,
+    /// The recomputed `+0xec` speed cache: the exact table square root of the
+    /// new velocity's wrapping Q16.16 squared length (`0x40aba6..0x40ac54`).
+    pub speed: Fixed16,
 }
 
 impl LaneDirectionOutcome {
@@ -1369,6 +1375,72 @@ pub fn orientation_angle_increment_out_of_control(current: Fixed16, scale: Fixed
     (current.mul(scale).raw().wrapping_mul(0x28b) >> 16) as i16
 }
 
+/// Angle increments strictly below this BAM magnitude are deadzone candidates
+/// (`CMP ..,0xa; JGE` at `0x40b027/0x40b069/0x40b080`).
+pub const ANGLE_DEADZONE_BAM: i32 = 10;
+
+/// Alignment between the projection axis `+0x324` and basis row `+0x264` above
+/// which a small X angle is zeroed (`0x40b032`).
+pub const ANGLE0_ALIGNMENT_GATE: Fixed16 = Fixed16::from_raw(0xcccc);
+
+/// New-speed bound below which a tick with no rotation marks the car at rest
+/// (`+0x700`, `0x40b15b`).
+pub const RESTING_SPEED: Fixed16 = Fixed16::from_raw(0xa3d);
+
+/// Inputs to the contact-gated angle deadzones of `FUN_0040a4a0`
+/// (`0x40afc7..0x40b0a3`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AngleDeadzoneInputs {
+    /// `+0x742 > 0`: the threshold scan found a contacting lane.
+    pub contacts_active_742: bool,
+    /// `dot(+0x324, +0x264)`: the projection axis against basis row 1.
+    pub alignment_264: Fixed16,
+    /// Control record `DAT_0050c604 +0x2fc` (steer-left magnitude).
+    pub steer_left_2fc: i32,
+    /// Control record `DAT_0050c604 +0x300` (steer-right magnitude).
+    pub steer_right_300: i32,
+    /// Control record `DAT_0050c604 +0x404`. Its writer is not yet recovered
+    /// (the in-race control mapper `FUN_00449580` does not write it).
+    pub word_404: i32,
+}
+
+/// Apply the three contact-gated angle deadzones, in native order.
+///
+/// Only when `+0x742 > 0`: angle 0 (X) is zeroed if `|angle0| < 10` and
+/// `|alignment_264| > 0xcccc`; angle 1 (Y) is zeroed if `|angle1| < 10` and the
+/// car is not being steered or `+0x404` is clear; angle 2 (Z) is zeroed if
+/// `|angle2| < 10`. Angle magnitudes are sign-extended before negation, so
+/// `i16::MIN` is never a candidate; the alignment uses wrapping absolute value,
+/// so `i32::MIN` never passes its gate.
+#[must_use]
+pub fn apply_contact_angle_deadzones(mut angles: [i16; 3], input: AngleDeadzoneInputs) -> [i16; 3] {
+    if !input.contacts_active_742 {
+        return angles;
+    }
+    let small = |angle: i16| i32::from(angle).abs() < ANGLE_DEADZONE_BAM;
+    if small(angles[0]) && input.alignment_264.raw().wrapping_abs() > ANGLE0_ALIGNMENT_GATE.raw() {
+        angles[0] = 0;
+    }
+    let not_steering = input.steer_left_2fc == 0 && input.steer_right_300 == 0;
+    if (not_steering || input.word_404 == 0) && small(angles[1]) {
+        angles[1] = 0;
+    }
+    if small(angles[2]) {
+        angles[2] = 0;
+    }
+    angles
+}
+
+/// The resting flag `+0x700` after the control-axis resets: set exactly when
+/// every angle increment is zero and the new speed is below [`RESTING_SPEED`]
+/// (signed compare). With all angles zero the native code also skips the
+/// orientation update, which [`integrate_orientation`] already leaves
+/// unchanged for zero angles.
+#[must_use]
+pub fn resting_flag_700(angles: [i16; 3], speed: Fixed16) -> bool {
+    angles == [0; 3] && speed < RESTING_SPEED
+}
+
 /// Inputs for the recovered momentum-to-orientation pipeline.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AngularOrientationInput {
@@ -1682,17 +1754,18 @@ pub fn apply_translation_step(input: TranslationStepInput) -> TranslationStepOut
     let velocity = input.velocity.add(delta_velocity);
     let scaled_velocity = velocity.scale(Fixed16::ONE);
     let position_delta = scaled_velocity.sub(delta_velocity.scale(POSITION_HALF_DELTA));
-    let position_delta = suppress_low_speed_position_delta(
-        position_delta,
-        input.contacts_active,
-        input.cached_speed,
-    );
+    // The cache is recomputed from the new velocity before the suppression
+    // test reads it; damping above used the previous tick's value.
+    let speed = Fixed16::from_raw(sqrt_q16(velocity.dot(velocity).raw() as u32) as i32);
+    let position_delta =
+        suppress_low_speed_position_delta(position_delta, input.contacts_active, speed);
 
     TranslationStepOutcome {
         position: input.position.add(position_delta),
         velocity,
         prior_velocity: input.velocity,
         acceleration,
+        speed,
     }
 }
 
@@ -2311,6 +2384,105 @@ mod tests {
         assert_eq!(orientation_angle_increment(current, delta, dt), 0x1e8);
     }
 
+    fn deadzone_inputs() -> AngleDeadzoneInputs {
+        AngleDeadzoneInputs {
+            contacts_active_742: true,
+            alignment_264: Fixed16::ZERO,
+            steer_left_2fc: 0,
+            steer_right_300: 0,
+            word_404: 0,
+        }
+    }
+
+    #[test]
+    fn deadzones_require_a_contacting_lane() {
+        let off = AngleDeadzoneInputs {
+            contacts_active_742: false,
+            alignment_264: Fixed16::ONE,
+            ..deadzone_inputs()
+        };
+        assert_eq!(apply_contact_angle_deadzones([1, 1, 1], off), [1, 1, 1]);
+    }
+
+    #[test]
+    fn angle0_deadzone_needs_small_angle_and_strong_alignment() {
+        let aligned = |alignment: i32| AngleDeadzoneInputs {
+            alignment_264: Fixed16::from_raw(alignment),
+            ..deadzone_inputs()
+        };
+        // Strictly above 0xcccc (either sign) zeroes a small X angle.
+        assert_eq!(
+            apply_contact_angle_deadzones([9, 50, 50], aligned(0xcccd))[0],
+            0
+        );
+        assert_eq!(
+            apply_contact_angle_deadzones([-9, 50, 50], aligned(-0xcccd))[0],
+            0
+        );
+        // Exactly at the gate, or a non-small angle, is kept.
+        assert_eq!(
+            apply_contact_angle_deadzones([9, 50, 50], aligned(0xcccc))[0],
+            9
+        );
+        assert_eq!(
+            apply_contact_angle_deadzones([10, 50, 50], aligned(0x10000))[0],
+            10
+        );
+        // Wrapping absolute value: i32::MIN stays negative and never passes.
+        assert_eq!(
+            apply_contact_angle_deadzones([9, 50, 50], aligned(i32::MIN))[0],
+            9
+        );
+    }
+
+    #[test]
+    fn angle1_deadzone_applies_when_not_steering_or_404_clear() {
+        let with = |left: i32, right: i32, word_404: i32| AngleDeadzoneInputs {
+            steer_left_2fc: left,
+            steer_right_300: right,
+            word_404,
+            ..deadzone_inputs()
+        };
+        let y = |input| apply_contact_angle_deadzones([50, -9, 50], input)[1];
+        // Not steering: zeroed regardless of +0x404.
+        assert_eq!(y(with(0, 0, 1)), 0);
+        // Steering with +0x404 clear: still zeroed.
+        assert_eq!(y(with(0xffbe, 0, 0)), 0);
+        // Steering with +0x404 set: kept.
+        assert_eq!(y(with(0, 0xffbe, 1)), -9);
+        // A non-small yaw is always kept.
+        assert_eq!(
+            apply_contact_angle_deadzones([50, 10, 50], with(0, 0, 0))[1],
+            10
+        );
+    }
+
+    #[test]
+    fn angle2_deadzone_is_unconditional_under_contact_and_spares_i16_min() {
+        assert_eq!(
+            apply_contact_angle_deadzones([50, 50, -9], deadzone_inputs())[2],
+            0
+        );
+        assert_eq!(
+            apply_contact_angle_deadzones([50, 50, 10], deadzone_inputs())[2],
+            10
+        );
+        // Sign-extended magnitude: i16::MIN is 32768, never a candidate.
+        assert_eq!(
+            apply_contact_angle_deadzones([i16::MIN, i16::MIN, i16::MIN], deadzone_inputs()),
+            [i16::MIN; 3]
+        );
+    }
+
+    #[test]
+    fn resting_flag_needs_no_rotation_and_a_slow_new_speed() {
+        assert!(resting_flag_700([0, 0, 0], Fixed16::from_raw(0xa3c)));
+        assert!(!resting_flag_700([0, 0, 0], RESTING_SPEED));
+        assert!(!resting_flag_700([0, 1, 0], Fixed16::ZERO));
+        // Signed compare: a negative speed word counts as slow.
+        assert!(resting_flag_700([0, 0, 0], Fixed16::from_raw(-1)));
+    }
+
     #[test]
     fn pipeline_trips_on_the_decayed_moment_and_uses_out_of_control_angles() {
         let trig = crate::fixed_point::build_sine_table();
@@ -2744,20 +2916,53 @@ mod tests {
     }
 
     #[test]
-    fn translation_step_suppresses_only_position_for_low_speed_contacts() {
-        let unsuppressed = apply_translation_step(TranslationStepInput {
-            accumulated_force: raw_v(0x10000, 0, 0),
-            ..translation_step_input()
-        });
-        let suppressed = apply_translation_step(TranslationStepInput {
+    fn translation_step_suppresses_only_position_for_low_new_speed_contacts() {
+        // From rest with a small force, the new velocity is 0x333: its recomputed
+        // speed is below 0xccc, so an active contact suppresses the position while
+        // velocity still integrates.
+        let small = |contacts_active: bool| {
+            apply_translation_step(TranslationStepInput {
+                accumulated_force: raw_v(0x1000, 0, 0),
+                contacts_active,
+                ..translation_step_input()
+            })
+        };
+        let free = small(false);
+        let held = small(true);
+        assert_eq!(held.velocity, free.velocity);
+        assert_eq!(held.velocity, raw_v(0x333, 0, 0));
+        assert_eq!(held.speed, table_speed(held.velocity));
+        assert!(held.speed < LOW_SPEED_POSITION_SUPPRESSION);
+        assert_ne!(free.position, Vec3::ZERO);
+        assert_eq!(held.position, Vec3::ZERO);
+    }
+
+    #[test]
+    fn translation_suppression_tests_the_new_speed_not_the_cached_one() {
+        // The cached speed is 0, but a 1.0 force reaches a new speed of 0x3333,
+        // above 0xccc: the native test reads the recomputed cache, so an active
+        // contact does NOT suppress the position.
+        let outcome = apply_translation_step(TranslationStepInput {
             accumulated_force: raw_v(0x10000, 0, 0),
             contacts_active: true,
             ..translation_step_input()
         });
-        assert_eq!(suppressed.velocity, unsuppressed.velocity);
-        assert_ne!(suppressed.velocity, Vec3::ZERO);
-        assert_eq!(unsuppressed.position, raw_v(0x199a, 0, 0));
-        assert_eq!(suppressed.position, Vec3::ZERO);
+        assert_eq!(outcome.velocity, raw_v(0x3333, 0, 0));
+        assert!(outcome.speed >= LOW_SPEED_POSITION_SUPPRESSION);
+        assert_eq!(outcome.position, raw_v(0x199a, 0, 0));
+
+        // The returned speed is the recovered table root of the new squared
+        // length, which quantizes: sqrt(3^2 + 4^2) is not exactly 5.0.
+        let diagonal = apply_translation_step(TranslationStepInput {
+            velocity: raw_v(0x3_0000, 0x4_0000, 0),
+            ..translation_step_input()
+        });
+        assert_eq!(diagonal.speed, table_speed(diagonal.velocity));
+        assert_eq!(diagonal.speed, Fixed16::from_raw(0x5_0030));
+    }
+
+    fn table_speed(velocity: Vec3) -> Fixed16 {
+        Fixed16::from_raw(sqrt_q16(velocity.dot(velocity).raw() as u32) as i32)
     }
 
     #[test]

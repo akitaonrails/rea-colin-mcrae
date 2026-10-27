@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-10-28 (angular moment lifecycle)
+Updated: 2026-10-28 (low-speed gate and angle deadzones)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: recover the angular moment lifecycle and overflow trigger
+fix: correct the low-speed gate and recover angle deadzones
 ```
 
 Start by confirming the checkout and progress footer:
@@ -48,6 +48,14 @@ It does **not** establish a finished or fully accurate game.
   The momentum order was also corrected to `qmul(-qmul(combined, inertia), dt)`
   (the old form was one LSB off whenever the time-step product had low bits).
   The live planar windowed path still does not run this pass.
+- The low-speed position suppression now tests the speed recomputed from the
+  new velocity (the native test runs after `+0xec` is updated), and the
+  four-wheel step gates it on `+0x742 > 0`, not the wheel flags. The angle
+  deadzones and resting flag `+0x700` exist as pure tested gates
+  (`apply_contact_angle_deadzones`, `resting_flag_700`) but are not wired.
+- The in-race mapper `FUN_00449580` owns the shipped camera-change input: a
+  rising edge on device bit `DAT_0055aeb0 >> 16` (default `0x40`) calls the view
+  cycle `FUN_00434210` (`rea.official-eu.camera-cycle-binding`).
 - The explicit planar `CarControls -> Controls` bridge now preserves the
   recovered `right - left` command. Keyboard, analog, and SDL adapter tests pin
   right-positive, left-negative, and cancellation.
@@ -67,7 +75,7 @@ ef78049 feat: derive canonical collision response state
 
 ## Verification state
 
-Green at handoff (2,307 tests, 35 ignored):
+Green at handoff (2,313 tests, 35 ignored):
 
 ```sh
 cargo test --workspace --all-targets
@@ -78,8 +86,8 @@ Focused collision, session rollback, keyboard/analog, SDL gamepad, app build,
 and full-workspace tests pass. Logs from the last run are ignored under:
 
 ```text
-.work/angular-workspace-test.log
-.work/angular-clippy.log
+.work/deadzone-workspace-test.log
+.work/deadzone-clippy.log
 ```
 
 The authenticated AU1 test was run before the steering correction:
@@ -99,14 +107,17 @@ budget permits; do not represent it as already green.
 
 ## Highest-priority remaining work
 
-1. Reconstruct the rest of the `FUN_0040a4a0` angular tail, already read at
-   instruction level and recorded in `rea.official-eu.angular-moment-lifecycle`:
-   the three angle deadzones (gated by `+0x742 > 0`, `|angle| < 10`, the
-   `dot(+0x324, +0x264) > 0xcccc` test, and `DAT_0050c604 +0x2fc/+0x300/+0x404`)
-   and the resting flag `+0x700` (all angles zero and `+0xec < 0xa3d` sets it and
-   skips `FUN_004184e0`). First confirm which `+0xec` value the four-wheel step
-   holds at that point: the native code uses the speed recomputed earlier in the
-   same tick. Do not apply `+0x3d8` as a guessed planar heading increment.
+1. Wire `apply_contact_angle_deadzones` and `resting_flag_700` into the angular
+   pipeline. Two inputs are missing first:
+   - thread the raw steer magnitudes `+0x2fc/+0x300` (already in
+     `input_map::CarControls`) into the simulation step, which currently gets
+     only the derived `Controls`;
+   - find the writer of control word `DAT_0050c604 +0x404`. It is not the in-race
+     mapper `FUN_00449580`. Do not supply a guessed default.
+   Use the translation outcome's recomputed `speed` for `+0x700`, not
+   `four_wheel.speed_ec`: the four-wheel step recomputes that after the planar
+   harness's `apply_lateral_grip`, a stage `FUN_0040a4a0` does not have. Removing
+   that grip stage from the four-wheel path is part of item 2.
 2. Move the windowed session from `GameplaySession::new_with_car` to the already
    recovered four-wheel path only after supplying its authenticated runtime
    inputs. The current planar path changes heading but does not evolve the full

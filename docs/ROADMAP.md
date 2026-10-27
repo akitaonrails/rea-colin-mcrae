@@ -1782,6 +1782,19 @@ deadzones and resting flag `+0x700` from the same function, the four-wheel
 transition, per-tick contact count, the `+0xbc` consumer, damage, and car/wheel
 animation remain.
 
+The contact-gated tail of the same function is now read and partly applied.
+The low-speed position suppression was fed the wrong inputs: the native test
+runs after `+0xec` is recomputed from the new velocity, so it reads the new
+speed, not the previous tick's cache, and in the four-wheel step it is gated on
+the threshold scan's `+0x742 > 0` rather than the wheel flags. Both are
+corrected, and the translation outcome now returns the recomputed speed. The
+three angle deadzones and the resting flag `+0x700` are reconstructed as pure
+tested gates but not wired: the yaw deadzone needs the raw steer magnitudes
+`+0x2fc/+0x300`, which the simulation step does not yet receive, and the
+control word `+0x404`, whose writer is not the in-race mapper. The same mapper
+pass also showed it owns the shipped camera-change input, a rising edge on
+device bit `DAT_0055aeb0 >> 16` (default bit `0x40`) that calls the view cycle.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions
