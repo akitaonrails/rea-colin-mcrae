@@ -1731,7 +1731,12 @@ XZ grid mapper. Authenticated live response inputs and persistent session
 publication remain the next gate. The authenticated compiled setup now
 publishes exact collision halves, AK11 projection axis, corrected basis and
 typed deformation scalars into/alongside the start state instead of discarding
-them; their live evolution is still open. Render mesh AABBs are not accepted as
+them. The per-contact response-input producer now derives the final normal and
+both response limits after arm finalization, and exact accumulated-correction
+damage severity replaces an arbitrary supplied scalar. Canonical contact axes,
+live mode `+0x674`, resumable mutable damage/effect ownership, and session
+publication remain open; live deformation/basis evolution is also unresolved.
+Render mesh AABBs are not accepted as
 compatibility geometry.
 
 The build and verification infrastructure is complete. Linux reviewed-import

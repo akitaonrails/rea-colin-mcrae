@@ -4,13 +4,15 @@
 //! The native routine consumes a normal left in globals by the narrow phase,
 //! mutates the car's pending linear/angular corrections and emits damage,
 //! sound, and force-feedback calls. This module keeps those external calls as
-//! ordered [`StaticResponseEvent`] values. The caller supplies the recovered
-//! damage result explicitly, allowing the response arithmetic to remain pure.
+//! ordered [`StaticResponseEvent`] values. Damage severity is pure recovered
+//! arithmetic. The supplied effect handle is a FIFO replay/test seam for the
+//! still-external mutable damage subsystem, not a complete live owner. A live
+//! integration needs a future resumable boundary around that mutation.
 //!
 //! The narrow-phase output pointer passed as the native third argument is not
 //! represented: the response routine does not read it. The square-root table
-//! and secondary state changes inside `FUN_0041f630` are likewise outside this
-//! contract; [`DamageResult`] is the explicit boundary for that work.
+//! Secondary state changes inside `FUN_0041f630` remain outside this contract;
+//! [`DamageResult`] is the explicit boundary for their effect-handle output.
 
 use crate::fixed_point::{Fixed16, Vec3};
 pub use crate::static_world_collision::StaticContactHistory as StaticResponseHistory;
@@ -84,11 +86,12 @@ pub struct StaticCollisionResponseState {
     pub history: StaticResponseHistory,
 }
 
-/// Outputs supplied by the separately reconstructed damage boundary.
+/// Replay/test output of the not-yet-integrated mutable damage boundary.
+/// A live owner must eventually resume after damage mutation instead of
+/// predicting this value before response execution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct DamageResult {
     pub effect_handle: i32,
-    pub severity: Fixed16,
 }
 
 /// Per-contact inputs and the two external query results needed to keep this
@@ -161,6 +164,26 @@ pub struct StaticCollisionResponseOutcome {
     /// Arithmetic executed for duplicate materials 5/6/9/12 but discarded by
     /// the native function. Exposing it documents the bounded dead-code match.
     pub discarded_material_tangent_measure: Option<Fixed16>,
+    /// Exact pure severity computed by `FUN_0041f630` for a new contact. A
+    /// repeated previous-tick contact does not invoke that routine.
+    pub damage_severity: Option<Fixed16>,
+}
+
+/// Pure scalar portion of `FUN_0041f630`, computed from the current total
+/// accumulated linear correction at `car+0x3cc`.
+#[must_use]
+pub const fn static_damage_severity(linear_correction_3cc: Vec3) -> Fixed16 {
+    let square_sum = linear_correction_3cc.dot(linear_correction_3cc).raw() as u32;
+    let length = crate::legacy_math::sqrt_q16(square_sum) as i32;
+    if length < 0x2624 {
+        return Fixed16::ZERO;
+    }
+    let severity = Fixed16::from_raw(length.wrapping_sub(0x2624)).mul(Fixed16::from_raw(0xf536));
+    if severity.raw() > 0x1_0000 {
+        Fixed16::ONE
+    } else {
+        severity
+    }
 }
 
 const fn abs_wrapping(value: Fixed16) -> Fixed16 {
@@ -242,6 +265,11 @@ pub fn apply_static_collision_response(
     state.linear_correction_3cc = state.linear_correction_3cc.add(full_world_correction);
 
     let previous_contact = state.history.contained_last_tick(input.contact_id);
+    let damage_severity = if previous_contact {
+        None
+    } else {
+        Some(static_damage_severity(state.linear_correction_3cc))
+    };
     if !previous_contact {
         events.push(StaticResponseEvent::RequestDamage {
             linear_correction: state.linear_correction_3cc,
@@ -266,27 +294,31 @@ pub fn apply_static_collision_response(
             }
         } else {
             let damage = input.damage_result;
-            if damage.effect_handle != 0 {
+            // Native damage cannot publish a handle for zero recovered
+            // severity. The kernel rejects such replay inputs up front; keep
+            // this direct pure entry point defensive as well.
+            let severity = damage_severity.expect("new contact computes damage severity");
+            if severity.raw() > 0 && damage.effect_handle != 0 {
                 events.push(StaticResponseEvent::ContactEffect {
                     handle: damage.effect_handle,
                     world_contact,
                 });
             }
-            if damage.severity.raw() > 0 {
+            if severity.raw() > 0 {
                 events.push(StaticResponseEvent::MaterialImpact {
-                    severity: damage.severity,
+                    severity,
                     world_contact,
                     material,
                 });
                 events.push(StaticResponseEvent::ScalarFeedback {
                     car_type: state.car_type_738,
-                    strength: damage.severity.mul(Fixed16::from_raw(0x1_8000)),
+                    strength: severity.mul(Fixed16::from_raw(0x1_8000)),
                     threshold: Fixed16::from_raw(0x4ccc),
                 });
                 events.push(StaticResponseEvent::DirectionalFeedback {
                     car_type: state.car_type_738,
                     direction: full_world_correction,
-                    strength: damage.severity.mul(TWO),
+                    strength: severity.mul(TWO),
                     limit: TWO,
                     trailing_zero: 0,
                 });
@@ -354,6 +386,7 @@ pub fn apply_static_collision_response(
         world_contact,
         debug_material_write,
         discarded_material_tangent_measure,
+        damage_severity,
     }
 }
 
@@ -477,10 +510,7 @@ mod tests {
         car.out_of_control_680 = true;
         let mut request = input();
         request.raw_material_flags = 0x85;
-        request.damage_result = DamageResult {
-            effect_handle: 7,
-            severity: q(0x8000),
-        };
+        request.damage_result = DamageResult { effect_handle: 7 };
         let hit = apply_static_collision_response(car, request);
         assert_eq!(hit.applied_world_correction, v(0x1_0000, 0, 0));
         assert_eq!(hit.state.linear_correction_3cc, v(0x1_0000, 0, 0));
@@ -496,19 +526,19 @@ mod tests {
                     world_contact: v(0, -0x1_0000, 0)
                 },
                 StaticResponseEvent::MaterialImpact {
-                    severity: q(0x8000),
+                    severity: ONE,
                     world_contact: v(0, -0x1_0000, 0),
                     material: 5
                 },
                 StaticResponseEvent::ScalarFeedback {
                     car_type: 0,
-                    strength: q(0xc000),
+                    strength: q(0x1_8000),
                     threshold: q(0x4ccc)
                 },
                 StaticResponseEvent::DirectionalFeedback {
                     car_type: 0,
                     direction: v(0x2_0000, 0, 0),
-                    strength: ONE,
+                    strength: TWO,
                     limit: TWO,
                     trailing_zero: 0
                 }
@@ -522,10 +552,7 @@ mod tests {
         car.car_type_738 = 1;
         let mut request = input();
         request.type_one_effect_gate_blocked = true;
-        request.damage_result = DamageResult {
-            effect_handle: 9,
-            severity: ONE,
-        };
+        request.damage_result = DamageResult { effect_handle: 9 };
         let hit = apply_static_collision_response(car, request);
         assert_eq!(
             hit.events,
@@ -535,6 +562,20 @@ mod tests {
                     linear_correction: Vec3::ZERO
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn zero_severity_defensively_suppresses_impossible_effect_handle() {
+        let mut request = input();
+        request.damage_result = DamageResult { effect_handle: 9 };
+        let hit = apply_static_collision_response(state(), request);
+        assert_eq!(hit.damage_severity, Some(ZERO));
+        assert_eq!(
+            hit.events,
+            [StaticResponseEvent::RequestDamage {
+                linear_correction: Vec3::ZERO,
+            }]
         );
     }
 
@@ -629,5 +670,45 @@ mod tests {
     fn constants_preserve_static_zero_identity() {
         assert_eq!(STATIC_RESPONSE_CONTACT_ID, 0);
         assert_eq!(ZERO, q(0));
+    }
+
+    #[test]
+    fn damage_severity_obeys_native_sqrt_threshold_scale_and_cap() {
+        assert_eq!(static_damage_severity(Vec3::ZERO), ZERO);
+
+        let first_above_threshold = (0..0x4000)
+            .find(|raw| {
+                let value = v(*raw, 0, 0);
+                crate::legacy_math::sqrt_q16(value.dot(value).raw() as u32) >= 0x2624
+            })
+            .unwrap();
+        assert_eq!(
+            static_damage_severity(v(first_above_threshold - 1, 0, 0)),
+            ZERO
+        );
+        let length = crate::legacy_math::sqrt_q16(
+            v(first_above_threshold, 0, 0)
+                .dot(v(first_above_threshold, 0, 0))
+                .raw() as u32,
+        ) as i32;
+        assert_eq!(
+            static_damage_severity(v(first_above_threshold, 0, 0)),
+            q(length.wrapping_sub(0x2624)).mul(q(0xf536))
+        );
+        assert_eq!(static_damage_severity(v(0x2_0000, 0, 0)), ONE);
+    }
+
+    #[test]
+    fn damage_severity_uses_wrapping_square_sum() {
+        let correction = v(i32::MAX, i32::MAX, i32::MAX);
+        let wrapped_sum = correction.dot(correction).raw() as u32;
+        let length = crate::legacy_math::sqrt_q16(wrapped_sum) as i32;
+        let expected = if length < 0x2624 {
+            ZERO
+        } else {
+            let scaled = q(length.wrapping_sub(0x2624)).mul(q(0xf536));
+            if scaled > ONE { ONE } else { scaled }
+        };
+        assert_eq!(static_damage_severity(correction), expected);
     }
 }
