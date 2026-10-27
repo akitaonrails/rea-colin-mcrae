@@ -1748,6 +1748,20 @@ publication remain open; live deformation/basis evolution is also unresolved.
 Render mesh AABBs are not accepted as
 compatibility geometry.
 
+The parsed static scene is now part of the live planar state-5 path. After
+integration, the session builds the exact authored-cell/hull frame, runs the
+recovered kernel, and atomically publishes depenetration, alternate velocity,
+next-tick linear/angular corrections, history and persistent response flags;
+failures restore the pre-step race before FSM, checkpoint or tick publication.
+Synthetic tests cover contact publication and rollback. Production deliberately
+uses a no-damage owner until the mutable damage object is recovered. The long
+authenticated AU1 input run reached its final steering assertion without a
+collision failure and exposed the planar bridge's reversed sign (`left` was
+`+40`, expected `-40`); the bridge now preserves recovered right-minus-left,
+with keyboard/analog tests pinning the correction. Owned-media contact accuracy,
+angular consume/clear, per-tick contact count, four-wheel basis evolution and
+car/wheel animation remain the next I14 work.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

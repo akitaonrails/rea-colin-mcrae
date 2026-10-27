@@ -25,11 +25,15 @@ use crate::game_race_flow::{InRaceInputs, race_flow_next};
 use crate::game_session::{GameSession, SessionBand};
 use crate::game_state::GameState;
 use crate::host_loop::HostClock;
+use crate::live_static_collision_car_frame::PreviousCarXz;
 use crate::race_state::{
-    CarState, Controls, FourWheelIterationParams, RaceState, SimParams, WheelPostprocessError,
+    CarState, Controls, FourWheelIterationParams, LiveStaticCollisionStepError, RaceState,
+    SimParams, WheelPostprocessError,
 };
 use crate::render_route::{RenderRoute, render_route};
 use crate::stage_checkpoints::StageProgress;
+use crate::static_collision_response::StaticDamageOwner;
+use crate::static_collision_scene_builder::ParsedStaticCollisionScene;
 
 /// The in-race sequencer inputs that are not the player's live controls: the
 /// replay/flyby/fade/quit flags and the front-end/world-ready gates the recovered
@@ -96,6 +100,12 @@ pub struct GameplayFrame {
     pub route: Option<RenderRoute>,
     /// Whether the driving sim stepped this frame (the live state was `5`).
     pub stepped: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StaticGameplayAdvanceError<E> {
+    Wheel(WheelPostprocessError),
+    Collision(LiveStaticCollisionStepError<E>),
 }
 
 /// The driven session: the recovered FSM plus the deterministic race sim.
@@ -225,6 +235,64 @@ impl<'a> GameplaySession<'a> {
         })
     }
 
+    /// Advance state 5 through integration and the recovered static-scene pass
+    /// before checkpoint progress observes the car. A collision failure restores
+    /// the complete pre-step race snapshot and leaves the FSM/progress/tick count
+    /// unchanged.
+    pub fn try_advance_with_static_collision<C: HostClock, D: StaticDamageOwner>(
+        &mut self,
+        clock: &C,
+        menu_inputs: MenuFlowInputs,
+        controls: Controls,
+        progress: &mut StageProgress,
+        parsed: &ParsedStaticCollisionScene,
+        damage_owner: &mut D,
+    ) -> Result<GameplayFrame, StaticGameplayAdvanceError<D::Error>> {
+        let driving_sample = if self.session.current().id() == 5 {
+            let race_before = self.race.clone();
+            let previous_center_xz = PreviousCarXz::capture(race_before.car().position);
+            let mut sample = match &self.wheel {
+                Some(wheel) => self
+                    .race
+                    .step_with_all_four_wheels(&controls, &self.params, wheel)
+                    .map_err(StaticGameplayAdvanceError::Wheel)?,
+                None => self.race.step(&controls, &self.params),
+            };
+            if let Err(error) = self.race.resolve_static_collision_after_step(
+                previous_center_xz,
+                parsed,
+                damage_owner,
+            ) {
+                self.race = race_before;
+                return Err(StaticGameplayAdvanceError::Collision(error));
+            }
+            sample.car = self.race.car();
+            Some(sample)
+        } else {
+            None
+        };
+        let script = self.script;
+        let sim_ticks = &mut self.sim_ticks;
+        let mut stepped = false;
+
+        let frame = self.session.run_frame(clock, menu_inputs, |state| {
+            if state.id() == 5 {
+                let sample = driving_sample.expect("state-5 sample was produced");
+                *sim_ticks += 1;
+                progress.update(sample.car.position, sample.centiseconds);
+                stepped = true;
+            }
+            let inputs = script.with_finish(progress.finished());
+            race_flow_next(state, inputs).unwrap_or(state)
+        });
+
+        Ok(GameplayFrame {
+            band: frame.band,
+            route: frame.plan.render.map(render_route),
+            stepped,
+        })
+    }
+
     /// Report the planned render's overrun to the driver's render-skip gate.
     pub fn report_render(&mut self, overran: bool) {
         self.session.report_render(overran);
@@ -264,8 +332,12 @@ impl<'a> GameplaySession<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::c3d_terrain_cull::CellGrid;
     use crate::fixed_point::Vec3;
     use crate::host_loop::HostClock;
+    use crate::live_static_collision_car_frame::ActiveCellRecordBuildError;
+    use crate::static_collision_kernel::NoStaticDamageOwner;
+    use crate::static_world_collision::{StaticCollisionScene, StaticNarrowObb};
     use cmr_formats::stage::CatNode;
 
     struct StationaryClock;
@@ -286,6 +358,22 @@ mod tests {
                 seq_index: 0,
             })
             .collect()
+    }
+
+    fn empty_collision_scene(cell_count: i32) -> ParsedStaticCollisionScene {
+        ParsedStaticCollisionScene {
+            grid: CellGrid {
+                width: cell_count.max(1),
+                height: 1,
+                cell_count,
+                cell_size: 0x20_0000,
+                min_x: 0,
+                half_cell: 0x10_0000,
+                max_z: 0,
+            },
+            main_cell_centers: vec![Vec3::ZERO],
+            scene: StaticCollisionScene::<StaticNarrowObb>::new(Vec::new(), []).unwrap(),
+        }
     }
 
     fn params() -> SimParams {
@@ -475,6 +563,63 @@ mod tests {
         );
         assert_eq!(session.sim_ticks(), 0);
         assert!(!progress.finished());
+    }
+
+    #[test]
+    fn static_collision_advance_is_atomic_before_progress_and_fsm_commit() {
+        let mut session = GameplaySession::new(params(), InRaceScript::frontend_harness());
+        let nodes = line();
+        let mut progress = StageProgress::new(&nodes, 0);
+        let invalid = empty_collision_scene(2);
+        let mut failure = None;
+        for _ in 0..1000 {
+            let before = session.car();
+            match session.try_advance_with_static_collision(
+                &StationaryClock,
+                frontend_menu(),
+                forward(),
+                &mut progress,
+                &invalid,
+                &mut NoStaticDamageOwner,
+            ) {
+                Ok(_) => {}
+                Err(error) => {
+                    assert_eq!(session.car(), before);
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        assert!(matches!(
+            failure,
+            Some(StaticGameplayAdvanceError::Collision(
+                LiveStaticCollisionStepError::ActiveCell(
+                    ActiveCellRecordBuildError::CellCountMismatch { .. }
+                )
+            ))
+        ));
+        assert_eq!(session.sim_ticks(), 0);
+        assert!(!progress.finished());
+
+        let mut session = GameplaySession::new(params(), InRaceScript::frontend_harness());
+        let mut progress = StageProgress::new(&nodes, 0);
+        let valid = empty_collision_scene(1);
+        for _ in 0..1000 {
+            let frame = session
+                .try_advance_with_static_collision(
+                    &StationaryClock,
+                    frontend_menu(),
+                    forward(),
+                    &mut progress,
+                    &valid,
+                    &mut NoStaticDamageOwner,
+                )
+                .unwrap();
+            if frame.stepped {
+                break;
+            }
+        }
+        assert_eq!(session.sim_ticks(), 1);
     }
 
     #[test]

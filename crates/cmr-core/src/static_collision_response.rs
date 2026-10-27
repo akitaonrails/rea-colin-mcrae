@@ -136,6 +136,25 @@ pub trait StaticDamageOwner {
     -> Result<DamageResult, Self::Error>;
 }
 
+impl<T: StaticDamageOwner + ?Sized> StaticDamageOwner for &mut T {
+    type Error = T::Error;
+
+    fn type_one_effect_gate_blocked(&mut self) -> Result<bool, Self::Error> {
+        (**self).type_one_effect_gate_blocked()
+    }
+
+    fn capture_debug_material(&self) -> bool {
+        (**self).capture_debug_material()
+    }
+
+    fn commit_contact(
+        &mut self,
+        request: StaticDamageRequest,
+    ) -> Result<DamageResult, Self::Error> {
+        (**self).commit_contact(request)
+    }
+}
+
 /// Per-contact inputs and the two external query results needed to keep this
 /// contract deterministic.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

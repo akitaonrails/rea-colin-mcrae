@@ -1,221 +1,136 @@
 # Reconstruction handoff
 
-Updated: 2026-10-26
+Updated: 2026-10-28
 
 ## Resume point
 
-The repository is on `main`. The latest completed reconstruction milestone is:
+Work resumes from the `main` commit whose subject is:
 
 ```text
-8a7970c feat: compose eight-lane post barrier
+feat: wire live static collision session
 ```
 
-The next task is G03-AK13: reconstruct the call-free post-normal basis rebuild
-at `FUN_00404440 [0x406b00, 0x406e30)`. Do not begin by changing the live game
-session. Keep recovering and testing this initializer spine in order.
-
-After opening the repository, first run:
+Start by confirming the checkout and progress footer:
 
 ```sh
 git status --short
 git log -8 --oneline
 tail -n 12 docs/DECOMP_MAP.md
-cargo test -p cmr-core --lib
 ```
 
-The worktree was clean when this handoff was prepared.
+This milestone wires the recovered static collision pass into the live planar
+windowed session and corrects the confirmed keyboard/gamepad steering inversion.
+It does **not** establish a finished or fully accurate game.
 
-## Latest completed work
+## What is now implemented
 
-The most recent milestones are:
+- `RaceState::resolve_static_collision_after_step` builds the exact authored
+  primary cell and live car hull/projection after integration, runs the recovered
+  kernel, and publishes depenetrated position, alternate velocity, next-tick
+  linear/angular corrections, history, and persistent `+0x680/+0x688` flags.
+- `GameplaySession::try_advance_with_static_collision` snapshots the complete
+  pre-step race state. Collision failure restores it before FSM, checkpoint,
+  or simulation-tick publication.
+- The windowed app uses that path whenever its parsed static scene is present.
+  It currently supplies `NoStaticDamageOwner`, explicitly leaving the recovered
+  mutable damage-object implementation open.
+- Pending linear correction `+0x3cc` is consumed once by the next translation
+  step and cleared. Angular `+0x3d8` is published but is not yet consumed/cleared
+  by the live orientation path.
+- The explicit planar `CarControls -> Controls` bridge now preserves the
+  recovered `right - left` command. Keyboard, analog, and SDL adapter tests pin
+  right-positive, left-negative, and cancellation.
+
+The collision milestone builds on these immediately preceding commits:
 
 ```text
-8a7970c feat: compose eight-lane post barrier
-61d0e5b feat: reconstruct post-lane global normal
-2ab57bd feat: load authenticated stage hpc runtime
-43ffdc3 feat: parse stage hpc geometry
-818ef49 feat: bind decoded geometry to eight-lane execution
-e75a26d feat: compose decoded compiled lane provider
-e799833 feat: add SuperGhidra REA cross-check bridge
-72a5bb7 feat: reconstruct compiled lane record decoder
+a94b0fd feat: add lazy static damage ownership
+014607f feat: consume pending static linear correction
+14063c9 feat: retain live collision state across ticks
+4e71941 feat: publish live collision contact count
+ef78049 feat: derive canonical collision response state
+2d52d72 feat: recover static response live inputs
+330ff19 feat: publish compiled collision setup state
+5fb7c36 feat: recover live primary collision cell
 ```
 
-What these establish:
+## Verification state
 
-- Decoded stage `.hpc` geometry has a pure, bounds-checked parser that retains
-  reserved fields and opaque trailing bytes.
-- The reviewed generic asset profile already covers all 76 installed-EU `.hpc`
-  sidecars. No HPC-specific extractor or profile is needed.
-- `StageCompiledGeometry` loads a profile-relative stage identity through the
-  authenticated `AssetStore`, owns the parsed snapshot, and supplies eight
-  providers borrowing that snapshot.
-- The recovered eight-lane dispatcher executes in ascending interleaved order
-  with typed dispatch/config failure prefixes.
-- `FUN_00408fe0 [0x408fe0,0x4095d8)` is reconstructed as the selected-quad
-  two-normal transform, including intermediate publication and final overwrite.
-- `execute_compiled_eight_lanes_then` invokes a typed post stage only after all
-  eight lanes and their late config reads succeed. Dispatch/config failure skips
-  post; post failure retains the complete lane success.
+Green at handoff:
 
-Current focused counts are `cmr-formats` 158 tests and `cmr-core` 1,232 tests.
-The last full workspace test, strict clippy, portability check, legacy-backend
-check, and SuperGhidra bridge test all passed.
+```sh
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+```
 
-## Exact next static contract
-
-Fresh REA work identified the next call-free interval as
-`[0x406b00,0x406e30)`. Use neutral vector/basis terminology; Gram-Schmidt and
-physical-normal language are inferences.
-
-Inputs:
-
-- prior vector at state `+0x258/+0x25c/+0x260`;
-- final AK11 vector at state `+0x324/+0x328/+0x32c`.
-
-Exact stable-snapshot arithmetic:
+Focused collision, session rollback, keyboard/analog, SDL gamepad, app build,
+and full-workspace tests pass. Logs from the last run are ignored under:
 
 ```text
-n = vector_324
-s = vector_258
-
-dot = wrap(qmul(n.x,s.x) + qmul(n.y,s.y) + qmul(n.z,s.z))
-rejected = s - n * dot                 # qmul per component, wrapping subtract
-u = legacy_normalize(rejected)
-v = legacy_normalize(cross(u, n))      # exact operand order: u × n
-
-state +0x258 = u
-state +0x264 = n                       # verbatim copy, not renormalized
-state +0x270 = v
+.work/handoff-workspace-test.log
+.work/handoff-clippy.log
 ```
 
-`qmul(a,b)` is signed `i64(a)*i64(b) >> 16`, narrowed to the low `i32`.
-Dot additions, projection subtraction, cross subtraction, and vector sums wrap.
-Normalization is the existing generated-table `sqrt_q16` rule used by AK11:
-zero length produces zero; otherwise use `floor(2^32/root)` followed by Q16
-component multiplies.
+The authenticated AU1 test was run before the steering correction:
 
-Native state store order is:
-
-```text
-+0x264, +0x268, +0x26c
-+0x258, +0x25c, +0x260
-+0x270, +0x274, +0x278
+```sh
+CMR_RUNTIME_DATA="$PWD/runtime-data/installed-eu-derived-assets-v2" \
+  cargo test -p cmr-app \
+  imported_au1_live_input_moves_the_world_and_advances_checkpoints \
+  -- --ignored --nocapture
 ```
 
-Note that writing `+0x268` supersedes one of AK11's old selector words.
+It ran for about 187 seconds and reached the final steering assertion without a
+collision error. The only failure was left steering producing heading delta
+`+40` instead of expected `-40`. The one-boundary sign fix is covered by focused
+tests, but this long authenticated test was not rerun. Do that when the runtime
+budget permits; do not represent it as already green.
 
-Suggested API:
+## Highest-priority remaining work
 
-```rust
-pub const COMPILED_POST_LANE_VECTOR_BASES: [u16; 4] =
-    [0x258, 0x264, 0x270, 0x324];
+1. Recover and wire angular `+0x3d8` consumption/clear into the exact orientation
+   pipeline. Do not apply it as a guessed planar heading increment.
+2. Move the windowed session from `GameplaySession::new_with_car` to the already
+   recovered four-wheel path only after supplying its authenticated runtime
+   inputs. The current planar path changes heading but does not evolve the full
+   `MotionState::basis`, which limits collision and body-render accuracy.
+3. Republish contact flags/count `+0x68c..+0x698/+0x674` per tick from live
+   lane/hull state. The current values are the authenticated setup snapshot.
+4. Implement the concrete mutable object behind `StaticDamageOwner`, including
+   deformation/effect state, while preserving the synchronous ordered contract.
+5. Add a controlled owned-media test that deliberately reaches a known static
+   object and asserts contact, depenetration, history, and next-tick consumption.
+   The latest AU1 driving test only establishes that collision execution did not
+   error; it does not prove that a scene object was contacted.
+6. Once four-wheel basis publication is live, render the car body from that basis
+   rather than the static root plus planar heading adapter. Then recover the CMR1
+   wheel-node/phase consumer and add animation tests. Previous review found that
+   guessing wheel animation before this basis transition would compound errors.
 
-pub struct CompiledPostLaneBasisInputs {
-    pub vector_324: [i32; 3],
-    pub vector_258: [i32; 3],
-}
+The next `docs/DECOMP_MAP.md` focus is therefore
+`four-wheel-window-path-angular-collision-and-car-animation`; counters remain
+117 complete, 2 partial, 119 total because this materially advances I14 without
+closing it.
 
-pub struct CompiledPostLaneBasisEffects {
-    pub vector_258: [i32; 3],
-    pub vector_264: [i32; 3],
-    pub vector_270: [i32; 3],
-}
+## Evidence and boundaries
 
-pub fn derive_compiled_post_lane_basis(
-    input: CompiledPostLaneBasisInputs,
-) -> CompiledPostLaneBasisEffects;
-```
-
-Minimum AK13 tests:
-
-- exact vector bases, store order, and disjoint layout;
-- orthogonal simple vectors with hard-coded generated-table results;
-- nonzero projection removal;
-- parallel and zero-vector degeneracy;
-- exact `u × n` handedness;
-- negative-odd Q16 truncation;
-- wrapping dot, subtraction, cross, and `i32` extremes;
-- `vector_264` is the verbatim AK11 final vector;
-- unused old rows 1/2 cannot affect the result;
-- orchestration consumes the AK11 final publication only after AK8 success.
-
-## Following interval—keep separate
-
-Do not merge pointer publication into the pure AK13 result. The next interval
-`[0x406e30,0x406e9a)` reads the pointer at state `+0x2a0` and publishes the
-three rows at destination strides `+0x00`, `+0x10`, and `+0x20`. Each row writes
-three dwords; padding at `+0x0c/+0x1c/+0x2c` is untouched. Native code reloads
-the global state and destination pointer between rows, so aliases, rebinding,
-and progressive faults must remain explicit limitations.
-
-At `[0x406e9a,0x406ea5)`, the caller reloads the global state and invokes the
-already reconstructed `FUN_00409c10(state)`. `0x406ea5` starts a separate
-state-adjustment phase.
-
-## REA evidence
-
-Authoritative evidence IDs for the current boundary:
-
-- complete `FUN_00404440` dossier:
-  `ev_91ece8af8128c4919dc5d495ae09da2e6e5d2a503b0055b468e49644bdceea98`
-- slice entry:
-  `ev_f4485461877bb44f85897abe56586884fd7351912fded41dd6a3a46ca61a09e2`
-- first normalization `IDIV`:
-  `ev_4f266cc6b83b6d7ae6f06dd03269980cae4327f11bd020f09909def80320d09e`
-- following `FUN_00409c10` call edge:
-  `ev_ca835a93b3dde6f990f08a908d6791085c74519c31837cee16703317422d2578`
-- AK11 `FUN_00408fe0` dossier:
-  `ev_3c3b901b71f69146ae7777233b27ab715eeed2be70e60f858afcdb03da22fa60`
-- AK11 complete resolved callers:
-  `ev_eb48f13b1fcd85bb168c624fae790cab45bc7180bc3de353ded9c1a21d9e3be7`
-
-Local evidence exports and snapshots remain under ignored `.work/`. REA is the
-authority; SuperGhidra remains an optional external discovery/cross-check tool.
-Do not promote a SuperGhidra-only result into the evidence ledger.
-
-## Required milestone procedure
-
-For AK13 and every later completed reconstruction item:
-
-1. Add focused unit tests, including malformed/boundary behavior where relevant.
-2. Run focused tests and strict clippy while iterating.
-3. Update `docs/EVIDENCE.md`, `docs/ROADMAP.md`, `docs/SUBSYSTEMS.md`,
-   `docs/DECOMP_MAP.md`, and `docs/CONVERSION_TIMELINE.md` in the same milestone.
-4. Keep the progress block as the final lines of `docs/DECOMP_MAP.md`.
-5. Run the full gate:
-
-   ```sh
-   cargo fmt --all -- --check
-   cargo clippy --workspace --all-targets -- -D warnings
-   cargo test --workspace
-   python3 -m unittest scripts.tests.test_superghidra_probe
-   scripts/check-portability.sh
-   scripts/check-legacy-backends.sh
-   ```
-
-6. Commit only after the gate passes, using a Conventional Commit subject.
-7. Pin the previous pending timeline/decomp-map milestone hash in the next
-   milestone. AK12 currently needs to be pinned as `8a7970c` by AK13.
-
-## Project boundaries to preserve
-
-- Never track game executables, DLLs, media, archives, fonts, palettes, tracks,
-  car data, or extracted payload bytes.
-- Never track a developer-specific media path. Accept `--source` or use the
-  documented `CMR_ORIGINAL_DIR` example variable.
-- Keep REA/SuperGhidra output in `.work/` and imported data in `runtime-data/`.
-- Static analysis remains the default; do not execute shipped binaries without
-  an explicitly scoped and documented experiment.
-- Describe decompiler output as pseudocode, not original source.
-- Preserve observations, inferences, decisions, and unknowns separately.
-- Do not modernize unrecovered behavior. Modern backends implement established
-  compatibility interfaces and must pass their shared contract tests.
+- Static collision recovery is documented in `docs/EVIDENCE.md` under
+  `impl.atomic-live-static-collision-session` and the related producer/kernel
+  records.
+- The steering runtime observation is recorded as
+  `obs.au1-steering-sign-regression`.
+- Local REA and SuperGhidra output stays under `.work/`; do not duplicate shipped
+  payloads or add absolute media paths.
+- The runtime app still reads user-owned data through the explicit imported-data
+  profile and source-root interfaces. Never commit original game assets.
+- Keep observations, inferences, design choices, and unknowns separate. Static
+  evidence does not establish runtime behavior.
+- Update `docs/EVIDENCE.md`, `docs/ROADMAP.md`, `docs/SUBSYSTEMS.md`,
+  `docs/DECOMP_MAP.md`, and `docs/CONVERSION_TIMELINE.md` with each milestone,
+  and keep the progress footer as the final lines of `docs/DECOMP_MAP.md`.
 
 ## Progress monitor
 
 ```sh
 watch -n 2 'tail -n 12 docs/DECOMP_MAP.md'
 ```
-
-At handoff, the progress footer reads 59 complete, 59 partial, 0 not-started,
-0 blocked, 118 total. These are roadmap-item counters, not function counts.

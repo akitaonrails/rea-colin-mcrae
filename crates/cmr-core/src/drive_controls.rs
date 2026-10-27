@@ -12,14 +12,14 @@
 //! demands into motion through the drivetrain actuator/torque stage
 //! (`FUN_004088c0` -> gearbox/RPM/torque -> the physics integrator, G02/G03), and
 //! the [`RaceState`](crate::race_state) harness is a documented simplification
-//! that takes an explicit forward force and heading rate. So the full-scale
+//! that takes an explicit forward force and heading rate. Its heading sign
+//! matches the recovered right-minus-left command at this boundary. So the full-scale
 //! response is supplied by the caller as a [`DriveResponse`], not invented here -
 //! the same choice as the harness [`SimParams`](crate::race_state::SimParams).
 //! When the demand->force stage is recovered, the caller fills [`DriveResponse`]
 //! with the recovered constants. The simplified [`RaceState`](crate::race_state::RaceState)
-//! heading convention increases counter-clockwise on the X/Z plane, so this
-//! bridge reverses the recovered right-minus-left command at that explicit
-//! harness boundary; the recovered input-map half channels remain unchanged.
+//! heading convention increases toward the requested right side on the X/Z
+//! plane; the recovered input-map half channels remain unchanged.
 
 use crate::fixed_point::Fixed16;
 use crate::input_map::{CarControls, FULL_SCALE};
@@ -49,9 +49,10 @@ pub fn car_controls_to_sim(controls: &CarControls, response: &DriveResponse) -> 
     let net_drive = controls.throttle - controls.brake;
     let forward_force = scale_fixed(net_drive, response.max_forward_force);
 
-    // The recovered command is right-minus-left. RaceState's positive BAM rate
-    // turns toward geometric left, so adapt the sign only at this harness edge.
-    let net_steer = controls.steer_left - controls.steer_right;
+    // The recovered command is right-minus-left. Keep that sign at the explicit
+    // planar harness edge; swapping it here inverted both keyboard and analog
+    // steering in the controlled native AU1 session.
+    let net_steer = controls.steer_right - controls.steer_left;
     let steer_rate = scale_bam(net_steer, response.max_steer_rate);
 
     Controls {
@@ -133,18 +134,19 @@ mod tests {
             ..controls()
         };
         let right_rate = car_controls_to_sim(&right, &response()).steer_rate;
-        assert_eq!(right_rate, -0x200);
+        assert_eq!(right_rate, 0x200);
         let left = CarControls {
             steer_left: FULL_SCALE,
             ..controls()
         };
         let left_rate = car_controls_to_sim(&left, &response()).steer_rate;
-        assert_eq!(left_rate, 0x200);
+        assert_eq!(left_rate, -0x200);
 
-        // At heading zero forward is +X and right is -Z. A requested right
-        // turn must move the next forward vector toward -Z, and left toward +Z.
+        // At heading zero forward is +X. The native AU1 control contract pins
+        // requested right to a positive heading delta and left to a negative
+        // delta at this simplified harness boundary.
         let trig = build_sine_table();
-        let old_right = Vec3::new(Fixed16::ZERO, Fixed16::ZERO, -Fixed16::ONE);
+        let positive_heading_side = Vec3::new(Fixed16::ZERO, Fixed16::ZERO, Fixed16::ONE);
         let forward_after = |rate: i16| {
             Vec3::new(
                 cos_bam(&trig, rate as u16),
@@ -152,8 +154,8 @@ mod tests {
                 sin_bam(&trig, rate as u16),
             )
         };
-        assert!(forward_after(right_rate).dot(old_right) > Fixed16::ZERO);
-        assert!(forward_after(left_rate).dot(old_right) < Fixed16::ZERO);
+        assert!(forward_after(right_rate).dot(positive_heading_side) > Fixed16::ZERO);
+        assert!(forward_after(left_rate).dot(positive_heading_side) < Fixed16::ZERO);
     }
 
     #[test]
@@ -167,7 +169,7 @@ mod tests {
         let out = car_controls_to_sim(&cc, &response());
         // Half throttle -> about half the full force (exact integer division).
         assert_eq!(out.forward_force.raw(), (8 << 16) / 2);
-        assert_eq!(out.steer_rate, -0x100);
+        assert_eq!(out.steer_rate, 0x100);
     }
 
     #[test]

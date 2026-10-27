@@ -45,7 +45,7 @@ use cmr_core::game_menu_flow::{FrontendMenuSignal, MenuFlowInputs, frontend_menu
 use cmr_core::game_rng::GameLcg;
 use cmr_core::game_session::SessionBand;
 use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
-use cmr_core::gameplay_session::{GameplaySession, InRaceScript};
+use cmr_core::gameplay_session::{GameplaySession, InRaceScript, StaticGameplayAdvanceError};
 use cmr_core::host_loop::HostClock;
 use cmr_core::load_interstitial::{LOADING_BAR_BMP, LOADING_LINE_BMP, STAGE_LOADING_PROGRESS_CAP};
 use cmr_core::localization::Language;
@@ -74,6 +74,7 @@ use cmr_core::startup::{StartupLanguage, StartupScreen};
 use cmr_core::startup_display::{
     StartupDisplay, StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
 };
+use cmr_core::static_collision_kernel::NoStaticDamageOwner;
 use cmr_core::static_collision_scene_builder::{
     ParsedStaticCollisionBuildError, ParsedStaticCollisionScene,
     build_parsed_static_collision_scene,
@@ -2580,6 +2581,8 @@ pub enum WindowedStageFrameError {
     CompiledPose(SessionCompiledPoseError),
     /// Authenticated session input or four-wheel production failed.
     Session(SessionFourWheelError),
+    /// Live static-scene production or response failed atomically.
+    StaticCollision(StaticGameplayAdvanceError<Infallible>),
     /// The SDL host failed to present the composed frame.
     Present(SdlHostError),
 }
@@ -2592,6 +2595,7 @@ impl WindowedStageFrameError {
             Self::Setup(source) => source.kind(),
             Self::CompiledPose(source) => source.kind(),
             Self::Session(_) => "four-wheel-session",
+            Self::StaticCollision(_) => "static-collision-session",
             Self::Present(_) => "present-host",
         }
     }
@@ -2615,6 +2619,9 @@ impl fmt::Display for WindowedStageFrameError {
             Self::Setup(source) => source.fmt(formatter),
             Self::CompiledPose(source) => write!(formatter, "compiled pose setup failed: {source}"),
             Self::Session(source) => write!(formatter, "four-wheel session failed: {source}"),
+            Self::StaticCollision(source) => {
+                write!(formatter, "static collision session failed: {source:?}")
+            }
             Self::Present(source) => write!(formatter, "cannot present stage frame: {source}"),
         }
     }
@@ -2626,6 +2633,7 @@ impl std::error::Error for WindowedStageFrameError {
             Self::Setup(source) => Some(source),
             Self::CompiledPose(source) => Some(source),
             Self::Session(source) => Some(source),
+            Self::StaticCollision(_) => None,
             Self::Present(source) => Some(source),
         }
     }
@@ -2879,6 +2887,7 @@ fn advance_game_frame<C: HostClock>(
     resources: &mut StageRenderResources,
     camera: &mut ViewHarness,
     fade: &mut Option<ScalarTween>,
+    damage_owner: &mut NoStaticDamageOwner,
     input: WindowedInput,
 ) -> Result<GameFrameOutcome, WindowedStageFrameError> {
     let root_tick = root_interaction.tick_for_game_session(input.frontend, clock.millis(), true);
@@ -2898,9 +2907,22 @@ fn advance_game_frame<C: HostClock>(
             .poll(|vk| input.keys.is_down(vk), response, true)
             .controls
     };
-    let advanced = session
-        .try_advance(clock, menu_inputs, controls, progress)
-        .map_err(SessionFourWheelError::Producer)?;
+    let advanced = if let Some(parsed) = resources.static_collision_scene() {
+        session
+            .try_advance_with_static_collision(
+                clock,
+                menu_inputs,
+                controls,
+                progress,
+                parsed,
+                damage_owner,
+            )
+            .map_err(WindowedStageFrameError::StaticCollision)?
+    } else {
+        session
+            .try_advance(clock, menu_inputs, controls, progress)
+            .map_err(SessionFourWheelError::Producer)?
+    };
     let world = compose_world_for_route(advanced.route, || {
         // Compose the live world for every route that reaches the shared viewport
         // compositor 0x422ca0: the in-race StageWorld states and the overlay
@@ -3737,6 +3759,7 @@ pub fn run_windowed_game_session(
             .expect("zero is a valid recovered root selection");
     let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
+    let mut damage_owner = NoStaticDamageOwner;
     let mut runtime_error = None;
 
     // Best-effort: open the recovered front-end root-menu compositor from the
@@ -3766,6 +3789,7 @@ pub fn run_windowed_game_session(
                     &mut resources,
                     &mut camera,
                     &mut fade,
+                    &mut damage_owner,
                     input,
                 ) {
                     Ok(outcome) => {
@@ -3823,6 +3847,7 @@ pub fn run_windowed_game_session(
             &mut resources,
             &mut camera,
             &mut fade,
+            &mut damage_owner,
             input,
         ) {
             Ok(outcome) => WindowedGameFrame {
@@ -5261,6 +5286,7 @@ mod tests {
         let mut progress = StageProgress::new(&nodes, 0);
         let mut camera = ViewHarness::new();
         let mut fade = None;
+        let mut damage_owner = NoStaticDamageOwner;
         let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
         let mut root_interaction =
             RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0).unwrap();
@@ -5277,6 +5303,7 @@ mod tests {
                     &mut resources,
                     &mut camera,
                     &mut fade,
+                    &mut damage_owner,
                     WindowedInput {
                         keys: $keys,
                         gamepad: None,

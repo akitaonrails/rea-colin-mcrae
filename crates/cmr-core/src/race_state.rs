@@ -37,9 +37,20 @@ use crate::drivetrain::{
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::legacy_math::sqrt_q16;
-use crate::live_static_collision_car_frame::UpperHullDeformationScalars;
+use crate::live_static_collision_car_frame::{
+    ActiveCellRecordBuildError, LiveStaticCollisionCarFrameInput,
+    LiveStaticCollisionFrameBridgeError, PreviousCarXz, UpperHullDeformationScalars,
+    build_active_cell_record, build_live_static_collision_car_frame,
+};
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
-use crate::static_world_collision::StaticContactHistory;
+use crate::static_collision_kernel::{
+    RecoveredStaticCollisionKernel, StaticKernelContext, StaticKernelError,
+};
+use crate::static_collision_response::{ResponseBasis, StaticDamageOwner};
+use crate::static_collision_scene_builder::ParsedStaticCollisionScene;
+use crate::static_world_collision::{
+    StaticCollisionExecutionError, StaticContactHistory, resolve_static_world_collisions,
+};
 use crate::vehicle_dynamics::{
     AngularOrientationInput, ContactBasisInput, ContactVectorUpdateInput,
     GeometricPostprocessError, GeometricPostprocessLane, LaneDirectionSources,
@@ -723,8 +734,16 @@ pub struct TraceSample {
     pub car: CarState,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LiveStaticCollisionStepError<E> {
+    ActiveCell(ActiveCellRecordBuildError),
+    Frame(LiveStaticCollisionFrameBridgeError),
+    Execute(StaticCollisionExecutionError<StaticKernelError<E>>),
+}
+
 /// The deterministic offline race state: a stage clock plus one car, stepped at
 /// the recovered fixed 40 ms / 25 Hz tick.
+#[derive(Clone)]
 pub struct RaceState {
     clock: Fixed16,
     start_clock: Fixed16,
@@ -751,6 +770,93 @@ impl RaceState {
     /// The current car state.
     pub fn car(&self) -> CarState {
         self.car
+    }
+
+    /// Resolve one post-integration static-scene pass and atomically publish
+    /// depenetration, alternate velocity, next-tick corrections, history, and
+    /// persistent response flags into the live car.
+    pub fn resolve_static_collision_after_step<D: StaticDamageOwner>(
+        &mut self,
+        previous_center_xz: PreviousCarXz,
+        parsed: &ParsedStaticCollisionScene,
+        damage_owner: &mut D,
+    ) -> Result<usize, LiveStaticCollisionStepError<D::Error>> {
+        let car = self.car;
+        let primary_cell =
+            build_active_cell_record(&parsed.grid, &parsed.main_cell_centers, car.position)
+                .map_err(LiveStaticCollisionStepError::ActiveCell)?;
+        let deformation = car
+            .motion
+            .upper_hull_deformation
+            .bind(car.motion.basis[0], car.motion.basis[2]);
+        let live = build_live_static_collision_car_frame(LiveStaticCollisionCarFrameInput {
+            previous_center_xz,
+            current_center: car.position,
+            current_basis: car.motion.basis,
+            half_extents: car.motion.compiled_half_words,
+            projection_axis_258: car.motion.basis[0],
+            projection_axis_264: car.motion.basis[1],
+            deformation: Some(deformation),
+            primary_cell,
+        });
+        let frame = live
+            .into_static_frame(
+                car.collision.pending_linear_3cc,
+                car.motion.moment,
+                Vec3::ZERO,
+                car.motion.compiled_half_words,
+            )
+            .map_err(LiveStaticCollisionStepError::Frame)?;
+        let speed_ec =
+            Fixed16::from_raw(sqrt_q16(car.velocity.dot(car.velocity).raw() as u32) as i32);
+        let projection = live.projection;
+        let context = StaticKernelContext {
+            projected_corners: projection.projected_corners,
+            projection_axis: projection.axis,
+            projection_perpendicular: projection.perpendicular,
+            projection_axis_radius: projection.axis_radius,
+            projection_perpendicular_radius: projection.perpendicular_radius,
+            y_gate_552f60: projection.min_y,
+            y_gate_552f80: projection.max_y,
+            velocity_d4: car.velocity,
+            alternate_axis_324: car.motion.projection_axis,
+            projected_axis_270: car.motion.basis[2],
+            response_basis_2a0: ResponseBasis {
+                rows: car.motion.basis,
+            },
+            out_of_control_680: car.collision.response_state_680,
+            out_of_control_688: car.collision.recovery_latch_688,
+            // The windowed compatibility session currently owns player slot
+            // zero and the fresh-process subtype byte remains zero.
+            car_type_738: 0,
+            car_subtype_739: 0,
+            contact_count_674: car.motion.contact_count_674,
+            velocity_normalizer_ec: speed_ec,
+            fallback_axis_258: car.motion.basis[0],
+        };
+        let mut kernel =
+            RecoveredStaticCollisionKernel::with_damage_owner(context, [], damage_owner);
+        let effects = resolve_static_world_collisions(
+            &parsed.scene,
+            &frame,
+            car.collision.history,
+            &mut kernel,
+        )
+        .map_err(LiveStaticCollisionStepError::Execute)?;
+
+        let mut committed = car;
+        committed.collision.pending_linear_3cc = effects.linear_impulse_3cc;
+        committed.motion.moment = effects.angular_impulse_3d8;
+        committed.collision.history = effects.history;
+        if let Some(kernel_state) = kernel.state() {
+            committed.position = kernel_state.position;
+            committed.velocity = kernel_state.velocity_d4;
+            committed.collision.response_state_680 = kernel_state.out_of_control_680;
+            committed.collision.recovery_latch_688 = kernel_state.out_of_control_688;
+        }
+        let contact_count = effects.contacts.len();
+        self.car = committed;
+        Ok(contact_count)
     }
 
     /// The unit forward vector for the current heading on the x/z plane.
@@ -1456,6 +1562,74 @@ mod tests {
             },
         );
         assert_eq!(next.car.velocity.x, sample.car.velocity.x);
+    }
+
+    #[test]
+    fn live_static_pass_publishes_depenetration_and_next_tick_state() {
+        use crate::c3d_terrain_cull::CellGrid;
+        use crate::static_collision_kernel::NoStaticDamageOwner;
+        use crate::static_world_collision::{
+            StaticCollisionNodeId, StaticCollisionRecord, StaticCollisionScene, StaticNarrowObb,
+        };
+
+        let one = Fixed16::ONE;
+        let identity = [
+            Vec3::new(one, Fixed16::ZERO, Fixed16::ZERO),
+            Vec3::new(Fixed16::ZERO, one, Fixed16::ZERO),
+            Vec3::new(Fixed16::ZERO, Fixed16::ZERO, one),
+        ];
+        let object = StaticNarrowObb {
+            center: Vec3::ZERO,
+            projected_corners: [[-128, -128], [128, -128], [128, 128], [-128, 128]],
+            radius: Fixed16::from_raw(0x20000),
+            max_y_shift9: 128,
+            min_y_shift9: -128,
+            axis_radius: one,
+            perpendicular_radius: one,
+            axis: identity[0],
+            perpendicular: identity[2],
+        };
+        let node = StaticCollisionNodeId::new(0).unwrap();
+        let parsed = ParsedStaticCollisionScene {
+            grid: CellGrid {
+                width: 1,
+                height: 1,
+                cell_count: 1,
+                cell_size: 0x20_0000,
+                min_x: 0,
+                half_cell: 0x10_0000,
+                max_z: 0,
+            },
+            main_cell_centers: vec![Vec3::ZERO],
+            scene: StaticCollisionScene::new(
+                vec![StaticCollisionRecord {
+                    collision_ordinal: 7,
+                    raw_material_flags: 0,
+                    geometry: object,
+                }],
+                [(node, 0)],
+            )
+            .unwrap(),
+        };
+        let mut car = CarState::at_rest();
+        car.motion.basis = identity;
+        car.motion.projection_axis = identity[0];
+        car.motion.compiled_half_words = Vec3::new(one, one, one);
+        car.motion.contact_count_674 = 3;
+        car.velocity = Vec3::new(one.neg(), Fixed16::ZERO, one);
+        let mut race = RaceState::new(car);
+        let previous = PreviousCarXz {
+            x: Fixed16::from_raw(-0xa_0000),
+            z: Fixed16::ZERO,
+        };
+        let contacts = race
+            .resolve_static_collision_after_step(previous, &parsed, &mut NoStaticDamageOwner)
+            .unwrap();
+        let committed = race.car();
+        assert_eq!(contacts, 1);
+        assert_ne!(committed.position, car.position);
+        assert_ne!(committed.collision.pending_linear_3cc, Vec3::ZERO);
+        assert_eq!(committed.collision.history.current_len, 1);
     }
 
     fn second_wheel_params(trig: &[i32]) -> SecondWheelParams<'_> {

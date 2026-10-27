@@ -2540,6 +2540,15 @@ languages rather than fabricating or silently aliasing Italian assets.
   car/wheel animation remain active native defects, and the
   recovered four-wheel producer is not yet the live path. A controlled A/B crop
   confirms the retained adapter shows the rear; the inverse shows the front.
+- The windowed planar state-5 path now runs the retained parsed static scene
+  after integration. It publishes depenetration, alternate velocity, next-tick
+  corrections, history and persistent flags atomically; collision failure rolls
+  back before FSM/progress/tick commit. Synthetic tests cover contact publication
+  and rollback. The long authenticated AU1 run reached its final steering
+  assertion without collision failure and exposed an inverted harness sign;
+  recovered right-minus-left is now preserved and pinned for keyboard/analog.
+  Concrete damage, angular consume/clear, per-tick contact count, four-wheel
+  basis evolution and car/wheel animation remain open.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

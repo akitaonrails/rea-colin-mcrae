@@ -381,10 +381,14 @@ requested and selected renderer plus a path-free typed setup/frame fallback; an
 slow post-UV capture explicitly forced `software`: full-layer release AU1
 measured about 0.32 seconds per frame before car/HUD, an approximately 3 FPS
 ceiling. `auto` successfully selects wgpu on the current host. The loading frame
-did hand off to a coherent live stage, and the corrected car/steering run now
-passes. The authenticated setup-time spawn-height gate now passes. I14 remains
-partial at live collision/contact and suspension, animation,
-and the other race-completion boundaries.
+did hand off to a coherent live stage. A later authenticated run reached its
+final steering assertion and showed left produced `+40` where `-40` was
+expected; the planar bridge now preserves recovered right-minus-left, with
+focused keyboard/analog tests green. The authenticated setup-time spawn-height
+gate now passes. I14 remains
+partial after the first atomic planar static-collision pass: owned-media contact
+accuracy, angular consume/clear, per-tick contact publication, suspension,
+animation, and the other race-completion boundaries remain.
 
 ## Update rules
 
@@ -395,14 +399,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T02:55:00Z
-milestone=recover-lazy-static-damage-owner
+updated_utc=2026-10-28T03:15:00Z
+milestone=wire-atomic-live-static-collision-session
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
-current_focus=atomic-static-pass-session-publication-and-angular-consume-clear
-next_exit_gate=controlled-live-static-object-contact-and-depenetration
+current_focus=four-wheel-window-path-angular-collision-and-car-animation
+next_exit_gate=controlled-owned-media-static-contact-and-angular-consume-clear
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

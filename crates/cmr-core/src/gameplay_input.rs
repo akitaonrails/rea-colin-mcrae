@@ -193,9 +193,9 @@ mod tests {
     fn steer_keys_give_opposite_rates_and_cancel_together() {
         let mut driver = KeyboardDriver::player_one();
         let left = driver.poll(|vk| vk == VK_LEFT, &response(), true);
-        assert!(left.controls.steer_rate > 0);
+        assert!(left.controls.steer_rate < 0);
         let right = driver.poll(|vk| vk == VK_RIGHT, &response(), true);
-        assert!(right.controls.steer_rate < 0);
+        assert!(right.controls.steer_rate > 0);
         // Both arrows held: the net steer cancels.
         let both = driver.poll(|vk| vk == VK_LEFT || vk == VK_RIGHT, &response(), true);
         assert_eq!(both.controls.steer_rate, 0);
@@ -254,15 +254,15 @@ mod tests {
     fn analog_steer_axis_splits_left_and_right() {
         let mut driver = AnalogDriver::new();
         let center = AXIS_CENTER as u32;
-        // Full right (axis above centre) -> the negative BAM rate that turns
-        // toward geometric right in the simplified RaceState convention.
+        // Full right (axis above centre) -> positive BAM at the simplified
+        // RaceState harness boundary.
         let right = driver.poll(0xffff, center, 0, &response(), true);
         assert!(right.car.steer_right > 0);
-        assert!(right.controls.steer_rate < 0);
-        // Full left (axis below centre) -> the opposite geometric turn.
+        assert!(right.controls.steer_rate > 0);
+        // Full left (axis below centre) -> the opposite heading delta.
         let left = driver.poll(0, center, 0, &response(), true);
         assert!(left.car.steer_left > 0);
-        assert!(left.controls.steer_rate > 0);
+        assert!(left.controls.steer_rate < 0);
     }
 
     #[test]
