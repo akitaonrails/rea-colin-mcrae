@@ -674,6 +674,8 @@ pub struct WindowedInput<'a> {
     pub keys: &'a KeyboardVkState,
     /// The live gamepad driving state, or `None` when no gamepad is connected.
     pub gamepad: Option<&'a GamepadDrivingState>,
+    /// Edge-triggered menu input from the same keyboard/gamepad event stream.
+    pub frontend: FrontendInput,
 }
 
 /// One windowed game-session frame, returned by the `step` callback of
@@ -760,6 +762,7 @@ where
         .map_err(|error| SdlHostError::sdl("event pump creation", error))?;
     let mut keys = KeyboardVkState::new();
     let mut pad = GamepadDrivingState::new();
+    let mut frontend = FrontendInputMapper::new();
     // Open any already-connected gamepads; hotplug is handled in the loop. The
     // handles must be kept alive for the device to keep sending events.
     let mut open_gamepads = BTreeMap::new();
@@ -804,6 +807,7 @@ where
         let mut host_events = Vec::new();
         if let Some(event) = events.wait_event_timeout(INTERACTIVE_FRAME_INTERVAL) {
             for event in std::iter::once(event).chain(events.poll_iter()) {
+                feed_input_event(&event, &mut frontend);
                 if is_fullscreen_toggle(&event) {
                     toggle_fullscreen(&mut canvas)?;
                 }
@@ -847,6 +851,7 @@ where
         let input = WindowedInput {
             keys: &keys,
             gamepad: (!open_gamepads.is_empty()).then_some(&pad),
+            frontend: frontend.poll(),
         };
         let frame = step(input);
         if frame.stopped {

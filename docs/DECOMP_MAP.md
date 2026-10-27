@@ -331,6 +331,11 @@ car passes the established 0.1% hardware/software raster boundary. Layered GPU
 rendering is wired; native Windows verification and zero-copy presentation
 remain open.
 
+Menu-to-race progress for `I14`: the full SDL game loop now exposes the tested
+edge-triggered `FrontendInput` pulse beside held driving controls, including
+keyboard, D-pad/button, and axis navigation. The app still needs to consume it
+through `RootInteraction` and launch only the recovered Rally transition.
+
 ## Update rules
 
 Update this file in every milestone commit that completes or materially advances
@@ -340,8 +345,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-27T19:16:32Z
-milestone=render-layered-gpu-horizon
+updated_utc=2026-10-27T19:17:33Z
+milestone=map-windowed-frontend-input
 completed=117
 partial=2
 not_started=0

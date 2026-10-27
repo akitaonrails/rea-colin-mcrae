@@ -1588,6 +1588,11 @@ Input selection now falls back to the keyboard when a connected gamepad is
 idle. Only non-neutral pad axes/buttons select analog driving, so a gamepad
 cannot leave the car static by overriding keyboard throttle.
 
+The full windowed-session callback now also receives the existing
+edge-triggered `FrontendInputMapper` output from keyboard and gamepad events.
+This preserves held driving input while exposing single menu pulses; consuming
+those pulses through `RootInteraction` is the next menu-to-race gate.
+
 The native game session is a drivable stage harness. Authored `.cat`
 checkpoints replace the synthetic line, a real country palette is loaded, and
 the `.csp` player-one pose drives the car and first chase camera. The native

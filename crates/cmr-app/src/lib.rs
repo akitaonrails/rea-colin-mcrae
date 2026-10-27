@@ -3639,6 +3639,7 @@ mod tests {
                     WindowedInput {
                         keys: $keys,
                         gamepad: None,
+                        frontend: cmr_core::frontend::FrontendInput::default(),
                     },
                 )
                 .unwrap()

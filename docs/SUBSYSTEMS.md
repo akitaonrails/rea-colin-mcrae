@@ -2447,6 +2447,11 @@ languages rather than fabricating or silently aliasing Italian assets.
   Synthetic full-layer equality is byte-exact, and authenticated AU1 with the
   retained car passes the established 0.1% raster boundary. See
   `impl.gpu-horizon-pass`.
+- The full SDL game-session callback now receives edge-triggered
+  `FrontendInput` from the same keyboard/gamepad events as held driving input.
+  Focus pause leaves pending edges untouched. This is the host prerequisite for
+  replacing the fixed root render with `RootInteraction`; see
+  `impl.windowed-frontend-input`.
 - Four-wheel stepping adds live forward force along the current heading before
   summing lane forces, so throttle produces world displacement. The native
   session boots directly into the stage rather than auto-advancing the menu.
