@@ -80,9 +80,13 @@ The loader successfully imports `GAME.EXE` as `PSX:LE:32`, entry
 artifact SHA-256 is
 `927e473a04962fde5d7bb99d2bfbcedee84997e7f5496cd3ed04a44fe077a900`.
 Splat accounts for the complete 739 KiB executable and reports 1,302 call-target
-candidates, but its initial giant mixed code/data region is not a trustworthy
-function map. P1 therefore remains partial until Ghidra-derived boundaries seed
-the split and PsyQ matches are reviewed. The loader and PsyQ-signature
+candidates. Ghidra now supplies 1,734 function candidates, and exact embedded
+PsyQ 4.1.0 signatures plus Splat/header corroboration divide them into 1,234
+Tier-A boundaries and 498 Tier-B signature-only candidates; 59 Splat-only
+targets remain Tier-C review work. Instructions plus defined data classify
+633,627 of 737,280 loaded bytes, leaving 103,653 bytes in 1,170 explicit
+ambiguous ranges. P1 therefore remains partial at the final segmentation gate,
+not the initial boundary-seeding gate. The loader and PsyQ-signature
 repositories do not currently publish a license in their checked-out roots, so
 they remain local-only and are not redistributed.
 
@@ -93,6 +97,13 @@ two-byte field. Sizes differ by edition (`0x2c`/`0x2630`/5,400 ticks on PS1;
 trailing-field contract but does not identify that field's semantics or prove
 bit-exact control equivalence. See `psx.usa.replay-object-shape` in the evidence
 ledger.
+
+The loading-art comparison is also deliberately role-only. PS1 function
+`0x8006217c` displays `%s.LOA;1` before continuing to the VRM load, corroborating
+the Windows selected-stage loading-background sequence. PS1 LOA files are three
+length-prefixed TIM records, however, while Windows LOA is a 640x480 indexed
+BMP behind raw or gzip/CMPR storage. The implementations must remain separate;
+the shared extension is not a format discriminator.
 
 ## Evidence model
 

@@ -1654,6 +1654,14 @@ show a visible gauge, timer, gear/speed readout, player car, and a changed world
 frame after a real throttle event. This does not claim complete four-wheel
 trajectory fidelity or a verified full-race finish.
 
+The menu-to-race path now presents the selected stage's loading artwork during
+state 4. The app reads `.LOA` directly from the caller-selected media root,
+handles both raw and gzip/CMPR Windows storage, validates the recovered 640x480
+indexed-BMP contract, and keeps missing art non-fatal. The next I14 presentation
+gate is composing the recovered progress-driven `BAR.BMP` fill and static
+`LINE.BMP` rule over that background; PS1's same-role TIM format remains a
+separate reference-only parser boundary.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

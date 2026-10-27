@@ -125,6 +125,7 @@ const ROOT_EXTENT: DisplayExtent = DisplayExtent {
     width: 640,
     height: 480,
 };
+const LOADING_BACKGROUND_EXTENSION: &str = ".loa";
 
 /// An executable operation selected on the command line.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1066,6 +1067,81 @@ fn read_decoded_section(
     Ok(Some(decoded.bytes().to_vec()))
 }
 
+/// Reads the Windows stage-loading sibling while tolerating the ASCII case
+/// variants found on case-sensitive installs. The shipped lookup is
+/// case-insensitive; extraction tools commonly materialize `AU1.LOA` as
+/// `au1.loa` on Linux.
+fn read_loading_background(
+    media_root: &Path,
+    stage: &str,
+    limits: DecodeLimits,
+) -> Result<Option<Vec<u8>>, StageFrameError> {
+    let lower_stage = stage.to_ascii_lowercase();
+    let candidates = [
+        format!("{stage}.LOA"),
+        format!("{stage}{LOADING_BACKGROUND_EXTENSION}"),
+        format!("{lower_stage}.LOA"),
+        format!("{lower_stage}{LOADING_BACKGROUND_EXTENSION}"),
+    ];
+    let mut attempted = Vec::<PathBuf>::new();
+    for candidate in candidates {
+        let path = media_root.join(candidate);
+        if attempted.contains(&path) {
+            continue;
+        }
+        attempted.push(path.clone());
+        let raw = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(StageFrameError::Io {
+                    extension: LOADING_BACKGROUND_EXTENSION,
+                    error,
+                });
+            }
+        };
+        let decoded =
+            decode_stored_asset(&raw, limits).map_err(|error| StageFrameError::Decode {
+                extension: LOADING_BACKGROUND_EXTENSION,
+                error,
+            })?;
+        return Ok(Some(decoded.bytes().to_vec()));
+    }
+    Ok(None)
+}
+
+fn parse_loading_background(bytes: &[u8]) -> Result<SoftwarePresentedFrame, StageFrameError> {
+    let bitmap = parse_indexed_bitmap(bytes, BitmapLimits::default())
+        .map_err(StageFrameError::LoadingBitmap)?;
+    if bitmap.width != u32::from(ROOT_EXTENT.width)
+        || bitmap.height != u32::from(ROOT_EXTENT.height)
+    {
+        return Err(StageFrameError::LoadingExtent {
+            width: bitmap.width,
+            height: bitmap.height,
+        });
+    }
+    let entries = bitmap.palette.len();
+    let palette: [PaletteEntry; 256] = bitmap
+        .palette
+        .into_iter()
+        .map(|entry| PaletteEntry {
+            red: entry.red,
+            green: entry.green,
+            blue: entry.blue,
+            flags: entry.reserved,
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .map_err(|_| StageFrameError::LoadingPalette { entries })?;
+    SoftwarePresentedFrame::from_indexed(
+        ROOT_EXTENT,
+        bitmap.pixels.into_boxed_slice(),
+        Box::new(palette),
+    )
+    .map_err(StageFrameError::Present)
+}
+
 /// Renderer-specific measurements for one composed stage frame.
 ///
 /// The software compositor reports its full raster statistics. The GPU path
@@ -1156,6 +1232,17 @@ pub enum StageFrameError {
     Compose(StageSceneComposeError),
     /// The composed frame could not be bridged to the presentation type.
     Present(SoftwareRgba8Error),
+    /// A selected-stage loading background was not a valid indexed bitmap.
+    LoadingBitmap(BitmapError),
+    /// A selected-stage loading background did not match the recovered viewport.
+    LoadingExtent {
+        width: u32,
+        height: u32,
+    },
+    /// A selected-stage loading background did not carry the full display palette.
+    LoadingPalette {
+        entries: usize,
+    },
     MissingNodes,
     DegenerateSpawn,
     UnknownPaletteStage(String),
@@ -1209,6 +1296,9 @@ impl StageFrameError {
             Self::Texture(_) => "texture",
             Self::Compose(_) => "compose",
             Self::Present(_) => "present",
+            Self::LoadingBitmap(_) => "loading-bitmap",
+            Self::LoadingExtent { .. } => "loading-extent",
+            Self::LoadingPalette { .. } => "loading-palette",
             Self::MissingNodes => "missing-nodes",
             Self::DegenerateSpawn => "degenerate-spawn",
             Self::UnknownPaletteStage(_) => "unknown-palette-stage",
@@ -1249,6 +1339,21 @@ impl fmt::Display for StageFrameError {
             Self::Texture(error) => write!(formatter, "cannot prepare stage textures: {error}"),
             Self::Compose(error) => write!(formatter, "cannot compose stage frame: {error}"),
             Self::Present(error) => write!(formatter, "cannot present stage frame: {error}"),
+            Self::LoadingBitmap(error) => {
+                write!(
+                    formatter,
+                    "cannot parse selected-stage loading bitmap: {error}"
+                )
+            }
+            Self::LoadingExtent { width, height } => write!(
+                formatter,
+                "selected-stage loading bitmap is {width}x{height}; expected {}x{}",
+                ROOT_EXTENT.width, ROOT_EXTENT.height
+            ),
+            Self::LoadingPalette { entries } => write!(
+                formatter,
+                "selected-stage loading bitmap has {entries} palette entries; expected 256"
+            ),
             Self::MissingNodes => write!(formatter, "stage has no checkpoint nodes"),
             Self::DegenerateSpawn => write!(formatter, "stage spawn has no horizontal direction"),
             Self::UnknownPaletteStage(stage) => {
@@ -1307,6 +1412,7 @@ impl std::error::Error for StageFrameError {
             Self::Texture(error) => Some(error),
             Self::Compose(error) => Some(error),
             Self::Present(error) => Some(error),
+            Self::LoadingBitmap(error) => Some(error),
             Self::Palette(error) => Some(error),
             Self::PaletteFormat(error) => Some(error),
             Self::Profile(error) => Some(error),
@@ -1326,6 +1432,7 @@ impl std::error::Error for StageFrameError {
             | Self::MissingHorizonSettings
             | Self::HudPlan(_)
             | Self::MissingHudAssets => None,
+            Self::LoadingExtent { .. } | Self::LoadingPalette { .. } => None,
         }
     }
 }
@@ -1727,6 +1834,7 @@ fn parse_race_hud_font(font: RaceHudFont, bytes: &[u8]) -> Result<BitmapFont, St
 pub struct StageRenderResources {
     stage: String,
     bundle: StageBundle,
+    loading_background: Option<SoftwarePresentedFrame>,
     textures: StageC3dTextures,
     object_textures: Option<StageC3dTextures>,
     scenery_textures: Option<StageC3dTextures>,
@@ -1780,7 +1888,11 @@ impl StageRenderResources {
         choice: StageRendererChoice,
         palette: [PaletteEntry; 256],
     ) -> Result<Self, StageFrameError> {
-        let source = FsStageSectionSource::read(media_root, stage, DecodeLimits::default())?;
+        let decode_limits = DecodeLimits::default();
+        let source = FsStageSectionSource::read(media_root, stage, decode_limits)?;
+        let loading_background = read_loading_background(media_root, stage, decode_limits)?
+            .map(|bytes| parse_loading_background(&bytes))
+            .transpose()?;
         let bundle = load_stage(&source, C3dLimits::default()).map_err(StageFrameError::Load)?;
         let textures = StageC3dTextures::prepare(bundle.scene(), BitmapLimits::default())
             .map_err(StageFrameError::Texture)?;
@@ -1810,6 +1922,7 @@ impl StageRenderResources {
         let mut resources = StageRenderResources {
             stage: stage.to_owned(),
             bundle,
+            loading_background,
             textures,
             object_textures,
             scenery_textures,
@@ -1825,6 +1938,14 @@ impl StageRenderResources {
         };
         resources.rebuild_gpu_foreground()?;
         Ok(resources)
+    }
+
+    /// Selected-stage artwork shown by the recovered state-4 load route before
+    /// the BAR/LINE progress overlay. It remains absent when user media does not
+    /// contain the optional sibling.
+    #[must_use]
+    pub fn loading_background(&self) -> Option<&SoftwarePresentedFrame> {
+        self.loading_background.as_ref()
     }
 
     fn prepare_gpu_foreground(&self) -> Result<PreparedRawStage, StageFrameError> {
@@ -2386,6 +2507,15 @@ where
     }
 }
 
+fn loading_background_for_route(
+    route: Option<RenderRoute>,
+    background: Option<&SoftwarePresentedFrame>,
+) -> Option<SoftwarePresentedFrame> {
+    (route == Some(RenderRoute::LoadInterstitial))
+        .then(|| background.cloned())
+        .flatten()
+}
+
 fn root_menu_flow_inputs(state_id: u8, interaction: &RootInteraction) -> MenuFlowInputs {
     match frontend_menu_signal(interaction.state()) {
         FrontendMenuSignal::Stay => MenuFlowInputs {
@@ -2497,9 +2627,12 @@ fn advance_game_frame<C: HostClock>(
         *fade = None;
         world
     };
+    let loading_background =
+        loading_background_for_route(advanced.route, resources.loading_background());
     Ok(GameFrameOutcome {
         route: advanced.route,
         world,
+        loading_background,
         root_render_input: root_tick.render_input,
         stopped: session.is_stopped(),
         // The recovered front-end music plays during the menu band (states 1..4).
@@ -2511,6 +2644,7 @@ fn advance_game_frame<C: HostClock>(
 struct GameFrameOutcome {
     route: Option<RenderRoute>,
     world: Option<SoftwarePresentedFrame>,
+    loading_background: Option<SoftwarePresentedFrame>,
     root_render_input: Option<RootRenderInput>,
     stopped: bool,
     music_active: bool,
@@ -2948,6 +3082,8 @@ pub fn run_windowed_game_session(
                         // front-end route presents the recovered root-menu frame.
                         let present = if outcome.world.is_some() {
                             outcome.world
+                        } else if outcome.loading_background.is_some() {
+                            outcome.loading_background
                         } else if outcome.route.is_some_and(composes_frontend_root) {
                             outcome.root_render_input.and_then(|render_input| {
                                 root.render(render_input).ok()?;
@@ -2999,7 +3135,7 @@ pub fn run_windowed_game_session(
             input,
         ) {
             Ok(outcome) => WindowedGameFrame {
-                present: outcome.world,
+                present: outcome.world.or(outcome.loading_background),
                 stopped: outcome.stopped,
                 music_active: outcome.music_active,
             },
@@ -3235,8 +3371,106 @@ pub fn run_headless_four_wheel_game_session(
 mod tests {
     use super::*;
 
+    fn loading_bitmap(width: u32, height: u32, palette_entries: usize) -> Vec<u8> {
+        let row_stride = width.div_ceil(4) * 4;
+        let pixels_len = (row_stride * height) as usize;
+        let pixel_offset = 14 + 40 + palette_entries * 4;
+        let file_size = pixel_offset + pixels_len;
+        let mut bytes = vec![0; file_size];
+        bytes[0..2].copy_from_slice(b"BM");
+        bytes[2..6].copy_from_slice(&(file_size as u32).to_le_bytes());
+        bytes[10..14].copy_from_slice(&(pixel_offset as u32).to_le_bytes());
+        bytes[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bytes[18..22].copy_from_slice(&(width as i32).to_le_bytes());
+        bytes[22..26].copy_from_slice(&(height as i32).to_le_bytes());
+        bytes[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bytes[28..30].copy_from_slice(&8u16.to_le_bytes());
+        bytes[34..38].copy_from_slice(&(pixels_len as u32).to_le_bytes());
+        bytes[46..50].copy_from_slice(&(palette_entries as u32).to_le_bytes());
+        for index in 0..palette_entries {
+            let start = 54 + index * 4;
+            bytes[start..start + 4].copy_from_slice(&[
+                index as u8,
+                (index as u8).wrapping_add(1),
+                (index as u8).wrapping_add(2),
+                0,
+            ]);
+        }
+        for y in 0..height as usize {
+            let row = pixel_offset + y * row_stride as usize;
+            bytes[row..row + width as usize].fill((y % palette_entries) as u8);
+        }
+        bytes
+    }
+
+    fn gzip_cmpr(payload: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        let mut envelope = b"CMPR".to_vec();
+        envelope.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        envelope.extend_from_slice(payload);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&envelope).unwrap();
+        encoder.finish().unwrap()
+    }
+
     fn arguments(values: &[&str]) -> impl Iterator<Item = OsString> {
         values.iter().map(OsString::from)
+    }
+
+    #[test]
+    fn selected_stage_loading_bitmap_becomes_a_full_palette_frame() {
+        let frame = parse_loading_background(&loading_bitmap(640, 480, 256)).unwrap();
+        assert_eq!(frame.extent(), ROOT_EXTENT);
+        assert_eq!(frame.pixels().len(), 640 * 480);
+        // Source rows are bottom-up; the parser normalizes them for presentation.
+        assert_eq!(frame.pixels()[0], 479u16 as u8);
+        assert_eq!(frame.pixels()[frame.pixels().len() - 1], 0);
+        assert_eq!(frame.palette()[7].red, 9);
+        assert_eq!(frame.palette()[7].green, 8);
+        assert_eq!(frame.palette()[7].blue, 7);
+
+        assert!(matches!(
+            parse_loading_background(&loading_bitmap(320, 200, 256)),
+            Err(StageFrameError::LoadingExtent {
+                width: 320,
+                height: 200
+            })
+        ));
+        assert!(matches!(
+            parse_loading_background(&loading_bitmap(640, 480, 16)),
+            Err(StageFrameError::LoadingPalette { entries: 16 })
+        ));
+        assert!(matches!(
+            parse_loading_background(b"not a bitmap"),
+            Err(StageFrameError::LoadingBitmap(_))
+        ));
+    }
+
+    #[test]
+    fn loading_lookup_accepts_lowercase_wrapped_media_and_missing_is_optional() {
+        let root = std::env::temp_dir().join(format!(
+            "cmr-app-loading-background-{}-{}",
+            std::process::id(),
+            NEXT_SURFACE_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let temp = SurfaceTemp(root);
+        std::fs::create_dir_all(&temp.0).unwrap();
+        let bitmap = loading_bitmap(640, 480, 256);
+        std::fs::write(temp.0.join("au1.loa"), gzip_cmpr(&bitmap)).unwrap();
+
+        let decoded = read_loading_background(&temp.0, "AU1", DecodeLimits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded, bitmap);
+        assert!(
+            read_loading_background(&temp.0, "NZ2", DecodeLimits::default())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -3477,6 +3711,17 @@ mod tests {
     }
 
     #[test]
+    fn loading_background_is_presented_only_on_the_load_interstitial_route() {
+        let background = parse_loading_background(&loading_bitmap(640, 480, 256)).unwrap();
+        assert_eq!(
+            loading_background_for_route(Some(RenderRoute::LoadInterstitial), Some(&background)),
+            Some(background.clone())
+        );
+        assert!(loading_background_for_route(None, Some(&background)).is_none());
+        assert!(loading_background_for_route(Some(RenderRoute::LoadInterstitial), None).is_none());
+    }
+
+    #[test]
     fn authored_curved_nodes_drive_checkpoint_progression() {
         let nodes = vec![
             native_test_node([0x10000, 0, 0], [0x10000, 0, 0], 1),
@@ -3530,6 +3775,21 @@ mod tests {
 
     #[test]
     #[ignore = "requires the reviewed installed-EU runtime data"]
+    fn imported_au1_loading_background_decodes_from_user_media() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let bytes =
+            read_loading_background(&root.join("Game/Au/1"), "AU1", DecodeLimits::default())
+                .unwrap()
+                .expect("AU1 selected-stage loading sibling");
+        let frame = parse_loading_background(&bytes).unwrap();
+        assert_eq!(frame.extent(), ROOT_EXTENT);
+        assert_eq!(frame.pixels().len(), 640 * 480);
+    }
+
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data"]
     fn imported_au1_native_setup_composes_from_the_real_spawn_and_palette() {
         let root = std::env::var_os("CMR_RUNTIME_DATA")
             .map(PathBuf::from)
@@ -3563,6 +3823,13 @@ mod tests {
         assert!(resources.horizon_textures.is_some());
         assert!(resources.car_scene.is_some());
         assert!(resources.car_textures.is_some());
+        assert_eq!(
+            resources
+                .loading_background()
+                .expect("AU1 retains its selected-stage LOA")
+                .extent(),
+            ROOT_EXTENT
+        );
         let hud = resources
             .race_hud()
             .expect("native setup retains HUD assets");

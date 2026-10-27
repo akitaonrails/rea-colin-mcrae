@@ -144,6 +144,7 @@ dependencies = [
  "cmr-test-support",
  "cmr-video",
  "cmr-video-wgpu",
+ "flate2",
  "serde_json",
  "sha2",
 ]
