@@ -1742,7 +1742,8 @@ owners. Pending linear correction, angular-moment ownership, response history,
 the two persistent recovery flags and deformation scalars now have typed live-car
 owners with the recovered consume-clear-reaccumulate lifetime. Translation now
 consumes and clears prior linear correction exactly once. Ordinary per-tick
-republishing, resumable mutable damage/effect ownership, and session
+republishing and the concrete damage-object implementation remain open, but a
+lazy synchronous owner now replaces the pre-sized per-hit replay FIFO. Atomic session
 publication remain open; live deformation/basis evolution is also unresolved.
 Render mesh AABBs are not accepted as
 compatibility geometry.

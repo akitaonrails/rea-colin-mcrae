@@ -3,14 +3,15 @@
 //! collision pass and retains the sequential car/cache state between records.
 
 use std::collections::VecDeque;
+use std::convert::Infallible;
 
 use crate::{
     fixed_point::{Fixed16, Vec3},
     static_collision_response::{
         DamageResult, ResponseBasis, STATIC_RESPONSE_CONTACT_ID, StaticCollisionResponseInput,
-        StaticCollisionResponseOutcome, StaticCollisionResponseState,
-        apply_static_collision_response, evaluate_static_damage,
-        static_damage_emits_contact_effect,
+        StaticCollisionResponseOutcome, StaticCollisionResponseState, StaticDamageEvaluation,
+        StaticDamageOwner, StaticDamageRequest, apply_static_collision_response,
+        evaluate_static_damage, static_damage_emits_contact_effect,
     },
     static_collision_response_input::{
         StaticResponseInputProducerError, StaticResponseInputProducerState,
@@ -53,6 +54,7 @@ pub struct StaticKernelContext {
     pub out_of_control_680: bool,
     pub out_of_control_688: bool,
     pub car_type_738: i8,
+    pub car_subtype_739: i8,
     pub contact_count_674: i32,
     pub velocity_normalizer_ec: Fixed16,
     pub fallback_axis_258: Vec3,
@@ -92,16 +94,39 @@ pub struct StaticKernelState {
 /// Construct one value per collision pass. The first `resolve` snapshots the
 /// frame's center/hull; subsequent calls use the depenetrated cache produced by
 /// earlier normal contacts, matching the native record order.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NoStaticDamageOwner;
+
+impl StaticDamageOwner for NoStaticDamageOwner {
+    type Error = Infallible;
+
+    fn commit_contact(
+        &mut self,
+        _request: StaticDamageRequest,
+    ) -> Result<DamageResult, Self::Error> {
+        Ok(DamageResult::default())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RecoveredStaticCollisionKernel {
+enum StaticDamageProvider<D> {
+    Replay,
+    Live(D),
+}
+
+/// Kernel adapter with either the legacy FIFO replay seam or a synchronous
+/// live mutable-damage owner.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveredStaticCollisionKernel<D = NoStaticDamageOwner> {
     context: StaticKernelContext,
     external_inputs: VecDeque<StaticKernelExternalInputs>,
+    damage_provider: StaticDamageProvider<D>,
     state: Option<StaticKernelState>,
     hits: Vec<StaticKernelHit>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StaticKernelError {
+pub enum StaticKernelError<E = Infallible> {
     MissingExternalInput {
         collision_ordinal: u16,
         normal_hit_index: usize,
@@ -116,9 +141,13 @@ pub enum StaticKernelError {
         collision_ordinal: u16,
         effect_handle: i32,
     },
+    DamageOwner {
+        collision_ordinal: u16,
+        source: E,
+    },
 }
 
-impl RecoveredStaticCollisionKernel {
+impl RecoveredStaticCollisionKernel<NoStaticDamageOwner> {
     #[must_use]
     pub fn new(
         context: StaticKernelContext,
@@ -127,6 +156,27 @@ impl RecoveredStaticCollisionKernel {
         Self {
             context,
             external_inputs: external_inputs.into_iter().collect(),
+            damage_provider: StaticDamageProvider::Replay,
+            state: None,
+            hits: Vec::new(),
+        }
+    }
+}
+
+impl<D> RecoveredStaticCollisionKernel<D> {
+    /// Bind a live damage owner. Live resolution does not consume the replay
+    /// FIFO: the owner supplies the synchronous type-one query and debug gate
+    /// as well as lazily committing admitted damage.
+    #[must_use]
+    pub fn with_damage_owner(
+        context: StaticKernelContext,
+        external_inputs: impl IntoIterator<Item = StaticKernelExternalInputs>,
+        damage_owner: D,
+    ) -> Self {
+        Self {
+            context,
+            external_inputs: external_inputs.into_iter().collect(),
+            damage_provider: StaticDamageProvider::Live(damage_owner),
             state: None,
             hits: Vec::new(),
         }
@@ -140,6 +190,14 @@ impl RecoveredStaticCollisionKernel {
     #[must_use]
     pub fn hits(&self) -> &[StaticKernelHit] {
         &self.hits
+    }
+
+    #[must_use]
+    pub fn damage_owner(&self) -> Option<&D> {
+        match &self.damage_provider {
+            StaticDamageProvider::Replay => None,
+            StaticDamageProvider::Live(owner) => Some(owner),
+        }
     }
 
     fn state_for_frame(&mut self, frame: &StaticCarCollisionFrame) -> &mut StaticKernelState {
@@ -175,8 +233,55 @@ impl RecoveredStaticCollisionKernel {
     }
 }
 
-impl StaticCollisionKernel<StaticNarrowObb> for RecoveredStaticCollisionKernel {
-    type Error = StaticKernelError;
+impl<D: StaticDamageOwner> RecoveredStaticCollisionKernel<D> {
+    fn obtain_damage_result(
+        &mut self,
+        collision_ordinal: u16,
+        evaluation: Option<StaticDamageEvaluation>,
+        contact_3f0: Vec3,
+        linear_correction_3cc: Vec3,
+        replay_external: Option<StaticKernelExternalInputs>,
+    ) -> Result<DamageResult, StaticKernelError<D::Error>> {
+        let invoked = evaluation.is_some_and(|value| value.damage_sequence_invoked);
+        if invoked {
+            return match &mut self.damage_provider {
+                StaticDamageProvider::Replay => Ok(replay_external
+                    .expect("replay input was validated")
+                    .damage_result),
+                StaticDamageProvider::Live(owner) => owner
+                    .commit_contact(StaticDamageRequest {
+                        car_type_738: self.context.car_type_738,
+                        car_subtype_739: self.context.car_subtype_739,
+                        contact_3f0,
+                        linear_correction_3cc,
+                        severity: evaluation
+                            .expect("an invoked damage sequence has an evaluation")
+                            .severity,
+                    })
+                    .map_err(|source| StaticKernelError::DamageOwner {
+                        collision_ordinal,
+                        source,
+                    }),
+            };
+        }
+
+        Ok(match &self.damage_provider {
+            // Preserve the old deterministic replay validation without
+            // invoking a live owner below threshold or for repeated history.
+            StaticDamageProvider::Replay => {
+                replay_external
+                    .expect("replay input was validated")
+                    .damage_result
+            }
+            StaticDamageProvider::Live(_) => DamageResult::default(),
+        })
+    }
+}
+
+impl<D: StaticDamageOwner> StaticCollisionKernel<StaticNarrowObb>
+    for RecoveredStaticCollisionKernel<D>
+{
+    type Error = StaticKernelError<D::Error>;
 
     fn resolve(
         &mut self,
@@ -241,16 +346,44 @@ impl StaticCollisionKernel<StaticNarrowObb> for RecoveredStaticCollisionKernel {
         // any sequential car/cache fields. A missing input is therefore atomic
         // apart from the documented lazy initialization performed to run the
         // narrow phase.
-        let external = self.external_inputs.front().copied().ok_or(
-            StaticKernelError::MissingExternalInput {
-                collision_ordinal: record.collision_ordinal,
-                normal_hit_index: self
-                    .hits
-                    .iter()
-                    .filter(|hit| matches!(hit, StaticKernelHit::Normal { .. }))
-                    .count(),
-            },
-        )?;
+        let replay_external = match &self.damage_provider {
+            StaticDamageProvider::Replay => Some(
+                self.external_inputs.front().copied().ok_or(
+                    StaticKernelError::MissingExternalInput {
+                        collision_ordinal: record.collision_ordinal,
+                        normal_hit_index: self
+                            .hits
+                            .iter()
+                            .filter(|hit| matches!(hit, StaticKernelHit::Normal { .. }))
+                            .count(),
+                    },
+                )?,
+            ),
+            StaticDamageProvider::Live(_) => None,
+        };
+        let (type_one_effect_gate_blocked, capture_debug_material) = match &mut self.damage_provider
+        {
+            StaticDamageProvider::Replay => {
+                let external = replay_external.expect("replay input was validated");
+                (
+                    external.type_one_effect_gate_blocked,
+                    external.capture_debug_material,
+                )
+            }
+            StaticDamageProvider::Live(owner) => {
+                let blocked = if context.car_type_738 == 1 {
+                    owner.type_one_effect_gate_blocked().map_err(|source| {
+                        StaticKernelError::DamageOwner {
+                            collision_ordinal: record.collision_ordinal,
+                            source,
+                        }
+                    })?
+                } else {
+                    false
+                };
+                (blocked, owner.capture_debug_material())
+            }
+        };
         let full_world_correction = produced_input
             .normal
             .scale(produced_input.normal.dot(velocity_d4).neg());
@@ -260,19 +393,28 @@ impl StaticCollisionKernel<StaticNarrowObb> for RecoveredStaticCollisionKernel {
             .contained_last_tick(STATIC_RESPONSE_CONTACT_ID);
         let damage_evaluation =
             (!previous_contact).then(|| evaluate_static_damage(prospective_linear_correction));
+        let damage_result = self.obtain_damage_result(
+            record.collision_ordinal,
+            damage_evaluation,
+            contact_3f0,
+            prospective_linear_correction,
+            replay_external,
+        )?;
         if !previous_contact
-            && external.damage_result.effect_handle != 0
+            && damage_result.effect_handle != 0
             && !static_damage_emits_contact_effect(
                 damage_evaluation.expect("new contact computes damage evaluation"),
-                external.damage_result.effect_handle,
+                damage_result.effect_handle,
             )
         {
             return Err(StaticKernelError::ImpossibleEffectHandle {
                 collision_ordinal: record.collision_ordinal,
-                effect_handle: external.damage_result.effect_handle,
+                effect_handle: damage_result.effect_handle,
             });
         }
-        self.external_inputs.pop_front();
+        if replay_external.is_some() {
+            self.external_inputs.pop_front();
+        }
         let state = self.state.as_mut().expect("narrow input initializes state");
         state.position = narrow.final_position;
         state.hull_points = narrow.final_hull_points;
@@ -298,9 +440,9 @@ impl StaticCollisionKernel<StaticNarrowObb> for RecoveredStaticCollisionKernel {
                 projected_limit: produced_input.projected_limit,
                 raw_material_flags: record.raw_material_flags,
                 contact_id: STATIC_RESPONSE_CONTACT_ID,
-                type_one_effect_gate_blocked: external.type_one_effect_gate_blocked,
-                damage_result: external.damage_result,
-                capture_debug_material: external.capture_debug_material,
+                type_one_effect_gate_blocked,
+                damage_result,
+                capture_debug_material,
             },
         );
         state.velocity_d4 = response.state.velocity_d4;
@@ -326,9 +468,57 @@ impl StaticCollisionKernel<StaticNarrowObb> for RecoveredStaticCollisionKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::static_collision_response::{StaticResponseEvent, static_damage_severity};
+    use crate::static_collision_response::{
+        StaticResponseEvent, evaluate_static_damage_length, static_damage_severity,
+    };
+    use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
     const ONE: i32 = 0x1_0000;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct TestDamageError;
+
+    #[derive(Debug)]
+    struct RecordingDamageOwner {
+        calls: Rc<RefCell<Vec<StaticDamageRequest>>>,
+        handles: VecDeque<i32>,
+        fail: bool,
+    }
+
+    impl RecordingDamageOwner {
+        fn returning(handles: impl IntoIterator<Item = i32>) -> Self {
+            Self {
+                calls: Rc::default(),
+                handles: handles.into_iter().collect(),
+                fail: false,
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                calls: Rc::default(),
+                handles: VecDeque::new(),
+                fail: true,
+            }
+        }
+    }
+
+    impl StaticDamageOwner for RecordingDamageOwner {
+        type Error = TestDamageError;
+
+        fn commit_contact(
+            &mut self,
+            request: StaticDamageRequest,
+        ) -> Result<DamageResult, Self::Error> {
+            self.calls.borrow_mut().push(request);
+            if self.fail {
+                return Err(TestDamageError);
+            }
+            Ok(DamageResult {
+                effect_handle: self.handles.pop_front().unwrap_or_default(),
+            })
+        }
+    }
 
     const fn q(raw: i32) -> Fixed16 {
         Fixed16::from_raw(raw)
@@ -386,6 +576,7 @@ mod tests {
             out_of_control_680: false,
             out_of_control_688: false,
             car_type_738: 0,
+            car_subtype_739: 0,
             contact_count_674: 3,
             velocity_normalizer_ec: q(ONE),
             fallback_axis_258: v(0, 0, ONE),
@@ -905,5 +1096,122 @@ mod tests {
         assert_eq!(second.history.previous_len, 1);
         assert_eq!(second.history.previous_ids[0], 0);
         assert_eq!(second.history.current_len, 1);
+    }
+
+    #[test]
+    fn live_owner_is_not_called_below_threshold_or_for_repeated_history() {
+        let below_owner = RecordingDamageOwner::returning([1]);
+        let below_calls = Rc::clone(&below_owner.calls);
+        let mut below_context = context();
+        below_context.velocity_d4 = Vec3::ZERO;
+        let mut below_running = running();
+        below_running.linear_impulse_3cc = Vec3::ZERO;
+        let mut below =
+            RecoveredStaticCollisionKernel::with_damage_owner(below_context, [], below_owner);
+        let resolution = below
+            .resolve(&frame(), &record(5, object(0)), below_running)
+            .unwrap();
+        assert!(matches!(resolution, StaticCollisionResolution::Normal(_)));
+        assert!(below_calls.borrow().is_empty());
+
+        let repeated_owner = RecordingDamageOwner::returning([2]);
+        let repeated_calls = Rc::clone(&repeated_owner.calls);
+        let mut repeated_running = running();
+        repeated_running.history.push(STATIC_RESPONSE_CONTACT_ID);
+        repeated_running.history = repeated_running.history.begin_tick();
+        let mut repeated =
+            RecoveredStaticCollisionKernel::with_damage_owner(context(), [], repeated_owner);
+        let resolution = repeated
+            .resolve(&frame(), &record(5, object(0)), repeated_running)
+            .unwrap();
+        assert!(matches!(resolution, StaticCollisionResolution::Normal(_)));
+        assert!(repeated_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn threshold_equality_calls_live_owner_with_zero_severity() {
+        let owner = RecordingDamageOwner::returning([3]);
+        let calls = Rc::clone(&owner.calls);
+        let mut kernel = RecoveredStaticCollisionKernel::with_damage_owner(context(), [], owner);
+        let equality = evaluate_static_damage_length(0x2624);
+        assert!(equality.damage_sequence_invoked);
+        assert_eq!(equality.severity, Fixed16::ZERO);
+
+        let result = kernel
+            .obtain_damage_result(17, Some(equality), v(1, 2, 3), v(4, 5, 6), None)
+            .unwrap();
+        assert_eq!(result, DamageResult { effect_handle: 3 });
+        assert_eq!(
+            calls.borrow().as_slice(),
+            [StaticDamageRequest {
+                car_type_738: 0,
+                car_subtype_739: 0,
+                contact_3f0: v(1, 2, 3),
+                linear_correction_3cc: v(4, 5, 6),
+                severity: Fixed16::ZERO,
+            }]
+        );
+    }
+
+    #[test]
+    fn live_owner_handles_two_normal_hits_lazily_with_empty_replay_fifo() {
+        use crate::static_world_collision::{
+            StaticCollisionNodeId, StaticCollisionScene, resolve_static_world_collisions,
+        };
+
+        let node = StaticCollisionNodeId::new(6).unwrap();
+        let scene = StaticCollisionScene::new(
+            vec![
+                record_with_id(40, 5, object(0)),
+                record_with_id(41, 6, object(-2 * ONE)),
+            ],
+            [(node, 1), (node, 0)],
+        )
+        .unwrap();
+        let mut input_frame = frame();
+        input_frame.active_nodes = [Some(node), None, None, None];
+        input_frame.linear_impulse_3cc = Vec3::ZERO;
+        let owner = RecordingDamageOwner::returning([1, 2]);
+        let calls = Rc::clone(&owner.calls);
+        let mut kernel = RecoveredStaticCollisionKernel::with_damage_owner(context(), [], owner);
+
+        let effects =
+            resolve_static_world_collisions(&scene, &input_frame, Default::default(), &mut kernel)
+                .unwrap();
+        assert_eq!(effects.contacts.len(), 2);
+        assert_eq!(calls.borrow().len(), 2);
+        assert!(kernel.external_inputs.is_empty());
+        assert_ne!(
+            calls.borrow()[0].linear_correction_3cc,
+            calls.borrow()[1].linear_correction_3cc,
+            "the second lazy request must observe sequential accumulation"
+        );
+    }
+
+    #[test]
+    fn live_owner_error_leaves_kernel_contact_state_atomic() {
+        let input_frame = frame();
+        let owner = RecordingDamageOwner::failing();
+        let calls = Rc::clone(&owner.calls);
+        let mut kernel = RecoveredStaticCollisionKernel::with_damage_owner(context(), [], owner);
+
+        let error = kernel
+            .resolve(&input_frame, &record(5, object(0)), running())
+            .unwrap_err();
+        assert_eq!(
+            error,
+            StaticKernelError::DamageOwner {
+                collision_ordinal: 7,
+                source: TestDamageError,
+            }
+        );
+        assert_eq!(calls.borrow().len(), 1);
+        assert!(kernel.hits().is_empty());
+        let state = kernel.state().expect("narrow phase initializes the cache");
+        assert_eq!(state.position, input_frame.center);
+        assert_eq!(state.hull_points, input_frame.world_hull_points);
+        assert_eq!(state.projected_corners, context().projected_corners);
+        assert_eq!(state.velocity_d4, context().velocity_d4);
+        assert!(kernel.external_inputs.is_empty());
     }
 }

@@ -95,6 +95,47 @@ pub struct DamageResult {
     pub effect_handle: i32,
 }
 
+/// Exact per-contact inputs available when the recovered ordinary mutable
+/// damage transaction is entered.
+///
+/// The owner instance identifies the live car. It must retain the damage
+/// object, linked geometry, authored-slot tables, mode query, and per-type
+/// globals needed to execute the transaction in native order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StaticDamageRequest {
+    pub car_type_738: i8,
+    pub car_subtype_739: i8,
+    pub contact_3f0: Vec3,
+    pub linear_correction_3cc: Vec3,
+    pub severity: Fixed16,
+}
+
+/// Synchronous owner of the recovered mutable damage transaction.
+///
+/// A call corresponds to one new normal contact whose native length test
+/// entered the damage branch, including threshold equality with zero severity.
+/// Returning `Ok` means all mutation through the mandatory aggregate recompute
+/// has committed. Returning `Err` must leave owner state unchanged; this lets
+/// the collision kernel preserve contact-level atomicity.
+pub trait StaticDamageOwner {
+    type Error;
+
+    /// Synchronous result of the native type-one effect-gate query. The kernel
+    /// calls this for every normal response of car type one, including repeated
+    /// contacts that do not enter mutable damage.
+    fn type_one_effect_gate_blocked(&mut self) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+
+    /// Whether the compatibility diagnostic material byte is captured.
+    fn capture_debug_material(&self) -> bool {
+        false
+    }
+
+    fn commit_contact(&mut self, request: StaticDamageRequest)
+    -> Result<DamageResult, Self::Error>;
+}
+
 /// Per-contact inputs and the two external query results needed to keep this
 /// contract deterministic.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

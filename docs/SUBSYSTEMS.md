@@ -1879,7 +1879,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   from exact lane/hull owners. Pending `+0x3cc`, single-owner angular `+0x3d8`,
   history, persistent `+0x680/+0x688` flags and deformation scalars now have
   typed live-car ownership, and translation consumes/clears prior linear
-  correction once. Per-tick republishing, resumable damage/effect ownership, live
+  correction once. A typed lazy damage owner now supports an unknown number of
+  ordered normal hits without a production replay FIFO. Per-tick republishing, the
+  concrete damage-object implementation, live
   basis/scalar evolution and mechanics-session publication remain open.
 - Stage timing uses the global clock `DAT_005ffc00`, a Q16.16 value in seconds
   advanced once per physics tick (step `2^32/(rate*0x10000)` = `0xa3d`~0.04 s at

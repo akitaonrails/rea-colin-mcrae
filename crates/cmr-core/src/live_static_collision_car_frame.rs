@@ -15,6 +15,9 @@ use crate::{
     c3d_terrain_cull::{CellGrid, MAX_CELLS},
     compiled_car_initializer::normalize_compiled_lane_vector,
     fixed_point::{Fixed16, Vec3},
+    static_world_collision::{
+        StaticCarCollisionFrame, StaticCollisionNodeId, StaticCollisionNodeIdError,
+    },
 };
 
 /// Collision reach used by `FUN_00490e80` for neighbor-cell admission.
@@ -399,6 +402,50 @@ pub struct LiveStaticCollisionCarFrame {
     pub collision_hull: [Vec3; 8],
     pub projection: LiveCarProjectionCache,
     pub active_cells: [i16; 4],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LiveStaticCollisionFrameBridgeError {
+    pub slot: usize,
+    pub value: i16,
+    pub source: StaticCollisionNodeIdError,
+}
+
+impl LiveStaticCollisionCarFrame {
+    /// Bind live geometry to the persistent response state consumed by the
+    /// static-scene executor. Exact `-1` cells are empty; every other cell must
+    /// pass the safe 4,096-node identity boundary.
+    pub fn into_static_frame(
+        self,
+        linear_impulse_3cc: Vec3,
+        angular_impulse_3d8: Vec3,
+        local_contact_arm_3f0: Vec3,
+        angular_limit_2c: Vec3,
+    ) -> Result<StaticCarCollisionFrame, LiveStaticCollisionFrameBridgeError> {
+        let mut active_nodes = [None; 4];
+        for (slot, value) in self.active_cells.into_iter().enumerate() {
+            if value == -1 {
+                continue;
+            }
+            active_nodes[slot] = Some(StaticCollisionNodeId::new(i32::from(value)).map_err(
+                |source| LiveStaticCollisionFrameBridgeError {
+                    slot,
+                    value,
+                    source,
+                },
+            )?);
+        }
+        Ok(StaticCarCollisionFrame {
+            center: self.current_center,
+            previous_center_xz: self.previous_center_xz.as_array(),
+            world_hull_points: self.collision_hull,
+            active_nodes,
+            linear_impulse_3cc,
+            angular_impulse_3d8,
+            local_contact_arm_3f0,
+            angular_limit_2c,
+        })
+    }
 }
 
 /// Inputs whose timeline has already crossed the pose-integration boundary.
@@ -801,5 +848,25 @@ mod tests {
             base
         );
         assert_eq!(frame.active_cells, [7, -1, -1, -1]);
+
+        let bound = frame
+            .into_static_frame(v(1, 2, 3), v(4, 5, 6), v(7, 8, 9), v(10, 11, 12))
+            .unwrap();
+        assert_eq!(bound.center, current_center);
+        assert_eq!(bound.previous_center_xz, [old_position.x, old_position.z]);
+        assert_eq!(bound.active_nodes[0].unwrap().index(), 7);
+        assert_eq!(bound.active_nodes[1..], [None; 3]);
+        assert_eq!(bound.linear_impulse_3cc, v(1, 2, 3));
+        assert_eq!(bound.angular_impulse_3d8, v(4, 5, 6));
+        assert_eq!(bound.local_contact_arm_3f0, v(7, 8, 9));
+        assert_eq!(bound.angular_limit_2c, v(10, 11, 12));
+
+        let mut invalid = frame;
+        invalid.active_cells = [7, 4096, -1, -1];
+        let error = invalid
+            .into_static_frame(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO)
+            .unwrap_err();
+        assert_eq!(error.slot, 1);
+        assert_eq!(error.value, 4096);
     }
 }
