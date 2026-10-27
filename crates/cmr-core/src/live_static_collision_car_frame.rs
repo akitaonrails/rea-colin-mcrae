@@ -82,6 +82,30 @@ pub struct UpperHullDeformation {
     pub scale_640: Fixed16,
 }
 
+/// Persistent setup scalars at car `+0x638/+0x63c/+0x640`.
+///
+/// The two source axes evolve with the car basis, so they are deliberately
+/// bound only when constructing a collision-visible frame.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UpperHullDeformationScalars {
+    pub scale_638: Fixed16,
+    pub scale_63c: Fixed16,
+    pub scale_640: Fixed16,
+}
+
+impl UpperHullDeformationScalars {
+    #[must_use]
+    pub const fn bind(self, axis_258: Vec3, axis_270: Vec3) -> UpperHullDeformation {
+        UpperHullDeformation {
+            axis_258,
+            axis_270,
+            scale_638: self.scale_638,
+            scale_63c: self.scale_63c,
+            scale_640: self.scale_640,
+        }
+    }
+}
+
 impl UpperHullDeformation {
     const fn scaled_vectors(self) -> (Vec3, Vec3, Vec3) {
         (
@@ -501,6 +525,25 @@ mod tests {
         assert_ne!(&deformed[4..], &original[4..]);
         assert_eq!(undo_upper_hull_deformation(deformed, deformation), original);
         assert_ne!(deformed, original, "a collision snapshot remains deformed");
+    }
+
+    #[test]
+    fn persistent_deformation_scalars_bind_the_current_basis_axes() {
+        let scalars = UpperHullDeformationScalars {
+            scale_638: f(11),
+            scale_63c: f(-12),
+            scale_640: f(13),
+        };
+        assert_eq!(
+            scalars.bind(v(1, 2, 3), v(4, 5, 6)),
+            UpperHullDeformation {
+                axis_258: v(1, 2, 3),
+                axis_270: v(4, 5, 6),
+                scale_638: f(11),
+                scale_63c: f(-12),
+                scale_640: f(13),
+            }
+        );
     }
 
     #[test]

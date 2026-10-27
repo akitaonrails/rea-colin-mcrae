@@ -1738,7 +1738,10 @@ are now derived from their literal normalized seed; damage branch entry is
 retained separately so equality can enter with zero severity while below-
 threshold values cannot produce a handle. The exact four-lane distance gate now
 publishes setup flags and contact count `+0x674` from authenticated lane/hull
-owners. Ordinary per-tick republishing, resumable mutable damage/effect ownership, and session
+owners. Pending linear correction, angular-moment ownership, response history,
+the two persistent recovery flags and deformation scalars now have typed live-car
+owners with the recovered consume-clear-reaccumulate lifetime. Ordinary per-tick
+republishing, resumable mutable damage/effect ownership, and session
 publication remain open; live deformation/basis evolution is also unresolved.
 Render mesh AABBs are not accepted as
 compatibility geometry.

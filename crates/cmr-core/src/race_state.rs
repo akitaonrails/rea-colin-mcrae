@@ -37,7 +37,9 @@ use crate::drivetrain::{
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::legacy_math::sqrt_q16;
+use crate::live_static_collision_car_frame::UpperHullDeformationScalars;
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
+use crate::static_world_collision::StaticContactHistory;
 use crate::vehicle_dynamics::{
     AngularOrientationInput, ContactBasisInput, ContactVectorUpdateInput,
     GeometricPostprocessError, GeometricPostprocessLane, LaneDirectionSources,
@@ -523,6 +525,28 @@ pub struct MotionState {
     pub contact_distance_flags: [bool; 4],
     /// Count of those flags at `+0x674`, consumed by static response mode 4.
     pub contact_count_674: i32,
+    /// Setup/live collision deformation scalars at `+0x638/+0x63c/+0x640`.
+    pub upper_hull_deformation: UpperHullDeformationScalars,
+}
+
+/// Cross-tick static-collision state owned by the live car.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LiveCollisionState {
+    /// Linear correction at `+0x3cc..+0x3d4`; angular `+0x3d8` has the single
+    /// owner [`MotionState::moment`].
+    pub pending_linear_3cc: Vec3,
+    pub history: StaticContactHistory,
+    pub response_state_680: bool,
+    pub recovery_latch_688: bool,
+}
+
+impl LiveCollisionState {
+    /// Snapshot and clear the three linear words before any collision pass can
+    /// accumulate their replacements for the next tick.
+    #[must_use]
+    pub fn consume_pending_linear(&mut self) -> Vec3 {
+        std::mem::take(&mut self.pending_linear_3cc)
+    }
 }
 
 impl MotionState {
@@ -541,6 +565,11 @@ impl MotionState {
             lane_source_s: Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
             contact_distance_flags: [false; 4],
             contact_count_674: 0,
+            upper_hull_deformation: UpperHullDeformationScalars {
+                scale_638: Fixed16::ZERO,
+                scale_63c: Fixed16::ZERO,
+                scale_640: Fixed16::ZERO,
+            },
         }
     }
 
@@ -602,6 +631,8 @@ pub struct CarState {
     pub heading: u16,
     /// Orientation and angular state consumed by contact production.
     pub motion: MotionState,
+    /// Persistent collision corrections, history, and recovery flags.
+    pub collision: LiveCollisionState,
     /// Recovered first-wheel force and speed state.
     pub first_wheel: FirstWheelState,
     /// Residual, angle, component and accumulators from the second core.
@@ -620,6 +651,18 @@ impl CarState {
             velocity: Vec3::ZERO,
             heading: 0,
             motion: MotionState::harness_default(),
+            collision: LiveCollisionState {
+                pending_linear_3cc: Vec3::ZERO,
+                history: StaticContactHistory {
+                    previous_ids: [0; crate::static_world_collision::STATIC_CONTACT_CAPACITY],
+                    previous_len: 0,
+                    current_ids: [0; crate::static_world_collision::STATIC_CONTACT_CAPACITY],
+                    current_len: 0,
+                    current_overflow: false,
+                },
+                response_state_680: false,
+                recovery_latch_688: false,
+            },
             first_wheel: FirstWheelState {
                 force: 0,
                 wheel_speed: 0,
@@ -1353,6 +1396,30 @@ mod tests {
         assert_eq!(second.car.first_wheel.force, -0xfffc);
         assert_eq!(second.car.first_wheel.wheel_speed, 7);
         assert!(second.car.position.x > first.car.position.x);
+    }
+
+    #[test]
+    fn live_collision_pending_linear_is_consumed_once_without_clearing_persistent_state() {
+        let pending = Vec3::new(
+            Fixed16::from_raw(1),
+            Fixed16::from_raw(-2),
+            Fixed16::from_raw(3),
+        );
+        let mut collision = LiveCollisionState {
+            pending_linear_3cc: pending,
+            history: StaticContactHistory {
+                previous_len: 1,
+                ..StaticContactHistory::default()
+            },
+            response_state_680: true,
+            recovery_latch_688: true,
+        };
+        assert_eq!(collision.consume_pending_linear(), pending);
+        assert_eq!(collision.pending_linear_3cc, Vec3::ZERO);
+        assert_eq!(collision.history.previous_len, 1);
+        assert!(collision.response_state_680);
+        assert!(collision.recovery_latch_688);
+        assert_eq!(collision.consume_pending_linear(), Vec3::ZERO);
     }
 
     fn second_wheel_params(trig: &[i32]) -> SecondWheelParams<'_> {

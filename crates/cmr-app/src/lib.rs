@@ -3489,15 +3489,6 @@ struct SessionCompiledPose {
     lanes: FreshProcessLaneState,
 }
 
-/// Recovered setup-time deformation scalars retained for later collision
-/// ownership. Their evolution after setup remains outside this adapter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SessionCompiledDeformationScalars {
-    scale_638: Fixed16,
-    scale_63c: Fixed16,
-    scale_640: Fixed16,
-}
-
 fn publish_session_compiled_pose(
     start: &mut CarState,
     effective_state_words: [i32; 6],
@@ -3506,7 +3497,7 @@ fn publish_session_compiled_pose(
     corrected_basis: &CompiledPostLaneBasisEffects,
     lane_words: [i32; 8],
     contact_sources: [[i32; 3]; 8],
-) -> SessionCompiledDeformationScalars {
+) -> cmr_core::live_static_collision_car_frame::UpperHullDeformationScalars {
     let half_state = derive_compiled_half_sign_state([
         effective_state_words[0],
         effective_state_words[1],
@@ -3524,11 +3515,13 @@ fn publish_session_compiled_pose(
         );
     start.motion.contact_distance_flags = contact_distance_flags;
     start.motion.contact_count_674 = i32::from(contact_count_674);
-    SessionCompiledDeformationScalars {
+    let deformation = cmr_core::live_static_collision_car_frame::UpperHullDeformationScalars {
         scale_638: Fixed16::from_raw(effective_state_words[3]),
         scale_63c: Fixed16::from_raw(effective_state_words[4]),
         scale_640: Fixed16::from_raw(effective_state_words[5]),
-    }
+    };
+    start.motion.upper_hull_deformation = deformation;
+    deformation
 }
 
 impl SessionCompiledPose {
@@ -3581,7 +3574,10 @@ impl SessionCompiledPose {
         &mut self,
         start: &mut CarState,
         actor_rows: ActorMatrixRows,
-    ) -> Result<SessionCompiledDeformationScalars, SessionCompiledPoseError> {
+    ) -> Result<
+        cmr_core::live_static_collision_car_frame::UpperHullDeformationScalars,
+        SessionCompiledPoseError,
+    > {
         let center = [
             start.position.x.raw(),
             start.position.y.raw(),
@@ -4213,12 +4209,13 @@ mod tests {
         assert_eq!(start.motion.contact_count_674, 4);
         assert_eq!(
             deformation,
-            SessionCompiledDeformationScalars {
+            cmr_core::live_static_collision_car_frame::UpperHullDeformationScalars {
                 scale_638: Fixed16::from_raw(13),
                 scale_63c: Fixed16::from_raw(-14),
                 scale_640: Fixed16::from_raw(15),
             }
         );
+        assert_eq!(start.motion.upper_hull_deformation, deformation);
     }
 
     #[test]
@@ -4967,7 +4964,7 @@ mod tests {
         assert_eq!(start.motion.projection_axis, start.motion.basis[1]);
         assert_ne!(
             deformation,
-            SessionCompiledDeformationScalars {
+            cmr_core::live_static_collision_car_frame::UpperHullDeformationScalars {
                 scale_638: Fixed16::ZERO,
                 scale_63c: Fixed16::ZERO,
                 scale_640: Fixed16::ZERO,
