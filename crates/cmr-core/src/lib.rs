@@ -126,6 +126,7 @@ pub mod source_store;
 pub mod stage_checkpoints;
 pub mod stage_compiled_geometry;
 pub mod stage_timing;
+pub mod stage_triggers;
 pub mod startup;
 pub mod startup_display;
 pub mod startup_surface;

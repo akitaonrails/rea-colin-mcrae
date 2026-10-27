@@ -194,18 +194,19 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   `.cat` node spline (`0x1C`-byte records, count = filesize/0x1C; position /
   direction / split flag / seq index), the recovered mirror/reverse transform,
   the `{e,i,n}.cjp` per-difficulty split-time table (13 dwords), and the
-  trigger-volume record (`0x30`: geometry / payload / node index / raw type /
-  flag / passed-bits). Pure, bounds-checked, rejects misaligned/truncated input
+  trigger-volume record (`0x30`: two points / Q16 plane normal / payload /
+  spatial-node index / raw type / event flag / raw state / unknown byte). Pure,
+  bounds-checked, rejects misaligned/truncated input
   with length+stride; the raw trigger type is classified by
   `cmr-core::collision::TriggerType`. The bundle front half ties these together:
   `load_stage(source: &impl StageSectionSource, c3d_limits) -> StageBundle` parses
-  the mandatory `.c3d` scene plus optional `.cat`, `.obj`, `.sht`, `.hzn`,
-  `.ars`, and `.csp` sections from an abstract
+  the mandatory `.c3d` scene plus optional `.dat`, `.cat`, `.obj`, `.sht`,
+  `.hzn`, `.ars`, and `.csp` sections from an abstract
   per-extension byte source (base-path resolution + file IO + CMPR decode stay in
   the caller), so a resolved stage base yields a scene ready for
   `cmr-core::c3d_mesh::assemble_scene_meshes` (`impl.stage-bundle-loader`). The
-  remaining `.dat`, `.moj`, `.tsc`, `.spl`, `.anm`, `.rsf`, and `.fuz`
-  consumers plus the runtime fix-up/relocation remain. See
+  remaining `.moj`, `.tsc`, `.spl`, `.anm`, `.rsf`, and `.fuz` consumers plus
+  DAT runtime dispatch and the runtime fix-up/relocation remain. See
   evidence `rea.official-eu.stage-bundle`.
 - `cmr-core::car_resources`: the car-resource composition (E09). A car is a set
   of sibling `.C3D` resources under `OBJECTS\CARS\` (body `<code><DAY|NIGHT>.C3D`,

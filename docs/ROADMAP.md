@@ -1610,17 +1610,18 @@ The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions
 provisioning remain explicitly unrun. Comparison/deviation matrices and the
-README describe the current 117 complete / 1 partial roadmap state.
+README describe the current 117 complete / 2 partial roadmap state.
 
 A10 is bounded to the reviewed official-EU/installed-EU profile. Other editions
 and language packs are explicitly unsupported; official-US and xdelta artifacts
 remain comparison variants, not proof of compatibility.
 
 E16 closes the championship boundary; E08 remains partial. Stage loading now
-consumes `.c3d`, `.cat`, `.obj`, `.sht`, `.ars`, `.hzn`, and `.csp`, with
-layered software presentation and authored starts. `.dat`, `.moj`, `.tsc`,
-`.spl`, `.anm`, `.rsf`, and `.fuz` remain unintegrated. The executable still
-bypasses the recovered menu flow and lacks player-car/HUD composition.
+consumes `.c3d`, `.dat`, `.cat`, `.obj`, `.sht`, `.ars`, `.hzn`, and `.csp`,
+with layered software presentation, authored starts, and bounded trigger-volume
+decoding. `.moj`, `.tsc`, `.spl`, `.anm`, `.rsf`, and `.fuz` remain
+unintegrated. The native race path composes the player car but still bypasses
+the recovered menu flow and lacks the recovered race HUD and DAT dispatch.
 
 E01 is closed at its deterministic indexed boundary. Supported BM, palette,
 row, composition, and queued-font paths are implemented; native padding,

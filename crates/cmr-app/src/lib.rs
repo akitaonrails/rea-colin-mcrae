@@ -67,8 +67,9 @@ use cmr_formats::c3d::{C3dError, C3dFile, C3dLimits, parse_c3d};
 use cmr_formats::riff_palette::{PaletteEntry, PaletteError, parse_legacy_palette_256};
 use cmr_formats::stage::CatNode;
 use cmr_formats::stage::{
-    ARS_EXTENSION, C3D_EXTENSION, CAT_EXTENSION, CSP_EXTENSION, CspStart, HZN_EXTENSION,
-    OBJ_EXTENSION, SHT_EXTENSION, StageBundle, StageLoadError, StageSectionSource, load_stage,
+    ARS_EXTENSION, C3D_EXTENSION, CAT_EXTENSION, CSP_EXTENSION, CspStart, DAT_EXTENSION,
+    HZN_EXTENSION, OBJ_EXTENSION, SHT_EXTENSION, StageBundle, StageLoadError, StageSectionSource,
+    load_stage,
 };
 use cmr_formats::stored_asset::{DecodeError, DecodeLimits, decode_stored_asset};
 use cmr_gpu_contract::{PersistentRawC3dGpuBackend, PersistentRawC3dIndexedBackend};
@@ -981,7 +982,7 @@ fn initial_root_input() -> RootRenderInput {
 /// The recovered master loader (`FUN_004228d0`) walks a 14-extension table and
 /// loads `<stagebase><ext>` for each present sibling through the shared,
 /// CMPR-capable loader. This source reproduces that lookup over a real directory
-/// for the sections the bundle loader consumes (`.c3d`, `.cat`): it reads
+/// for the sections the bundle loader consumes (`.c3d`, `.dat`, `.cat`, ...): it reads
 /// `<media_root>/<stage><ext>`, runs each file through [`decode_stored_asset`]
 /// (so a CMPR-wrapped sibling is transparently inflated), and keeps the decoded
 /// bytes. A missing sibling is simply absent; only an I/O or decode failure is an
@@ -994,10 +995,11 @@ pub struct FsStageSectionSource {
     obj: Option<Vec<u8>>,
     sht: Option<Vec<u8>>,
     csp: Option<Vec<u8>>,
+    dat: Option<Vec<u8>>,
 }
 
 impl FsStageSectionSource {
-    /// Reads the `.c3d` and `.cat` siblings of `stage` under `media_root`.
+    /// Reads all currently decoded siblings of `stage` under `media_root`.
     pub fn read(
         media_root: &Path,
         stage: &str,
@@ -1011,6 +1013,7 @@ impl FsStageSectionSource {
             obj: read_decoded_section(media_root, stage, OBJ_EXTENSION, limits)?,
             sht: read_decoded_section(media_root, stage, SHT_EXTENSION, limits)?,
             csp: read_decoded_section(media_root, stage, CSP_EXTENSION, limits)?,
+            dat: read_decoded_section(media_root, stage, DAT_EXTENSION, limits)?,
         })
     }
 }
@@ -1025,6 +1028,7 @@ impl StageSectionSource for FsStageSectionSource {
             OBJ_EXTENSION => self.obj.as_deref(),
             SHT_EXTENSION => self.sht.as_deref(),
             CSP_EXTENSION => self.csp.as_deref(),
+            DAT_EXTENSION => self.dat.as_deref(),
             _ => None,
         }
     }
@@ -3073,6 +3077,12 @@ mod tests {
         assert_ne!(resources.palette, stage_placeholder_palette());
         assert!(resources.bundle.horizon().is_some());
         assert!(resources.bundle.ars().is_some());
+        assert!(
+            resources
+                .bundle
+                .triggers()
+                .is_some_and(|triggers| !triggers.is_empty())
+        );
         assert!(resources.horizon_textures.is_some());
         assert!(resources.car_scene.is_some());
         assert!(resources.car_textures.is_some());

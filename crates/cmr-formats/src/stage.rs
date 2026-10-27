@@ -51,10 +51,6 @@ pub const CJP_RECORD_LEN: usize = CJP_DWORD_COUNT * 4;
 /// Stride of one trigger-volume record.
 pub const TRIGGER_VOLUME_STRIDE: usize = 0x30;
 
-/// Length of the (unverified-split) bounding-volume geometry prefix of a trigger
-/// record, preserved as raw bytes.
-pub const TRIGGER_GEOMETRY_LEN: usize = 0x24;
-
 /// The 14 stage section extensions, in the loader's order (`0x4eb92c` table).
 pub const STAGE_EXTENSIONS: [&str; 14] = [
     ".c3d", ".dat", ".obj", ".moj", ".sht", ".ars", ".hzn", ".tsc", ".csp", ".cat", ".spl", ".anm",
@@ -65,6 +61,8 @@ pub const STAGE_EXTENSIONS: [&str; 14] = [
 pub const CAT_EXTENSION: &str = ".cat";
 /// Extension of the 3D world-mesh section.
 pub const C3D_EXTENSION: &str = ".c3d";
+/// Extension of the stage trigger/collision-volume stream.
+pub const DAT_EXTENSION: &str = ".dat";
 /// Extension of the horizon/background scene. The shipped loader sends this
 /// payload through the same C3D parser as the world scene (`FUN_00480d80`),
 /// with render mode 4 and lit vertices.
@@ -194,6 +192,7 @@ pub struct StageBundle {
     ars: Option<ArsSettings>,
     starts: Option<CspStarts>,
     nodes: Option<Vec<CatNode>>,
+    triggers: Option<Vec<TriggerVolume>>,
 }
 
 impl StageBundle {
@@ -238,6 +237,12 @@ impl StageBundle {
     pub fn nodes(&self) -> Option<&[CatNode]> {
         self.nodes.as_deref()
     }
+
+    /// The parsed `.dat` trigger/collision volumes, if present.
+    #[must_use]
+    pub fn triggers(&self) -> Option<&[TriggerVolume]> {
+        self.triggers.as_deref()
+    }
 }
 
 /// Failure to load a stage bundle from its section source.
@@ -259,6 +264,8 @@ pub enum StageLoadError {
     Starts(StageError),
     /// The `.cat` node-spline payload failed to decode.
     Nodes(StageError),
+    /// The optional `.dat` trigger-volume payload failed to decode.
+    Triggers(StageError),
 }
 
 impl fmt::Display for StageLoadError {
@@ -272,6 +279,7 @@ impl fmt::Display for StageLoadError {
             StageLoadError::Ars(error) => write!(f, "stage .ars settings: {error}"),
             StageLoadError::Starts(error) => write!(f, "stage .csp starts: {error}"),
             StageLoadError::Nodes(error) => write!(f, "stage .cat nodes: {error}"),
+            StageLoadError::Triggers(error) => write!(f, "stage .dat triggers: {error}"),
         }
     }
 }
@@ -286,6 +294,7 @@ impl std::error::Error for StageLoadError {
             StageLoadError::Ars(error) => Some(error),
             StageLoadError::Starts(error) => Some(error),
             StageLoadError::Nodes(error) => Some(error),
+            StageLoadError::Triggers(error) => Some(error),
             StageLoadError::MissingScene => None,
         }
     }
@@ -335,6 +344,11 @@ pub fn load_stage(
         .map(parse_cat_nodes)
         .transpose()
         .map_err(StageLoadError::Nodes)?;
+    let triggers = source
+        .section(DAT_EXTENSION)
+        .map(parse_trigger_volumes)
+        .transpose()
+        .map_err(StageLoadError::Triggers)?;
     Ok(StageBundle {
         scene,
         objects,
@@ -343,6 +357,7 @@ pub fn load_stage(
         ars,
         starts,
         nodes,
+        triggers,
     })
 }
 
@@ -590,23 +605,28 @@ pub fn parse_cjp(input: &[u8]) -> Result<CjpSplitTable, StageError> {
     })
 }
 
-/// One trigger volume (`0x30` bytes). The bounding-volume geometry split was not
-/// verified, so it is preserved as raw bytes; the type byte is kept raw for
-/// classification by `cmr-core::collision`.
+/// One trigger volume (`0x30` bytes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TriggerVolume {
-    /// `+0x00..+0x24` bounding-volume geometry, raw (split unverified).
-    pub geometry: [u8; TRIGGER_GEOMETRY_LEN],
+    /// First point of the trigger segment (`+0x00..+0x0b`).
+    pub point_a: [i32; 3],
+    /// Second point of the trigger segment (`+0x0c..+0x17`).
+    pub point_b: [i32; 3],
+    /// Q16.16 plane/edge normal (`+0x18..+0x23`).
+    pub normal_q16: [i32; 3],
     /// `+0x24` payload (pacenote id / sound id / resource / surface arg).
     pub payload: i32,
-    /// `+0x28` node index on disk (rewritten to a list pointer during fix-up).
-    pub node_index: i32,
+    /// `+0x28` spatial-node index on disk (rewritten to a list pointer during fix-up).
+    pub spatial_node_index: i32,
     /// `+0x2C` type byte (classify with `cmr-core::collision::TriggerType`).
     pub raw_type: u8,
-    /// `+0x2D` flag byte.
-    pub flag: u8,
-    /// `+0x2E` per-car passed-bits de-dupe mask (initial on-disk value).
-    pub passed_bits: u16,
+    /// `+0x2D` event flag byte.
+    pub event_flag: u8,
+    /// `+0x2E` raw on-disk byte. Native load resets it, then uses it as either
+    /// a type-1 ordinal or a per-player consumed mask.
+    pub raw_state: u8,
+    /// `+0x2F` preserved byte with no observed consumer.
+    pub unknown_2f: u8,
 }
 
 /// Decode one `0x30`-byte trigger-volume record.
@@ -617,15 +637,28 @@ pub fn parse_trigger_volume(record: &[u8]) -> Result<TriggerVolume, StageError> 
             expected: TRIGGER_VOLUME_STRIDE,
         });
     }
-    let mut geometry = [0u8; TRIGGER_GEOMETRY_LEN];
-    geometry.copy_from_slice(&record[0x00..TRIGGER_GEOMETRY_LEN]);
     Ok(TriggerVolume {
-        geometry,
+        point_a: [
+            read_i32(record, 0x00),
+            read_i32(record, 0x04),
+            read_i32(record, 0x08),
+        ],
+        point_b: [
+            read_i32(record, 0x0c),
+            read_i32(record, 0x10),
+            read_i32(record, 0x14),
+        ],
+        normal_q16: [
+            read_i32(record, 0x18),
+            read_i32(record, 0x1c),
+            read_i32(record, 0x20),
+        ],
         payload: read_i32(record, 0x24),
-        node_index: read_i32(record, 0x28),
+        spatial_node_index: read_i32(record, 0x28),
         raw_type: record[0x2c],
-        flag: record[0x2d],
-        passed_bits: read_u16(record, 0x2e),
+        event_flag: record[0x2d],
+        raw_state: record[0x2e],
+        unknown_2f: record[0x2f],
     })
 }
 
@@ -740,21 +773,35 @@ mod tests {
     #[test]
     fn parses_trigger_volume_record() {
         let mut r = vec![0u8; TRIGGER_VOLUME_STRIDE];
-        r[0x00] = 0x11; // geometry sentinel
-        r[0x23] = 0x22;
+        for (offset, value) in [
+            (0x00, 11i32),
+            (0x04, 12),
+            (0x08, 13),
+            (0x0c, 21),
+            (0x10, 22),
+            (0x14, 23),
+            (0x18, 0x10000),
+            (0x1c, -0x10000),
+            (0x20, 0),
+        ] {
+            r[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
         r[0x24..0x28].copy_from_slice(&42i32.to_le_bytes());
         r[0x28..0x2c].copy_from_slice(&5i32.to_le_bytes());
         r[0x2c] = 0x15; // out-of-bounds type
         r[0x2d] = 1;
-        r[0x2e..0x30].copy_from_slice(&0x0102u16.to_le_bytes());
+        r[0x2e] = 0x02;
+        r[0x2f] = 0x01;
         let v = parse_trigger_volume(&r).unwrap();
-        assert_eq!(v.geometry[0], 0x11);
-        assert_eq!(v.geometry[0x23], 0x22);
+        assert_eq!(v.point_a, [11, 12, 13]);
+        assert_eq!(v.point_b, [21, 22, 23]);
+        assert_eq!(v.normal_q16, [0x10000, -0x10000, 0]);
         assert_eq!(v.payload, 42);
-        assert_eq!(v.node_index, 5);
+        assert_eq!(v.spatial_node_index, 5);
         assert_eq!(v.raw_type, 0x15);
-        assert_eq!(v.flag, 1);
-        assert_eq!(v.passed_bits, 0x0102);
+        assert_eq!(v.event_flag, 1);
+        assert_eq!(v.raw_state, 0x02);
+        assert_eq!(v.unknown_2f, 0x01);
     }
 
     #[test]
@@ -828,6 +875,32 @@ mod tests {
         assert!(bundle.ars().is_none());
         assert!(bundle.starts().is_none());
         assert_eq!(bundle.nodes().unwrap().len(), 2);
+        assert!(bundle.triggers().is_none());
+    }
+
+    #[test]
+    fn load_stage_parses_optional_trigger_volumes() {
+        let mut sections = std::collections::HashMap::new();
+        sections.insert(C3D_EXTENSION, empty_scene_bytes());
+        sections.insert(DAT_EXTENSION, vec![0u8; TRIGGER_VOLUME_STRIDE * 2]);
+
+        let bundle = load_stage(&MapSource(sections), C3dLimits::default()).unwrap();
+        assert_eq!(bundle.triggers().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn load_stage_rejects_misaligned_trigger_volumes() {
+        let mut sections = std::collections::HashMap::new();
+        sections.insert(C3D_EXTENSION, empty_scene_bytes());
+        sections.insert(DAT_EXTENSION, vec![0u8; TRIGGER_VOLUME_STRIDE + 1]);
+
+        assert_eq!(
+            load_stage(&MapSource(sections), C3dLimits::default()).unwrap_err(),
+            StageLoadError::Triggers(StageError::TriggerNotAligned {
+                len: TRIGGER_VOLUME_STRIDE + 1,
+                stride: TRIGGER_VOLUME_STRIDE,
+            })
+        );
     }
 
     #[test]
