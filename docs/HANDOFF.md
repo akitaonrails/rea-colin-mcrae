@@ -93,7 +93,7 @@ and full-workspace tests pass. Logs from the last run are ignored under:
 .work/moment-clear-clippy.log
 ```
 
-The authenticated AU1 test was run before the steering correction:
+The authenticated AU1 test:
 
 ```sh
 CMR_RUNTIME_DATA="$PWD/runtime-data/installed-eu-derived-assets-v2" \
@@ -102,11 +102,13 @@ CMR_RUNTIME_DATA="$PWD/runtime-data/installed-eu-derived-assets-v2" \
   -- --ignored --nocapture
 ```
 
-It ran for about 187 seconds and reached the final steering assertion without a
-collision error. The only failure was left steering producing heading delta
-`+40` instead of expected `-40`. The one-boundary sign fix is covered by focused
-tests, but this long authenticated test was not rerun. Do that when the runtime
-budget permits; do not represent it as already green.
+It was first run before the steering correction and failed only on left
+steering (`+40` instead of `-40`). **It has since been rerun green** at
+`b86736c`, after both the sign correction and the per-tick angular moment clear:
+about 200 seconds, all assertions including steering (log
+`.work/au1-authenticated.log`). It proves collision execution without error and
+the steering sign on owned media; it still does not prove a scene object was
+contacted (item 5 below).
 
 ## Highest-priority remaining work
 
