@@ -1831,7 +1831,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   `0x43d5d0 -> 0x43e640 -> 0x43d760`; the later `0x410a60` step delegates the
   crash path to `0x4115d0` once the out-of-control flag `car+0x680` is set.
   Linear impulse accumulates at `car+0x3cc..`, angular impulse at `+0x3d8..`,
-  and `+0x3f0..` is persistent angular state rather than a contact normal. The
+  and `+0x3f0..` is a mutable local contact/lever arm rather than angular state
+  or a contact normal. The normal is published separately by the narrow phase. The
   linear impulse magnitude feeds the impact
   computer `0x41f630` (threshold `0x2624`, slope `0xf536`, clamp 1.0), and the
   same 0..1 impact drives the pitched impact sound (`0x469e80`), force feedback,
@@ -1848,11 +1849,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   `Fixed16::sqrt`/`Vec3::length` added to `fixed_point`).
   `cmr-core::static_world_collision` now owns the tested 4,096-cell ordered
   provider boundary, current/previous five-ID history, raw material propagation
-  and distinct linear/angular/angular-state effects. Static recovery now pins
-  OBJ-only OBB sources, point/projection helpers, grid provenance, prepend order
-  and literal-zero history identity. Exact center/extents, cell emission,
-  current-pose overlap/response arithmetic and session integration remain open;
-  renderer bounds are not substituted. See
+  and distinct linear/angular/local-contact-arm effects. Static recovery pins
+  exact OBJ OBB geometry/projection, main-C3D grid derivation, prepend order,
+  literal-zero history identity and both reciprocal-corner narrow paths;
+  `static_collision_response` pins the direct normal response and exceptional
+  branches. Parsed scene construction, active-cell selection and live session
+  integration remain open; renderer bounds are not substituted. See
   evidence `rea.official-eu.sim-collision` and
   `impl.static-world-collision-orchestration`.
 - Stage timing uses the global clock `DAT_005ffc00`, a Q16.16 value in seconds

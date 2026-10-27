@@ -60,6 +60,68 @@ pub struct CellGrid {
     pub max_z: i32,
 }
 
+/// Safe reconstruction failures while deriving `FUN_004904e0` grid parameters
+/// from main-C3D group-0 translations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CellGridDeriveError {
+    MissingCells,
+    TooManyCells { count: usize },
+    NoSameRowSpacing,
+    ZeroSpacing,
+    NegativeSpacing { spacing: i32 },
+    NonRectangular { count: usize, width: usize },
+}
+
+/// Derive the collision/visibility grid from main-C3D group-0 matrix
+/// translations. Source index zero is the container and is excluded; every
+/// later `[x,y,z]` translation becomes one cell record in source order.
+///
+/// Rejecting degenerate/non-rectangular inputs is bounds-checked reconstruction
+/// policy. The shipped initializer assumes authored data and would retain stale
+/// sentinel values or truncate the height.
+pub fn derive_cell_grid_from_main_translations(
+    group0_translations: &[[i32; 3]],
+) -> Result<CellGrid, CellGridDeriveError> {
+    let cells = group0_translations
+        .get(1..)
+        .ok_or(CellGridDeriveError::MissingCells)?;
+    if cells.len() < 2 {
+        return Err(CellGridDeriveError::MissingCells);
+    }
+    if cells.len() > MAX_CELLS {
+        return Err(CellGridDeriveError::TooManyCells { count: cells.len() });
+    }
+    let spacing = cells
+        .windows(2)
+        .filter(|pair| pair[0][2] == pair[1][2])
+        .map(|pair| pair[1][0].wrapping_sub(pair[0][0]).wrapping_abs())
+        .min()
+        .ok_or(CellGridDeriveError::NoSameRowSpacing)?;
+    if spacing == 0 {
+        return Err(CellGridDeriveError::ZeroSpacing);
+    }
+    if spacing < 0 {
+        return Err(CellGridDeriveError::NegativeSpacing { spacing });
+    }
+    let first_z = cells[0][2];
+    let width = cells.iter().take_while(|cell| cell[2] == first_z).count();
+    if width == 0 || !cells.len().is_multiple_of(width) {
+        return Err(CellGridDeriveError::NonRectangular {
+            count: cells.len(),
+            width,
+        });
+    }
+    Ok(CellGrid {
+        width: width as i32,
+        height: (cells.len() / width) as i32,
+        cell_count: cells.len() as i32,
+        cell_size: spacing,
+        min_x: cells.iter().map(|cell| cell[0]).min().unwrap(),
+        half_cell: spacing >> 1,
+        max_z: cells.iter().map(|cell| cell[2]).max().unwrap(),
+    })
+}
+
 impl CellGrid {
     /// Maps a world XZ point to its cell index (`FUN_00490af0`):
     /// `row = |z - half_cell - max_z| / cell_size`,
@@ -291,6 +353,74 @@ mod tests {
             ..grid()
         };
         assert_eq!(g.cell_of_point(105, 195), 9);
+    }
+
+    #[test]
+    fn main_c3d_translations_derive_rectangular_grid_and_drop_root() {
+        let translations = [
+            [999, 999, 999],
+            [0, 1, 20],
+            [10, 2, 20],
+            [20, 3, 20],
+            [0, 4, 10],
+            [10, 5, 10],
+            [20, 6, 10],
+        ];
+        assert_eq!(
+            derive_cell_grid_from_main_translations(&translations),
+            Ok(CellGrid {
+                width: 3,
+                height: 2,
+                cell_count: 6,
+                cell_size: 10,
+                min_x: 0,
+                half_cell: 5,
+                max_z: 20,
+            })
+        );
+    }
+
+    #[test]
+    fn grid_derivation_uses_same_z_adjacency_and_rejects_bad_shapes() {
+        assert_eq!(
+            derive_cell_grid_from_main_translations(&[[0; 3], [0, 0, 1]]),
+            Err(CellGridDeriveError::MissingCells)
+        );
+        assert_eq!(
+            derive_cell_grid_from_main_translations(&[[0; 3], [0, 0, 1], [10, 0, 2]]),
+            Err(CellGridDeriveError::NoSameRowSpacing)
+        );
+        assert_eq!(
+            derive_cell_grid_from_main_translations(&[
+                [0; 3],
+                [0, 0, 2],
+                [0, 0, 2],
+                [0, 0, 1],
+                [1, 0, 1],
+            ]),
+            Err(CellGridDeriveError::ZeroSpacing)
+        );
+        assert_eq!(
+            derive_cell_grid_from_main_translations(&[
+                [0; 3],
+                [i32::MIN, 0, 2],
+                [0, 0, 2],
+                [i32::MIN, 0, 1],
+                [0, 0, 1],
+            ]),
+            Err(CellGridDeriveError::NegativeSpacing { spacing: i32::MIN })
+        );
+        assert_eq!(
+            derive_cell_grid_from_main_translations(&[
+                [0; 3],
+                [0, 0, 2],
+                [10, 0, 2],
+                [20, 0, 2],
+                [0, 0, 1],
+                [10, 0, 1],
+            ]),
+            Err(CellGridDeriveError::NonRectangular { count: 5, width: 3 })
+        );
     }
 
     #[test]
