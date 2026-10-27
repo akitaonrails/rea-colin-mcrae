@@ -1601,8 +1601,9 @@ harness control strengths instead of feeding live play through incomplete
 vertical-force integration. The SDL presenter uses the shared explicit viewport
 calculation at the renderer's actual output extent. Imported AU1 integration
 checks prove input-driven world/frame changes, steering and checkpoint progress;
-controlled Xvfb captures verify visible throttle, steering and coasting. This
-does not add player-car rendering or an in-race HUD, and does not claim complete
+controlled Xvfb captures verify visible throttle, steering and coasting. The
+caller-selected in-race C3D car is now depth-composed with the stage under its
+live pose. This does not add an in-race HUD and does not claim complete
 four-wheel trajectory fidelity or a verified full-race finish.
 
 The build and verification infrastructure is complete. Linux reviewed-import

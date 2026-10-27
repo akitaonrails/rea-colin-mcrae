@@ -19,6 +19,7 @@ use cmr_core::c3d_render::VERTEXTYPE_LVERTEX;
 use cmr_core::c3d_stage_scene::{StageScene, StageSceneError};
 use cmr_core::camera_mode::{CameraMode, ViewGate};
 use cmr_core::camera_view::ViewController;
+use cmr_core::car_resources::car_body_path;
 use cmr_core::compiled_car_initializer::{CompiledControlFamilies, CompiledHalfSignState};
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
@@ -62,7 +63,7 @@ use cmr_core::vehicle_dynamics::{
 };
 use cmr_core::weather::{StageWeatherEffects, particles};
 use cmr_formats::bitmap::BitmapLimits;
-use cmr_formats::c3d::C3dLimits;
+use cmr_formats::c3d::{C3dError, C3dFile, C3dLimits, parse_c3d};
 use cmr_formats::riff_palette::{PaletteEntry, PaletteError, parse_legacy_palette_256};
 use cmr_formats::stage::CatNode;
 use cmr_formats::stage::{
@@ -185,6 +186,7 @@ pub struct AppOptions {
     runtime_data: Option<PathBuf>,
     source: Option<PathBuf>,
     stage: Option<String>,
+    car_code: Option<String>,
     renderer: StageRendererChoice,
 }
 
@@ -199,6 +201,7 @@ impl AppOptions {
         let mut runtime_data = None;
         let mut source = None;
         let mut stage = None;
+        let mut car_code = None;
         let mut renderer = None;
 
         while let Some(argument) = arguments.next() {
@@ -264,6 +267,16 @@ impl AppOptions {
                 stage = Some(value.into_string().map_err(ConfigError::NonUtf8Stage)?);
                 continue;
             }
+            if argument == OsStr::new("--car-code") {
+                if car_code.is_some() {
+                    return Err(ConfigError::DuplicateOption("--car-code"));
+                }
+                let value = arguments
+                    .next()
+                    .ok_or(ConfigError::MissingOptionValue("--car-code"))?;
+                car_code = Some(value.into_string().map_err(ConfigError::NonUtf8CarCode)?);
+                continue;
+            }
             if argument == OsStr::new("--runtime-data") {
                 if runtime_data.is_some() {
                     return Err(ConfigError::DuplicateOption("--runtime-data"));
@@ -292,6 +305,7 @@ impl AppOptions {
             runtime_data,
             source,
             stage,
+            car_code,
             renderer: renderer.unwrap_or_default(),
         })
     }
@@ -337,6 +351,14 @@ impl AppOptions {
         {
             return Err(ConfigError::EmptyStage);
         }
+        if let Some(code) = &self.car_code
+            && (code.is_empty()
+                || !code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'))
+        {
+            return Err(ConfigError::InvalidCarCode(code.clone()));
+        }
 
         // The stage commands need both a stage name and a media root to read the
         // sibling section files from; the root-frame commands need neither.
@@ -353,6 +375,9 @@ impl AppOptions {
                 return Err(ConfigError::MissingSourceForStage);
             }
         }
+        if self.command == AppCommand::WindowedGameSession && self.car_code.is_none() {
+            return Err(ConfigError::MissingCarCode);
+        }
 
         Ok(RuntimeConfig {
             command: self.command,
@@ -360,6 +385,7 @@ impl AppOptions {
             source,
             media,
             stage: self.stage,
+            car_code: self.car_code,
             renderer: self.renderer,
         })
     }
@@ -373,6 +399,7 @@ pub struct RuntimeConfig {
     source: RuntimeDataSource,
     media: Option<(PathBuf, RuntimeDataSource)>,
     stage: Option<String>,
+    car_code: Option<String>,
     renderer: StageRendererChoice,
 }
 
@@ -384,6 +411,11 @@ impl RuntimeConfig {
     /// The selected stage base name, if one was supplied.
     pub fn stage(&self) -> Option<&str> {
         self.stage.as_deref()
+    }
+
+    /// Caller-selected car asset code for the direct-to-stage harness.
+    pub fn car_code(&self) -> Option<&str> {
+        self.car_code.as_deref()
     }
 
     /// The selected stage renderer (`--renderer`).
@@ -443,6 +475,12 @@ pub enum ConfigError {
     MissingStage,
     /// The stage command was selected without a `--source` media root.
     MissingSourceForStage,
+    /// `--car-code` carried a non-UTF-8 identifier.
+    NonUtf8CarCode(OsString),
+    /// Direct-to-stage play requires a caller-selected car asset code.
+    MissingCarCode,
+    /// Car codes are single safe path components.
+    InvalidCarCode(String),
     /// `--renderer` carried a non-UTF-8 value.
     NonUtf8Renderer(OsString),
     /// `--renderer` named an unknown renderer.
@@ -488,6 +526,17 @@ impl fmt::Display for ConfigError {
             Self::MissingSourceForStage => write!(
                 formatter,
                 "a stage command requires a media root; pass --source PATH or set {SOURCE_ENV}"
+            ),
+            Self::NonUtf8CarCode(value) => {
+                write!(formatter, "--car-code must be valid UTF-8, got {value:?}")
+            }
+            Self::MissingCarCode => write!(
+                formatter,
+                "--windowed-game-session requires a car; pass --car-code CODE"
+            ),
+            Self::InvalidCarCode(value) => write!(
+                formatter,
+                "invalid car code {value:?}; expected one ASCII path component"
             ),
             Self::NonUtf8Renderer(value) => {
                 write!(formatter, "--renderer must be valid UTF-8, got {value:?}")
@@ -1096,6 +1145,10 @@ pub enum StageFrameError {
     Palette(AssetStoreError),
     PaletteFormat(PaletteError),
     Profile(ReviewedProfileError),
+    /// The caller-selected in-race car could not be loaded from the verified store.
+    CarAsset(AssetStoreError),
+    /// The selected car body is not a valid C3D scene.
+    CarScene(C3dError),
     /// The raw-GPU stage adapter rejected the scene.
     GpuPrepare(PreparedRawStageError),
     /// The selected GPU backend could not be initialized (or its persistent
@@ -1127,6 +1180,8 @@ impl StageFrameError {
             Self::Palette(_) => "palette",
             Self::PaletteFormat(_) => "palette-format",
             Self::Profile(_) => "profile",
+            Self::CarAsset(_) => "car-asset",
+            Self::CarScene(_) => "car-scene",
             Self::GpuPrepare(_) => "gpu-prepare",
             Self::GpuInit(_) => "gpu-init",
             Self::GpuCompose(_) => "gpu-compose",
@@ -1161,6 +1216,8 @@ impl fmt::Display for StageFrameError {
             Self::Palette(error) => write!(formatter, "cannot load stage palette: {error}"),
             Self::PaletteFormat(error) => write!(formatter, "cannot parse stage palette: {error}"),
             Self::Profile(error) => write!(formatter, "cannot read reviewed profile: {error}"),
+            Self::CarAsset(error) => write!(formatter, "cannot load in-race car: {error}"),
+            Self::CarScene(error) => write!(formatter, "cannot parse in-race car: {error}"),
             Self::GpuPrepare(error) => write!(formatter, "cannot prepare raw GPU stage: {error}"),
             Self::GpuInit(detail) => {
                 write!(
@@ -1198,6 +1255,8 @@ impl std::error::Error for StageFrameError {
             Self::Palette(error) => Some(error),
             Self::PaletteFormat(error) => Some(error),
             Self::Profile(error) => Some(error),
+            Self::CarAsset(error) => Some(error),
+            Self::CarScene(error) => Some(error),
             Self::GpuPrepare(error) => Some(error),
             Self::MissingNodes
             | Self::DegenerateSpawn
@@ -1353,6 +1412,29 @@ fn native_stage_start_from_csp(start_record: CspStart) -> (CarState, [i32; 16]) 
     (start, initial_camera)
 }
 
+fn car_model_world_q16(car_world: &[i32; 16]) -> [i32; 16] {
+    // Race-car C3D geometry is authored with local -X forward and +Z right;
+    // the gameplay harness publishes +Z forward and +X right.
+    [
+        car_world[8].wrapping_neg(),
+        car_world[9].wrapping_neg(),
+        car_world[10].wrapping_neg(),
+        0,
+        car_world[4],
+        car_world[5],
+        car_world[6],
+        0,
+        car_world[0],
+        car_world[1],
+        car_world[2],
+        0,
+        car_world[12],
+        car_world[13],
+        car_world[14],
+        car_world[15],
+    ]
+}
+
 /// A composed stage frame plus its scene statistics, for a caller-owned
 /// presenter (the native window host or the headless digest path).
 #[derive(Clone, Debug)]
@@ -1458,6 +1540,8 @@ pub struct StageRenderResources {
     object_textures: Option<StageC3dTextures>,
     scenery_textures: Option<StageC3dTextures>,
     horizon_textures: Option<StageC3dTextures>,
+    car_scene: Option<C3dFile>,
+    car_textures: Option<StageC3dTextures>,
     palette: [PaletteEntry; 256],
     node_count: usize,
     draw_ops: usize,
@@ -1565,12 +1649,37 @@ impl StageRenderResources {
             object_textures,
             scenery_textures,
             horizon_textures,
+            car_scene: None,
+            car_textures: None,
             palette,
             node_count,
             draw_ops,
             choice,
             gpu,
         })
+    }
+
+    /// Attach the caller-selected full-detail daytime race car from the
+    /// authenticated runtime-data store. The car code is data selected by the
+    /// user/menu; the reconstruction does not embed the original 14-entry table.
+    pub fn attach_car(
+        &mut self,
+        runtime_data: &Path,
+        car_code: &str,
+    ) -> Result<(), StageFrameError> {
+        let reviewed =
+            ReviewedProfile::from_json(REVIEWED_PROFILE).map_err(StageFrameError::Profile)?;
+        let store = AssetStore::open(runtime_data, &reviewed, DecodeLimits::default())
+            .map_err(StageFrameError::CarAsset)?;
+        let relative = car_body_path(car_code, false, false).replace('\\', "/");
+        let path = format!("Game/{relative}");
+        let bytes = store.load(&path).map_err(StageFrameError::CarAsset)?;
+        let scene = parse_c3d(&bytes, C3dLimits::default()).map_err(StageFrameError::CarScene)?;
+        let textures = StageC3dTextures::prepare(&scene, BitmapLimits::default())
+            .map_err(StageFrameError::Texture)?;
+        self.car_scene = Some(scene);
+        self.car_textures = Some(textures);
+        Ok(())
     }
 
     /// Which renderer will compose the next frame.
@@ -1593,6 +1702,22 @@ impl StageRenderResources {
         &mut self,
         camera: &[i32; 16],
     ) -> Result<RenderedStageFrameOutput, StageFrameError> {
+        self.compose_with_car(camera, None)
+    }
+
+    /// Compose the stage and, when supplied, the retained player car under its
+    /// current world transform into the same depth-tested frame.
+    pub fn compose_with_car(
+        &mut self,
+        camera: &[i32; 16],
+        car_world: Option<&[i32; 16]>,
+    ) -> Result<RenderedStageFrameOutput, StageFrameError> {
+        if car_world.is_some() && self.gpu.is_some() {
+            if self.choice == StageRendererChoice::Gpu {
+                return Err(StageFrameError::GpuLayeredStageUnsupported);
+            }
+            self.gpu = None;
+        }
         if let Some(gpu) = self.gpu.as_mut() {
             match gpu.compose(camera) {
                 Ok(frame) => {
@@ -1616,12 +1741,13 @@ impl StageRenderResources {
                 }
             }
         }
-        self.compose_software(camera)
+        self.compose_software(camera, car_world)
     }
 
     fn compose_software(
         &self,
         camera: &[i32; 16],
+        car_world: Option<&[i32; 16]>,
     ) -> Result<RenderedStageFrameOutput, StageFrameError> {
         let scene = StageScene::from_c3d(
             self.bundle.scene(),
@@ -1660,6 +1786,28 @@ impl StageRenderResources {
             .map_err(StageFrameError::Compose)?;
             frame = frame
                 .merge_nearest(&graph_frame)
+                .map_err(StageFrameError::Compose)?;
+        }
+
+        if let (Some(car_scene), Some(car_textures), Some(car_world)) = (
+            self.car_scene.as_ref(),
+            self.car_textures.as_ref(),
+            car_world,
+        ) {
+            let car = StageScene::from_c3d(car_scene, car_world, VERTEXTYPE_LVERTEX)
+                .map_err(StageFrameError::Scene)?;
+            let car_frame = compose_stage_scene_frame_color_key(
+                &car,
+                camera,
+                [ROOT_EXTENT.width, ROOT_EXTENT.height],
+                &self.palette,
+                SoftwareC3dIndexedQuantization::NearestRgbL1LowestIndexNoDither,
+                0,
+                |ordinal| car_textures.texture_for_ordinal(ordinal),
+            )
+            .map_err(StageFrameError::Compose)?;
+            frame = frame
+                .merge_nearest(&car_frame)
                 .map_err(StageFrameError::Compose)?;
         }
 
@@ -1847,6 +1995,7 @@ struct ViewHarness {
     controller: ViewController,
     rng: GameLcg,
     change_view_down: bool,
+    trig: [i32; cmr_core::fixed_point::TRIG_TABLE_LEN],
 }
 
 impl ViewHarness {
@@ -1866,6 +2015,7 @@ impl ViewHarness {
             controller: ViewController::new(CameraMode::ChaseNear),
             rng: GameLcg::new(Self::VIEW_SEED),
             change_view_down: false,
+            trig: cmr_core::fixed_point::build_sine_table(),
         }
     }
 
@@ -1883,6 +2033,10 @@ impl ViewHarness {
         }
         self.change_view_down = change_view_down;
         self.controller.update(position, heading, pal)
+    }
+
+    fn car_world(&self, position: Vec3, heading: u16) -> [i32; 16] {
+        cmr_core::gameplay_camera::car_world_q16(&self.trig, position, heading)
     }
 }
 
@@ -1962,8 +2116,10 @@ fn advance_game_frame<C: HostClock>(
         let car = session.car();
         let change_view_down = input.keys.is_down(ViewHarness::CHANGE_VIEW_VK);
         let camera_world = camera.update(change_view_down, car.position, car.heading, false);
+        let harness_car_world = camera.car_world(car.position, car.heading);
+        let car_world = car_model_world_q16(&harness_car_world);
         resources
-            .compose(&camera_world)
+            .compose_with_car(&camera_world, Some(&car_world))
             .map(|rendered| rendered.frame)
     })?;
     // Race-end fade (state 0xb, FadeComposite): the recovered linear brightness
@@ -2328,10 +2484,15 @@ fn native_stage_setup(
     media_root: &Path,
     runtime_data: &Path,
     stage: &str,
+    car_code: Option<&str>,
     renderer: StageRendererChoice,
 ) -> Result<(StageRenderResources, Vec<CatNode>, CarState, [i32; 16]), StageFrameError> {
     let palette = load_native_stage_palette(runtime_data, stage)?;
-    let resources = StageRenderResources::load_with_palette(media_root, stage, renderer, palette)?;
+    let mut resources =
+        StageRenderResources::load_with_palette(media_root, stage, renderer, palette)?;
+    if let Some(car_code) = car_code {
+        resources.attach_car(runtime_data, car_code)?;
+    }
     let nodes = resources
         .bundle
         .nodes()
@@ -2349,11 +2510,18 @@ pub fn run_windowed_game_session(
     media_root: &Path,
     runtime_data: &Path,
     stage: &str,
+    car_code: &str,
     renderer: StageRendererChoice,
 ) -> Result<(), WindowedStageFrameError> {
     let (mut resources, nodes, start, initial_camera) =
-        native_stage_setup(media_root, runtime_data, stage, renderer)?;
-    let initial = resources.compose(&initial_camera)?;
+        native_stage_setup(media_root, runtime_data, stage, Some(car_code), renderer)?;
+    let initial_harness_world = cmr_core::gameplay_camera::car_world_q16(
+        &cmr_core::fixed_point::build_sine_table(),
+        start.position,
+        start.heading,
+    );
+    let initial_car_world = car_model_world_q16(&initial_harness_world);
+    let initial = resources.compose_with_car(&initial_camera, Some(&initial_car_world))?;
 
     let params = SimParams {
         inverse_mass: Fixed16::from_raw(0x8000),
@@ -2751,6 +2919,24 @@ mod tests {
     }
 
     #[test]
+    fn race_car_model_minus_x_axis_maps_to_harness_forward() {
+        let trig = cmr_core::fixed_point::build_sine_table();
+        let harness = cmr_core::gameplay_camera::car_world_q16(
+            &trig,
+            Vec3::new(
+                Fixed16::from_int(1),
+                Fixed16::from_int(2),
+                Fixed16::from_int(3),
+            ),
+            0,
+        );
+        let model = car_model_world_q16(&harness);
+        assert_eq!(&model[0..3], &[-0x10000, 0, 0]);
+        assert_eq!(&model[8..11], &[0, 0, -0x10000]);
+        assert_eq!(&model[12..15], &[0x10000, 0x20000, 0x30000]);
+    }
+
+    #[test]
     fn horizon_root_tracks_camera_position_with_identity_basis_and_ars_height() {
         let mut camera = MATRIX_IDENTITY_Q16;
         camera[0] = 0;
@@ -2877,6 +3063,7 @@ mod tests {
             &root.join("Game/Au/1"),
             &root,
             "AU1",
+            Some("Sub"),
             StageRendererChoice::Software,
         )
         .unwrap();
@@ -2887,7 +3074,22 @@ mod tests {
         assert!(resources.bundle.horizon().is_some());
         assert!(resources.bundle.ars().is_some());
         assert!(resources.horizon_textures.is_some());
-        let rendered = resources.compose(&initial_camera).unwrap();
+        assert!(resources.car_scene.is_some());
+        assert!(resources.car_textures.is_some());
+        let harness_car_world = cmr_core::gameplay_camera::car_world_q16(
+            &cmr_core::fixed_point::build_sine_table(),
+            start.position,
+            start.heading,
+        );
+        let car_world = car_model_world_q16(&harness_car_world);
+        let without_car = resources.compose(&initial_camera).unwrap();
+        let rendered = resources
+            .compose_with_car(&initial_camera, Some(&car_world))
+            .unwrap();
+        assert_ne!(
+            rendered.frame.digest_summary().canonical_frame_sha256,
+            without_car.frame.digest_summary().canonical_frame_sha256
+        );
         assert!(matches!(
             rendered.stats,
             StageRenderStats::Software(stats) if stats.prims_composed >= 3
@@ -2898,6 +3100,7 @@ mod tests {
                 &root.join("Game/Au/1"),
                 &root,
                 "AU1",
+                None,
                 StageRendererChoice::Gpu,
             ),
             Err(StageFrameError::GpuLayeredStageUnsupported)
@@ -2914,6 +3117,7 @@ mod tests {
             &root.join("Game/Au/1"),
             &root,
             "AU1",
+            Some("Sub"),
             StageRendererChoice::Software,
         )
         .unwrap();
@@ -3675,6 +3879,8 @@ mod tests {
                 "/media",
                 "--stage",
                 "MONACO1",
+                "--car-code",
+                "Sub",
             ]),
             None,
             None,
@@ -3683,7 +3889,43 @@ mod tests {
 
         assert_eq!(config.command(), AppCommand::HeadlessStageFrame);
         assert_eq!(config.stage(), Some("MONACO1"));
+        assert_eq!(config.car_code(), Some("Sub"));
         assert_eq!(config.media_root(), Some(Path::new("/media")));
+
+        assert_eq!(
+            runtime_config(
+                arguments(&[
+                    "--windowed-game-session",
+                    "--runtime-data",
+                    "/user",
+                    "--source",
+                    "/media",
+                    "--stage",
+                    "MONACO1",
+                ]),
+                None,
+                None,
+            ),
+            Err(ConfigError::MissingCarCode)
+        );
+        assert_eq!(
+            runtime_config(
+                arguments(&[
+                    "--windowed-game-session",
+                    "--runtime-data",
+                    "/user",
+                    "--source",
+                    "/media",
+                    "--stage",
+                    "MONACO1",
+                    "--car-code",
+                    "../Sub",
+                ]),
+                None,
+                None,
+            ),
+            Err(ConfigError::InvalidCarCode("../Sub".to_owned()))
+        );
     }
 
     #[test]
@@ -3734,6 +3976,8 @@ mod tests {
                 "/media",
                 "--stage",
                 "MONACO1",
+                "--car-code",
+                "Sub",
             ]),
             None,
             None,
@@ -3741,6 +3985,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.command(), AppCommand::WindowedGameSession);
         assert_eq!(config.stage(), Some("MONACO1"));
+        assert_eq!(config.car_code(), Some("Sub"));
         assert_eq!(config.media_root(), Some(Path::new("/media")));
 
         // Like the stage commands, it needs both a stage name and a media root.

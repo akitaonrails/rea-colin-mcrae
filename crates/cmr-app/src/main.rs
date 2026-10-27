@@ -77,10 +77,14 @@ fn main() -> ExitCode {
             }
             AppCommand::WindowedGameSession => {
                 let (media_root, stage) = stage_inputs(&config);
+                let car_code = config
+                    .car_code()
+                    .expect("windowed game session resolves with a car code");
                 match run_windowed_game_session(
                     media_root,
                     config.runtime_data(),
                     stage,
+                    car_code,
                     config.stage_renderer(),
                 ) {
                     Ok(()) => ExitCode::SUCCESS,

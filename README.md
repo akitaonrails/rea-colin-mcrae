@@ -25,11 +25,11 @@ DirectX/QMixer/DirectInput/DirectPlay DLLs are not required by the portable
 build.
 
 The native single-player stage supports live keyboard/gamepad driving, authored
-`.cat` checkpoints, the real stage palette, and a live follow camera. Its
-node-zero spawn, planar dynamics, and control strengths are explicit playable
-harness approximations, not recovered vehicle or spawn behavior. The player-car
-model and in-race HUD are not yet composed, and post-race sequencing remains a
-harness boundary.
+`.csp` starts and `.cat` checkpoints, layered stage scenery, the real stage
+palette, a caller-selected in-race car model, and a live follow camera. Its
+planar dynamics and control strengths remain explicit playable harness
+approximations. The in-race HUD, menu-to-race selection, layered GPU path, and
+post-race sequencing remain open.
 
 Unsupported boundaries are explicit: native driver-owned padding and exact
 font/filter/alpha output, alternate type-1 lighting, a concrete video decoder
@@ -129,12 +129,15 @@ cargo run --release -q -p cmr-app -- \
   --runtime-data runtime-data \
   --source "$CMR_ORIGINAL_DIR/Game/Au/1" \
   --stage AU1 \
+  --car-code Sub \
   --renderer auto        # auto | software | gpu
 ```
 
-`auto` (default) uses the GPU when a device is available and silently falls
-back to software; `software` forces the oracle compositor; `gpu` fails closed
-if the device or scene is unavailable. Measured per composed 640x480 stage
+`--car-code` is the asset code selected by the caller/menu; the reconstruction
+does not embed the original car table. `auto` (default) uses the GPU for the
+currently supported single-graph path and software for layered HZN/OBJ/SHT/car
+composition; `software` forces the oracle compositor; `gpu` fails closed when
+the requested scene contract is unavailable. Measured per composed 640x480 stage
 frame on this host: AU1 79.6 ms (software) vs 0.75 ms (GPU), NZ2 67.9 vs 1.07,
 MC5 101.4 vs 1.11, IN8 7.2 vs 0.16. The GPU index frame is held to the
 software oracle by the shared raw-C3D contract (hardware-gated test).

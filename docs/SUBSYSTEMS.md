@@ -2493,7 +2493,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   the existing planar dynamics and explicit control strengths so incomplete
   vertical-force integration cannot destabilize live driving. Authored `.cat`
   checkpoints drive progress; spawn, dynamics and post-race inputs remain
-  explicit harness boundaries. Player-car and in-race HUD composition remain.
+  explicit harness boundaries. The explicit caller-selected in-race C3D car is
+  depth-composed under the live pose; HUD composition remains open.
 - Rectangular C3D surface expansion does not define the contents of added
   padding. `FUN_0049e960` allocates a DirectDraw surface and `FUN_00499320`
   writes source-derived pixels only, so the indexed sampler keeps GR4's padded

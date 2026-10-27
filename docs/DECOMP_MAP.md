@@ -314,6 +314,7 @@ force sources, not the generated square-root entries themselves.
 - [x] `I11` Package binaries without copyrighted game payloads (the repository tracks only independently written source, documentation, and synthetic fixtures, and the importer writes user data to the Git-ignored `runtime-data/`. `crates/cmr-assets/tests/no_game_payloads.rs` makes the policy executable: it parses the embedded reviewed profile and hashes every tracked file whose size matches a catalogued payload size, failing if any SHA-256 matches the supported corpus (255 tracked files, 29 size-matched candidates, none catalogued today). It reads no game bytes and skips cleanly in a checkout without Git metadata. Packaging still depends on the user's own media; the explicit `--source`/`CMR_ORIGINAL_DIR` policy plus the ignored runtime-data root are the distribution boundary.)
 - [x] `I12` Document a controlled original-vs-reconstruction comparison ([docs/COMPARISON.md](COMPARISON.md) defines the comparison methodology and status map across five levels matching the reconstruction order: (1) artifact identity by SHA-256 against the recorded hashes; (2) format parity via synthetic differential fixtures + the malformed-input rejection boundary, with an optional owned-media byte-exact re-encode; (3) behavioral parity using the recovered constants/formulas encoded in pure Rust as standing oracles (the unit suite IS the comparison), recording unknowns rather than fabricating formulas; (4) persistence byte-exact round-trips gated on an owned original save (F07); (5) observational runtime parity as a scoped/opt-in procedure over the shared `image_compare` tolerance harness and the same backend contract tests. Documents the exact repeatable command (`cargo test --workspace`, extended by the I04 cross-check and I05 CI) and what each optional level needs, and explicitly separates gated comparisons from the intentional permanent deviations (portable paths vs registry, SDL vs DirectX, software mixer vs QMixer, no CD/MCI music) which are deferred to the I13 matrix. Linked from the README doc index. **I12 -> complete**: the comparison methodology, required gates and owned-media/runtime boundaries are documented. Optional levels are procedures, not missing baseline verification.)
 - [x] `I13` Publish a supported-edition and known-deviation matrix ([docs/DEVIATIONS.md](DEVIATIONS.md) publishes two matrices. The **supported-edition** matrix fixes the canonical EU updater payload as the sole recovery baseline and tracks the installed EU-derived executable, the official US payload, and the unofficial xdelta result as comparison variants only, with the explicit `--source`/`CMR_ORIGINAL_DIR` edition policy and the no-shipped-payload rule. The **known-deviation** matrix enumerates every intentional/necessary divergence with original mechanism, replacement, reason, and roadmap item: media/path resolution (registry->explicit roots), save/config location, presentation/3D (DirectX->SDL3/GPU), audio (QMixer->software mixer), music (PCM path, no CD - a recovered fact), video (MCI avivideo->portable backend), input (WinMM->portable mapper), calibration/rebinding (faithful to the absent UIs), force feedback (DirectInput->recovered semantics), required DLLs (none in the portable slice), packaging (no payloads), launcher/CLI (recovered no-CLI negative result), and the retained fixed-base assumption. Classifies them as portability deviations, backend deviations (each held to the same contract tests), and faithful non-deviations (recorded to pre-empt "missing feature" reports), and explicit unsupported boundaries. Linked from the README. **I13 -> complete**: the matrix covers GPU selection, FFB, networking, other editions, and unrun environment limits.)
+- [~] `I14` Deliver a verified native menu-to-race playable build. The direct-to-stage harness now loads an explicit caller-selected in-race car code from authenticated runtime data, parses its full-detail daytime C3D, remaps the recovered model `-X` forward basis into the gameplay convention, and depth-composes it with the layered stage. An X11/SDL release capture verifies the correctly aligned rear view and visible motion under a real throttle event. Still open: recovered menu-to-race selection, race HUD, live four-wheel producer, layered GPU rendering, full finish/post-race flow, car palette/livery fidelity, reflection/wheel/damage animation, and equivalent native-Windows execution.
 
 ## Update rules
 
@@ -324,13 +325,13 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-27T18:16:44Z
-milestone=integrate-stage-multigraph-and-authored-starts
+updated_utc=2026-10-27T18:21:09Z
+milestone=compose-live-player-car
 completed=117
-partial=1
+partial=2
 not_started=0
 blocked=0
-total=118
-current_focus=remaining-stage-sections-player-car-and-hud
+total=119
+current_focus=race-hud-menu-flow-and-layered-gpu
 next_exit_gate=verified-native-menu-to-race-with-layered-stage-player-car-and-hud
 <!-- PROGRESS-TAIL-END -->
