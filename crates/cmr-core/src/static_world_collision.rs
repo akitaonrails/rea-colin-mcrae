@@ -16,7 +16,7 @@ use crate::fixed_point::{Fixed16, Vec3};
 
 pub const STATIC_CONTACT_CAPACITY: usize = 5;
 /// Literal identity passed by the static-scenery wrapper to its response path.
-pub const STATIC_SCENERY_CONTACT_ID: u16 = 0;
+pub const STATIC_SCENERY_CONTACT_ID: i32 = 0;
 
 /// Emit the eight world-space OBB points of `FUN_0043ce70` in native order.
 /// Every scale/add/subtract uses the existing wrapping Q16 operations.
@@ -731,9 +731,9 @@ pub struct StaticCarCollisionFrame {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StaticContactHistory {
-    pub previous_ids: [u16; STATIC_CONTACT_CAPACITY],
+    pub previous_ids: [i16; STATIC_CONTACT_CAPACITY],
     pub previous_len: u8,
-    pub current_ids: [u16; STATIC_CONTACT_CAPACITY],
+    pub current_ids: [i16; STATIC_CONTACT_CAPACITY],
     pub current_len: u8,
     /// Reconstruction diagnostic only; the shipped path silently stops storing
     /// IDs at five and has no corresponding field.
@@ -753,7 +753,10 @@ impl Default for StaticContactHistory {
 }
 
 impl StaticContactHistory {
-    fn begin_tick(self) -> Self {
+    /// Rotate the completed current-contact list into the native previous list
+    /// and clear storage for one new collision tick.
+    #[must_use]
+    pub fn begin_tick(self) -> Self {
         Self {
             previous_ids: self.current_ids,
             previous_len: self.current_len.min(STATIC_CONTACT_CAPACITY as u8),
@@ -763,14 +766,17 @@ impl StaticContactHistory {
         }
     }
 
-    fn contained_last_tick(&self, id: u16) -> bool {
-        self.previous_ids[..usize::from(self.previous_len)].contains(&id)
+    #[must_use]
+    pub fn contained_last_tick(&self, id: i32) -> bool {
+        self.previous_ids[..usize::from(self.previous_len.min(STATIC_CONTACT_CAPACITY as u8))]
+            .iter()
+            .any(|stored| i32::from(*stored) == id)
     }
 
-    fn push(&mut self, id: u16) -> bool {
+    pub fn push(&mut self, id: i32) -> bool {
         let index = usize::from(self.current_len);
         if index < STATIC_CONTACT_CAPACITY {
-            self.current_ids[index] = id;
+            self.current_ids[index] = id as i16;
             self.current_len += 1;
             true
         } else {
@@ -786,6 +792,8 @@ pub struct StaticCollisionContribution {
     pub linear_impulse_3cc: Vec3,
     pub angular_impulse_3d8: Vec3,
     pub local_contact_arm_3f0: Vec3,
+    /// The one native signed response-history owner after this contact.
+    pub history: StaticContactHistory,
 }
 
 /// Sequential state visible to each native response invocation. The response
@@ -795,17 +803,26 @@ pub struct StaticCollisionRunningState {
     pub linear_impulse_3cc: Vec3,
     pub angular_impulse_3d8: Vec3,
     pub local_contact_arm_3f0: Vec3,
+    pub history: StaticContactHistory,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StaticResolvedContact {
-    pub collision_ordinal: u16,
-    pub contact_history_id: u16,
-    pub raw_material_id: u8,
-    pub alternate_collision_path: bool,
-    pub contact_normal: Vec3,
-    pub repeated_from_previous_tick: bool,
-    pub stored_in_current_history: bool,
+pub enum StaticResolvedContact {
+    /// `FUN_0043e140` overlap. It does not call the normal response and does not
+    /// append the literal-zero response-history identity.
+    Alternate {
+        collision_ordinal: u16,
+        raw_material_id: u8,
+    },
+    /// `FUN_0043e640` overlap followed by `FUN_0043d760`.
+    Normal {
+        collision_ordinal: u16,
+        contact_history_id: i32,
+        raw_material_id: u8,
+        contact_normal: Vec3,
+        repeated_from_previous_tick: bool,
+        stored_in_current_history: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -820,13 +837,22 @@ pub struct StaticCollisionEffects {
 pub trait StaticCollisionKernel<G> {
     type Error;
 
-    /// `None` means no overlap at the current pose.
     fn resolve(
         &mut self,
         frame: &StaticCarCollisionFrame,
         record: &StaticCollisionRecord<G>,
         running: StaticCollisionRunningState,
-    ) -> Result<Option<StaticCollisionContribution>, Self::Error>;
+    ) -> Result<StaticCollisionResolution, Self::Error>;
+}
+
+/// Explicit path metadata returned by a static collision kernel. In
+/// particular, an alternate overlap is not conflated with a normal response
+/// carrying a zero vector (zero is a legitimate normal result).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StaticCollisionResolution {
+    Miss,
+    Alternate,
+    Normal(StaticCollisionContribution),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -854,7 +880,7 @@ pub fn resolve_static_world_collisions<G, K: StaticCollisionKernel<G>>(
     for node in frame.active_nodes.into_iter().flatten() {
         for &record_index in scene.node_records(node) {
             let record = &scene.records[record_index];
-            let contribution = kernel
+            let resolution = kernel
                 .resolve(
                     frame,
                     record,
@@ -862,6 +888,7 @@ pub fn resolve_static_world_collisions<G, K: StaticCollisionKernel<G>>(
                         linear_impulse_3cc: effects.linear_impulse_3cc,
                         angular_impulse_3d8: effects.angular_impulse_3d8,
                         local_contact_arm_3f0: effects.local_contact_arm_3f0,
+                        history: effects.history,
                     },
                 )
                 .map_err(|source| StaticCollisionExecutionError {
@@ -869,25 +896,33 @@ pub fn resolve_static_world_collisions<G, K: StaticCollisionKernel<G>>(
                     record_index,
                     source,
                 })?;
-            let Some(contribution) = contribution else {
-                continue;
-            };
-            effects.linear_impulse_3cc = contribution.linear_impulse_3cc;
-            effects.angular_impulse_3d8 = contribution.angular_impulse_3d8;
-            effects.local_contact_arm_3f0 = contribution.local_contact_arm_3f0;
-            let repeated = effects
-                .history
-                .contained_last_tick(STATIC_SCENERY_CONTACT_ID);
-            let stored = effects.history.push(STATIC_SCENERY_CONTACT_ID);
-            effects.contacts.push(StaticResolvedContact {
-                collision_ordinal: record.collision_ordinal,
-                contact_history_id: STATIC_SCENERY_CONTACT_ID,
-                raw_material_id: record.raw_material_id(),
-                alternate_collision_path: record.alternate_collision_path(),
-                contact_normal: contribution.contact_normal,
-                repeated_from_previous_tick: repeated,
-                stored_in_current_history: stored,
-            });
+            match resolution {
+                StaticCollisionResolution::Miss => {}
+                StaticCollisionResolution::Alternate => {
+                    effects.contacts.push(StaticResolvedContact::Alternate {
+                        collision_ordinal: record.collision_ordinal,
+                        raw_material_id: record.raw_material_id(),
+                    });
+                }
+                StaticCollisionResolution::Normal(contribution) => {
+                    let repeated = effects
+                        .history
+                        .contained_last_tick(STATIC_SCENERY_CONTACT_ID);
+                    let stored = contribution.history.current_len > effects.history.current_len;
+                    effects.linear_impulse_3cc = contribution.linear_impulse_3cc;
+                    effects.angular_impulse_3d8 = contribution.angular_impulse_3d8;
+                    effects.local_contact_arm_3f0 = contribution.local_contact_arm_3f0;
+                    effects.history = contribution.history;
+                    effects.contacts.push(StaticResolvedContact::Normal {
+                        collision_ordinal: record.collision_ordinal,
+                        contact_history_id: STATIC_SCENERY_CONTACT_ID,
+                        raw_material_id: record.raw_material_id(),
+                        contact_normal: contribution.contact_normal,
+                        repeated_from_previous_tick: repeated,
+                        stored_in_current_history: stored,
+                    });
+                }
+            }
         }
     }
     Ok(effects)
@@ -983,7 +1018,7 @@ mod tests {
             frame: &StaticCarCollisionFrame,
             record: &StaticCollisionRecord<u8>,
             running: StaticCollisionRunningState,
-        ) -> Result<Option<StaticCollisionContribution>, Self::Error> {
+        ) -> Result<StaticCollisionResolution, Self::Error> {
             self.calls.push((
                 record.collision_ordinal,
                 frame.previous_center_xz.map(Fixed16::raw),
@@ -993,22 +1028,30 @@ mod tests {
                 return Err(record.collision_ordinal);
             }
             if record.geometry == 0 {
-                return Ok(None);
+                return Ok(StaticCollisionResolution::Miss);
             }
-            Ok(Some(StaticCollisionContribution {
-                contact_normal: vec3(i32::from(record.geometry), 0, 0),
-                linear_impulse_3cc: running.linear_impulse_3cc.add(vec3(
-                    i32::MAX,
-                    i32::from(record.geometry),
-                    0,
-                )),
-                angular_impulse_3d8: running.angular_impulse_3d8.add(vec3(
-                    0,
-                    0,
-                    i32::from(record.geometry),
-                )),
-                local_contact_arm_3f0: running.local_contact_arm_3f0.add(vec3(1, 0, 0)),
-            }))
+            if record.alternate_collision_path() {
+                return Ok(StaticCollisionResolution::Alternate);
+            }
+            let mut history = running.history;
+            history.push(STATIC_SCENERY_CONTACT_ID);
+            Ok(StaticCollisionResolution::Normal(
+                StaticCollisionContribution {
+                    contact_normal: vec3(i32::from(record.geometry), 0, 0),
+                    linear_impulse_3cc: running.linear_impulse_3cc.add(vec3(
+                        i32::MAX,
+                        i32::from(record.geometry),
+                        0,
+                    )),
+                    angular_impulse_3d8: running.angular_impulse_3d8.add(vec3(
+                        0,
+                        0,
+                        i32::from(record.geometry),
+                    )),
+                    local_contact_arm_3f0: running.local_contact_arm_3f0.add(vec3(1, 0, 0)),
+                    history,
+                },
+            ))
         }
     }
 
@@ -1409,22 +1452,31 @@ mod tests {
             [11, 10, 12]
         );
         assert!(kernel.calls.iter().all(|v| v.1 == [123, -456]));
-        assert_eq!(effects.linear_impulse_3cc, vec3(3, 9, 7));
-        assert_eq!(effects.angular_impulse_3d8, vec3(1, 2, 6));
-        assert_eq!(
-            kernel.calls[2].2.linear_impulse_3cc,
-            vec3(i32::MIN + 4, 7, 7)
-        );
-        assert_eq!(kernel.calls[2].2.angular_impulse_3d8, vec3(1, 2, 4));
-        assert_eq!(effects.local_contact_arm_3f0, vec3(9, 8, 9));
+        assert_eq!(effects.linear_impulse_3cc, vec3(i32::MIN + 4, 8, 7));
+        assert_eq!(effects.angular_impulse_3d8, vec3(1, 2, 5));
+        assert_eq!(kernel.calls[2].2.linear_impulse_3cc, vec3(5, 6, 7));
+        assert_eq!(kernel.calls[2].2.angular_impulse_3d8, vec3(1, 2, 3));
+        assert_eq!(effects.local_contact_arm_3f0, vec3(8, 8, 9));
         assert_eq!(effects.history.previous_ids[..2], [0, 99]);
-        assert_eq!(effects.history.current_ids[..2], [0, 0]);
-        assert_eq!(effects.contacts[0].collision_ordinal, 10);
-        assert_eq!(effects.contacts[0].contact_history_id, 0);
-        assert_eq!(effects.contacts[0].raw_material_id, 5);
-        assert!(effects.contacts[0].alternate_collision_path);
-        assert!(effects.contacts[0].repeated_from_previous_tick);
-        assert!(effects.contacts[1].repeated_from_previous_tick);
+        assert_eq!(effects.history.current_ids[..1], [0]);
+        assert_eq!(
+            effects.contacts[0],
+            StaticResolvedContact::Alternate {
+                collision_ordinal: 10,
+                raw_material_id: 5,
+            }
+        );
+        assert_eq!(
+            effects.contacts[1],
+            StaticResolvedContact::Normal {
+                collision_ordinal: 12,
+                contact_history_id: 0,
+                raw_material_id: 3,
+                contact_normal: vec3(2, 0, 0),
+                repeated_from_previous_tick: true,
+                stored_in_current_history: true,
+            }
+        );
     }
 
     #[test]

@@ -15,9 +15,10 @@ use cmr_app::{
     StageRendererKind, render_stage_frame, run_headless_stage_frame,
 };
 use cmr_formats::c3d::{
-    C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS, C3D_FORMAT_VERSION, C3D_GROUP0_VALUES_OFFSET,
-    C3D_GROUP1_ENTRY24_LEN, C3D_GROUP1_ENTRY32_LEN, C3D_GROUP1_FIXED_LEN, C3D_HEADER_LEN,
-    C3D_MAGIC,
+    C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS, C3D_FORMAT_VERSION, C3D_GROUP0_AFFINE_MATRIX_OFFSET,
+    C3D_GROUP0_FIXED_LEN, C3D_GROUP0_NODE_CLASS_OFFSET, C3D_GROUP0_VALUE_COUNT_OFFSET,
+    C3D_GROUP0_VALUES_OFFSET, C3D_GROUP1_COLLISION_BOUNDS_OFFSET, C3D_GROUP1_ENTRY24_LEN,
+    C3D_GROUP1_ENTRY32_LEN, C3D_GROUP1_FIXED_LEN, C3D_HEADER_LEN, C3D_MAGIC,
 };
 use cmr_formats::stage::{
     ARS_EXTENSION, C3D_EXTENSION, CAT_EXTENSION, CAT_NODE_STRIDE, HZN_EXTENSION, OBJ_EXTENSION,
@@ -92,6 +93,58 @@ fn composes_a_drawable_stage_from_a_source_root() {
             .stable_summary()
             .contains(media.root().to_str().unwrap())
     );
+}
+
+#[test]
+fn load_retains_the_parsed_static_collision_scene() {
+    let media = MediaDir::new();
+    media.write_section("collision", C3D_EXTENSION, &collision_grid_c3d());
+    media.write_section("collision", OBJ_EXTENSION, &collision_object_c3d(0));
+
+    let resources =
+        StageRenderResources::load_with(media.root(), "collision", StageRendererChoice::Software)
+            .unwrap();
+    let collision = resources
+        .static_collision_scene()
+        .expect("an OBJ sibling builds one retained collision scene");
+
+    assert_eq!(collision.grid.width, 2);
+    assert_eq!(collision.grid.height, 1);
+    assert_eq!(collision.scene.records().len(), 1);
+    let record = &collision.scene.records()[0];
+    assert_eq!(record.collision_ordinal, 0);
+    assert_eq!(record.raw_material_flags, 3);
+    let cell =
+        cmr_core::static_world_collision::StaticCollisionNodeId::new(collision.grid.cell_of_point(
+            record.geometry.center.x.raw(),
+            record.geometry.center.z.raw(),
+        ))
+        .unwrap();
+    assert_eq!(collision.scene.node_records(cell), [0]);
+}
+
+#[test]
+fn load_surfaces_typed_static_collision_builder_failures() {
+    let media = MediaDir::new();
+    media.write_section(
+        "badcollision",
+        C3D_EXTENSION,
+        &drawable_c3d(&indexed_bitmap_4x4(), [0, 0, -(1 << 16)]),
+    );
+    media.write_section("badcollision", OBJ_EXTENSION, &collision_object_c3d(0));
+
+    let error = match StageRenderResources::load_with(
+        media.root(),
+        "badcollision",
+        StageRendererChoice::Software,
+    ) {
+        Ok(_) => panic!("malformed collision grid must fail stage setup"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind(), "static-collision");
+    assert!(matches!(error, StageFrameError::StaticCollision(_)));
+    assert!(std::error::Error::source(&error).is_some());
 }
 
 #[test]
@@ -181,7 +234,8 @@ fn a_malformed_scene_is_a_load_error() {
 fn gpu_and_software_render_the_same_synthetic_layered_stage_frame() {
     let media = MediaDir::new();
     let scene = drawable_c3d(&indexed_bitmap_4x4(), [0, 0, -(1 << 16)]);
-    media.write_section("gpucompare", C3D_EXTENSION, &scene);
+    let main_scene = drawable_collision_grid_c3d(&scene);
+    media.write_section("gpucompare", C3D_EXTENSION, &main_scene);
     media.write_section("gpucompare", OBJ_EXTENSION, &scene);
     media.write_section("gpucompare", SHT_EXTENSION, &scene);
     media.write_section("gpucompare", HZN_EXTENSION, &scene);
@@ -233,6 +287,41 @@ fn gpu_and_software_render_the_same_synthetic_layered_stage_frame() {
     let gpu_moved = gpu_resources.compose(&moved).unwrap();
     assert_eq!(gpu_moved.renderer, StageRendererKind::Gpu);
     assert_eq!(gpu_moved.frame.pixels(), software_moved.frame.pixels());
+}
+
+/// Retains the drawable root and appends two source-owned meshless main-C3D
+/// cell records, so the layered renderer fixture also satisfies the recovered
+/// collision-grid load contract.
+fn drawable_collision_grid_c3d(drawable: &[u8]) -> Vec<u8> {
+    let old_group1_start = u32::from_le_bytes(drawable[24..28].try_into().unwrap()) as usize;
+    let old_group2_start = u32::from_le_bytes(drawable[28..32].try_into().unwrap()) as usize;
+    let added_len = 2 * C3D_GROUP0_FIXED_LEN;
+    let new_group1_start = old_group1_start + added_len;
+    let new_group2_start = old_group2_start + added_len;
+    let mut bytes = vec![0_u8; drawable.len() + added_len];
+    bytes[..old_group1_start].copy_from_slice(&drawable[..old_group1_start]);
+    bytes[new_group1_start..].copy_from_slice(&drawable[old_group1_start..]);
+    bytes[12..14].copy_from_slice(&3_u16.to_le_bytes());
+    bytes[24..28].copy_from_slice(&(new_group1_start as u32).to_le_bytes());
+    bytes[28..32].copy_from_slice(&(new_group2_start as u32).to_le_bytes());
+
+    for (record_index, translation) in [[0_i32, 0, 1 << 16], [4 << 16, 0, 1 << 16]]
+        .into_iter()
+        .enumerate()
+    {
+        let offset = old_group1_start + record_index * C3D_GROUP0_FIXED_LEN;
+        bytes[offset..offset + 4].copy_from_slice(&(C3D_GROUP0_FIXED_LEN as u32).to_le_bytes());
+        bytes[offset + 4..offset + 6].copy_from_slice(&(-1_i16).to_le_bytes());
+        for index in [0, 5, 10, 15] {
+            let start = offset + C3D_GROUP0_AFFINE_MATRIX_OFFSET + index * 4;
+            bytes[start..start + 4].copy_from_slice(&(1_i32 << 16).to_le_bytes());
+        }
+        for (index, component) in translation.into_iter().enumerate() {
+            let start = offset + C3D_GROUP0_AFFINE_MATRIX_OFFSET + (12 + index) * 4;
+            bytes[start..start + 4].copy_from_slice(&component.to_le_bytes());
+        }
+    }
+    bytes
 }
 
 /// A minimal CM3D scene: one root group-0 node selecting one group-1 LOD mesh of
@@ -313,6 +402,75 @@ fn drawable_c3d(bitmap: &[u8], normal_q16: [i32; 3]) -> Vec<u8> {
     input[blob_start + 12..blob_start + 16].copy_from_slice(&(bitmap.len() as u32).to_le_bytes());
     input[blob_start + 16..].copy_from_slice(bitmap);
     input
+}
+
+fn collision_grid_c3d() -> Vec<u8> {
+    collision_c3d(
+        &[
+            ([0, 0, 0], 0, None),
+            ([0, 0, 1 << 16], 0, None),
+            ([4 << 16, 0, 1 << 16], 0, None),
+        ],
+        &[],
+    )
+}
+
+fn collision_object_c3d(group1_ordinal: u16) -> Vec<u8> {
+    collision_c3d(
+        &[([3 << 16, 0, 1 << 16], (1 << 29) | 3, Some(group1_ordinal))],
+        &[[2 << 16; 3]],
+    )
+}
+
+/// Minimal source-owned main/OBJ C3D shape for the parsed collision bridge.
+fn collision_c3d(group0: &[([i32; 3], u32, Option<u16>)], bounds: &[[i32; 3]]) -> Vec<u8> {
+    let group0_len: usize = group0
+        .iter()
+        .map(|(_, _, ordinal)| C3D_GROUP0_FIXED_LEN + usize::from(ordinal.is_some()) * 2)
+        .sum();
+    let group1_start = C3D_HEADER_LEN + group0_len;
+    let end = group1_start + bounds.len() * C3D_GROUP1_FIXED_LEN;
+    let mut bytes = vec![0_u8; end];
+    bytes[0..4].copy_from_slice(&C3D_MAGIC);
+    bytes[4..8].copy_from_slice(&C3D_FORMAT_VERSION.to_le_bytes());
+    bytes[12..14].copy_from_slice(&(group0.len() as u16).to_le_bytes());
+    bytes[14..16].copy_from_slice(&(bounds.len() as u16).to_le_bytes());
+    bytes[20..24].copy_from_slice(&(C3D_HEADER_LEN as u32).to_le_bytes());
+    bytes[24..28].copy_from_slice(&(group1_start as u32).to_le_bytes());
+    bytes[28..32].copy_from_slice(&(end as u32).to_le_bytes());
+
+    let mut offset = C3D_HEADER_LEN;
+    for &(translation, class, ordinal) in group0 {
+        let len = C3D_GROUP0_FIXED_LEN + usize::from(ordinal.is_some()) * 2;
+        bytes[offset..offset + 4].copy_from_slice(&(len as u32).to_le_bytes());
+        bytes[offset + 4..offset + 6].copy_from_slice(&(-1_i16).to_le_bytes());
+        for index in [0, 5, 10, 15] {
+            let start = offset + C3D_GROUP0_AFFINE_MATRIX_OFFSET + index * 4;
+            bytes[start..start + 4].copy_from_slice(&(1_i32 << 16).to_le_bytes());
+        }
+        for (index, component) in translation.into_iter().enumerate() {
+            let start = offset + C3D_GROUP0_AFFINE_MATRIX_OFFSET + (12 + index) * 4;
+            bytes[start..start + 4].copy_from_slice(&component.to_le_bytes());
+        }
+        bytes[offset + C3D_GROUP0_NODE_CLASS_OFFSET..offset + C3D_GROUP0_NODE_CLASS_OFFSET + 4]
+            .copy_from_slice(&class.to_le_bytes());
+        if let Some(ordinal) = ordinal {
+            bytes[offset + C3D_GROUP0_VALUE_COUNT_OFFSET] = 1;
+            bytes[offset + C3D_GROUP0_VALUES_OFFSET..offset + C3D_GROUP0_VALUES_OFFSET + 2]
+                .copy_from_slice(&ordinal.to_le_bytes());
+        }
+        offset += len;
+    }
+    for bound in bounds {
+        bytes[offset + 12..offset + 16]
+            .copy_from_slice(&(C3D_GROUP1_FIXED_LEN as u32).to_le_bytes());
+        for (index, component) in bound.iter().copied().enumerate() {
+            let start = offset + C3D_GROUP1_COLLISION_BOUNDS_OFFSET + index * 4;
+            bytes[start..start + 4].copy_from_slice(&component.to_le_bytes());
+        }
+        offset += C3D_GROUP1_FIXED_LEN;
+    }
+    bytes
 }
 
 /// A tiny 4x4, 8bpp `BM` bitmap with a full 256-entry palette.

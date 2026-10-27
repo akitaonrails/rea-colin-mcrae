@@ -1719,9 +1719,14 @@ narrow paths and the response arithmetic are now test-backed. The pure parsed-
 scene bridge applies the recovered OBJ admission, shallow traversal, first
 group-1 bound, immediate-parent translation, root-local basis/scale and native
 cell-prepend rules; an AU1 read-in-place diagnostic accounts for 2,169 records
-across 156 occupied cells of the derived 29x26 grid. The exact live car hull,
-projection cache, active-cell selection and session response publication remain
-the next gate; render mesh AABBs are not accepted as compatibility geometry.
+across 156 occupied cells of the derived 29x26 grid. The pure live-car producer
+now captures pre-integration X/Z, rebuilds/deforms the eight-point hull, creates
+the horizontal projection cache and expands the strict four-cell neighborhood.
+The concrete kernel distinguishes alternate/miss/normal paths, owns one tick-
+rotated history and consumes ordered per-normal external results; the app now
+retains the parsed scene at stage load. Primary-cell resolution and persistent
+session response publication remain the next gate; render mesh AABBs are not
+accepted as compatibility geometry.
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI

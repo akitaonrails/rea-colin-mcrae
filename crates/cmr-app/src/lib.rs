@@ -74,6 +74,10 @@ use cmr_core::startup::{StartupLanguage, StartupScreen};
 use cmr_core::startup_display::{
     StartupDisplay, StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
 };
+use cmr_core::static_collision_scene_builder::{
+    ParsedStaticCollisionBuildError, ParsedStaticCollisionScene,
+    build_parsed_static_collision_scene,
+};
 use cmr_core::surface::PaletteMapping;
 use cmr_core::vehicle_dynamics::{
     AngularMomentumStepInput, AngularOrientationInput, ControlAxisFlags, GeometricPostprocessLane,
@@ -1304,6 +1308,9 @@ pub enum StageFrameError {
     Scene(StageSceneError),
     /// The scene's group-2 textures could not be prepared.
     Texture(StageC3dTextureError),
+    /// Parsed main-C3D/OBJ data could not be translated into the recovered
+    /// immutable static-collision scene.
+    StaticCollision(ParsedStaticCollisionBuildError),
     /// The stage scene could not be composed into a frame.
     Compose(StageSceneComposeError),
     /// The composed frame could not be bridged to the presentation type.
@@ -1386,6 +1393,7 @@ impl StageFrameError {
             Self::Load(_) => "load",
             Self::Scene(_) => "scene",
             Self::Texture(_) => "texture",
+            Self::StaticCollision(_) => "static-collision",
             Self::Compose(_) => "compose",
             Self::Present(_) => "present",
             Self::LoadingBitmap(_) => "loading-bitmap",
@@ -1434,6 +1442,9 @@ impl fmt::Display for StageFrameError {
             Self::Load(error) => write!(formatter, "cannot load stage bundle: {error}"),
             Self::Scene(error) => write!(formatter, "cannot walk stage scene: {error}"),
             Self::Texture(error) => write!(formatter, "cannot prepare stage textures: {error}"),
+            Self::StaticCollision(error) => {
+                write!(formatter, "cannot build static collision scene: {error}")
+            }
             Self::Compose(error) => write!(formatter, "cannot compose stage frame: {error}"),
             Self::Present(error) => write!(formatter, "cannot present stage frame: {error}"),
             Self::LoadingBitmap(error) => {
@@ -1529,6 +1540,7 @@ impl std::error::Error for StageFrameError {
             Self::Load(error) => Some(error),
             Self::Scene(error) => Some(error),
             Self::Texture(error) => Some(error),
+            Self::StaticCollision(error) => Some(error),
             Self::Compose(error) => Some(error),
             Self::Present(error) => Some(error),
             Self::LoadingBitmap(error) => Some(error),
@@ -2042,6 +2054,7 @@ fn parse_race_hud_font(font: RaceHudFont, bytes: &[u8]) -> Result<BitmapFont, St
 pub struct StageRenderResources {
     stage: String,
     bundle: StageBundle,
+    static_collision_scene: Option<ParsedStaticCollisionScene>,
     loading_background: Option<SoftwarePresentedFrame>,
     loading_overlay: Option<LoadingOverlayAssets>,
     textures: StageC3dTextures,
@@ -2104,6 +2117,11 @@ impl StageRenderResources {
             .map(|bytes| parse_loading_background(&bytes))
             .transpose()?;
         let bundle = load_stage(&source, C3dLimits::default()).map_err(StageFrameError::Load)?;
+        let static_collision_scene = bundle
+            .objects()
+            .map(|objects| build_parsed_static_collision_scene(bundle.scene(), objects))
+            .transpose()
+            .map_err(StageFrameError::StaticCollision)?;
         let textures = StageC3dTextures::prepare(bundle.scene(), BitmapLimits::default())
             .map_err(StageFrameError::Texture)?;
         let horizon_textures = bundle
@@ -2132,6 +2150,7 @@ impl StageRenderResources {
         let mut resources = StageRenderResources {
             stage: stage.to_owned(),
             bundle,
+            static_collision_scene,
             loading_background,
             loading_overlay: None,
             textures,
@@ -2158,6 +2177,14 @@ impl StageRenderResources {
     #[must_use]
     pub fn loading_background(&self) -> Option<&SoftwarePresentedFrame> {
         self.loading_background.as_ref()
+    }
+
+    /// Immutable recovered collision records built once from the retained
+    /// main-C3D grid and OBJ graph. A stage without an OBJ sibling has no
+    /// static collision scene; live car/session wiring is a separate step.
+    #[must_use]
+    pub fn static_collision_scene(&self) -> Option<&ParsedStaticCollisionScene> {
+        self.static_collision_scene.as_ref()
     }
 
     fn prepare_gpu_foreground(&self) -> Result<PreparedRawStage, StageFrameError> {

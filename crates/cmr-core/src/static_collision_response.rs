@@ -13,6 +13,7 @@
 //! contract; [`DamageResult`] is the explicit boundary for that work.
 
 use crate::fixed_point::{Fixed16, Vec3};
+pub use crate::static_world_collision::StaticContactHistory as StaticResponseHistory;
 
 pub const STATIC_RESPONSE_HISTORY_CAPACITY: usize = 5;
 pub const STATIC_RESPONSE_CONTACT_ID: i32 = 0;
@@ -61,32 +62,6 @@ impl ResponseBasis {
                 .add(self.rows[1].z.mul(value.y))
                 .add(self.rows[2].z.mul(value.z)),
         )
-    }
-}
-
-/// Native previous/current contact-ID arrays. IDs are signed words when read
-/// and truncated to 16 bits when appended. Valid game state keeps both lengths
-/// in `0..=5`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
-pub struct StaticResponseHistory {
-    pub previous_ids: [i16; STATIC_RESPONSE_HISTORY_CAPACITY],
-    pub previous_len: u8,
-    pub current_ids: [i16; STATIC_RESPONSE_HISTORY_CAPACITY],
-    pub current_len: u8,
-}
-
-impl StaticResponseHistory {
-    fn contains_previous(self, contact_id: i32) -> bool {
-        self.previous_ids[..usize::from(self.previous_len.min(5))]
-            .iter()
-            .any(|id| i32::from(*id) == contact_id)
-    }
-
-    fn append_current(&mut self, contact_id: i32) {
-        if self.current_len < 5 {
-            self.current_ids[usize::from(self.current_len)] = contact_id as i16;
-            self.current_len = self.current_len.wrapping_add(1);
-        }
     }
 }
 
@@ -266,7 +241,7 @@ pub fn apply_static_collision_response(
     let body_correction = state.basis_2a0.world_to_body(full_world_correction);
     state.linear_correction_3cc = state.linear_correction_3cc.add(full_world_correction);
 
-    let previous_contact = state.history.contains_previous(input.contact_id);
+    let previous_contact = state.history.contained_last_tick(input.contact_id);
     if !previous_contact {
         events.push(StaticResponseEvent::RequestDamage {
             linear_correction: state.linear_correction_3cc,
@@ -366,7 +341,7 @@ pub fn apply_static_collision_response(
     state.angular_correction_3d8.x = clamp_raw(state.angular_correction_3d8.x, -0x8_0000, 0x8_0000);
     state.angular_correction_3d8.y = clamp_raw(state.angular_correction_3d8.y, -0x4_0000, 0x4_0000);
     state.angular_correction_3d8.z = clamp_raw(state.angular_correction_3d8.z, -0x8_0000, 0x8_0000);
-    state.history.append_current(input.contact_id);
+    state.history.push(input.contact_id);
 
     StaticCollisionResponseOutcome {
         state,
