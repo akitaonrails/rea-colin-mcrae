@@ -1853,10 +1853,16 @@ languages rather than fabricating or silently aliasing Italian assets.
   exact OBJ OBB geometry/projection, main-C3D grid derivation, prepend order,
   literal-zero history identity and both reciprocal-corner narrow paths;
   `static_collision_response` pins the direct normal response and exceptional
-  branches. Parsed scene construction, active-cell selection and live session
-  integration remain open; renderer bounds are not substituted. See
+  branches. Parsed scene construction is now implemented below; active-cell
+  selection and live session integration remain open, and renderer bounds are
+  not substituted. See
   evidence `rea.official-eu.sim-collision` and
   `impl.static-world-collision-orchestration`.
+  `static_collision_scene_builder` now bridges checked main/OBJ C3D parsers to
+  those records using the recovered admission, shallow traversal, immediate-
+  parent translation, root-local scale/basis and native-prepend cell rules.
+  AU1 read-in-place diagnostics account for 2,169 records in 156 occupied
+  cells; the live car hull/cache and mechanics-session publication remain open.
 - Stage timing uses the global clock `DAT_005ffc00`, a Q16.16 value in seconds
   advanced once per physics tick (step `2^32/(rate*0x10000)` = `0xa3d`~0.04 s at
   25 Hz, the same dt as `sim_clock`; `0x51e` at 50 Hz), saturating at

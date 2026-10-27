@@ -41,6 +41,11 @@ pub const C3D_NODE_TRANSLUCENT_CLASS: u32 = 0x6f;
 pub const C3D_GROUP1_FIXED_LEN: usize = 48;
 pub const C3D_GROUP1_PREFIX_LEN: usize = 12;
 pub const C3D_GROUP1_UNKNOWN_LEN: usize = 28;
+/// Offset of the three signed Q16.16 bound words copied by `FUN_004a2b70` to
+/// runtime mesh `+0x90/+0x94/+0x98` and consumed by the static OBJ collision
+/// builder.
+pub const C3D_GROUP1_COLLISION_BOUNDS_OFFSET: usize = 0x24;
+pub const C3D_GROUP1_COLLISION_BOUND_COUNT: usize = 3;
 pub const C3D_GROUP1_ENTRY32_LEN: usize = 32;
 pub const C3D_GROUP1_ENTRY24_LEN: usize = 24;
 pub const C3D_ENTRY24_ENTRY32_ORDINAL_OFFSETS: [usize; 3] = [2, 4, 6];
@@ -525,6 +530,18 @@ impl<'a> C3dGroup1Record<'a> {
     #[must_use]
     pub const fn unknown_bytes(self) -> &'a [u8; C3D_GROUP1_UNKNOWN_LEN] {
         self.unknown
+    }
+
+    /// Returns the three signed Q16.16 bounds copied verbatim into the runtime
+    /// mesh fields used by the recovered static-collision builder.
+    #[must_use]
+    pub fn collision_bounds_q16(self) -> [i32; C3D_GROUP1_COLLISION_BOUND_COUNT] {
+        std::array::from_fn(|index| {
+            read_i32(
+                self.bytes,
+                C3D_GROUP1_COLLISION_BOUNDS_OFFSET + index * size_of::<i32>(),
+            )
+        })
     }
 
     pub fn entries_32(self) -> impl ExactSizeIterator<Item = C3dEntry32<'a>> {
@@ -2595,6 +2612,31 @@ mod tests {
 
         assert_eq!(record.affine_matrix_q16(), expected);
         assert_eq!(record.bytes(), &original[32..112]);
+        assert_eq!(parsed.bytes(), original);
+    }
+
+    #[test]
+    fn exposes_group1_collision_bounds_as_signed_little_endian() {
+        assert_eq!(C3D_GROUP1_COLLISION_BOUNDS_OFFSET, 0x24);
+        assert_eq!(C3D_GROUP1_COLLISION_BOUND_COUNT, 3);
+
+        let mut input = fixture([0, 1, 0], [32, 32, 80], 80);
+        assert_eq!(
+            write_group1_record(&mut input, 32, *b"BOUNDS-Q16\0X", 0, 0, 0),
+            80
+        );
+        let expected = [i32::MIN, -0x0001_2345, i32::MAX];
+        for (index, value) in expected.into_iter().enumerate() {
+            let start = 32 + C3D_GROUP1_COLLISION_BOUNDS_OFFSET + index * 4;
+            input[start..start + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let original = input.clone();
+
+        let parsed = parse_c3d(&input, LIMITS).unwrap();
+        let record = parsed.group1_records().next().unwrap();
+
+        assert_eq!(record.collision_bounds_q16(), expected);
+        assert_eq!(record.bytes(), &original[32..80]);
         assert_eq!(parsed.bytes(), original);
     }
 

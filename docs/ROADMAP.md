@@ -1715,10 +1715,13 @@ records, exact point/projection helpers, main-C3D grid provenance, native list
 prepend order and literal-zero static history identity. A tested provider
 boundary owns those 4,096 cell lists, raw materials, sequential accumulator
 state and five-ID history. Exact OBB/grid construction, both reciprocal-corner
-narrow paths and the response arithmetic are now test-backed. Parsed OBJ/main-
-C3D record construction, active-cell selection and live session publication
-remain the next gate; render mesh AABBs are not accepted as compatibility
-collision geometry.
+narrow paths and the response arithmetic are now test-backed. The pure parsed-
+scene bridge applies the recovered OBJ admission, shallow traversal, first
+group-1 bound, immediate-parent translation, root-local basis/scale and native
+cell-prepend rules; an AU1 read-in-place diagnostic accounts for 2,169 records
+across 156 occupied cells of the derived 29x26 grid. The exact live car hull,
+projection cache, active-cell selection and session response publication remain
+the next gate; render mesh AABBs are not accepted as compatibility geometry.
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI

@@ -132,6 +132,7 @@ pub mod startup;
 pub mod startup_display;
 pub mod startup_surface;
 pub mod static_collision_response;
+pub mod static_collision_scene_builder;
 pub mod static_world_collision;
 pub mod surface;
 pub mod timing;
