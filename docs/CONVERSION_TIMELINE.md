@@ -692,7 +692,9 @@ touched. Per-commit granularity for the full history is recoverable with
 
 | 2026-10-26T23:32Z | 152h14m | implement-native-playable-stage | `9b2cd72` | G01, I03, I07 | Replaced native harness checkpoints with authored `.cat` nodes, loaded real country palettes before software/GPU preparation, and derived a coherent node-zero spawn and first chase camera. Four focused tests cover spawn, errors, mapping and curved progression; imported AU1 composition and GPU preparation pass. Node-zero startup is explicitly approximate and post-race sequencer flags remain harness inputs. |
 
-| 2026-10-26T23:57Z | 152h39m | fix-idle-gamepad-keyboard-fallback | _(pending)_ | B10, I07 | Analog driving now requires non-neutral pad input. Idle connected gamepads no longer mask keyboard throttle. Added SDL activity and app fallback tests; full workspace gates pass. |
+| 2026-10-26T23:57Z | 152h39m | fix-idle-gamepad-keyboard-fallback | `f7038db` | B10, I07 | Analog driving now requires non-neutral pad input. Idle connected gamepads no longer mask keyboard throttle. Added SDL activity and app fallback tests; full workspace gates pass. |
+
+| 2026-10-27T00:59Z | 153h41m | apply-native-throttle-to-world-motion | _(pending)_ | G01, G03, I07 | Four-wheel stepping now adds live forward force along the car heading before lane-force summation, and native boot enters the stage directly instead of auto-advancing the menu. A new motion test proves positive displacement; `cmr-core` has 1,419 tests and full workspace gates pass. This is explicit playable policy, not recovered original force production. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

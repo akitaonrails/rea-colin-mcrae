@@ -1111,8 +1111,12 @@ impl RaceState {
             contact_update_inputs,
             self.car.four_wheel.contact_updates,
         );
+        let base_force = wheel
+            .postprocess
+            .base_force
+            .add(self.forward_unit().scale(controls.forward_force));
         let force = sum_translation_lane_forces(
-            wheel.postprocess.base_force,
+            base_force,
             wheel.postprocess.non_wheel_forces,
             std::array::from_fn(|index| {
                 (
@@ -2006,7 +2010,7 @@ mod tests {
             sample.car.four_wheel.postprocess.qualified,
             outcome.qualified
         );
-        assert!(sample.car.velocity.x < Fixed16::ZERO);
+        assert!(sample.car.velocity.x > Fixed16::ZERO);
         assert_eq!(sample.car.position, Vec3::ZERO);
         let mut expected_angular = wheel.angular;
         expected_angular.basis = car.motion.basis;

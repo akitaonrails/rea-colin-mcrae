@@ -2399,6 +2399,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   exactly on the shared parsed synthetic C3D fixture. Persistent GPU scene
   ownership and representative imported-stage timing remain the I08 exit gate.
   See evidence `impl.gpu-raw-c3d-conformance`.
+- Four-wheel stepping adds live forward force along the current heading before
+  summing lane forces, so throttle produces world displacement. The native
+  session boots directly into the stage rather than auto-advancing the menu.
+  This is explicit playable policy, not a recovered original force model.
 - `GamepadDrivingState::has_driving_input` gates analog selection: idle pads
   fall back to keyboard, while non-neutral axes/buttons use the recovered analog
   driver. This fixes connected-gamepad keyboard masking without altering either

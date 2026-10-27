@@ -1576,6 +1576,12 @@ Measured per 640x480 stage frame, the same workload composes in 79.6 ms
 MC5, and 7.2 vs 0.16 on IN8. A zero-copy window presentation that skips the
 index readback remains a host optimization.
 
+The native session now boots directly into the stage instead of automatically
+leaving the menu after a short display. Four-wheel stepping also adds live
+forward force along the car heading before lane-force summation, with a test
+proving real displacement. This is a documented playable policy, not recovered
+original force production.
+
 Input selection now falls back to the keyboard when a connected gamepad is
 idle. Only non-neutral pad axes/buttons select analog driving, so a gamepad
 cannot leave the car static by overriding keyboard throttle.

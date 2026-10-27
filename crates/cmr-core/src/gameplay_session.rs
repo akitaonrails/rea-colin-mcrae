@@ -470,6 +470,23 @@ mod tests {
     }
 
     #[test]
+    fn four_wheel_throttle_produces_forward_world_motion() {
+        let trig = crate::fixed_point::build_sine_table();
+        let wheel = four_wheel_params(&trig);
+        let mut session =
+            GameplaySession::new_with_four_wheel(params(), InRaceScript::frontend_harness(), wheel);
+        let nodes = line();
+        let mut progress = StageProgress::new(&nodes, 0);
+        for _ in 0..100 {
+            session
+                .try_advance(&StationaryClock, frontend_menu(), forward(), &mut progress)
+                .unwrap();
+        }
+        assert!(session.sim_ticks() > 0);
+        assert!(session.car().position.x.raw() > 0);
+    }
+
+    #[test]
     fn a_forward_drive_runs_the_fsm_from_boot_to_stopped() {
         let mut session = GameplaySession::new(params(), InRaceScript::frontend_harness());
         let nodes = line();

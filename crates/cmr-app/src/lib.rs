@@ -2192,12 +2192,7 @@ pub fn run_windowed_game_session(
         max_forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
         max_steer_rate: GAME_SESSION_MAX_STEER_RATE,
     };
-    let menu_inputs = MenuFlowInputs {
-        frontend_active: true,
-        root_menu_ready: true,
-        screen_graph_ready: true,
-        ..MenuFlowInputs::default()
-    };
+    let menu_inputs = MenuFlowInputs::default();
     let mut progress = StageProgress::new(&nodes, 0);
     let clock = WallClock::new();
     let mut camera = ViewHarness::new();
