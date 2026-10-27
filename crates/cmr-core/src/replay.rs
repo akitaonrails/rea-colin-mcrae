@@ -13,7 +13,8 @@
 //!   the decoded inputs (`FUN_0046cd70` / `FUN_0046dc20`). `nTicks` is `0x1d4c`
 //!   (7500 = 300 s at 25 Hz) or `0x3a98` at the 50 Hz option. Files load through
 //!   the shared loader `FUN_00495ed0`, whose optional archive container carries
-//!   the `"CMPR"` magic + 4-byte size.
+//!   the `"CMPR"` magic + 4-byte size. A final little-endian `u16` follows a
+//!   single frame's records; its consumer and semantic name remain unknown.
 //! - the **render snapshot buffer** (`FUN_0046c7d0` / `FUN_0046ca70`, gated on the
 //!   record flag): 24-byte keyframes (a position vec3 of `i32` plus two
 //!   `3xi16` compressed orientation axes) captured every 4th subframe (6.25 Hz),
@@ -77,9 +78,15 @@ pub const REPLAY_TICK_RECORD_BYTES: usize = 4;
 /// Bytes of the replay-object header prefix.
 pub const REPLAY_OBJECT_HEADER_BYTES: usize = 0x40;
 
-/// The per-frame constant used in the object-size formula (`0x151ee`, two bytes
-/// over the Region-A block size).
-pub const REPLAY_SIZING_PAD: usize = 0x151ee;
+/// Bytes of the semantically-unresolved field after a single frame's Region-B
+/// control records. Static file comparison establishes that these bytes hold a
+/// little-endian `u16`; it is not padding, but its consumer is not yet named.
+pub const REPLAY_TRAILING_FIELD_BYTES: usize = 2;
+
+/// Per-frame fixed bytes in the object-size formula: Region A plus the trailing
+/// field (`0x151ec + 2 = 0x151ee`).
+pub const REPLAY_FRAME_FIXED_BYTES: usize =
+    REPLAY_INITIAL_STATE_BYTES + REPLAY_TRAILING_FIELD_BYTES;
 
 /// The `.SSR` replay/shadow file extension (uppercase, as the format literal
 /// `"%s%s%c%d%c.SSR"` produces).
@@ -130,10 +137,10 @@ pub fn replay_ticks(double_rate: bool) -> u32 {
 }
 
 /// Serialized replay-object size in bytes, reproducing `FUN_0046d7b0`:
-/// `(nTicks*4 + 0x151ee) * nFrames + 0x40`. The file loader validates the loaded
-/// size against this exact value.
+/// `(nTicks*4 + 0x151ec + 2) * nFrames + 0x40`. The file loader validates the
+/// loaded size against this exact value.
 pub fn replay_object_size(n_ticks: u32, n_frames: u32) -> usize {
-    (n_ticks as usize * REPLAY_TICK_RECORD_BYTES + REPLAY_SIZING_PAD) * n_frames as usize
+    (n_ticks as usize * REPLAY_TICK_RECORD_BYTES + REPLAY_FRAME_FIXED_BYTES) * n_frames as usize
         + REPLAY_OBJECT_HEADER_BYTES
 }
 
@@ -141,6 +148,30 @@ pub fn replay_object_size(n_ticks: u32, n_frames: u32) -> usize {
 /// after the header and the `nFrames` Region-A seed blocks.
 pub fn replay_region_b_offset(n_frames: u32) -> usize {
     REPLAY_OBJECT_HEADER_BYTES + n_frames as usize * REPLAY_INITIAL_STATE_BYTES
+}
+
+/// Byte offset of the unresolved trailing `u16` in a one-frame replay object.
+///
+/// Multi-frame placement has not been established independently, so this
+/// helper deliberately exposes only the observed single-frame layout.
+#[must_use]
+pub fn replay_single_frame_trailing_field_offset(n_ticks: u32) -> Option<usize> {
+    REPLAY_OBJECT_HEADER_BYTES
+        .checked_add(REPLAY_INITIAL_STATE_BYTES)?
+        .checked_add((n_ticks as usize).checked_mul(REPLAY_TICK_RECORD_BYTES)?)
+}
+
+/// Read the unresolved trailing `u16` from an exactly-sized one-frame replay.
+/// Truncated and overlong inputs are rejected rather than partially accepted.
+#[must_use]
+pub fn replay_single_frame_trailing_field(bytes: &[u8], n_ticks: u32) -> Option<u16> {
+    let offset = replay_single_frame_trailing_field_offset(n_ticks)?;
+    let end = offset.checked_add(REPLAY_TRAILING_FIELD_BYTES)?;
+    if bytes.len() != end {
+        return None;
+    }
+    let raw = bytes.get(offset..end)?;
+    Some(u16::from_le_bytes(raw.try_into().ok()?))
 }
 
 /// Whether a loaded file's size matches the replay object it claims to be
@@ -376,8 +407,15 @@ mod tests {
     #[test]
     fn object_size_and_region_layout_match_the_loader_check() {
         let size = replay_object_size(REPLAY_TICKS_25HZ, 1);
-        // (7500*4 + 0x151ee) * 1 + 0x40.
-        assert_eq!(size, (7500 * 4 + 0x151ee) + 0x40);
+        // Header + Region A + 7500 control records + trailing u16.
+        assert_eq!(
+            size,
+            REPLAY_OBJECT_HEADER_BYTES
+                + REPLAY_INITIAL_STATE_BYTES
+                + 7500 * REPLAY_TICK_RECORD_BYTES
+                + REPLAY_TRAILING_FIELD_BYTES
+        );
+        assert_eq!(REPLAY_FRAME_FIXED_BYTES, 0x151ee);
         // The loader validates the loaded size against the same formula.
         assert!(replay_file_size_valid(size, REPLAY_TICKS_25HZ, 1));
         assert!(!replay_file_size_valid(size + 1, REPLAY_TICKS_25HZ, 1));
@@ -386,6 +424,27 @@ mod tests {
             replay_region_b_offset(1),
             REPLAY_OBJECT_HEADER_BYTES + REPLAY_INITIAL_STATE_BYTES
         );
+    }
+
+    #[test]
+    fn single_frame_trailing_field_is_distinct_and_bounds_checked() {
+        let n_ticks = 3;
+        let size = replay_object_size(n_ticks, 1);
+        let offset = replay_single_frame_trailing_field_offset(n_ticks).unwrap();
+        assert_eq!(offset + REPLAY_TRAILING_FIELD_BYTES, size);
+
+        let mut replay = vec![0; size];
+        replay[offset..offset + 2].copy_from_slice(&0x1234_u16.to_le_bytes());
+        assert_eq!(
+            replay_single_frame_trailing_field(&replay, n_ticks),
+            Some(0x1234)
+        );
+        assert_eq!(
+            replay_single_frame_trailing_field(&replay[..size - 1], n_ticks),
+            None
+        );
+        replay.push(0);
+        assert_eq!(replay_single_frame_trailing_field(&replay, n_ticks), None);
     }
 
     #[test]

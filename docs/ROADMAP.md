@@ -43,6 +43,14 @@ contract. The staged procedure and gates are in
 [PSX_REFERENCE_PLAN.md](PSX_REFERENCE_PLAN.md). This auxiliary lane does not
 change the completion counters in [DECOMP_MAP.md](DECOMP_MAP.md).
 
+Current bounded result: P0 identifies the USA `SCUS_94474` four-track disc and
+pins the local static tools; P1 has validated the PS-X EXE loader and accounted
+for the main executable with a conservative Splat map, but trustworthy
+code/data boundaries and SDK separation still need the Ghidra-derived seeds.
+The first P2 comparison found the same replay-object architecture at a high
+level and corrected the Windows model's final two bytes from unnamed padding to
+a neutral trailing-field contract. Exact field semantics remain unknown.
+
 ## Milestone 0 — provenance and safe workspace
 
 Deliverables:

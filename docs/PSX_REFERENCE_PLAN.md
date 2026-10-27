@@ -53,6 +53,47 @@ release or commit and record its license before making it a reproducible
 dependency. Do not vendor Sony SDK material, retail BIOS images, disc license
 sectors, PsyQ libraries, or generated game code.
 
+## Current bounded result
+
+P0 identifies a USA four-track release with volume/serial `SCUS_94474`. The CUE
+SHA-256 is `17cf17c55ccd870f50d9e92a7810ddf900538d615839dab77286ab09a4d06eee`;
+track SHA-256 values, in CUE order, are
+`746036fa7262f2a76b0a2114b69d5ccd9cf8c85c15401b76437be106bfcb2467`,
+`087581da4d904e75cf657e113c43d11ce378af8f475e133c77fb271abc685f2c`,
+`e62e25091e7ddc51a9e902b01c548b5d3d6a9204df40afbdbd7ecfa94fc322bc`,
+and `2ad74da65166e7c7237d98d11d5c4dbb1befda2b6164fa354a928ccc9c89d93b`.
+Only hashes and metadata are tracked.
+
+The static tool baseline is:
+
+- Ghidra 12.1.2 with Java 27;
+- `ghidra_psx_ldr` release `2026.07.02`, commit
+  `edb847d962081cdbae1a8fc231fa1fa05cf873c5`, release-asset SHA-256
+  `a1609adc35547d0ba770155c1b19fe86d1d210a74ffdd83644b6968e9064f17e`;
+- Splat 0.50.1 at commit `7548b9771e6f8418507b23434187fb07741af6d4`
+  with `spimdisasm` 1.42.4;
+- PsyQ signature data at commit
+  `e9e46e7e133ef275a79bfce650924f98edb086bc`.
+
+The loader successfully imports `GAME.EXE` as `PSX:LE:32`, entry
+`0x800bae1c`, text load address `0x80013000`, and initial GP `0x800bae04`; the
+artifact SHA-256 is
+`927e473a04962fde5d7bb99d2bfbcedee84997e7f5496cd3ed04a44fe077a900`.
+Splat accounts for the complete 739 KiB executable and reports 1,302 call-target
+candidates, but its initial giant mixed code/data region is not a trustworthy
+function map. P1 therefore remains partial until Ghidra-derived boundaries seed
+the split and PsyQ matches are reviewed. The loader and PsyQ-signature
+repositories do not currently publish a license in their checked-out roots, so
+they remain local-only and are not redistributed.
+
+The first cross-edition comparison found the same high-level replay object shape:
+a header, deterministic seed region, four-byte control slots, and a final
+two-byte field. Sizes differ by edition (`0x2c`/`0x2630`/5,400 ticks on PS1;
+`0x40`/`0x151ec`/7,500 ticks on Windows). This supports a neutral Windows
+trailing-field contract but does not identify that field's semantics or prove
+bit-exact control equivalence. See `psx.usa.replay-object-shape` in the evidence
+ledger.
+
 ## Evidence model
 
 Every cross-edition claim has two independent sides:

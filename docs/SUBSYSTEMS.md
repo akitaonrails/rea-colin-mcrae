@@ -1902,7 +1902,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   `0x46d7b0`) is input-based re-simulation saved to `.SSR` files: a `0x40`-byte
   header, a per-frame `0x151ec`-byte initial-state seed, then `nTicks` (7500 at
   25 Hz = 300 s) 4-byte packed control records (actuators quantized `>>10` into
-  6-bit fields, XOR-delta coded, plus gear/flags). Playback decodes the inputs
+  6-bit fields, XOR-delta coded, plus gear/flags), followed by a two-byte field
+  whose consumer and semantic name remain unresolved. Playback decodes the inputs
   back into the control struct and re-runs the normal physics (`0x43afd0`), with
   collision suppressed and the `0x462ac0` tracker used under the playback flag;
   the live frame driver `0x437690` bails and `0x437ef0` drives instead. Files go
@@ -1922,7 +1923,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   suppression, completing G08. Transport envelopes remain networking work. See
   evidence `rea.official-eu.sim-replay`, `rea.official-eu.replay-control-record`,
   `rea.official-eu.replay-region-a-layout`, and
-  `rea.official-eu.network-replay-records`. Co-driver display records now round-trip
+  `rea.official-eu.network-replay-records`. The auxiliary USA PS1 comparison
+  (`psx.usa.replay-object-shape`) corroborates the high-level seed/control/trailing-
+  field architecture with edition-specific sizes; it does not establish Windows
+  semantics. Co-driver display records now round-trip
   all 20 bytes, the visual FIFO implements rotation, TTL eviction and wrapping
   modifier accumulation, and audio routing uses native replay-car/active-player
   counts, completing G07. `participant_setup_counts` separates replay data slots
