@@ -79,6 +79,10 @@ pub const SHT_EXTENSION: &str = ".sht";
 pub const CSP_EXTENSION: &str = ".csp";
 /// One normal or mirrored `.csp` block: two positions and two rotations.
 pub const CSP_BLOCK_LEN: usize = 0x28;
+/// Extension of the authored trackside/cinematic camera records.
+pub const TSC_EXTENSION: &str = ".tsc";
+/// Size of one `.tsc` camera record.
+pub const TSC_CAMERA_STRIDE: usize = 0x10;
 
 /// Rally-School stage directory template (`%s` = track name, `%d` = task index).
 pub const STAGE_DIR_TEMPLATE: &str = r"RALLSCHL\TRACKS\%s\TASK%d\";
@@ -118,6 +122,8 @@ pub enum StageError {
     /// A present `.csp` payload was neither one complete normal block nor a
     /// complete normal+mirrored pair.
     CspInvalidLength { len: usize },
+    /// A `.tsc` payload whose length is not a whole number of camera records.
+    TscNotCameraAligned { len: usize, stride: usize },
 }
 
 impl fmt::Display for StageError {
@@ -153,6 +159,10 @@ impl fmt::Display for StageError {
                 f,
                 "csp start-position length {len} is not {CSP_BLOCK_LEN} bytes or at least {} bytes",
                 CSP_BLOCK_LEN * 2
+            ),
+            StageError::TscNotCameraAligned { len, stride } => write!(
+                f,
+                "tsc camera table length {len} is not a multiple of the {stride}-byte record stride"
             ),
         }
     }
@@ -191,6 +201,7 @@ pub struct StageBundle {
     horizon: Option<C3dFile>,
     ars: Option<ArsSettings>,
     starts: Option<CspStarts>,
+    trackside_cameras: Option<Vec<TscCameraRecord>>,
     nodes: Option<Vec<CatNode>>,
     triggers: Option<Vec<TriggerVolume>>,
 }
@@ -232,6 +243,12 @@ impl StageBundle {
         self.starts.as_ref()
     }
 
+    /// Parsed `.tsc` trackside/cinematic camera records, if present.
+    #[must_use]
+    pub fn trackside_cameras(&self) -> Option<&[TscCameraRecord]> {
+        self.trackside_cameras.as_deref()
+    }
+
     /// The parsed `.cat` node spline, if the stage carried a `.cat` sibling.
     #[must_use]
     pub fn nodes(&self) -> Option<&[CatNode]> {
@@ -262,6 +279,8 @@ pub enum StageLoadError {
     Ars(StageError),
     /// The optional `.csp` start-position payload failed to decode.
     Starts(StageError),
+    /// The optional `.tsc` trackside-camera payload failed to decode.
+    TracksideCameras(StageError),
     /// The `.cat` node-spline payload failed to decode.
     Nodes(StageError),
     /// The optional `.dat` trigger-volume payload failed to decode.
@@ -278,6 +297,9 @@ impl fmt::Display for StageLoadError {
             StageLoadError::Scenery(error) => write!(f, "stage .sht scenery: {error}"),
             StageLoadError::Ars(error) => write!(f, "stage .ars settings: {error}"),
             StageLoadError::Starts(error) => write!(f, "stage .csp starts: {error}"),
+            StageLoadError::TracksideCameras(error) => {
+                write!(f, "stage .tsc trackside cameras: {error}")
+            }
             StageLoadError::Nodes(error) => write!(f, "stage .cat nodes: {error}"),
             StageLoadError::Triggers(error) => write!(f, "stage .dat triggers: {error}"),
         }
@@ -293,6 +315,7 @@ impl std::error::Error for StageLoadError {
             StageLoadError::Scenery(error) => Some(error),
             StageLoadError::Ars(error) => Some(error),
             StageLoadError::Starts(error) => Some(error),
+            StageLoadError::TracksideCameras(error) => Some(error),
             StageLoadError::Nodes(error) => Some(error),
             StageLoadError::Triggers(error) => Some(error),
             StageLoadError::MissingScene => None,
@@ -339,6 +362,11 @@ pub fn load_stage(
         .map(parse_csp_starts)
         .transpose()
         .map_err(StageLoadError::Starts)?;
+    let trackside_cameras = source
+        .section(TSC_EXTENSION)
+        .map(parse_tsc_cameras)
+        .transpose()
+        .map_err(StageLoadError::TracksideCameras)?;
     let nodes = source
         .section(CAT_EXTENSION)
         .map(parse_cat_nodes)
@@ -356,9 +384,52 @@ pub fn load_stage(
         horizon,
         ars,
         starts,
+        trackside_cameras,
         nodes,
         triggers,
     })
+}
+
+/// One authored `.tsc` trackside/cinematic camera record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TscCameraRecord {
+    /// Q16.16 world position (`+0x00..+0x0b`).
+    pub position: [i32; 3],
+    /// Camera behavior selector (`+0x0c`).
+    pub mode: u8,
+    /// Preserved byte at `+0x0d`; no semantic consumer is currently proven.
+    pub reserved: u8,
+    /// CAT-node ordinal at `+0x0e`, initialized by the shipped loader for mode 2.
+    pub cat_node_ordinal: u16,
+}
+
+/// Decode a flat `.tsc` camera table.
+///
+/// The shipped loader retains the payload and derives its record count with
+/// `size >> 4`. Reconstruction rejects a non-multiple instead of silently
+/// ignoring the truncated tail.
+pub fn parse_tsc_cameras(bytes: &[u8]) -> Result<Vec<TscCameraRecord>, StageError> {
+    if !bytes.len().is_multiple_of(TSC_CAMERA_STRIDE) {
+        return Err(StageError::TscNotCameraAligned {
+            len: bytes.len(),
+            stride: TSC_CAMERA_STRIDE,
+        });
+    }
+    let (records, tail) = bytes.as_chunks::<TSC_CAMERA_STRIDE>();
+    debug_assert!(tail.is_empty());
+    Ok(records
+        .iter()
+        .map(|record| TscCameraRecord {
+            position: [
+                read_i32(record, 0x00),
+                read_i32(record, 0x04),
+                read_i32(record, 0x08),
+            ],
+            mode: record[0x0c],
+            reserved: record[0x0d],
+            cat_node_ordinal: read_u16(record, 0x0e),
+        })
+        .collect())
 }
 
 /// Four little-endian Q16.16 dwords consumed from a stage `.ars` payload.
@@ -874,8 +945,77 @@ mod tests {
         assert!(bundle.horizon().is_none());
         assert!(bundle.ars().is_none());
         assert!(bundle.starts().is_none());
+        assert!(bundle.trackside_cameras().is_none());
         assert_eq!(bundle.nodes().unwrap().len(), 2);
         assert!(bundle.triggers().is_none());
+    }
+
+    fn tsc_record(position: [i32; 3], mode: u8, reserved: u8, ordinal: u16) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(TSC_CAMERA_STRIDE);
+        for component in position {
+            bytes.extend_from_slice(&component.to_le_bytes());
+        }
+        bytes.push(mode);
+        bytes.push(reserved);
+        bytes.extend_from_slice(&ordinal.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn tsc_camera_parser_accepts_empty_and_multiple_records() {
+        assert!(parse_tsc_cameras(&[]).unwrap().is_empty());
+
+        let mut bytes = tsc_record([1, -2, 3], 2, 0xaa, 0x1234);
+        bytes.extend_from_slice(&tsc_record([4, 5, -6], 7, 0xbb, 0xffff));
+        let cameras = parse_tsc_cameras(&bytes).unwrap();
+        assert_eq!(
+            cameras,
+            [
+                TscCameraRecord {
+                    position: [1, -2, 3],
+                    mode: 2,
+                    reserved: 0xaa,
+                    cat_node_ordinal: 0x1234,
+                },
+                TscCameraRecord {
+                    position: [4, 5, -6],
+                    mode: 7,
+                    reserved: 0xbb,
+                    cat_node_ordinal: 0xffff,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tsc_camera_parser_rejects_a_truncated_tail() {
+        assert_eq!(
+            parse_tsc_cameras(&[0; TSC_CAMERA_STRIDE + 1]).unwrap_err(),
+            StageError::TscNotCameraAligned {
+                len: TSC_CAMERA_STRIDE + 1,
+                stride: TSC_CAMERA_STRIDE,
+            }
+        );
+    }
+
+    #[test]
+    fn load_stage_parses_optional_trackside_cameras_and_types_misalignment() {
+        let mut sections = std::collections::HashMap::new();
+        sections.insert(C3D_EXTENSION, empty_scene_bytes());
+        sections.insert(TSC_EXTENSION, tsc_record([10, 20, 30], 2, 0, 7));
+        let bundle = load_stage(&MapSource(sections), C3dLimits::default()).unwrap();
+        assert_eq!(bundle.trackside_cameras().unwrap()[0].cat_node_ordinal, 7);
+
+        let mut malformed = std::collections::HashMap::new();
+        malformed.insert(C3D_EXTENSION, empty_scene_bytes());
+        malformed.insert(TSC_EXTENSION, vec![0; TSC_CAMERA_STRIDE - 1]);
+        assert_eq!(
+            load_stage(&MapSource(malformed), C3dLimits::default()).unwrap_err(),
+            StageLoadError::TracksideCameras(StageError::TscNotCameraAligned {
+                len: TSC_CAMERA_STRIDE - 1,
+                stride: TSC_CAMERA_STRIDE,
+            })
+        );
     }
 
     #[test]

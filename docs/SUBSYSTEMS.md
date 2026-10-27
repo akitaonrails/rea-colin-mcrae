@@ -200,13 +200,13 @@ owned interface. Broad bulk decompilation is deliberately out of scope.
   with length+stride; the raw trigger type is classified by
   `cmr-core::collision::TriggerType`. The bundle front half ties these together:
   `load_stage(source: &impl StageSectionSource, c3d_limits) -> StageBundle` parses
-  the mandatory `.c3d` scene plus optional `.dat`, `.cat`, `.obj`, `.sht`,
-  `.hzn`, `.ars`, and `.csp` sections from an abstract
+  the mandatory `.c3d` scene plus optional `.dat`, `.obj`, `.sht`, `.hzn`,
+  `.ars`, `.tsc`, `.csp`, and `.cat` sections from an abstract
   per-extension byte source (base-path resolution + file IO + CMPR decode stay in
   the caller), so a resolved stage base yields a scene ready for
   `cmr-core::c3d_mesh::assemble_scene_meshes` (`impl.stage-bundle-loader`). The
-  remaining `.moj`, `.tsc`, `.spl`, `.anm`, `.rsf`, and `.fuz` consumers plus
-  DAT runtime dispatch and the runtime fix-up/relocation remain. See
+  remaining `.moj`, `.spl`, `.anm`, `.rsf`, and `.fuz` consumers plus DAT
+  runtime dispatch, TSC director binding, and runtime fix-up/relocation remain. See
   evidence `rea.official-eu.stage-bundle`.
 - `cmr-core::car_resources`: the car-resource composition (E09). A car is a set
   of sibling `.C3D` resources under `OBJECTS\CARS\` (body `<code><DAY|NIGHT>.C3D`,

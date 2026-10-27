@@ -69,7 +69,7 @@ use cmr_formats::stage::CatNode;
 use cmr_formats::stage::{
     ARS_EXTENSION, C3D_EXTENSION, CAT_EXTENSION, CSP_EXTENSION, CspStart, DAT_EXTENSION,
     HZN_EXTENSION, OBJ_EXTENSION, SHT_EXTENSION, StageBundle, StageLoadError, StageSectionSource,
-    load_stage,
+    TSC_EXTENSION, load_stage,
 };
 use cmr_formats::stored_asset::{DecodeError, DecodeLimits, decode_stored_asset};
 use cmr_gpu_contract::{PersistentRawC3dGpuBackend, PersistentRawC3dIndexedBackend};
@@ -996,6 +996,7 @@ pub struct FsStageSectionSource {
     sht: Option<Vec<u8>>,
     csp: Option<Vec<u8>>,
     dat: Option<Vec<u8>>,
+    tsc: Option<Vec<u8>>,
 }
 
 impl FsStageSectionSource {
@@ -1014,6 +1015,7 @@ impl FsStageSectionSource {
             sht: read_decoded_section(media_root, stage, SHT_EXTENSION, limits)?,
             csp: read_decoded_section(media_root, stage, CSP_EXTENSION, limits)?,
             dat: read_decoded_section(media_root, stage, DAT_EXTENSION, limits)?,
+            tsc: read_decoded_section(media_root, stage, TSC_EXTENSION, limits)?,
         })
     }
 }
@@ -1029,6 +1031,7 @@ impl StageSectionSource for FsStageSectionSource {
             SHT_EXTENSION => self.sht.as_deref(),
             CSP_EXTENSION => self.csp.as_deref(),
             DAT_EXTENSION => self.dat.as_deref(),
+            TSC_EXTENSION => self.tsc.as_deref(),
             _ => None,
         }
     }
@@ -3082,6 +3085,12 @@ mod tests {
                 .bundle
                 .triggers()
                 .is_some_and(|triggers| !triggers.is_empty())
+        );
+        assert!(
+            resources
+                .bundle
+                .trackside_cameras()
+                .is_some_and(|cameras| !cameras.is_empty())
         );
         assert!(resources.horizon_textures.is_some());
         assert!(resources.car_scene.is_some());

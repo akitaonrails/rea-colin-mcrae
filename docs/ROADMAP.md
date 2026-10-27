@@ -1617,10 +1617,10 @@ and language packs are explicitly unsupported; official-US and xdelta artifacts
 remain comparison variants, not proof of compatibility.
 
 E16 closes the championship boundary; E08 remains partial. Stage loading now
-consumes `.c3d`, `.dat`, `.cat`, `.obj`, `.sht`, `.ars`, `.hzn`, and `.csp`,
-with layered software presentation, authored starts, and bounded trigger-volume
-decoding. `.moj`, `.tsc`, `.spl`, `.anm`, `.rsf`, and `.fuz` remain
-unintegrated. The native race path composes the player car but still bypasses
+consumes `.c3d`, `.dat`, `.obj`, `.sht`, `.ars`, `.hzn`, `.tsc`, `.csp`, and
+`.cat`, with layered software presentation, authored starts, bounded
+trigger-volume decoding, and authored trackside-camera records. `.moj`, `.spl`,
+`.anm`, `.rsf`, and `.fuz` remain unintegrated. The native race path composes the player car but still bypasses
 the recovered menu flow and lacks the recovered race HUD and DAT dispatch.
 
 E01 is closed at its deterministic indexed boundary. Supported BM, palette,
