@@ -1614,8 +1614,11 @@ cannot leave the car static by overriding keyboard throttle.
 
 The full windowed-session callback now also receives the existing
 edge-triggered `FrontendInputMapper` output from keyboard and gamepad events.
-This preserves held driving input while exposing single menu pulses; consuming
-those pulses through `RootInteraction` is the next menu-to-race gate.
+The native loop now consumes those pulses through one `RootInteraction`, renders
+the live recovered selection, and permits only the Rally entry to emit the
+state-2 leave pulse. The front-end gate is cleared before state 4, so the
+explicitly configured stage and car arm state 5 instead of auto-advancing at
+boot. Other unreconstructed destinations remain pending.
 
 The native game session is a drivable stage harness. Authored `.cat`
 checkpoints replace the synthetic line, a real country palette is loaded, and

@@ -5,19 +5,20 @@
 //! per-frame [`FrontendInput`] into a [`RootRenderInput`] to present.
 //!
 //! The driver owns no clock: the caller supplies a monotonically increasing
-//! `now`. Its transition policy is deliberately minimal — only the recovered
-//! root and exit screens complete instantly; every other confirmed entry
-//! begins its recovered transition and then waits, because the destination
-//! screens are not yet reconstructed. The live selection's chrome is snapped
-//! to its recovered endpoint via [`steady_root_render_input`]; the in-between
-//! tween is a separate, not-yet-recovered concern. None of this models the
-//! original transition timing, so it is not a compatibility claim.
+//! `now`. Its default transition policy completes only the recovered root and
+//! exit screens. A game-session host may explicitly enable the recovered Rally
+//! hand-off; every other confirmed entry begins its transition and then waits,
+//! because the destination screens are not yet reconstructed. The live
+//! selection's chrome is snapped to its recovered endpoint via
+//! [`steady_root_render_input`]; the in-between tween is a separate,
+//! not-yet-recovered concern. None of this models the original transition
+//! timing, so it is not a compatibility claim.
 
 use crate::{
     display::DisplayExtent,
     frontend::{
         EXIT_SCREEN_ID, FrontendEffect, FrontendInput, FrontendPhase, FrontendState,
-        InvalidRootSelection, ROOT_SCREEN_ID, ScreenId, TransitionResult,
+        InvalidRootSelection, RALLY_SCREEN_ID, ROOT_SCREEN_ID, ScreenId, TransitionResult,
     },
     localization::Language,
     root_menu_visual::{RootRenderInput, steady_root_render_input},
@@ -68,7 +69,30 @@ impl RootInteraction {
     /// Advances the controller by one tick and reports what to present.
     #[must_use]
     pub fn tick(&mut self, input: FrontendInput, now: u32, save_allowed: bool) -> RootTick {
-        let transition = self.resolve_transition();
+        self.tick_with_rally_launch(input, now, save_allowed, false)
+    }
+
+    /// Advances one tick while allowing the recovered Rally root entry to leave
+    /// the front end through `LeaveFrontendB`. Other unbuilt destinations remain
+    /// pending.
+    #[must_use]
+    pub fn tick_for_game_session(
+        &mut self,
+        input: FrontendInput,
+        now: u32,
+        save_allowed: bool,
+    ) -> RootTick {
+        self.tick_with_rally_launch(input, now, save_allowed, true)
+    }
+
+    fn tick_with_rally_launch(
+        &mut self,
+        input: FrontendInput,
+        now: u32,
+        save_allowed: bool,
+        rally_launch: bool,
+    ) -> RootTick {
+        let transition = self.resolve_transition(rally_launch);
         let effects = self.state.step(input, now, transition, save_allowed);
         RootTick {
             render_input: self.current_render_input(),
@@ -79,13 +103,16 @@ impl RootInteraction {
 
     /// Completes only transitions whose destination screen is reconstructed
     /// (the root screen itself and the exit screen); all others stay pending.
-    fn resolve_transition(&self) -> TransitionResult {
+    fn resolve_transition(&self, rally_launch: bool) -> TransitionResult {
         let target = match self.state.phase() {
             FrontendPhase::AdvanceToPending => self.state.pending_screen(),
             FrontendPhase::AdvanceToInteractive => Some(self.state.active_screen()),
             FrontendPhase::Interactive | FrontendPhase::BeginTransition => None,
         };
         match target {
+            Some(screen) if rally_launch && screen == RALLY_SCREEN_ID => {
+                TransitionResult::LeaveFrontendB
+            }
             Some(screen) if is_reconstructed_screen(screen) => TransitionResult::Complete,
             _ => TransitionResult::Pending,
         }
@@ -256,5 +283,59 @@ mod tests {
             );
         }
         assert_ne!(driver.state().phase(), FrontendPhase::Interactive);
+    }
+
+    #[test]
+    fn game_session_policy_launches_only_the_rally_entry() {
+        let mut rally = driver(0);
+        let _ = settle_to_interactive(&mut rally);
+        let _ = rally.tick_for_game_session(
+            FrontendInput {
+                next: true,
+                ..FrontendInput::default()
+            },
+            3,
+            true,
+        );
+        let _ = rally.tick_for_game_session(
+            FrontendInput {
+                confirm: true,
+                ..FrontendInput::default()
+            },
+            4,
+            true,
+        );
+        let begin = rally.tick_for_game_session(FrontendInput::default(), 5, true);
+        assert!(begin.effects.iter().any(|effect| matches!(
+            effect,
+            FrontendEffect::BeginTransition {
+                to: RALLY_SCREEN_ID,
+                ..
+            }
+        )));
+        let leave = rally.tick_for_game_session(FrontendInput::default(), 6, true);
+        assert_eq!(
+            leave.effects,
+            vec![
+                FrontendEffect::ApplyConfigToProfileState,
+                FrontendEffect::LeaveFrontendB
+            ]
+        );
+
+        let mut championship = driver(0);
+        let _ = settle_to_interactive(&mut championship);
+        let _ = championship.tick_for_game_session(
+            FrontendInput {
+                confirm: true,
+                ..FrontendInput::default()
+            },
+            3,
+            true,
+        );
+        let _ = championship.tick_for_game_session(FrontendInput::default(), 4, true);
+        for now in 5..8 {
+            let tick = championship.tick_for_game_session(FrontendInput::default(), now, true);
+            assert!(tick.effects.is_empty());
+        }
     }
 }

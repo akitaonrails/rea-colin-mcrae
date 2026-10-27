@@ -9,6 +9,8 @@ use crate::config::LegacyConfig;
 
 pub const ROOT_SCREEN_ID: ScreenId = ScreenId(0x00d4_8b80);
 pub const CHAMPIONSHIP_SETUP_SCREEN_ID: ScreenId = ScreenId(0x00d4_0900);
+/// Destination of root selection 1, whose matching root object is `Rally.C3D`.
+pub const RALLY_SCREEN_ID: ScreenId = ScreenId(0x00d4_8230);
 pub const CHAMPIONSHIP_NEXT_SCREEN_ID: ScreenId = ScreenId(0x00d4_5cf8);
 pub const EXIT_SCREEN_ID: ScreenId = ScreenId(0x00d4_2058);
 pub const ATTRACT_SCREEN_ID: ScreenId = ScreenId(0x00d4_37c8);
@@ -16,7 +18,7 @@ pub const ROOT_FOOTER_TEXT_INDEX: usize = 253;
 
 const ROOT_ENTRIES: [ScreenEntry; 7] = [
     ScreenEntry::new(0, CHAMPIONSHIP_SETUP_SCREEN_ID),
-    ScreenEntry::new(1, ScreenId(0x00d4_8230)),
+    ScreenEntry::new(1, RALLY_SCREEN_ID),
     ScreenEntry::new(120, ScreenId(0x00d4_b240)),
     ScreenEntry::new(3, ScreenId(0x00d4_6b10)),
     ScreenEntry::new(4, ScreenId(0x00d4_53b8)),

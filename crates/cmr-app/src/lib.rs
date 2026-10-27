@@ -31,7 +31,7 @@ use cmr_core::drivetrain::{
 };
 use cmr_core::fixed_point::{Fixed16, Vec3};
 use cmr_core::frontend::{FrontendPhase, RootSelection};
-use cmr_core::game_menu_flow::MenuFlowInputs;
+use cmr_core::game_menu_flow::{FrontendMenuSignal, MenuFlowInputs, frontend_menu_signal};
 use cmr_core::game_rng::GameLcg;
 use cmr_core::game_session::SessionBand;
 use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
@@ -2386,6 +2386,29 @@ where
     }
 }
 
+fn root_menu_flow_inputs(state_id: u8, interaction: &RootInteraction) -> MenuFlowInputs {
+    match frontend_menu_signal(interaction.state()) {
+        FrontendMenuSignal::Stay => MenuFlowInputs {
+            frontend_active: true,
+            ..MenuFlowInputs::default()
+        },
+        FrontendMenuSignal::Advance if state_id == 2 => MenuFlowInputs {
+            frontend_active: true,
+            root_menu_ready: true,
+            screen_graph_ready: true,
+            ..MenuFlowInputs::default()
+        },
+        FrontendMenuSignal::Quit if state_id == 2 => MenuFlowInputs {
+            frontend_active: true,
+            root_menu_ready: true,
+            screen_graph_ready: false,
+            menu_status_quit: true,
+            ..MenuFlowInputs::default()
+        },
+        FrontendMenuSignal::Advance | FrontendMenuSignal::Quit => MenuFlowInputs::default(),
+    }
+}
+
 /// One windowed-game-session frame of the input/advance/world-compose work the
 /// two loop variants share.
 ///
@@ -2405,7 +2428,7 @@ fn advance_game_frame<C: HostClock>(
     keyboard: &mut KeyboardDriver,
     analog: &mut AnalogDriver,
     response: &DriveResponse,
-    menu_inputs: MenuFlowInputs,
+    root_interaction: &mut RootInteraction,
     progress: &mut StageProgress,
     clock: &C,
     resources: &mut StageRenderResources,
@@ -2413,6 +2436,8 @@ fn advance_game_frame<C: HostClock>(
     fade: &mut Option<ScalarTween>,
     input: WindowedInput,
 ) -> Result<GameFrameOutcome, WindowedStageFrameError> {
+    let root_tick = root_interaction.tick_for_game_session(input.frontend, clock.millis(), true);
+    let menu_inputs = root_menu_flow_inputs(session.state().id(), root_interaction);
     let controls = if let Some(pad) = input.gamepad.filter(|pad| analog_driving_is_active(pad)) {
         analog
             .poll(
@@ -2475,6 +2500,7 @@ fn advance_game_frame<C: HostClock>(
     Ok(GameFrameOutcome {
         route: advanced.route,
         world,
+        root_render_input: root_tick.render_input,
         stopped: session.is_stopped(),
         // The recovered front-end music plays during the menu band (states 1..4).
         music_active: matches!(advanced.band, SessionBand::Menu),
@@ -2485,6 +2511,7 @@ fn advance_game_frame<C: HostClock>(
 struct GameFrameOutcome {
     route: Option<RenderRoute>,
     world: Option<SoftwarePresentedFrame>,
+    root_render_input: Option<RootRenderInput>,
     stopped: bool,
     music_active: bool,
 }
@@ -2873,7 +2900,6 @@ pub fn run_windowed_game_session(
         max_forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
         max_steer_rate: GAME_SESSION_MAX_STEER_RATE,
     };
-    let menu_inputs = MenuFlowInputs::default();
     let mut progress = StageProgress::new(&nodes, 0);
     let initial = compose_live_race_hud(
         &resources,
@@ -2881,6 +2907,9 @@ pub fn run_windowed_game_session(
         live_race_hud_inputs(start, &progress, nodes.len(), Fixed16::ZERO),
     )?;
     let clock = WallClock::new();
+    let mut root_interaction =
+        RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, clock.millis())
+            .expect("zero is a valid recovered root selection");
     let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
     let mut runtime_error = None;
@@ -2906,7 +2935,7 @@ pub fn run_windowed_game_session(
                     &mut keyboard,
                     &mut analog,
                     &response,
-                    menu_inputs,
+                    &mut root_interaction,
                     &mut progress,
                     &clock,
                     &mut resources,
@@ -2920,9 +2949,10 @@ pub fn run_windowed_game_session(
                         let present = if outcome.world.is_some() {
                             outcome.world
                         } else if outcome.route.is_some_and(composes_frontend_root) {
-                            root.render(initial_root_input())
-                                .ok()
-                                .and_then(|_| root.backend().presented_frame().cloned())
+                            outcome.root_render_input.and_then(|render_input| {
+                                root.render(render_input).ok()?;
+                                root.backend().presented_frame().cloned()
+                            })
                         } else {
                             None
                         };
@@ -2960,7 +2990,7 @@ pub fn run_windowed_game_session(
             &mut keyboard,
             &mut analog,
             &response,
-            menu_inputs,
+            &mut root_interaction,
             &mut progress,
             &clock,
             &mut resources,
@@ -3239,6 +3269,67 @@ mod tests {
     #[test]
     fn idle_gamepad_does_not_mask_keyboard_driving_input() {
         assert!(!analog_driving_is_active(&GamepadDrivingState::new()));
+    }
+
+    #[test]
+    fn rally_leave_pulses_state_two_then_clears_the_frontend_gate() {
+        let mut root =
+            RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0).unwrap();
+        let _ = root.tick_for_game_session(Default::default(), 1, true);
+        let _ = root.tick_for_game_session(Default::default(), 2, true);
+        assert!(root_menu_flow_inputs(2, &root).frontend_active);
+
+        let _ = root.tick_for_game_session(
+            cmr_core::frontend::FrontendInput {
+                next: true,
+                ..Default::default()
+            },
+            3,
+            true,
+        );
+        let _ = root.tick_for_game_session(
+            cmr_core::frontend::FrontendInput {
+                confirm: true,
+                ..Default::default()
+            },
+            4,
+            true,
+        );
+        let _ = root.tick_for_game_session(Default::default(), 5, true);
+        let _ = root.tick_for_game_session(Default::default(), 6, true);
+
+        let state_two = root_menu_flow_inputs(2, &root);
+        assert!(state_two.frontend_active);
+        assert!(state_two.root_menu_ready);
+        assert!(state_two.screen_graph_ready);
+        let state_three = root_menu_flow_inputs(3, &root);
+        assert_eq!(state_three, MenuFlowInputs::default());
+
+        let mut root =
+            RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0).unwrap();
+        let mut game = cmr_core::game_session::GameSession::new();
+        let pulses = [
+            Default::default(),
+            Default::default(),
+            cmr_core::frontend::FrontendInput {
+                next: true,
+                ..Default::default()
+            },
+            cmr_core::frontend::FrontendInput {
+                confirm: true,
+                ..Default::default()
+            },
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        ];
+        for (now, pulse) in pulses.into_iter().enumerate() {
+            let _ = root.tick_for_game_session(pulse, now as u32 + 1, true);
+            let menu = root_menu_flow_inputs(game.current().id(), &root);
+            let _ = game.run_frame(&StationaryClock, menu, |state| state);
+        }
+        assert_eq!(game.current().id(), 5);
     }
 
     fn native_test_node(position: [i32; 3], direction: [i32; 3], split_flag: u8) -> CatNode {
@@ -3623,14 +3714,16 @@ mod tests {
         let mut camera = ViewHarness::new();
         let mut fade = None;
         let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
+        let mut root_interaction =
+            RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0).unwrap();
         macro_rules! advance {
-            ($keys:expr) => {
+            ($keys:expr, $frontend:expr) => {
                 advance_game_frame(
                     &mut session,
                     &mut keyboard,
                     &mut analog,
                     &response,
-                    MenuFlowInputs::default(),
+                    &mut root_interaction,
                     &mut progress,
                     &StationaryClock,
                     &mut resources,
@@ -3639,28 +3732,50 @@ mod tests {
                     WindowedInput {
                         keys: $keys,
                         gamepad: None,
-                        frontend: cmr_core::frontend::FrontendInput::default(),
+                        frontend: $frontend,
                     },
                 )
                 .unwrap()
             };
         }
 
+        advance!(&keys, cmr_core::frontend::FrontendInput::default());
+        advance!(&keys, cmr_core::frontend::FrontendInput::default());
+        advance!(
+            &keys,
+            cmr_core::frontend::FrontendInput {
+                next: true,
+                ..Default::default()
+            }
+        );
+        advance!(
+            &keys,
+            cmr_core::frontend::FrontendInput {
+                confirm: true,
+                ..Default::default()
+            }
+        );
         for _ in 0..8 {
             if session.state().id() == 5 {
                 break;
             }
-            advance!(&keys);
+            advance!(&keys, cmr_core::frontend::FrontendInput::default());
         }
         assert_eq!(session.state().id(), 5);
-        let initial = advance!(&keys).world.unwrap().digest_summary();
+        let initial = advance!(&keys, cmr_core::frontend::FrontendInput::default())
+            .world
+            .unwrap()
+            .digest_summary();
         let initial_car = session.car();
         keys.apply_vk(0x26, true);
         for _ in 0..25 {
-            advance!(&keys);
+            advance!(&keys, cmr_core::frontend::FrontendInput::default());
         }
         keys.apply_vk(0x26, false);
-        let driven = advance!(&keys).world.unwrap().digest_summary();
+        let driven = advance!(&keys, cmr_core::frontend::FrontendInput::default())
+            .world
+            .unwrap()
+            .digest_summary();
         let driven_car = session.car();
         assert_ne!(driven_car.position, initial_car.position);
         assert_eq!(driven_car.heading, initial_car.heading);
@@ -3672,7 +3787,7 @@ mod tests {
 
         keys.apply_vk(0x25, true);
         for _ in 0..5 {
-            advance!(&keys);
+            advance!(&keys, cmr_core::frontend::FrontendInput::default());
         }
         keys.apply_vk(0x25, false);
         let steered_car = session.car();

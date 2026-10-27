@@ -2479,9 +2479,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   official-US and xdelta files are comparison-only artifacts.
 - Stage/championship coverage includes nine stage siblings, layered software
   presentation, authored starts, transform/visibility/mutation and retained
-  setup sessions. MOJ/SPL/ANM/RSF/FUZ, DAT dispatch, layered GPU, recovered
-  menu-to-race selection, finish, and post-race behavior remain open. The
-  player car and normal software race HUD are live.
+  setup sessions. The native root now launches the configured race only through
+  its recovered Rally selection. MOJ/SPL/ANM/RSF/FUZ, DAT dispatch, remaining
+  layered-GPU work, finish, and post-race behavior remain open. The player car
+  and normal software race HUD are live.
 - Bitmap conversion has an explicit deterministic indexed boundary: 4/8-bit
   BM, palettes, stored rows, composition, and queued fonts are supported;
   native padding, 24-bit, driver filtering, device-owned formats, and alternate
