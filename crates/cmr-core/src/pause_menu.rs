@@ -528,7 +528,7 @@ impl PauseController {
                 MenuEvent::Commit { menu, callback } => {
                     commit_callback(menus, menu, callback, options);
                 }
-                MenuEvent::Leave { .. } => {}
+                MenuEvent::Leave { .. } | MenuEvent::Post { .. } => {}
             }
         }
     }

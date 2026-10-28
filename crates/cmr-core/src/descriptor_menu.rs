@@ -96,11 +96,43 @@ pub enum MenuSound {
     Back,
 }
 
+/// The navigation enables at `+0x0c..+0x0f` (`FUN_004aec50`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MenuNav {
+    /// `+0x0c`: moving the selection.
+    pub moves: bool,
+    /// `+0x0d`: adjusting a value.
+    pub adjusts: bool,
+    /// `+0x0e`: confirm.
+    pub confirms: bool,
+    /// `+0x0f`: back.
+    pub backs: bool,
+}
+
+impl MenuNav {
+    pub const ALL: Self = Self {
+        moves: true,
+        adjusts: true,
+        confirms: true,
+        backs: true,
+    };
+    pub const NONE: Self = Self {
+        moves: false,
+        adjusts: false,
+        confirms: false,
+        backs: false,
+    };
+}
+
 /// A menu object.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Menu {
     /// `+0x04`.
     pub title_id: i32,
+    /// `+0x08 != 1`: a horizontal list (left/right move, up/down adjust).
+    pub horizontal: bool,
+    /// `+0x0c..+0x0f`.
+    pub nav: MenuNav,
     /// `+0x10`: the selection wraps.
     pub wrap: bool,
     /// `+0x14`.
@@ -114,6 +146,9 @@ pub struct Menu {
     pub on_enter: Option<u32>,
     pub on_commit: Option<u32>,
     pub on_predraw: Option<u32>,
+    /// `+0x46c`: called after the commit whenever the step leaves the menu,
+    /// with whether it went back.
+    pub on_post: Option<u32>,
     pub on_leave: Option<u32>,
     /// `+0x498`: the sound table id, or `None` for a silent menu.
     pub sounds: Option<u32>,
@@ -126,6 +161,8 @@ impl Menu {
     pub fn new(title_id: i32, parent: Option<MenuId>, sounds: Option<u32>) -> Self {
         Self {
             title_id,
+            horizontal: false,
+            nav: MenuNav::ALL,
             wrap: true,
             parent,
             items: Vec::new(),
@@ -134,6 +171,7 @@ impl Menu {
             on_enter: None,
             on_commit: None,
             on_predraw: None,
+            on_post: None,
             on_leave: None,
             sounds,
             last_value: 0,
@@ -165,6 +203,12 @@ pub enum MenuEvent {
     },
     /// The menu's commit callback (every step).
     Commit { menu: MenuId, callback: u32 },
+    /// The post callback, with `DAT_00bbac04` (the step went back).
+    Post {
+        menu: MenuId,
+        callback: u32,
+        back: bool,
+    },
     /// The previous menu's leave callback.
     Leave { menu: MenuId, callback: u32 },
     /// The menu's enter callback with its argument.
@@ -179,6 +223,11 @@ pub enum MenuEvent {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MenuSet {
     pub menus: Vec<Menu>,
+    /// `DAT_00bbac08`: the menu the next step switches to; a callback can set
+    /// it (`FUN_004af3a0`), and the step returns and clears it.
+    pub pending: Option<MenuId>,
+    /// `DAT_00bbac04`: whether the last step that left a menu went back.
+    pub went_back: bool,
 }
 
 impl MenuSet {
@@ -231,18 +280,63 @@ impl MenuSet {
     }
 
     /// `FUN_004aee60(m, bits)`: one input step. Returns the menu to switch to
-    /// (the parent or a submenu), and the callbacks in native order.
+    /// (the parent, a submenu or one a callback set), and the callbacks in
+    /// native order.
     pub fn step(&mut self, id: MenuId, input: u32) -> (Option<MenuId>, Vec<MenuEvent>) {
         let mut events = Vec::new();
+        let mut back = false;
+        if self.pending.is_none() {
+            back = self.input_step(id, input, &mut events);
+        }
+        let (pending, post) = self.leave(id, back);
+        events.extend(post);
+        (pending, events)
+    }
+
+    /// The step's tail (`0x4af2c1`) for a host whose commit callback set the
+    /// pending menu (`FUN_004af3a0`): the post callback and the switch. The
+    /// native runs callbacks inside the step, so this completes the same step.
+    pub fn resolve_pending(&mut self, id: MenuId) -> (Option<MenuId>, Vec<MenuEvent>) {
+        self.leave(id, false)
+    }
+
+    fn leave(&mut self, id: MenuId, back: bool) -> (Option<MenuId>, Vec<MenuEvent>) {
+        let mut events = Vec::new();
+        let menu = &self.menus[id.0];
+        if let (Some(callback), Some(_)) = (menu.on_post, self.pending) {
+            let back = back
+                || menu
+                    .items
+                    .get(menu.selected)
+                    .is_some_and(|item| item.kind == ItemKind::Back);
+            self.went_back = back;
+            events.push(MenuEvent::Post {
+                menu: id,
+                callback,
+                back,
+            });
+        }
+        (self.pending.take(), events)
+    }
+
+    /// The input part of the step; returns the gated back input.
+    fn input_step(&mut self, id: MenuId, input: u32, events: &mut Vec<MenuEvent>) -> bool {
         let menu = &mut self.menus[id.0];
         let count = menu.items.len();
-        let confirm = input & bits::CONFIRM != 0;
-        let back = input & bits::BACK != 0;
-        let previous = input & bits::UP != 0;
-        let next = !previous && input & bits::DOWN != 0;
-        let moving = input & (bits::UP | bits::DOWN) != 0;
-        let left = !moving && input & bits::LEFT != 0;
-        let right = !moving && !left && input & bits::RIGHT != 0;
+        let nav = menu.nav;
+        let confirm = nav.confirms && input & bits::CONFIRM != 0;
+        let back = nav.backs && input & bits::BACK != 0;
+        let (previous_bit, next_bit, decrement_bit, increment_bit) = if menu.horizontal {
+            (bits::LEFT, bits::RIGHT, bits::UP, bits::DOWN)
+        } else {
+            (bits::UP, bits::DOWN, bits::LEFT, bits::RIGHT)
+        };
+        let previous = nav.moves && input & previous_bit != 0;
+        let next = nav.moves && !previous && input & next_bit != 0;
+        let moving = nav.moves && input & (previous_bit | next_bit) != 0;
+        let adjusting = nav.adjusts && !moving;
+        let left = adjusting && input & decrement_bit != 0;
+        let right = adjusting && !left && input & increment_bit != 0;
         let mut pending = None;
 
         if count > 0 {
@@ -294,7 +388,8 @@ impl MenuSet {
             if let Some(callback) = menu.on_commit {
                 events.push(MenuEvent::Commit { menu: id, callback });
             }
-            return (pending, events);
+            self.pending = self.pending.or(pending);
+            return back;
         }
 
         let selected = menu.selected;
@@ -353,7 +448,8 @@ impl MenuSet {
         if let Some(callback) = menu.on_commit {
             events.push(MenuEvent::Commit { menu: id, callback });
         }
-        (pending, events)
+        self.pending = self.pending.or(pending);
+        back
     }
 }
 
@@ -390,6 +486,55 @@ mod tests {
             resume,
         ];
         (set, root, sub)
+    }
+
+    #[test]
+    fn the_nav_enables_gate_each_input() {
+        let (mut set, _, sub) = tree();
+        set.menu_mut(sub).nav = MenuNav::NONE;
+        let (pending, _) = set.step(sub, bits::DOWN | bits::RIGHT | bits::BACK);
+        assert_eq!(pending, None);
+        assert_eq!(set.menu(sub).selected, 0);
+        assert_eq!(set.menu(sub).items[0].value.value, 5);
+        set.menu_mut(sub).nav.adjusts = true;
+        set.step(sub, bits::LEFT);
+        assert_eq!(set.menu(sub).items[0].value.value, 4);
+    }
+
+    #[test]
+    fn a_horizontal_list_moves_with_left_and_right() {
+        let (mut set, root, _) = tree();
+        set.menu_mut(root).horizontal = true;
+        set.step(root, bits::DOWN);
+        assert_eq!(set.menu(root).selected, 0);
+        set.step(root, bits::RIGHT);
+        assert_eq!(set.menu(root).selected, 1);
+    }
+
+    #[test]
+    fn leaving_runs_the_post_callback_with_the_back_flag() {
+        let (mut set, root, sub) = tree();
+        set.menu_mut(sub).on_post = Some(9);
+        let (pending, events) = set.step(sub, bits::BACK);
+        assert_eq!(pending, Some(root));
+        assert_eq!(
+            events.last(),
+            Some(&MenuEvent::Post {
+                menu: sub,
+                callback: 9,
+                back: true
+            })
+        );
+        assert!(set.went_back);
+        // A pending menu a callback set skips the input and leaves at once.
+        set.pending = Some(root);
+        let (pending, events) = set.step(sub, bits::DOWN);
+        assert_eq!(pending, Some(root));
+        assert_eq!(set.menu(sub).selected, 0);
+        assert!(matches!(events[..], [MenuEvent::Post { back: false, .. }]));
+        assert_eq!(set.pending, None);
+        // Without a pending menu nothing leaves.
+        assert_eq!(set.resolve_pending(sub), (None, Vec::new()));
     }
 
     #[test]
