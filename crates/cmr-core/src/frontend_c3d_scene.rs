@@ -11,7 +11,9 @@ pub use crate::root_menu_c3d_transform::{
 };
 use crate::{
     display::DisplayExtent,
-    root_menu_c3d_transform::{ROOT_MENU_C3D_VIEW, root_menu_c3d_viewport},
+    root_menu_c3d_transform::{
+        C3dViewportRect, ROOT_MENU_C3D_VIEW, frontend_c3d_viewport_rect, root_menu_c3d_viewport,
+    },
 };
 
 /// Exact recovered identity camera transform shared by frontend C3D scenes.
@@ -194,7 +196,40 @@ pub fn execute_frontend_c3d_scene_with_post_reset<B, P, O, D>(
 where
     B: FrontendC3dSceneBackend,
 {
-    let viewport = root_menu_c3d_viewport(extent).map_err(|source| C3dSceneError {
+    execute_frontend_c3d_scene_in(
+        backend,
+        destination,
+        extent,
+        None,
+        depth_clear,
+        plan,
+        submit,
+        post_reset,
+    )
+}
+
+/// [`execute_frontend_c3d_scene_with_post_reset`] in the viewport rectangle
+/// `rect` (`DAT_00d4ce10`; `None` covers the display). The depth clear
+/// still covers the display: it runs before the scene sets its viewport.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_frontend_c3d_scene_in<B, P, O, D>(
+    backend: &mut B,
+    destination: B::Surface,
+    extent: DisplayExtent,
+    rect: Option<C3dViewportRect>,
+    depth_clear: C3dDepthClear,
+    plan: Option<P>,
+    submit: impl FnOnce(&mut B, P) -> Result<O, D>,
+    post_reset: impl FnOnce(&mut B),
+) -> Result<C3dSceneOutcome<O>, C3dSceneError<B::SceneError, D>>
+where
+    B: FrontendC3dSceneBackend,
+{
+    let viewport = match rect {
+        Some(rect) => frontend_c3d_viewport_rect(rect),
+        None => root_menu_c3d_viewport(extent),
+    }
+    .map_err(|source| C3dSceneError {
         primary: C3dScenePrimaryError::Viewport(source),
         cleanup: None,
     })?;

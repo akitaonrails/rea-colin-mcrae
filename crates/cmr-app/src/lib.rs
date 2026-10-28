@@ -3981,6 +3981,14 @@ fn time_trial_columns<'a>(
     columns
 }
 
+/// No F9/F10 held (the real-data frame tests).
+#[cfg(test)]
+const NO_CAR_KEYS: cmr_core::championship_car_transform::ChampionshipCarInput =
+    cmr_core::championship_car_transform::ChampionshipCarInput {
+        f9: false,
+        f10: false,
+    };
+
 /// The name entry's encoded cheat names (`name_cheat_00..`), in test order.
 fn name_cheats(store: &cmr_assets::StaticTablesStore) -> Vec<Vec<u8>> {
     (0..cmr_core::frontend_name_entry::CHEAT_COUNT)
@@ -7186,6 +7194,11 @@ pub fn run_windowed_game_session(
                     Some(audio_root),
                     |input: WindowedInput| {
                         session.set_results_input(results.poll_keys(input.keys));
+                        // `GetAsyncKeyState(VK_F9/VK_F10)` tilt the front end's car.
+                        let car_keys = cmr_core::championship_car_transform::ChampionshipCarInput {
+                            f9: input.keys.is_down(0x78),
+                            f10: input.keys.is_down(0x79),
+                        };
                         let frame = reload_stage_for_event(
                             &mut session,
                             &mut resources,
@@ -7239,9 +7252,14 @@ pub fn run_windowed_game_session(
                                     clock.millis(),
                                     led_step(&screen_bitmaps),
                                 ) {
-                                    root.render_screen(&commands, &screen_bitmaps, &screen_images)
-                                        .ok()
-                                        .and_then(|()| root.backend().presented_frame().cloned())
+                                    root.render_screen(
+                                        &commands,
+                                        &screen_bitmaps,
+                                        &screen_images,
+                                        car_keys,
+                                    )
+                                    .ok()
+                                    .and_then(|()| root.backend().presented_frame().cloned())
                                 } else {
                                     None
                                 };
@@ -10876,6 +10894,33 @@ mod tests {
                     }
                     let _ = tick(&mut interaction, press, None, &mut config);
                 }
+                // Up to the car row: the 3D car turns in its viewport once
+                // the logo has stopped; then back down to Continue.
+                for frame in 0..270 {
+                    let held = match frame {
+                        10 | 40 | 70 => Some(0x26),
+                        180 | 210 | 240 => Some(0x28),
+                        _ => None,
+                    };
+                    let _ = tick(&mut interaction, Default::default(), held, &mut config);
+                    if let Some(commands) = screen_commands(
+                        &interaction,
+                        Some(&tables),
+                        &config.image[..],
+                        &mut state,
+                        root.text(),
+                        root.fonts(),
+                        now.get(),
+                        led_step(&screen_bitmaps),
+                    ) {
+                        root.render_screen(&commands, &screen_bitmaps, &screen_images, NO_CAR_KEYS)
+                            .unwrap();
+                        if (100..180).contains(&frame) && frame % 20 == 0 {
+                            let presented = root.backend().presented_frame().cloned().unwrap();
+                            write(&format!("tt-car-{frame:03}"), &presented);
+                        }
+                    }
+                }
                 for frame in 0..400 {
                     let held = (frame % 30 == 29).then_some(0x0d);
                     let ticked = tick(&mut interaction, Default::default(), held, &mut config);
@@ -10895,7 +10940,7 @@ mod tests {
                         now.get(),
                         led_step(&screen_bitmaps),
                     ) {
-                        root.render_screen(&commands, &screen_bitmaps, &screen_images)
+                        root.render_screen(&commands, &screen_bitmaps, &screen_images, NO_CAR_KEYS)
                             .unwrap();
                         if frame % 30 == 28 {
                             let screen = interaction.state().active_screen().legacy_value();
@@ -10956,7 +11001,7 @@ mod tests {
                         now.get(),
                         led_step(&screen_bitmaps),
                     ) {
-                        root.render_screen(&commands, &screen_bitmaps, &screen_images)
+                        root.render_screen(&commands, &screen_bitmaps, &screen_images, NO_CAR_KEYS)
                             .unwrap();
                         if frame % 10 == 9 {
                             let presented = root.backend().presented_frame().cloned().unwrap();
@@ -11017,7 +11062,7 @@ mod tests {
                         now.get(),
                         led_step(&screen_bitmaps),
                     ) {
-                        root.render_screen(&commands, &screen_bitmaps, &screen_images)
+                        root.render_screen(&commands, &screen_bitmaps, &screen_images, NO_CAR_KEYS)
                             .unwrap();
                         if frame % 10 == 9 {
                             let screen = interaction.state().active_screen().legacy_value();
@@ -11057,7 +11102,7 @@ mod tests {
                         now.get(),
                         led_step(&screen_bitmaps),
                     ) {
-                        root.render_screen(&commands, &screen_bitmaps, &screen_images)
+                        root.render_screen(&commands, &screen_bitmaps, &screen_images, NO_CAR_KEYS)
                             .unwrap();
                         if frame % 10 == 9 {
                             let screen = interaction.state().active_screen().legacy_value();

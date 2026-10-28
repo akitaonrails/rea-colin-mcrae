@@ -29,6 +29,15 @@ use crate::frontend_setup::{SetupKind, key};
 /// One draw operation, in pixels.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScreenCommand {
+    /// `FUN_004c4d30`'s 3D car: car `car` (`DAT_00d3cec4[car]`) turned one
+    /// step and shown in the screen's viewport rectangle (`DAT_00d4ce10`)
+    /// once its logo at `logo` has stopped moving. Drawn by the frame's C3D
+    /// pass after the blits; a no-op for the 2D executor.
+    Car {
+        car: u8,
+        logo: (i32, i32),
+        viewport: crate::root_menu_c3d_transform::C3dViewportRect,
+    },
     /// `FUN_004bac90`: the backdrop window at the camera, to `(0, 0)`.
     Backdrop { x: i32, y: i32, w: i32, h: i32 },
     /// The selection bar: `select.bmp` (0, 0, 256, 256) stretched to the
@@ -148,10 +157,10 @@ impl ScreenFrameState {
         }
     }
 
-    /// `FUN_004c4d30`'s logo and palette (the model's transform and its
-    /// visibility latch are not drawn): the logo at the anchor
+    /// `FUN_004c4d30`: the 3D car in `viewport`, the logo at the anchor
     /// (`q(W, X + 0x3999)`, or `q(W, X) + 0x116` in the wide layout), then the
     /// car's palette when the car changes, invalidating the flag cache.
+    #[allow(clippy::too_many_arguments)]
     pub fn car_logo(
         &mut self,
         car: u8,
@@ -159,20 +168,30 @@ impl ScreenFrameState {
         anchor: (i32, i32),
         camera: Camera,
         extent: DisplayExtent,
+        viewport: crate::root_menu_c3d_transform::C3dViewportRect,
         commands: &mut Vec<ScreenCommand>,
     ) {
         let w = i32::from(extent.width);
         let h = i32::from(extent.height);
         let (ox, oy) = camera.offset();
         let x = anchor.0.wrapping_add(ox);
-        commands.push(ScreenCommand::Image {
-            image: crate::frontend_screen_bitmaps::ScreenImage::Logo { car },
-            x: if wide {
+        let logo = (
+            if wide {
                 q(w, x) + 0x116
             } else {
                 q(w, x.wrapping_add(0x3999))
             },
-            y: q(h, anchor.1.wrapping_add(oy)),
+            q(h, anchor.1.wrapping_add(oy)),
+        );
+        commands.push(ScreenCommand::Car {
+            car,
+            logo,
+            viewport,
+        });
+        commands.push(ScreenCommand::Image {
+            image: crate::frontend_screen_bitmaps::ScreenImage::Logo { car },
+            x: logo.0,
+            y: logo.1,
         });
         if i32::from(car) != self.car_cache {
             commands.push(ScreenCommand::Palette(
@@ -182,6 +201,32 @@ impl ScreenFrameState {
             self.flag_cache = -2;
         }
     }
+}
+
+/// The car viewports the enter callbacks set (`DAT_00d4ce10`, pixels as
+/// coded, unscaled).
+pub mod car_viewport {
+    use crate::root_menu_c3d_transform::C3dViewportRect;
+
+    const fn rect(x: i16, y: i16) -> C3dViewportRect {
+        C3dViewportRect {
+            x,
+            y,
+            width: 0xb6,
+            height: 0x80,
+        }
+    }
+
+    /// `FUN_004c8f00`.
+    pub const CHAMPIONSHIP: C3dViewportRect = rect(0x134, 0x40);
+    /// `0x4c8b80` and `0x4c8f90`.
+    pub const RALLY: C3dViewportRect = rect(0x110, 0x12c);
+    /// `0x4c59d0`.
+    pub const CHAMPIONSHIP_NAME: C3dViewportRect = rect(0x7b, 0x40);
+    /// `0x4c5ab0` and `0x4c5c70`.
+    pub const RALLY_NAME: C3dViewportRect = rect(0x64, 0x12c);
+    /// `0x4c74e0`.
+    pub const LOAD: C3dViewportRect = rect(0x18, 0x150);
 }
 
 /// The executable's strings and tables the rows read.
@@ -542,6 +587,11 @@ fn preview_commands<'f>(
                 input.info,
                 input.camera,
                 input.extent,
+                if input.kind == SetupKind::Championship {
+                    car_viewport::CHAMPIONSHIP
+                } else {
+                    car_viewport::RALLY
+                },
                 commands,
             );
         }
@@ -852,6 +902,11 @@ pub fn plan_name_entry_frame<'f>(
         (anchor_x, input.info.1),
         input.camera,
         extent,
+        if input.kind == SetupKind::Championship {
+            car_viewport::CHAMPIONSHIP_NAME
+        } else {
+            car_viewport::RALLY_NAME
+        },
         &mut commands,
     );
     // `FUN_004c4fc0`: the summary at the anchor.
@@ -1232,6 +1287,7 @@ pub fn plan_load_frame<'f>(
                         screen.info,
                         input.camera,
                         extent,
+                        car_viewport::LOAD,
                         &mut commands,
                     );
                 }
@@ -2157,6 +2213,8 @@ pub enum ScreenFrameError<E, F> {
     Bitmap(crate::root_menu_bitmap_raster::RootBitmapCommandError<E>),
     Selection(String),
     Text(String),
+    /// The C3D pass between the blits and the queued text.
+    Scene(String),
     Palette(crate::deferred_palette::DeferredPaletteCommitError<E>),
     Present(F),
 }
@@ -2179,11 +2237,52 @@ pub fn execute_screen_frame<B>(
     bitmaps: &crate::root_menu_bitmap_raster::UploadedRootMenuBitmapPool,
     screen_bitmaps: &crate::frontend_screen_bitmaps::ScreenBitmapPool,
     images: &crate::frontend_screen_bitmaps::ScreenImagePool,
+    palette: crate::root_menu_frame::RootFramePaletteResources<'_>,
+    sources: &mut crate::source_store::UploadedSourceStore<'_, B>,
+    destination: B::Surface,
+    extent: DisplayExtent,
+    limits: cmr_formats::font::TextLayoutLimits,
+) -> Result<(), ScreenFrameError<<B as crate::display::IndexedVideoBackend>::Error, B::FinalError>>
+where
+    B: crate::root_menu_frame::RootFrameHooks
+        + crate::deferred_palette::DeferredPaletteAdapter<
+            Error = <B as crate::display::IndexedVideoBackend>::Error,
+        >,
+    <B as crate::display::IndexedVideoBackend>::Error: std::fmt::Debug,
+{
+    execute_screen_frame_with(
+        commands,
+        fonts,
+        bitmaps,
+        screen_bitmaps,
+        images,
+        palette,
+        sources,
+        destination,
+        extent,
+        limits,
+        |_, _| Ok(()),
+    )
+}
+
+/// [`execute_screen_frame`] with the frame's C3D pass `scene` (`FUN_004a0010`:
+/// the car model) run after the blits and before the queued text.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_screen_frame_with<B>(
+    commands: &[ScreenCommand],
+    fonts: &crate::font_raster::UploadedFontPool,
+    bitmaps: &crate::root_menu_bitmap_raster::UploadedRootMenuBitmapPool,
+    screen_bitmaps: &crate::frontend_screen_bitmaps::ScreenBitmapPool,
+    images: &crate::frontend_screen_bitmaps::ScreenImagePool,
     mut palette: crate::root_menu_frame::RootFramePaletteResources<'_>,
     sources: &mut crate::source_store::UploadedSourceStore<'_, B>,
     destination: B::Surface,
     extent: DisplayExtent,
     limits: cmr_formats::font::TextLayoutLimits,
+    scene: impl FnOnce(
+        &mut crate::source_store::UploadedSourceStore<'_, B>,
+        B::Surface,
+    ) -> Result<(), String>,
 ) -> Result<(), ScreenFrameError<<B as crate::display::IndexedVideoBackend>::Error, B::FinalError>>
 where
     B: crate::root_menu_frame::RootFrameHooks
@@ -2202,8 +2301,16 @@ where
     let texts = commands
         .iter()
         .filter(|command| matches!(command, ScreenCommand::Text { .. }));
+    let mut scene = Some(scene);
     for command in blits.chain(texts) {
+        if matches!(command, ScreenCommand::Text { .. })
+            && let Some(scene) = scene.take()
+        {
+            scene(sources, destination).map_err(ScreenFrameError::Scene)?;
+        }
         match command {
+            // The C3D pass's own input.
+            ScreenCommand::Car { .. } => {}
             ScreenCommand::Backdrop { x, y, w, h } => {
                 let Some((bw, bh)) = bitmaps.extent(RootMenuBitmapSlot::Backdrop) else {
                     continue;
@@ -2364,6 +2471,9 @@ where
             }
         }
     }
+    if let Some(scene) = scene.take() {
+        scene(sources, destination).map_err(ScreenFrameError::Scene)?;
+    }
     let backend = sources.backend_mut();
     crate::deferred_palette::commit_deferred_palette(
         palette.state,
@@ -2467,20 +2577,29 @@ mod tests {
             }
         ));
         assert!(matches!(&commands[7], ScreenCommand::Text { text, .. } if text == b"T76"));
-        // The car's logo then its palette (`FUN_004c4d30`), narrow layout,
-        // before the rows below the selected one.
+        // The 3D car in the championship's viewport, the car's logo then its
+        // palette (`FUN_004c4d30`), narrow layout, before the rows below the
+        // selected one.
         assert!(matches!(
             commands[8],
+            ScreenCommand::Car {
+                car: 6,
+                viewport: car_viewport::CHAMPIONSHIP,
+                ..
+            }
+        ));
+        assert!(matches!(
+            commands[9],
             ScreenCommand::Image {
                 image: crate::frontend_screen_bitmaps::ScreenImage::Logo { car: 6 },
                 ..
             }
         ));
         assert_eq!(
-            commands[9],
+            commands[10],
             ScreenCommand::Palette(crate::frontend_screen_bitmaps::palette::CARS + 6)
         );
-        assert_eq!(commands.len(), 12);
+        assert_eq!(commands.len(), 13);
         assert_eq!(state.arrow_tick, 1);
         // The bar starts 31 pixels left of the text at 640 wide.
         let ScreenCommand::Selection { x, h, .. } = commands[2] else {
@@ -2681,10 +2800,23 @@ mod tests {
             ..Default::default()
         };
         let mut commands = Vec::new();
-        state.car_logo(6, false, (0, 0), camera, extent, &mut commands);
+        state.car_logo(
+            6,
+            false,
+            (0, 0),
+            camera,
+            extent,
+            car_viewport::RALLY,
+            &mut commands,
+        );
         assert_eq!(
             commands,
             vec![
+                ScreenCommand::Car {
+                    car: 6,
+                    logo: (q(640, 0x3999), 0),
+                    viewport: car_viewport::RALLY,
+                },
                 ScreenCommand::Image {
                     image: ScreenImage::Logo { car: 6 },
                     x: q(640, 0x3999),
@@ -2695,9 +2827,17 @@ mod tests {
         );
         assert_eq!(state.flag_cache, -2, "the car invalidates the flag");
         commands.clear();
-        state.car_logo(6, true, (0x8000, 0), camera, extent, &mut commands);
-        assert_eq!(commands.len(), 1, "same car: no palette");
-        assert!(matches!(commands[0], ScreenCommand::Image { x, .. } if x == 320 + 0x116));
+        state.car_logo(
+            6,
+            true,
+            (0x8000, 0),
+            camera,
+            extent,
+            car_viewport::RALLY,
+            &mut commands,
+        );
+        assert_eq!(commands.len(), 2, "same car: no palette");
+        assert!(matches!(commands[1], ScreenCommand::Image { x, .. } if x == 320 + 0x116));
         // A setup entry resets both caches once.
         state.sync_setup_entries(1);
         assert_eq!((state.flag_cache, state.car_cache), (-2, -1));

@@ -257,7 +257,23 @@ pub struct SoftwareRootMenuSessionRun<R> {
     pub startup_copy: cmr_core::display::StartupCopyOutcome<SoftwareVideoError>,
 }
 
+/// The front end's 3D cars (`DAT_00d3cec4[0..14)`, `FUN_004c4d30`): the
+/// fourteen car objects, their batch executor and the turning state.
+struct FrontendCarLayer<'session, 'asset, 'catalog> {
+    topologies: &'session [cmr_core::c3d_topology::C3dObjectTopology<'asset>;
+                  cmr_core::championship_assets::CHAMPIONSHIP_CAR_COUNT],
+    runtimes: &'session [cmr_core::root_menu_c3d_runtime::C3dResourceScaledObject;
+                  cmr_core::championship_assets::CHAMPIONSHIP_CAR_COUNT],
+    executor: &'session mut cmr_core::championship_car_execute::ChampionshipCarBatchExecutor<
+        'catalog,
+        SoftwareC3dSampledTexture,
+    >,
+    state: &'session mut cmr_core::championship_car_transform::ChampionshipCarState,
+    raster: crate::software_championship_session::SoftwareChampionshipRasterSelection,
+}
+
 pub struct SoftwareRootMenuSession<'session, 'asset, 'catalog, 'backend> {
+    car: Option<FrontendCarLayer<'session, 'asset, 'catalog>>,
     language: Language,
     target: IndexedFrameTarget<SurfaceHandle>,
     text_layout_limits: TextLayoutLimits,
@@ -331,14 +347,30 @@ impl SoftwareRootMenuSession<'_, '_, '_, '_> {
 
     /// Draw one front-end sub-screen frame (`FUN_004c1bc0` with a setup
     /// menu current) from its planned commands, with this session's fonts,
-    /// backdrop and selection bitmaps and palette state.
+    /// backdrop and selection bitmaps and palette state; a planned car
+    /// ([`cmr_core::frontend_screen_frame::ScreenCommand::Car`]) turns one
+    /// step and draws in its viewport between the blits and the text, as the
+    /// frame's C3D pass does. `keys` are F9 and F10 held (they tilt the car).
     pub fn render_screen(
         &mut self,
         commands: &[cmr_core::frontend_screen_frame::ScreenCommand],
         screen_bitmaps: &cmr_core::frontend_screen_bitmaps::ScreenBitmapPool,
         images: &cmr_core::frontend_screen_bitmaps::ScreenImagePool,
+        keys: cmr_core::championship_car_transform::ChampionshipCarInput,
     ) -> Result<(), String> {
-        cmr_core::frontend_screen_frame::execute_screen_frame(
+        let extent = self.target.mode.extent;
+        let depth_clear = self.depth_clear;
+        let route = self.route_state;
+        let planned = commands.iter().find_map(|command| match command {
+            cmr_core::frontend_screen_frame::ScreenCommand::Car {
+                car,
+                logo,
+                viewport,
+            } => Some((*car, *logo, *viewport)),
+            _ => None,
+        });
+        let car_layer = self.car.as_mut();
+        cmr_core::frontend_screen_frame::execute_screen_frame_with(
             commands,
             self.fonts,
             self.bitmaps,
@@ -353,8 +385,25 @@ impl SoftwareRootMenuSession<'_, '_, '_, '_> {
             },
             self.sources,
             self.target.back,
-            self.target.mode.extent,
+            extent,
             self.text_layout_limits,
+            |sources, destination| {
+                let (Some(layer), Some((car, logo, viewport))) = (car_layer, planned) else {
+                    return Ok(());
+                };
+                draw_frontend_car(
+                    layer,
+                    route,
+                    sources,
+                    destination,
+                    extent,
+                    depth_clear,
+                    car,
+                    logo,
+                    viewport,
+                    keys,
+                )
+            },
         )
         .map_err(|error| error.to_string())
     }
@@ -478,6 +527,76 @@ impl SoftwareRootMenuSession<'_, '_, '_, '_> {
 /// sentinel, index zero is pending, and the immediate display upload uses the
 /// all-zero contents of the executable's zero-filled global buffer. The first
 /// terminal frame then commits the complete disk palette.
+/// `FUN_004c4d30` for `car`: one turning step (F9/F10 tilt it), then the
+/// frame's C3D pass in the screen's viewport; the car shows once its logo
+/// has stopped moving (the visibility latch). An unknown car index draws
+/// nothing.
+#[allow(clippy::too_many_arguments)]
+fn draw_frontend_car(
+    layer: &mut FrontendCarLayer<'_, '_, '_>,
+    route: &FrontendC3dRouteState,
+    sources: &mut UploadedSourceStore<'_, SoftwareIndexedBackend>,
+    destination: SurfaceHandle,
+    extent: cmr_core::display::DisplayExtent,
+    depth_clear: RootMenuC3dDepthClear,
+    car: u8,
+    logo: (i32, i32),
+    viewport: cmr_core::root_menu_c3d_transform::C3dViewportRect,
+    keys: cmr_core::championship_car_transform::ChampionshipCarInput,
+) -> Result<(), String> {
+    use cmr_core::championship_setup::CanonicalCar;
+    let Some(&canonical) = CanonicalCar::ALL.get(usize::from(car)) else {
+        return Ok(());
+    };
+    // The rectangles are coded for 640 x 480; one that does not fit the
+    // display fails `SetViewport2`, leaving the display's viewport from the
+    // last scene (inference: the result is not checked).
+    let fits = viewport.x >= 0
+        && viewport.y >= 0
+        && i32::from(viewport.x) + i32::from(viewport.width) <= i32::from(extent.width)
+        && i32::from(viewport.y) + i32::from(viewport.height) <= i32::from(extent.height);
+    let viewport = if fits {
+        viewport
+    } else {
+        cmr_core::root_menu_c3d_transform::C3dViewportRect {
+            x: 0,
+            y: 0,
+            width: extent.width,
+            height: extent.height,
+        }
+    };
+    let index = usize::from(car);
+    let plan = cmr_core::championship_car_frame_plan::plan_championship_car_frame(
+        &layer.topologies[index],
+        &layer.runtimes[index],
+        layer.state,
+        canonical,
+        keys,
+        [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x10000],
+        cmr_core::championship_setup_visual::PixelPoint::new(logo.0, logo.1),
+        extent,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let prepared = layer
+        .executor
+        .prepare(plan, layer.raster.pre_draw_state_for_car(canonical))
+        .map_err(|error| format!("{error:?}"))?;
+    if route.enter(cmr_core::frontend_c3d_route::FrontendC3dRoute::ChampionshipCar) {
+        layer.executor.invalidate_bindings();
+    }
+    cmr_core::championship_car_scene::execute_championship_car_scene_on(
+        layer.executor,
+        sources,
+        destination,
+        extent,
+        viewport,
+        depth_clear,
+        prepared,
+    )
+    .map(|_| ())
+    .map_err(|error| format!("{error:?}"))
+}
+
 pub fn with_software_root_menu_session<R>(
     store: &AssetStore,
     startup: StartupDisplay<SoftwareIndexedBackend>,
@@ -532,6 +651,55 @@ pub fn with_software_root_menu_session_palettes<R>(
     let catalog = prepare_software_root_c3d_bindings(&topology, request.c3d_load_states)
         .map_err(SoftwareRootMenuSessionBuildError::C3dBindings)?;
     let mut executor = RootMenuC3dBatchExecutor::new(&catalog);
+    // The fourteen car objects (`DAT_00d3cec4`), when the user's data has
+    // them; without them the setup screens draw no 3D car.
+    let championship = cmr_core::championship_assets::load_championship_assets(
+        store,
+        request.c3d_limits,
+        request.bitmap_limits,
+    )
+    .ok();
+    let frontend = championship.as_ref().and_then(|championship| {
+        cmr_core::frontend_c3d_resources::prepare_frontend_c3d_resources(
+            championship,
+            &c3d_assets,
+            request.bitmap_limits,
+        )
+        .ok()
+    });
+    let car_topologies =
+        championship
+            .as_ref()
+            .zip(frontend.as_ref())
+            .and_then(|(championship, frontend)| {
+                cmr_core::championship_setup::CanonicalCar::ALL
+                    .into_iter()
+                    .map(|car| frontend.car_topology(championship, car).ok())
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|topologies| topologies.try_into().ok())
+            });
+    let car_runtimes = frontend.as_ref().zip(car_topologies.as_ref()).and_then(
+        |(frontend, topologies): (_, &[cmr_core::c3d_topology::C3dObjectTopology<'_>; 14])| {
+            cmr_core::championship_setup::CanonicalCar::ALL
+                .into_iter()
+                .map(|car| {
+                    frontend
+                        .materialize_car(car, &topologies[car.index() as usize])
+                        .ok()
+                })
+                .collect::<Option<Vec<_>>>()
+                .and_then(|runtimes| runtimes.try_into().ok())
+        },
+    );
+    let car_catalog = frontend.as_ref().and_then(|frontend| {
+        crate::c3d_software::prepare_software_frontend_c3d_bindings(frontend).ok()
+    });
+    let mut car_executor = car_catalog
+        .as_ref()
+        .map(cmr_core::championship_car_execute::ChampionshipCarBatchExecutor::new);
+    let mut car_state = cmr_core::championship_car_transform::ChampionshipCarState::new();
+    let car_raster =
+        crate::software_championship_session::SoftwareChampionshipRasterSelection::supported_software_oracle_policy();
     let mut angles = RootMenuC3dAngles::new();
     let mut visibility = RootMenuC3dVisibilityLatches::new();
     let route_state = FrontendC3dRouteState::new();
@@ -545,6 +713,13 @@ pub fn with_software_root_menu_session_palettes<R>(
         .map_err(SoftwareRootMenuSessionBuildError::BootstrapPalette)?;
     let target = display.frame_target();
     let mut backend = display.into_backend();
+    // Surface creation resets the backend's C3D state, so the car raster
+    // profile is configured after it (as the championship session does).
+    let cars_ready = car_runtimes.is_some()
+        && car_executor.is_some()
+        && backend
+            .configure_championship_car_raster_profile(car_raster.raster_profile)
+            .is_ok();
     let mut sources = UploadedSourceStore::new(&mut backend);
     let uploaded_fonts = UploadedFontPool::upload(&mut sources, fonts)
         .map_err(SoftwareRootMenuSessionBuildError::FontUpload)?;
@@ -568,7 +743,23 @@ pub fn with_software_root_menu_session_palettes<R>(
     let mut global_palette_cache = bootstrap_palette;
 
     let output = {
+        let car = match (
+            cars_ready,
+            &car_topologies,
+            &car_runtimes,
+            car_executor.as_mut(),
+        ) {
+            (true, Some(topologies), Some(runtimes), Some(executor)) => Some(FrontendCarLayer {
+                topologies,
+                runtimes,
+                executor,
+                state: &mut car_state,
+                raster: car_raster.clone(),
+            }),
+            _ => None,
+        };
         let mut session = SoftwareRootMenuSession {
+            car,
             language: request.language,
             target,
             text_layout_limits: request.text_layout_limits,

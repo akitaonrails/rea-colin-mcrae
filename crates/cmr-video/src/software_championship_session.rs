@@ -195,7 +195,10 @@ impl SoftwareChampionshipRasterSelection {
         }
     }
 
-    fn pre_draw_state_for_car(&self, car: CanonicalCar) -> ChampionshipCarPreDrawState<'_> {
+    pub(crate) fn pre_draw_state_for_car(
+        &self,
+        car: CanonicalCar,
+    ) -> ChampionshipCarPreDrawState<'_> {
         ChampionshipCarPreDrawState {
             type2_fog: self.type2_fog,
             actor_rgb: self.actor_rgb.for_car(car),

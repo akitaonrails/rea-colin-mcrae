@@ -214,24 +214,54 @@ pub fn root_menu_c3d_world(raw_angle: u16) -> C3dMatrixWords {
 pub fn root_menu_c3d_viewport(
     extent: DisplayExtent,
 ) -> Result<C3dViewportWords, RootMenuC3dViewportError> {
-    if extent.width == 0
-        || extent.height == 0
-        || extent.width > i16::MAX as u16
-        || extent.height > i16::MAX as u16
+    frontend_c3d_viewport_rect(C3dViewportRect {
+        x: 0,
+        y: 0,
+        width: extent.width,
+        height: extent.height,
+    })
+    .map_err(|_| RootMenuC3dViewportError { extent })
+}
+
+/// The front end's C3D viewport rectangle `DAT_00d4ce10` (i16 `x, y, w, h`
+/// pixels), which each sub-screen's enter callback sets (the root's covers
+/// the display).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct C3dViewportRect {
+    pub x: i16,
+    pub y: i16,
+    pub width: u16,
+    pub height: u16,
+}
+
+/// `FUN_004a0010`'s `D3DVIEWPORT2` from the rectangle: `X, Y, W, H` as given
+/// (sign-extended), the clip volume `-1, w / h, 2, 2 w / h` and depth `0..1`.
+pub fn frontend_c3d_viewport_rect(
+    rect: C3dViewportRect,
+) -> Result<C3dViewportWords, RootMenuC3dViewportError> {
+    if rect.width == 0
+        || rect.height == 0
+        || rect.width > i16::MAX as u16
+        || rect.height > i16::MAX as u16
     {
-        return Err(RootMenuC3dViewportError { extent });
+        return Err(RootMenuC3dViewportError {
+            extent: DisplayExtent {
+                width: rect.width,
+                height: rect.height,
+            },
+        });
     }
 
-    let width = f64::from(extent.width);
-    let height = f64::from(extent.height);
+    let width = f64::from(rect.width);
+    let height = f64::from(rect.height);
     let clip_y = (width / height) as f32;
     let clip_height = ((width * 2.0) / height) as f32;
     Ok(C3dViewportWords([
         44,
-        0,
-        0,
-        u32::from(extent.width),
-        u32::from(extent.height),
+        i32::from(rect.x) as u32,
+        i32::from(rect.y) as u32,
+        u32::from(rect.width),
+        u32::from(rect.height),
         (-1.0_f32).to_bits(),
         clip_y.to_bits(),
         2.0_f32.to_bits(),

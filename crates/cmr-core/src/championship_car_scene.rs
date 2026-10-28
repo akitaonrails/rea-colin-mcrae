@@ -17,7 +17,7 @@ use crate::{
     frontend_c3d_scene::{
         C3dBindingState, C3dDepthClear, C3dSceneError, C3dSceneOutcome, C3dScenePrimaryError,
         C3dSceneStage, FrontendC3dSceneBackend, execute_frontend_c3d_scene,
-        execute_frontend_c3d_scene_with_post_reset,
+        execute_frontend_c3d_scene_in,
     },
     root_menu_c3d_transform::root_menu_c3d_viewport,
 };
@@ -158,6 +158,35 @@ where
     B: FrontendC3dSceneBackend
         + ChampionshipCarBatchBackend<H, Error = <B as FrontendC3dSceneBackend>::SceneError>,
 {
+    execute_optional_championship_car_scene_in(
+        executor,
+        backend,
+        destination,
+        extent,
+        None,
+        depth_clear,
+        prepared,
+        post_reset,
+    )
+}
+
+/// [`execute_optional_championship_car_scene_with_post_reset`] in the
+/// sub-screen's viewport rectangle (`DAT_00d4ce10`, `None` for the display).
+#[allow(clippy::too_many_arguments)]
+pub fn execute_optional_championship_car_scene_in<'catalog, B, H>(
+    executor: &mut ChampionshipCarBatchExecutor<'catalog, H>,
+    backend: &mut B,
+    destination: B::Surface,
+    extent: DisplayExtent,
+    rect: Option<crate::root_menu_c3d_transform::C3dViewportRect>,
+    depth_clear: C3dDepthClear,
+    prepared: Option<PreparedChampionshipCarFrame<'catalog, H>>,
+    post_reset: impl FnOnce(&mut B),
+) -> Result<ChampionshipCarSceneOutcome, ChampionshipCarSceneError<B::SceneError>>
+where
+    B: FrontendC3dSceneBackend
+        + ChampionshipCarBatchBackend<H, Error = <B as FrontendC3dSceneBackend>::SceneError>,
+{
     preflight_optional_championship_car_terminal_scene(
         executor,
         backend,
@@ -169,10 +198,11 @@ where
     let scene_extent = prepared
         .as_ref()
         .map_or(extent, PreparedChampionshipCarFrame::extent);
-    let result = execute_frontend_c3d_scene_with_post_reset(
+    let result = execute_frontend_c3d_scene_in(
         backend,
         destination,
         scene_extent,
+        rect,
         depth_clear,
         prepared,
         |backend, prepared| executor.execute_prepared(backend, prepared),
@@ -182,6 +212,35 @@ where
         executor.invalidate_bindings();
     }
     result.map_err(ChampionshipCarSceneError::Scene)
+}
+
+/// [`execute_optional_championship_car_scene_in`] on the backend that owns
+/// `sources` (a sub-screen frame's C3D pass between its blits and its text).
+#[allow(clippy::too_many_arguments)]
+pub fn execute_championship_car_scene_on<'catalog, B, H>(
+    executor: &mut ChampionshipCarBatchExecutor<'catalog, H>,
+    sources: &mut crate::source_store::UploadedSourceStore<'_, B>,
+    destination: <B as FrontendC3dSceneBackend>::Surface,
+    extent: DisplayExtent,
+    rect: crate::root_menu_c3d_transform::C3dViewportRect,
+    depth_clear: C3dDepthClear,
+    prepared: PreparedChampionshipCarFrame<'catalog, H>,
+) -> Result<ChampionshipCarSceneOutcome, ChampionshipCarSceneError<B::SceneError>>
+where
+    B: crate::display::IndexedVideoBackend
+        + FrontendC3dSceneBackend
+        + ChampionshipCarBatchBackend<H, Error = <B as FrontendC3dSceneBackend>::SceneError>,
+{
+    execute_optional_championship_car_scene_in(
+        executor,
+        sources.backend_mut(),
+        destination,
+        extent,
+        Some(rect),
+        depth_clear,
+        Some(prepared),
+        |_| {},
+    )
 }
 
 /// Effect-free car-specific preflight for the optional terminal car scene.

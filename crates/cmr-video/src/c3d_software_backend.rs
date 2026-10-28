@@ -286,7 +286,15 @@ impl RootMenuC3dSceneBackend for SoftwareIndexedBackend {
                 }
             })?,
         };
-        if viewport_extent != destination_extent {
+        // The viewport may be a rectangle of the target (the front end's
+        // sub-screen car windows) but must lie inside it, as
+        // `IDirect3DViewport2::SetViewport2` requires.
+        let (x, y) = (words[1] as i32, words[2] as i32);
+        let inside = x >= 0
+            && y >= 0
+            && x + i32::from(viewport_extent.width) <= i32::from(destination_extent.width)
+            && y + i32::from(viewport_extent.height) <= i32::from(destination_extent.height);
+        if !inside {
             return Err(SoftwareC3dBackendError::ViewportExtentMismatch {
                 viewport: viewport_extent,
                 destination: destination_extent,
