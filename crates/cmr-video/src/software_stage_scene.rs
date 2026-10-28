@@ -141,6 +141,69 @@ impl StageSceneFrame {
         Ok(self)
     }
 
+    /// Draws the car shadows (`FUN_004a51f0`) over this world pass: each
+    /// shadow's pre-lit world-space triangles are depth-tested against the
+    /// frame without writing depth (`ZWRITEENABLE` off), and each passing
+    /// fragment blends `SRCALPHA`/`INVSRCALPHA` with the texture MODULATE of
+    /// the black vertex colour, so it darkens the pixel by the vertex alpha
+    /// times the alpha map's texel (`64 x 64`, the ARGB4444 upload keeps its
+    /// high nibble); the colour re-quantizes to the frame's palette (the
+    /// backend's nearest-colour policy). Point sampling, as for the meshes.
+    pub fn blend_shadows(
+        &mut self,
+        camera_world_q16: &[i32; 16],
+        shadows: &[(
+            Vec<crate::c3d_software_raster::SoftwareC3dLitVertex>,
+            Vec<u16>,
+        )],
+        alpha: &[u8],
+    ) -> Result<(), StageSceneComposeError> {
+        const MAP: usize = 64;
+        let [width, height] = self.extent;
+        let identity = [
+            0x1_0000, 0, 0, 0, 0, 0x1_0000, 0, 0, 0, 0, 0x1_0000, 0, 0, 0, 0, 0x1_0000,
+        ];
+        let transforms = SoftwareC3dTransformState::for_gameplay_scene(
+            width,
+            height,
+            camera_world_q16,
+            &identity,
+        )?;
+        let palette = *self.palette;
+        let mut cache = std::collections::HashMap::<(u8, u8), u8>::new();
+        for (vertices, indices) in shadows {
+            let batch = crate::c3d_software_raster::preflight_lit_triangle_list(
+                vertices, indices, transforms,
+            )?;
+            let mut scratch = self.depth.clone();
+            let pixels = &mut self.pixels;
+            crate::c3d_software_raster::rasterize_c3d_fragments_untextured(
+                &batch,
+                &mut scratch,
+                |fragment| {
+                    let [u, v] = fragment.uv();
+                    let tx = ((u * MAP as f32) as usize).min(MAP - 1);
+                    let ty = ((v * MAP as f32) as usize).min(MAP - 1);
+                    let texel = alpha.get(ty * MAP + tx).copied().unwrap_or(0) >> 4;
+                    let vertex_alpha = fragment.diffuse_argb()[0];
+                    let a = (f32::from(texel) / 15.0) * vertex_alpha;
+                    let level = (a * 255.0).round().clamp(0.0, 255.0) as u8;
+                    let [x, y] = fragment.position();
+                    let at = usize::from(y) * usize::from(width) + usize::from(x);
+                    let under = pixels[at];
+                    pixels[at] = *cache.entry((under, level)).or_insert_with(|| {
+                        let entry = palette[usize::from(under)];
+                        let keep = 1.0 - f32::from(level) / 255.0;
+                        let rgb = [entry.red, entry.green, entry.blue]
+                            .map(|c| (f32::from(c) * keep).round() as u8);
+                        nearest_index(rgb, &palette)
+                    });
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     /// Depth-composites a later independently rendered opaque world graph into
     /// this frame. The nearer depth wins per pixel and `other` wins equal-depth
     /// ties, reproducing `LessEqual` submission to one shared depth buffer while
@@ -169,6 +232,21 @@ impl StageSceneFrame {
         self.add_stats(other);
         Ok(self)
     }
+}
+
+/// The palette entry nearest `rgb` (Manhattan distance, lowest index on
+/// ties — the backend's quantization policy).
+fn nearest_index(rgb: [u8; 3], palette: &[PaletteEntry; 256]) -> u8 {
+    let mut best = (u32::MAX, 0u8);
+    for (index, entry) in palette.iter().enumerate() {
+        let d = u32::from(rgb[0].abs_diff(entry.red))
+            + u32::from(rgb[1].abs_diff(entry.green))
+            + u32::from(rgb[2].abs_diff(entry.blue));
+        if d < best.0 {
+            best = (d, index as u8);
+        }
+    }
+    best.1
 }
 
 /// Composites a walkable stage scene into a software frame.

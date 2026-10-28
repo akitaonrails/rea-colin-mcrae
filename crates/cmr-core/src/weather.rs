@@ -18,8 +18,7 @@
 //! distance-culled billboards; a billboard/decal emitter (`FUN_00424f40`,
 //! `0x50`-byte records, 8 ring pools of 100 at `DAT_005144d0`); and the
 //! tyre-mark / track-decay fade (`Track_Decay_Life`/`Track_Decay_RATE`). The car
-//! shadow is a projected soft-edged polygon shadow (a 64x64 blob texture, grey
-//! `(100,100,100,170)`) rebuilt each frame (`FUN_004a51f0`). Fog is software
+//! shadow is [`crate::car_shadow`]. Fog is software
 //! distance-haze (color/density/far setters), the engine-level analog of the
 //! C3D type-2 per-vertex fog ([`crate::c3d_type2_fog`]) - there is no DirectX
 //! fog render-state path.
@@ -717,54 +716,7 @@ pub mod particles {
     }
 }
 
-/// Car-shadow subsystem (`FUN_004a4f20`/`FUN_004a51f0`, "Cm" shadows): a
-/// projected, textured, soft-edged polygon shadow flattened to the ground.
-pub mod shadow {
-    /// Blob texture dimension (`images\shadpc.bmp` + alpha mask).
-    pub const BLOB_SIZE: u32 = 64;
-    /// Shadow RGBA: grey `(100,100,100)` at alpha `170` (~0.67).
-    pub const SHADOW_RGBA: (u8, u8, u8, u8) = (100, 100, 100, 170);
-    /// Soft-edge per-vertex alpha ramp written across a shadow polygon.
-    pub const SOFT_EDGE_ALPHAS: [f32; 5] = [0.0, 0.3, 0.5, 0.7, 1.0];
-    /// Ground-plane coordinate the shadow is flattened onto (Q16.16 -2.0).
-    pub const GROUND_PLANE_Q16: i32 = -0x2_0000;
-
-    /// A shadow entry's primitive shape (`piVar13[0x1b]` in `FUN_004a51f0`).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum ShadowPrimitive {
-        /// Type 0: a 4-vertex strip.
-        Strip4,
-        /// Type 1: indexed with the 11-entry index table (`DAT_00b73420`).
-        Indexed11,
-        /// Type 2: indexed with the 15-entry index table (`DAT_00b73890`).
-        Indexed15,
-    }
-
-    /// Classify a shadow entry type byte (0/1/2).
-    pub fn shadow_primitive(entry_type: u8) -> Option<ShadowPrimitive> {
-        Some(match entry_type {
-            0 => ShadowPrimitive::Strip4,
-            1 => ShadowPrimitive::Indexed11,
-            2 => ShadowPrimitive::Indexed15,
-            _ => return None,
-        })
-    }
-
-    /// The vertex/index count a shadow primitive draws.
-    pub fn shadow_primitive_counts(primitive: ShadowPrimitive) -> (u32, u32) {
-        match primitive {
-            ShadowPrimitive::Strip4 => (4, 0),
-            ShadowPrimitive::Indexed11 => (0, 11),
-            ShadowPrimitive::Indexed15 => (0, 15),
-        }
-    }
-
-    /// Convert a Q16.16 vertex coordinate to the float the shadow builder uses
-    /// (`* 1/65536`).
-    pub fn fixed_to_float(q16: i32) -> f32 {
-        q16 as f32 / 65536.0
-    }
-}
+// The car shadow (`FUN_004a4f20`/`FUN_004a51f0`) is `crate::car_shadow`.
 
 /// Sky / horizon / fog setup (`FUN_0048b960`, `FUN_00480d80`).
 pub mod sky {
@@ -1313,23 +1265,6 @@ mod tests {
         assert_eq!(tuning::DRAW_DIRT_OTHER_VIEWPORT, 30);
         assert_eq!(tuning::INITIAL_FOLLOW_SIZE.raw(), 0x3333);
         assert_eq!(tuning::FOLLOW_SIZE_GROWTH.raw(), 0x51e);
-    }
-
-    #[test]
-    fn shadow_primitives_and_conversion() {
-        use shadow::{
-            SHADOW_RGBA, ShadowPrimitive, fixed_to_float, shadow_primitive, shadow_primitive_counts,
-        };
-        assert_eq!(shadow_primitive(0), Some(ShadowPrimitive::Strip4));
-        assert_eq!(shadow_primitive(1), Some(ShadowPrimitive::Indexed11));
-        assert_eq!(shadow_primitive(2), Some(ShadowPrimitive::Indexed15));
-        assert_eq!(shadow_primitive(3), None);
-        assert_eq!(shadow_primitive_counts(ShadowPrimitive::Strip4), (4, 0));
-        assert_eq!(shadow_primitive_counts(ShadowPrimitive::Indexed15), (0, 15));
-        assert_eq!(SHADOW_RGBA, (100, 100, 100, 170));
-        // 1.0 in Q16.16 -> 1.0f; -2.0 ground plane.
-        assert_eq!(fixed_to_float(0x1_0000), 1.0);
-        assert_eq!(fixed_to_float(shadow::GROUND_PLANE_Q16), -2.0);
     }
 
     #[test]

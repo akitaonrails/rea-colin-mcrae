@@ -495,6 +495,14 @@ impl<'a> GameplaySession<'a> {
         ))
     }
 
+    /// The stage's compiled ground (`.hpc`), when attached.
+    #[must_use]
+    pub fn ground_geometry(
+        &self,
+    ) -> Option<&'a crate::stage_compiled_geometry::StageCompiledGeometry> {
+        self.ground_geometry
+    }
+
     /// The four-wheel car's setup wheel words `+0x800..+0x80c`, or `None`
     /// for the planar harness.
     #[must_use]

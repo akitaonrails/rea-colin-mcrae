@@ -856,6 +856,47 @@ pub fn validate_championship_car_split_modulate_no_alpha_oracle_profile(
     }
 }
 
+/// One pre-lit world-space vertex (`D3DLVERTEX`: position, diffuse ARGB,
+/// texture coordinates; the specular is `0xff000000`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SoftwareC3dLitVertex {
+    pub position: [f32; 3],
+    pub diffuse: u32,
+    pub uv: [f32; 2],
+}
+
+/// Preflights pre-lit vertices drawn as an indexed triangle list through the
+/// same transform, clip and cull core as the meshes (`transforms` carries
+/// the WORLD slot, identity for world-space vertices).
+pub fn preflight_lit_triangle_list(
+    vertices: &[SoftwareC3dLitVertex],
+    indices: &[u16],
+    transforms: SoftwareC3dTransformState,
+) -> Result<SoftwareC3dPreparedBatch, SoftwareC3dRasterError> {
+    let raster = vertices
+        .iter()
+        .map(|vertex| RasterInputVertex {
+            position: vertex.position,
+            diffuse: vertex.diffuse,
+            specular: 0xff00_0000,
+            uv: vertex.uv,
+        })
+        .collect::<Vec<_>>();
+    preflight_indexed_triangle_list(&raster, indices, transforms)
+}
+
+/// Visits the depth-passing fragments of an untextured batch (the caller
+/// samples its own texture from the fragment's coordinates). Depth is
+/// written to `depth` as for any batch; a caller drawing with z-write off
+/// passes a scratch copy.
+pub fn rasterize_c3d_fragments_untextured(
+    batch: &SoftwareC3dPreparedBatch,
+    depth: &mut SoftwareC3dDepthBuffer,
+    visit: impl FnMut(SoftwareC3dFragment),
+) -> Result<SoftwareC3dFragmentOutcome, SoftwareC3dRasterError> {
+    rasterize_fragments_extent_only(batch, [1, 1], depth, visit)
+}
+
 /// Visits depth-passing fragments for one prepared batch in triangle/scanline
 /// order using the deterministic point-filter compatibility policy.
 ///

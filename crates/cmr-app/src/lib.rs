@@ -2201,6 +2201,13 @@ pub struct StageRenderResources {
     car_scene: Option<C3dFile>,
     car_textures: Option<StageC3dTextures>,
     race_hud: Option<RaceHudAssets>,
+    /// The car shadows (`FUN_004a4f20`), once the race setup attached them.
+    shadow: Option<StageShadow>,
+    /// This frame's planned shadow triangles (`FUN_004a51f0`'s queue).
+    shadow_draws: Vec<(
+        Vec<cmr_video::c3d_software_raster::SoftwareC3dLitVertex>,
+        Vec<u16>,
+    )>,
     palette: [PaletteEntry; 256],
     node_count: usize,
     draw_ops: usize,
@@ -2297,6 +2304,8 @@ impl StageRenderResources {
             car_scene: None,
             car_textures: None,
             race_hud: None,
+            shadow: None,
+            shadow_draws: Vec::new(),
             palette,
             node_count,
             draw_ops,
@@ -2466,6 +2475,157 @@ impl StageRenderResources {
         Ok(())
     }
 
+    /// `FUN_004a4f20` and the sun `FUN_00449bd0`: the shadow's alpha map
+    /// (`images\\shadam.bmp`; the colour map is modulated to black), the
+    /// stage's sun from its `.shp` (the default without one), the stage's
+    /// lighting and weather gates, and fresh ground caches. Without the alpha
+    /// map no shadow is drawn.
+    pub fn attach_shadows(
+        &mut self,
+        runtime_data: &Path,
+        media_root: &Path,
+        stage: &str,
+        weather: StageWeather,
+    ) {
+        let alpha = ReviewedProfile::from_json(REVIEWED_PROFILE)
+            .ok()
+            .and_then(|reviewed| {
+                AssetStore::open(runtime_data, &reviewed, DecodeLimits::default()).ok()
+            })
+            .and_then(|store| store.load("Game/Images/SHADAM.BMP").ok())
+            .and_then(|bytes| {
+                cmr_formats::bitmap::parse_indexed_bitmap(&bytes, BitmapLimits::default()).ok()
+            })
+            .filter(|bitmap| bitmap.width == 64 && bitmap.height == 64)
+            .map(|bitmap| {
+                // The 8-bit alpha decode takes each texel's grey level.
+                bitmap
+                    .pixels
+                    .iter()
+                    .map(|&index| {
+                        bitmap
+                            .palette
+                            .get(usize::from(index))
+                            .map_or(index, |e| e.red)
+                    })
+                    .collect::<Vec<u8>>()
+            });
+        let Some(alpha) = alpha else {
+            self.shadow = None;
+            return;
+        };
+        let sun = read_decoded_section(media_root, stage, ".shp", DecodeLimits::default())
+            .ok()
+            .flatten()
+            .and_then(|bytes| cmr_core::car_shadow::ShadowSun::parse_shp(&bytes))
+            .map_or_else(cmr_core::car_shadow::ShadowSun::default, |(az, el)| {
+                cmr_core::car_shadow::ShadowSun::from_shp(az, el)
+            });
+        self.shadow = Some(StageShadow {
+            sun,
+            alpha,
+            night: weather.lighting == cmr_core::stage_weather::NIGHT_LIGHTING,
+            overcast: cmr_core::compiled_car_initializer::derive_compiled_initializer_48d2d0(
+                weather.lighting as i32,
+                weather.weather_type as i32,
+                weather.detail as i32,
+            ),
+            cache: cmr_core::car_shadow::ShadowGroundCache::default(),
+            last: None,
+        });
+    }
+
+    /// `FUN_0047a920`/`FUN_0047be50` for the player's car this frame: the
+    /// template rebuilt (kept while paused, state `0xa`), pulled toward the
+    /// camera, and queued unless the view is inside the car. A car without
+    /// live ground contact (the planar harness) casts none.
+    fn plan_shadow(
+        &mut self,
+        session: &GameplaySession,
+        camera_world: &[i32; 16],
+        interior_view: bool,
+    ) {
+        use cmr_core::car_shadow::{
+            CompiledShadowGround, ShadowCar, ShadowConditions, ShadowProfile, build_template,
+            camera_pull, shadow_indices, shadow_vertices,
+        };
+        self.shadow_draws.clear();
+        let Some(shadow) = self.shadow.as_mut() else {
+            return;
+        };
+        let event = session.event();
+        let car = session.car();
+        if session.state().id() != 0xa {
+            shadow.last = car.ground.as_ref().map(|ground| {
+                let raw = |v: cmr_core::fixed_point::Vec3| [v.x.raw(), v.y.raw(), v.z.raw()];
+                let shadow_car = ShadowCar {
+                    normal: raw(car.motion.projection_axis),
+                    forward: raw(car.motion.basis[0]),
+                    up: raw(car.motion.basis[1]),
+                    centre: raw(car.position),
+                    probes: ground.probes,
+                    ground_heights: ground.lanes.lane_words,
+                    touching: ground.thresholds.flags_73a,
+                    fade: ground.thresholds.flag_743 != 0,
+                };
+                // Inference: `+0x739` is the car model (fourteen cases).
+                let profile = ShadowProfile::for_model(
+                    event.cfg.car_0b6 & 0xf,
+                    event.cfg.options_025 & 4 != 0,
+                );
+                let conditions = ShadowConditions {
+                    night: shadow.night,
+                    overcast: shadow.overcast,
+                    split_screen: event.split_screen(),
+                    special_event: event.globals.special_514478,
+                    attach_mode_two: false,
+                };
+                let school = event.globals.school_d3ca88;
+                match session.ground_geometry() {
+                    Some(geometry) => build_template(
+                        &shadow_car,
+                        &profile,
+                        &shadow.sun,
+                        conditions,
+                        school,
+                        &mut CompiledShadowGround {
+                            provider: geometry.provider(),
+                            cache: &mut shadow.cache,
+                        },
+                    ),
+                    None => build_template(
+                        &shadow_car,
+                        &profile,
+                        &shadow.sun,
+                        conditions,
+                        school,
+                        &mut KeepHeight,
+                    ),
+                }
+            });
+        }
+        if interior_view {
+            return;
+        }
+        let Some(entry) = shadow.last else {
+            return;
+        };
+        let camera = [camera_world[12], camera_world[13], camera_world[14]];
+        let pulled = camera_pull(&entry, camera, event.split_screen());
+        let vertices = shadow_vertices(&pulled, true)
+            .into_iter()
+            .map(|v| cmr_video::c3d_software_raster::SoftwareC3dLitVertex {
+                position: v.position,
+                diffuse: v.color,
+                uv: v.uv,
+            })
+            .collect();
+        // A four-vertex strip draws as its two triangles.
+        let indices =
+            shadow_indices(&pulled).map_or_else(|| vec![0, 1, 2, 1, 3, 2], <[u16]>::to_vec);
+        self.shadow_draws.push((vertices, indices));
+    }
+
     /// Load the recovered BAR/LINE loading-overlay sources from authenticated
     /// user runtime data. This intentionally does not derive an installation
     /// root from the stage-local `--source` path.
@@ -2619,6 +2779,14 @@ impl StageRenderResources {
             |ordinal| self.textures.texture_for_ordinal(ordinal),
         )
         .map_err(StageFrameError::Compose)?;
+        // `FUN_004a51f0`: the shadows after the track cells, before the objects.
+        if let Some(shadow) = self.shadow.as_ref()
+            && !self.shadow_draws.is_empty()
+        {
+            frame
+                .blend_shadows(camera, &self.shadow_draws, &shadow.alpha)
+                .map_err(StageFrameError::Compose)?;
+        }
 
         for (graph, graph_textures) in [
             (self.bundle.objects(), self.object_textures.as_ref()),
@@ -2958,6 +3126,16 @@ struct ViewHarness {
 }
 
 impl ViewHarness {
+    /// The view is inside the car (`FUN_00434d00`: camera modes 1..3).
+    fn interior(&self) -> bool {
+        matches!(
+            self.controller.mode(),
+            cmr_core::camera_mode::CameraMode::CockpitA
+                | cmr_core::camera_mode::CameraMode::CockpitB
+                | cmr_core::camera_mode::CameraMode::Showroom
+        )
+    }
+
     /// In-race view gate: both interior cockpit poses are reachable; the
     /// showroom pose is a front-end mode, not an in-race one.
     const GATE: ViewGate = ViewGate {
@@ -3123,6 +3301,27 @@ fn loading_interstitial_for_route(
     compose_load_interstitial(background.clone(), &overlay.bar, &overlay.line, progress)
         .map(Some)
         .map_err(StageFrameError::LoadingOverlayCompose)
+}
+
+/// The per-stage shadow state (`FUN_004a4f20`, `FUN_00449bd0`,
+/// `FUN_0047b000`'s caches).
+struct StageShadow {
+    sun: cmr_core::car_shadow::ShadowSun,
+    alpha: Vec<u8>,
+    night: bool,
+    overcast: bool,
+    cache: cmr_core::car_shadow::ShadowGroundCache,
+    /// The last template (`DAT_005ff178`), kept while paused.
+    last: Option<cmr_core::car_shadow::ShadowEntry>,
+}
+
+/// No stage ground: each point keeps its height.
+struct KeepHeight;
+
+impl cmr_core::car_shadow::ShadowGround for KeepHeight {
+    fn height(&mut self, _: usize, point: [i32; 3]) -> i32 {
+        point[1]
+    }
 }
 
 /// The pre-race waits this session satisfies at once. Harness: the country
@@ -3570,6 +3769,7 @@ fn advance_game_frame<C: HostClock>(
             (Some(setup_800), Some(rig)) => rig.locals(&car, setup_800, steer_analog, &camera.trig),
             _ => Vec::new(),
         };
+        resources.plan_shadow(session, &camera_world, camera.interior());
         let world = resources
             .compose_with_posed_car(&camera_world, Some(&car_world), &wheels)
             .map(|rendered| rendered.frame)?;
@@ -6294,6 +6494,7 @@ fn load_windowed_stage(
         car_code,
         weather.lighting == cmr_core::stage_weather::NIGHT_LIGHTING,
     )?;
+    resources.attach_shadows(runtime_data, media_root, stage, weather);
     // Each load models a fresh process/session: its lane arrays are
     // loader-zeroed, authenticated setup runs once, and only the recovered
     // setup-time center-Y, half state, AK11 normal, and corrected basis are fed
@@ -8896,6 +9097,7 @@ mod tests {
             StageRendererChoice::Software,
         )
         .unwrap();
+        resources.attach_shadows(&root, &root.join("Game/Au/1"), "AU1", CLEAR_WEATHER);
         let mut compiled_pose = SessionCompiledPose::open(&root, "AU1", "Sub").unwrap();
         compiled_pose.adjust_spawn(&mut start, actor_rows).unwrap();
         let trig = cmr_core::fixed_point::build_sine_table();
