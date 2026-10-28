@@ -446,8 +446,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-11-01T04:00:00Z
-milestone=school-menu
+updated_utc=2026-11-01T06:00:00Z
+milestone=school-videos
 completed=117
 partial=2
 not_started=0

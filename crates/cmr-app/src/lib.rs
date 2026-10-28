@@ -3709,6 +3709,85 @@ struct SchoolHost {
     palette: Option<[PaletteEntry; 256]>,
     /// `DAT_005f9e90`/`DAT_005f1e20`: the level and task last loaded.
     loaded: (u8, u8),
+    /// The movies still to play and the one playing.
+    movies: std::collections::VecDeque<(String, [i32; 4])>,
+    playing: Option<MoviePlayback>,
+}
+
+/// A movie `FUN_004af8a0` plays in a window rectangle until it ends or
+/// Enter/Escape skips it, over the screen shown behind it.
+struct MoviePlayback {
+    bytes: Vec<u8>,
+    movie: cmr_formats::avi::AviMovie,
+    picture: Vec<u8>,
+    decoded: usize,
+    start_ms: u32,
+    rect: [i32; 4],
+    /// The skip keys held when it started (a skip needs a new press).
+    held: bool,
+}
+
+impl MoviePlayback {
+    fn open(bytes: Vec<u8>, rect: [i32; 4], now: u32, held: bool) -> Option<Self> {
+        let movie = cmr_formats::avi::parse_avi(&bytes).ok()?;
+        let picture = vec![0; (movie.width * movie.height) as usize];
+        Some(Self {
+            bytes,
+            movie,
+            picture,
+            decoded: 0,
+            start_ms: now,
+            rect,
+            held,
+        })
+    }
+
+    /// Decode up to the frame due at `now`; `false` once the movie is over
+    /// or skipped.
+    fn advance(&mut self, now: u32, skip_held: bool) -> bool {
+        if skip_held && !self.held {
+            return false;
+        }
+        self.held &= skip_held;
+        let period = u64::from(self.movie.micros_per_frame.max(1));
+        let due = (u64::from(now.wrapping_sub(self.start_ms)) * 1000 / period) as usize + 1;
+        let (w, h) = (self.movie.width as usize, self.movie.height as usize);
+        while self.decoded < due.min(self.movie.frames.len()) {
+            let range = self.movie.frames[self.decoded].clone();
+            if cmr_formats::avi::decode_msvideo1_8bit(&mut self.picture, w, h, &self.bytes[range])
+                .is_err()
+            {
+                return false;
+            }
+            self.decoded += 1;
+        }
+        due <= self.movie.frames.len()
+    }
+
+    /// The movie's picture scaled into its rectangle over `background`
+    /// (nearest-neighbour: the window stretch is backend policy).
+    fn compose(&self, background: &[u8], width: usize, height: usize) -> Vec<u8> {
+        let mut out = background.to_vec();
+        out.resize(width * height, 0);
+        let [x0, y0, rw, rh] = self.rect;
+        let (mw, mh) = (self.movie.width as i32, self.movie.height as i32);
+        for y in 0..rh.max(0) {
+            let dy = y0 + y;
+            if dy < 0 || dy >= height as i32 {
+                continue;
+            }
+            let sy = y * mh / rh;
+            for x in 0..rw.max(0) {
+                let dx = x0 + x;
+                if dx < 0 || dx >= width as i32 {
+                    continue;
+                }
+                let sx = x * mw / rw;
+                out[dy as usize * width + dx as usize] = self.picture[(sy * mw + sx) as usize];
+            }
+        }
+        out
+    }
 }
 
 /// What one school frame reports to state 2.
@@ -3751,6 +3830,8 @@ impl SchoolHost {
             .ok()
         };
         let language_byte = live[0x18] & 7;
+        // A blocking wipe (inside the update's step) comes before any movie
+        // the render then starts.
         if self.wipes > 0 {
             let text = &self.text;
             let lookup = |id: i32| {
@@ -3780,6 +3861,35 @@ impl SchoolHost {
                 status_quit: false,
                 frame: present(&self.shown, self.palette),
             };
+        }
+        // A movie blocks the screen until it ends or is skipped.
+        let skip_held = keys.is_down(0x0d) || keys.is_down(0x1b);
+        if self.playing.is_none()
+            && let Some((path, rect)) = self.movies.pop_front()
+        {
+            let bytes = ReviewedProfile::from_json(REVIEWED_PROFILE)
+                .ok()
+                .and_then(|reviewed| {
+                    AssetStore::open(runtime_data, &reviewed, DecodeLimits::default()).ok()
+                })
+                .and_then(|store| store.load(&path.replace('\\', "/")).ok());
+            self.playing = bytes.and_then(|bytes| MoviePlayback::open(bytes, rect, now, skip_held));
+        }
+        if let Some(movie) = self.playing.as_mut() {
+            if movie.advance(now, skip_held) {
+                let pixels = movie.compose(
+                    &self.shown,
+                    usize::from(ROOT_EXTENT.width),
+                    usize::from(ROOT_EXTENT.height),
+                );
+                return SchoolFrameOutcome {
+                    done: false,
+                    quit: false,
+                    status_quit: false,
+                    frame: present(&pixels, self.palette),
+                };
+            }
+            self.playing = None;
         }
         let mut mask = 0;
         for (vk, bit) in [
@@ -3846,6 +3956,10 @@ impl SchoolHost {
                     }
                 }
                 SchoolEffect::Wipe => self.wipes += 1,
+                // `AVIPath` + the module's path: under the media root.
+                SchoolEffect::Movie { path, rect } => {
+                    self.movies.push_back((path.clone(), *rect));
+                }
                 SchoolEffect::Speech { path } => {
                     if let Some(mixer) = mixer {
                         let path = format!("game\\rallschl\\{path}");
@@ -12271,6 +12385,30 @@ mod tests {
             shown = step(&mut host, &mut config, &mut event, None).frame;
         }
         save(shown.take(), "level");
+        // Confirm the first task: the wipe, the zoom video, then the
+        // briefing video in its window.
+        step(&mut host, &mut config, &mut event, Some(0x0d));
+        for k in 0..60 {
+            let frame = step(&mut host, &mut config, &mut event, None).frame;
+            if k == 40 {
+                save(frame, "zoom");
+            }
+        }
+        for k in 0..200 {
+            let frame = step(&mut host, &mut config, &mut event, None).frame;
+            if k == 150 {
+                save(frame, "briefing");
+            }
+        }
+        assert_eq!(event.cfg.school_6c0 & 7, 3, "briefed, waiting to load");
+        // Escape skips the rest of the briefing; the fade then ends the
+        // screen (state 2 would leave for the load).
+        step(&mut host, &mut config, &mut event, Some(0x1b));
+        let mut done = false;
+        for _ in 0..20 {
+            done |= step(&mut host, &mut config, &mut event, None).done;
+        }
+        assert!(done);
         // A finished task: the results.
         {
             let live = cmr_core::config_commit::live_mut(&mut config.image);
@@ -12279,7 +12417,8 @@ mod tests {
             event.cfg.school_6c0 = live[0x6c0];
         }
         for _ in 0..20 {
-            shown = step(&mut host, &mut config, &mut event, None).frame;
+            let o = step(&mut host, &mut config, &mut event, None);
+            shown = o.frame;
         }
         save(shown.take(), "results");
         step(&mut host, &mut config, &mut event, Some(0x0d));

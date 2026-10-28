@@ -3,6 +3,7 @@
 //! The crate owns format validation only. Filesystem lookup, source-profile
 //! verification, and caching belong to higher layers.
 
+pub mod avi;
 pub mod bitmap;
 pub mod c3d;
 pub mod font;
