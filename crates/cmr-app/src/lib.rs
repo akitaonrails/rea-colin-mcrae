@@ -10495,6 +10495,72 @@ mod tests {
         );
     }
 
+    /// A hard rear hit dents the car visibly, and the GPU's in-place car
+    /// rewrite still matches the software frame.
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data and a Vulkan adapter"]
+    fn imported_au1_dented_car_matches_between_renderers() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let mut frames = Vec::new();
+        for choice in [StageRendererChoice::Software, StageRendererChoice::Gpu] {
+            let (mut resources, _, start, camera, _) =
+                native_stage_setup(&root.join("Game/Au/1"), &root, "AU1", Some("Sub"), choice)
+                    .unwrap();
+            let car_world = car_model_world_q16(&cmr_core::gameplay_camera::car_world_q16(
+                &cmr_core::fixed_point::build_sine_table(),
+                start.position,
+                start.heading,
+            ));
+            let clean = resources
+                .compose_with_car(&camera, Some(&car_world))
+                .unwrap()
+                .frame;
+            let mut damage = resources.fresh_car_damage(0).unwrap();
+            for _ in 0..4 {
+                damage.dent([-0x2_0000, 0x8000, 0], 0x1_0000);
+                damage.detach();
+            }
+            resources.apply_car_damage(&damage);
+            let dented = resources
+                .compose_with_car(&camera, Some(&car_world))
+                .unwrap();
+            assert_eq!(
+                dented.renderer == StageRendererKind::Gpu,
+                choice == StageRendererChoice::Gpu
+            );
+            let changed = clean
+                .pixels()
+                .iter()
+                .zip(dented.frame.pixels())
+                .filter(|(a, b)| a != b)
+                .count();
+            assert!(
+                changed > 50,
+                "{choice:?}: the dent shows ({changed} pixels)"
+            );
+            // The next stage load restores the car as loaded.
+            resources.fresh_car_damage(0).unwrap();
+            let restored = resources
+                .compose_with_car(&camera, Some(&car_world))
+                .unwrap()
+                .frame;
+            assert_eq!(restored.pixels(), clean.pixels(), "{choice:?}: restored");
+            frames.push(dented.frame);
+        }
+        let mismatches = frames[0]
+            .pixels()
+            .iter()
+            .zip(frames[1].pixels())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            mismatches <= 307,
+            "the dented car exceeds the 0.1% GPU/software boundary: {mismatches} pixels"
+        );
+    }
+
     #[test]
     #[ignore = "requires the reviewed installed-EU runtime data and a Vulkan adapter"]
     fn imported_au1_gpu_shadow_matches_software() {
