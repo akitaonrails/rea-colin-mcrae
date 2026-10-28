@@ -5872,7 +5872,7 @@ fn reload_changed_stage<'a>(
         context.aux,
         context.params,
         stage.start,
-        EventState::default(),
+        session.event().clone(),
     )
     .with_stage_triggers(&stage.statics.trigger_volumes, &stage.statics.cell_centers)
     .map_err(WindowedStageFrameError::StageTriggers)?;
@@ -6286,7 +6286,16 @@ fn windowed_drive_session<'a>(
         (_, _, Err(error)) => Err(error.clone()),
     };
     match four_wheel {
-        Ok(wheel) => {
+        Ok(mut wheel) => {
+            // The car setup (`0x406fa1..0x406fe9`): control `+0x3f0` is 1
+            // (manual) for player 1's manual gearbox bit (`cfg[0xb6] & 0x10`),
+            // else 2 (automatic with brake-to-reverse). Mode 2's gate
+            // (`DAT_0057b0ac[type] == 100`) is open in a running race: the
+            // race-start init sets it to 100.
+            if let Some(gearbox) = wheel.gearbox.as_mut() {
+                gearbox.mode_3f0 = cmr_core::gearbox::setup_mode(event.cfg.car_0b6);
+                gearbox.brake_reverse_enabled = true;
+            }
             start.four_wheel.gearbox = cmr_core::gearbox::GearboxState::at_setup(true);
             GameplaySession::new_with_four_wheel_and_car(
                 params,

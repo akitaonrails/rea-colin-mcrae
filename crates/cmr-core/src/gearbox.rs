@@ -113,6 +113,14 @@ impl GearboxState {
     }
 }
 
+/// The car setup's gearbox mode (`0x406fa1..0x406fe9`): control `+0x3f0`
+/// is 1 (manual) when the player's config car byte (`cfg[0xb6 + 0x9c p]`) has
+/// the manual bit `0x10`, else 2 (automatic with brake-to-reverse).
+#[must_use]
+pub const fn setup_mode(car_byte: u8) -> i32 {
+    if car_byte & 0x10 != 0 { 1 } else { 2 }
+}
+
 /// Per-car gearbox configuration and the runtime gates the caller resolves.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct GearboxParams {
@@ -722,5 +730,12 @@ mod tests {
             apply_gearbox(in_gear(-1), manual, &tables()),
             Err(GearOutOfRange { gear: 0xff })
         );
+    }
+
+    #[test]
+    fn the_car_setup_picks_manual_or_automatic_with_reverse() {
+        assert_eq!(setup_mode(0x16), 1);
+        assert_eq!(setup_mode(0x06), 2);
+        assert_eq!(setup_mode(0), 2);
     }
 }
