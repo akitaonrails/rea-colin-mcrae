@@ -5563,6 +5563,17 @@ fn screen_commands(
     Some(frame::plan_setup_frame(&input, state, &lookup, &font))
 }
 
+/// The car codes by selector from the reviewed car-selector store.
+fn open_car_codes(runtime_data: &Path) -> Option<Vec<String>> {
+    let reviewed = ReviewedCarSelectorProfile::from_json(REVIEWED_CAR_SELECTOR_PROFILE).ok()?;
+    let store = CarSelectorStore::open(
+        &session_sidecar_store(runtime_data, CAR_SELECTOR_STORE_DIRECTORY),
+        &reviewed,
+    )
+    .ok()?;
+    Some(store.map().codes().to_vec())
+}
+
 /// The reviewed static tables of the user's executable, when extracted.
 fn open_static_tables(runtime_data: &Path) -> Option<cmr_assets::StaticTablesStore> {
     let reviewed =
@@ -5759,7 +5770,12 @@ struct StageReloadContext<'a> {
     /// The `game` directory the `--source` stage directory `<CC>\<n>` sits in.
     game_root: Option<PathBuf>,
     runtime_data: &'a Path,
+    /// The car the session started with (`--car-code`), used when the
+    /// selector map is absent.
     car_code: &'a str,
+    /// The car codes by selector (`0x...` car table), from the reviewed
+    /// car-selector store.
+    car_codes: Option<&'a [String]>,
     renderer: StageRendererChoice,
     trig: &'a [i32],
     wheel_inputs: &'a Result<SessionWheelInputs, SessionSurfaceInputsError>,
@@ -5767,8 +5783,6 @@ struct StageReloadContext<'a> {
     aux: &'a Result<SessionAuxControl, String>,
     params: SimParams,
     weather_tables: Option<&'a StageWeatherTables>,
-    /// The loaded car's selector, standing in for its car nibble.
-    car: u8,
 }
 
 /// The stage load of state 4's render handler `FUN_00421da0`: just before
@@ -5783,7 +5797,7 @@ fn reload_stage_for_event<'a>(
     progress: &mut StageProgress<'static>,
     audio: &mut RaceAudio,
     camera: &mut ViewHarness,
-    loaded: &mut (String, StageWeather, PathBuf),
+    loaded: &mut LoadedStageKey,
     context: &StageReloadContext<'a>,
     results: &mut RaceResults,
 ) -> Result<(), WindowedStageFrameError> {
@@ -5795,10 +5809,10 @@ fn reload_stage_for_event<'a>(
     let nodes = progress.nodes();
     results.stage_load(
         session.event_mut(),
-        &loaded.2,
-        &loaded.0,
+        &loaded.dir,
+        &loaded.name,
         nodes,
-        context.car,
+        loaded.car,
         &mut camera.rng,
     );
     Ok(())
@@ -5811,21 +5825,29 @@ fn reload_changed_stage<'a>(
     progress: &mut StageProgress<'static>,
     audio: &mut RaceAudio,
     camera: &mut ViewHarness,
-    loaded: &mut (String, StageWeather, PathBuf),
+    loaded: &mut LoadedStageKey,
     context: &StageReloadContext<'a>,
 ) -> Result<(), WindowedStageFrameError> {
     let Some(base) = cmr_core::stage_path::stage_base(session.event()) else {
         return Ok(());
     };
+    // Player 1's car from the committed record (`cfg[0xb6]`); its code
+    // names the car files the stage load attaches.
+    let car = session.event().cfg.car_0b6 & 0xf;
+    let car_code = context
+        .car_codes
+        .and_then(|codes| codes.get(usize::from(car)))
+        .map_or(context.car_code, String::as_str);
     // `FUN_00449ba0` picks the weather as state 4 arms the race.
     let weather = context.weather_tables.map_or(CLEAR_WEATHER, |tables| {
         select_weather(tables, session.event())
     });
-    if weather == loaded.1
+    if weather == loaded.weather
+        && car == loaded.car
         && base
             .rsplit('\\')
             .next()
-            .is_some_and(|name| name.eq_ignore_ascii_case(&loaded.0))
+            .is_some_and(|name| name.eq_ignore_ascii_case(&loaded.name))
     {
         return Ok(());
     }
@@ -5838,7 +5860,7 @@ fn reload_changed_stage<'a>(
         &dir,
         context.runtime_data,
         &name,
-        context.car_code,
+        car_code,
         context.renderer,
         weather,
     )?;
@@ -5868,8 +5890,26 @@ fn reload_changed_stage<'a>(
     let rng = camera.rng;
     *camera = ViewHarness::new();
     camera.rng = rng;
-    *loaded = (name, weather, dir);
+    if car != loaded.car {
+        // The car loader `FUN_004872b0` registers the new car's waves.
+        audio.engine = EngineAudio::open(context.runtime_data, car);
+    }
+    *loaded = LoadedStageKey {
+        name,
+        weather,
+        dir,
+        car,
+    };
     Ok(())
+}
+
+/// What the loaded stage is: its name, weather, directory and car.
+#[derive(Debug)]
+struct LoadedStageKey {
+    name: String,
+    weather: StageWeather,
+    dir: PathBuf,
+    car: u8,
 }
 
 /// A file in `dir` named `name` in any ASCII case, as the Windows lookup is.
@@ -6380,11 +6420,13 @@ pub fn run_windowed_game_session(
     let mut config =
         FrontEndConfig::new(stage, compiled_pose.selector as u8).with_file(runtime_data);
     let mut runtime_error = None;
-    let mut loaded_stage = (
-        stage.to_ascii_uppercase(),
+    let mut loaded_stage = LoadedStageKey {
+        name: stage.to_ascii_uppercase(),
         weather,
-        media_root.to_path_buf(),
-    );
+        dir: media_root.to_path_buf(),
+        car: compiled_pose.selector as u8,
+    };
+    let car_codes = open_car_codes(runtime_data);
     let mut results = RaceResults::open(runtime_data);
     let reload = StageReloadContext {
         game_root: media_root
@@ -6393,6 +6435,7 @@ pub fn run_windowed_game_session(
             .map(Path::to_path_buf),
         runtime_data,
         car_code,
+        car_codes: car_codes.as_deref(),
         renderer,
         trig: &trig,
         wheel_inputs: &wheel_inputs,
@@ -6400,7 +6443,6 @@ pub fn run_windowed_game_session(
         aux: &aux,
         params,
         weather_tables: weather_tables.as_ref(),
-        car: compiled_pose.selector as u8,
     };
 
     // Best-effort: open the recovered front-end root-menu compositor from the
@@ -8371,14 +8413,22 @@ mod tests {
         .unwrap();
         let mut progress = StageProgress::new(&statics.nodes, 0);
         let mut pause = PauseHarness::new();
-        let mut config = FrontEndConfig::new("AU1", pose.selector as u8);
+        // The setup chooses car 6, not the session's starting car.
+        let mut config = FrontEndConfig::new("AU1", 6);
         let mut audio = RaceAudio::default();
         let mut camera = ViewHarness::new();
-        let mut loaded = ("AU1".to_owned(), CLEAR_WEATHER, media.clone());
+        let mut loaded = LoadedStageKey {
+            name: "AU1".to_owned(),
+            weather: CLEAR_WEATHER,
+            dir: media.clone(),
+            car: pose.selector as u8,
+        };
+        let car_codes = open_car_codes(&root);
         let reload = StageReloadContext {
             game_root: media.parent().and_then(Path::parent).map(Path::to_path_buf),
             runtime_data: &root,
             car_code: "Sub",
+            car_codes: car_codes.as_deref(),
             renderer,
             trig: &trig,
             wheel_inputs: &wheel_inputs,
@@ -8386,7 +8436,6 @@ mod tests {
             aux: &aux,
             params,
             weather_tables: weather_tables.as_ref(),
-            car: pose.selector as u8,
         };
         let mut results = RaceResults::open(&root);
         // The championship setup's choices, committed at the hand-off.
@@ -8418,7 +8467,8 @@ mod tests {
             }
         }
         assert_eq!(session.state().id(), 5);
-        assert_eq!(loaded.0, "NZ1");
+        assert_eq!(loaded.name, "NZ1");
+        assert_eq!(loaded.car, 6, "the stage load attached the chosen car");
         assert_eq!(session.event().cfg.cursor_168, 0);
         assert_ne!(session.car().position, start.position);
         // The stage load rolled the rivals' times for NZ1.

@@ -1981,8 +1981,8 @@ stage load follows the event, so the root's Championship, Rally and Time
 Trial entries run their events stage after stage. The setup, name-entry and
 stage-select screens now run as the native menu flow and write the record
 (`impl.frontend-setup-flow`); all of them are drawn, without the preview
-panels, 3D cars, stage thumbnails and flag animations yet, and the session still
-loads the `--car-code` car rather than the one chosen.
+panels, 3D cars, stage thumbnails and flag animations yet; the stage load
+attaches the chosen car.
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
@@ -2000,9 +2000,9 @@ consumes `.c3d`, `.dat`, `.obj`, `.sht`, `.ars`, `.hzn`, `.tsc`, `.csp`, and
 trigger-volume decoding, and authored trackside-camera records. `.moj`, `.spl`,
 `.anm`, `.rsf`, and `.fuz` remain unintegrated. The native race path composes the
 player car and normal race HUD and enters the configured race through the
-recovered Rally root selection. The country and stages now come from the
-setup screens; the car remains an explicit caller input until the session
-loads the chosen one, and DAT dispatch remains open.
+recovered Rally root selection. The country, stages and car now come from the
+setup screens (the `--car-code` car only drives the window's first stage),
+and DAT dispatch remains open.
 The normal single-player HUD now has a pure, test-backed command plan for the
 pinned common gauge core including all 15 strict-threshold rev segments,
 speed/gear text, progress marker, and late timer

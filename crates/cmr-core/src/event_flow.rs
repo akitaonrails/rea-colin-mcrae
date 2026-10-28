@@ -45,6 +45,8 @@ pub struct EventConfig {
     /// `+0x25`: bit 7 forces a night stage, bit 6 weather type 5
     /// ([`crate::stage_weather`]).
     pub options_025: u8,
+    /// `+0xb6`: player 1's car (low nibble) and manual gearbox (bit 4).
+    pub car_0b6: u8,
     /// `+0x164`: the selected-stages mask.
     pub stage_mask_164: u8,
     /// `+0x165`: low nibble is the stage count of the event.
@@ -82,6 +84,7 @@ impl EventConfig {
             unlocks_023: live[0x23],
             unlocks_024: live[0x24],
             options_025: live[0x25],
+            car_0b6: live[0xb6],
             stage_mask_164: live[0x164],
             stage_count_165: live[0x165],
             mode_166: live[0x166],
@@ -106,6 +109,7 @@ impl EventConfig {
         live[0x23] = self.unlocks_023;
         live[0x24] = self.unlocks_024;
         live[0x25] = self.options_025;
+        live[0xb6] = self.car_0b6;
         live[0x164] = self.stage_mask_164;
         live[0x165] = self.stage_count_165;
         live[0x166] = self.mode_166;
@@ -698,6 +702,7 @@ mod tests {
         e.cfg.options_025 = 0x80;
         e.cfg.school_6c0 = 0x2b;
         e.cfg.unlocks_023 = 0x0e;
+        e.cfg.car_0b6 = 0x16;
         e.cfg.store_live(&mut live);
         assert_eq!((live[0x166], live[0x168], live[0x26b]), (0x42, 0x35, 9));
         assert_eq!(EventConfig::from_live(&live), e.cfg);
