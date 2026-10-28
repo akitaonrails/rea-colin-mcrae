@@ -544,6 +544,10 @@ pub(crate) mod tests {
                 ("frontend_flag_07", 0x0050_8d18, String),
                 ("frontend_flag_08", 0x0050_8d04, String),
                 ("frontend_flag_09", 0x0050_8cf4, String),
+                ("load_summary_format", 0x0050_9108, String),
+                ("load_slot_line_format", 0x0050_9120, String),
+                ("save_slot_label_wide", 0x004f_12c4, String),
+                ("save_slot_label_narrow", 0x004f_12e0, String),
             ]
         );
         // Same executable identity as the reviewed stage-weather profile.

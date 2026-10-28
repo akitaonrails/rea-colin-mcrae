@@ -75,6 +75,7 @@ pub mod frontend_c3d_scene;
 pub mod frontend_camera;
 pub mod frontend_flow;
 pub mod frontend_keys;
+pub mod frontend_load;
 pub mod frontend_menu;
 pub mod frontend_name_entry;
 pub mod frontend_screen_bitmaps;

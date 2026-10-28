@@ -333,11 +333,15 @@ pub fn slot_summary(record: &[u8]) -> [u8; 3] {
     ]
 }
 
-fn slot_entry(record: &[u8]) -> SlotEntry {
+/// The player name a record holds at `+0xc` (up to its NUL).
+pub fn record_name(record: &[u8]) -> &[u8] {
     let name = &record[SLOT_PAYLOAD_OFFSET..SLOT_PAYLOAD_OFFSET + SLOT_PAYLOAD_LEN];
-    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    &name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())]
+}
+
+fn slot_entry(record: &[u8]) -> SlotEntry {
     SlotEntry {
-        name: name[..end].to_vec(),
+        name: record_name(record).to_vec(),
         summary: slot_summary(record),
     }
 }
@@ -345,6 +349,14 @@ fn slot_entry(record: &[u8]) -> SlotEntry {
 /// `strncpy(dst, src, n)` then `dst[n] = 0`.
 fn prefix(text: &[u8], n: usize) -> &[u8] {
     &text[..text.len().min(n)]
+}
+
+/// The label formats `0x4f12c4` (512 wide or more) and `0x4f12e0`, from the
+/// user's executable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SlotLabelFormats<'a> {
+    pub wide: &'a [u8],
+    pub narrow: &'a [u8],
 }
 
 /// `FUN_0044f3d0`: an occupied slot's line in the list — at 512 wide or
@@ -356,6 +368,7 @@ fn prefix(text: &[u8], n: usize) -> &[u8] {
 pub fn slot_label(
     entry: &SlotEntry,
     wide: bool,
+    formats: SlotLabelFormats,
     text: &dyn Fn(i32) -> Vec<u8>,
     car_short_names: &[Vec<u8>],
 ) -> Vec<u8> {
@@ -369,7 +382,7 @@ pub fn slot_label(
     let stage = i64::from((progress >> 3) & 7);
     let mut line = if wide {
         c_format(
-            b"%s - %s - %s - %s %s %d - ",
+            formats.wide,
             &[
                 FormatArg::Bytes(&entry.name),
                 FormatArg::Bytes(&car),
@@ -381,7 +394,7 @@ pub fn slot_label(
         )
     } else {
         c_format(
-            b"%s - %s - %s - %s - %d - ",
+            formats.narrow,
             &[
                 FormatArg::Bytes(prefix(&entry.name, 3)),
                 FormatArg::Bytes(prefix(&car, 6)),
@@ -562,12 +575,16 @@ mod tests {
             id => format!("T{id:X}").into_bytes(),
         };
         let cars = vec![b"IMPREZA".to_vec(), b"CELICA GT".to_vec()];
+        let formats = SlotLabelFormats {
+            wide: b"%s - %s - %s - %s %s %d - ",
+            narrow: b"%s - %s - %s - %s - %d - ",
+        };
         assert_eq!(
-            slot_label(&entry, true, &text, &cars),
+            slot_label(&entry, true, formats, &text, &cars),
             b"COLIN - CELICA GT - T30 - T3F T25 2 - 16 PTS".to_vec()
         );
         assert_eq!(
-            slot_label(&entry, false, &text, &cars),
+            slot_label(&entry, false, formats, &text, &cars),
             b"COL - CELICA - T30 - T3F - 2 - 16 PTS".to_vec()
         );
     }

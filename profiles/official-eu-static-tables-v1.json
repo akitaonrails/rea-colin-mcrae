@@ -67,9 +67,13 @@
       { "name": "frontend_flag_06", "kind": "string", "va": 5279020 },
       { "name": "frontend_flag_07", "kind": "string", "va": 5279000 },
       { "name": "frontend_flag_08", "kind": "string", "va": 5278980 },
-      { "name": "frontend_flag_09", "kind": "string", "va": 5278964 }
+      { "name": "frontend_flag_09", "kind": "string", "va": 5278964 },
+      { "name": "load_summary_format", "kind": "string", "va": 5280008 },
+      { "name": "load_slot_line_format", "kind": "string", "va": 5280032 },
+      { "name": "save_slot_label_wide", "kind": "string", "va": 5182148 },
+      { "name": "save_slot_label_narrow", "kind": "string", "va": 5182176 }
     ],
-    "payload_sha256": "14a03e8ba48f5781edb1fae07a58c8ac85b8e79139013e64e46854f6ff579c3b",
+    "payload_sha256": "37e8d9418883772d622a967aa60b9313b5fe526132b42e684da14d64a40f8802",
     "output_encoding": "cmr-static-tables-v1"
   }
 }

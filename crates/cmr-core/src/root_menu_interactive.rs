@@ -158,6 +158,13 @@ impl RootInteraction {
         self
     }
 
+    /// The host's save-slot reader the Load screen calls on entry.
+    #[must_use]
+    pub fn with_save_slots(mut self, reader: crate::frontend_flow::SlotReader) -> Self {
+        self.screens.set_slot_reader(reader);
+        self
+    }
+
     /// The camera position `DAT_004f1300/4`.
     #[must_use]
     pub const fn camera(&self) -> Camera {
@@ -588,5 +595,67 @@ mod tests {
         }
         assert!(started);
         assert_eq!(record[0x180] & 3, 0, "a championship");
+    }
+
+    #[test]
+    fn the_load_screen_loads_a_saved_slot_and_starts_the_race() {
+        use crate::frontend_load::SlotFile;
+        let mut live = vec![0u8; 0x6c4];
+        live[0x2c..0x31].copy_from_slice(b"COLIN");
+        let mut saved = crate::save_dialog::build_save_record(&live, 0xaa00_0003);
+        saved[0x148] = 0x12;
+        let mut driver = driver(5).with_save_slots(Box::new(move || {
+            let mut files = vec![SlotFile::default(); 12];
+            files[0].bytes = Some(saved.clone());
+            files
+        }));
+        let mut record = record();
+        let mut now = 0;
+        let mut tick = |driver: &mut RootInteraction,
+                        input: FrontendInput,
+                        held: Option<u8>,
+                        record: &mut Record| {
+            now += 50;
+            driver.tick_for_game_session(input, FrontendKeys { held, pad: 0 }, now, true, record)
+        };
+        while driver.state().phase() != FrontendPhase::Interactive {
+            let _ = tick(&mut driver, FrontendInput::default(), None, &mut record);
+        }
+        let _ = tick(&mut driver, CONFIRM, None, &mut record);
+        let mut frames = 0;
+        while !(driver.state().active_screen() == crate::frontend::LOAD_SCREEN_ID
+            && driver.state().phase() == FrontendPhase::Interactive)
+        {
+            let _ = tick(&mut driver, FrontendInput::default(), None, &mut record);
+            frames += 1;
+            assert!(frames < 100, "the Load screen is reached");
+        }
+        let screen = driver.screens().load_screen();
+        assert!(screen.slot(0).is_some() && screen.slot(1).is_none());
+        assert!(screen.menu.items[0].enabled && !screen.menu.items[1].enabled);
+        let _ = tick(&mut driver, FrontendInput::default(), None, &mut record);
+        let load = tick(
+            &mut driver,
+            FrontendInput::default(),
+            Some(0x0d),
+            &mut record,
+        );
+        assert!(
+            load.screen_effects
+                .contains(&ScreenEffect::LoadGame { slot: 0 })
+        );
+        assert_eq!(&record[0x34..0x39], b"COLIN");
+        assert_eq!(record[0x181], 0x12);
+        let mut started = false;
+        for _ in 0..20 {
+            if tick(&mut driver, FrontendInput::default(), None, &mut record)
+                .effects
+                .contains(&FrontendEffect::StartRace)
+            {
+                started = true;
+                break;
+            }
+        }
+        assert!(started, "the load starts the race");
     }
 }

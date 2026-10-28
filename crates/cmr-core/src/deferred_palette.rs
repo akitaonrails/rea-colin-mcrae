@@ -80,6 +80,12 @@ impl DeferredPaletteState {
         self.pending
     }
 
+    /// `DAT_00d4ce64 = -1`: no palette is current, so the next request
+    /// always commits.
+    pub fn forget_current(&mut self) {
+        self.current = None;
+    }
+
     /// Queues a resolved palette unless it is already current.
     ///
     /// Native code compares only against `current`, not against `pending`.

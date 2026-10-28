@@ -228,6 +228,8 @@ pub struct ResultsDrawInput<'a> {
     pub panel_capable: bool,
     /// `0x506e08`: the cars' short names the save slots' lines show.
     pub car_short_names: &'a [Vec<u8>],
+    /// The save slots' line formats.
+    pub save_label_formats: crate::save_dialog::SlotLabelFormats<'a>,
 }
 
 /// The rectangles and text one results frame draws, in order.
@@ -825,7 +827,15 @@ fn save_page(
                     let entry = slots.get(row as usize).and_then(Option::as_ref);
                     let label = entry.map_or_else(
                         || text(0x4b),
-                        |entry| slot_label(entry, width >= 0x200, text, input.car_short_names),
+                        |entry| {
+                            slot_label(
+                                entry,
+                                width >= 0x200,
+                                input.save_label_formats,
+                                text,
+                                input.car_short_names,
+                            )
+                        },
                     );
                     c_format(&label, &[])
                 };
@@ -994,6 +1004,7 @@ mod tests {
             height: 480,
             panel_capable: true,
             car_short_names: &[],
+            save_label_formats: Default::default(),
         }
     }
 

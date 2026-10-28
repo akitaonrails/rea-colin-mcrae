@@ -22,10 +22,11 @@ use crate::config::LEGACY_CONFIG_SIZE;
 use crate::descriptor_menu::{Menu, MenuEvent, MenuId, MenuNav, MenuSet};
 use crate::display::DisplayExtent;
 use crate::frontend::{
-    CHAMPIONSHIP_NEXT_SCREEN_ID, CHAMPIONSHIP_SETUP_SCREEN_ID, NETWORK_SCREEN_ID,
+    CHAMPIONSHIP_NEXT_SCREEN_ID, CHAMPIONSHIP_SETUP_SCREEN_ID, LOAD_SCREEN_ID, NETWORK_SCREEN_ID,
     RACE_SENTINEL_SCREEN_ID, RALLY_NAME_SCREEN_ID, RALLY_SCREEN_ID, ROOT_SCREEN_ID,
     STAGE_SELECT_SCREEN_ID, ScreenId, TIME_TRIAL_NAME_SCREEN_ID, TIME_TRIAL_SCREEN_ID,
 };
+use crate::frontend_load::{LoadScreen, SlotFile};
 use crate::frontend_name_entry::{NameEntry, NameKey, NameOutcome, NameScreen};
 use crate::frontend_setup::{SetupKind, SetupScreen, key};
 use crate::frontend_stage_select::{PostOutcome, StageSelect};
@@ -92,7 +93,14 @@ pub enum ScreenEffect {
     /// A direct cue of the front-end bank (`FUN_004c9a20` and the root's
     /// table): slot, success byte.
     Cue { slot: u32, ok: bool },
+    /// The Load screen loaded `slot` into the record (`0x4c7b40`): commit
+    /// it, then apply [`crate::frontend_load::apply_to_live`] with the slot's
+    /// record ([`FrontendScreens::load_screen`]).
+    LoadGame { slot: u8 },
 }
+
+/// The host's reader of the twelve save-slot files (`FUN_0044ed90`).
+pub type SlotReader = Box<dyn FnMut() -> Vec<SlotFile>>;
 
 /// The tweens a screen's commit waits on.
 #[derive(Clone, Debug, Default)]
@@ -144,6 +152,8 @@ pub struct FrontendScreens {
     setups: [SetupScreen; 3],
     stage: StageSelect,
     name: NameEntry,
+    load: LoadScreen,
+    slot_reader: Option<SlotReader>,
     layouts: [SetupLayout; 3],
     slides: Slides,
     /// `0x508fe8`: the name entry is leaving.
@@ -177,9 +187,10 @@ mod id {
     pub const STAGE: MenuId = MenuId(7);
     pub const RACE: MenuId = MenuId(8);
     pub const NETWORK: MenuId = MenuId(9);
+    pub const LOAD: MenuId = MenuId(10);
 }
 
-const SCREENS: [(MenuId, ScreenId); 10] = [
+const SCREENS: [(MenuId, ScreenId); 11] = [
     (id::ROOT, ROOT_SCREEN_ID),
     (id::SETUP[0], CHAMPIONSHIP_SETUP_SCREEN_ID),
     (id::SETUP[1], RALLY_SCREEN_ID),
@@ -190,6 +201,7 @@ const SCREENS: [(MenuId, ScreenId); 10] = [
     (id::STAGE, STAGE_SELECT_SCREEN_ID),
     (id::RACE, RACE_SENTINEL_SCREEN_ID),
     (id::NETWORK, NETWORK_SCREEN_ID),
+    (id::LOAD, LOAD_SCREEN_ID),
 ];
 
 fn menu_of(screen: ScreenId) -> Option<MenuId> {
@@ -204,6 +216,7 @@ enum Kind {
     Setup(usize),
     Name(usize),
     Stage,
+    Load,
 }
 
 fn kind_of(menu: MenuId) -> Option<Kind> {
@@ -213,6 +226,8 @@ fn kind_of(menu: MenuId) -> Option<Kind> {
         Some(Kind::Name(i))
     } else if menu == id::STAGE {
         Some(Kind::Stage)
+    } else if menu == id::LOAD {
+        Some(Kind::Load)
     } else {
         None
     }
@@ -248,11 +263,15 @@ impl FrontendScreens {
         set.add(stage.menu.clone());
         set.add(Menu::new(-1, None, None));
         set.add(Menu::new(-1, None, None));
+        let load = LoadScreen::build(id::ROOT);
+        set.add(load.menu.clone());
         Self {
             set,
             setups,
             stage,
             name: NameEntry::default(),
+            load,
+            slot_reader: None,
             layouts: layouts.unwrap_or_default(),
             slides: Slides::default(),
             name_leaving: false,
@@ -263,6 +282,16 @@ impl FrontendScreens {
             info: (0, 0),
             info_slide: None,
         }
+    }
+
+    /// The host's save-slot reader the Load screen's enter calls.
+    pub fn set_slot_reader(&mut self, reader: SlotReader) {
+        self.slot_reader = Some(reader);
+    }
+
+    /// The Load screen's state, for the draw and the host's load.
+    pub const fn load_screen(&self) -> &LoadScreen {
+        &self.load
     }
 
     /// The setups' layout descriptors.
@@ -371,6 +400,15 @@ impl FrontendScreens {
                 let tweens = vec![self.slide(0x10000, 0, 0), self.slide(0x10000, 0, 0)];
                 self.slides.start(tweens);
             }
+            Some(Kind::Load) => {
+                let files = self
+                    .slot_reader
+                    .as_mut()
+                    .map_or_else(Vec::new, |read| read());
+                self.load.menu = self.set.menu(menu).clone();
+                self.load.enter(&files, self.no_animation);
+                *self.set.menu_mut(menu) = self.load.menu.clone();
+            }
             Some(Kind::Stage) => {
                 cues.push(ScreenEffect::Cue {
                     slot: crate::frontend_sounds::SLIDE_CUE,
@@ -414,7 +452,21 @@ impl FrontendScreens {
         let mut pending = pending;
         for event in events {
             match event {
+                // The Load screen's enter clears the table's move entry
+                // while no slot is occupied.
+                MenuEvent::Sound {
+                    sound: crate::descriptor_menu::MenuSound::Move,
+                    ..
+                } if matches!(kind, Kind::Load) && !self.load.move_sound => {}
                 MenuEvent::Sound { .. } => effects.push(ScreenEffect::Sound(event)),
+                // `0x4c7b40`: an occupied slot loads and starts the race.
+                MenuEvent::Activate { item, .. } if matches!(kind, Kind::Load) => {
+                    if self.load.activate(item, record) {
+                        effects.push(ScreenEffect::LoadGame { slot: item as u8 });
+                        self.set.pending = Some(id::RACE);
+                        pending = Some(id::RACE);
+                    }
+                }
                 MenuEvent::Commit { .. } => {
                     if let Some(target) = self.commit(&kind, menu, key, record, &mut effects) {
                         pending = Some(target);
@@ -499,6 +551,13 @@ impl FrontendScreens {
                     }
                 }
             }
+            // `0x4c76c0`.
+            Kind::Load => {
+                self.load.menu = self.set.menu(menu).clone();
+                self.load.commit();
+                *self.set.menu_mut(menu) = self.load.menu.clone();
+                None
+            }
             // `0x4c8320`.
             Kind::Stage => {
                 self.stage.menu = self.set.menu(menu).clone();
@@ -550,6 +609,12 @@ impl FrontendScreens {
                 self.slides.start(self.slide_outs());
                 self.name_leaving = true;
             }
+            // `0x4c7770`.
+            Kind::Load => {
+                self.load.menu = self.set.menu(menu).clone();
+                self.load.post(self.no_animation);
+                *self.set.menu_mut(menu) = self.load.menu.clone();
+            }
             // `0x4c84d0`.
             Kind::Stage => {
                 effects.push(ScreenEffect::Cue {
@@ -586,6 +651,11 @@ impl FrontendScreens {
                 self.stage.menu = self.set.menu(menu).clone();
                 self.stage.predraw(record);
                 *self.set.menu_mut(menu) = self.stage.menu.clone();
+            }
+            Some(Kind::Load) => {
+                self.load.menu = self.set.menu(menu).clone();
+                self.load.draw_effects();
+                *self.set.menu_mut(menu) = self.load.menu.clone();
             }
             _ => {}
         }

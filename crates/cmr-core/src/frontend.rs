@@ -21,6 +21,10 @@ pub const RALLY_NAME_SCREEN_ID: ScreenId = ScreenId(0x00d4_7d90);
 pub const TIME_TRIAL_NAME_SCREEN_ID: ScreenId = ScreenId(0x00d4_6fb0);
 /// The time-trial stage select.
 pub const STAGE_SELECT_SCREEN_ID: ScreenId = ScreenId(0x00d4_7450);
+/// The Load screen (root entry 5).
+pub const LOAD_SCREEN_ID: ScreenId = ScreenId(0x00d4_0da0);
+/// The Options screen (root entry 4).
+pub const OPTIONS_SCREEN_ID: ScreenId = ScreenId(0x00d4_53b8);
 /// The network selection.
 pub const NETWORK_SCREEN_ID: ScreenId = ScreenId(0x00d4_b6e0);
 /// The empty "go to race" screen: a transition to it returns result 3
@@ -36,8 +40,8 @@ const ROOT_ENTRIES: [ScreenEntry; 7] = [
     ScreenEntry::new(1, RALLY_SCREEN_ID),
     ScreenEntry::new(120, TIME_TRIAL_SCREEN_ID),
     ScreenEntry::new(3, RALLY_SCHOOL_SENTINEL_SCREEN_ID),
-    ScreenEntry::new(4, ScreenId(0x00d4_53b8)),
-    ScreenEntry::new(5, ScreenId(0x00d4_0da0)),
+    ScreenEntry::new(4, OPTIONS_SCREEN_ID),
+    ScreenEntry::new(5, LOAD_SCREEN_ID),
     ScreenEntry::new(6, EXIT_SCREEN_ID),
 ];
 

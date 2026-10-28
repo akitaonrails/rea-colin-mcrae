@@ -53,6 +53,9 @@ pub enum ScreenCommand {
     /// `FUN_004c4920`: request a palette of the arena, committed at the
     /// frame's end in 8-bit mode (`FUN_004c4960`).
     Palette(i32),
+    /// `DAT_00d4ce64 = -1` then `FUN_004c4920`: drop the current palette so
+    /// the request always commits.
+    ForcePalette(i32),
     /// Text with the legacy alignment flags.
     Text {
         font: FontStyle,
@@ -369,13 +372,37 @@ fn info_box<'f>(
     fonts: &dyn Fn(FontStyle) -> &'f BitmapFont,
     commands: &mut Vec<ScreenCommand>,
 ) {
+    info_box_at(
+        input.camera,
+        input.extent,
+        input.info,
+        input.info_flags,
+        line1,
+        line2,
+        fonts,
+        commands,
+    );
+}
+
+/// [`info_box`] at an anchor with its flags (`k = flags & 0xf`).
+#[allow(clippy::too_many_arguments)]
+fn info_box_at<'f>(
+    camera: Camera,
+    extent: DisplayExtent,
+    anchor: (i32, i32),
+    flags: u32,
+    line1: &[u8],
+    line2: &[u8],
+    fonts: &dyn Fn(FontStyle) -> &'f BitmapFont,
+    commands: &mut Vec<ScreenCommand>,
+) {
     use crate::frontend_screen_bitmaps::ScreenBitmap;
-    let w = i32::from(input.extent.width);
-    let h = i32::from(input.extent.height);
-    let (ox, oy) = input.camera.offset();
-    let x = input.info.0.wrapping_add(ox);
-    let y = input.info.1.wrapping_add(oy);
-    let right = input.info_flags & 0xf == 1;
+    let w = i32::from(extent.width);
+    let h = i32::from(extent.height);
+    let (ox, oy) = camera.offset();
+    let x = anchor.0.wrapping_add(ox);
+    let y = anchor.1.wrapping_add(oy);
+    let right = flags & 0xf == 1;
     commands.push(ScreenCommand::Bitmap {
         bitmap: ScreenBitmap::InfoRight,
         source: Some((0, 0, 0x140, 0x84)),
@@ -394,7 +421,7 @@ fn info_box<'f>(
         base,
         y.wrapping_add(0x7ad),
         0x11,
-        input.extent,
+        extent,
     );
     commands.push(command);
     let (command, _) = q16_text(
@@ -404,7 +431,7 @@ fn info_box<'f>(
         base,
         next.wrapping_add(0x51e),
         0x11,
-        input.extent,
+        extent,
     );
     commands.push(command);
 }
@@ -1088,6 +1115,183 @@ pub fn plan_stage_select_frame<'f>(
     commands
 }
 
+/// What one Load frame draws from (`0x4c77b0` and `0x4c77d0`).
+pub struct LoadDrawInput<'a> {
+    pub screen: &'a crate::frontend_load::LoadScreen,
+    pub camera: Camera,
+    pub extent: DisplayExtent,
+    /// `0x506e08`: the cars' short names.
+    pub car_short_names: &'a [Vec<u8>],
+    /// The info box's summary format (`0x509108`).
+    pub summary_format: &'a [u8],
+    /// The row's name-and-time format (`0x509120`).
+    pub line_format: &'a [u8],
+    pub now_ms: u32,
+}
+
+/// The Load screen's frame: the commit's palette request (`0x4c76c0`), the
+/// backdrop, the title `5` (`FUN_004c3bb0(m, -0x10000, 0xdc28, 5, 0x11)`),
+/// then each item (`0x4c77d0`): the first draws the panel `LOADPAN.BMP`
+/// at the panel position; the selected occupied slot shows the info box
+/// (name, and the summary `0x509108` of the car's short name, difficulty
+/// `0x67 + d`, country `0x22 + c`, `2`, the stage, the points and `0x64`)
+/// and, once the info slide has ended, the car logo (`FUN_004c4d30(car, 1,
+/// 0, 1)`); selected Back shows the box (`0xa`, `0x94`) and the chequered
+/// flag. Each row (`FUN_004c7a00`) is the slot's name with `" : "` and its
+/// file time (`0x509120`), `0x65` for a free slot, or Back's
+/// text, at `(q(W, px) + 0x10e, q(H, py) + 17 row + 0x32)` centred, in
+/// yellow when selected, white when enabled and grey otherwise.
+pub fn plan_load_frame<'f>(
+    input: &LoadDrawInput,
+    state: &mut ScreenFrameState,
+    text: &dyn Fn(i32) -> Vec<u8>,
+    fonts: &dyn Fn(FontStyle) -> &'f BitmapFont,
+) -> Vec<ScreenCommand> {
+    use crate::frontend_load::{BACK_KEY, FIRST_SLOT_KEY, INFO_X};
+    use crate::frontend_screen_bitmaps::ScreenBitmap;
+    let screen = input.screen;
+    let extent = input.extent;
+    let w = i32::from(extent.width);
+    let h = i32::from(extent.height);
+    let (palette, force) = screen.palette();
+    let mut commands = vec![
+        if force {
+            ScreenCommand::ForcePalette(palette)
+        } else {
+            ScreenCommand::Palette(palette)
+        },
+        backdrop(input.camera, w, h),
+    ];
+    let (ox, oy) = input.camera.offset();
+    commands.push(ScreenCommand::Text {
+        font: FontStyle::Title,
+        x: q(w, (-0x10000_i32).wrapping_add(ox)),
+        y: q(h, 0xdc28_i32.wrapping_add(oy)),
+        flags: 0x11,
+        text: text(screen.menu.title_id),
+    });
+    let (px, py) = (q(w, screen.panel.0), q(h, screen.panel.1));
+    for (index, item) in screen.menu.items.iter().enumerate() {
+        if !item.visible {
+            continue;
+        }
+        let selected = index == screen.menu.selected;
+        if item.key == FIRST_SLOT_KEY {
+            commands.push(ScreenCommand::Bitmap {
+                bitmap: ScreenBitmap::LoadPanel,
+                source: None,
+                x: px,
+                y: py,
+                size: None,
+                keyed: true,
+            });
+        }
+        let (row, mut line, time, enabled) = if item.key == BACK_KEY {
+            if selected {
+                info_box_at(
+                    input.camera,
+                    extent,
+                    screen.info,
+                    0x11,
+                    &text(0xa),
+                    &text(0x94),
+                    fonts,
+                    &mut commands,
+                );
+                state.flag(
+                    9,
+                    false,
+                    screen.info,
+                    input.camera,
+                    extent,
+                    input.now_ms,
+                    &mut commands,
+                );
+            }
+            (12, text(item.text_id), None, true)
+        } else if let Some(slot) = screen.slot(index) {
+            let [points, progress, car] = screen.summary(index);
+            if selected {
+                let summary = crate::c_format::c_format(
+                    input.summary_format,
+                    &[
+                        crate::c_format::FormatArg::Bytes(
+                            input
+                                .car_short_names
+                                .get(usize::from(car & 0xf))
+                                .map_or(&[][..], Vec::as_slice),
+                        ),
+                        crate::c_format::FormatArg::Bytes(&text(0x67 + i32::from(progress >> 6))),
+                        crate::c_format::FormatArg::Bytes(&text(0x22 + i32::from(progress & 7))),
+                        crate::c_format::FormatArg::Bytes(&text(2)),
+                        crate::c_format::FormatArg::Int(i64::from((progress >> 3) & 7)),
+                        crate::c_format::FormatArg::Int(i64::from(points)),
+                        crate::c_format::FormatArg::Bytes(&text(0x64)),
+                    ],
+                );
+                info_box_at(
+                    input.camera,
+                    extent,
+                    screen.info,
+                    0x11,
+                    slot.name(),
+                    &summary,
+                    fonts,
+                    &mut commands,
+                );
+                if screen.info.0 == INFO_X {
+                    state.car_logo(
+                        slot.record[0x96] & 0xf,
+                        false,
+                        screen.info,
+                        input.camera,
+                        extent,
+                        &mut commands,
+                    );
+                }
+            }
+            (
+                index as i32,
+                crate::c_format::c_format(slot.name(), &[]),
+                Some(&slot.label[..]),
+                true,
+            )
+        } else {
+            (
+                index as i32,
+                crate::c_format::c_format(&text(0x65), &[]),
+                None,
+                false,
+            )
+        };
+        // `FUN_004c7a00` adds the file time to an enabled slot's row.
+        if let Some(time) = time {
+            line = crate::c_format::c_format(
+                input.line_format,
+                &[
+                    crate::c_format::FormatArg::Bytes(&line),
+                    crate::c_format::FormatArg::Bytes(time),
+                ],
+            );
+        }
+        let font = if selected {
+            FontStyle::Yellow
+        } else if enabled {
+            FontStyle::White
+        } else {
+            FontStyle::Grey
+        };
+        commands.push(ScreenCommand::Text {
+            font,
+            x: px + 0x10e,
+            y: py + row * 17 + 0x32,
+            flags: 0x12,
+            text: line,
+        });
+    }
+    commands
+}
+
 /// Why a screen frame could not be executed.
 #[derive(Debug)]
 pub enum ScreenFrameError<E, F> {
@@ -1104,8 +1308,9 @@ impl<E: std::fmt::Debug, F: std::fmt::Debug> std::fmt::Display for ScreenFrameEr
     }
 }
 
-/// Execute `commands` in order onto `destination`, then commit the pending
-/// palette and present (`FUN_004c4960`, `FUN_00498660`). A backdrop window
+/// Execute `commands` onto `destination` — the blits in order, then the
+/// queued text in order — then commit the pending palette and present
+/// (`FUN_004c4960`, `FUN_00498660`). A backdrop window
 /// outside the backdrop draws nothing, as `FUN_004bac90` checks; text the
 /// layout cannot place is skipped.
 #[allow(clippy::too_many_arguments)]
@@ -1130,7 +1335,15 @@ where
 {
     use crate::root_menu_bitmap_assets::RootMenuBitmapSlot;
     use crate::root_menu_visual::{Point, Rect, RenderCommand};
-    for command in commands {
+    // The text is queued (`FUN_00497b40`/`FUN_004976a0`, lane 2) and drawn
+    // after every blit of the frame, in queue order (`FUN_004a0010`).
+    let blits = commands
+        .iter()
+        .filter(|command| !matches!(command, ScreenCommand::Text { .. }));
+    let texts = commands
+        .iter()
+        .filter(|command| matches!(command, ScreenCommand::Text { .. }));
+    for command in blits.chain(texts) {
         match command {
             ScreenCommand::Backdrop { x, y, w, h } => {
                 let Some((bw, bh)) = bitmaps.extent(RootMenuBitmapSlot::Backdrop) else {
@@ -1259,6 +1472,10 @@ where
                 }
             }
             ScreenCommand::Palette(index) => palette.request_loaded(*index),
+            ScreenCommand::ForcePalette(index) => {
+                palette.state.forget_current();
+                palette.request_loaded(*index);
+            }
             ScreenCommand::Text {
                 font,
                 x,

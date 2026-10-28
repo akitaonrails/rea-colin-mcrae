@@ -3258,6 +3258,13 @@ impl FrontEndConfig {
         self.returning = true;
     }
 
+    /// The live writes of the Load screen's activate after its commit.
+    fn apply_loaded(&mut self, record: &[u8], event: &mut EventState) {
+        let live = cmr_core::config_commit::live_mut(&mut self.image);
+        cmr_core::frontend_load::apply_to_live(live, record);
+        event.cfg = cmr_core::event_flow::EventConfig::from_live(live);
+    }
+
     /// The front end's return after a session (`FUN_004c1e00`): the race's
     /// event and options go back into the record.
     fn resume(&mut self, event: &EventState, pause: &PauseHarness) {
@@ -3300,6 +3307,19 @@ fn front_end_frame(
         let cue = match *effect {
             cmr_core::frontend_flow::ScreenEffect::CommitRecord => {
                 config.commit(session.event_mut(), pause);
+                None
+            }
+            // `0x4c7b40` after the record load: commit, then the
+            // championship state into the live block.
+            cmr_core::frontend_flow::ScreenEffect::LoadGame { slot } => {
+                if let Some(loaded) = root_interaction
+                    .screens()
+                    .load_screen()
+                    .slot(usize::from(slot))
+                {
+                    config.commit(session.event_mut(), pause);
+                    config.apply_loaded(&loaded.record, session.event_mut());
+                }
                 None
             }
             cmr_core::frontend_flow::ScreenEffect::Sound(
@@ -5612,6 +5632,24 @@ fn screen_commands(
     let country_table = tables
         .and_then(|t| t.block("frontend_country_table"))
         .unwrap_or(&[]);
+    if screen == fe::LOAD_SCREEN_ID {
+        let input = frame::LoadDrawInput {
+            screen: screens.load_screen(),
+            camera: root.camera(),
+            extent: ROOT_EXTENT,
+            car_short_names: tables
+                .and_then(|t| t.strings("car_short_names"))
+                .unwrap_or(empty),
+            summary_format: tables
+                .and_then(|t| t.string("load_summary_format"))
+                .unwrap_or(&[]),
+            line_format: tables
+                .and_then(|t| t.string("load_slot_line_format"))
+                .unwrap_or(&[]),
+            now_ms,
+        };
+        return Some(frame::plan_load_frame(&input, state, &lookup, &font));
+    }
     if screen == fe::STAGE_SELECT_SCREEN_ID {
         let input = frame::StageDrawInput {
             menu,
@@ -5757,6 +5795,31 @@ fn load_screen_images(
         return Default::default();
     };
     root.load_screen_images(store, prefix, &groups, format)
+}
+
+/// `FUN_0044ed90`'s reads for the Load screen: each `SAVE\SAVESLOT<n>.cms`
+/// under the writable root, with its modification time (UTC: the host has
+/// no time-zone database, so `localtime` is taken as UTC — harness).
+fn save_slot_reader(writable_root: &Path) -> cmr_core::frontend_flow::SlotReader {
+    let paths = cmr_core::settings_store::DataPaths::new(writable_root, writable_root);
+    Box::new(move || {
+        (0..cmr_core::settings_store::SAVE_SLOT_COUNT)
+            .map(|slot| {
+                let file = paths.save_slot(slot);
+                let modified = std::fs::metadata(&file)
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|since| {
+                        cmr_core::frontend_load::FileTime::from_unix(since.as_secs() as i64)
+                    });
+                cmr_core::frontend_load::SlotFile {
+                    bytes: std::fs::read(&file).ok(),
+                    modified,
+                }
+            })
+            .collect()
+    })
 }
 
 /// The car codes by selector from the reviewed car-selector store.
@@ -6304,6 +6367,18 @@ impl RaceResults {
                 .as_ref()
                 .and_then(|t| t.tables().strings("car_short_names"))
                 .unwrap_or(&[]),
+            save_label_formats: cmr_core::save_dialog::SlotLabelFormats {
+                wide: self
+                    .static_tables
+                    .as_ref()
+                    .and_then(|t| t.tables().string("save_slot_label_wide"))
+                    .unwrap_or(&[]),
+                narrow: self
+                    .static_tables
+                    .as_ref()
+                    .and_then(|t| t.tables().string("save_slot_label_narrow"))
+                    .unwrap_or(&[]),
+            },
         };
         let text = |id: i32| {
             usize::try_from(id)
@@ -6624,6 +6699,7 @@ pub fn run_windowed_game_session(
     }) {
         root_interaction = root_interaction.with_camera_block(block);
     }
+    root_interaction = root_interaction.with_save_slots(save_slot_reader(runtime_data));
     let mut screen_state = cmr_core::frontend_screen_frame::ScreenFrameState::default();
     let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
@@ -10190,6 +10266,10 @@ mod tests {
                 height: 480,
                 panel_capable: true,
                 car_short_names: &car_short_names,
+                save_label_formats: cmr_core::save_dialog::SlotLabelFormats {
+                    wide: b"%s - %s - %s - %s %s %d - ",
+                    narrow: b"%s - %s - %s - %s - %d - ",
+                },
             };
             let plan =
                 results_draw_plan(&input, &mut pulse, &text, &|font| assets.font(font)).unwrap();
@@ -10362,6 +10442,65 @@ mod tests {
                             let screen = interaction.state().active_screen().legacy_value();
                             let presented = root.backend().presented_frame().cloned().unwrap();
                             write(&format!("tt-{frame:03}-{screen:x}"), &presented);
+                        }
+                    }
+                }
+                // The Load screen with one synthetic occupied slot (slot 2).
+                let mut live = cmr_core::config_commit::live(&config.image).to_vec();
+                live[0x2c..0x32].copy_from_slice(b"COLIN\0");
+                let mut saved = cmr_core::save_dialog::build_save_record(&live, 0xaa00_0005);
+                saved[0x96] = 1;
+                saved[0x148] = 0x13;
+                let mut interaction =
+                    RootInteraction::from_saved_selection(5, Language::English, ROOT_EXTENT, 0)
+                        .unwrap()
+                        .with_setup_layouts(setup_layouts(&tables).unwrap())
+                        .with_camera_block(
+                            cmr_core::frontend_camera::CameraBlock::parse(
+                                tables
+                                    .tables()
+                                    .block("frontend_camera_targets_and_records")
+                                    .unwrap(),
+                            )
+                            .unwrap(),
+                        )
+                        .with_save_slots(Box::new(move || {
+                            let mut files = vec![cmr_core::frontend_load::SlotFile::default(); 12];
+                            files[2] = cmr_core::frontend_load::SlotFile {
+                                bytes: Some(saved.clone()),
+                                modified: Some(cmr_core::frontend_load::FileTime::from_unix(
+                                    1_793_175_274,
+                                )),
+                            };
+                            files
+                        }));
+                while interaction.state().phase() != cmr_core::frontend::FrontendPhase::Interactive
+                {
+                    let _ = tick(&mut interaction, Default::default(), None, &mut config);
+                }
+                let _ = tick(&mut interaction, confirm, None, &mut config);
+                for frame in 0..120 {
+                    // Down twice (slot 2), later down to Back.
+                    let held = match frame {
+                        40 | 44 => Some(0x28),
+                        80..=82 => Some(0x28),
+                        _ => None,
+                    };
+                    let _ = tick(&mut interaction, Default::default(), held, &mut config);
+                    if let Some(commands) = screen_commands(
+                        &interaction,
+                        Some(&tables),
+                        &config.image[..],
+                        &mut state,
+                        root.text(),
+                        root.fonts(),
+                        now.get(),
+                    ) {
+                        root.render_screen(&commands, &screen_bitmaps, &screen_images)
+                            .unwrap();
+                        if frame % 10 == 9 {
+                            let presented = root.backend().presented_frame().cloned().unwrap();
+                            write(&format!("load-{frame:03}"), &presented);
                         }
                     }
                 }

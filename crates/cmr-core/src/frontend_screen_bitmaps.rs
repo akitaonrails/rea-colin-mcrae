@@ -41,10 +41,12 @@ pub enum ScreenBitmap {
     TwoPlayer,
     Host,
     Join,
+    /// `DAT_00d424f8`: `images\LOAD\LOADPAN.BMP`.
+    LoadPanel,
 }
 
 impl ScreenBitmap {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::InfoRight,
         Self::Name,
         Self::NameSmall,
@@ -61,6 +63,7 @@ impl ScreenBitmap {
         Self::TwoPlayer,
         Self::Host,
         Self::Join,
+        Self::LoadPanel,
     ];
 
     /// The imported path.
@@ -82,6 +85,7 @@ impl ScreenBitmap {
             Self::TwoPlayer => "New_Fe/Images/Players/2play.BMP",
             Self::Host => "New_Fe/Images/Players/host.bmp",
             Self::Join => "New_Fe/Images/Players/join.bmp",
+            Self::LoadPanel => "New_Fe/Images/Load/loadpan.bmp",
         }
     }
 
