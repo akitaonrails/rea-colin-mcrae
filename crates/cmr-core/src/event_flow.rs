@@ -34,6 +34,14 @@ pub struct EventConfig {
     pub flags_000: u8,
     /// `+0x18`: bits `0x18` are the difficulty.
     pub difficulty_018: u8,
+    /// `+0x1a`, `+0x1b`: progress counters the results raise.
+    pub progress_01a: u8,
+    pub progress_01b: u8,
+    /// `+0x22`..`+0x24`: the unlocks the results raise (rally and
+    /// championship reach, the bonus events, the bonus cars).
+    pub unlocks_022: u8,
+    pub unlocks_023: u8,
+    pub unlocks_024: u8,
     /// `+0x25`: bit 7 forces a night stage, bit 6 weather type 5
     /// ([`crate::stage_weather`]).
     pub options_025: u8,
@@ -68,6 +76,11 @@ impl EventConfig {
         Self {
             flags_000: live[0x00],
             difficulty_018: live[0x18],
+            progress_01a: live[0x1a],
+            progress_01b: live[0x1b],
+            unlocks_022: live[0x22],
+            unlocks_023: live[0x23],
+            unlocks_024: live[0x24],
             options_025: live[0x25],
             stage_mask_164: live[0x164],
             stage_count_165: live[0x165],
@@ -87,6 +100,11 @@ impl EventConfig {
     pub fn store_live(&self, live: &mut [u8]) {
         live[0x00] = self.flags_000;
         live[0x18] = self.difficulty_018;
+        live[0x1a] = self.progress_01a;
+        live[0x1b] = self.progress_01b;
+        live[0x22] = self.unlocks_022;
+        live[0x23] = self.unlocks_023;
+        live[0x24] = self.unlocks_024;
         live[0x25] = self.options_025;
         live[0x164] = self.stage_mask_164;
         live[0x165] = self.stage_count_165;
@@ -127,6 +145,9 @@ pub struct EventGlobals {
     /// The FSM init-done flag `DAT_005590b0` was cleared (`FUN_004440a0(0)`),
     /// so the next session re-seeds the FSM from state 1.
     pub reseed_requested: bool,
+    /// `DAT_00550024`: the post-stage results director is running; state 8
+    /// holds while it is set.
+    pub results_550024: bool,
 }
 
 /// The config block plus the globals.
@@ -411,6 +432,18 @@ impl EventState {
             && (self.globals.race_session_d3ca84 || self.globals.school_d3ca88)
     }
 
+    /// `FUN_00485bb0`: the current stage is the super-special. With mode bit
+    /// `0x40` it is every stage but stage 2; otherwise the series flag
+    /// `0x20` or stage 6.
+    pub fn super_special(&self) -> bool {
+        let stage = self.cfg.cursor_168 & 0xf0;
+        if self.cfg.mode_166 & 0x40 != 0 {
+            stage != 0x20
+        } else {
+            self.cfg.mode_166 & 0x20 != 0 || stage == 0x60
+        }
+    }
+
     /// The post-race hub's restart block: rewind the event to the stage that
     /// was restarted and clear the result times.
     pub fn rewind_for_restart(&mut self) {
@@ -664,6 +697,7 @@ mod tests {
         e.cfg.results_16c[15][15] = 9;
         e.cfg.options_025 = 0x80;
         e.cfg.school_6c0 = 0x2b;
+        e.cfg.unlocks_023 = 0x0e;
         e.cfg.store_live(&mut live);
         assert_eq!((live[0x166], live[0x168], live[0x26b]), (0x42, 0x35, 9));
         assert_eq!(EventConfig::from_live(&live), e.cfg);
@@ -676,5 +710,20 @@ mod tests {
         let mut school = event(8, 0);
         school.globals.school_d3ca88 = true;
         assert!(!school.head_to_head());
+    }
+
+    #[test]
+    fn the_super_special_stage() {
+        let mut event = EventState::default();
+        event.cfg.cursor_168 = 0x63;
+        assert!(event.super_special());
+        event.cfg.cursor_168 = 0x53;
+        assert!(!event.super_special());
+        event.cfg.mode_166 = 0x20;
+        assert!(event.super_special());
+        event.cfg.mode_166 = 0x40;
+        assert!(event.super_special());
+        event.cfg.cursor_168 = 0x23;
+        assert!(!event.super_special());
     }
 }

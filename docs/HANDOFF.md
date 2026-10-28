@@ -175,7 +175,9 @@ Stage weather (`impl.stage-weather`) needs
 the rivals' times (`impl.rival-times`) need `extract-rival-records` the same way
 (`profiles/official-eu-rival-records-v1.json`, output `runtime-data/official-eu-rival-records`).
 Post-stage results are documented in `.work/post-stage-results-notes.md`;
-standings are computed (`impl.standings`) but the result pages are not drawn yet. The race hand-off commits the
+standings are computed (`impl.standings`) and the results director runs
+(`impl.results-director`: state 8 holds until Return reaches Continue, Restart or
+Quit; left/right move the menu, up/down the confirmations), but its pages are not drawn yet. The race hand-off commits the
 cmRally.cfg record (`impl.config-commit`). Front-end screens are in
 `.work/frontend-menu-tree-notes.md`. Next: the front-end setup screens (they edit
 the record, so a chosen stage and car load), the car-to-car impact site

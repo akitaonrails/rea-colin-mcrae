@@ -5707,6 +5707,8 @@ struct RaceResults {
     rivals: Option<cmr_core::stage_rivals::StageRivals>,
     standings: Option<cmr_core::standings::Standings>,
     finished: bool,
+    /// The results keys held last tick, for the press edge (`FUN_0043baa0`).
+    held_keys: u8,
 }
 
 impl RaceResults {
@@ -5739,6 +5741,29 @@ impl RaceResults {
             rivals: None,
             standings: None,
             finished: false,
+            held_keys: 0,
+        }
+    }
+
+    /// The results director's input `FUN_00430980`: `GetAsyncKeyState` of
+    /// Left, Right, Up, Down and Return, reported on the press edge without
+    /// auto-repeat.
+    fn poll_keys(
+        &mut self,
+        keys: &cmr_platform_sdl3::KeyboardVkState,
+    ) -> cmr_core::results_director::DirectorInput {
+        const KEYS: [u8; 5] = [0x25, 0x27, 0x26, 0x28, 0x0d];
+        let held = KEYS.iter().enumerate().fold(0u8, |bits, (bit, &vk)| {
+            bits | (u8::from(keys.is_down(vk)) << bit)
+        });
+        let edge = held & !self.held_keys;
+        self.held_keys = held;
+        cmr_core::results_director::DirectorInput {
+            left: edge & 1 != 0,
+            right: edge & 2 != 0,
+            up: edge & 4 != 0,
+            down: edge & 8 != 0,
+            confirm: edge & 0x10 != 0,
         }
     }
 
@@ -5778,7 +5803,7 @@ impl RaceResults {
                 tiers: std::array::from_fn(|slot| tiers[slot][country]),
                 players: 1,
                 player_cars: [car, 0],
-                super_special: false,
+                super_special: event.super_special(),
                 reversed: false,
             },
             rng,
@@ -5789,25 +5814,51 @@ impl RaceResults {
     /// the finish (`FUN_00443c80` latches the stage time there).
     fn frame(&mut self, session: &mut GameplaySession, progress: &StageProgress) {
         if session.state().id() == 8
+            && !session.event().globals.school_d3ca88
             && let Some(time) = progress.finish_centiseconds()
         {
-            self.finish(session.event_mut(), time as u32);
+            self.finish(session, time as u32);
         }
     }
 
-    /// `FUN_0042fab0` at the finish (the results init `FUN_0042f860`).
-    fn finish(&mut self, event: &mut EventState, stage_time: u32) {
+    /// The results init `FUN_0042f860` at the finish: the standings
+    /// `FUN_0042fab0`, then the director. Without the rival records the
+    /// player is alone and placed first (harness).
+    fn finish(&mut self, session: &mut GameplaySession, stage_time: u32) {
         if self.finished {
             return;
         }
         self.finished = true;
-        let Some(rivals) = &self.rivals else {
-            return;
+        self.standings = self.compute(session.event_mut(), stage_time);
+        let first = |positions: &[usize]| positions.first().copied().unwrap_or(1);
+        let (stage_position, rally_position, championship_position) =
+            self.standings.as_ref().map_or((1, 1, 1), |standings| {
+                (
+                    first(&standings.stage_positions),
+                    first(&standings.rally_positions),
+                    first(&standings.championship_positions),
+                )
+            });
+        let context = cmr_core::results_director::DirectorContext {
+            super_special: session.event().super_special(),
+            disqualified: false,
+            stage_position,
+            rally_position,
+            championship_position,
+            save_schedule: None,
         };
-        let Some(&slot) = rivals.player_slots.first() else {
-            return;
-        };
-        self.standings = cmr_core::standings::compute_standings(
+        session.start_results(context);
+    }
+
+    /// `FUN_0042fab0` for the one player.
+    fn compute(
+        &self,
+        event: &mut EventState,
+        stage_time: u32,
+    ) -> Option<cmr_core::standings::Standings> {
+        let rivals = self.rivals.as_ref()?;
+        let &slot = rivals.player_slots.first()?;
+        cmr_core::standings::compute_standings(
             event,
             &cmr_core::standings::StageFinish {
                 rival_times: rivals.times,
@@ -5816,7 +5867,7 @@ impl RaceResults {
                 disqualified: false,
                 head_to_head_pending: false,
             },
-        );
+        )
     }
 }
 
@@ -6014,6 +6065,7 @@ pub fn run_windowed_game_session(
         );
         let built = with_software_root_menu_session(&store, startup, request, |root| {
             run_windowed_game_session_loop(&initial, Some(audio_root), |input: WindowedInput| {
+                session.set_results_input(results.poll_keys(input.keys));
                 let frame = reload_stage_for_event(
                     &mut session,
                     &mut resources,
@@ -6090,6 +6142,7 @@ pub fn run_windowed_game_session(
     }
 
     run_windowed_game_session_loop(&initial, Some(audio_root), |input: WindowedInput| {
+        session.set_results_input(results.poll_keys(input.keys));
         let frame = reload_stage_for_event(
             &mut session,
             &mut resources,
@@ -9340,5 +9393,31 @@ mod tests {
                 actual: 8,
             })
         );
+    }
+
+    #[test]
+    fn the_finish_starts_the_results_on_the_press_edge() {
+        let mut results = RaceResults::open(Path::new("/nonexistent-runtime-data"));
+        let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
+        keys.apply_vk(0x0d, true);
+        assert!(results.poll_keys(&keys).confirm);
+        assert!(!results.poll_keys(&keys).confirm, "held: no repeat");
+        keys.apply_vk(0x0d, false);
+        keys.apply_vk(0x27, true);
+        let input = results.poll_keys(&keys);
+        assert!(input.right && !input.confirm);
+
+        let mut session = GameplaySession::new(
+            SimParams {
+                inverse_mass: Fixed16::ONE,
+                gravity: Vec3::ZERO,
+            },
+            InRaceScript::gameplay_harness(),
+        );
+        results.finish(&mut session, 12_345);
+        let director = session.results().expect("the finish starts the results");
+        assert_eq!(director.page(), 1);
+        assert!(session.event().globals.results_550024);
+        assert!(session.event().globals.continues_4ed7d8);
     }
 }

@@ -33,6 +33,7 @@ use crate::race_state::{
     ResetOutcome, SimParams, WheelPostprocessError,
 };
 use crate::render_route::{RenderRoute, render_route};
+use crate::results_director::{DirectorContext, DirectorEffect, DirectorInput, ResultsDirector};
 use crate::stage_checkpoints::StageProgress;
 use crate::stage_triggers::{RuntimeTrigger, initialize_runtime_triggers};
 use crate::static_collision_response::StaticDamageOwner;
@@ -215,6 +216,8 @@ pub struct GameplaySession<'a> {
     last_static_impacts: Vec<crate::race_state::StaticMaterialImpact>,
     /// The pause words for the next frame ([`Self::set_pause_flow`]).
     pause_flow: PauseFlow,
+    /// The post-stage results director (state 8).
+    results: ResultsHold,
     /// The car as the stage setup left it, restored when a new stage starts.
     stage_start: CarState,
     /// The sim has stepped since the stage started.
@@ -269,23 +272,63 @@ impl ResetEnvironment {
     }
 }
 
+/// The post-stage results director and the host's input for its next tick.
+#[derive(Clone, Debug, Default)]
+struct ResultsHold {
+    director: Option<ResultsDirector>,
+    input: DirectorInput,
+    effects: Vec<DirectorEffect>,
+}
+
+impl ResultsHold {
+    /// State 8's update `FUN_00438100` before its exit test: the special
+    /// event skips the results (`DAT_00514478`, clearing `DAT_0055001c`);
+    /// otherwise the director ticks (`FUN_00430770`, which runs its init
+    /// lazily when the finish did not), and the state holds while it runs.
+    fn boundary(&mut self, event: &mut EventState, inputs: &mut InRaceInputs) {
+        if inputs.school_session {
+            return;
+        }
+        if event.globals.special_514478 {
+            event.globals.special_55001c = false;
+            inputs.boundary_skip = true;
+            return;
+        }
+        let input = std::mem::take(&mut self.input);
+        let director = self
+            .director
+            .get_or_insert_with(|| ResultsDirector::start(event, DirectorContext::default()));
+        self.effects.extend(director.tick(event, input));
+        inputs.boundary_active = event.globals.results_550024;
+        if !inputs.boundary_active {
+            // Continue, restart and quit clear the init flag `DAT_00550020`.
+            self.director = None;
+        }
+    }
+}
+
 /// One gameplay-band handler: the recovered race-flow table over the script,
-/// the pause flow and the live finish. A restart chosen in the pause menu sets
-/// `DAT_00550018` on its way to the hub (`0x4389fa`).
+/// the pause flow, the results director and the live finish. A restart
+/// chosen in the pause menu sets `DAT_00550018` on its way to the hub
+/// (`0x4389fa`).
 fn in_race_next(
     state: GameState,
     event: &mut EventState,
     pause: PauseFlow,
     script: InRaceScript,
     finished: bool,
+    results: &mut ResultsHold,
 ) -> GameState {
-    let inputs = pause.apply(script.with_finish(finished, event.globals.school_d3ca88));
+    let mut inputs = pause.apply(script.with_finish(finished, event.globals.school_d3ca88));
     if state.id() == 0xA
         && !inputs.quit_requested
         && !inputs.school_session
         && inputs.restart_requested
     {
         event.globals.restart_550018 = true;
+    }
+    if state.id() == 8 {
+        results.boundary(event, &mut inputs);
     }
     race_flow_next(state, inputs, event).unwrap_or(state)
 }
@@ -368,6 +411,7 @@ impl<'a> GameplaySession<'a> {
             last_throttle_304: 0,
             last_static_impacts: Vec::new(),
             pause_flow: PauseFlow::default(),
+            results: ResultsHold::default(),
             stage_start: CarState::at_rest(),
             race_started: false,
             stage_dirty: false,
@@ -486,6 +530,31 @@ impl<'a> GameplaySession<'a> {
     /// The pause words for the next frame only.
     pub fn set_pause_flow(&mut self, flow: PauseFlow) {
         self.pause_flow = flow;
+    }
+
+    /// The results init `FUN_0042f860`, which the finish handoff
+    /// `FUN_00443c80` runs at the finish line (single player, not the
+    /// school, a demo or a network session), with the standings computed
+    /// there.
+    pub fn start_results(&mut self, context: DirectorContext) {
+        let event = self.session.event_mut();
+        self.results.director = Some(ResultsDirector::start(event, context));
+    }
+
+    /// The results director's input for its next tick (`FUN_00430980`).
+    pub fn set_results_input(&mut self, input: DirectorInput) {
+        self.results.input = input;
+    }
+
+    /// The running (or last) results director.
+    #[must_use]
+    pub fn results(&self) -> Option<&ResultsDirector> {
+        self.results.director.as_ref()
+    }
+
+    /// The results director's cues since the last call.
+    pub fn take_results_effects(&mut self) -> Vec<DirectorEffect> {
+        std::mem::take(&mut self.results.effects)
     }
 
     /// The words the surface and landing sounds (`FUN_00489890`,
@@ -693,6 +762,7 @@ impl<'a> GameplaySession<'a> {
             None
         };
         let script = self.script;
+        let results = &mut self.results;
         let sim_ticks = &mut self.sim_ticks;
         let mut stepped = false;
 
@@ -704,7 +774,7 @@ impl<'a> GameplaySession<'a> {
                 progress.update(sample.car.position, sample.centiseconds);
                 stepped = true;
             }
-            in_race_next(state, event, pause, script, progress.finished())
+            in_race_next(state, event, pause, script, progress.finished(), results)
         });
         self.track_stage_end(stepped);
 
@@ -762,6 +832,7 @@ impl<'a> GameplaySession<'a> {
             None
         };
         let script = self.script;
+        let results = &mut self.results;
         let sim_ticks = &mut self.sim_ticks;
         let mut stepped = false;
 
@@ -773,7 +844,7 @@ impl<'a> GameplaySession<'a> {
                 progress.update(sample.car.position, sample.centiseconds);
                 stepped = true;
             }
-            in_race_next(state, event, pause, script, progress.finished())
+            in_race_next(state, event, pause, script, progress.finished(), results)
         });
         self.track_stage_end(stepped);
 
@@ -1296,8 +1367,17 @@ mod tests {
         let mut frames = 0u32;
         let mut left_gameplay = false;
         let mut finish_position = Vec3::ZERO;
+        let mut held_in_results = 0u32;
         while frames < 100_000 {
             frames += 1;
+            // The results pages hold state 8 until Return reaches Continue.
+            if session.state().id() == 8 {
+                held_in_results += 1;
+                session.set_results_input(DirectorInput {
+                    confirm: held_in_results > 20,
+                    ..DirectorInput::default()
+                });
+            }
             let frame =
                 session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
             if progress.finished() && !frame.stepped && session.state().id() <= 4 {
@@ -1310,6 +1390,8 @@ mod tests {
             left_gameplay,
             "a normal finish runs 5 -> 8 -> 0xb back to the menu band"
         );
+        assert!(held_in_results > 20, "state 8 held for the results");
+        assert!(session.results().is_none(), "Continue cleared the director");
         assert!(!session.is_stopped());
         assert!(finish_position.x.raw() > 0);
         // The menu flow starts the stage again; the first drive starts over.
