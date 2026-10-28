@@ -149,6 +149,11 @@ contacted (item 5 below).
    `accumulation_limit`, `correction_alternate`, `coefficient_34`,
    `config_scale`), the first-loop slip `limit` (`+0x378`) and the front brake
    share `+0x170`, then gravity/suspension in `FUN_0040d810`, before item 2.
+   `rea.official-eu.tyre-input-sources` maps them: extend the reviewed
+   executable-table store with `DAT_004f6b50`, `DAT_004f6f10` and
+   `DAT_004f777c` (static data; never commit values), produce the per-wheel
+   surface words `+0x42a..+0x430` from the stage surface under each wheel,
+   and keep searching for the writer of control `+0x35c..+0x378`.
 2. Move the windowed session from `GameplaySession::new_with_car` to the already
    recovered four-wheel path only after supplying its authenticated runtime
    inputs. The current planar path changes heading but does not evolve the full
