@@ -75,6 +75,7 @@ pub mod gameplay_camera;
 pub mod gameplay_input;
 pub mod gameplay_session;
 pub mod gearbox;
+pub mod ground_pass;
 pub mod host_lifecycle;
 pub mod host_loop;
 pub mod indexed_bitmap_raster;

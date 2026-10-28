@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-10-28 (wheel brake torques and producer gates)
+Updated: 2026-10-28 (per-tick ground pass; four-wheel car drives)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: recover the wheel brake torques and producer gates
+feat: run the per-car ground pass after each four-wheel tick
 ```
 
 Start by confirming the checkout and progress footer:
@@ -83,7 +83,7 @@ ef78049 feat: derive canonical collision response state
 
 ## Verification state
 
-Green at handoff (2,367 tests, 36 ignored):
+Green at handoff (2,397 tests, 36 ignored):
 
 ```sh
 cargo test --workspace --all-targets
@@ -94,7 +94,7 @@ Focused collision, session rollback, keyboard/analog, SDL gamepad, app build,
 and full-workspace tests pass. Logs from the last run are ignored under:
 
 ```text
-.work/wheel-brake-workspace-test.log
+.work/ground-pass-workspace-test.log
 ```
 
 The authenticated AU1 test:
@@ -113,6 +113,18 @@ about 200 seconds, all assertions including steering (log
 `.work/au1-authenticated.log`). It proves collision execution without error and
 the steering sign on owned media; it still does not prove a scene object was
 contacted (item 5 below).
+
+## Latest state (read first)
+
+The four-wheel car drives on the owned AU1 data (`impl.ground-pass`): run
+`CMR_RUNTIME_DATA="$PWD/runtime-data/installed-eu-derived-assets-v2" cargo test
+-p cmr-app --release probe_compiled_four_wheel_car_on_au1 -- --ignored
+--nocapture`. Next, in order: build the windowed session on
+`GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`
+from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground`),
+render the car body from `MotionState::basis`, then the out-of-control path
+`FUN_004115d0`, suspension/wheel animation `FUN_00410350`, and the remaining
+tyre inputs (`DAT_004f6b50/6f10/777c` are now in `SessionTyreTables`).
 
 ## Highest-priority remaining work
 

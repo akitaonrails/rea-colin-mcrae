@@ -3681,6 +3681,7 @@ impl SessionCompiledPose {
             lane: self.lanes.inputs(),
         };
         let state = self.lanes.begin_car_setup();
+        let lane_inputs = self.lanes.inputs();
         let mut config = |_lane: usize| Ok::<u8, std::convert::Infallible>(0);
         let effects = execute_stage_compiled_setup_pose(
             &self.direct_cases,
@@ -3691,6 +3692,31 @@ impl SessionCompiledPose {
         )
         .map_err(SessionCompiledPoseError::Execution)?;
         self.lanes.publish(effects.lanes.state);
+        let probes = effects.sources.contact_basis;
+        start.ground = Some(cmr_core::ground_pass::GroundContact {
+            lanes: effects.lanes.state,
+            lane_inputs,
+            half_words: derive_compiled_half_sign_state([
+                effects.effective_state_words[0],
+                effects.effective_state_words[1],
+                effects.effective_state_words[2],
+            ])
+            .words[..3]
+                .try_into()
+                .expect("the half-sign state starts with the three half words"),
+            deformation: [
+                effects.effective_state_words[3],
+                effects.effective_state_words[4],
+                effects.effective_state_words[5],
+            ],
+            probes,
+            thresholds: cmr_core::compiled_car_initializer::derive_compiled_lane_thresholds(
+                cmr_core::compiled_car_initializer::CompiledLaneThresholdInputs {
+                    lane_words: effects.lanes.state.lane_words,
+                    source_y: probes.map(|probe| probe[1]),
+                },
+            ),
+        });
         Ok(publish_session_compiled_pose(
             start,
             [
@@ -5901,9 +5927,21 @@ mod tests {
         );
         let origin = start.position;
         for tick in 0..250 {
-            let sample = match state.step_with_all_four_wheels(&throttle, &wheel) {
-                Ok(sample) => sample,
-                Err(error) => panic!("tick {tick}: {error:?}"),
+            if let Err(error) = state.step_with_all_four_wheels(&throttle, &wheel) {
+                panic!("tick {tick}: {error:?}");
+            }
+            let mut config = |_lane: usize| Ok::<u8, std::convert::Infallible>(0);
+            if let Err(error) = state.run_ground_pass(
+                wheel.lane_time_step,
+                &mut pose.geometry.eight_lane_providers(),
+                &mut config,
+            ) {
+                panic!("tick {tick} ground: {error:?}");
+            }
+            let sample = cmr_core::race_state::TraceSample {
+                clock: Fixed16::ZERO,
+                centiseconds: 0,
+                car: state.car(),
             };
             if tick % 25 == 0 || tick == 249 {
                 let car = sample.car;
@@ -5931,6 +5969,19 @@ mod tests {
                     car.four_wheel.first.map(|wheel| wheel.wheel_speed),
                     car.four_wheel.smoothed_wheel_speeds,
                 );
+                if let Some(ground) = car.ground {
+                    eprintln!(
+                        "probe   pos_y={:#x} vel=({:#x},{:#x},{:#x}) clear743={} count742={} contacts={:?} lane_words={:x?}",
+                        car.position.y.raw(),
+                        car.velocity.x.raw(),
+                        car.velocity.y.raw(),
+                        car.velocity.z.raw(),
+                        ground.thresholds.flag_743,
+                        ground.thresholds.count_742,
+                        car.motion.contact_distance_flags,
+                        &ground.lanes.lane_words[..4],
+                    );
+                }
                 eprintln!(
                     "probe   second={:x?} lanes={:x?} qualified={:?}",
                     car.four_wheel.second.map(|lane| lane.accumulators),

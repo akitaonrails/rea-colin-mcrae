@@ -408,8 +408,8 @@ Its steering half now turns steer input into the wheel angle that rotates the
 lane source, and its gearbox drives gear, shift request and reversing mode. A
 probe on owned AU1 data now shows engine force reaching the drive slots
 through the recovered car-setup block and torque split, with brake torques and
-the grounded/airborne gates in place: the driven wheels spin, but the second
-loop's tyre inputs are still zero, so no lane force reaches the body.
+the grounded/airborne gates in place, gravity, and the per-tick ground pass: the
+four-wheel car now drives on owned AU1 data, following the terrain.
 
 ## Update rules
 
@@ -420,14 +420,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T07:00:00Z
-milestone=tyre-table-store-and-gravity
+updated_utc=2026-10-28T08:10:00Z
+milestone=per-tick-ground-pass
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-window-path-angular-collision-and-car-animation
-next_exit_gate=second-wheel-tyre-inputs-to-first-lane-force
+next_exit_gate=four-wheel-windowed-session
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

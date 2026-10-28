@@ -115,6 +115,7 @@ pub struct GameplaySession<'a> {
     params: SimParams,
     script: InRaceScript,
     wheel: Option<FourWheelIterationParams<'a>>,
+    ground_geometry: Option<&'a crate::stage_compiled_geometry::StageCompiledGeometry>,
     sim_ticks: u32,
 }
 
@@ -167,8 +168,38 @@ impl<'a> GameplaySession<'a> {
             params,
             script,
             wheel,
+            ground_geometry: None,
             sim_ticks: 0,
         }
+    }
+
+    /// Run the per-car ground pass `FUN_00410a60` against this stage geometry
+    /// after every four-wheel step whose car carries live ground contact.
+    #[must_use]
+    pub fn with_ground_geometry(
+        mut self,
+        geometry: &'a crate::stage_compiled_geometry::StageCompiledGeometry,
+    ) -> Self {
+        self.ground_geometry = Some(geometry);
+        self
+    }
+
+    fn four_wheel_tick(
+        &mut self,
+        controls: &Controls,
+    ) -> Result<crate::race_state::TraceSample, WheelPostprocessError> {
+        let wheel = self.wheel.as_ref().expect("a four-wheel session");
+        let mut sample = self.race.step_with_all_four_wheels(controls, wheel)?;
+        if let Some(geometry) = self.ground_geometry {
+            let mut config = |_lane: usize| Ok::<u8, std::convert::Infallible>(0);
+            self.race.run_ground_pass(
+                wheel.lane_time_step,
+                &mut geometry.eight_lane_providers(),
+                &mut config,
+            )?;
+            sample.car = self.race.car();
+        }
+        Ok(sample)
     }
 
     /// Advance a simplified session. Four-wheel sessions use [`Self::try_advance`]
@@ -203,9 +234,10 @@ impl<'a> GameplaySession<'a> {
         progress: &mut StageProgress,
     ) -> Result<GameplayFrame, WheelPostprocessError> {
         let driving_sample = if self.session.current().id() == 5 {
-            Some(match &self.wheel {
-                Some(wheel) => self.race.step_with_all_four_wheels(&controls, wheel)?,
-                None => self.race.step(&controls, &self.params),
+            Some(if self.wheel.is_some() {
+                self.four_wheel_tick(&controls)?
+            } else {
+                self.race.step(&controls, &self.params)
             })
         } else {
             None
@@ -248,12 +280,11 @@ impl<'a> GameplaySession<'a> {
         let driving_sample = if self.session.current().id() == 5 {
             let race_before = self.race.clone();
             let previous_center_xz = PreviousCarXz::capture(race_before.car().position);
-            let mut sample = match &self.wheel {
-                Some(wheel) => self
-                    .race
-                    .step_with_all_four_wheels(&controls, wheel)
-                    .map_err(StaticGameplayAdvanceError::Wheel)?,
-                None => self.race.step(&controls, &self.params),
+            let mut sample = if self.wheel.is_some() {
+                self.four_wheel_tick(&controls)
+                    .map_err(StaticGameplayAdvanceError::Wheel)?
+            } else {
+                self.race.step(&controls, &self.params)
             };
             if let Err(error) = self.race.resolve_static_collision_after_step(
                 previous_center_xz,

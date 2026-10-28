@@ -1317,8 +1317,58 @@ where
     C: CompiledLaneConfigProvider,
 {
     let mut lanes = [None; 8];
+    execute_compiled_lane_range(input, &mut state, &mut lanes, providers, config, 8)?;
+    Ok(CompiledEightLaneExecutionSuccess {
+        state,
+        lanes: lanes.map(|lane| lane.expect("all eight lanes completed")),
+    })
+}
 
-    for lane_index in 0..8 {
+/// Height offset of the four derived hull lanes in the runtime query
+/// (`FUN_00419c20`, `0x419d24..`): lane `4 + i` is lane `i` minus 5.0.
+pub const RUNTIME_HULL_LANE_OFFSET: i32 = 0x5_0000;
+
+/// The runtime four-lane query `FUN_00419c20`: the same per-lane dispatch and
+/// postprocess as [`execute_compiled_eight_lanes`] for lanes 0..3 (each with
+/// its first-four subtraction), after which lanes 4..7 take only their lane
+/// word, `lane_word[i] - 0x50000`; their handles, type words, vectors and
+/// accumulators are left as they were.
+///
+/// # Errors
+///
+/// The same dispatch and config failures as the eight-lane executor, for lanes
+/// 0..3 only.
+pub fn execute_runtime_four_lanes<P, C>(
+    input: CompiledEightLaneExecutionInputs,
+    mut state: CompiledEightLaneExecutionState,
+    providers: &mut [P; 8],
+    config: &mut C,
+) -> Result<CompiledEightLaneExecutionState, CompiledEightLaneExecutionFailure<P::Error, C::Error>>
+where
+    P: CompiledLaneGeometryProvider,
+    C: CompiledLaneConfigProvider,
+{
+    let mut lanes = [None; 8];
+    execute_compiled_lane_range(input, &mut state, &mut lanes, providers, config, 4)?;
+    for lane in 0..4 {
+        state.lane_words[lane + 4] = state.lane_words[lane].wrapping_sub(RUNTIME_HULL_LANE_OFFSET);
+    }
+    Ok(state)
+}
+
+fn execute_compiled_lane_range<P, C>(
+    input: CompiledEightLaneExecutionInputs,
+    state: &mut CompiledEightLaneExecutionState,
+    lanes: &mut [Option<CompiledLaneExecutionEffects>; 8],
+    providers: &mut [P; 8],
+    config: &mut C,
+    lane_count: usize,
+) -> Result<(), CompiledEightLaneExecutionFailure<P::Error, C::Error>>
+where
+    P: CompiledLaneGeometryProvider,
+    C: CompiledLaneConfigProvider,
+{
+    for lane_index in 0..lane_count {
         let dispatch = match dispatch_compiled_lane(
             CompiledLaneDispatchInput {
                 source_vector: input.source_vectors[lane_index],
@@ -1337,8 +1387,8 @@ where
                     failed_lane: lane_index,
                     progress: Box::new(CompiledEightLaneExecutionProgress {
                         completed_lanes: lane_index,
-                        state,
-                        lanes,
+                        state: *state,
+                        lanes: *lanes,
                     }),
                     failure,
                 });
@@ -1366,7 +1416,7 @@ where
             config_flag_26: 0,
         };
         let mut postprocess = derive_compiled_single_lane_before_config(postprocess_input);
-        apply_compiled_lane_postprocess_effects(&mut state, lane_index, postprocess);
+        apply_compiled_lane_postprocess_effects(state, lane_index, postprocess);
 
         let config_flag_26 = match config.read_flag_26(lane_index) {
             Ok(flag) => flag,
@@ -1375,8 +1425,8 @@ where
                     failed_lane: lane_index,
                     progress: Box::new(CompiledEightLaneExecutionProgress {
                         completed_lanes: lane_index,
-                        state,
-                        lanes,
+                        state: *state,
+                        lanes: *lanes,
                     }),
                     dispatch,
                     pre_config_postprocess: postprocess,
@@ -1385,17 +1435,14 @@ where
             }
         };
         apply_compiled_single_lane_config(&mut postprocess, config_flag_26);
-        apply_compiled_lane_postprocess_effects(&mut state, lane_index, postprocess);
+        apply_compiled_lane_postprocess_effects(state, lane_index, postprocess);
         lanes[lane_index] = Some(CompiledLaneExecutionEffects {
             dispatch,
             postprocess,
         });
     }
 
-    Ok(CompiledEightLaneExecutionSuccess {
-        state,
-        lanes: lanes.map(|lane| lane.expect("all eight lanes completed")),
-    })
+    Ok(())
 }
 
 /// Decoded candidate access required by the inner search at `FUN_00447540`.
@@ -6168,6 +6215,63 @@ mod tests {
         assert_eq!(success.state.type_words[2], 0x000a);
         assert_eq!(success.state.output_vectors[2], [0, 0x1_0000, 0]);
         assert_eq!(success.state.lane_words[2], 102 - 0x4ccc - 3 + 0x1_0000);
+    }
+
+    #[test]
+    fn runtime_four_lane_query_runs_lanes_zero_to_three_then_derives_the_hull_lanes() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let modes = [
+            IntegratedLaneMode::Built(0x51),
+            IntegratedLaneMode::SearchMiss,
+            IntegratedLaneMode::Built(0),
+            IntegratedLaneMode::Built(0x3b),
+            IntegratedLaneMode::Built(0),
+            IntegratedLaneMode::Built(0),
+            IntegratedLaneMode::Built(0),
+            IntegratedLaneMode::Built(0),
+        ];
+        let mut providers = integrated_providers(&events, modes);
+        let mut config = |_lane| -> Result<u8, &'static str> { Ok(0) };
+        let initial = integrated_execution_state();
+        let runtime = execute_runtime_four_lanes(
+            integrated_execution_input(),
+            initial,
+            &mut providers,
+            &mut config,
+        )
+        .unwrap();
+        // Only lanes 0..3 query the geometry.
+        assert!(events.borrow().iter().all(|event| match event {
+            IntegratedLaneEvent::Validate(lane)
+            | IntegratedLaneEvent::Search(lane)
+            | IntegratedLaneEvent::Build(lane)
+            | IntegratedLaneEvent::Config(lane) => *lane < 4,
+        }));
+        // Lanes 0..3 match the eight-lane executor exactly.
+        let mut eight_providers = integrated_providers(&Rc::new(RefCell::new(Vec::new())), modes);
+        let eight = execute_compiled_eight_lanes(
+            integrated_execution_input(),
+            initial,
+            &mut eight_providers,
+            &mut |_lane| -> Result<u8, &'static str> { Ok(0) },
+        )
+        .unwrap();
+        assert_eq!(runtime.lane_words[..4], eight.state.lane_words[..4]);
+        assert_eq!(runtime.type_words[..4], eight.state.type_words[..4]);
+        assert_eq!(runtime.output_vectors[..4], eight.state.output_vectors[..4]);
+        // Lanes 4..7 take only `lane_word[i] - 5.0`.
+        for lane in 0..4 {
+            assert_eq!(
+                runtime.lane_words[lane + 4],
+                runtime.lane_words[lane].wrapping_sub(RUNTIME_HULL_LANE_OFFSET)
+            );
+            assert_eq!(runtime.type_words[lane + 4], initial.type_words[lane + 4]);
+            assert_eq!(
+                runtime.output_vectors[lane + 4],
+                initial.output_vectors[lane + 4]
+            );
+            assert_eq!(runtime.handles[lane + 4], initial.handles[lane + 4]);
+        }
     }
 
     #[test]

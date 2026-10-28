@@ -40,6 +40,7 @@ use crate::drivetrain::{
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::gearbox::{GearOutOfRange, GearboxInputs, GearboxParams, GearboxState, apply_gearbox};
+use crate::ground_pass::{GroundContact, GroundPassCar, run_ground_pass};
 use crate::legacy_math::sqrt_q16;
 use crate::live_static_collision_car_frame::{
     ActiveCellRecordBuildError, LiveStaticCollisionCarFrameInput,
@@ -59,6 +60,7 @@ use crate::static_world_collision::{
     StaticCollisionExecutionError, StaticContactHistory, resolve_static_world_collisions,
 };
 use crate::steering_response::{SteeringInputs, SteeringParams, SteeringState, apply_steering};
+use crate::vehicle_dynamics::classify_contact_distance_lanes;
 use crate::vehicle_dynamics::{
     AngularOrientationInput, ContactBasisInput, ContactDeadzoneGate, ContactVectorUpdateInput,
     GeometricPostprocessError, GeometricPostprocessLane, LaneDirectionSources,
@@ -565,6 +567,9 @@ pub struct FourWheelState {
     pub upright_404: bool,
     /// Resting flag at `state+0x700`, written by the integrator each tick.
     pub resting_700: bool,
+    /// The basis the mechanics driver copies to `+0x27c` at the start of the
+    /// tick; the ground pass restores it for a resting, aligned car.
+    pub start_basis_27c: [Vec3; 3],
 }
 
 /// Apply neutral-gear zeroing or the ordinary post-step tracking update.
@@ -650,6 +655,10 @@ pub enum WheelPostprocessError {
     Geometry(GeometricPostprocessError),
     /// The live gearbox reached a gear outside its eight-entry tables.
     Gear(GearOutOfRange),
+    /// The ground pass's query failed on this lane.
+    GroundQuery {
+        failed_lane: usize,
+    },
 }
 
 impl From<GearOutOfRange> for WheelPostprocessError {
@@ -825,6 +834,9 @@ pub struct CarState {
     pub postprocess: FourWheelPostprocessState,
     /// Independent state for the complete four-wheel producer path.
     pub four_wheel: FourWheelState,
+    /// The live ground-contact words, present once a stage's compiled ground
+    /// query has seeded them; drives the per-tick ground pass `FUN_00410a60`.
+    pub ground: Option<GroundContact>,
 }
 
 impl CarState {
@@ -895,7 +907,9 @@ impl CarState {
                 gearbox: GearboxState::ZERO,
                 upright_404: false,
                 resting_700: false,
+                start_basis_27c: [Vec3::ZERO; 3],
             },
+            ground: None,
         }
     }
 }
@@ -1319,7 +1333,25 @@ impl RaceState {
             self.car.four_wheel.first[2].wheel_speed,
             self.car.four_wheel.speed_ec,
         );
-        let thresholds = derive_compiled_lane_thresholds(wheel.lane_threshold_inputs);
+        self.car.four_wheel.start_basis_27c = self.car.motion.basis;
+        // With live ground contact, the threshold scan and the contact-distance
+        // gate `FUN_0040d740` read the current lane words and probe points.
+        let threshold_inputs = match &self.car.ground {
+            Some(ground) => {
+                let (flags, count) = classify_contact_distance_lanes(
+                    std::array::from_fn(|lane| ground.lanes.lane_words[lane]),
+                    std::array::from_fn(|lane| ground.probes[lane][1]),
+                );
+                self.car.motion.contact_distance_flags = flags;
+                self.car.motion.contact_count_674 = i32::from(count);
+                CompiledLaneThresholdInputs {
+                    lane_words: ground.lanes.lane_words,
+                    source_y: ground.probes.map(|probe| probe[1]),
+                }
+            }
+            None => wheel.lane_threshold_inputs,
+        };
+        let thresholds = derive_compiled_lane_thresholds(threshold_inputs);
         let scale_528 =
             contact_count_scale(wheel.angular.momentum.moment_scale, thresholds.count_742);
         // The mechanics driver `FUN_00407690` cuts the steer magnitudes against
@@ -1738,6 +1770,71 @@ impl RaceState {
         self.finish_mechanics_tick();
         sample.car = self.car;
         Ok(sample)
+    }
+
+    /// Run the per-car ground pass `FUN_00410a60` after a four-wheel step, when
+    /// the car has live ground contact. Nothing changes on a query failure.
+    ///
+    /// # Errors
+    ///
+    /// Reports the lane whose ground query failed.
+    pub fn run_ground_pass<P, C>(
+        &mut self,
+        time_step: Fixed16,
+        providers: &mut [P; 8],
+        config: &mut C,
+    ) -> Result<(), WheelPostprocessError>
+    where
+        P: crate::compiled_car_initializer::CompiledLaneGeometryProvider,
+        C: crate::compiled_car_initializer::CompiledLaneConfigProvider,
+    {
+        let Some(ground) = self.car.ground else {
+            return Ok(());
+        };
+        let car = GroundPassCar {
+            position: self.car.position,
+            velocity: self.car.velocity,
+            angular_velocity: self.car.motion.angular_velocity,
+            basis: self.car.motion.basis,
+            normal: self.car.motion.projection_axis,
+            speed_ec: self.car.four_wheel.speed_ec,
+            resting_700: self.car.four_wheel.resting_700,
+            out_of_control_680: self.car.collision.response_state_680,
+            axis_snapshot_bc: self.car.collision.out_of_control_axis_bc,
+        };
+        let (after, ground) = run_ground_pass(
+            car,
+            ground,
+            self.car.four_wheel.start_basis_27c,
+            time_step,
+            providers,
+            config,
+        )
+        .map_err(|failure| WheelPostprocessError::GroundQuery {
+            failed_lane: match failure {
+                crate::compiled_car_initializer::CompiledEightLaneExecutionFailure::Dispatch {
+                    failed_lane,
+                    ..
+                }
+                | crate::compiled_car_initializer::CompiledEightLaneExecutionFailure::Config {
+                    failed_lane,
+                    ..
+                } => failed_lane,
+            },
+        })?;
+        if after.out_of_control_680 && !self.car.collision.response_state_680 {
+            // The tilt test sets `+0x680` and `+0x688` together.
+            self.car.collision.recovery_latch_688 = true;
+        }
+        self.car.position = after.position;
+        self.car.velocity = after.velocity;
+        self.car.motion.angular_velocity = after.angular_velocity;
+        self.car.motion.basis = after.basis;
+        self.car.motion.projection_axis = after.normal;
+        self.car.collision.response_state_680 = after.out_of_control_680;
+        self.car.collision.out_of_control_axis_bc = after.axis_snapshot_bc;
+        self.car.ground = Some(ground);
+        Ok(())
     }
 
     /// Run a scripted control sequence, returning the per-tick trace.

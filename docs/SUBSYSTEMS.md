@@ -2599,6 +2599,9 @@ languages rather than fabricating or silently aliasing Italian assets.
 - The wheel-force producer's brake torques replace the harness drag, and its
   grounded/airborne and per-lane contact gates are in place; the second loop's
   tyre inputs are still harness values.
+- The ground pass `FUN_00410a60` keeps the four-wheel car on the stage surface
+  every tick (requery, normal, basis alignment, penetration lift, velocity
+  constraint); contact flags and the threshold scan are now live.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning
