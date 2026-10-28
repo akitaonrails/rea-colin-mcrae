@@ -25,11 +25,12 @@ use crate::descriptor_menu::{
     ItemKind, Menu, MenuEvent, MenuId, MenuItem, MenuLinks, MenuSet, MenuSound,
 };
 use crate::frontend_menu::ValueWidget;
+use crate::screen_fade::ScreenFade;
 
 /// The time budget each player starts with (`DAT_004f605c`, minutes).
 pub const SERVICE_BUDGET: i32 = 60;
 /// The fades' length (`FUN_0048df80(12)`, `FUN_0048dfa0(12)`).
-pub const SERVICE_FADE_FRAMES: i32 = 12;
+pub const SERVICE_FADE_FRAMES: u32 = 12;
 
 /// The executable's tables the screen reads.
 #[derive(Clone, Copy, Debug, Default)]
@@ -116,49 +117,6 @@ pub enum ServiceEffect {
     Cue { slot: u8, ok: bool },
 }
 
-/// The fade channel `0x82b37c` as the screen uses it: idle until started,
-/// then running until its counter passes the target by three (`0x4ad560`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Fade {
-    active: bool,
-    counter: i32,
-    target: i32,
-    rising: bool,
-}
-
-impl Fade {
-    fn start(&mut self, frames: i32, rising: bool) {
-        *self = Self {
-            active: true,
-            counter: 0,
-            target: frames,
-            rising,
-        };
-    }
-
-    /// `FUN_0048dfc0`: this frame's level (Q16), advancing the counter.
-    fn evaluate(&mut self) -> i32 {
-        if !self.active {
-            return 0x1_0000;
-        }
-        let c = self.counter.min(self.target);
-        if self.counter < self.target + 3 {
-            self.counter += 1;
-        }
-        let up = if self.target > 0 {
-            c * 0x1_0000 / self.target
-        } else {
-            0x1_0000
-        };
-        if self.rising { up } else { 0x1_0000 - up }
-    }
-
-    /// `FUN_0048dfd0`: no fade in progress.
-    fn idle(&self) -> bool {
-        !self.active || self.counter >= self.target + 3
-    }
-}
-
 /// The screen's state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceScreen {
@@ -181,9 +139,12 @@ pub struct ServiceScreen {
     pub fade_level: i32,
     /// The stage view's plaque frame and typewriter counters.
     pub stage_view: StageViewReveal,
-    fade: Fade,
+    /// The shared fade channel `0x82b37c` (the host carries it between
+    /// this screen and the race).
+    pub fade: ScreenFade,
     finished: bool,
     school: bool,
+    instant: bool,
 }
 
 /// `DAT_005fdf50` (the plaque frame, 0..=14) and the six typewriter
@@ -207,6 +168,8 @@ pub struct ServiceContext {
     pub network: bool,
     /// Split screen or head to head (outside the school): two players.
     pub two_players: bool,
+    /// `DAT_00bbabec`: every fade is instant.
+    pub instant_fades: bool,
 }
 
 fn base(player: u8) -> usize {
@@ -234,9 +197,10 @@ impl ServiceScreen {
             budget: SERVICE_BUDGET,
             fade_level: 0,
             stage_view: StageViewReveal::default(),
-            fade: Fade::default(),
+            fade: ScreenFade::default(),
             finished: false,
             school: context.school,
+            instant: context.instant_fades,
         };
         screen.begin_player(live, context, tables);
         screen
@@ -254,7 +218,8 @@ impl ServiceScreen {
         let p = base(self.player);
         let first = live[0x167] & 0x3f == 0 || live[0x168] & 0xf0 == 0;
         let time_trial = live[0x166] & 3 == 2;
-        self.fade.start(SERVICE_FADE_FRAMES, true);
+        self.fade
+            .fade_in(SERVICE_FADE_FRAMES, context.instant_fades);
         self.phase = 0;
         let country = usize::from(live[0x168] & 0xf);
         let set_values = |live: &mut [u8], table: &[u8], at: usize| {
@@ -415,6 +380,7 @@ impl ServiceScreen {
         tables: ServiceTables,
     ) -> (bool, Vec<ServiceEffect>) {
         let mut effects = Vec::new();
+        self.instant = context.instant_fades;
         self.fade_level = self.fade.evaluate();
         match self.phase {
             0 => {
@@ -549,7 +515,7 @@ impl ServiceScreen {
             // `0x479970`: fade out to the next player or the end.
             callback::CONTINUE => {
                 self.phase = 2;
-                self.fade.start(SERVICE_FADE_FRAMES, false);
+                self.fade.fade_out(SERVICE_FADE_FRAMES, self.instant);
                 effects.push(cue(cue::FORWARD));
             }
             // `0x4795e0`: the budget, start values and conditions restored.

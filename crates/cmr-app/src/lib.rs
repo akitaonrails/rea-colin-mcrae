@@ -68,6 +68,7 @@ use cmr_core::game_menu_flow::MenuFlowInputs;
 use cmr_core::game_rng::GameLcg;
 use cmr_core::game_session::SessionBand;
 use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
+use cmr_core::gameplay_session::FadeComposite;
 use cmr_core::gameplay_session::PauseFlow;
 use cmr_core::gameplay_session::{GameplaySession, InRaceScript, StaticGameplayAdvanceError};
 use cmr_core::host_loop::HostClock;
@@ -92,7 +93,6 @@ use cmr_core::race_state::{
     SecondWheelParams, SimParams, WheelPostprocessError, populate_compiled_contact_offsets,
     populate_compiled_gear_ratio, populate_force_pass_scales, populate_surface_table_factor,
 };
-use cmr_core::render_compose::{fade_duration_frames, fade_level_to_modulation_byte, fade_out};
 use cmr_core::render_route::{RenderRoute, presents_world_scene};
 use cmr_core::results_director::DirectorEffect;
 use cmr_core::root_menu_assets::VisualVariant;
@@ -101,7 +101,6 @@ use cmr_core::root_menu_visual::{
     ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16, ROOT_INITIAL_VERTICAL_TRANSFORM_Q16, RootRenderInput,
 };
 use cmr_core::save_dialog::SaveEffect;
-use cmr_core::scalar_tween::ScalarTween;
 use cmr_core::settings_store::{DataPaths, SettingsError, SettingsImage};
 use cmr_core::stage_checkpoints::StageProgress;
 use cmr_core::stage_compiled_geometry::{StageCompiledGeometry, StageCompiledGeometryLoadError};
@@ -3406,6 +3405,7 @@ impl ServiceHost {
         now: u32,
         keys: &cmr_platform_sdl3::KeyboardVkState,
         mixer: Option<&SharedSoftwareMixer>,
+        fade: &mut cmr_core::screen_fade::ScreenFade,
     ) -> (bool, bool, Option<SoftwarePresentedFrame>) {
         use cmr_core::service_draw::{
             DIAL_SEGMENTS, FONT_NAMES, ICON_NAMES, PLAQUE_FRAMES, STAGE_PICTURES, ServiceAssets,
@@ -3428,6 +3428,8 @@ impl ServiceHost {
             school_defaults: data.get(0x30..).unwrap_or(&[]),
         };
         let school = event.globals.school_d3ca88;
+        // `DAT_00bbabec`: the front end's animation option off.
+        let instant_fades = config.image[0x10] & 0x20 == 0;
         let live = cmr_core::config_commit::live_mut(&mut config.image);
         event.cfg.store_live(live);
         if !service_pending(
@@ -3443,6 +3445,7 @@ impl ServiceHost {
             restart: event.globals.restart_550018,
             network: event.globals.network_d3ca94,
             two_players: event.split_screen() || event.head_to_head(),
+            instant_fades,
         };
         if self.screen.is_none() {
             // The lazy init `FUN_00479c80`: the palette, the text, the
@@ -3533,6 +3536,7 @@ impl ServiceHost {
         };
         let screen = self.screen.as_mut().expect("opened above");
         let (done, effects) = screen.update(live, input, context, service_tables);
+        *fade = screen.fade;
         for effect in effects {
             let cmr_core::service_screen::ServiceEffect::Cue { slot, ok } = effect;
             if let (Some(mixer), Some(base)) = (mixer, self.bank) {
@@ -4177,7 +4181,6 @@ fn advance_game_frame<C: HostClock>(
     clock: &C,
     resources: &mut StageRenderResources,
     camera: &mut ViewHarness,
-    fade: &mut Option<ScalarTween>,
     damage_owner: &mut NoStaticDamageOwner,
     audio: &mut RaceAudio,
     pause: &mut PauseHarness,
@@ -4202,6 +4205,9 @@ fn advance_game_frame<C: HostClock>(
             clock.millis(),
         ))
     };
+    // `DAT_00bbabec`: with the front end's animation option off every fade
+    // is instant.
+    session.race_fade_mut().instant = config.image[0x10] & 0x20 == 0;
     let mut menu_inputs = PRE_RACE_INPUTS;
     // The full-screen pre-race screen of state 2 or 3, if one shows.
     let mut screen = None;
@@ -4223,6 +4229,7 @@ fn advance_game_frame<C: HostClock>(
     }
     // State 3: the service screen (`FUN_004371c0`).
     if session.state().id() == 3 {
+        let mut service_fade = session.race_fade_mut().fade;
         let (pending, done, frame) = results.service.frame(
             &results.runtime_data.clone(),
             results.static_tables.as_ref(),
@@ -4232,7 +4239,9 @@ fn advance_game_frame<C: HostClock>(
             clock.millis(),
             input.keys,
             input.audio,
+            &mut service_fade,
         );
+        session.race_fade_mut().fade = service_fade;
         menu_inputs.preload_pending = pending;
         menu_inputs.preload_done = done;
         screen = frame;
@@ -4270,6 +4279,11 @@ fn advance_game_frame<C: HostClock>(
     if session.last_reset().camera_reset {
         camera.snap();
     }
+    // The render's compositor step: the screen fade's black quad
+    // (`FUN_00423170`), or state 0xb's display shutdown.
+    let fade_step = session.composite_fade();
+    let quad_under_hud =
+        matches!(advanced.route, Some(RenderRoute::StageWorld(_))) && session.results().is_none();
     let reset_fade = session.car().four_wheel.reset.fade_428;
     let mut tick_camera = None;
     let world = compose_world_for_route(advanced.route, || {
@@ -4318,17 +4332,13 @@ fn advance_game_frame<C: HostClock>(
         let world = resources
             .compose_with_posed_car(&camera_world, Some(&car_world), &wheels)
             .map(|rendered| rendered.frame)?;
+        // The HUD bar is queued after the quad and drawn over it unfaded.
+        let world = match fade_step {
+            FadeComposite::Quad(alpha) if quad_under_hud => world.under_black_quad(alpha),
+            _ => world,
+        };
         compose_live_race_hud(resources, world, hud_input)
     })?;
-    // Race-end fade (state 0xb, FadeComposite): the recovered linear brightness
-    // tween drives a fullscreen modulate of the composed world toward black. The
-    // shipped fade is triggered by the in-race transition handlers; this windowed
-    // harness starts the recovered fade-out when the FSM reaches the fade route
-    // and advances it one step per frame (a documented harness stand-in, like the
-    // synthetic checkpoint line), presenting the modulated world so the race-end
-    // transition is visible. Any other route clears the fade.
-    // State 0xa: the pause menu's panel and text over the world (B handler
-    // `FUN_004233e0` -> `FUN_00468dd0`).
     // The results director's cues: `FUN_00467ef0(0, 0, 1)` (FORWARD) on a
     // page change and `FUN_00467dd0` (UPDOWN) when the menu cursor moved;
     // a blocked move passes 0 and plays nothing. The bonus car's model load
@@ -4352,21 +4362,27 @@ fn advance_game_frame<C: HostClock>(
         }
     }
     // State 8 while the results director runs: its pages over the world
-    // (B handler `FUN_00423260` -> `FUN_0042ae80`).
+    // (B handler `FUN_00423260` -> `FUN_0042ae80`), queued before the
+    // fade's quad and so under it.
     let world = match (advanced.route, world) {
-        (Some(RenderRoute::OverlayAlt), Some(frame)) => Some(pause.draw(frame)),
         (Some(RenderRoute::StageWorld(_)), Some(frame)) if session.results().is_some() => {
             Some(results.draw(session, config, frame))
         }
         (_, world) => world,
     };
-    let world = if advanced.route == Some(RenderRoute::FadeComposite) {
-        let tween = fade.get_or_insert_with(|| fade_out(fade_duration_frames(false)));
-        let level = tween.evaluate_and_advance();
-        world.map(|frame| frame.modulated(fade_level_to_modulation_byte(level)))
-    } else {
-        *fade = None;
-        world
+    let world = match fade_step {
+        FadeComposite::Quad(alpha) if !quad_under_hud => {
+            world.map(|frame| frame.under_black_quad(alpha))
+        }
+        // State 0xb's idle frame composites nothing.
+        FadeComposite::Shutdown => None,
+        _ => world,
+    };
+    // State 0xa: the pause menu's panel and text over the world (B handler
+    // `FUN_004233e0` -> `FUN_00468dd0`), queued after the quad.
+    let world = match (advanced.route, world) {
+        (Some(RenderRoute::OverlayAlt), Some(frame)) => Some(pause.draw(frame)),
+        (_, world) => world,
     };
     // The reset fade `ctl +0x428` is copied into the viewport record each tick
     // (`0x43b6f5`); its renderer is not recovered, so it is presented as a
@@ -7904,7 +7920,6 @@ pub fn run_windowed_game_session(
     }
     let mut screen_state = cmr_core::frontend_screen_frame::ScreenFrameState::default();
     let mut camera = ViewHarness::new();
-    let mut fade: Option<ScalarTween> = None;
     let mut damage_owner = NoStaticDamageOwner;
     let mut audio = RaceAudio {
         engine: EngineAudio::open(runtime_data, compiled_pose.selector as u8),
@@ -8018,7 +8033,6 @@ pub fn run_windowed_game_session(
                                 &clock,
                                 &mut resources,
                                 &mut camera,
-                                &mut fade,
                                 &mut damage_owner,
                                 &mut audio,
                                 &mut pause,
@@ -8120,7 +8134,6 @@ pub fn run_windowed_game_session(
                 &clock,
                 &mut resources,
                 &mut camera,
-                &mut fade,
                 &mut damage_owner,
                 &mut audio,
                 &mut pause,
@@ -8291,6 +8304,8 @@ fn drive_headless_session(
     while session.event().in_session() && frames < GAME_SESSION_MAX_FRAMES {
         frames += 1;
         session.try_advance(&clock, menu_inputs, controls, &mut progress)?;
+        // Each frame renders: the fade advances in the compositor.
+        session.composite_fade();
     }
     Ok(HeadlessGameSessionOutput {
         frames,
@@ -9760,7 +9775,6 @@ mod tests {
         };
         let mut progress = StageProgress::new(&nodes, 0);
         let mut camera = ViewHarness::new();
-        let mut fade = None;
         let mut damage_owner = NoStaticDamageOwner;
         let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
         let mut root_interaction =
@@ -9811,7 +9825,6 @@ mod tests {
                 &StationaryClock,
                 &mut resources,
                 &mut camera,
-                &mut fade,
                 &mut damage_owner,
                 &mut audio,
                 &mut pause,
@@ -10144,7 +10157,6 @@ mod tests {
         };
         let mut progress = StageProgress::new(&nodes, 0);
         let mut camera = ViewHarness::new();
-        let mut fade = None;
         let mut damage_owner = NoStaticDamageOwner;
         let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
         let mut root_interaction =
@@ -10163,7 +10175,6 @@ mod tests {
                     &StationaryClock,
                     &mut resources,
                     &mut camera,
-                    &mut fade,
                     &mut damage_owner,
                     &mut RaceAudio::default(),
                     &mut pause,
@@ -11791,6 +11802,7 @@ mod tests {
         let mut host = ServiceHost::default();
         let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
         let mut now = 0;
+        let mut fade = cmr_core::screen_fade::ScreenFade::default();
         // One tick with `vk` held (then released the next), or none.
         let mut step = |host: &mut ServiceHost, config: &mut FrontEndConfig, vk: Option<u8>| {
             let mut run = |keys: &cmr_platform_sdl3::KeyboardVkState| {
@@ -11804,6 +11816,7 @@ mod tests {
                     now,
                     keys,
                     None,
+                    &mut fade,
                 );
                 assert!(pending && !done);
                 frame

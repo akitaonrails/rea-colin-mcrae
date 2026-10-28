@@ -34,6 +34,7 @@ use crate::race_state::{
 };
 use crate::render_route::{RenderRoute, render_route};
 use crate::results_director::{DirectorContext, DirectorEffect, DirectorInput, ResultsDirector};
+use crate::screen_fade::ScreenFade;
 use crate::stage_checkpoints::StageProgress;
 use crate::stage_triggers::{RuntimeTrigger, initialize_runtime_triggers};
 use crate::static_collision_response::StaticDamageOwner;
@@ -225,6 +226,90 @@ pub struct GameplaySession<'a> {
     /// The FSM left the gameplay band after a race; the next drive re-inits.
     stage_dirty: bool,
     sim_ticks: u32,
+    /// The screen fade as the race uses it.
+    fade: RaceFade,
+    /// The state whose render handler the last frame planned (`None` when
+    /// the render gate skipped it).
+    rendered_state: Option<u8>,
+}
+
+/// The fade channel `0x82b37c` as the race drives it
+/// (`.work/race-fade-notes.md`): the stage load leaves a one-frame fade out,
+/// state 8 cuts its finish shots in through black, the exits to the hub
+/// fade out, the hub waits for the fade and then for the display shutdown
+/// its render performs. The school's intro and replay fades (states 7, 9)
+/// are not reproduced.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RaceFade {
+    pub fade: ScreenFade,
+    /// `DAT_00bbabec`: every fade is instant.
+    pub instant: bool,
+    /// `DAT_00551af0`: the fades take 25 frames instead of 12.
+    pub flag_551af0: bool,
+    /// `ctx+0x428 && ctx+0x10`: the race display is up (the load creates
+    /// it, state `0xb`'s render shuts it down).
+    display_up: bool,
+    /// Harness: state 8's finish shots started (the camera sequence
+    /// `DAT_006e2d5c` is taken to play on from then; its player is not
+    /// reconstructed, so later shot changes do not fade).
+    shots_started: bool,
+}
+
+/// What the compositor does with the fade on one rendered frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FadeComposite {
+    /// No fade in progress: the frame as composed.
+    Clear,
+    /// The black quad of this alpha over the frame (`FUN_00423170`).
+    Quad(u8),
+    /// State `0xb`'s idle frame: the display is shut down and nothing is
+    /// composited (`FUN_00423420` -> `FUN_004992e0`).
+    Shutdown,
+}
+
+impl RaceFade {
+    fn count(&self) -> u32 {
+        crate::screen_fade::race_fade_count(self.flag_551af0)
+    }
+
+    fn fade_out(&mut self) {
+        self.fade.fade_out(self.count(), self.instant);
+    }
+
+    /// State 4's load (`FUN_00421da0` tail): `FUN_0044e980`'s fade in is
+    /// replaced at once by a one-frame fade out (`0x422724`), so the first
+    /// four composited frames are black; the display is up.
+    fn load(&mut self) {
+        self.fade.fade_out(1, self.instant);
+        self.display_up = true;
+        self.shots_started = false;
+    }
+
+    /// State 8's cut through black (`0x43822d`): with the fade idle and no
+    /// shot playing, a visible screen fades out and a black one starts the
+    /// shots and fades in.
+    fn finish_shots(&mut self) {
+        if !self.fade.idle() || self.shots_started {
+            return;
+        }
+        if self.fade.evaluate() != 0 {
+            self.fade_out();
+        } else {
+            self.shots_started = true;
+            self.fade.fade_in(self.count(), self.instant);
+        }
+    }
+
+    /// The fades a transition starts: out to the hub from 6, 8 and 0xa (its
+    /// quit and restart; SHIFT+Q is not modelled), and the head-to-head
+    /// reload from the hub.
+    fn transition(&mut self, from: u8, to: u8) {
+        match (from, to) {
+            (6 | 8 | 0xA, 0xB) => self.fade_out(),
+            (0xB, 5) => self.load(),
+            _ => {}
+        }
+    }
 }
 
 /// The stage's `.dat` records with their per-player state and cell lists, and
@@ -347,8 +432,11 @@ fn in_race_next(
     script: InRaceScript,
     finished: bool,
     results: &mut ResultsHold,
+    fade: &mut RaceFade,
 ) -> GameState {
     let mut inputs = pause.apply(script.with_finish(finished, event.globals.school_d3ca88));
+    inputs.fade_done = fade.fade.idle();
+    inputs.results_page_up = fade.display_up;
     if state.id() == 0xA
         && !inputs.quit_requested
         && !inputs.school_session
@@ -358,8 +446,13 @@ fn in_race_next(
     }
     if state.id() == 8 {
         results.boundary(event, &mut inputs);
+        if !inputs.school_session && !event.globals.special_514478 {
+            fade.finish_shots();
+        }
     }
-    race_flow_next(state, inputs, event).unwrap_or(state)
+    let next = race_flow_next(state, inputs, event).unwrap_or(state);
+    fade.transition(state.id(), next.id());
+    next
 }
 
 impl<'a> GameplaySession<'a> {
@@ -445,6 +538,8 @@ impl<'a> GameplaySession<'a> {
             race_started: false,
             stage_dirty: false,
             sim_ticks: 0,
+            fade: RaceFade::default(),
+            rendered_state: None,
         }
     }
 
@@ -826,6 +921,8 @@ impl<'a> GameplaySession<'a> {
         let script = self.script;
         let results = &mut self.results;
         let sim_ticks = &mut self.sim_ticks;
+        let fade = &mut self.fade;
+        let before = self.session.current().id();
         let mut stepped = false;
 
         let frame = self.session.run_frame(clock, menu_inputs, |state, event| {
@@ -836,8 +933,23 @@ impl<'a> GameplaySession<'a> {
                 progress.update(sample.car.position, sample.centiseconds);
                 stepped = true;
             }
-            in_race_next(state, event, pause, script, progress.finished(), results)
+            in_race_next(
+                state,
+                event,
+                pause,
+                script,
+                progress.finished(),
+                results,
+                fade,
+            )
         });
+        if before == 4 && self.session.current().id() != 4 {
+            self.fade.load();
+        }
+        self.rendered_state = frame
+            .plan
+            .and_then(|plan| plan.render)
+            .map(|state| state.id());
         self.track_stage_end(stepped);
 
         Ok(GameplayFrame {
@@ -896,6 +1008,8 @@ impl<'a> GameplaySession<'a> {
         let script = self.script;
         let results = &mut self.results;
         let sim_ticks = &mut self.sim_ticks;
+        let fade = &mut self.fade;
+        let before = self.session.current().id();
         let mut stepped = false;
 
         let frame = self.session.run_frame(clock, menu_inputs, |state, event| {
@@ -906,8 +1020,23 @@ impl<'a> GameplaySession<'a> {
                 progress.update(sample.car.position, sample.centiseconds);
                 stepped = true;
             }
-            in_race_next(state, event, pause, script, progress.finished(), results)
+            in_race_next(
+                state,
+                event,
+                pause,
+                script,
+                progress.finished(),
+                results,
+                fade,
+            )
         });
+        if before == 4 && self.session.current().id() != 4 {
+            self.fade.load();
+        }
+        self.rendered_state = frame
+            .plan
+            .and_then(|plan| plan.render)
+            .map(|state| state.id());
         self.track_stage_end(stepped);
 
         Ok(GameplayFrame {
@@ -915,6 +1044,33 @@ impl<'a> GameplaySession<'a> {
             route: frame.plan.and_then(|plan| plan.render).map(render_route),
             stepped,
         })
+    }
+
+    /// The race's fade channel and its options.
+    pub fn race_fade_mut(&mut self) -> &mut RaceFade {
+        &mut self.fade
+    }
+
+    /// The compositor's fade step for this frame's render (`FUN_00422ca0`
+    /// runs `FUN_00423170` first): when the planned render is one of states
+    /// 5..=0xb a fade in progress advances and draws its quad; state `0xb`'s
+    /// idle frame shuts the display down instead. Call once per frame, after
+    /// the advance.
+    pub fn composite_fade(&mut self) -> FadeComposite {
+        let Some(state) = self.rendered_state.take() else {
+            return FadeComposite::Clear;
+        };
+        if !(5..=0xB).contains(&state) {
+            return FadeComposite::Clear;
+        }
+        if self.fade.fade.idle() {
+            if state == 0xB && self.fade.display_up {
+                self.fade.display_up = false;
+                return FadeComposite::Shutdown;
+            }
+            return FadeComposite::Clear;
+        }
+        FadeComposite::Quad(crate::screen_fade::overlay_alpha(self.fade.fade.evaluate()))
     }
 
     /// Report the planned render's overrun to the driver's render-skip gate.
@@ -1378,6 +1534,14 @@ mod tests {
         assert!(session.car().position.x.raw() > 0);
     }
 
+    /// One frame and its render's compositor step (the fade only advances
+    /// on rendered frames).
+    fn rendered(session: &mut GameplaySession, progress: &mut StageProgress) -> GameplayFrame {
+        let frame = session.advance(&StationaryClock, frontend_menu(), forward(), progress);
+        session.composite_fade();
+        frame
+    }
+
     #[test]
     fn a_forward_drive_runs_the_school_session_back_to_the_front_end() {
         let mut session = GameplaySession::new(params(), InRaceScript::school_harness());
@@ -1387,7 +1551,7 @@ mod tests {
         let mut frames = 0u32;
         while session.event().in_session() && frames < 100_000 {
             frames += 1;
-            session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            rendered(&mut session, &mut progress);
         }
         assert!(session.event().globals.frontend_506228);
         assert_eq!(session.state().id(), 0xc);
@@ -1409,8 +1573,7 @@ mod tests {
         let mut frames = 0u32;
         while !session.is_stopped() && frames < 100_000 {
             frames += 1;
-            let frame =
-                session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            let frame = rendered(&mut session, &mut progress);
             if frame.stepped {
                 assert_eq!(frame.band, SessionBand::Gameplay);
                 if matches!(frame.route, Some(RenderRoute::StageWorld(_))) {
@@ -1448,8 +1611,7 @@ mod tests {
                     ..DirectorInput::default()
                 });
             }
-            let frame =
-                session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            let frame = rendered(&mut session, &mut progress);
             cues.extend(session.take_results_effects());
             if progress.finished() && !frame.stepped && session.state().id() <= 4 {
                 left_gameplay = true;
@@ -1473,8 +1635,7 @@ mod tests {
         let mut restarted = false;
         while frames < 200_000 {
             frames += 1;
-            let frame =
-                session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            let frame = rendered(&mut session, &mut progress);
             if frame.stepped {
                 restarted = true;
                 assert!(session.car().position.x.raw() < finish_position.x.raw());
@@ -1490,7 +1651,7 @@ mod tests {
             if session.state().id() == 5 {
                 return;
             }
-            session.advance(&StationaryClock, frontend_menu(), forward(), progress);
+            rendered(session, progress);
         }
         panic!("the menu flow never reached driving");
     }
@@ -1501,18 +1662,17 @@ mod tests {
         let nodes = line();
         let mut progress = StageProgress::new(&nodes, 0);
         drive_to_state_five(&mut session, &mut progress);
-        session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+        rendered(&mut session, &mut progress);
         let before = session.car();
         session.set_pause_flow(PauseFlow {
             enter_pause: true,
             ..PauseFlow::default()
         });
-        let frame = session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+        let frame = rendered(&mut session, &mut progress);
         assert!(!frame.stepped, "the pausing tick runs no Mechanics");
         assert_eq!(session.state().id(), 0xa);
         for _ in 0..10 {
-            let frame =
-                session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            let frame = rendered(&mut session, &mut progress);
             assert!(!frame.stepped);
         }
         assert_eq!(session.car(), before);
@@ -1521,9 +1681,9 @@ mod tests {
             resume: true,
             ..PauseFlow::default()
         });
-        session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+        rendered(&mut session, &mut progress);
         assert_eq!(session.state().id(), 5);
-        let frame = session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+        let frame = rendered(&mut session, &mut progress);
         assert!(frame.stepped);
         assert_ne!(session.car().position, before.position);
     }
@@ -1554,18 +1714,91 @@ mod tests {
                 enter_pause: true,
                 ..PauseFlow::default()
             });
-            session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            rendered(&mut session, &mut progress);
             assert_eq!(session.state().id(), 0xa);
             // The words persist from the pause into the hub.
-            for _ in 0..4 {
+            // The fade out to the hub, then the display shutdown.
+            for _ in 0..40 {
                 session.set_pause_flow(flow);
-                session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+                rendered(&mut session, &mut progress);
                 if !(0xa..=0xc).contains(&session.state().id()) {
                     break;
                 }
             }
             assert_eq!(session.state().id(), expected);
         }
+    }
+
+    #[test]
+    fn the_race_fades_follow_the_load_the_finish_and_the_hub() {
+        let mut session = GameplaySession::new(params(), InRaceScript::gameplay_harness());
+        let nodes = line();
+        let mut progress = StageProgress::new(&nodes, 0);
+        let mut log: Vec<(u8, FadeComposite)> = Vec::new();
+        let mut held_in_results = 0u32;
+        for _ in 0..100_000 {
+            if session.state().id() == 8 {
+                held_in_results += 1;
+                session.set_results_input(DirectorInput {
+                    confirm: held_in_results > 20,
+                    keys: if held_in_results > 20 && held_in_results.is_multiple_of(2) {
+                        0x10
+                    } else {
+                        0
+                    },
+                    ..DirectorInput::default()
+                });
+            }
+            session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            let state = session.rendered_state.unwrap_or(0);
+            log.push((state, session.composite_fade()));
+            if progress.finished() && session.state().id() <= 4 {
+                break;
+            }
+        }
+        let of = |state: u8| -> Vec<FadeComposite> {
+            log.iter()
+                .filter(|(s, _)| *s == state)
+                .map(|(_, f)| *f)
+                .collect()
+        };
+        // The load's one-frame fade out: four black frames, then a hard cut.
+        let driving = of(5);
+        assert_eq!(
+            driving[..5],
+            [
+                FadeComposite::Quad(255),
+                FadeComposite::Quad(255),
+                FadeComposite::Quad(255),
+                FadeComposite::Quad(255),
+                FadeComposite::Clear,
+            ]
+        );
+        // The finish cuts in through black over 12 frames.
+        let results = of(8);
+        assert_eq!(results[0], FadeComposite::Quad(255));
+        assert_eq!(results[1], FadeComposite::Quad(234));
+        assert_eq!(
+            results[11..16],
+            [
+                FadeComposite::Quad(0),
+                FadeComposite::Quad(0),
+                FadeComposite::Quad(0),
+                FadeComposite::Quad(0),
+                FadeComposite::Clear,
+            ]
+        );
+        // The exit fades out in the hub, which then shuts the display down.
+        let hub = of(0xB);
+        // State 8's render showed the exit's first step (alpha 0).
+        assert_eq!(hub[0], FadeComposite::Quad(22));
+        assert_eq!(
+            hub.iter()
+                .filter(|f| **f == FadeComposite::Shutdown)
+                .count(),
+            1
+        );
+        assert_eq!(*hub.last().unwrap(), FadeComposite::Clear);
     }
 
     #[test]

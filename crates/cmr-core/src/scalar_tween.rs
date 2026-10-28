@@ -12,8 +12,7 @@
 //! incremented by one per evaluation and clamped below `target+3`).
 //!
 //! This module reconstructs the **linear** curve (mode `0`), which the screen
-//! fade uses ([`crate::render_compose::fade_in`] /
-//! [`crate::render_compose::fade_out`]), and the two triangular ease curves the
+//! fade uses ([`crate::screen_fade::ScreenFade`]), and the two triangular ease curves the
 //! front-end menus use: mode `2` ([`ScalarTween::ease_out`]) and mode `3`
 //! ([`ScalarTween::ease_in`]). Modes `1`/`4` (a table-driven tail) are not
 //! reconstructed. The Q12 product is rounded toward zero (`cdq; and edx,0xfff;
@@ -162,6 +161,15 @@ impl ScalarTween {
         }
     }
 
+    /// `FUN_004ad560`'s in-progress test of the owning handle: an active
+    /// tween runs until its counter reaches `target + 3`, an inactive one
+    /// (the instant mode) until it reaches `target`.
+    #[must_use]
+    pub fn in_progress(&self, active: bool) -> bool {
+        let limit = if active { self.target + 3 } else { self.target };
+        self.counter < limit
+    }
+
     /// Whether the tween has reached its end value.
     #[must_use]
     pub fn is_finished(&self) -> bool {
@@ -176,6 +184,10 @@ impl ScalarTween {
     /// holds at `end` and is marked finished.
     pub fn evaluate_and_advance(&mut self) -> i32 {
         if self.finished {
+            // A finished record (mode 5) still counts on to `target+3`.
+            if self.counter < self.target + 3 {
+                self.counter += 1;
+            }
             return self.end;
         }
         if self.delay > 0 {

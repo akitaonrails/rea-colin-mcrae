@@ -182,14 +182,47 @@ impl SoftwarePresentedFrame {
         expand_indexed_frame_rgba8(self.extent, &self.pixels, &self.palette)
     }
 
+    /// Returns this frame under a fullscreen black quad of `alpha`
+    /// (`FUN_00423170`, blended SRCALPHA/INVSRCALPHA): each colour scaled by
+    /// `(255 - alpha) / 255`, then matched to the nearest palette entry (L1,
+    /// first minimum) so what is drawn later keeps its own colours. The
+    /// re-quantization is this indexed backend's policy.
+    #[must_use]
+    pub fn under_black_quad(&self, alpha: u8) -> Self {
+        if alpha == 0 {
+            return self.clone();
+        }
+        let keep = u32::from(0xff - alpha);
+        let scale = |c: u8| ((u32::from(c) * keep) / 255) as u8;
+        let map: [u8; 256] = std::array::from_fn(|i| {
+            let e = self.palette[i];
+            let rgb = [scale(e.red), scale(e.green), scale(e.blue)];
+            let mut best = (u32::MAX, 0u8);
+            for (index, c) in self.palette.iter().enumerate() {
+                let d = u32::from(rgb[0].abs_diff(c.red))
+                    + u32::from(rgb[1].abs_diff(c.green))
+                    + u32::from(rgb[2].abs_diff(c.blue));
+                if d < best.0 {
+                    best = (d, index as u8);
+                }
+            }
+            best.1
+        });
+        Self {
+            extent: self.extent,
+            pixels: self.pixels.iter().map(|&p| map[usize::from(p)]).collect(),
+            palette: self.palette.clone(),
+        }
+    }
+
     /// Returns this frame with every palette RGB channel scaled by `level/255`
-    /// (flags preserved), the backend realization of the recovered fullscreen
-    /// modulate the screen fade applies (`render_compose::fade_level_to_modulation_byte`).
-    /// Because every pixel shares one palette, a palette scale and a fullscreen
+    /// (flags preserved): a whole-frame modulate toward black. Because every
+    /// pixel shares one palette, a palette scale and a fullscreen
     /// modulate-by-`(level,level,level)` quad produce the identical per-pixel
     /// multiply; `0xff` leaves the frame unchanged (full brightness) and `0`
     /// drives it to black. The pixels are shared unchanged; only the palette is
-    /// rebuilt, so this cannot fail.
+    /// rebuilt, so this cannot fail. (The screen fade is a black quad drawn
+    /// under later 2D, [`Self::under_black_quad`].)
     #[must_use]
     pub fn modulated(&self, level: u8) -> Self {
         let scale = u32::from(level);

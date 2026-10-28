@@ -104,8 +104,6 @@ pub fn overlay_alt_plan(sub_mode_active: bool) -> OverlayAltPlan {
     }
 }
 
-use crate::scalar_tween::ScalarTween;
-
 /// The margin the fade transition test (`0x4ad560`) adds to the target counter: a
 /// fade counts as still running until `current` reaches `target + 3`.
 pub const FADE_COUNTER_MARGIN: i32 = 3;
@@ -115,45 +113,8 @@ pub const FADE_COUNTER_MARGIN: i32 = 3;
 /// with `start`/`end` of `0` and `0x10000`.
 pub const FADE_FULL_LEVEL: i32 = 0x1_0000;
 
-/// The frame scale the fade-duration helper uses (`0x190000` Q16 frames, halved):
-/// `(((two_player)+1) * 0x190000) / 2) >> 16`.
-const FADE_DURATION_SCALE_Q16: i32 = 0x19_0000;
-
-/// A fade-in tween (black -> full), the recovered `FUN_0048df80(count)`: a linear
-/// ramp `0 -> FADE_FULL_LEVEL` over `count` frames, no initial delay.
-#[must_use]
-pub fn fade_in(count: i32) -> ScalarTween {
-    ScalarTween::linear(0, FADE_FULL_LEVEL, count, 0)
-}
-
-/// A fade-out tween (full -> black), the recovered `FUN_0048dfa0(count)`: a linear
-/// ramp `FADE_FULL_LEVEL -> 0` over `count` frames, no initial delay. Fade-in and
-/// fade-out are the same tween with `start`/`end` swapped.
-#[must_use]
-pub fn fade_out(count: i32) -> ScalarTween {
-    ScalarTween::linear(FADE_FULL_LEVEL, 0, count, 0)
-}
-
-/// The recovered fade duration in frames for the single-player (`false`) vs
-/// two-player (`true`, the doubled `DAT_00551af0` timer) case:
-/// `(((two_player)+1) * 0x190000) / 2) >> 16` = 12 or 25 frames (the latter
-/// ~1 s at the fixed 25 Hz tick).
-#[must_use]
-pub fn fade_duration_frames(two_player: bool) -> i32 {
-    ((i32::from(two_player) + 1) * FADE_DURATION_SCALE_Q16 / 2) >> 16
-}
-
-/// Convert a fade level (Q16 `0..=FADE_FULL_LEVEL`) to the 0..=255 modulation byte
-/// the shipped fade applies as a fullscreen modulate color (`R=G=B=byte`): the
-/// level's high byte, saturated. The shipped game draws a fullscreen quad tinted
-/// by this byte (`DAT_004f4bb4`); for an indexed framebuffer the identical
-/// per-pixel multiply is applied in palette space by a backend (every pixel is
-/// scaled by `byte/255`, so a palette scale and a fullscreen modulate quad give
-/// the same result).
-#[must_use]
-pub fn fade_level_to_modulation_byte(level: i32) -> u8 {
-    (level >> 8).clamp(0, 0xff) as u8
-}
+// The fade channel itself (its triggers, level and the compositor's black
+// quad `0xff - ((level * 255) >> 16)`) is `crate::screen_fade`.
 
 /// The address the fade handler clears (`<- 0`) when it presents at fade
 /// completion (present-enable flag A, `0xb63748`).
@@ -339,44 +300,6 @@ mod tests {
         );
         assert_eq!(PRESENT_GATE_CLEAR_ADDR, 0x00b6_3748);
         assert_eq!(PRESENT_GATE_SET_ADDR, 0x00b6_374c);
-    }
-
-    #[test]
-    fn fade_wrappers_ramp_between_black_and_full() {
-        assert_eq!(FADE_FULL_LEVEL, 0x1_0000);
-        // Fade-in starts black and ends full.
-        let mut fin = fade_in(4);
-        assert_eq!(fin.level(), 0);
-        for _ in 0..5 {
-            fin.evaluate_and_advance();
-        }
-        assert!(fin.is_finished());
-        assert_eq!(fin.level(), FADE_FULL_LEVEL);
-        // Fade-out starts full and ends black.
-        let mut fout = fade_out(4);
-        assert_eq!(fout.level(), FADE_FULL_LEVEL);
-        for _ in 0..5 {
-            fout.evaluate_and_advance();
-        }
-        assert!(fout.is_finished());
-        assert_eq!(fout.level(), 0);
-    }
-
-    #[test]
-    fn fade_duration_is_12_or_25_frames() {
-        assert_eq!(fade_duration_frames(false), 12);
-        assert_eq!(fade_duration_frames(true), 25);
-    }
-
-    #[test]
-    fn fade_level_maps_to_a_saturated_modulation_byte() {
-        // Black -> 0, full -> 0xff (the high byte saturates at 0x100 -> 0xff).
-        assert_eq!(fade_level_to_modulation_byte(0), 0);
-        assert_eq!(fade_level_to_modulation_byte(FADE_FULL_LEVEL), 0xff);
-        // Half brightness -> ~0x80.
-        assert_eq!(fade_level_to_modulation_byte(FADE_FULL_LEVEL / 2), 0x80);
-        // Negative clamps to 0.
-        assert_eq!(fade_level_to_modulation_byte(-1), 0);
     }
 
     #[test]
