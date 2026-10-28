@@ -22,6 +22,8 @@ pub struct Settings {
     /// Race resolution replacing the in-game 640x480 choice (fix F10). Off
     /// unless set.
     pub resolution: Option<(u32, u32)>,
+    /// Hor+ widescreen projection (fix F11). Off unless set.
+    pub widescreen: Option<bool>,
 }
 
 pub const FILE_NAME: &str = "launcher.cfg";
@@ -66,6 +68,11 @@ gamepad_axes = true
 # Graphics), so pick 640x480 there; the menus stay 640x480. The screen must
 # offer that mode (Proton and gamescope do). Unset keeps the original sizes.
 #resolution = 1440x1080
+
+# For a 16:9 (or wider) race resolution such as 1920x1080 or 3840x2160:
+# shows more to the sides instead of stretching the 4:3 picture. Has no
+# effect at 4:3.
+#widescreen = true
 ";
 
 pub const USAGE: &str = "\
@@ -91,11 +98,10 @@ fn parse_bool(v: &str) -> Option<bool> {
 
 /// `WxH`, within what a 1998 DirectDraw game and a modern screen can hold.
 fn parse_resolution(v: &str) -> Option<(u32, u32)> {
-    let (w, h) = v
-        .to_ascii_lowercase()
-        .split_once('x')
-        .map(|(w, h)| (w.trim().parse().ok(), h.trim().parse().ok()))?;
-    let (w, h): (u32, u32) = (w?, h?);
+    let lower = v.to_ascii_lowercase();
+    let (w, h) = lower.split_once('x')?;
+    let w: u32 = w.trim().parse().ok()?;
+    let h: u32 = h.trim().parse().ok()?;
     ((320..=7680).contains(&w) && (240..=4320).contains(&h)).then_some((w, h))
 }
 
@@ -142,6 +148,10 @@ impl Settings {
                     Some(b) => s.gamepad_axes = Some(b),
                     None => bad("gamepad_axes needs true or false, not"),
                 },
+                "widescreen" => match parse_bool(value) {
+                    Some(b) => s.widescreen = Some(b),
+                    None => bad("widescreen needs true or false, not"),
+                },
                 "resolution" => match parse_resolution(value) {
                     Some(r) => s.resolution = Some(r),
                     None => bad("resolution needs WIDTHxHEIGHT (320x240 to 7680x4320), not"),
@@ -161,6 +171,7 @@ impl Settings {
             close_quits: over.close_quits.or(self.close_quits),
             gamepad_axes: over.gamepad_axes.or(self.gamepad_axes),
             resolution: over.resolution.or(self.resolution),
+            widescreen: over.widescreen.or(self.widescreen),
         }
     }
 
@@ -175,6 +186,9 @@ impl Settings {
         }
         if self.resolution.is_none() {
             skip.push("F10");
+        }
+        if self.widescreen != Some(true) {
+            skip.push("F11");
         }
         skip
     }
@@ -259,7 +273,7 @@ mod tests {
                 ..Settings::default()
             }
         );
-        assert_eq!(s.skipped_fixes(), ["F10"]);
+        assert_eq!(s.skipped_fixes(), ["F10", "F11"]);
     }
 
     #[test]
@@ -269,7 +283,7 @@ mod tests {
         assert!(warnings.is_empty());
         assert_eq!(saved.language.as_deref(), Some("FRENCH"));
         assert_eq!(saved.resolution, Some((1920, 1440)));
-        assert_eq!(saved.skipped_fixes(), ["F6", "F7"]);
+        assert_eq!(saved.skipped_fixes(), ["F6", "F7", "F11"]);
         let m = saved.merged(args(&["--game", r"C:\new"]).unwrap());
         assert_eq!(m.game, Some(PathBuf::from(r"C:\new")));
         assert_eq!(m.runtime, Some(PathBuf::from(r"C:\rt")));

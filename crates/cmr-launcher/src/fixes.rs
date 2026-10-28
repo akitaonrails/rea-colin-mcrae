@@ -149,7 +149,7 @@ fn rel32(at: u32, len: u32, to: u32) -> [u8; 4] {
 /// The community-patched EU v1.5 (`46500c8e…`) carries F1-F5 on disk; it
 /// is the same build, so F6 applies at the same addresses.
 pub static COMMUNITY_EU_15: FixSet = FixSet {
-    fixes: &[F6, F7, F8, F9, F10],
+    fixes: &[F6, F7, F8, F9, F10, F11],
 };
 
 /// Official EU v1.5 (`0eb6ea96…`).
@@ -224,6 +224,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         F8,
         F9,
         F10,
+        F11,
     ],
 };
 
@@ -448,6 +449,80 @@ const F10: Fix = Fix {
     ],
 };
 
+const F11_PROJ: u32 = 0x180;
+const F11_K: u32 = 0x190;
+const F11_VIEW: u32 = 0x1a0;
+const F11_Q: u32 = 0x1d0;
+const _: () = assert!(
+    F11_PROJ >= F10_SIZE + 8
+        && F11_K >= F11_PROJ + 11
+        && F11_VIEW >= F11_K + 8
+        && F11_Q >= F11_VIEW + 46
+);
+
+/// The race projection (`FUN_00435d10`) scales its horizontal factor by the
+/// screen's W/H, and the viewport (`0x4a6ed0`) clips x to [-1, 1] and y to
+/// [-W/H, W/H]. Right only at 4:3: at 16:9 the view gets narrower and
+/// taller (stretched). F11 makes it Hor+: the projection always uses the
+/// 4:3 aspect, and the viewport keeps y at [-4/3, 4/3] and widens x to
+/// [-A*3/4, A*3/4] (A = viewport W/H), so the vertical field of view is the
+/// original one, the horizontal one grows with the screen and pixels stay
+/// square. At 4:3 both give exactly the original values. Opt-in
+/// (`widescreen`). Split-screen views use another path (not changed).
+const F11: Fix = Fix {
+    id: "F11",
+    what: "widescreen: wider view instead of a stretched one (Hor+)",
+    optional: true,
+    code: &[
+        // fild [W] ; fidiv [H] ; fmul [65536.0] -> jmp ; 6 x nop
+        Piece {
+            at: At::Image(0x0043_5d44),
+            ops: &[Op::Jmp(At::Cave(F11_PROJ)), Op::Raw(&[NOP; 6])],
+        },
+        Piece {
+            at: At::Cave(F11_PROJ),
+            ops: &[
+                Op::Raw(&[0xdd, 0x05]), // fld qword [65536 * 4/3]
+                Op::Addr(At::Cave(F11_K)),
+                Op::Jmp(At::Image(0x0043_5d4f)),
+            ],
+        },
+        Piece {
+            at: At::Cave(F11_K),
+            // 65536.0 * 4/3 as a double
+            ops: &[Op::Raw(&[0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0xf5, 0x40])],
+        },
+        // mov eax,[eax+0x14] ; push eax ; mov ecx,[eax] -> jmp ; nop
+        Piece {
+            at: At::Image(0x004a_6f75),
+            ops: &[Op::Jmp(At::Cave(F11_VIEW)), Op::Raw(&[NOP])],
+        },
+        Piece {
+            at: At::Cave(F11_VIEW),
+            ops: &[
+                // edx = the D3DVIEWPORT2; dvClipY (+0x18) holds W/H here.
+                Op::Raw(&[0xd9, 0x42, 0x18]), // fld dword [edx+0x18]
+                Op::Raw(&[0xd8, 0x0d]),       // fmul dword [0.75]
+                Op::Addr(At::Cave(F11_Q)),
+                Op::Raw(&[0xd9, 0xc0, 0xd9, 0xe0]), // fld st0 ; fchs
+                Op::Raw(&[0xd9, 0x5a, 0x14]),       // fstp [edx+0x14] dvClipX
+                Op::Raw(&[0xdc, 0xc0]),             // fadd st0,st0
+                Op::Raw(&[0xd9, 0x5a, 0x1c]),       // fstp [edx+0x1c] dvClipWidth
+                // dvClipY = 4/3 ; dvClipHeight = 8/3
+                Op::Raw(&[0xc7, 0x42, 0x18, 0xab, 0xaa, 0xaa, 0x3f]),
+                Op::Raw(&[0xc7, 0x42, 0x20, 0xab, 0xaa, 0x2a, 0x40]),
+                // the replaced instructions
+                Op::Raw(&[0x8b, 0x40, 0x14, 0x50, 0x8b, 0x08]),
+                Op::Jmp(At::Image(0x004a_6f7b)),
+            ],
+        },
+        Piece {
+            at: At::Cave(F11_Q),
+            ops: &[Op::Raw(&[0x00, 0x00, 0x40, 0x3f])], // 0.75f
+        },
+    ],
+};
+
 /// 24 bytes: ecx = |[esp+d8] - 0x8000|; if ecx > ebx { ebx = ecx; eax = [esp+d8] }.
 const fn take_if_further(d8: u8) -> [u8; 24] {
     [
@@ -487,7 +562,9 @@ mod tests {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
         assert_eq!(
             ids,
-            ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"]
+            [
+                "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11"
+            ]
         );
     }
 
@@ -560,6 +637,36 @@ mod tests {
     }
 
     #[test]
+    fn f11_constants_and_jumps() {
+        assert_eq!(
+            f64::from_le_bytes(at(CAVE + F11_K).try_into().unwrap()),
+            65536.0 * 4.0 / 3.0
+        );
+        assert_eq!(
+            f32::from_le_bytes(at(CAVE + F11_Q).try_into().unwrap()),
+            0.75
+        );
+        let view = at(CAVE + F11_VIEW);
+        assert_eq!(view.len(), 46);
+        assert_eq!(
+            f32::from_le_bytes(view[24..28].try_into().unwrap()),
+            4.0 / 3.0
+        );
+        assert_eq!(
+            f32::from_le_bytes(view[31..35].try_into().unwrap()),
+            8.0 / 3.0
+        );
+        let back = |code: &[u8], base: u32| {
+            let n = code.len();
+            assert_eq!(code[n - 5], 0xe9);
+            let rel = u32::from_le_bytes(code[n - 4..].try_into().unwrap());
+            (base + n as u32).wrapping_add(rel)
+        };
+        assert_eq!(back(&view, CAVE + F11_VIEW), 0x4a6f7b);
+        assert_eq!(back(&at(CAVE + F11_PROJ), CAVE + F11_PROJ), 0x435d4f);
+    }
+
+    #[test]
     fn simple_stubs() {
         assert_eq!(at(0x496ca0), [0xb8, 1, 0, 0, 0, 0xc3]);
         assert_eq!(at(0x497cef), [0x10]);
@@ -581,7 +688,7 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F10_SIZE + 8);
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F11_Q + 4);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
@@ -601,7 +708,7 @@ mod tests {
 
     #[test]
     fn only_optional_fixes_can_be_skipped() {
-        let skip = ["F6", "F7", "F10", "F1"];
+        let skip = ["F6", "F7", "F10", "F11", "F1"];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
         assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9"]);
         assert_eq!(OFFICIAL_EU_15.cave_size(&skip), F9_CAVE + 24);
@@ -612,7 +719,7 @@ mod tests {
                 .all(|w| w.fix != "F6")
         );
         assert_eq!(
-            COMMUNITY_EU_15.cave_size(&["F6", "F7", "F10"]),
+            COMMUNITY_EU_15.cave_size(&["F6", "F7", "F10", "F11"]),
             F9_CAVE + 24
         );
     }
