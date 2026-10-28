@@ -1239,8 +1239,10 @@ impl RaceState {
             projection_perpendicular: projection.perpendicular,
             projection_axis_radius: projection.axis_radius,
             projection_perpendicular_radius: projection.perpendicular_radius,
-            y_gate_552f60: projection.min_y,
-            y_gate_552f80: projection.max_y,
+            // `FUN_0043f600` keeps the car's top in `DAT_00552f60` and its
+            // bottom in `DAT_00552f80` (`0x43f58f..0x43f5ad`).
+            y_gate_552f60: projection.max_y,
+            y_gate_552f80: projection.min_y,
             velocity_d4: car.velocity,
             alternate_axis_324: car.motion.projection_axis,
             projected_axis_270: car.motion.basis[2],
