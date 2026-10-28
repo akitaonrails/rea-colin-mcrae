@@ -446,8 +446,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-29T14:10:00Z
-milestone=static-impact-sound
+updated_utc=2026-10-29T14:40:00Z
+milestone=tumble-impact-sound
 completed=117
 partial=2
 not_started=0

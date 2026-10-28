@@ -1129,6 +1129,16 @@ pub struct RaceState {
     start_clock: Fixed16,
     car: CarState,
     trig: [i32; TRIG_TABLE_LEN],
+    /// The tumbling impact of the last ground pass, for its sound.
+    last_tumble_impact: Option<TumbleImpact>,
+}
+
+/// A tumbling contact's impact-sound inputs (`FUN_00412860`, `0x413990`):
+/// the `+0x3cc` vector `FUN_0041f630` measures and the world contact point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TumbleImpact {
+    pub severity_vector: [i32; 3],
+    pub point: [i32; 3],
 }
 
 impl RaceState {
@@ -1139,7 +1149,14 @@ impl RaceState {
             start_clock: Fixed16::ZERO,
             car,
             trig: build_sine_table(),
+            last_tumble_impact: None,
         }
+    }
+
+    /// The tumbling impact of the last ground pass, if any.
+    #[must_use]
+    pub fn last_tumble_impact(&self) -> Option<TumbleImpact> {
+        self.last_tumble_impact
     }
 
     /// The current stage clock (Q16.16 seconds).
@@ -2252,6 +2269,7 @@ impl RaceState {
             tumble: self.car.four_wheel.tumble,
             contact_vectors: self.car.four_wheel.contact_vectors_4bc,
             impact_3cc: None,
+            impact_contact: None,
         };
         let (after, ground) = run_ground_pass(
             car,
@@ -2266,6 +2284,14 @@ impl RaceState {
         self.car.four_wheel.tumble = after.tumble;
         if let Some(impact) = after.impact_3cc {
             self.car.collision.pending_linear_3cc = impact;
+        }
+        self.last_tumble_impact = None;
+        if let (Some(impact), Some(contact)) = (after.impact_3cc, after.impact_contact) {
+            self.car.four_wheel.barrier_impact_3f0 = contact.contact_3f0;
+            self.last_tumble_impact = Some(TumbleImpact {
+                severity_vector: [impact.x.raw(), impact.y.raw(), impact.z.raw()],
+                point: contact.point,
+            });
         }
         self.car.position = after.position;
         self.car.velocity = after.velocity;

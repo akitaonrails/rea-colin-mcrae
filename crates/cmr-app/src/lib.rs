@@ -4148,7 +4148,7 @@ impl EffectsAudio {
         let centre = vec3_raw(car.position);
         // Impacts fire inside Mechanics, so only on a stepped tick: static
         // scenery first (`FUN_0043d760`), then the barrier walk
-        // (`FUN_00401fd0`). The damage model that yields the breakage kind is
+        // (`FUN_00401fd0`), then the tumbling contact (`FUN_00412860`). The damage model that yields the breakage kind is
         // not reconstructed, so no breakage cue plays.
         if stepped {
             let static_impacts = session
@@ -4168,7 +4168,16 @@ impl EffectsAudio {
                 let object_type = barrier_object_type(kind).filter(|_| severity > 0)?;
                 Some((severity, impact.point, object_type))
             });
-            let impacts: Vec<_> = static_impacts.chain(barrier_impacts).collect();
+            // The ground pass (and its tumbling contact `FUN_00412860`, object
+            // type 0) runs after the trigger walk.
+            let tumble_impact = session.last_tumble_impact().and_then(|impact| {
+                let severity = impact_severity(impact.severity_vector);
+                (severity > 0).then_some((severity, impact.point, 0_i8))
+            });
+            let impacts: Vec<_> = static_impacts
+                .chain(barrier_impacts)
+                .chain(tumble_impact)
+                .collect();
             for (severity, point, object_type) in impacts {
                 let Ok(azimuth) = point_azimuth(camera_world, camera_mode, centre, point) else {
                     continue;

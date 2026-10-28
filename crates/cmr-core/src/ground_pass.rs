@@ -189,6 +189,56 @@ pub struct GroundPassCar {
     pub contact_vectors: [Vec3; 8],
     /// A tumbling impact stored in `+0x3cc..+0x3d4` this tick.
     pub impact_3cc: Option<Vec3>,
+    /// With it, the body contact `+0x3f0` `FUN_00412860` then writes
+    /// (`rows . (+0x324 * -3)` clamped to `+0x2c..+0x34`) and the world point
+    /// `FUN_0048dfe0(+0x3f0, basis) + +0xc8` its impact sound uses.
+    pub impact_contact: Option<TumbleImpactContact>,
+}
+
+/// `FUN_00412860`'s contact after an impact: `+0x3f0 = rows . (normal * -3)`
+/// clamped to the half extents, and the world point
+/// `row0 * x + row1 * y + row2 * z + centre` (`FUN_0048dfe0`).
+#[must_use]
+pub fn tumble_impact_contact(
+    basis: [Vec3; 3],
+    normal: Vec3,
+    half_words: [i32; 3],
+    position: Vec3,
+) -> TumbleImpactContact {
+    let push = normal.scale(Fixed16::from_raw(-0x3_0000));
+    let local = crate::vehicle_dynamics::transform_contact_force(basis, push);
+    let local = [local.x.raw(), local.y.raw(), local.z.raw()];
+    let contact_3f0: [i32; 3] = std::array::from_fn(|axis| {
+        let half = half_words[axis];
+        if half < local[axis].wrapping_abs() {
+            if local[axis] < 0 {
+                half.wrapping_neg()
+            } else {
+                half
+            }
+        } else {
+            local[axis]
+        }
+    });
+    let rows = basis.map(|row| [row.x.raw(), row.y.raw(), row.z.raw()]);
+    let centre = [position.x.raw(), position.y.raw(), position.z.raw()];
+    let q = |a: i32, b: i32| ((i64::from(a) * i64::from(b)) >> 16) as i32;
+    TumbleImpactContact {
+        contact_3f0,
+        point: std::array::from_fn(|axis| {
+            q(rows[2][axis], contact_3f0[2])
+                .wrapping_add(q(rows[1][axis], contact_3f0[1]))
+                .wrapping_add(q(rows[0][axis], contact_3f0[0]))
+                .wrapping_add(centre[axis])
+        }),
+    }
+}
+
+/// The contact words of a tumbling impact (`0x4138bf..0x4139e5`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TumbleImpactContact {
+    pub contact_3f0: [i32; 3],
+    pub point: [i32; 3],
 }
 
 /// Rebuild the eight probe points from the basis and position
@@ -423,6 +473,7 @@ where
     let mut car = car;
     let mut ground = ground;
     car.impact_3cc = None;
+    car.impact_contact = None;
     if car.tumble.righting_3ec {
         step_righting(&mut car, &mut ground);
     } else if let Some(_probe) = (4..8).find(|&probe| ground.thresholds.flags_73a[probe] == 0) {
@@ -449,6 +500,7 @@ where
             .final_published_normal,
         )
     };
+    let half_words = ground.half_words;
     let respond = |car: &mut GroundPassCar| {
         let effects = tumble_contact_response(
             &mut car.tumble,
@@ -466,6 +518,12 @@ where
         car.axis_snapshot_bc = effects.axis_snapshot_bc;
         if effects.impact_3cc.is_some() {
             car.impact_3cc = effects.impact_3cc;
+            car.impact_contact = Some(tumble_impact_contact(
+                car.basis,
+                car.normal,
+                half_words,
+                car.position,
+            ));
         }
     };
     if ground.thresholds.count_742 == 0 {
@@ -565,6 +623,23 @@ fn track_lowest_wheel(car: &mut GroundPassCar, ground: &GroundContact) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tumbling_contact_sits_three_units_below_along_the_normal_clamped() {
+        let one = Fixed16::ONE;
+        let basis = [
+            Vec3::new(one, Fixed16::ZERO, Fixed16::ZERO),
+            Vec3::new(Fixed16::ZERO, one, Fixed16::ZERO),
+            Vec3::new(Fixed16::ZERO, Fixed16::ZERO, one),
+        ];
+        let normal = Vec3::new(Fixed16::ZERO, one, Fixed16::ZERO);
+        let position = Vec3::new(Fixed16::from_raw(0x10_0000), Fixed16::ZERO, Fixed16::ZERO);
+        let contact =
+            tumble_impact_contact(basis, normal, [0x2_0000, 0x1_0000, 0x4_0000], position);
+        // -3 along y, clamped to the 1.0 half height.
+        assert_eq!(contact.contact_3f0, [0, -0x1_0000, 0]);
+        assert_eq!(contact.point, [0x10_0000, -0x1_0000, 0]);
+    }
     use crate::compiled_car_initializer::CompiledLaneBuildCompletion;
 
     fn v(x: i32, y: i32, z: i32) -> Vec3 {
@@ -651,6 +726,7 @@ mod tests {
             tumble: TumbleState::default(),
             contact_vectors: [Vec3::ZERO; 8],
             impact_3cc: None,
+            impact_contact: None,
         }
     }
 

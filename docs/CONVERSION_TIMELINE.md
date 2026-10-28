@@ -763,7 +763,8 @@ touched. Per-commit granularity for the full history is recoverable with
 | 2026-10-29T11:00Z | 212h42m | pause-menu-draw | `f05a457` | I14 | Drew the pause menu: the Q16 text wrapper `FUN_00497b40`, the title/item draws with their label formats and colours, the corrected panel placement of `FUN_00468dd0`, the in-game fonts and strings, and a software compositor for the panel and tinted glyphs. Workspace 2,541 tests pass, 37 ignored. |
 | 2026-10-29T13:00Z | 214h42m | surface-and-impact-audio | `99bcf28` | I14 | Reconstructed the surface roll/skid tick and bank, the landing/rollover thumps and the barrier impact sounds with their severity and azimuth, extracted the surface-audio tables, and played them in the windowed session in the native channel order. Workspace 2,575 tests pass, 37 ignored. |
 | 2026-10-29T13:40Z | 215h22m | wet-sound | `2b129a6` | I14 | Reconstructed the wet-tyre/interior-rain loader and tick and played `wet_out` on wet surfaces on the native channel after the surface bank. Workspace 2,578 tests pass, 37 ignored. |
-| 2026-10-29T14:10Z | 215h52m | static-impact-sound | _(pending; previous milestone `2b129a6`)_ | I14 | Played the static scenery impacts the collision response already recovered, and gated every impact sound on ticks where Mechanics ran. Workspace 2,578 tests pass, 37 ignored. |
+| 2026-10-29T14:10Z | 215h52m | static-impact-sound | `7d04840` | I14 | Played the static scenery impacts the collision response already recovered, and gated every impact sound on ticks where Mechanics ran. Workspace 2,578 tests pass, 37 ignored. |
+| 2026-10-29T14:40Z | 216h22m | tumble-impact-sound | _(pending; previous milestone `7d04840`)_ | I14 | Reconstructed the tumbling contact point of `FUN_00412860`'s impact and played it. Workspace 2,579 tests pass, 37 ignored. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

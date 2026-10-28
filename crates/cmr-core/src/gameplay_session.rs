@@ -478,6 +478,13 @@ impl<'a> GameplaySession<'a> {
         self.race.set_idle_countdown_6ec(countdown);
     }
 
+    /// The tumbling impact of the last stepped tick's ground pass
+    /// (`FUN_00412860`).
+    #[must_use]
+    pub fn last_tumble_impact(&self) -> Option<crate::race_state::TumbleImpact> {
+        self.race.last_tumble_impact()
+    }
+
     /// The static scenery impacts of the last stepped tick (`FUN_0043d760`).
     #[must_use]
     pub fn last_static_impacts(&self) -> &[crate::race_state::StaticMaterialImpact] {
