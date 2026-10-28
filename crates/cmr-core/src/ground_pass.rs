@@ -72,6 +72,11 @@ pub struct GroundContact {
     /// The compiled state words `+0x648` (front) and `+0x644` (rear) that
     /// the tumbling pass scales the up row by to find the lowest wheel.
     pub wheel_reach_648_644: [i32; 2],
+    /// Compiled state word `+0x20`; the barrier end-post reach is twice it.
+    pub reach_20: i32,
+    /// `+0x44`: the half diagonal `sqrt(sum((word >> 1)^2))` of `+0x20..+0x28`
+    /// (`derive_compiled_suffix_defaults`), the trigger plane thickness.
+    pub radius_44: i32,
 }
 
 /// The `vn` admission test: the new normal is kept unless the car moves away
@@ -622,6 +627,8 @@ mod tests {
                 indices_744: [0; 8],
             },
             wheel_reach_648_644: [0; 2],
+            reach_20: 0,
+            radius_44: 0,
         }
     }
 

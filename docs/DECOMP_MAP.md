@@ -428,6 +428,7 @@ it following the AU1 road around a bend. The out-of-control (tumbling) path `FUN
 (`FUN_0040b240` grip assist, `FUN_0040bfe0` rollover trigger, native force sum),
 and the car reset (`FUN_00467210` dispatcher, `FUN_00414850` fade and placement).
 The HUD value preparation `FUN_00464130` feeds the live rev, speed and gear.
+The `.dat` trigger walk `FUN_00403a00` with the barrier walls `FUN_00401fd0` runs each tick.
 
 ## Update rules
 
@@ -438,14 +439,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T23:15:00Z
-milestone=race-hud-prepare
+updated_utc=2026-10-29T02:00:00Z
+milestone=trigger-walk-and-barriers
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-handling-out-of-control-path-and-car-animation
-next_exit_gate=player-options-and-penalty-timer
+next_exit_gate=codriver-audio-and-damage
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

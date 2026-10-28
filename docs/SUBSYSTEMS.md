@@ -2608,6 +2608,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   offset; an out-of-control car takes the tumbling pass `FUN_004115d0`.
 - A wrecked, sunk or stuck car (latch `+0x67c`) is reset by `FUN_00467210` and
   `FUN_00414850`: fade out, placement on the last eligible `.cat` node, fade in.
+- The `.dat` trigger walk `FUN_00403a00` runs per tick over the car's cell:
+  barrier walls (`FUN_00401fd0`) push and bounce the car, kill volumes set the
+  reset latch, cursor records move the checkpoint cursor, co-driver calls fire.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

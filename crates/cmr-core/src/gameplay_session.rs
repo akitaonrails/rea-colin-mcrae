@@ -33,8 +33,12 @@ use crate::race_state::{
 };
 use crate::render_route::{RenderRoute, render_route};
 use crate::stage_checkpoints::StageProgress;
+use crate::stage_triggers::{RuntimeTrigger, initialize_runtime_triggers};
 use crate::static_collision_response::StaticDamageOwner;
 use crate::static_collision_scene_builder::ParsedStaticCollisionScene;
+use crate::trigger_walk::{
+    TriggerCellOutOfRange, TriggerCells, TriggerEvent, TriggerWalkConfig, link_trigger_cells,
+};
 
 /// The in-race sequencer inputs that are not the player's live controls: the
 /// replay/flyby/fade/quit flags and the front-end/world-ready gates the recovered
@@ -119,7 +123,18 @@ pub struct GameplaySession<'a> {
     ground_geometry: Option<&'a crate::stage_compiled_geometry::StageCompiledGeometry>,
     reset_environment: ResetEnvironment,
     last_reset: ResetOutcome,
+    stage_triggers: Option<StageTriggers<'a>>,
+    last_trigger_events: Vec<TriggerEvent>,
     sim_ticks: u32,
+}
+
+/// The stage's `.dat` records with their per-player state and cell lists, and
+/// the cell centres `FUN_0048fd20` selects the car's cell from.
+struct StageTriggers<'a> {
+    runtime: Vec<RuntimeTrigger>,
+    cells: TriggerCells,
+    cell_centers: &'a [Vec3],
+    config: TriggerWalkConfig,
 }
 
 /// The words `FUN_00467210` reads besides the car and the `.cat` cursor.
@@ -208,6 +223,8 @@ impl<'a> GameplaySession<'a> {
             ground_geometry: None,
             reset_environment: ResetEnvironment::single_player_harness(),
             last_reset: ResetOutcome::default(),
+            stage_triggers: None,
+            last_trigger_events: Vec::new(),
             sim_ticks: 0,
         }
     }
@@ -265,17 +282,73 @@ impl<'a> GameplaySession<'a> {
         self.last_reset
     }
 
-    /// One four-wheel mechanics tick: the producer and integrator, then the
-    /// ground pass `FUN_00410a60` and the reset `FUN_00467210`, in the order of
-    /// the mechanics routine's per-car tail (`0x43b50a`, `0x43b517`).
-    fn four_wheel_tick(
+    /// Run the trigger walk `FUN_00403a00` each four-wheel tick over these
+    /// `.dat` records (linked into cells by `FUN_004904e0`) with the harness
+    /// [`TriggerWalkConfig::single_player_harness`] words.
+    ///
+    /// # Errors
+    ///
+    /// A record names a cell outside `cell_centers`.
+    pub fn with_stage_triggers(
+        mut self,
+        volumes: &[cmr_formats::stage::TriggerVolume],
+        cell_centers: &'a [Vec3],
+    ) -> Result<Self, TriggerCellOutOfRange> {
+        self.stage_triggers = Some(StageTriggers {
+            runtime: initialize_runtime_triggers(volumes),
+            cells: link_trigger_cells(volumes, cell_centers.len())?,
+            cell_centers,
+            config: TriggerWalkConfig::single_player_harness(),
+        });
+        Ok(self)
+    }
+
+    /// The trigger walk's effects on the last four-wheel tick.
+    #[must_use]
+    pub fn last_trigger_events(&self) -> &[TriggerEvent] {
+        &self.last_trigger_events
+    }
+
+    /// The driver and integrator of one four-wheel mechanics tick.
+    fn four_wheel_drive(
         &mut self,
         controls: &Controls,
-        progress: &mut StageProgress,
     ) -> Result<crate::race_state::TraceSample, WheelPostprocessError> {
         let wheel = self.wheel.as_ref().expect("a four-wheel session");
-        let mut sample = self.race.step_with_all_four_wheels(controls, wheel)?;
+        self.race.step_with_all_four_wheels(controls, wheel)
+    }
+
+    /// The rest of the mechanics tick after the driver and the static-scene
+    /// collision: the trigger walk `FUN_00403a00` (`0x43b327`), then per car
+    /// the ground pass `FUN_00410a60` and the reset `FUN_00467210`
+    /// (`0x43b50a`, `0x43b517`).
+    fn four_wheel_tail(
+        &mut self,
+        progress: &mut StageProgress,
+        sample: &mut crate::race_state::TraceSample,
+    ) -> Result<(), WheelPostprocessError> {
+        let wheel = self.wheel.as_ref().expect("a four-wheel session");
         self.last_reset = ResetOutcome::default();
+        self.last_trigger_events.clear();
+        if let Some(triggers) = self.stage_triggers.as_mut() {
+            let events = self
+                .race
+                .run_trigger_walk(
+                    &mut triggers.runtime,
+                    &triggers.cells,
+                    triggers.cell_centers,
+                    &triggers.config,
+                )
+                .map_err(WheelPostprocessError::TriggerWalk)?;
+            for event in &events {
+                if let TriggerEvent::NodeCursor { payload, .. } = *event
+                    && let Ok(cursor) = usize::try_from(payload)
+                {
+                    progress.set_cursor(cursor);
+                }
+            }
+            self.last_trigger_events = events;
+        }
         if let Some(geometry) = self.ground_geometry {
             let mut config = |_lane: usize| Ok::<u8, std::convert::Infallible>(0);
             self.race.run_ground_pass(
@@ -305,9 +378,9 @@ impl<'a> GameplaySession<'a> {
                 progress.set_cursor(cursor);
             }
             self.last_reset = outcome;
-            sample.car = self.race.car();
         }
-        Ok(sample)
+        sample.car = self.race.car();
+        Ok(())
     }
 
     /// Advance a simplified session. Four-wheel sessions use [`Self::try_advance`]
@@ -343,7 +416,13 @@ impl<'a> GameplaySession<'a> {
     ) -> Result<GameplayFrame, WheelPostprocessError> {
         let driving_sample = if self.session.current().id() == 5 {
             Some(if self.wheel.is_some() {
-                self.four_wheel_tick(&controls, progress)?
+                let race_before = self.race.clone();
+                let mut sample = self.four_wheel_drive(&controls)?;
+                if let Err(error) = self.four_wheel_tail(progress, &mut sample) {
+                    self.race = race_before;
+                    return Err(error);
+                }
+                sample
             } else {
                 self.race.step(&controls, &self.params)
             })
@@ -388,8 +467,9 @@ impl<'a> GameplaySession<'a> {
         let driving_sample = if self.session.current().id() == 5 {
             let race_before = self.race.clone();
             let previous_center_xz = PreviousCarXz::capture(race_before.car().position);
-            let mut sample = if self.wheel.is_some() {
-                self.four_wheel_tick(&controls, progress)
+            let four_wheel = self.wheel.is_some();
+            let mut sample = if four_wheel {
+                self.four_wheel_drive(&controls)
                     .map_err(StaticGameplayAdvanceError::Wheel)?
             } else {
                 self.race.step(&controls, &self.params)
@@ -403,6 +483,10 @@ impl<'a> GameplaySession<'a> {
                 return Err(StaticGameplayAdvanceError::Collision(error));
             }
             sample.car = self.race.car();
+            if four_wheel && let Err(error) = self.four_wheel_tail(progress, &mut sample) {
+                self.race = race_before;
+                return Err(StaticGameplayAdvanceError::Wheel(error));
+            }
             Some(sample)
         } else {
             None

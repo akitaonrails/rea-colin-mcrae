@@ -1943,6 +1943,11 @@ The suspension and wheel animation routines are presentation-only.
 The HUD's rev, speed and gear now come from the car through the recovered
 preparation `FUN_00464130` (`impl.race-hud-prepare`).
 
+The `.dat` trigger walk `FUN_00403a00` runs every tick (`impl.trigger-walk-and-barriers`):
+barrier walls push the car back and bounce it, kill volumes reset it, type-1
+records move the checkpoint cursor and co-driver calls fire. The earlier labels
+(split, finish, sound) for types 0, 1 and 2 were wrong.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions
@@ -1976,7 +1981,8 @@ DAT trigger geometry is now reconstructed over the native current/prior
 eight-point world-space car bounds, including directional gating, thickness,
 open-Y span, and evaluate-before-snapshot ordering. The exact type-to-spatial
 gate switch, outer player-bit check (including type-1 ordinal-byte behavior),
-whole-table evaluation, and single post-table snapshot are now test-backed.
+whole-table evaluation, and single post-table snapshot are now test-backed
+(the native walk is per cell; see `rea.official-eu.trigger-walk`).
 Live mode predicates/side effects, the car-bound producer attachment, and
 first-frame prior-array initialization remain open.
 

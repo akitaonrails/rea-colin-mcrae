@@ -2627,6 +2627,8 @@ pub enum WindowedStageFrameError {
     StaticCollision(StaticGameplayAdvanceError<Infallible>),
     /// The SDL host failed to present the composed frame.
     Present(SdlHostError),
+    /// A stage `.dat` record names a cell outside the main-C3D grid.
+    StageTriggers(cmr_core::trigger_walk::TriggerCellOutOfRange),
 }
 
 impl WindowedStageFrameError {
@@ -2639,6 +2641,7 @@ impl WindowedStageFrameError {
             Self::Session(_) => "four-wheel-session",
             Self::StaticCollision(_) => "static-collision-session",
             Self::Present(_) => "present-host",
+            Self::StageTriggers(_) => "stage-triggers",
         }
     }
 }
@@ -2665,6 +2668,12 @@ impl fmt::Display for WindowedStageFrameError {
                 write!(formatter, "static collision session failed: {source:?}")
             }
             Self::Present(source) => write!(formatter, "cannot present stage frame: {source}"),
+            Self::StageTriggers(source) => {
+                write!(
+                    formatter,
+                    "stage .dat record outside the cell grid: {source:?}"
+                )
+            }
         }
     }
 }
@@ -2675,7 +2684,7 @@ impl std::error::Error for WindowedStageFrameError {
             Self::Setup(source) => Some(source),
             Self::CompiledPose(source) => Some(source),
             Self::Session(source) => Some(source),
-            Self::StaticCollision(_) => None,
+            Self::StaticCollision(_) | Self::StageTriggers(_) => None,
             Self::Present(source) => Some(source),
         }
     }
@@ -3853,7 +3862,22 @@ impl SessionCompiledPose {
                 effects.effective_state_words[6],
                 effects.effective_state_words[7],
             ],
+            reach_20: effects.effective_state_words[0],
+            radius_44: cmr_core::compiled_car_initializer::derive_compiled_suffix_defaults(
+                [
+                    effects.effective_state_words[0],
+                    effects.effective_state_words[1],
+                    effects.effective_state_words[2],
+                ],
+                0,
+            )
+            .state_word_44,
         });
+        // First-frame trigger snapshot and saved centre: the native
+        // initialization of `+0x15c`/`+0x3e4` is not recovered, so the spawn
+        // probes and centre stand in (an inference).
+        start.four_wheel.trigger_prior_15c = probes;
+        start.four_wheel.saved_position_3e4 = start.position;
         Ok(publish_session_compiled_pose(
             start,
             [
@@ -4070,6 +4094,24 @@ fn windowed_drive_session<'a>(
     }
 }
 
+/// The stage's `.dat` records and the main-C3D cell centres the trigger walk
+/// selects the car's cell from; empty when the stage has no static scene.
+fn stage_trigger_inputs(
+    resources: &StageRenderResources,
+) -> (Vec<cmr_formats::stage::TriggerVolume>, Vec<Vec3>) {
+    match resources.static_collision_scene() {
+        Some(scene) => (
+            resources
+                .bundle
+                .triggers()
+                .map(<[_]>::to_vec)
+                .unwrap_or_default(),
+            scene.main_cell_centers.clone(),
+        ),
+        None => (Vec::new(), Vec::new()),
+    }
+}
+
 pub fn run_windowed_game_session(
     media_root: &Path,
     runtime_data: &Path,
@@ -4110,6 +4152,7 @@ pub fn run_windowed_game_session(
     let wheel_inputs = SessionWheelInputs::open(runtime_data);
     let tyre_tables = SessionTyreTables::open(runtime_data);
     let aux = SessionAuxControl::open(runtime_data);
+    let (trigger_volumes, trigger_cell_centers) = stage_trigger_inputs(&resources);
     let mut session = windowed_drive_session(
         &compiled_pose,
         &trig,
@@ -4118,7 +4161,9 @@ pub fn run_windowed_game_session(
         &aux,
         params,
         start,
-    );
+    )
+    .with_stage_triggers(&trigger_volumes, &trigger_cell_centers)
+    .map_err(WindowedStageFrameError::StageTriggers)?;
     let mut keyboard = KeyboardDriver::player_one();
     let mut analog = AnalogDriver::new();
     let response = DriveResponse {
@@ -5744,6 +5789,7 @@ mod tests {
             inverse_mass: Fixed16::from_raw(0x8000),
             gravity: Vec3::ZERO,
         };
+        let (trigger_volumes, trigger_cell_centers) = stage_trigger_inputs(&resources);
         let mut session = windowed_drive_session(
             &compiled_pose,
             &trig,
@@ -5752,7 +5798,9 @@ mod tests {
             &aux,
             params,
             start,
-        );
+        )
+        .with_stage_triggers(&trigger_volumes, &trigger_cell_centers)
+        .unwrap();
         assert!(session.is_four_wheel());
         eprintln!(
             "frames static_collision_scene={}",
@@ -5830,6 +5878,12 @@ mod tests {
                 keys.apply_vk(vk, frame >= steer_after);
             }
             let outcome = advance(&mut session, &mut progress, &keys, idle);
+            for event in session.last_trigger_events() {
+                eprintln!("frames frame={frame} trigger {event:?}");
+            }
+            if session.last_reset().placed {
+                eprintln!("frames frame={frame} reset placed");
+            }
             if frame % every == 0 || frame + 1 == frames {
                 let car = session.car();
                 let moved = car.position.sub(origin);

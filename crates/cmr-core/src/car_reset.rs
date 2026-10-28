@@ -663,6 +663,8 @@ mod tests {
                 indices_744: [0; 8],
             },
             wheel_reach_648_644: [0; 2],
+            reach_20: 0,
+            radius_44: 0,
         }
     }
 

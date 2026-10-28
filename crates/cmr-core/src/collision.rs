@@ -135,12 +135,12 @@ impl CollisionMaterial {
 /// the surface switches are classified by [`surface_switch_index`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TriggerType {
-    /// Type `0`: a split / time checkpoint (`FUN_00444380`).
-    SplitCheckpoint,
-    /// Type `1`: the finish line.
-    Finish,
-    /// Type `2`: a trigger sound (also the default).
-    Sound,
+    /// Type `0`: a co-driver call (`FUN_00444380` queues the note id).
+    CodriverCall,
+    /// Type `1`: writes the `.cat` cursor `DAT_0057ae70[player]`.
+    NodeCursor,
+    /// Type `2`: a barrier wall `FUN_00401fd0` (as is every unlisted type).
+    Barrier,
     /// Type `6`: a "kill" volume - forces the totalled latch `car+0x67c`.
     Kill,
     /// Type `0x15`: out-of-bounds - arms the `car+0x75c` countdown (game mode 8).
@@ -153,9 +153,9 @@ impl TriggerType {
     /// [`surface_switch_index`]).
     pub fn from_id(id: u8) -> Option<Self> {
         match id {
-            0 => Some(TriggerType::SplitCheckpoint),
-            1 => Some(TriggerType::Finish),
-            2 => Some(TriggerType::Sound),
+            0 => Some(TriggerType::CodriverCall),
+            1 => Some(TriggerType::NodeCursor),
+            2 => Some(TriggerType::Barrier),
             6 => Some(TriggerType::Kill),
             0x15 => Some(TriggerType::OutOfBounds),
             _ => None,
@@ -434,7 +434,7 @@ mod tests {
         );
         assert_eq!(CollisionMaterial::from_id(0), None);
 
-        assert_eq!(TriggerType::from_id(0), Some(TriggerType::SplitCheckpoint));
+        assert_eq!(TriggerType::from_id(0), Some(TriggerType::CodriverCall));
         assert_eq!(TriggerType::from_id(6), Some(TriggerType::Kill));
         assert_eq!(TriggerType::from_id(0x15), Some(TriggerType::OutOfBounds));
         // Surface-switch ids are not named trigger types.

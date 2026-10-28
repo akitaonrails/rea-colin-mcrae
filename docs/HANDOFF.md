@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: feed the HUD from the recovered value preparation
+feat: run the stage trigger walk and barrier walls
 ```
 
 Start by confirming the checkout and progress footer:
@@ -144,8 +144,10 @@ with `CMR_RUNTIME_DATA="$PWD/runtime-data/installed-eu-derived-assets-v2"`.
 The car reset is reconstructed (`impl.car-reset`); the wheel/suspension
 animation routines are presentation-only (`rea.official-eu.car-animation-words`).
 The HUD rev, speed and gear come from `FUN_00464130` (`impl.race-hud-prepare`).
-Next: the player option bytes, the `+0x75c` penalty timer, then the animation
-words for rendering. Trees appear to be `.sht` sprites, which the native
+The `.dat` trigger walk and barrier walls run each tick
+(`impl.trigger-walk-and-barriers`). Next: queue the co-driver calls to the
+audio ring (`FUN_00444380`), the damage call `FUN_0041f630`, the player option
+bytes, then the animation words for rendering. Trees appear to be `.sht` sprites, which the native
 excludes from static collision. Done so far: the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`
 from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground`),

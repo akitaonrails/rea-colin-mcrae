@@ -84,34 +84,71 @@ fn inside_xz_segment(
     edge_a == 0 || edge_b == 0 || edge_a.is_negative() != edge_b.is_negative()
 }
 
-/// Exact side/crossing predicate used by `FUN_00403470`/`FUN_004035a0`,
-/// `FUN_004036e0`, and `FUN_00403980`.
+/// `FUN_004035a0` (directional) / `FUN_00403470` (bidirectional): the car's
+/// centre lies within `2 * +0x44` of the trigger plane, and for the directional
+/// test the saved centre is not on the positive side. Returns the facing flag
+/// `DAT_0050c524` (saved centre on the non-negative side) when it passes.
 #[must_use]
-pub fn trigger_geometry_contains(
+pub fn trigger_plane_side(
     volume: &TriggerVolume,
     car: &TriggerCarBounds,
     mode: TriggerGeometryMode,
-) -> bool {
+) -> Option<bool> {
     let saved_side = dot_from_point(volume.point_a, car.saved_position, volume.normal_q16);
     if mode == TriggerGeometryMode::RequireSavedNonPositive && saved_side > 0 {
-        return false;
+        return None;
     }
     let current_center_side =
         dot_from_point(volume.point_a, car.current_position, volume.normal_q16);
     let thickness = q16_mul(car.radius_q16, Q16_TWO);
     if current_center_side.wrapping_abs() > thickness {
-        return false;
+        return None;
     }
+    Some(saved_side >= 0)
+}
 
-    let saved_nonnegative = saved_side >= 0;
-    let mut negative_total = 0_u8;
-    let mut selected_negative = 0_u8;
-    let mut selected_nonnegative = 0_u8;
+/// `FUN_004036e0`'s per-probe plane depths and the two probe lists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProbePlaneLists {
+    /// `DAT_0050c548[i]`: `(point_a - probe) . normal` for every probe.
+    pub depths: [i32; 8],
+    /// `DAT_0050c528`/`DAT_0050c529`: probes with negative / non-negative depth.
+    pub negative_total: u8,
+    pub nonnegative_total: u8,
+    /// `DAT_0050c538` (count `DAT_0050c52a`): admitted probes with negative depth.
+    pub negative: [u8; 8],
+    pub negative_count: u8,
+    /// `DAT_0050c540` (count `DAT_0050c52b`): admitted probes with non-negative depth.
+    pub nonnegative: [u8; 8],
+    pub nonnegative_count: u8,
+}
+
+/// `FUN_004036e0`: classify each current probe against the trigger plane. A
+/// probe is admitted when it lies within the segment's x/z span and, on the
+/// side the facing flag does not expect, only while it is advancing relative
+/// to its prior position.
+#[must_use]
+pub fn probe_plane_lists(
+    volume: &TriggerVolume,
+    car: &TriggerCarBounds,
+    facing: bool,
+) -> ProbePlaneLists {
+    let mut lists = ProbePlaneLists {
+        depths: [0; 8],
+        negative_total: 0,
+        nonnegative_total: 0,
+        negative: [0; 8],
+        negative_count: 0,
+        nonnegative: [0; 8],
+        nonnegative_count: 0,
+    };
     for index in 0..8 {
-        let current_side =
-            dot_from_point(volume.point_a, car.current_points[index], volume.normal_q16);
-        if current_side < 0 {
-            negative_total += 1;
+        let depth = dot_from_point(volume.point_a, car.current_points[index], volume.normal_q16);
+        lists.depths[index] = depth;
+        if depth < 0 {
+            lists.negative_total += 1;
+        } else {
+            lists.nonnegative_total += 1;
         }
         if !inside_xz_segment(
             volume.point_a,
@@ -121,27 +158,46 @@ pub fn trigger_geometry_contains(
         ) {
             continue;
         }
-
-        let needs_prior = (current_side < 0) == saved_nonnegative;
-        if needs_prior {
-            let prior_side =
-                dot_from_point(volume.point_a, car.prior_points[index], volume.normal_q16);
-            let advances_on_side = current_side == 0
-                || (current_side < 0 && current_side <= prior_side)
-                || (current_side > 0 && prior_side <= current_side);
-            if !advances_on_side {
+        if (depth < 0) == facing {
+            let prior = dot_from_point(volume.point_a, car.prior_points[index], volume.normal_q16);
+            let advancing = if depth < 1 {
+                depth >= 0 || depth <= prior
+            } else {
+                prior <= depth
+            };
+            if !advancing {
                 continue;
             }
         }
-        if current_side < 0 {
-            selected_negative += 1;
+        if depth < 0 {
+            lists.negative[usize::from(lists.negative_count)] = index as u8;
+            lists.negative_count += 1;
         } else {
-            selected_nonnegative += 1;
+            lists.nonnegative[usize::from(lists.nonnegative_count)] = index as u8;
+            lists.nonnegative_count += 1;
         }
     }
+    lists
+}
 
-    (selected_negative != 0 && selected_nonnegative != 0)
-        || (selected_negative != 0 && negative_total == 8 && saved_nonnegative)
+/// Exact side/crossing predicate `FUN_00403980`: the plane-side test, then
+/// the probe lists; true when both lists are non-empty, or when every probe
+/// is on the negative side of a plane the car faced.
+#[must_use]
+pub fn trigger_geometry_contains(
+    volume: &TriggerVolume,
+    car: &TriggerCarBounds,
+    mode: TriggerGeometryMode,
+) -> bool {
+    let Some(facing) = trigger_plane_side(volume, car, mode) else {
+        return false;
+    };
+    let lists = probe_plane_lists(volume, car, facing);
+    match (lists.negative_count, lists.nonnegative_count) {
+        (0, 0) => false,
+        (n, p) if n != 0 && p != 0 => true,
+        _ => lists.negative_total == 8 && facing,
+    }
 }
 
 /// Evaluate against the old snapshot, then perform the native post-query copy.
@@ -247,7 +303,7 @@ impl RuntimeTrigger {
         let payload = self.volume.payload;
         let event_flag = self.volume.event_flag != 0;
         match self.volume.raw_type {
-            0 => TriggerDispatch::SplitCheckpoint { payload },
+            0 => TriggerDispatch::CodriverCall { payload },
             1 => {
                 let TriggerRuntimeState::Type1Ordinal(ordinal) = self.state else {
                     // `initialize_runtime_triggers` makes this unreachable. Keep
@@ -255,10 +311,10 @@ impl RuntimeTrigger {
                     // or by future serializers without inventing an ordinal.
                     return TriggerDispatch::InvalidType1State;
                 };
-                TriggerDispatch::Finish { payload, ordinal }
+                TriggerDispatch::NodeCursor { payload, ordinal }
             }
-            2 => TriggerDispatch::Sound {
-                event_code: 0,
+            2 => TriggerDispatch::Barrier {
+                kind: 0,
                 payload,
                 event_flag,
             },
@@ -269,8 +325,8 @@ impl RuntimeTrigger {
                 index: self.volume.raw_type - 7,
             },
             0x15 => TriggerDispatch::OutOfBounds,
-            event_code => TriggerDispatch::Sound {
-                event_code,
+            kind => TriggerDispatch::Barrier {
+                kind,
                 payload,
                 event_flag,
             },
@@ -378,15 +434,19 @@ fn player_bit(player: u8) -> Result<u8, TriggerStateError> {
 /// Side-effect-free event class selected by the trigger dispatcher.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TriggerDispatch {
-    SplitCheckpoint {
+    /// Type 0: a co-driver call; `FUN_00444380` queues the payload's note id.
+    CodriverCall {
         payload: i32,
     },
-    Finish {
+    /// Type 1: writes the `.cat` cursor `DAT_0057ae70[player] = payload`.
+    NodeCursor {
         payload: i32,
         ordinal: u8,
     },
-    Sound {
-        event_code: u8,
+    /// Type 2 and every unlisted type: a barrier wall, `FUN_00401fd0(kind)`
+    /// with `kind` 0 for type 2 and the type itself otherwise.
+    Barrier {
+        kind: u8,
         payload: i32,
         event_flag: bool,
     },
@@ -520,13 +580,13 @@ mod tests {
                 .map(RuntimeTrigger::dispatch)
                 .collect::<Vec<_>>(),
             vec![
-                TriggerDispatch::SplitCheckpoint { payload: 10 },
-                TriggerDispatch::Finish {
+                TriggerDispatch::CodriverCall { payload: 10 },
+                TriggerDispatch::NodeCursor {
                     payload: 11,
                     ordinal: 0,
                 },
-                TriggerDispatch::Sound {
-                    event_code: 0,
+                TriggerDispatch::Barrier {
+                    kind: 0,
                     payload: 12,
                     event_flag: true,
                 },
@@ -537,8 +597,8 @@ mod tests {
                 TriggerDispatch::SurfaceSwitch { index: 0 },
                 TriggerDispatch::SurfaceSwitch { index: 4 },
                 TriggerDispatch::OutOfBounds,
-                TriggerDispatch::Sound {
-                    event_code: 0x13,
+                TriggerDispatch::Barrier {
+                    kind: 0x13,
                     payload: 20,
                     event_flag: true,
                 },
@@ -644,12 +704,12 @@ mod tests {
             vec![
                 TriggerSpatialCandidate {
                     record_index: 0,
-                    dispatch: TriggerDispatch::SplitCheckpoint { payload: 0 },
+                    dispatch: TriggerDispatch::CodriverCall { payload: 0 },
                 },
                 TriggerSpatialCandidate {
                     record_index: 2,
-                    dispatch: TriggerDispatch::Sound {
-                        event_code: 0,
+                    dispatch: TriggerDispatch::Barrier {
+                        kind: 0,
                         payload: 0,
                         event_flag: true,
                     },

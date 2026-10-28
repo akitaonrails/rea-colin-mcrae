@@ -68,6 +68,10 @@ use crate::static_world_collision::{
     StaticCollisionExecutionError, StaticContactHistory, resolve_static_world_collisions,
 };
 use crate::steering_response::{SteeringInputs, SteeringParams, SteeringState, apply_steering};
+use crate::trigger_walk::{
+    TriggerCells, TriggerEvent, TriggerWalkConfig, TriggerWalkError, TriggerWalkState,
+    walk_triggers,
+};
 use crate::tumble::{TumbleState, arm_righting};
 use crate::tyre_load::{
     TyreGains, TyreLoadInputs, TyreSurfaceIndexError, WheelSurfaceTerms, apply_tyre_load_pass,
@@ -606,6 +610,17 @@ pub struct FourWheelState {
     pub previous_normal_330: Vec3,
     /// The reset words `ctl +0x41c/+0x424/+0x428/+0x460` (`FUN_00414850`).
     pub reset: ResetFadeState,
+    /// `+0x3e4..+0x3ec`: the centre saved before the physics step.
+    pub saved_position_3e4: Vec3,
+    /// `+0x15c..+0x1b8`: the probes snapshotted after the last trigger walk.
+    pub trigger_prior_15c: [[i32; 3]; 8],
+    /// `+0x3f0..+0x3f8`: the last barrier impact point (body frame).
+    pub barrier_impact_3f0: [i32; 3],
+    /// `+0x6dc`: a barrier touched the car in the last walk (read by the
+    /// rollover trigger on the next tick).
+    pub barrier_contact_6dc: bool,
+    /// `DAT_0050c574`, `+0x6e0` and the `+0x75c` timer.
+    pub trigger_walk: TriggerWalkState,
 }
 
 /// Apply neutral-gear zeroing or the ordinary post-step tracking update.
@@ -701,6 +716,8 @@ pub enum WheelPostprocessError {
     RollSurface(RollSurfaceIndexError),
     /// The reset dispatcher read outside the `.cat` nodes.
     ResetNode(ResetNodeError),
+    /// The trigger walk could not run.
+    TriggerWalk(TriggerWalkError),
 }
 
 /// Report a ground-query failure by the lane that failed.
@@ -1018,6 +1035,15 @@ impl CarState {
                     countdown_424: 0,
                     fade_428: 0,
                     penalty_460: false,
+                },
+                saved_position_3e4: Vec3::ZERO,
+                trigger_prior_15c: [[0; 3]; 8],
+                barrier_impact_3f0: [0; 3],
+                barrier_contact_6dc: false,
+                trigger_walk: TriggerWalkState {
+                    selected_probe_574: 0,
+                    previous_contact_6e0: false,
+                    penalty_timer_75c: 0,
                 },
             },
             ground: None,
@@ -1548,6 +1574,22 @@ impl RaceState {
                 wheel.postprocess.current_lane,
             ));
         }
+        // The driver saves the centre before the physics step (`+0x3e4`) and
+        // advances the out-of-bounds timer `+0x75c` (`0x40771d..0x40785f`);
+        // its expiry sets the latch and the slow penalty reset (`ctl +0x460`).
+        self.car.four_wheel.saved_position_3e4 = self.car.position;
+        let out_of_bounds = crate::collision::advance_out_of_bounds(
+            self.car.four_wheel.trigger_walk.penalty_timer_75c,
+            false,
+            true,
+        );
+        self.car.four_wheel.trigger_walk.penalty_timer_75c = out_of_bounds.timer;
+        if out_of_bounds.totalled {
+            self.car.four_wheel.reset.penalty_460 = true;
+            if let Some(ground) = self.car.ground.as_mut() {
+                ground.lanes.latch_67c = 1;
+            }
+        }
         let contact_vectors =
             build_contact_basis_vectors(self.car.motion.contact_basis(self.car.velocity));
         self.car.four_wheel.contact_vectors_4bc = contact_vectors;
@@ -1937,8 +1979,8 @@ impl RaceState {
                 velocity: self.car.velocity,
                 base_force,
                 inverse_mass_4c: wheel.inverse_mass_4c,
-                // No other car shares this race state.
-                car_contact_6dc: false,
+                // The last trigger walk's barrier contact.
+                car_contact_6dc: self.car.four_wheel.barrier_contact_6dc,
                 wheel_surfaces,
                 roll_limits: wheel.tyre.map(|tyre| &tyre.tables.roll_limits_768c),
             },
@@ -2158,6 +2200,80 @@ impl RaceState {
         Ok(())
     }
 
+    /// The trigger walk `FUN_00403a00` for this car over the `.dat` records of
+    /// its cell (`FUN_0048fd20` of the current centre), followed by the
+    /// mechanics routine's probe snapshot into `+0x15c`. Barrier pushes,
+    /// bounces and moments are applied; a reset latch is set on the ground
+    /// words. Returns the records' effects for the caller (cursor writes,
+    /// co-driver calls). On error nothing is written back.
+    ///
+    /// # Errors
+    ///
+    /// The car's cell is outside the trigger cell table.
+    pub fn run_trigger_walk(
+        &mut self,
+        triggers: &mut [crate::stage_triggers::RuntimeTrigger],
+        cells: &TriggerCells,
+        cell_centers: &[Vec3],
+        config: &TriggerWalkConfig,
+    ) -> Result<Vec<TriggerEvent>, TriggerWalkError> {
+        let Some(mut ground) = self.car.ground else {
+            return Ok(Vec::new());
+        };
+        let cell = crate::live_static_collision_car_frame::select_primary_cell(
+            cell_centers,
+            self.car.position,
+        );
+        let undeformed = crate::ground_pass::GroundContact {
+            deformation: [0; 3],
+            ..ground
+        };
+        let probes = crate::ground_pass::rebuild_ground_probes(
+            &undeformed,
+            self.car.motion.basis,
+            self.car.position,
+        );
+        use crate::tumble::{raw, vec};
+        let mut car = crate::barrier_collision::BarrierCar {
+            bounds: crate::stage_triggers::TriggerCarBounds {
+                current_position: raw(self.car.position),
+                saved_position: raw(self.car.four_wheel.saved_position_3e4),
+                radius_q16: ground.radius_44,
+                current_points: probes,
+                prior_points: self.car.four_wheel.trigger_prior_15c,
+            },
+            reach_20: ground.reach_20,
+            velocity: raw(self.car.velocity),
+            basis: self.car.motion.basis,
+            half_words: ground.half_words,
+            impact_3f0: self.car.four_wheel.barrier_impact_3f0,
+            moment_3d8: self.car.motion.moment,
+            out_of_control_680: self.car.collision.response_state_680,
+            recovery_688: self.car.collision.recovery_latch_688,
+            contact_6dc: self.car.four_wheel.barrier_contact_6dc,
+        };
+        let mut walk_state = self.car.four_wheel.trigger_walk;
+        let events = walk_triggers(triggers, cells, cell, config, &mut car, &mut walk_state)?;
+        if events
+            .iter()
+            .any(|event| matches!(event, TriggerEvent::ResetLatch { .. }))
+        {
+            ground.lanes.latch_67c = 1;
+        }
+        self.car.ground = Some(ground);
+        self.car.position = vec(car.bounds.current_position);
+        self.car.velocity = vec(car.velocity);
+        self.car.motion.moment = car.moment_3d8;
+        self.car.collision.response_state_680 = car.out_of_control_680;
+        self.car.collision.recovery_latch_688 = car.recovery_688;
+        let wheel = &mut self.car.four_wheel;
+        wheel.barrier_impact_3f0 = car.impact_3f0;
+        wheel.barrier_contact_6dc = car.contact_6dc;
+        wheel.trigger_walk = walk_state;
+        wheel.trigger_prior_15c = car.bounds.current_points;
+        Ok(events)
+    }
+
     /// The reset dispatcher `FUN_00467210` and its fade-and-place routine
     /// `FUN_00414850` for this car, run after the ground pass. Returns the
     /// dispatcher's cursor write and the presentation effects. On error
@@ -2263,6 +2379,8 @@ impl RaceState {
         wheel.gearbox.reverse_mode_408 = false;
         wheel.gearbox.gear_43a = 1;
         wheel.limiter_444 = false;
+        wheel.saved_position_3e4 = placement.position;
+        wheel.trigger_walk.penalty_timer_75c = 0;
     }
 
     /// Run a scripted control sequence, returning the per-tick trace.
@@ -3714,6 +3832,8 @@ mod tests {
                 source_y: [0; 8],
             }),
             wheel_reach_648_644: [0; 2],
+            reach_20: 0,
+            radius_44: 0,
         });
         let tyre_free = RaceState::new(ground_car)
             .step_with_all_four_wheels(&straight_throttle(1)[0], &wheel)
