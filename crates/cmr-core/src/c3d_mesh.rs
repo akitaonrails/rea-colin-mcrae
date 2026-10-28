@@ -50,8 +50,10 @@
 //! keyed on each face's material ordinal - that builder is reused here rather
 //! than re-derived.
 //!
-//! Decisive constraint: `FUN_004b2340` allocates the vbuf, ibuf and per-vertex
-//! color buffer from the system-memory arena `FUN_004990d0`, not from a Direct3D
+//! Decisive constraint: `FUN_004b2340` allocates the vbuf (`prim+0x0c`), ibuf
+//! (`prim+0x14`) and per-vertex normal array (`prim+0x04`, the on-disk
+//! normals, stride `0xc`; only the damage chain reads it) from the
+//! system-memory arena `FUN_004990d0`, not from a Direct3D
 //! vertex/index buffer. C3D geometry is therefore drawn from system-memory
 //! streams (user-pointer draw calls); the loader creates a Direct3D resource
 //! only for textures (`FUN_004b01d0`). The compatibility interface models

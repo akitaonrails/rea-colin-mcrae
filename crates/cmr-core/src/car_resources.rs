@@ -55,9 +55,10 @@ pub const CAR_STATE_STRIDE: usize = 0x768;
 /// param region; see [`car_type_param_base`]).
 pub const CAR_TYPE_STATE_OFFSET: usize = 0x738;
 
-/// Offset of the damage-variant byte within a car state block (selects the
-/// damage-region layout).
-pub const DAMAGE_VARIANT_STATE_OFFSET: usize = 0x739;
+/// Offset of the car model index within a car state block (`FUN_00480e60`
+/// stores the loaded model `v` there; the damage, part and shadow tables
+/// are keyed on it).
+pub const CAR_MODEL_STATE_OFFSET: usize = 0x739;
 
 /// Directory prefix all in-race car resources are built under.
 pub const CAR_DIR: &str = r"OBJECTS\CARS\";
@@ -67,9 +68,9 @@ pub const CAR_MODEL_EXT: &str = ".C3D";
 pub const REFLECTION_SUFFIX: &str = "ref.c3d";
 /// Shared reflection environment-map file name.
 pub const REFLECTION_MAP: &str = "ref_map.bmp";
-/// Low-detail suffix used for the night model.
+/// Low-detail suffix appended to the day name (`<CODE>DAY` + `med`).
 pub const MED_SUFFIX: &str = "med";
-/// Low-detail suffix used for the day model.
+/// Low-detail suffix that replaces the night tag (`<CODE>` + `daymed`).
 pub const DAYMED_SUFFIX: &str = "daymed";
 /// Daytime model tag.
 pub const DAY_TAG: &str = "DAY";
@@ -192,18 +193,20 @@ pub fn day_night_tag(night: bool) -> &'static str {
     if night { NIGHT_TAG } else { DAY_TAG }
 }
 
-/// Build the body-model path for a car code: `OBJECTS\CARS\<code><tag>.C3D`, or
-/// the low-detail variant when `low_detail` is set. The low-detail pairing
-/// (night -> `med`, day -> `daymed`) is inferred from the recovered suffix
-/// strings; the `<tag>` is dropped in that case because the `med`/`daymed`
-/// suffixes fold the day/night distinction.
+/// Build the body-model path for a car code (`FUN_00480e60`):
+/// `OBJECTS\CARS\<code><tag>.C3D`, or for low detail `<code>DAYmed` by day
+/// and, by night, the name with its five-letter `NIGHT` cut and `daymed`
+/// appended. Both low-detail names open the same file on the shipped
+/// case-insensitive filesystem.
 pub fn car_body_path(code: &str, night: bool, low_detail: bool) -> String {
-    if low_detail {
-        let suffix = if night { MED_SUFFIX } else { DAYMED_SUFFIX };
-        format!("{CAR_DIR}{code}{suffix}{CAR_MODEL_EXT}")
+    let name = if low_detail && night {
+        format!("{code}{DAYMED_SUFFIX}")
+    } else if low_detail {
+        format!("{code}{DAY_TAG}{MED_SUFFIX}")
     } else {
-        format!("{CAR_DIR}{code}{}{CAR_MODEL_EXT}", day_night_tag(night))
-    }
+        format!("{code}{}", day_night_tag(night))
+    };
+    format!("{CAR_DIR}{name}{CAR_MODEL_EXT}")
 }
 
 /// Build the reflection/shadow-model path: `OBJECTS\CARS\<code><tag>ref.c3d`.
@@ -377,12 +380,16 @@ mod tests {
             car_body_path("XYZ", true, false),
             r"OBJECTS\CARS\XYZNIGHT.C3D"
         );
-        // Low detail folds the day/night distinction into the suffix.
+        // Low detail: `DAY` + `med` by day, `NIGHT` cut for `daymed` by
+        // night; the same file case-insensitively.
         assert_eq!(
             car_body_path("XYZ", false, true),
+            r"OBJECTS\CARS\XYZDAYmed.C3D"
+        );
+        assert_eq!(
+            car_body_path("XYZ", true, true),
             r"OBJECTS\CARS\XYZdaymed.C3D"
         );
-        assert_eq!(car_body_path("XYZ", true, true), r"OBJECTS\CARS\XYZmed.C3D");
         assert_eq!(
             car_reflection_path("XYZ", false),
             r"OBJECTS\CARS\XYZDAYref.c3d"
