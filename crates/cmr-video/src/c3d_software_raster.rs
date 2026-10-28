@@ -399,6 +399,21 @@ impl SoftwareC3dDepthBuffer {
         &mut self.values
     }
 
+    /// A depth buffer from another renderer's values (row-major, `[0, 1]`),
+    /// for passes drawn over its frame.
+    pub fn from_values(extent: [u16; 2], values: Vec<f32>) -> Result<Self, SoftwareC3dRasterError> {
+        if extent[0] == 0
+            || extent[1] == 0
+            || values.len() != usize::from(extent[0]) * usize::from(extent[1])
+        {
+            return Err(SoftwareC3dRasterError::InvalidDepthExtent(extent));
+        }
+        Ok(Self {
+            extent,
+            values: values.into_boxed_slice(),
+        })
+    }
+
     /// Performs the recovered depth-only clear without touching color.
     pub fn clear_far(&mut self) {
         self.values.fill(1.0);

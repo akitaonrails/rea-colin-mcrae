@@ -203,6 +203,8 @@ pub struct WgpuPreparedC3dScene {
     readback_pitch: u32,
     index_readback: wgpu::Buffer,
     index_readback_pitch: u32,
+    /// The depth after the frame, for passes the host draws over it.
+    depth_readback: wgpu::Buffer,
     transform_buffer: wgpu::Buffer,
     transform_bind_group: wgpu::BindGroup,
     transform_stride: u32,
@@ -1058,11 +1060,17 @@ impl PersistentRawC3dGpuBackend for WgpuIndexedPaletteBackend {
             "cmr prepared C3D depth",
             size,
             C3D_DEPTH_FORMAT,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let tight_pitch = u32::from(extent.width) * 4;
         let readback_pitch = tight_pitch.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
+        let depth_readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cmr prepared C3D depth readback"),
+            size: u64::from(readback_pitch) * u64::from(extent.height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cmr prepared C3D readback"),
             size: u64::from(readback_pitch) * u64::from(extent.height),
@@ -1117,6 +1125,7 @@ impl PersistentRawC3dGpuBackend for WgpuIndexedPaletteBackend {
             readback_pitch,
             index_readback,
             index_readback_pitch,
+            depth_readback,
             transform_buffer,
             transform_bind_group,
             transform_stride,
@@ -1318,6 +1327,44 @@ impl WgpuIndexedPaletteBackend {
         foreground: &mut WgpuPreparedC3dScene,
         foreground_frame: C3dPreparedFrame<'_>,
     ) -> Result<CanonicalIndexedFrame, WgpuBackendError> {
+        self.render_layered(
+            background,
+            background_frame,
+            foreground,
+            foreground_frame,
+            false,
+        )
+        .map(|(frame, _)| frame)
+    }
+
+    /// [`Self::render_prepared_layered_indexed_readback`] that also reads back
+    /// the frame's depth (`[0, 1]`, row-major), for the host's passes drawn
+    /// over it with a depth test (the car shadows).
+    pub fn render_prepared_layered_indexed_readback_with_depth(
+        &mut self,
+        background: &mut WgpuPreparedC3dScene,
+        background_frame: C3dPreparedFrame<'_>,
+        foreground: &mut WgpuPreparedC3dScene,
+        foreground_frame: C3dPreparedFrame<'_>,
+    ) -> Result<(CanonicalIndexedFrame, Vec<f32>), WgpuBackendError> {
+        self.render_layered(
+            background,
+            background_frame,
+            foreground,
+            foreground_frame,
+            true,
+        )
+        .map(|(frame, depth)| (frame, depth.unwrap_or_default()))
+    }
+
+    fn render_layered(
+        &mut self,
+        background: &mut WgpuPreparedC3dScene,
+        background_frame: C3dPreparedFrame<'_>,
+        foreground: &mut WgpuPreparedC3dScene,
+        foreground_frame: C3dPreparedFrame<'_>,
+        with_depth: bool,
+    ) -> Result<(CanonicalIndexedFrame, Option<Vec<f32>>), WgpuBackendError> {
         background_frame
             .ensure_layout(background.layout)
             .map_err(WgpuBackendError::RawContract)?;
@@ -1374,6 +1421,29 @@ impl WgpuIndexedPaletteBackend {
                 depth_or_array_layers: 1,
             },
         );
+        if with_depth {
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &background._depth_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::DepthOnly,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &background.depth_readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(background.readback_pitch),
+                        rows_per_image: Some(u32::from(extent.height)),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: u32::from(extent.width),
+                    height: u32::from(extent.height),
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         let submission = self.queue.submit([encoder.finish()]);
         let (sender, receiver) = mpsc::sync_channel(1);
         background
@@ -1414,7 +1484,45 @@ impl WgpuIndexedPaletteBackend {
         drop(mapped);
         background.index_readback.unmap();
         drop((background_draws, foreground_draws));
+        let depth = if with_depth {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            background
+                .depth_readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    let _ = sender.send(result);
+                });
+            self.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
+            receiver
+                .recv()
+                .map_err(|error| WgpuBackendError::MapChannel(error.to_string()))?
+                .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
+            let mapped = background
+                .depth_readback
+                .slice(..)
+                .get_mapped_range()
+                .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
+            let pitch = background.readback_pitch as usize;
+            let mut values = Vec::with_capacity(width * height);
+            for row in 0..height {
+                let line = &mapped[row * pitch..row * pitch + width * 4];
+                values.extend(
+                    line.as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|bytes| f32::from_le_bytes(*bytes)),
+                );
+            }
+            drop(mapped);
+            background.depth_readback.unmap();
+            Some(values)
+        } else {
+            None
+        };
         CanonicalIndexedFrame::new(extent, indices.into_boxed_slice())
+            .map(|frame| (frame, depth))
             .map_err(WgpuBackendError::Contract)
     }
 

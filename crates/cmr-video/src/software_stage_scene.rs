@@ -75,6 +75,23 @@ impl StageSceneFrame {
         self.stats.depth_rejected += other.stats.depth_rejected;
     }
 
+    /// A frame another renderer composed (its indices, palette and depth),
+    /// for passes drawn over it.
+    pub fn from_parts(
+        extent: [u16; 2],
+        pixels: Vec<u8>,
+        palette: [PaletteEntry; 256],
+        depth: SoftwareC3dDepthBuffer,
+    ) -> Self {
+        Self {
+            extent,
+            pixels,
+            palette: Box::new(palette),
+            depth,
+            stats: StageSceneFrameStats::default(),
+        }
+    }
+
     /// The frame extent `[width, height]`.
     pub fn extent(&self) -> [u16; 2] {
         self.extent

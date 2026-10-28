@@ -1990,6 +1990,7 @@ impl WgpuStageRenderer {
         camera: &[i32; 16],
         dynamic_worlds: Option<&[[i32; 16]]>,
         horizon_worlds: Option<&[[i32; 16]]>,
+        shadows: Option<(&[ShadowDraw], &[u8])>,
     ) -> Result<SoftwarePresentedFrame, StageFrameError> {
         let frame = if self.prepared.dynamic_world_set_count() == 0 {
             self.prepared.prepared_frame_for(camera)
@@ -2021,6 +2022,35 @@ impl WgpuStageRenderer {
                     (w, h, z_near, cmr_core::c3d_camera::HORIZON_Z_FAR),
                 )
                 .map_err(StageFrameError::GpuPrepare)?;
+            if let Some((draws, alpha)) = shadows {
+                // The shadows over the GPU frame with its depth: whatever is
+                // nearer (the car, the objects) rejects their fragments, as
+                // drawing those after the shadow covers it.
+                let (indexed, depth) = self
+                    .backend
+                    .render_prepared_layered_indexed_readback_with_depth(
+                        horizon_scene,
+                        horizon_frame,
+                        &mut self.scene,
+                        frame,
+                    )
+                    .map_err(|error| StageFrameError::GpuCompose(error.to_string()))?;
+                let extent = [indexed.extent().width, indexed.extent().height];
+                let depth = cmr_video::c3d_software_raster::SoftwareC3dDepthBuffer::from_values(
+                    extent, depth,
+                )
+                .map_err(|error| StageFrameError::GpuCompose(format!("{error:?}")))?;
+                let mut scene = cmr_video::software_stage_scene::StageSceneFrame::from_parts(
+                    extent,
+                    indexed.indices().to_vec(),
+                    self.palette,
+                    depth,
+                );
+                scene
+                    .blend_shadows(camera, draws, alpha)
+                    .map_err(StageFrameError::Compose)?;
+                return scene.to_presented_frame().map_err(StageFrameError::Present);
+            }
             self.backend
                 .render_prepared_layered_indexed_readback(
                     horizon_scene,
@@ -2204,10 +2234,7 @@ pub struct StageRenderResources {
     /// The car shadows (`FUN_004a4f20`), once the race setup attached them.
     shadow: Option<StageShadow>,
     /// This frame's planned shadow triangles (`FUN_004a51f0`'s queue).
-    shadow_draws: Vec<(
-        Vec<cmr_video::c3d_software_raster::SoftwareC3dLitVertex>,
-        Vec<u16>,
-    )>,
+    shadow_draws: Vec<ShadowDraw>,
     palette: [PaletteEntry; 256],
     node_count: usize,
     draw_ops: usize,
@@ -2712,10 +2739,16 @@ impl StageRenderResources {
                     scene_world_transforms(horizon.group0_records(), &root)
                 });
         if let Some(gpu) = self.gpu.as_mut() {
+            let shadows = self
+                .shadow
+                .as_ref()
+                .filter(|_| !self.shadow_draws.is_empty())
+                .map(|shadow| (&self.shadow_draws[..], &shadow.alpha[..]));
             match gpu.compose(
                 camera,
                 car_node_worlds.as_deref(),
                 horizon_node_worlds.as_deref(),
+                shadows,
             ) {
                 Ok(frame) => {
                     return Ok(RenderedStageFrameOutput {
@@ -3429,6 +3462,12 @@ fn load_game_text(
     let store = AssetStore::open(runtime_data, &reviewed, DecodeLimits::default()).ok()?;
     cmr_core::localization_assets::load_game_text_table(&store, language).ok()
 }
+
+/// One queued shadow: its pre-lit vertices and triangle indices.
+type ShadowDraw = (
+    Vec<cmr_video::c3d_software_raster::SoftwareC3dLitVertex>,
+    Vec<u16>,
+);
 
 /// The per-stage shadow state (`FUN_004a4f20`, `FUN_00449bd0`,
 /// `FUN_0047b000`'s caches).
@@ -9021,6 +9060,58 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data and a Vulkan adapter"]
+    fn imported_au1_gpu_shadow_matches_software() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let mut frames = Vec::new();
+        for choice in [StageRendererChoice::Software, StageRendererChoice::Gpu] {
+            let (mut resources, _, start, camera, _) =
+                native_stage_setup(&root.join("Game/Au/1"), &root, "AU1", Some("Sub"), choice)
+                    .unwrap();
+            resources.attach_shadows(&root, &root.join("Game/Au/1"), "AU1", CLEAR_WEATHER);
+            // A 3 x 3 quad on the ground ahead of the camera, around the car.
+            let p = [start.position.x, start.position.y, start.position.z]
+                .map(|c| (f64::from(c.raw()) / 65536.0) as f32);
+            let corner = |dx: f32, dz: f32, uv: [f32; 2]| {
+                cmr_video::c3d_software_raster::SoftwareC3dLitVertex {
+                    position: [p[0] + dx, p[1], p[2] + dz],
+                    diffuse: 0xc800_0000,
+                    uv,
+                }
+            };
+            let quad = vec![
+                corner(1.5, -1.5, [1.0, 0.0]),
+                corner(1.5, 1.5, [1.0, 1.0]),
+                corner(-1.5, -1.5, [0.0, 0.0]),
+                corner(-1.5, 1.5, [0.0, 1.0]),
+            ];
+            resources.shadow_draws = vec![(quad, vec![0, 1, 2, 1, 3, 2])];
+            let car_world = car_model_world_q16(&cmr_core::gameplay_camera::car_world_q16(
+                &cmr_core::fixed_point::build_sine_table(),
+                start.position,
+                start.heading,
+            ));
+            let frame = resources
+                .compose_with_car(&camera, Some(&car_world))
+                .unwrap();
+            assert_eq!(
+                frame.renderer == StageRendererKind::Gpu,
+                choice == StageRendererChoice::Gpu
+            );
+            frames.push(frame.frame);
+        }
+        let mismatches = frames[0]
+            .pixels()
+            .iter()
+            .zip(frames[1].pixels())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(mismatches <= 307, "{mismatches} pixels differ");
+    }
+
+    #[test]
     #[ignore = "requires the reviewed installed-EU runtime data"]
     fn imported_au1_reports_car_vertical_clearance_metadata() {
         use cmr_core::c3d_camera::{apply_affine_q16, invert_affine_q16};
@@ -9679,6 +9770,8 @@ mod tests {
         let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
         let mut root_interaction =
             RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0).unwrap();
+        let mut results =
+            RaceResults::open(Path::new("/nonexistent-runtime-data"), Language::English);
         macro_rules! advance {
             ($keys:expr, $frontend:expr) => {
                 advance_game_frame(
@@ -9696,10 +9789,7 @@ mod tests {
                     &mut RaceAudio::default(),
                     &mut pause,
                     &mut config,
-                    &mut RaceResults::open(
-                        Path::new("/nonexistent-runtime-data"),
-                        Language::English,
-                    ),
+                    &mut results,
                     WindowedInput {
                         keys: $keys,
                         gamepad: None,
@@ -9736,7 +9826,9 @@ mod tests {
             } else {
                 Default::default()
             };
-            keys.apply_vk(0x0d, interactive && !on_root && frame % 2 == 0);
+            // Return also dismisses the country welcome screen (state 2).
+            let welcome = session.state().id() == 2;
+            keys.apply_vk(0x0d, (welcome || interactive && !on_root) && frame % 2 == 0);
             advance!(&keys, pulse);
         }
         keys.apply_vk(0x0d, false);
