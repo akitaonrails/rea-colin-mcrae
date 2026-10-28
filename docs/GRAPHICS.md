@@ -27,6 +27,18 @@ code or data, [I] inferred. Status and the fix list are in
   width (`fonts\{320x240,512x384,640x480}\…`, `images\osdnew\revs\classic\<WxH>…`);
   race fonts by the resolution byte (`0x4f0e1c`); some pieces scale 640x480
   rectangles by W/640, H/480 (`0x461a60`) or use Q16 fractions of W/H.
+- **F13** (HUD): while the HUD lays itself out (race start) and draws (each
+  frame), the game sees a virtual 640x480 screen, so every piece resolves
+  in one space (640x480 rectangles, W/H fractions, the absolute rev-dial
+  tables, the 640 fonts); every sprite it queues (`0x49b420`/`0x49b1d0`,
+  destination and clip rectangles) is mapped onto a 4:3 canvas centred on
+  the real screen. Text glyphs are queued sprites too, so they scale. The
+  logic is in `cmrhooks.dll` (crate `cmr-hooks`); the launcher loads it
+  into the suspended game and fills F13's hook table. Seen at run time:
+  1440x1080 and 1920x1080 (16:9, HUD 4:3 centred) correct. Not covered
+  yet: the pause menu and results pages (Q16 layouts, so placed right but
+  stretched at 16:9 and with small text), split-screen views, the rotated
+  needle dial's pivot.
 - Forcing the whole game (front end too) above 640x480 breaks the front
   end (menu drawn in the corner, then a hang), so the front end stays at
   640x480.

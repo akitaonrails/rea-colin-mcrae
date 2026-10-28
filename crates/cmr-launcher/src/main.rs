@@ -34,6 +34,7 @@ mod app {
     use crate::win32;
 
     const EXE: &str = "Rally.exe";
+    const HOOKS_DLL: &str = "cmrhooks.dll";
 
     fn home() -> PathBuf {
         std::env::var_os("LOCALAPPDATA")
@@ -165,7 +166,17 @@ mod app {
             }
         }
 
-        let skip = settings.skipped_fixes();
+        let mut skip = settings.skipped_fixes();
+        // F13 needs the hook library next to the launcher.
+        let hooks_path = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(HOOKS_DLL)));
+        if !skip.contains(&"F13") && !hooks_path.as_ref().is_some_and(|p| p.is_file()) {
+            log_line(&format!(
+                "warning: {HOOKS_DLL} not found next to the launcher; the HUD is not scaled"
+            ));
+            skip.push("F13");
+        }
         if !skip.is_empty() {
             log_line(&format!(
                 "fixes turned off by settings: {}",
@@ -176,6 +187,14 @@ mod app {
             &rt.join(EXE),
             &rt,
             edition.fixes.cave_size(&skip),
+            hooks_path
+                .as_deref()
+                .filter(|_| !skip.contains(&"F13"))
+                .map(|path| win32::HookLibrary {
+                    path,
+                    table: fixes::F13_TABLE,
+                    exports: &fixes::F13_EXPORTS,
+                }),
             |cave| {
                 let mut writes = prepare(&image, edition.fixes, &skip, cave)?;
                 let axes = win32::centred_axes();

@@ -1,0 +1,11 @@
+[package]
+name = "cmr-hooks"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Hook library loaded into Colin McRae Rally by CMRLauncher: logic for in-memory fixes too large for hand-written stubs"
+
+[lib]
+name = "cmrhooks"
+crate-type = ["cdylib", "rlib"]

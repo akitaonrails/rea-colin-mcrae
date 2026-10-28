@@ -34,14 +34,19 @@ the first run (a `launcher.cfg` next to `CMRLauncher.exe` takes its place for
 portable installs). Besides the folders and language it holds `close_quits`
 (closing the window quits the game, or `false` for the original behaviour)
 and `gamepad_axes` (a pad's triggers and right stick work as throttle and
-brake). `CMRLauncher --controllers` lists the joysticks the game can see and
+brake), and the opt-in graphics settings `resolution`, `widescreen` and
+`draw_distance` (see the comments in the file and
+[docs/GRAPHICS.md](docs/GRAPHICS.md)). Keep `cmrhooks.dll` next to
+`CMRLauncher.exe`: it holds the HUD scaling for higher resolutions.
+`CMRLauncher --controllers` lists the joysticks the game can see and
 logs what each stick, trigger and button sends.
 
 ## Building
 
 ```text
 cargo test                                         # host logic
-cargo build --release --target i686-pc-windows-gnu  # needs i686-w64-mingw32-gcc
+cargo build --release --target i686-pc-windows-gnu  # needs i686-w64-mingw32-gcc;
+                                                   # builds CMRLauncher.exe and cmrhooks.dll
 ```
 
 ## History

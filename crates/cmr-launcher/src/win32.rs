@@ -7,7 +7,7 @@ use std::path::Path;
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, FreeLibrary, HANDLE,
 };
 use windows_sys::Win32::Media::Multimedia::{
     JOYCAPSW, JOYERR_NOERROR, JOYINFOEX, joyGetDevCapsW, joyGetPosEx,
@@ -15,9 +15,12 @@ use windows_sys::Win32::Media::Multimedia::{
 use windows_sys::Win32::System::Diagnostics::Debug::{
     FlushInstructionCache, ReadProcessMemory, WriteProcessMemory,
 };
-use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+use windows_sys::Win32::System::LibraryLoader::{
+    DONT_RESOLVE_DLL_REFERENCES, GetModuleHandleW, GetProcAddress, LoadLibraryExW,
+};
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAllocEx, VirtualProtectEx,
+    MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE, VirtualAllocEx,
+    VirtualFreeEx, VirtualProtectEx,
 };
 use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_32KEY,
@@ -25,8 +28,9 @@ use windows_sys::Win32::System::Registry::{
     RegSetValueExW,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CreateProcessW, GetExitCodeProcess, INFINITE, PROCESS_INFORMATION,
-    ResumeThread, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
+    CREATE_SUSPENDED, CreateProcessW, CreateRemoteThread, GetExitCodeProcess, GetExitCodeThread,
+    INFINITE, PROCESS_INFORMATION, ResumeThread, STARTUPINFOW, TerminateProcess,
+    WaitForSingleObject,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MessageBoxW,
@@ -214,6 +218,109 @@ fn write(process: HANDLE, address: u32, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// A DLL to load into the game before it runs, and where in the fix memory
+/// its exports go (see `fixes::F13_TABLE`).
+pub struct HookLibrary<'a> {
+    pub path: &'a Path,
+    pub table: u32,
+    pub exports: &'a [&'a str],
+}
+
+/// Each export's offset from the DLL's base, read by mapping the DLL here
+/// without running it (both processes are 32-bit).
+fn export_offsets(path: &Path, names: &[&str]) -> Result<Vec<u32>, String> {
+    let wpath = wide(path);
+    let module = unsafe { LoadLibraryExW(wpath.as_ptr(), null_mut(), DONT_RESOLVE_DLL_REFERENCES) };
+    if module.is_null() {
+        return Err(format!("cannot open {}: {}", path.display(), last_error()));
+    }
+    let offsets = names
+        .iter()
+        .map(|name| {
+            let cname = format!("{name}\0");
+            match unsafe { GetProcAddress(module, cname.as_ptr()) } {
+                Some(f) => Ok((f as usize - module as usize) as u32),
+                None => Err(format!("{} has no export {name}", path.display())),
+            }
+        })
+        .collect();
+    unsafe { FreeLibrary(module) };
+    offsets
+}
+
+/// Loads the hook library into the (suspended) game with a remote
+/// `LoadLibraryW` and writes its exports' addresses into the fix memory.
+/// Returns the library's base address in the game.
+fn load_hooks(process: HANDLE, hooks: &HookLibrary, cave: u32) -> Result<u32, String> {
+    let offsets = export_offsets(hooks.path, hooks.exports)?;
+    let wpath = wide(hooks.path);
+    let size = wpath.len() * 2;
+    let remote = unsafe {
+        VirtualAllocEx(
+            process,
+            null(),
+            size,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_READWRITE,
+        )
+    };
+    if remote.is_null() {
+        return Err(format!("cannot allocate in the game: {}", last_error()));
+    }
+    let result = (|| {
+        let mut done = 0usize;
+        if unsafe { WriteProcessMemory(process, remote, wpath.as_ptr().cast(), size, &mut done) }
+            == 0
+        {
+            return Err(format!("cannot write the library path: {}", last_error()));
+        }
+        let kernel32 = wide("kernel32.dll");
+        let load = unsafe {
+            GetProcAddress(
+                GetModuleHandleW(kernel32.as_ptr()),
+                c"LoadLibraryW".as_ptr().cast(),
+            )
+        }
+        .ok_or("no LoadLibraryW")?;
+        let thread = unsafe {
+            CreateRemoteThread(
+                process,
+                null(),
+                0,
+                // LoadLibraryW(path) as the thread routine: one pointer in,
+                // a 32-bit module handle out (the thread's exit code).
+                Some(std::mem::transmute::<
+                    unsafe extern "system" fn() -> isize,
+                    unsafe extern "system" fn(*mut c_void) -> u32,
+                >(load)),
+                remote,
+                0,
+                null_mut(),
+            )
+        };
+        if thread.is_null() {
+            return Err(format!("cannot start the loader thread: {}", last_error()));
+        }
+        let mut base = 0u32;
+        unsafe {
+            WaitForSingleObject(thread, 20_000);
+            GetExitCodeThread(thread, &mut base);
+            CloseHandle(thread);
+        }
+        if base == 0 {
+            return Err("the game could not load the library".into());
+        }
+        let table: Vec<u8> = offsets
+            .iter()
+            .flat_map(|o| base.wrapping_add(*o).to_le_bytes())
+            .collect();
+        write(process, cave.wrapping_add(hooks.table), &table)?;
+        Ok(base)
+    })();
+    unsafe { VirtualFreeEx(process, remote, 0, MEM_RELEASE) };
+    result
+}
+
 /// Starts `exe` suspended, applies the fixes, resumes it and waits for it
 /// to exit. Allocates `cave_size` bytes for the fixes' own code (none when
 /// 0); `prepare` turns that address into checked writes.
@@ -221,6 +328,7 @@ pub fn run_patched(
     exe: &Path,
     workdir: &Path,
     cave_size: u32,
+    hooks: Option<HookLibrary>,
     prepare: impl FnOnce(u32) -> Result<Vec<CheckedWrite>, String>,
     log: &mut dyn FnMut(&str),
 ) -> Result<u32, String> {
@@ -290,6 +398,15 @@ pub fn run_patched(
             w.write.address,
             w.write.bytes.len()
         ));
+    }
+    if let Some(h) = &hooks {
+        match load_hooks(process, h, cave) {
+            Ok(base) => log(&format!("{} loaded at 0x{base:08x}", h.path.display())),
+            // The fixes' stubs see an empty table and do nothing.
+            Err(e) => log(&format!(
+                "warning: hook library not loaded ({e}); its fixes stay off"
+            )),
+        }
     }
     unsafe {
         FlushInstructionCache(process, null(), 0);
