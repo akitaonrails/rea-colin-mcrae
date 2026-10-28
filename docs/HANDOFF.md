@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: play the wet-tyre sound
+feat: play the scenery impact sounds
 ```
 
 Start by confirming the checkout and progress footer:
@@ -162,9 +162,9 @@ Escape pauses and the menu is drawn (`impl.pause-menu`, `impl.pause-menu-draw`;
 Surface/skid, landing and barrier impact sounds play
 (`impl.surface-and-prang-sound`; tables via `extract-surface-audio-tables`).
 The wet-tyre sound plays (`impl.wet-sound`). Next: the crowd feeder (scene
-nodes of type `0xe` gathered by `FUN_00481990`), the other impact sites (body
-contact, objects), then the championship progression behind the hub
-predicates.
+nodes of type `0xe` gathered by `FUN_00481990`), the body-contact impact
+sites (`FUN_004115d0`/`FUN_00412860`), then the championship progression
+behind the hub predicates. Scenery impacts play (`impl.static-impact-sound`).
 `FUN_0041f630` only feeds impact sound/FFB/shudder. Trees appear to be `.sht` sprites, which the native
 excludes from static collision. Done so far: the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`

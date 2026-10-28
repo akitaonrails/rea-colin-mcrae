@@ -435,7 +435,7 @@ The wheel/suspension animation and wheel node pose (`FUN_00410350`, `FUN_00417e2
 The engine sound (`FUN_00488d60`, `FUN_00487e00`, `FUN_00488ab0`) and its listener `FUN_0047ec20` play in the windowed session over the extracted static band tables.
 Escape pauses the race (`FUN_00449580` Escape block, `FUN_00468200`), and the pause menu (`FUN_00468260`, `FUN_00468ed0`, `FUN_00438970`) resumes, restarts or quits; the hub (`FUN_00438b90`) follows its observed branch order.
 The pause menu draws its text and panel (`FUN_00468dd0`, `FUN_00497b40`) with the in-game fonts and strings.
-The surface roll/skid (`FUN_00489890`), landing thumps (`FUN_0046a030`) and barrier impacts (`FUN_00469e80`) play over the extracted surface-audio tables, followed by the wet-tyre/rain tick (`FUN_0048d4c0`).
+The surface roll/skid (`FUN_00489890`), landing thumps (`FUN_0046a030`) and barrier impacts (`FUN_00469e80`) play over the extracted surface-audio tables, followed by the wet-tyre/rain tick (`FUN_0048d4c0`); scenery hits (`FUN_0043d760`) play their impact sounds too.
 
 ## Update rules
 
@@ -446,8 +446,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-29T13:40:00Z
-milestone=wet-sound
+updated_utc=2026-10-29T14:10:00Z
+milestone=static-impact-sound
 completed=117
 partial=2
 not_started=0

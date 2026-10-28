@@ -781,6 +781,22 @@ impl From<GeometricPostprocessError> for WheelPostprocessError {
     }
 }
 
+/// One static scenery hit's impact-sound inputs: the severity `FUN_0041f630`
+/// returned, the world contact point and the object type `+0x54 & 0x7f`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StaticMaterialImpact {
+    pub severity: i32,
+    pub world_contact: [i32; 3],
+    pub material: u8,
+}
+
+/// What one static scenery collision pass produced.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StaticCollisionStep {
+    pub contacts: usize,
+    pub impacts: Vec<StaticMaterialImpact>,
+}
+
 /// Orientation and angular inputs shared by the native motion/contact passes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MotionState {
@@ -1160,7 +1176,7 @@ impl RaceState {
         previous_center_xz: PreviousCarXz,
         parsed: &ParsedStaticCollisionScene,
         damage_owner: &mut D,
-    ) -> Result<usize, LiveStaticCollisionStepError<D::Error>> {
+    ) -> Result<StaticCollisionStep, LiveStaticCollisionStepError<D::Error>> {
         let car = self.car;
         let primary_cell =
             build_active_cell_record(&parsed.grid, &parsed.main_cell_centers, car.position)
@@ -1234,9 +1250,36 @@ impl RaceState {
             committed.collision.response_state_680 = kernel_state.out_of_control_680;
             committed.collision.recovery_latch_688 = kernel_state.out_of_control_688;
         }
-        let contact_count = effects.contacts.len();
+        let contacts = effects.contacts.len();
+        // FUN_0043d760's impact sound inputs (`FUN_00469e80`), in hit order.
+        let impacts = kernel
+            .hits()
+            .iter()
+            .filter_map(|hit| match hit {
+                crate::static_collision_kernel::StaticKernelHit::Normal { response, .. } => {
+                    Some(response.events.iter().filter_map(|event| match *event {
+                        crate::static_collision_response::StaticResponseEvent::MaterialImpact {
+                            severity,
+                            world_contact,
+                            material,
+                        } => Some(StaticMaterialImpact {
+                            severity: severity.raw(),
+                            world_contact: [
+                                world_contact.x.raw(),
+                                world_contact.y.raw(),
+                                world_contact.z.raw(),
+                            ],
+                            material,
+                        }),
+                        _ => None,
+                    }))
+                }
+                crate::static_collision_kernel::StaticKernelHit::Alternate { .. } => None,
+            })
+            .flatten()
+            .collect();
         self.car = committed;
-        Ok(contact_count)
+        Ok(StaticCollisionStep { contacts, impacts })
     }
 
     /// The unit forward vector for the current heading on the x/z plane.
@@ -2759,11 +2802,11 @@ mod tests {
             x: Fixed16::from_raw(-0xa_0000),
             z: Fixed16::ZERO,
         };
-        let contacts = race
+        let step = race
             .resolve_static_collision_after_step(previous, &parsed, &mut NoStaticDamageOwner)
             .unwrap();
         let committed = race.car();
-        assert_eq!(contacts, 1);
+        assert_eq!(step.contacts, 1);
         assert_ne!(committed.position, car.position);
         assert_ne!(committed.collision.pending_linear_3cc, Vec3::ZERO);
         assert_eq!(committed.collision.history.current_len, 1);

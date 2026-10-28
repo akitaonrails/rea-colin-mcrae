@@ -212,6 +212,8 @@ pub struct GameplaySession<'a> {
     last_trigger_events: Vec<TriggerEvent>,
     /// `ctl +0x304` as the last four-wheel tick read it.
     last_throttle_304: i32,
+    /// The static scenery impacts of the last stepped tick.
+    last_static_impacts: Vec<crate::race_state::StaticMaterialImpact>,
     /// The pause words for the next frame ([`Self::set_pause_flow`]).
     pause_flow: PauseFlow,
     /// The car as the stage setup left it, restored when a new stage starts.
@@ -325,6 +327,7 @@ impl<'a> GameplaySession<'a> {
             stage_triggers: None,
             last_trigger_events: Vec::new(),
             last_throttle_304: 0,
+            last_static_impacts: Vec::new(),
             pause_flow: PauseFlow::default(),
             stage_start: CarState::at_rest(),
             race_started: false,
@@ -473,6 +476,12 @@ impl<'a> GameplaySession<'a> {
     /// Write back the engine sound's `car +0x6ec`.
     pub fn set_idle_countdown_6ec(&mut self, countdown: i16) {
         self.race.set_idle_countdown_6ec(countdown);
+    }
+
+    /// The static scenery impacts of the last stepped tick (`FUN_0043d760`).
+    #[must_use]
+    pub fn last_static_impacts(&self) -> &[crate::race_state::StaticMaterialImpact] {
+        &self.last_static_impacts
     }
 
     /// The trigger walk's effects on the last four-wheel tick.
@@ -686,13 +695,16 @@ impl<'a> GameplaySession<'a> {
             } else {
                 self.race.step(&controls, &self.params)
             };
-            if let Err(error) = self.race.resolve_static_collision_after_step(
+            match self.race.resolve_static_collision_after_step(
                 previous_center_xz,
                 parsed,
                 damage_owner,
             ) {
-                self.race = race_before;
-                return Err(StaticGameplayAdvanceError::Collision(error));
+                Ok(step) => self.last_static_impacts = step.impacts,
+                Err(error) => {
+                    self.race = race_before;
+                    return Err(StaticGameplayAdvanceError::Collision(error));
+                }
             }
             sample.car = self.race.car();
             if four_wheel && let Err(error) = self.four_wheel_tail(&controls, progress, &mut sample)

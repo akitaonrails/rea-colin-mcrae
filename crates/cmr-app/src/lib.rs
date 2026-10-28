@@ -3257,6 +3257,7 @@ fn advance_game_frame<C: HostClock>(
                         camera_mode,
                         listener.centre_proximity_9e4,
                         master,
+                        advanced.stepped,
                     );
                 }
             }
@@ -4120,6 +4121,7 @@ impl EffectsAudio {
         camera_mode: i32,
         centre_proximity: i32,
         master_percent: i32,
+        stepped: bool,
     ) {
         let Ok(mut mixer) = mixer.lock() else {
             return;
@@ -4144,33 +4146,42 @@ impl EffectsAudio {
         }
         let car = session.car();
         let centre = vec3_raw(car.position);
-        // Impacts fire inside Mechanics (the barrier walk's FUN_0041f630 ->
-        // FUN_00469e80); the damage model that yields the breakage kind is
+        // Impacts fire inside Mechanics, so only on a stepped tick: static
+        // scenery first (`FUN_0043d760`), then the barrier walk
+        // (`FUN_00401fd0`). The damage model that yields the breakage kind is
         // not reconstructed, so no breakage cue plays.
-        for event in session.last_trigger_events() {
-            let cmr_core::trigger_walk::TriggerEvent::Barrier {
-                kind,
-                impact: Some(impact),
-                ..
-            } = *event
-            else {
-                continue;
-            };
-            let severity = impact_severity(impact.severity_vector);
-            let Some(object_type) = barrier_object_type(kind).filter(|_| severity > 0) else {
-                continue;
-            };
-            let Ok(azimuth) = point_azimuth(camera_world, camera_mode, centre, impact.point) else {
-                continue;
-            };
-            let mut out = PrangVoices {
-                voices: &mut *mixer,
-                slot_base: prang_base,
-                channel_base: PRANG_CHANNEL_BASE,
-                centre_proximity,
-                master_percent,
-            };
-            play_impact(&self.prang, &mut out, severity, azimuth, object_type);
+        if stepped {
+            let static_impacts = session
+                .last_static_impacts()
+                .iter()
+                .map(|impact| (impact.severity, impact.world_contact, impact.material as i8));
+            let barrier_impacts = session.last_trigger_events().iter().filter_map(|event| {
+                let cmr_core::trigger_walk::TriggerEvent::Barrier {
+                    kind,
+                    impact: Some(impact),
+                    ..
+                } = *event
+                else {
+                    return None;
+                };
+                let severity = impact_severity(impact.severity_vector);
+                let object_type = barrier_object_type(kind).filter(|_| severity > 0)?;
+                Some((severity, impact.point, object_type))
+            });
+            let impacts: Vec<_> = static_impacts.chain(barrier_impacts).collect();
+            for (severity, point, object_type) in impacts {
+                let Ok(azimuth) = point_azimuth(camera_world, camera_mode, centre, point) else {
+                    continue;
+                };
+                let mut out = PrangVoices {
+                    voices: &mut *mixer,
+                    slot_base: prang_base,
+                    channel_base: PRANG_CHANNEL_BASE,
+                    centre_proximity,
+                    master_percent,
+                };
+                play_impact(&self.prang, &mut out, severity, azimuth, object_type);
+            }
         }
         let Some(words) = session.surface_sound_words() else {
             return;
