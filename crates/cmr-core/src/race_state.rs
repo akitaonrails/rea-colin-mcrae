@@ -41,6 +41,10 @@ use crate::drivetrain::{
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::gearbox::{GearOutOfRange, GearboxInputs, GearboxParams, GearboxState, apply_gearbox};
 use crate::ground_pass::{GroundContact, GroundPassCar, run_ground_pass};
+use crate::integrator_head::{
+    ContactSumInput, GripAssistInput, RollSurfaceIndexError, RolloverInput, RolloverState,
+    contact_force_and_moment, grip_assist, rollover_trigger,
+};
 use crate::legacy_math::sqrt_q16;
 use crate::live_static_collision_car_frame::{
     ActiveCellRecordBuildError, LiveStaticCollisionCarFrameInput,
@@ -74,8 +78,8 @@ use crate::vehicle_dynamics::{
     apply_low_speed_steer_cut, apply_translation_step, build_contact_basis_vectors,
     construct_lane_directions, contact_count_scale, contact_global_update_gate,
     derive_lane_direction_pair, drag, net_accel, resolve_lane_direction_mode, resting_flag_700,
-    stabilize_lane_source_s, sum_contact_moments, sum_translation_lane_forces,
-    transform_contact_force, upright_flag_404,
+    stabilize_lane_source_s, sum_translation_lane_forces, transform_contact_force,
+    upright_flag_404,
 };
 use crate::vehicle_dynamics::{classify_contact_distance_lanes, grounded_base_force, slope_grip};
 use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
@@ -394,6 +398,11 @@ pub struct FourWheelIterationParams<'a> {
     /// and `FUN_004095e0` each tick and feeds their gains and bases to both
     /// wheel loops; `None` keeps the harness words in `first`/`second`.
     pub tyre: Option<TyreSurfaceInputs<'a>>,
+    /// The hull probes' moment arms `+0x8c/+0x98/+0xa4/+0xb0` (probes 4..7).
+    pub hull_contact_offsets: [Vec3; 4],
+    /// `ctl +0x128/+0x12c`, the crest threshold and speed-loss gain of the
+    /// grip assist (from the auxiliary control patch `FUN_00407270`).
+    pub crest_128_12c: [i32; 2],
     /// Resolved global/callback inputs; Rebuild takes precedence over Exchange.
     pub lane_rebuild: bool,
     pub lane_exchange: bool,
@@ -421,13 +430,17 @@ pub fn populate_compiled_contact_offsets(
     state: &CompiledHalfSignState,
 ) {
     const INDICES: [[usize; 3]; 4] = [[6, 7, 8], [3, 4, 5], [9, 10, 11], [12, 13, 14]];
-    wheel.contact_offsets = INDICES.map(|[x, y, z]| {
+    /// `+0x8c/+0x98/+0xa4/+0xb0` in the half-sign store order.
+    const HULL_INDICES: [[usize; 3]; 4] = [[18, 19, 20], [15, 16, 17], [21, 22, 23], [24, 25, 26]];
+    let offset = |[x, y, z]: [usize; 3]| {
         Vec3::new(
             Fixed16::from_raw(state.words[x]),
             Fixed16::from_raw(state.words[y]),
             Fixed16::from_raw(state.words[z]),
         )
-    });
+    };
+    wheel.contact_offsets = INDICES.map(offset);
+    wheel.hull_contact_offsets = HULL_INDICES.map(offset);
 }
 
 /// Populate the integrator's mass, moment scale and inertia, and the control
@@ -536,27 +549,6 @@ pub fn populate_compiled_contact_update_inputs(
     }
 }
 
-/// Transform current postprocessed wheel forces through the pre-update basis and
-/// accumulate their contact moments in native lane order.
-#[must_use]
-pub fn derive_wheel_contact_moment(
-    basis: [Vec3; 3],
-    lanes: &[GeometricPostprocessLane; 4],
-    contacts: [bool; 4],
-    offsets: [Vec3; 4],
-) -> Vec3 {
-    sum_contact_moments(
-        &[],
-        std::array::from_fn(|index| {
-            (
-                contacts[index],
-                transform_contact_force(basis, lanes[index].accumulator),
-                offsets[index],
-            )
-        }),
-    )
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FourWheelState {
     pub first: [FirstWheelState; 4],
@@ -604,6 +596,10 @@ pub struct FourWheelState {
     pub tumble: TumbleState,
     /// This tick's contact vectors `+0x4bc..+0x518` (`FUN_00409f90`).
     pub contact_vectors_4bc: [Vec3; 8],
+    /// The rollover words `+0x734/+0x610/+0x614/+0x60c`.
+    pub rollover: RolloverState,
+    /// `+0x330`: the ground normal saved before the last ground pass.
+    pub previous_normal_330: Vec3,
 }
 
 /// Apply neutral-gear zeroing or the ordinary post-step tracking update.
@@ -695,6 +691,14 @@ pub enum WheelPostprocessError {
     },
     /// A surface word or tyre variant outside the static tyre tables.
     TyreSurface(TyreSurfaceIndexError),
+    /// A wheel surface word outside the roll-limit table.
+    RollSurface(RollSurfaceIndexError),
+}
+
+impl From<RollSurfaceIndexError> for WheelPostprocessError {
+    fn from(error: RollSurfaceIndexError) -> Self {
+        Self::RollSurface(error)
+    }
 }
 
 impl From<TyreSurfaceIndexError> for WheelPostprocessError {
@@ -979,6 +983,13 @@ impl CarState {
                     lowest_wheel_650: 0,
                 },
                 contact_vectors_4bc: [Vec3::ZERO; 8],
+                rollover: RolloverState {
+                    slope_ticks_734: 0,
+                    roll_610: 0,
+                    roll_ticks_614: 0,
+                    roll_angle_60c: 0,
+                },
+                previous_normal_330: Vec3::ZERO,
             },
             ground: None,
         }
@@ -1833,16 +1844,88 @@ impl RaceState {
             slope_grip(start_normal.y),
             thresholds.count_742,
         );
-        let force = sum_translation_lane_forces(
-            base_force,
-            wheel.postprocess.non_wheel_forces,
-            std::array::from_fn(|index| {
-                (
-                    wheel.postprocess.wheel_contacts[index],
-                    lanes[index].accumulator,
-                )
-            }),
+        // The integrator head `FUN_0040a4a0`: the grip assist `FUN_0040b240`
+        // and the rollover trigger `FUN_0040bfe0` run before the contact sum.
+        // `+0x2a0` still holds the start-of-tick basis there.
+        let published = self.car.four_wheel.start_basis_27c;
+        let mut lane_accumulators = lanes.map(|lane| lane.accumulator);
+        let assist = grip_assist(
+            &GripAssistInput {
+                contact_count_674: self.car.motion.contact_count_674,
+                upright_404: self.car.four_wheel.upright_404,
+                time_step: wheel.lane_time_step,
+                basis: self.car.motion.basis,
+                velocity: self.car.velocity,
+                angular_velocity: self.car.motion.angular_velocity,
+                speed_ec: self.car.four_wheel.speed_ec,
+                steer_angle_3e0: self.car.four_wheel.steering.angle_3e0,
+                steer_position_318: self.car.four_wheel.steering.position_318,
+                handbrake_30c: controls.handbrake,
+                steer_force_reversed: wheel.lane_exchange,
+                normal: self.car.motion.projection_axis,
+                previous_normal_330: self.car.four_wheel.previous_normal_330,
+                crest_threshold_128: wheel.crest_128_12c[0],
+                crest_gain_12c: wheel.crest_128_12c[1],
+                front_accumulators: [lane_accumulators[0], lane_accumulators[1]],
+                published,
+            },
+            &self.trig,
         );
+        self.car.motion.basis = assist.basis;
+        self.car.velocity = assist.velocity;
+        self.car.motion.angular_velocity = assist.angular_velocity;
+        [lane_accumulators[0], lane_accumulators[1]] = assist.front_accumulators;
+        let wheel_surfaces = self.car.ground.map_or([0; 4], |ground| {
+            std::array::from_fn(|w| ground.lanes.type_words[w] as i16)
+        });
+        let rollover = rollover_trigger(
+            &mut self.car.four_wheel.rollover,
+            self.car.collision.response_state_680,
+            &RolloverInput {
+                contact_count_674: self.car.motion.contact_count_674,
+                count_742: thresholds.count_742,
+                normal: self.car.motion.projection_axis,
+                basis: self.car.motion.basis,
+                published,
+                velocity: self.car.velocity,
+                base_force,
+                inverse_mass_4c: wheel.inverse_mass_4c,
+                // No other car shares this race state.
+                car_contact_6dc: false,
+                wheel_surfaces,
+                roll_limits: wheel.tyre.map(|tyre| &tyre.tables.roll_limits_768c),
+            },
+        )?;
+        if rollover.out_of_control {
+            self.car.collision.response_state_680 = true;
+        }
+        if let Some(snapshot) = rollover.axis_snapshot_bc {
+            self.car.collision.out_of_control_axis_bc = snapshot;
+        }
+        self.car.motion.moment = self.car.motion.moment.add(rollover.moment);
+        let offsets: [Vec3; 8] = std::array::from_fn(|probe| {
+            if probe < 4 {
+                wheel.contact_offsets[probe]
+            } else {
+                wheel.hull_contact_offsets[probe - 4]
+            }
+        });
+        let (contact_force, contact_moment) = contact_force_and_moment(&ContactSumInput {
+            base_force,
+            support_3fc: self.car.four_wheel.support_3fc,
+            lane_accumulators,
+            count_742: thresholds.count_742,
+            touching_744: thresholds.indices_744,
+            contact_68c: self.car.motion.contact_distance_flags,
+            offsets,
+            published,
+        });
+        // Harness-only extra forces (empty on the compiled path).
+        let force = wheel
+            .postprocess
+            .non_wheel_forces
+            .iter()
+            .fold(contact_force, |sum, extra| sum.add(*extra));
         // The integrator's own translation: damping by the previous `+0xec`,
         // inverse mass `+0x4c`, the pending collision correction, then the new
         // `+0xec`. The low-speed suppression is gated on the threshold scan's
@@ -1939,16 +2022,7 @@ impl RaceState {
         angular.basis = self.car.motion.basis;
         angular.momentum.angular_velocity = self.car.motion.angular_velocity;
         angular.momentum.prior_moment = self.car.motion.moment;
-        angular.momentum.contact_moment =
-            angular
-                .momentum
-                .contact_moment
-                .add(derive_wheel_contact_moment(
-                    self.car.motion.basis,
-                    &lanes,
-                    wheel.postprocess.wheel_contacts,
-                    wheel.contact_offsets,
-                ));
+        angular.momentum.contact_moment = angular.momentum.contact_moment.add(contact_moment);
         let orientation = apply_angular_orientation_pipeline(
             angular,
             self.car.collision.out_of_control(),
@@ -1995,6 +2069,8 @@ impl RaceState {
         let Some(ground) = self.car.ground else {
             return Ok(());
         };
+        // `FUN_00410a60` saves the normal before either path updates it.
+        self.car.four_wheel.previous_normal_330 = self.car.motion.projection_axis;
         let car = GroundPassCar {
             position: self.car.position,
             velocity: self.car.velocity,
@@ -2832,6 +2908,9 @@ mod tests {
             gearbox: None,
             brake_balance_e1a4: [0x1_0000; 2],
             tyre: None,
+            hull_contact_offsets: [Vec3::ZERO; 4],
+            // Harness value: never crest.
+            crest_128_12c: [i32::MAX, 0],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -3302,22 +3381,40 @@ mod tests {
                 < crate::vehicle_dynamics::LOW_SPEED_POSITION_SUPPRESSION
         );
         assert_eq!(suppressed.car.position, Vec3::ZERO);
-        let mut expected_angular = wheel.angular;
-        expected_angular.basis = car.motion.basis;
-        expected_angular.momentum.angular_velocity = car.motion.angular_velocity;
-        expected_angular.momentum.prior_moment = car.motion.moment;
-        expected_angular.momentum.contact_moment =
-            wheel
-                .angular
-                .momentum
-                .contact_moment
-                .add(derive_wheel_contact_moment(
+        // The integrator head's grip assist `FUN_0040b240` runs first and
+        // hands its renormalized basis and damped yaw rate to the pipeline.
+        let assist = crate::integrator_head::grip_assist(
+            &GripAssistInput {
+                contact_count_674: car.motion.contact_count_674,
+                upright_404: upright_flag_404(transform_contact_force(
                     car.motion.basis,
-                    &expected_lanes,
-                    wheel.postprocess.wheel_contacts,
-                    wheel.contact_offsets,
-                ));
-        // `wheel` has no contacting lane, so the deadzones are skipped.
+                    car.motion.projection_axis,
+                )),
+                time_step: wheel.lane_time_step,
+                basis: car.motion.basis,
+                velocity: car.velocity,
+                angular_velocity: car.motion.angular_velocity,
+                speed_ec: car.four_wheel.speed_ec,
+                steer_angle_3e0: sample.car.four_wheel.steering.angle_3e0,
+                steer_position_318: sample.car.four_wheel.steering.position_318,
+                handbrake_30c: straight_throttle(1)[0].handbrake,
+                steer_force_reversed: wheel.lane_exchange,
+                normal: car.motion.projection_axis,
+                previous_normal_330: car.four_wheel.previous_normal_330,
+                crest_threshold_128: wheel.crest_128_12c[0],
+                crest_gain_12c: wheel.crest_128_12c[1],
+                front_accumulators: [Vec3::ZERO; 2],
+                published: car.four_wheel.start_basis_27c,
+            },
+            &trig,
+        );
+        let mut expected_angular = wheel.angular;
+        expected_angular.basis = assist.basis;
+        expected_angular.momentum.angular_velocity = assist.angular_velocity;
+        expected_angular.momentum.prior_moment = car.motion.moment;
+        // `wheel` has no touching probe: the integrator's contact sum adds no
+        // lane moment, and the deadzones are skipped.
+        expected_angular.momentum.contact_moment = wheel.angular.momentum.contact_moment;
         assert_eq!(
             derive_compiled_lane_thresholds(wheel.lane_threshold_inputs).count_742,
             0
@@ -3336,9 +3433,10 @@ mod tests {
             upright_flag_404(start_axis)
         );
         // An upright car with no rotation or throttle: on contact the
-        // deadzones zero the one-LSB residual angles, the basis holds, and the
-        // slow new speed marks it at rest. Without contact the same residual
-        // rotates the basis and the flag stays clear.
+        // deadzones zero the one-LSB residual angles of the lane moments, the
+        // basis holds, and the slow new speed marks it at rest. Without
+        // contact the integrator adds no lane moment at all, so the basis
+        // holds too.
         let mut calm_car = car;
         calm_car.motion.projection_axis = vector([0, 0x10000, 0]);
         calm_car.motion.angular_velocity = Vec3::ZERO;
@@ -3350,14 +3448,34 @@ mod tests {
                 .step_with_all_four_wheels(&Controls::default(), &unforced)
                 .unwrap()
         };
+        // The grip assist `FUN_0040b240` legacy-renormalizes the rows of a
+        // grounded upright car every tick, so "holds" means no rotation.
+        let axis_aligned = |basis: [Vec3; 3]| {
+            basis.iter().enumerate().all(|(row, axis)| {
+                let words = [axis.x.raw(), axis.y.raw(), axis.z.raw()];
+                words
+                    .iter()
+                    .enumerate()
+                    .all(|(column, &word)| (column == row) == (word != 0))
+            })
+        };
         let calm = calm_step(&contacting);
         assert!(calm.car.four_wheel.upright_404);
-        assert_eq!(calm.car.motion.basis, calm_car.motion.basis);
+        assert!(
+            axis_aligned(calm.car.motion.basis),
+            "{:?}",
+            calm.car.motion.basis
+        );
         assert!(calm.car.four_wheel.resting_700);
+        // The loose fixture's lanes still push through the native contact
+        // moment sum, so it turns a little but stays upright.
         let loose = calm_step(&wheel);
         assert!(loose.car.four_wheel.upright_404);
-        assert_ne!(loose.car.motion.basis, calm_car.motion.basis);
-        assert!(!loose.car.four_wheel.resting_700);
+        assert!(
+            loose.car.motion.basis[1].y.raw() > 0xf000,
+            "{:?}",
+            loose.car.motion.basis
+        );
 
         // With contacting lanes the deadzones run on the cut steer and the
         // start-of-tick `+0x404`; the fixture starts at rest, so any steer is cut
@@ -3423,6 +3541,7 @@ mod tests {
             wheel_terms_777c: std::array::from_fn(|v| {
                 std::array::from_fn(|s| [(v * 4 + s) as u16, 0x100, 0x200])
             }),
+            roll_limits_768c: [[0; 2]; 120],
         };
         let mut tyred = wheel.clone();
         tyred.tyre = Some(TyreSurfaceInputs {

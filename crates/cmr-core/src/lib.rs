@@ -84,6 +84,7 @@ pub mod input_calibration;
 pub mod input_device;
 pub mod input_map;
 pub mod input_poll;
+pub mod integrator_head;
 pub mod intro_video;
 pub mod legacy_math;
 pub mod live_static_collision_car_frame;

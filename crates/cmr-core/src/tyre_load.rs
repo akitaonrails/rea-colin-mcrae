@@ -272,6 +272,7 @@ mod tests {
             wheel_terms_777c: std::array::from_fn(|v| {
                 std::array::from_fn(|s| [(v * 10 + s) as u16, 0x300 + s as u16, 0xfff0])
             }),
+            roll_limits_768c: [[0; 2]; 120],
         }
     }
 

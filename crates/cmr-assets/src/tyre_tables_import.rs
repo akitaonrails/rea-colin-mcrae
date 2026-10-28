@@ -16,7 +16,7 @@ use crate::tyre_tables_profile::{
 use crate::verify::{require_real_directory, sha256};
 
 pub const TYRE_TABLES_IMPORT_SCHEMA_VERSION: u32 = 1;
-pub const TYRE_TABLES_DATA_FILE: &str = "tyre-surface-tables-v2.bin";
+pub const TYRE_TABLES_DATA_FILE: &str = "tyre-surface-tables-v3.bin";
 pub const TYRE_TABLES_STATE_FILE: &str = "tyre-surface-tables-import-state.json";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -315,7 +315,7 @@ fn populate(
             format_version: TYRE_TABLES_FORMAT_VERSION,
             surfaces: TYRE_SURFACE_COUNT as u32,
             variants: TYRE_VARIANT_COUNT as u32,
-            encoding: TyreTablesEncoding::CmrTyreTablesV2,
+            encoding: TyreTablesEncoding::CmrTyreTablesV3,
         },
     };
     let mut state =
@@ -389,6 +389,7 @@ mod tests {
             wheel_terms_777c: std::array::from_fn(|v| {
                 std::array::from_fn(|s| [v as u16, s as u16, u16::MAX - s as u16])
             }),
+            roll_limits_768c: [[0; 2]; 120],
         }
     }
     fn reviewed(bytes: &[u8]) -> ReviewedTyreTablesProfile {

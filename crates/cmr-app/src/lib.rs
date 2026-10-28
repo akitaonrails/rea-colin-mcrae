@@ -153,6 +153,9 @@ const CAR_SELECTOR_STORE_DIRECTORY: &str = "official-eu-car-selectors";
 const REVIEWED_TYRE_TABLES_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-tyre-surface-tables-v1.json");
 const TYRE_TABLES_STORE_DIRECTORY: &str = "official-eu-tyre-surface-tables";
+const REVIEWED_AUX_CONTROL_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-aux-control-constants-v1.json");
+const AUX_CONTROL_STORE_DIRECTORY: &str = "official-eu-aux-control-constants";
 const ROOT_EXTENT: DisplayExtent = DisplayExtent {
     width: 640,
     height: 480,
@@ -3157,6 +3160,56 @@ impl SessionSurfaceInputs {
     }
 }
 
+/// The reviewed auxiliary control constants behind `FUN_00407270`.
+pub struct SessionAuxControl {
+    set: cmr_core::compiled_car_initializer::AuxControlConstantSet,
+}
+
+impl SessionAuxControl {
+    /// # Errors
+    ///
+    /// Reports an invalid reviewed profile, a missing or tampered store, or a
+    /// store schema that does not match the core contract.
+    pub fn open(runtime_data: &Path) -> Result<Self, String> {
+        let reviewed =
+            cmr_assets::ReviewedAuxControlProfile::from_json(REVIEWED_AUX_CONTROL_PROFILE)
+                .map_err(|error| format!("invalid reviewed aux-control profile: {error}"))?;
+        let store = cmr_assets::AuxControlConstantsStore::open(
+            &session_sidecar_store(runtime_data, AUX_CONTROL_STORE_DIRECTORY),
+            &reviewed,
+        )
+        .map_err(|error| format!("cannot open aux-control constants: {error}"))?;
+        let set = cmr_core::compiled_car_initializer::AuxControlConstantSet::from_store(&store)
+            .map_err(|error| error.to_string())?;
+        Ok(Self { set })
+    }
+
+    /// `ctl +0x128/+0x12c` of the patch for the session's zero config: its
+    /// option byte selects the default policy, and the patch's global word is
+    /// `DAT_004eac6c`.
+    fn crest_words(&self, state_word_48: i32) -> Result<[i32; 2], String> {
+        use cmr_core::compiled_car_initializer::{AUX_CONTROL_WORD_OFFSETS, AuxControlOption};
+        let patch = self
+            .set
+            .derive(
+                AuxControlOption::Resolved(0),
+                state_word_48,
+                cmr_core::vehicle_dynamics::SOLVER_GLOBAL_CONSTANTS
+                    .time_step
+                    .raw(),
+            )
+            .map_err(|error| error.to_string())?;
+        let word = |offset: u16| {
+            let index = AUX_CONTROL_WORD_OFFSETS
+                .iter()
+                .position(|candidate| *candidate == offset)
+                .expect("the patch writes this word");
+            patch.words[index]
+        };
+        Ok([word(0x128), word(0x12c)])
+    }
+}
+
 #[derive(Debug)]
 pub enum SessionTyreTablesError {
     Profile(ReviewedTyreTablesProfileError),
@@ -3330,10 +3383,13 @@ impl SessionWheelInputs {
                 limit: Fixed16::ONE,
                 threshold: Fixed16::ONE,
             }; 8],
+            // Harness scan without live ground: every probe touches, so the
+            // integrator's contact sum includes all lanes (live ground
+            // replaces this with the real scan).
             lane_threshold_inputs:
                 cmr_core::compiled_car_initializer::CompiledLaneThresholdInputs {
                     lane_words: [0; 8],
-                    source_y: [0x199a; 8],
+                    source_y: [0; 8],
                 },
             pedal_response: cmr_core::pedal_response::PedalResponseParams::default(),
             lane_time_step: SOLVER_GLOBAL_CONSTANTS.time_step,
@@ -3344,6 +3400,9 @@ impl SessionWheelInputs {
             gearbox: None,
             brake_balance_e1a4: [0x1_0000; 2],
             tyre: None,
+            hull_contact_offsets: [Vec3::ZERO; 4],
+            // Harness value: never crest.
+            crest_128_12c: [i32::MAX, 0],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -3846,6 +3905,7 @@ impl SessionCompiledPose {
         inputs: &SessionWheelInputs,
         trig: &'a [i32],
         tyre_tables: &'a cmr_formats::pe_tyre_tables::TyreSurfaceTables,
+        aux: &SessionAuxControl,
     ) -> Result<FourWheelIterationParams<'a>, SessionFourWheelError> {
         let car = self
             .compiled_car()
@@ -3874,6 +3934,9 @@ impl SessionCompiledPose {
         // `FUN_0041b160` reads the player's sensitivity option; the session's
         // zero config selects option 0.
         wheel.steering = cmr_core::steering_response::steering_sensitivity(wheel.steering, 0);
+        wheel.crest_128_12c = aux
+            .crest_words(car.constants.state_word_48)
+            .map_err(SessionFourWheelError::AuxControl)?;
         Ok(wheel)
     }
 }
@@ -3946,15 +4009,17 @@ fn windowed_drive_session<'a>(
     trig: &'a [i32],
     wheel_inputs: &Result<SessionWheelInputs, SessionSurfaceInputsError>,
     tyre_tables: &'a Result<SessionTyreTables, SessionTyreTablesError>,
+    aux: &Result<SessionAuxControl, String>,
     params: SimParams,
     mut start: CarState,
 ) -> GameplaySession<'a> {
-    let four_wheel = match (wheel_inputs, tyre_tables) {
-        (Ok(inputs), Ok(tables)) => compiled_pose
-            .compiled_four_wheel_params(inputs, trig, tables.tables())
+    let four_wheel = match (wheel_inputs, tyre_tables, aux) {
+        (Ok(inputs), Ok(tables), Ok(aux)) => compiled_pose
+            .compiled_four_wheel_params(inputs, trig, tables.tables(), aux)
             .map_err(|error| error.to_string()),
-        (Err(error), _) => Err(error.to_string()),
-        (_, Err(error)) => Err(error.to_string()),
+        (Err(error), _, _) => Err(error.to_string()),
+        (_, Err(error), _) => Err(error.to_string()),
+        (_, _, Err(error)) => Err(error.clone()),
     };
     match four_wheel {
         Ok(wheel) => {
@@ -4013,11 +4078,13 @@ pub fn run_windowed_game_session(
     let trig = cmr_core::fixed_point::build_sine_table();
     let wheel_inputs = SessionWheelInputs::open(runtime_data);
     let tyre_tables = SessionTyreTables::open(runtime_data);
+    let aux = SessionAuxControl::open(runtime_data);
     let mut session = windowed_drive_session(
         &compiled_pose,
         &trig,
         &wheel_inputs,
         &tyre_tables,
+        &aux,
         params,
         start,
     );
@@ -4302,6 +4369,7 @@ pub enum SessionFourWheelError {
     Surface(SurfaceCoefficientIndexError),
     Producer(WheelPostprocessError),
     CompiledCar(SessionCompiledPoseError),
+    AuxControl(String),
 }
 
 impl fmt::Display for SessionFourWheelError {
@@ -4311,6 +4379,7 @@ impl fmt::Display for SessionFourWheelError {
             Self::Surface(error) => write!(formatter, "invalid wheel surface index: {error:?}"),
             Self::Producer(error) => write!(formatter, "four-wheel producer failed: {error:?}"),
             Self::CompiledCar(error) => write!(formatter, "compiled car inputs failed: {error}"),
+            Self::AuxControl(error) => write!(formatter, "aux-control patch failed: {error}"),
         }
     }
 }
@@ -4386,13 +4455,18 @@ pub fn run_headless_four_wheel_game_session(
     };
     let mut start = CarState::at_rest();
     start.motion.angular_velocity = Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE);
-    // A harness grounded start: four contacting lanes and a projection axis
-    // that is upright in the harness basis (the negated identity), so the
-    // wheel-force producer runs its grounded body; an at-rest car with no
-    // contacts is airborne and produces no lane force.
+    // A harness grounded start in the game's y-up frame: four contacting
+    // lanes, an up normal and the identity basis (rolling along +x), so the
+    // producer runs its grounded body and the integrator head sees level
+    // ground; an at-rest car with no contacts is airborne.
     start.motion.contact_distance_flags = [true; 4];
     start.motion.contact_count_674 = 4;
-    start.motion.projection_axis = Vec3::new(Fixed16::ZERO, Fixed16::ONE.neg(), Fixed16::ZERO);
+    start.motion.basis = [
+        Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
+        Vec3::new(Fixed16::ZERO, Fixed16::ONE, Fixed16::ZERO),
+        Vec3::new(Fixed16::ZERO, Fixed16::ZERO, Fixed16::ONE),
+    ];
+    start.motion.projection_axis = Vec3::new(Fixed16::ZERO, Fixed16::ONE, Fixed16::ZERO);
     let mut session = GameplaySession::new_with_four_wheel_and_car(
         params,
         InRaceScript::frontend_harness(),
@@ -5627,6 +5701,7 @@ mod tests {
         let trig = cmr_core::fixed_point::build_sine_table();
         let wheel_inputs = SessionWheelInputs::open(&root);
         let tyre_tables = SessionTyreTables::open(&root);
+        let aux = SessionAuxControl::open(&root);
         let params = SimParams {
             inverse_mass: Fixed16::from_raw(0x8000),
             gravity: Vec3::ZERO,
@@ -5636,6 +5711,7 @@ mod tests {
             &trig,
             &wheel_inputs,
             &tyre_tables,
+            &aux,
             params,
             start,
         );
@@ -6186,8 +6262,9 @@ mod tests {
         let inputs = SessionWheelInputs::open(&root).unwrap();
         let tyre_tables = SessionTyreTables::open(&root).unwrap();
         let trig = cmr_core::fixed_point::build_sine_table();
+        let aux = SessionAuxControl::open(&root).unwrap();
         let wheel = pose
-            .compiled_four_wheel_params(&inputs, &trig, tyre_tables.tables())
+            .compiled_four_wheel_params(&inputs, &trig, tyre_tables.tables(), &aux)
             .unwrap();
         start.four_wheel.gearbox = GearboxState::at_setup(true);
         if let Some(gearbox) = &wheel.gearbox {

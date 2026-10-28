@@ -424,7 +424,8 @@ axis-angle lane rotation and the compiled drive split are now sourced, and the
 windowed session runs the four-wheel producer. With the orientation update's native row-vector
 transform, steering turns the car the right way: rendered windowed frames show
 it following the AU1 road around a bend. The out-of-control (tumbling) path `FUN_004115d0` with
-`FUN_00412860`/`FUN_00413a80` is reconstructed.
+`FUN_00412860`/`FUN_00413a80` is reconstructed, and so is the integrator head
+(`FUN_0040b240` grip assist, `FUN_0040bfe0` rollover trigger, native force sum).
 
 ## Update rules
 
@@ -435,14 +436,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T17:30:00Z
-milestone=tumbling-ground-pass
+updated_utc=2026-10-28T20:00:00Z
+milestone=integrator-head
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-handling-out-of-control-path-and-car-animation
-next_exit_gate=bank-slide-divergence-and-wheel-animation
+next_exit_gate=wheel-animation-and-player-options
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

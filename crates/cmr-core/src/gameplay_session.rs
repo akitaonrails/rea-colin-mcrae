@@ -511,6 +511,9 @@ mod tests {
             gearbox: None,
             brake_balance_e1a4: [0x1_0000; 2],
             tyre: None,
+            hull_contact_offsets: [Vec3::ZERO; 4],
+            // Harness value: never crest.
+            crest_128_12c: [i32::MAX, 0],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: crate::race_state::FourWheelPostprocessParams {

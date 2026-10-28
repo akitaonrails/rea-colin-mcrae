@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: reconstruct the out-of-control tumbling ground pass
+feat: reconstruct the integrator head and native contact sum
 ```
 
 Start by confirming the checkout and progress footer:
@@ -138,10 +138,11 @@ steering turns the right way. To see the car, run the ignored
 `imported_au1_four_wheel_window_frames` test (`CMR_FRAMES_STEER=left|right`,
 `CMR_FRAMES_STEER_AFTER`, `CMR_FRAMES_TICKS`, `CMR_FRAMES_EVERY`); it writes PPM
 frames under `.work/frames`. The out-of-control path is reconstructed
-(`impl.tumbling-ground-pass`). Next: the blow-up after sliding into a steep
-bank (probe `CMR_PROBE_FROM=1200 CMR_PROBE_TICKS=1300 CMR_PROBE_EVERY=4` shows
-the rear lane words jumping ~3.6 units and the fall speed growing), then wheel
-animation `FUN_00410350`. Trees appear to be `.sht` sprites, which the native
+(`impl.tumbling-ground-pass`), and so is the integrator head
+(`impl.integrator-head`), which removed the bank-slide blow-up. Run the probe
+with `CMR_RUNTIME_DATA="$PWD/runtime-data/installed-eu-derived-assets-v2"`.
+Next: wheel animation `FUN_00410350`, the player option bytes, respawn and
+totalled handling. Trees appear to be `.sht` sprites, which the native
 excludes from static collision. Done so far: the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`
 from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground`),

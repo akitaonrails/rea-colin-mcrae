@@ -123,7 +123,7 @@ fn validate(
             "shape.variants",
         ),
         (
-            s.shape.encoding == TyreTablesEncoding::CmrTyreTablesV2,
+            s.shape.encoding == TyreTablesEncoding::CmrTyreTablesV3,
             "shape.encoding",
         ),
     ];
@@ -248,6 +248,7 @@ mod tests {
             wheel_terms_777c: std::array::from_fn(|v| {
                 std::array::from_fn(|s| [v as u16, s as u16, u16::MAX - s as u16])
             }),
+            roll_limits_768c: [[0; 2]; 120],
         }
     }
 
@@ -278,7 +279,7 @@ mod tests {
                 format_version: TYRE_TABLES_FORMAT_VERSION,
                 surfaces: TYRE_SURFACE_COUNT as u32,
                 variants: TYRE_VARIANT_COUNT as u32,
-                encoding: TyreTablesEncoding::CmrTyreTablesV2,
+                encoding: TyreTablesEncoding::CmrTyreTablesV3,
             },
         };
         fs::write(

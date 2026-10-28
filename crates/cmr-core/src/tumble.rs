@@ -92,7 +92,7 @@ pub(crate) fn cross(a: Vec3, b: Vec3) -> Vec3 {
     ])
 }
 
-fn length(vector: Vec3) -> i32 {
+pub(crate) fn length(vector: Vec3) -> i32 {
     crate::legacy_math::sqrt_q16(vector.dot(vector).raw() as u32) as i32
 }
 

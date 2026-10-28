@@ -15,7 +15,7 @@ use crate::pe32::{Pe32Error, Pe32Image};
 pub const TYRE_SURFACE_COUNT: usize = 120;
 pub const TYRE_VARIANT_COUNT: usize = 8;
 pub const TYRE_WHEEL_TERM_WORDS: usize = 3;
-pub const TYRE_TABLES_FORMAT_VERSION: u32 = 2;
+pub const TYRE_TABLES_FORMAT_VERSION: u32 = 3;
 
 const CANDIDATE_STRIDE: usize = 8;
 /// Offset of the second-loop dword inside each record; the load factor is at 0.
@@ -26,12 +26,15 @@ const RECORD_TABLE_SPAN: usize = TYRE_SURFACE_COUNT * CANDIDATE_STRIDE;
 /// Distance between the two second-loop dword addresses.
 const BASE_6B50_SPAN: usize = RECORD_TABLE_SPAN;
 const WHEEL_TERMS_SPAN: usize = TYRE_VARIANT_COUNT * TYRE_SURFACE_COUNT * WHEEL_TERM_ENTRY_BYTES;
+/// Two bytes per surface: the roll limits `DAT_004f768c` that end exactly
+/// where `DAT_004f777c` begins.
+const ROLL_LIMITS_SPAN: usize = TYRE_SURFACE_COUNT * 2;
 
 const MAGIC: &[u8; 8] = b"CMRTYRE\0";
 const HEADER_LEN: usize = 20;
 const CANDIDATE_ENCODED_BYTES: usize = TYRE_SURFACE_COUNT * 4;
 pub const TYRE_TABLES_ENCODED_LEN: usize =
-    HEADER_LEN + 4 * CANDIDATE_ENCODED_BYTES + WHEEL_TERMS_SPAN;
+    HEADER_LEN + 4 * CANDIDATE_ENCODED_BYTES + WHEEL_TERMS_SPAN + ROLL_LIMITS_SPAN;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TyreTablesLayout {
@@ -61,6 +64,9 @@ pub struct TyreSurfaceTables {
     pub load_factor_6f0c: [i32; TYRE_SURFACE_COUNT],
     /// `DAT_004f777c[variant][surface]` as three little-endian words.
     pub wheel_terms_777c: [[[u16; TYRE_WHEEL_TERM_WORDS]; TYRE_SURFACE_COUNT]; TYRE_VARIANT_COUNT],
+    /// `DAT_004f768c[surface * 2..]`: the slide and roll limits the rollover
+    /// trigger `FUN_0040bfe0` sums over the four wheel surfaces.
+    pub roll_limits_768c: [[u8; 2]; TYRE_SURFACE_COUNT],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -157,6 +163,13 @@ pub fn extract_tyre_surface_tables(
     let terms = image
         .read_va_range(layout.wheel_terms_777c_va, WHEEL_TERMS_SPAN)
         .map_err(pe_error)?;
+    let roll_start = layout
+        .wheel_terms_777c_va
+        .checked_sub(ROLL_LIMITS_SPAN as u32)
+        .ok_or(TyreTablesError::UnsupportedLayout)?;
+    let roll = image
+        .read_va_range(roll_start, ROLL_LIMITS_SPAN)
+        .map_err(pe_error)?;
     let field = |bytes: &[u8], offset: usize| {
         std::array::from_fn(|i| {
             let at = i * CANDIDATE_STRIDE + offset;
@@ -176,6 +189,7 @@ pub fn extract_tyre_surface_tables(
                 })
             })
         }),
+        roll_limits_768c: std::array::from_fn(|i| [roll[i * 2], roll[i * 2 + 1]]),
     })
 }
 
@@ -196,6 +210,9 @@ pub fn encode_tyre_surface_tables(tables: &TyreSurfaceTables) -> Vec<u8> {
     }
     for word in tables.wheel_terms_777c.iter().flatten().flatten() {
         out.extend_from_slice(&word.to_le_bytes());
+    }
+    for pair in &tables.roll_limits_768c {
+        out.extend_from_slice(pair);
     }
     debug_assert_eq!(out.len(), TYRE_TABLES_ENCODED_LEN);
     out
@@ -221,6 +238,7 @@ pub fn decode_tyre_surface_tables(input: &[u8]) -> Result<TyreSurfaceTables, Tyr
         std::array::from_fn(|i| word(start + i * 4) as i32)
     };
     let terms_start = HEADER_LEN + 4 * CANDIDATE_ENCODED_BYTES;
+    let roll_start = terms_start + WHEEL_TERMS_SPAN;
     Ok(TyreSurfaceTables {
         candidate_base_6b50: table(0),
         candidate_base_6f10: table(1),
@@ -233,6 +251,9 @@ pub fn decode_tyre_surface_tables(input: &[u8]) -> Result<TyreSurfaceTables, Tyr
                     u16::from_le_bytes(input[at + w * 2..at + w * 2 + 2].try_into().unwrap())
                 })
             })
+        }),
+        roll_limits_768c: std::array::from_fn(|i| {
+            [input[roll_start + i * 2], input[roll_start + i * 2 + 1]]
         }),
     })
 }
@@ -273,6 +294,7 @@ mod tests {
                     ]
                 })
             }),
+            roll_limits_768c: std::array::from_fn(|i| [i as u8, 0xff - i as u8]),
         }
     }
 
@@ -312,6 +334,10 @@ mod tests {
             file_offset(layout.candidate_base_6f10_va) + RECORD_TABLE_SPAN - 4,
             0xdead_beef,
         );
+        let roll = file_offset(layout.wheel_terms_777c_va) - 240;
+        for (i, pair) in tables.roll_limits_768c.iter().enumerate() {
+            bytes[roll + i * 2..roll + i * 2 + 2].copy_from_slice(pair);
+        }
         for (v, variant) in tables.wheel_terms_777c.iter().enumerate() {
             for (s, entry) in variant.iter().enumerate() {
                 let at = file_offset(layout.wheel_terms_777c_va)
@@ -337,7 +363,8 @@ mod tests {
             0x4f72cc
         );
         assert_eq!(l.wheel_terms_777c_va + WHEEL_TERMS_SPAN as u32, 0x4f8dfc);
-        assert_eq!(TYRE_TABLES_ENCODED_LEN, 20 + 1920 + 5760);
+        assert_eq!(l.wheel_terms_777c_va - ROLL_LIMITS_SPAN as u32, 0x4f768c);
+        assert_eq!(TYRE_TABLES_ENCODED_LEN, 20 + 1920 + 5760 + 240);
     }
 
     #[test]
@@ -474,6 +501,7 @@ mod tests {
         tables.candidate_base_6f10[119] = -1;
         tables.load_factor_6b4c[0] = i32::MAX;
         tables.load_factor_6f0c[119] = i32::MIN;
+        tables.roll_limits_768c[119] = [0xff, 0];
         tables.wheel_terms_777c[7][119] = [0, u16::MAX, 0x8000];
         let decoded = decode_tyre_surface_tables(&encode_tyre_surface_tables(&tables)).unwrap();
         assert_eq!(decoded, tables);

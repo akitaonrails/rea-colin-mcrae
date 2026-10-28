@@ -2602,6 +2602,10 @@ languages rather than fabricating or silently aliasing Italian assets.
 - The ground pass `FUN_00410a60` keeps the four-wheel car on the stage surface
   every tick (requery, normal, basis alignment, penetration lift, velocity
   constraint); contact flags and the threshold scan are now live.
+- The integrator head runs the grip assist `FUN_0040b240` and the rollover
+  trigger `FUN_0040bfe0` before the native contact sum, which adds each
+  touching probe's support and lane force and its moment about the probe
+  offset; an out-of-control car takes the tumbling pass `FUN_004115d0`.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

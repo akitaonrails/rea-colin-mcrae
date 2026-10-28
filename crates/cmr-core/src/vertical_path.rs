@@ -258,7 +258,8 @@ mod tests {
             }; 8],
             lane_threshold_inputs: crate::compiled_car_initializer::CompiledLaneThresholdInputs {
                 lane_words: [0; 8],
-                source_y: [0x199a; 8],
+                // Harness scan: every probe touches the flat stage.
+                source_y: [0; 8],
             },
             pedal_response: crate::pedal_response::PedalResponseParams::default(),
             lane_time_step: Fixed16::ZERO,
@@ -269,6 +270,9 @@ mod tests {
             gearbox: None,
             brake_balance_e1a4: [0x1_0000; 2],
             tyre: None,
+            hull_contact_offsets: [Vec3::ZERO; 4],
+            // Harness value: never crest.
+            crest_128_12c: [i32::MAX, 0],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -429,11 +433,17 @@ mod tests {
         let script = full_throttle(400);
         let mut start = CarState::at_rest();
         start.motion.angular_velocity = Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE);
-        // Grounded and upright in the harness basis (the negated identity), so
-        // the wheel-force producer runs its grounded body.
+        // Grounded and upright in the game's y-up frame, rolling along +x
+        // (row 0), so the producer runs its grounded body and the integrator
+        // head sees level ground.
         start.motion.contact_distance_flags = [true; 4];
         start.motion.contact_count_674 = 4;
-        start.motion.projection_axis = Vec3::new(Fixed16::ZERO, Fixed16::ONE.neg(), Fixed16::ZERO);
+        start.motion.basis = [
+            Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
+            Vec3::new(Fixed16::ZERO, Fixed16::ONE, Fixed16::ZERO),
+            Vec3::new(Fixed16::ZERO, Fixed16::ZERO, Fixed16::ONE),
+        ];
+        start.motion.projection_axis = Vec3::new(Fixed16::ZERO, Fixed16::ONE, Fixed16::ZERO);
         let first = drive_stage_with_all_four_wheels(start, &script, &stage(), &wheel).unwrap();
         assert!(first.finished);
         assert!(first.ticks < 400);
