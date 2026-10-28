@@ -1940,6 +1940,9 @@ stuck (latch `+0x67c`), the screen fades out, the car is placed back on the
 last eligible `.cat` node facing along the road, and the fade comes back in.
 The suspension and wheel animation routines are presentation-only.
 
+The HUD's rev, speed and gear now come from the car through the recovered
+preparation `FUN_00464130` (`impl.race-hud-prepare`).
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: reconstruct the car reset to the road
+feat: feed the HUD from the recovered value preparation
 ```
 
 Start by confirming the checkout and progress footer:
@@ -143,9 +143,9 @@ frames under `.work/frames`. The out-of-control path is reconstructed
 with `CMR_RUNTIME_DATA="$PWD/runtime-data/installed-eu-derived-assets-v2"`.
 The car reset is reconstructed (`impl.car-reset`); the wheel/suspension
 animation routines are presentation-only (`rea.official-eu.car-animation-words`).
-Next: the player option bytes, the live HUD gear/rev words (the HUD still uses
-harness gear 1, rev 0), the `+0x75c` penalty timer, then the animation words
-for rendering. Trees appear to be `.sht` sprites, which the native
+The HUD rev, speed and gear come from `FUN_00464130` (`impl.race-hud-prepare`).
+Next: the player option bytes, the `+0x75c` penalty timer, then the animation
+words for rendering. Trees appear to be `.sht` sprites, which the native
 excludes from static collision. Done so far: the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`
 from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground`),

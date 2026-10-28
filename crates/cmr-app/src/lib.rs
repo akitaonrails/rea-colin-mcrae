@@ -2803,22 +2803,32 @@ fn analog_driving_is_active(pad: &GamepadDrivingState) -> bool {
 /// magnitude by the normal HUD preparation path.
 const RACE_HUD_SPEED_MULTIPLIER_Q16: i32 = 0x431168;
 
-/// Adapt the currently reconstructed session state to the recovered HUD input
-/// contract. Timer and speed conversion use recovered arithmetic. Until the
-/// live gearbox/rev producer is connected, first gear and zero rev are explicit
-/// native-session harness values; progress uses the active CAT cursor fraction.
+/// Adapt the session state to the recovered HUD input contract. A four-wheel
+/// car supplies `FUN_00464130`'s rev, speed and gear words (`prepared`), with
+/// the units bits and car-type nibble at their harness zero. The planar
+/// harness has no engine or gearbox, so it shows gear 1, zero rev and its
+/// velocity magnitude. Progress uses the active CAT cursor fraction (the
+/// native progress words are not recovered).
 fn live_race_hud_inputs(
     car: CarState,
+    prepared: Option<cmr_core::race_hud_prepare::PreparedHudValues>,
     progress: &StageProgress<'_>,
     node_count: usize,
     stage_clock: Fixed16,
 ) -> RaceHudPreparedInputs {
-    let speed_q16 = car.velocity.length();
-    let speed = speed_q16
-        .mul(Fixed16::from_raw(RACE_HUD_SPEED_MULTIPLIER_Q16))
-        .raw()
-        .max(0)
-        >> 16;
+    let (rev_q16, speed, gear) = prepared.map_or_else(
+        || {
+            let speed = car
+                .velocity
+                .length()
+                .mul(Fixed16::from_raw(RACE_HUD_SPEED_MULTIPLIER_Q16))
+                .raw()
+                .max(0)
+                >> 16;
+            (0, speed, 1)
+        },
+        |values| (values.rev_q16, values.speed.max(0), values.gear),
+    );
     let progress_q16 = if node_count <= 1 {
         0
     } else {
@@ -2827,9 +2837,9 @@ fn live_race_hud_inputs(
     };
     RaceHudPreparedInputs {
         viewport: ROOT_EXTENT,
-        rev_q16: 0,
+        rev_q16,
         speed: speed as u32,
-        gear: 1,
+        gear,
         progress_q16,
         elapsed_centiseconds: elapsed_centiseconds(stage_clock, Fixed16::ZERO).max(0) as u32,
         gauge_inset: CommonGaugeInset::ConfigLowThreeBitsZero,
@@ -3000,6 +3010,7 @@ fn advance_game_frame<C: HostClock>(
         let car_world = car_model_world_q16(&harness_car_world);
         let hud_input = live_race_hud_inputs(
             car,
+            session.prepared_hud_values(false, false),
             progress,
             resources.bundle.nodes().map_or(0, <[CatNode]>::len),
             session.stage_clock(),
@@ -4118,7 +4129,7 @@ pub fn run_windowed_game_session(
     let initial = compose_live_race_hud(
         &resources,
         initial_world,
-        live_race_hud_inputs(start, &progress, nodes.len(), Fixed16::ZERO),
+        live_race_hud_inputs(start, None, &progress, nodes.len(), Fixed16::ZERO),
     )?;
     let clock = WallClock::new();
     let mut root_interaction =
@@ -5245,7 +5256,13 @@ mod tests {
         let mut car = CarState::at_rest();
         car.velocity = Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO);
 
-        let input = live_race_hud_inputs(car, &progress, nodes.len(), Fixed16::from_raw(0x1_8000));
+        let input = live_race_hud_inputs(
+            car,
+            None,
+            &progress,
+            nodes.len(),
+            Fixed16::from_raw(0x1_8000),
+        );
         assert_eq!(input.speed, 0x43);
         assert_eq!(input.elapsed_centiseconds, 150);
         assert_eq!(input.progress_q16, 0);
@@ -5374,6 +5391,7 @@ mod tests {
             rendered.frame.clone(),
             live_race_hud_inputs(
                 start,
+                None,
                 &StageProgress::new(&nodes, 0),
                 nodes.len(),
                 Fixed16::ZERO,

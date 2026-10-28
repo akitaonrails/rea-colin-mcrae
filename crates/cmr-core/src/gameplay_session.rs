@@ -237,6 +237,28 @@ impl<'a> GameplaySession<'a> {
         self
     }
 
+    /// The HUD words `FUN_00464130` prepares from the four-wheel car, or
+    /// `None` for the planar harness (which has no engine or gearbox).
+    #[must_use]
+    pub fn prepared_hud_values(
+        &self,
+        metric_units: bool,
+        classic_gauge: bool,
+    ) -> Option<crate::race_hud_prepare::PreparedHudValues> {
+        let wheel = self.wheel.as_ref()?;
+        let car = self.race.car();
+        Some(crate::race_hud_prepare::prepare_hud_values(
+            crate::race_hud_prepare::HudPrepareInput {
+                engine_speed_2e8: car.four_wheel.engine_speed_2e8,
+                redline_15c: wheel.engine_smoothing.redline_15c,
+                speed_ec: car.four_wheel.speed_ec,
+                gear_43a: car.four_wheel.gearbox.gear_43a,
+                metric_units,
+                classic_gauge,
+            },
+        ))
+    }
+
     /// What the reset dispatcher did on the last four-wheel tick.
     #[must_use]
     pub fn last_reset(&self) -> ResetOutcome {

@@ -427,6 +427,7 @@ it following the AU1 road around a bend. The out-of-control (tumbling) path `FUN
 `FUN_00412860`/`FUN_00413a80` is reconstructed, and so is the integrator head
 (`FUN_0040b240` grip assist, `FUN_0040bfe0` rollover trigger, native force sum),
 and the car reset (`FUN_00467210` dispatcher, `FUN_00414850` fade and placement).
+The HUD value preparation `FUN_00464130` feeds the live rev, speed and gear.
 
 ## Update rules
 
@@ -437,14 +438,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T22:30:00Z
-milestone=car-reset
+updated_utc=2026-10-28T23:15:00Z
+milestone=race-hud-prepare
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-handling-out-of-control-path-and-car-animation
-next_exit_gate=player-options-and-live-hud-gear
+next_exit_gate=player-options-and-penalty-timer
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

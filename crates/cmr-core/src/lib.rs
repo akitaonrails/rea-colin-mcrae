@@ -103,6 +103,7 @@ pub mod present_scaling;
 pub mod presentation;
 pub mod profile_store;
 pub mod race_hud_plan;
+pub mod race_hud_prepare;
 pub mod race_participants;
 pub mod race_state;
 pub mod render_compose;
