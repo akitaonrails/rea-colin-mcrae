@@ -12,8 +12,12 @@
 //! `FUN_004976a0`, or its Q16 wrapper `FUN_00497b40` for the menu.
 //!
 //! Drawn: the stage results (`FUN_0042b1d0`), the rally results
-//! (`FUN_0042b960`) and the post-stage menu (`FUN_0042d5a0`). The other
-//! pages draw the frame only for now. Not drawn: the team and flag icons
+//! (`FUN_0042b960`), the championship standings (`FUN_0042bdb0`), the
+//! post-stage menu (`FUN_0042d5a0`), GAME OVER (`FUN_0042e180`) and the
+//! championship and rally complete pages (`FUN_0042df90`, `FUN_0042e0c0`).
+//! The confirmations (`FUN_0042e210` sizes its box from the dialog object
+//! `FUN_004aadf0`, which draws the text), the super-special result, the
+//! bonus car and the save page draw the frame only for now. Not drawn: the team and flag icons
 //! (`FUN_0042e5c0`), the time trial's record rows (`FUN_0042b6b0`), and the
 //! stage name when the host has none (`FUN_004ba470` reads the executable's
 //! name table `0x506f80`, which is not extracted). The table rows are cut to
@@ -111,8 +115,16 @@ pub struct ResultsLayout {
     pub time_x: i32,
     /// `0x54f9d4`: the corner text's right edge.
     pub corner_x: i32,
-    /// `0x54f9d0`: the first row's centre.
+    /// `0x54f9d0` (`0x54f9d2` is the same): the first row's centre.
     pub row_base: i32,
+    /// `0x54f9b6`, `0x54f9b8`, `0x54f9ce`: the championship position, name
+    /// and total columns; `0x54f9d6` the first country column and
+    /// `0x54f9f2` the country column pitch.
+    pub championship_position_x: i32,
+    pub championship_name_x: i32,
+    pub championship_total_x: i32,
+    pub country_x: i32,
+    pub country_pitch: i32,
     /// `0x54f9e8`: the rows' clip.
     pub clip: OverlayQuad,
     /// `DAT_004ed558` (`FUN_0042ae80`).
@@ -140,6 +152,11 @@ impl ResultsLayout {
             name_x: fraction(w, 0x75c2),
             time_x: fraction(w, 0xd999),
             corner_x: fraction(w, 0xe666),
+            championship_position_x: fraction(w, 0x147a),
+            championship_name_x: fraction(w, 0x1eb8),
+            championship_total_x: fraction(w, 0xe7ae),
+            country_x: fraction(w, 0x5ef9),
+            country_pitch: fraction(w, 0x10a3),
             row_base: h.wrapping_mul(37) / 480 / 2 + quarter,
             clip: OverlayQuad {
                 x: 0,
@@ -170,6 +187,26 @@ pub struct ResultsRow<'a> {
     pub player: bool,
 }
 
+/// One championship row: the placed slot's name, whether it is a player,
+/// and its rally points by country (`cfg + 0x170 + 16 slot`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChampionshipRow<'a> {
+    pub name: &'a [u8],
+    pub player: bool,
+    pub points: [u8; 9],
+}
+
+impl ChampionshipRow<'_> {
+    /// The entry's total byte: the points summed through the current
+    /// country, stored as `total << 1 | player` in a byte, drawn `>> 1`.
+    fn total(&self, country: usize) -> u8 {
+        let sum = self.points[..=country.min(8)]
+            .iter()
+            .fold(0u8, |sum, &points| sum.wrapping_add(points));
+        sum.wrapping_shl(1) >> 1
+    }
+}
+
 /// What the pages draw from.
 pub struct ResultsDrawInput<'a> {
     pub director: &'a ResultsDirector,
@@ -177,6 +214,8 @@ pub struct ResultsDrawInput<'a> {
     /// The stage order (`0x54fdcc`) and the rally order (`0x54fe58`).
     pub stage_rows: &'a [ResultsRow<'a>],
     pub rally_rows: &'a [ResultsRow<'a>],
+    /// The championship order (`0x54fee1`).
+    pub championship_rows: &'a [ChampionshipRow<'a>],
     /// `FUN_004ba470(country, stage)`, when the host has the name table.
     pub stage_name: Option<&'a [u8]>,
     /// `FUN_00430480`'s fraction of the tick, Q16.
@@ -220,6 +259,22 @@ impl Painter<'_, '_> {
             TextAlignment::from_legacy_flags(flags),
             TextLayoutLimits::default(),
         )?;
+        self.push(font, color, plan);
+        Ok(())
+    }
+
+    /// `FUN_00497b40`: text at a Q16 position.
+    fn text_q16(
+        &mut self,
+        x_q16: i32,
+        y_q16: i32,
+        text: &[u8],
+        font: PauseFont,
+        color: [u8; 4],
+        flags: u8,
+    ) -> Result<(), TextLayoutError> {
+        let (width, height) = (self.layout.width as u16, self.layout.height as u16);
+        let (plan, _, _) = text_q16((self.fonts)(font), text, x_q16, y_q16, flags, width, height)?;
         self.push(font, color, plan);
         Ok(())
     }
@@ -287,7 +342,11 @@ pub fn results_draw_plan<'a>(
     match page {
         1 => stage_results(&mut painter, input, highlight, text)?,
         2 => rally_results(&mut painter, input, highlight, text)?,
+        3 => championship(&mut painter, input, highlight, text)?,
         4 => post_stage_menu(&mut painter, input, text)?,
+        8 => game_over(&mut painter, input, highlight, text)?,
+        0x14 => championship_complete(&mut painter, input, highlight, text)?,
+        0x15 => rally_complete(&mut painter, input, highlight, text)?,
         _ => {}
     }
     Ok(painter.plan)
@@ -448,6 +507,222 @@ fn rally_results(
     Ok(())
 }
 
+/// `FUN_0042bdb0`: position, name, each country's points (6 columns for a
+/// novice, 8 otherwise; `"-"` past the current country) and the total.
+fn championship(
+    painter: &mut Painter,
+    input: &ResultsDrawInput,
+    highlight: [u8; 4],
+    text: &dyn Fn(i32) -> Vec<u8>,
+) -> Result<(), TextLayoutError> {
+    let l = painter.layout;
+    let cfg = &input.event.cfg;
+    let difficulty = cfg.difficulty_018 & 0x18 != 0;
+    let country = usize::from(cfg.cursor_168 & 0xf);
+    let (columns, first_column) = if difficulty {
+        (8, l.country_x)
+    } else {
+        (6, l.country_x + l.country_pitch)
+    };
+    for (id, x, flags) in [
+        (0x7b, l.championship_position_x, 0x32),
+        (0x22, l.championship_name_x, 0x31),
+        (0x7c, l.championship_total_x, 0x32),
+    ] {
+        painter.text(
+            x,
+            l.header_y,
+            &text(id),
+            PauseFont::Result,
+            BODY_COLOR,
+            flags,
+        )?;
+    }
+    let scroll = input.director.scroll();
+    let offset = i32::from(scroll.drawn(input.scroll_t_q16));
+    painter.clip = Some(l.clip);
+    for (i, row) in input
+        .championship_rows
+        .iter()
+        .enumerate()
+        .take(usize::from(input.director.rows()))
+    {
+        let i = i as i32;
+        if i <= scroll.index - 2 || i > scroll.index + 8 {
+            continue;
+        }
+        let y = l.pitch() * i + offset + l.row_base;
+        let color = if row.player { highlight } else { BODY_COLOR };
+        let position = c_format(b"%d", &[FormatArg::Int(i64::from(i + 1))]);
+        let x = l.championship_position_x;
+        painter.text(x, y, &position, PauseFont::Title, color, 0x22)?;
+        let x = l.championship_name_x;
+        painter.text(x, y, row.name, PauseFont::Result, color, 0x21)?;
+        for column in 0..columns {
+            let points = if column <= country {
+                c_format(b"%02d", &[FormatArg::Int(i64::from(row.points[column]))])
+            } else {
+                b"-".to_vec()
+            };
+            let x = l.country_pitch * column as i32 + first_column;
+            painter.text(x, y, &points, PauseFont::Result, color, 0x22)?;
+        }
+        let total = c_format(b"%d", &[FormatArg::Int(i64::from(row.total(country)))]);
+        let x = l.championship_total_x;
+        painter.text(x, y, &total, PauseFont::Title, color, 0x22)?;
+    }
+    painter.clip = None;
+    let last = if difficulty { 7 } else { 5 };
+    if country >= last {
+        painter.text(
+            l.title_x,
+            l.title_y,
+            &text(0xe9),
+            PauseFont::Title,
+            TITLE_COLOR,
+            0x31,
+        )?;
+    } else {
+        painter.text(
+            l.title_x,
+            l.title_y,
+            &text(0xe8),
+            PauseFont::Title,
+            TITLE_COLOR,
+            0x31,
+        )?;
+        let name = text(0x3c + country as i32);
+        corner(painter, &c_format(&text(0xe6), &[FormatArg::Bytes(&name)]))?;
+    }
+    championship_rules(painter, input, columns);
+    Ok(())
+}
+
+/// `FUN_0042c240`: the header rule, a vertical rule after the names and one
+/// before each country column and after the last.
+fn championship_rules(painter: &mut Painter, input: &ResultsDrawInput, columns: usize) {
+    rule(painter, input);
+    let l = painter.layout;
+    let y = fraction(l.height, 0x2b85);
+    let h = fraction(l.height, 0xc000);
+    painter.fill(fraction(l.width, 0x1c28), y, 1, h, BODY_COLOR);
+    let mut x = l.country_x - l.country_pitch / 2 - 1;
+    if columns == 6 {
+        x += l.country_pitch;
+    }
+    for _ in 0..=columns {
+        painter.fill(x, y, 1, h, BODY_COLOR);
+        x += l.country_pitch;
+    }
+}
+
+/// `FUN_0042e180`: GAME OVER and why.
+fn game_over(
+    painter: &mut Painter,
+    input: &ResultsDrawInput,
+    highlight: [u8; 4],
+    text: &dyn Fn(i32) -> Vec<u8>,
+) -> Result<(), TextLayoutError> {
+    painter.text_q16(
+        0x8000,
+        0x3333,
+        &text(0x86),
+        PauseFont::Title,
+        highlight,
+        0x12,
+    )?;
+    let reason = if input.director.context().disqualified {
+        0x80
+    } else {
+        0x12a
+    };
+    painter.text_q16(
+        0x8000,
+        0x6666,
+        &text(reason),
+        PauseFont::Result,
+        BODY_COLOR,
+        0x22,
+    )
+}
+
+/// `FUN_0042df90`: the championship finished, by position (and outside the
+/// top three by difficulty; the expert set's line is an unset local, drawn
+/// as nothing).
+fn championship_complete(
+    painter: &mut Painter,
+    input: &ResultsDrawInput,
+    highlight: [u8; 4],
+    text: &dyn Fn(i32) -> Vec<u8>,
+) -> Result<(), TextLayoutError> {
+    painter.text_q16(
+        0x8000,
+        0x4000,
+        &text(0x78),
+        PauseFont::Title,
+        highlight,
+        0x12,
+    )?;
+    let position = input.director.context().championship_position;
+    let (first, second) = match position {
+        1 => (Some(0x10d), 0x10e),
+        2 => (Some(0x10f), 0x111),
+        3 => (Some(0x110), 0x111),
+        _ if position > 3 => match (input.event.cfg.difficulty_018 >> 3) & 3 {
+            0 => (Some(0x109), 0x10c),
+            1 => (Some(0x10a), 0x10c),
+            2 => (Some(0x10b), 0x10c),
+            _ => (None, 0x10c),
+        },
+        _ => (Some(0x110), 0x111),
+    };
+    if let Some(first) = first {
+        painter.text_q16(
+            0x8000,
+            0x6666,
+            &text(first),
+            PauseFont::Result,
+            BODY_COLOR,
+            0x12,
+        )?;
+    }
+    painter.text_q16(
+        0x8000,
+        0x8000,
+        &text(second),
+        PauseFont::Result,
+        BODY_COLOR,
+        0x12,
+    )
+}
+
+/// `FUN_0042e0c0`: the rally finished, and a line by difficulty (none for
+/// the fourth setting).
+fn rally_complete(
+    painter: &mut Painter,
+    input: &ResultsDrawInput,
+    highlight: [u8; 4],
+    text: &dyn Fn(i32) -> Vec<u8>,
+) -> Result<(), TextLayoutError> {
+    let country = text(0x3c + i32::from(input.event.cfg.cursor_168 & 0xf));
+    let title = c_format(&text(0x11f), &[FormatArg::Bytes(&country)]);
+    painter.text_q16(0x8000, 0x6666, &title, PauseFont::Title, highlight, 0x12)?;
+    let line = match (input.event.cfg.difficulty_018 >> 3) & 3 {
+        0 => 0x120,
+        1 => 0x121,
+        2 => 0x122,
+        _ => return Ok(()),
+    };
+    painter.text_q16(
+        0x8000,
+        0x9999,
+        &text(line),
+        PauseFont::Result,
+        BODY_COLOR,
+        0x12,
+    )
+}
+
 /// `FUN_0042d5a0`: each item centred on its slot in the bottom bar, the
 /// selected one in `result` white, the others in `resultgr` grey.
 fn post_stage_menu(
@@ -472,16 +747,7 @@ fn post_stage_menu(
         } else {
             (PauseFont::ResultGrey, UNSELECTED_COLOR)
         };
-        let (plan, _, _) = text_q16(
-            (painter.fonts)(font),
-            &label,
-            xs[index],
-            MENU_Y_Q16,
-            0x12,
-            input.width,
-            input.height,
-        )?;
-        painter.push(font, color, plan);
+        painter.text_q16(xs[index], MENU_Y_Q16, &label, font, color, 0x12)?;
     }
     Ok(())
 }
@@ -533,6 +799,7 @@ mod tests {
             event,
             stage_rows: rows,
             rally_rows: rows,
+            championship_rows: &[],
             stage_name: Some(b"STAGE"),
             scroll_t_q16: 0x10000,
             width: 640,
@@ -637,6 +904,75 @@ mod tests {
         assert_eq!(plan.runs.len(), 3);
         assert_eq!(plan.runs[1].color, SELECTED_COLOR, "continue is selected");
         assert_eq!(plan.runs[0].font, PauseFont::ResultGrey);
+    }
+
+    #[test]
+    fn the_championship_page_and_the_end_pages() {
+        let font = font();
+        let mut event = EventState::default();
+        event.cfg.stage_count_165 = 6;
+        event.cfg.cursor_168 = 0x22; // novice, country 2
+        let mut director = ResultsDirector::start(
+            &mut event,
+            DirectorContext {
+                championship_position: 2,
+                screen_height: 480,
+                ..Default::default()
+            },
+        );
+        let confirm = DirectorInput {
+            confirm: true,
+            ..Default::default()
+        };
+        let advance = |director: &mut ResultsDirector, event: &mut EventState| {
+            director.tick(event, confirm);
+            while director.settle() > 0 {
+                director.tick(event, DirectorInput::default());
+            }
+        };
+        advance(&mut director, &mut event);
+        advance(&mut director, &mut event);
+        assert_eq!(director.page(), 3);
+        let row = ChampionshipRow {
+            name: b"AB",
+            player: true,
+            points: [10, 6, 4, 3, 0, 0, 0, 0, 0],
+        };
+        assert_eq!(row.total(2), 20);
+        let rows = [row; 8];
+        let text = |id: i32| format!("T{id:X}").into_bytes();
+        let mut pulse = ResultsPulse::default();
+        let mut draw = |director: &ResultsDirector, event: &EventState| {
+            let mut input = input(director, event, &[]);
+            input.championship_rows = &rows;
+            results_draw_plan(&input, &mut pulse, &text, &|_| &font).unwrap()
+        };
+        let plan = draw(&director, &event);
+        // Headers, eight rows of position, name, six columns and total, title,
+        // corner.
+        assert_eq!(plan.runs.len(), 3 + 8 * 9 + 2);
+        // Panel, bars, header rule, the vertical rule and seven dividers.
+        assert_eq!(plan.quads.len(), 3 + 1 + 1 + 7);
+        // Novice, country 2 of 5: the save is offered, then rally complete.
+        advance(&mut director, &mut event);
+        assert_eq!(director.page(), 5);
+        advance(&mut director, &mut event);
+        assert_eq!(director.page(), 0x15);
+        assert_eq!(draw(&director, &event).runs.len(), 2);
+        let mut over = EventState::default();
+        over.cfg.difficulty_018 = 0x18;
+        let director = ResultsDirector::start(
+            &mut over,
+            DirectorContext {
+                disqualified: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(director.page(), 8);
+        let plan = draw(&director, &over);
+        // GAME OVER and the disqualification line.
+        assert_eq!(plan.runs.len(), 2);
+        assert_eq!(plan.runs[1].color, BODY_COLOR);
     }
 
     #[test]

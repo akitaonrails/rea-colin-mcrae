@@ -5816,17 +5816,36 @@ impl RaceResults {
                     })
                     .collect()
             };
-        let (stage_rows, rally_rows) = self
-            .standings
-            .as_ref()
-            .map_or((Vec::new(), Vec::new()), |standings| {
-                (rows(&standings.stage), rows(&standings.rally))
-            });
+        let empty: &[cmr_core::standings::Placed] = &[];
+        let (stage, rally, championship) =
+            self.standings
+                .as_ref()
+                .map_or((empty, empty, empty), |standings| {
+                    (
+                        &standings.stage[..],
+                        &standings.rally[..],
+                        &standings.championship[..],
+                    )
+                });
+        let (stage_rows, rally_rows) = (rows(stage), rows(rally));
+        let event = session.event();
+        let championship_rows: Vec<cmr_core::results_draw::ChampionshipRow> = championship
+            .iter()
+            .zip(rows(championship))
+            .map(|(placed, row)| cmr_core::results_draw::ChampionshipRow {
+                name: row.name,
+                player: row.player,
+                points: std::array::from_fn(|country| {
+                    event.cfg.results_16c[usize::from(placed.slot & 0xf)][4 + country]
+                }),
+            })
+            .collect();
         let input = cmr_core::results_draw::ResultsDrawInput {
             director,
             event: session.event(),
             stage_rows: &stage_rows,
             rally_rows: &rally_rows,
+            championship_rows: &championship_rows,
             stage_name: None,
             scroll_t_q16: 0x10000,
             width: extent.width,
@@ -9600,12 +9619,23 @@ mod tests {
             confirm: true,
             ..Default::default()
         };
-        for name in ["stage", "rally", "menu"] {
+        let championship_rows: Vec<cmr_core::results_draw::ChampionshipRow> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| cmr_core::results_draw::ChampionshipRow {
+                name: row.name,
+                player: row.player,
+                points: [10u8.saturating_sub(i as u8), 6, 0, 0, 0, 0, 0, 0, 0],
+            })
+            .collect();
+        event.cfg.cursor_168 = 0x51; // the last stage of the second rally
+        for name in ["stage", "rally", "championship", "menu"] {
             let input = ResultsDrawInput {
                 director: &director,
                 event: &event,
                 stage_rows: &rows,
                 rally_rows: &rows,
+                championship_rows: &championship_rows,
                 stage_name: None,
                 scroll_t_q16: 0x10000,
                 width: 640,
