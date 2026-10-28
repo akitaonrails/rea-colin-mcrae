@@ -4166,6 +4166,19 @@ pub struct CompiledFourWheelConstants {
     /// The effective `+0x15c` engine-speed scale (redline): the common
     /// prefix's scaled value, else the direct case word.
     pub control_word_15c: i32,
+    /// `DAT_0050c5fc`, the gravity constant the car initializer sets from
+    /// config `+0x25` (`0x407202..0x40721b`): `0x9999` normally, `0x1999`
+    /// when bit 0 is set.
+    pub gravity_c5fc: i32,
+    /// Control `+0x420`, which the same initializer stage sets to 1
+    /// (`0x4071ed`): the second loop's correction gate.
+    pub control_word_420: i32,
+}
+
+/// The gravity constant `DAT_0050c5fc` for a config `+0x25` byte.
+#[must_use]
+pub const fn compiled_gravity_constant(config_25: u8) -> i32 {
+    ((((!config_25) & 1) as i32) << 15) | 0x1999
 }
 
 fn post_helper_word(effects: &CompiledPostHelperEffects, offset: u16) -> i32 {
@@ -4221,6 +4234,8 @@ pub fn derive_compiled_four_wheel_constants(
         control_u16_3e4: post_helper.control_u16[0],
         control_byte_440: post_helper.control_bytes[0],
         control_word_15c,
+        gravity_c5fc: compiled_gravity_constant(config_flags),
+        control_word_420: 1,
     })
 }
 
@@ -10932,6 +10947,8 @@ mod tests {
                 constants.control_word_15c,
                 prefix.control_word_15c.unwrap_or(words.control_words[3])
             );
+            assert_eq!(constants.gravity_c5fc, compiled_gravity_constant(flags));
+            assert_eq!(constants.control_word_420, 1);
             assert_eq!(
                 (
                     constants.control_word_150,
@@ -11029,5 +11046,13 @@ mod tests {
             scaled.redline_15c,
             common_prefix_q16_mul(words.control_words[3], 0x1_3333)
         );
+    }
+
+    #[test]
+    fn gravity_constant_follows_config_bit_zero() {
+        assert_eq!(compiled_gravity_constant(0), 0x9999);
+        assert_eq!(compiled_gravity_constant(1), 0x1999);
+        assert_eq!(compiled_gravity_constant(0xfe), 0x9999);
+        assert_eq!(compiled_gravity_constant(0xff), 0x1999);
     }
 }

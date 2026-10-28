@@ -434,6 +434,27 @@ pub fn populate_compiled_four_wheel_constants(
     wheel.steering.flags_440 = constants.control_byte_440;
     wheel.engine_smoothing.redline_15c = constants.control_word_15c;
     wheel.engine_force.redline_15c = constants.control_word_15c;
+    wheel.postprocess.base_force = gravity_force_51c(
+        Fixed16::from_raw(constants.state_word_48),
+        Fixed16::from_raw(constants.gravity_c5fc),
+    );
+    for second in &mut wheel.second {
+        second.correction_gate = constants.control_word_420;
+    }
+}
+
+/// The per-tick base force the mechanics driver writes to `+0x51c..+0x524`
+/// (`0x407f13..`): `(0, -qmul(+0x48, qmul(DAT_0050c5fc, 0x8000)), 0)`, the
+/// starting value of the integrator's force sum.
+#[must_use]
+pub fn gravity_force_51c(mass_48: Fixed16, gravity_c5fc: Fixed16) -> Vec3 {
+    Vec3::new(
+        Fixed16::ZERO,
+        mass_48
+            .mul(gravity_c5fc.mul(Fixed16::from_raw(0x8000)))
+            .neg(),
+        Fixed16::ZERO,
+    )
 }
 
 /// The per-tick first-wheel inputs from one lane's parameters; the caller sets

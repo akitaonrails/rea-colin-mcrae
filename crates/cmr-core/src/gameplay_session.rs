@@ -647,6 +647,8 @@ mod tests {
             control_u16_3e4: 0x02aa,
             control_byte_440: 3,
             control_word_15c: 0x5_0000,
+            gravity_c5fc: 0x9999,
+            control_word_420: 1,
         };
         crate::race_state::populate_compiled_four_wheel_constants(&mut wheel, &constants);
         assert_eq!(wheel.inverse_mass_4c.raw(), 0x218);
@@ -681,6 +683,19 @@ mod tests {
         );
         assert_eq!(wheel.engine_smoothing.redline_15c, 0x5_0000);
         assert_eq!(wheel.engine_force.redline_15c, 0x5_0000);
+        assert_eq!(
+            wheel.postprocess.base_force,
+            crate::race_state::gravity_force_51c(
+                crate::fixed_point::Fixed16::from_raw(0x7a_0000),
+                crate::fixed_point::Fixed16::from_raw(0x9999),
+            )
+        );
+        assert!(
+            wheel
+                .second
+                .iter()
+                .all(|second| second.correction_gate == 1)
+        );
     }
 
     #[test]

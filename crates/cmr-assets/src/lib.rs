@@ -19,6 +19,9 @@ mod store;
 mod surface_import;
 mod surface_profile;
 mod surface_store;
+mod tyre_tables_import;
+mod tyre_tables_profile;
+mod tyre_tables_store;
 mod verify;
 
 pub use aux_control_import::{
@@ -84,4 +87,15 @@ pub use surface_store::{
     SurfaceCapabilityStore, SurfaceDataError, SurfaceTableStore, SurfaceTableStoreError,
     decode_surface_capability_data, decode_surface_table_data,
 };
+pub use tyre_tables_import::{
+    TYRE_TABLES_DATA_FILE, TYRE_TABLES_IMPORT_SCHEMA_VERSION, TYRE_TABLES_STATE_FILE,
+    TyreTablesImportError, TyreTablesImportFile, TyreTablesImportShape, TyreTablesImportSummary,
+    extract_tyre_surface_tables,
+};
+pub use tyre_tables_profile::{
+    ReviewedTyreTablesProfile, ReviewedTyreTablesProfileError, TYRE_TABLES_PROFILE_SCHEMA_VERSION,
+    TyreTablesEncoding, TyreTablesExecutable, TyreTablesProfile, TyreTablesProfileError,
+    TyreTablesSpec,
+};
+pub use tyre_tables_store::{TyreTablesStore, TyreTablesStoreError};
 pub use verify::{VerificationError, VerificationSummary, verify_source};

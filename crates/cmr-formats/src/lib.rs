@@ -12,6 +12,7 @@ pub mod pe_aux_control_initializer;
 pub mod pe_car_selector;
 pub mod pe_compiled_initializer;
 pub mod pe_surface;
+pub mod pe_tyre_tables;
 pub mod riff_palette;
 pub mod stage;
 pub mod stored_asset;

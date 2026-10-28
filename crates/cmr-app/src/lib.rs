@@ -15,7 +15,9 @@ use cmr_assets::{
     CompiledInitializerStoreError, ReviewedCarSelectorProfile, ReviewedCarSelectorProfileError,
     ReviewedCompiledInitializerProfile, ReviewedCompiledInitializerProfileError, ReviewedProfile,
     ReviewedProfileError, ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile,
-    ReviewedSurfaceProfileError, SurfaceCapabilityStore, SurfaceTableStore, SurfaceTableStoreError,
+    ReviewedSurfaceProfileError, ReviewedTyreTablesProfile, ReviewedTyreTablesProfileError,
+    SurfaceCapabilityStore, SurfaceTableStore, SurfaceTableStoreError, TyreTablesStore,
+    TyreTablesStoreError,
 };
 use cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
 use cmr_core::c3d_mesh::node_mesh_vertex_type;
@@ -148,6 +150,9 @@ const COMPILED_INITIALIZER_STORE_DIRECTORY: &str = "official-eu-compiled-car-ini
 const REVIEWED_CAR_SELECTOR_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-car-selector-map-v1.json");
 const CAR_SELECTOR_STORE_DIRECTORY: &str = "official-eu-car-selectors";
+const REVIEWED_TYRE_TABLES_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-tyre-surface-tables-v1.json");
+const TYRE_TABLES_STORE_DIRECTORY: &str = "official-eu-tyre-surface-tables";
 const ROOT_EXTENT: DisplayExtent = DisplayExtent {
     width: 640,
     height: 480,
@@ -3113,6 +3118,54 @@ impl SessionSurfaceInputs {
     }
 }
 
+#[derive(Debug)]
+pub enum SessionTyreTablesError {
+    Profile(ReviewedTyreTablesProfileError),
+    Store(TyreTablesStoreError),
+}
+
+impl fmt::Display for SessionTyreTablesError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Profile(error) => {
+                write!(formatter, "invalid reviewed tyre-table profile: {error}")
+            }
+            Self::Store(error) => write!(formatter, "cannot open tyre tables: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for SessionTyreTablesError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Profile(error) => Some(error),
+            Self::Store(error) => Some(error),
+        }
+    }
+}
+
+/// Authenticated static tyre/surface tables for the wheel-force producer.
+#[derive(Debug)]
+pub struct SessionTyreTables {
+    store: TyreTablesStore,
+}
+
+impl SessionTyreTables {
+    pub fn open(runtime_data: &Path) -> Result<Self, SessionTyreTablesError> {
+        let reviewed = ReviewedTyreTablesProfile::from_json(REVIEWED_TYRE_TABLES_PROFILE)
+            .map_err(SessionTyreTablesError::Profile)?;
+        let store =
+            TyreTablesStore::open(&runtime_data.join(TYRE_TABLES_STORE_DIRECTORY), &reviewed)
+                .map_err(SessionTyreTablesError::Store)?;
+        Ok(Self { store })
+    }
+
+    #[must_use]
+    pub fn tables(&self) -> &cmr_formats::pe_tyre_tables::TyreSurfaceTables {
+        self.store.tables()
+    }
+}
+
 /// Authenticated coefficient inputs for the second-wheel force producer.
 #[derive(Debug)]
 pub struct SessionWheelInputs {
@@ -4149,6 +4202,8 @@ const HEADLESS_HARNESS_FOUR_WHEEL_CONSTANTS: CompiledFourWheelConstants =
         control_u16_3e4: 0,
         control_byte_440: 0,
         control_word_15c: 0x1_0000,
+        gravity_c5fc: 0,
+        control_word_420: 1,
     };
 
 /// Run the headless FSM with authenticated coefficients and compiled geometry.
@@ -5686,6 +5741,17 @@ mod tests {
             inputs.effect_enables(&[]),
             Some([0; SURFACE_CAPABILITY_COUNT])
         );
+    }
+
+    #[test]
+    fn tyre_tables_opener_pins_the_reviewed_profile_and_rejects_a_missing_store() {
+        let reviewed = ReviewedTyreTablesProfile::from_json(REVIEWED_TYRE_TABLES_PROFILE).unwrap();
+        assert_eq!(reviewed.profile().id, "official-eu-tyre-surface-tables-v1");
+        let temp = wheel_runtime();
+        assert!(matches!(
+            SessionTyreTables::open(&temp.0),
+            Err(SessionTyreTablesError::Store(_))
+        ));
     }
 
     #[test]

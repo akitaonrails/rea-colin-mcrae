@@ -8,9 +8,9 @@ use std::process::ExitCode;
 use cmr_assets::{
     ReviewedAuxControlProfile, ReviewedCarSelectorProfile, ReviewedCompiledInitializerProfile,
     ReviewedProfile, ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile,
-    catalog_standard_source, extract_aux_control_constants, extract_car_selectors,
-    extract_compiled_car_initializer, extract_surface_capabilities, extract_surface_tables,
-    import_source, verify_source,
+    ReviewedTyreTablesProfile, catalog_standard_source, extract_aux_control_constants,
+    extract_car_selectors, extract_compiled_car_initializer, extract_surface_capabilities,
+    extract_surface_tables, extract_tyre_surface_tables, import_source, verify_source,
 };
 
 fn main() -> ExitCode {
@@ -108,6 +108,16 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<String, String> {
                 .map_err(|error| error.to_string())?;
             serde_json::to_string(&summary).map_err(|error| error.to_string())
         }
+        Some("extract-tyre-surface-tables") => {
+            let source = required_path(&options, "--source")?;
+            let profile_path = required_path(&options, "--profile")?;
+            let output = required_path(&options, "--output")?;
+            reject_unknown(&options, &["--source", "--profile", "--output"])?;
+            let reviewed = load_tyre_tables_profile(&profile_path)?;
+            let summary = extract_tyre_surface_tables(&source, &output, &reviewed)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_string(&summary).map_err(|error| error.to_string())
+        }
         Some("extract-aux-control-constants") => {
             let source = required_path(&options, "--source")?;
             let profile_path = required_path(&options, "--profile")?;
@@ -202,6 +212,12 @@ fn load_car_selector_profile(path: &Path) -> Result<ReviewedCarSelectorProfile, 
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+fn load_tyre_tables_profile(path: &Path) -> Result<ReviewedTyreTablesProfile, String> {
+    let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    ReviewedTyreTablesProfile::from_json(&document)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn load_aux_control_profile(path: &Path) -> Result<ReviewedAuxControlProfile, String> {
     let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     ReviewedAuxControlProfile::from_json(&document)
@@ -219,7 +235,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-surface-capabilities|extract-compiled-car-initializer|extract-car-selectors|extract-aux-control-constants> [options]".to_owned()
+    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-surface-capabilities|extract-compiled-car-initializer|extract-car-selectors|extract-tyre-surface-tables|extract-aux-control-constants> [options]".to_owned()
 }
 
 #[cfg(test)]
@@ -500,6 +516,13 @@ mod tests {
                 "runtime-data/car-selectors",
             ],
             &[
+                "extract-tyre-surface-tables",
+                "--profile",
+                "tyre-profile.json",
+                "--output",
+                "runtime-data/tyre-surface-tables",
+            ],
+            &[
                 "extract-aux-control-constants",
                 "--profile",
                 "aux-profile.json",
@@ -608,6 +631,24 @@ mod tests {
         assert_eq!(
             run(args(&[
                 "extract-car-selectors",
+                "--source",
+                "source",
+                "--profile",
+                "profile.json",
+            ])),
+            Err("missing required option --output".to_owned())
+        );
+    }
+
+    #[test]
+    fn tyre_tables_extraction_requires_profile_and_output() {
+        assert_eq!(
+            run(args(&["extract-tyre-surface-tables", "--source", "source"])),
+            Err("missing required option --profile".to_owned())
+        );
+        assert_eq!(
+            run(args(&[
+                "extract-tyre-surface-tables",
                 "--source",
                 "source",
                 "--profile",
