@@ -10863,7 +10863,7 @@ mod tests {
             type_byte: 1,
             tuning: [10, 11],
             random: 0x090603,
-            low_detail: false,
+            night: false,
             global_flag: true,
         };
         let mut pools = particles::ParticlePools::default();

@@ -44,10 +44,6 @@ pub const COUNTRY_CONFIG_OFFSET: usize = 0x168;
 /// The country index forced for the special/bonus stage (`DAT_00d3ca88 != 0`).
 pub const SPECIAL_STAGE_COUNTRY: u8 = 7;
 
-/// The detail-level value at which shadows are disabled and particles are
-/// throttled to the fixed low-detail alpha (`FUN_0046b240() == 8`).
-pub const LOW_DETAIL_LEVEL: u32 = 8;
-
 /// The country/surface index for a stage: the low nibble of the config byte,
 /// or [`SPECIAL_STAGE_COUNTRY`] when the special-stage flag is set.
 pub fn country_index(config_byte: u8, special_stage: bool) -> u8 {
@@ -64,10 +60,10 @@ pub fn is_wet_weather(weather_type: u32) -> bool {
     weather_type == 3 || weather_type == 4
 }
 
-/// Whether the detail level is the lowest (`8`): shadows off, particle alpha
-/// forced to the low-detail floor.
-pub fn is_low_detail(detail_level: u32) -> bool {
-    detail_level == LOW_DETAIL_LEVEL
+/// Whether the stage's lighting (`FUN_0046b240`) is night (`8`): shadows
+/// off, the particle alpha floored, no fog.
+pub fn is_night(lighting: u32) -> bool {
+    lighting == crate::stage_weather::NIGHT_LIGHTING
 }
 
 /// Accumulate one effect's enable counter over the surface ids present on a
@@ -175,10 +171,10 @@ pub mod particles {
     /// Billboard records per pool.
     pub const BILLBOARD_RECORDS_PER_POOL: usize = 100;
 
-    /// The low-detail fixed particle alpha floor (`FUN_0046b240() == 8`).
-    pub const LOW_DETAIL_ALPHA: u32 = 0x50;
-    /// The low-detail forced initial animation frame.
-    pub const LOW_DETAIL_FRAME: u8 = 0x32;
+    /// The night particle alpha floor (`FUN_0046b240() == 8`).
+    pub const NIGHT_ALPHA: u32 = 0x50;
+    /// The night forced initial animation frame.
+    pub const NIGHT_FRAME: u8 = 0x32;
 
     /// Near/far distance-cull window for a billboard (Q16.16: 3.0 .. 100.0).
     pub const CULL_NEAR: Fixed16 = Fixed16::from_raw(0x3_0000);
@@ -284,7 +280,7 @@ pub mod particles {
         pub type_byte: u8,
         pub tuning: [u16; 2],
         pub random: u32,
-        pub low_detail: bool,
+        pub night: bool,
         pub global_flag: bool,
     }
 
@@ -402,7 +398,7 @@ pub mod particles {
                 word_46: input.word_46,
                 tuning_48,
                 type_byte: input.type_byte,
-                frame: initial_anim_frame(input.random, input.low_detail),
+                frame: initial_anim_frame(input.random, input.night),
                 flags: ((input.global_flag as u8) << 1) | (previous.flags & 0xfd) | 1,
             };
             (wrapped, &self.records[index])
@@ -676,10 +672,10 @@ pub mod particles {
 
     /// The initial animation frame at spawn (`FUN_00424f40` / `FUN_004a96e0`):
     /// the average of the three low bytes of a random word, or the fixed
-    /// low-detail frame when the detail level is lowest.
-    pub fn initial_anim_frame(random: u32, low_detail: bool) -> u8 {
-        if low_detail {
-            return LOW_DETAIL_FRAME;
+    /// night frame at night.
+    pub fn initial_anim_frame(random: u32, night: bool) -> u8 {
+        if night {
+            return NIGHT_FRAME;
         }
         let a = random & 0xff;
         let b = (random >> 8) & 0xff;
@@ -703,13 +699,13 @@ pub mod particles {
     }
 
     /// The rendered particle alpha, reproducing `FUN_00428bc0`:
-    /// `min(0xff, pool_alpha * multiplier)`, floored to the low-detail value
-    /// when the detail level is lowest. The multiplier is `3` (own viewport) or
+    /// `min(0xff, pool_alpha * multiplier)`, floored to the night value at
+    /// night. The multiplier is `3` (own viewport) or
     /// `1` (other), per the recovered `(config & ...)` select.
-    pub fn particle_alpha(pool_alpha: u32, multiplier: u32, low_detail: bool) -> u32 {
+    pub fn particle_alpha(pool_alpha: u32, multiplier: u32, night: bool) -> u32 {
         let scaled = (pool_alpha * multiplier).min(0xff);
-        if low_detail {
-            scaled.max(LOW_DETAIL_ALPHA)
+        if night {
+            scaled.max(NIGHT_ALPHA)
         } else {
             scaled
         }
@@ -754,15 +750,15 @@ pub mod sky {
         pub source_base: u32,
     }
 
-    /// Select fog from weather type, intensity, country and detail level.
+    /// Select fog from weather type, intensity, country and the lighting.
     /// Weather 5 always uses density 0.8/far 70; weather 3 uses intensity rows
-    /// 0..2, weather 4 rows 1..3. Other cases or low detail disable fog.
+    /// 0..2, weather 4 rows 1..3. Other cases or night disable fog.
     #[must_use]
     pub fn fog_settings(
         weather_type: u32,
         intensity: u32,
         country: u8,
-        low_detail: bool,
+        night: bool,
     ) -> Option<FogSettings> {
         let color = match country {
             3 | 6 => FOG_COLOR_BLUISH,
@@ -778,7 +774,7 @@ pub mod sky {
                 source_base: 0x50_0000,
             });
         }
-        if low_detail || !(1..=3).contains(&intensity) {
+        if night || !(1..=3).contains(&intensity) {
             return None;
         }
         let row = usize::try_from(intensity - 1).ok()?;
@@ -827,8 +823,8 @@ mod tests {
         assert!(is_wet_weather(4));
         assert!(!is_wet_weather(0));
         assert!(!is_wet_weather(5));
-        assert!(is_low_detail(8));
-        assert!(!is_low_detail(2));
+        assert!(is_night(8));
+        assert!(!is_night(2));
     }
 
     #[test]
@@ -929,7 +925,7 @@ mod tests {
             type_byte: 6,
             tuning: [10, 11],
             random: 0x0603,
-            low_detail: false,
+            night: false,
             global_flag: true,
         };
         let mut pools = ParticlePools::default();
@@ -956,7 +952,7 @@ mod tests {
             type_byte: 0x16,
             tuning: [10, 11],
             random: 0,
-            low_detail: true,
+            night: true,
             global_flag: true,
         };
         let mut pools = ParticlePools::default();
@@ -989,7 +985,7 @@ mod tests {
             type_byte,
             tuning: [2, 11],
             random: 0,
-            low_detail: false,
+            night: false,
             global_flag: true,
         }
     }
@@ -1075,7 +1071,7 @@ mod tests {
             type_byte: 1,
             tuning: [2, 11],
             random: 0,
-            low_detail: false,
+            night: false,
             global_flag: true,
         };
         let mut pools = ParticlePools::default();
@@ -1108,7 +1104,7 @@ mod tests {
             type_byte: 2,
             tuning: [1, 1],
             random: 0,
-            low_detail: false,
+            night: false,
             global_flag: true,
         };
         let mut pools = ParticlePools::default();
@@ -1153,7 +1149,7 @@ mod tests {
             type_byte: 6,
             tuning: [1, 1],
             random: 0,
-            low_detail: false,
+            night: false,
             global_flag: true,
         };
         pools.spawn(0, active).unwrap();
@@ -1225,11 +1221,11 @@ mod tests {
 
     #[test]
     fn initial_frame_averages_or_floors() {
-        use particles::{LOW_DETAIL_FRAME, initial_anim_frame};
+        use particles::{NIGHT_FRAME, initial_anim_frame};
         // (0x0c + 0x06 + 0x03)/3 = 7.
         assert_eq!(initial_anim_frame(0x03_06_0c, false), 7);
-        // Low detail forces the fixed frame regardless of the random word.
-        assert_eq!(initial_anim_frame(0x03_06_0c, true), LOW_DETAIL_FRAME);
+        // Night forces the fixed frame regardless of the random word.
+        assert_eq!(initial_anim_frame(0x03_06_0c, true), NIGHT_FRAME);
     }
 
     #[test]
@@ -1248,12 +1244,12 @@ mod tests {
 
     #[test]
     fn particle_alpha_scales_and_floors() {
-        use particles::{LOW_DETAIL_ALPHA, particle_alpha};
+        use particles::{NIGHT_ALPHA, particle_alpha};
         assert_eq!(particle_alpha(50, 3, false), 150);
         assert_eq!(particle_alpha(100, 3, false), 0xff); // saturates
         assert_eq!(particle_alpha(10, 1, false), 10);
-        // Low detail floors to 0x50.
-        assert_eq!(particle_alpha(10, 1, true), LOW_DETAIL_ALPHA);
+        // Night floors to 0x50.
+        assert_eq!(particle_alpha(10, 1, true), NIGHT_ALPHA);
         assert_eq!(particle_alpha(100, 3, true), 0xff);
     }
 

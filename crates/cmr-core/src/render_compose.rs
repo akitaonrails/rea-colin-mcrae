@@ -10,9 +10,9 @@
 //! of its three `u8` arguments are an open item, so the plans carry the observed
 //! argument triples verbatim ([`SharedComposite`]) rather than inventing their
 //! semantics. Present/flip stays an A-side step ([`crate::render_route::PRESENT_NOTE`]),
-//! except that the fade handler, at fade completion, itself issues the device
-//! present op `0x4992e0` and flips the present-enable pair - the one B-side path
-//! that reaches the device layer (the `0xb`->`0xc` terminal boundary).
+//! except that the fade handler, at fade completion, itself shuts the display
+//! down (`0x4992e0`) and flips the present-enable pair - the one B-side path
+//! that reaches the device layer (the hub's exit from the race display).
 //!
 //! # Observed handler bodies
 //!
@@ -25,7 +25,7 @@
 //! **State `0xb` (`FUN_00423420`)**: query the fade object (`0x48dfd0`, which
 //! inverts the transition-counter test `0x4ad560(&DAT_0082b37c)`). If the fade is
 //! **idle/finished** and the device is ready (`DAT_00502518->+0x428 != 0 &&
-//! ->+0x10 != 0`), run the device present op `0x4992e0` and write
+//! ->+0x10 != 0`), shut the display down (`0x4992e0`) and write
 //! `0xb63748 <- 0` / `0xb6374c <- 1`. If the fade is **in progress**, composite
 //! the live world through `0x422ca0(1,0,0)` so the fade blends fresh content -
 //! unless the scene sub-mode predicate (`0x401030`) and the split flags
@@ -156,7 +156,7 @@ pub enum FadeCompositeStep {
     /// Fade in progress but the composite is suppressed this pass (the scene
     /// sub-mode predicate `0x401030` and both split flags hold).
     HoldDuringFade,
-    /// Fade idle/finished and the device is ready: run the device present op
+    /// Fade idle/finished and the device is ready: shut the display down
     /// (`0x4992e0`) and flip the present-enable pair (`0xb63748 <- 0`,
     /// `0xb6374c <- 1`).
     PresentAndFlip,
