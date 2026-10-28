@@ -231,6 +231,14 @@ pub struct GameplaySession<'a> {
     /// The state whose render handler the last frame planned (`None` when
     /// the render gate skipped it).
     rendered_state: Option<u8>,
+    /// The player's setup block (`0x50d950`) with its damage fractions,
+    /// the wet-brake flag `+0xbb4`, the gearbox's unscaled ratio copies
+    /// (`ctl +0x210/+0x230`), and a finish awaiting the damage write-back
+    /// (`FUN_00420db0` at `0x437cd9`).
+    car_setup: crate::car_setup::CarSetupBlock,
+    wet_brakes: bool,
+    gear_copies: Option<([i32; 8], [i32; 8])>,
+    damage_writeback: bool,
 }
 
 /// The fade channel `0x82b37c` as the race drives it
@@ -425,6 +433,7 @@ impl ResultsHold {
 /// the pause flow, the results director and the live finish. A restart
 /// chosen in the pause menu sets `DAT_00550018` on its way to the hub
 /// (`0x4389fa`).
+#[allow(clippy::too_many_arguments)]
 fn in_race_next(
     state: GameState,
     event: &mut EventState,
@@ -433,6 +442,7 @@ fn in_race_next(
     finished: bool,
     results: &mut ResultsHold,
     fade: &mut RaceFade,
+    finish_writeback: &mut bool,
 ) -> GameState {
     let mut inputs = pause.apply(script.with_finish(finished, event.globals.school_d3ca88));
     inputs.fade_done = fade.fade.idle();
@@ -451,6 +461,10 @@ fn in_race_next(
         }
     }
     let next = race_flow_next(state, inputs, event).unwrap_or(state);
+    // State 5's finish (`0x437cd9`): the damage goes back to the record.
+    if !inputs.school_session && state.id() == 5 && next.id() == 8 {
+        *finish_writeback = true;
+    }
     // The school's task ends in state 9 (`0x4385f7`): its results screen
     // comes up when state 2 runs again.
     if inputs.school_session && state.id() == 9 && next.id() == 0xB {
@@ -545,6 +559,10 @@ impl<'a> GameplaySession<'a> {
             sim_ticks: 0,
             fade: RaceFade::default(),
             rendered_state: None,
+            car_setup: crate::car_setup::CarSetupBlock::RESET,
+            wet_brakes: false,
+            gear_copies: None,
+            damage_writeback: false,
         }
     }
 
@@ -947,10 +965,14 @@ impl<'a> GameplaySession<'a> {
         } else {
             None
         };
+        if driving_sample.is_some() {
+            self.wet_tick(&controls);
+        }
         let script = self.script;
         let results = &mut self.results;
         let sim_ticks = &mut self.sim_ticks;
         let fade = &mut self.fade;
+        let writeback = &mut self.damage_writeback;
         let before = self.session.current().id();
         let mut stepped = false;
 
@@ -970,6 +992,7 @@ impl<'a> GameplaySession<'a> {
                 progress.finished(),
                 results,
                 fade,
+                writeback,
             )
         });
         if before == 4 && self.session.current().id() != 4 {
@@ -1034,10 +1057,14 @@ impl<'a> GameplaySession<'a> {
         } else {
             None
         };
+        if driving_sample.is_some() {
+            self.wet_tick(&controls);
+        }
         let script = self.script;
         let results = &mut self.results;
         let sim_ticks = &mut self.sim_ticks;
         let fade = &mut self.fade;
+        let writeback = &mut self.damage_writeback;
         let before = self.session.current().id();
         let mut stepped = false;
 
@@ -1057,6 +1084,7 @@ impl<'a> GameplaySession<'a> {
                 progress.finished(),
                 results,
                 fade,
+                writeback,
             )
         });
         if before == 4 && self.session.current().id() != 4 {
@@ -1073,6 +1101,80 @@ impl<'a> GameplaySession<'a> {
             route: frame.plan.and_then(|plan| plan.render).map(render_route),
             stepped,
         })
+    }
+
+    /// `FUN_00420c70` at the stage load: the player's carried damage (the
+    /// record from `+0x9a`, whose repaired parts are cleared in place) into
+    /// the setup block, the handling and the gear ratios of the four-wheel
+    /// car. The planar harness has nothing to set up.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::car_setup::CarSetupError`] when the ratio factor has no
+    /// reciprocal.
+    pub fn race_start_damage(
+        &mut self,
+        record: &mut crate::car_setup::SetupConfigBytes,
+    ) -> Result<(), crate::car_setup::CarSetupError> {
+        let Some(wheel) = self.wheel.as_mut() else {
+            return Ok(());
+        };
+        let Some(gearbox) = wheel.gearbox.as_mut() else {
+            return Ok(());
+        };
+        let (ratios, inverses) = *self
+            .gear_copies
+            .get_or_insert((gearbox.tables.ratio_1d0, gearbox.tables.inverse_1f0));
+        let (block, gears) = crate::car_damage::race_start(
+            record,
+            wheel.pedal_response.throttle_max_148,
+            ratios,
+            inverses,
+        )?;
+        gearbox.tables.ratio_1d0 = gears.ratio_1d0;
+        gearbox.tables.inverse_1f0 = gears.inverse_1f0;
+        crate::race_state::populate_car_setup(wheel, &block);
+        self.car_setup = block;
+        self.wet_brakes = false;
+        Ok(())
+    }
+
+    /// The setup block with this race's damage fractions.
+    #[must_use]
+    pub const fn car_setup(&self) -> &crate::car_setup::CarSetupBlock {
+        &self.car_setup
+    }
+
+    /// A finish since the last call: the host writes the damage back to the
+    /// record (`FUN_00420db0`).
+    pub fn take_damage_writeback(&mut self) -> bool {
+        std::mem::take(&mut self.damage_writeback)
+    }
+
+    /// `FUN_00420260` after a four-wheel tick: water wets the brakes and
+    /// damages the electrics; the brake scales go back to the sim.
+    fn wet_tick(&mut self, controls: &Controls) {
+        let Some(wheel) = self.wheel.as_mut() else {
+            return;
+        };
+        let car = self.race.car();
+        let Some(ground) = car.ground else {
+            return;
+        };
+        let raw = |v: Vec3| [v.x.raw(), v.y.raw(), v.z.raw()];
+        let input = crate::car_damage::WetInputs {
+            super_special: !self.session.event().globals.school_d3ca88
+                && self.session.event().super_special(),
+            initialised: true,
+            contact_count: car.motion.contact_count_674,
+            surfaces: std::array::from_fn(|w| ground.lanes.type_words[w] as i16),
+            up: raw(car.motion.basis[1]),
+            normal: raw(car.motion.projection_axis),
+            velocity: raw(car.velocity),
+            brake_308: controls.raw_pedals.brake_308,
+        };
+        crate::car_damage::wet_tick(&mut self.car_setup, &mut self.wet_brakes, &input);
+        wheel.brake_balance_e1a4 = [self.car_setup.words_84c[2], self.car_setup.words_84c[3]];
     }
 
     /// The race's fade channel and its options.
@@ -1764,6 +1866,7 @@ mod tests {
         let nodes = line();
         let mut progress = StageProgress::new(&nodes, 0);
         let mut log: Vec<(u8, FadeComposite)> = Vec::new();
+        let mut wrote_back = 0u32;
         let mut held_in_results = 0u32;
         for _ in 0..100_000 {
             if session.state().id() == 8 {
@@ -1779,6 +1882,7 @@ mod tests {
                 });
             }
             session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            wrote_back += u32::from(session.take_damage_writeback());
             let state = session.rendered_state.unwrap_or(0);
             log.push((state, session.composite_fade()));
             if progress.finished() && session.state().id() <= 4 {
@@ -1828,6 +1932,7 @@ mod tests {
             1
         );
         assert_eq!(*hub.last().unwrap(), FadeComposite::Clear);
+        assert_eq!(wrote_back, 1, "the finish hands the damage back once");
     }
 
     #[test]

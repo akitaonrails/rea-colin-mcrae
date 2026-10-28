@@ -4966,6 +4966,15 @@ fn advance_game_frame<C: HostClock>(
     if session.last_reset().camera_reset {
         camera.snap();
     }
+    // `FUN_00420db0` at the finish (not in time trial): the damage back into
+    // player 1's record, where the service screen reads it.
+    if session.take_damage_writeback() && session.event().cfg.mode_166 & 3 != 2 {
+        let event = session.event();
+        let carry = event.globals.school_d3ca88 || event.cfg.cursor_168 & 0xf0 != 0x50;
+        let fractions = session.car_setup().setup_800;
+        let live = cmr_core::config_commit::live_mut(&mut config.image);
+        cmr_core::car_damage::stage_end(&mut live[0x9a..0xb6], &fractions, carry);
+    }
     // The wheel particles' spawn and update ride the sim tick
     // (`DAT_0054f8b0`: the options' effects bit and `cfg[0x26] & 2`).
     let live_cfg = cmr_core::config_commit::live(&config.image);
@@ -7866,11 +7875,19 @@ fn reload_stage_for_event<'a>(
     loaded: &mut LoadedStageKey,
     context: &StageReloadContext<'a>,
     results: &mut RaceResults,
+    config: &mut FrontEndConfig,
 ) -> Result<(), WindowedStageFrameError> {
     if session.state().id() != 4 {
         return Ok(());
     }
     reload_changed_stage(session, resources, progress, audio, camera, loaded, context)?;
+    // `FUN_00420c70` in the car load: player 1's carried damage.
+    let live = cmr_core::config_commit::live_mut(&mut config.image);
+    if let Ok(record) = <&mut [u8; 0x1c]>::try_from(&mut live[0x9a..0xb6])
+        && let Err(error) = session.race_start_damage(record)
+    {
+        eprintln!("cmr-app: car damage setup failed ({error:?})");
+    }
     // The CatsEye load in the same stage load rolls the rivals' times.
     let nodes = progress.nodes();
     results.stage_load(
@@ -8721,6 +8738,7 @@ pub fn run_windowed_game_session(
                             &mut loaded_stage,
                             &reload,
                             &mut results,
+                            &mut config,
                         )
                         .and_then(|()| {
                             advance_game_frame(
@@ -8822,6 +8840,7 @@ pub fn run_windowed_game_session(
             &mut loaded_stage,
             &reload,
             &mut results,
+            &mut config,
         )
         .and_then(|()| {
             advance_game_frame(
@@ -10789,6 +10808,7 @@ mod tests {
                 &mut loaded,
                 &reload,
                 &mut results,
+                &mut config,
             )
             .unwrap();
             session

@@ -3,15 +3,16 @@
 //! Three routines own the physics scalars the four-wheel step reads from this
 //! block (offsets below are relative to the slot base):
 //!
-//! - `FUN_0041e3f0` (car setup) resets them: the thirteen setup fractions
+//! - `FUN_0041e3f0` (car setup) resets them: the thirteen damage fractions
 //!   `+0x800..+0x830` to zero, `+0x834` and `+0x838` to `1.0`, the four wheel
 //!   constants `+0x83c..+0x848` to zero, `+0x84c..+0x864` to `1.0`, and the
 //!   base angle `+0xbac` to zero.
-//! - `FUN_00420c70` (race start) converts the player's thirteen config setup
-//!   bytes into the fractions (`(byte << 16) / 100`), after clearing paired
-//!   bytes whose selector byte reads 100, and zeroes the damage table
-//!   `+0x864`; it then calls `FUN_00420740`.
-//! - `FUN_00420740` runs only when the car record's `+0x6c0` word is nonzero:
+//! - `FUN_00420c70` (race start) converts the player's thirteen carried
+//!   damage bytes into the fractions (`(byte << 16) / 100`), after clearing
+//!   the damage of each repair part whose condition reads 100, and zeroes the
+//!   per-impact table `+0x864`; it then calls `FUN_00420740`.
+//! - `FUN_00420740` runs when the car record's `+0x6f0` word is nonzero, at
+//!   race start and after every impact (`FUN_0041f630`):
 //!   it adds damage contributions, clamps, and derives the steering factor
 //!   `+0x838`, wheel constants `+0x83c..`, engine response `+0x85c`, ratio
 //!   factor `+0x860`, base angle `+0xbac`, and rescales the control record's
@@ -23,16 +24,16 @@
 //! is `+0xbac` (all for slot 0).
 //!
 //! Observations are at pseudocode level (`FUN_00420740`, `FUN_00420c70`,
-//! `FUN_0041e3f0`). Inferences: the thirteen fractions are the car-setup
-//! sliders and the `+0x864` table holds per-part damage; neither is
-//! established.
+//! `FUN_0041e3f0`). The thirteen fractions are the damage the stages carry
+//! ([`crate::car_damage`]); `+0x864` is the last impact's intensity per
+//! part, set by the mesh deformation `FUN_0041f880`.
 
 use crate::fixed_point::Fixed16;
 
 /// The physics words of one slot of the setup block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CarSetupBlock {
-    /// `+0x800..+0x830`: the thirteen setup fractions.
+    /// `+0x800..+0x830`: the thirteen damage fractions.
     pub setup_800: [i32; 13],
     /// `+0x834`.
     pub word_834: i32,
@@ -70,13 +71,13 @@ impl CarSetupBlock {
     }
 }
 
-/// The bytes of one player's config record from `+0x9a` (the setup selector
-/// and value bytes `FUN_00420c70` reads).
+/// The bytes of one player's config record from `+0x9a`: the repair parts'
+/// cost/condition/start triples and the carried damage bytes `0x0f..`.
 pub type SetupConfigBytes = [u8; 0x1c];
 
-/// `FUN_00420c70`: clear the paired setup bytes whose selector reads 100
-/// (`& 0x7f`), returning the updated record and the thirteen fractions
-/// `(byte << 16) / 100`.
+/// `FUN_00420c70`: clear the carried damage of each repair part whose
+/// condition reads 100 (`& 0x7f`), returning the updated record and the
+/// thirteen fractions `(byte << 16) / 100`.
 #[must_use]
 pub fn setup_fractions_from_config(record: SetupConfigBytes) -> (SetupConfigBytes, [i32; 13]) {
     let mut record = record;

@@ -1281,35 +1281,6 @@ pub fn cosine_modulated_component(coefficient: i32, angle_cos: i32, config_scale
     q16_mul(root, config_scale)
 }
 
-/// The front/rear axle factor derivation of `FUN_00420260`:
-/// `factor = qmul(car_type_constant, travel)`.
-#[must_use]
-pub fn derive_axle_factor(constant: Fixed16, travel: Fixed16) -> Fixed16 {
-    constant.mul(travel)
-}
-
-/// The per-car-type runtime defaults written by `FUN_0041e3f0` for every car
-/// type: the front and rear factor constants and the initial travel are all
-/// `0x10000` (1.0), and the per-wheel constant is `0`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CarTypeDefaults {
-    pub front_factor_constant: Fixed16,
-    pub rear_factor_constant: Fixed16,
-    pub initial_travel: Fixed16,
-    pub wheel_constant: i32,
-}
-
-/// The recovered per-car-type defaults from the loader.
-#[must_use]
-pub const fn default_car_type_constants() -> CarTypeDefaults {
-    CarTypeDefaults {
-        front_factor_constant: Fixed16::ONE,
-        rear_factor_constant: Fixed16::ONE,
-        initial_travel: Fixed16::ONE,
-        wheel_constant: 0,
-    }
-}
-
 /// The number of per-surface capability tables and enable counters.
 pub const SURFACE_CAPABILITY_COUNT: usize = 16;
 /// The number of surface ids covered by the tables.
@@ -1426,50 +1397,6 @@ pub fn derive_gear_ratio_and_aux_from_families(
         derive_gear_ratio(Fixed16::from_raw(families.raw_copy[0]), factor_c860),
         derive_gear_aux_value(Fixed16::from_raw(families.reciprocal_copy[0]), param_2),
     )
-}
-
-/// The travel update of `FUN_00420260` when the normalized length exceeds 1.0:
-/// `excess = length - 0x10000`; `decrement = min(0x10000, qmul(excess, 0x8000))`;
-/// `travel = max(0, travel - decrement)`; and the `DAT_0050e504` flag is set.
-/// The `DAT_0050e160` bump is `min(0x10000, qmul(excess, 0xccc))`.
-/// Returns `None` when the length does not exceed 1.0.
-#[must_use]
-pub fn update_travel_on_excess(
-    travel: Fixed16,
-    length: Fixed16,
-) -> Option<(Fixed16, Fixed16, bool)> {
-    if length <= Fixed16::ONE {
-        return None;
-    }
-    let excess = length.sub(Fixed16::ONE);
-    let decrement = excess.mul(Fixed16::from_raw(0x8000)).min(Fixed16::ONE);
-    let new_travel = travel.sub(decrement).max(Fixed16::ZERO);
-    let bump = excess.mul(Fixed16::from_raw(0xccc)).min(Fixed16::ONE);
-    Some((new_travel, bump, true))
-}
-
-/// The additional surface bump when the `DAT_0050e504` flag is set:
-/// `travel + bump`, capped at `0x10000`; when the bumped travel exceeds
-/// `0xffff`, the flag is cleared. The bump is `0x147` when `param_2+0x308` is
-/// nonzero, otherwise `0x20`.
-#[must_use]
-pub fn apply_surface_bump(travel: Fixed16, bump: Fixed16) -> (Fixed16, bool) {
-    let updated = travel.add(bump);
-    if updated.raw() > 0xffff {
-        (Fixed16::ONE, true)
-    } else {
-        (updated, false)
-    }
-}
-
-/// The surface bump value: `0x147` when `param_2+0x308` is nonzero, else `0x20`.
-#[must_use]
-pub const fn surface_bump_value(surface_flag: bool) -> Fixed16 {
-    if surface_flag {
-        Fixed16::from_raw(0x147)
-    } else {
-        Fixed16::from_raw(0x20)
-    }
 }
 
 /// Scale values produced by the main `FUN_0040d810` force-pass head.
@@ -2988,40 +2915,6 @@ mod tests {
     }
 
     #[test]
-    fn axle_factor_is_the_constant_times_travel() {
-        assert_eq!(
-            derive_axle_factor(Fixed16::from_raw(0x8000), Fixed16::ONE),
-            Fixed16::from_raw(0x8000)
-        );
-        assert_eq!(
-            derive_axle_factor(Fixed16::from_raw(0x8000), Fixed16::from_raw(0x8000)),
-            Fixed16::from_raw(0x4000)
-        );
-        assert_eq!(
-            derive_axle_factor(Fixed16::from_raw(0x10000), Fixed16::ZERO),
-            Fixed16::ZERO
-        );
-    }
-
-    #[test]
-    fn car_type_defaults_match_the_loader() {
-        let defaults = default_car_type_constants();
-        assert_eq!(defaults.front_factor_constant, Fixed16::ONE);
-        assert_eq!(defaults.rear_factor_constant, Fixed16::ONE);
-        assert_eq!(defaults.initial_travel, Fixed16::ONE);
-        assert_eq!(defaults.wheel_constant, 0);
-        // With these defaults the axle factors are simply the travel value.
-        assert_eq!(
-            derive_axle_factor(defaults.front_factor_constant, defaults.initial_travel),
-            Fixed16::ONE
-        );
-        assert_eq!(
-            derive_axle_factor(defaults.rear_factor_constant, defaults.initial_travel),
-            Fixed16::ONE
-        );
-    }
-
-    #[test]
     fn gear_ratio_and_aux_value_derivations() {
         assert_eq!(
             derive_gear_ratio(Fixed16::from_raw(0x8000), Fixed16::from_raw(0x8000)),
@@ -3094,36 +2987,6 @@ mod tests {
             counters,
             [2, 1, 3, 4, 0, 5, 6, 7, 8, 9, 10, 11, 12, 14, 13, 15]
         );
-    }
-
-    #[test]
-    fn travel_excess_decrements_and_bumps_with_caps() {
-        // No excess: no update and no flag.
-        assert_eq!(update_travel_on_excess(Fixed16::ONE, Fixed16::ONE), None);
-        // Excess of 1.0: decrement 0.5 and bump 0.05.
-        assert_eq!(
-            update_travel_on_excess(Fixed16::from_raw(0x18000), Fixed16::from_int(2)),
-            Some((Fixed16::ONE, Fixed16::from_raw(0xccc), true))
-        );
-        // Excess of 2.0: the decrement caps at 1.0, the bump is 0x1998, and travel floors at 0.
-        assert_eq!(
-            update_travel_on_excess(Fixed16::ONE, Fixed16::from_int(3)),
-            Some((Fixed16::ZERO, Fixed16::from_raw(0x1998), true))
-        );
-    }
-
-    #[test]
-    fn surface_bump_caps_at_one_and_clears_the_flag() {
-        assert_eq!(
-            apply_surface_bump(Fixed16::from_raw(0x8000), surface_bump_value(false)),
-            (Fixed16::from_raw(0x8020), false)
-        );
-        assert_eq!(
-            apply_surface_bump(Fixed16::ONE, surface_bump_value(true)),
-            (Fixed16::ONE, true)
-        );
-        assert_eq!(surface_bump_value(true), Fixed16::from_raw(0x147));
-        assert_eq!(surface_bump_value(false), Fixed16::from_raw(0x20));
     }
 
     #[test]
