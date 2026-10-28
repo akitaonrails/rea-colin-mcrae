@@ -1701,10 +1701,12 @@ fn native_stage_start(nodes: &[CatNode]) -> Result<NativeStageStart, StageFrameE
         ]
     };
     let components = |vector: Vec3| [vector.x.raw(), vector.y.raw(), vector.z.raw()];
+    // The native car rolls along its `+0x258` row (the tyre model's lane
+    // source), so the setup row 0 is the harness forward and row 2 its left.
     let actor_rows = [
-        negate(harness[2]),
+        components(harness[2]),
         components(harness[1]),
-        components(harness[0]),
+        negate(harness[0]),
     ];
     Ok((start, initial_camera, actor_rows))
 }
@@ -1746,7 +1748,27 @@ fn native_stage_start_from_csp(start_record: CspStart) -> NativeStageStart {
     start.motion.lane_source_s = basis[2];
     let mut camera = ViewHarness::new();
     let initial_camera = camera.update(false, position, heading, false);
-    let actor_rows = native_basis.map(|vector| [vector.x.raw(), vector.y.raw(), vector.z.raw()]);
+    // The authored rotation leads along `-native_basis[0]` (the harness forward
+    // above), while the native car rolls along its `+0x258` row (the tyre
+    // model's lane source). Inference: the setup rows are the integrated basis
+    // turned half a turn about the up axis; the native CSP-to-basis routine is
+    // not yet recovered.
+    let negate = |vector: Vec3| {
+        [
+            vector.x.raw().wrapping_neg(),
+            vector.y.raw().wrapping_neg(),
+            vector.z.raw().wrapping_neg(),
+        ]
+    };
+    let actor_rows = [
+        negate(native_basis[0]),
+        [
+            native_basis[1].x.raw(),
+            native_basis[1].y.raw(),
+            native_basis[1].z.raw(),
+        ],
+        negate(native_basis[2]),
+    ];
     (start, initial_camera, actor_rows)
 }
 
@@ -4713,13 +4735,14 @@ mod tests {
         assert_eq!(start.position.z.raw(), 20 << 16);
         assert_eq!(start.heading, 0x400);
         assert_eq!(start.motion.basis[2].z.raw(), 0x10000);
+        // Setup row 0 is the harness forward (the native rolling direction).
         assert_eq!(
             actor_rows,
             [
                 [
-                    start.motion.basis[2].x.raw().wrapping_neg(),
-                    start.motion.basis[2].y.raw().wrapping_neg(),
-                    start.motion.basis[2].z.raw().wrapping_neg(),
+                    start.motion.basis[2].x.raw(),
+                    start.motion.basis[2].y.raw(),
+                    start.motion.basis[2].z.raw(),
                 ],
                 [
                     start.motion.basis[1].x.raw(),
@@ -4727,9 +4750,9 @@ mod tests {
                     start.motion.basis[1].z.raw(),
                 ],
                 [
-                    start.motion.basis[0].x.raw(),
-                    start.motion.basis[0].y.raw(),
-                    start.motion.basis[0].z.raw(),
+                    start.motion.basis[0].x.raw().wrapping_neg(),
+                    start.motion.basis[0].y.raw().wrapping_neg(),
+                    start.motion.basis[0].z.raw().wrapping_neg(),
                 ],
             ]
         );
@@ -4759,16 +4782,18 @@ mod tests {
                 Fixed16::from_raw(row[2]),
             )
         });
-        assert_eq!(start.motion.basis[0], native[2]);
-        assert_eq!(start.motion.basis[1], native[1]);
-        assert_eq!(
-            start.motion.basis[2],
+        // The setup rows are the harness basis with row 0 forward: the
+        // integrated CSP basis turned half a turn about the up axis.
+        let negated = |vector: Vec3| {
             Vec3::new(
-                Fixed16::from_raw(native[0].x.raw().wrapping_neg()),
-                Fixed16::from_raw(native[0].y.raw().wrapping_neg()),
-                Fixed16::from_raw(native[0].z.raw().wrapping_neg()),
+                Fixed16::from_raw(vector.x.raw().wrapping_neg()),
+                Fixed16::from_raw(vector.y.raw().wrapping_neg()),
+                Fixed16::from_raw(vector.z.raw().wrapping_neg()),
             )
-        );
+        };
+        assert_eq!(native[0], start.motion.basis[2]);
+        assert_eq!(native[1], start.motion.basis[1]);
+        assert_eq!(native[2], negated(start.motion.basis[0]));
         assert_ne!(
             actor_rows,
             start
@@ -5941,6 +5966,26 @@ mod tests {
             start.motion.projection_axis.x.raw(),
             start.motion.projection_axis.y.raw(),
             start.motion.projection_axis.z.raw(),
+        );
+        for (index, node) in nodes.iter().take(4).enumerate() {
+            eprintln!(
+                "probe node[{index}] pos=({:#x},{:#x},{:#x}) dir=({:#x},{:#x},{:#x})",
+                node.position[0],
+                node.position[1],
+                node.position[2],
+                node.direction[0],
+                node.direction[1],
+                node.direction[2],
+            );
+        }
+        eprintln!(
+            "probe start pos=({:#x},{:#x},{:#x}) row0=({:#x},{:#x},{:#x})",
+            start.position.x.raw(),
+            start.position.y.raw(),
+            start.position.z.raw(),
+            start.motion.basis[0].x.raw(),
+            start.motion.basis[0].y.raw(),
+            start.motion.basis[0].z.raw(),
         );
         let origin = start.position;
         let every = std::env::var("CMR_PROBE_EVERY")

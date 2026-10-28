@@ -1908,6 +1908,12 @@ vectors are whole opposite corners. On AU1 the four-wheel car now accelerates
 along its body axis through the gears under throttle. Steering it along the
 road (the checkpoint cursor) is the next gate.
 
+The compiled spawn rows now face the road (`impl.spawn-rows-face-the-road`,
+an inference: the native rolls along `+0x258`, and the planar adaptation had
+row 0 reversed). Under throttle alone the four-wheel car now drives down the
+AU1 road and passes 21 checkpoints before it leaves the ground and tumbles,
+which needs the out-of-control path `FUN_004115d0`.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-fix: correct the second loop inputs and the mirrored contact vectors
+fix: turn the compiled spawn rows to face the road
 ```
 
 Start by confirming the checkout and progress footer:
@@ -126,9 +126,11 @@ The tyre gains and bases now come from `cmr-core::tyre_load`
 (`impl.tyre-gains-and-live-force-head`), and with the second loop's inputs and
 the contact-vector mirror corrected (`impl.second-loop-inputs-and-contact-mirror`)
 the car accelerates along its body axis through the gears on AU1
-(`CMR_PROBE_TICKS=1500`). It yaws about 45 degrees at the start with no
-steering and then runs straight off the road, so the cursor stays 0. Next, in
-order: build the windowed session on
+(`CMR_PROBE_TICKS=1500`). With the spawn rows facing the road
+(`impl.spawn-rows-face-the-road`) it drives down the road under throttle and
+the cursor reaches 21 before the car leaves the ground and tumbles near tick
+1000 (the out-of-control path `FUN_004115d0` is missing). Next, in order:
+build the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`
 from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground`),
 render the car body from `MotionState::basis`, then the out-of-control path
