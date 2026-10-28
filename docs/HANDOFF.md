@@ -151,9 +151,12 @@ to the menu after the finish (`impl.gameplay-script-and-stage-restart`). The whe
 plays (`impl.engine-sound`): extract its tables once with
 `cargo run -q -p cmr-assets -- extract-engine-audio-tables --source <dir with Rally.exe> --profile profiles/official-eu-engine-audio-tables-v1.json --output runtime-data/official-eu-engine-audio-tables`;
 `CMR_FRAMES_AUDIO=1` on the ignored frames test writes `engine.wav`. Open
-points: QMixer panning of `SetPosition`, `car +0x764`, and the tyre profile's
+points: QMixer panning of `SetPosition` and `car +0x764`. The tyre profile's
 `wheel_terms_777c` read (8 variants x 120 x 6 bytes from `0x4f777c`) overlaps
-the engine tables at `0x4f82e0..0x4f8bac`, so one of its extents is wrong.
+the engine tables at `0x4f82e0..0x4f8bac`; that is the native's own reach:
+`FUN_00486090` stores an explicit variant (1 or 2 from `0x4eac78`) or
+`cfg[0x91 + p*0x9c] & 7`, so variants 4..7 alias the engine tables exactly as
+in the shipped image.
 Next: the pause menu and the player option bytes, impact/surface sounds.
 `FUN_0041f630` only feeds impact sound/FFB/shudder. Trees appear to be `.sht` sprites, which the native
 excludes from static collision. Done so far: the windowed session on
