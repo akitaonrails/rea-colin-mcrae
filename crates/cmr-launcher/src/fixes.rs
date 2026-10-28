@@ -149,7 +149,7 @@ fn rel32(at: u32, len: u32, to: u32) -> [u8; 4] {
 /// The community-patched EU v1.5 (`46500c8e…`) carries F1-F5 on disk; it
 /// is the same build, so F6 applies at the same addresses.
 pub static COMMUNITY_EU_15: FixSet = FixSet {
-    fixes: &[F6, F7, F8, F9],
+    fixes: &[F6, F7, F8, F9, F10],
 };
 
 /// Official EU v1.5 (`0eb6ea96…`).
@@ -223,6 +223,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         F7,
         F8,
         F9,
+        F10,
     ],
 };
 
@@ -400,6 +401,53 @@ const F9: Fix = Fix {
     ],
 };
 
+const F10_CAVE: u32 = 0x140;
+/// F10's data: the race width and height (two dwords), filled by the
+/// launcher from the `resolution` setting.
+pub const F10_SIZE: u32 = 0x168;
+const _: () = assert!(F10_CAVE >= F9_CAVE + 24 && F10_SIZE >= F10_CAVE + 38);
+
+/// Races re-create DirectDraw at the RESOLUTION setting (`FUN_00421da0` ->
+/// `FUN_00497be0` with the 16-bit table), which offers four slots up to
+/// 800x600; the front end always runs its own 640x480 init through another
+/// branch. F10 hooks the race's slot load (`0x497d43`): slot 2, the one the
+/// menu calls 640x480, returns the configured width and height instead, so
+/// the race's surfaces, Z-buffer and viewport follow; the other slots and
+/// the front end are untouched. Opt-in: applied only with a `resolution`
+/// setting. The display must offer that mode (the game ignores a failed
+/// SetDisplayMode).
+const F10: Fix = Fix {
+    id: "F10",
+    what: "races at a chosen resolution (replaces the 640x480 slot)",
+    optional: true,
+    code: &[
+        // mov ecx,[eax+0xa204f0] ; mov eax,[eax+0xa204f4] -> jmp ; 7 x nop
+        Piece {
+            at: At::Image(0x0049_7d43),
+            ops: &[Op::Jmp(At::Cave(F10_CAVE)), Op::Raw(&[NOP; 7])],
+        },
+        Piece {
+            at: At::Cave(F10_CAVE),
+            ops: &[
+                Op::Raw(&[0x83, 0xfb, 0x02, 0x75, 0x10]), // cmp ebx,2 ; jne +16
+                Op::Raw(&[0x8b, 0x0d]),                   // mov ecx,[width]
+                Op::Addr(At::Cave(F10_SIZE)),
+                Op::Raw(&[0xa1]), // mov eax,[height]
+                Op::Addr(At::Cave(F10_SIZE + 4)),
+                Op::Jmp(At::Image(0x0049_7d4f)),
+                // the original loads
+                Op::Raw(&[0x8b, 0x88, 0xf0, 0x04, 0xa2, 0x00]),
+                Op::Raw(&[0x8b, 0x80, 0xf4, 0x04, 0xa2, 0x00]),
+                Op::Jmp(At::Image(0x0049_7d4f)),
+            ],
+        },
+        Piece {
+            at: At::Cave(F10_SIZE),
+            ops: &[Op::Raw(&[0; 8])],
+        },
+    ],
+};
+
 /// 24 bytes: ecx = |[esp+d8] - 0x8000|; if ecx > ebx { ebx = ecx; eax = [esp+d8] }.
 const fn take_if_further(d8: u8) -> [u8; 24] {
     [
@@ -437,7 +485,10 @@ mod tests {
     #[test]
     fn fixes_are_f1_to_f6_in_order() {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
-        assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9"]);
+        assert_eq!(
+            ids,
+            ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"]
+        );
     }
 
     #[test]
@@ -490,6 +541,25 @@ mod tests {
     }
 
     #[test]
+    fn f10_returns_the_configured_size_for_slot_2_only() {
+        let code = at(CAVE + F10_CAVE);
+        assert_eq!(code.len(), 38);
+        assert_eq!(&code[..5], [0x83, 0xfb, 0x02, 0x75, 0x10]);
+        assert_eq!(code[7..11], (CAVE + F10_SIZE).to_le_bytes());
+        assert_eq!(code[12..16], (CAVE + F10_SIZE + 4).to_le_bytes());
+        let back = |jmp_at: usize| {
+            let rel = u32::from_le_bytes(code[jmp_at + 1..jmp_at + 5].try_into().unwrap());
+            (CAVE + F10_CAVE + jmp_at as u32 + 5).wrapping_add(rel)
+        };
+        assert_eq!(code[16], 0xe9);
+        assert_eq!(back(16), 0x497d4f);
+        // jne +16 lands on the original loads.
+        assert_eq!(&code[21..27], [0x8b, 0x88, 0xf0, 0x04, 0xa2, 0x00]);
+        assert_eq!(back(33), 0x497d4f);
+        assert_eq!(at(0x497d43).len(), 12);
+    }
+
+    #[test]
     fn simple_stubs() {
         assert_eq!(at(0x496ca0), [0xb8, 1, 0, 0, 0, 0xc3]);
         assert_eq!(at(0x497cef), [0x10]);
@@ -511,7 +581,7 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F9_CAVE + 24);
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F10_SIZE + 8);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
@@ -531,7 +601,7 @@ mod tests {
 
     #[test]
     fn only_optional_fixes_can_be_skipped() {
-        let skip = ["F6", "F7", "F1"];
+        let skip = ["F6", "F7", "F10", "F1"];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
         assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9"]);
         assert_eq!(OFFICIAL_EU_15.cave_size(&skip), F9_CAVE + 24);
@@ -541,7 +611,10 @@ mod tests {
                 .iter()
                 .all(|w| w.fix != "F6")
         );
-        assert_eq!(COMMUNITY_EU_15.cave_size(&["F6", "F7"]), F9_CAVE + 24);
+        assert_eq!(
+            COMMUNITY_EU_15.cave_size(&["F6", "F7", "F10"]),
+            F9_CAVE + 24
+        );
     }
 
     #[test]

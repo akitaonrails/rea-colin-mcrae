@@ -186,6 +186,12 @@ mod app {
                         &axes[..4]
                     ));
                 }
+                if let Some((w, h)) = settings.resolution {
+                    let size: Vec<u8> = [w, h].iter().flat_map(|v| v.to_le_bytes()).collect();
+                    if fill_cave_data(&mut writes, cave.wrapping_add(fixes::F10_SIZE), &size) {
+                        log_line(&format!("F10 race resolution {w}x{h}"));
+                    }
+                }
                 Ok(writes)
             },
             &mut |line| log_line(line),

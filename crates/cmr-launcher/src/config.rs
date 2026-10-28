@@ -19,6 +19,9 @@ pub struct Settings {
     pub close_quits: Option<bool>,
     /// Pad triggers and right stick work as throttle/brake (fix F7). Default on.
     pub gamepad_axes: Option<bool>,
+    /// Race resolution replacing the in-game 640x480 choice (fix F10). Off
+    /// unless set.
+    pub resolution: Option<(u32, u32)>,
 }
 
 pub const FILE_NAME: &str = "launcher.cfg";
@@ -57,6 +60,12 @@ close_quits = true
 # not affected. Set to false for the original handling, where only the left
 # stick drives.
 gamepad_axes = true
+
+# Race resolution, e.g. 1440x1080 (4:3) or 2880x2160. It replaces the
+# 640x480 choice of the game's RESOLUTION option (Options > Settings >
+# Graphics), so pick 640x480 there; the menus stay 640x480. The screen must
+# offer that mode (Proton and gamescope do). Unset keeps the original sizes.
+#resolution = 1440x1080
 ";
 
 pub const USAGE: &str = "\
@@ -78,6 +87,16 @@ fn parse_bool(v: &str) -> Option<bool> {
         "false" | "no" | "off" | "0" => Some(false),
         _ => None,
     }
+}
+
+/// `WxH`, within what a 1998 DirectDraw game and a modern screen can hold.
+fn parse_resolution(v: &str) -> Option<(u32, u32)> {
+    let (w, h) = v
+        .to_ascii_lowercase()
+        .split_once('x')
+        .map(|(w, h)| (w.trim().parse().ok(), h.trim().parse().ok()))?;
+    let (w, h): (u32, u32) = (w?, h?);
+    ((320..=7680).contains(&w) && (240..=4320).contains(&h)).then_some((w, h))
 }
 
 fn parse_language(v: &str) -> Option<String> {
@@ -123,6 +142,10 @@ impl Settings {
                     Some(b) => s.gamepad_axes = Some(b),
                     None => bad("gamepad_axes needs true or false, not"),
                 },
+                "resolution" => match parse_resolution(value) {
+                    Some(r) => s.resolution = Some(r),
+                    None => bad("resolution needs WIDTHxHEIGHT (320x240 to 7680x4320), not"),
+                },
                 _ => {}
             }
         }
@@ -137,6 +160,7 @@ impl Settings {
             language: over.language.or(self.language),
             close_quits: over.close_quits.or(self.close_quits),
             gamepad_axes: over.gamepad_axes.or(self.gamepad_axes),
+            resolution: over.resolution.or(self.resolution),
         }
     }
 
@@ -148,6 +172,9 @@ impl Settings {
         }
         if self.gamepad_axes == Some(false) {
             skip.push("F7");
+        }
+        if self.resolution.is_none() {
+            skip.push("F10");
         }
         skip
     }
@@ -232,15 +259,16 @@ mod tests {
                 ..Settings::default()
             }
         );
-        assert!(s.skipped_fixes().is_empty());
+        assert_eq!(s.skipped_fixes(), ["F10"]);
     }
 
     #[test]
     fn file_values_and_args_win() {
-        let text = "game = C:\\old\nruntime=C:\\rt\nlanguage = french\nclose_quits = no\ngamepad_axes=off\n";
+        let text = "game = C:\\old\nruntime=C:\\rt\nlanguage = french\nclose_quits = no\ngamepad_axes=off\nresolution = 1920X1440\n";
         let (saved, warnings) = Settings::parse_file(text);
         assert!(warnings.is_empty());
         assert_eq!(saved.language.as_deref(), Some("FRENCH"));
+        assert_eq!(saved.resolution, Some((1920, 1440)));
         assert_eq!(saved.skipped_fixes(), ["F6", "F7"]);
         let m = saved.merged(args(&["--game", r"C:\new"]).unwrap());
         assert_eq!(m.game, Some(PathBuf::from(r"C:\new")));
@@ -250,12 +278,12 @@ mod tests {
     #[test]
     fn file_ignores_junk_and_reports_bad_values() {
         let (s, warnings) = Settings::parse_file(
-            "# game = C:\\commented\nfuture=1\ngame = C:\\G \n\nruntime=\nclose_quits = maybe\nlanguage=xx\n",
+            "# game = C:\\commented\nfuture=1\ngame = C:\\G \n\nruntime=\nclose_quits = maybe\nlanguage=xx\nresolution=8000x100\n",
         );
         assert_eq!(s.game, Some(PathBuf::from(r"C:\G")));
         assert_eq!(s.runtime, None);
         assert_eq!(s.close_quits, None);
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
         assert!(warnings[0].contains("line 6"));
     }
 
