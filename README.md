@@ -11,11 +11,30 @@ pieces the 1998 game expected from Windows and no longer finds:
 - a launcher that sets the game up from your files (replacing the installer);
 - open-source compatibility libraries for graphics, controllers and movies,
   bundled and preconfigured;
-- a small hook library with the game-specific fixes (CD check, Windows
-  version check), applied in memory at run time.
+- the game-specific fixes (CD check, Windows version check, the 8-bit front
+  end, VGA port access), applied in memory by the launcher at run time.
 
 This repository contains no game files and never will. See
 [docs/THIN_APP_PLAN.md](docs/THIN_APP_PLAN.md) for the design and status.
+
+## Using it (early)
+
+```text
+CMRLauncher.exe --game <folder with your Rally.exe>
+```
+
+The folder is remembered, so later runs need no arguments; a launcher copied
+into the game folder finds it by itself. On Linux, run the same exe with
+Wine (`wine CMRLauncher.exe --game Z:/path/to/game`); the Proton/Steam route
+is still being settled. The launcher keeps its copy of the game, saves and
+`launcher.log` under `%LOCALAPPDATA%\CMRLauncher`.
+
+## Building
+
+```text
+cargo test                                         # host logic
+cargo build --release --target i686-pc-windows-gnu  # needs i686-w64-mingw32-gcc
+```
 
 ## History
 

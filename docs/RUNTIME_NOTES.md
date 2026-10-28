@@ -44,3 +44,14 @@ registry values from `THIN_APP_PLAN.md` R2 imported with `regedit /S`.
   failed and the game used the null device.
 - `cmp` of the two exes: exactly 87 bytes in 5 places, the fixes F1-F5 in
   `THIN_APP_PLAN.md`.
+
+## 2026-11-02: first launcher runs
+
+- `CMRLauncher.exe --game <official EU v1.5 folder>` in a fresh Wine 11.20
+  prefix (no registry, no drive or version settings): copied 5167 files,
+  wrote HKLM, applied F1-F5 (cave allocated at `0x00290000`), the game showed
+  the Codemasters screen at ~20 s and the main menu at ~40 s.
+- The second launch copied 0 files and reached the menu again.
+- Sound was recorded from a private PipeWire null sink (`PULSE_SINK`): music
+  at the menu, peak 8608. An earlier run went to the user's speakers; the
+  harness now always uses the null sink.
