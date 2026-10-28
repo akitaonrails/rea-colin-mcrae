@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-10-28 (per-tick ground pass; four-wheel car drives)
+Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: run the per-car ground pass after each four-wheel tick
+fix: seed the lane source and correct the ground-pass claim
 ```
 
 Start by confirming the checkout and progress footer:
@@ -116,10 +116,13 @@ contacted (item 5 below).
 
 ## Latest state (read first)
 
-The four-wheel car drives on the owned AU1 data (`impl.ground-pass`): run
+The four-wheel car stays on the owned AU1 surface (`impl.ground-pass`) but does
+not drive yet: all lane forces are zero, so it slides downhill under gravity
+and the checkpoint cursor never advances (a correction to `834e4c9`). Run
 `CMR_RUNTIME_DATA="$PWD/runtime-data/installed-eu-derived-assets-v2" cargo test
 -p cmr-app --release probe_compiled_four_wheel_car_on_au1 -- --ignored
---nocapture`. Next, in order: build the windowed session on
+--nocapture` (it prints the cursor). Next, in order: source the second loop's
+tyre inputs so lane forces appear, then build the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`
 from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground`),
 render the car body from `MotionState::basis`, then the out-of-control path

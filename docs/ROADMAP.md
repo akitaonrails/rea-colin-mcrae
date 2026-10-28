@@ -1884,10 +1884,12 @@ The per-car ground pass `FUN_00410a60` is now reconstructed and run after each
 four-wheel tick: probes are rebuilt and the stage geometry is queried every
 tick, the car aligns to the ground normal, penetration lifts it, and
 into-ground velocity is removed. The contact flags and threshold scan now come
-from live ground state instead of the setup snapshot (handoff item 3). With
-gravity, the tyre-table store and this pass, the four-wheel car drives on the
-owned AU1 data for the first time: forward along the terrain, upright, and
-shifting gear. Moving the windowed session onto it is next.
+from live ground state instead of the setup snapshot (handoff item 3).
+Correction to the first version of this paragraph: the four-wheel car does not
+yet drive. It stays on the surface and upright with live contacts, but every
+lane force is still zero, so the motion seen on AU1 was gravity sliding it
+downhill (the checkpoint cursor never advances). The second loop's tyre inputs
+are the blocker, and the windowed session waits for them.
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI

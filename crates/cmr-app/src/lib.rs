@@ -5874,7 +5874,7 @@ mod tests {
         let root = std::env::var_os("CMR_RUNTIME_DATA")
             .map(PathBuf::from)
             .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
-        let (_resources, _nodes, mut start, _, actor_rows) = native_stage_setup(
+        let (_resources, nodes, mut start, _, actor_rows) = native_stage_setup(
             &root.join("Game/Au/1"),
             &root,
             "AU1",
@@ -5882,6 +5882,7 @@ mod tests {
             StageRendererChoice::Software,
         )
         .unwrap();
+        let mut progress = StageProgress::new(&nodes, 0);
         let mut pose = SessionCompiledPose::open(&root, "AU1", "Sub").unwrap();
         pose.adjust_spawn(&mut start, actor_rows).unwrap();
         let car = pose.compiled_car().unwrap();
@@ -5943,6 +5944,7 @@ mod tests {
                 centiseconds: 0,
                 car: state.car(),
             };
+            progress.update(sample.car.position, tick);
             if tick % 25 == 0 || tick == 249 {
                 let car = sample.car;
                 let moved = car.position.sub(origin);
@@ -5968,6 +5970,17 @@ mod tests {
                     car.four_wheel.first.map(|wheel| wheel.force),
                     car.four_wheel.first.map(|wheel| wheel.wheel_speed),
                     car.four_wheel.smoothed_wheel_speeds,
+                );
+                eprintln!(
+                    "probe   cursor={} row0=({:#x},{:#x},{:#x}) row2=({:#x},{:#x},{:#x}) heading={:#x}",
+                    progress.cursor(),
+                    car.motion.basis[0].x.raw(),
+                    car.motion.basis[0].y.raw(),
+                    car.motion.basis[0].z.raw(),
+                    car.motion.basis[2].x.raw(),
+                    car.motion.basis[2].y.raw(),
+                    car.motion.basis[2].z.raw(),
+                    car.heading,
                 );
                 if let Some(ground) = car.ground {
                     eprintln!(

@@ -793,6 +793,9 @@ impl MotionState {
                 Fixed16::from_raw(vector[2]),
             )
         });
+        // The initializer later seeds the persistent lane source `+0x5d4` from
+        // the published row `+0x258` (`0x407073..0x40708b`).
+        self.lane_source_s = self.basis[0];
     }
 
     /// Form the six angular inputs and add the current native velocity field.
