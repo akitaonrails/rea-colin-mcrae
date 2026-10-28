@@ -128,6 +128,44 @@ impl C3dFile {
             .map(|span| self.group1_record_view(span))
     }
 
+    /// Overwrite one group-1 vertex's position (words 0..3) and UV (words
+    /// 3..5), as the runtime damage rewrites the live car mesh. Returns
+    /// `false`, changing nothing, when the record or vertex is out of range.
+    pub fn set_entry32_position_uv(
+        &mut self,
+        record: usize,
+        entry: usize,
+        position: [i32; 3],
+        uv: [i32; 2],
+    ) -> bool {
+        let Some(span) = self.group1_records.get(record) else {
+            return false;
+        };
+        let start = span.entries_32_start + entry * C3D_GROUP1_ENTRY32_LEN;
+        if start + C3D_GROUP1_ENTRY32_LEN > span.entries_32_end {
+            return false;
+        }
+        for (i, word) in position.into_iter().chain(uv).enumerate() {
+            self.bytes[start + 4 * i..start + 4 * i + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        true
+    }
+
+    /// Overwrite one group-1 face's group-2 material ordinal (`+8`), as the
+    /// damage swaps a part to its damaged material. Returns `false`,
+    /// changing nothing, when the record or face is out of range.
+    pub fn set_entry24_group2_ordinal(&mut self, record: usize, face: usize, ordinal: i16) -> bool {
+        let Some(span) = self.group1_records.get(record) else {
+            return false;
+        };
+        let start = span.entries_32_end + face * C3D_GROUP1_ENTRY24_LEN;
+        if start + C3D_GROUP1_ENTRY24_LEN > span.entries_24_end {
+            return false;
+        }
+        self.bytes[start + 8..start + 10].copy_from_slice(&ordinal.to_le_bytes());
+        true
+    }
+
     /// Resolves every counted group-0 value as a group-1 record ordinal.
     ///
     /// Resolution is deliberately separate from structural parsing. Each
@@ -2692,6 +2730,25 @@ mod tests {
             assert_eq!(record.is_group_marker(), marker);
             assert_eq!(record.parent_index(), parent);
         }
+    }
+
+    #[test]
+    fn the_damage_setters_write_in_range_words_only() {
+        let mut input = fixture([0, 1, 0], [32, 96, 300], 300);
+        write_group1_record(&mut input, 96, *b"GROUP1-TYPED", 2, 2, 0);
+        let mut parsed = parse_c3d(&input, LIMITS).unwrap();
+        assert!(parsed.set_entry32_position_uv(0, 1, [1, -2, 3], [4, 5]));
+        assert!(parsed.set_entry24_group2_ordinal(0, 1, -7));
+        let record = parsed.group1_records().next().unwrap();
+        let entry = record.entries_32().nth(1).unwrap();
+        assert_eq!(entry.position_q16(), [1, -2, 3]);
+        assert_eq!(entry.uv_q16(), [4, 5]);
+        assert_eq!(record.entries_24().nth(1).unwrap().group2_ordinal(), -7);
+        let before = parsed.bytes().to_vec();
+        assert!(!parsed.set_entry32_position_uv(0, 2, [0; 3], [0; 2]));
+        assert!(!parsed.set_entry24_group2_ordinal(0, 2, 0));
+        assert!(!parsed.set_entry32_position_uv(1, 0, [0; 3], [0; 2]));
+        assert_eq!(parsed.bytes(), &before[..], "out of range changes nothing");
     }
 
     #[test]

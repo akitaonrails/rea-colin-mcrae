@@ -12690,6 +12690,60 @@ mod tests {
     /// bar, the setup list, a category page, the repair list and the stage
     /// view, written under `.work/frames-service`. The setup costs, damage
     /// and player name are synthetic.
+    /// Every shipped car body builds its damage parts (three LODs each, ids
+    /// from 6), writing the untouched live meshes back changes nothing, and
+    /// a hard hit dents the front and detaches parts.
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data"]
+    fn imported_car_bodies_build_their_damage_parts() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let reviewed = ReviewedProfile::from_json(REVIEWED_PROFILE).unwrap();
+        let store = AssetStore::open(&root, &reviewed, DecodeLimits::default()).unwrap();
+        let codes = [
+            "SUB", "SEA", "SKO", "QUA", "RS2", "MK2", "MIT", "VW", "INT", "TOY", "COS", "MEG",
+            "M4R", "CEL",
+        ];
+        for (model, code) in codes.iter().enumerate() {
+            for night in [false, true] {
+                let relative = car_body_path(code, night, false).replace('\\', "/");
+                let bytes = store.load(&format!("Game/{relative}")).unwrap();
+                let mut scene = parse_c3d(&bytes, C3dLimits::default()).unwrap();
+                let mut damage =
+                    cmr_core::car_crash_damage::CarDamage::from_c3d(&scene, false, model as u8)
+                        .expect("a body node");
+                assert!(
+                    (10..=14).contains(&damage.count),
+                    "{relative}: {}",
+                    damage.count
+                );
+                let before = scene.bytes().to_vec();
+                damage.write_live(&mut scene);
+                assert_eq!(scene.bytes(), &before[..], "{relative}: idempotent write");
+                // A full hit on the nose (+x forward).
+                for _ in 0..4 {
+                    damage.dent([0x2_0000, 0x8000, 0], 0x1_0000);
+                    damage.detach();
+                }
+                damage.write_live(&mut scene);
+                assert_ne!(scene.bytes(), &before[..], "{relative}: dented");
+                assert!(damage.deform_788.iter().any(|&d| d > 0), "{relative}");
+                eprintln!(
+                    "{relative}: {} parts, deform {:x?}, detached {:?}",
+                    damage.count,
+                    &damage.deform_788[..damage.count],
+                    damage.detached_bb8[..damage.count]
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, d)| **d)
+                        .map(|(i, _)| i)
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
     /// The school's status line and loop counter in the user's
     /// `title.fon` over a grey frame (`.work/frames-school/text.ppm`).
     #[test]

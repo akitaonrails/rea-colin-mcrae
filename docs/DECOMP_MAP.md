@@ -446,8 +446,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-11-01T19:30:00Z
-milestone=car-name-fixes
+updated_utc=2026-11-01T21:00:00Z
+milestone=crash-damage-model
 completed=117
 partial=2
 not_started=0
