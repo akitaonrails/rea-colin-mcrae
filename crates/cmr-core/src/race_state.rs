@@ -29,13 +29,14 @@ use crate::compiled_car_initializer::{
 use crate::drivetrain::{
     DrivenSmoothingScalarInput, DrivenSmoothingScalars, DrivenWheelSmoothingInput,
     EngineForceInput, FirstWheelEffects, FirstWheelInputs, ForcePassScales, SecondWheelCoreEffects,
-    SecondWheelInputs, SmoothedEngineSpeedInput, SmoothedSpeedGateInput, advance_idle_oscillation,
-    advance_idle_reset, advance_residual_enable, apply_rev_limiter,
-    derive_driven_smoothing_scalars, derive_engine_force, derive_force_pass_scales,
-    derive_gear_ratio, derive_smoothed_engine_speed, distribute_drive_torque,
-    equalize_wheel_speeds, execute_first_wheel_iteration, execute_second_wheel_core,
-    integrate_driven_wheel_speed, integrate_engine_from_raw_wheels, integrate_idle_engine,
-    smoothed_speed_uses_tracking, track_smoothed_wheel_speed,
+    SecondWheelInputs, SmoothedEngineSpeedInput, SmoothedSpeedGateInput, WheelBrakeInput,
+    advance_idle_oscillation, advance_idle_reset, advance_residual_enable, apply_rev_limiter,
+    derive_alternate_force_pass_factor, derive_driven_smoothing_scalars, derive_engine_force,
+    derive_force_pass_scales, derive_gear_ratio, derive_smoothed_engine_speed,
+    distribute_drive_torque, equalize_wheel_speeds, execute_first_wheel_iteration,
+    execute_second_wheel_core, integrate_driven_wheel_speed, integrate_engine_from_raw_wheels,
+    integrate_idle_engine, smoothed_speed_uses_tracking, spin_free_wheel,
+    track_smoothed_wheel_speed, wheel_brake_torques,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::gearbox::{GearOutOfRange, GearboxInputs, GearboxParams, GearboxState, apply_gearbox};
@@ -369,6 +370,9 @@ pub struct FourWheelIterationParams<'a> {
     /// processor's gearbox each tick and feeds its gear, shift request
     /// `+0x40c`, drive ratio and reversing mode `+0x408` to the drivetrain.
     pub gearbox: Option<GearboxParams>,
+    /// Setup block `+0x854/+0x858` (`DAT_0050e1a4/e1a8`): the front and rear
+    /// brake scales of the wheel-force producer.
+    pub brake_balance_e1a4: [i32; 2],
     /// Resolved global/callback inputs; Rebuild takes precedence over Exchange.
     pub lane_rebuild: bool,
     pub lane_exchange: bool,
@@ -432,6 +436,29 @@ pub fn populate_compiled_four_wheel_constants(
     wheel.engine_force.redline_15c = constants.control_word_15c;
 }
 
+/// The per-tick first-wheel inputs from one lane's parameters; the caller sets
+/// the live drive slot, wheel speed and handbrake.
+fn first_wheel_inputs(wheel: &FirstWheelParams) -> FirstWheelInputs {
+    FirstWheelInputs {
+        force: 0,
+        wheel_speed: 0,
+        split: wheel.split,
+        wheel_constant: wheel.wheel_constant,
+        wheel_vector: wheel.wheel_vector,
+        state_vector: wheel.state_vector,
+        scale_c600: wheel.scale_c600,
+        limit: wheel.limit,
+        shift: wheel.shift,
+        handbrake: 0,
+        factor_c5c0: wheel.factor_c5c0,
+        gear: wheel.gear,
+        config_40c: wheel.config_40c,
+        config_158: wheel.config_158,
+        gear_ratio: wheel.gear_ratio,
+        is_front_wheel: wheel.is_front_wheel,
+    }
+}
+
 /// Populate the per-slot setup-block scalars the four-wheel passes read: the
 /// engine response `DAT_0050e1ac` (`+0x85c`), steering factor `DAT_0050e188`
 /// (`+0x838`), per-lane wheel constants `DAT_0050e18c[lane]` (`+0x83c`), base
@@ -441,6 +468,7 @@ pub fn populate_car_setup(wheel: &mut FourWheelIterationParams<'_>, setup: &CarS
     wheel.engine_force.response_e1ac = setup.engine_response_85c;
     wheel.steering_car_factor_e188 = setup.steering_factor_838;
     wheel.lane_direction_angle = setup.base_angle_bac;
+    wheel.brake_balance_e1a4 = [setup.words_84c[2], setup.words_84c[3]];
     for (first, constant) in wheel.first.iter_mut().zip(setup.wheel_constants_83c) {
         first.wheel_constant = constant;
     }
@@ -1069,20 +1097,8 @@ impl RaceState {
         let effects = execute_first_wheel_iteration(FirstWheelInputs {
             force: state.force,
             wheel_speed: state.wheel_speed,
-            split: wheel.split,
-            wheel_constant: wheel.wheel_constant,
-            wheel_vector: wheel.wheel_vector,
-            state_vector: wheel.state_vector,
-            scale_c600: wheel.scale_c600,
-            limit: wheel.limit,
-            shift: wheel.shift,
             handbrake: i32::from(handbrake),
-            factor_c5c0: wheel.factor_c5c0,
-            gear: wheel.gear,
-            config_40c: wheel.config_40c,
-            config_158: wheel.config_158,
-            gear_ratio: wheel.gear_ratio,
-            is_front_wheel: wheel.is_front_wheel,
+            ..first_wheel_inputs(wheel)
         });
         *state = FirstWheelState {
             force: effects.force_at_540,
@@ -1456,14 +1472,48 @@ impl RaceState {
         for (state, torque) in self.car.four_wheel.first.iter_mut().zip(torques) {
             state.force = torque;
         }
+        // `FUN_0040d810`'s brake torques replace each lane's drag word, then
+        // the producer runs its grounded body only with contacts (`+0x674`)
+        // and an upright car (`+0x404`); otherwise every wheel spins freely
+        // with drag and the airborne factor, and no lane force is produced.
+        let (front_brake, rear_brake) = wheel_brake_torques(WheelBrakeInput {
+            throttle_304: pedal_inputs.throttle_304,
+            brake_308: pedal_inputs.brake_308,
+            gear: first[0].gear,
+            bias_170: wheel.driven_smoothing.split_170,
+            brake_response_2ec: self.car.four_wheel.pedals.brake_response_2ec,
+            balance_e1a4: wheel.brake_balance_e1a4,
+            handbrake_30c: controls.handbrake,
+            handbrake_torque_2f4: self.car.four_wheel.pedals.handbrake_torque_2f4,
+        });
+        for (index, input) in first.iter_mut().enumerate() {
+            input.split = if index < 2 { front_brake } else { rear_brake };
+        }
+        let grounded = self.car.motion.contact_count_674 != 0 && self.car.four_wheel.upright_404;
         let mut prior_speeds = [0; 4];
         for index in (0..4).rev() {
             prior_speeds[index] = self.car.four_wheel.first[index].wheel_speed;
-            Self::execute_first_wheel_state(
-                &mut self.car.four_wheel.first[index],
-                controls.handbrake,
-                &first[index],
-            );
+            let state = &mut self.car.four_wheel.first[index];
+            if grounded && self.car.motion.contact_distance_flags[index] {
+                Self::execute_first_wheel_state(state, controls.handbrake, &first[index]);
+                continue;
+            }
+            let inputs = FirstWheelInputs {
+                force: state.force,
+                wheel_speed: state.wheel_speed,
+                handbrake: i32::from(controls.handbrake),
+                ..first_wheel_inputs(&first[index])
+            };
+            let factor = if grounded {
+                Fixed16::from_raw(first[index].factor_c5c0)
+            } else {
+                derive_alternate_force_pass_factor(wheel.lane_time_step)
+            };
+            let (force, speed) = spin_free_wheel(inputs, !grounded, factor);
+            *state = FirstWheelState {
+                force,
+                wheel_speed: speed,
+            };
         }
         for axle in [0, 2] {
             let (left, right) = equalize_wheel_speeds(
@@ -1479,6 +1529,9 @@ impl RaceState {
             output.vector_b = directions.direction_b[lane];
         }
         for index in (0..4).rev() {
+            if !grounded {
+                break;
+            }
             populate_derived_second_inputs(
                 &first[index],
                 &mut second[index],
@@ -1499,13 +1552,26 @@ impl RaceState {
                 Fixed16::from_raw(current[2]),
             );
         }
-        let outcome =
-            apply_geometric_lane_postprocess(&mut lanes, wheel.postprocess.argument_scale)?;
-        self.car.four_wheel.postprocess = FourWheelPostprocessState {
-            accumulators: lanes.map(|lane| lane.accumulator),
-            qualified: outcome.qualified,
-            angle_measures: outcome.angle_measures,
-        };
+        if grounded {
+            let outcome =
+                apply_geometric_lane_postprocess(&mut lanes, wheel.postprocess.argument_scale)?;
+            self.car.four_wheel.postprocess = FourWheelPostprocessState {
+                accumulators: lanes.map(|lane| lane.accumulator),
+                qualified: outcome.qualified,
+                angle_measures: outcome.angle_measures,
+            };
+        } else {
+            // The driver clears the lane accumulators every tick, and the
+            // airborne pass never writes them.
+            for lane in &mut lanes {
+                lane.accumulator = Vec3::ZERO;
+            }
+            self.car.four_wheel.postprocess = FourWheelPostprocessState {
+                accumulators: [Vec3::ZERO; 4],
+                qualified: [false; 4],
+                angle_measures: [Fixed16::ZERO; 4],
+            };
+        }
         self.car.four_wheel.contact_updates = apply_contact_vector_updates(
             contact_update_inputs,
             self.car.four_wheel.contact_updates,
@@ -2437,6 +2503,7 @@ mod tests {
             steering_car_factor_e188: 0x1_0000,
             steering_surface_factors: [0; 2],
             gearbox: None,
+            brake_balance_e1a4: [0x1_0000; 2],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -2530,6 +2597,10 @@ mod tests {
             },
         );
         car.motion.angular_velocity = vector([0x10000, 0x10000, 0x10000]);
+        // Grounded and upright, so the wheel-force producer runs its full body.
+        car.motion.contact_distance_flags = [true; 4];
+        car.motion.contact_count_674 = 4;
+        car.motion.projection_axis = vector([0, 0x10000, 0]);
         // A nonzero collision moment from the previous tick: the angular pass
         // must consume it (decayed) and the mechanics driver must clear it.
         car.motion.moment = vector([0x2_0000, -0x1_0000, 0x3_0000]);
@@ -2769,6 +2840,76 @@ mod tests {
         assert_eq!(reversed.car.four_wheel.gearbox.target_43f, 7);
         assert_eq!(reversed.car.four_wheel.pedals.response_2d8, 0x8000);
         assert_eq!(reversed.car.four_wheel.pedals.brake_response_2ec, 0);
+
+        // Without contacts the producer takes its airborne pass: every wheel
+        // spins with drag and the alternate factor, and no lane force or
+        // postprocess output is produced.
+        let mut airborne_car = car;
+        airborne_car.motion.contact_count_674 = 0;
+        let airborne = RaceState::new(airborne_car)
+            .step_with_all_four_wheels(&straight_throttle(1)[0], &wheel)
+            .unwrap();
+        assert_eq!(
+            airborne.car.four_wheel.postprocess.accumulators,
+            [Vec3::ZERO; 4]
+        );
+        assert_eq!(airborne.car.four_wheel.postprocess.qualified, [false; 4]);
+        let alternate = crate::drivetrain::derive_alternate_force_pass_factor(wheel.lane_time_step);
+        // No pedal in gear: the coasting brake torques.
+        let (front_brake, rear_brake) =
+            crate::drivetrain::wheel_brake_torques(crate::drivetrain::WheelBrakeInput {
+                gear: wheel.first[0].gear,
+                bias_170: wheel.driven_smoothing.split_170,
+                balance_e1a4: wheel.brake_balance_e1a4,
+                ..Default::default()
+            });
+        for index in 0..4 {
+            let lane = FirstWheelParams {
+                split: if index < 2 { front_brake } else { rear_brake },
+                ..wheel.first[index]
+            };
+            let (force, _) = crate::drivetrain::spin_free_wheel(
+                FirstWheelInputs {
+                    force: 0,
+                    wheel_speed: airborne_car.four_wheel.first[index].wheel_speed,
+                    ..first_wheel_inputs(&lane)
+                },
+                true,
+                alternate,
+            );
+            // Zero drive torque (no engine force yet) leaves only the drag.
+            assert_eq!(
+                airborne.car.four_wheel.first[index].force, force,
+                "lane {index}"
+            );
+        }
+        // The same car upright but tipped (`+0x404` clear) is airborne too.
+        let mut tipped_car = car;
+        tipped_car.motion.projection_axis = vector([0x10000, 0, 0]);
+        let tipped = RaceState::new(tipped_car)
+            .step_with_all_four_wheels(&straight_throttle(1)[0], &wheel)
+            .unwrap();
+        assert!(!tipped.car.four_wheel.upright_404);
+        assert_eq!(tipped.car.four_wheel.postprocess.qualified, [false; 4]);
+
+        // A grounded car with one non-contacting lane skips that lane's drag
+        // and slip: its drive slot is only integrated.
+        let mut three_down = car;
+        three_down.motion.contact_distance_flags = [true, true, true, false];
+        let partial = RaceState::new(three_down)
+            .step_with_all_four_wheels(&straight_throttle(1)[0], &wheel)
+            .unwrap();
+        let (force, _) = crate::drivetrain::spin_free_wheel(
+            FirstWheelInputs {
+                force: 0,
+                wheel_speed: three_down.four_wheel.first[3].wheel_speed,
+                ..first_wheel_inputs(&wheel.first[3])
+            },
+            false,
+            Fixed16::from_raw(wheel.first[3].factor_c5c0),
+        );
+        assert_eq!(partial.car.four_wheel.first[3].force, force);
+        assert_eq!(partial.car.four_wheel.first[3].force, 0);
 
         // A gear outside the tables is reported, not guessed.
         let mut lost = revving;

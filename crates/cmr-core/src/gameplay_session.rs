@@ -471,6 +471,7 @@ mod tests {
             steering_car_factor_e188: 0x1_0000,
             steering_surface_factors: [0; 2],
             gearbox: None,
+            brake_balance_e1a4: [0x1_0000; 2],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: crate::race_state::FourWheelPostprocessParams {

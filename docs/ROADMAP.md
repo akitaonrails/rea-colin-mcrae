@@ -1873,6 +1873,13 @@ owned AU1 data the engine now revs against the car's real redline, but the
 wheels still do not turn: the remaining first/second-wheel inputs and ground
 contact are next.
 
+The wheel-force producer's brake torques and its grounded/airborne and
+per-lane contact gates are now recovered and wired. On the owned AU1 data the
+car is grounded and upright, its driven wheels spin up under the engine and the
+rev limiter cuts in, but no lane force reaches the body yet: the second loop's
+tyre inputs (transition and alternate gains and bases, correction gate,
+accumulation limit) are still harness zeros and are the next target.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

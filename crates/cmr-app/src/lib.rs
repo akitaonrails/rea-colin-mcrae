@@ -3247,6 +3247,7 @@ impl SessionWheelInputs {
             steering_car_factor_e188: 0x1_0000,
             steering_surface_factors: [0; 2],
             gearbox: None,
+            brake_balance_e1a4: [0x1_0000; 2],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -4176,6 +4177,13 @@ pub fn run_headless_four_wheel_game_session(
     };
     let mut start = CarState::at_rest();
     start.motion.angular_velocity = Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE);
+    // A harness grounded start: four contacting lanes and a projection axis
+    // that is upright in the harness basis (the negated identity), so the
+    // wheel-force producer runs its grounded body; an at-rest car with no
+    // contacts is airborne and produces no lane force.
+    start.motion.contact_distance_flags = [true; 4];
+    start.motion.contact_count_674 = 4;
+    start.motion.projection_axis = Vec3::new(Fixed16::ZERO, Fixed16::ONE.neg(), Fixed16::ZERO);
     let mut session = GameplaySession::new_with_four_wheel_and_car(
         params,
         InRaceScript::frontend_harness(),
@@ -5817,6 +5825,14 @@ mod tests {
             },
             ..Controls::default()
         };
+        eprintln!(
+            "probe start contacts={:?} count674={} projection=({:#x},{:#x},{:#x})",
+            start.motion.contact_distance_flags,
+            start.motion.contact_count_674,
+            start.motion.projection_axis.x.raw(),
+            start.motion.projection_axis.y.raw(),
+            start.motion.projection_axis.z.raw(),
+        );
         let origin = start.position;
         for tick in 0..250 {
             let sample = match state.step_with_all_four_wheels(&throttle, &wheel) {
@@ -5840,6 +5856,24 @@ mod tests {
                     car.motion.basis[1].x.raw(),
                     car.motion.basis[1].y.raw(),
                     car.motion.basis[1].z.raw(),
+                );
+                eprintln!(
+                    "probe   upright={} force530={:#x} wheel_force={:x?} wheel_speed={:x?} smoothed={:x?}",
+                    car.four_wheel.upright_404,
+                    car.four_wheel.engine_force_530,
+                    car.four_wheel.first.map(|wheel| wheel.force),
+                    car.four_wheel.first.map(|wheel| wheel.wheel_speed),
+                    car.four_wheel.smoothed_wheel_speeds,
+                );
+                eprintln!(
+                    "probe   second={:x?} lanes={:x?} qualified={:?}",
+                    car.four_wheel.second.map(|lane| lane.accumulators),
+                    car.four_wheel.postprocess.accumulators.map(|lane| [
+                        lane.x.raw(),
+                        lane.y.raw(),
+                        lane.z.raw()
+                    ]),
+                    car.four_wheel.postprocess.qualified,
                 );
             }
         }

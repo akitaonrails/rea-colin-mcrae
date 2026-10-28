@@ -2596,6 +2596,9 @@ languages rather than fabricating or silently aliasing Italian assets.
 - The per-player car-setup block (`DAT_0050d950 + slot * 0xcd0`) supplies engine
   response, steering factor, wheel constants, base angle and the gear-2 skip;
   the engine force is split into the four drive slots before the wheel passes.
+- The wheel-force producer's brake torques replace the harness drag, and its
+  grounded/airborne and per-lane contact gates are in place; the second loop's
+  tyre inputs are still harness values.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

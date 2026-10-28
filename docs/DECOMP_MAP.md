@@ -407,8 +407,9 @@ the drivetrain. Their car constants derive from the compiled initializer stages.
 Its steering half now turns steer input into the wheel angle that rotates the
 lane source, and its gearbox drives gear, shift request and reversing mode. A
 probe on owned AU1 data now shows engine force reaching the drive slots
-through the recovered car-setup block and torque split, but no wheel motion yet
-(wheel-pass inputs and ground contact remain).
+through the recovered car-setup block and torque split, with brake torques and
+the grounded/airborne gates in place: the driven wheels spin, but the second
+loop's tyre inputs are still zero, so no lane force reaches the body.
 
 ## Update rules
 
@@ -419,14 +420,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T05:30:00Z
-milestone=car-setup-block-and-drive-torque
+updated_utc=2026-10-28T06:10:00Z
+milestone=wheel-brake-torques-and-producer-gates
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-window-path-angular-collision-and-car-animation
-next_exit_gate=four-wheel-wheel-pass-inputs-and-ground-contact
+next_exit_gate=second-wheel-tyre-inputs-to-first-lane-force
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

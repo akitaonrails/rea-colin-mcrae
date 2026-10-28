@@ -378,6 +378,85 @@ pub struct EngineForce {
     pub engine_2e0: i32,
 }
 
+/// Inputs to the wheel-force producer's brake torques (`FUN_0040d810`,
+/// `0x40d85e..0x40d996`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WheelBrakeInput {
+    pub throttle_304: i32,
+    pub brake_308: i32,
+    pub gear: i32,
+    /// Control `+0x170`: the front brake share.
+    pub bias_170: i32,
+    /// Control `+0x2ec`: the brake response.
+    pub brake_response_2ec: i32,
+    /// Setup block `+0x854/+0x858` (`DAT_0050e1a4/e1a8`): front/rear brake scale.
+    pub balance_e1a4: [i32; 2],
+    /// Control `+0x30c` and the handbrake torque `+0x2f4`.
+    pub handbrake_30c: bool,
+    pub handbrake_torque_2f4: i32,
+}
+
+/// The front and rear per-wheel brake torques the drive application subtracts
+/// against the wheel's motion.
+///
+/// Coasting in gear (no pedal, gear nonzero) gives `qmul(0x1999, +0x170)` front
+/// and `qmul(0x1999, 1 - +0x170)` rear. Otherwise the front is
+/// `qmul(qmul(+0x2ec, e1a4), +0x170)` and the rear
+/// `qmul(qmul(+0x2ec, e1a8), 1 - +0x170)`. A held handbrake adds `+0x2f4` to the
+/// rear.
+#[must_use]
+pub fn wheel_brake_torques(input: WheelBrakeInput) -> (i32, i32) {
+    let rear_share = 0x1_0000_i32.wrapping_sub(input.bias_170);
+    let (front, mut rear) = if input.throttle_304 == 0 && input.brake_308 == 0 && input.gear != 0 {
+        (q16_mul(0x1999, input.bias_170), q16_mul(0x1999, rear_share))
+    } else {
+        (
+            q16_mul(
+                q16_mul(input.brake_response_2ec, input.balance_e1a4[0]),
+                input.bias_170,
+            ),
+            q16_mul(
+                q16_mul(input.brake_response_2ec, input.balance_e1a4[1]),
+                rear_share,
+            ),
+        )
+    };
+    if input.handbrake_30c {
+        rear = rear.wrapping_add(input.handbrake_torque_2f4);
+    }
+    (front, rear)
+}
+
+/// One wheel outside the slip path: optionally apply the brake/rolling drag
+/// (the airborne pass does, a non-contacting lane of the grounded pass does
+/// not), integrate the drive slot into the wheel speed with `factor`, and gate
+/// the result (`0x40e7c6..0x40e884`, `0x40fa74..0x40fbb3`). Returns the drive
+/// slot and the gated speed.
+#[must_use]
+pub fn spin_free_wheel(input: FirstWheelInputs, apply_drag: bool, factor: Fixed16) -> (i32, i32) {
+    let force = if apply_drag {
+        apply_wheel_drive(
+            input.force,
+            input.split,
+            input.wheel_constant,
+            input.wheel_speed,
+        )
+    } else {
+        input.force
+    };
+    let integrated = integrate_wheel_speed(input.wheel_speed, Fixed16::from_raw(force), factor);
+    let speed = gate_wheel_speed(
+        input.wheel_speed,
+        integrated,
+        input.gear,
+        input.config_40c,
+        input.config_158,
+        input.gear_ratio,
+        !input.is_front_wheel,
+    );
+    (force, speed)
+}
+
 /// Distribute the engine force to the four wheels' drive slots
 /// `state+0x534..+0x540` (`FUN_0040ce40`, `0x40cfd1..0x40d0aa`), just before the
 /// wheel-force producer `FUN_0040d810` runs.
@@ -1723,6 +1802,81 @@ pub fn execute_first_wheel_iteration(input: FirstWheelInputs) -> FirstWheelEffec
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn brake_torques_coast_brake_and_handbrake() {
+        let coasting = WheelBrakeInput {
+            gear: 2,
+            bias_170: 0x4000,
+            balance_e1a4: [0x1_0000; 2],
+            ..WheelBrakeInput::default()
+        };
+        assert_eq!(
+            wheel_brake_torques(coasting),
+            (q16_mul(0x1999, 0x4000), q16_mul(0x1999, 0xc000))
+        );
+        // Neutral with no pedal uses the brake response path (zero here).
+        assert_eq!(
+            wheel_brake_torques(WheelBrakeInput {
+                gear: 0,
+                ..coasting
+            }),
+            (0, 0)
+        );
+        let braking = WheelBrakeInput {
+            brake_308: 1,
+            brake_response_2ec: 0x2_0000,
+            balance_e1a4: [0x8000, 0x1_0000],
+            ..coasting
+        };
+        assert_eq!(
+            wheel_brake_torques(braking),
+            (
+                q16_mul(q16_mul(0x2_0000, 0x8000), 0x4000),
+                q16_mul(0x2_0000, 0xc000)
+            )
+        );
+        let handbrake = WheelBrakeInput {
+            handbrake_30c: true,
+            handbrake_torque_2f4: 0x3_0000,
+            ..braking
+        };
+        let (front, rear) = wheel_brake_torques(handbrake);
+        assert_eq!(front, wheel_brake_torques(braking).0);
+        assert_eq!(rear, wheel_brake_torques(braking).1 + 0x3_0000);
+    }
+
+    #[test]
+    fn free_wheels_integrate_with_or_without_drag() {
+        let input = FirstWheelInputs {
+            force: 0x1_0000,
+            wheel_speed: 0x100,
+            split: 0x4000,
+            wheel_constant: 0x1000,
+            wheel_vector: [0; 3],
+            state_vector: [0; 3],
+            scale_c600: 0,
+            limit: 0,
+            shift: 0,
+            handbrake: 0,
+            factor_c5c0: 0x1_0000,
+            gear: 0,
+            config_40c: 0,
+            config_158: 0x8000,
+            gear_ratio: 0x1_0000,
+            is_front_wheel: true,
+        };
+        let factor = Fixed16::from_raw(0x2_0000);
+        assert_eq!(
+            spin_free_wheel(input, false, factor),
+            (0x1_0000, 0x100 + 0x2_0000)
+        );
+        let dragged = 0x1_0000 - 0x4000 - 0x1000;
+        assert_eq!(
+            spin_free_wheel(input, true, factor),
+            (dragged, 0x100 + q16_mul(dragged, 0x2_0000))
+        );
+    }
+
     #[test]
     fn drive_torque_splits_front_and_rear_with_truncating_halves() {
         // t = qmul(3.0, 2.0) = 6.0; front = qmul(6.0, 0.25) / 2 = 0.75.

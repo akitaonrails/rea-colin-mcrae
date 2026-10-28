@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-10-28 (car-setup block and drive torque)
+Updated: 2026-10-28 (wheel brake torques and producer gates)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: recover the car-setup block and the engine drive split
+feat: recover the wheel brake torques and producer gates
 ```
 
 Start by confirming the checkout and progress footer:
@@ -83,7 +83,7 @@ ef78049 feat: derive canonical collision response state
 
 ## Verification state
 
-Green at handoff (2,365 tests, 36 ignored):
+Green at handoff (2,367 tests, 36 ignored):
 
 ```sh
 cargo test --workspace --all-targets
@@ -94,7 +94,7 @@ Focused collision, session rollback, keyboard/analog, SDL gamepad, app build,
 and full-workspace tests pass. Logs from the last run are ignored under:
 
 ```text
-.work/car-setup-workspace-test.log
+.work/wheel-brake-workspace-test.log
 ```
 
 The authenticated AU1 test:
@@ -140,11 +140,15 @@ contacted (item 5 below).
    `DAT_0050e170..` is now recovered (`cmr-core::car_setup`,
    `populate_car_setup`) and the engine force is split into the drive slots
    before the wheel passes (`impl.car-setup-and-drive-torque`): the probe's
-   engine revs against the real redline, but wheel speeds stay zero. Next:
-   inventory and source the remaining `FirstWheelParams`/`SecondWheelParams`
-   harness fields (wheel/state vectors, splits, slip limit, transition gains,
-   surface vectors) and recover gravity/ground contact in `FUN_0040d810`
-   before item 2.
+   engine revs against the real redline. The producer's brake torques and its
+   grounded/airborne and per-lane gates are now wired
+   (`impl.wheel-brake-and-producer-gates`): on AU1 the car is grounded, its
+   driven wheels spin and the limiter cuts, but the second loop's
+   accumulators stay zero. Next: source the `SecondWheelParams` tyre inputs
+   (`transition_gain/base`, `alternate_gain/base`, `correction_gate`,
+   `accumulation_limit`, `correction_alternate`, `coefficient_34`,
+   `config_scale`), the first-loop slip `limit` (`+0x378`) and the front brake
+   share `+0x170`, then gravity/suspension in `FUN_0040d810`, before item 2.
 2. Move the windowed session from `GameplaySession::new_with_car` to the already
    recovered four-wheel path only after supplying its authenticated runtime
    inputs. The current planar path changes heading but does not evolve the full
