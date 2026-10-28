@@ -95,11 +95,16 @@ at tag `recomp-parked-2026-11-02` and copied in full (with its local notes) to
   patch. Forcing the whole game to 1440x1080 broke the front end (menu
   drawn in the corner, then a hang). Plan in the Enhancements table.
 
+- **Gamepad verified (2026-11-02):** with F7-F9 the user played a full
+  stage on the 8BitDo with analog steering, R2/L2 and the right stick, and
+  drove the menus with the pad; no glitches. RUN JOYSTICK PANEL still hangs
+  the game when clicked (C6).
+
 **Next:**
-1. C1: confirm F7-F9 with a real pad (R2/L2, right stick), then fix the
-   Control Setup loop and the binding capture (C3, C4), map the d-pad and
-   offer an A/B swap for Nintendo-layout pads (C5), and keep RUN JOYSTICK
-   PANEL from hanging (C6).
+1. Graphics (E1-E4): race resolution above 800x600, 16:9 without
+   stretching, draw distance, frame rate / vsync.
+2. Controllers: keep RUN JOYSTICK PANEL from hanging (C6), the Control
+   Setup loop and binding capture (C3, C4), d-pad and A/B swap (C5).
 2. R15: handle a portrait main screen in the launcher (give the game a
    landscape mode list or a clear message).
 3. E1: race resolution as an opt-in `resolution` setting (front end stays
@@ -171,8 +176,8 @@ ourselves and apply it in memory; the file on disk is never changed.
 | F4 | `0x49dcb0` | Win9x-only OS gate | accept | **verified** (launcher, Wine) |
 | F5 | `0x4ae590..0x4ae5ac` | reads the VGA palette with `in`/`out` port I/O, a privileged instruction on NT-family Windows | skip the port reads | **verified** (launcher, Wine) |
 | F6 | `0x49de78` (WndProc jump-table entry for `WM_CLOSE`) | the window procedure swallows `WM_CLOSE`, so Alt+F4 or the window manager's close leaves the game running full screen; under gamescope the window looks frozen | on `WM_CLOSE` set the main loop's quit flag `0x96efe8`; the game shuts down through its own teardown (also applied to the community exe, which lacks it) | **verified** (Wine, gamescope on Hyprland: closes in ~1 s; during a load it quits when the load ends) |
-| F7 | `0x49ce1b`, `0x49ce6f` (analog joystick read `FUN_0049cdf0`) | the game reads X/Y/buttons only, so on a modern pad only the left stick drives | also request Z and R; feed the game's Y with whichever of left-stick Y, Z (triggers) or R (right stick) is furthest from centre, for axes the launcher found present and centred at start (pedals are left out); optional (`gamepad_axes`) | applies cleanly; L2 brake seen; R2/right stick to confirm on a real pad |
-| F8 | `0x49d60e` (joystick probe `FUN_0049d5c0`) | Control Setup clamps CONTROL METHOD to the pads that answered this frame; a transient `JOYERR_UNPLUGGED` under Wine drops it to KEYBOARD or below | a pad that answered once stays present for the session (sticky mask in the fix memory) | applies cleanly |
+| F7 | `0x49ce1b`, `0x49ce6f` (analog joystick read `FUN_0049cdf0`) | the game reads X/Y/buttons only, so on a modern pad only the left stick drives | also request Z and R; feed the game's Y with whichever of left-stick Y, Z (triggers) or R (right stick) is furthest from centre, for axes the launcher found present and centred at start (pedals are left out); optional (`gamepad_axes`) | **verified** (user, 8BitDo Ultimate 2 under Wine + gamescope: a full stage driven with analog steering, triggers and right stick; menus by pad) |
+| F8 | `0x49d60e` (joystick probe `FUN_0049d5c0`) | Control Setup clamps CONTROL METHOD to the pads that answered this frame; a transient `JOYERR_UNPLUGGED` under Wine drops it to KEYBOARD or below | a pad that answered once stays present for the session (sticky mask in the fix memory) | **verified** (JOYSTICK 1 setting kept; menus and race on the pad) |
 | F9 | `0x49d67d` (device-type setter `FUN_0049d670`) | a joystick type written to keyboard record 0 (from F8's case, or a save made before F8) makes the game read key codes as joystick axes: the car circles in reverse | records 0 and 1 always keep type 1 (keyboard); repairs such saves at start-up | **verified** headless (broken save: car waits at the start instead of circling) |
 
 ### Editions
@@ -227,12 +232,12 @@ Excluded: dgVoodoo2 (closed source; crashes under Wine), cnc-ddraw
 | P1 | Launcher applies F1-F5 in memory (start suspended, write, resume) | `CMRLauncher.exe` under Wine 11.20 | **yes**: official exe reaches the main menu |
 | A1 | QMixer audio plays | Record a private null sink during a run | **yes** at the menu and in the race (Wine 11.20) |
 | S1 | Stage loading under NT-family Windows versions (community pack: crashes on Win7+ without XP compatibility mode) | Load a stage with the default Wine version; if it crashes, find the cause | **no crash** under Wine 11.20 (two stages: New Zealand, Greece); real Windows still to see (M3) |
-| C1 | Analog pad works via WinMM under Wine/Proton | `CMRLauncher --controllers` (lists pads, logs every axis/button), then drive | **in progress**: works with F7-F9 headless; real-pad confirmation pending |
-| C2 | R2/L2 and right stick drive with F7 on a real pad | user test with an Xbox-layout and a Nintendo-layout pad | open |
+| C1 | Analog pad works via WinMM under Wine/Proton | `CMRLauncher --controllers` (lists pads, logs every axis/button), then drive | **verified** under Wine with F7-F9 (real pad, full stage); Proton and Windows still to check |
+| C2 | R2/L2 and right stick drive with F7 on a real pad | user test with an Xbox-layout and a Nintendo-layout pad | **verified** (Nintendo-layout 8BitDo); Xbox-layout pad to check |
 | C3 | Control Setup -> Analogue -> Button Setup loops back with no exit | trace the menu parent chain (`0xd445e4`) | open |
 | C4 | Button Setup capture records a direction/the wrong button | trace capture (`state::CAPTURE`) edges vs F7's flags | open |
 | C5 | d-pad (POV) not read; A/B order differs per pad | map POV to the digital flags in F7; optional A/B swap setting | open |
-| C6 | RUN JOYSTICK PANEL hangs under gamescope | the game deactivates itself and opens `joy.cpl`; skip it (in memory) when no desktop can show it | open |
+| C6 | RUN JOYSTICK PANEL hangs under gamescope | the game deactivates itself and opens `joy.cpl`; skip it (in memory) when no desktop can show it | **seen again** by the user (accidental click hangs the game); open |
 | D1 | `dplayx` on Windows 10/11 | Windows machine | blocked |
 | V1 | Intro playback with an open-source decoder | After M2 | — |
 

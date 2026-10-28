@@ -160,4 +160,8 @@ registry values from `THIN_APP_PLAN.md` R2 imported with `regedit /S`.
 - Left-stick steering and L2 braking seen in a race with the virtual pad;
   R2 and right-stick throttle not yet confirmed (the scripted navigation
   into races is unreliable; a real-pad test is next).
+- Real pad, user test with F7-F9: settings already on JOYSTICK 1 / ANALOGUE
+  (all three analogue). A full stage driven normally with analog steering,
+  triggers and right stick; menus follow the pad; no visual glitches.
+  Clicking RUN JOYSTICK PANEL by accident still hangs the game (C6).
 
