@@ -204,10 +204,7 @@ impl<'a> GameplaySession<'a> {
     ) -> Result<GameplayFrame, WheelPostprocessError> {
         let driving_sample = if self.session.current().id() == 5 {
             Some(match &self.wheel {
-                Some(wheel) => {
-                    self.race
-                        .step_with_all_four_wheels(&controls, &self.params, wheel)?
-                }
+                Some(wheel) => self.race.step_with_all_four_wheels(&controls, wheel)?,
                 None => self.race.step(&controls, &self.params),
             })
         } else {
@@ -254,7 +251,7 @@ impl<'a> GameplaySession<'a> {
             let mut sample = match &self.wheel {
                 Some(wheel) => self
                     .race
-                    .step_with_all_four_wheels(&controls, &self.params, wheel)
+                    .step_with_all_four_wheels(&controls, wheel)
                     .map_err(StaticGameplayAdvanceError::Wheel)?,
                 None => self.race.step(&controls, &self.params),
             };
@@ -474,10 +471,11 @@ mod tests {
                 lanes: [inactive; 4],
                 current_lane: 0,
                 argument_scale: Fixed16::ONE,
-                base_force: Vec3::ZERO,
+                base_force: Vec3::new(Fixed16::ONE, Fixed16::ZERO, Fixed16::ZERO),
                 non_wheel_forces: &[],
                 wheel_contacts: [true; 4],
             },
+            inverse_mass_4c: Fixed16::ONE,
             angular: crate::vehicle_dynamics::AngularOrientationInput {
                 momentum: crate::vehicle_dynamics::AngularMomentumStepInput {
                     prior_moment: Vec3::ZERO,
@@ -624,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn four_wheel_throttle_produces_forward_world_motion() {
+    fn four_wheel_base_force_produces_world_motion() {
         let trig = crate::fixed_point::build_sine_table();
         let wheel = four_wheel_params(&trig);
         let mut session =

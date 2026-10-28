@@ -399,7 +399,9 @@ moment every tick, so an end-of-tick clear now fixes the four-wheel write-back
 and the live planar session's compounding angular impulses; `+0x404` is
 recovered as an upright-cone test. The four-wheel step now threads the raw
 steer magnitudes through the instruction-confirmed low-speed cut and runs the
-deadzones and `+0x700` in native order; the planar windowed path does not.
+deadzones and `+0x700` in native order; the planar windowed path does not. Its
+translation is now the integrator's own (no harness steering, drag, throttle
+push or lateral grip; inverse mass `+0x4c` is an explicit input).
 
 ## Update rules
 
@@ -410,8 +412,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T01:40:00Z
-milestone=wire-steer-cut-angle-deadzones-and-resting-flag
+updated_utc=2026-10-28T02:05:00Z
+milestone=native-four-wheel-translation
 completed=117
 partial=2
 not_started=0

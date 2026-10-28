@@ -92,11 +92,10 @@ pub fn drive_stage_with_all_four_wheels(
     start: CarState,
     controls: &[Controls],
     config: &StageConfig,
-    params: &SimParams,
     wheel: &FourWheelIterationParams<'_>,
 ) -> Result<StageOutcome, WheelPostprocessError> {
     drive_stage_with_step(start, controls, config, |state, control| {
-        state.step_with_all_four_wheels(control, params, wheel)
+        state.step_with_all_four_wheels(control, wheel)
     })
 }
 
@@ -274,6 +273,7 @@ mod tests {
                 non_wheel_forces: &[],
                 wheel_contacts: [true; 4],
             },
+            inverse_mass_4c: Fixed16::ONE,
             angular: crate::vehicle_dynamics::AngularOrientationInput {
                 momentum: crate::vehicle_dynamics::AngularMomentumStepInput {
                     prior_moment: Vec3::ZERO,
@@ -421,8 +421,7 @@ mod tests {
         let script = full_throttle(400);
         let mut start = CarState::at_rest();
         start.motion.angular_velocity = Vec3::new(Fixed16::ONE, Fixed16::ONE, Fixed16::ONE);
-        let first =
-            drive_stage_with_all_four_wheels(start, &script, &stage(), &params(), &wheel).unwrap();
+        let first = drive_stage_with_all_four_wheels(start, &script, &stage(), &wheel).unwrap();
         assert!(first.finished);
         assert!(first.ticks < 400);
         assert!(
@@ -434,8 +433,7 @@ mod tests {
                 .iter()
                 .any(|force| *force != Vec3::ZERO)
         );
-        let replay =
-            drive_stage_with_all_four_wheels(start, &script, &stage(), &params(), &wheel).unwrap();
+        let replay = drive_stage_with_all_four_wheels(start, &script, &stage(), &wheel).unwrap();
         assert_eq!(first, replay);
     }
 

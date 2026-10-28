@@ -3172,6 +3172,7 @@ impl SessionWheelInputs {
         families: &CompiledControlFamilies,
         half_state: &CompiledHalfSignState,
         factor_c860: Fixed16,
+        inverse_mass_4c: Fixed16,
         surface_indices: [usize; 4],
     ) -> Result<FourWheelIterationParams<'a>, SurfaceCoefficientIndexError> {
         let inactive = GeometricPostprocessLane {
@@ -3251,6 +3252,7 @@ impl SessionWheelInputs {
                 non_wheel_forces: &[],
                 wheel_contacts: [true; 4],
             },
+            inverse_mass_4c,
             angular: AngularOrientationInput {
                 momentum: AngularMomentumStepInput {
                     prior_moment: Vec3::ZERO,
@@ -4063,7 +4065,16 @@ pub fn run_headless_four_wheel_game_session(
 ) -> Result<HeadlessGameSessionOutput, SessionFourWheelError> {
     let inputs = SessionWheelInputs::open(runtime_data)?;
     let trig = cmr_core::fixed_point::build_sine_table();
-    let wheel = inputs.four_wheel_params(&trig, families, half_state, Fixed16::ONE, [0; 4])?;
+    // State `+0x4c` stays a harness input here (the old planar `SimParams`
+    // value); this headless path has no compiled common prefix.
+    let wheel = inputs.four_wheel_params(
+        &trig,
+        families,
+        half_state,
+        Fixed16::ONE,
+        Fixed16::from_raw(0x8000),
+        [0; 4],
+    )?;
     let params = SimParams {
         inverse_mass: Fixed16::from_raw(0x8000),
         gravity: Vec3::ZERO,
@@ -5588,12 +5599,26 @@ mod tests {
         let trig = cmr_core::fixed_point::build_sine_table();
         assert_eq!(
             inputs
-                .four_wheel_params(&trig, &families, &half_state, Fixed16::ONE, [0, 0, 0, 120])
+                .four_wheel_params(
+                    &trig,
+                    &families,
+                    &half_state,
+                    Fixed16::ONE,
+                    Fixed16::ONE,
+                    [0, 0, 0, 120]
+                )
                 .err(),
             Some(SurfaceCoefficientIndexError { index: 120 })
         );
         let wheel = inputs
-            .four_wheel_params(&trig, &families, &half_state, Fixed16::ONE, [0; 4])
+            .four_wheel_params(
+                &trig,
+                &families,
+                &half_state,
+                Fixed16::ONE,
+                Fixed16::ONE,
+                [0; 4],
+            )
             .unwrap();
         assert!(wheel.first.iter().all(|first| first.flag_43b == 10));
 

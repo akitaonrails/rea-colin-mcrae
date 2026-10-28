@@ -2576,6 +2576,10 @@ languages rather than fabricating or silently aliasing Italian assets.
   `+0x404` and `+0x700`, and applies the angle deadzones between angle
   conversion and the control-axis resets. The planar windowed path does not run
   this pass, and the steering consumer `FUN_0041b5b0` is not reconstructed.
+- The four-wheel step translates as the integrator does (damping by the previous
+  `+0xec`, inverse mass `+0x4c`, pending correction, recomputed `+0xec`), with
+  no harness steering, drag, throttle push or lateral grip. Pedals still reach
+  the drivetrain only as fixed parameters.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

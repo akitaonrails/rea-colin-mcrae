@@ -338,6 +338,9 @@ pub struct FourWheelIterationParams<'a> {
     pub lane_rebuild: bool,
     pub lane_exchange: bool,
     pub postprocess: FourWheelPostprocessParams<'a>,
+    /// State `+0x4c`, the common prefix's reciprocal of `+0x48`, which the
+    /// integrator multiplies into the damped force (`0x40a9f0`).
+    pub inverse_mass_4c: Fixed16,
     /// Moment scales/base contact input and angular gates; stateful vectors come
     /// from `MotionState` at each step.
     pub angular: AngularOrientationInput,
@@ -904,7 +907,7 @@ impl RaceState {
     /// into velocity, apply the recovered half-delta position update, apply the
     /// lateral-grip constraint, and advance the stage clock.
     pub fn step(&mut self, controls: &Controls, params: &SimParams) -> TraceSample {
-        let (mut sample, _) = self.step_with_optional_world_force(controls, params, None, false);
+        let mut sample = self.step_with_optional_world_force(controls, params, None, false);
         self.finish_mechanics_tick();
         sample.car = self.car;
         sample
@@ -927,7 +930,7 @@ impl RaceState {
         params: &SimParams,
         world_force: Option<Vec3>,
         contacts_active: bool,
-    ) -> (TraceSample, Fixed16) {
+    ) -> TraceSample {
         self.car.heading = self.car.heading.wrapping_add(controls.steer_rate as u16);
         let forward = self.forward_unit();
 
@@ -956,12 +959,11 @@ impl RaceState {
 
         self.clock = advance_stage_clock(self.clock, stage_clock_step(false));
 
-        let sample = TraceSample {
+        TraceSample {
             clock: self.clock,
             centiseconds: elapsed_centiseconds(self.clock, self.start_clock),
             car: self.car,
-        };
-        (sample, translation.speed)
+        }
     }
 
     fn execute_first_wheel_state(
@@ -1143,7 +1145,7 @@ impl RaceState {
                 (postprocess.wheel_contacts[index], lanes[index].accumulator)
             }),
         );
-        let (mut sample, _) = self.step_with_optional_world_force(
+        let mut sample = self.step_with_optional_world_force(
             controls,
             params,
             Some(force),
@@ -1164,7 +1166,6 @@ impl RaceState {
     pub fn step_with_all_four_wheels(
         &mut self,
         controls: &Controls,
-        params: &SimParams,
         wheel: &FourWheelIterationParams<'_>,
     ) -> Result<TraceSample, WheelPostprocessError> {
         if wheel.postprocess.current_lane >= wheel.postprocess.lanes.len() {
@@ -1319,12 +1320,8 @@ impl RaceState {
             contact_update_inputs,
             self.car.four_wheel.contact_updates,
         );
-        let base_force = wheel
-            .postprocess
-            .base_force
-            .add(self.forward_unit().scale(controls.forward_force));
         let force = sum_translation_lane_forces(
-            base_force,
+            wheel.postprocess.base_force,
             wheel.postprocess.non_wheel_forces,
             std::array::from_fn(|index| {
                 (
@@ -1333,16 +1330,30 @@ impl RaceState {
                 )
             }),
         );
-        // The native low-speed suppression is gated on the threshold scan's
-        // contact count `+0x742 > 0` (`0x40afcc`), not on the wheel flags.
-        let (mut sample, new_speed) = self.step_with_optional_world_force(
-            controls,
-            params,
-            Some(force),
-            thresholds.count_742 > 0,
-        );
-        self.car.four_wheel.speed_ec =
-            sqrt_q16(self.car.velocity.dot(self.car.velocity).raw() as u32) as i32;
+        // The integrator's own translation: damping by the previous `+0xec`,
+        // inverse mass `+0x4c`, the pending collision correction, then the new
+        // `+0xec`. The low-speed suppression is gated on the threshold scan's
+        // `+0x742 > 0` (`0x40afcc`), not on the wheel flags. Unlike the planar
+        // harness there is no heading-rate steering, no separate drag, and no
+        // lateral grip: lateral and drive forces arrive through the lanes.
+        let translation = apply_translation_step(TranslationStepInput {
+            position: self.car.position,
+            velocity: self.car.velocity,
+            cached_speed: Fixed16::from_raw(self.car.four_wheel.speed_ec),
+            contacts_active: thresholds.count_742 > 0,
+            accumulated_force: force,
+            inverse_mass: wheel.inverse_mass_4c,
+            additive_acceleration: self.car.collision.consume_pending_linear(),
+        });
+        self.car.position = translation.position;
+        self.car.velocity = translation.velocity;
+        self.car.four_wheel.speed_ec = translation.speed.raw();
+        self.clock = advance_stage_clock(self.clock, stage_clock_step(false));
+        let mut sample = TraceSample {
+            clock: self.clock,
+            centiseconds: elapsed_centiseconds(self.clock, self.start_clock),
+            car: self.car,
+        };
         let engine_force = derive_engine_force(EngineForceInput {
             limiter_444: self.car.four_wheel.limiter_444,
             cut_448: self.car.four_wheel.limiter_cut_448,
@@ -1443,9 +1454,8 @@ impl RaceState {
             &self.trig,
         )
         .expect("the race-state trig table is complete");
-        // `+0x700` tests the integrator's recomputed speed, not `speed_ec`,
-        // which this harness recomputes after its planar lateral grip.
-        self.car.four_wheel.resting_700 = resting_flag_700(orientation.angle_increments, new_speed);
+        self.car.four_wheel.resting_700 =
+            resting_flag_700(orientation.angle_increments, translation.speed);
         self.car.motion.basis = orientation.basis;
         self.car.motion.angular_velocity = orientation.angular_velocity;
         // The angular pass consumed the decayed moment
@@ -2214,10 +2224,13 @@ mod tests {
                 lanes,
                 current_lane: 3,
                 argument_scale: Fixed16::ONE,
-                base_force: Vec3::ZERO,
+                // A caller-supplied non-wheel force: the four-wheel step has no
+                // harness throttle push, so it drives the fixture.
+                base_force: vector([0x1_0000, 0, 0]),
                 non_wheel_forces: &[],
                 wheel_contacts: [true; 4],
             },
+            inverse_mass_4c: Fixed16::ONE,
             angular: AngularOrientationInput {
                 momentum: crate::vehicle_dynamics::AngularMomentumStepInput {
                     prior_moment: Vec3::ZERO,
@@ -2306,7 +2319,7 @@ mod tests {
         }
         let mut state = RaceState::new(car);
         let sample = state
-            .step_with_all_four_wheels(&straight_throttle(1)[0], &params(), &wheel)
+            .step_with_all_four_wheels(&straight_throttle(1)[0], &wheel)
             .unwrap();
         assert_eq!(
             sample.car.four_wheel.first[0].wheel_speed,
@@ -2411,6 +2424,12 @@ mod tests {
             outcome.qualified
         );
         assert!(sample.car.velocity.x > Fixed16::ZERO);
+        // The integrator has no harness throttle push: the planar
+        // `forward_force` leaves the four-wheel tick unchanged.
+        let coasting = RaceState::new(car)
+            .step_with_all_four_wheels(&Controls::default(), &wheel)
+            .unwrap();
+        assert_eq!(coasting.car, sample.car);
         // Every lane passes `0 + 0x1999 < 0x199a`, so `+0x742 == 0` and the
         // native low-speed suppression is off even though the wheel flags are
         // set: the position advances.
@@ -2426,7 +2445,7 @@ mod tests {
         contacting.lane_threshold_inputs.source_y = [0; 8];
         assert!(derive_compiled_lane_thresholds(contacting.lane_threshold_inputs).count_742 > 0);
         let suppressed = RaceState::new(car)
-            .step_with_all_four_wheels(&straight_throttle(1)[0], &params(), &contacting)
+            .step_with_all_four_wheels(&straight_throttle(1)[0], &contacting)
             .unwrap();
         assert!(suppressed.car.velocity.x > Fixed16::ZERO);
         assert!(
@@ -2476,8 +2495,10 @@ mod tests {
         calm_car.motion.angular_velocity = Vec3::ZERO;
         calm_car.motion.moment = Vec3::ZERO;
         let calm_step = |wheel: &FourWheelIterationParams<'_>| {
+            let mut unforced = wheel.clone();
+            unforced.postprocess.base_force = Vec3::ZERO;
             RaceState::new(calm_car)
-                .step_with_all_four_wheels(&Controls::default(), &params(), wheel)
+                .step_with_all_four_wheels(&Controls::default(), &unforced)
                 .unwrap()
         };
         let calm = calm_step(&contacting);
@@ -2501,7 +2522,7 @@ mod tests {
         };
         assert_eq!(car.four_wheel.speed_ec, 0);
         let steered_contacting = RaceState::new(car)
-            .step_with_all_four_wheels(&steered, &params(), &contacting)
+            .step_with_all_four_wheels(&steered, &contacting)
             .unwrap();
         assert_eq!(steered_contacting.car.motion, suppressed.car.motion);
         assert_eq!(steered_contacting.car.four_wheel, suppressed.car.four_wheel);
@@ -2534,7 +2555,7 @@ mod tests {
         let mut moving_car = car;
         moving_car.velocity = vector([0x20000, 0, 0]);
         let moving = RaceState::new(moving_car)
-            .step_with_all_four_wheels(&straight_throttle(1)[0], &params(), &wheel)
+            .step_with_all_four_wheels(&straight_throttle(1)[0], &wheel)
             .unwrap();
         assert_ne!(
             moving.car.four_wheel.second[0].accumulators,
@@ -2545,7 +2566,7 @@ mod tests {
         invalid.contact_vector_indices[1] = 8;
         let before = state.car();
         assert_eq!(
-            state.step_with_all_four_wheels(&straight_throttle(1)[0], &params(), &invalid),
+            state.step_with_all_four_wheels(&straight_throttle(1)[0], &invalid),
             Err(WheelPostprocessError::ContactVectorIndex {
                 lane: 1,
                 vector_index: 8,

@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-10-28 (steer cut, angle deadzones and resting flag wired)
+Updated: 2026-10-28 (native four-wheel translation)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: wire the steer cut, angle deadzones and resting flag
+refactor: translate the four-wheel step through the integrator path
 ```
 
 Start by confirming the checkout and progress footer:
@@ -94,7 +94,7 @@ Focused collision, session rollback, keyboard/analog, SDL gamepad, app build,
 and full-workspace tests pass. Logs from the last run are ignored under:
 
 ```text
-.work/steer-deadzone-workspace-test.log
+.work/four-wheel-translation-workspace-test.log
 ```
 
 The authenticated AU1 test:
@@ -117,10 +117,15 @@ contacted (item 5 below).
 ## Highest-priority remaining work
 
 1. (Done: steer cut, deadzones and `+0x700` are wired in the four-wheel step.)
-   Two follow-ups stay open: the cut reads `speed_ec`, which the harness
-   recomputes after its planar lateral grip, and the steering consumer
-   `FUN_0041b5b0` is not reconstructed, so the cut does not reach the derived
-   `steer_rate`. Both resolve with item 2.
+   The four-wheel translation is now the integrator's own
+   (`impl.four-wheel-native-translation`): no harness steering, drag, throttle
+   push or lateral grip, so `speed_ec` is native. Still open: the steering
+   consumer `FUN_0041b5b0` is not reconstructed; throttle/brake `+0x304/+0x308`
+   reach the drivetrain only as fixed `FourWheelIterationParams` inputs, not
+   from `Controls`; and the app builder fills inertia, moment scale and
+   `inverse_mass_4c` from harness values rather than the car's compiled prefix
+   (`derive_compiled_common_prefix` `+0x48/+0x4c`,
+   `derive_compiled_suffix_defaults` `+0x50..+0x58`). Do those before item 2.
 2. Move the windowed session from `GameplaySession::new_with_car` to the already
    recovered four-wheel path only after supplying its authenticated runtime
    inputs. The current planar path changes heading but does not evolve the full

@@ -1819,6 +1819,14 @@ still skips this pass, the cut reads the harness speed (recomputed after the
 planar lateral grip), and the steering consumer `FUN_0041b5b0` is not
 reconstructed, so the cut does not yet reach the derived steering rate.
 
+The four-wheel step now translates through the integrator's own path:
+previous-speed damping, inverse mass `+0x4c`, the pending collision correction,
+and the recomputed `+0xec`, with no heading-rate steering, harness drag, throttle
+push or lateral grip. That resolves the `speed_ec` divergence. A four-wheel car
+now moves only through lane and non-wheel forces, so the next step is routing
+throttle and brake `+0x304/+0x308` from `Controls` into the drivetrain, and
+filling mass, inertia and `+0x4c` from the car's compiled prefix.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions
