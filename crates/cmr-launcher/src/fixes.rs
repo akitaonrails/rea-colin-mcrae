@@ -5,7 +5,7 @@
 //! launcher checks that memory still matches the file on disk before it
 //! writes anything, so a mismatch stops the launch instead of corrupting it.
 //! Addresses and the reasons are documented in `docs/THIN_APP_PLAN.md`
-//! (inventory F1-F5).
+//! (inventory F1-F6).
 
 /// One fix: a list of code pieces written at absolute addresses.
 #[derive(Debug, PartialEq, Eq)]
@@ -44,6 +44,8 @@ pub enum Op {
     Jmp(At),
     /// `jcc rel32`; the value is the condition code (0x4 = e, 0x5 = ne).
     Jcc(u8, At),
+    /// A 32-bit absolute address (a jump-table entry).
+    Addr(At),
 }
 
 pub const JE: u8 = 0x4;
@@ -56,6 +58,7 @@ impl Op {
             Op::Raw(b) => b.len(),
             Op::Jmp(_) => 5,
             Op::Jcc(..) => 6,
+            Op::Addr(_) => 4,
         }
     }
 }
@@ -116,6 +119,7 @@ impl FixSet {
                             bytes.extend_from_slice(&[0x0f, 0x80 | cc]);
                             bytes.extend_from_slice(&rel32(here, 6, resolve(to)));
                         }
+                        Op::Addr(to) => bytes.extend_from_slice(&resolve(to).to_le_bytes()),
                     }
                 }
                 writes.push(Write {
@@ -134,8 +138,9 @@ fn rel32(at: u32, len: u32, to: u32) -> [u8; 4] {
     to.wrapping_sub(at.wrapping_add(len)).to_le_bytes()
 }
 
-/// For executables that already carry equivalent fixes on disk.
-pub static NO_FIXES: FixSet = FixSet { fixes: &[] };
+/// The community-patched EU v1.5 (`46500c8e…`) carries F1-F5 on disk; it
+/// is the same build, so F6 applies at the same addresses.
+pub static COMMUNITY_EU_15: FixSet = FixSet { fixes: &[F6] };
 
 /// Official EU v1.5 (`0eb6ea96…`).
 pub static OFFICIAL_EU_15: FixSet = FixSet {
@@ -199,6 +204,36 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
                 ops: &[Op::Raw(&[0xc2, 0x04, 0x00])],
             }],
         },
+        F6,
+    ],
+};
+
+/// Cave offset of F6, after F3's 22 bytes.
+const F6_CAVE: u32 = 0x20;
+
+const F6: Fix = Fix {
+    id: "F6",
+    what: "closing the window (Alt+F4, the window manager) quits the game",
+    // The window procedure swallows WM_CLOSE: its jump-table entry at
+    // 0x49de78 (shared with WM_ERASEBKGND) leads to `return 0`. The
+    // entry now points to the cave, which on WM_CLOSE (ecx = msg)
+    // sets the main loop's quit flag, so the game shuts down the way
+    // its own Quit does; both messages still return 0.
+    code: &[
+        Piece {
+            at: At::Image(0x0049_de78),
+            ops: &[Op::Addr(At::Cave(F6_CAVE))],
+        },
+        Piece {
+            at: At::Cave(F6_CAVE),
+            ops: &[
+                // cmp ecx,0x10 ; jne +10
+                Op::Raw(&[0x83, 0xf9, 0x10, 0x75, 0x0a]),
+                // mov dword [0x96efe8],1
+                Op::Raw(&[0xc7, 0x05, 0xe8, 0xef, 0x96, 0x00, 0x01, 0x00, 0x00, 0x00]),
+                Op::Jmp(At::Image(0x0049_dde6)),
+            ],
+        },
     ],
 };
 
@@ -221,9 +256,22 @@ mod tests {
     }
 
     #[test]
-    fn fixes_are_f1_to_f5_in_order() {
+    fn fixes_are_f1_to_f6_in_order() {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
-        assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5"]);
+        assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F6"]);
+    }
+
+    #[test]
+    fn f6_points_the_close_entry_at_the_cave() {
+        assert_eq!(at(0x49de78), (CAVE + F6_CAVE).to_le_bytes());
+        let cave = at(CAVE + F6_CAVE);
+        assert_eq!(&cave[..5], [0x83, 0xf9, 0x10, 0x75, 0x0a]);
+        // jne skips exactly the 10-byte store, landing on the jmp.
+        assert_eq!(&cave[5..7], [0xc7, 0x05]);
+        assert_eq!(cave[15], 0xe9);
+        let rel = u32::from_le_bytes(cave[16..20].try_into().unwrap());
+        assert_eq!((CAVE + F6_CAVE + 20).wrapping_add(rel), 0x49dde6);
+        assert!(F6_CAVE >= 22, "after F3's cave code");
     }
 
     #[test]
@@ -247,7 +295,8 @@ mod tests {
         assert_eq!(site[5], 0x90);
 
         let cave = at(CAVE);
-        assert_eq!(cave.len() as u32, OFFICIAL_EU_15.cave_size());
+        assert_eq!(cave.len(), 22);
+        assert_eq!(OFFICIAL_EU_15.cave_size(), F6_CAVE + 20);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]

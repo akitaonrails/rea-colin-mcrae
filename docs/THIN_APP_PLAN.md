@@ -47,12 +47,27 @@ at tag `recomp-parked-2026-11-02` and copied in full (with its local notes) to
 - Under Proton the Codemasters/legal screen shows black (it rendered under
   plain Wine); the menus and races render normally.
 
+- **Portrait main screen crashes the game** (seen on the developer's desktop:
+  DP-2 rotated, listed first by XWayland). Wine then enumerates every mode
+  rotated (480x640, ...); the game keeps only 320x240..800x600 modes, finds
+  no 16-bit one, reads an empty table slot (`SetDisplayMode(0x80000000, 0)`)
+  and crashes in `AddAttachedSurface` on a null surface. A Wine virtual
+  desktop inherits the rotation and doesn't help. Running inside gamescope
+  (its own landscape 640x480 screen, scaled to fit) works. Real Windows with
+  a portrait primary probably fails the same way. Launcher fix: open (R15).
+- Closing the window now quits the game (F6).
+- Trees were once seen drawn over hills in a race (user screenshot); not
+  reproduced since. The game toggles `ZENABLE` per draw; to investigate when
+  it shows again (R16).
+
 **Next:**
-1. Probe C1: gamepad (WinMM joystick under Wine/Proton) and what the
+1. R15: handle a portrait main screen in the launcher (give the game a
+   landscape mode list or a clear message).
+2. Probe C1: gamepad (WinMM joystick under Wine/Proton) and what the
    launcher should do about saves bound to a missing device.
-2. Write the Linux how-to (Steam "Add a non-Steam game" + Proton; plain
+3. Write the Linux how-to (Steam "Add a non-Steam game" + Proton; plain
    Wine) and package a release zip.
-3. Windows 10/11 (M3) needs a Windows machine: G2 renderer and D1 dplayx.
+4. Windows 10/11 (M3) needs a Windows machine: G2 renderer and D1 dplayx.
 
 ## Goal and ground rules
 
@@ -100,6 +115,8 @@ Sources: the decomp ledger (`docs/recomp/EVIDENCE.md`), the API inventory
 | R12 | Intro movie: played by `Game.exe` (DirectShow, Indeo 5), not by `Rally.exe` | The launcher starts `Rally.exe` directly, as `Game.exe` does after the intro. The intro is optional: play it with an open-source decoder (Wine's `ir50_32` or FFmpeg), or skip it | Wine ir50_32 / FFmpeg (LGPL-2.1) | optional; *probe V1* |
 | R13 | Display mode switching to 640x480/800x600 and scaling to modern screens | Proton scales low fullscreen modes to the display; on Windows the GPU driver does | (platform) | *probe G1* |
 | R14 | Process quirks: realtime priority, `rdtsc` calibration, a 25/50 Hz timer thread, Debug CRT | Nothing to do; noted in case of trouble | n/a | evidence |
+| R15 | A portrait main screen: Wine (and likely Windows) lists every mode rotated, the game finds no usable mode and crashes | Launcher: give the game a landscape mode list, or stop with a clear message; workaround: gamescope | ours | **seen**; open |
+| R16 | Depth order: trees once drawn over hills in a race | Find whether it is the game's own draw order or the Z-buffer under wined3d | n/a | seen once; open |
 
 ### Game-specific fixes (applied in memory by the launcher)
 
@@ -114,13 +131,14 @@ ourselves and apply it in memory; the file on disk is never changed.
 | F3 | `0x497df5` (`jne`) | with F2, the GDI system-palette block (8-bit only) would run in 16-bit | run it only when a palette is supplied (extra test of the caller's palette argument) | **verified** (launcher, Wine) |
 | F4 | `0x49dcb0` | Win9x-only OS gate | accept | **verified** (launcher, Wine) |
 | F5 | `0x4ae590..0x4ae5ac` | reads the VGA palette with `in`/`out` port I/O, a privileged instruction on NT-family Windows | skip the port reads | **verified** (launcher, Wine) |
+| F6 | `0x49de78` (WndProc jump-table entry for `WM_CLOSE`) | the window procedure swallows `WM_CLOSE`, so Alt+F4 or the window manager's close leaves the game running full screen; under gamescope the window looks frozen | on `WM_CLOSE` set the main loop's quit flag `0x96efe8`; the game shuts down through its own teardown (also applied to the community exe, which lacks it) | **verified** (Wine, gamescope on Hyprland: closes in ~1 s; during a load it quits when the load ends) |
 
 ### Editions
 
 | Executable (SHA-256) | What it is | What we need to do | State |
 | --- | --- | --- | --- |
-| `0eb6ea96…` | Official EU v1.5 (the decomp's reference) | F1-F5 in memory | **verified**: menu via the launcher |
-| `46500c8e…` | ChemicalFlood pack exe (the user's installed copy) = EU v1.5 + F1-F5 on disk | run as-is | **verified** under Wine 11.20 |
+| `0eb6ea96…` | Official EU v1.5 (the decomp's reference) | F1-F6 in memory | **verified**: menu via the launcher |
+| `46500c8e…` | ChemicalFlood pack exe (the user's installed copy) = EU v1.5 + F1-F5 on disk | F6 in memory | **verified** under Wine 11.20 |
 | `b445fd0d…` | `Game.exe` (1998 launcher/intro player) | Not needed to play | evidence |
 | others (US v1.5, v1.0 CD) | Unknown until users bring them | Per-hash patch tables | open |
 

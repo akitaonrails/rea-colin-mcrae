@@ -107,3 +107,25 @@ registry values from `THIN_APP_PLAN.md` R2 imported with `regedit /S`.
   connected device (an 8BitDo pad and a Moonlander keyboard's joystick
   interface are visible to Wine) drives the menu by itself. The menu's
   odd jumps come from the game polling key levels during its ring animation.
+
+## 2026-11-02: first runs on the developer's desktop
+
+- Wine 11.20 on Hyprland (XWayland), two 4K monitors, DP-2 rotated to
+  portrait and listed first by XWayland, so Wine takes it as the main screen.
+- The game crashed at start (`AddAttachedSurface`, read of `0x102`). Trace:
+  Wine enumerated every mode as height x width (`480x640x16`, ...); the
+  mode callback `0x4a66b0` keeps only widths 320..800 and heights 240..600,
+  so no 16-bit mode survived, the selector read an empty slot and called
+  `SetDisplayMode(0x80000000, 0, 16)`; the primary chain then failed and the
+  game attached a null surface. The headless runs never saw it (gamescope
+  offers landscape modes only).
+- A Wine virtual desktop (`explorer /desktop=`) inherits the rotation and
+  crashed the same way. gamescope (`-w 640 -h 480 -f -S fit`) works: the
+  game fills the monitor at 4:3.
+- The window procedure swallows `WM_CLOSE`; Super+W on the gamescope window
+  left the game running and Hyprland flagged gamescope as not responding.
+  Fix F6 sets the quit flag on `WM_CLOSE`: closing now ends the game in
+  about a second (or when a load finishes) through its normal teardown.
+- Played by the user: menus, a New Zealand stage, driving. One screenshot
+  showed trees drawn over the hills; not seen again (R16).
+

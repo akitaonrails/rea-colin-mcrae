@@ -2,7 +2,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::fixes::{FixSet, NO_FIXES, OFFICIAL_EU_15};
+use crate::fixes::{COMMUNITY_EU_15, FixSet, OFFICIAL_EU_15};
 
 /// A known executable and the in-memory fixes it needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,10 +40,10 @@ pub static EDITIONS: &[Edition] = &[
     },
     Edition {
         // The EU v1.5 executable from a community pack, already patched on
-        // disk with the equivalent of every fix in OFFICIAL_EU_15.
+        // disk with the equivalent of F1-F5.
         name: "EU v1.5, community-patched",
         sha256: hex32("46500c8e22ce3e943b6855eca63ae9288261162347ca76fa36cad77cbb19c0bb"),
-        fixes: &NO_FIXES,
+        fixes: &COMMUNITY_EU_15,
     },
 ];
 
