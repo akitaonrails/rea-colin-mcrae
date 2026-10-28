@@ -36,9 +36,9 @@ fn country_stage(country: u8, number: u8) -> Option<String> {
 
 /// `FUN_0044d4c0`: the stage base for the event, or `None` where the native
 /// leaves the buffer untouched (a secret stage above 3) or would read past
-/// its tables (a country above 7, a school level of 3). `school_6c0` is
-/// `cfg[0x6c0]`.
-pub fn stage_base(event: &EventState, school_6c0: u8) -> Option<String> {
+/// its tables (a country above 7, a school level of 3).
+pub fn stage_base(event: &EventState) -> Option<String> {
+    let school_6c0 = event.cfg.school_6c0;
     let country = event.cfg.cursor_168 & 0xf;
     if event.globals.special_514478 {
         return country_stage(country, 8);
@@ -81,34 +81,30 @@ mod tests {
 
     #[test]
     fn a_country_stage_numbers_from_one() {
-        assert_eq!(
-            stage_base(&event(0, 0x03), 0).as_deref(),
-            Some("AU\\1\\AU1")
-        );
-        assert_eq!(
-            stage_base(&event(2, 0x57), 0).as_deref(),
-            Some("UK\\6\\UK6")
-        );
-        assert_eq!(stage_base(&event(0, 0x08), 0), None);
+        assert_eq!(stage_base(&event(0, 0x03)).as_deref(), Some("AU\\1\\AU1"));
+        assert_eq!(stage_base(&event(2, 0x57)).as_deref(), Some("UK\\6\\UK6"));
+        assert_eq!(stage_base(&event(0, 0x08)), None);
     }
 
     #[test]
     fn the_special_event_school_and_secret_bases() {
         let mut special = event(0, 0x25);
         special.globals.special_514478 = true;
-        assert_eq!(stage_base(&special, 0).as_deref(), Some("CO\\8\\CO8"));
+        assert_eq!(stage_base(&special).as_deref(), Some("CO\\8\\CO8"));
         let mut school = event(0, 0);
         school.globals.school_d3ca88 = true;
+        school.cfg.school_6c0 = (1 << 3) | (2 << 5);
         assert_eq!(
-            stage_base(&school, (1 << 3) | (2 << 5)).as_deref(),
+            stage_base(&school).as_deref(),
             Some("RALLSCHL\\TRACKS\\MEDIUM\\TASK3\\TASK3")
         );
-        assert_eq!(stage_base(&school, 3 << 3), None);
+        school.cfg.school_6c0 = 3 << 3;
+        assert_eq!(stage_base(&school), None);
         assert_eq!(
-            stage_base(&event(0x40, 0x18), 0).as_deref(),
+            stage_base(&event(0x40, 0x18)).as_deref(),
             Some("SECRET\\MILEHIGH\\MILEHIGH")
         );
-        assert_eq!(stage_base(&event(0x40, 0x48), 0), None);
+        assert_eq!(stage_base(&event(0x40, 0x48)), None);
     }
 
     #[test]

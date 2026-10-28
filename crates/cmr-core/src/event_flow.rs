@@ -34,6 +34,9 @@ pub struct EventConfig {
     pub flags_000: u8,
     /// `+0x18`: bits `0x18` are the difficulty.
     pub difficulty_018: u8,
+    /// `+0x25`: bit 7 forces a night stage, bit 6 weather type 5
+    /// ([`crate::stage_weather`]).
+    pub options_025: u8,
     /// `+0x164`: the selected-stages mask.
     pub stage_mask_164: u8,
     /// `+0x165`: low nibble is the stage count of the event.
@@ -47,6 +50,9 @@ pub struct EventConfig {
     pub cursor_168: u8,
     /// `+0x16c`: the 16 result slots of 16 bytes.
     pub results_16c: [[u8; 16]; 16],
+    /// `+0x6c0`: the rally-school status, level (bits 3-4) and task
+    /// (bits 5-7).
+    pub school_6c0: u8,
 }
 
 impl EventConfig {
@@ -55,19 +61,21 @@ impl EventConfig {
     ///
     /// # Panics
     ///
-    /// If `live` is shorter than `0x26c` bytes.
+    /// If `live` is shorter than `0x6c1` bytes.
     pub fn from_live(live: &[u8]) -> Self {
         let (slots, _) = live[0x16c..0x26c].as_chunks::<16>();
         let results_16c = std::array::from_fn(|slot| slots[slot]);
         Self {
             flags_000: live[0x00],
             difficulty_018: live[0x18],
+            options_025: live[0x25],
             stage_mask_164: live[0x164],
             stage_count_165: live[0x165],
             mode_166: live[0x166],
             progress_167: live[0x167],
             cursor_168: live[0x168],
             results_16c,
+            school_6c0: live[0x6c0],
         }
     }
 
@@ -75,10 +83,11 @@ impl EventConfig {
     ///
     /// # Panics
     ///
-    /// If `live` is shorter than `0x26c` bytes.
+    /// If `live` is shorter than `0x6c1` bytes.
     pub fn store_live(&self, live: &mut [u8]) {
         live[0x00] = self.flags_000;
         live[0x18] = self.difficulty_018;
+        live[0x25] = self.options_025;
         live[0x164] = self.stage_mask_164;
         live[0x165] = self.stage_count_165;
         live[0x166] = self.mode_166;
@@ -86,6 +95,7 @@ impl EventConfig {
         live[0x168] = self.cursor_168;
         let (slots, _) = live[0x16c..0x26c].as_chunks_mut::<16>();
         slots.copy_from_slice(&self.results_16c);
+        live[0x6c0] = self.school_6c0;
     }
 }
 
@@ -644,7 +654,7 @@ mod tests {
 
     #[test]
     fn the_config_round_trips_through_the_live_block() {
-        let mut live = vec![0u8; 0x300];
+        let mut live = vec![0u8; 0x6c4];
         let mut e = event(0x42, 0x35);
         e.cfg.flags_000 = 1;
         e.cfg.difficulty_018 = 0x18;
@@ -652,6 +662,8 @@ mod tests {
         e.cfg.stage_count_165 = 7;
         e.cfg.progress_167 = 0x83;
         e.cfg.results_16c[15][15] = 9;
+        e.cfg.options_025 = 0x80;
+        e.cfg.school_6c0 = 0x2b;
         e.cfg.store_live(&mut live);
         assert_eq!((live[0x166], live[0x168], live[0x26b]), (0x42, 0x35, 9));
         assert_eq!(EventConfig::from_live(&live), e.cfg);

@@ -8,7 +8,9 @@
 //!   `FUN_0048dde0` finishing -> `3`, else stay `2`; in the rally school, its
 //!   menu `FUN_00470e20` returning 0 -> stay `2`, else the quit latch
 //!   `FUN_0046f650` nonzero or the school status `cfg[0x6c0] & 7 == 6` -> `0xc`
-//!   (with `FUN_0049daf0(1)`), else `3`.
+//!   (with `FUN_0049daf0(1)`), else `3`. Its render handler `FUN_00421cd0`
+//!   ends a school session on the same quit test and, in a race, copies the
+//!   special-event flag `DAT_0055001c` to `DAT_00514478`.
 //! - **State 3** (`FUN_004371c0`): no pending interstitial (`FUN_0047a190`)
 //!   -> `4`; else its screen finished (`FUN_00476f70`) -> `4`, else stay `3`.
 //! - **State 4** (`FUN_00437200`): arm the race. Outside the school it clears
@@ -97,7 +99,20 @@ pub fn menu_flow_next(
 ) -> Option<GameState> {
     match state.id() {
         1 => Some(event.boot(None)),
-        2 => Some(welcome_or_school_next(inputs, event.globals.school_d3ca88)),
+        2 => {
+            let school = event.globals.school_d3ca88;
+            let next = welcome_or_school_next(inputs, school);
+            // State 2's render handler `FUN_00421cd0`: the school's quit
+            // block ends the session; a race arms the special-event flag.
+            if school {
+                if inputs.school_quit || inputs.school_status_quit {
+                    event.end_session();
+                }
+            } else {
+                event.globals.special_514478 = event.globals.special_55001c;
+            }
+            Some(next)
+        }
         3 => Some(preload_gate_next(inputs)),
         4 => Some(load_arm_next(event)),
         _ => None,
@@ -146,6 +161,23 @@ mod tests {
             ..chosen
         };
         assert_eq!(welcome_or_school_next(status, true), state(0xC));
+    }
+
+    #[test]
+    fn state_two_s_render_handler_ends_a_quit_school_and_arms_the_special() {
+        let mut school = EventState::default();
+        school.start_school_session();
+        let quit = MenuFlowInputs {
+            school_quit: true,
+            ..Default::default()
+        };
+        menu_flow_next(state(2), quit, &mut school);
+        assert!(!school.in_session() && school.globals.reseed_requested);
+        let mut race = EventState::default();
+        race.start_race_session();
+        race.globals.special_55001c = true;
+        menu_flow_next(state(2), MenuFlowInputs::default(), &mut race);
+        assert!(race.globals.special_514478);
     }
 
     #[test]

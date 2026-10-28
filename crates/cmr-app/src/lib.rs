@@ -5534,7 +5534,7 @@ fn reload_stage_for_event<'a>(
     if session.state().id() != 4 {
         return Ok(());
     }
-    let Some(base) = cmr_core::stage_path::stage_base(session.event(), 0) else {
+    let Some(base) = cmr_core::stage_path::stage_base(session.event()) else {
         return Ok(());
     };
     if base
