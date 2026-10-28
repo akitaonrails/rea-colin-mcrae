@@ -18,8 +18,11 @@ pub const STATIC_CONTACT_CAPACITY: usize = 5;
 /// Literal identity passed by the static-scenery wrapper to its response path.
 pub const STATIC_SCENERY_CONTACT_ID: i32 = 0;
 
-/// Emit the eight world-space OBB points of `FUN_0043ce70` in native order.
-/// Every scale/add/subtract uses the existing wrapping Q16 operations.
+/// Emit the eight world-space OBB points of `FUN_0043ce70` in native order:
+/// the upper four `a+b+c, a+b-c, -a+b+c, -a+b-c` and below them their
+/// negations in reverse (`0x43ceb4..0x43cf9c`), so index bit 2 is `+b`,
+/// bit 1 is `-a` and bit 0 is `-c`. Every scale/add/subtract uses the
+/// existing wrapping Q16 operations.
 #[must_use]
 pub fn build_static_obb_points(center: Vec3, basis: [Vec3; 3], half_extents: Vec3) -> [Vec3; 8] {
     let a = basis[0].scale(half_extents.x);
@@ -27,9 +30,9 @@ pub fn build_static_obb_points(center: Vec3, basis: [Vec3; 3], half_extents: Vec
     let c = basis[2].scale(half_extents.z);
     [
         center.add(a).sub(b).add(c),
+        center.add(a).sub(b).sub(c),
         center.sub(a).sub(b).add(c),
         center.sub(a).sub(b).sub(c),
-        center.add(a).sub(b).sub(c),
         center.add(a).add(b).add(c),
         center.add(a).add(b).sub(c),
         center.sub(a).add(b).add(c),
@@ -1087,9 +1090,9 @@ mod tests {
             points,
             [
                 vec3(11 << 16, 18 << 16, 33 << 16),
+                vec3(11 << 16, 18 << 16, 27 << 16),
                 vec3(9 << 16, 18 << 16, 33 << 16),
                 vec3(9 << 16, 18 << 16, 27 << 16),
-                vec3(11 << 16, 18 << 16, 27 << 16),
                 vec3(11 << 16, 22 << 16, 33 << 16),
                 vec3(11 << 16, 22 << 16, 27 << 16),
                 vec3(9 << 16, 22 << 16, 33 << 16),
@@ -1099,7 +1102,7 @@ mod tests {
 
         let wrapping = build_static_obb_points(vec3(i32::MAX, 0, 0), basis, vec3(1 << 16, 0, 0));
         assert_eq!(wrapping[0].x.raw(), i32::MIN + 0xffff);
-        assert_eq!(wrapping[1].x.raw(), i32::MAX - (1 << 16));
+        assert_eq!(wrapping[2].x.raw(), i32::MAX - (1 << 16));
     }
 
     #[test]
