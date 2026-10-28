@@ -3088,6 +3088,8 @@ struct FrontEndConfig {
     stage: Option<(u8, u8)>,
     /// The car the session loaded (the `--car-code` selector).
     car: u8,
+    /// `save\cmRally.cfg` under the writable root, when there is one.
+    file: Option<PathBuf>,
 }
 
 impl FrontEndConfig {
@@ -3110,6 +3112,49 @@ impl FrontEndConfig {
             returning: false,
             stage: cmr_core::stage_path::parse_stage_name(stage),
             car,
+            file: None,
+        }
+    }
+
+    /// The front end's first entry (`FUN_004c1e00`): after the defaults, the
+    /// loader `FUN_004b9e70` replaces the record with `save\cmRally.cfg` when
+    /// it is exactly `0x1e20` bytes and zeroes its runtime region; then the
+    /// attract flag is cleared and a language index of 4 is reset to 0. The
+    /// writable root is the runtime-data root (the native reads the
+    /// registry's HDPath).
+    fn with_file(mut self, writable_root: &Path) -> Self {
+        let file =
+            cmr_core::settings_store::DataPaths::new(writable_root, writable_root).settings_file();
+        if let Some(mut loaded) = std::fs::read(&file)
+            .ok()
+            .and_then(|raw| cmr_core::settings_store::SettingsImage::from_file_bytes(&raw).ok())
+        {
+            loaded.clear_runtime_region();
+            self.image.copy_from_slice(loaded.as_bytes());
+        }
+        self.image[8] &= 0xfe;
+        if self.image[0x20] & 7 == 4 {
+            self.image[0x20] &= 0xf8;
+        }
+        self.file = Some(file);
+        self
+    }
+
+    /// The saver `FUN_004ba5e0`: the whole record unless its attract flag
+    /// (`record[8] & 1`) is set.
+    fn save(&self) {
+        let Some(file) = &self.file else {
+            return;
+        };
+        if self.image[8] & 1 != 0 {
+            return;
+        }
+        let written = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(file, &self.image[..]));
+        if let Err(error) = written {
+            eprintln!("cmr-app: cannot save cmRally.cfg: {error}");
         }
     }
 
@@ -3178,17 +3223,23 @@ fn front_end_frame(
     let tick = root_interaction.tick_for_game_session(input, now, true);
     for effect in &tick.effects {
         match effect {
+            // The commit, then the front end's teardown `FUN_004c25a0`, which
+            // saves the record.
             cmr_core::frontend::FrontendEffect::StartRace => {
                 if let Some(mode) = root_interaction.race_mode() {
                     config.preset_setup(mode);
                 }
                 config.commit(session.event_mut(), pause);
+                config.save();
                 session.event_mut().start_race_session();
             }
             cmr_core::frontend::FrontendEffect::StartRallySchool => {
                 config.commit(session.event_mut(), pause);
+                config.save();
                 session.event_mut().start_school_session();
             }
+            // The exit screen's enter callback.
+            cmr_core::frontend::FrontendEffect::SaveConfig => config.save(),
             _ => {}
         }
     }
@@ -5670,7 +5721,8 @@ pub fn run_windowed_game_session(
         effects: EffectsAudio::open(runtime_data, srf, stage_crowd_points(&resources)),
     };
     let mut pause = PauseHarness::with_runtime_data(runtime_data);
-    let mut config = FrontEndConfig::new(stage, compiled_pose.selector as u8);
+    let mut config =
+        FrontEndConfig::new(stage, compiled_pose.selector as u8).with_file(runtime_data);
     let mut runtime_error = None;
     let mut loaded_stage = stage.to_ascii_uppercase();
     let reload = StageReloadContext {
@@ -7545,6 +7597,38 @@ mod tests {
     }
 
     #[test]
+    fn the_record_saves_and_loads_like_cmrally_cfg() {
+        let root = std::env::temp_dir().join(format!(
+            "cmr-app-cfg-{}-{}",
+            std::process::id(),
+            NEXT_SURFACE_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _cleanup = SurfaceTemp(root.clone());
+        let mut config = FrontEndConfig::new("AU1", 3).with_file(&root);
+        assert_eq!(&config.image[0..4], &0x8765_1234u32.to_le_bytes());
+        config.preset_setup(1);
+        config.image[0x184] = 0x55;
+        config.image[0x20] = (config.image[0x20] & 0xf8) | 4;
+        config.save();
+        let file = root.join("save").join("cmRally.cfg");
+        assert_eq!(std::fs::read(&file).unwrap().len(), 0x1e20);
+
+        let loaded = FrontEndConfig::new("", 0).with_file(&root);
+        assert_eq!(loaded.image[0x180] & 3, 1);
+        assert_eq!(loaded.image[0x181], 3, "the AU country");
+        assert_eq!(loaded.image[0xbe] & 0xf, 3);
+        assert_eq!(loaded.image[0x184], 0, "the runtime region is zeroed");
+        assert_eq!(loaded.image[0x20] & 7, 0, "language 4 resets to 0");
+
+        // The attract flag suppresses the save.
+        let mut demo = FrontEndConfig::new("", 0).with_file(&root);
+        demo.image[0x181] = 7;
+        demo.image[8] |= 1;
+        demo.save();
+        assert_eq!(FrontEndConfig::new("", 0).with_file(&root).image[0x181], 3);
+    }
+
+    #[test]
     #[ignore = "requires the reviewed installed-EU runtime data"]
     fn a_championship_from_the_au1_window_loads_its_first_stage() {
         let root = std::env::var_os("CMR_RUNTIME_DATA")
@@ -7612,7 +7696,12 @@ mod tests {
             )
             .unwrap();
             session
-                .try_advance(&StationaryClock, PRE_RACE_INPUTS, Controls::default(), &mut progress)
+                .try_advance(
+                    &StationaryClock,
+                    PRE_RACE_INPUTS,
+                    Controls::default(),
+                    &mut progress,
+                )
                 .unwrap();
             if session.state().id() == 5 {
                 break;
