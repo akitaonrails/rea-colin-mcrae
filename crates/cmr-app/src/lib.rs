@@ -100,6 +100,7 @@ use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::{
     ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16, ROOT_INITIAL_VERTICAL_TRANSFORM_Q16, RootRenderInput,
 };
+use cmr_core::save_dialog::SaveEffect;
 use cmr_core::scalar_tween::ScalarTween;
 use cmr_core::settings_store::{DataPaths, SettingsError, SettingsImage};
 use cmr_core::stage_checkpoints::StageProgress;
@@ -3111,6 +3112,8 @@ struct FrontEndConfig {
     car: u8,
     /// `save\cmRally.cfg` under the writable root, when there is one.
     file: Option<PathBuf>,
+    /// The writable root's paths, for the save slots.
+    paths: Option<cmr_core::settings_store::DataPaths>,
 }
 
 impl FrontEndConfig {
@@ -3134,6 +3137,7 @@ impl FrontEndConfig {
             stage: cmr_core::stage_path::parse_stage_name(stage),
             car,
             file: None,
+            paths: None,
         }
     }
 
@@ -3158,7 +3162,46 @@ impl FrontEndConfig {
             self.image[0x20] &= 0xf8;
         }
         self.file = Some(file);
+        self.paths = Some(cmr_core::settings_store::DataPaths::new(
+            writable_root,
+            writable_root,
+        ));
         self
+    }
+
+    /// `FUN_0044ed90`'s reads: each save slot file, `None` when absent.
+    fn read_slots(&self) -> Vec<Option<Vec<u8>>> {
+        (0..cmr_core::settings_store::SAVE_SLOT_COUNT)
+            .map(|slot| {
+                let paths = self.paths.as_ref()?;
+                std::fs::read(paths.save_slot(slot)).ok()
+            })
+            .collect()
+    }
+
+    /// `FUN_0044ef50(slot)`: the live block as the race has it (the event's
+    /// bytes and the pause options over the committed record), stamped with
+    /// three `rand()` draws.
+    fn write_slot(&self, slot: u8, event: &EventState, pause: &PauseHarness, rng: &mut GameLcg) {
+        let Some(paths) = &self.paths else {
+            return;
+        };
+        let mut live = cmr_core::config_commit::live(&self.image).to_vec();
+        event.cfg.store_live(&mut live);
+        live[5] = pause.options.cfg_5;
+        live[6] = pause.options.cfg_6;
+        live[8] = pause.options.cfg_8;
+        let seed =
+            cmr_core::profile_store::make_seed(rng.next_raw(), rng.next_raw(), rng.next_raw());
+        let record = cmr_core::save_dialog::build_save_record(&live, seed);
+        let file = paths.save_slot(usize::from(slot));
+        let written = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&file, record));
+        if let Err(error) = written {
+            eprintln!("cmr-app: cannot write {}: {error}", file.display());
+        }
     }
 
     /// The saver `FUN_004ba5e0`: the whole record unless its attract flag
@@ -3439,6 +3482,14 @@ fn advance_game_frame<C: HostClock>(
         let cue = match effect {
             DirectorEffect::PageCue => MenuCue::Forward,
             DirectorEffect::CursorCue(true) => MenuCue::UpDown,
+            DirectorEffect::Save(SaveEffect::LoadSlots) => {
+                session.provide_save_slots(&config.read_slots());
+                continue;
+            }
+            DirectorEffect::Save(SaveEffect::Write { slot }) => {
+                config.write_slot(slot, session.event(), pause, &mut camera.rng);
+                continue;
+            }
             DirectorEffect::CursorCue(false) | DirectorEffect::BonusCar => continue,
         };
         if let Some(mixer) = input.audio {
@@ -6248,6 +6299,11 @@ impl RaceResults {
             width: extent.width,
             height: extent.height,
             panel_capable: true,
+            car_short_names: self
+                .static_tables
+                .as_ref()
+                .and_then(|t| t.tables().strings("car_short_names"))
+                .unwrap_or(&[]),
         };
         let text = |id: i32| {
             usize::try_from(id)
@@ -6293,6 +6349,12 @@ impl RaceResults {
             confirm: edge & 0x10 != 0,
             up_held: held & 4 != 0,
             down_held: held & 8 != 0,
+            // `FUN_0043baa0`'s keyboard bits: the five keys above are
+            // left, right, up, down and Return in descriptor order, plus
+            // Escape (back).
+            keys: u32::from(held) | if keys.is_down(0x1b) { 0x20 } else { 0 },
+            // `DAT_00551af0`: no slow motion runs behind the results here.
+            slow_motion: false,
         }
     }
 
@@ -10113,10 +10175,12 @@ mod tests {
             })
             .collect();
         event.cfg.cursor_168 = 0x51; // the last stage of the second rally
-        for name in ["stage", "rally", "championship", "menu"] {
+        let car_short_names: Vec<Vec<u8>> =
+            vec![b"IMPREZA".to_vec(), b"CELICA".to_vec(), b"ESCORT".to_vec()];
+        let mut render = |name: &str, director: &ResultsDirector, event: &EventState| {
             let input = ResultsDrawInput {
-                director: &director,
-                event: &event,
+                director,
+                event,
                 stage_rows: &rows,
                 rally_rows: &rows,
                 championship_rows: &championship_rows,
@@ -10125,6 +10189,7 @@ mod tests {
                 width: 640,
                 height: 480,
                 panel_capable: true,
+                car_short_names: &car_short_names,
             };
             let plan =
                 results_draw_plan(&input, &mut pulse, &text, &|font| assets.font(font)).unwrap();
@@ -10148,10 +10213,45 @@ mod tests {
                 ppm.extend_from_slice(&pixel[..3]);
             }
             std::fs::write(out_dir.join(format!("{name}.ppm")), ppm).unwrap();
+        };
+        for name in ["stage", "rally", "championship", "menu"] {
+            render(name, &director, &event);
             director.tick(&mut event, confirm);
             while director.settle() > 0 && event.globals.results_550024 {
                 director.tick(&mut event, DirectorInput::default());
             }
+        }
+        // A novice championship mid-rally offers the save: the prompt, the
+        // slot list (one synthetic occupied slot) and the "saving" message.
+        let mut event = EventState::default();
+        event.cfg.cursor_168 = 0x02;
+        let mut director = ResultsDirector::start(&mut event, DirectorContext::default());
+        while director.page() != 5 || director.settle() > 0 {
+            director.tick(&mut event, confirm);
+        }
+        let keys = |keys| DirectorInput {
+            keys,
+            ..Default::default()
+        };
+        let mut record = cmr_core::save_dialog::build_save_record(&[0x41; 0x6c4], 0xaa00_0001);
+        record[0x0c..0x12].copy_from_slice(b"COLIN\0");
+        record[0x96] = 1;
+        record[0x148] = 0x13;
+        let mut files = vec![None; 12];
+        files[3] = Some(record);
+        for (step, input) in [0, 0, 0x10, 0, 0, 0x08, 0, 0x08, 0, 0x08, 0, 0x08, 0x10]
+            .into_iter()
+            .enumerate()
+        {
+            for effect in director.tick(&mut event, keys(input)) {
+                if effect == cmr_core::results_director::DirectorEffect::Save(SaveEffect::LoadSlots)
+                {
+                    director.provide_save_slots(&files);
+                }
+            }
+            // Twice: the draw skips the frame a state changes.
+            render(&format!("save-{step:02}"), &director, &event);
+            render(&format!("save-{step:02}"), &director, &event);
         }
     }
 

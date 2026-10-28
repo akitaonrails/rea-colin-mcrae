@@ -13,10 +13,8 @@
 //!
 //! Not reconstructed: the stage, rally and championship record checks
 //! (`FUN_004ba370`/`FUN_004ba260`/`FUN_004ba120`) and their notice and code
-//! pages, which the confirm skips; the save dialog itself (`FUN_0043bce0`):
-//! page 5 is entered where the native offers the save and left on a confirm
-//! as if the dialog returned without saving (harness); network
-//! and head-to-head pages. A description of disassembly, not original source.
+//! pages, which the confirm skips; network and head-to-head pages. Page 5
+//! runs the save dialog ([`crate::save_dialog`]) every tick until it ends. A description of disassembly, not original source.
 //! Evidence: `rea.official-eu.results-director`.
 
 use crate::event_flow::{EventState, SPECIAL_COUNTRIES};
@@ -33,6 +31,11 @@ pub struct DirectorInput {
     pub down: bool,
     pub up_held: bool,
     pub down_held: bool,
+    /// The player's held keys as descriptor bits, which the save dialog's
+    /// change filter `FUN_0043baa0` reads.
+    pub keys: u32,
+    /// `DAT_00551af0`: slow motion doubles the dialog's message times.
+    pub slow_motion: bool,
 }
 
 /// What the race was.
@@ -62,6 +65,8 @@ pub enum DirectorEffect {
     CursorCue(bool),
     /// The bonus car was awarded (`FUN_00404310(2, car 0)`).
     BonusCar,
+    /// The save dialog's slot I/O.
+    Save(crate::save_dialog::SaveEffect),
 }
 
 /// The results director's state.
@@ -81,6 +86,9 @@ pub struct ResultsDirector {
     /// `DAT_0054fc3c`: the table rows, 16 with a difficulty set and 8 without.
     rows: u8,
     scroll: Scroll,
+    /// The save dialog (its globals outlive one director: carry it with
+    /// [`ResultsDirector::with_save_dialog`]).
+    save: crate::save_dialog::SaveDialog,
 }
 
 /// The results tables' scroll: the first shown row `DAT_0054ffcc`, the
@@ -213,7 +221,30 @@ impl ResultsDirector {
             context,
             rows,
             scroll,
+            save: crate::save_dialog::SaveDialog::default(),
         }
+    }
+
+    /// This director with the dialog the last one left.
+    #[must_use]
+    pub fn with_save_dialog(mut self, save: crate::save_dialog::SaveDialog) -> Self {
+        self.save = save;
+        self
+    }
+
+    /// The save dialog.
+    pub const fn save_dialog(&self) -> &crate::save_dialog::SaveDialog {
+        &self.save
+    }
+
+    /// The host's answer to [`crate::save_dialog::SaveEffect::LoadSlots`].
+    pub fn provide_save_slots(&mut self, files: &[Option<Vec<u8>>]) {
+        self.save.provide_slots(files);
+    }
+
+    /// Hand the save dialog on (the director is done).
+    pub fn take_save_dialog(&mut self) -> crate::save_dialog::SaveDialog {
+        std::mem::take(&mut self.save)
     }
 
     /// The five-tick settle after a page change (`DAT_0054fc5c`); the pages
@@ -273,8 +304,13 @@ impl ResultsDirector {
             9 => self.confirmation(event, input, 9, quit),
             10 => self.confirmation(event, input, 10, restart),
             1..=3 => self.scrolling_page(event, input, &mut effects),
+            5 => {
+                let mut save = Vec::new();
+                let open = self.save.tick(input.keys, input.slow_motion, &mut save);
+                effects.extend(save.into_iter().map(DirectorEffect::Save));
+                if open { 5 } else { self.after_save(event) }
+            }
             page if !input.confirm => page,
-            5 => self.after_save(event),
             6 => 1,
             8 => {
                 event.globals.continues_4ed7d8 = false;
@@ -319,8 +355,7 @@ impl ResultsDirector {
         self.scroll.centre_on(position as i32, self.rows, height);
     }
 
-    /// `0x431ae0`: the save dialog (`FUN_0043bce0`, not reconstructed) has
-    /// returned; mid-rally the menu, at a rally's end the menu with the bonus
+    /// `0x431ae0`: the save dialog has returned; mid-rally the menu, at a rally's end the menu with the bonus
     /// event armed, else the rally-complete page.
     fn after_save(&self, event: &EventState) -> u8 {
         if !last_stage_of_rally(event) || event.globals.special_55001c {
@@ -748,7 +783,16 @@ mod tests {
         press(&mut d, &mut e, confirm());
         press(&mut d, &mut e, confirm());
         assert_eq!(d.page(), 5);
-        press(&mut d, &mut e, confirm());
+        // The dialog: Down to "no", Return, then it ends.
+        let keys = |keys| DirectorInput {
+            keys,
+            ..Default::default()
+        };
+        press(&mut d, &mut e, keys(0));
+        assert_eq!(d.page(), 5);
+        d.tick(&mut e, keys(crate::descriptor_menu::bits::DOWN));
+        d.tick(&mut e, keys(crate::descriptor_menu::bits::CONFIRM));
+        d.tick(&mut e, keys(0));
         assert_eq!(d.page(), 4);
         // Novice, the last country's later stages: not offered.
         let mut e = event(0, 0x25, 0);

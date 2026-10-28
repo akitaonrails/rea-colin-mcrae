@@ -278,6 +278,8 @@ struct ResultsHold {
     director: Option<ResultsDirector>,
     input: DirectorInput,
     effects: Vec<DirectorEffect>,
+    /// The save dialog between directors (its cursor is a process global).
+    save: crate::save_dialog::SaveDialog,
 }
 
 impl ResultsHold {
@@ -295,14 +297,18 @@ impl ResultsHold {
             return;
         }
         let input = std::mem::take(&mut self.input);
-        let director = self
-            .director
-            .get_or_insert_with(|| ResultsDirector::start(event, DirectorContext::default()));
+        let save = &mut self.save;
+        let director = self.director.get_or_insert_with(|| {
+            ResultsDirector::start(event, DirectorContext::default())
+                .with_save_dialog(std::mem::take(save))
+        });
         self.effects.extend(director.tick(event, input));
         inputs.boundary_active = event.globals.results_550024;
         if !inputs.boundary_active {
             // Continue, restart and quit clear the init flag `DAT_00550020`.
-            self.director = None;
+            if let Some(mut director) = self.director.take() {
+                self.save = director.take_save_dialog();
+            }
         }
     }
 }
@@ -538,7 +544,18 @@ impl<'a> GameplaySession<'a> {
     /// there.
     pub fn start_results(&mut self, context: DirectorContext) {
         let event = self.session.event_mut();
-        self.results.director = Some(ResultsDirector::start(event, context));
+        let save = match self.results.director.take() {
+            Some(mut last) => last.take_save_dialog(),
+            None => std::mem::take(&mut self.results.save),
+        };
+        self.results.director = Some(ResultsDirector::start(event, context).with_save_dialog(save));
+    }
+
+    /// The host's answer to the save dialog's slot read.
+    pub fn provide_save_slots(&mut self, files: &[Option<Vec<u8>>]) {
+        if let Some(director) = &mut self.results.director {
+            director.provide_save_slots(files);
+        }
     }
 
     /// The results director's input for its next tick (`FUN_00430980`).
@@ -1374,8 +1391,15 @@ mod tests {
             // The results pages hold state 8 until Return reaches Continue.
             if session.state().id() == 8 {
                 held_in_results += 1;
+                // Return held, and pressed anew every other frame for the
+                // save dialog's change filter.
                 session.set_results_input(DirectorInput {
                     confirm: held_in_results > 20,
+                    keys: if held_in_results > 20 && held_in_results.is_multiple_of(2) {
+                        0x10
+                    } else {
+                        0
+                    },
                     ..DirectorInput::default()
                 });
             }

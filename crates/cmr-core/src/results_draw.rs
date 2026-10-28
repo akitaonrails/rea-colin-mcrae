@@ -16,9 +16,9 @@
 //! post-stage menu (`FUN_0042d5a0`), GAME OVER (`FUN_0042e180`) and the
 //! championship and rally complete pages (`FUN_0042df90`, `FUN_0042e0c0`).
 //! The confirmations (`FUN_0042e210`: the dialog menu's three lines,
-//! `FUN_004aacb0`, then a box sized to the widest) are drawn too. The
-//! super-special result, the bonus car and the save page draw the frame
-//! only for now. Not drawn: the team and flag icons
+//! `FUN_004aacb0`, then a box sized to the widest) are drawn too, and the
+//! save page's dialog (`FUN_0043bc90`). The super-special result and the
+//! bonus car draw the frame only for now. Not drawn: the team and flag icons
 //! (`FUN_0042e5c0`) and the time trial's record rows (`FUN_0042b6b0`). The
 //! host supplies the stage name (`FUN_004ba470`: the executable's name table
 //! `0x506f80`, from the reviewed static tables). The table rows are cut to
@@ -226,6 +226,8 @@ pub struct ResultsDrawInput<'a> {
     pub height: u16,
     /// `FUN_004aa040() || FUN_00498af0() == 3`: the panel is drawn.
     pub panel_capable: bool,
+    /// `0x506e08`: the cars' short names the save slots' lines show.
+    pub car_short_names: &'a [Vec<u8>],
 }
 
 /// The rectangles and text one results frame draws, in order.
@@ -347,6 +349,7 @@ pub fn results_draw_plan<'a>(
         3 => championship(&mut painter, input, highlight, text)?,
         4 => post_stage_menu(&mut painter, input, text)?,
         8 => game_over(&mut painter, input, highlight, text)?,
+        5 => save_page(&mut painter, input, text)?,
         9 | 10 => confirmation(&mut painter, input, text)?,
         0x14 => championship_complete(&mut painter, input, highlight, text)?,
         0x15 => rally_complete(&mut painter, input, highlight, text)?,
@@ -726,6 +729,114 @@ fn rally_complete(
     )
 }
 
+/// `FUN_0043bc90`: the save dialog — the message (`FUN_0044f1a0`: the text
+/// at `(0x8000, 0x6666)` in `result` and `0x502498`, and `0x4d` 0xccc below
+/// when it waits for a confirm), the prompt's lines (`FUN_004aadf0`, no box),
+/// or the slot list (`FUN_0044f070`: the heading `0x47` in the title font and
+/// `0x5024b8` at `(0x8000, 0x4ccc)`, then each slot's line 0x1333 lower in
+/// `result`, `0x4f3e38` for the cursor's and `0x4f3e3c` for the others —
+/// the occupied slots' summaries, `0x4b` for a free one, and `0x4c` for
+/// cancel after a further 0x1333 — each passed through `sprintf` as its own
+/// format). Nothing on the frame the dialog's state changed.
+fn save_page(
+    painter: &mut Painter,
+    input: &ResultsDrawInput,
+    text: &dyn Fn(i32) -> Vec<u8>,
+) -> Result<(), TextLayoutError> {
+    use crate::save_dialog::{CANCEL_ROW, SaveView, slot_label};
+    let (width, height) = (input.width, input.height);
+    let line = |painter: &mut Painter,
+                y: i32,
+                words: &[u8],
+                font: PauseFont,
+                color: [u8; 4],
+                flags: u8|
+     -> Result<i32, TextLayoutError> {
+        let (plan, next, _) = text_q16(
+            (painter.fonts)(font),
+            words,
+            0x8000,
+            y,
+            flags,
+            width,
+            height,
+        )?;
+        painter.push(font, color, plan);
+        Ok(next)
+    };
+    match input.director.save_dialog().view() {
+        Some(SaveView::Message { text: id, waits }) => {
+            let y = line(
+                painter,
+                0x6666,
+                &text(id),
+                PauseFont::Result,
+                BODY_COLOR,
+                0x12,
+            )?;
+            if waits {
+                line(
+                    painter,
+                    y + 0xccc,
+                    &text(0x4d),
+                    PauseFont::Result,
+                    BODY_COLOR,
+                    0x12,
+                )?;
+            }
+        }
+        Some(SaveView::Prompt { prompt, selected }) => {
+            line(
+                painter,
+                prompt.y,
+                &text(prompt.question),
+                PauseFont::Title,
+                DIALOG_TITLE_COLOR,
+                prompt.flags,
+            )?;
+            for (index, (y, id)) in [(0x8000, 0xe), (0x8ccc, 0xf)].into_iter().enumerate() {
+                let color = if index == usize::from(selected) {
+                    SELECTED_COLOR
+                } else {
+                    UNSELECTED_COLOR
+                };
+                line(painter, y, &text(id), PauseFont::Result, color, 0x12)?;
+            }
+        }
+        Some(SaveView::Slots { cursor, slots }) => {
+            let mut y = line(
+                painter,
+                0x4ccc,
+                &text(0x47),
+                PauseFont::Title,
+                DIALOG_TITLE_COLOR,
+                0x12,
+            )? + 0x1333;
+            for row in 0..=CANCEL_ROW {
+                let color = if row == cursor {
+                    SELECTED_COLOR
+                } else {
+                    UNSELECTED_COLOR
+                };
+                let label = if row == CANCEL_ROW {
+                    y += 0x1333;
+                    text(0x4c)
+                } else {
+                    let entry = slots.get(row as usize).and_then(Option::as_ref);
+                    let label = entry.map_or_else(
+                        || text(0x4b),
+                        |entry| slot_label(entry, width >= 0x200, text, input.car_short_names),
+                    );
+                    c_format(&label, &[])
+                };
+                y = line(painter, y, &label, PauseFont::Result, color, 0x12)?;
+            }
+        }
+        None => {}
+    }
+    Ok(())
+}
+
 /// `FUN_0042e210`: the dialog's lines (`FUN_004aadf0` draws the menu
 /// `0xbb3448` through `FUN_004aacb0` and returns the widest line), then the
 /// box. The records `0x4ed828` (quit) and `0x4ed888` (restart) place the
@@ -882,6 +993,7 @@ mod tests {
             width: 640,
             height: 480,
             panel_capable: true,
+            car_short_names: &[],
         }
     }
 
@@ -967,8 +1079,11 @@ mod tests {
         assert!(director.settle() > 0);
         assert!(plan.runs.is_empty());
         assert_eq!(plan.quads.len(), 3);
+        let mut tick = 0;
         while director.page() != 4 {
-            director.tick(&mut event, confirm);
+            tick += 1;
+            let keys = if tick % 2 == 0 { 0x10 } else { 0 };
+            director.tick(&mut event, DirectorInput { keys, ..confirm });
         }
         while director.settle() > 0 {
             director.tick(&mut event, DirectorInput::default());
@@ -1033,7 +1148,19 @@ mod tests {
         // Novice, country 2 of 5: the save is offered, then rally complete.
         advance(&mut director, &mut event);
         assert_eq!(director.page(), 5);
-        advance(&mut director, &mut event);
+        // Answer "no" to the save prompt.
+        for keys in [0, 0x08, 0x10, 0] {
+            director.tick(
+                &mut event,
+                DirectorInput {
+                    keys,
+                    ..Default::default()
+                },
+            );
+        }
+        while director.settle() > 0 {
+            director.tick(&mut event, DirectorInput::default());
+        }
         assert_eq!(director.page(), 0x15);
         assert_eq!(draw(&director, &event).runs.len(), 2);
         let mut over = EventState::default();
@@ -1061,8 +1188,13 @@ mod tests {
             confirm: true,
             ..Default::default()
         };
+        // Confirm through the pages; the save page's dialog sees the key
+        // change every other tick (it saves to slot 0 and ends).
+        let mut tick = 0;
         while director.page() != 4 {
-            director.tick(&mut event, confirm);
+            tick += 1;
+            let keys = if tick % 2 == 0 { 0x10 } else { 0 };
+            director.tick(&mut event, DirectorInput { keys, ..confirm });
         }
         while director.settle() > 0 {
             director.tick(&mut event, DirectorInput::default());
