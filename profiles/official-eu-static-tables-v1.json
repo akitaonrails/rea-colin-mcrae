@@ -26,9 +26,29 @@
       { "name": "car_stats", "kind": "block", "va": 5279256, "len": 168 },
       { "name": "name_entry_player_format", "kind": "string", "va": 5202508 },
       { "name": "stage_select_row_format", "kind": "string", "va": 5280464 },
-      { "name": "stage_select_labels", "kind": "string-pointers", "va": 5280040, "count": 7 }
+      { "name": "stage_select_labels", "kind": "string-pointers", "va": 5280040, "count": 7 },
+      { "name": "frontend_sound_prefix", "kind": "string", "va": 5203536 },
+      { "name": "frontend_sound_00", "kind": "string", "va": 5202932 },
+      { "name": "frontend_sound_01", "kind": "string", "va": 5193308 },
+      { "name": "frontend_sound_02", "kind": "string", "va": 5193320 },
+      { "name": "frontend_sound_03", "kind": "string", "va": 5193352 },
+      { "name": "frontend_sound_04", "kind": "string", "va": 5193336 },
+      { "name": "frontend_sound_05", "kind": "string", "va": 5281036 },
+      { "name": "frontend_sound_06", "kind": "string", "va": 5281024 },
+      { "name": "frontend_sound_07", "kind": "string", "va": 5281008 },
+      { "name": "frontend_sound_08", "kind": "string", "va": 5280996 },
+      { "name": "frontend_sound_09", "kind": "string", "va": 5280980 },
+      { "name": "frontend_sound_10", "kind": "string", "va": 5280968 },
+      { "name": "frontend_sound_11", "kind": "string", "va": 5280952 },
+      { "name": "frontend_sound_12", "kind": "string", "va": 5280940 },
+      { "name": "frontend_sound_13", "kind": "string", "va": 5280924 },
+      { "name": "frontend_sound_14", "kind": "string", "va": 5280912 },
+      { "name": "frontend_sound_15", "kind": "string", "va": 5280896 },
+      { "name": "frontend_sound_16", "kind": "string", "va": 5280884 },
+      { "name": "frontend_sound_17", "kind": "string", "va": 5280872 },
+      { "name": "frontend_sound_18", "kind": "string", "va": 5280856 }
     ],
-    "payload_sha256": "fafad35b4710b84a54acd2d9829142b27189e68519dd13221f3504e255459d09",
+    "payload_sha256": "f5ddaee2f09a0380ffee2c6bcc0bc88393e91f734f159f94b91ce32a176da8ea",
     "output_encoding": "cmr-static-tables-v1"
   }
 }

@@ -487,6 +487,26 @@ pub(crate) mod tests {
                     0x0050_9128,
                     StringPointers { count: 7 }
                 ),
+                ("frontend_sound_prefix", 0x004f_6650, String),
+                ("frontend_sound_00", 0x004f_63f4, String),
+                ("frontend_sound_01", 0x004f_3e5c, String),
+                ("frontend_sound_02", 0x004f_3e68, String),
+                ("frontend_sound_03", 0x004f_3e88, String),
+                ("frontend_sound_04", 0x004f_3e78, String),
+                ("frontend_sound_05", 0x0050_950c, String),
+                ("frontend_sound_06", 0x0050_9500, String),
+                ("frontend_sound_07", 0x0050_94f0, String),
+                ("frontend_sound_08", 0x0050_94e4, String),
+                ("frontend_sound_09", 0x0050_94d4, String),
+                ("frontend_sound_10", 0x0050_94c8, String),
+                ("frontend_sound_11", 0x0050_94b8, String),
+                ("frontend_sound_12", 0x0050_94ac, String),
+                ("frontend_sound_13", 0x0050_949c, String),
+                ("frontend_sound_14", 0x0050_9490, String),
+                ("frontend_sound_15", 0x0050_9480, String),
+                ("frontend_sound_16", 0x0050_9474, String),
+                ("frontend_sound_17", 0x0050_9468, String),
+                ("frontend_sound_18", 0x0050_9458, String),
             ]
         );
         // Same executable identity as the reviewed stage-weather profile.

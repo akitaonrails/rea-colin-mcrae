@@ -255,6 +255,16 @@ impl RootInteraction {
                 };
             }
         }
+        // The root's sound table `0xd90070`: a move (it wraps, so it always
+        // moves) and the confirmed entry.
+        if phase == FrontendPhase::Interactive && active == ROOT_SCREEN_ID {
+            if input.previous || input.next {
+                screen_effects.push(ScreenEffect::Cue { slot: 0, ok: true });
+            }
+            if input.confirm && !input.cancel {
+                screen_effects.push(ScreenEffect::Cue { slot: 3, ok: true });
+            }
+        }
         let transition = self.resolve_transition(record.is_some());
         let effects = self.state.step(input, now, transition, save_allowed);
         for effect in &effects {

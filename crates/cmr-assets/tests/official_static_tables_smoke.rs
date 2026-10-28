@@ -52,7 +52,7 @@ fn reviewed_official_static_tables_extract_and_reopen_without_exposing_values() 
     );
     let summary = result.expect("checked successful extraction");
     assert_eq!(summary.shape.format_version, STATIC_TABLES_FORMAT_VERSION);
-    assert_eq!(summary.shape.entry_count, 18);
+    assert_eq!(summary.shape.entry_count, 38);
 
     let store = StaticTablesStore::open(&output, &reviewed);
     assert!(store.is_ok(), "official static-tables store reopen failed");
@@ -82,4 +82,6 @@ fn reviewed_official_static_tables_extract_and_reopen_without_exposing_values() 
         Some(7)
     );
     assert!(tables.string("stage_select_row_format").is_some());
+    assert!(tables.string("frontend_sound_prefix").is_some());
+    assert!(tables.string("frontend_sound_18").is_some());
 }

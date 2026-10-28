@@ -3239,22 +3239,36 @@ fn front_end_frame(
     root_interaction: &mut RootInteraction,
     config: &mut FrontEndConfig,
     pause: &mut PauseHarness,
-    input: cmr_core::frontend::FrontendInput,
-    keys: &cmr_platform_sdl3::KeyboardVkState,
+    input: &WindowedInput,
     now: u32,
 ) -> cmr_core::root_menu_interactive::RootTick {
     config.resume(session.event(), pause);
-    let held = cmr_core::frontend_keys::held_key(|vk| keys.is_down(vk));
+    let held = cmr_core::frontend_keys::held_key(|vk| input.keys.is_down(vk));
+    let audio = input.audio;
     let tick = root_interaction.tick_for_game_session(
-        input,
+        input.frontend,
         cmr_core::root_menu_interactive::FrontendKeys { held, pad: 0 },
         now,
         true,
         &mut config.image,
     );
+    let master = cmr_core::frontend_sounds::master_percent(config.image[0xd]);
     for effect in &tick.screen_effects {
-        if *effect == cmr_core::frontend_flow::ScreenEffect::CommitRecord {
-            config.commit(session.event_mut(), pause);
+        let cue = match *effect {
+            cmr_core::frontend_flow::ScreenEffect::CommitRecord => {
+                config.commit(session.event_mut(), pause);
+                None
+            }
+            cmr_core::frontend_flow::ScreenEffect::Sound(
+                cmr_core::descriptor_menu::MenuEvent::Sound {
+                    table, sound, ok, ..
+                },
+            ) => cmr_core::frontend_sounds::cue_slot(table, sound).map(|slot| (slot, ok)),
+            cmr_core::frontend_flow::ScreenEffect::Cue { slot, ok } => Some((slot, ok)),
+            cmr_core::frontend_flow::ScreenEffect::Sound(_) => None,
+        };
+        if let (Some((slot, ok)), Some(mixer)) = (cue, audio) {
+            pause.play_frontend_cue(mixer, slot, ok, master);
         }
     }
     for effect in &tick.effects {
@@ -3321,8 +3335,7 @@ fn advance_game_frame<C: HostClock>(
             root_interaction,
             config,
             pause,
-            input.frontend,
-            input.keys,
+            &input,
             clock.millis(),
         ))
     };
@@ -3781,6 +3794,10 @@ struct PauseHarness {
     /// The fonts and in-game text, loaded for one display width.
     assets: Option<(u16, PauseAssets)>,
     runtime_data: Option<PathBuf>,
+    /// The front end's bank (`FUN_004c9a60`): its wave paths from the
+    /// static tables, and the loaded channel and base slot.
+    frontend_sound_paths: Vec<String>,
+    frontend_bank: Option<cmr_core::frontend_sounds::FrontendBank>,
 }
 
 /// The pause menu's fonts (`FUN_00436a50`) and the in-game text table
@@ -3837,6 +3854,8 @@ impl PauseHarness {
                 speech_master_4f6538: 100,
             },
             menu_cues: None,
+            frontend_sound_paths: Vec::new(),
+            frontend_bank: None,
             assets: None,
             runtime_data: None,
         }
@@ -4026,7 +4045,54 @@ impl PauseHarness {
     }
 }
 
+/// The front-end bank's channel. Harness: the loader allocates three
+/// channels at the front end's start (`FUN_004957c0`); their place in the
+/// allocation order is not recovered, so the bank takes the first channel
+/// after the in-race banks.
+const FRONTEND_SOUND_CHANNEL: u32 = 21;
+
 impl PauseHarness {
+    /// The front end's bank's paths: the front end's root (`FUN_00496730`,
+    /// the `new_fe` directory), the prefix `0x4f6650` and the 19 names.
+    fn set_frontend_sounds(&mut self, tables: &cmr_assets::StaticTablesStore) {
+        let tables = tables.tables();
+        let Some(prefix) = tables.string("frontend_sound_prefix") else {
+            return;
+        };
+        let prefix = String::from_utf8_lossy(prefix).into_owned();
+        self.frontend_sound_paths = (0..cmr_core::frontend_sounds::WAVE_COUNT)
+            .filter_map(|index| tables.string(&format!("frontend_sound_{index:02}")))
+            .map(|name| format!("new_fe\\{prefix}{}", String::from_utf8_lossy(name)))
+            .collect();
+    }
+
+    /// A front-end cue (`0x4c9870` and its siblings) on the bank's channel,
+    /// loading the bank on first use.
+    fn play_frontend_cue(&mut self, mixer: &SharedSoftwareMixer, slot: u32, ok: bool, master: i32) {
+        let Ok(mut mixer) = mixer.lock() else {
+            return;
+        };
+        if self.frontend_bank.is_none() {
+            let mut base = None;
+            for path in &self.frontend_sound_paths {
+                let Ok(slot) =
+                    mixer.load_wave(path, cmr_core::frontend_sounds::WAVE_RATE_HZ, 16, false)
+                else {
+                    return;
+                };
+                base.get_or_insert(slot);
+            }
+            let (Some(base), Ok(channel)) = (base, ChannelId::new(FRONTEND_SOUND_CHANNEL)) else {
+                return;
+            };
+            self.frontend_bank = Some(cmr_core::frontend_sounds::FrontendBank { channel, base });
+        }
+        if let Some(bank) = self.frontend_bank {
+            let commands = cmr_core::frontend_sounds::cue(bank, slot, ok, master);
+            let _ = apply_commands(&mut *mixer, &commands);
+        }
+    }
+
     /// A menu play helper (`FUN_00467dd0` and its siblings) on the menu
     /// channel, loading the cue bank on first use.
     fn play_cue(&mut self, mixer: &SharedSoftwareMixer, cue: MenuCue) {
@@ -6426,6 +6492,9 @@ pub fn run_windowed_game_session(
         effects: EffectsAudio::open(runtime_data, srf, stage_crowd_points(&resources), weather),
     };
     let mut pause = PauseHarness::with_runtime_data(runtime_data);
+    if let Some(tables) = static_tables.as_ref() {
+        pause.set_frontend_sounds(tables);
+    }
     let mut config =
         FrontEndConfig::new(stage, compiled_pose.selector as u8).with_file(runtime_data);
     let mut runtime_error = None;
@@ -10095,5 +10164,27 @@ mod tests {
             }
         })
         .unwrap();
+    }
+
+    /// The front end's bank loads its 19 waves from the user's media and a
+    /// cue plays.
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data"]
+    fn imported_frontend_sound_bank_loads() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let tables = open_static_tables(&root).expect("static tables");
+        let mut pause = PauseHarness::new();
+        pause.set_frontend_sounds(&tables);
+        assert_eq!(
+            pause.frontend_sound_paths.len(),
+            cmr_core::frontend_sounds::WAVE_COUNT
+        );
+        let mut software = SoftwareMixer::with_source(FileWaveSource::new(&root));
+        software.initialize().unwrap();
+        let mixer: SharedSoftwareMixer = std::sync::Arc::new(std::sync::Mutex::new(software));
+        pause.play_frontend_cue(&mixer, 3, true, 100);
+        assert!(pause.frontend_bank.is_some(), "every wave loaded");
     }
 }

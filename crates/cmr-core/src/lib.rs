@@ -80,6 +80,7 @@ pub mod frontend_name_entry;
 pub mod frontend_screen_bitmaps;
 pub mod frontend_screen_frame;
 pub mod frontend_setup;
+pub mod frontend_sounds;
 pub mod frontend_stage_select;
 pub mod game_driver;
 pub mod game_menu_flow;

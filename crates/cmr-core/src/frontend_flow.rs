@@ -89,6 +89,9 @@ pub enum ScreenEffect {
     CommitRecord,
     /// A menu sound-table slot.
     Sound(MenuEvent),
+    /// A direct cue of the front-end bank (`FUN_004c9a20` and the root's
+    /// table): slot, success byte.
+    Cue { slot: u32, ok: bool },
 }
 
 /// The tweens a screen's commit waits on.
@@ -336,6 +339,7 @@ impl FrontendScreens {
             return Vec::new();
         };
         self.no_animation = record[0x10] & 0x20 == 0;
+        let mut cues = Vec::new();
         let went_back = self.set.went_back;
         let _ = self.set.activate(menu, None, u8::from(went_back));
         match kind_of(menu) {
@@ -354,12 +358,20 @@ impl FrontendScreens {
                 self.info_slide = Some(self.slide(0x10000, 0, 0));
             }
             Some(Kind::Name(i)) => {
+                cues.push(ScreenEffect::Cue {
+                    slot: crate::frontend_sounds::SLIDE_CUE,
+                    ok: true,
+                });
                 self.name.enter(NAMES[i], record);
                 self.name_leaving = false;
                 let tweens = vec![self.slide(0x10000, 0, 0), self.slide(0x10000, 0, 0)];
                 self.slides.start(tweens);
             }
             Some(Kind::Stage) => {
+                cues.push(ScreenEffect::Cue {
+                    slot: crate::frontend_sounds::SLIDE_CUE,
+                    ok: true,
+                });
                 self.stage.menu = self.set.menu(menu).clone();
                 self.stage.enter(record);
                 *self.set.menu_mut(menu) = self.stage.menu.clone();
@@ -369,7 +381,8 @@ impl FrontendScreens {
             None => {}
         }
         let (_, effects) = self.step(screen, 0, NameKey::default(), record);
-        effects
+        cues.extend(effects);
+        cues
     }
 
     /// One stepper step of `screen` with the menu `bits` (the name entries
@@ -526,11 +539,19 @@ impl FrontendScreens {
             }
             // `0x4c5ec0`.
             Kind::Name(_) => {
+                effects.push(ScreenEffect::Cue {
+                    slot: crate::frontend_sounds::SLIDE_CUE,
+                    ok: true,
+                });
                 self.slides.start(self.slide_outs());
                 self.name_leaving = true;
             }
             // `0x4c84d0`.
             Kind::Stage => {
+                effects.push(ScreenEffect::Cue {
+                    slot: crate::frontend_sounds::SLIDE_CUE,
+                    ok: true,
+                });
                 self.stage.menu = self.set.menu(menu).clone();
                 match self.stage.post(record, back) {
                     PostOutcome::Back { next_player } => self.name.next_player = next_player,
