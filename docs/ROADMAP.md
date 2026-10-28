@@ -1963,6 +1963,10 @@ loops, adds the whine, overrun pops, blow-off, anti-lag and gear clunk, and
 balances front/rear emitters from the camera (`impl.engine-sound`). The band
 tables come from the user's executable through a reviewed extraction.
 
+Escape now pauses the race. The recovered pause menu resumes (Escape or the
+default item), restarts or quits, and its sound submenu sets the effects and
+speech volumes (`impl.pause-menu`). The menu text is not drawn yet.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

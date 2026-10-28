@@ -25,7 +25,8 @@ use cmr_core::audio_car_assets::{
     CAR_WAVE_BITS, CAR_WAVE_RATE_HZ, car_row_index_for_selector, car_wave_names,
     car_wave_source_path,
 };
-use cmr_core::audio_mixer::AudioMixer;
+use cmr_core::audio_menu::{MenuChannel, MenuSound as MenuCue, play_menu_sound};
+use cmr_core::audio_mixer::{AudioMixer, ChannelId, apply_commands};
 use cmr_core::audio_render::{FileWaveSource, SoftwareMixer};
 use cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
 use cmr_core::c3d_mesh::node_mesh_vertex_type;
@@ -44,6 +45,7 @@ use cmr_core::compiled_car_initializer::{
     execute_stage_compiled_setup_pose,
 };
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
+use cmr_core::descriptor_menu::MenuSound as DescriptorSound;
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
 use cmr_core::drive_controls::DriveResponse;
 use cmr_core::drivetrain::{
@@ -61,10 +63,16 @@ use cmr_core::game_menu_flow::{FrontendMenuSignal, MenuFlowInputs, frontend_menu
 use cmr_core::game_rng::GameLcg;
 use cmr_core::game_session::SessionBand;
 use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
+use cmr_core::gameplay_session::PauseFlow;
 use cmr_core::gameplay_session::{GameplaySession, InRaceScript, StaticGameplayAdvanceError};
 use cmr_core::host_loop::HostClock;
 use cmr_core::load_interstitial::{LOADING_BAR_BMP, LOADING_LINE_BMP, STAGE_LOADING_PROGRESS_CAP};
 use cmr_core::localization::Language;
+use cmr_core::pause_menu::{
+    DrivingPauseInput, PauseController, PauseDecision, PauseEffect, PauseKeys, PauseMenuConditions,
+    PauseOptions,
+};
+use cmr_core::pause_request::PauseKeyGates;
 use cmr_core::race_hud_plan::{
     CommonGaugeInset, RaceHudBitmap, RaceHudFont, RaceHudPlanError, RaceHudPreparedInputs,
     plan_normal_single_player_race_hud,
@@ -2855,6 +2863,8 @@ struct ViewHarness {
     controller: ViewController,
     rng: GameLcg,
     trig: [i32; cmr_core::fixed_point::TRIG_TABLE_LEN],
+    /// The camera record as the last camera-driver run left it.
+    last: Option<[i32; 16]>,
 }
 
 impl ViewHarness {
@@ -2872,6 +2882,7 @@ impl ViewHarness {
             controller: ViewController::new(CameraMode::ChaseNear),
             rng: GameLcg::new(Self::VIEW_SEED),
             trig: cmr_core::fixed_point::build_sine_table(),
+            last: None,
         }
     }
 
@@ -2882,7 +2893,19 @@ impl ViewHarness {
         if change_view {
             self.controller.cycle(Self::GATE, &mut self.rng);
         }
-        self.controller.update(position, heading, pal)
+        let world = self.controller.update(position, heading, pal);
+        self.last = Some(world);
+        world
+    }
+
+    /// The camera record without a driver run: the pause (`0xa`) and hub
+    /// (`0xb`) handlers do not run Mechanics, which owns the camera driver
+    /// `FUN_004343a0`, so the record keeps its last pose.
+    fn held(&mut self, position: Vec3, heading: u16, pal: bool) -> [i32; 16] {
+        match self.last {
+            Some(world) => world,
+            None => self.update(false, position, heading, pal),
+        }
     }
 
     /// The reset's camera snap (`DAT_00551560` -> `FUN_00434870`): the
@@ -3062,8 +3085,13 @@ fn advance_game_frame<C: HostClock>(
     fade: &mut Option<ScalarTween>,
     damage_owner: &mut NoStaticDamageOwner,
     engine: &mut Option<EngineAudio>,
+    pause: &mut PauseHarness,
     input: WindowedInput,
 ) -> Result<GameFrameOutcome, WindowedStageFrameError> {
+    let mut pause_effects = Vec::new();
+    let pause_flow = pause.frame(session, progress, input.keys, &mut pause_effects);
+    session.set_pause_flow(pause_flow);
+    pause.apply(&pause_effects, input.audio, engine.as_ref());
     let root_tick = root_interaction.tick_for_game_session(input.frontend, clock.millis(), true);
     let menu_inputs = root_menu_flow_inputs(session.state().id(), root_interaction);
     let drive = if let Some(pad) = input.gamepad.filter(|pad| analog_driving_is_active(pad)) {
@@ -3120,7 +3148,14 @@ fn advance_game_frame<C: HostClock>(
         } else {
             (car.heading, camera.car_world(car.position, car.heading))
         };
-        let camera_world = camera.update(change_view, car.position, heading, false);
+        let camera_world = if matches!(
+            advanced.route,
+            Some(RenderRoute::OverlayAlt | RenderRoute::FadeComposite)
+        ) {
+            camera.held(car.position, heading, false)
+        } else {
+            camera.update(change_view, car.position, heading, false)
+        };
         tick_camera = Some(camera_world);
         let car_world = car_model_world_q16(&harness_car_world);
         let hud_input = live_race_hud_inputs(
@@ -3171,7 +3206,13 @@ fn advance_game_frame<C: HostClock>(
         (engine.as_mut(), input.audio, tick_camera.as_ref())
         && (5..=9).contains(&session.state().id())
     {
-        engine.tick(mixer, session, camera, camera_world);
+        engine.tick(
+            mixer,
+            session,
+            camera,
+            camera_world,
+            pause.options.effects_master_4f653c,
+        );
     }
     let loading_interstitial = loading_interstitial_for_route(
         advanced.route,
@@ -3433,6 +3474,211 @@ struct EngineAudio {
     config: Option<EngineSoundConfig>,
 }
 
+/// The windowed session's pause: the recovered request and menu
+/// ([`cmr_core::pause_menu`]) and the option bytes its sound/settings
+/// submenus edit.
+///
+/// Harness choices: player 0 on the keyboard device (pad mask 0), real play,
+/// one player, no link session, an all-zero config block apart from the
+/// volumes `cfg[5] = cfg[6] = 5`, which match the static master defaults
+/// `DAT_004f653c = DAT_004f6538 = 100` (`5 * 20`), and `DAT_00514478 = 0`
+/// (`DAT_0055001c` is clear at race start), so Escape always pauses. The menu
+/// cues play on mixer channel [`PAUSE_MENU_CHANNEL`] and the speech mute
+/// targets the speech bank's channel [`SPEECH_CHANNEL`]; the native channels
+/// are allocated at run time. The value-change preview plays a speech or
+/// collision sample whose banks this harness does not share, so it is silent.
+struct PauseHarness {
+    controller: PauseController,
+    options: PauseOptions,
+    menu_cues: Option<MenuChannel>,
+}
+
+/// The pause menu cue channel (harness; after the engine's 2..=9).
+const PAUSE_MENU_CHANNEL: u32 = 10;
+/// The co-driver speech channel the SDL speech bank uses (harness).
+const SPEECH_CHANNEL: u32 = 1;
+
+impl PauseHarness {
+    fn new() -> Self {
+        Self {
+            controller: PauseController::default(),
+            options: PauseOptions {
+                cfg_5: 5,
+                cfg_6: 5,
+                cfg_8: 0,
+                view_toggle_4eb5f0: 0,
+                effects_master_4f653c: 100,
+                speech_master_4f6538: 100,
+            },
+            menu_cues: None,
+        }
+    }
+
+    /// The control map's Escape poll and probe in states 5/7/9, or the paused
+    /// handler in `0xa`; returns the next frame's pause words.
+    fn frame(
+        &mut self,
+        session: &GameplaySession,
+        progress: &StageProgress,
+        keys: &cmr_platform_sdl3::KeyboardVkState,
+        effects: &mut Vec<PauseEffect>,
+    ) -> PauseFlow {
+        let state_id = session.state().id();
+        let conditions = PauseMenuConditions {
+            real_play: true,
+            link_session: false,
+            two_player_mode: false,
+            cfg_166_mode: 0,
+            slow_motion: false,
+        };
+        let mut flow = PauseFlow::default();
+        match state_id {
+            5 | 7 | 9 => {
+                let car = session.car();
+                flow.enter_pause = self.controller.driving_tick(
+                    DrivingPauseInput {
+                        state_id,
+                        escape_down: keys.is_down(0x1b),
+                        player: 0,
+                        any_countdown_75c: car.four_wheel.trigger_walk.penalty_timer_75c != 0,
+                        gates: PauseKeyGates {
+                            player_finished: progress.finished(),
+                            player_active: true,
+                            blocked_55ae9c: false,
+                            real_play: conditions.real_play,
+                            alternate_6c0: false,
+                        },
+                        conditions,
+                        one_player: true,
+                    },
+                    self.options,
+                    effects,
+                );
+            }
+            0xa => {
+                let pause_keys = PauseKeys {
+                    escape: keys.is_down(0x1b),
+                    up: keys.is_down(0x26),
+                    down: keys.is_down(0x28),
+                    left: keys.is_down(0x25),
+                    right: keys.is_down(0x27),
+                    enter: keys.is_down(0x0d),
+                    shift: keys.is_down(0x10),
+                    q: keys.is_down(0x51),
+                    pad_mask: 0,
+                };
+                match self.controller.paused_tick(
+                    pause_keys,
+                    conditions.real_play,
+                    conditions.slow_motion,
+                    &mut self.options,
+                    effects,
+                ) {
+                    PauseDecision::Stay => {}
+                    PauseDecision::QuitHotkey => flow.quit = true,
+                    PauseDecision::Quit | PauseDecision::Restart => {}
+                    PauseDecision::Alternate => flow.resume_alt = true,
+                    PauseDecision::Resume { to_entry_state } => {
+                        flow.resume = true;
+                        flow.prepause_was_7 = to_entry_state;
+                    }
+                }
+            }
+            1..=4 => {
+                // The race init `FUN_00437510` clears the restart request
+                // (`0x437341`) before the next stage.
+                self.controller.restart_request_550018 = false;
+            }
+            _ => {}
+        }
+        // The quit word and the restart request persist into the hub.
+        flow.quit |= self.controller.quit_678;
+        flow.restart |= self.controller.restart_request_550018;
+        flow
+    }
+
+    fn apply(
+        &mut self,
+        effects: &[PauseEffect],
+        mixer: Option<&SharedSoftwareMixer>,
+        engine: Option<&EngineAudio>,
+    ) {
+        let Some(mixer) = mixer else {
+            return;
+        };
+        for effect in effects {
+            match *effect {
+                PauseEffect::MuteEngine { car } => {
+                    if let Some(engine) = engine {
+                        engine.mute(mixer, u32::from(car));
+                    }
+                }
+                PauseEffect::MuteSpeech => set_speech_volume(mixer, 0),
+                PauseEffect::RestoreSpeech => {
+                    set_speech_volume(mixer, cmr_core::audio_pacenote::PACENOTE_CHANNEL_VOLUME)
+                }
+                PauseEffect::MenuSound {
+                    table, sound, ok, ..
+                } => {
+                    if !ok
+                        || (table == cmr_core::pause_menu::callback::SOUNDS_PREVIEW
+                            && sound == DescriptorSound::ValueChange)
+                    {
+                        continue;
+                    }
+                    let cue = match sound {
+                        DescriptorSound::Move => MenuCue::UpDown,
+                        DescriptorSound::ValueChange => MenuCue::LeftRight,
+                        DescriptorSound::Enter => MenuCue::Forward,
+                        DescriptorSound::Back => MenuCue::Backward,
+                    };
+                    let Ok(mut mixer) = mixer.lock() else {
+                        continue;
+                    };
+                    let channel = match self.menu_cues {
+                        Some(channel) => channel,
+                        None => match load_menu_cues(&mut mixer) {
+                            Some(channel) => *self.menu_cues.insert(channel),
+                            None => continue,
+                        },
+                    };
+                    let commands =
+                        play_menu_sound(channel, cue, self.options.effects_master_4f653c);
+                    let _ = apply_commands(&mut *mixer, &commands);
+                }
+                // No surface loops, force feedback or telemetry in this
+                // session; the fade is the hub route's tween.
+                PauseEffect::StopSurfaceLoops
+                | PauseEffect::ZeroForceFeedback
+                | PauseEffect::FadeOut { .. }
+                | PauseEffect::CommitTelemetryAndStopAudio => {}
+            }
+        }
+    }
+}
+
+fn set_speech_volume(mixer: &SharedSoftwareMixer, volume: i32) {
+    if let Ok(mut mixer) = mixer.lock() {
+        EngineVoices::set_volume(&mut *mixer, SPEECH_CHANNEL, volume);
+    }
+}
+
+/// The pause menu's cue bank (`FUN_00468f50`: `sounds\menu\` FORWARD,
+/// BACKWARD, LEFTRIGH, UPDOWN at 22050 Hz), under the install root `game\`.
+fn load_menu_cues(mixer: &mut SoftwareMixer<FileWaveSource>) -> Option<MenuChannel> {
+    let mut base = None;
+    for file in cmr_core::audio_assets::MENU_WAVE_FILES {
+        let slot = mixer
+            .load_wave(&format!("game\\{file}"), 22_050, 16, false)
+            .ok()?;
+        base.get_or_insert(slot);
+    }
+    Some(MenuChannel {
+        channel: ChannelId::new(PAUSE_MENU_CHANNEL).ok()?,
+        base_slot: base?,
+    })
+}
+
 /// The first mixer channel of the engine's eight (0 is music, 1 speech).
 const ENGINE_CHANNEL_BASE: u32 = 2;
 
@@ -3458,7 +3704,11 @@ impl EngineAudio {
     /// The car loader `FUN_004872b0`: register the row's 14 waves in slot
     /// order, the loader's stray `FUN_0047eb70(7, 0x1a0a)` on absolute
     /// channel 7, then the init `FUN_00487250`.
-    fn load(&mut self, mixer: &mut SoftwareMixer<FileWaveSource>) -> Option<EngineSoundConfig> {
+    fn load(
+        &mut self,
+        mixer: &mut SoftwareMixer<FileWaveSource>,
+        master_percent: i32,
+    ) -> Option<EngineSoundConfig> {
         let row = car_row_index_for_selector(self.car_nibble);
         let names = car_wave_names(row)?;
         let mut slots = Vec::with_capacity(names.len());
@@ -3476,19 +3726,35 @@ impl EngineAudio {
             antilag_family_540: antilag_family_for_nibble(self.car_nibble),
             car_nibble: self.car_nibble,
             helium: false,
-            master_percent: 100,
+            master_percent,
         };
         EngineVoices::set_volume(mixer, 7, config.master_percent * 0x1a0a / 100);
         self.state.stage_init(mixer, &config, false);
         Some(config)
     }
 
+    /// `FUN_00487170(0, car)` on pause entry: volume 0 on each of the car's
+    /// engine channels that is playing (`FUN_00487210` with level 0).
+    fn mute(&self, mixer: &SharedSoftwareMixer, car: u32) {
+        let (Some(config), Ok(mut mixer)) = (self.config, mixer.lock()) else {
+            return;
+        };
+        for n in [0, 1, 2, 3, 5, 6, 7, 4] {
+            let channel = config.channel_base + car * 8 + n;
+            if EngineVoices::playing(&*mixer, channel) {
+                EngineVoices::set_volume(&mut *mixer, channel, 0);
+            }
+        }
+    }
+
+    /// `master_percent` is the live effects master `DAT_004f653c`.
     fn tick(
         &mut self,
         mixer: &SharedSoftwareMixer,
         session: &mut GameplaySession,
         camera: &mut ViewHarness,
         camera_world: &[i32; 16],
+        master_percent: i32,
     ) {
         let Some(car_words) = session.engine_sound_car() else {
             return;
@@ -3498,10 +3764,14 @@ impl EngineAudio {
         };
         let config = match self.config {
             Some(config) => config,
-            None => match self.load(&mut mixer) {
+            None => match self.load(&mut mixer, master_percent) {
                 Some(config) => *self.config.insert(config),
                 None => return,
             },
+        };
+        let config = EngineSoundConfig {
+            master_percent,
+            ..config
         };
         let car = session.car();
         let camera_mode = camera.record_mode();
@@ -4506,6 +4776,7 @@ pub fn run_windowed_game_session(
     let mut fade: Option<ScalarTween> = None;
     let mut damage_owner = NoStaticDamageOwner;
     let mut engine = EngineAudio::open(runtime_data, compiled_pose.selector as u8);
+    let mut pause = PauseHarness::new();
     let mut runtime_error = None;
 
     // Best-effort: open the recovered front-end root-menu compositor from the
@@ -4541,6 +4812,7 @@ pub fn run_windowed_game_session(
                     &mut fade,
                     &mut damage_owner,
                     &mut engine,
+                    &mut pause,
                     input,
                 ) {
                     Ok(outcome) => {
@@ -4602,6 +4874,7 @@ pub fn run_windowed_game_session(
             &mut fade,
             &mut damage_owner,
             &mut engine,
+            &mut pause,
             input,
         ) {
             Ok(outcome) => WindowedGameFrame {
@@ -6186,6 +6459,7 @@ mod tests {
             .as_ref()
             .and_then(|_| EngineAudio::open(&root, compiled_pose.selector as u8));
         let mut pcm: Vec<i16> = Vec::new();
+        let mut pause = PauseHarness::new();
         let mut advance = |session: &mut GameplaySession,
                            progress: &mut StageProgress,
                            keys: &cmr_platform_sdl3::KeyboardVkState,
@@ -6203,6 +6477,7 @@ mod tests {
                 &mut fade,
                 &mut damage_owner,
                 &mut engine,
+                &mut pause,
                 WindowedInput {
                     keys,
                     gamepad: None,
@@ -6374,6 +6649,7 @@ mod tests {
                     &mut fade,
                     &mut damage_owner,
                     &mut None,
+                    &mut PauseHarness::new(),
                     WindowedInput {
                         keys: $keys,
                         gamepad: None,

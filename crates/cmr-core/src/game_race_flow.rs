@@ -31,8 +31,10 @@
 //!   (front-end, paused from `7`) / `5`; nothing chosen -> stay `0xa`.
 //! - **State 0xb** post-race / inter-stage hub (`FUN_00438b90`) ->
 //!   `{2,3,5,0xb,0xc}`: fade not done or results page up -> hold `0xb`; a
-//!   front-end quit-event -> `0xc`; a restart or an allowed next stage -> `5`
-//!   (re-drive); else exit to the menu band (`2` front-end or show-menu, else `3`).
+//!   front-end quit -> `0xc`, otherwise the front end returns to `2`; a
+//!   real-play restart rewinds the progress and returns to the menu band; an
+//!   allowed next stage -> `5`; else the progression checks pick the quit
+//!   funnel `0xc` or the menu band (see [`hub_next`]).
 //!
 //! This module reconstructs those seven decision tables over [`InRaceInputs`] -
 //! the recovered globals and probe results are **inputs**, not reimplemented
@@ -120,6 +122,13 @@ pub struct InRaceInputs {
     /// State 0xb, normal-play exit: the "show the front-end menu" predicate
     /// (`FUN_0048df30 != 0`) selects `2` over `3`.
     pub show_menu: bool,
+    /// State 0xb: `FUN_0048df30` evaluated after the restart rewind.
+    pub restart_show_menu: bool,
+    /// State 0xb: `cfg[0] & 1` forces the quit funnel `0xc`.
+    pub config_bit0: bool,
+    /// State 0xb: the championship progression step `FUN_00436f00` returned
+    /// nonzero (the event goes on); zero funnels to `0xc`.
+    pub event_continues: bool,
 }
 
 fn race_state(id: u8) -> GameState {
@@ -227,29 +236,39 @@ pub fn pause_next(inputs: InRaceInputs) -> GameState {
     race_state(0xA)
 }
 
-/// State 0xb post-race / inter-stage hub (`FUN_00438b90`): hold on the results,
-/// re-drive the next/restarted stage, quit the event, or exit to the menu band.
+/// State 0xb post-race / inter-stage hub (`FUN_00438b90`), instruction level:
+///
+/// 1. Fade not done (`FUN_0048dfd0`) or the results page up -> hold `0xb`.
+/// 2. Front-end (`DAT_00d3ca88 != 0`): quit (`FUN_00468d70`) -> `0xc`, else `2`.
+/// 3. Real play, restart (`DAT_00550018`): the championship progress is
+///    rewound, then `FUN_0048df30 ? 2 : 3` ([`InRaceInputs::restart_show_menu`]).
+/// 4. Real play, no quit, a next stage allowed (`FUN_00401030`) and the
+///    sequence not exhausted (`DAT_00551ad8`): the next stage starts -> `5`.
+/// 5. Otherwise (`0x438e03`): `cfg[0] & 1`, quit, the progression step
+///    `FUN_00436f00` returning 0, or `FUN_0042a840` set -> `0xc`; else
+///    `FUN_0048df30 ? 2 : 3`.
 pub fn hub_next(inputs: InRaceInputs) -> GameState {
     if !inputs.fade_done || inputs.results_page_up {
         return race_state(0xB);
     }
-    if inputs.frontend_active && inputs.quit_requested {
-        return race_state(0xC);
+    let menu_band = |show_menu: bool| race_state(if show_menu { 2 } else { 3 });
+    if inputs.frontend_active {
+        return race_state(if inputs.quit_requested { 0xC } else { 2 });
     }
-    // Restart re-drives the current stage; otherwise an allowed, non-quit next
-    // stage starts driving. (The restart -> 5 edge is inferred from the restart
-    // flag's intent; the explicit next-stage guard is observed.)
     if inputs.restart_requested {
-        return race_state(5);
+        return menu_band(inputs.restart_show_menu);
     }
     if !inputs.quit_requested && inputs.next_stage_allowed && !inputs.championship_exhausted {
         return race_state(5);
     }
-    if inputs.frontend_active || inputs.show_menu {
-        race_state(2)
-    } else {
-        race_state(3)
+    if inputs.config_bit0
+        || inputs.quit_requested
+        || !inputs.event_continues
+        || inputs.prestage_ready
+    {
+        return race_state(0xC);
     }
+    menu_band(inputs.show_menu)
 }
 
 /// The next state for an in-race state (`5..=0xb`), or `None` for any other
@@ -579,46 +598,73 @@ mod tests {
             }),
             state(0xC)
         );
-        // Restart -> re-drive 5.
+        let going_on = InRaceInputs {
+            event_continues: true,
+            ..faded
+        };
+        // A real-play restart returns to the menu band, never straight to 5.
+        assert_eq!(
+            hub_next(InRaceInputs {
+                restart_requested: true,
+                restart_show_menu: true,
+                ..faded
+            }),
+            state(2)
+        );
         assert_eq!(
             hub_next(InRaceInputs {
                 restart_requested: true,
                 ..faded
             }),
-            state(5)
+            state(3)
         );
-        // Allowed next stage -> drive 5.
+        // Allowed next stage -> drive 5, unless quitting or exhausted.
+        let next = InRaceInputs {
+            next_stage_allowed: true,
+            ..going_on
+        };
+        assert_eq!(hub_next(next), state(5));
         assert_eq!(
             hub_next(InRaceInputs {
-                next_stage_allowed: true,
-                ..faded
+                championship_exhausted: true,
+                ..next
             }),
-            state(5)
+            state(3)
         );
-        // Not allowed, normal, show-menu -> 2; else 3.
+        // Not allowed: the progression checks.
         assert_eq!(
             hub_next(InRaceInputs {
                 show_menu: true,
-                ..faded
+                ..going_on
             }),
             state(2)
         );
-        assert_eq!(hub_next(faded), state(3));
-        // Front-end exit (not quit, no next stage) -> 2.
+        assert_eq!(hub_next(going_on), state(3));
+        assert_eq!(hub_next(faded), state(0xC), "the progression step ended");
+        for funnel in [
+            InRaceInputs {
+                config_bit0: true,
+                ..going_on
+            },
+            InRaceInputs {
+                quit_requested: true,
+                ..going_on
+            },
+            InRaceInputs {
+                prestage_ready: true,
+                ..going_on
+            },
+        ] {
+            assert_eq!(hub_next(funnel), state(0xC));
+        }
+        // Front end: quit -> 0xc, otherwise 2, whatever else is set.
         assert_eq!(
             hub_next(InRaceInputs {
                 frontend_active: true,
+                restart_requested: true,
                 ..faded
             }),
             state(2)
-        );
-        // Normal quit (no next stage) -> menu band 3.
-        assert_eq!(
-            hub_next(InRaceInputs {
-                quit_requested: true,
-                ..faded
-            }),
-            state(3)
         );
     }
 
@@ -635,7 +681,7 @@ mod tests {
 
     #[test]
     fn every_race_flow_edge_is_a_recovered_transition() {
-        // A deterministic seeded sweep over the 23-bit input space (a full 2^23
+        // A deterministic seeded sweep over the 26-bit input space (a full 2^26
         // enumeration is wasteful; this LCG walk covers a large, reproducible
         // sample) confirms every produced next state is a recovered edge.
         let mut seed: u32 = 0x1234_5678;
@@ -666,6 +712,9 @@ mod tests {
                 next_stage_allowed: bits & (1 << 20) != 0,
                 championship_exhausted: bits & (1 << 21) != 0,
                 show_menu: bits & (1 << 22) != 0,
+                restart_show_menu: bits & (1 << 23) != 0,
+                config_bit0: bits & (1 << 24) != 0,
+                event_continues: bits & (1 << 25) != 0,
             };
             for id in 5u8..=0xB {
                 let from = state(id);

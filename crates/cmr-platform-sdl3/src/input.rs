@@ -109,8 +109,11 @@ pub fn sdl_keycode_to_vk(keycode: Keycode) -> Option<u8> {
         Keycode::Kp4 => 0x64,
         Keycode::Kp6 => 0x66,
         Keycode::Kp8 => 0x68,
-        // Shared pause.
+        // Shared pause, and the pause menu's own GetAsyncKeyState reads:
+        // VK_RETURN covers both Enter keys, VK_SHIFT either Shift key.
         Keycode::Escape => 0x1b,
+        Keycode::Return | Keycode::KpEnter => 0x0d,
+        Keycode::LShift | Keycode::RShift => 0x10,
         // Player 2: letters + tab.
         Keycode::Tab => 0x09,
         Keycode::A => 0x41,
@@ -556,6 +559,9 @@ mod tests {
         assert_eq!(sdl_keycode_to_vk(Keycode::Down), Some(0x28));
         assert_eq!(sdl_keycode_to_vk(Keycode::Kp8), Some(0x68));
         assert_eq!(sdl_keycode_to_vk(Keycode::Escape), Some(0x1b));
+        assert_eq!(sdl_keycode_to_vk(Keycode::Return), Some(0x0d));
+        assert_eq!(sdl_keycode_to_vk(Keycode::KpEnter), Some(0x0d));
+        assert_eq!(sdl_keycode_to_vk(Keycode::RShift), Some(0x10));
         // Numpad 6 is player one's change-view action.
         assert_eq!(sdl_keycode_to_vk(Keycode::Kp6), Some(0x66));
         // Player 2 letters + tab.

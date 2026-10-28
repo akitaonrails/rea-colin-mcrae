@@ -433,6 +433,7 @@ Co-driver calls play through the recovered sequencer `FUN_00444450`.
 A finished stage returns to the menu band; re-entering driving restores the stage setup.
 The wheel/suspension animation and wheel node pose (`FUN_00410350`, `FUN_00417e20`, `FUN_00439ee0`) are reconstructed.
 The engine sound (`FUN_00488d60`, `FUN_00487e00`, `FUN_00488ab0`) and its listener `FUN_0047ec20` play in the windowed session over the extracted static band tables.
+Escape pauses the race (`FUN_00449580` Escape block, `FUN_00468200`), and the pause menu (`FUN_00468260`, `FUN_00468ed0`, `FUN_00438970`) resumes, restarts or quits; the hub (`FUN_00438b90`) follows its observed branch order.
 
 ## Update rules
 
@@ -443,14 +444,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-29T07:30:00Z
-milestone=engine-sound
+updated_utc=2026-10-29T10:00:00Z
+milestone=pause-menu
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-handling-out-of-control-path-and-car-animation
-next_exit_gate=pause-menu-and-player-options
+next_exit_gate=pause-menu-text-and-surface-audio
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

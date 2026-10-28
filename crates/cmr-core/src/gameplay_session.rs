@@ -61,6 +61,11 @@ pub struct InRaceScript {
     pub quit_requested: bool,
     /// The quit fade has completed (`fade_done`).
     pub fade_done: bool,
+    /// The hub's progression step `FUN_00436f00` returns nonzero
+    /// (`event_continues`).
+    pub event_continues: bool,
+    /// `FUN_0048df30` after a restart rewind (`restart_show_menu`).
+    pub restart_show_menu: bool,
 }
 
 impl InRaceScript {
@@ -68,8 +73,12 @@ impl InRaceScript {
     /// world is ready, the stage-boundary director and the results page are
     /// treated as done and the fade as complete, nothing is quit or restarted,
     /// and no next championship stage is armed, so a finished stage runs
-    /// `5 -> 8 -> 0xb -> 3` back to the menu band (the `FUN_0048df30` "show
-    /// menu" predicate is not recovered and stays clear). Harness stand-ins.
+    /// `5 -> 8 -> 0xb -> 3` back to the menu band. Harness stand-ins, except
+    /// the two hub predicates, which are evaluated for an all-zero config
+    /// block (`DAT_00d3ca80`) and the static `DAT_004ed7d8 = 1`:
+    /// `FUN_00436f00` advances the stage counter `cfg[0x168] >> 4` to 1 and
+    /// returns 1, after which `FUN_0048df30` is 0 (`3`); after a restart rewind
+    /// the counter is 0 and `FUN_0048df30` is 1 (`2`).
     #[must_use]
     pub const fn gameplay_harness() -> Self {
         InRaceScript {
@@ -80,6 +89,8 @@ impl InRaceScript {
             flyby_cinematic_done: false,
             quit_requested: false,
             fade_done: true,
+            event_continues: true,
+            restart_show_menu: true,
         }
     }
 
@@ -96,6 +107,8 @@ impl InRaceScript {
             flyby_cinematic_done: true,
             quit_requested: true,
             fade_done: true,
+            event_continues: true,
+            restart_show_menu: false,
         }
     }
 
@@ -109,7 +122,42 @@ impl InRaceScript {
             flyby_cinematic_done: self.flyby_cinematic_done,
             quit_requested: self.quit_requested,
             fade_done: self.fade_done,
+            event_continues: self.event_continues,
+            restart_show_menu: self.restart_show_menu,
             ..InRaceInputs::default()
+        }
+    }
+}
+
+/// The pause words the in-race handlers read on the next frame, from the
+/// host's [`crate::pause_menu::PauseController`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PauseFlow {
+    /// `FUN_00468200` hit in a driving state: the handler returns `0xa`
+    /// without running Mechanics.
+    pub enter_pause: bool,
+    /// State `0xa`: Shift+Q or `DAT_0057e678`.
+    pub quit: bool,
+    /// State `0xa`: `DAT_0057e680` in real play.
+    pub restart: bool,
+    /// State `0xa`: `DAT_0057e67c`.
+    pub resume_alt: bool,
+    /// State `0xa`: `DAT_0057e670` consumed.
+    pub resume: bool,
+    /// `DAT_00551b28 == 7`.
+    pub prepause_was_7: bool,
+}
+
+impl PauseFlow {
+    fn apply(self, inputs: InRaceInputs) -> InRaceInputs {
+        InRaceInputs {
+            pause_requested: self.enter_pause,
+            quit_requested: inputs.quit_requested || self.quit,
+            restart_requested: inputs.restart_requested || self.restart,
+            resume_alt: self.resume_alt,
+            resume: self.resume,
+            prepause_was_7: self.prepause_was_7,
+            ..inputs
         }
     }
 }
@@ -146,6 +194,8 @@ pub struct GameplaySession<'a> {
     last_trigger_events: Vec<TriggerEvent>,
     /// `ctl +0x304` as the last four-wheel tick read it.
     last_throttle_304: i32,
+    /// The pause words for the next frame ([`Self::set_pause_flow`]).
+    pause_flow: PauseFlow,
     /// The car as the stage setup left it, restored when a new stage starts.
     stage_start: CarState,
     /// The sim has stepped since the stage started.
@@ -257,6 +307,7 @@ impl<'a> GameplaySession<'a> {
             stage_triggers: None,
             last_trigger_events: Vec::new(),
             last_throttle_304: 0,
+            pause_flow: PauseFlow::default(),
             stage_start: CarState::at_rest(),
             race_started: false,
             stage_dirty: false,
@@ -370,6 +421,11 @@ impl<'a> GameplaySession<'a> {
             idle_countdown_6ec: four.idle_countdown_6ec,
             ignition_764: 0,
         })
+    }
+
+    /// The pause words for the next frame only.
+    pub fn set_pause_flow(&mut self, flow: PauseFlow) {
+        self.pause_flow = flow;
     }
 
     /// Write back the engine sound's `car +0x6ec`.
@@ -523,7 +579,8 @@ impl<'a> GameplaySession<'a> {
         progress: &mut StageProgress,
     ) -> Result<GameplayFrame, WheelPostprocessError> {
         self.begin_stage_if_reentered(progress);
-        let driving_sample = if self.session.current().id() == 5 {
+        let pause = std::mem::take(&mut self.pause_flow);
+        let driving_sample = if self.session.current().id() == 5 && !pause.enter_pause {
             Some(if self.wheel.is_some() {
                 let race_before = self.race.clone();
                 let mut sample = self.four_wheel_drive(&controls)?;
@@ -543,13 +600,14 @@ impl<'a> GameplaySession<'a> {
         let mut stepped = false;
 
         let frame = self.session.run_frame(clock, menu_inputs, |state| {
-            if state.id() == 5 {
-                let sample = driving_sample.expect("state-5 sample was produced");
+            if state.id() == 5
+                && let Some(sample) = driving_sample
+            {
                 *sim_ticks += 1;
                 progress.update(sample.car.position, sample.centiseconds);
                 stepped = true;
             }
-            let inputs = script.with_finish(progress.finished());
+            let inputs = pause.apply(script.with_finish(progress.finished()));
             race_flow_next(state, inputs).unwrap_or(state)
         });
         self.track_stage_end(stepped);
@@ -575,7 +633,8 @@ impl<'a> GameplaySession<'a> {
         damage_owner: &mut D,
     ) -> Result<GameplayFrame, StaticGameplayAdvanceError<D::Error>> {
         self.begin_stage_if_reentered(progress);
-        let driving_sample = if self.session.current().id() == 5 {
+        let pause = std::mem::take(&mut self.pause_flow);
+        let driving_sample = if self.session.current().id() == 5 && !pause.enter_pause {
             let race_before = self.race.clone();
             let previous_center_xz = PreviousCarXz::capture(race_before.car().position);
             let four_wheel = self.wheel.is_some();
@@ -608,13 +667,14 @@ impl<'a> GameplaySession<'a> {
         let mut stepped = false;
 
         let frame = self.session.run_frame(clock, menu_inputs, |state| {
-            if state.id() == 5 {
-                let sample = driving_sample.expect("state-5 sample was produced");
+            if state.id() == 5
+                && let Some(sample) = driving_sample
+            {
                 *sim_ticks += 1;
                 progress.update(sample.car.position, sample.centiseconds);
                 stepped = true;
             }
-            let inputs = script.with_finish(progress.finished());
+            let inputs = pause.apply(script.with_finish(progress.finished()));
             race_flow_next(state, inputs).unwrap_or(state)
         });
         self.track_stage_end(stepped);
@@ -1158,6 +1218,89 @@ mod tests {
             }
         }
         assert!(restarted);
+    }
+
+    fn drive_to_state_five(session: &mut GameplaySession, progress: &mut StageProgress) {
+        for _ in 0..100 {
+            if session.state().id() == 5 {
+                return;
+            }
+            session.advance(&StationaryClock, frontend_menu(), forward(), progress);
+        }
+        panic!("the menu flow never reached driving");
+    }
+
+    #[test]
+    fn a_pause_freezes_the_sim_until_resume() {
+        let mut session = GameplaySession::new(params(), InRaceScript::gameplay_harness());
+        let nodes = line();
+        let mut progress = StageProgress::new(&nodes, 0);
+        drive_to_state_five(&mut session, &mut progress);
+        session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+        let before = session.car();
+        session.set_pause_flow(PauseFlow {
+            enter_pause: true,
+            ..PauseFlow::default()
+        });
+        let frame = session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+        assert!(!frame.stepped, "the pausing tick runs no Mechanics");
+        assert_eq!(session.state().id(), 0xa);
+        for _ in 0..10 {
+            let frame =
+                session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            assert!(!frame.stepped);
+        }
+        assert_eq!(session.car(), before);
+        assert_eq!(session.state().id(), 0xa);
+        session.set_pause_flow(PauseFlow {
+            resume: true,
+            ..PauseFlow::default()
+        });
+        session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+        assert_eq!(session.state().id(), 5);
+        let frame = session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+        assert!(frame.stepped);
+        assert_ne!(session.car().position, before.position);
+    }
+
+    #[test]
+    fn a_pause_restart_returns_to_the_menu_band_and_quit_stops_the_game() {
+        let nodes = line();
+        for (flow, expected) in [
+            (
+                PauseFlow {
+                    restart: true,
+                    ..PauseFlow::default()
+                },
+                2,
+            ),
+            (
+                PauseFlow {
+                    quit: true,
+                    ..PauseFlow::default()
+                },
+                0,
+            ),
+        ] {
+            let mut session = GameplaySession::new(params(), InRaceScript::gameplay_harness());
+            let mut progress = StageProgress::new(&nodes, 0);
+            drive_to_state_five(&mut session, &mut progress);
+            session.set_pause_flow(PauseFlow {
+                enter_pause: true,
+                ..PauseFlow::default()
+            });
+            session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            assert_eq!(session.state().id(), 0xa);
+            // The words persist from the pause into the hub.
+            for _ in 0..4 {
+                session.set_pause_flow(flow);
+                session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+                if !(0xa..=0xc).contains(&session.state().id()) {
+                    break;
+                }
+            }
+            assert_eq!(session.state().id(), expected);
+        }
     }
 
     #[test]
