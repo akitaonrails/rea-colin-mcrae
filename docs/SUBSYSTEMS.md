@@ -2584,6 +2584,9 @@ languages rather than fabricating or silently aliasing Italian assets.
   torque) with a quarter-sine ease; the four-wheel step now feeds those and the
   raw pedal words to the drivetrain. Its gearbox and steering parts are not yet
   reconstructed.
+- The car constants those passes read (`+0x48/+0x4c`, `+0x50..+0x58`,
+  `+0x148..+0x184`, `+0x408`) are derived from a car's compiled case words by
+  `derive_compiled_four_wheel_constants`.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

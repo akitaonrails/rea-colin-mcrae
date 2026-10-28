@@ -1835,6 +1835,12 @@ four-wheel step hands them, and the raw pedal words, to their recovered
 drivetrain consumers. The ramp scalars are still harness inputs, and the
 processor's gearbox and steering parts are next.
 
+The four-wheel car constants now come from the recovered initializer stages:
+`derive_compiled_four_wheel_constants` yields mass and inverse mass, inertia,
+the pedal ramp scalars and the `+0x408` mode from one car's case words, and the
+app builder takes that set. Only the headless session, which has no case words,
+still passes explicit harness values.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

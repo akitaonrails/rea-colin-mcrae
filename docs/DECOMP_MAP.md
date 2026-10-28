@@ -403,7 +403,7 @@ deadzones and `+0x700` in native order; the planar windowed path does not. Its
 translation is now the integrator's own (no harness steering, drag, throttle
 push or lateral grip; inverse mass `+0x4c` is an explicit input), and the
 control processor's pedal ramps feed throttle, brake and handbrake responses to
-the drivetrain.
+the drivetrain. Their car constants derive from the compiled initializer stages.
 
 ## Update rules
 
@@ -414,8 +414,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T02:40:00Z
-milestone=control-processor-pedal-responses
+updated_utc=2026-10-28T03:00:00Z
+milestone=compiled-four-wheel-car-constants
 completed=117
 partial=2
 not_started=0

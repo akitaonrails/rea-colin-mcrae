@@ -27,10 +27,11 @@ use cmr_core::camera_view::ViewController;
 use cmr_core::car_resources::{InRaceBodyLoadBranch, car_body_path, in_race_car_load_policy};
 use cmr_core::compiled_car_initializer::{
     CompiledCaseWords, CompiledControlFamilies, CompiledDirectCaseSet, CompiledDirectCaseSetError,
-    CompiledEightLaneExecutionFailure, CompiledEightLaneExecutionState, CompiledHalfSignState,
-    CompiledLaneDispatchFailurePhase, CompiledPostLaneBasisEffects, CompiledSetupPoseError,
-    CompiledSetupPoseInputs, CompiledSetupPoseLaneInputs, DecodedCompiledLaneGeometryError,
-    derive_compiled_half_sign_state, execute_stage_compiled_setup_pose,
+    CompiledEightLaneExecutionFailure, CompiledEightLaneExecutionState, CompiledFourWheelConstants,
+    CompiledHalfSignState, CompiledLaneDispatchFailurePhase, CompiledPostLaneBasisEffects,
+    CompiledSetupPoseError, CompiledSetupPoseInputs, CompiledSetupPoseLaneInputs,
+    DecodedCompiledLaneGeometryError, derive_compiled_half_sign_state,
+    execute_stage_compiled_setup_pose,
 };
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
@@ -3172,7 +3173,7 @@ impl SessionWheelInputs {
         families: &CompiledControlFamilies,
         half_state: &CompiledHalfSignState,
         factor_c860: Fixed16,
-        inverse_mass_4c: Fixed16,
+        constants: &CompiledFourWheelConstants,
         surface_indices: [usize; 4],
     ) -> Result<FourWheelIterationParams<'a>, SurfaceCoefficientIndexError> {
         let inactive = GeometricPostprocessLane {
@@ -3252,7 +3253,7 @@ impl SessionWheelInputs {
                 non_wheel_forces: &[],
                 wheel_contacts: [true; 4],
             },
-            inverse_mass_4c,
+            inverse_mass_4c: Fixed16::ZERO,
             angular: AngularOrientationInput {
                 momentum: AngularMomentumStepInput {
                     prior_moment: Vec3::ZERO,
@@ -3311,6 +3312,7 @@ impl SessionWheelInputs {
         }
         self.populate_four_wheel(&mut wheel, surface_indices)?;
         populate_compiled_contact_offsets(&mut wheel, half_state);
+        cmr_core::race_state::populate_compiled_four_wheel_constants(&mut wheel, constants);
         cmr_core::race_state::populate_compiled_contact_update_inputs(
             &mut wheel,
             &cmr_core::compiled_car_initializer::derive_compiled_control_clear_loop(),
@@ -4054,6 +4056,24 @@ impl From<WheelPostprocessError> for SessionFourWheelError {
     }
 }
 
+/// Harness car constants for the headless four-wheel session, which has no
+/// compiled case words: unit mass and inertia, the old planar inverse mass,
+/// and inert pedal ramps. A session with authenticated case words derives
+/// these with `derive_compiled_four_wheel_constants` instead.
+const HEADLESS_HARNESS_FOUR_WHEEL_CONSTANTS: CompiledFourWheelConstants =
+    CompiledFourWheelConstants {
+        state_word_48: 0x1_0000,
+        state_word_4c: 0x8000,
+        inertia_50_54_58: [0x1_0000; 3],
+        control_word_148: 0,
+        control_word_16c: 0,
+        control_word_150: 0,
+        control_word_174: 0,
+        control_word_17c: 0,
+        control_word_184: 0,
+        control_word_408: 0,
+    };
+
 /// Run the headless FSM with authenticated coefficients and compiled geometry.
 ///
 /// # Errors
@@ -4066,14 +4086,12 @@ pub fn run_headless_four_wheel_game_session(
 ) -> Result<HeadlessGameSessionOutput, SessionFourWheelError> {
     let inputs = SessionWheelInputs::open(runtime_data)?;
     let trig = cmr_core::fixed_point::build_sine_table();
-    // State `+0x4c` stays a harness input here (the old planar `SimParams`
-    // value); this headless path has no compiled common prefix.
     let wheel = inputs.four_wheel_params(
         &trig,
         families,
         half_state,
         Fixed16::ONE,
-        Fixed16::from_raw(0x8000),
+        &HEADLESS_HARNESS_FOUR_WHEEL_CONSTANTS,
         [0; 4],
     )?;
     let params = SimParams {
@@ -5606,7 +5624,7 @@ mod tests {
                     &families,
                     &half_state,
                     Fixed16::ONE,
-                    Fixed16::ONE,
+                    &HEADLESS_HARNESS_FOUR_WHEEL_CONSTANTS,
                     [0, 0, 0, 120]
                 )
                 .err(),
@@ -5618,7 +5636,7 @@ mod tests {
                 &families,
                 &half_state,
                 Fixed16::ONE,
-                Fixed16::ONE,
+                &HEADLESS_HARNESS_FOUR_WHEEL_CONSTANTS,
                 [0; 4],
             )
             .unwrap();

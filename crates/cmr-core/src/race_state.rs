@@ -21,8 +21,9 @@
 //! See evidence `impl.sim-race-state-trace`.
 
 use crate::compiled_car_initializer::{
-    CompiledControlClearLoop, CompiledControlFamilies, CompiledHalfSignState,
-    CompiledLaneThresholdInputs, CompiledPostLaneBasisEffects, derive_compiled_lane_thresholds,
+    CompiledControlClearLoop, CompiledControlFamilies, CompiledFourWheelConstants,
+    CompiledHalfSignState, CompiledLaneThresholdInputs, CompiledPostLaneBasisEffects,
+    derive_compiled_lane_thresholds,
 };
 use crate::drivetrain::{
     DrivenSmoothingScalarInput, DrivenSmoothingScalars, DrivenWheelSmoothingInput,
@@ -376,6 +377,28 @@ pub fn populate_compiled_contact_offsets(
             Fixed16::from_raw(state.words[z]),
         )
     });
+}
+
+/// Populate the integrator's mass, moment scale and inertia, and the control
+/// processor's pedal scalars and `+0x408` mode, from the recovered initializer
+/// constants.
+pub fn populate_compiled_four_wheel_constants(
+    wheel: &mut FourWheelIterationParams<'_>,
+    constants: &CompiledFourWheelConstants,
+) {
+    wheel.inverse_mass_4c = Fixed16::from_raw(constants.state_word_4c);
+    wheel.angular.momentum.moment_scale = Fixed16::from_raw(constants.state_word_48);
+    let [x, y, z] = constants.inertia_50_54_58.map(Fixed16::from_raw);
+    wheel.angular.momentum.inertia_scale = Vec3::new(x, y, z);
+    wheel.pedal_response = PedalResponseParams {
+        throttle_max_148: constants.control_word_148,
+        throttle_rate_150: constants.control_word_150,
+        brake_max_16c: constants.control_word_16c,
+        brake_rate_174: constants.control_word_174,
+        handbrake_rate_17c: constants.control_word_17c,
+        handbrake_max_184: constants.control_word_184,
+    };
+    wheel.driven_smoothing.mode_408 = constants.control_word_408;
 }
 
 /// Populate each update's limit and threshold from the interleaved compiled

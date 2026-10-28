@@ -623,6 +623,47 @@ mod tests {
     }
 
     #[test]
+    fn compiled_constants_fill_mass_inertia_pedals_and_mode() {
+        let trig = crate::fixed_point::build_sine_table();
+        let mut wheel = four_wheel_params(&trig);
+        let constants = crate::compiled_car_initializer::CompiledFourWheelConstants {
+            state_word_48: 0x7a_0000,
+            state_word_4c: 0x218,
+            inertia_50_54_58: [1, 2, 1],
+            control_word_148: 0x3_0000,
+            control_word_16c: 0x2_0000,
+            control_word_150: 0x0ccc,
+            control_word_174: 0x0ccd,
+            control_word_17c: 0x0cce,
+            control_word_184: 0x8000,
+            control_word_408: 1,
+        };
+        crate::race_state::populate_compiled_four_wheel_constants(&mut wheel, &constants);
+        assert_eq!(wheel.inverse_mass_4c.raw(), 0x218);
+        assert_eq!(wheel.angular.momentum.moment_scale.raw(), 0x7a_0000);
+        assert_eq!(
+            [
+                wheel.angular.momentum.inertia_scale.x.raw(),
+                wheel.angular.momentum.inertia_scale.y.raw(),
+                wheel.angular.momentum.inertia_scale.z.raw(),
+            ],
+            [1, 2, 1]
+        );
+        assert_eq!(
+            wheel.pedal_response,
+            crate::pedal_response::PedalResponseParams {
+                throttle_max_148: 0x3_0000,
+                throttle_rate_150: 0x0ccc,
+                brake_max_16c: 0x2_0000,
+                brake_rate_174: 0x0ccd,
+                handbrake_rate_17c: 0x0cce,
+                handbrake_max_184: 0x8000,
+            }
+        );
+        assert_eq!(wheel.driven_smoothing.mode_408, 1);
+    }
+
+    #[test]
     fn four_wheel_base_force_produces_world_motion() {
         let trig = crate::fixed_point::build_sine_table();
         let wheel = four_wheel_params(&trig);

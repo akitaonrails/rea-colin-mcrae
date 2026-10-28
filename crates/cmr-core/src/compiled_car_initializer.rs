@@ -4138,6 +4138,80 @@ pub fn derive_compiled_control_families(
     })
 }
 
+/// The car constants the four-wheel integrator and control processor read,
+/// taken from the recovered initializer stages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompiledFourWheelConstants {
+    /// State `+0x48`, the angular pass's moment scale (`0x40a7af`).
+    pub state_word_48: i32,
+    /// State `+0x4c`, the translation's inverse mass (`0x40a9f0`).
+    pub state_word_4c: i32,
+    /// State `+0x50/+0x54/+0x58`, the angular inertia (`0x40aa75..0x40aab4`).
+    pub inertia_50_54_58: [i32; 3],
+    /// Control `+0x148`: full throttle response.
+    pub control_word_148: i32,
+    /// Control `+0x16c`: full brake response.
+    pub control_word_16c: i32,
+    /// Control `+0x150/+0x174/+0x17c/+0x184/+0x408` from the post-helper patch.
+    pub control_word_150: i32,
+    pub control_word_174: i32,
+    pub control_word_17c: i32,
+    pub control_word_184: i32,
+    pub control_word_408: i32,
+}
+
+fn post_helper_word(effects: &CompiledPostHelperEffects, offset: u16) -> i32 {
+    let index = COMPILED_POST_HELPER_CONTROL_WORD_OFFSETS
+        .iter()
+        .position(|candidate| *candidate == offset)
+        .expect("the offset is in the recovered post-helper schema");
+    effects.control_words[index]
+}
+
+/// Derive [`CompiledFourWheelConstants`] from one car's direct case words and
+/// its common-prefix config flags (config `+0x25`).
+///
+/// This runs only the stages that write these words, in the order
+/// [`compose_recovered_compiled_stage_effects`] does: the common prefix
+/// (`+0x48/+0x4c`, `+0x148`, optional `+0x15c` and state scaling), the
+/// post-helper patch (`+0x150..+0x184`, `+0x408`), and the suffix defaults
+/// (`+0x50..+0x58`). `+0x16c` is a direct case word that none of them rewrites.
+/// Later initializer stages are not known to rewrite any of these words, but
+/// that is not established for every caller.
+///
+/// # Errors
+///
+/// Returns the shared stage error for a common-prefix or post-helper
+/// reciprocal that would fault the shipped `IDIV`.
+pub fn derive_compiled_four_wheel_constants(
+    words: CompiledCaseWords,
+    config_flags: u8,
+) -> Result<CompiledFourWheelConstants, RecoveredCompiledStageError> {
+    let prefix = derive_compiled_common_prefix(words, config_flags)
+        .map_err(RecoveredCompiledStageError::Prefix)?;
+    let control_word_15c = prefix.control_word_15c.unwrap_or(words.control_words[3]);
+    let post_helper =
+        derive_compiled_post_helper_effects(prefix.control_word_148, control_word_15c)
+            .map_err(RecoveredCompiledStageError::PostHelper)?;
+    let state_words = prefix.state_words.unwrap_or(words.state_words);
+    let suffix = derive_compiled_suffix_defaults(
+        [state_words[0], state_words[1], state_words[2]],
+        config_flags,
+    );
+    Ok(CompiledFourWheelConstants {
+        state_word_48: prefix.state_word_48,
+        state_word_4c: prefix.state_word_4c,
+        inertia_50_54_58: suffix.state_words_50_54_58,
+        control_word_148: prefix.control_word_148,
+        control_word_16c: words.control_words[2],
+        control_word_150: post_helper_word(&post_helper, 0x150),
+        control_word_174: post_helper_word(&post_helper, 0x174),
+        control_word_17c: post_helper_word(&post_helper, 0x17c),
+        control_word_184: post_helper_word(&post_helper, 0x184),
+        control_word_408: post_helper_word(&post_helper, 0x408),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10770,5 +10844,59 @@ mod tests {
         let families = derive_compiled_control_families(post_processed_raw).unwrap();
         assert_eq!(families.reciprocal[0], 0);
         assert_eq!(families.raw_copy[0], 1);
+    }
+
+    #[test]
+    fn four_wheel_constants_follow_the_prefix_post_helper_and_suffix_stages() {
+        assert_eq!(COMPILED_CONTROL_WORD_OFFSETS[2], 0x16c);
+        let words = synthetic_case(3);
+        for flags in [
+            0,
+            COMPILED_COMMON_CONTROL_SCALE_MASK | COMPILED_COMMON_STATE_SCALE_MASK,
+        ] {
+            let constants = derive_compiled_four_wheel_constants(words, flags).unwrap();
+            let prefix = derive_compiled_common_prefix(words, flags).unwrap();
+            assert_eq!(constants.state_word_48, prefix.state_word_48);
+            assert_eq!(constants.state_word_4c, prefix.state_word_4c);
+            assert_eq!(constants.control_word_148, prefix.control_word_148);
+            assert_eq!(constants.control_word_16c, words.control_words[2]);
+            assert_eq!(
+                (
+                    constants.control_word_150,
+                    constants.control_word_174,
+                    constants.control_word_17c,
+                    constants.control_word_184,
+                    constants.control_word_408,
+                ),
+                (0x0ccc, 0x0ccc, 0x0ccc, 0x8000, 0)
+            );
+            let expected_inertia = if flags & COMPILED_COMMON_STATE_SCALE_MASK == 0 {
+                [1, 2, 1]
+            } else {
+                [2, 4, 2]
+            };
+            assert_eq!(constants.inertia_50_54_58, expected_inertia);
+        }
+        // The control-scale flag doubles the adjusted `+0x148`.
+        let plain = derive_compiled_four_wheel_constants(words, 0).unwrap();
+        let scaled =
+            derive_compiled_four_wheel_constants(words, COMPILED_COMMON_CONTROL_SCALE_MASK)
+                .unwrap();
+        assert_eq!(
+            scaled.control_word_148,
+            common_prefix_q16_mul(plain.control_word_148, 0x2_0000)
+        );
+    }
+
+    #[test]
+    fn four_wheel_constants_report_a_faulting_prefix_reciprocal() {
+        let mut words = synthetic_case(1);
+        words.control_words[22] = 1_i32.wrapping_sub(0x78_0000);
+        assert_eq!(
+            derive_compiled_four_wheel_constants(words, 0),
+            Err(RecoveredCompiledStageError::Prefix(
+                CompiledCommonPrefixReciprocalOverflow { state_word_48: 1 }
+            ))
+        );
     }
 }
