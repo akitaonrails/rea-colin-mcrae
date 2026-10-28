@@ -1965,7 +1965,8 @@ tables come from the user's executable through a reviewed extraction.
 
 Escape now pauses the race. The recovered pause menu resumes (Escape or the
 default item), restarts or quits, and its sound submenu sets the effects and
-speech volumes (`impl.pause-menu`). The menu text is not drawn yet.
+speech volumes (`impl.pause-menu`). The menu draws its title, items and the
+darkened panel with the game's own fonts and strings (`impl.pause-menu-draw`).
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI

@@ -103,6 +103,7 @@ pub mod options_screen;
 pub mod overlay_alt;
 pub mod pacenote_schedule;
 pub mod pause_menu;
+pub mod pause_menu_draw;
 pub mod pause_request;
 pub mod pedal_response;
 pub mod present_scaling;

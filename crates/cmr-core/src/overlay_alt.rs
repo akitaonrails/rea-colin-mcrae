@@ -1,112 +1,59 @@
-//! The state-`0xa` ("OverlayAlt") animated screen-quad placement
-//! ([`RenderRoute::OverlayAlt`](crate::render_route::RenderRoute::OverlayAlt),
-//! B handler `FUN_004233e0` -> `FUN_00468dd0`, `rea.official-eu.game-fsm-overlay-alt`).
+//! The state-`0xa` pause panel placement (`FUN_00468dd0`, B handler
+//! `FUN_004233e0`, `rea.official-eu.game-fsm-overlay-alt`).
 //!
-//! State `0xa` composites the still-running in-race world (via the shared
-//! compositor `FUN_00422ca0`, which treats `0xa` exactly as in-race state `5`)
-//! plus two overlay layers: a runtime entity-table overlay (`FUN_0043af20`) and
-//! this one animated screen-space quad (`FUN_00468dd0`). The entity table, the
-//! destination surfaces, the display-format-selected colour/vertex templates
-//! (`DAT_005024a4`/`DAT_004eb604`), and the visibility oracle are all
-//! runtime/asset-gated. The one statically-pinned, asset-free piece is this
-//! quad's destination-rectangle arithmetic, reconstructed here.
+//! After the pause menu draws its text, `FUN_00468dd0` sizes a background
+//! panel to it from two words the text draw leaves behind: `DAT_0057e684`, the
+//! widest line as a Q16 fraction of the screen width, and `DAT_004f3e34`, the
+//! Q16 y cursor after the last line. It pads them (`+0x1999`, `+0x51e`),
+//! writes them back, and builds a four-`u16` `[x, y, w, h]` rectangle centred
+//! horizontally with its top at `0.3 H`. The title pre-draw resets both words
+//! every frame.
 //!
-//! `FUN_00468dd0` reads the runtime screen width/height (`W`/`H`, from the
-//! surface descriptor `[PTR_DAT_00502518] + 0/+4`) and two per-frame animation
-//! phase accumulators (`DAT_0057e684`, `DAT_004f3e34`) that step by fixed
-//! increments each frame, then builds a four-`u16` `[x, y, w, h]` rectangle. All
-//! multipliers are baked into the image; the accumulators' initial values and any
-//! wrap/reset are runtime state, so they are modelled as caller-held state
-//! starting at `0`.
+//! An earlier reading took the two words for free-running animation
+//! accumulators; `rea.official-eu.pause-menu` corrects that, and adds the
+//! `- 0x4ccc` (the `0.3` top) in the height that the earlier version missed.
+//! The products are 32-bit, as the shipped `imul`s are.
 
-/// The per-frame increment of the X-phase accumulator (`DAT_0057e684 += 0x1999`).
-pub const OVERLAY_ALT_PHASE_X_STEP: i32 = 0x1999;
+/// The width padding (`DAT_0057e684 += 0x1999`, about `0.1`).
+pub const PANEL_WIDTH_PAD_Q16: i32 = 0x1999;
+/// The bottom padding (`DAT_004f3e34 += 0x51e`, about `0.02`).
+pub const PANEL_BOTTOM_PAD_Q16: i32 = 0x51e;
+/// The panel top, `19660 / 65536` of the height (about `0.3`).
+pub const PANEL_TOP_Q16: i32 = 19660;
+/// The top subtracted from the bottom cursor for the height (`0x4ccc`).
+pub const PANEL_TOP_OFFSET_Q16: i32 = 0x4ccc;
 
-/// The per-frame increment of the height-phase accumulator (`DAT_004f3e34 += 0x51e`).
-pub const OVERLAY_ALT_PHASE_H_STEP: i32 = 0x51e;
-
-/// The Y-position fraction (`y = H * 19660 >> 16` ~= `0.300 * H`), a fixed
-/// vertical placement independent of the animation phase.
-pub const OVERLAY_ALT_Y_FRACTION_Q16: i32 = 19660;
-
-/// The Q16.16 `0.5` the X phase is subtracted from: `x = (0x8000 - (phase_x >>
-/// 1)) * W >> 16`, so at phase `0` the quad starts horizontally centered.
-const X_CENTER_Q16: i32 = 0x8000;
-
-/// A destination rectangle in screen pixels - the four-`u16` `[x, y, w, h]`
-/// struct `FUN_00468dd0` builds for the draw (right `= x + w`, bottom `= y + h`).
+/// A destination rectangle in screen pixels (the `[x, y, w, h]` u16 struct).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OverlayQuad {
-    /// Left edge (pixels).
     pub x: u16,
-    /// Top edge (pixels).
     pub y: u16,
-    /// Width (pixels).
     pub w: u16,
-    /// Height (pixels).
     pub h: u16,
 }
 
-/// The two animation phase accumulators `FUN_00468dd0` advances each frame
-/// (`DAT_0057e684` and `DAT_004f3e34`). Modelled starting at `0`; the shipped
-/// globals' initial values and any wrap/reset are runtime state.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct OverlayAltPhase {
-    x: i32,
-    h: i32,
-}
-
-impl OverlayAltPhase {
-    /// A fresh phase at `0`.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Step both accumulators one frame (the `+= 0x1999` / `+= 0x51e` writes),
-    /// wrapping like the shipped 32-bit integer adds.
-    pub fn advance(&mut self) {
-        self.x = self.x.wrapping_add(OVERLAY_ALT_PHASE_X_STEP);
-        self.h = self.h.wrapping_add(OVERLAY_ALT_PHASE_H_STEP);
-    }
-
-    /// The X-phase accumulator (`DAT_0057e684`).
-    #[must_use]
-    pub fn x(self) -> i32 {
-        self.x
-    }
-
-    /// The height-phase accumulator (`DAT_004f3e34`).
-    #[must_use]
-    pub fn h(self) -> i32 {
-        self.h
-    }
-}
-
-/// The recovered quad placement (`FUN_00468dd0`): the `[x, y, w, h]` destination
-/// rectangle from the current phase accumulators and the runtime screen size.
-///
-/// Each field is a Q16.16 product arithmetic-shifted right by 16 then stored into
-/// a `u16`, matching the shipped `(u16)(.. >> 16)` writes (the `as u16` keeps the
-/// low 16 bits, wrapping, as the C cast does): `x = (0x8000 - (phase_x >> 1)) *
-/// W >> 16`, `y = H * 19660 >> 16`, `w = W * phase_x >> 16`, `h = phase_h * H >>
-/// 16`.
+/// `FUN_00468dd0`: the panel rectangle and the padded words it writes back,
+/// from the text width `DAT_0057e684` and the y cursor `DAT_004f3e34`.
 #[must_use]
-pub fn overlay_alt_quad(
-    phase: OverlayAltPhase,
+pub fn pause_panel_quad(
+    text_width_q16: i32,
+    cursor_y_q16: i32,
     screen_width: u16,
     screen_height: u16,
-) -> OverlayQuad {
-    let w = i64::from(screen_width);
-    let h = i64::from(screen_height);
-    let phase_x = i64::from(phase.x);
-    let phase_h = i64::from(phase.h);
-    OverlayQuad {
-        x: (((i64::from(X_CENTER_Q16) - (phase_x >> 1)) * w) >> 16) as u16,
-        y: ((h * i64::from(OVERLAY_ALT_Y_FRACTION_Q16)) >> 16) as u16,
-        w: ((w * phase_x) >> 16) as u16,
-        h: ((phase_h * h) >> 16) as u16,
-    }
+) -> (OverlayQuad, i32, i32) {
+    let w = i32::from(screen_width);
+    let h = i32::from(screen_height);
+    let width = text_width_q16.wrapping_add(PANEL_WIDTH_PAD_Q16);
+    let bottom = cursor_y_q16.wrapping_add(PANEL_BOTTOM_PAD_Q16);
+    // cdq; sub eax, edx; sar eax, 1: halve rounding toward zero.
+    let half = (width - (width >> 31)) >> 1;
+    let quad = OverlayQuad {
+        x: (0x8000_i32.wrapping_sub(half).wrapping_mul(w) >> 16) as u16,
+        y: (h.wrapping_mul(PANEL_TOP_Q16) >> 16) as u16,
+        w: (w.wrapping_mul(width) >> 16) as u16,
+        h: (bottom.wrapping_sub(PANEL_TOP_OFFSET_Q16).wrapping_mul(h) >> 16) as u16,
+    };
+    (quad, width, bottom)
 }
 
 #[cfg(test)]
@@ -114,62 +61,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn phase_zero_starts_centered_with_a_fixed_vertical_and_zero_size() {
-        // At phase 0: x = 0.5*W (0x8000 Q16.16), y = 0.300*H, w = h = 0.
-        let quad = overlay_alt_quad(OverlayAltPhase::new(), 640, 480);
-        assert_eq!(
-            quad,
-            OverlayQuad {
-                x: 320,
-                y: 143,
-                w: 0,
-                h: 0
-            }
-        );
-        // Independent of width for the centering and of the phase for y.
-        assert_eq!(overlay_alt_quad(OverlayAltPhase::new(), 512, 384).x, 256);
-        assert_eq!(overlay_alt_quad(OverlayAltPhase::new(), 512, 384).y, 115);
+    fn the_panel_is_centred_and_sized_to_the_text() {
+        // Text 0.5 wide, cursor at 0.7: the panel pads to 0.6 x (0.72 - 0.3).
+        let (quad, width, bottom) = pause_panel_quad(0x8000, 0xb333, 640, 480);
+        assert_eq!(width, 0x8000 + 0x1999);
+        assert_eq!(bottom, 0xb333 + 0x51e);
+        assert_eq!(quad.y, ((480 * 19660) >> 16) as u16);
+        assert_eq!(quad.w, ((640 * width) >> 16) as u16);
+        let half = width / 2;
+        assert_eq!(quad.x, (((0x8000 - half) * 640) >> 16) as u16);
+        assert_eq!(quad.h, (((bottom - 0x4ccc) * 480) >> 16) as u16);
+        // Centred: left margin equals right margin within a pixel.
+        let right = 640 - (u32::from(quad.x) + u32::from(quad.w));
+        assert!(u32::from(quad.x).abs_diff(right) <= 1);
     }
 
     #[test]
-    fn accumulators_step_by_the_recovered_increments() {
-        let mut phase = OverlayAltPhase::new();
-        phase.advance();
-        assert_eq!((phase.x(), phase.h()), (0x1999, 0x51e));
-        phase.advance();
-        assert_eq!((phase.x(), phase.h()), (0x3332, 0xa3c));
-    }
-
-    #[test]
-    fn one_frame_in_grows_and_slides_the_quad() {
-        // After one frame the quad has a nonzero width/height and the left edge
-        // has slid in from center (phase_x reduces the 0.5 centering term).
-        let mut phase = OverlayAltPhase::new();
-        phase.advance();
-        let quad = overlay_alt_quad(phase, 640, 480);
-        // x = (0x8000 - 0xccc)*640 >> 16 = 288; w = 640*0x1999 >> 16 = 63;
-        // h = 0x51e*480 >> 16 = 9; y unchanged at 143.
-        assert_eq!(
-            quad,
-            OverlayQuad {
-                x: 288,
-                y: 143,
-                w: 63,
-                h: 9
-            }
-        );
-        assert!(quad.x < 320 && quad.w > 0 && quad.h > 0);
-    }
-
-    #[test]
-    fn placement_truncates_to_u16_like_the_shipped_stores() {
-        // A large phase drives the width product past 16 bits; the store keeps the
-        // low 16 bits (wrapping), as the shipped (u16) cast does.
-        let phase = OverlayAltPhase { x: 0x20_0000, h: 0 };
-        let quad = overlay_alt_quad(phase, 640, 480);
-        // w = (640 * 0x20_0000) >> 16 = 0x50_0000 >> ... = 640*32 = 20480 fits,
-        // but x = (0x8000 - 0x10_0000)*640 >> 16 is negative -> wraps in u16.
-        assert_eq!(quad.w, ((640i64 * 0x20_0000) >> 16) as u16);
-        assert_eq!(quad.x, (((0x8000i64 - 0x10_0000) * 640) >> 16) as u16);
+    fn halving_rounds_toward_zero_for_a_negative_width() {
+        // width = -0x1999 + 0x1999 - 1 = -1: half is 0, not -1.
+        let (quad, width, _) = pause_panel_quad(-0x199a, 0x4ccc - 0x51e, 640, 480);
+        assert_eq!(width, -1);
+        assert_eq!(quad.x, ((0x8000 * 640) >> 16) as u16);
+        assert_eq!(quad.h, 0);
     }
 }

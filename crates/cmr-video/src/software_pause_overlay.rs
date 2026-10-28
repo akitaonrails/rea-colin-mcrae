@@ -1,0 +1,222 @@
+//! Indexed software composition of the pause menu
+//! ([`cmr_core::pause_menu_draw::PauseDrawPlan`]) over the world frame.
+//!
+//! Order follows the native flush: the panel quad (untextured, blended
+//! source-over by its alpha byte, or opaque) and then the lane-1 text. The
+//! text takes the queued glyph path: each atlas texel converts to ARGB4444
+//! (black transparent, every other colour opaque, as the recovered upload
+//! rule does) and is multiplied by the colour record, the `MODULATE` texture
+//! blend. Rasterising those primitives is driver-defined, so the blend
+//! rounding (`x * y / 255`), the nibble expansion (`n * 17`) and the
+//! nearest-palette quantization (full-palette Manhattan distance, lowest index
+//! on ties, shared with the race HUD) are this backend's documented policy.
+
+use cmr_core::pause_menu_draw::{PauseDrawPlan, PauseFont};
+use cmr_formats::font::BitmapFont;
+
+use crate::software_race_hud::{modulate_channel, nearest_palette_index, source_over_channel};
+use crate::{SoftwarePresentedFrame, SoftwareRgba8Error};
+
+/// What [`compose_pause_overlay`] drew.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PauseOverlayOutcome {
+    pub panel_pixels: usize,
+    pub glyphs_drawn: usize,
+}
+
+/// The ARGB4444 texel of one atlas palette entry, expanded back to 8 bits,
+/// or `None` for the transparent black.
+fn texel(rgb: [u8; 3]) -> Option<[u8; 3]> {
+    if rgb == [0, 0, 0] {
+        return None;
+    }
+    Some(rgb.map(|channel| (channel >> 4) * 17))
+}
+
+/// Draw the panel and the text runs of `plan` over `frame`.
+pub fn compose_pause_overlay<'a>(
+    frame: SoftwarePresentedFrame,
+    plan: &PauseDrawPlan,
+    fonts: impl Fn(PauseFont) -> &'a BitmapFont,
+) -> Result<(SoftwarePresentedFrame, PauseOverlayOutcome), SoftwareRgba8Error> {
+    let extent = frame.extent();
+    let width = usize::from(extent.width);
+    let height = usize::from(extent.height);
+    let palette = Box::new(*frame.palette());
+    let mut pixels = frame.pixels().to_vec();
+    let mut outcome = PauseOverlayOutcome::default();
+
+    let [red, green, blue, alpha] = plan.panel_color;
+    let left = usize::from(plan.panel.x).min(width);
+    let top = usize::from(plan.panel.y).min(height);
+    let right = (usize::from(plan.panel.x) + usize::from(plan.panel.w)).min(width);
+    let bottom = (usize::from(plan.panel.y) + usize::from(plan.panel.h)).min(height);
+    let mut panel_cache = [None::<u8>; 256];
+    for y in top..bottom {
+        for pixel in &mut pixels[y * width + left..y * width + right] {
+            let destination = usize::from(*pixel);
+            *pixel = *panel_cache[destination].get_or_insert_with(|| {
+                let under = palette[destination];
+                let rgb = [
+                    source_over_channel(red, under.red, alpha),
+                    source_over_channel(green, under.green, alpha),
+                    source_over_channel(blue, under.blue, alpha),
+                ];
+                nearest_palette_index(rgb, &palette)
+            });
+            outcome.panel_pixels += 1;
+        }
+    }
+
+    for run in &plan.runs {
+        let font = fonts(run.font);
+        let atlas = font.atlas();
+        let atlas_width = atlas.width as usize;
+        let mut glyph_cache = [None::<Option<u8>>; 256];
+        for blit in &run.plan.blits {
+            outcome.glyphs_drawn += 1;
+            for row in 0..i32::from(blit.source.height) {
+                let target_y = blit.destination.y + row;
+                if target_y < 0 || target_y as usize >= height {
+                    continue;
+                }
+                for column in 0..i32::from(blit.source.width) {
+                    let target_x = blit.destination.x + column;
+                    if target_x < 0 || target_x as usize >= width {
+                        continue;
+                    }
+                    let source_x = i32::from(blit.source.x) + column;
+                    let source_y = i32::from(blit.source.y) + row;
+                    let Some(&index) = usize::try_from(source_y)
+                        .ok()
+                        .zip(usize::try_from(source_x).ok())
+                        .filter(|&(_, x)| x < atlas_width)
+                        .and_then(|(y, x)| atlas.pixels.get(y * atlas_width + x))
+                    else {
+                        continue;
+                    };
+                    let resolved = *glyph_cache[usize::from(index)].get_or_insert_with(|| {
+                        let entry = atlas.palette.get(usize::from(index))?;
+                        let texel = texel([entry.red, entry.green, entry.blue])?;
+                        let rgb = [
+                            modulate_channel(texel[0], run.color[0]),
+                            modulate_channel(texel[1], run.color[1]),
+                            modulate_channel(texel[2], run.color[2]),
+                        ];
+                        Some(nearest_palette_index(rgb, &palette))
+                    });
+                    if let Some(color) = resolved {
+                        pixels[target_y as usize * width + target_x as usize] = color;
+                    }
+                }
+            }
+        }
+    }
+
+    let frame = SoftwarePresentedFrame::from_indexed(extent, pixels.into_boxed_slice(), palette)?;
+    Ok((frame, outcome))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cmr_core::display::DisplayExtent;
+    use cmr_core::overlay_alt::OverlayQuad;
+    use cmr_core::pause_menu_draw::{PauseTextRun, text_q16};
+    use cmr_formats::font::{FontLimits, parse_legacy_font};
+    use cmr_formats::riff_palette::PaletteEntry;
+
+    fn palette() -> Box<[PaletteEntry; 256]> {
+        Box::new(std::array::from_fn(|index| {
+            let level = index as u8;
+            PaletteEntry {
+                red: level,
+                green: level,
+                blue: level,
+                flags: 0,
+            }
+        }))
+    }
+
+    fn frame(fill: u8) -> SoftwarePresentedFrame {
+        let extent = DisplayExtent {
+            width: 8,
+            height: 4,
+        };
+        SoftwarePresentedFrame::from_indexed(extent, vec![fill; 32].into_boxed_slice(), palette())
+            .unwrap()
+    }
+
+    /// A 4x4 atlas: index 0 black (transparent), index 1 white; one 2x2 glyph.
+    fn font() -> BitmapFont {
+        let mut file = vec![0u8; 0x436 + 16];
+        file[0..2].copy_from_slice(b"BM");
+        file[18..22].copy_from_slice(&4i32.to_le_bytes());
+        file[22..26].copy_from_slice(&4i32.to_le_bytes());
+        file[28..30].copy_from_slice(&8u16.to_le_bytes());
+        file[54 + 4..54 + 7].copy_from_slice(&[0xff, 0xff, 0xff]);
+        for byte in &mut file[0x436..0x436 + 16] {
+            *byte = 1;
+        }
+        let mut trailer = [0u8; 24];
+        trailer[1] = 1;
+        trailer[4..8].copy_from_slice(&2i32.to_le_bytes());
+        file.extend_from_slice(&trailer);
+        let mut glyph = [0u8; 16];
+        glyph[0] = b'A';
+        glyph[6..8].copy_from_slice(&2i16.to_le_bytes());
+        glyph[8..10].copy_from_slice(&2i16.to_le_bytes());
+        file.extend_from_slice(&glyph);
+        parse_legacy_font(&file, FontLimits::default()).unwrap()
+    }
+
+    #[test]
+    fn the_translucent_panel_halves_the_world() {
+        let plan = PauseDrawPlan {
+            panel: OverlayQuad {
+                x: 2,
+                y: 1,
+                w: 4,
+                h: 2,
+            },
+            panel_color: [0, 0, 0, 0x80],
+            runs: Vec::new(),
+        };
+        let font = font();
+        let (out, outcome) = compose_pause_overlay(frame(200), &plan, |_| &font).unwrap();
+        assert_eq!(outcome.panel_pixels, 8);
+        let expected = source_over_channel(0, 200, 0x80);
+        assert_eq!(out.pixels()[8 + 2], expected);
+        assert_eq!(out.pixels()[0], 200, "outside the panel");
+    }
+
+    #[test]
+    fn glyphs_take_the_colour_record_over_the_panel() {
+        let font = font();
+        let (text, _, _) = text_q16(&font, b"A", 0, 0, 0, 8, 4).unwrap();
+        let plan = PauseDrawPlan {
+            panel: OverlayQuad {
+                x: 0,
+                y: 0,
+                w: 8,
+                h: 4,
+            },
+            panel_color: [0x14, 0x14, 0x14, 0xff],
+            runs: vec![PauseTextRun {
+                font: PauseFont::Result,
+                color: [0x80, 0x80, 0x80, 0xff],
+                plan: text,
+            }],
+        };
+        let (out, outcome) = compose_pause_overlay(frame(200), &plan, |_| &font).unwrap();
+        assert_eq!(outcome.glyphs_drawn, 1);
+        assert_eq!(out.pixels()[0], modulate_channel(0xff, 0x80));
+        assert_eq!(out.pixels()[3], 0x14, "the opaque panel elsewhere");
+    }
+
+    #[test]
+    fn black_texels_are_transparent() {
+        assert_eq!(texel([0, 0, 0]), None);
+        assert_eq!(texel([0xff, 0x10, 0x0f]), Some([0xff, 0x11, 0]));
+    }
+}

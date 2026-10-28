@@ -452,16 +452,16 @@ fn bitmap_rgb(
     }
 }
 
-fn modulate_channel(source: u8, diffuse: u8) -> u8 {
+pub(crate) fn modulate_channel(source: u8, diffuse: u8) -> u8 {
     ((u16::from(source) * u16::from(diffuse)) / 255) as u8
 }
 
-fn source_over_channel(source: u8, destination: u8, alpha: u8) -> u8 {
+pub(crate) fn source_over_channel(source: u8, destination: u8, alpha: u8) -> u8 {
     let inverse_alpha = 255 - u16::from(alpha);
     ((u16::from(source) * u16::from(alpha) + u16::from(destination) * inverse_alpha) / 255) as u8
 }
 
-fn nearest_palette_index(rgb: [u8; 3], palette: &[PaletteEntry; 256]) -> u8 {
+pub(crate) fn nearest_palette_index(rgb: [u8; 3], palette: &[PaletteEntry; 256]) -> u8 {
     let mut best_index = 0;
     let mut best_distance = u16::MAX;
     for (index, entry) in palette.iter().enumerate() {

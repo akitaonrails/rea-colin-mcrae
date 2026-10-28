@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: pause the race with the recovered pause menu
+feat: draw the pause menu
 ```
 
 Start by confirming the checkout and progress footer:
@@ -157,11 +157,9 @@ the engine tables at `0x4f82e0..0x4f8bac`; that is the native's own reach:
 `FUN_00486090` stores an explicit variant (1 or 2 from `0x4eac78`) or
 `cfg[0x91 + p*0x9c] & 7`, so variants 4..7 alias the engine tables exactly as
 in the shipped image.
-Escape pauses (`impl.pause-menu`): the menu logic runs but is not drawn.
-Next: draw it (`.work/ingame-text-notes.md`: the strings already load through
-`cmr_core::localization`; the `result`/`resultgr`/`title` fonts need a
-width-selected loader and a colour-tinted glyph draw; the panel is a
-translucent quad under the text), then the surface/skid, landing and impact
+Escape pauses and the menu is drawn (`impl.pause-menu`, `impl.pause-menu-draw`;
+`CMR_FRAMES_PAUSE_AT=<frame>` on the ignored frames test taps Escape).
+Next: the surface/skid, landing and impact
 sounds (`.work/surface-impact-audio-notes.md`, which also lists the static
 tables to extract and the `audio_surface.rs` errors), then the championship
 progression behind the hub predicates.

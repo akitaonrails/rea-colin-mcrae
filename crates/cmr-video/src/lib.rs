@@ -26,6 +26,7 @@ pub mod software_championship_selection_rgb16;
 pub mod software_championship_session;
 pub mod software_championship_setup_frame;
 pub mod software_load_interstitial;
+pub mod software_pause_overlay;
 pub mod software_queued_font_argb4444;
 pub mod software_queued_font_flush;
 pub mod software_queued_font_glyphs;

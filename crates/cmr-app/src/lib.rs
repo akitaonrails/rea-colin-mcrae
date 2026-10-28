@@ -72,6 +72,7 @@ use cmr_core::pause_menu::{
     DrivingPauseInput, PauseController, PauseDecision, PauseEffect, PauseKeys, PauseMenuConditions,
     PauseOptions,
 };
+use cmr_core::pause_menu_draw::{PauseDisplay, PauseFont, pause_draw_plan};
 use cmr_core::pause_request::PauseKeyGates;
 use cmr_core::race_hud_plan::{
     CommonGaugeInset, RaceHudBitmap, RaceHudFont, RaceHudPlanError, RaceHudPreparedInputs,
@@ -134,6 +135,7 @@ use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
 use cmr_video::software_load_interstitial::{
     LoadInterstitialComposeError, compose_load_interstitial,
 };
+use cmr_video::software_pause_overlay::compose_pause_overlay;
 use cmr_video::software_race_hud::{RaceHudComposeError, compose_race_hud_commands};
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
@@ -3183,6 +3185,12 @@ fn advance_game_frame<C: HostClock>(
     // and advances it one step per frame (a documented harness stand-in, like the
     // synthetic checkpoint line), presenting the modulated world so the race-end
     // transition is visible. Any other route clears the fade.
+    // State 0xa: the pause menu's panel and text over the world (B handler
+    // `FUN_004233e0` -> `FUN_00468dd0`).
+    let world = match (advanced.route, world) {
+        (Some(RenderRoute::OverlayAlt), Some(frame)) => Some(pause.draw(frame)),
+        (_, world) => world,
+    };
     let world = if advanced.route == Some(RenderRoute::FadeComposite) {
         let tween = fade.get_or_insert_with(|| fade_out(fade_duration_frames(false)));
         let level = tween.evaluate_and_advance();
@@ -3491,6 +3499,44 @@ struct PauseHarness {
     controller: PauseController,
     options: PauseOptions,
     menu_cues: Option<MenuChannel>,
+    /// The fonts and in-game text, loaded for one display width.
+    assets: Option<(u16, PauseAssets)>,
+    runtime_data: Option<PathBuf>,
+}
+
+/// The pause menu's fonts (`FUN_00436a50`) and the in-game text table
+/// (`FUN_0043bc00`, language `cfg[0x18] & 7 = 0`, English, in this harness).
+struct PauseAssets {
+    title: BitmapFont,
+    result: BitmapFont,
+    result_grey: BitmapFont,
+    text: cmr_core::localization::IndexedTextTable,
+}
+
+impl PauseAssets {
+    fn load(runtime_data: &Path, width: u16) -> Option<Self> {
+        let reviewed = ReviewedProfile::from_json(REVIEWED_PROFILE).ok()?;
+        let store = AssetStore::open(runtime_data, &reviewed, DecodeLimits::default()).ok()?;
+        let font = |font: PauseFont| {
+            let bytes = store.load(&format!("Game/{}", font.path(width))).ok()?;
+            parse_legacy_font(&bytes, FontLimits::default()).ok()
+        };
+        Some(Self {
+            title: font(PauseFont::Title)?,
+            result: font(PauseFont::Result)?,
+            result_grey: font(PauseFont::ResultGrey)?,
+            text: cmr_core::localization_assets::load_game_text_table(&store, Language::English)
+                .ok()?,
+        })
+    }
+
+    fn font(&self, font: PauseFont) -> &BitmapFont {
+        match font {
+            PauseFont::Title => &self.title,
+            PauseFont::Result => &self.result,
+            PauseFont::ResultGrey => &self.result_grey,
+        }
+    }
 }
 
 /// The pause menu cue channel (harness; after the engine's 2..=9).
@@ -3511,6 +3557,61 @@ impl PauseHarness {
                 speech_master_4f6538: 100,
             },
             menu_cues: None,
+            assets: None,
+            runtime_data: None,
+        }
+    }
+
+    fn with_runtime_data(runtime_data: &Path) -> Self {
+        Self {
+            runtime_data: Some(runtime_data.to_owned()),
+            ..Self::new()
+        }
+    }
+
+    /// `FUN_00468dd0`: the current pause menu's panel and text over `frame`.
+    /// The display is taken as alpha-capable and not mode 6 (the D3D path
+    /// the queued glyphs model). Without the fonts or text the world shows
+    /// unchanged.
+    fn draw(&mut self, frame: SoftwarePresentedFrame) -> SoftwarePresentedFrame {
+        let extent = frame.extent();
+        let (Some(menus), Some(current)) =
+            (self.controller.menus.as_ref(), self.controller.current)
+        else {
+            return frame;
+        };
+        if self
+            .assets
+            .as_ref()
+            .is_none_or(|(width, _)| *width != extent.width)
+        {
+            self.assets = self
+                .runtime_data
+                .as_deref()
+                .and_then(|root| PauseAssets::load(root, extent.width))
+                .map(|assets| (extent.width, assets));
+        }
+        let Some((_, assets)) = self.assets.as_ref() else {
+            return frame;
+        };
+        let text = |id: i32| {
+            usize::try_from(id)
+                .map(|id| assets.text.lookup(id).to_vec())
+                .unwrap_or_default()
+        };
+        let display = PauseDisplay {
+            width: extent.width,
+            height: extent.height,
+            mode_6: false,
+            alpha_capable: true,
+        };
+        let Ok(plan) = pause_draw_plan(menus, current, &text, &|font| assets.font(font), display)
+        else {
+            return frame;
+        };
+        match compose_pause_overlay(frame.clone(), &plan, |font| assets.font(font)) {
+            Ok((drawn, _)) => drawn,
+            Err(_) => frame,
         }
     }
 
@@ -4776,7 +4877,7 @@ pub fn run_windowed_game_session(
     let mut fade: Option<ScalarTween> = None;
     let mut damage_owner = NoStaticDamageOwner;
     let mut engine = EngineAudio::open(runtime_data, compiled_pose.selector as u8);
-    let mut pause = PauseHarness::new();
+    let mut pause = PauseHarness::with_runtime_data(runtime_data);
     let mut runtime_error = None;
 
     // Best-effort: open the recovered front-end root-menu compositor from the
@@ -6459,7 +6560,7 @@ mod tests {
             .as_ref()
             .and_then(|_| EngineAudio::open(&root, compiled_pose.selector as u8));
         let mut pcm: Vec<i16> = Vec::new();
-        let mut pause = PauseHarness::new();
+        let mut pause = PauseHarness::with_runtime_data(&root);
         let mut advance = |session: &mut GameplaySession,
                            progress: &mut StageProgress,
                            keys: &cmr_platform_sdl3::KeyboardVkState,
@@ -6524,9 +6625,16 @@ mod tests {
         assert_eq!(session.state().id(), 5);
         let origin = session.car().position;
         keys.apply_vk(0x26, true);
+        // `CMR_FRAMES_PAUSE_AT=<frame>` taps Escape on that frame.
+        let pause_at = std::env::var("CMR_FRAMES_PAUSE_AT")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok());
         for frame in 0..frames {
             if let Some(vk) = steer_vk {
                 keys.apply_vk(vk, frame >= steer_after);
+            }
+            if let Some(at) = pause_at {
+                keys.apply_vk(0x1b, frame == at);
             }
             let outcome = advance(&mut session, &mut progress, &keys, idle);
             for event in session.last_trigger_events() {
