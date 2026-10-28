@@ -161,8 +161,9 @@ Escape pauses and the menu is drawn (`impl.pause-menu`, `impl.pause-menu-draw`;
 `CMR_FRAMES_PAUSE_AT=<frame>` on the ignored frames test taps Escape).
 Surface/skid, landing and barrier impact sounds play
 (`impl.surface-and-prang-sound`; tables via `extract-surface-audio-tables`).
-The wet-tyre sound plays (`impl.wet-sound`). Next: the crowd feeder (scene
-nodes of type `0xe` gathered by `FUN_00481990`), the `FUN_004115d0` body-contact impact
+The wet-tyre sound plays (`impl.wet-sound`). The crowd ambience is wired
+(`impl.crowd-sound`) but no shipped `.obj` has a crowd node (id `0xe`), so it
+stays silent, as natively; storm/thunder are unwired. Next: the `FUN_004115d0` body-contact impact
 site (`FUN_00412860`'s is wired), then the championship progression
 behind the hub predicates. Scenery impacts play (`impl.static-impact-sound`).
 `FUN_0041f630` only feeds impact sound/FFB/shudder. Trees appear to be `.sht` sprites, which the native

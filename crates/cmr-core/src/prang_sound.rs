@@ -125,11 +125,7 @@ pub struct PrangVoices<'a, V: EngineVoices> {
 
 impl<V: EngineVoices> PrangVoices<'_, V> {
     fn curve(&self, v: i32) -> i32 {
-        if self.centre_proximity > 0x14d {
-            self.centre_proximity.wrapping_mul(v) / 1000
-        } else {
-            v / 3
-        }
+        crate::engine_listener::centre_curve(self.centre_proximity, v)
     }
     fn volume(&mut self, n: u32, v: i32) {
         let v = self.curve(v);

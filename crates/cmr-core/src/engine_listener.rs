@@ -187,6 +187,17 @@ pub fn point_azimuth(
     Ok((i32::from(angle) * 0x1680) >> 16)
 }
 
+/// `FUN_0047f9c0(p, v)`: a volume scaled by the car-centre proximity score
+/// `DAT_005ff9e4[p]` (`0..=1000`), or a third of it at a score of `0x14d`
+/// or less.
+pub fn centre_curve(centre_proximity: i32, v: i32) -> i32 {
+    if centre_proximity > 0x14d {
+        centre_proximity.wrapping_mul(v) / 1000
+    } else {
+        v / 3
+    }
+}
+
 /// `FUN_0047ec20(p)`.
 pub fn update_listener(input: &ListenerInput) -> Result<ListenerOutput, ListenerError> {
     let cam = &input.camera;

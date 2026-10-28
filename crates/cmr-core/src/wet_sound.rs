@@ -103,12 +103,7 @@ impl<V: EngineVoices> Out<'_, V> {
         self.voices.playing(self.channel)
     }
     fn curve(&self, v: i32) -> i32 {
-        let proximity = self.input.centre_proximity;
-        if proximity > 0x14d {
-            proximity.wrapping_mul(v) / 1000
-        } else {
-            v / 3
-        }
+        crate::engine_listener::centre_curve(self.input.centre_proximity, v)
     }
     /// `FUN_0048d4a0(ch, v)`: the master-scaled volume of `ftol(v * 0.66)`.
     fn volume(&mut self, v: i32) {

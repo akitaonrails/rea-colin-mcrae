@@ -764,7 +764,8 @@ touched. Per-commit granularity for the full history is recoverable with
 | 2026-10-29T13:00Z | 214h42m | surface-and-impact-audio | `99bcf28` | I14 | Reconstructed the surface roll/skid tick and bank, the landing/rollover thumps and the barrier impact sounds with their severity and azimuth, extracted the surface-audio tables, and played them in the windowed session in the native channel order. Workspace 2,575 tests pass, 37 ignored. |
 | 2026-10-29T13:40Z | 215h22m | wet-sound | `2b129a6` | I14 | Reconstructed the wet-tyre/interior-rain loader and tick and played `wet_out` on wet surfaces on the native channel after the surface bank. Workspace 2,578 tests pass, 37 ignored. |
 | 2026-10-29T14:10Z | 215h52m | static-impact-sound | `7d04840` | I14 | Played the static scenery impacts the collision response already recovered, and gated every impact sound on ticks where Mechanics ran. Workspace 2,578 tests pass, 37 ignored. |
-| 2026-10-29T14:40Z | 216h22m | tumble-impact-sound | _(pending; previous milestone `7d04840`)_ | I14 | Reconstructed the tumbling contact point of `FUN_00412860`'s impact and played it. Workspace 2,579 tests pass, 37 ignored. |
+| 2026-10-29T14:40Z | 216h22m | tumble-impact-sound | `2b53b2e` | I14 | Reconstructed the tumbling contact point of `FUN_00412860`'s impact and played it. Workspace 2,579 tests pass, 37 ignored. |
+| 2026-10-29T15:20Z | 217h02m | crowd-sound | _(pending; previous milestone `2b53b2e`)_ | I14 | Reconstructed the crowd point gather of `FUN_00481990` and the crowd volume of `FUN_0041cfe0`, shared the centre-proximity curve, and played the crowd ambience on its native channel in states 5, 6 and 8; no shipped `.obj` carries a crowd node, so it stays silent there. Workspace 2,582 tests pass, 37 ignored. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

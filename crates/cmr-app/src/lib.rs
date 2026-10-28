@@ -21,13 +21,15 @@ use cmr_assets::{
     ReviewedTyreTablesProfileError, SurfaceAudioTablesStore, SurfaceCapabilityStore,
     SurfaceTableStore, SurfaceTableStoreError, TyreTablesStore, TyreTablesStoreError,
 };
+use cmr_core::audio_ambience::{AmbienceChannel, AmbienceController};
 use cmr_core::audio_car_assets::{
     CAR_WAVE_BITS, CAR_WAVE_RATE_HZ, car_row_index_for_selector, car_wave_names,
     car_wave_source_path,
 };
 use cmr_core::audio_menu::{MenuChannel, MenuSound as MenuCue, play_menu_sound};
-use cmr_core::audio_mixer::{AudioMixer, ChannelId, apply_commands};
+use cmr_core::audio_mixer::{AudioMixer, ChannelId, WaveSlotId, apply_commands};
 use cmr_core::audio_render::{FileWaveSource, SoftwareMixer};
+use cmr_core::audio_weather_assets::load_weather_ambience;
 use cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
 use cmr_core::c3d_mesh::node_mesh_vertex_type;
 use cmr_core::c3d_render::VERTEXTYPE_LVERTEX;
@@ -44,6 +46,7 @@ use cmr_core::compiled_car_initializer::{
     DecodedCompiledLaneGeometryError, RecoveredCompiledStageError, derive_compiled_half_sign_state,
     execute_stage_compiled_setup_pose,
 };
+use cmr_core::crowd_sound::{crowd_cue, crowd_points};
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
 use cmr_core::descriptor_menu::MenuSound as DescriptorSound;
 use cmr_core::display::{CooperativeMode, DisplayExtent, IndexedMode};
@@ -3258,6 +3261,7 @@ fn advance_game_frame<C: HostClock>(
                         listener.centre_proximity_9e4,
                         master,
                         advanced.stepped,
+                        session.state().id(),
                     );
                 }
             }
@@ -3967,9 +3971,21 @@ struct EffectsAudio {
     wet: WetSoundState,
     wet_k: i32,
     wet_surfaces: [i32; 15],
-    /// The surface, prang and wet slot bases once loaded.
-    banks: Option<(u32, u32, u32)>,
+    /// The stage's crowd points (`FUN_00481990`) and factor `DAT_004eb2b0`.
+    crowd_points: Vec<[i32; 3]>,
+    crowd_k: i32,
+    ambience: AmbienceController,
+    banks: Option<EffectBanks>,
     camera_mode: Option<i32>,
+}
+
+/// The first wave slot of each effects bank once loaded.
+#[derive(Clone, Copy)]
+struct EffectBanks {
+    surface: u32,
+    prang: u32,
+    wet: u32,
+    ambience: WaveSlotId,
 }
 
 /// The prang bank's five channels and the surface bank's four (harness:
@@ -3978,9 +3994,18 @@ const PRANG_CHANNEL_BASE: u32 = 9;
 const SURFACE_CHANNEL_BASE: u32 = 15;
 /// The wet/rain channel (`FUN_0048d340`, after the surface bank).
 const WET_CHANNEL: u32 = 19;
+/// The crowd/weather ambience channel (`FUN_0041cd30`, after the wet one).
+const AMBIENCE_CHANNEL: u32 = 20;
+/// Harness: the weather-detail level `FUN_0046b230` is not the storm level
+/// 3, so the thunder waves are not loaded and the storm never runs.
+const AMBIENCE_WEATHER_DETAIL: i32 = 0;
 
 impl EffectsAudio {
-    fn open(runtime_data: &Path, srf: Option<Vec<u8>>) -> Option<Self> {
+    fn open(
+        runtime_data: &Path,
+        srf: Option<Vec<u8>>,
+        crowd_points: Vec<[i32; 3]>,
+    ) -> Option<Self> {
         let reviewed =
             ReviewedSurfaceAudioTablesProfile::from_json(REVIEWED_SURFACE_AUDIO_TABLES_PROFILE)
                 .ok()?;
@@ -4013,6 +4038,9 @@ impl EffectsAudio {
             prang_names: t.prang_names.clone(),
             tables,
             srf: srf.unwrap_or_default(),
+            crowd_points,
+            crowd_k: t.crowd_volume_k,
+            ambience: AmbienceController::new(),
             banks: None,
             camera_mode: None,
         })
@@ -4021,14 +4049,15 @@ impl EffectsAudio {
     /// The prang loader `FUN_00469ac0` (48 waves, five channels at the full
     /// volume), the surface loader `FUN_004892b0` (the `.srf` groups, four
     /// channels at volume 0) and the wet loader `FUN_0048d340`, in the
-    /// stage-load order. Harness: the weather type is 0 (not the rain type 3),
+    /// stage-load order, then the ambience loader `FUN_0041cd30` (its channel
+    /// at volume 0). Harness: the weather type is 0 (not the rain type 3),
     /// so `rain_in` is not loaded.
     fn load(
         &mut self,
         mixer: &mut SoftwareMixer<FileWaveSource>,
         master_percent: i32,
         camera_mode: i32,
-    ) -> Option<(u32, u32, u32)> {
+    ) -> Option<EffectBanks> {
         let mut prang_base = None;
         for path in prang_wave_paths(&self.prang_names) {
             let slot = mixer
@@ -4099,7 +4128,14 @@ impl EffectsAudio {
         if wet_bank.start_rain {
             EngineVoices::play(mixer, wet_base, WET_CHANNEL, u32::MAX);
         }
-        Some((surface_base, prang_base?, wet_base))
+        EngineVoices::set_volume(mixer, AMBIENCE_CHANNEL, 0);
+        let ambience = load_weather_ambience(mixer, "game\\", AMBIENCE_WEATHER_DETAIL).ok()?;
+        Some(EffectBanks {
+            surface: surface_base,
+            prang: prang_base?,
+            wet: wet_base,
+            ambience: *ambience.first()?,
+        })
     }
 
     /// `FUN_0048b650`.
@@ -4122,11 +4158,12 @@ impl EffectsAudio {
         centre_proximity: i32,
         master_percent: i32,
         stepped: bool,
+        state_id: u8,
     ) {
         let Ok(mut mixer) = mixer.lock() else {
             return;
         };
-        let (surface_base, prang_base, wet_base) = match self.banks {
+        let banks = match self.banks {
             Some(banks) => banks,
             None => match self.load(&mut mixer, master_percent, camera_mode) {
                 Some(banks) => *self.banks.insert(banks),
@@ -4184,7 +4221,7 @@ impl EffectsAudio {
                 };
                 let mut out = PrangVoices {
                     voices: &mut *mixer,
-                    slot_base: prang_base,
+                    slot_base: banks.prang,
                     channel_base: PRANG_CHANNEL_BASE,
                     centre_proximity,
                     master_percent,
@@ -4192,6 +4229,14 @@ impl EffectsAudio {
                 play_impact(&self.prang, &mut out, severity, azimuth, object_type);
             }
         }
+        self.crowd_tick(
+            &mut mixer,
+            session,
+            banks,
+            centre_proximity,
+            master_percent,
+            state_id,
+        );
         let Some(words) = session.surface_sound_words() else {
             return;
         };
@@ -4209,7 +4254,7 @@ impl EffectsAudio {
             &mut *mixer,
             &self.tables,
             rng,
-            surface_base,
+            banks.surface,
             SURFACE_CHANNEL_BASE,
             &input,
         ) {
@@ -4218,7 +4263,7 @@ impl EffectsAudio {
         }
         let mut out = PrangVoices {
             voices: &mut *mixer,
-            slot_base: prang_base,
+            slot_base: banks.prang,
             channel_base: PRANG_CHANNEL_BASE,
             centre_proximity,
             master_percent,
@@ -4240,7 +4285,7 @@ impl EffectsAudio {
         let words = session.surface_sound_words().unwrap_or(words);
         self.wet.tick(
             &mut *mixer,
-            wet_base,
+            banks.wet,
             WET_CHANNEL,
             &WetTickInput {
                 surfaces: words.surfaces,
@@ -4256,6 +4301,45 @@ impl EffectsAudio {
                 master_percent,
             },
         );
+    }
+
+    /// `FUN_0041cfe0`, from the in-race handlers 5, 6 and 8 only (not the
+    /// states 7 or 9). Storm off (see [`AMBIENCE_WEATHER_DETAIL`]), so the
+    /// abduct and thunder branches never run.
+    fn crowd_tick(
+        &mut self,
+        mixer: &mut SoftwareMixer<FileWaveSource>,
+        session: &GameplaySession,
+        banks: EffectBanks,
+        centre_proximity: i32,
+        master_percent: i32,
+        state_id: u8,
+    ) {
+        if !matches!(state_id, 5 | 6 | 8) {
+            return;
+        }
+        let Ok(channel) = ChannelId::new(AMBIENCE_CHANNEL) else {
+            return;
+        };
+        let cue = crowd_cue(
+            &self.crowd_points,
+            vec3_raw(session.car().position),
+            self.crowd_k,
+            centre_proximity,
+        );
+        let busy = EngineVoices::playing(mixer, AMBIENCE_CHANNEL);
+        let commands = self.ambience.crowd_or_storm_tick(
+            AmbienceChannel {
+                channel,
+                base_slot: banks.ambience,
+            },
+            cue,
+            busy,
+            master_percent,
+        );
+        if let Err(error) = apply_commands(mixer, &commands) {
+            eprintln!("cmr-app: crowd sound failed: {error:?}");
+        }
     }
 }
 
@@ -4274,6 +4358,21 @@ impl std::fmt::Display for EngineAudioOpenError {
             Self::Tables(error) => write!(f, "engine audio tables: {error}"),
         }
     }
+}
+
+/// `FUN_00481990`'s crowd points over the stage `.obj` nodes (the range
+/// `DAT_0051445c..DAT_00514010` brackets the `.obj` load `FUN_00480c50`).
+/// No shipped `.obj` group-0 record carries id `0xe`, so this is empty on the
+/// reviewed install and the crowd stays silent there, as it would natively.
+fn stage_crowd_points(resources: &StageRenderResources) -> Vec<[i32; 3]> {
+    let Some(objects) = resources.bundle.objects() else {
+        return Vec::new();
+    };
+    crowd_points(
+        objects
+            .group0_records()
+            .map(|record| (record.node_class(), record.affine_matrix_q16())),
+    )
 }
 
 fn vec3_raw(v: Vec3) -> [i32; 3] {
@@ -5235,7 +5334,7 @@ pub fn run_windowed_game_session(
         .flatten();
     let mut audio = RaceAudio {
         engine: EngineAudio::open(runtime_data, compiled_pose.selector as u8),
-        effects: EffectsAudio::open(runtime_data, srf),
+        effects: EffectsAudio::open(runtime_data, srf, stage_crowd_points(&resources)),
     };
     let mut pause = PauseHarness::with_runtime_data(runtime_data);
     let mut runtime_error = None;
@@ -6927,7 +7026,8 @@ mod tests {
             )
             .ok()
             .flatten();
-            audio.effects = EffectsAudio::open(&root, srf);
+            let crowd = stage_crowd_points(&resources);
+            audio.effects = EffectsAudio::open(&root, srf, crowd);
         }
         let mut pcm: Vec<i16> = Vec::new();
         let mut pause = PauseHarness::with_runtime_data(&root);

@@ -442,12 +442,7 @@ impl<V: EngineVoices> Tick<'_, V> {
     }
     /// `FUN_0047f9c0(0, v)`.
     fn curve(&self, v: i32) -> i32 {
-        let proximity = self.input.centre_proximity;
-        if proximity > 0x14d {
-            proximity.wrapping_mul(v) / 1000
-        } else {
-            v / 3
-        }
+        crate::engine_listener::centre_curve(self.input.centre_proximity, v)
     }
     /// `FUN_0047eb70`.
     fn volume(&mut self, n: u32, v: i32) {
