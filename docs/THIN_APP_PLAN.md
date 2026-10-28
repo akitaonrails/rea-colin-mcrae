@@ -100,9 +100,17 @@ at tag `recomp-parked-2026-11-02` and copied in full (with its local notes) to
   drove the menus with the pad; no glitches. RUN JOYSTICK PANEL still hangs
   the game when clicked (C6).
 
+- **Graphics (2026-11-02):** opt-in race resolution (F10) with a HUD that
+  scales (F13, first use of our hook library `cmrhooks.dll`), Hor+ 16:9
+  (F11) and longer draw distance (F12), verified headless up to
+  3840x2160. Frame rate needs no patch (already interpolated). Open: a
+  display path that scales the 640x480 front end while offering the race
+  mode (Proton looks right; Wine's Wayland driver scales but showed black).
+
 **Next:**
-1. Graphics (E1-E4): race resolution above 800x600, 16:9 without
-   stretching, draw distance, frame rate / vsync.
+1. Graphics: confirm on a real screen (Proton/Steam route; Wine's Wayland
+   driver black picture), pause menu and results text at high resolution,
+  edge-anchored HUD option.
 2. Controllers: keep RUN JOYSTICK PANEL from hanging (C6), the Control
    Setup loop and binding capture (C3, C4), d-pad and A/B swap (C5).
 2. R15: handle a portrait main screen in the launcher (give the game a
@@ -226,7 +234,7 @@ Excluded: dgVoodoo2 (closed source; crashes under Wine), cnc-ddraw
 | E1 | Higher race resolution (1080p, aiming at 4K) — **done** with F10 + F13 (HUD) and F11 (16:9); 4K run still to check | The race re-creates DirectDraw at the RESOLUTION slot (`0x421ea9`; front end stays 640x480). (a) In-memory: hook the 16-bit slot load at `0x497d43` to return the configured W x H for slot 2 (640x480 fonts and HUD tables match), bypassing the 800x600 enumeration filter; then scale the absolute HUD tables (`0x45d0fd`, fonts by width) and add a Hor+ 16:9 projection (`0x435d44`, viewport `0x4a6f15`/`0x4a6f6f`). (b) Alternative: keep 640x480 and supersample in the renderer, if a bundled renderer offers it. Risks: `SetDisplayMode` failures are ignored (the mode must exist: gamescope/Proton provide it), culling tuned for 4:3, CPU locks at 4K | researched; to implement as opt-in `resolution` |
 | E4 | Draw distance | Scale the stage's far plane, object and LOD wedges and the section-trigger table by an opt-in factor (GRAPHICS.md) | **done** (F12); visual check on a long straight and the frame-rate cost still to judge |
 | E2 | Widescreen | Widen the projection (renderer side) **and** patch the game's own view-culling constants in memory (`c3d_terrain_cull`/`c3d_camera` in the decomp); re-anchor or keep the HUD | evidence for where to patch; **risk** until E1's renderer is chosen |
-| E3 | 60 fps | Physics is a fixed 25 Hz tick (50 Hz option), driven by a WinMM timer thread in races; smooth 60 fps needs render-side interpolation inside the game loop | **risk**: needs a design study of the frame driver (`FUN_00443e90`) |
+| E3 | 60 fps — **not needed**: races already render decoupled from the 25 Hz tick and interpolate (190 fps measured headless at 1080p); vsync via Flip | Physics is a fixed 25 Hz tick (50 Hz option), driven by a WinMM timer thread in races; smooth 60 fps needs render-side interpolation inside the game loop | **risk**: needs a design study of the frame driver (`FUN_00443e90`) |
 | E4 | Texture filtering, MSAA, borderless window | Renderer settings, if the chosen renderer exposes them | open |
 
 ### Probes

@@ -101,3 +101,29 @@ Three distances, all from stage data at run time [O]:
 - If it judders: replace the alpha function with one based on the nominal
   period, or move the ticks to a fixed-step accumulator on the main thread
   (tick count and order unchanged, physics identical) [I].
+
+### Measured (Wine 11.20, headless gamescope, llvmpipe renderer)
+
+- Race at 1920x1080: about 190 presented frames per second (no vsync in
+  headless gamescope), with physics at 25 Hz: rendering is decoupled from
+  the tick and interpolated, as the code says (mode A).
+- Race at 3840x2160 (F10 + F11 + F13): about 60 fps on the software
+  renderer; HUD placed correctly.
+- So no frame-rate patch is needed: on a real display the game presents at
+  the refresh rate (Flip waits for vsync; gamescope caps to its output).
+  If judder shows, the planned remedy is a steadier interpolation factor
+  (replace `0x4a7c90` with one based on the nominal 40 ms period).
+
+## Display paths for the 640x480 front end with a higher race mode
+
+The front end must stay 640x480, so the display has to scale a 640x480
+mode to the screen while also offering the race mode.
+- gamescope (nested or headless) with Wine's X11 driver: no. The 640x480
+  picture sits in the corner of a larger gamescope screen.
+- Proton (GE-Proton 11): the front end shows as a clean 640x480 picture
+  (its fullscreen scaling); a full check on a real screen is pending.
+- Wine's Wayland driver on Hyprland: the 640x480 mode is scaled to a centred
+  4:3 area of the monitor, and it does not trip over a portrait monitor
+  (R15), but the picture stayed black in the first try (to investigate).
+  It does not run inside gamescope (no `wl_subcompositor`).
+
