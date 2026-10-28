@@ -9,7 +9,9 @@ use crate::frontend::{
     CHAMPIONSHIP_NEXT_SCREEN_ID, CHAMPIONSHIP_SETUP_SCREEN_ID, ROOT_SCREEN_ID, ScreenId,
 };
 
-pub const TITLE_TEXT_INDEX: usize = 0x13;
+/// The title's text id (`0x4c9790` pushes id 0 and the flags `0x13`;
+/// `FUN_0049b010` takes the one id argument).
+pub const TITLE_TEXT_INDEX: usize = 0;
 pub const NEXT_ROW_TEXT_INDEX: usize = 0x18;
 pub const ENTRY_ANIMATION_CHANNELS: usize = 7;
 pub const CAR_ROW_TAG: u8 = 2;
@@ -745,7 +747,7 @@ mod tests {
     fn render_transcript_tracks_each_active_row_mapping_without_mutation() {
         let mut state = interactive(1, ALL_ELIGIBLE, CanonicalCar::Subaru);
         let next = state.render_transcript();
-        assert_eq!(next.title_text_index, 0x13);
+        assert_eq!(next.title_text_index, 0);
         assert_eq!(next.highlight_row, 2);
         assert_eq!(next.preview, ActivePreview::Next);
         assert_eq!(

@@ -1981,7 +1981,7 @@ fn visual_input(
 
 fn car_transcript() -> ChampionshipSetupRenderTranscript {
     ChampionshipSetupRenderTranscript {
-        title_text_index: 0x13,
+        title_text_index: 0,
         rows: [
             RenderRow {
                 tag: CAR_ROW_TAG,
@@ -2027,7 +2027,7 @@ fn gear_transcript() -> ChampionshipSetupRenderTranscript {
 
 fn next_transcript() -> ChampionshipSetupRenderTranscript {
     ChampionshipSetupRenderTranscript {
-        title_text_index: 0x13,
+        title_text_index: 0,
         rows: [
             RenderRow {
                 tag: CAR_ROW_TAG,

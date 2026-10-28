@@ -446,8 +446,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-29T22:00:00Z
-milestone=landing-impact
+updated_utc=2026-10-29T23:30:00Z
+milestone=championship-setup-corrections
 completed=117
 partial=2
 not_started=0

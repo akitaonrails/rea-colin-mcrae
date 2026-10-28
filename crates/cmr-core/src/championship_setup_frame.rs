@@ -1788,7 +1788,7 @@ mod tests {
         let car = CanonicalCar::Subaru;
         let gear = GearChoice::BitClear;
         ChampionshipSetupRenderTranscript {
-            title_text_index: 0x13,
+            title_text_index: 0,
             rows: [
                 RenderRow {
                     tag: CAR_ROW_TAG,

@@ -1962,7 +1962,7 @@ fn championship_gear_transcript() -> ChampionshipSetupRenderTranscript {
 
 fn championship_transcript_for(car: CanonicalCar) -> ChampionshipSetupRenderTranscript {
     ChampionshipSetupRenderTranscript {
-        title_text_index: 0x13,
+        title_text_index: 0,
         rows: [
             RenderRow {
                 tag: CAR_ROW_TAG,
@@ -1994,7 +1994,7 @@ fn championship_transcript_for(car: CanonicalCar) -> ChampionshipSetupRenderTran
 
 fn championship_next_transcript() -> ChampionshipSetupRenderTranscript {
     ChampionshipSetupRenderTranscript {
-        title_text_index: 0x13,
+        title_text_index: 0,
         rows: [
             RenderRow {
                 tag: CAR_ROW_TAG,

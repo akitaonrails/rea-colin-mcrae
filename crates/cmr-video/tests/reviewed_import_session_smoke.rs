@@ -251,7 +251,7 @@ fn root_input() -> RootRenderInput {
 fn reviewed_championship_transcript() -> ChampionshipSetupRenderTranscript {
     let car = CanonicalCar::Subaru;
     ChampionshipSetupRenderTranscript {
-        title_text_index: 0x13,
+        title_text_index: 0,
         rows: [
             RenderRow {
                 tag: CAR_ROW_TAG,

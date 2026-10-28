@@ -677,8 +677,10 @@ fn selection_destination(
     text_width: u16,
 ) -> PixelRect {
     PixelRect::new(
+        // `0x4c3cda..0x4c3d08` then `0x4c3d46`: both margins come off.
         text_position
             .x
+            .wrapping_sub(scale_q16(viewport.width, 0x07ae))
             .wrapping_sub(scale_q16(viewport.width, 0x051e)),
         text_position.y.wrapping_sub(2),
         i32::from(text_width)
@@ -746,7 +748,7 @@ mod tests {
             _ => ActivePreview::Next,
         };
         ChampionshipSetupRenderTranscript {
-            title_text_index: 0x13,
+            title_text_index: 0,
             rows,
             highlight_row: selected,
             preview,
@@ -808,7 +810,7 @@ mod tests {
         assert_eq!(text(&commands[0]).font, FontStyle::Title);
         assert_eq!(
             text(&commands[0]).identity,
-            SetupTextIdentity::Localized(0x13)
+            SetupTextIdentity::Localized(0)
         );
         assert_eq!(text(&commands[1]).font, FontStyle::Options);
         assert_eq!(text(&commands[2]).font, FontStyle::Options);
@@ -897,7 +899,7 @@ mod tests {
             ChampionshipSetupVisualCommand::Selection {
                 row: SetupRowKind::ChooseCar,
                 source: SELECTION_SOURCE,
-                destination: PixelRect::new(628, 238, 163, 33),
+                destination: PixelRect::new(609, 238, 163, 33),
                 color_key: 0,
             }
         );
@@ -932,7 +934,7 @@ mod tests {
             ChampionshipSetupVisualCommand::Selection {
                 row: SetupRowKind::ChooseCar,
                 source: SELECTION_SOURCE,
-                destination: PixelRect::new(885, 260, 155, 33),
+                destination: PixelRect::new(862, 260, 155, 33),
                 color_key: 0,
             }
         );
