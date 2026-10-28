@@ -29,7 +29,7 @@ pub const STATIC_TABLE_NAME_MAX_BYTES: usize = 64;
 /// Upper bound on a block's byte length.
 pub const STATIC_BLOCK_MAX_BYTES: usize = 0x1_0000;
 /// Upper bound on a string-pointer table's pointer count.
-pub const STATIC_STRING_TABLE_MAX_COUNT: usize = 256;
+pub const STATIC_STRING_TABLE_MAX_COUNT: usize = 512;
 /// Upper bound on one string, including its NUL terminator.
 pub const STATIC_STRING_MAX_BYTES: usize = 256;
 

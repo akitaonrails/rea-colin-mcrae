@@ -102,6 +102,9 @@ pub enum ScreenEffect {
     /// The sound options' front-end volumes (`FUN_004c9860`/`FUN_004c97f0`,
     /// percent).
     Volumes { effects: i32, music: i32 },
+    /// A keyboard device record changed: the host refreshes the driving
+    /// bindings of `player` from [`FrontendScreens::controls`].
+    Keyboard { player: u8 },
 }
 
 /// The control screens' cues (the device type change is the host's input
@@ -113,6 +116,7 @@ fn control_effects(changes: Vec<ControlsEffect>) -> impl Iterator<Item = ScreenE
             ok: true,
         }),
         ControlsEffect::DeviceType { .. } => None,
+        ControlsEffect::Keyboard { player } => Some(ScreenEffect::Keyboard { player }),
     })
 }
 
@@ -177,6 +181,8 @@ pub struct FrontendScreens {
     display: DisplayCaps,
     /// The host's input devices for the control setup.
     devices: InputDevices,
+    /// A capture began in this step (its key event is zeroed).
+    capture_started: bool,
     layouts: [SetupLayout; 3],
     slides: Slides,
     /// `0x508fe8`: the name entry is leaving.
@@ -343,6 +349,7 @@ impl FrontendScreens {
             controls,
             display: DisplayCaps::DEFAULT,
             devices: InputDevices::KEYBOARDS,
+            capture_started: false,
             layouts: layouts.unwrap_or_default(),
             slides: Slides::default(),
             name_leaving: false,
@@ -373,6 +380,12 @@ impl FrontendScreens {
     /// The host's input devices the control setup asks about.
     pub fn set_input_devices(&mut self, devices: InputDevices) {
         self.devices = devices;
+    }
+
+    /// `FUN_004ba060` at the config load: the record's bindings into the
+    /// keyboard device records.
+    pub fn install_keyboard_record(&mut self, record: &Record) {
+        self.controls.install_record(record);
     }
 
     /// The control screens' state.
@@ -623,12 +636,26 @@ impl FrontendScreens {
                     self.set.pending = Some(target);
                     pending = Some(target);
                 }
-                // `0x4cdc30`: the button setup's OK returns to its parent's
-                // parent.
+                // `0x4cdbe0`: capture the selected slot's binding.
+                MenuEvent::Activate {
+                    item,
+                    callback: 0x004c_dbe0,
+                    ..
+                } => {
+                    let slot = self.set.menu(menu).items[item].key;
+                    self.controls.start_capture(self.set.menu_mut(menu), slot);
+                    self.capture_started = true;
+                }
+                // `0x4cdc30`: the button setup's OK writes the bindings and
+                // returns to its parent's parent.
                 MenuEvent::Activate {
                     callback: 0x004c_dc30,
                     ..
                 } => {
+                    let mut changes = Vec::new();
+                    let player = self.options.player;
+                    self.controls.buttons_ok(record, player, &mut changes);
+                    effects.extend(control_effects(changes));
                     let parent = self.set.menu(menu).parent;
                     if let Some(target) = parent.and_then(|p| self.set.menu(p).parent) {
                         self.set.pending = Some(target);
@@ -761,8 +788,21 @@ impl FrontendScreens {
             // `0x4cee30`.
             Kind::Control(_) => {
                 let devices = self.devices;
-                self.controls
-                    .commit(self.set.menu_mut(menu), &devices, false);
+                let player = self.options.player;
+                // `0x4cdbe0` zeroed the key event for its own step.
+                let key = if std::mem::take(&mut self.capture_started) {
+                    0
+                } else {
+                    u32::from(key.vk)
+                };
+                self.controls.commit(
+                    self.set.menu_mut(menu),
+                    record,
+                    player,
+                    &devices,
+                    key,
+                    false,
+                );
                 None
             }
             // `0x4c76c0`.
@@ -936,6 +976,8 @@ mod tests {
                 token: 0,
                 language: 0,
                 large_memory: false,
+                computer_name: None,
+                player_text: b"Player",
             },
             None,
         );

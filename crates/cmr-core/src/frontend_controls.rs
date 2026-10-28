@@ -88,6 +88,10 @@ pub struct InputDevices {
     pub polled: u32,
     /// `FUN_0049caf0`: a force-feedback device.
     pub force_feedback: bool,
+    /// `FUN_0049d6a0(dev)`: each device record's button count (`+0xc`).
+    pub buttons: [i32; 18],
+    /// The rising-edge mask (`+8`) of each device record this frame.
+    pub edges: [u32; 18],
 }
 
 impl InputDevices {
@@ -96,6 +100,8 @@ impl InputDevices {
         present: 0b11,
         polled: 0b11,
         force_feedback: false,
+        buttons: [0; 18],
+        edges: [0; 18],
     };
 }
 
@@ -106,7 +112,17 @@ pub enum ControlsEffect {
     SlideCue,
     /// `FUN_0049d670(dev, type)`: the device's type changed.
     DeviceType { device: u16, kind: i32 },
+    /// The keyboard record of `player` changed (`FUN_004b9f70`,
+    /// `FUN_0049d3f0`): the host refreshes its driving bindings from
+    /// [`ControlScreens::keyboards`].
+    Keyboard { player: u8 },
 }
+
+/// The default masks for binding slots 0..8 (the button setup's and the
+/// reset `FUN_004b98b0`'s): left, right, up, down,
+/// then joystick buttons 4, 5, 3 and 2 (keyboard: handbrake, gear up, gear
+/// down, change view).
+pub const DEFAULT_MASKS: [u16; 8] = [1, 2, 4, 8, 0x100, 0x200, 0x80, 0x40];
 
 /// The number of significant bits of `mask`.
 fn bit_length(mask: u32) -> i32 {
@@ -175,6 +191,18 @@ pub struct ControlScreens {
     /// The layout `0x50aa94`/`0x50aa98`/`0x50aa9c`: label x, first row y,
     /// row gap.
     pub layout: (i32, i32, i32),
+    /// The working copy `0x50aaa4` (masks) and `0x50aab4` (keys).
+    pub masks: [u16; 8],
+    pub keys: [u32; 8],
+    /// `DAT_00d90514`: the device's button count.
+    buttons: i32,
+    /// `DAT_00d90508`: the slot being captured; `DAT_00d9051c` the state to
+    /// return to; `DAT_00d9054c` the capture's ready latch.
+    slot: usize,
+    saved_state: u8,
+    ready: bool,
+    /// The keyboard device records 0 and 1 (`+0x78..`).
+    pub keyboards: [crate::input_map::KeyBindings; 2],
 }
 
 impl ControlScreens {
@@ -269,6 +297,21 @@ impl ControlScreens {
             analogue_latch: [false; 4],
             device_type: 0,
             layout: (0xf5c, 0xccc, 0x7ae),
+            masks: [0; 8],
+            keys: [0; 8],
+            buttons: 0,
+            slot: 0,
+            saved_state: 0,
+            ready: false,
+            keyboards: crate::input_map::KeyBindings::DEVICE_INIT,
+        }
+    }
+
+    /// `FUN_004ba060` at the config load: the record's bindings installed
+    /// into both keyboard records.
+    pub fn install_record(&mut self, img: &Record) {
+        for (player, keyboard) in self.keyboards.iter_mut().enumerate() {
+            *keyboard = keyboard.with_record(img, player);
         }
     }
 
@@ -389,14 +432,255 @@ impl ControlScreens {
             ControlScreen::Buttons => {
                 self.layout = (0x7333, 0xccc, 0x418);
                 self.state = state::BUTTONS;
+                if arg == 0 {
+                    self.enter_buttons(menu, img, player, devices, effects);
+                }
+                self.capturing = false;
             }
         }
+    }
+
+    /// `0x4ccf50`'s body: the button count, the item gating, and the working
+    /// copy from the player block (its type matches), the device's profile
+    /// (`img + 0x1830 + 0x54 dev`, its type matches) or the defaults, then
+    /// the masks a device cannot produce dropped.
+    fn enter_buttons(
+        &mut self,
+        menu: &mut Menu,
+        img: &mut Record,
+        player: u8,
+        devices: &InputDevices,
+        effects: &mut Vec<ControlsEffect>,
+    ) {
+        let p = player_block(player);
+        let device = usize::from(u16::from_le_bytes([img[p + 2], img[p + 3]]));
+        let kind = self.device_type;
+        self.buttons = if matches!(kind, 0 | 2 | 4) {
+            devices.buttons.get(device).copied().unwrap_or(0)
+        } else {
+            0xc
+        };
+        if !self.analogue {
+            self.analogue_latch[0] = false;
+            self.analogue_latch[1] = false;
+            self.analogue_latch[2] = false;
+        }
+        let label = if img[0x2e] & 8 != 0 {
+            0x3b
+        } else if img[0x2c] & 0x40 != 0 {
+            0xcb
+        } else {
+            0x3d
+        };
+        if let Some(item) = item_mut(menu, 4) {
+            item.text_id = label;
+        }
+        let (accel, brake) = (self.analogue_latch[1], self.analogue_latch[2]);
+        if let Some(item) = item_mut(menu, 2) {
+            item.enabled = !accel;
+        }
+        if let Some(item) = item_mut(menu, 3) {
+            item.enabled = !brake;
+        }
+        if let Some(item) = item_mut(menu, 8) {
+            item.enabled = false;
+            item.visible = false;
+        }
+        for key in [0, 1] {
+            if let Some(item) = item_mut(menu, key) {
+                item.enabled = kind == 1;
+                item.visible = kind == 1;
+            }
+        }
+        self.keys = [0; 8];
+        let word = |img: &Record, at: usize| u16::from_le_bytes([img[at], img[at + 1]]);
+        let dword = |img: &Record, at: usize| {
+            u32::from_le_bytes([img[at], img[at + 1], img[at + 2], img[at + 3]])
+        };
+        let stored_type = dword(img, p + 4) as i32;
+        let profile = 0x1830 + device * 0x54;
+        let profile_matches = img
+            .get(profile + 4..profile + 8)
+            .is_some_and(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) == kind);
+        let source = if kind == stored_type {
+            Some(p)
+        } else {
+            profile_matches.then_some(profile)
+        };
+        if let Some(at) = source {
+            for i in 0..8 {
+                self.masks[i] = word(img, at + 0x20 + 2 * i);
+                if kind == 1 {
+                    self.keys[i] = dword(img, at + 0x34 + 4 * i);
+                }
+            }
+        } else if kind == 1 {
+            self.keyboards[0] = self.keyboards[0].with_button_defaults(0);
+            self.keyboards[1] = self.keyboards[1].with_button_defaults(1);
+            effects.push(ControlsEffect::Keyboard { player: 0 });
+            effects.push(ControlsEffect::Keyboard { player: 1 });
+            let keyboard = &self.keyboards[usize::from(player.min(1))];
+            self.keys = DEFAULT_MASKS.map(|mask| keyboard.code_of(u32::from(mask)));
+            self.masks = DEFAULT_MASKS;
+        } else {
+            self.masks = DEFAULT_MASKS;
+        }
+        let limit = self.buttons + 4;
+        for i in 0..8 {
+            if bit_length(u32::from(self.masks[i])) > limit {
+                self.keys[i] = if kind != stored_type {
+                    self.keyboards[usize::from(player.min(1))].code_of(u32::from(self.masks[i]))
+                } else {
+                    dword(img, p + 0x34 + 4 * i)
+                };
+                self.masks[i] = 0;
+            }
+        }
+        for (latched, axis) in [(accel, 4u16), (brake, 8)] {
+            if latched {
+                for mask in &mut self.masks[4..8] {
+                    if *mask == axis {
+                        *mask = 0;
+                    }
+                }
+            }
+        }
+        skip_disabled(menu);
+    }
+
+    /// `0x4cdbe0`: capture a binding for the slot keyed `slot`.
+    pub fn start_capture(&mut self, menu: &mut Menu, slot: i32) {
+        self.saved_state = self.state;
+        self.state = state::CAPTURE;
+        menu.nav = MenuNav::NONE;
+        self.capturing = true;
+        self.slot = slot.clamp(0, 7) as usize;
+    }
+
+    /// `FUN_004cec30`: one capture step over the typematic key `key` (0 for
+    /// none) and the player's device's rising edges `edge`.
+    fn capture(&mut self, menu: &mut Menu, img: &Record, player: u8, key: u32, edge: u32) {
+        let other = player_block(u8::from(player == 0));
+        let selected = menu.selected.min(7);
+        let mut key = key;
+        if key != 0 && !self.ready {
+            // The native waits here, unpumped, until the key is released.
+            key = 0;
+        }
+        self.ready = true;
+        let finish = |this: &mut Self, menu: &mut Menu| {
+            menu.nav = MenuNav {
+                moves: true,
+                adjusts: true,
+                confirms: true,
+                backs: false,
+            };
+            this.state = this.saved_state;
+        };
+        if self.device_type == 1 {
+            if key == 0 {
+                return;
+            }
+            let old = self.keys[selected];
+            for slot in &mut self.keys {
+                if *slot == key {
+                    *slot = old;
+                }
+            }
+            self.keys[self.slot] = key;
+            self.ready = false;
+            finish(self, menu);
+            return;
+        }
+        if key != 0 {
+            let at = other + 0x34 + 4 * selected;
+            let rejected = u32::from_le_bytes([img[at], img[at + 1], img[at + 2], img[at + 3]]);
+            for i in 0..8 {
+                if key == self.keys[i] {
+                    self.keys[i] = 0;
+                    continue;
+                }
+                if key == rejected {
+                    return;
+                }
+            }
+            self.keys[self.slot] = key;
+            self.masks[self.slot] = 0;
+            self.ready = false;
+            finish(self, menu);
+        }
+        let edge = edge & 0xffff;
+        if edge & 3 != 0 || edge.count_ones() != 1 {
+            return;
+        }
+        let slot = self.slot;
+        if let Some(i) = (0..8).find(|&i| u32::from(self.masks[i]) == edge && i != slot) {
+            self.masks[i] = 0;
+        }
+        self.masks[slot] = edge as u16;
+        self.keys[slot] = 0;
+        finish(self, menu);
+    }
+
+    /// `FUN_004cdd30`: the default for an empty mask — the first of
+    /// `4..0x80` (without 4 and 8 on a device of six buttons or more) that
+    /// masks 1..7 and the low word of key 0 do not hold, else `0x100`.
+    fn default_mask(&self) -> u16 {
+        let words: Vec<u16> = self.masks[1..]
+            .iter()
+            .copied()
+            .chain(std::iter::once(self.keys[0] as u16))
+            .collect();
+        for c in 2..8 {
+            if self.buttons >= 6 && (c == 2 || c == 3) {
+                continue;
+            }
+            if !words.contains(&(1 << c)) {
+                return 1 << c;
+            }
+        }
+        0x100
+    }
+
+    /// `0x4cdc30`, the button setup's OK: every empty mask defaulted, the
+    /// keys and masks and type into the player block, the bindings into the
+    /// keyboard record of the player, and the block copied to the device's
+    /// profile.
+    pub fn buttons_ok(&mut self, img: &mut Record, player: u8, effects: &mut Vec<ControlsEffect>) {
+        let p = player_block(player);
+        for i in 0..8 {
+            if self.masks[i] == 0 {
+                self.masks[i] = self.default_mask();
+            }
+            img[p + 0x34 + 4 * i..p + 0x38 + 4 * i].copy_from_slice(&self.keys[i].to_le_bytes());
+            let keyboard = &mut self.keyboards[usize::from(player.min(1))];
+            keyboard.install(self.masks[i], self.keys[i]);
+        }
+        for i in 0..8 {
+            img[p + 0x20 + 2 * i..p + 0x22 + 2 * i].copy_from_slice(&self.masks[i].to_le_bytes());
+        }
+        img[p + 4..p + 8].copy_from_slice(&self.device_type.to_le_bytes());
+        let device = usize::from(u16::from_le_bytes([img[p + 2], img[p + 3]]));
+        let profile = 0x1830 + device * 0x54;
+        if profile + 0x54 <= img.len() {
+            img.copy_within(p..p + 0x54, profile);
+        }
+        effects.push(ControlsEffect::Keyboard { player });
     }
 
     /// `0x4cee30` (all three): the method count from the polled devices,
     /// the panel and the settle (`FUN_004ccb50`), then the control setup's
     /// type gating.
-    pub fn commit(&mut self, menu: &mut Menu, devices: &InputDevices, slow_motion: bool) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit(
+        &mut self,
+        menu: &mut Menu,
+        img: &Record,
+        player: u8,
+        devices: &InputDevices,
+        key: u32,
+        slow_motion: bool,
+    ) {
         let mut count = bit_length(devices.polled);
         if count > 2 {
             count -= 1;
@@ -423,6 +707,13 @@ impl ControlScreens {
             }
         } else {
             self.settle += 1;
+        }
+        if self.state == state::CAPTURE {
+            let p = player_block(player);
+            let device = usize::from(u16::from_le_bytes([img[p + 2], img[p + 3]]));
+            let edge = devices.edges.get(device).copied().unwrap_or(0);
+            self.capture(menu, img, player, key, edge);
+            return;
         }
         if self.state == state::CONTROL {
             if value(menu, key::METHOD) == 0 {
@@ -554,7 +845,7 @@ mod tests {
         let devices = InputDevices {
             present: 0b1111,
             polled: 0b1111,
-            force_feedback: false,
+            ..InputDevices::KEYBOARDS
         };
         let m = set.menu_mut(c.id(ControlScreen::Control));
         let mut effects = Vec::new();
@@ -574,14 +865,14 @@ mod tests {
         assert_eq!(m.nav, MenuNav::NONE);
         // The slide, then six settle steps, then no back.
         for _ in 0..15 + 6 {
-            c.commit(m, &devices, false);
+            c.commit(m, &img, 0, &devices, 0, false);
             assert!(!m.nav.moves);
         }
-        c.commit(m, &devices, false);
+        c.commit(m, &img, 0, &devices, 0, false);
         assert!(m.nav.moves && !m.nav.backs);
         // Keyboard (method 0): the type is disabled at -1.
         m.items[0].value.value = 0;
-        c.commit(m, &devices, false);
+        c.commit(m, &img, 0, &devices, 0, false);
         assert!(!m.items[1].enabled);
         assert_eq!(value(m, key::TYPE), -1);
         let (target, parent) = c.control_ok(m, &mut img, 0, &mut effects);
@@ -645,5 +936,92 @@ mod tests {
             &mut effects,
         );
         assert_eq!(img[p] & 0xf, 0);
+    }
+
+    #[test]
+    fn the_button_setup_loads_defaults_captures_a_key_and_saves() {
+        let (mut set, mut c, mut img) = build();
+        let p = player_block(0);
+        // A keyboard type with nothing stored: the defaults.
+        c.device_type = 1;
+        img[p + 4] = 0xff; // stored type differs
+        let b = c.id(ControlScreen::Buttons);
+        let mut effects = Vec::new();
+        let m = set.menu_mut(b);
+        c.enter(
+            ControlScreen::Buttons,
+            0,
+            m,
+            &mut img,
+            0,
+            &InputDevices::KEYBOARDS,
+            true,
+            &mut effects,
+        );
+        assert_eq!(c.masks, DEFAULT_MASKS);
+        assert_eq!(c.keys, [0x25, 0x27, 0x26, 0x28, 0x64, 0x68, 0x62, 0x66]);
+        assert!(effects.contains(&ControlsEffect::Keyboard { player: 1 }));
+        assert!(!m.items[8].visible && m.items[0].visible);
+        // Capture slot 2 (accelerate): the first key event only arms it.
+        m.selected = 2;
+        c.start_capture(m, 2);
+        c.commit(m, &img, 0, &InputDevices::KEYBOARDS, 0x41, false);
+        assert_eq!(c.state, state::CAPTURE, "the first event is waited out");
+        c.commit(m, &img, 0, &InputDevices::KEYBOARDS, 0x27, false);
+        // Right was on slot 1: it takes slot 2's old key (Up).
+        assert_eq!((c.keys[1], c.keys[2]), (0x26, 0x27));
+        assert_eq!(c.state, state::BUTTONS);
+        assert!(m.nav.confirms && !m.nav.backs);
+        // OK writes the record, the profile and the keyboard record.
+        c.buttons_ok(&mut img, 0, &mut effects);
+        assert_eq!(img[p + 0x34 + 8], 0x27);
+        assert_eq!(img[p + 0x20 + 4], 4);
+        assert_eq!(img[p + 4], 1);
+        assert_eq!(img[0x1830..0x1830 + 0x54], img[p..p + 0x54]);
+        assert_eq!(c.keyboards[0].code_of(4), 0x27, "accelerate is now Right");
+    }
+
+    #[test]
+    fn a_joystick_capture_takes_one_new_button_and_ok_fills_empty_masks() {
+        let (mut set, mut c, mut img) = build();
+        let p = player_block(0);
+        img[p + 2] = 2; // device 2
+        img[p + 4] = 0xff; // nothing stored for this type
+        img[0x1830 + 2 * 0x54 + 4] = 0xff; // nor in device 2's profile
+        c.device_type = 0;
+        let mut devices = InputDevices::KEYBOARDS;
+        devices.buttons[2] = 4;
+        let b = c.id(ControlScreen::Buttons);
+        let mut effects = Vec::new();
+        let m = set.menu_mut(b);
+        c.enter(
+            ControlScreen::Buttons,
+            0,
+            m,
+            &mut img,
+            0,
+            &devices,
+            true,
+            &mut effects,
+        );
+        // Four buttons: 0x100 and 0x200 (buttons 4 and 5) are out of range.
+        assert_eq!(c.masks, [1, 2, 4, 8, 0, 0, 0x80, 0x40]);
+        m.selected = 4;
+        c.start_capture(m, 4);
+        devices.edges[2] = 0x20; // button 1
+        c.commit(m, &img, 0, &devices, 0, false);
+        assert_eq!(c.masks[4], 0x20);
+        assert_eq!(c.state, state::BUTTONS);
+        // Two bits, or an X-axis bit, are ignored.
+        c.start_capture(m, 5);
+        devices.edges[2] = 0x30;
+        c.commit(m, &img, 0, &devices, 0, false);
+        devices.edges[2] = 0x1;
+        c.commit(m, &img, 0, &devices, 0, false);
+        assert_eq!(c.state, state::CAPTURE);
+        c.state = state::BUTTONS;
+        // OK: the empty slot 5 gets the first free default (0x10).
+        c.buttons_ok(&mut img, 0, &mut effects);
+        assert_eq!(c.masks[5], 0x10);
     }
 }

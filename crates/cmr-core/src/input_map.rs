@@ -222,6 +222,96 @@ impl KeyBindings {
         },
     };
 
+    /// The keyboard device records as `FUN_0049d6e0(2)` initialises them
+    /// (one VK per action bit, `+0x78 + bit`), before the config's bindings
+    /// are installed (`FUN_004ba060`).
+    pub const DEVICE_INIT: [KeyBindings; 2] = [
+        KeyBindings {
+            codes: [
+                Some(0x25),
+                Some(0x27),
+                Some(0x26),
+                Some(0x28),
+                Some(0x0d),
+                Some(0x1b),
+                Some(0x21),
+                Some(0x2e),
+                Some(0x60),
+                Some(0x2d),
+                Some(0x1b),
+                Some(0xa0),
+                Some(0x6d),
+                Some(0x6b),
+                Some(0x67),
+                Some(0x69),
+            ],
+        },
+        KeyBindings {
+            codes: [
+                Some(0x41),
+                Some(0x53),
+                Some(0x52),
+                Some(0x44),
+                Some(0x0d),
+                Some(0x1b),
+                Some(0x70),
+                Some(0x51),
+                Some(0x54),
+                Some(0x09),
+                Some(0x1b),
+                Some(0xa0),
+                Some(0x6d),
+                Some(0x6b),
+                Some(0x67),
+                Some(0x69),
+            ],
+        },
+    ];
+
+    /// `FUN_004b9f70(kb)`: the button setup's keyboard defaults over the
+    /// record — the eight driving bindings and Escape on `0x400`.
+    pub fn with_button_defaults(mut self, keyboard: usize) -> Self {
+        let codes: [(u16, u32); 9] = if keyboard == 0 {
+            [
+                (0x1, 0x25),
+                (0x2, 0x27),
+                (0x4, 0x26),
+                (0x8, 0x28),
+                (0x100, 0x64),
+                (0x200, 0x68),
+                (0x80, 0x62),
+                (0x40, 0x66),
+                (0x400, 0x1b),
+            ]
+        } else {
+            [
+                (0x1, 0x41),
+                (0x2, 0x53),
+                (0x4, 0x52),
+                (0x8, 0x44),
+                (0x100, 0x54),
+                (0x200, 0x09),
+                (0x80, 0x51),
+                (0x40, 0x5c),
+                (0x400, 0x1b),
+            ]
+        };
+        for (mask, code) in codes {
+            self.install(mask, code);
+        }
+        self
+    }
+
+    /// `FUN_0049d210(mask, dev)`: the VK a single-bit mask is bound to, 0
+    /// for any other mask.
+    pub fn code_of(&self, mask: u32) -> u32 {
+        if mask.count_ones() == 1 && mask <= 0x8000 {
+            self.codes[mask.trailing_zeros() as usize].map_or(0, u32::from)
+        } else {
+            0
+        }
+    }
+
     /// `FUN_0049d3f0(dev, mask, code)` on a keyboard record: a single-bit
     /// `mask` binds its action bit to `code`'s low byte (`+0x78 + bit`); any
     /// other mask is ignored.

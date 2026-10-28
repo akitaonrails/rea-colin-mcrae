@@ -88,9 +88,15 @@
       { "name": "hiscore_rank_format", "kind": "string", "va": 5281376 },
       { "name": "hiscore_time_format", "kind": "string", "va": 5281380 },
       { "name": "hiscore_number_format", "kind": "string", "va": 5166824 },
-      { "name": "hiscore_code_schedule", "kind": "block", "va": 5165336, "len": 32 }
+      { "name": "hiscore_code_schedule", "kind": "block", "va": 5165336, "len": 32 },
+      { "name": "config_default_table", "kind": "block", "va": 5268016, "len": 2968 },
+      { "name": "key_names_en", "kind": "string-pointers", "va": 5281396, "count": 257 },
+      { "name": "key_names_fr", "kind": "string-pointers", "va": 5283452, "count": 257 },
+      { "name": "key_names_de", "kind": "string-pointers", "va": 5282424, "count": 257 },
+      { "name": "key_names_es", "kind": "string-pointers", "va": 5285508, "count": 257 },
+      { "name": "key_names_it", "kind": "string-pointers", "va": 5284480, "count": 257 }
     ],
-    "payload_sha256": "3d419592288ea9a28adcf4c6be77432c425f1768804c5c810b7586cc5c93557b",
+    "payload_sha256": "74b7f8ae3fb990bbfc31f3e5bd798f6bafa60ab1bed93617a17557be4ad6c5b7",
     "output_encoding": "cmr-static-tables-v1"
   }
 }

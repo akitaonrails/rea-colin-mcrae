@@ -367,6 +367,8 @@ mod tests {
                 token: 0,
                 language: 0,
                 large_memory: false,
+                computer_name: None,
+                player_text: b"Player",
             },
             None,
         );

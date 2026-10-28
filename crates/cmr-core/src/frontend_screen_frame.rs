@@ -1936,6 +1936,9 @@ pub struct ControlsDrawInput<'a> {
     pub arrow_right: &'a [u8],
     /// `"%s %d"` (`0x4f624c`).
     pub method_format: &'a [u8],
+    /// The key names of the record's language (`0x509674` and its siblings,
+    /// indexed by VK).
+    pub key_names: &'a [Vec<u8>],
 }
 
 /// The control setup's (`FUN_004cdd80`) and analogue setup's
@@ -1978,6 +1981,10 @@ pub fn plan_controls_frame<'f>(
             text: text(input.menu.title_id),
         },
     ];
+    if input.screen == ControlScreen::Buttons {
+        buttons_rows(input, text, fonts, &mut commands);
+        return commands;
+    }
     let analogue = input.screen == ControlScreen::Analogue;
     let (label_x, first, gap) = input.controls.layout;
     let lx = cx + label_x;
@@ -2061,6 +2068,87 @@ pub fn plan_controls_frame<'f>(
         glyph(vx + right, row_y, font, input.arrow_right, &mut commands);
     }
     commands
+}
+
+/// `FUN_004ce650`'s rows: each slot's binding at `X0 + 0x8f5` (left) and its
+/// action right-aligned at `X0 = CX + 0x7333`, `0x418` below the last line;
+/// the binding is `0x3a` while capturing the selected slot, the key's name
+/// for a keyboard or a bound key, else the joystick mask (`0x8d` up, `0x8e`
+/// down, `"%s %d"` of `0xc8` and the button); rows 2/3 with their analogue
+/// pedal, row 8, and an X-axis mask are skipped. OK gets the DONE button.
+fn buttons_rows<'f>(
+    input: &ControlsDrawInput,
+    text: &dyn Fn(i32) -> Vec<u8>,
+    fonts: &dyn Fn(FontStyle) -> &'f BitmapFont,
+    commands: &mut Vec<ScreenCommand>,
+) {
+    use crate::c_format::{FormatArg, c_format};
+    use crate::frontend_controls::state;
+    let extent = input.extent;
+    let controls = input.controls;
+    let x0 = controls.panel_x + 0x7333;
+    let mut y = 0x2666 + 0xccc;
+    let last = input.menu.items.len().saturating_sub(1);
+    for (index, item) in input.menu.items.iter().enumerate() {
+        let selected = index == input.menu.selected;
+        let font = if !item.enabled {
+            FontStyle::GreyDynamic
+        } else if selected {
+            FontStyle::RedDynamic
+        } else {
+            FontStyle::BlueDynamic
+        };
+        if index == last {
+            done_button(x0, y, selected, extent, commands);
+            let (command, next) = q16_text(fonts, font, &text(item.text_id), x0, y, 0x11, extent);
+            commands.push(command);
+            y = next + 0x418;
+            continue;
+        }
+        let skipped = (item.key == 2 && controls.analogue_latch[1])
+            || (item.key == 3 && controls.analogue_latch[2])
+            || item.key == 8;
+        if skipped {
+            continue;
+        }
+        let slot = index.min(7);
+        let (mask, key) = (u32::from(controls.masks[slot]), controls.keys[slot]);
+        let binding = if controls.state == state::CAPTURE && selected {
+            text(0x3a)
+        } else if controls.device_type == 1 || key != 0 {
+            input
+                .key_names
+                .get(key as usize)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            match mask {
+                0 => Vec::new(),
+                1 | 2 => continue,
+                4 => text(0x8d),
+                8 => text(0x8e),
+                3 | 5 | 6 | 7 => c_format(
+                    input.method_format,
+                    &[FormatArg::Bytes(&text(0xc8)), FormatArg::Int(0)],
+                ),
+                _ => {
+                    let (mut m, mut shifts) = (mask, 0);
+                    while m > 8 && shifts < 13 {
+                        m >>= 1;
+                        shifts += 1;
+                    }
+                    c_format(
+                        input.method_format,
+                        &[FormatArg::Bytes(&text(0xc8)), FormatArg::Int(shifts)],
+                    )
+                }
+            }
+        };
+        commands.push(q16_text(fonts, font, &binding, x0 + 0x8f5, y, 0x11, extent).0);
+        let (command, next) = q16_text(fonts, font, &text(item.text_id), x0, y, 0x13, extent);
+        commands.push(command);
+        y = next + 0x418;
+    }
 }
 
 /// Why a screen frame could not be executed.

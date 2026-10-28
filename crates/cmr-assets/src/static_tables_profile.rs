@@ -565,6 +565,12 @@ pub(crate) mod tests {
                 ("hiscore_time_format", 0x00509664, String),
                 ("hiscore_number_format", 0x004ed6e8, String),
                 ("hiscore_code_schedule", 0x004ed118, Block { len: 32 }),
+                ("config_default_table", 0x00506230, Block { len: 2968 }),
+                ("key_names_en", 0x00509674, StringPointers { count: 257 }),
+                ("key_names_fr", 0x00509e7c, StringPointers { count: 257 }),
+                ("key_names_de", 0x00509a78, StringPointers { count: 257 }),
+                ("key_names_es", 0x0050a684, StringPointers { count: 257 }),
+                ("key_names_it", 0x0050a280, StringPointers { count: 257 }),
             ]
         );
         // Same executable identity as the reviewed stage-weather profile.

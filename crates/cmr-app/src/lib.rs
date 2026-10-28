@@ -3120,7 +3120,22 @@ impl FrontEndConfig {
     /// The record at process start: the reset `FUN_004b98b0` with a fixed
     /// token, the English language and the small-memory branch (harness: the
     /// cmRally.cfg file is not read yet).
+    #[cfg(test)]
     fn new(stage: &str, car: u8) -> Self {
+        Self::with_default_table(stage, car, None, None, b"Player")
+    }
+
+    /// [`FrontEndConfig::new`] with the executable's default hi-score and
+    /// table block (`0x506230`, copied to `+0xc98` by the defaults), the
+    /// host's computer name and the game text `0x5f` the default player
+    /// names come from.
+    fn with_default_table(
+        stage: &str,
+        car: u8,
+        default_table: Option<&[u8]>,
+        computer_name: Option<&[u8]>,
+        player_text: &[u8],
+    ) -> Self {
         let mut image = Box::new([0; cmr_core::config::LEGACY_CONFIG_SIZE]);
         cmr_core::config_commit::apply_defaults(
             &mut image,
@@ -3128,8 +3143,10 @@ impl FrontEndConfig {
                 token: 0xaa00_0000,
                 language: 0,
                 large_memory: false,
+                computer_name,
+                player_text,
             },
-            None,
+            default_table,
         );
         Self {
             image,
@@ -3293,11 +3310,13 @@ impl FrontEndConfig {
 /// session is: the screens edit the cmRally.cfg record, the name entry (or
 /// the stage select) commits it (`FUN_004b93f0`), and the camera's hand-off
 /// starts the race session (the rally school commits at its hand-off).
+#[allow(clippy::too_many_arguments)]
 fn front_end_frame(
     session: &mut GameplaySession,
     root_interaction: &mut RootInteraction,
     config: &mut FrontEndConfig,
     pause: &mut PauseHarness,
+    keyboard: &mut KeyboardDriver,
     input: &WindowedInput,
     now: u32,
 ) -> cmr_core::root_menu_interactive::RootTick {
@@ -3340,6 +3359,15 @@ fn front_end_frame(
             // The effects master is read back from `img[0xd]` and the music's
             // fade target from `img[0xf]` each frame.
             cmr_core::frontend_flow::ScreenEffect::Volumes { .. } => None,
+            // Player 1 drives from keyboard record 0.
+            cmr_core::frontend_flow::ScreenEffect::Keyboard { player: 0 } => {
+                *keyboard = KeyboardDriver::new(
+                    root_interaction.screens().controls().keyboards[0],
+                    cmr_core::input_map::ControlConfig::default(),
+                );
+                None
+            }
+            cmr_core::frontend_flow::ScreenEffect::Keyboard { .. } => None,
             cmr_core::frontend_flow::ScreenEffect::Sound(_) => None,
         };
         if let (Some((slot, ok)), Some(mixer)) = (cue, audio) {
@@ -3410,6 +3438,7 @@ fn advance_game_frame<C: HostClock>(
             root_interaction,
             config,
             pause,
+            keyboard,
             &input,
             clock.millis(),
         ))
@@ -3881,6 +3910,36 @@ struct PauseHarness {
     /// static tables, and the loaded channel and base slot.
     frontend_sound_paths: Vec<String>,
     frontend_bank: Option<cmr_core::frontend_sounds::FrontendBank>,
+}
+
+/// The game text the reset names a player without a computer name by
+/// (`FUN_004b98b0`: `"%s %d"` of text `0x5f`).
+const DEFAULT_PLAYER_TEXT: usize = 0x5f;
+
+/// Text `0x5f` of the English game text table (empty without the assets).
+fn default_player_text(runtime_data: &Path) -> Vec<u8> {
+    let Ok(reviewed) = ReviewedProfile::from_json(REVIEWED_PROFILE) else {
+        return Vec::new();
+    };
+    AssetStore::open(runtime_data, &reviewed, DecodeLimits::default())
+        .ok()
+        .and_then(|store| {
+            cmr_core::localization_assets::load_game_text_table(&store, Language::English).ok()
+        })
+        .map(|text| text.lookup(DEFAULT_PLAYER_TEXT).to_vec())
+        .unwrap_or_default()
+}
+
+/// The host's stand-in for `GetComputerNameA` (harness: the `COMPUTERNAME`
+/// or `HOSTNAME` variable, else `/etc/hostname`; `None` when none is set,
+/// the native failure branch).
+fn host_computer_name() -> Option<Vec<u8>> {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|name| name.trim().as_bytes().to_vec())
+        .filter(|name| !name.is_empty())
 }
 
 /// The pause menu's fonts (`FUN_00436a50`) and the in-game text table
@@ -5657,6 +5716,17 @@ fn screen_commands(
             arrow_left: string("frontend_arrow_left"),
             arrow_right: string("frontend_arrow_right"),
             method_format: string("name_entry_player_format"),
+            key_names: tables
+                .and_then(|t| {
+                    t.strings(match record.get(0x20).map_or(0, |b| b & 7) {
+                        1 => "key_names_fr",
+                        2 => "key_names_de",
+                        3 => "key_names_es",
+                        4 => "key_names_it",
+                        _ => "key_names_en",
+                    })
+                })
+                .unwrap_or(empty),
         };
         return Some(frame::plan_controls_frame(&input, &lookup, &font));
     }
@@ -6807,12 +6877,23 @@ pub fn run_windowed_game_session(
     if let Some(tables) = static_tables.as_ref() {
         pause.set_frontend_sounds(tables);
     }
-    let mut config =
-        FrontEndConfig::new(stage, compiled_pose.selector as u8).with_file(runtime_data);
-    // `FUN_004ba060` at the config load: player 1's record bindings over the
-    // keyboard defaults.
+    let computer_name = host_computer_name();
+    let player_text = default_player_text(runtime_data);
+    let mut config = FrontEndConfig::with_default_table(
+        stage,
+        compiled_pose.selector as u8,
+        static_tables
+            .as_ref()
+            .and_then(|t| t.tables().block("config_default_table")),
+        computer_name.as_deref(),
+        &player_text,
+    )
+    .with_file(runtime_data);
+    // `FUN_004ba060` at the config load: the record's bindings over the
+    // keyboard device records (`FUN_0049d6e0`); player 1 drives from record 0.
+    root_interaction.install_keyboard_record(&config.image);
     let mut keyboard = KeyboardDriver::new(
-        cmr_core::input_map::KeyBindings::PLAYER1.with_record(&config.image[..], 0),
+        root_interaction.screens().controls().keyboards[0],
         cmr_core::input_map::ControlConfig::default(),
     );
     let mut runtime_error = None;

@@ -113,23 +113,97 @@ pub fn return_live_to_record(image: &mut [u8; LEGACY_CONFIG_SIZE]) {
 
 /// What the defaults read from the host besides the image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DefaultsHost {
+pub struct DefaultsHost<'a> {
     /// The record token (`FUN_004cfac0` three times, `| 0xaa000000`).
     pub token: u32,
     /// The language `FUN_00496890` returns (low three bits used).
     pub language: u8,
     /// `FUN_004ad240() > 0xbcd3d80`.
     pub large_memory: bool,
+    /// What `GetComputerNameA` gave, or `None` when it failed: player 1's
+    /// default name (its first eleven bytes).
+    pub computer_name: Option<&'a [u8]>,
+    /// Text `0x5f` (`FUN_0049b010`), the `"%s %d"` default name of a player
+    /// without a computer name.
+    pub player_text: &'a [u8],
+}
+
+/// One player block of the reset (`img + 0x9c player`): the name, the
+/// analogue and device bytes, the eight bindings with the keyboard device's
+/// codes (`FUN_0049d210`, the devices as `FUN_0049d6e0` set them) and the
+/// option bit-fields.
+fn default_player(image: &mut [u8; LEGACY_CONFIG_SIZE], host: &DefaultsHost, player: u16) {
+    let b = usize::from(player) * crate::settings_store::PLAYER_STRIDE;
+    image[b + 0xbf] &= 0x83;
+    let until_nul = |s: &'_ [u8]| s.iter().position(|&c| c == 0).unwrap_or(s.len());
+    match host.computer_name {
+        Some(name) if player == 0 => {
+            // strncpy(.., 0xb), then a NUL at +0xb.
+            let name = &name[..until_nul(name).min(0xb)];
+            image[0x34..0x3f].fill(0);
+            image[0x34..0x34 + name.len()].copy_from_slice(name);
+            image[0x3f] = 0;
+        }
+        _ => {
+            // sprintf("%s %d", text, player + 1).
+            let text = &host.player_text[..until_nul(host.player_text)];
+            let name = [text, format!(" {}\0", player + 1).as_bytes()].concat();
+            for (slot, c) in image[b + 0x34..].iter_mut().zip(name) {
+                *slot = c;
+            }
+        }
+    }
+    image[b + 0xbe] &= 0xe0;
+    image[b + 0x44] &= 0xf0;
+    image[b + 0x48..b + 0x4c].copy_from_slice(&1u32.to_le_bytes());
+    image[b + 0x46..b + 0x48].copy_from_slice(&player.to_le_bytes());
+    let device = crate::input_map::KeyBindings::DEVICE_INIT[usize::from(player)];
+    for (n, mask) in crate::frontend_controls::DEFAULT_MASKS
+        .into_iter()
+        .enumerate()
+    {
+        let code = device.code_of(u32::from(mask));
+        image[b + 0x78 + 4 * n..b + 0x7c + 4 * n].copy_from_slice(&code.to_le_bytes());
+    }
+    for (n, mask) in crate::frontend_controls::DEFAULT_MASKS
+        .into_iter()
+        .enumerate()
+    {
+        image[b + 0x64 + 2 * n..b + 0x66 + 2 * n].copy_from_slice(&mask.to_le_bytes());
+    }
+    for (at, keep, set) in [
+        (0x98, 0xc3, 0x03),
+        (0x99, 0xf8, 0x00),
+        (0x9e, 0xcc, 0x0c),
+        (0x9f, 0xf9, 0x01),
+        (0x9a, 0xcf, 0x0f),
+        (0x9b, 0xf9, 0x01),
+        (0xa0, 0xd4, 0x14),
+        (0xa1, 0xfa, 0x02),
+        (0x9c, 0xca, 0x0a),
+        (0x9d, 0xf9, 0x01),
+        (0xa2, 0xc0, 0x00),
+        (0xa3, 0xe4, 0x64),
+        (0xa5, 0xc0, 0x00),
+        (0xa6, 0xe4, 0x64),
+        (0xa8, 0xc0, 0x00),
+        (0xa9, 0xe4, 0x64),
+        (0xab, 0xc0, 0x00),
+        (0xac, 0xe4, 0x64),
+        (0xae, 0xc0, 0x00),
+        (0xaf, 0xe4, 0x64),
+    ] {
+        image[b + at] = (image[b + at] & keep) | set;
+    }
 }
 
 /// `FUN_004b98b0`'s reset of a record with a bad magic, size or token, then
-/// its commit. Not modelled: the two player blocks (the computer name, the
-/// default control bindings `FUN_0049d210`) and the `0x2e6`-dword default
-/// table copied from `0x506230` to `+0xc98`, which is shipped data the caller
-/// supplies through `default_table` when it has it.
+/// its commit. The `0x2e6`-dword default table copied from `0x506230` to
+/// `+0xc98` is shipped data the caller supplies through `default_table` when
+/// it has it.
 pub fn apply_defaults(
     image: &mut [u8; LEGACY_CONFIG_SIZE],
-    host: DefaultsHost,
+    host: DefaultsHost<'_>,
     default_table: Option<&[u8]>,
 ) -> CommitMasters {
     let put32 = |image: &mut [u8; LEGACY_CONFIG_SIZE], at: usize, value: u32| {
@@ -185,6 +259,9 @@ pub fn apply_defaults(
         } else {
             (image[at + 1] & 0xf6) | 6
         };
+    }
+    for player in 0..2 {
+        default_player(image, &host, player);
     }
     for record in 0..0x12 {
         put32(image, 0x1834 + record * 0x54, u32::MAX);
@@ -315,6 +392,8 @@ mod tests {
                 token: 0xaa12_3456,
                 language: 2,
                 large_memory: true,
+                computer_name: None,
+                player_text: b"Player",
             },
             None,
         );
@@ -334,5 +413,60 @@ mod tests {
         assert_eq!((live[0x164], live[0x165]), (0, 6));
         assert_eq!(live[0x166] & 3, 0);
         assert_eq!(masters.effects_4f653c, 3 * 20);
+    }
+
+    #[test]
+    fn the_defaults_bind_the_keyboards_and_name_the_players() {
+        let host = |computer_name| DefaultsHost {
+            token: 0,
+            language: 0,
+            large_memory: false,
+            computer_name,
+            player_text: b"Player\0junk",
+        };
+        let mut image = image();
+        image[0xbf] = 0xff;
+        image[0x44] = 0xff;
+        image[0x9c + 0x9c] = 0xff;
+        apply_defaults(&mut image, host(None), None);
+        assert_eq!(&image[0x34..0x3d], b"Player 1\0");
+        assert_eq!(&image[0x34 + 0x9c..0x3d + 0x9c], b"Player 2\0");
+        assert_eq!(image[0xbf], 0x83);
+        assert_eq!(image[0x44], 0xf0);
+        assert_eq!(&image[0x46..0x4c], &[0, 0, 1, 0, 0, 0]);
+        assert_eq!(
+            &image[0x46 + 0x9c..0x48 + 0x9c],
+            &[1, 0],
+            "the device index"
+        );
+        let words = |at: usize, n: usize, size: usize| -> Vec<u32> {
+            (0..n)
+                .map(|i| {
+                    let mut b = [0u8; 4];
+                    b[..size].copy_from_slice(&image[at + i * size..at + (i + 1) * size]);
+                    u32::from_le_bytes(b)
+                })
+                .collect()
+        };
+        assert_eq!(words(0x64, 8, 2), [1, 2, 4, 8, 0x100, 0x200, 0x80, 0x40]);
+        // The device-0 codes: arrows, Numpad 0, Insert, Delete, Page Up.
+        assert_eq!(
+            words(0x78, 8, 4),
+            [0x25, 0x27, 0x26, 0x28, 0x60, 0x2d, 0x2e, 0x21]
+        );
+        assert_eq!(
+            words(0x78 + 0x9c, 8, 4),
+            [0x41, 0x53, 0x52, 0x44, 0x54, 0x09, 0x51, 0x70]
+        );
+        assert_eq!(
+            image[0x9c + 0x9c],
+            0xca | 0x0a,
+            "the odd-addressed +0x9c field"
+        );
+        assert_eq!((image[0xa3], image[0xaf], image[0xa2]), (0x64, 0x64, 0));
+        // A computer name names player 1 only, cut to eleven bytes.
+        apply_defaults(&mut image, host(Some(b"WORKSTATION-42")), None);
+        assert_eq!(&image[0x34..0x40], b"WORKSTATION\0");
+        assert_eq!(&image[0x34 + 0x9c..0x3d + 0x9c], b"Player 2\0");
     }
 }

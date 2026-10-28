@@ -168,6 +168,12 @@ impl RootInteraction {
         self
     }
 
+    /// `FUN_004ba060` at the config load: the record's bindings into the
+    /// keyboard device records.
+    pub fn install_keyboard_record(&mut self, record: &Record) {
+        self.screens.install_keyboard_record(record);
+    }
+
     /// The host's save-slot reader the Load screen calls on entry.
     #[must_use]
     pub fn with_save_slots(mut self, reader: crate::frontend_flow::SlotReader) -> Self {
@@ -529,6 +535,8 @@ mod tests {
                 token: 0,
                 language: 0,
                 large_memory: false,
+                computer_name: None,
+                player_text: b"Player",
             },
             None,
         );
