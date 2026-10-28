@@ -15,9 +15,10 @@
 //! (`FUN_0042b960`), the championship standings (`FUN_0042bdb0`), the
 //! post-stage menu (`FUN_0042d5a0`), GAME OVER (`FUN_0042e180`) and the
 //! championship and rally complete pages (`FUN_0042df90`, `FUN_0042e0c0`).
-//! The confirmations (`FUN_0042e210` sizes its box from the dialog object
-//! `FUN_004aadf0`, which draws the text), the super-special result, the
-//! bonus car and the save page draw the frame only for now. Not drawn: the team and flag icons
+//! The confirmations (`FUN_0042e210`: the dialog menu's three lines,
+//! `FUN_004aacb0`, then a box sized to the widest) are drawn too. The
+//! super-special result, the bonus car and the save page draw the frame
+//! only for now. Not drawn: the team and flag icons
 //! (`FUN_0042e5c0`), the time trial's record rows (`FUN_0042b6b0`), and the
 //! stage name when the host has none (`FUN_004ba470` reads the executable's
 //! name table `0x506f80`, which is not extracted). The table rows are cut to
@@ -34,7 +35,8 @@ use crate::c_format::{FormatArg, c_format};
 use crate::event_flow::EventState;
 use crate::overlay_alt::OverlayQuad;
 use crate::pause_menu_draw::{
-    PANEL_TRANSLUCENT, PauseFont, PauseTextRun, SELECTED_COLOR, UNSELECTED_COLOR, text_q16,
+    PANEL_OPAQUE, PANEL_TRANSLUCENT, PauseFont, PauseTextRun, SELECTED_COLOR,
+    TITLE_COLOR as DIALOG_TITLE_COLOR, UNSELECTED_COLOR, text_q16,
 };
 use crate::results_director::{ResultsDirector, item};
 use crate::standings::last_stage_of_rally;
@@ -345,6 +347,7 @@ pub fn results_draw_plan<'a>(
         3 => championship(&mut painter, input, highlight, text)?,
         4 => post_stage_menu(&mut painter, input, text)?,
         8 => game_over(&mut painter, input, highlight, text)?,
+        9 | 10 => confirmation(&mut painter, input, text)?,
         0x14 => championship_complete(&mut painter, input, highlight, text)?,
         0x15 => rally_complete(&mut painter, input, highlight, text)?,
         _ => {}
@@ -723,6 +726,80 @@ fn rally_complete(
     )
 }
 
+/// `FUN_0042e210`: the dialog's lines (`FUN_004aadf0` draws the menu
+/// `0xbb3448` through `FUN_004aacb0` and returns the widest line), then the
+/// box. The records `0x4ed828` (quit) and `0x4ed888` (restart) place the
+/// question at `(0x8000, 0x6666)` and "yes"/"no" (`0xe`/`0xf`) at `0x8000`
+/// and `0x8ccc`, all centred (`0x12`): the question in the title font and
+/// `0x5024b8`, the selected answer in `result` and `0x4f3e38`, the other in
+/// `result` (`resultgr` only in display mode 6) and `0x4f3e3c`.
+fn confirmation(
+    painter: &mut Painter,
+    input: &ResultsDrawInput,
+    text: &dyn Fn(i32) -> Vec<u8>,
+) -> Result<(), TextLayoutError> {
+    let question = if input.director.page() == 9 {
+        0xd
+    } else if input.event.cfg.mode_166 & 3 == 2 {
+        0xe3
+    } else {
+        0xe1
+    };
+    let selected = input.director.dialog_selection().unwrap_or(1);
+    let (width, height) = (input.width, input.height);
+    let mut widest = 0;
+    let mut line = |painter: &mut Painter,
+                    y: i32,
+                    id: i32,
+                    font: PauseFont,
+                    color: [u8; 4]|
+     -> Result<(), TextLayoutError> {
+        let (plan, _, line_width) = text_q16(
+            (painter.fonts)(font),
+            &text(id),
+            0x8000,
+            y,
+            0x12,
+            width,
+            height,
+        )?;
+        widest = widest.max(line_width);
+        painter.push(font, color, plan);
+        Ok(())
+    };
+    line(
+        painter,
+        0x6666,
+        question,
+        PauseFont::Title,
+        DIALOG_TITLE_COLOR,
+    )?;
+    for (index, (y, id)) in [(0x8000, 0xe), (0x8ccc, 0xf)].into_iter().enumerate() {
+        let color = if index == usize::from(selected) {
+            SELECTED_COLOR
+        } else {
+            UNSELECTED_COLOR
+        };
+        line(painter, y, id, PauseFont::Result, color)?;
+    }
+    let box_width = widest + 0x1999;
+    let l = painter.layout;
+    let x = (0x8000 - box_width / 2).wrapping_mul(l.width) >> 16;
+    let color = if input.panel_capable {
+        PANEL_TRANSLUCENT
+    } else {
+        PANEL_OPAQUE
+    };
+    painter.fill(
+        x,
+        fraction(l.height, 0x5eb8),
+        box_width.wrapping_mul(l.width) >> 16,
+        fraction(l.height, 0x428f),
+        color,
+    );
+    Ok(())
+}
+
 /// `FUN_0042d5a0`: each item centred on its slot in the bottom bar, the
 /// selected one in `result` white, the others in `resultgr` grey.
 fn post_stage_menu(
@@ -973,6 +1050,52 @@ mod tests {
         // GAME OVER and the disqualification line.
         assert_eq!(plan.runs.len(), 2);
         assert_eq!(plan.runs[1].color, BODY_COLOR);
+    }
+
+    #[test]
+    fn the_confirmation_draws_its_lines_and_a_box_sized_to_them() {
+        let font = font();
+        let mut event = EventState::default();
+        let mut director = ResultsDirector::start(&mut event, DirectorContext::default());
+        let confirm = DirectorInput {
+            confirm: true,
+            ..Default::default()
+        };
+        while director.page() != 4 {
+            director.tick(&mut event, confirm);
+        }
+        while director.settle() > 0 {
+            director.tick(&mut event, DirectorInput::default());
+        }
+        director.tick(
+            &mut event,
+            DirectorInput {
+                right: true,
+                ..Default::default()
+            },
+        );
+        director.tick(&mut event, confirm);
+        while director.settle() > 0 {
+            director.tick(&mut event, DirectorInput::default());
+        }
+        assert_eq!(director.page(), 9);
+        let text = |id: i32| format!("T{id:X}").into_bytes();
+        let mut pulse = ResultsPulse::default();
+        let plan = results_draw_plan(&input(&director, &event, &[]), &mut pulse, &text, &|_| {
+            &font
+        })
+        .unwrap();
+        assert_eq!(plan.runs.len(), 3);
+        assert_eq!(plan.runs[0].color, DIALOG_TITLE_COLOR);
+        assert_eq!(plan.runs[1].color, UNSELECTED_COLOR, "yes");
+        assert_eq!(plan.runs[2].color, SELECTED_COLOR, "no is the default");
+        // Bars, then the box: centred, from 0.37H, 0.26H tall.
+        let (quad, color) = plan.quads[2];
+        assert_eq!(color, PANEL_TRANSLUCENT);
+        assert_eq!((quad.y, quad.h), (177, 124));
+        let span = 2 * u32::from(quad.x) + u32::from(quad.w);
+        assert!((639..=641).contains(&span), "centred: {quad:?}");
+        assert!(quad.w >= 63, "at least the 0x1999 margin");
     }
 
     #[test]

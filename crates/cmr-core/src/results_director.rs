@@ -476,7 +476,8 @@ impl ResultsDirector {
                 self.dialog = Some(1);
                 9
             }
-            _ => 4,
+            // An unknown item leaves without switching the director off.
+            _ => 0xb,
         }
     }
 
