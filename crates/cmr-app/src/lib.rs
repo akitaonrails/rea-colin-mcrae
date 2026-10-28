@@ -2816,8 +2816,7 @@ const RACE_HUD_SPEED_MULTIPLIER_Q16: i32 = 0x431168;
 /// car supplies `FUN_00464130`'s rev, speed and gear words (`prepared`), with
 /// the units bits and car-type nibble at their harness zero. The planar
 /// harness has no engine or gearbox, so it shows gear 1, zero rev and its
-/// velocity magnitude. Progress uses the active CAT cursor fraction (the
-/// native progress words are not recovered).
+/// velocity magnitude. Progress is `FUN_00464130`'s cursor fraction.
 fn live_race_hud_inputs(
     car: CarState,
     prepared: Option<cmr_core::race_hud_prepare::PreparedHudValues>,
@@ -2838,12 +2837,13 @@ fn live_race_hud_inputs(
         },
         |values| (values.rev_q16, values.speed.max(0), values.gear),
     );
-    let progress_q16 = if node_count <= 1 {
-        0
-    } else {
-        let numerator = (progress.cursor().min(node_count - 1) as u64) << 16;
-        (numerator / (node_count - 1) as u64) as i32
-    };
+    // `FUN_00464130`'s progress word; one active player (`DAT_005515fc`).
+    let progress_q16 = cmr_core::race_hud_prepare::hud_progress(
+        node_count,
+        i32::try_from(progress.cursor()).unwrap_or(i32::MAX),
+        progress.finished(),
+        1,
+    );
     RaceHudPreparedInputs {
         viewport: ROOT_EXTENT,
         rev_q16,

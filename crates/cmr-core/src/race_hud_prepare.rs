@@ -8,8 +8,12 @@
 //! (zero below one), and the gear `ctl +0x43a`. When the car-type nibble
 //! `DAT_00d3ca80 +0xb6 & 0xf` is 3..5 or 8 (outside replays) it prepares the
 //! classic gauge instead: the rev becomes `(fraction * 20 >> 16) - 18` and the
-//! speed `speed * 180 / 100`. The progress and split-table words it also
-//! prepares are not reconstructed here.
+//! speed `speed * 180 / 100`. The progress word `DAT_0057afa8` is `0` with no
+//! `.cat` nodes, full (`0x10000`) once the player has finished
+//! (`FUN_00443da0`, `DAT_005590b4[p]`) or is not active (`DAT_005515fc[p] <=
+//! 0`), and otherwise `(ftol(cursor * 65536.0) << 16) / ftol(count * 65536.0)`
+//! (`-1` for a zero denominator; the double is at `0x4e62f0`). The split-table
+//! words it also prepares are not reconstructed here.
 
 use crate::fixed_point::Fixed16;
 
@@ -71,6 +75,28 @@ pub fn prepare_hud_values(input: HudPrepareInput) -> PreparedHudValues {
             gear: input.gear_43a,
         }
     }
+}
+
+/// The progress word `DAT_0057afa8`.
+#[must_use]
+pub fn hud_progress(
+    node_count: usize,
+    cursor: i32,
+    finished_5590b4: bool,
+    active_5515fc: i32,
+) -> i32 {
+    if node_count == 0 {
+        return 0;
+    }
+    if finished_5590b4 || active_5515fc <= 0 {
+        return 0x1_0000;
+    }
+    let denominator = (node_count as f64 * 65536.0) as i64 as i32;
+    let numerator = (f64::from(cursor) * 65536.0) as i64 as i32;
+    if denominator == 0 {
+        return -1;
+    }
+    ((i64::from(numerator) << 16) / i64::from(denominator)) as i32
 }
 
 /// Whether the car-type nibble selects the classic gauge (outside replays).
@@ -139,6 +165,18 @@ mod tests {
         assert_eq!(classic.rev_q16, ((0x8000 * 20) >> 16) - 18);
         assert_eq!(classic.speed, 67 * 180 / 100);
         assert_eq!(classic.gear, 3);
+    }
+
+    #[test]
+    fn the_progress_word_is_the_cursor_fraction_of_the_node_count() {
+        assert_eq!(hud_progress(0, 5, false, 1), 0);
+        assert_eq!(hud_progress(100, 0, false, 1), 0);
+        assert_eq!(hud_progress(100, 50, false, 1), 0x8000);
+        assert_eq!(hud_progress(3, 1, false, 1), 0x5555);
+        // The cursor can sit at the node count once the last node is passed.
+        assert_eq!(hud_progress(100, 100, false, 1), 0x1_0000);
+        assert_eq!(hud_progress(100, 10, true, 1), 0x1_0000);
+        assert_eq!(hud_progress(100, 10, false, 0), 0x1_0000);
     }
 
     #[test]

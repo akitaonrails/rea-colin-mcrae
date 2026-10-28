@@ -441,8 +441,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-29T03:45:00Z
-milestone=gameplay-script-and-stage-restart
+updated_utc=2026-10-29T04:05:00Z
+milestone=race-hud-progress
 completed=117
 partial=2
 not_started=0
