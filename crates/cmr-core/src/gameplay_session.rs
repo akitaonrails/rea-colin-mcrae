@@ -503,6 +503,7 @@ mod tests {
             steering_surface_factors: [0; 2],
             gearbox: None,
             brake_balance_e1a4: [0x1_0000; 2],
+            tyre: None,
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: crate::race_state::FourWheelPostprocessParams {

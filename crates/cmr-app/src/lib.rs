@@ -3154,9 +3154,11 @@ impl SessionTyreTables {
     pub fn open(runtime_data: &Path) -> Result<Self, SessionTyreTablesError> {
         let reviewed = ReviewedTyreTablesProfile::from_json(REVIEWED_TYRE_TABLES_PROFILE)
             .map_err(SessionTyreTablesError::Profile)?;
-        let store =
-            TyreTablesStore::open(&runtime_data.join(TYRE_TABLES_STORE_DIRECTORY), &reviewed)
-                .map_err(SessionTyreTablesError::Store)?;
+        let store = TyreTablesStore::open(
+            &session_sidecar_store(runtime_data, TYRE_TABLES_STORE_DIRECTORY),
+            &reviewed,
+        )
+        .map_err(SessionTyreTablesError::Store)?;
         Ok(Self { store })
     }
 
@@ -3301,6 +3303,7 @@ impl SessionWheelInputs {
             steering_surface_factors: [0; 2],
             gearbox: None,
             brake_balance_e1a4: [0x1_0000; 2],
+            tyre: None,
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -3365,7 +3368,7 @@ impl SessionWheelInputs {
                 &mut wheel.second[index],
                 Fixed16::from_raw(0x30000),
                 SOLVER_GLOBAL_CONSTANTS.force_scale,
-                Fixed16::from_raw(0x40000),
+                SOLVER_GLOBAL_CONSTANTS.time_step,
             );
         }
         self.populate_four_wheel(&mut wheel, surface_indices)?;
@@ -3751,6 +3754,8 @@ struct SessionCompiledCar {
     constants: CompiledFourWheelConstants,
     gearbox_tables: cmr_core::gearbox::GearboxTables,
     half_state: CompiledHalfSignState,
+    /// Tyre variant `car +0x758`, indexing the `DAT_004f777c` blocks.
+    variant_758: i32,
 }
 
 impl SessionCompiledPose {
@@ -3765,7 +3770,8 @@ impl SessionCompiledPose {
     fn compiled_car(&self) -> Result<SessionCompiledCar, SessionCompiledPoseError> {
         use cmr_core::compiled_car_initializer::{
             derive_compiled_control_families, derive_compiled_four_wheel_constants,
-            derive_compiled_gearbox_tables, transform_compiled_control_family,
+            derive_compiled_gearbox_tables, derive_compiled_state_word_758,
+            transform_compiled_control_family,
         };
         let words = self
             .direct_cases
@@ -3789,11 +3795,15 @@ impl SessionCompiledPose {
             words.state_words[1],
             words.state_words[2],
         ]);
+        // A zero config has a zero context, so the selector returns the `-1`
+        // sentinel and the record's zero fallback byte picks variant 0.
+        let variant_758 = derive_compiled_state_word_758(-1, 0).state_word_758;
         Ok(SessionCompiledCar {
             families,
             constants,
             gearbox_tables,
             half_state,
+            variant_758,
         })
     }
 }
@@ -5910,6 +5920,11 @@ mod tests {
             &cmr_core::car_setup::CarSetupBlock::RESET,
         );
         start.four_wheel.gearbox = GearboxState::at_setup(true);
+        let tyre_tables = SessionTyreTables::open(&root).unwrap();
+        wheel.tyre = Some(cmr_core::race_state::TyreSurfaceInputs {
+            tables: tyre_tables.tables(),
+            variant_758: car.variant_758,
+        });
         let mut state = cmr_core::race_state::RaceState::new(start);
         let throttle = Controls {
             raw_pedals: RawPedals {
@@ -5927,6 +5942,11 @@ mod tests {
             start.motion.projection_axis.z.raw(),
         );
         let origin = start.position;
+        let every = std::env::var("CMR_PROBE_EVERY")
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(25);
+        eprintln!("probe inverse_mass_4c={:#x}", wheel.inverse_mass_4c.raw());
         for tick in 0..250 {
             if let Err(error) = state.step_with_all_four_wheels(&throttle, &wheel) {
                 panic!("tick {tick}: {error:?}");
@@ -5945,7 +5965,7 @@ mod tests {
                 car: state.car(),
             };
             progress.update(sample.car.position, tick);
-            if tick % 25 == 0 || tick == 249 {
+            if tick % every == 0 || tick == 249 {
                 let car = sample.car;
                 let moved = car.position.sub(origin);
                 eprintln!(
@@ -5995,6 +6015,12 @@ mod tests {
                         &ground.lanes.lane_words[..4],
                     );
                 }
+                eprintln!(
+                    "probe   gains35c={:x?} gains36c={:x?} surfaces={:?}",
+                    car.four_wheel.tyre_gains.gain_35c,
+                    car.four_wheel.tyre_gains.gain_36c,
+                    car.ground.map(|ground| ground.lanes.type_words),
+                );
                 eprintln!(
                     "probe   second={:x?} lanes={:x?} qualified={:?}",
                     car.four_wheel.second.map(|lane| lane.accumulators),

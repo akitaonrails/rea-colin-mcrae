@@ -40,7 +40,7 @@ pub struct TyreTablesSpec {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TyreTablesEncoding {
-    CmrTyreTablesV1,
+    CmrTyreTablesV2,
 }
 
 impl TyreTablesSpec {
@@ -131,7 +131,7 @@ impl TyreTablesProfile {
         if self.tables.layout() != OFFICIAL_EU_TYRE_TABLES_LAYOUT
             || self.tables.surfaces != TYRE_SURFACE_COUNT as u32
             || self.tables.variants != TYRE_VARIANT_COUNT as u32
-            || self.tables.output_encoding != TyreTablesEncoding::CmrTyreTablesV1
+            || self.tables.output_encoding != TyreTablesEncoding::CmrTyreTablesV2
         {
             return Err(TyreTablesProfileError::UnsupportedLayout);
         }
@@ -181,7 +181,7 @@ pub(crate) mod tests {
                 wheel_terms_777c_va: l.wheel_terms_777c_va,
                 surfaces: TYRE_SURFACE_COUNT as u32,
                 variants: TYRE_VARIANT_COUNT as u32,
-                output_encoding: TyreTablesEncoding::CmrTyreTablesV1,
+                output_encoding: TyreTablesEncoding::CmrTyreTablesV2,
             },
         }
     }

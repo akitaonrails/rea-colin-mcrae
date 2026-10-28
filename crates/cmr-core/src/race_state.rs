@@ -23,8 +23,8 @@
 use crate::car_setup::CarSetupBlock;
 use crate::compiled_car_initializer::{
     CompiledControlClearLoop, CompiledControlFamilies, CompiledFourWheelConstants,
-    CompiledHalfSignState, CompiledLaneThresholdInputs, CompiledPostLaneBasisEffects,
-    derive_compiled_lane_thresholds,
+    CompiledHalfSignState, CompiledLaneThresholdEffects, CompiledLaneThresholdInputs,
+    CompiledPostLaneBasisEffects, derive_compiled_lane_thresholds,
 };
 use crate::drivetrain::{
     DrivenSmoothingScalarInput, DrivenSmoothingScalars, DrivenWheelSmoothingInput,
@@ -36,7 +36,7 @@ use crate::drivetrain::{
     distribute_drive_torque, equalize_wheel_speeds, execute_first_wheel_iteration,
     execute_second_wheel_core, integrate_driven_wheel_speed, integrate_engine_from_raw_wheels,
     integrate_idle_engine, smoothed_speed_uses_tracking, spin_free_wheel,
-    track_smoothed_wheel_speed, wheel_brake_torques,
+    track_smoothed_wheel_speed, wheel_brake_torques, wheel_slip_flag, wheel_slip_shift,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::gearbox::{GearOutOfRange, GearboxInputs, GearboxParams, GearboxState, apply_gearbox};
@@ -60,19 +60,25 @@ use crate::static_world_collision::{
     StaticCollisionExecutionError, StaticContactHistory, resolve_static_world_collisions,
 };
 use crate::steering_response::{SteeringInputs, SteeringParams, SteeringState, apply_steering};
+use crate::tyre_load::{
+    TyreGains, TyreLoadInputs, TyreSurfaceIndexError, WheelSurfaceTerms, apply_tyre_load_pass,
+    derive_wheel_surface_terms, wheel_candidate_bases,
+};
 use crate::vehicle_dynamics::{
     AngularOrientationInput, ContactBasisInput, ContactDeadzoneGate, ContactVectorUpdateInput,
     GeometricPostprocessError, GeometricPostprocessLane, LaneDirectionSources,
-    LookupDependentCandidateError, OutOfControlState, RawSteer, SurfaceCoefficientIndexError,
-    TranslationStepInput, apply_angular_orientation_pipeline, apply_contact_vector_updates,
-    apply_geometric_lane_postprocess, apply_lateral_grip, apply_low_speed_steer_cut,
-    apply_translation_step, build_contact_basis_vectors, construct_lane_directions,
-    contact_count_scale, contact_global_update_gate, derive_lane_direction_pair, drag, net_accel,
-    resolve_lane_direction_mode, resting_flag_700, stabilize_lane_source_s, sum_contact_moments,
-    sum_translation_lane_forces, transform_contact_force, upright_flag_404,
+    LookupDependentCandidateError, OutOfControlState, RawSteer, SOLVER_GLOBAL_CONSTANTS,
+    SurfaceCoefficientIndexError, TranslationStepInput, apply_angular_orientation_pipeline,
+    apply_contact_vector_updates, apply_geometric_lane_postprocess, apply_lateral_grip,
+    apply_low_speed_steer_cut, apply_translation_step, build_contact_basis_vectors,
+    construct_lane_directions, contact_count_scale, contact_global_update_gate,
+    derive_lane_direction_pair, drag, net_accel, resolve_lane_direction_mode, resting_flag_700,
+    stabilize_lane_source_s, sum_contact_moments, sum_translation_lane_forces,
+    transform_contact_force, upright_flag_404,
 };
 use crate::vehicle_dynamics::{classify_contact_distance_lanes, grounded_base_force, slope_grip};
 use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
+use cmr_formats::pe_tyre_tables::TyreSurfaceTables;
 
 /// Fixed per-tick parameters of the integration harness (not recovered game
 /// data - explicit inputs that stand in for the unrecovered force wiring).
@@ -342,6 +348,13 @@ impl Default for DrivenWheelUpdateParams {
     }
 }
 
+/// The static tables and per-car variant behind the tyre gains.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TyreSurfaceInputs<'a> {
+    pub tables: &'a TyreSurfaceTables,
+    pub variant_758: i32,
+}
+
 /// Complete per-wheel runtime inputs for one native-order force tick.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FourWheelIterationParams<'a> {
@@ -375,6 +388,11 @@ pub struct FourWheelIterationParams<'a> {
     /// Setup block `+0x854/+0x858` (`DAT_0050e1a4/e1a8`): the front and rear
     /// brake scales of the wheel-force producer.
     pub brake_balance_e1a4: [i32; 2],
+    /// The static tyre/surface tables and the car's tyre variant `+0x758`.
+    /// `Some` with live ground contact runs the driver's `DAT_004f777c` loop
+    /// and `FUN_004095e0` each tick and feeds their gains and bases to both
+    /// wheel loops; `None` keeps the harness words in `first`/`second`.
+    pub tyre: Option<TyreSurfaceInputs<'a>>,
     /// Resolved global/callback inputs; Rebuild takes precedence over Exchange.
     pub lane_rebuild: bool,
     pub lane_exchange: bool,
@@ -570,6 +588,12 @@ pub struct FourWheelState {
     /// The basis the mechanics driver copies to `+0x27c` at the start of the
     /// tick; the ground pass restores it for a resting, aligned car.
     pub start_basis_27c: [Vec3; 3],
+    /// The driver's per-wheel `DAT_004f777c` words `ctl +0x278/+0x288/+0x298`.
+    pub wheel_terms: WheelSurfaceTerms,
+    /// The tyre gain words `ctl +0x31c..+0x378` written by `FUN_004095e0`.
+    pub tyre_gains: TyreGains,
+    /// This tick's support sums `+0x3fc + 12i`, cleared by the driver.
+    pub support_3fc: [Vec3; 8],
 }
 
 /// Apply neutral-gear zeroing or the ordinary post-step tracking update.
@@ -659,6 +683,14 @@ pub enum WheelPostprocessError {
     GroundQuery {
         failed_lane: usize,
     },
+    /// A surface word or tyre variant outside the static tyre tables.
+    TyreSurface(TyreSurfaceIndexError),
+}
+
+impl From<TyreSurfaceIndexError> for WheelPostprocessError {
+    fn from(error: TyreSurfaceIndexError) -> Self {
+        Self::TyreSurface(error)
+    }
 }
 
 impl From<GearOutOfRange> for WheelPostprocessError {
@@ -911,6 +943,18 @@ impl CarState {
                 upright_404: false,
                 resting_700: false,
                 start_basis_27c: [Vec3::ZERO; 3],
+                wheel_terms: WheelSurfaceTerms {
+                    term_278: [0; 4],
+                    term_288: [0; 4],
+                    term_298: [0; 4],
+                },
+                tyre_gains: TyreGains {
+                    gain_31c: [0; 8],
+                    gain_33c: [0; 8],
+                    gain_35c: [0; 4],
+                    gain_36c: [0; 4],
+                },
+                support_3fc: [Vec3::ZERO; 8],
             },
             ground: None,
         }
@@ -1305,14 +1349,114 @@ impl RaceState {
         Ok(sample)
     }
 
+    /// The per-tick words of the wheel-force producer's head that the harness
+    /// path keeps fixed: `DAT_0050c5c4 = qmul(+0x52c, DAT_004eac70)` from the
+    /// live contact-count share `+0x52c` (`FUN_0040d740`), and each wheel's
+    /// slip downshift from the processed pedals and the residual countdown.
+    fn apply_live_force_pass_head(
+        &self,
+        mass_48: Fixed16,
+        pedals: PedalInputs,
+        first: &mut [FirstWheelParams; 4],
+        second: &mut [SecondWheelParams<'_>; 4],
+    ) {
+        let count_674 = u8::try_from(self.car.motion.contact_count_674).unwrap_or(0);
+        let scale_52c = contact_count_scale(mass_48, count_674);
+        let scale_c5c4 = scale_52c.mul(SOLVER_GLOBAL_CONSTANTS.force_scale).raw();
+        let residual = self.car.four_wheel.residual_enable;
+        for (wheel, (first, second)) in first.iter_mut().zip(second.iter_mut()).enumerate() {
+            second.scale_c5c4 = scale_c5c4;
+            let flag = wheel_slip_flag(residual, first.config_158, wheel >= 2);
+            first.shift = wheel_slip_shift(i32::from(flag), pedals.throttle_304, pedals.brake_308);
+        }
+    }
+
+    /// The driver's `DAT_004f777c` loop and `FUN_004095e0`, then the wheel
+    /// loops' reads of their results: the first loop's slip limit and the
+    /// second loop's gains and candidate bases. `ctl +0x258..+0x26c` and
+    /// `car +0x654..` have no recovered writer and stay at zero.
+    #[expect(clippy::too_many_arguments)]
+    fn apply_tyre_loads(
+        &mut self,
+        tyre: TyreSurfaceInputs<'_>,
+        ground: &GroundContact,
+        thresholds: &CompiledLaneThresholdEffects,
+        mass_48: Fixed16,
+        normal_324: Vec3,
+        first: &mut [FirstWheelParams; 4],
+        second: &mut [SecondWheelParams<'_>; 4],
+    ) -> Result<(), WheelPostprocessError> {
+        let surface_words = ground.lanes.type_words.map(|word| word as i16);
+        let wheel_surfaces: [i16; 4] = std::array::from_fn(|wheel| surface_words[wheel]);
+        let four_wheel = &mut self.car.four_wheel;
+        four_wheel.wheel_terms =
+            derive_wheel_surface_terms(wheel_surfaces, tyre.variant_758, tyre.tables)?;
+        let effects = apply_tyre_load_pass(
+            &mut four_wheel.tyre_gains,
+            &TyreLoadInputs {
+                count_742: thresholds.count_742,
+                mass_48,
+                normal_324,
+                upright_404: four_wheel.upright_404,
+                flags_73a: thresholds.flags_73a,
+                contact_68c: self.car.motion.contact_distance_flags,
+                probe_normal_y: std::array::from_fn(|wheel| ground.lanes.output_vectors[wheel][1]),
+                wheel_load_654: [0; 4],
+                surface_words,
+                term_268: [0; 4],
+                term_278: four_wheel.wheel_terms.term_278,
+                shared_250: 0,
+                shared_254: 0,
+                tables: tyre.tables,
+            },
+        )?;
+        four_wheel.support_3fc = effects.support_3fc;
+        let gains = four_wheel.tyre_gains;
+        for wheel in 0..4 {
+            let (transition_base, alternate_base) = wheel_candidate_bases(
+                wheel,
+                wheel_surfaces[wheel],
+                0,
+                four_wheel.wheel_terms.term_288[wheel],
+                tyre.tables,
+            )?;
+            first[wheel].limit = gains.gain_36c[wheel];
+            let input = &mut second[wheel];
+            input.transition_gain = gains.gain_36c[wheel];
+            input.transition_base = transition_base;
+            input.alternate_gain = gains.gain_35c[wheel];
+            input.alternate_base = alternate_base;
+            input.coefficient_34 = alternate_base;
+            input.config_scale = gains.gain_35c[wheel];
+            input.accumulation_limit = gains.gain_35c[wheel];
+            input.correction_alternate = gains.gain_36c[wheel];
+        }
+        Ok(())
+    }
+
     /// Rebuild contact vectors from the pre-step velocity, run all four first
     /// iterations in reverse order, equalize each axle, run all second iterations
     /// in reverse order, postprocess, update all eight contacts, then translate.
     ///
     /// # Errors
     ///
-    /// Propagates contact-index, candidate lookup and geometric postprocess failures.
+    /// Propagates contact-index, candidate lookup, gear, tyre-surface and
+    /// geometric postprocess failures. A failed tick leaves the race state as
+    /// it was before the call.
     pub fn step_with_all_four_wheels(
+        &mut self,
+        controls: &Controls,
+        wheel: &FourWheelIterationParams<'_>,
+    ) -> Result<TraceSample, WheelPostprocessError> {
+        let (car, clock) = (self.car, self.clock);
+        let result = self.step_with_all_four_wheels_unchecked(controls, wheel);
+        if result.is_err() {
+            (self.car, self.clock) = (car, clock);
+        }
+        result
+    }
+
+    fn step_with_all_four_wheels_unchecked(
         &mut self,
         controls: &Controls,
         wheel: &FourWheelIterationParams<'_>,
@@ -1481,6 +1625,23 @@ impl RaceState {
             if let Some((_, _, ratio)) = live_gear {
                 input.gear_ratio = ratio;
             }
+        }
+        if let (Some(tyre), Some(ground)) = (wheel.tyre, self.car.ground) {
+            self.apply_live_force_pass_head(
+                wheel.angular.momentum.moment_scale,
+                pedal_inputs,
+                &mut first,
+                &mut second,
+            );
+            self.apply_tyre_loads(
+                tyre,
+                &ground,
+                &thresholds,
+                wheel.angular.momentum.moment_scale,
+                start_normal,
+                &mut first,
+                &mut second,
+            )?;
         }
         for (lane, vector_index) in wheel.contact_vector_indices.into_iter().enumerate() {
             let Some(vector) = contact_vectors.get(vector_index) else {
@@ -2635,6 +2796,7 @@ mod tests {
             steering_surface_factors: [0; 2],
             gearbox: None,
             brake_balance_e1a4: [0x1_0000; 2],
+            tyre: None,
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -3214,6 +3376,90 @@ mod tests {
             moving.car.four_wheel.second[0].accumulators,
             sample.car.four_wheel.second[0].accumulators
         );
+
+        // With the static tyre tables and live ground contact the step runs
+        // the driver's `DAT_004f777c` loop and `FUN_004095e0`, and the wheel
+        // loops read their gains, bases and limits instead of harness words.
+        let tables = TyreSurfaceTables {
+            candidate_base_6b50: std::array::from_fn(|i| 0x1_0000 + i as i32),
+            candidate_base_6f10: std::array::from_fn(|i| 0x2_0000 + i as i32),
+            load_factor_6b4c: std::array::from_fn(|i| 0x8000 + i as i32),
+            load_factor_6f0c: std::array::from_fn(|i| 0x4000 + i as i32),
+            wheel_terms_777c: std::array::from_fn(|v| {
+                std::array::from_fn(|s| [(v * 4 + s) as u16, 0x100, 0x200])
+            }),
+        };
+        let mut tyred = wheel.clone();
+        tyred.tyre = Some(TyreSurfaceInputs {
+            tables: &tables,
+            variant_758: 1,
+        });
+        let mut ground_car = car;
+        ground_car.ground = Some(GroundContact {
+            lanes: crate::compiled_car_initializer::CompiledEightLaneExecutionState {
+                handles: [0; 8],
+                type_words: [3; 8],
+                output_vectors: [[0, 0x1_0000, 0]; 8],
+                lane_words: [0; 8],
+                accumulator_words: [0; 8],
+                latch_67c: 0,
+            },
+            lane_inputs: crate::compiled_car_initializer::CompiledSetupPoseLaneInputs {
+                gate_words: [0; 8],
+                drive_words: [0; 8],
+                first_four_subtractions: [0; 4],
+            },
+            half_words: [0; 3],
+            deformation: [0; 3],
+            probes: [[0; 3]; 8],
+            thresholds: derive_compiled_lane_thresholds(CompiledLaneThresholdInputs {
+                lane_words: [0; 8],
+                source_y: [0; 8],
+            }),
+        });
+        let tyre_free = RaceState::new(ground_car)
+            .step_with_all_four_wheels(&straight_throttle(1)[0], &wheel)
+            .unwrap();
+        let live = RaceState::new(ground_car)
+            .step_with_all_four_wheels(&straight_throttle(1)[0], &tyred)
+            .unwrap();
+        let terms = live.car.four_wheel.wheel_terms;
+        assert_eq!(terms.term_278, [-7; 4]);
+        assert_eq!(terms.term_288, [-0x100; 4]);
+        assert_eq!(terms.term_298, [0x1_0200; 4]);
+        assert!(live.car.four_wheel.upright_404);
+        // Upright wheels on a level normal: load 30.0 * 0.5 = 15.0.
+        let gains = live.car.four_wheel.tyre_gains;
+        let load = Fixed16::from_raw(0xf_0000);
+        assert_eq!(
+            gains.gain_36c,
+            [load.mul(Fixed16::from_raw(0x4003 - 7)).raw(); 4]
+        );
+        assert_eq!(
+            gains.gain_35c,
+            [load.mul(Fixed16::from_raw(0x8003 - 7)).raw(); 4]
+        );
+        assert_eq!(tyre_free.car.four_wheel.tyre_gains, TyreGains::default());
+        assert_ne!(
+            live.car.four_wheel.second[0].accumulators,
+            tyre_free.car.four_wheel.second[0].accumulators
+        );
+        // An out-of-table surface word is rejected before any state changes.
+        let mut bad_ground = ground_car;
+        if let Some(ground) = bad_ground.ground.as_mut() {
+            ground.lanes.type_words[2] = 120;
+        }
+        let mut bad_state = RaceState::new(bad_ground);
+        assert_eq!(
+            bad_state.step_with_all_four_wheels(&straight_throttle(1)[0], &tyred),
+            Err(WheelPostprocessError::TyreSurface(
+                TyreSurfaceIndexError::Surface {
+                    probe: 2,
+                    surface: 120
+                }
+            ))
+        );
+        assert_eq!(bad_state.car(), bad_ground);
 
         let mut invalid = wheel.clone();
         invalid.contact_vector_indices[1] = 8;

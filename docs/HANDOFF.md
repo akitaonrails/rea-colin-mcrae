@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: project the base force onto the ground while grounded
+feat: feed the tyre loads and gains to both wheel loops
 ```
 
 Start by confirming the checkout and progress footer:
@@ -121,10 +121,14 @@ not drive yet: all lane forces are zero, so it slides downhill under gravity
 and the checkpoint cursor never advances (a correction to `834e4c9`). Run
 `CMR_RUNTIME_DATA="$PWD/runtime-data/installed-eu-derived-assets-v2" cargo test
 -p cmr-app --release probe_compiled_four_wheel_car_on_au1 -- --ignored
---nocapture` (it prints the cursor). Next, in order: source the second loop's
-tyre inputs so lane forces appear (`rea.official-eu.tyre-load-pass`: the gains
-`+0x35c/+0x36c` come from `FUN_004095e0`; extend the tyre store with each
-8-byte record's first dword at `0x4f6b4c/0x4f6f0c`), then build the windowed session on
+--nocapture` (it prints the cursor; `CMR_PROBE_EVERY=1` prints every tick).
+The tyre gains and bases now come from `cmr-core::tyre_load`
+(`impl.tyre-gains-and-live-force-head`) and every lane produces force, but the
+summed lane force flips sign each tick (about +16.8 then -14.9 in x on AU1), so
+the car stays under the `0xccc` position gate. Next, in order: find why the
+lane force alternates (compare the second loop's residuals and its
+`+0x2a8/+0x2b8` speed inputs with `FUN_0040d810`, and check the stored
+`ctl +0x2d4` pre-slip force), then build the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`
 from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground`),
 render the car body from `MotionState::basis`, then the out-of-control path

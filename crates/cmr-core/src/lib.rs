@@ -144,6 +144,7 @@ pub mod static_world_collision;
 pub mod steering_response;
 pub mod surface;
 pub mod timing;
+pub mod tyre_load;
 pub mod vehicle_dynamics;
 pub mod vertical_path;
 pub mod video_player;

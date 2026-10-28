@@ -1891,6 +1891,16 @@ lane force is still zero, so the motion seen on AU1 was gravity sliding it
 downhill (the checkpoint cursor never advances). The second loop's tyre inputs
 are the blocker, and the windowed session waits for them.
 
+Those tyre inputs are now produced: `cmr-core::tyre_load` reconstructs the
+driver's `DAT_004f777c` terms and `FUN_004095e0`'s per-wheel loads and gains,
+the reviewed tyre store keeps each surface record's first dword, and the
+four-wheel step feeds the gains, bases and slip limits to both wheel loops
+(`impl.tyre-gains-and-live-force-head`). The same path derives the slip shift
+and `DAT_0050c5c4` per tick and uses the recovered unit step for `DAT_0050c5c0`.
+On AU1 every lane now produces force and the gearbox shifts under throttle, but
+the summed lane force alternates sign each tick and the car stays below the
+position gate, so it still does not advance.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

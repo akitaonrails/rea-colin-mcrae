@@ -1,10 +1,11 @@
 //! Authenticated extraction and payload-free encoding of the three static
 //! per-wheel tyre/surface tables read by the wheel-force producer.
 //!
-//! Observation: `DAT_004f6b50` and `DAT_004f6f10` are 120-entry, 8-byte-stride
-//! tables of which only the signed little-endian dword at entry offset 0 is
-//! read; `DAT_004f777c` is 8 variants x 120 surfaces of three unsigned 16-bit
-//! words. The meaning of the values is not asserted here, so field names carry
+//! Observation: two contiguous 120-record, 8-byte-stride surface tables start
+//! at `0x4f6b4c` and `0x4f6f0c`. The tyre-load pass `FUN_004095e0` reads each
+//! record's first signed dword and the wheel-force producer reads the second
+//! (addressed there as `DAT_004f6b50`/`DAT_004f6f10`); `DAT_004f777c` is 8
+//! variants x 120 surfaces of three unsigned 16-bit words. The meaning of the values is not asserted here, so field names carry
 //! the source address. No table payload is compiled into this crate.
 
 use std::fmt;
@@ -14,23 +15,23 @@ use crate::pe32::{Pe32Error, Pe32Image};
 pub const TYRE_SURFACE_COUNT: usize = 120;
 pub const TYRE_VARIANT_COUNT: usize = 8;
 pub const TYRE_WHEEL_TERM_WORDS: usize = 3;
-pub const TYRE_TABLES_FORMAT_VERSION: u32 = 1;
+pub const TYRE_TABLES_FORMAT_VERSION: u32 = 2;
 
 const CANDIDATE_STRIDE: usize = 8;
+/// Offset of the second-loop dword inside each record; the load factor is at 0.
 const CANDIDATE_DWORD_BYTES: usize = 4;
 const WHEEL_TERM_ENTRY_BYTES: usize = TYRE_WHEEL_TERM_WORDS * 2;
-/// Bytes of the first table: every entry is complete.
-const BASE_6B50_SPAN: usize = TYRE_SURFACE_COUNT * CANDIDATE_STRIDE;
-/// Bytes of the second table: the last entry contributes only its read dword,
-/// so the span stops where the existing surface-coefficient family begins.
-const BASE_6F10_SPAN: usize = (TYRE_SURFACE_COUNT - 1) * CANDIDATE_STRIDE + CANDIDATE_DWORD_BYTES;
+/// Bytes of one table's records, from its first record's load-factor dword.
+const RECORD_TABLE_SPAN: usize = TYRE_SURFACE_COUNT * CANDIDATE_STRIDE;
+/// Distance between the two second-loop dword addresses.
+const BASE_6B50_SPAN: usize = RECORD_TABLE_SPAN;
 const WHEEL_TERMS_SPAN: usize = TYRE_VARIANT_COUNT * TYRE_SURFACE_COUNT * WHEEL_TERM_ENTRY_BYTES;
 
 const MAGIC: &[u8; 8] = b"CMRTYRE\0";
 const HEADER_LEN: usize = 20;
 const CANDIDATE_ENCODED_BYTES: usize = TYRE_SURFACE_COUNT * 4;
 pub const TYRE_TABLES_ENCODED_LEN: usize =
-    HEADER_LEN + 2 * CANDIDATE_ENCODED_BYTES + WHEEL_TERMS_SPAN;
+    HEADER_LEN + 4 * CANDIDATE_ENCODED_BYTES + WHEEL_TERMS_SPAN;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TyreTablesLayout {
@@ -47,13 +48,17 @@ pub const OFFICIAL_EU_TYRE_TABLES_LAYOUT: TyreTablesLayout = TyreTablesLayout {
     wheel_terms_777c_va: 0x004f_777c,
 };
 
-/// The three neutral tables in source order.
+/// The neutral tables, each indexed by surface.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TyreSurfaceTables {
-    /// Dword at offset 0 of each 8-byte entry of `DAT_004f6b50`.
+    /// Second dword of each record at `0x4f6b4c + 8 * surface` (`DAT_004f6b50`).
     pub candidate_base_6b50: [i32; TYRE_SURFACE_COUNT],
-    /// Dword at offset 0 of each 8-byte entry of `DAT_004f6f10`.
+    /// Second dword of each record at `0x4f6f0c + 8 * surface` (`DAT_004f6f10`).
     pub candidate_base_6f10: [i32; TYRE_SURFACE_COUNT],
+    /// First dword of each record at `0x4f6b4c + 8 * surface` (`DAT_004f6b4c`).
+    pub load_factor_6b4c: [i32; TYRE_SURFACE_COUNT],
+    /// First dword of each record at `0x4f6f0c + 8 * surface` (`DAT_004f6f0c`).
+    pub load_factor_6f0c: [i32; TYRE_SURFACE_COUNT],
     /// `DAT_004f777c[variant][surface]` as three little-endian words.
     pub wheel_terms_777c: [[[u16; TYRE_WHEEL_TERM_WORDS]; TYRE_SURFACE_COUNT]; TYRE_VARIANT_COUNT],
 }
@@ -133,24 +138,36 @@ pub fn extract_tyre_surface_tables(
             actual: image.image_base(),
         });
     }
+    let record_start = |va: u32| {
+        va.checked_sub(CANDIDATE_DWORD_BYTES as u32)
+            .ok_or(TyreTablesError::UnsupportedLayout)
+    };
     let first = image
-        .read_va_range(layout.candidate_base_6b50_va, BASE_6B50_SPAN)
+        .read_va_range(
+            record_start(layout.candidate_base_6b50_va)?,
+            RECORD_TABLE_SPAN,
+        )
         .map_err(pe_error)?;
     let second = image
-        .read_va_range(layout.candidate_base_6f10_va, BASE_6F10_SPAN)
+        .read_va_range(
+            record_start(layout.candidate_base_6f10_va)?,
+            RECORD_TABLE_SPAN,
+        )
         .map_err(pe_error)?;
     let terms = image
         .read_va_range(layout.wheel_terms_777c_va, WHEEL_TERMS_SPAN)
         .map_err(pe_error)?;
-    let candidates = |bytes: &[u8]| {
+    let field = |bytes: &[u8], offset: usize| {
         std::array::from_fn(|i| {
-            let at = i * CANDIDATE_STRIDE;
+            let at = i * CANDIDATE_STRIDE + offset;
             i32::from_le_bytes(bytes[at..at + 4].try_into().expect("bounded span"))
         })
     };
     Ok(TyreSurfaceTables {
-        candidate_base_6b50: candidates(first),
-        candidate_base_6f10: candidates(second),
+        candidate_base_6b50: field(first, CANDIDATE_DWORD_BYTES),
+        candidate_base_6f10: field(second, CANDIDATE_DWORD_BYTES),
+        load_factor_6b4c: field(first, 0),
+        load_factor_6f0c: field(second, 0),
         wheel_terms_777c: std::array::from_fn(|v| {
             std::array::from_fn(|s| {
                 let at = (s + TYRE_SURFACE_COUNT * v) * WHEEL_TERM_ENTRY_BYTES;
@@ -172,6 +189,8 @@ pub fn encode_tyre_surface_tables(tables: &TyreSurfaceTables) -> Vec<u8> {
         .candidate_base_6b50
         .iter()
         .chain(&tables.candidate_base_6f10)
+        .chain(&tables.load_factor_6b4c)
+        .chain(&tables.load_factor_6f0c)
     {
         out.extend_from_slice(&value.to_le_bytes());
     }
@@ -197,11 +216,16 @@ pub fn decode_tyre_surface_tables(input: &[u8]) -> Result<TyreSurfaceTables, Tyr
     {
         return Err(TyreTablesError::InvalidHeader);
     }
-    let second_start = HEADER_LEN + CANDIDATE_ENCODED_BYTES;
-    let terms_start = second_start + CANDIDATE_ENCODED_BYTES;
+    let table = |index: usize| -> [i32; TYRE_SURFACE_COUNT] {
+        let start = HEADER_LEN + index * CANDIDATE_ENCODED_BYTES;
+        std::array::from_fn(|i| word(start + i * 4) as i32)
+    };
+    let terms_start = HEADER_LEN + 4 * CANDIDATE_ENCODED_BYTES;
     Ok(TyreSurfaceTables {
-        candidate_base_6b50: std::array::from_fn(|i| word(HEADER_LEN + i * 4) as i32),
-        candidate_base_6f10: std::array::from_fn(|i| word(second_start + i * 4) as i32),
+        candidate_base_6b50: table(0),
+        candidate_base_6f10: table(1),
+        load_factor_6b4c: table(2),
+        load_factor_6f0c: table(3),
         wheel_terms_777c: std::array::from_fn(|v| {
             std::array::from_fn(|s| {
                 let at = terms_start + (s + TYRE_SURFACE_COUNT * v) * WHEEL_TERM_ENTRY_BYTES;
@@ -238,6 +262,8 @@ mod tests {
         TyreSurfaceTables {
             candidate_base_6b50: std::array::from_fn(|i| i as i32 - 60),
             candidate_base_6f10: std::array::from_fn(|i| i32::MIN + i as i32 * 7),
+            load_factor_6b4c: std::array::from_fn(|i| 0x1_0000 + i as i32),
+            load_factor_6f0c: std::array::from_fn(|i| -(i as i32) * 3),
             wheel_terms_777c: std::array::from_fn(|v| {
                 std::array::from_fn(|s| {
                     [
@@ -269,15 +295,23 @@ mod tests {
         let tables = synthetic_tables();
         for i in 0..TYRE_SURFACE_COUNT {
             let a = file_offset(layout.candidate_base_6b50_va) + i * 8;
+            put_u32(&mut bytes, a - 4, tables.load_factor_6b4c[i] as u32);
             put_u32(&mut bytes, a, tables.candidate_base_6b50[i] as u32);
-            // Unread second dword of each entry must not leak into the result.
-            put_u32(&mut bytes, a + 4, 0xdead_beef);
             let b = file_offset(layout.candidate_base_6f10_va) + i * 8;
+            put_u32(&mut bytes, b - 4, tables.load_factor_6f0c[i] as u32);
             put_u32(&mut bytes, b, tables.candidate_base_6f10[i] as u32);
-            if i + 1 < TYRE_SURFACE_COUNT {
-                put_u32(&mut bytes, b + 4, 0xdead_beef);
-            }
         }
+        // Bytes just outside the record span must not leak into the result.
+        put_u32(
+            &mut bytes,
+            file_offset(layout.candidate_base_6b50_va) - 8,
+            0xdead_beef,
+        );
+        put_u32(
+            &mut bytes,
+            file_offset(layout.candidate_base_6f10_va) + RECORD_TABLE_SPAN - 4,
+            0xdead_beef,
+        );
         for (v, variant) in tables.wheel_terms_777c.iter().enumerate() {
             for (s, entry) in variant.iter().enumerate() {
                 let at = file_offset(layout.wheel_terms_777c_va)
@@ -294,10 +328,16 @@ mod tests {
     fn spans_match_the_reviewed_addresses() {
         let l = OFFICIAL_EU_TYRE_TABLES_LAYOUT;
         assert_eq!(l.candidate_base_6b50_va + BASE_6B50_SPAN as u32, 0x4f6f10);
+        // Records start at the load-factor dword read by `FUN_004095e0`.
+        assert_eq!(l.candidate_base_6b50_va - 4, 0x4f6b4c);
+        assert_eq!(l.candidate_base_6f10_va - 4, 0x4f6f0c);
         // Ends exactly where the existing surface family begins.
-        assert_eq!(l.candidate_base_6f10_va + BASE_6F10_SPAN as u32, 0x4f72cc);
+        assert_eq!(
+            l.candidate_base_6f10_va - 4 + RECORD_TABLE_SPAN as u32,
+            0x4f72cc
+        );
         assert_eq!(l.wheel_terms_777c_va + WHEEL_TERMS_SPAN as u32, 0x4f8dfc);
-        assert_eq!(TYRE_TABLES_ENCODED_LEN, 20 + 960 + 5760);
+        assert_eq!(TYRE_TABLES_ENCODED_LEN, 20 + 1920 + 5760);
     }
 
     #[test]
@@ -306,6 +346,8 @@ mod tests {
         let got = extract_tyre_surface_tables(&bytes, &OFFICIAL_EU_TYRE_TABLES_LAYOUT).unwrap();
         assert_eq!(got, synthetic_tables());
         assert_eq!(got.candidate_base_6f10[119], i32::MIN + 119 * 7);
+        assert_eq!(got.load_factor_6b4c[0], 0x1_0000);
+        assert_eq!(got.load_factor_6f0c[119], -357);
         assert_eq!(got.wheel_terms_777c[7][119][0], (7 * 1000 + 119) as u16);
         assert_eq!(got.wheel_terms_777c[1][0][1], u16::MAX);
     }
@@ -315,7 +357,7 @@ mod tests {
         let l = OFFICIAL_EU_TYRE_TABLES_LAYOUT;
         let bytes = synthetic_pe();
         let end = file_offset(l.wheel_terms_777c_va) + WHEEL_TERMS_SPAN;
-        for len in [end - 1, end - 6, file_offset(l.candidate_base_6f10_va) + 4] {
+        for len in [end - 1, end - 6, file_offset(l.candidate_base_6f10_va)] {
             let err = extract_tyre_surface_tables(&bytes[..len], &l).unwrap_err();
             let TyreTablesError::Pe(text) = err else {
                 panic!("expected PE error");
@@ -430,6 +472,8 @@ mod tests {
         tables.candidate_base_6b50[0] = i32::MIN;
         tables.candidate_base_6b50[119] = i32::MAX;
         tables.candidate_base_6f10[119] = -1;
+        tables.load_factor_6b4c[0] = i32::MAX;
+        tables.load_factor_6f0c[119] = i32::MIN;
         tables.wheel_terms_777c[7][119] = [0, u16::MAX, 0x8000];
         let decoded = decode_tyre_surface_tables(&encode_tyre_surface_tables(&tables)).unwrap();
         assert_eq!(decoded, tables);

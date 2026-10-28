@@ -812,6 +812,20 @@ pub fn clamp_wheel_slip_force(slip: Fixed16, scale: Fixed16, limit: i32) -> i32 
     }
 }
 
+/// The per-wheel flag that selects the `5` slip downshift (`0x40e62f..`):
+/// set while the residual countdown `ctl +0x43b` runs on a wheel the drive
+/// layout `ctl +0x158` does not drive (rear wheels unless it is `1.0`, front
+/// wheels unless it is `0`).
+#[must_use]
+pub const fn wheel_slip_flag(residual_43b: u8, config_158: i32, is_rear_wheel: bool) -> bool {
+    residual_43b != 0
+        && if is_rear_wheel {
+            config_158 != 0x1_0000
+        } else {
+            config_158 != 0
+        }
+}
+
 /// The downshift applied to the clamped slip force: `5` when the per-wheel
 /// flag is set, otherwise `2` when both config dwords are zero, else `3`.
 #[must_use]
@@ -2515,6 +2529,13 @@ mod tests {
         assert_eq!(wheel_slip_shift(0, 1, 0), 3);
         assert_eq!(wheel_slip_shift(0, 0, 1), 3);
         assert_eq!(wheel_slip_shift(-1, 1, 1), 5);
+        assert!(!wheel_slip_flag(0, 0x8000, true));
+        assert!(wheel_slip_flag(3, 0x8000, true));
+        assert!(wheel_slip_flag(3, 0x8000, false));
+        assert!(!wheel_slip_flag(3, 0x1_0000, true));
+        assert!(wheel_slip_flag(3, 0x1_0000, false));
+        assert!(!wheel_slip_flag(3, 0, false));
+        assert!(wheel_slip_flag(3, 0, true));
     }
 
     #[test]
