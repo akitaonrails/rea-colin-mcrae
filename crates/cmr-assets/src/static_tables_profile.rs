@@ -507,6 +507,8 @@ pub(crate) mod tests {
                 ("frontend_sound_16", 0x0050_9474, String),
                 ("frontend_sound_17", 0x0050_9468, String),
                 ("frontend_sound_18", 0x0050_9458, String),
+                ("car_stats_format", 0x0050_8f20, String),
+                ("car_locked_line", 0x0050_8f10, String),
             ]
         );
         // Same executable identity as the reviewed stage-weather profile.

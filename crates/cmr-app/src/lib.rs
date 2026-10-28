@@ -5624,7 +5624,20 @@ fn screen_commands(
             oscillation: tables
                 .and_then(|t| t.block("frontend_arrow_oscillation"))
                 .unwrap_or(&[]),
+            car_short_names: tables
+                .and_then(|t| t.strings("car_short_names"))
+                .unwrap_or(empty),
+            car_stats: tables.and_then(|t| t.block("car_stats")).unwrap_or(&[]),
+            stats_format: tables
+                .and_then(|t| t.string("car_stats_format"))
+                .unwrap_or(&[]),
+            locked_line: tables
+                .and_then(|t| t.string("car_locked_line"))
+                .unwrap_or(&[]),
         },
+        info: screens.info_anchor(),
+        info_flags: screens.layout(kind).info_flags,
+        record,
     };
     Some(frame::plan_setup_frame(&input, state, &lookup, &font))
 }

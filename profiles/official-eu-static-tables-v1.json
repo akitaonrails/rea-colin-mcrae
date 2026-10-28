@@ -46,9 +46,11 @@
       { "name": "frontend_sound_15", "kind": "string", "va": 5280896 },
       { "name": "frontend_sound_16", "kind": "string", "va": 5280884 },
       { "name": "frontend_sound_17", "kind": "string", "va": 5280872 },
-      { "name": "frontend_sound_18", "kind": "string", "va": 5280856 }
+      { "name": "frontend_sound_18", "kind": "string", "va": 5280856 },
+      { "name": "car_stats_format", "kind": "string", "va": 5279520 },
+      { "name": "car_locked_line", "kind": "string", "va": 5279504 }
     ],
-    "payload_sha256": "f5ddaee2f09a0380ffee2c6bcc0bc88393e91f734f159f94b91ce32a176da8ea",
+    "payload_sha256": "adac7dd21039d0e0877fba0b58589450d2a92969c15f26603cb173e75812888a",
     "output_encoding": "cmr-static-tables-v1"
   }
 }

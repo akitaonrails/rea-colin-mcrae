@@ -72,6 +72,14 @@ pub struct SetupDrawData<'a> {
     pub arrows: Option<(&'a [u8], &'a [u8])>,
     /// `0x508818`: 16 signed arrow offsets.
     pub oscillation: &'a [u8],
+    /// `PTR[0x506e08 + car * 4]`: the cars' short names.
+    pub car_short_names: &'a [Vec<u8>],
+    /// `0x508e18`: 14 x `{i32 bhp, i32 mm, i32 drive}`.
+    pub car_stats: &'a [u8],
+    /// `"%s: %d BHP^%s: %d MM^"` (`0x508f20`) and the locked line for the
+    /// third difficulty (`0x508f10`).
+    pub stats_format: &'a [u8],
+    pub locked_line: &'a [u8],
 }
 
 /// What one setup frame draws from.
@@ -87,6 +95,12 @@ pub struct SetupDrawInput<'a> {
     pub camera: Camera,
     pub extent: DisplayExtent,
     pub data: SetupDrawData<'a>,
+    /// The info anchor (`DAT_00d90038/c`) and the descriptor's info flags
+    /// (`+0x40`).
+    pub info: (i32, i32),
+    pub info_flags: u32,
+    /// The cmRally.cfg record the previews read.
+    pub record: &'a [u8],
 }
 
 fn q(value: i32, fraction: i32) -> i32 {
@@ -207,8 +221,192 @@ pub fn plan_setup_frame<'f>(
             fonts,
             &mut commands,
         );
+        if selected {
+            preview_commands(
+                input,
+                item.key,
+                item.value.value,
+                text,
+                fonts,
+                &mut commands,
+            );
+        }
     }
     commands
+}
+
+/// `FUN_004c41d0(x, y, flags, .., line1, line2)`: the info box
+/// `R_INFO.BMP` (0, 0, 0x140, 0x84) at the camera-relative anchor and its two
+/// lines in `BL_INFO` and `GR_INFO`, flags `0x11`.
+#[allow(clippy::too_many_arguments)]
+fn info_box<'f>(
+    input: &SetupDrawInput,
+    line1: &[u8],
+    line2: &[u8],
+    fonts: &dyn Fn(FontStyle) -> &'f BitmapFont,
+    commands: &mut Vec<ScreenCommand>,
+) {
+    use crate::frontend_screen_bitmaps::ScreenBitmap;
+    let w = i32::from(input.extent.width);
+    let h = i32::from(input.extent.height);
+    let (ox, oy) = input.camera.offset();
+    let x = input.info.0.wrapping_add(ox);
+    let y = input.info.1.wrapping_add(oy);
+    let right = input.info_flags & 0xf == 1;
+    commands.push(ScreenCommand::Bitmap {
+        bitmap: ScreenBitmap::InfoRight,
+        source: Some((0, 0, 0x140, 0x84)),
+        x: q(w, x) + if right { 0x8e } else { 0x69 },
+        y: q(h, y) - i32::from(right) * 2,
+        size: None,
+        keyed: false,
+    });
+    let base = x
+        .wrapping_add(if right { 0x353 } else { 0x4c08 })
+        .wrapping_add(0x8147);
+    let (command, next) = q16_text(
+        fonts,
+        FontStyle::BlueInfo,
+        line1,
+        base,
+        y.wrapping_add(0x7ad),
+        0x11,
+        input.extent,
+    );
+    commands.push(command);
+    let (command, _) = q16_text(
+        fonts,
+        FontStyle::GreenInfo,
+        line2,
+        base,
+        next.wrapping_add(0x51e),
+        0x11,
+        input.extent,
+    );
+    commands.push(command);
+}
+
+/// The selected row's preview: the players hint (`FUN_004c9430`) with its
+/// picture, the car's stats (`FUN_004c54a0` for the car rows and the gear
+/// rows' cars), the country's name and description (`FUN_004c4540`), and
+/// Continue's hint (`FUN_004c9370`). The car logos and models, the flags and
+/// the chequered flag are not drawn yet.
+fn preview_commands<'f>(
+    input: &SetupDrawInput,
+    item_key: i32,
+    value: i32,
+    text: &dyn Fn(i32) -> Vec<u8>,
+    fonts: &dyn Fn(FontStyle) -> &'f BitmapFont,
+    commands: &mut Vec<ScreenCommand>,
+) {
+    use crate::frontend_screen_bitmaps::ScreenBitmap;
+    let record: &[u8] = input.record;
+    let full_record = <&[u8; crate::config::LEGACY_CONFIG_SIZE]>::try_from(record).ok();
+    let difficulty = record.get(0x20).map_or(0, |b| (b >> 3) & 3);
+    match item_key {
+        key::PLAYERS => {
+            info_box(input, &text(0x1f), &text(0x20), fonts, commands);
+            let w = i32::from(input.extent.width);
+            let h = i32::from(input.extent.height);
+            let (ox, oy) = input.camera.offset();
+            commands.push(ScreenCommand::Bitmap {
+                bitmap: match value {
+                    0 => ScreenBitmap::OnePlayer,
+                    4 => ScreenBitmap::Host,
+                    5 => ScreenBitmap::Join,
+                    _ => ScreenBitmap::TwoPlayer,
+                },
+                source: None,
+                x: q(w, input.info.0.wrapping_add(ox)) + 0x90,
+                y: q(h, input.info.1.wrapping_add(oy)),
+                size: None,
+                keyed: false,
+            });
+        }
+        key::CAR_1 | key::CAR_2 | key::GEAR_1 | key::GEAR_2 => {
+            // The gear rows show their car's stats (`DAT_00d8ce8c/90`).
+            let car_key = if matches!(item_key, key::CAR_1 | key::GEAR_1) {
+                key::CAR_1
+            } else {
+                key::CAR_2
+            };
+            let car_index = input
+                .menu
+                .find(car_key)
+                .map_or(0, |index| input.menu.items[index].value.value);
+            let Some(&car) = input.cars.get(car_index.max(0) as usize) else {
+                return;
+            };
+            let allowed =
+                full_record.is_some_and(|record| crate::frontend_setup::car_allowed(record, car));
+            let line2 = if allowed {
+                let at = 12 * usize::from(car);
+                let stat = |offset: usize| {
+                    input
+                        .data
+                        .car_stats
+                        .get(at + offset..at + offset + 4)
+                        .map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                };
+                let mut line = crate::c_format::c_format(
+                    input.data.stats_format,
+                    &[
+                        crate::c_format::FormatArg::Bytes(&text(0xa9)),
+                        crate::c_format::FormatArg::Int(i64::from(stat(0))),
+                        crate::c_format::FormatArg::Bytes(&text(0xaa)),
+                        crate::c_format::FormatArg::Int(i64::from(stat(4))),
+                    ],
+                );
+                match stat(8) {
+                    0 => line.extend(text(0x73)),
+                    1 => line.extend(text(0x74)),
+                    2 => line.extend(text(0x75)),
+                    _ => {}
+                }
+                line
+            } else {
+                match difficulty {
+                    0 => text(0x76),
+                    1 => text(0x77),
+                    _ => input.data.locked_line.to_vec(),
+                }
+            };
+            let short = input
+                .data
+                .car_short_names
+                .get(usize::from(car))
+                .cloned()
+                .unwrap_or_default();
+            info_box(input, &short, &line2, fonts, commands);
+        }
+        key::COUNTRY => {
+            let at = 8 * value.max(0) as usize;
+            let id = |offset: usize| {
+                input
+                    .data
+                    .country_table
+                    .get(at + offset..at + offset + 2)
+                    .map_or(0, |b| i32::from(u16::from_le_bytes([b[0], b[1]])))
+            };
+            let time_trial = input.kind == SetupKind::TimeTrial;
+            let ok = full_record.is_some_and(|record| {
+                crate::frontend_setup::country_allowed(record, value as u8, time_trial)
+            });
+            let line2 = text(if ok { id(6) } else { 0x8c });
+            info_box(input, &text(id(4)), &line2, fonts, commands);
+        }
+        key::CONTINUE => {
+            let mode = record.get(0x180).map_or(0, |b| b & 3);
+            let d = i32::from(difficulty);
+            let line2 = match (mode, difficulty) {
+                (0, 0..=2) => text(0xab + d),
+                (1, 0..=2) => text(0xae + d),
+                _ => text(0x21),
+            };
+            info_box(input, &text(0x18), &line2, fonts, commands);
+        }
+        _ => {}
+    }
 }
 
 /// `FUN_004c3c50` for one row at the camera-relative Q16 anchor `(x, y)`.
@@ -919,7 +1117,14 @@ mod tests {
                 country_table: &country,
                 arrows: Some((b"<", b">")),
                 oscillation: &[3; 16],
+                car_short_names: &names,
+                car_stats: &[0; 168],
+                stats_format: b"%s: %d BHP^%s: %d MM^",
+                locked_line: b"LOCKED",
             },
+            info: (0x8000, 0x4000),
+            info_flags: 0,
+            record: &[],
         };
         let mut state = ScreenFrameState::default();
         let text = |id: i32| format!("T{id:X}").into_bytes();
@@ -951,7 +1156,17 @@ mod tests {
         assert!(
             matches!(&commands[4], ScreenCommand::Text { flags: 0x13, text, .. } if text == b"<")
         );
-        assert_eq!(commands.len(), 7);
+        // The car row's preview: the info box and its two lines; the empty
+        // record (difficulty 0) allows no car 0, so the locked line `0x76`.
+        assert!(matches!(
+            commands[5],
+            ScreenCommand::Bitmap {
+                bitmap: crate::frontend_screen_bitmaps::ScreenBitmap::InfoRight,
+                ..
+            }
+        ));
+        assert!(matches!(&commands[7], ScreenCommand::Text { text, .. } if text == b"T76"));
+        assert_eq!(commands.len(), 10);
         assert_eq!(state.arrow_tick, 1);
         // The bar starts 31 pixels left of the text at 640 wide.
         let ScreenCommand::Selection { x, h, .. } = commands[2] else {
