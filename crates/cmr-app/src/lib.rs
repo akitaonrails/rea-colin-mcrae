@@ -3685,6 +3685,324 @@ fn stop_channel(mixer: &SharedSoftwareMixer, channel: u32) {
     }
 }
 
+/// The channel the school's instructor speech plays on (harness: the
+/// allocator `FUN_004957c0`'s result is not recovered).
+const SCHOOL_SPEECH_CHANNEL: u32 = 1;
+
+/// The rally school's screens as state 2 runs them in a school session
+/// (`FUN_00470e20`/`FUN_0046f670`): the module, its assets, the wipe in
+/// progress and the shown frame.
+#[derive(Default)]
+struct SchoolHost {
+    menu: cmr_core::school_menu::SchoolMenu,
+    assets: cmr_core::school_menu::SchoolAssets,
+    text: Option<cmr_core::localization::IndexedTextTable>,
+    /// The menu waves by load position (`FUN_00471380`).
+    bank: Vec<Option<cmr_core::audio_mixer::WaveSlotId>>,
+    /// `FUN_0043baa0`'s last mask.
+    previous_mask: u32,
+    /// The blocking wipes still to show and the frame in progress.
+    wipes: usize,
+    wipe_frame: usize,
+    /// The last presented frame and palette.
+    shown: Vec<u8>,
+    palette: Option<[PaletteEntry; 256]>,
+    /// `DAT_005f9e90`/`DAT_005f1e20`: the level and task last loaded.
+    loaded: (u8, u8),
+}
+
+/// What one school frame reports to state 2.
+struct SchoolFrameOutcome {
+    done: bool,
+    quit: bool,
+    status_quit: bool,
+    frame: Option<SoftwarePresentedFrame>,
+}
+
+impl SchoolHost {
+    /// One state-2 frame of the school: a blocking wipe in progress shows
+    /// its next frame and holds the screen; otherwise the update and the
+    /// render run. The videos have no portable decoder yet, so each ends at
+    /// once (as a skip would); the instructor's speech plays.
+    #[allow(clippy::too_many_arguments)]
+    fn frame(
+        &mut self,
+        runtime_data: &Path,
+        config: &mut FrontEndConfig,
+        event: &mut EventState,
+        language: Language,
+        now: u32,
+        keys: &cmr_platform_sdl3::KeyboardVkState,
+        mixer: Option<&SharedSoftwareMixer>,
+    ) -> SchoolFrameOutcome {
+        use cmr_core::school_menu::{SchoolContext, SchoolEffect, SchoolFrame, WIPE_FRAMES};
+        let context = SchoolContext {
+            flag_551af0: false,
+            instant: config.image[0x10] & 0x20 == 0,
+        };
+        let live = cmr_core::config_commit::live_mut(&mut config.image);
+        event.cfg.store_live(live);
+        let present = |pixels: &[u8], palette: Option<[PaletteEntry; 256]>| {
+            SoftwarePresentedFrame::from_indexed(
+                ROOT_EXTENT,
+                pixels.to_vec().into_boxed_slice(),
+                Box::new(palette.unwrap_or(cmr_core::welcome_screen::BLACK)),
+            )
+            .ok()
+        };
+        let language_byte = live[0x18] & 7;
+        if self.wipes > 0 {
+            let text = &self.text;
+            let lookup = |id: i32| {
+                usize::try_from(id)
+                    .ok()
+                    .and_then(|id| text.as_ref().map(|t| t.lookup(id).to_vec()))
+                    .unwrap_or_default()
+            };
+            let frame = SchoolFrame {
+                assets: &self.assets,
+                text: &lookup,
+                width: ROOT_EXTENT.width,
+                height: ROOT_EXTENT.height,
+                now_ms: now,
+                language: language_byte,
+                loaded: self.loaded,
+            };
+            self.shown = self.menu.wipe_frame(&self.shown, self.wipe_frame, &frame);
+            self.wipe_frame += 1;
+            if self.wipe_frame == WIPE_FRAMES {
+                self.wipe_frame = 0;
+                self.wipes -= 1;
+            }
+            return SchoolFrameOutcome {
+                done: false,
+                quit: false,
+                status_quit: false,
+                frame: present(&self.shown, self.palette),
+            };
+        }
+        let mut mask = 0;
+        for (vk, bit) in [
+            (0x25, 1),
+            (0x27, 2),
+            (0x26, 4),
+            (0x28, 8),
+            (0x0d, 0x10),
+            (0x1b, 0x20),
+        ] {
+            if keys.is_down(vk) {
+                mask |= bit;
+            }
+        }
+        let input = if mask == self.previous_mask {
+            0
+        } else {
+            self.previous_mask = mask;
+            mask
+        };
+        let status_before = live[0x6c0] & 7;
+        let (done, mut effects) = self.menu.update(live, input, context);
+        if done && status_before == 3 {
+            self.loaded = ((live[0x6c0] >> 3) & 3, live[0x6c0] >> 5);
+        }
+        // The render (state 2's B) in the same frame.
+        self.load(&effects, runtime_data, language, mixer);
+        let text = &self.text;
+        let lookup = |id: i32| {
+            usize::try_from(id)
+                .ok()
+                .and_then(|id| text.as_ref().map(|t| t.lookup(id).to_vec()))
+                .unwrap_or_default()
+        };
+        let frame = SchoolFrame {
+            assets: &self.assets,
+            text: &lookup,
+            width: ROOT_EXTENT.width,
+            height: ROOT_EXTENT.height,
+            now_ms: now,
+            language: language_byte,
+            loaded: self.loaded,
+        };
+        let view = self.menu.render(live, &frame, context);
+        let mut presented = None;
+        if let Ok(view) = view {
+            if view.palette.is_some() {
+                self.palette = view.palette;
+            }
+            if let Some(pixels) = view.pixels {
+                self.shown = pixels;
+                presented = present(&self.shown, self.palette);
+            }
+            effects.extend(view.effects);
+        }
+        self.load(&effects, runtime_data, language, mixer);
+        for effect in &effects {
+            match effect {
+                SchoolEffect::Cue(slot) => {
+                    if let (Some(mixer), Some(Some(slot))) =
+                        (mixer, self.bank.get(usize::from(*slot)))
+                    {
+                        play_slot_on(mixer, *slot, 0, 0x7fff);
+                    }
+                }
+                SchoolEffect::Wipe => self.wipes += 1,
+                SchoolEffect::Speech { path } => {
+                    if let Some(mixer) = mixer {
+                        let path = format!("game\\rallschl\\{path}");
+                        let slot = mixer
+                            .lock()
+                            .ok()
+                            .and_then(|mut m| m.load_wave(&path, 11_025, 16, false).ok());
+                        if let Some(slot) = slot {
+                            play_slot_on(mixer, slot, SCHOOL_SPEECH_CHANNEL, 0x7d00);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let status_quit = live[0x6c0] & 7 == 6;
+        event.cfg = cmr_core::event_flow::EventConfig::from_live(live);
+        SchoolFrameOutcome {
+            done,
+            quit: self.menu.quit_requested(),
+            status_quit,
+            frame: presented,
+        }
+    }
+
+    /// The loads the module asks for: the lazy init's (`FUN_004702a0`,
+    /// paths under `Game\RallSchl`, bitmaps and fonts remapped to
+    /// `ini\schlpal.pal`) and the level-complete ones (`FUN_00471260`).
+    fn load(
+        &mut self,
+        effects: &[cmr_core::school_menu::SchoolEffect],
+        runtime_data: &Path,
+        language: Language,
+        mixer: Option<&SharedSoftwareMixer>,
+    ) {
+        use cmr_core::indexed_canvas::{CanvasFont, Sprite};
+        use cmr_core::school_menu::{ANIMATION_FRAMES, SchoolEffect, WAVES, WIPE_FRAMES};
+        let init = effects.contains(&SchoolEffect::LoadAssets);
+        let completion = effects.contains(&SchoolEffect::LoadCompletion);
+        if !init && !completion {
+            return;
+        }
+        let store = ReviewedProfile::from_json(REVIEWED_PROFILE)
+            .ok()
+            .and_then(|reviewed| {
+                AssetStore::open(runtime_data, &reviewed, DecodeLimits::default()).ok()
+            });
+        let load = |path: &str| {
+            store
+                .as_ref()
+                .and_then(|store| store.load(&path.replace('\\', "/")).ok())
+        };
+        let palette = |path: &str| {
+            load(path)
+                .and_then(|bytes| cmr_formats::riff_palette::parse_legacy_palette_256(&bytes).ok())
+                .map(|p| p.entries)
+        };
+        let live = palette("ini\\schlpal.pal").unwrap_or(cmr_core::welcome_screen::BLACK);
+        let bitmap = |path: String| {
+            load(&format!("Game\\RallSchl\\{path}"))
+                .and_then(|bytes| {
+                    cmr_formats::bitmap::parse_indexed_bitmap(&bytes, BitmapLimits::default()).ok()
+                })
+                .map(|bitmap| Sprite::new(bitmap, &live))
+        };
+        let font = |name: &str| {
+            load(&format!("Game\\RallSchl\\FONTS\\{name}"))
+                .and_then(|bytes| parse_legacy_font(&bytes, FontLimits::default()).ok())
+                .map(|font| CanvasFont::new(font, &live))
+        };
+        if completion {
+            self.assets.com_font = font("COM_FONT.FON");
+            self.assets.complete_back = bitmap("IMAGES\\MENU\\COM_BACK.BMP".to_owned());
+            self.assets.tick = bitmap("IMAGES\\MENU\\TICK.BMP".to_owned());
+        }
+        if !init {
+            return;
+        }
+        let a = &mut self.assets;
+        a.blaktip = font("BLAKTIP.FON");
+        a.greytip = font("GREYTIP.FON");
+        a.redtip = font("REDTIP.FON");
+        a.co_bold = font("CO_BOLD.FON");
+        a.fatwrit = font("FATWRIT.FON");
+        a.pass = bitmap("IMAGES\\RESULTS\\PASSFAIL\\PASS.BMP".to_owned());
+        a.fail = bitmap("IMAGES\\RESULTS\\PASSFAIL\\FAIL.BMP".to_owned());
+        a.results = bitmap("IMAGES\\RESULTS\\RESULTS.BMP".to_owned());
+        a.back = bitmap("IMAGES\\MENU\\RSBACK.BMP".to_owned());
+        a.logo = bitmap("IMAGES\\MENU\\RSLOGO.BMP".to_owned());
+        a.video = bitmap("IMAGES\\MENU\\VIDEO001.BMP".to_owned());
+        a.fan = (0..ANIMATION_FRAMES)
+            .map(|i| bitmap(format!("IMAGES\\MENU\\FAN\\FAN{i}.BMP")))
+            .collect();
+        a.plant = (0..ANIMATION_FRAMES)
+            .map(|i| bitmap(format!("IMAGES\\MENU\\PLANT\\PLANT{i}.BMP")))
+            .collect();
+        a.wipe = (1..=WIPE_FRAMES)
+            .map(|k| bitmap(format!("IMAGES\\MENU\\WIPE\\WIPE{k:02}.BMP")))
+            .collect();
+        a.cabin = palette("Game\\RallSchl\\palettes\\cabin.pal");
+        a.results_palette = palette("Game\\RallSchl\\palettes\\results.pal");
+        a.complete_palette = palette("Game\\RallSchl\\palettes\\complet.pal");
+        // `FUN_0043bc00` under the school directory.
+        let path = language.game_path().replacen("Game/", "Game/RallSchl/", 1);
+        self.text = load(&path).and_then(|bytes| {
+            cmr_core::localization::IndexedTextTable::parse(
+                &bytes,
+                cmr_core::localization::GAME_TEXT_COUNT,
+            )
+            .ok()
+        });
+        if let Some(mut mixer) = mixer.and_then(|m| m.lock().ok())
+            && self.bank.is_empty()
+        {
+            self.bank = WAVES
+                .iter()
+                .map(|name| {
+                    mixer
+                        .load_wave(
+                            &format!("game\\rallschl\\sounds\\menu\\{name}.wav"),
+                            11_025,
+                            16,
+                            false,
+                        )
+                        .ok()
+                })
+                .collect();
+        }
+    }
+}
+
+/// Stop a channel, play a slot once on it, and set its volume (the cue
+/// helpers' shape).
+fn play_slot_on(
+    mixer: &SharedSoftwareMixer,
+    slot: cmr_core::audio_mixer::WaveSlotId,
+    channel: u32,
+    volume: i32,
+) {
+    use cmr_core::audio_mixer::MixerCommand;
+    let (Ok(mut mixer), Ok(channel)) = (mixer.lock(), ChannelId::new(channel)) else {
+        return;
+    };
+    let _ = apply_commands(
+        &mut *mixer,
+        &[
+            MixerCommand::StopChannel { channel },
+            MixerCommand::Play {
+                slot,
+                channel,
+                flags: cmr_core::audio_mixer::PLAY_ONE_SHOT,
+            },
+            MixerCommand::SetVolume { channel, volume },
+        ],
+    );
+}
+
 /// The country welcome screen as state 2 runs it (`FUN_0048dde0`): its
 /// assets, the drawn image and the sequencer.
 struct WelcomeHost {
@@ -4226,6 +4544,24 @@ fn advance_game_frame<C: HostClock>(
         );
         menu_inputs.welcome_done = done;
         screen = frame;
+    }
+    // State 2 in the rally school: its menus and screens (`FUN_00470e20`).
+    if session.state().id() == 2 && session.event().globals.school_d3ca88 {
+        let mut event = session.event().clone();
+        let outcome = results.school.frame(
+            &results.runtime_data.clone(),
+            config,
+            &mut event,
+            results.language,
+            clock.millis(),
+            input.keys,
+            input.audio,
+        );
+        *session.event_mut() = event;
+        menu_inputs.school_menu_done = outcome.done;
+        menu_inputs.school_quit = outcome.quit;
+        menu_inputs.school_status_quit = outcome.status_quit;
+        screen = outcome.frame;
     }
     // State 3: the service screen (`FUN_004371c0`).
     if session.state().id() == 3 {
@@ -7323,6 +7659,8 @@ struct RaceResults {
     welcome: WelcomeHost,
     /// The service screen state 3 shows.
     service: ServiceHost,
+    /// The rally school's screens state 2 shows in a school session.
+    school: SchoolHost,
 }
 
 impl RaceResults {
@@ -7368,6 +7706,7 @@ impl RaceResults {
             language,
             welcome: WelcomeHost::default(),
             service: ServiceHost::default(),
+            school: SchoolHost::default(),
         }
     }
 
@@ -11868,6 +12207,87 @@ mod tests {
         save(step(&mut host, &mut config, Some(0x0d)), "category");
         save(step(&mut host, &mut config, Some(0x27)), "category-changed");
         save(step(&mut host, &mut config, Some(0x0d)), "setup-changed");
+    }
+
+    /// The rally school's screens over the user's `Game\RallSchl` assets:
+    /// the root menu, the wipe, a level menu, the results (synthetic marks)
+    /// and the level-complete screen, written under `.work/frames-school`.
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data; writes frames under .work"]
+    fn imported_school_menu_frames() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/frames-school");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let mut config = FrontEndConfig::new("", 0);
+        let mut event = EventState::default();
+        event.start_school_session();
+        cmr_core::config_commit::live_mut(&mut config.image)[0x6c1] = 1 | (2 << 2);
+        let mut host = SchoolHost::default();
+        let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
+        let mut now = 0;
+        let mut step = |host: &mut SchoolHost,
+                        config: &mut FrontEndConfig,
+                        event: &mut EventState,
+                        vk: Option<u8>| {
+            let mut run = |keys: &cmr_platform_sdl3::KeyboardVkState| {
+                now += 20;
+                host.frame(&root, config, event, Language::English, now, keys, None)
+            };
+            if let Some(vk) = vk {
+                keys.apply_vk(vk, true);
+                let outcome = run(&keys);
+                keys.apply_vk(vk, false);
+                return outcome;
+            }
+            run(&keys)
+        };
+        let save = |frame: Option<SoftwarePresentedFrame>, name: &str| {
+            let frame = frame.expect("a school frame");
+            let rgba = frame.expand_rgba8().unwrap();
+            let mut ppm = b"P6\n640 480\n255\n".to_vec();
+            let (pixels, _) = rgba.pixels().as_chunks::<4>();
+            for pixel in pixels {
+                ppm.extend_from_slice(&pixel[..3]);
+            }
+            std::fs::write(out_dir.join(format!("school-{name}.ppm")), ppm).unwrap();
+        };
+        let mut shown = None;
+        for _ in 0..90 {
+            shown = step(&mut host, &mut config, &mut event, None).frame;
+        }
+        save(shown.take(), "root");
+        // Down to the medium level, confirm: the wipe, then its menu.
+        step(&mut host, &mut config, &mut event, Some(0x28));
+        step(&mut host, &mut config, &mut event, Some(0x0d));
+        for k in 0..30 {
+            let frame = step(&mut host, &mut config, &mut event, None).frame;
+            if k == 10 {
+                save(frame, "wipe");
+            }
+        }
+        for _ in 0..90 {
+            shown = step(&mut host, &mut config, &mut event, None).frame;
+        }
+        save(shown.take(), "level");
+        // A finished task: the results.
+        {
+            let live = cmr_core::config_commit::live_mut(&mut config.image);
+            live[0x6bc..0x6c0].copy_from_slice(&[0x98, 0x7a, 0x89, 0x90]);
+            live[0x6c0] = (2 << 5) | 4; // level 0, task 2, results
+            event.cfg.school_6c0 = live[0x6c0];
+        }
+        for _ in 0..20 {
+            shown = step(&mut host, &mut config, &mut event, None).frame;
+        }
+        save(shown.take(), "results");
+        step(&mut host, &mut config, &mut event, Some(0x0d));
+        for _ in 0..30 {
+            shown = step(&mut host, &mut config, &mut event, None).frame;
+        }
+        save(shown.take(), "complete");
+        assert_eq!(event.cfg.school_6c0 & 7, 5, "the level-complete screen");
     }
 
     #[test]

@@ -451,6 +451,11 @@ fn in_race_next(
         }
     }
     let next = race_flow_next(state, inputs, event).unwrap_or(state);
+    // The school's task ends in state 9 (`0x4385f7`): its results screen
+    // comes up when state 2 runs again.
+    if inputs.school_session && state.id() == 9 && next.id() == 0xB {
+        event.cfg.school_6c0 = (event.cfg.school_6c0 & 0xfc) | 4;
+    }
     fade.transition(state.id(), next.id());
     next
 }

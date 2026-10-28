@@ -195,8 +195,9 @@ setup (`impl.chosen-car`). Before a stage the country welcome screen (state 2,
 `.work/service-screen-draw-notes.md`) run from the user's assets; the damage
 write-back `FUN_00420db0` into the service's conditions is not wired yet.
 The race fades follow the binary (`impl.race-fade`, `.work/race-fade-notes.md`);
-the rally school menu (`.work/school-menu-notes.md`) is decoded but not yet
-reconstructed, so a school session stalls in state 2. `--language english|french|german|spanish|italian`
+the rally school's screens run in state 2 (`impl.school-menu`,
+`.work/school-menu-notes.md`); its videos need a Microsoft Video 1 decoder
+and its in-race scorer `FUN_004725e0` is not reconstructed. `--language english|french|german|spanish|italian`
 stands in for the registry's installed language (English by default). Static tables (`impl.static-tables`) need
 `cargo run -q -p cmr-assets -- extract-static-tables --source <dir with Rally.exe> --profile profiles/official-eu-static-tables-v1.json --output runtime-data/official-eu-static-tables`. Next: the car-to-car impact site
 (the `FUN_004115d0` landing and `FUN_00412860` tumbling impacts are wired), then the championship progression
