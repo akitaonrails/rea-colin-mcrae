@@ -4517,13 +4517,17 @@ pub fn run_windowed_game_session(
         .ok()
         .and_then(|reviewed| open_root_session_inputs(runtime_data, &reviewed).ok());
 
+    // Every game wave path (`\new_fe\sounds\...`, `game\sounds\...`) is
+    // relative to the installation root, which the imported runtime data
+    // mirrors; `media_root` is the stage directory, so it cannot root them.
+    let audio_root = runtime_data;
     if let Some((store, startup)) = front_end {
         let request = SoftwareRootMenuSessionRequest::official_eu_initial_software_default_config(
             Language::English,
             VisualVariant::Normal,
         );
         let built = with_software_root_menu_session(&store, startup, request, |root| {
-            run_windowed_game_session_loop(&initial, Some(media_root), |input: WindowedInput| {
+            run_windowed_game_session_loop(&initial, Some(audio_root), |input: WindowedInput| {
                 match advance_game_frame(
                     &mut session,
                     &mut keyboard,
@@ -4584,7 +4588,7 @@ pub fn run_windowed_game_session(
         // through to the world-only loop below rather than failing the session.
     }
 
-    run_windowed_game_session_loop(&initial, Some(media_root), |input: WindowedInput| {
+    run_windowed_game_session_loop(&initial, Some(audio_root), |input: WindowedInput| {
         match advance_game_frame(
             &mut session,
             &mut keyboard,
