@@ -1368,6 +1368,7 @@ mod tests {
         let mut left_gameplay = false;
         let mut finish_position = Vec3::ZERO;
         let mut held_in_results = 0u32;
+        let mut cues = Vec::new();
         while frames < 100_000 {
             frames += 1;
             // The results pages hold state 8 until Return reaches Continue.
@@ -1380,6 +1381,7 @@ mod tests {
             }
             let frame =
                 session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            cues.extend(session.take_results_effects());
             if progress.finished() && !frame.stepped && session.state().id() <= 4 {
                 left_gameplay = true;
                 finish_position = session.car().position;
@@ -1392,6 +1394,10 @@ mod tests {
         );
         assert!(held_in_results > 20, "state 8 held for the results");
         assert!(session.results().is_none(), "Continue cleared the director");
+        assert!(
+            cues.contains(&DirectorEffect::PageCue),
+            "each page change cues the menu sound"
+        );
         assert!(!session.is_stopped());
         assert!(finish_position.x.raw() > 0);
         // The menu flow starts the stage again; the first drive starts over.

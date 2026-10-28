@@ -94,6 +94,7 @@ use cmr_core::race_state::{
 };
 use cmr_core::render_compose::{fade_duration_frames, fade_level_to_modulation_byte, fade_out};
 use cmr_core::render_route::{RenderRoute, presents_world_scene};
+use cmr_core::results_director::DirectorEffect;
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::{
@@ -3402,6 +3403,20 @@ fn advance_game_frame<C: HostClock>(
     // transition is visible. Any other route clears the fade.
     // State 0xa: the pause menu's panel and text over the world (B handler
     // `FUN_004233e0` -> `FUN_00468dd0`).
+    // The results director's cues: `FUN_00467ef0(0, 0, 1)` (FORWARD) on a
+    // page change and `FUN_00467dd0` (UPDOWN) when the menu cursor moved;
+    // a blocked move passes 0 and plays nothing. The bonus car's model load
+    // (`FUN_00404310`) has no effect here.
+    for effect in session.take_results_effects() {
+        let cue = match effect {
+            DirectorEffect::PageCue => MenuCue::Forward,
+            DirectorEffect::CursorCue(true) => MenuCue::UpDown,
+            DirectorEffect::CursorCue(false) | DirectorEffect::BonusCar => continue,
+        };
+        if let Some(mixer) = input.audio {
+            pause.play_cue(mixer, cue);
+        }
+    }
     // State 8 while the results director runs: its pages over the world
     // (B handler `FUN_00423260` -> `FUN_0042ae80`).
     let world = match (advanced.route, world) {
@@ -3984,19 +3999,7 @@ impl PauseHarness {
                         DescriptorSound::Enter => MenuCue::Forward,
                         DescriptorSound::Back => MenuCue::Backward,
                     };
-                    let Ok(mut mixer) = mixer.lock() else {
-                        continue;
-                    };
-                    let channel = match self.menu_cues {
-                        Some(channel) => channel,
-                        None => match load_menu_cues(&mut mixer) {
-                            Some(channel) => *self.menu_cues.insert(channel),
-                            None => continue,
-                        },
-                    };
-                    let commands =
-                        play_menu_sound(channel, cue, self.options.effects_master_4f653c);
-                    let _ = apply_commands(&mut *mixer, &commands);
+                    self.play_cue(mixer, cue);
                 }
                 // No surface loops, force feedback or telemetry in this
                 // session; the fade is the hub route's tween.
@@ -4005,6 +4008,25 @@ impl PauseHarness {
                 | PauseEffect::CommitTelemetryAndStopAudio => {}
             }
         }
+    }
+}
+
+impl PauseHarness {
+    /// A menu play helper (`FUN_00467dd0` and its siblings) on the menu
+    /// channel, loading the cue bank on first use.
+    fn play_cue(&mut self, mixer: &SharedSoftwareMixer, cue: MenuCue) {
+        let Ok(mut mixer) = mixer.lock() else {
+            return;
+        };
+        let channel = match self.menu_cues {
+            Some(channel) => channel,
+            None => match load_menu_cues(&mut mixer) {
+                Some(channel) => *self.menu_cues.insert(channel),
+                None => return,
+            },
+        };
+        let commands = play_menu_sound(channel, cue, self.options.effects_master_4f653c);
+        let _ = apply_commands(&mut *mixer, &commands);
     }
 }
 
