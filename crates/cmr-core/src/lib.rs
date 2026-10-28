@@ -149,6 +149,7 @@ pub mod stage_path;
 pub mod stage_timing;
 pub mod stage_triggers;
 pub mod stage_weather;
+pub mod standings;
 pub mod startup;
 pub mod startup_display;
 pub mod startup_surface;

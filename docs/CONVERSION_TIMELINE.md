@@ -774,7 +774,8 @@ touched. Per-commit granularity for the full history is recoverable with
 | 2026-10-29T22:00Z | 223h42m | landing-impact | `5957033` | I14 | Played the landing tick's impact from the out-of-control ground pass. Workspace 2,607 tests pass, 38 ignored. |
 | 2026-10-29T23:00Z | 224h42m | stage-weather-select | `7feefd3` | I14 | Chose the stage weather, detail and lighting and ran state 2's render effects. Workspace 2,611 tests pass, 38 ignored. |
 | 2026-10-29T23:30Z | 225h12m | championship-setup-corrections | `ad8d5a7` | I14 | Corrected the championship title text id and the selection bar's left margin. Workspace 2,611 tests pass, 38 ignored. |
-| 2026-10-30T00:00Z | 225h42m | stage-weather | _(pending; previous milestone `ad8d5a7`)_ | I14 | Extracted the stage weather tables from the user's executable and applied the weather per stage: night car models, rain and storm waves. Workspace 2,633 tests pass, 38 ignored. |
+| 2026-10-30T00:00Z | 225h42m | stage-weather | `cebe0e1` | I14 | Extracted the stage weather tables from the user's executable and applied the weather per stage: night car models, rain and storm waves. Workspace 2,633 tests pass, 38 ignored. |
+| 2026-10-30T01:00Z | 226h42m | standings | _(pending; previous milestone `cebe0e1`)_ | I14 | Reconstructed the post-stage standings (stage, rally and championship orders, cumulative times, rally points and wins) and corrected the championship scoring to points. Workspace 2,638 tests pass, 38 ignored. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.

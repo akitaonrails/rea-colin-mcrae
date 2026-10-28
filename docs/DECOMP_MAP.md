@@ -446,8 +446,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-30T00:00:00Z
-milestone=stage-weather
+updated_utc=2026-10-30T01:00:00Z
+milestone=standings
 completed=117
 partial=2
 not_started=0

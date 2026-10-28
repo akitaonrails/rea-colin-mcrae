@@ -6,24 +6,27 @@
 //! ([`crate::championship_model`]): the per-car-slot results table, the
 //! standings-ranking formulas, the best-time record addressing, and the
 //! mode/flag decode. It does **not** vendor content: opponent AI time tables,
-//! record times, points values (there are none - see below), stage names, and
-//! the per-stage `.TIM`/pace resources are game data and are modeled only by
-//! their addressing (offset, stride, element shape).
+//! record times, stage names, and the per-stage `.TIM`/pace resources are game
+//! data and are modeled only by their addressing (offset, stride, element
+//! shape).
 //!
 //! # Recovered facts
 //!
-//! - **Standings are by elapsed time, not points.** There is decisively no
-//!   points/scoring table in the executable (the `points.dat` string has zero
-//!   code references). Two parallel rankings coexist: within-event ranking by
-//!   cumulative stage time (`FUN_00430590`, live `+0x16c + slot*0x10`), and
-//!   overall ranking by accumulated per-stage finishing positions
-//!   (`FUN_004304d0`, live `+0x170 + slot*0x10`).
+//! - **The championship is scored in points** (corrected by
+//!   `rea.official-eu.standings`): on each rally's last stage the first six on
+//!   cumulative time score 10, 6, 4, 3, 2 and 1 into the slot's byte for that
+//!   country (live `+0x170 + slot*0x10 + country`), computed with the stage,
+//!   rally and championship orders in [`crate::standings`]. Within an event the
+//!   ranking is by cumulative stage time (`FUN_00430590`, live
+//!   `+0x16c + slot*0x10`); the championship ranking (`FUN_004304d0`) is by
+//!   `points * 10 + wins`, largest first.
 //! - The live championship holds a 16-slot, `0x10`-stride results table keyed by
-//!   car-type slot. Each slot carries a cumulative-time dword, a run of per-stage
-//!   finishing-position bytes, and a flag byte (bit `0x10` = "entered this
-//!   stage's field", low nibble = provisional order / finishing position). This
-//!   is the same array [`crate::championship_model`] addresses as event progress
-//!   at live `+0x170`.
+//!   car-type slot. Each slot carries a cumulative-time dword, eight per-country
+//!   points bytes, a flag byte (bit `0x10` = "entered this stage's field", low
+//!   nibble = the player using it) and the rally-win count (`+0xd`, `0xff` for a
+//!   slot excluded from a novice championship). This is the same array
+//!   [`crate::championship_model`] addresses as event progress at live
+//!   `+0x170`.
 //! - Best/record times live in the mutable game-data image (`PTR_DAT_0050622c`),
 //!   addressed by `(country * 7 + stage) * 0x1e` for championship records and by
 //!   `stage * 0x1e` for the alternate mode, each off a fixed base. Records are
@@ -113,26 +116,42 @@ pub fn slot_at_time_rank(times: &[u32], rank: usize) -> Option<usize> {
     slot_at_rank(times, rank)
 }
 
-/// Weight applied to the accumulated per-stage position sum before the
-/// tiebreak term is added (`FUN_004304d0`).
-pub const CHAMPIONSHIP_POSITION_WEIGHT: u32 = 10;
+/// The weight of the points total in `FUN_004304d0`'s championship key.
+pub const CHAMPIONSHIP_POINTS_WEIGHT: u16 = 10;
 
-/// The overall championship score of one slot: the sum of its per-stage
-/// finishing positions times [`CHAMPIONSHIP_POSITION_WEIGHT`] plus a tiebreak
-/// term, reproducing the key `FUN_004304d0` sorts by (lower is better).
-pub fn championship_score(stage_positions: &[u8], tiebreak: u8) -> u32 {
-    let sum: u32 = stage_positions.iter().map(|&p| u32::from(p)).sum();
-    sum * CHAMPIONSHIP_POSITION_WEIGHT + u32::from(tiebreak)
+/// One slot's championship key in `FUN_004304d0`: its points over the
+/// countries so far (`+0x170..`, through `country`) times 10, plus the
+/// signed rally-win byte (`+0x179`), all in 16 bits.
+pub fn championship_score(points_by_country: &[u8], wins_179: u8) -> u16 {
+    let total = points_by_country
+        .iter()
+        .fold(0u16, |sum, &points| sum.wrapping_add(u16::from(points)));
+    total
+        .wrapping_mul(CHAMPIONSHIP_POINTS_WEIGHT)
+        .wrapping_add(i16::from(wins_179 as i8) as u16)
 }
 
-/// 1-based rank of `slot` by ascending championship score (`FUN_004304d0`).
-pub fn rank_by_championship_score(scores: &[u32], slot: usize) -> Option<usize> {
-    rank_ascending(scores, slot)
-}
-
-/// The inverse of [`rank_by_championship_score`] (`FUN_004306c0`).
-pub fn slot_at_championship_rank(scores: &[u32], rank: usize) -> Option<usize> {
-    slot_at_rank(scores, rank)
+/// `FUN_004304d0`'s 1-based championship position of `slot`: sixteen passes
+/// each taking the unmarked slot with the strictly largest key above 0
+/// (unsigned); a pass that finds none takes the previous pass's slot again.
+/// `None` (the native 0) when the slot is never placed.
+pub fn championship_position(scores: &[u16; 16], slot: usize) -> Option<usize> {
+    let mut marked = [false; 16];
+    let mut chosen = 0usize;
+    for pass in 0..16 {
+        let mut best = 0u16;
+        for (candidate, &score) in scores.iter().enumerate() {
+            if !marked[candidate] && score > best {
+                best = score;
+                chosen = candidate;
+            }
+        }
+        if chosen == slot {
+            return Some(pass + 1);
+        }
+        marked[chosen] = true;
+    }
+    None
 }
 
 /// 1-based rank of `index` among `keys` by ascending value, breaking ties by
@@ -313,16 +332,24 @@ mod tests {
     }
 
     #[test]
-    fn championship_score_weights_positions_then_adds_tiebreak() {
-        // positions 1,2,3 -> (1+2+3)*10 + tiebreak 4 = 64.
-        assert_eq!(championship_score(&[1, 2, 3], 4), 64);
-        assert_eq!(championship_score(&[], 0), 0);
-        // Lower score ranks first.
-        let scores = [64u32, 30, 64];
-        assert_eq!(rank_by_championship_score(&scores, 1), Some(1));
-        assert_eq!(rank_by_championship_score(&scores, 0), Some(2));
-        assert_eq!(rank_by_championship_score(&scores, 2), Some(3));
-        assert_eq!(slot_at_championship_rank(&scores, 1), Some(1));
+    fn the_championship_key_is_points_times_ten_plus_wins_largest_first() {
+        // 10 + 6 + 4 = 20 points, 1 win -> 201.
+        assert_eq!(championship_score(&[10, 6, 4], 1), 201);
+        // An excluded slot's 0xff counts as -1.
+        assert_eq!(championship_score(&[10], 0xff), 99);
+        let mut scores = [0u16; 16];
+        scores[2] = 201;
+        scores[5] = 99;
+        scores[7] = 201;
+        assert_eq!(championship_position(&scores, 2), Some(1));
+        assert_eq!(
+            championship_position(&scores, 7),
+            Some(2),
+            "ties to the lower slot"
+        );
+        assert_eq!(championship_position(&scores, 5), Some(3));
+        // Slots at 0 are never placed.
+        assert_eq!(championship_position(&scores, 0), None);
     }
 
     #[test]
