@@ -183,6 +183,32 @@ pub struct CarParticles {
     pub solid_marks: [u8; 4],
     /// `DAT_0052f9e8`: a snow-bank hit at a probe (`FUN_00427920`).
     pub snow_puff: Option<usize>,
+    /// The tyre marks: 80 per wheel (`DAT_0052ff60`), their heads
+    /// (`DAT_0052e06c`) and marking flags (`DAT_0052fb98`).
+    pub marks: Vec<[TyreMark; MARKS]>,
+    pub mark_heads: [usize; 4],
+    pub marking: [bool; 4],
+}
+
+/// The tyre marks per wheel.
+pub const MARKS: usize = 80;
+/// `Track_Decay_Life` (1240 ticks) and `Track_Decay_RATE` (`0x7c`).
+pub const MARK_LIFE: i32 = 0x4d8;
+pub const MARK_RATE: i32 = 0x7c;
+/// `ABIT` (`DAT_004ebec0`): each wheel's mark sits `(w + 4) * ABIT` lower.
+const ABIT: i32 = 0x83;
+
+/// One tyre-mark segment end (`0x2c` bytes): its two edge points, age,
+/// alpha, the tick it was laid (`+0x24`) and its colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TyreMark {
+    pub a: [i32; 3],
+    pub b: [i32; 3],
+    pub age: i32,
+    pub alpha: u8,
+    pub valid: bool,
+    pub seq: u32,
+    pub rgb: [u8; 3],
 }
 
 impl Default for CarParticles {
@@ -199,6 +225,9 @@ impl Default for CarParticles {
             last_contact: [false; 4],
             solid_marks: [0x20; 4],
             snow_puff: None,
+            marks: vec![[TyreMark::default(); MARKS]; 4],
+            mark_heads: [0; 4],
+            marking: [false; 4],
         }
     }
 }
@@ -228,6 +257,10 @@ pub struct WheelCar {
     pub surfaces: [i16; 4],
     /// `ctl +0x43a`: the gear (7 reverse).
     pub gear: i8,
+    /// `ctl +0x404`: upright, and `car +0x33c + 12w`: each wheel's ground
+    /// normal (the tyre marks).
+    pub upright: bool,
+    pub normals: [[i32; 3]; 4],
 }
 
 /// The stage facts the spawners read.
@@ -250,6 +283,10 @@ pub struct ParticleStage<'a> {
     pub fixed_grey: Option<u8>,
     /// `DAT_0054f800`/`DAT_0054b7ec`: the wheel point blend `(a, b)`.
     pub blend: (i32, i32),
+    /// `0x4ec800`: each surface's mark enable and colour (`FUN_00424c60`
+    /// sets surface `0x2c`'s by country), and `cfg[0x25] & 4` (narrow).
+    pub mark_surfaces: &'a [[u8; 8]],
+    pub narrow_marks: bool,
 }
 
 fn qmul(a: i32, b: i32) -> i32 {
@@ -337,8 +374,7 @@ impl ParticleSystem {
         self.ticks = self.ticks.wrapping_add(1);
         for (state, car) in self.cars.iter_mut().zip(cars) {
             state.wheel_points(car, stage.blend);
-            state.spawn_car(car, stage, rng, trig);
-            self.spawn_ticks = self.spawn_ticks.wrapping_add(1);
+            state.spawn_car(car, stage, rng, trig, &mut self.spawn_ticks);
         }
     }
 
@@ -554,6 +590,7 @@ impl CarParticles {
         stage: &ParticleStage,
         rng: &mut GameLcg,
         trig: &[i32; TRIG_TABLE_LEN],
+        seq: &mut u32,
     ) {
         for w in 0..4 {
             self.accumulate(car, stage, w);
@@ -594,6 +631,8 @@ impl CarParticles {
                 }
             }
         }
+        // `DAT_0054f8ac`: the tick the marks are laid in.
+        *seq = seq.wrapping_add(1);
         // `FUN_00426900`: the spray.
         for w in 0..4 {
             let wet = self.acc[w].wet;
@@ -602,7 +641,10 @@ impl CarParticles {
                 self.splash(car, stage, rng, w);
             }
         }
-        // The tyre marks (`FUN_004261c0`) are not particles.
+        // `FUN_004261c0`: the tyre marks, not at night.
+        if !stage.night {
+            self.lay_marks(car, stage, *seq);
+        }
         let pair = if car.gear == 7 { (0, 1) } else { (2, 3) };
         // `FUN_00427040`, `FUN_004277b0`.
         let a = self.acc;
@@ -679,6 +721,129 @@ impl CarParticles {
                 self.contact_ticks[w] = 0;
             }
         }
+    }
+
+    /// `FUN_004261c0`: each sliding wheel lays a mark across its contact
+    /// point, `0.12` either side of its travel, darker the harder it slides.
+    fn lay_marks(&mut self, car: &WheelCar, stage: &ParticleStage, seq: u32) {
+        let surface = |s: i16| {
+            usize::try_from(s)
+                .ok()
+                .and_then(|i| stage.mark_surfaces.get(i))
+                .copied()
+                .unwrap_or([0; 8])
+        };
+        for w in 0..4 {
+            for mark in self.marks[w].iter_mut().filter(|m| m.valid) {
+                mark.age += 1;
+            }
+            let now = surface(car.surfaces[w]);
+            let before = surface(self.last_surface[w]);
+            if !(car.contact[w]
+                && self.contact_ticks[w] > 10
+                && self.wheels_down > 1
+                && car.upright
+                && car.flags_73a[w] != 1
+                && now[0] == 1
+                && before[0] == 1)
+            {
+                continue;
+            }
+            let slide = car.lateral[w].abs() - 0x9999;
+            let spin = car.longitudinal[w].abs() - 0x9999;
+            if slide <= 0 && spin <= 0 {
+                self.marking[w] = false;
+                continue;
+            }
+            let alpha = ((i64::from((slide / 2).max(spin)) * 0xff_0000) >> 32).min(255) as i32;
+            if alpha < 0x51 {
+                continue;
+            }
+            self.mark_heads[w] = (self.mark_heads[w] + 1) % MARKS;
+            let p = self.wheels[w];
+            let d = sub(self.wheels_prev[w], p);
+            let n = car.normals[w];
+            let cross = [
+                qmul(d[1], n[2]) - qmul(d[2], n[1]),
+                qmul(d[2], n[0]) - qmul(d[0], n[2]),
+                qmul(d[0], n[1]) - qmul(d[1], n[0]),
+            ];
+            let len = length(cross);
+            let mut h = if len == 0 {
+                [0; 3]
+            } else {
+                scale(cross.map(|c| qdiv(c, len)), 0x1eb8)
+            };
+            if stage.narrow_marks {
+                h = scale(h, 0x8000);
+            }
+            let drop = (w as i32 + 4) * ABIT;
+            let mut a = add(p, h);
+            let mut b = sub(p, h);
+            a[1] -= drop;
+            b[1] -= drop;
+            let colour = [before[4], before[5], before[6]];
+            let rgb: [u8; 3] = std::array::from_fn(|k| {
+                ((u32::from(stage.lit[k]) * u32::from(colour[k])) / 255) as u8
+            });
+            let head = self.mark_heads[w];
+            self.marks[w][head] = TyreMark {
+                a,
+                b,
+                age: 0,
+                alpha: alpha as u8,
+                valid: true,
+                seq,
+                rgb,
+            };
+            self.marking[w] = true;
+            self.marks[w][(head + 1) % MARKS].alpha = 0;
+        }
+    }
+
+    /// `FUN_00429980`: the marks as coloured triangles (two per joined
+    /// pair of consecutive ticks), fading over `Life / RATE` ticks past
+    /// their life; `ambient` is the stage's sixth light colour
+    /// (`DAT_00592ef4`).
+    pub fn mark_triangles(&self, ambient: [u8; 3]) -> Vec<([[i32; 3]; 3], [u32; 3])> {
+        let mut out = Vec::new();
+        for w in 0..4 {
+            let ring = &self.marks[w];
+            let head = self.mark_heads[w];
+            for k in 0..MARKS {
+                let i = (head + MARKS - k) % MARKS;
+                let j = (i + MARKS - 1) % MARKS;
+                let (ni, nj) = (ring[i], ring[j]);
+                if !(ni.valid && nj.valid && ni.seq == nj.seq.wrapping_add(1)) {
+                    continue;
+                }
+                let fade = |m: &TyreMark| {
+                    let a = i32::from(m.alpha);
+                    let a = if nj.age > MARK_LIFE {
+                        a - (m.age - MARK_LIFE) * a * MARK_RATE / MARK_LIFE
+                    } else {
+                        a
+                    };
+                    a.clamp(0, 255)
+                };
+                let (ai, aj) = (fade(&ni), fade(&nj));
+                if ai <= 4 {
+                    continue;
+                }
+                let colour = |m: &TyreMark, a: i32| {
+                    let c: [u32; 3] =
+                        std::array::from_fn(|k| u32::from(m.rgb[k]) * u32::from(ambient[k]) / 200);
+                    ((a as u32) << 24)
+                        | (c[0].min(255) << 16)
+                        | (c[1].min(255) << 8)
+                        | c[2].min(255)
+                };
+                let (ci, cj) = (colour(&ni, ai), colour(&nj, aj));
+                out.push(([nj.a, ni.b, ni.a], [cj, ci, ci]));
+                out.push(([nj.b, ni.b, nj.a], [cj, ci, cj]));
+            }
+        }
+        out
     }
 
     /// `FUN_004270f0`: a cloud from a wheel pair, spread between the two
@@ -1347,8 +1512,17 @@ mod tests {
             lit: [0xc0, 0xc0, 0xc0],
             fixed_grey: None,
             blend: DEFAULT_BLEND,
+            mark_surfaces: &MARK_SURFACES,
+            narrow_marks: false,
         }
     }
+
+    /// Surface 5 marks, in a mid grey.
+    static MARK_SURFACES: [[u8; 8]; 120] = {
+        let mut t = [[0u8; 8]; 120];
+        t[5] = [1, 0, 0, 0, 0x80, 0x80, 0x80, 0];
+        t
+    };
 
     fn car() -> WheelCar {
         WheelCar {
@@ -1466,6 +1640,55 @@ mod tests {
             ticks += 1;
         }
         assert!(ticks > 2 && ticks < 100);
+    }
+
+    #[test]
+    fn a_sliding_wheel_lays_joined_marks_that_fade_after_their_life() {
+        let t = tables(0);
+        let st = stage(&t);
+        let mut system = ParticleSystem::new(1, true);
+        let mut rng = GameLcg::new(3);
+        let trig = trig();
+        let mut sliding = car();
+        sliding.upright = true;
+        sliding.normals = [[0, 0x1_0000, 0]; 4];
+        sliding.lateral = [0x2_0000; 4];
+        for tick in 0..20 {
+            for p in &mut sliding.probes {
+                p[2] = tick * 0x8_0000;
+            }
+            system.spawn(&[sliding], &st, &mut rng, &trig);
+        }
+        let c = &system.cars[0];
+        assert!(c.marking.iter().all(|&m| m), "every wheel is marking");
+        let tris = c.mark_triangles([200, 200, 200]);
+        assert!(!tris.is_empty());
+        // The first marks need ten ticks of contact; later ones join up.
+        assert_eq!(c.marks[0].iter().filter(|m| m.valid).count(), 9);
+        let ([a, b, _], colours) = tris[0];
+        assert_ne!(a, b);
+        // A 2.0 slide: (2.0 - 0.6) / 2 of full alpha.
+        assert_eq!(colours[0] >> 24, 178);
+        // Night lays none.
+        let night = ParticleStage { night: true, ..st };
+        let mut dark = ParticleSystem::new(1, true);
+        for _ in 0..20 {
+            dark.spawn(&[sliding], &night, &mut rng, &trig);
+        }
+        assert!(
+            dark.cars[0]
+                .marks
+                .iter()
+                .all(|r| r.iter().all(|m| !m.valid))
+        );
+        // Past their life the marks fade out.
+        let mut old = c.clone();
+        for ring in &mut old.marks {
+            for m in ring.iter_mut() {
+                m.age += MARK_LIFE + MARK_LIFE / MARK_RATE + 1;
+            }
+        }
+        assert!(old.mark_triangles([200, 200, 200]).is_empty());
     }
 
     #[test]

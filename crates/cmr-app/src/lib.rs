@@ -2236,6 +2236,7 @@ pub struct StageRenderResources {
     /// attached them, and this frame's sprites.
     particles: Option<StageParticles>,
     sprite_draws: Vec<SpriteDraw>,
+    mark_draws: Vec<([[f32; 3]; 3], [u32; 3])>,
     palette: [PaletteEntry; 256],
     node_count: usize,
     draw_ops: usize,
@@ -2336,6 +2337,7 @@ impl StageRenderResources {
             shadow_draws: Vec::new(),
             particles: None,
             sprite_draws: Vec::new(),
+            mark_draws: Vec::new(),
             palette,
             node_count,
             draw_ops,
@@ -2617,6 +2619,25 @@ impl StageRenderResources {
                 lights.colors[0][2],
             ]
         });
+        let ambient = cmr_core::stage_weather::stage_lights(weather).map_or([0xc8; 3], |l| {
+            [l.colors[5][0], l.colors[5][1], l.colors[5][2]]
+        });
+        let mut mark_surfaces: Vec<[u8; 8]> = open_static_tables(runtime_data)
+            .and_then(|tables| {
+                tables
+                    .tables()
+                    .block("tyre_mark_surfaces")
+                    .map(|b| b.as_chunks::<8>().0.to_vec())
+            })
+            .unwrap_or_default();
+        // `FUN_00424c60`: surface 0x2c's colour by country.
+        if let Some(entry) = mark_surfaces.get_mut(0x2c) {
+            entry[4..7].copy_from_slice(if country == 3 {
+                &[0x8c, 0x4a, 0x08]
+            } else {
+                &[0xaa, 0x9b, 0x6c]
+            });
+        }
         self.particles = Some(StageParticles {
             system: cmr_core::car_particles::ParticleSystem::new(1, true),
             tables: surfaces.store.tables().values.to_vec(),
@@ -2633,6 +2654,8 @@ impl StageRenderResources {
                 country,
                 stage_index,
             ),
+            mark_surfaces,
+            ambient,
             textures,
         });
     }
@@ -2643,6 +2666,7 @@ impl StageRenderResources {
         &mut self,
         session: &GameplaySession,
         enabled: bool,
+        narrow_marks: bool,
         rng: &mut GameLcg,
         trig: &[i32; cmr_core::fixed_point::TRIG_TABLE_LEN],
     ) {
@@ -2662,6 +2686,8 @@ impl StageRenderResources {
             lit: particles.lit,
             fixed_grey: particles.fixed_grey,
             blend: cmr_core::car_particles::DEFAULT_BLEND,
+            mark_surfaces: &particles.mark_surfaces,
+            narrow_marks,
         };
         particles.system.spawn(&[car], &stage, rng, trig);
         particles.system.update(rng);
@@ -2677,6 +2703,7 @@ impl StageRenderResources {
         single_alpha: bool,
     ) {
         self.sprite_draws.clear();
+        self.mark_draws.clear();
         let Some(particles) = self.particles.as_mut() else {
             return;
         };
@@ -2706,6 +2733,15 @@ impl StageRenderResources {
         let Some(state) = particles.system.cars.first_mut() else {
             return;
         };
+        // `FUN_00429980`, not at night.
+        if !particles.night {
+            let world = |p: [i32; 3]| p.map(|v| (f64::from(v) / 65536.0) as f32);
+            self.mark_draws = state
+                .mark_triangles(particles.ambient)
+                .into_iter()
+                .map(|(points, colours)| (points.map(world), colours))
+                .collect();
+        }
         let snapshot = state.snapshot(0x1_0000);
         let list = state.billboards(&snapshot, &view);
         for billboard in list {
@@ -2905,17 +2941,22 @@ impl StageRenderResources {
                 .as_ref()
                 .filter(|_| !self.shadow_draws.is_empty());
             let shadow_draws = &self.shadow_draws;
-            let sprites = (self.particles.as_ref(), &self.sprite_draws);
+            let sprites = (
+                self.particles.as_ref(),
+                &self.sprite_draws,
+                &self.mark_draws,
+            );
             let blend = |scene: &mut cmr_video::software_stage_scene::StageSceneFrame| {
                 if let Some(shadow) = shadow {
                     scene
                         .blend_shadows(camera, shadow_draws, &shadow.alpha)
                         .map_err(StageFrameError::Compose)?;
                 }
-                blend_sprite_draws(scene, camera, sprites.0, sprites.1)
+                blend_sprite_draws(scene, camera, sprites.0, sprites.1, sprites.2)
             };
             let post: Option<&PostBlend<'_>> =
-                (shadow.is_some() || !self.sprite_draws.is_empty()).then_some(&blend);
+                (shadow.is_some() || !self.sprite_draws.is_empty() || !self.mark_draws.is_empty())
+                    .then_some(&blend);
             match gpu.compose(
                 camera,
                 car_node_worlds.as_deref(),
@@ -3084,6 +3125,7 @@ impl StageRenderResources {
             camera,
             self.particles.as_ref(),
             &self.sprite_draws,
+            &self.mark_draws,
         )?;
 
         let presented = frame
@@ -4447,6 +4489,10 @@ struct StageParticles {
     country: u8,
     lit: [u8; 3],
     fixed_grey: Option<u8>,
+    /// `0x4ec800` with `FUN_00424c60`'s country colour for surface `0x2c`,
+    /// and the stage's sixth light colour the marks are lit by.
+    mark_surfaces: Vec<[u8; 8]>,
+    ambient: [u8; 3],
     textures: std::collections::HashMap<
         (cmr_core::car_particles::Sprites, usize),
         cmr_formats::bitmap::IndexedBitmap,
@@ -4468,6 +4514,7 @@ fn blend_sprite_draws(
     camera: &[i32; 16],
     particles: Option<&StageParticles>,
     draws: &[SpriteDraw],
+    marks: &[([[f32; 3]; 3], [u32; 3])],
 ) -> Result<(), StageFrameError> {
     let Some(particles) = particles else {
         return Ok(());
@@ -4486,6 +4533,10 @@ fn blend_sprite_draws(
         .collect();
     frame
         .blend_sprites(camera, &quads)
+        .map_err(StageFrameError::Compose)?;
+    // The tyre marks after the sprites (`FUN_004a9cd0`).
+    frame
+        .blend_coloured_triangles(camera, marks)
         .map_err(StageFrameError::Compose)
 }
 
@@ -4981,7 +5032,13 @@ fn advance_game_frame<C: HostClock>(
     let particles_enabled = config.image[0x10] & 0x80 != 0 && live_cfg[0x26] & 2 == 0;
     let single_alpha = live_cfg[0xb] != 0;
     if advanced.stepped {
-        resources.tick_particles(session, particles_enabled, &mut camera.rng, &camera.trig);
+        resources.tick_particles(
+            session,
+            particles_enabled,
+            live_cfg[0x25] & 4 != 0,
+            &mut camera.rng,
+            &camera.trig,
+        );
     }
     // The render's compositor step: the screen fade's black quad
     // (`FUN_00423170`), or state 0xb's display shutdown.

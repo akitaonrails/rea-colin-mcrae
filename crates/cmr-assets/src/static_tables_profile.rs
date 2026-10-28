@@ -603,6 +603,7 @@ pub(crate) mod tests {
                 ("service_screen_data", 0x004f5fc8, Block { len: 232 }),
                 ("stage_info_surfaces", 0x004f4448, Block { len: 240 }),
                 ("stage_lengths", 0x004f48e0, Block { len: 63 }),
+                ("tyre_mark_surfaces", 0x004ec800, Block { len: 960 }),
             ]
         );
         // Same executable identity as the reviewed stage-weather profile.

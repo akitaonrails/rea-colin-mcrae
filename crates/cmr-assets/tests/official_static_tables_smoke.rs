@@ -52,7 +52,7 @@ fn reviewed_official_static_tables_extract_and_reopen_without_exposing_values() 
     );
     let summary = result.expect("checked successful extraction");
     assert_eq!(summary.shape.format_version, STATIC_TABLES_FORMAT_VERSION);
-    assert_eq!(summary.shape.entry_count, 118);
+    assert_eq!(summary.shape.entry_count, 119);
 
     let store = StaticTablesStore::open(&output, &reviewed);
     assert!(store.is_ok(), "official static-tables store reopen failed");

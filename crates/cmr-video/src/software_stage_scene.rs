@@ -294,24 +294,76 @@ impl StageSceneFrame {
                     // ordered 4x4 offset keeps a translucent blend from
                     // quantizing back to the colour under it.
                     let bayer = BAYER_4X4[usize::from(y & 3)][usize::from(x & 3)];
-                    pixels[at] = *cache.entry((under, rgb, alpha, bayer)).or_insert_with(|| {
-                        let base = palette[usize::from(under)];
-                        let a = f32::from(alpha) / 255.0;
-                        let offset = (f32::from(bayer) - 7.5) * DITHER_STEP;
-                        let mix = |b: u8, s: u8| {
-                            (f32::from(b) * (1.0 - a) + f32::from(s) * a + offset)
-                                .round()
-                                .clamp(0.0, 255.0) as u8
-                        };
-                        nearest_index(
-                            [
-                                mix(base.red, rgb[0]),
-                                mix(base.green, rgb[1]),
-                                mix(base.blue, rgb[2]),
-                            ],
-                            &palette,
-                        )
-                    });
+                    pixels[at] = dithered_blend(&mut cache, &palette, under, rgb, alpha, bayer);
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Vertex-coloured triangles in world units, blended by their vertex
+    /// alpha (the tyre marks, `FUN_004a9cd0`'s untextured buffer), depth
+    /// tested against the frame without writing it, and re-quantized with
+    /// the sprites' ordered dither.
+    pub fn blend_coloured_triangles(
+        &mut self,
+        camera_world_q16: &[i32; 16],
+        triangles: &[([[f32; 3]; 3], [u32; 3])],
+    ) -> Result<(), StageSceneComposeError> {
+        if triangles.is_empty() {
+            return Ok(());
+        }
+        let [width, height] = self.extent;
+        let identity = [
+            0x1_0000, 0, 0, 0, 0, 0x1_0000, 0, 0, 0, 0, 0x1_0000, 0, 0, 0, 0, 0x1_0000,
+        ];
+        let transforms = SoftwareC3dTransformState::for_gameplay_scene(
+            width,
+            height,
+            camera_world_q16,
+            &identity,
+        )?;
+        let palette = *self.palette;
+        let mut vertices = Vec::with_capacity(triangles.len() * 3);
+        let mut indices = Vec::with_capacity(triangles.len() * 3);
+        for (points, colours) in triangles {
+            for (point, &colour) in points.iter().zip(colours) {
+                indices.push(vertices.len() as u16);
+                vertices.push(crate::c3d_software_raster::SoftwareC3dLitVertex {
+                    position: *point,
+                    diffuse: colour,
+                    uv: [0.0, 0.0],
+                });
+            }
+        }
+        let mut cache = std::collections::HashMap::<(u8, [u8; 3], u8, u8), u8>::new();
+        // One batch per 21000 vertices keeps the u16 indices in range.
+        for (vchunk, ichunk) in vertices.chunks(21_000).zip(indices.chunks(21_000)) {
+            let base = ichunk.first().copied().unwrap_or(0);
+            let local: Vec<u16> = ichunk.iter().map(|i| i - base).collect();
+            let batch = crate::c3d_software_raster::preflight_lit_triangle_list(
+                vchunk, &local, transforms,
+            )?;
+            let mut scratch = self.depth.clone();
+            let pixels = &mut self.pixels;
+            crate::c3d_software_raster::rasterize_c3d_fragments_untextured(
+                &batch,
+                &mut scratch,
+                |fragment| {
+                    let [a, r, g, b] = fragment.diffuse_argb();
+                    let to8 = |c: f32| (c * 255.0).round().clamp(0.0, 255.0) as u8;
+                    let rgb = [to8(r), to8(g), to8(b)];
+                    let alpha = to8(a);
+                    let [x, y] = fragment.position();
+                    let at = usize::from(y) * usize::from(width) + usize::from(x);
+                    pixels[at] = dithered_blend(
+                        &mut cache,
+                        &palette,
+                        pixels[at],
+                        rgb,
+                        alpha,
+                        BAYER_4X4[usize::from(y & 3)][usize::from(x & 3)],
+                    );
                 },
             )?;
         }
@@ -351,6 +403,36 @@ impl StageSceneFrame {
 /// The ordered-dither matrix and step the sprite blend quantizes with.
 const BAYER_4X4: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 const DITHER_STEP: f32 = 2.0;
+
+/// `rgb` over palette entry `under` at `alpha` (SRCALPHA/INVSRCALPHA),
+/// offset by the ordered dither and matched to the palette.
+fn dithered_blend(
+    cache: &mut std::collections::HashMap<(u8, [u8; 3], u8, u8), u8>,
+    palette: &[PaletteEntry; 256],
+    under: u8,
+    rgb: [u8; 3],
+    alpha: u8,
+    bayer: u8,
+) -> u8 {
+    *cache.entry((under, rgb, alpha, bayer)).or_insert_with(|| {
+        let base = palette[usize::from(under)];
+        let a = f32::from(alpha) / 255.0;
+        let offset = (f32::from(bayer) - 7.5) * DITHER_STEP;
+        let mix = |b: u8, s: u8| {
+            (f32::from(b) * (1.0 - a) + f32::from(s) * a + offset)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        };
+        nearest_index(
+            [
+                mix(base.red, rgb[0]),
+                mix(base.green, rgb[1]),
+                mix(base.blue, rgb[2]),
+            ],
+            palette,
+        )
+    })
+}
 
 /// One particle sprite for [`StageSceneFrame::blend_sprites`]: the four
 /// corners (v0 `(a0, b0)`, v1 `(a0, b1)`, v2 `(a1, b0)`, v3 `(a1, b1)`) in

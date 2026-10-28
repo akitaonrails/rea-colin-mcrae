@@ -776,6 +776,8 @@ impl<'a> GameplaySession<'a> {
             lateral: four.lateral_dot_3c0,
             surfaces: std::array::from_fn(|w| ground.lanes.type_words[w] as i16),
             gear: four.gearbox.gear_43a,
+            upright: four.upright_404,
+            normals: std::array::from_fn(|w| ground.lanes.output_vectors[w]),
         })
     }
 
