@@ -64,6 +64,7 @@ pub fn car_controls_to_sim(controls: &CarControls, response: &DriveResponse) -> 
         raw_steer: RawSteer {
             left_2fc: controls.steer_left,
             right_300: controls.steer_right,
+            analog_410: controls.steer_analog,
         },
         raw_pedals: RawPedals {
             throttle_304: controls.throttle,
@@ -127,6 +128,7 @@ mod tests {
             RawSteer {
                 left_2fc: 0xfc00,
                 right_300: 0x400,
+                analog_410: false,
             }
         );
     }

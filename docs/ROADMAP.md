@@ -1841,6 +1841,13 @@ the pedal ramp scalars and the `+0x408` mode from one car's case words, and the
 app builder takes that set. Only the headless session, which has no case words,
 still passes explicit harness values.
 
+The steering half of the control processor is recovered and wired: digital and
+analog routines turn the cut steer magnitudes into the wheel angle `+0x3e0`,
+and the four-wheel step rotates the lane source by the per-car base plus that
+angle, so steering now reaches the wheel forces. The digital rate and minimum
+deflection (`+0x44c..+0x45c`) and the surface/car-type steering tables are not
+yet sourced, and the processor's gearbox part remains.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

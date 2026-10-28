@@ -263,6 +263,9 @@ mod tests {
             pedal_response: crate::pedal_response::PedalResponseParams::default(),
             lane_time_step: Fixed16::ZERO,
             lane_direction_angle: 0,
+            steering: crate::steering_response::SteeringParams::default(),
+            steering_car_factor_e188: 0x1_0000,
+            steering_surface_factors: [0; 2],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {

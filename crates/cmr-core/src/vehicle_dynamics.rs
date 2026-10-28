@@ -1393,6 +1393,8 @@ pub const RESTING_SPEED: Fixed16 = Fixed16::from_raw(0xa3d);
 pub struct RawSteer {
     pub left_2fc: i32,
     pub right_300: i32,
+    /// `+0x410`: the steer came from the analog path. The low-speed cut keeps it.
+    pub analog_410: bool,
 }
 
 /// Speed bound below which the mechanics driver zeroes both steer magnitudes
@@ -1408,7 +1410,11 @@ pub const LOW_SPEED_STEER_CUT: i32 = 0x147;
 #[must_use]
 pub fn apply_low_speed_steer_cut(steer: RawSteer, speed_ec: i32) -> RawSteer {
     if speed_ec.wrapping_abs() < LOW_SPEED_STEER_CUT {
-        RawSteer::default()
+        RawSteer {
+            left_2fc: 0,
+            right_300: 0,
+            ..steer
+        }
     } else {
         steer
     }
@@ -2609,6 +2615,7 @@ mod tests {
         let steer = RawSteer {
             left_2fc: 0xfc00,
             right_300: 0x400,
+            analog_410: false,
         };
         for slow in [0, 0x146, -0x146, i32::MIN] {
             assert_eq!(
@@ -2620,6 +2627,18 @@ mod tests {
         for fast in [0x147, -0x147, i32::MAX] {
             assert_eq!(apply_low_speed_steer_cut(steer, fast), steer, "{fast:#x}");
         }
+        // The cut zeroes only the magnitudes; the analog flag `+0x410` stays.
+        let analog = RawSteer {
+            analog_410: true,
+            ..steer
+        };
+        assert_eq!(
+            apply_low_speed_steer_cut(analog, 0),
+            RawSteer {
+                analog_410: true,
+                ..RawSteer::default()
+            }
+        );
     }
 
     #[test]
@@ -2679,6 +2698,7 @@ mod tests {
             steer: RawSteer {
                 left_2fc: 0,
                 right_300: 0x400,
+                analog_410: false,
             },
             ..gate
         };

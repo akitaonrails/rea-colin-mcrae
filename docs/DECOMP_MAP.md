@@ -404,6 +404,8 @@ translation is now the integrator's own (no harness steering, drag, throttle
 push or lateral grip; inverse mass `+0x4c` is an explicit input), and the
 control processor's pedal ramps feed throttle, brake and handbrake responses to
 the drivetrain. Their car constants derive from the compiled initializer stages.
+Its steering half now turns steer input into the wheel angle that rotates the
+lane source.
 
 ## Update rules
 
@@ -414,8 +416,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T03:00:00Z
-milestone=compiled-four-wheel-car-constants
+updated_utc=2026-10-28T03:35:00Z
+milestone=control-processor-steering
 completed=117
 partial=2
 not_started=0

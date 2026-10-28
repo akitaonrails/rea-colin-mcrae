@@ -4158,6 +4158,11 @@ pub struct CompiledFourWheelConstants {
     pub control_word_17c: i32,
     pub control_word_184: i32,
     pub control_word_408: i32,
+    /// Steering: `+0x188` centering rate, `+0x3e4` maximum angle and the
+    /// `+0x440` option byte, all from the post-helper patch.
+    pub control_word_188: i32,
+    pub control_u16_3e4: u16,
+    pub control_byte_440: u8,
 }
 
 fn post_helper_word(effects: &CompiledPostHelperEffects, offset: u16) -> i32 {
@@ -4209,6 +4214,9 @@ pub fn derive_compiled_four_wheel_constants(
         control_word_17c: post_helper_word(&post_helper, 0x17c),
         control_word_184: post_helper_word(&post_helper, 0x184),
         control_word_408: post_helper_word(&post_helper, 0x408),
+        control_word_188: post_helper_word(&post_helper, 0x188),
+        control_u16_3e4: post_helper.control_u16[0],
+        control_byte_440: post_helper.control_bytes[0],
     })
 }
 
@@ -10869,6 +10877,16 @@ mod tests {
                     constants.control_word_408,
                 ),
                 (0x0ccc, 0x0ccc, 0x0ccc, 0x8000, 0)
+            );
+            assert_eq!(COMPILED_POST_HELPER_CONTROL_U16_OFFSETS, [0x3e4]);
+            assert_eq!(COMPILED_POST_HELPER_CONTROL_BYTE_OFFSETS, [0x440]);
+            assert_eq!(
+                (
+                    constants.control_word_188,
+                    constants.control_u16_3e4,
+                    constants.control_byte_440,
+                ),
+                (0x3333, 0x02aa, 3)
             );
             let expected_inertia = if flags & COMPILED_COMMON_STATE_SCALE_MASK == 0 {
                 [1, 2, 1]

@@ -55,6 +55,7 @@ use crate::static_collision_scene_builder::ParsedStaticCollisionScene;
 use crate::static_world_collision::{
     StaticCollisionExecutionError, StaticContactHistory, resolve_static_world_collisions,
 };
+use crate::steering_response::{SteeringInputs, SteeringParams, SteeringState, apply_steering};
 use crate::vehicle_dynamics::{
     AngularOrientationInput, ContactBasisInput, ContactDeadzoneGate, ContactVectorUpdateInput,
     GeometricPostprocessError, GeometricPostprocessLane, LaneDirectionSources,
@@ -342,7 +343,14 @@ pub struct FourWheelIterationParams<'a> {
     pub pedal_response: PedalResponseParams,
     /// Timestep used by the persistent `+0x5d4` stabilizer.
     pub lane_time_step: Fixed16,
+    /// The per-car-type base angle `DAT_0050e4fc[type]`; the step adds this
+    /// tick's wheel steer angle `+0x3e0` before rotating the lane source.
     pub lane_direction_angle: i16,
+    /// Steering scalars, the per-car-type factor `DAT_0050e188[type]` and the
+    /// two front-wheel `DAT_004f74ac` values for the control processor.
+    pub steering: SteeringParams,
+    pub steering_car_factor_e188: i32,
+    pub steering_surface_factors: [i32; 2],
     /// Resolved global/callback inputs; Rebuild takes precedence over Exchange.
     pub lane_rebuild: bool,
     pub lane_exchange: bool,
@@ -399,6 +407,9 @@ pub fn populate_compiled_four_wheel_constants(
         handbrake_max_184: constants.control_word_184,
     };
     wheel.driven_smoothing.mode_408 = constants.control_word_408;
+    wheel.steering.centering_188 = constants.control_word_188;
+    wheel.steering.max_angle_3e4 = constants.control_u16_3e4 as i16;
+    wheel.steering.flags_440 = constants.control_byte_440;
 }
 
 /// Populate each update's limit and threshold from the interleaved compiled
@@ -460,6 +471,8 @@ pub struct FourWheelState {
     /// The control processor's ramps and responses, including the throttle
     /// response `control+0x2d8` read by the engine force and lane stabilizer.
     pub pedals: PedalResponseState,
+    /// The control processor's steering words (`+0x318/+0x114/+0x3e0/+0x3e2`).
+    pub steering: SteeringState,
     /// Control `+0x404`, recomputed at the start of each four-wheel tick.
     pub upright_404: bool,
     /// Resting flag at `state+0x700`, written by the integrator each tick.
@@ -779,6 +792,7 @@ impl CarState {
                 idle_6e8: 0,
                 idle_countdown_6ec: 0,
                 pedals: PedalResponseState::ZERO,
+                steering: SteeringState::ZERO,
                 upright_404: false,
                 resting_700: false,
             },
@@ -1224,8 +1238,21 @@ impl RaceState {
         // the previous tick's `+0xec`, then recomputes `+0x404` from the same
         // start-of-tick body axis, before any integrator runs.
         let steer = apply_low_speed_steer_cut(controls.raw_steer, self.car.four_wheel.speed_ec);
-        // The control processor `FUN_0041b5b0` follows the cut and ramps the
-        // raw pedals into the responses the drivetrain reads this tick.
+        // The control processor `FUN_0041b5b0` follows the cut: its steering
+        // half turns the cut magnitudes into the wheel angle `+0x3e0`, then its
+        // pedal half ramps the raw pedals into this tick's responses.
+        self.car.four_wheel.steering = apply_steering(
+            self.car.four_wheel.steering,
+            wheel.steering,
+            SteeringInputs {
+                steer,
+                analog_410: steer.analog_410,
+                car_factor_e188: wheel.steering_car_factor_e188,
+                front_surface_factors: wheel.steering_surface_factors,
+                forward_axis: self.car.motion.basis[0],
+                velocity: self.car.velocity,
+            },
+        );
         let pedal_inputs = PedalInputs::from_raw(
             controls.raw_pedals,
             controls.handbrake,
@@ -1266,7 +1293,9 @@ impl RaceState {
         let (source_p, source_r) = derive_lane_direction_pair(
             source_s,
             self.car.motion.basis[1],
-            wheel.lane_direction_angle,
+            wheel
+                .lane_direction_angle
+                .wrapping_add(self.car.four_wheel.steering.angle_3e0),
             &self.trig,
         )
         .expect("the race-state trig table is complete");
@@ -2274,6 +2303,9 @@ mod tests {
             },
             lane_time_step: crate::vehicle_dynamics::SOLVER_GLOBAL_CONSTANTS.time_step,
             lane_direction_angle: 0,
+            steering: SteeringParams::default(),
+            steering_car_factor_e188: 0x1_0000,
+            steering_surface_factors: [0; 2],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -2504,6 +2536,45 @@ mod tests {
             .step_with_all_four_wheels(&pressed_controls, &wheel)
             .unwrap();
         assert_eq!(pressed.car.four_wheel.pedals.response_2d8, 0x8000);
+
+        // A held digital left above the low-speed cut runs the steering half:
+        // the wheel angle slews to -0x22, the lane source is rotated by base +
+        // angle, and the lane outputs change. At rest the cut removes the steer
+        // and the tick matches the unsteered one.
+        let mut steerable = wheel.clone();
+        steerable.steering = SteeringParams {
+            max_angle_3e4: 0x2aa,
+            rate_44c: 0x4000,
+            time_step: 0x1_0000,
+            ..SteeringParams::default()
+        };
+        let left = Controls {
+            raw_steer: RawSteer {
+                left_2fc: 0x1_0000,
+                right_300: 0,
+                analog_410: false,
+            },
+            ..straight_throttle(1)[0]
+        };
+        let mut rolling = car;
+        rolling.four_wheel.speed_ec = 0x1000;
+        let steered = RaceState::new(rolling)
+            .step_with_all_four_wheels(&left, &steerable)
+            .unwrap();
+        let straight = RaceState::new(rolling)
+            .step_with_all_four_wheels(&straight_throttle(1)[0], &steerable)
+            .unwrap();
+        assert_eq!(steered.car.four_wheel.steering.position_318, 0x4000);
+        assert_eq!(steered.car.four_wheel.steering.angle_3e0, -0x22);
+        assert_eq!(straight.car.four_wheel.steering, SteeringState::ZERO);
+        assert_ne!(
+            steered.car.four_wheel.second[0].accumulators,
+            straight.car.four_wheel.second[0].accumulators
+        );
+        let parked = RaceState::new(car)
+            .step_with_all_four_wheels(&left, &steerable)
+            .unwrap();
+        assert_eq!(parked.car.four_wheel.steering, SteeringState::ZERO);
         assert_eq!(
             pressed.car.motion.lane_source_s,
             stabilize_lane_source_s(
@@ -2617,6 +2688,7 @@ mod tests {
             raw_steer: RawSteer {
                 left_2fc: 0xfc00,
                 right_300: 0,
+                analog_410: false,
             },
             ..straight_throttle(1)[0]
         };

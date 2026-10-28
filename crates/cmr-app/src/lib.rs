@@ -3243,6 +3243,9 @@ impl SessionWheelInputs {
             pedal_response: cmr_core::pedal_response::PedalResponseParams::default(),
             lane_time_step: SOLVER_GLOBAL_CONSTANTS.time_step,
             lane_direction_angle: 0,
+            steering: cmr_core::steering_response::SteeringParams::default(),
+            steering_car_factor_e188: 0x1_0000,
+            steering_surface_factors: [0; 2],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -4072,6 +4075,9 @@ const HEADLESS_HARNESS_FOUR_WHEEL_CONSTANTS: CompiledFourWheelConstants =
         control_word_17c: 0,
         control_word_184: 0,
         control_word_408: 0,
+        control_word_188: 0,
+        control_u16_3e4: 0,
+        control_byte_440: 0,
     };
 
 /// Run the headless FSM with authenticated coefficients and compiled geometry.

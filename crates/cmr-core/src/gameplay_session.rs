@@ -466,6 +466,9 @@ mod tests {
             pedal_response: crate::pedal_response::PedalResponseParams::default(),
             lane_time_step: Fixed16::ZERO,
             lane_direction_angle: 0,
+            steering: crate::steering_response::SteeringParams::default(),
+            steering_car_factor_e188: 0x1_0000,
+            steering_surface_factors: [0; 2],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: crate::race_state::FourWheelPostprocessParams {
@@ -637,6 +640,9 @@ mod tests {
             control_word_17c: 0x0cce,
             control_word_184: 0x8000,
             control_word_408: 1,
+            control_word_188: 0x3333,
+            control_u16_3e4: 0x02aa,
+            control_byte_440: 3,
         };
         crate::race_state::populate_compiled_four_wheel_constants(&mut wheel, &constants);
         assert_eq!(wheel.inverse_mass_4c.raw(), 0x218);
@@ -661,6 +667,14 @@ mod tests {
             }
         );
         assert_eq!(wheel.driven_smoothing.mode_408, 1);
+        assert_eq!(
+            (
+                wheel.steering.centering_188,
+                wheel.steering.max_angle_3e4,
+                wheel.steering.flags_440,
+            ),
+            (0x3333, 0x02aa, 3)
+        );
     }
 
     #[test]
