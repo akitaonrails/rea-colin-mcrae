@@ -18,11 +18,17 @@ pub struct CheckedWrite {
     pub original: Vec<u8>,
 }
 
-/// Assembles the fixes for an image and pairs each image write with the
-/// bytes the file has there. Fails when a site is not file-backed code.
-pub fn prepare(image: &Image, fixes: &FixSet, cave_base: u32) -> Result<Vec<CheckedWrite>, String> {
+/// Assembles the active fixes (see `FixSet::active`) for an image and pairs
+/// each image write with the bytes the file has there. Fails when a site is
+/// not file-backed code.
+pub fn prepare(
+    image: &Image,
+    fixes: &FixSet,
+    skip: &[&str],
+    cave_base: u32,
+) -> Result<Vec<CheckedWrite>, String> {
     fixes
-        .assemble(cave_base)
+        .assemble(cave_base, skip)
         .into_iter()
         .map(|write| {
             let original = if write.in_image {
@@ -52,6 +58,7 @@ mod tests {
         fixes: &[Fix {
             id: "T1",
             what: "test",
+            optional: false,
             code: &[
                 Piece {
                     at: At::Image(0x401002),
@@ -69,7 +76,7 @@ mod tests {
     fn prepare_reads_the_replaced_bytes() {
         let file = pe::tests::synthetic(&[0x55, 0x8b, 0xec, 0x90]);
         let img = Image::parse(&file).unwrap();
-        let w = prepare(&img, &TEST_FIXES, 0x500000).unwrap();
+        let w = prepare(&img, &TEST_FIXES, &[], 0x500000).unwrap();
         assert_eq!(w[0].original, [0xec]);
         assert!(w[1].original.is_empty());
     }
@@ -78,6 +85,6 @@ mod tests {
     fn prepare_refuses_sites_outside_code() {
         let file = pe::tests::synthetic(&[0x90]);
         let img = Image::parse(&file).unwrap();
-        assert!(prepare(&img, &TEST_FIXES, 0x500000).is_err());
+        assert!(prepare(&img, &TEST_FIXES, &[], 0x500000).is_err());
     }
 }

@@ -31,7 +31,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use cmr_launcher::CheckedWrite;
-use cmr_launcher::fixes::FixSet;
 use cmr_launcher::registry::{KEY, VIRTUAL_STORE_KEY, Value, When};
 
 fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
@@ -222,11 +221,12 @@ fn write(
 }
 
 /// Starts `exe` suspended, applies the fixes, resumes it and waits for it
-/// to exit. `prepare` turns the cave address into checked writes.
+/// to exit. Allocates `cave_size` bytes for the fixes' own code (none when
+/// 0); `prepare` turns that address into checked writes.
 pub fn run_patched(
     exe: &Path,
     workdir: &Path,
-    fixes: &FixSet,
+    cave_size: u32,
     prepare: impl FnOnce(u32) -> Result<Vec<CheckedWrite>, String>,
     log: &mut dyn FnMut(&str),
 ) -> Result<u32, String> {
@@ -259,7 +259,6 @@ pub fn run_patched(
     };
     let process = child.info.hProcess;
 
-    let cave_size = fixes.cave_size();
     let cave = if cave_size == 0 {
         0
     } else {

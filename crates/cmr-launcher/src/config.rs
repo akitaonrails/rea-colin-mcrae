@@ -1,7 +1,10 @@
-//! Command line and the remembered settings file.
+//! Command line and the settings file (`launcher.cfg`).
 //!
-//! The settings file is plain `key=value` lines; unknown keys are ignored so
-//! older launchers can read newer files.
+//! The file is plain `key = value` lines with `#` comments, written once from
+//! a commented template so users can edit it. The launcher later changes
+//! only the lines it owns (`game`), keeping everything else as the user left
+//! it. Unknown keys are ignored so older launchers can read newer files;
+//! values it cannot read are reported and ignored.
 
 use std::path::PathBuf;
 
@@ -12,59 +15,117 @@ pub struct Settings {
     pub game: Option<PathBuf>,
     pub runtime: Option<PathBuf>,
     pub language: Option<String>,
+    /// Closing the window quits the game (fix F6). Default on.
+    pub close_quits: Option<bool>,
 }
+
+pub const FILE_NAME: &str = "launcher.cfg";
+
+/// The file written on first run.
+pub const TEMPLATE: &str = r"# Colin McRae Rally launcher settings.
+#
+# One setting per line as key = value; lines starting with # are comments.
+# Command-line options (--game, --runtime, --language) override this file
+# for one run. A launcher.cfg next to CMRLauncher.exe is used instead of
+# this one when it exists (for portable installs).
+
+# The folder with your installed Rally.exe. Filled in by --game; the game
+# folder is only read, never changed.
+game =
+
+# Where the launcher keeps its private, writable copy of the game, including
+# your saves. Default: %LOCALAPPDATA%\CMRLauncher\Rally
+#runtime =
+
+# Game language, used when the game is first set up:
+# ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN.
+#language = ENGLISH
+
+# Closing the game window (Alt+F4, the window manager's close) quits the
+# game. Set to false for the original 1998 behaviour, where closing the
+# window does nothing.
+close_quits = true
+";
 
 pub const USAGE: &str = "\
 CMRLauncher [--game <folder>] [--runtime <folder>] [--language <name>]
 
   --game      the folder with your installed Rally.exe (remembered)
-  --runtime   where the launcher keeps its private copy (remembered)
-  --language  ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN (first run only)";
+  --runtime   where the launcher keeps its private copy
+  --language  ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN
+
+Other settings are in launcher.cfg (see the comments in it).";
+
+fn parse_bool(v: &str) -> Option<bool> {
+    match v.to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" => Some(true),
+        "false" | "no" | "off" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_language(v: &str) -> Option<String> {
+    let v = v.to_ascii_uppercase();
+    LANGUAGES.contains(&v.as_str()).then_some(v)
+}
+
+/// Splits `key = value`, ignoring comments and blank values.
+fn entry(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    if line.starts_with('#') {
+        return None;
+    }
+    let (key, value) = line.split_once('=')?;
+    let value = value.trim();
+    (!value.is_empty()).then_some((key.trim(), value))
+}
 
 impl Settings {
-    pub fn parse_file(text: &str) -> Settings {
+    /// Reads a settings file; the second value lists lines it could not use.
+    pub fn parse_file(text: &str) -> (Settings, Vec<String>) {
         let mut s = Settings::default();
-        for line in text.lines() {
-            let Some((key, value)) = line.split_once('=') else {
+        let mut warnings = Vec::new();
+        for (n, line) in text.lines().enumerate() {
+            let Some((key, value)) = entry(line) else {
                 continue;
             };
-            let value = value.trim();
-            if value.is_empty() {
-                continue;
-            }
-            match key.trim() {
+            let mut bad = |what: &str| {
+                warnings.push(format!("{FILE_NAME} line {}: {what} {value:?}", n + 1));
+            };
+            match key {
                 "game" => s.game = Some(value.into()),
                 "runtime" => s.runtime = Some(value.into()),
-                "language" => s.language = Some(value.into()),
+                "language" => match parse_language(value) {
+                    Some(l) => s.language = Some(l),
+                    None => bad("unknown language"),
+                },
+                "close_quits" => match parse_bool(value) {
+                    Some(b) => s.close_quits = Some(b),
+                    None => bad("close_quits needs true or false, not"),
+                },
                 _ => {}
             }
         }
-        s
+        (s, warnings)
     }
 
-    pub fn to_file(&self) -> String {
-        let mut out = String::new();
-        let mut put = |k: &str, v: Option<String>| {
-            if let Some(v) = v {
-                out.push_str(&format!("{k}={v}\n"));
-            }
-        };
-        put("game", self.game.as_ref().map(|p| p.display().to_string()));
-        put(
-            "runtime",
-            self.runtime.as_ref().map(|p| p.display().to_string()),
-        );
-        put("language", self.language.clone());
-        out
-    }
-
-    /// Command-line values override remembered ones.
+    /// Command-line values override the file's.
     pub fn merged(self, over: Settings) -> Settings {
         Settings {
             game: over.game.or(self.game),
             runtime: over.runtime.or(self.runtime),
             language: over.language.or(self.language),
+            close_quits: over.close_quits.or(self.close_quits),
         }
+    }
+
+    /// Optional fixes these settings turn off (see `fixes::Fix::optional`).
+    pub fn skipped_fixes(&self) -> Vec<&'static str> {
+        let mut skip = Vec::new();
+        if self.close_quits == Some(false) {
+            skip.push("F6");
+        }
+        skip
     }
 
     pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Settings, String> {
@@ -79,11 +140,11 @@ impl Settings {
                 "--game" => s.game = Some(value("--game")?.into()),
                 "--runtime" => s.runtime = Some(value("--runtime")?.into()),
                 "--language" => {
-                    let v = value("--language")?.to_ascii_uppercase();
-                    if !LANGUAGES.contains(&v.as_str()) {
-                        return Err(format!("unknown language {v}\n\n{USAGE}"));
-                    }
-                    s.language = Some(v);
+                    let v = value("--language")?;
+                    s.language = Some(
+                        parse_language(&v)
+                            .ok_or_else(|| format!("unknown language {v}\n\n{USAGE}"))?,
+                    );
                 }
                 "--help" | "-h" | "/?" => return Err(USAGE.into()),
                 other => return Err(format!("unknown argument {other}\n\n{USAGE}")),
@@ -91,6 +152,30 @@ impl Settings {
         }
         Ok(s)
     }
+}
+
+/// Sets `key` in a settings file, keeping every other line (and comments)
+/// as it was: replaces the first active or empty `key =` line, else appends.
+pub fn set_key(text: &str, key: &str, value: &str) -> String {
+    let is_key = |line: &str| {
+        let line = line.trim();
+        !line.starts_with('#') && line.split_once('=').is_some_and(|(k, _)| k.trim() == key)
+    };
+    let mut out = String::with_capacity(text.len() + key.len() + value.len() + 4);
+    let mut done = false;
+    for line in text.lines() {
+        if !done && is_key(line) {
+            out.push_str(&format!("{key} = {value}"));
+            done = true;
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    if !done {
+        out.push_str(&format!("{key} = {value}\n"));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -112,22 +197,55 @@ mod tests {
     }
 
     #[test]
-    fn file_round_trips_and_args_win() {
-        let saved = Settings {
-            game: Some(r"C:\old".into()),
-            runtime: Some(r"C:\rt".into()),
-            language: None,
-        };
-        assert_eq!(Settings::parse_file(&saved.to_file()), saved);
+    fn template_parses_to_the_defaults() {
+        let (s, warnings) = Settings::parse_file(TEMPLATE);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            s,
+            Settings {
+                close_quits: Some(true),
+                ..Settings::default()
+            }
+        );
+        assert!(s.skipped_fixes().is_empty());
+    }
+
+    #[test]
+    fn file_values_and_args_win() {
+        let text = "game = C:\\old\nruntime=C:\\rt\nlanguage = french\nclose_quits = no\n";
+        let (saved, warnings) = Settings::parse_file(text);
+        assert!(warnings.is_empty());
+        assert_eq!(saved.language.as_deref(), Some("FRENCH"));
+        assert_eq!(saved.skipped_fixes(), ["F6"]);
         let m = saved.merged(args(&["--game", r"C:\new"]).unwrap());
         assert_eq!(m.game, Some(PathBuf::from(r"C:\new")));
         assert_eq!(m.runtime, Some(PathBuf::from(r"C:\rt")));
     }
 
     #[test]
-    fn file_ignores_junk() {
-        let s = Settings::parse_file("# comment\nfuture=1\ngame = C:\\G \n\nruntime=\n");
+    fn file_ignores_junk_and_reports_bad_values() {
+        let (s, warnings) = Settings::parse_file(
+            "# game = C:\\commented\nfuture=1\ngame = C:\\G \n\nruntime=\nclose_quits = maybe\nlanguage=xx\n",
+        );
         assert_eq!(s.game, Some(PathBuf::from(r"C:\G")));
         assert_eq!(s.runtime, None);
+        assert_eq!(s.close_quits, None);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("line 6"));
+    }
+
+    #[test]
+    fn set_key_keeps_the_rest_of_the_file() {
+        let filled = set_key(TEMPLATE, "game", r"D:\CMR");
+        assert_eq!(filled.lines().count(), TEMPLATE.lines().count());
+        assert!(filled.contains("\ngame = D:\\CMR\n"));
+        assert!(filled.contains("#runtime =\n"));
+        let (s, _) = Settings::parse_file(&filled);
+        assert_eq!(s.game, Some(PathBuf::from(r"D:\CMR")));
+
+        // Replaced again in place; a commented key is not touched.
+        let again = set_key(&filled, "game", r"E:\CMR");
+        assert_eq!(again.matches("game =").count(), 1);
+        assert!(set_key("#game = x\n", "game", "y").ends_with("#game = x\ngame = y\n"));
     }
 }

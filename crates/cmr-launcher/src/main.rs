@@ -28,7 +28,7 @@ mod app {
     use std::io::Write as _;
     use std::path::{Path, PathBuf};
 
-    use cmr_launcher::config::Settings;
+    use cmr_launcher::config::{self, Settings};
     use cmr_launcher::{edition, pe, prepare, registry, runtime};
 
     use crate::win32;
@@ -54,6 +54,18 @@ mod app {
         }
     }
 
+    /// A `launcher.cfg` next to the exe wins (portable installs); otherwise
+    /// the one in the launcher's home folder.
+    fn settings_path() -> PathBuf {
+        let portable = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(config::FILE_NAME)));
+        match portable {
+            Some(p) if p.is_file() => p,
+            _ => home().join(config::FILE_NAME),
+        }
+    }
+
     fn find_game(settings: &Settings) -> Result<PathBuf, String> {
         if let Some(g) = &settings.game {
             return Ok(g.clone());
@@ -72,11 +84,16 @@ mod app {
     }
 
     pub fn run() -> Result<u32, String> {
-        let settings_path = home().join("launcher.cfg");
-        let saved = fs::read_to_string(&settings_path)
-            .map(|t| Settings::parse_file(&t))
-            .unwrap_or_default();
-        let settings = saved.merged(Settings::parse_args(std::env::args().skip(1))?);
+        let settings_path = settings_path();
+        let existing = fs::read_to_string(&settings_path).ok();
+        let file_text = existing.as_deref().unwrap_or(config::TEMPLATE);
+        let (saved, warnings) = Settings::parse_file(file_text);
+        for w in &warnings {
+            log_line(&format!("warning: {w}"));
+        }
+        let settings = saved
+            .clone()
+            .merged(Settings::parse_args(std::env::args().skip(1))?);
 
         let game = find_game(&settings)?;
         let exe_bytes = fs::read(game.join(EXE))
@@ -122,20 +139,29 @@ mod app {
             win32::is_wine()
         ));
 
-        let _ = fs::write(
-            &settings_path,
-            Settings {
-                game: Some(game.clone()),
-                ..settings
+        // Remember the game folder; the rest of the file stays as written.
+        if existing.is_none() || saved.game.as_ref() != Some(&game) {
+            let text = config::set_key(file_text, "game", &game.display().to_string());
+            if let Err(e) = fs::write(&settings_path, text) {
+                log_line(&format!(
+                    "warning: cannot write {}: {e}",
+                    settings_path.display()
+                ));
             }
-            .to_file(),
-        );
+        }
 
+        let skip = settings.skipped_fixes();
+        if !skip.is_empty() {
+            log_line(&format!(
+                "fixes turned off by settings: {}",
+                skip.join(", ")
+            ));
+        }
         let code = win32::run_patched(
             &rt.join(EXE),
             &rt,
-            edition.fixes,
-            |cave| prepare(&image, edition.fixes, cave),
+            edition.fixes.cave_size(&skip),
+            |cave| prepare(&image, edition.fixes, &skip, cave),
             &mut |line| log_line(line),
         )?;
         log_line(&format!("game exited with {code}"));

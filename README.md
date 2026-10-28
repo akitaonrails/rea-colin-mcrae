@@ -29,6 +29,11 @@ Wine (`wine CMRLauncher.exe --game Z:/path/to/game`); the Proton/Steam route
 is still being settled. The launcher keeps its copy of the game, saves and
 `launcher.log` under `%LOCALAPPDATA%\CMRLauncher`.
 
+Settings live in `launcher.cfg` in the same folder, written with comments on
+the first run (a `launcher.cfg` next to `CMRLauncher.exe` takes its place for
+portable installs). Besides the folders and language it holds `close_quits`:
+closing the window quits the game, or `false` for the original behaviour.
+
 ## Building
 
 ```text

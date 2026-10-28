@@ -12,6 +12,8 @@
 pub struct Fix {
     pub id: &'static str,
     pub what: &'static str,
+    /// The game runs without it; a setting can turn it off.
+    pub optional: bool,
     pub code: &'static [Piece],
 }
 
@@ -81,9 +83,18 @@ pub struct Write {
 }
 
 impl FixSet {
+    /// The fixes to apply: all of them except the optional ones named in
+    /// `skip` (required fixes are never skipped).
+    pub fn active<'a>(&'a self, skip: &'a [&str]) -> impl Iterator<Item = &'a Fix> {
+        self.fixes
+            .iter()
+            .filter(move |f| !(f.optional && skip.contains(&f.id)))
+    }
+
     /// Bytes the cave needs; 0 means no cave is allocated.
-    pub fn cave_size(&self) -> u32 {
-        self.pieces()
+    pub fn cave_size(&self, skip: &[&str]) -> u32 {
+        self.active(skip)
+            .flat_map(|f| f.code.iter())
             .filter_map(|p| match p.at {
                 At::Cave(off) => Some(off + p.len() as u32),
                 At::Image(_) => None,
@@ -92,18 +103,15 @@ impl FixSet {
             .unwrap_or(0)
     }
 
-    fn pieces(&self) -> impl Iterator<Item = &Piece> {
-        self.fixes.iter().flat_map(|f| f.code.iter())
-    }
-
-    /// Resolves every piece to absolute bytes, given where the cave landed.
-    pub fn assemble(&self, cave_base: u32) -> Vec<Write> {
+    /// Resolves every active piece to absolute bytes, given where the cave
+    /// landed.
+    pub fn assemble(&self, cave_base: u32, skip: &[&str]) -> Vec<Write> {
         let resolve = |at: At| match at {
             At::Image(a) => a,
             At::Cave(off) => cave_base.wrapping_add(off),
         };
         let mut writes = Vec::new();
-        for fix in self.fixes {
+        for fix in self.active(skip) {
             for piece in fix.code {
                 let start = resolve(piece.at);
                 let mut bytes = Vec::with_capacity(piece.len());
@@ -148,6 +156,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         Fix {
             id: "F1",
             what: "CD-ROM check always finds the disc (the files come from CDPath)",
+            optional: false,
             // FUN_00496ca0 (no arguments, returns nonzero when found):
             // mov eax,1 ; ret
             code: &[Piece {
@@ -158,6 +167,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         Fix {
             id: "F2",
             what: "front end uses a 16-bit display mode instead of 8-bit palettized",
+            optional: false,
             // Immediate of `mov edi,8` (the requested depth) becomes 16.
             code: &[Piece {
                 at: At::Image(0x0049_7cef),
@@ -167,6 +177,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         Fix {
             id: "F3",
             what: "system-palette setup runs only when the caller passes a palette",
+            optional: false,
             // Replaces `jne 0x497f44` after the depth compare with a jump to
             // the cave, which keeps that branch and adds the palette test.
             code: &[
@@ -189,6 +200,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         Fix {
             id: "F4",
             what: "operating-system check accepts Windows NT",
+            optional: false,
             // FUN_0049dcb0 returns 0 to accept: xor eax,eax ; ret
             code: &[Piece {
                 at: At::Image(0x0049_dcb0),
@@ -198,6 +210,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         Fix {
             id: "F5",
             what: "skip the VGA palette read through I/O ports (privileged on NT)",
+            optional: false,
             // FUN_004ae590(buffer), stdcall: ret 4
             code: &[Piece {
                 at: At::Image(0x004a_e590),
@@ -210,10 +223,12 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
 
 /// Cave offset of F6, after F3's 22 bytes.
 const F6_CAVE: u32 = 0x20;
+const _: () = assert!(F6_CAVE >= 22, "F6 must follow F3's cave code");
 
 const F6: Fix = Fix {
     id: "F6",
     what: "closing the window (Alt+F4, the window manager) quits the game",
+    optional: true,
     // The window procedure swallows WM_CLOSE: its jump-table entry at
     // 0x49de78 (shared with WM_ERASEBKGND) leads to `return 0`. The
     // entry now points to the cave, which on WM_CLOSE (ecx = msg)
@@ -244,7 +259,7 @@ mod tests {
     const CAVE: u32 = 0x0060_0000;
 
     fn writes() -> Vec<Write> {
-        OFFICIAL_EU_15.assemble(CAVE)
+        OFFICIAL_EU_15.assemble(CAVE, &[])
     }
 
     fn at(address: u32) -> Vec<u8> {
@@ -271,7 +286,6 @@ mod tests {
         assert_eq!(cave[15], 0xe9);
         let rel = u32::from_le_bytes(cave[16..20].try_into().unwrap());
         assert_eq!((CAVE + F6_CAVE + 20).wrapping_add(rel), 0x49dde6);
-        assert!(F6_CAVE >= 22, "after F3's cave code");
     }
 
     #[test]
@@ -296,7 +310,7 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        assert_eq!(OFFICIAL_EU_15.cave_size(), F6_CAVE + 20);
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F6_CAVE + 20);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
@@ -315,6 +329,21 @@ mod tests {
     }
 
     #[test]
+    fn only_optional_fixes_can_be_skipped() {
+        let skip = ["F6", "F1"];
+        let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
+        assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5"]);
+        assert_eq!(OFFICIAL_EU_15.cave_size(&skip), 22);
+        assert!(
+            OFFICIAL_EU_15
+                .assemble(CAVE, &skip)
+                .iter()
+                .all(|w| w.fix != "F6")
+        );
+        assert_eq!(COMMUNITY_EU_15.cave_size(&["F6"]), 0);
+    }
+
+    #[test]
     fn image_writes_do_not_overlap() {
         let mut spans: Vec<_> = writes()
             .into_iter()
@@ -330,8 +359,8 @@ mod tests {
     #[test]
     fn cave_is_independent_of_its_base() {
         // Only the rel32 fields change with the base; lengths never do.
-        let a = OFFICIAL_EU_15.assemble(0x1000_0000);
-        let b = OFFICIAL_EU_15.assemble(0x7000_0000);
+        let a = OFFICIAL_EU_15.assemble(0x1000_0000, &[]);
+        let b = OFFICIAL_EU_15.assemble(0x7000_0000, &[]);
         for (x, y) in a.iter().zip(&b) {
             assert_eq!(x.bytes.len(), y.bytes.len());
         }
