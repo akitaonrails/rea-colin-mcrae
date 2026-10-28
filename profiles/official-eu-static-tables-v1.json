@@ -23,9 +23,12 @@
       { "name": "frontend_arrow_left", "kind": "string", "va": 5277748 },
       { "name": "frontend_arrow_right", "kind": "string", "va": 5277752 },
       { "name": "car_short_names", "kind": "string-pointers", "va": 5271048, "count": 14 },
-      { "name": "car_stats", "kind": "block", "va": 5279256, "len": 168 }
+      { "name": "car_stats", "kind": "block", "va": 5279256, "len": 168 },
+      { "name": "name_entry_player_format", "kind": "string", "va": 5202508 },
+      { "name": "stage_select_row_format", "kind": "string", "va": 5280464 },
+      { "name": "stage_select_labels", "kind": "string-pointers", "va": 5280040, "count": 7 }
     ],
-    "payload_sha256": "076b6a1766ee32ac9fa1d0937f2739be143409601c18bb5e88c2469c2a9267ac",
+    "payload_sha256": "fafad35b4710b84a54acd2d9829142b27189e68519dd13221f3504e255459d09",
     "output_encoding": "cmr-static-tables-v1"
   }
 }

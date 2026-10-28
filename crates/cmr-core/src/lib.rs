@@ -77,6 +77,7 @@ pub mod frontend_flow;
 pub mod frontend_keys;
 pub mod frontend_menu;
 pub mod frontend_name_entry;
+pub mod frontend_screen_bitmaps;
 pub mod frontend_screen_frame;
 pub mod frontend_setup;
 pub mod frontend_stage_select;

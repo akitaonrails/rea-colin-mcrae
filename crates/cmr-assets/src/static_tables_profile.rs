@@ -480,6 +480,13 @@ pub(crate) mod tests {
                 ("frontend_arrow_right", 0x0050_8838, String),
                 ("car_short_names", 0x0050_6e08, StringPointers { count: 14 }),
                 ("car_stats", 0x0050_8e18, Block { len: 0xa8 }),
+                ("name_entry_player_format", 0x004f_624c, String),
+                ("stage_select_row_format", 0x0050_92d0, String),
+                (
+                    "stage_select_labels",
+                    0x0050_9128,
+                    StringPointers { count: 7 }
+                ),
             ]
         );
         // Same executable identity as the reviewed stage-weather profile.

@@ -118,6 +118,10 @@ impl Slides {
     fn idle(&self) -> bool {
         self.tweens.iter().all(ScalarTween::is_finished)
     }
+
+    fn levels(&self) -> Vec<i32> {
+        self.tweens.iter().map(ScalarTween::level).collect()
+    }
 }
 
 const SETUPS: [SetupKind; 3] = [
@@ -570,6 +574,12 @@ impl FrontendScreens {
     /// Whether the slides have ended.
     pub fn slides_idle(&self) -> bool {
         self.slides.idle()
+    }
+
+    /// The current slides' last values (the name entry's `NX` and anchor
+    /// slides, the stage select's `SX` and anchor slides).
+    pub fn slide_values(&self) -> Vec<i32> {
+        self.slides.levels()
     }
 }
 

@@ -5450,42 +5450,98 @@ impl SessionCompiledPose {
     }
 }
 
-/// The current setup screen's frame (`FUN_004c1bc0`), when a setup screen is
-/// the front end's current menu.
-fn setup_screen_commands(
+/// The current sub-screen's frame (`FUN_004c1bc0`), when a setup, name-entry
+/// or stage-select screen is the front end's current menu.
+fn screen_commands(
     root: &RootInteraction,
     static_tables: Option<&cmr_assets::StaticTablesStore>,
+    record: &[u8],
     state: &mut cmr_core::frontend_screen_frame::ScreenFrameState,
     text: &cmr_core::localization::IndexedTextTable,
     fonts: &cmr_core::font_raster::UploadedFontPool,
 ) -> Option<Vec<cmr_core::frontend_screen_frame::ScreenCommand>> {
+    use cmr_core::frontend as fe;
+    use cmr_core::frontend_screen_frame as frame;
     use cmr_core::frontend_setup::SetupKind;
     let screen = root.state().active_screen();
-    let kind = [
-        (
-            cmr_core::frontend::CHAMPIONSHIP_SETUP_SCREEN_ID,
-            SetupKind::Championship,
-        ),
-        (cmr_core::frontend::RALLY_SCREEN_ID, SetupKind::Rally),
-        (
-            cmr_core::frontend::TIME_TRIAL_SCREEN_ID,
-            SetupKind::TimeTrial,
-        ),
-    ]
-    .into_iter()
-    .find(|(id, _)| *id == screen)?
-    .1;
     let screens = root.screens();
     let menu = screens.menu(screen)?;
     let tables = static_tables.map(cmr_assets::StaticTablesStore::tables);
     let empty: &[Vec<u8>] = &[];
+    let car_names = tables.and_then(|t| t.strings("car_names")).unwrap_or(empty);
+    let lookup = |id: i32| {
+        usize::try_from(id)
+            .map(|id| text.lookup(id).to_vec())
+            .unwrap_or_default()
+    };
+    let font = |style| fonts.font(style);
+    let setup_kind = |id| {
+        [
+            (fe::CHAMPIONSHIP_SETUP_SCREEN_ID, SetupKind::Championship),
+            (fe::RALLY_SCREEN_ID, SetupKind::Rally),
+            (fe::TIME_TRIAL_SCREEN_ID, SetupKind::TimeTrial),
+            (fe::CHAMPIONSHIP_NEXT_SCREEN_ID, SetupKind::Championship),
+            (fe::RALLY_NAME_SCREEN_ID, SetupKind::Rally),
+            (fe::TIME_TRIAL_NAME_SCREEN_ID, SetupKind::TimeTrial),
+        ]
+        .into_iter()
+        .find(|(screen, _)| *screen == id)
+        .map(|(_, kind)| kind)
+    };
+    let slides = screens.slide_values();
+    let slide = |index: usize| slides.get(index).copied().unwrap_or(0);
+    if screen == fe::STAGE_SELECT_SCREEN_ID {
+        let input = frame::StageDrawInput {
+            menu,
+            record,
+            slide: slide(0),
+            camera: root.camera(),
+            extent: ROOT_EXTENT,
+            labels: tables
+                .and_then(|t| t.strings("stage_select_labels"))
+                .unwrap_or(empty),
+            row_format: tables
+                .and_then(|t| t.string("stage_select_row_format"))
+                .unwrap_or(b"%s %d:%02d.%02d"),
+            bonus_countries: tables
+                .and_then(|t| t.block("bonus_car_countries"))
+                .unwrap_or(&[]),
+        };
+        return Some(frame::plan_stage_select_frame(&input, &lookup, &font));
+    }
+    let kind = setup_kind(screen)?;
+    if [
+        fe::CHAMPIONSHIP_NEXT_SCREEN_ID,
+        fe::RALLY_NAME_SCREEN_ID,
+        fe::TIME_TRIAL_NAME_SCREEN_ID,
+    ]
+    .contains(&screen)
+    {
+        let entry = screens.name_entry();
+        let layout = screens.layout(kind);
+        let input = frame::NameDrawInput {
+            kind,
+            name: entry.name(),
+            player: entry.player,
+            record,
+            slides: [slide(0), slide(1)],
+            info: (layout.info[0], layout.info[1]),
+            camera: root.camera(),
+            extent: ROOT_EXTENT,
+            car_names,
+            player_format: tables
+                .and_then(|t| t.string("name_entry_player_format"))
+                .unwrap_or(b"%s %d"),
+        };
+        return Some(frame::plan_name_entry_frame(&input, &lookup, &font));
+    }
     let arrows = tables.and_then(|tables| {
         Some((
             tables.string("frontend_arrow_left")?,
             tables.string("frontend_arrow_right")?,
         ))
     });
-    let input = cmr_core::frontend_screen_frame::SetupDrawInput {
+    let input = frame::SetupDrawInput {
         kind,
         menu,
         cars: &screens.setup(kind).cars,
@@ -5493,8 +5549,8 @@ fn setup_screen_commands(
         item_flags: screens.layout(kind).item_flags as u8,
         camera: root.camera(),
         extent: ROOT_EXTENT,
-        data: cmr_core::frontend_screen_frame::SetupDrawData {
-            car_names: tables.and_then(|t| t.strings("car_names")).unwrap_or(empty),
+        data: frame::SetupDrawData {
+            car_names,
             country_table: tables
                 .and_then(|t| t.block("frontend_country_table"))
                 .unwrap_or(&[]),
@@ -5504,17 +5560,7 @@ fn setup_screen_commands(
                 .unwrap_or(&[]),
         },
     };
-    let lookup = |id: i32| {
-        usize::try_from(id)
-            .map(|id| text.lookup(id).to_vec())
-            .unwrap_or_default()
-    };
-    Some(cmr_core::frontend_screen_frame::plan_setup_frame(
-        &input,
-        state,
-        &lookup,
-        &|style| fonts.font(style),
-    ))
+    Some(frame::plan_setup_frame(&input, state, &lookup, &font))
 }
 
 /// The reviewed static tables of the user's executable, when extracted.
@@ -6376,6 +6422,7 @@ pub fn run_windowed_game_session(
             VisualVariant::Normal,
         );
         let built = with_software_root_menu_session(&store, startup, request, |root| {
+            let screen_bitmaps = root.load_screen_bitmaps(&store);
             run_windowed_game_session_loop(&initial, Some(audio_root), |input: WindowedInput| {
                 session.set_results_input(results.poll_keys(input.keys));
                 let frame = reload_stage_for_event(
@@ -6421,14 +6468,15 @@ pub fn run_windowed_game_session(
                             root.render(render_input)
                                 .ok()
                                 .and_then(|_| root.backend().presented_frame().cloned())
-                        } else if let Some(commands) = setup_screen_commands(
+                        } else if let Some(commands) = screen_commands(
                             &root_interaction,
                             static_tables.as_ref(),
+                            &config.image[..],
                             &mut screen_state,
                             root.text(),
                             root.fonts(),
                         ) {
-                            root.render_screen(&commands)
+                            root.render_screen(&commands, &screen_bitmaps)
                                 .ok()
                                 .and_then(|()| root.backend().presented_frame().cloned())
                         } else {
@@ -9952,44 +10000,37 @@ mod tests {
                 next: true,
                 ..Default::default()
             };
-            for (name, presses) in [
-                ("championship", vec![confirm]),
-                ("rally", vec![next, confirm]),
-            ] {
+            let screen_bitmaps = root.load_screen_bitmaps(&store);
+            // The time trial: its setup, name entry and stage select.
+            for press in [next, next, confirm] {
                 while interaction.state().phase() != cmr_core::frontend::FrontendPhase::Interactive
-                    || interaction.state().active_screen() != cmr_core::frontend::ROOT_SCREEN_ID
                 {
                     let _ = tick(&mut interaction, Default::default(), None, &mut config);
-                    // Leave a setup with Escape when one is up.
-                    if interaction.state().active_screen() != cmr_core::frontend::ROOT_SCREEN_ID
-                        && interaction.screens().slides_idle()
-                    {
-                        let _ = tick(
-                            &mut interaction,
-                            Default::default(),
-                            Some(0x1b),
-                            &mut config,
-                        );
-                        let _ = tick(&mut interaction, Default::default(), None, &mut config);
-                    }
                 }
-                for press in presses {
-                    let _ = tick(&mut interaction, press, None, &mut config);
+                let _ = tick(&mut interaction, press, None, &mut config);
+            }
+            for frame in 0..400 {
+                let held = (frame % 30 == 29).then_some(0x0d);
+                let ticked = tick(&mut interaction, Default::default(), held, &mut config);
+                if ticked
+                    .effects
+                    .contains(&cmr_core::frontend::FrontendEffect::StartRace)
+                {
+                    break;
                 }
-                for frame in 0..40 {
-                    let _ = tick(&mut interaction, Default::default(), None, &mut config);
-                    if let Some(commands) = setup_screen_commands(
-                        &interaction,
-                        Some(&tables),
-                        &mut state,
-                        root.text(),
-                        root.fonts(),
-                    ) {
-                        root.render_screen(&commands).unwrap();
-                        if frame % 8 == 7 || frame == 39 {
-                            let presented = root.backend().presented_frame().cloned().unwrap();
-                            write(&format!("{name}-{frame:02}"), &presented);
-                        }
+                if let Some(commands) = screen_commands(
+                    &interaction,
+                    Some(&tables),
+                    &config.image[..],
+                    &mut state,
+                    root.text(),
+                    root.fonts(),
+                ) {
+                    root.render_screen(&commands, &screen_bitmaps).unwrap();
+                    if frame % 30 == 28 {
+                        let screen = interaction.state().active_screen().legacy_value();
+                        let presented = root.backend().presented_frame().cloned().unwrap();
+                        write(&format!("tt-{frame:03}-{screen:x}"), &presented);
                     }
                 }
             }

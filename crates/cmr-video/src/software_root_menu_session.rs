@@ -335,11 +335,13 @@ impl SoftwareRootMenuSession<'_, '_, '_, '_> {
     pub fn render_screen(
         &mut self,
         commands: &[cmr_core::frontend_screen_frame::ScreenCommand],
+        screen_bitmaps: &cmr_core::frontend_screen_bitmaps::ScreenBitmapPool,
     ) -> Result<(), String> {
         cmr_core::frontend_screen_frame::execute_screen_frame(
             commands,
             self.fonts,
             self.bitmaps,
+            screen_bitmaps,
             RootFramePaletteResources {
                 bits_per_pixel: self.target.mode.bits_per_pixel,
                 arena: self.palette_arena,
@@ -353,6 +355,17 @@ impl SoftwareRootMenuSession<'_, '_, '_, '_> {
             self.text_layout_limits,
         )
         .map_err(|error| error.to_string())
+    }
+
+    /// Load and upload the sub-screens' bitmaps over the disk palette.
+    pub fn load_screen_bitmaps(
+        &mut self,
+        store: &AssetStore,
+    ) -> cmr_core::frontend_screen_bitmaps::ScreenBitmapPool {
+        let palette = cmr_formats::riff_palette::LegacyPalette256 {
+            entries: self.palette_arena[0],
+        };
+        cmr_core::frontend_screen_bitmaps::ScreenBitmapPool::load(store, &palette, self.sources)
     }
 
     /// The fonts the session uploaded.

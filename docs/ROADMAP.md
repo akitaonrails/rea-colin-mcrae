@@ -1980,8 +1980,8 @@ when the event is over the session ends and the front end comes back
 stage load follows the event, so the root's Championship, Rally and Time
 Trial entries run their events stage after stage. The setup, name-entry and
 stage-select screens now run as the native menu flow and write the record
-(`impl.frontend-setup-flow`); the setups are drawn without their preview
-panels, the name entries and stage select are not yet, and the session still
+(`impl.frontend-setup-flow`); all of them are drawn, without the preview
+panels, 3D cars, stage thumbnails and flag animations yet, and the session still
 loads the `--car-code` car rather than the one chosen.
 
 The build and verification infrastructure is complete. Linux reviewed-import

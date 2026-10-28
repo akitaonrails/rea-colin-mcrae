@@ -11,7 +11,10 @@
 //! apply). Value rows draw only their value (the car's full name, the gear,
 //! the players' mode, the country), never the item label. Not drawn yet: the
 //! preview panels (`FUN_004c5450`, `FUN_004c4540`, `FUN_004c9430`,
-//! `FUN_004c9370`), the name entries and the stage select. A description of
+//! `FUN_004c9370`), the cars in 3D, the stage thumbnails and the flag
+//! animations. The name entries (`0x4c6180`) and the stage select
+//! (`0x4c8680`) are drawn by [`plan_name_entry_frame`] and
+//! [`plan_stage_select_frame`]. A description of
 //! disassembly, not original source. Evidence:
 //! `rea.official-eu.frontend-setup-draw`.
 
@@ -31,6 +34,16 @@ pub enum ScreenCommand {
     /// The selection bar: `select.bmp` (0, 0, 256, 256) stretched to the
     /// rectangle, colour key 0.
     Selection { x: i32, y: i32, w: i32, h: i32 },
+    /// A whole-surface keyed blit (`FUN_0049f000`), or a stretched part of
+    /// a bitmap (`FUN_0049e3e0`).
+    Bitmap {
+        bitmap: crate::frontend_screen_bitmaps::ScreenBitmap,
+        source: Option<(i32, i32, i32, i32)>,
+        x: i32,
+        y: i32,
+        size: Option<(i32, i32)>,
+        keyed: bool,
+    },
     /// Text with the legacy alignment flags.
     Text {
         font: FontStyle,
@@ -78,6 +91,16 @@ pub struct SetupDrawInput<'a> {
 
 fn q(value: i32, fraction: i32) -> i32 {
     ((i64::from(value) * i64::from(fraction)) >> 16) as i32
+}
+
+/// `FUN_004bac90`: the backdrop window at the camera.
+fn backdrop(camera: Camera, w: i32, h: i32) -> ScreenCommand {
+    ScreenCommand::Backdrop {
+        x: q(w, camera.x) + 0x140,
+        y: q(h, camera.y) + 0xf0,
+        w,
+        h,
+    }
 }
 
 /// The item's row channel (`DAT_00d8ffe0` index) by key.
@@ -154,12 +177,7 @@ pub fn plan_setup_frame<'f>(
     let w = i32::from(input.extent.width);
     let h = i32::from(input.extent.height);
     let (ox, oy) = input.camera.offset();
-    let mut commands = vec![ScreenCommand::Backdrop {
-        x: q(w, input.camera.x) + 0x140,
-        y: q(h, input.camera.y) + 0xf0,
-        w,
-        h,
-    }];
+    let mut commands = vec![backdrop(input.camera, w, h)];
     // `FUN_004c3bb0`: the title, camera-relative, in the menu's title font.
     let (title_id, (tx, ty), title_flags) = title(input.kind);
     commands.push(ScreenCommand::Text {
@@ -294,6 +312,391 @@ fn row_commands<'f>(
     }
 }
 
+/// What one name-entry frame draws from (`0x4c6180`).
+pub struct NameDrawInput<'a> {
+    /// The parent setup's kind (its title predraw and descriptor).
+    pub kind: SetupKind,
+    /// The edit buffer.
+    pub name: &'a [u8],
+    /// `DAT_00d8cee4`.
+    pub player: usize,
+    pub record: &'a [u8],
+    /// The two slides' values (`0xd8ceb8`, `0xd8ceb9`).
+    pub slides: [i32; 2],
+    /// The parent descriptor's info anchor (`+0x38`, `+0x3c`).
+    pub info: (i32, i32),
+    pub camera: Camera,
+    pub extent: DisplayExtent,
+    pub car_names: &'a [Vec<u8>],
+    /// `"%s %d"` (`0x4f624c`).
+    pub player_format: &'a [u8],
+}
+
+fn q16_text<'f>(
+    fonts: &dyn Fn(FontStyle) -> &'f BitmapFont,
+    font: FontStyle,
+    text: &[u8],
+    x: i32,
+    y: i32,
+    flags: u8,
+    extent: DisplayExtent,
+) -> (ScreenCommand, i32) {
+    let w = i32::from(extent.width);
+    let h = i32::from(extent.height);
+    let px = q(w, x);
+    let py = q(h, y);
+    let next = crate::pause_menu_draw::text_q16(
+        fonts(font),
+        text,
+        x,
+        y,
+        flags,
+        extent.width,
+        extent.height,
+    )
+    .map_or(y, |(_, next, _)| next);
+    (
+        ScreenCommand::Text {
+            font,
+            x: px,
+            y: py,
+            flags,
+            text: text.to_vec(),
+        },
+        next,
+    )
+}
+
+/// `0x4c6180`: the name entry's panel, the player line and prompt, the LCD
+/// name field, the parent setup's title and the summary.
+pub fn plan_name_entry_frame<'f>(
+    input: &NameDrawInput,
+    text: &dyn Fn(i32) -> Vec<u8>,
+    fonts: &dyn Fn(FontStyle) -> &'f BitmapFont,
+) -> Vec<ScreenCommand> {
+    use crate::frontend_screen_bitmaps::ScreenBitmap;
+    let extent = input.extent;
+    let w = i32::from(extent.width);
+    let h = i32::from(extent.height);
+    let base = if input.kind == SetupKind::Championship {
+        0x849b
+    } else {
+        0x8000
+    };
+    let nx = input.slides[0].wrapping_add(base);
+    let mut commands = vec![
+        backdrop(input.camera, w, h),
+        // `FUN_004c3a30(NX, 0x3333, 2)`.
+        ScreenCommand::Bitmap {
+            bitmap: ScreenBitmap::NameSmall,
+            source: None,
+            x: q(w, nx),
+            y: q(h, 0x3333),
+            size: None,
+            keyed: true,
+        },
+    ];
+    let players = input.record.get(0x182).map_or(0, |b| b & 7);
+    let mut y = 0x451e;
+    if !matches!(players, 0 | 4 | 5) {
+        let line = crate::c_format::c_format(
+            input.player_format,
+            &[
+                crate::c_format::FormatArg::Bytes(&text(0x5f)),
+                crate::c_format::FormatArg::Int(input.player as i64 + 1),
+            ],
+        );
+        let (command, next) = q16_text(
+            fonts,
+            FontStyle::BlueDynamic,
+            &line,
+            nx.wrapping_add(0x3851),
+            y,
+            0x12,
+            extent,
+        );
+        commands.push(command);
+        y = next;
+    }
+    let (command, _) = q16_text(
+        fonts,
+        FontStyle::BlueDynamic,
+        &text(0x60),
+        nx.wrapping_add(0x3851),
+        y,
+        0x12,
+        extent,
+    );
+    commands.push(command);
+    // `FUN_004c37a0(NX + 0x147a, 0x75c2, 0x4ccc, name, 1)`.
+    let (fx, fy, fw) = (nx.wrapping_add(0x147a), 0x75c2, 0x4ccc);
+    let (px, py, pw) = (q(w, fx), q(h, fy - 0x147), q(w, fw));
+    commands.push(ScreenCommand::Bitmap {
+        bitmap: ScreenBitmap::LcdLeft,
+        source: None,
+        x: px,
+        y: py,
+        size: None,
+        keyed: true,
+    });
+    commands.push(ScreenCommand::Bitmap {
+        bitmap: ScreenBitmap::LcdMiddle,
+        source: Some((0, 0, 0x11, 0)),
+        x: px + 0xe,
+        y: py,
+        size: Some((pw - 0x1c, 0x22)),
+        keyed: true,
+    });
+    commands.push(ScreenCommand::Bitmap {
+        bitmap: ScreenBitmap::LcdRight,
+        source: None,
+        x: px - 0xe + pw,
+        y: py,
+        size: None,
+        keyed: true,
+    });
+    let (command, _) = q16_text(
+        fonts,
+        FontStyle::RedLcd,
+        input.name,
+        fx + fw / 2,
+        fy + 0x28f,
+        0x12,
+        extent,
+    );
+    commands.push(command);
+    // The parent setup's title, camera-relative.
+    let (ox, oy) = input.camera.offset();
+    let (title_id, (tx, ty), title_flags) = title(input.kind);
+    commands.push(ScreenCommand::Text {
+        font: FontStyle::Title,
+        x: q(w, tx.wrapping_add(ox)),
+        y: q(h, ty.wrapping_add(oy)),
+        flags: title_flags,
+        text: text(title_id),
+    });
+    // `FUN_004c4fc0`: the summary at the anchor.
+    let mode = input.record.get(0x180).map_or(0, |b| b & 3);
+    let anchor_x = input.info.0.wrapping_sub(input.slides[1]);
+    let x = anchor_x.wrapping_add(ox).wrapping_add(0xb5c2);
+    let y = input.info.1.wrapping_add(oy).wrapping_add(if mode == 0 {
+        0x4a3d
+    } else if matches!(players, 0 | 4 | 5) {
+        -0x3333
+    } else {
+        -0x3916
+    });
+    let difficulty = input.record.get(0x20).map_or(0, |b| (b >> 3) & 3);
+    let mut line_a = text(match mode {
+        0 => 0,
+        1 => 1,
+        _ => 0x78,
+    });
+    line_a.push(b'^');
+    line_a.extend(text(match difficulty {
+        0 => 0x67,
+        2 => 0x69,
+        _ => 0x68,
+    }));
+    line_a.push(b'^');
+    if mode != 0 {
+        line_a.push(b'^');
+        line_a.extend(text(match players {
+            0 => 0x1b,
+            1 => 0x8b,
+            2 => 0x8a,
+            3 => 0xb1,
+            4 => 0xd0,
+            _ => 0xd1,
+        }));
+        line_a.push(b'^');
+        let country = input.record.get(0x181).map_or(0, |b| b & 0xf);
+        line_a.extend(text(0x22 + i32::from(country)));
+        line_a.push(b'^');
+    }
+    let (command, next) = q16_text(fonts, FontStyle::GreenInfo, &line_a, x, y, 0x13, extent);
+    commands.push(command);
+    let car_byte = input
+        .record
+        .get(0xbe + 0x9c * input.player)
+        .copied()
+        .unwrap_or(0);
+    let mut line_b = Vec::new();
+    if mode != 0 && !matches!(players, 0 | 4 | 5) {
+        line_b = crate::c_format::c_format(
+            input.player_format,
+            &[
+                crate::c_format::FormatArg::Bytes(&text(0x5f)),
+                crate::c_format::FormatArg::Int(input.player as i64 + 1),
+            ],
+        );
+        line_b.push(b'^');
+    }
+    line_b.extend(
+        input
+            .car_names
+            .get(usize::from(car_byte & 0xf))
+            .cloned()
+            .unwrap_or_default(),
+    );
+    line_b.push(b'^');
+    line_b.extend(text(if car_byte & 0x10 != 0 { 0x1e } else { 0x1d }));
+    line_b.push(b'^');
+    let (command, _) = q16_text(fonts, FontStyle::GreenInfo, &line_b, x, next, 0x13, extent);
+    commands.push(command);
+    commands
+}
+
+/// What one stage-select frame draws from (`0x4c8680`).
+pub struct StageDrawInput<'a> {
+    pub menu: &'a Menu,
+    pub record: &'a [u8],
+    /// The slide `0xd8ffd4` (`SX`).
+    pub slide: i32,
+    pub camera: Camera,
+    pub extent: DisplayExtent,
+    /// `PTR[0x509128 + 4i]`: the seven row labels.
+    pub labels: &'a [Vec<u8>],
+    /// `"%s      %d:%02d.%02d"` (`0x5092d0`).
+    pub row_format: &'a [u8],
+    /// `0x506dc8`: the bonus countries (country 8's record rows).
+    pub bonus_countries: &'a [u8],
+}
+
+/// `0x4c8680`: the panel, the time-trial title, the heading, each shown
+/// stage's label and best time with its LED, and the OK text and button.
+pub fn plan_stage_select_frame<'f>(
+    input: &StageDrawInput,
+    text: &dyn Fn(i32) -> Vec<u8>,
+    fonts: &dyn Fn(FontStyle) -> &'f BitmapFont,
+) -> Vec<ScreenCommand> {
+    use crate::frontend_screen_bitmaps::ScreenBitmap;
+    let extent = input.extent;
+    let w = i32::from(extent.width);
+    let h = i32::from(extent.height);
+    let sx = input.slide;
+    let (ox, oy) = input.camera.offset();
+    let mut commands = vec![
+        backdrop(input.camera, w, h),
+        // `FUN_004c3a30(SX + 0x8000, 0xf5c, 0)`.
+        ScreenCommand::Bitmap {
+            bitmap: ScreenBitmap::Name,
+            source: None,
+            x: q(w, sx.wrapping_add(0x8000)),
+            y: q(h, 0xf5c),
+            size: None,
+            keyed: true,
+        },
+    ];
+    let (title_id, (tx, ty), title_flags) = title(SetupKind::TimeTrial);
+    commands.push(ScreenCommand::Text {
+        font: FontStyle::Title,
+        x: q(w, tx.wrapping_add(ox)),
+        y: q(h, ty.wrapping_add(oy)),
+        flags: title_flags,
+        text: text(title_id),
+    });
+    let (command, _) = q16_text(
+        fonts,
+        FontStyle::BlueDynamic,
+        &text(0x2f),
+        sx.wrapping_add(0xb851),
+        0x1999,
+        0x12,
+        extent,
+    );
+    commands.push(command);
+    let country = usize::from(input.record.get(0x181).map_or(0, |b| b & 0xf));
+    let rows = usize::from(input.record.get(0x16d + 2 * country).map_or(0, |b| b & 0xf));
+    let font_of = |index: usize, enabled: bool| {
+        if index == input.menu.selected {
+            FontStyle::RedDynamic
+        } else if !enabled {
+            FontStyle::GreyDynamic
+        } else {
+            FontStyle::BlueDynamic
+        }
+    };
+    for (i, item) in input.menu.items.iter().enumerate().take(rows.min(7)) {
+        if !item.visible {
+            continue;
+        }
+        let y = 0x3333 + i as i32 * 0x147a;
+        let at = if country == 8 {
+            let bonus = usize::from(input.bonus_countries.get(i).copied().unwrap_or(0));
+            0x10ca + bonus * 210
+        } else {
+            0x1016 + (country * 7 + i) * 30
+        };
+        let time = input
+            .record
+            .get(at..at + 2)
+            .map_or(0, |b| i64::from(u16::from_le_bytes([b[0], b[1]])));
+        let label = input.labels.get(i).cloned().unwrap_or_default();
+        let row = crate::c_format::c_format(
+            input.row_format,
+            &[
+                crate::c_format::FormatArg::Bytes(&label),
+                crate::c_format::FormatArg::Int(time / 6000),
+                crate::c_format::FormatArg::Int(time / 100 - 60 * (time / 6000)),
+                crate::c_format::FormatArg::Int(time % 100),
+            ],
+        );
+        let (command, _) = q16_text(
+            fonts,
+            font_of(i, item.enabled),
+            &row,
+            sx.wrapping_add(0xa666),
+            y,
+            0x11,
+            extent,
+        );
+        commands.push(command);
+        // `FUN_004c3af0(SX + 0x9999, y, 2, value)`.
+        commands.push(ScreenCommand::Bitmap {
+            bitmap: if item.value.value == 1 {
+                ScreenBitmap::LightOn
+            } else {
+                ScreenBitmap::LightOff
+            },
+            source: None,
+            x: q(w, sx.wrapping_add(0x9999)),
+            y: q(h, y) + 1,
+            size: None,
+            keyed: true,
+        });
+    }
+    let ok_enabled = input
+        .menu
+        .items
+        .get(crate::frontend_stage_select::OK_ITEM)
+        .is_some_and(|item| item.enabled);
+    let (command, _) = q16_text(
+        fonts,
+        font_of(crate::frontend_stage_select::OK_ITEM, ok_enabled),
+        &text(0x18),
+        sx.wrapping_add(0xab85),
+        0xc51e,
+        0x11,
+        extent,
+    );
+    commands.push(command);
+    // `FUN_004c3950(SX + 0xab85, 0xc7ae, sel == 7)`.
+    commands.push(ScreenCommand::Bitmap {
+        bitmap: if input.menu.selected == crate::frontend_stage_select::OK_ITEM {
+            ScreenBitmap::DoneIn
+        } else {
+            ScreenBitmap::DoneOut
+        },
+        source: None,
+        x: q(w, sx.wrapping_add(0xab85) - 0xe14),
+        y: q(h, 0xc7ae - 0x83),
+        size: None,
+        keyed: true,
+    });
+    commands
+}
+
 /// Why a screen frame could not be executed.
 #[derive(Debug)]
 pub enum ScreenFrameError<E, F> {
@@ -319,6 +722,7 @@ pub fn execute_screen_frame<B>(
     commands: &[ScreenCommand],
     fonts: &crate::font_raster::UploadedFontPool,
     bitmaps: &crate::root_menu_bitmap_raster::UploadedRootMenuBitmapPool,
+    screen_bitmaps: &crate::frontend_screen_bitmaps::ScreenBitmapPool,
     palette: crate::root_menu_frame::RootFramePaletteResources<'_>,
     sources: &mut crate::source_store::UploadedSourceStore<'_, B>,
     destination: B::Surface,
@@ -395,6 +799,44 @@ where
                         .blit(sources, destination, plan)
                         .map_err(|error| ScreenFrameError::Selection(format!("{error:?}")))?,
                     Ok(crate::blit::BlitDecision::NoOp) | Err(_) => {}
+                }
+            }
+            ScreenCommand::Bitmap {
+                bitmap,
+                source,
+                x,
+                y,
+                size,
+                keyed,
+            } => {
+                let Some(uploaded) = screen_bitmaps.get(*bitmap) else {
+                    continue;
+                };
+                let (width, height) = uploaded.extent();
+                let (sx, sy, sw, sh) = source.unwrap_or((0, 0, width as i32, height as i32));
+                let sh = if sh == 0 { height as i32 } else { sh };
+                let (dw, dh) = size.unwrap_or((sw, sh));
+                let decision = crate::indexed_bitmap_raster::plan_indexed_bitmap_blit_for_extent(
+                    (width, height),
+                    crate::indexed_bitmap_raster::IndexedBitmapRect {
+                        x: sx,
+                        y: sy,
+                        width: sw,
+                        height: sh,
+                    },
+                    crate::indexed_bitmap_raster::IndexedBitmapRect {
+                        x: *x,
+                        y: *y,
+                        width: dw,
+                        height: dh,
+                    },
+                    extent,
+                    keyed.then_some(crate::blit::ColorKey { low: 0, high: 0 }),
+                );
+                if let Ok(crate::blit::BlitDecision::Blit(plan)) = decision {
+                    uploaded
+                        .blit(sources, destination, plan)
+                        .map_err(|error| ScreenFrameError::Selection(format!("{error:?}")))?;
                 }
             }
             ScreenCommand::Text {
@@ -516,5 +958,124 @@ mod tests {
             unreachable!()
         };
         assert_eq!((x, h), (320 - 19 - 12, 0x21));
+    }
+
+    #[test]
+    fn the_name_entry_draws_its_panel_field_and_summary() {
+        use crate::frontend_screen_bitmaps::ScreenBitmap;
+        let font = font();
+        let mut record = vec![0u8; 0x200];
+        record[0x180] = 1; // a rally
+        record[0x182] = 2; // two players
+        record[0xbe] = 0x16; // car 6, manual
+        let names = vec![b"CAR".to_vec(); 16];
+        let input = NameDrawInput {
+            kind: SetupKind::Rally,
+            name: b"AB",
+            player: 0,
+            record: &record,
+            slides: [0, 0],
+            info: (0x1000, 0x2000),
+            camera: Camera::at(0x8000, 0),
+            extent: DisplayExtent {
+                width: 640,
+                height: 480,
+            },
+            car_names: &names,
+            player_format: b"%s %d",
+        };
+        let text = |id: i32| format!("T{id:X}").into_bytes();
+        let commands = plan_name_entry_frame(&input, &text, &|_| &font);
+        let bitmaps: Vec<ScreenBitmap> = commands
+            .iter()
+            .filter_map(|command| match command {
+                ScreenCommand::Bitmap { bitmap, .. } => Some(*bitmap),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            bitmaps,
+            [
+                ScreenBitmap::NameSmall,
+                ScreenBitmap::LcdLeft,
+                ScreenBitmap::LcdMiddle,
+                ScreenBitmap::LcdRight
+            ]
+        );
+        let texts: Vec<&[u8]> = commands
+            .iter()
+            .filter_map(|command| match command {
+                ScreenCommand::Text { text, .. } => Some(text.as_slice()),
+                _ => None,
+            })
+            .collect();
+        // Player line (two players), prompt, the name, the title, summary A, B.
+        assert_eq!(texts[0], b"T5F 1");
+        assert_eq!(texts[1], b"T60");
+        assert_eq!(texts[2], b"AB");
+        assert_eq!(texts[3], b"T1");
+        assert_eq!(texts[4], b"T1^T67^^T8A^T22^");
+        assert_eq!(texts[5], b"T5F 1^CAR^T1E^");
+        // The panel sits at NX = 0x8000 for a rally.
+        assert!(matches!(
+            commands[1],
+            ScreenCommand::Bitmap { x: 320, y: 95, .. }
+        ));
+    }
+
+    #[test]
+    fn the_stage_select_draws_rows_leds_and_the_button() {
+        use crate::descriptor_menu::MenuId;
+        use crate::frontend_screen_bitmaps::ScreenBitmap;
+        use crate::frontend_stage_select::StageSelect;
+        let font = font();
+        let mut record = vec![0u8; 0x1100];
+        record[0x181] = 0;
+        record[0x16d] = 6;
+        record[0x1016..0x1018].copy_from_slice(&6123u16.to_le_bytes());
+        let mut select = StageSelect::build(MenuId(0), MenuId(1), MenuId(2));
+        select.menu.items[0].value.value = 1;
+        select.menu.items[6].visible = false;
+        select.menu.selected = crate::frontend_stage_select::OK_ITEM;
+        let labels: Vec<Vec<u8>> = (1..=7).map(|i| format!("{i}").into_bytes()).collect();
+        let input = StageDrawInput {
+            menu: &select.menu,
+            record: &record,
+            slide: 0,
+            camera: Camera::at(0x8000, 0),
+            extent: DisplayExtent {
+                width: 640,
+                height: 480,
+            },
+            labels: &labels,
+            row_format: b"%s %d:%02d.%02d",
+            bonus_countries: &[],
+        };
+        let text = |id: i32| format!("T{id:X}").into_bytes();
+        let commands = plan_stage_select_frame(&input, &text, &|_| &font);
+        let leds: Vec<ScreenBitmap> = commands
+            .iter()
+            .filter_map(|command| match command {
+                ScreenCommand::Bitmap { bitmap, .. }
+                    if matches!(bitmap, ScreenBitmap::LightOn | ScreenBitmap::LightOff) =>
+                {
+                    Some(*bitmap)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(leds.len(), 6, "six rows shown");
+        assert_eq!(leds[0], ScreenBitmap::LightOn);
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            ScreenCommand::Text { text, .. } if text == b"1 1:01.23"
+        )));
+        assert!(matches!(
+            commands.last(),
+            Some(ScreenCommand::Bitmap {
+                bitmap: ScreenBitmap::DoneIn,
+                ..
+            })
+        ));
     }
 }
