@@ -40,7 +40,7 @@ pub fn crossfade(
     let weight = 256 - 8 * step.min(FADE_STEPS - 1) as i32;
     std::array::from_fn(|i| {
         let mix =
-            |c: u8, t: u8| (i32::from(t) + ((i32::from(c) - i32::from(t)) * weight >> 8)) as u8;
+            |c: u8, t: u8| (i32::from(t) + (((i32::from(c) - i32::from(t)) * weight) >> 8)) as u8;
         PaletteEntry {
             red: mix(current[i].red, target[i].red),
             green: mix(current[i].green, target[i].green),
