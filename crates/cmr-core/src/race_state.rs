@@ -2346,12 +2346,12 @@ mod tests {
         assert_eq!(
             populate_contact_basis_vector(&mut second, input, 5),
             Some(Vec3::new(
-                Fixed16::ZERO,
-                Fixed16::from_raw(0x20000),
                 Fixed16::from_raw(-0x20000),
+                Fixed16::from_raw(0x20000),
+                Fixed16::ZERO,
             ))
         );
-        assert_eq!(second.surface_vector, [0, 0x20000, -0x20000]);
+        assert_eq!(second.surface_vector, [-0x20000, 0x20000, 0]);
         second.surface_vector = [7, 8, 9];
         assert_eq!(populate_contact_basis_vector(&mut second, input, 8), None);
         assert_eq!(second.surface_vector, [7, 8, 9]);

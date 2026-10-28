@@ -415,7 +415,9 @@ ground while grounded, and the tyre loads and gains (`FUN_004095e0`, the
 driver's `DAT_004f777c` terms) feed both wheel loops, with the slip shift and
 `DAT_0050c5c4` derived per tick: every lane now produces force and the gearbox
 shifts, but the summed lane force alternates sign each tick, so the car still
-does not advance.
+does not advance. With the second loop's residual inputs, small-residual
+normalization and mirrored contact vectors corrected, the car now accelerates
+along its body axis through the gears on AU1.
 
 ## Update rules
 
@@ -426,14 +428,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T11:10:00Z
-milestone=tyre-gains-and-live-force-head
+updated_utc=2026-10-28T12:30:00Z
+milestone=second-loop-inputs-and-contact-mirror
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-window-path-angular-collision-and-car-animation
-next_exit_gate=stable-lane-force-and-checkpoint-cursor-advance
+next_exit_gate=steered-four-wheel-window-and-checkpoint-cursor-advance
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

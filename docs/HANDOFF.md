@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: feed the tyre loads and gains to both wheel loops
+fix: correct the second loop inputs and the mirrored contact vectors
 ```
 
 Start by confirming the checkout and progress footer:
@@ -123,12 +123,12 @@ and the checkpoint cursor never advances (a correction to `834e4c9`). Run
 -p cmr-app --release probe_compiled_four_wheel_car_on_au1 -- --ignored
 --nocapture` (it prints the cursor; `CMR_PROBE_EVERY=1` prints every tick).
 The tyre gains and bases now come from `cmr-core::tyre_load`
-(`impl.tyre-gains-and-live-force-head`) and every lane produces force, but the
-summed lane force flips sign each tick (about +16.8 then -14.9 in x on AU1), so
-the car stays under the `0xccc` position gate. Next, in order: find why the
-lane force alternates (compare the second loop's residuals and its
-`+0x2a8/+0x2b8` speed inputs with `FUN_0040d810`, and check the stored
-`ctl +0x2d4` pre-slip force), then build the windowed session on
+(`impl.tyre-gains-and-live-force-head`), and with the second loop's inputs and
+the contact-vector mirror corrected (`impl.second-loop-inputs-and-contact-mirror`)
+the car accelerates along its body axis through the gears on AU1
+(`CMR_PROBE_TICKS=1500`). It yaws about 45 degrees at the start with no
+steering and then runs straight off the road, so the cursor stays 0. Next, in
+order: build the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`
 from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground`),
 render the car body from `MotionState::basis`, then the out-of-control path

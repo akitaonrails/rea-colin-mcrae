@@ -1901,6 +1901,13 @@ On AU1 every lane now produces force and the gearbox shifts under throttle, but
 the summed lane force alternates sign each tick and the car stays below the
 position gate, so it still does not advance.
 
+That blocker is fixed (`impl.second-loop-inputs-and-contact-mirror`): the
+second loop now scales the slip and the axis dot as the native does, its
+small-residual normalization keeps the raw square sum, and the mirrored contact
+vectors are whole opposite corners. On AU1 the four-wheel car now accelerates
+along its body axis through the gears under throttle. Steering it along the
+road (the checkpoint cursor) is the next gate.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

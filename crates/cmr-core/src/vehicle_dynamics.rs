@@ -1688,6 +1688,12 @@ pub struct ContactBasisInput {
 
 /// Build twelve primary dwords, mirror them with modular negation, assemble
 /// eight vectors, and add velocity to every result.
+///
+/// The primary rows hold the x, y and z words of vectors 0..3 (stored at
+/// `+0x4bc + 12k`). The mirror writes `+0x4ec..+0x518` as the negated dwords
+/// of `+0x4e8..+0x4bc` in reverse vector order, so vector `4 + i` is the
+/// negation of vector `3 - i`, component by component, before the velocity is
+/// added.
 #[must_use]
 pub fn build_contact_basis_vectors(input: ContactBasisInput) -> [Vec3; 8] {
     let mut output = [0; 24];
@@ -1724,15 +1730,17 @@ pub fn build_contact_basis_vectors(input: ContactBasisInput) -> [Vec3; 8] {
         let base = row_index * 4;
         output[base..base + 4].copy_from_slice(&primary);
     }
-    for index in 0..12 {
-        output[12 + index] = output[11 - index].wrapping_neg();
-    }
+    let primary = |corner: usize| [output[corner], output[corner + 4], output[corner + 8]];
     std::array::from_fn(|index| {
-        let source = (index & 3) + if index < 4 { 0 } else { 12 };
+        let words = if index < 4 {
+            primary(index)
+        } else {
+            primary(7 - index).map(i32::wrapping_neg)
+        };
         Vec3::new(
-            Fixed16::from_raw(output[source]),
-            Fixed16::from_raw(output[source + 4]),
-            Fixed16::from_raw(output[source + 8]),
+            Fixed16::from_raw(words[0]),
+            Fixed16::from_raw(words[1]),
+            Fixed16::from_raw(words[2]),
         )
         .add(input.velocity)
     })
@@ -2953,10 +2961,29 @@ mod tests {
         assert_eq!(vectors[1], raw_v(0, 0x20000, -0x20000));
         assert_eq!(vectors[2], raw_v(0x20000, -0x20000, 0));
         assert_eq!(vectors[3], Vec3::ZERO);
+        // Each mirrored vector is the opposite corner of a primary one.
         assert_eq!(vectors[4], Vec3::ZERO);
-        assert_eq!(vectors[5], raw_v(0, 0x20000, -0x20000));
-        assert_eq!(vectors[6], raw_v(0x20000, -0x20000, 0));
-        assert_eq!(vectors[7], raw_v(0x20000, 0, -0x20000));
+        assert_eq!(vectors[5], raw_v(-0x20000, 0x20000, 0));
+        assert_eq!(vectors[6], raw_v(0, -0x20000, 0x20000));
+        assert_eq!(vectors[7], raw_v(-0x20000, 0, 0x20000));
+        let asymmetric = build_contact_basis_vectors(ContactBasisInput {
+            rows: identity,
+            angular: [
+                Fixed16::ONE,
+                Fixed16::from_raw(0x2_0000),
+                Fixed16::from_raw(0x3_0000),
+                Fixed16::from_raw(0x5_0000),
+                Fixed16::from_raw(0x7_0000),
+                Fixed16::from_raw(0xb_0000),
+            ],
+            velocity: raw_v(1, 2, 3),
+        });
+        for corner in 0..4 {
+            assert_eq!(
+                asymmetric[7 - corner].sub(raw_v(1, 2, 3)),
+                raw_v(0, 0, 0).sub(asymmetric[corner].sub(raw_v(1, 2, 3)))
+            );
+        }
 
         let velocity = raw_v(1, 2, 3);
         assert_eq!(

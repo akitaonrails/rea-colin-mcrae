@@ -3278,7 +3278,8 @@ impl SessionWheelInputs {
                 surface_vector: [0; 3],
                 table_factor: None,
             }),
-            contact_vector_indices: [2, 3, 6, 7],
+            // Both wheel loops read wheel `w`'s contact vector at `+0x4bc + 12w`.
+            contact_vector_indices: [0, 1, 2, 3],
             contact_offsets: [Vec3::ZERO; 4],
             contact_update_inputs: [cmr_core::vehicle_dynamics::ContactVectorUpdateInput {
                 update_gate: 0,
@@ -5946,8 +5947,12 @@ mod tests {
             .ok()
             .and_then(|value| value.parse::<i32>().ok())
             .unwrap_or(25);
+        let ticks = std::env::var("CMR_PROBE_TICKS")
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(250);
         eprintln!("probe inverse_mass_4c={:#x}", wheel.inverse_mass_4c.raw());
-        for tick in 0..250 {
+        for tick in 0..ticks {
             if let Err(error) = state.step_with_all_four_wheels(&throttle, &wheel) {
                 panic!("tick {tick}: {error:?}");
             }
@@ -5965,7 +5970,7 @@ mod tests {
                 car: state.car(),
             };
             progress.update(sample.car.position, tick);
-            if tick % every == 0 || tick == 249 {
+            if tick % every == 0 || tick == ticks - 1 {
                 let car = sample.car;
                 let moved = car.position.sub(origin);
                 eprintln!(
@@ -6015,6 +6020,18 @@ mod tests {
                         &ground.lanes.lane_words[..4],
                     );
                 }
+                eprintln!(
+                    "probe   omega=({:#x},{:#x},{:#x}) ratio3b0={:x?} angle={:x?} component={:x?} source_s=({:#x},{:#x},{:#x})",
+                    car.motion.angular_velocity.x.raw(),
+                    car.motion.angular_velocity.y.raw(),
+                    car.motion.angular_velocity.z.raw(),
+                    car.four_wheel.second.map(|lane| lane.ratio_at_3b0),
+                    car.four_wheel.second.map(|lane| lane.angle),
+                    car.four_wheel.second.map(|lane| lane.component),
+                    car.motion.lane_source_s.x.raw(),
+                    car.motion.lane_source_s.y.raw(),
+                    car.motion.lane_source_s.z.raw(),
+                );
                 eprintln!(
                     "probe   gains35c={:x?} gains36c={:x?} surfaces={:?}",
                     car.four_wheel.tyre_gains.gain_35c,

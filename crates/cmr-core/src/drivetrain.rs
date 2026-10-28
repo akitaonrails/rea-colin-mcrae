@@ -995,14 +995,20 @@ pub struct SecondLoopNormalization {
 
 /// Reconstructs the normalization branch of the second per-wheel loop.
 ///
-/// The normalizer is `|local_30|` when `|local_2c| < 0x10001` or
+/// When neither residual exceeds `1.0` (`|local_2c| < 0x10001` and
+/// `|local_30| <= 0x10000`, `0x40ed9a..0x40eda4`) the native scales the two
+/// direction sources by the raw residuals and keeps the bare square sum
+/// (`0x40eff3..0x40f1ae`), which equals a unit normalizer. Otherwise the
+/// normalizer is `|local_30|` when `|local_2c| < 0x10001` or
 /// `|local_2c| < |local_30|` (the large-ratio branch), and `|local_2c|`
-/// otherwise (the small-ratio branch). Both branches then scale the two
+/// otherwise (the small-ratio branch). Every branch then scales the two
 /// direction sources by `qmul(local_2c, reciprocal)` and
-/// `qmul(local_30, reciprocal)`, sum them componentwise, and normalize the sum
+/// `qmul(local_30, reciprocal)`, sums them componentwise, and normalizes the sum
 /// with the legacy generated-table rule: a zero square sum yields a zero
 /// direction, otherwise each component is multiplied by `2^32/root`. `length`
-/// is `qmul(square_sum, normalizer)`.
+/// is `qmul(square_sum, normalizer)`. The native's zero-normalizer reciprocal
+/// (`-1`) is unreachable, since both scaled branches need a residual above
+/// `1.0`; it is kept for parity.
 #[must_use]
 pub fn normalize_second_loop_direction(
     local_68: [i32; 3],
@@ -1012,7 +1018,9 @@ pub fn normalize_second_loop_direction(
 ) -> SecondLoopNormalization {
     let abs_2c = local_2c.wrapping_abs();
     let abs_30 = local_30.wrapping_abs();
-    let normalizer = if abs_2c < 0x10001 || abs_2c < abs_30 {
+    let normalizer = if abs_2c < 0x10001 && abs_30 <= 0x10000 {
+        0x10000
+    } else if abs_2c < 0x10001 || abs_2c < abs_30 {
         abs_30
     } else {
         abs_2c
@@ -1616,6 +1624,18 @@ pub struct SecondWheelCoreEffects {
     pub accumulators: [i32; 3],
 }
 
+/// The `DAT_0050c5a8..b0` vector the second loop's corrections dot against.
+/// The mechanics driver zeroes it (`0x40796e..0x40797c`) and `FUN_004095e0`
+/// rewrites it as its tail vector scaled by `max(0, qmul(0x1_0000_0000 /
+/// 0x3d70, -0xb333)) = 0`, so it is zero whenever the wheel-force producer runs.
+pub const SECOND_LOOP_CORRECTION_C5A8: [i32; 3] = [0; 3];
+
+fn raw_dot3(left: [i32; 3], right: [i32; 3]) -> i32 {
+    (0..3).fold(0_i32, |sum, index| {
+        sum.wrapping_add(q16_mul(left[index], right[index]))
+    })
+}
+
 /// Composes the second per-wheel iteration's core from the recovered rules:
 /// ratio and residuals, direction normalization, candidate derivation and
 /// selection, then the ordered lane accumulation tail.
@@ -1627,10 +1647,15 @@ pub struct SecondWheelCoreEffects {
 pub fn execute_second_wheel_core(
     input: SecondWheelInputs<'_>,
 ) -> Result<SecondWheelCoreEffects, LookupDependentCandidateError> {
+    // `local_34`: the slip against the raw wheel speed `+0x2a8`.
     let ratio = wheel_slip_candidate(input.dot, input.speed_at_2a8);
+    // The corrections dot each direction with `DAT_0050c5a8..b0`, which the
+    // mechanics driver clears and `FUN_004095e0` rewrites as zero each tick.
+    let correction_a = -raw_dot3(input.local_68, SECOND_LOOP_CORRECTION_C5A8);
+    let correction_b = -raw_dot3(input.local_98, SECOND_LOOP_CORRECTION_C5A8);
     let residual_ac = if wheel_ratio_within_unit(ratio) {
         gate_residual_by_gear_ratio(
-            residual_with_saturation(-input.axis_dot, q16_mul(input.wheel_e8, input.scale_c5c4)),
+            residual_with_saturation(correction_a, q16_mul(input.wheel_e8, input.scale_c5c4)),
             input.gear_ratio,
             input.config_2ec,
         )
@@ -1638,19 +1663,19 @@ pub fn execute_second_wheel_core(
         0
     };
     let residual_b0 = if wheel_ratio_within_unit(input.axis_dot) {
-        -input.axis_dot
+        correction_b
     } else {
         0
     };
     let residual_2c = second_loop_residual(
-        Fixed16::from_raw(input.dot),
+        Fixed16::from_raw(ratio),
         Fixed16::from_raw(input.scale_c5c4),
         input.residual_flag_147a,
     )
     .raw()
     .wrapping_add(residual_ac);
     let residual_30 = second_loop_axis_residual(
-        Fixed16::from_raw(input.dot),
+        Fixed16::from_raw(input.axis_dot),
         Fixed16::from_raw(input.scale_c5c4),
     )
     .raw()
@@ -2675,12 +2700,31 @@ mod tests {
     }
 
     #[test]
-    fn second_loop_normalization_zero_normalizer_uses_minus_one_reciprocal() {
-        let result = normalize_second_loop_direction([0x1000000, 0, 0], [0; 3], 0x10000, 0);
-        assert_eq!(result.normalizer, 0);
-        assert_eq!(result.reciprocal, -1);
-        assert_eq!(result.direction, [-0x10000, 0, 0]);
-        assert_eq!(result.length, 0);
+    fn second_loop_normalization_keeps_small_residuals_raw() {
+        // Neither residual exceeds 1.0: the sources are scaled by the raw
+        // residuals and the length is the bare square sum, so a small slip
+        // gives a small length instead of a unit-scaled one.
+        let result =
+            normalize_second_loop_direction([0x10000, 0, 0], [0, 0x10000, 0], 0x4000, -0x2000);
+        assert_eq!(result.normalizer, 0x10000);
+        assert_eq!(result.reciprocal, 0x10000);
+        assert_eq!(result.length, 0x1000 + 0x400);
+        assert_eq!(
+            result.direction,
+            crate::compiled_car_initializer::normalize_compiled_lane_vector([0x4000, -0x2000, 0])
+        );
+        // Both residuals at exactly 1.0 stay on the raw path; zero residuals
+        // give a zero direction without a zero normalizer.
+        let unit = normalize_second_loop_direction([0x10000, 0, 0], [0; 3], -0x10000, 0x10000);
+        assert_eq!((unit.normalizer, unit.length), (0x10000, 0x10000));
+        let zero = normalize_second_loop_direction([0x10000, 0, 0], [0; 3], 0, 0);
+        assert_eq!(
+            (zero.normalizer, zero.direction, zero.length),
+            (0x10000, [0; 3], 0)
+        );
+        // Just above 1.0 on either side selects a scaled branch.
+        let above = normalize_second_loop_direction([0; 3], [0; 3], 0x8000, 0x10001);
+        assert_eq!(above.normalizer, 0x10001);
     }
 
     #[test]
@@ -2704,11 +2748,11 @@ mod tests {
         // so the large-ratio branch still uses |local_30|.
         let result = normalize_second_loop_direction([0; 3], [0; 3], 0x20000, 0x40000);
         assert_eq!(result.normalizer, 0x40000);
-        // |local_2c| = 1.0 is below the unit gate: |local_30| is used even
-        // though it is smaller.
-        let result = normalize_second_loop_direction([0; 3], [0; 3], 0x10000, 0x8000);
-        assert_eq!(result.normalizer, 0x8000);
-        assert_eq!(result.reciprocal, 0x20000);
+        // |local_2c| = 1.0 is below the unit gate and |local_30| = 3.0 is
+        // above it: |local_30| is used.
+        let result = normalize_second_loop_direction([0; 3], [0; 3], 0x10000, 0x30000);
+        assert_eq!(result.normalizer, 0x30000);
+        assert_eq!(result.reciprocal, 0x5555);
     }
 
     #[test]
@@ -3208,24 +3252,22 @@ mod tests {
             wheel_slip_candidate(input.dot, input.speed_at_2b8)
         );
         assert!(!wheel_ratio_within_unit(ratio));
-        let residual_b0 = if wheel_ratio_within_unit(input.axis_dot) {
-            -input.axis_dot
-        } else {
-            0
-        };
-        assert_eq!(residual_b0, -0x8000);
+        // `local_2c` scales the slip `local_34`, `local_30` the axis dot, and
+        // both corrections dot against the zero `DAT_0050c5a8` vector.
+        assert!(wheel_ratio_within_unit(input.axis_dot));
         let expected_2c = second_loop_residual(
-            Fixed16::from_raw(input.dot),
+            Fixed16::from_raw(ratio),
             Fixed16::from_raw(input.scale_c5c4),
             false,
         )
         .raw();
         let expected_30 = second_loop_axis_residual(
-            Fixed16::from_raw(input.dot),
+            Fixed16::from_raw(input.axis_dot),
             Fixed16::from_raw(input.scale_c5c4),
         )
-        .raw()
-        .wrapping_add(residual_b0);
+        .raw();
+        assert_ne!(expected_2c, 0);
+        assert_ne!(expected_30, 0);
         assert_eq!(effects.residual_2c, expected_2c);
         assert_eq!(effects.residual_30, expected_30);
         assert_eq!(
