@@ -174,21 +174,24 @@ Stage weather (`impl.stage-weather`) needs
 `cargo run -q -p cmr-assets -- extract-stage-weather-tables --source <dir with Rally.exe> --profile profiles/official-eu-stage-weather-tables-v1.json --output runtime-data/official-eu-stage-weather-tables`;
 the rivals' times (`impl.rival-times`) need `extract-rival-records` the same way
 (`profiles/official-eu-rival-records-v1.json`, output `runtime-data/official-eu-rival-records`).
-Post-stage results are documented in `.work/post-stage-results-notes.md`;
-standings are computed (`impl.standings`) and the results director runs
-(`impl.results-director`: state 8 holds until Return reaches Continue, Restart or
-Quit; left/right move the menu, up/down the confirmations, held up/down scroll the tables);
-the frame, the stage, rally and championship tables, the menu, GAME OVER and the
-complete pages and the confirmations are drawn (`impl.results-draw`); the super-special
-result, the bonus car and the save page draw the frame only. The race hand-off commits the
-cmRally.cfg record (`impl.config-commit`). Front-end screens are in
-`.work/frontend-menu-tree-notes.md` and `.work/frontend-setup-draw-notes.md`. The window's front end now runs the
-real setup, name-entry and stage-select screens (`impl.frontend-setup-flow`; arrows, Return, Escape, letters):
-the setups, name entries and stage select are drawn (`impl.frontend-setup-draw`,
-`impl.frontend-name-stage-draw`; no preview panels, 3D cars, thumbnails or flags yet); the stage load attaches the car chosen in the setup
-(`impl.chosen-car`; `--car-code` is only the car of the window's first stage). Static tables (`impl.static-tables`) need
-`cargo run -q -p cmr-assets -- extract-static-tables --source <dir with Rally.exe> --profile profiles/official-eu-static-tables-v1.json --output runtime-data/official-eu-static-tables`. Next: the front-end setup screens (they edit
-the record, so a chosen stage and car load), the car-to-car impact site
+Post-stage results are documented in `.work/post-stage-results-notes.md`,
+`.work/results-records-notes.md` and `.work/results-pages-notes.md`; standings
+are computed (`impl.standings`) and the results director runs every
+single-player page (`impl.results-director`, `impl.results-record-checks`): the
+stage, rally and championship tables, the record checks with their notice and
+CAC code pages, the menu, the confirmations, GAME OVER, the complete pages, the
+save page's dialog, the super-special result and the bonus car, all drawn with
+the make logos and flags (`impl.results-draw`, `impl.results-icons-pages`). The
+super-special opponent's time needs the opponent car, which is not simulated.
+The race hand-off commits the cmRally.cfg record (`impl.config-commit`), and
+records written by the results reach it. The window's front end runs the real
+screens (`.work/frontend-menu-tree-notes.md`, `.work/frontend-setup-draw-notes.md`):
+setups, name entries (with the cheat and CAC codes, `impl.frontend-name-codes`),
+stage select, Load, Options and its sub-screens, and the control, analogue and
+button setups, with their previews, flags, logos and the turning 3D car
+(`impl.frontend-car-preview`); the stage load attaches the car chosen in the
+setup (`impl.chosen-car`). Static tables (`impl.static-tables`) need
+`cargo run -q -p cmr-assets -- extract-static-tables --source <dir with Rally.exe> --profile profiles/official-eu-static-tables-v1.json --output runtime-data/official-eu-static-tables`. Next: the car-to-car impact site
 (the `FUN_004115d0` landing and `FUN_00412860` tumbling impacts are wired), then the championship progression
 behind the hub predicates. Scenery impacts play (`impl.static-impact-sound`).
 `FUN_0041f630` only feeds impact sound/FFB/shudder. Trees appear to be `.sht` sprites, which the native
