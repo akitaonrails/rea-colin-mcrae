@@ -956,6 +956,48 @@ impl WgpuIndexedPaletteBackend {
     }
 }
 
+impl WgpuIndexedPaletteBackend {
+    /// One prepared scene's palette-index frame and its depth, for passes
+    /// the host draws over it (the stage without a horizon layer).
+    ///
+    /// # Errors
+    ///
+    /// As [`PersistentRawC3dIndexedBackend::render_prepared_indexed_readback`].
+    pub fn render_prepared_indexed_readback_with_depth(
+        &mut self,
+        scene: &mut WgpuPreparedC3dScene,
+        frame: C3dPreparedFrame<'_>,
+    ) -> Result<(CanonicalIndexedFrame, Vec<f32>), WgpuBackendError> {
+        self.render_single_indexed(scene, frame, true)
+            .map(|(frame, depth)| (frame, depth.unwrap_or_default()))
+    }
+
+    fn render_single_indexed(
+        &mut self,
+        scene: &mut WgpuPreparedC3dScene,
+        frame: C3dPreparedFrame<'_>,
+        with_depth: bool,
+    ) -> Result<(CanonicalIndexedFrame, Option<Vec<f32>>), WgpuBackendError> {
+        frame
+            .ensure_layout(scene.layout)
+            .map_err(WgpuBackendError::RawContract)?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("cmr prepared C3D indexed presentation commands"),
+            });
+        let frame_draws = self.encode_prepared_c3d_target(
+            scene,
+            frame,
+            &mut encoder,
+            C3dEncodeTarget::PaletteIndex,
+        )?;
+        let readback = self.submit_indexed_readback(scene, encoder, with_depth);
+        drop(frame_draws);
+        readback
+    }
+}
+
 impl PersistentRawC3dGpuBackend for WgpuIndexedPaletteBackend {
     type Error = WgpuBackendError;
     type PreparedScene = WgpuPreparedC3dScene;
@@ -1282,79 +1324,8 @@ impl PersistentRawC3dIndexedBackend for WgpuIndexedPaletteBackend {
         scene: &mut Self::PreparedScene,
         frame: C3dPreparedFrame<'_>,
     ) -> Result<CanonicalIndexedFrame, Self::Error> {
-        frame
-            .ensure_layout(scene.layout)
-            .map_err(WgpuBackendError::RawContract)?;
-        let extent = scene.layout.extent();
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("cmr prepared C3D indexed presentation commands"),
-            });
-        let frame_draws = self.encode_prepared_c3d_target(
-            scene,
-            frame,
-            &mut encoder,
-            C3dEncodeTarget::PaletteIndex,
-        )?;
-        encoder.copy_texture_to_buffer(
-            texture_copy(&scene._index_texture),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &scene.index_readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(scene.index_readback_pitch),
-                    rows_per_image: Some(u32::from(extent.height)),
-                },
-            },
-            wgpu::Extent3d {
-                width: u32::from(extent.width),
-                height: u32::from(extent.height),
-                depth_or_array_layers: 1,
-            },
-        );
-        let submission = self.queue.submit([encoder.finish()]);
-        let (sender, receiver) = mpsc::sync_channel(1);
-        scene
-            .index_readback
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                let _ = sender.send(result);
-            });
-        self.wait_for_submission(submission)?;
-        receiver
-            .recv()
-            .map_err(|error| WgpuBackendError::MapChannel(error.to_string()))?
-            .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
-        let mapped = scene
-            .index_readback
-            .slice(..)
-            .get_mapped_range()
-            .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
-        let width = usize::from(extent.width);
-        let height = usize::from(extent.height);
-        let pitch = scene.index_readback_pitch as usize;
-        let mapped_len = pitch * height;
-        if mapped.len() != mapped_len {
-            let actual = mapped.len();
-            drop(mapped);
-            scene.index_readback.unmap();
-            return Err(WgpuBackendError::Contract(
-                FrameContractError::InvalidReadbackLength {
-                    expected: mapped_len,
-                    actual,
-                },
-            ));
-        }
-        let mut indices = Vec::with_capacity(width * height);
-        for row in 0..height {
-            indices.extend_from_slice(&mapped[row * pitch..row * pitch + width]);
-        }
-        drop(mapped);
-        scene.index_readback.unmap();
-        drop(frame_draws);
-        CanonicalIndexedFrame::new(extent, indices.into_boxed_slice())
-            .map_err(WgpuBackendError::Contract)
+        self.render_single_indexed(scene, frame, false)
+            .map(|(frame, _)| frame)
     }
 }
 
@@ -1447,13 +1418,27 @@ impl WgpuIndexedPaletteBackend {
             C3dEncodeTarget::PaletteIndex,
             true,
         )?;
+        let readback = self.submit_indexed_readback(background, encoder, with_depth);
+        drop((background_draws, foreground_draws));
+        readback
+    }
+
+    /// Copy the palette-index target (and with `with_depth` the depth) of
+    /// `scene` after the encoded draws, submit, wait and map them back.
+    fn submit_indexed_readback(
+        &mut self,
+        scene: &WgpuPreparedC3dScene,
+        mut encoder: wgpu::CommandEncoder,
+        with_depth: bool,
+    ) -> Result<(CanonicalIndexedFrame, Option<Vec<f32>>), WgpuBackendError> {
+        let extent = scene.layout.extent();
         encoder.copy_texture_to_buffer(
-            texture_copy(&background._index_texture),
+            texture_copy(&scene._index_texture),
             wgpu::TexelCopyBufferInfo {
-                buffer: &background.index_readback,
+                buffer: &scene.index_readback,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(background.index_readback_pitch),
+                    bytes_per_row: Some(scene.index_readback_pitch),
                     rows_per_image: Some(u32::from(extent.height)),
                 },
             },
@@ -1466,16 +1451,16 @@ impl WgpuIndexedPaletteBackend {
         if with_depth {
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
-                    texture: &background._depth_texture,
+                    texture: &scene._depth_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::DepthOnly,
                 },
                 wgpu::TexelCopyBufferInfo {
-                    buffer: &background.depth_readback,
+                    buffer: &scene.depth_readback,
                     layout: wgpu::TexelCopyBufferLayout {
                         offset: 0,
-                        bytes_per_row: Some(background.readback_pitch),
+                        bytes_per_row: Some(scene.readback_pitch),
                         rows_per_image: Some(u32::from(extent.height)),
                     },
                 },
@@ -1488,7 +1473,7 @@ impl WgpuIndexedPaletteBackend {
         }
         let submission = self.queue.submit([encoder.finish()]);
         let (sender, receiver) = mpsc::sync_channel(1);
-        background
+        scene
             .index_readback
             .slice(..)
             .map_async(wgpu::MapMode::Read, move |result| {
@@ -1499,19 +1484,19 @@ impl WgpuIndexedPaletteBackend {
             .recv()
             .map_err(|error| WgpuBackendError::MapChannel(error.to_string()))?
             .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
-        let mapped = background
+        let mapped = scene
             .index_readback
             .slice(..)
             .get_mapped_range()
             .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
         let width = usize::from(extent.width);
         let height = usize::from(extent.height);
-        let pitch = background.index_readback_pitch as usize;
+        let pitch = scene.index_readback_pitch as usize;
         let mapped_len = pitch * height;
         if mapped.len() != mapped_len {
             let actual = mapped.len();
             drop(mapped);
-            background.index_readback.unmap();
+            scene.index_readback.unmap();
             return Err(WgpuBackendError::Contract(
                 FrameContractError::InvalidReadbackLength {
                     expected: mapped_len,
@@ -1524,11 +1509,10 @@ impl WgpuIndexedPaletteBackend {
             indices.extend_from_slice(&mapped[row * pitch..row * pitch + width]);
         }
         drop(mapped);
-        background.index_readback.unmap();
-        drop((background_draws, foreground_draws));
+        scene.index_readback.unmap();
         let depth = if with_depth {
             let (sender, receiver) = mpsc::sync_channel(1);
-            background
+            scene
                 .depth_readback
                 .slice(..)
                 .map_async(wgpu::MapMode::Read, move |result| {
@@ -1541,12 +1525,12 @@ impl WgpuIndexedPaletteBackend {
                 .recv()
                 .map_err(|error| WgpuBackendError::MapChannel(error.to_string()))?
                 .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
-            let mapped = background
+            let mapped = scene
                 .depth_readback
                 .slice(..)
                 .get_mapped_range()
                 .map_err(|error| WgpuBackendError::Map(error.to_string()))?;
-            let pitch = background.readback_pitch as usize;
+            let pitch = scene.readback_pitch as usize;
             let mut values = Vec::with_capacity(width * height);
             for row in 0..height {
                 let line = &mapped[row * pitch..row * pitch + width * 4];
@@ -1558,7 +1542,7 @@ impl WgpuIndexedPaletteBackend {
                 );
             }
             drop(mapped);
-            background.depth_readback.unmap();
+            scene.depth_readback.unmap();
             Some(values)
         } else {
             None
@@ -2247,6 +2231,19 @@ mod tests {
             "the mapped material slot must appear in the index readback"
         );
         assert_eq!(index_readback.indices()[0], 0);
+        // The depth variant reads the same image and one depth per pixel,
+        // nearer than the clear where the triangle drew.
+        let (with_depth, depth) = backend
+            .render_prepared_indexed_readback_with_depth(&mut prepared, prepared_frame)
+            .unwrap();
+        assert_eq!(with_depth, index_readback);
+        assert_eq!(depth.len(), 64 * 64);
+        let drawn = index_readback
+            .indices()
+            .iter()
+            .position(|&i| i == 7)
+            .unwrap();
+        assert!(depth[drawn] < depth[0]);
         let uploads = prepared.static_upload_counts();
         let first_timing = backend
             .render_prepared_timed(&mut prepared, prepared_frame)

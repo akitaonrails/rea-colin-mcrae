@@ -2042,9 +2042,6 @@ impl WgpuStageRenderer {
                 )
                 .map_err(StageFrameError::GpuPrepare)?;
             if let Some(post) = post {
-                // The shadows and sprites over the GPU frame with its depth:
-                // whatever is nearer (the car, the objects) rejects their
-                // fragments, as drawing those after the shadow covers it.
                 let (indexed, depth) = self
                     .backend
                     .render_prepared_layered_indexed_readback_with_depth(
@@ -2054,19 +2051,7 @@ impl WgpuStageRenderer {
                         frame,
                     )
                     .map_err(|error| StageFrameError::GpuCompose(error.to_string()))?;
-                let extent = [indexed.extent().width, indexed.extent().height];
-                let depth = cmr_video::c3d_software_raster::SoftwareC3dDepthBuffer::from_values(
-                    extent, depth,
-                )
-                .map_err(|error| StageFrameError::GpuCompose(format!("{error:?}")))?;
-                let mut scene = cmr_video::software_stage_scene::StageSceneFrame::from_parts(
-                    extent,
-                    indexed.indices().to_vec(),
-                    self.palette,
-                    depth,
-                );
-                post(&mut scene)?;
-                return scene.to_presented_frame().map_err(StageFrameError::Present);
+                return post_blend_gpu_frame(&indexed, depth, self.palette, post);
             }
             self.backend
                 .render_prepared_layered_indexed_readback(
@@ -2076,6 +2061,12 @@ impl WgpuStageRenderer {
                     frame,
                 )
                 .map_err(|error| StageFrameError::GpuCompose(error.to_string()))?
+        } else if let Some(post) = post {
+            let (indexed, depth) = self
+                .backend
+                .render_prepared_indexed_readback_with_depth(&mut self.scene, frame)
+                .map_err(|error| StageFrameError::GpuCompose(error.to_string()))?;
+            return post_blend_gpu_frame(&indexed, depth, self.palette, post);
         } else {
             self.backend
                 .render_prepared_indexed_readback(&mut self.scene, frame)
@@ -2088,6 +2079,28 @@ impl WgpuStageRenderer {
         )
         .map_err(StageFrameError::Present)
     }
+}
+
+/// The shadows and sprites over a GPU frame with its depth: whatever is
+/// nearer (the car, the objects) rejects their fragments, as drawing those
+/// after the shadow covers it.
+fn post_blend_gpu_frame(
+    indexed: &cmr_gpu_contract::CanonicalIndexedFrame,
+    depth: Vec<f32>,
+    palette: [PaletteEntry; 256],
+    post: &PostBlend<'_>,
+) -> Result<SoftwarePresentedFrame, StageFrameError> {
+    let extent = [indexed.extent().width, indexed.extent().height];
+    let depth = cmr_video::c3d_software_raster::SoftwareC3dDepthBuffer::from_values(extent, depth)
+        .map_err(|error| StageFrameError::GpuCompose(format!("{error:?}")))?;
+    let mut scene = cmr_video::software_stage_scene::StageSceneFrame::from_parts(
+        extent,
+        indexed.indices().to_vec(),
+        palette,
+        depth,
+    );
+    post(&mut scene)?;
+    scene.to_presented_frame().map_err(StageFrameError::Present)
 }
 
 /// Identity retained on typed loading-overlay failures.
