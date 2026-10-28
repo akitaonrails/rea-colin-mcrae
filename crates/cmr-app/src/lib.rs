@@ -3336,6 +3336,351 @@ fn loading_interstitial_for_route(
         .map_err(StageFrameError::LoadingOverlayCompose)
 }
 
+/// `FUN_004ba470(country, stage)`: the rally school's name, or the name
+/// table `0x506f80` for country < 9 and stage < 6, else none.
+fn stage_name_of(
+    tables: &cmr_formats::pe_static_tables::StaticTables,
+    school: bool,
+    country: u8,
+    stage: u8,
+) -> Option<Vec<u8>> {
+    if school {
+        return tables.string("school_stage_name").map(<[u8]>::to_vec);
+    }
+    let (country, stage) = (usize::from(country), usize::from(stage));
+    if country >= 9 || stage >= 6 {
+        return None;
+    }
+    tables
+        .strings("stage_names")?
+        .get(country * 6 + stage)
+        .cloned()
+}
+
+/// The service screen's waves (`load_sounds` 0x47a2b0), slots 0..6.
+const SERVICE_WAVES: [&str; 7] = [
+    "WHEEL.WAV",
+    "UPDOWN.WAV",
+    "TOGGLE.WAV",
+    "FORWARD.WAV",
+    "BACK.WAV",
+    "DO.WAV",
+    "UNDO.WAV",
+];
+
+/// The channel `FUN_004957c0` hands SETUP.WAV (harness: the allocator's
+/// result is not recovered; any free channel past the cue channel 0).
+const SERVICE_MUSIC_CHANNEL: u32 = 1;
+
+/// The service screen as state 3 runs it (`FUN_004371c0`/`FUN_00421d80`):
+/// the screen, its assets, the draw's persistent state and surface, and its
+/// sounds.
+#[derive(Default)]
+struct ServiceHost {
+    screen: Option<cmr_core::service_screen::ServiceScreen>,
+    assets: Option<cmr_core::service_draw::ServiceAssets>,
+    text: Option<cmr_core::localization::IndexedTextTable>,
+    weather: Option<StageWeatherTables>,
+    /// Kept across screens (`DAT_005fefbc` is never reset).
+    draw: cmr_core::service_draw::ServiceDrawState,
+    pixels: Vec<u8>,
+    /// `FUN_0043baa0`'s last mask (`DAT_00550c20`).
+    previous_mask: u32,
+    /// The cue bank's first slot, and SETUP.WAV's slot.
+    bank: Option<cmr_core::audio_mixer::WaveSlotId>,
+    music: Option<cmr_core::audio_mixer::WaveSlotId>,
+}
+
+impl ServiceHost {
+    /// One state-3 tick: the pending check, the update and the render.
+    /// Returns the menu-flow inputs' `(preload_pending, preload_done)` and
+    /// the frame to present.
+    #[allow(clippy::too_many_arguments)]
+    fn frame(
+        &mut self,
+        runtime_data: &Path,
+        static_tables: Option<&cmr_assets::StaticTablesStore>,
+        config: &mut FrontEndConfig,
+        event: &EventState,
+        language: Language,
+        now: u32,
+        keys: &cmr_platform_sdl3::KeyboardVkState,
+        mixer: Option<&SharedSoftwareMixer>,
+    ) -> (bool, bool, Option<SoftwarePresentedFrame>) {
+        use cmr_core::service_draw::{
+            DIAL_SEGMENTS, FONT_NAMES, ICON_NAMES, PLAQUE_FRAMES, STAGE_PICTURES, ServiceAssets,
+            ServiceDrawContext, ServiceDrawTables, ServiceFont, ServiceFonts, ServiceFrame, Sprite,
+            draw_service_frame, picture_path, plaque_path,
+        };
+        use cmr_core::service_screen::{
+            ServiceContext, ServiceScreen, ServiceTables, service_pending,
+        };
+        let tables = static_tables.map(cmr_assets::StaticTablesStore::tables);
+        let data = tables
+            .and_then(|t| t.block("service_screen_data"))
+            .unwrap_or(&[]);
+        let part = |at: usize, len: usize| data.get(at..at + len).unwrap_or(&[]);
+        let service_tables = ServiceTables {
+            mask: part(0x3c, 9),
+            country_defaults: part(0, 45),
+            // From 0x4f5ff8 to the block's end: the native reads on past the
+            // two tasks' ten bytes.
+            school_defaults: data.get(0x30..).unwrap_or(&[]),
+        };
+        let school = event.globals.school_d3ca88;
+        let live = cmr_core::config_commit::live_mut(&mut config.image);
+        event.cfg.store_live(live);
+        if !service_pending(
+            live,
+            school,
+            event.globals.special_55001c,
+            service_tables.mask,
+        ) {
+            return (false, false, None);
+        }
+        let context = ServiceContext {
+            school,
+            restart: event.globals.restart_550018,
+            network: event.globals.network_d3ca94,
+            two_players: event.split_screen() || event.head_to_head(),
+        };
+        if self.screen.is_none() {
+            // The lazy init `FUN_00479c80`: the palette, the text, the
+            // graphics, the sounds and the music.
+            let store = ReviewedProfile::from_json(REVIEWED_PROFILE)
+                .ok()
+                .and_then(|reviewed| {
+                    AssetStore::open(runtime_data, &reviewed, DecodeLimits::default()).ok()
+                });
+            let load = |path: &str| {
+                store
+                    .as_ref()
+                    .and_then(|store| store.load(&path.replace('\\', "/")).ok())
+            };
+            let palette = load("ini/setrpal.pal")
+                .and_then(|bytes| cmr_formats::riff_palette::parse_legacy_palette_256(&bytes).ok())
+                .map_or(cmr_core::welcome_screen::BLACK, |p| p.entries);
+            let bitmap = |path: String| {
+                load(&format!("Game/SetRep/{path}"))
+                    .and_then(|bytes| {
+                        cmr_formats::bitmap::parse_indexed_bitmap(&bytes, BitmapLimits::default())
+                            .ok()
+                    })
+                    .map(|bitmap| Sprite::new(bitmap, &palette))
+            };
+            let fonts: ServiceFonts = FONT_NAMES.map(|name| {
+                load(&format!("Game/SetRep/Fonts/{name}.fon"))
+                    .and_then(|bytes| parse_legacy_font(&bytes, FontLimits::default()).ok())
+                    .map(|font| ServiceFont::new(font, &palette))
+            });
+            let pictures = (0..STAGE_PICTURES)
+                .map(|i| picture_path(i, live, school).and_then(bitmap))
+                .collect();
+            let plaques = (0..PLAQUE_FRAMES)
+                .map(|i| plaque_path(i, live, school).and_then(bitmap))
+                .collect();
+            self.assets = Some(ServiceAssets {
+                fonts,
+                backdrop: bitmap("BackDrop.bmp".to_owned()),
+                dial: (0..DIAL_SEGMENTS)
+                    .map(|i| bitmap(format!("dial\\{i:03}.bmp")))
+                    .collect(),
+                icons: ICON_NAMES
+                    .iter()
+                    .map(|name| bitmap(format!("icons\\{name}.bmp")))
+                    .collect(),
+                left_arrow: bitmap("l_arrow.bmp".to_owned()),
+                right_arrow: bitmap("r_arrow.bmp".to_owned()),
+                damage_bar: bitmap("DamBar.bmp".to_owned()),
+                pictures,
+                plaques,
+                palette,
+            });
+            // `FUN_0043bc00` under the setrep directory.
+            let path = language.game_path().replacen("Game/", "Game/SetRep/", 1);
+            self.text = load(&path).and_then(|bytes| {
+                cmr_core::localization::IndexedTextTable::parse(
+                    &bytes,
+                    cmr_core::localization::GAME_TEXT_COUNT,
+                )
+                .ok()
+            });
+            if self.weather.is_none() {
+                self.weather = open_stage_weather_tables(runtime_data);
+            }
+            self.pixels = vec![0; usize::from(ROOT_EXTENT.width) * usize::from(ROOT_EXTENT.height)];
+            self.screen = Some(ServiceScreen::open(live, context, service_tables));
+            self.start_sounds(mixer);
+        }
+        let mut mask = 0;
+        for (vk, bit) in [
+            (0x25, 1),
+            (0x27, 2),
+            (0x26, 4),
+            (0x28, 8),
+            (0x0d, 0x10),
+            (0x1b, 0x20),
+        ] {
+            if keys.is_down(vk) {
+                mask |= bit;
+            }
+        }
+        let input = if mask == self.previous_mask {
+            0
+        } else {
+            self.previous_mask = mask;
+            mask
+        };
+        let screen = self.screen.as_mut().expect("opened above");
+        let (done, effects) = screen.update(live, input, context, service_tables);
+        for effect in effects {
+            let cmr_core::service_screen::ServiceEffect::Cue { slot, ok } = effect;
+            if let (Some(mixer), Some(base)) = (mixer, self.bank) {
+                play_service_cue(mixer, base, slot, ok);
+            }
+        }
+        let assets = self.assets.as_ref().expect("loaded above");
+        let text = |id: i32| {
+            usize::try_from(id)
+                .ok()
+                .and_then(|id| self.text.as_ref().map(|t| t.lookup(id).to_vec()))
+                .unwrap_or_default()
+        };
+        let stage_name = |country: u8, stage: u8| {
+            tables
+                .and_then(|t| stage_name_of(t, school, country, stage))
+                .unwrap_or_default()
+        };
+        let stage_info = tables
+            .and_then(|t| t.block("stage_info_surfaces"))
+            .unwrap_or(&[]);
+        let frame = ServiceFrame {
+            assets,
+            tables: ServiceDrawTables {
+                dial: part(0x48, 60),
+                bob: part(0x84, 14),
+                setup_icons: part(0xd8, 8),
+                repair_icons: part(0xe0, 8),
+                car_names: tables.and_then(|t| t.strings("car_names")).unwrap_or(&[]),
+                lengths: tables.and_then(|t| t.block("stage_lengths")).unwrap_or(&[]),
+                surfaces: stage_info.get(..189).unwrap_or(&[]),
+                school_surfaces: stage_info.get(0xc0..).unwrap_or(&[]),
+                weather: self.weather.as_ref(),
+            },
+            context: ServiceDrawContext {
+                school,
+                special: event.globals.special_514478,
+                width: ROOT_EXTENT.width,
+                height: ROOT_EXTENT.height,
+                now_ms: now,
+            },
+            text: &text,
+            stage_name: &stage_name,
+        };
+        let drawn = draw_service_frame(&frame, &mut self.draw, screen, live, &mut self.pixels);
+        if let (Some(mixer), Some(_)) = (mixer, self.music) {
+            set_channel_volume(mixer, SERVICE_MUSIC_CHANNEL, self.draw.music_volume);
+        }
+        let present = (!done && drawn.is_ok())
+            .then(|| {
+                SoftwarePresentedFrame::from_indexed(
+                    ROOT_EXTENT,
+                    self.pixels.clone().into_boxed_slice(),
+                    Box::new(assets.palette),
+                )
+                .ok()
+            })
+            .flatten();
+        if done {
+            // `service_finish`: the lazy init re-arms for the next screen.
+            // Harness: SETUP.WAV stops here (the module never stops it; the
+            // native release point is not recovered).
+            self.screen = None;
+            if let Some(mixer) = mixer {
+                stop_channel(mixer, SERVICE_MUSIC_CHANNEL);
+            }
+        }
+        (true, done, present)
+    }
+
+    /// `load_sounds` and `start_setup_music`: the cue bank (22050 Hz,
+    /// 16-bit) and SETUP.WAV looping at volume 0.
+    fn start_sounds(&mut self, mixer: Option<&SharedSoftwareMixer>) {
+        let Some(mut mixer) = mixer.and_then(|m| m.lock().ok()) else {
+            return;
+        };
+        if self.bank.is_none() {
+            let mut base = None;
+            for name in SERVICE_WAVES {
+                let Ok(slot) = mixer.load_wave(
+                    &format!("game\\setrep\\sound\\new\\{name}"),
+                    22_050,
+                    16,
+                    false,
+                ) else {
+                    base = None;
+                    break;
+                };
+                base.get_or_insert(slot);
+            }
+            self.bank = base;
+        }
+        if self.music.is_none() {
+            self.music = mixer
+                .load_wave("game\\setrep\\Sound\\SETUP.WAV", 22_050, 16, false)
+                .ok();
+        }
+        if let (Some(slot), Ok(channel)) = (self.music, ChannelId::new(SERVICE_MUSIC_CHANNEL)) {
+            let _ = apply_commands(
+                &mut *mixer,
+                &[
+                    cmr_core::audio_mixer::MixerCommand::StopChannel { channel },
+                    cmr_core::audio_mixer::MixerCommand::SetVolume { channel, volume: 0 },
+                    cmr_core::audio_mixer::MixerCommand::Play {
+                        slot,
+                        channel,
+                        flags: cmr_core::audio_mixer::PLAY_LOOPING,
+                    },
+                ],
+            );
+        }
+    }
+}
+
+/// A service cue helper (`479de0` and its siblings): stop channel 0, play
+/// the slot once when `ok`, then channel 0 to full volume.
+fn play_service_cue(
+    mixer: &SharedSoftwareMixer,
+    base: cmr_core::audio_mixer::WaveSlotId,
+    slot: u8,
+    ok: bool,
+) {
+    let (Ok(mut mixer), Ok(channel)) = (mixer.lock(), ChannelId::new(0)) else {
+        return;
+    };
+    let bank = cmr_core::frontend_sounds::FrontendBank { channel, base };
+    let commands = cmr_core::frontend_sounds::cue(bank, u32::from(slot), ok, 100);
+    let _ = apply_commands(&mut *mixer, &commands);
+}
+
+fn set_channel_volume(mixer: &SharedSoftwareMixer, channel: u32, volume: i32) {
+    if let (Ok(mut mixer), Ok(channel)) = (mixer.lock(), ChannelId::new(channel)) {
+        let _ = apply_commands(
+            &mut *mixer,
+            &[cmr_core::audio_mixer::MixerCommand::SetVolume { channel, volume }],
+        );
+    }
+}
+
+fn stop_channel(mixer: &SharedSoftwareMixer, channel: u32) {
+    if let (Ok(mut mixer), Ok(channel)) = (mixer.lock(), ChannelId::new(channel)) {
+        let _ = apply_commands(
+            &mut *mixer,
+            &[cmr_core::audio_mixer::MixerCommand::StopChannel { channel }],
+        );
+    }
+}
+
 /// The country welcome screen as state 2 runs it (`FUN_0048dde0`): its
 /// assets, the drawn image and the sequencer.
 struct WelcomeHost {
@@ -3491,8 +3836,9 @@ impl cmr_core::car_shadow::ShadowGround for KeepHeight {
 }
 
 /// The pre-race waits a session without the windowed screens satisfies at
-/// once: the welcome screen counts as dismissed (the windowed session runs
-/// it, [`WelcomeHost`]); no interstitial is pending.
+/// once: the welcome screen counts as dismissed and no service screen is
+/// pending (the windowed session runs both, [`WelcomeHost`] and
+/// [`ServiceHost`]).
 const PRE_RACE_INPUTS: MenuFlowInputs = MenuFlowInputs {
     welcome_done: true,
     school_menu_done: false,
@@ -3857,8 +4203,9 @@ fn advance_game_frame<C: HostClock>(
         ))
     };
     let mut menu_inputs = PRE_RACE_INPUTS;
+    // The full-screen pre-race screen of state 2 or 3, if one shows.
+    let mut screen = None;
     // State 2 in a race: the country welcome screen (`FUN_0048dde0`).
-    let mut welcome = None;
     if session.state().id() == 2 && !session.event().globals.school_d3ca88 {
         let keyboards = root_interaction.screens().controls().keyboards;
         let held = keyboards.iter().fold(0, |mask, keyboard| {
@@ -3872,7 +4219,23 @@ fn advance_game_frame<C: HostClock>(
             held,
         );
         menu_inputs.welcome_done = done;
-        welcome = frame;
+        screen = frame;
+    }
+    // State 3: the service screen (`FUN_004371c0`).
+    if session.state().id() == 3 {
+        let (pending, done, frame) = results.service.frame(
+            &results.runtime_data.clone(),
+            results.static_tables.as_ref(),
+            config,
+            session.event(),
+            results.language,
+            clock.millis(),
+            input.keys,
+            input.audio,
+        );
+        menu_inputs.preload_pending = pending;
+        menu_inputs.preload_done = done;
+        screen = frame;
     }
     let drive = if let Some(pad) = input.gamepad.filter(|pad| analog_driving_is_active(pad)) {
         analog.poll(
@@ -4065,7 +4428,7 @@ fn advance_game_frame<C: HostClock>(
         STAGE_LOADING_PROGRESS_CAP,
     )?;
     Ok(GameFrameOutcome {
-        welcome,
+        screen,
         world,
         loading_interstitial,
         exit_requested: root_tick.as_ref().is_some_and(|tick| tick.exit_requested),
@@ -4091,8 +4454,8 @@ fn advance_game_frame<C: HostClock>(
 
 /// What one [`advance_game_frame`] produced for the windowed loop.
 struct GameFrameOutcome {
-    /// The country welcome screen's frame (state 2).
-    welcome: Option<SoftwarePresentedFrame>,
+    /// The country welcome (state 2) or service (state 3) screen's frame.
+    screen: Option<SoftwarePresentedFrame>,
     world: Option<SoftwarePresentedFrame>,
     loading_interstitial: Option<SoftwarePresentedFrame>,
     root_render_input: Option<RootRenderInput>,
@@ -6942,6 +7305,8 @@ struct RaceResults {
     language: Language,
     /// The country welcome screen state 2 shows.
     welcome: WelcomeHost,
+    /// The service screen state 3 shows.
+    service: ServiceHost,
 }
 
 impl RaceResults {
@@ -6986,6 +7351,7 @@ impl RaceResults {
             static_tables: open_static_tables(runtime_data),
             language,
             welcome: WelcomeHost::default(),
+            service: ServiceHost::default(),
         }
     }
 
@@ -7002,19 +7368,12 @@ impl RaceResults {
     /// `FUN_004ba470(country, stage)`: the rally school's name, or the name
     /// table `0x506f80` for country < 9 and stage < 6, else none.
     fn stage_name(&self, event: &EventState) -> Option<Vec<u8>> {
-        let tables = self.static_tables.as_ref()?.tables();
-        if event.globals.school_d3ca88 {
-            return tables.string("school_stage_name").map(<[u8]>::to_vec);
-        }
-        let country = usize::from(event.cfg.cursor_168 & 0xf);
-        let stage = usize::from(event.cfg.cursor_168 >> 4);
-        if country >= 9 || stage >= 6 {
-            return None;
-        }
-        tables
-            .strings("stage_names")?
-            .get(country * 6 + stage)
-            .cloned()
+        stage_name_of(
+            self.static_tables.as_ref()?.tables(),
+            event.globals.school_d3ca88,
+            event.cfg.cursor_168 & 0xf,
+            event.cfg.cursor_168 >> 4,
+        )
     }
 
     /// State 8's render `FUN_00423260` while the director runs: the results
@@ -7673,8 +8032,8 @@ pub fn run_windowed_game_session(
                             Ok(outcome) => {
                                 // A composed world frame wins; otherwise the interactive
                                 // front-end route presents the recovered root-menu frame.
-                                let present = if outcome.welcome.is_some() {
-                                    outcome.welcome
+                                let present = if outcome.screen.is_some() {
+                                    outcome.screen
                                 } else if outcome.world.is_some() {
                                     outcome.world
                                 } else if outcome.loading_interstitial.is_some() {
@@ -7774,7 +8133,7 @@ pub fn run_windowed_game_session(
         match frame {
             Ok(outcome) => WindowedGameFrame {
                 present: outcome
-                    .welcome
+                    .screen
                     .or(outcome.world)
                     .or(outcome.loading_interstitial),
                 stopped: outcome.exit_requested,
@@ -9495,11 +9854,31 @@ mod tests {
                 ..Default::default()
             },
         );
-        for _ in 0..8 {
-            if session.state().id() == 5 {
-                break;
+        // The service screen (state 3) waits for Continue: after its fade
+        // in, Right from View stages, then Return.
+        let mut service_ticks = 0;
+        for _ in 0..80 {
+            match session.state().id() {
+                5 => break,
+                3 => {
+                    service_ticks += 1;
+                    let vk = match service_ticks {
+                        20 => Some(0x27),
+                        22 => Some(0x0d),
+                        _ => None,
+                    };
+                    if let Some(vk) = vk {
+                        keys.apply_vk(vk, true);
+                    }
+                    advance(&mut session, &mut progress, &keys, idle);
+                    if let Some(vk) = vk {
+                        keys.apply_vk(vk, false);
+                    }
+                }
+                _ => {
+                    advance(&mut session, &mut progress, &keys, idle);
+                }
             }
-            advance(&mut session, &mut progress, &keys, idle);
         }
         assert_eq!(session.state().id(), 5);
         let origin = session.car().position;
@@ -11377,6 +11756,105 @@ mod tests {
             }
             assert!(ended);
         }
+    }
+
+    /// The service screen over the user's `Game\SetRep` assets: the bottom
+    /// bar, the setup list, a category page, the repair list and the stage
+    /// view, written under `.work/frames-service`. The setup costs, damage
+    /// and player name are synthetic.
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data; writes frames under .work"]
+    fn imported_service_screen_frames() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/frames-service");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let tables = open_static_tables(&root);
+        let mut config = FrontEndConfig::new("AU1", 0);
+        let mut event = EventState::default();
+        event.cfg.cursor_168 = 0x23; // Australia, stage 3
+        event.cfg.difficulty_018 = 0x08;
+        event.cfg.progress_167 = 1;
+        {
+            let live = cmr_core::config_commit::live_mut(&mut config.image);
+            live[0x2c..0x31].copy_from_slice(b"TEST\0");
+            for k in 0..5 {
+                live[0x90 + 2 * k] = [3, 15, 10, 12, 20][k];
+                live[0x91 + 2 * k] = [0, 1, 1, 1, 2][k];
+            }
+            for i in 0..5 {
+                live[0x9a + 3 * i] = 8;
+                live[0x9b + 3 * i] = [100, 40, 75, 100, 20][i];
+            }
+        }
+        let mut host = ServiceHost::default();
+        let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
+        let mut now = 0;
+        // One tick with `vk` held (then released the next), or none.
+        let mut step = |host: &mut ServiceHost, config: &mut FrontEndConfig, vk: Option<u8>| {
+            let mut run = |keys: &cmr_platform_sdl3::KeyboardVkState| {
+                now += 33;
+                let (pending, done, frame) = host.frame(
+                    &root,
+                    tables.as_ref(),
+                    config,
+                    &event,
+                    Language::English,
+                    now,
+                    keys,
+                    None,
+                );
+                assert!(pending && !done);
+                frame
+            };
+            if let Some(vk) = vk {
+                keys.apply_vk(vk, true);
+                run(&keys);
+                keys.apply_vk(vk, false);
+            }
+            run(&keys)
+        };
+        let save = |frame: Option<SoftwarePresentedFrame>, name: &str| {
+            let frame = frame.expect("a service frame");
+            let rgba = frame.expand_rgba8().unwrap();
+            let mut ppm = b"P6\n640 480\n255\n".to_vec();
+            let (pixels, _) = rgba.pixels().as_chunks::<4>();
+            for pixel in pixels {
+                ppm.extend_from_slice(&pixel[..3]);
+            }
+            std::fs::write(out_dir.join(format!("service-{name}.ppm")), ppm).unwrap();
+        };
+        let mut shown = None;
+        for _ in 0..80 {
+            shown = step(&mut host, &mut config, None);
+        }
+        save(shown.take(), "bottom");
+        // View stages has the focus: enter it and let the plaque and the
+        // typewriter run, then step to the next stage.
+        step(&mut host, &mut config, Some(0x0d));
+        for _ in 0..120 {
+            shown = step(&mut host, &mut config, None);
+        }
+        save(shown.take(), "stages");
+        step(&mut host, &mut config, Some(0x27));
+        for _ in 0..120 {
+            shown = step(&mut host, &mut config, None);
+        }
+        save(shown, "stages-next");
+        step(&mut host, &mut config, Some(0x0d));
+        // Up follows the bottom bar's link to the repair list's last row;
+        // Return repairs the gearbox.
+        step(&mut host, &mut config, Some(0x26));
+        save(step(&mut host, &mut config, Some(0x0d)), "repair");
+        // Up past the first repair row: the setup list's first row.
+        for _ in 0..4 {
+            step(&mut host, &mut config, Some(0x26));
+        }
+        save(step(&mut host, &mut config, Some(0x26)), "setup");
+        save(step(&mut host, &mut config, Some(0x0d)), "category");
+        save(step(&mut host, &mut config, Some(0x27)), "category-changed");
+        save(step(&mut host, &mut config, Some(0x0d)), "setup-changed");
     }
 
     #[test]

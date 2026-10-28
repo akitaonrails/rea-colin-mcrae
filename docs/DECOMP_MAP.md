@@ -446,8 +446,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-31T21:00:00Z
-milestone=gpu-shadow
+updated_utc=2026-10-31T23:30:00Z
+milestone=service-screen
 completed=117
 partial=2
 not_started=0

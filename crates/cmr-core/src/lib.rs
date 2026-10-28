@@ -158,6 +158,7 @@ pub mod root_menu_interactive;
 pub mod root_menu_visual;
 pub mod save_dialog;
 pub mod scalar_tween;
+pub mod service_draw;
 pub mod service_screen;
 pub mod settings_store;
 pub mod sim_clock;

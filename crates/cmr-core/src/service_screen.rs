@@ -179,9 +179,21 @@ pub struct ServiceScreen {
     pub budget: i32,
     /// `DAT_005fef80`: the fade level the draws scale colours by.
     pub fade_level: i32,
+    /// The stage view's plaque frame and typewriter counters.
+    pub stage_view: StageViewReveal,
     fade: Fade,
     finished: bool,
     school: bool,
+}
+
+/// `DAT_005fdf50` (the plaque frame, 0..=14) and the six typewriter
+/// counters `FUN_0046b770` reveals the stage facts by (`5fcc00`, `5fd0ac`,
+/// `5fda8c`, `5fdf54`, `5fd54c`, `5fda94`); only entering the stage view
+/// resets them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StageViewReveal {
+    pub frame: u8,
+    pub reveal: [usize; 6],
 }
 
 /// The session facts the screen reads besides the live block.
@@ -221,6 +233,7 @@ impl ServiceScreen {
             },
             budget: SERVICE_BUDGET,
             fade_level: 0,
+            stage_view: StageViewReveal::default(),
             fade: Fade::default(),
             finished: false,
             school: context.school,
@@ -588,6 +601,7 @@ impl ServiceScreen {
         let item = &mut self.set.menu_mut(menu).items[0];
         item.value.value_count = count;
         item.value.value = 0;
+        self.stage_view = StageViewReveal::default();
     }
 
     /// The menus and the screen phase for the draw.
