@@ -97,7 +97,7 @@ impl KeyboardDriver {
 ///
 /// The recovered analog control path reads one steering axis (sign-split into
 /// left/right) and one pedal axis (negative half throttle, positive half brake),
-/// with the discrete actions (handbrake/gear/reset) coming from a button mask.
+/// with the discrete actions (handbrake/gear/change view) coming from a button mask.
 /// A host supplies the raw axis positions in the WinMM range (centre `0x8000`,
 /// `0..=0xffff`) and the already-packed `buttons` mask; the dead-zone, the axis
 /// split, and the quantization are the recovered transform.
@@ -134,7 +134,7 @@ impl AnalogDriver {
     /// Poll one frame from the raw analog axes and button mask. `steer_raw` and
     /// `pedal_raw` are host axis positions in the WinMM range (centre `0x8000`);
     /// `buttons` carries the recovered action bits (handbrake `0x100`, gear-up
-    /// `0x200`, gear-down `0x80`, reset `0x40`). Returns the car controls and the
+    /// `0x200`, gear-down `0x80`, change view `0x40`). Returns the car controls and the
     /// sim controls scaled by `response`.
     pub fn poll(
         &mut self,
@@ -208,27 +208,32 @@ mod tests {
         assert_eq!(frame.controls.steer_rate, 0);
         assert_eq!(frame.controls.forward_force, Fixed16::ZERO);
         assert!(!frame.controls.handbrake);
-        assert!(!frame.car.reset_fired);
+        assert!(!frame.car.change_view_fired);
     }
 
     #[test]
     fn reset_fires_once_per_press_across_frames() {
         let mut driver = KeyboardDriver::player_one();
         // The recovered latch starts disarmed (zeroed BSS); a clear frame arms it.
-        assert!(!driver.poll(|_| false, &response(), true).car.reset_fired);
+        assert!(
+            !driver
+                .poll(|_| false, &response(), true)
+                .car
+                .change_view_fired
+        );
         // Next press edge (while armed) fires once.
         assert!(
             driver
                 .poll(|vk| vk == VK_RESET, &response(), true)
                 .car
-                .reset_fired
+                .change_view_fired
         );
         // Held again, no new edge: it does not re-fire.
         assert!(
             !driver
                 .poll(|vk| vk == VK_RESET, &response(), true)
                 .car
-                .reset_fired
+                .change_view_fired
         );
         // Release re-arms; the next press fires again.
         let _ = driver.poll(|_| false, &response(), true);
@@ -236,7 +241,7 @@ mod tests {
             driver
                 .poll(|vk| vk == VK_RESET, &response(), true)
                 .car
-                .reset_fired
+                .change_view_fired
         );
     }
 

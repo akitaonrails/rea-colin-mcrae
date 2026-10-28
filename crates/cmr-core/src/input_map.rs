@@ -23,8 +23,8 @@
 //!   - **handbrake** `+0x30c` (or `+0x310`): digital mask bit.
 //!   - **gear command** `+0x314`: edge-triggered, gear-up (`+1`) / gear-down
 //!     (`0xff`, i.e. down), suppressed while the car's `+0x3f0 == 2`.
-//!   - **reset/rescue**: an edge-armed latch firing `FUN_00434210(player)` once
-//!     per press.
+//!   - **change view**: an edge-armed latch firing `FUN_00434210(player)` once
+//!     per press; that routine cycles the camera view (`FUN_00434060`).
 //! - A digital press writes the un-quantized `0xffbe`; an analog magnitude is
 //!   clamped to `0xffbe` **then** quantized by `& 0xfffffc00` (low 10 bits
 //!   cleared, so analog saturates at `0xfc00`). The poll-layer axis pre-scale is
@@ -42,7 +42,7 @@
 //! This module reconstructs the pure transform (the device poll - `joyGetPosEx`/
 //! `GetAsyncKeyState` - stays the backend's job;
 //! [`crate::input_device::apply_axis_deadzone`] and [`KeyBindings::held_mask`] let
-//! a backend build the snapshot). The per-player reset latch and the alternate
+//! a backend build the snapshot). The per-player change-view latch and the alternate
 //! throttle ramp are per-player state, so the map is a small stateful
 //! [`InRaceControlMapper`].
 
@@ -80,8 +80,9 @@ pub struct ActionMasks {
     pub gear_up: u32,
     /// Gear-down bit (default bit 7, `0x80`).
     pub gear_down: u32,
-    /// Reset/rescue bit (default bit 6, `0x40`).
-    pub reset: u32,
+    /// Change-view bit (default bit 6, `0x40`): `FUN_00434210` cycles the
+    /// camera view.
+    pub change_view: u32,
 }
 
 impl Default for ActionMasks {
@@ -94,7 +95,7 @@ impl Default for ActionMasks {
             handbrake: 0x0100,
             gear_up: 0x0200,
             gear_down: 0x0080,
-            reset: 0x0040,
+            change_view: 0x0040,
         }
     }
 }
@@ -171,8 +172,8 @@ pub struct CarControls {
     pub brake_analog: bool,
     /// The gear/discrete command (`+0x314`).
     pub gear_command: GearCommand,
-    /// The reset/rescue action fired this frame (`FUN_00434210`).
-    pub reset_fired: bool,
+    /// The change-view action fired this frame (`FUN_00434210`).
+    pub change_view_fired: bool,
 }
 
 /// A default keyboard binding table: the VK code bound to each action bit index
@@ -186,7 +187,7 @@ pub struct KeyBindings {
 impl KeyBindings {
     /// The recovered Player-1 default keyboard bindings (`FUN_004b9f70`,
     /// device 0): arrows to steer/throttle/brake, numpad to handbrake/gears/
-    /// reset, ESC to pause.
+    /// change view, ESC to pause.
     pub const PLAYER1: KeyBindings = KeyBindings {
         codes: {
             let mut c = [None; 16];
@@ -194,7 +195,7 @@ impl KeyBindings {
             c[1] = Some(0x27); // VK_RIGHT - steer right
             c[2] = Some(0x26); // VK_UP    - throttle
             c[3] = Some(0x28); // VK_DOWN  - brake
-            c[6] = Some(0x66); // VK_NUMPAD6 - reset
+            c[6] = Some(0x66); // VK_NUMPAD6 - change view
             c[7] = Some(0x62); // VK_NUMPAD2 - gear down
             c[8] = Some(0x64); // VK_NUMPAD4 - handbrake
             c[9] = Some(0x68); // VK_NUMPAD8 - gear up
@@ -212,7 +213,7 @@ impl KeyBindings {
             c[1] = Some(0x53); // 'S' - steer right
             c[2] = Some(0x52); // 'R' - throttle
             c[3] = Some(0x44); // 'D' - brake
-            c[6] = Some(0x5c); // raw 0x5c - reset
+            c[6] = Some(0x5c); // raw 0x5c - change view
             c[7] = Some(0x51); // 'Q' - gear down
             c[8] = Some(0x54); // 'T' - handbrake
             c[9] = Some(0x09); // VK_TAB - gear up
@@ -238,12 +239,12 @@ impl KeyBindings {
 }
 
 /// The stateful in-race control map, reproducing `FUN_00449580` for one player
-/// (the reset latch and the throttle ramp are per-player state across frames).
+/// (the change-view latch and the throttle ramp are per-player state across frames).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InRaceControlMapper {
-    /// The reset-latch arm flag (`DAT_0055ae7c[player]`), so reset fires once per
+    /// The change-view latch arm flag (`DAT_0055ae7c[player]`), so it fires once per
     /// press.
-    reset_armed: bool,
+    change_view_armed: bool,
     /// The alternate-ramp throttle counter (`DAT_0055ae74[player]`).
     ramp_counter: i32,
     /// Previous frame's throttle-held state, to detect the ramp's re-trigger.
@@ -251,7 +252,7 @@ pub struct InRaceControlMapper {
 }
 
 impl InRaceControlMapper {
-    /// A fresh mapper (matches the zeroed BSS globals: reset not yet armed).
+    /// A fresh mapper (matches the zeroed BSS globals: change view not yet armed).
     #[must_use]
     pub fn new() -> Self {
         InRaceControlMapper::default()
@@ -302,7 +303,7 @@ impl InRaceControlMapper {
             throttle_analog,
             brake_analog,
             gear_command,
-            reset_fired: self.update_reset(edge & m.reset != 0),
+            change_view_fired: self.update_change_view(edge & m.change_view != 0),
         }
     }
 
@@ -373,14 +374,14 @@ impl InRaceControlMapper {
         ((stage * i64::from(FULL_SCALE)) >> 16) as i32
     }
 
-    /// The reset/rescue edge latch: arm when the reset edge is clear, fire once
-    /// (and disarm) when it is set while armed.
-    fn update_reset(&mut self, reset_edge: bool) -> bool {
-        if !reset_edge {
-            self.reset_armed = true;
+    /// The change-view edge latch: arm when the edge is clear, fire once (and
+    /// disarm) when it is set while armed.
+    fn update_change_view(&mut self, view_edge: bool) -> bool {
+        if !view_edge {
+            self.change_view_armed = true;
             false
-        } else if self.reset_armed {
-            self.reset_armed = false;
+        } else if self.change_view_armed {
+            self.change_view_armed = false;
             true
         } else {
             false
@@ -547,19 +548,31 @@ mod tests {
     }
 
     #[test]
-    fn reset_latch_fires_once_per_press() {
+    fn change_view_latch_fires_once_per_press() {
         let mut mapper = InRaceControlMapper::new();
         let config = ControlConfig::default();
-        let reset_edge = keyboard(0, config.masks.reset);
+        let view_edge = keyboard(0, config.masks.change_view);
         let clear = keyboard(0, 0);
-        // Fresh mapper is not yet armed: a reset edge without a prior clear frame
+        // Fresh mapper is not yet armed: a change-view edge without a prior clear frame
         // does not fire.
-        assert!(!mapper.map(&reset_edge, &clear, &config, true).reset_fired);
-        // A clear frame arms it; the next reset edge fires once.
-        assert!(!mapper.map(&clear, &clear, &config, true).reset_fired);
-        assert!(mapper.map(&reset_edge, &clear, &config, true).reset_fired);
-        // A second consecutive reset edge does not re-fire until re-armed.
-        assert!(!mapper.map(&reset_edge, &clear, &config, true).reset_fired);
+        assert!(
+            !mapper
+                .map(&view_edge, &clear, &config, true)
+                .change_view_fired
+        );
+        // A clear frame arms it; the next change-view edge fires once.
+        assert!(!mapper.map(&clear, &clear, &config, true).change_view_fired);
+        assert!(
+            mapper
+                .map(&view_edge, &clear, &config, true)
+                .change_view_fired
+        );
+        // A second consecutive change-view edge does not re-fire until re-armed.
+        assert!(
+            !mapper
+                .map(&view_edge, &clear, &config, true)
+                .change_view_fired
+        );
     }
 
     #[test]

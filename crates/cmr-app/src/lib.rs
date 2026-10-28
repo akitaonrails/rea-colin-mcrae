@@ -2740,23 +2740,18 @@ impl HostClock for WallClock {
 /// rendering and the in-race HUD remain separate composition work.
 ///
 /// The windowed session's camera state is the recovered multi-mode view
-/// controller plus a harness view-cycle binding. The view modes, their placement
-/// math, and the cycle order are recovered behavior
-/// ([`ViewController`]/[`cmr_core::camera_view`]). What is not recovered is the
-/// shipped camera-change input binding, so this harness cycles modes on the
-/// rising edge of a documented key (VK `0x43` / `C`, matching
-/// `cmr_platform_sdl3::input::sdl_keycode_to_vk`) seeded from a fixed harness
-/// seed. Only the trigger key and seed are harness policy.
+/// controller. The view modes, their placement math, and the cycle order are
+/// recovered behavior ([`ViewController`]/[`cmr_core::camera_view`]); the
+/// cycle fires on the control map's change-view action (action bit 6, Numpad 6
+/// for player one), the latch that calls `FUN_00434210`. Only the RNG seed is
+/// harness policy.
 struct ViewHarness {
     controller: ViewController,
     rng: GameLcg,
-    change_view_down: bool,
     trig: [i32; cmr_core::fixed_point::TRIG_TABLE_LEN],
 }
 
 impl ViewHarness {
-    /// VK of the harness change-view key (`C`).
-    const CHANGE_VIEW_VK: u8 = 0x43;
     /// In-race view gate: both interior cockpit poses are reachable; the
     /// showroom pose is a front-end mode, not an in-race one.
     const GATE: ViewGate = ViewGate {
@@ -2770,24 +2765,17 @@ impl ViewHarness {
         Self {
             controller: ViewController::new(CameraMode::ChaseNear),
             rng: GameLcg::new(Self::VIEW_SEED),
-            change_view_down: false,
             trig: cmr_core::fixed_point::build_sine_table(),
         }
     }
 
-    /// Cycles to the next recovered view on the rising edge of the change-view
-    /// key, then returns the world matrix for the car's current placement.
-    fn update(
-        &mut self,
-        change_view_down: bool,
-        position: Vec3,
-        heading: u16,
-        pal: bool,
-    ) -> [i32; 16] {
-        if change_view_down && !self.change_view_down {
+    /// Cycles to the next recovered view when the change-view action fired
+    /// (`FUN_00434210`), then returns the world matrix for the car's current
+    /// placement.
+    fn update(&mut self, change_view: bool, position: Vec3, heading: u16, pal: bool) -> [i32; 16] {
+        if change_view {
             self.controller.cycle(Self::GATE, &mut self.rng);
         }
-        self.change_view_down = change_view_down;
         self.controller.update(position, heading, pal)
     }
 
@@ -2961,21 +2949,19 @@ fn advance_game_frame<C: HostClock>(
 ) -> Result<GameFrameOutcome, WindowedStageFrameError> {
     let root_tick = root_interaction.tick_for_game_session(input.frontend, clock.millis(), true);
     let menu_inputs = root_menu_flow_inputs(session.state().id(), root_interaction);
-    let controls = if let Some(pad) = input.gamepad.filter(|pad| analog_driving_is_active(pad)) {
-        analog
-            .poll(
-                pad.steer_axis(),
-                pad.pedal_axis(),
-                pad.buttons(),
-                response,
-                true,
-            )
-            .controls
+    let drive = if let Some(pad) = input.gamepad.filter(|pad| analog_driving_is_active(pad)) {
+        analog.poll(
+            pad.steer_axis(),
+            pad.pedal_axis(),
+            pad.buttons(),
+            response,
+            true,
+        )
     } else {
-        keyboard
-            .poll(|vk| input.keys.is_down(vk), response, true)
-            .controls
+        keyboard.poll(|vk| input.keys.is_down(vk), response, true)
     };
+    let controls = drive.controls;
+    let change_view = drive.car.change_view_fired;
     let advanced = if let Some(parsed) = resources.static_collision_scene() {
         session
             .try_advance_with_static_collision(
@@ -3007,7 +2993,7 @@ fn advance_game_frame<C: HostClock>(
         // change-view key cycles the recovered view modes (chase/cockpit/
         // cinematic) on its rising edge.
         let car = session.car();
-        let change_view_down = input.keys.is_down(ViewHarness::CHANGE_VIEW_VK);
+
         // A four-wheel car's pose is its evolving basis; the planar harness
         // keeps only a heading.
         let (heading, harness_car_world) = if session.is_four_wheel() {
@@ -3015,7 +3001,7 @@ fn advance_game_frame<C: HostClock>(
         } else {
             (car.heading, camera.car_world(car.position, car.heading))
         };
-        let camera_world = camera.update(change_view_down, car.position, heading, false);
+        let camera_world = camera.update(change_view, car.position, heading, false);
         let car_world = car_model_world_q16(&harness_car_world);
         let hud_input = live_race_hud_inputs(
             car,
