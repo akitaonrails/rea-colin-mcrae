@@ -172,8 +172,8 @@ NZ1 onwards. `--source` must be a stage directory `<root>/Game/<CC>/<n>`.
 The record persists as `<runtime-data>/save/cmRally.cfg` (`impl.cfg-file`). The race hand-off commits the
 cmRally.cfg record (`impl.config-commit`). Front-end screens are in
 `.work/frontend-menu-tree-notes.md`. Next: the front-end setup screens (they edit
-the record, so a chosen stage and car load), the `FUN_004115d0` body-contact impact
-site (`FUN_00412860`'s is wired), then the championship progression
+the record, so a chosen stage and car load), the car-to-car impact site
+(the `FUN_004115d0` landing and `FUN_00412860` tumbling impacts are wired), then the championship progression
 behind the hub predicates. Scenery impacts play (`impl.static-impact-sound`).
 `FUN_0041f630` only feeds impact sound/FFB/shudder. Trees appear to be `.sht` sprites, which the native
 excludes from static collision. Done so far: the windowed session on

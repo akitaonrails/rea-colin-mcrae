@@ -193,6 +193,10 @@ pub struct GroundPassCar {
     /// (`rows . (+0x324 * -3)` clamped to `+0x2c..+0x34`) and the world point
     /// `FUN_0048dfe0(+0x3f0, basis) + +0xc8` its impact sound uses.
     pub impact_contact: Option<TumbleImpactContact>,
+    /// The landing tick's impact (`0x411e1a..0x41209e`): the severity vector
+    /// it stores in `+0x3cc` only for the impact sound (the old words are put
+    /// back after it) and its body contact.
+    pub landing_impact: Option<(Vec3, TumbleImpactContact)>,
 }
 
 /// `FUN_00412860`'s contact after an impact: `+0x3f0 = rows . (normal * -3)`
@@ -205,7 +209,37 @@ pub fn tumble_impact_contact(
     half_words: [i32; 3],
     position: Vec3,
 ) -> TumbleImpactContact {
-    let push = normal.scale(Fixed16::from_raw(-0x3_0000));
+    impact_contact(
+        basis,
+        normal.scale(Fixed16::from_raw(-0x3_0000)),
+        half_words,
+        position,
+    )
+}
+
+/// The landing tick's contact (`0x411ede`): the same placement with
+/// `normal * -2`.
+#[must_use]
+pub fn landing_impact_contact(
+    basis: [Vec3; 3],
+    normal: Vec3,
+    half_words: [i32; 3],
+    position: Vec3,
+) -> TumbleImpactContact {
+    impact_contact(
+        basis,
+        normal.scale(Fixed16::from_raw(-0x2_0000)),
+        half_words,
+        position,
+    )
+}
+
+fn impact_contact(
+    basis: [Vec3; 3],
+    push: Vec3,
+    half_words: [i32; 3],
+    position: Vec3,
+) -> TumbleImpactContact {
     let local = crate::vehicle_dynamics::transform_contact_force(basis, push);
     let local = [local.x.raw(), local.y.raw(), local.z.raw()];
     let contact_3f0: [i32; 3] = std::array::from_fn(|axis| {
@@ -474,6 +508,7 @@ where
     let mut ground = ground;
     car.impact_3cc = None;
     car.impact_contact = None;
+    car.landing_impact = None;
     if car.tumble.righting_3ec {
         step_righting(&mut car, &mut ground);
     } else if let Some(_probe) = (4..8).find(|&probe| ground.thresholds.flags_73a[probe] == 0) {
@@ -551,6 +586,19 @@ where
         ground.thresholds = scan(&ground);
         if previous_count != 0 {
             respond(&mut car);
+        } else if let Some(probe) = (0..8).find(|&probe| ground.thresholds.flags_73a[probe] == 0)
+        {
+            // The first touching probe's contact vector along the normal,
+            // times 4, is the severity vector's x.
+            let along = car.normal.dot(car.contact_vectors[probe]).raw();
+            car.landing_impact = Some((
+                Vec3::new(
+                    Fixed16::from_raw(qmul(along, 0x4_0000)),
+                    Fixed16::ZERO,
+                    Fixed16::ZERO,
+                ),
+                landing_impact_contact(car.basis, car.normal, half_words, car.position),
+            ));
         }
         let normal_speed = car.velocity.dot(car.normal);
         if normal_speed.raw() < 0 {
@@ -727,6 +775,7 @@ mod tests {
             contact_vectors: [Vec3::ZERO; 8],
             impact_3cc: None,
             impact_contact: None,
+            landing_impact: None,
         }
     }
 
@@ -921,6 +970,36 @@ mod tests {
             after.axis_snapshot_bc.y.raw(),
             after.normal.dot(after.basis[1]).raw()
         );
+    }
+
+    #[test]
+    fn the_landing_tick_stores_an_impact_from_the_first_touching_probe() {
+        let car = GroundPassCar {
+            out_of_control_680: true,
+            contact_vectors: [v(0, -0x2000, 0); 8],
+            ..car_at(-0x1_0000)
+        };
+        let mut airborne = ground();
+        airborne.thresholds.count_742 = 0;
+        let (landed, ground_after) = tumble(car, airborne);
+        let (severity, contact) = landed.landing_impact.expect("the landing tick");
+        let along = landed.normal.dot(v(0, -0x2000, 0)).raw();
+        assert_eq!(severity, v(qmul(along, 0x4_0000), 0, 0));
+        assert!(severity.x.raw() < 0);
+        assert_eq!(
+            contact,
+            landing_impact_contact(
+                identity(),
+                landed.normal,
+                ground_after.half_words,
+                landed.position
+            )
+        );
+        assert_eq!(landed.impact_3cc, None, "the real +0x3cc is left alone");
+        // With probes already touching last tick, the contact response runs
+        // instead.
+        let (touching, _) = tumble(car, ground());
+        assert_eq!(touching.landing_impact, None);
     }
 
     #[test]

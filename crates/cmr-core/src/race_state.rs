@@ -2270,6 +2270,7 @@ impl RaceState {
             contact_vectors: self.car.four_wheel.contact_vectors_4bc,
             impact_3cc: None,
             impact_contact: None,
+            landing_impact: None,
         };
         let (after, ground) = run_ground_pass(
             car,
@@ -2286,7 +2287,13 @@ impl RaceState {
             self.car.collision.pending_linear_3cc = impact;
         }
         self.last_tumble_impact = None;
-        if let (Some(impact), Some(contact)) = (after.impact_3cc, after.impact_contact) {
+        // The tumbling contact (`FUN_00412860`) or the landing tick's: both
+        // play through `FUN_0041f630`/`FUN_00469e80` and leave `+0x3f0`.
+        let impact = match (after.impact_3cc, after.impact_contact) {
+            (Some(impact), Some(contact)) => Some((impact, contact)),
+            _ => after.landing_impact,
+        };
+        if let Some((impact, contact)) = impact {
             self.car.four_wheel.barrier_impact_3f0 = contact.contact_3f0;
             self.last_tumble_impact = Some(TumbleImpact {
                 severity_vector: [impact.x.raw(), impact.y.raw(), impact.z.raw()],

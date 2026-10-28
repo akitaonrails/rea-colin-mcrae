@@ -770,7 +770,8 @@ touched. Per-commit granularity for the full history is recoverable with
 | 2026-10-29T18:40Z | 220h22m | config-commit | `a7a89d9` | I14 | Reconstructed the cmRally.cfg defaults, the record-to-live commit and the copy-back, and made the race hand-off commit the record, so the event and the option bytes come from the live block. Workspace 2,594 tests pass, 37 ignored. |
 | 2026-10-29T20:00Z | 221h42m | stage-reload | `e78b001` | I14 | Reconstructed the stage path builder, loaded the event's stage at state 4 so championships and rallies run their stages, and launched the race from the championship, rally and time-trial entries with their modes. Workspace 2,597 tests pass, 38 ignored. |
 | 2026-10-29T20:30Z | 222h12m | cfg-file | `cea1cba` | I14 | Loaded cmRally.cfg over the defaults at the front end's first entry and saved it at each session hand-off and on exit. Workspace 2,598 tests pass, 38 ignored. |
-| 2026-10-29T21:30Z | 223h12m | frontend-setup-logic | _(pending; previous milestone `cea1cba`)_ | I14 | Completed the descriptor-menu step (orientation, navigation enables, pending latch, post callback) and reconstructed the three race-setup screens' logic with the car and country availability rules. Workspace 2,606 tests pass, 38 ignored. |
+| 2026-10-29T21:30Z | 223h12m | frontend-setup-logic | `2e95f49` | I14 | Completed the descriptor-menu step (orientation, navigation enables, pending latch, post callback) and reconstructed the three race-setup screens' logic with the car and country availability rules. Workspace 2,606 tests pass, 38 ignored. |
+| 2026-10-29T22:00Z | 223h42m | landing-impact | _(pending; previous milestone `2e95f49`)_ | I14 | Played the landing tick's impact from the out-of-control ground pass. Workspace 2,607 tests pass, 38 ignored. |
 
 > A commit cannot embed its own final hash, so the uncommitted milestone row is
 > marked _(pending)_; the next milestone update pins its hash from `git log`.
