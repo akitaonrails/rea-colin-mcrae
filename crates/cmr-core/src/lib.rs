@@ -51,6 +51,7 @@ pub mod championship_terminal_frame;
 pub mod collision;
 pub mod compiled_car_initializer;
 pub mod config;
+pub mod config_commit;
 pub mod control_bindings;
 pub mod crowd_sound;
 pub mod deferred_palette;

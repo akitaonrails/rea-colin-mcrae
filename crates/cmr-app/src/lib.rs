@@ -3067,27 +3067,105 @@ const PRE_RACE_INPUTS: MenuFlowInputs = MenuFlowInputs {
     preload_done: false,
 };
 
+/// The cmRally.cfg record image the front end edits; the race reads it
+/// through the commit `FUN_004b93f0`.
+struct FrontEndConfig {
+    image: Box<[u8; cmr_core::config::LEGACY_CONFIG_SIZE]>,
+    /// A session ran since the front end last had the frame, so its return
+    /// copies the results back (`FUN_004b9600`).
+    returning: bool,
+}
+
+impl FrontEndConfig {
+    /// The record for a session over one `--stage`. Harness for the unbuilt
+    /// setup screens: the reset `FUN_004b98b0` (with a fixed token, the English
+    /// language and the small-memory branch), then the choices the time-trial
+    /// setup and its stage select would write: mode 2 (`record[0x180]`), the
+    /// stage's country (`record[0x181]`) and only that stage in the country's
+    /// mask (`record[0x16c + 2c]`). State 1 then picks the stage, and the hub
+    /// ends the session after it. A stage name outside `<CC><n>` keeps the
+    /// default championship.
+    fn for_stage(stage: &str) -> Self {
+        let mut image = Box::new([0; cmr_core::config::LEGACY_CONFIG_SIZE]);
+        cmr_core::config_commit::apply_defaults(
+            &mut image,
+            cmr_core::config_commit::DefaultsHost {
+                token: 0xaa00_0000,
+                language: 0,
+                large_memory: false,
+            },
+            None,
+        );
+        let (code, number) = stage.split_at(stage.len().min(2));
+        let country = COUNTRY_CODES
+            .iter()
+            .position(|candidate| candidate.eq_ignore_ascii_case(code));
+        let index = number.parse::<u8>().ok().and_then(|n| n.checked_sub(1));
+        if let (Some(country), Some(index)) = (country, index) {
+            let at = 0x16c + country * 2;
+            if index < image[at + 1] & 0xf {
+                image[0x180] = 2;
+                image[0x181] = country as u8;
+                image[at] |= 1 << index;
+            }
+        }
+        Self {
+            image,
+            returning: false,
+        }
+    }
+
+    /// The commit at a session hand-off: the event and the option bytes come
+    /// from the live block.
+    fn commit(&mut self, event: &mut EventState, pause: &mut PauseHarness) {
+        let masters = cmr_core::config_commit::commit_record_to_live(&mut self.image);
+        let live = cmr_core::config_commit::live(&self.image);
+        event.cfg = cmr_core::event_flow::EventConfig::from_live(live);
+        pause.options.cfg_5 = live[5];
+        pause.options.cfg_6 = live[6];
+        pause.options.cfg_8 = live[8];
+        pause.options.effects_master_4f653c = masters.effects_4f653c;
+        pause.options.speech_master_4f6538 = masters.master_4f6538;
+        self.returning = true;
+    }
+
+    /// The front end's return after a session (`FUN_004c1e00`): the race's
+    /// event and options go back into the record.
+    fn resume(&mut self, event: &EventState, pause: &PauseHarness) {
+        if !std::mem::take(&mut self.returning) {
+            return;
+        }
+        let live = cmr_core::config_commit::live_mut(&mut self.image);
+        event.cfg.store_live(live);
+        live[5] = pause.options.cfg_5;
+        live[6] = pause.options.cfg_6;
+        live[8] = pause.options.cfg_8;
+        cmr_core::config_commit::return_live_to_record(&mut self.image);
+    }
+}
+
 /// The descriptor front end's frame (`FUN_004c20f0`), run only while no
-/// session is: its race hand-off starts the race session (after the two
-/// unconditional writes of the commit `FUN_004b93f0`), its rally-school
-/// hand-off the school session.
+/// session is: its race hand-off commits the record and starts the race
+/// session, its rally-school hand-off the school session.
 fn front_end_frame(
     session: &mut GameplaySession,
     root_interaction: &mut RootInteraction,
+    config: &mut FrontEndConfig,
+    pause: &mut PauseHarness,
     input: cmr_core::frontend::FrontendInput,
     now: u32,
 ) -> cmr_core::root_menu_interactive::RootTick {
+    config.resume(session.event(), pause);
     let tick = root_interaction.tick_for_game_session(input, now, true);
     for effect in &tick.effects {
-        let event = session.event_mut();
         match effect {
             cmr_core::frontend::FrontendEffect::StartRace => {
-                event.commit_unconditional();
-                event.start_race_session();
+                config.commit(session.event_mut(), pause);
+                session.event_mut().start_race_session();
             }
             cmr_core::frontend::FrontendEffect::StartRallySchool => {
-                event.commit_unconditional();
-                event.start_school_session();
+                config.commit(session.event_mut(), pause);
+                session.event_mut().start_school_session();
             }
             _ => {}
         }
@@ -3123,6 +3201,7 @@ fn advance_game_frame<C: HostClock>(
     damage_owner: &mut NoStaticDamageOwner,
     audio: &mut RaceAudio,
     pause: &mut PauseHarness,
+    config: &mut FrontEndConfig,
     input: WindowedInput,
 ) -> Result<GameFrameOutcome, WindowedStageFrameError> {
     let mut pause_effects = Vec::new();
@@ -3135,6 +3214,8 @@ fn advance_game_frame<C: HostClock>(
         Some(front_end_frame(
             session,
             root_interaction,
+            config,
+            pause,
             input.frontend,
             clock.millis(),
         ))
@@ -5228,31 +5309,10 @@ fn native_stage_setup(
 /// The country directories in the native country order (`0x4f0db8`).
 const COUNTRY_CODES: [&str; 8] = ["NZ", "GR", "MC", "AU", "SW", "CO", "IN", "UK"];
 
-/// The event a session over one `--stage` runs. Harness for the unbuilt
-/// setup screens and the cmRally.cfg commit `FUN_004b93f0`: a native
-/// selected-stages event (mode 2) whose mask holds only that stage of its
-/// country, with the country's stage count (6, or 7 for a special country),
-/// as the time-trial setup commits it. State 1 then picks the stage, and the
-/// hub ends the session after it. A stage name outside `<CC><n>` falls back to
-/// a championship from the first country. The front end is up.
-fn single_stage_event(stage: &str) -> EventState {
+/// The event state at process start: the front end is up.
+fn front_end_event() -> EventState {
     let mut event = EventState::default();
     event.globals.frontend_506228 = true;
-    let (code, number) = stage.split_at(stage.len().min(2));
-    let country = COUNTRY_CODES
-        .iter()
-        .position(|candidate| candidate.eq_ignore_ascii_case(code));
-    let index = number.parse::<u8>().ok().and_then(|n| n.checked_sub(1));
-    if let (Some(country), Some(index)) = (country, index) {
-        let country = country as u8;
-        let count = 6 + u8::from(cmr_core::event_flow::SPECIAL_COUNTRIES.contains(&country));
-        if index < count {
-            event.cfg.mode_166 = 2;
-            event.cfg.cursor_168 = country;
-            event.cfg.stage_count_165 = count;
-            event.cfg.stage_mask_164 = 1 << index;
-        }
-    }
     event
 }
 
@@ -5365,7 +5425,7 @@ pub fn run_windowed_game_session(
         &aux,
         params,
         start,
-        single_stage_event(stage),
+        front_end_event(),
     )
     .with_stage_triggers(&trigger_volumes, &trigger_cell_centers)
     .map_err(WindowedStageFrameError::StageTriggers)?;
@@ -5396,6 +5456,7 @@ pub fn run_windowed_game_session(
         effects: EffectsAudio::open(runtime_data, srf, stage_crowd_points(&resources)),
     };
     let mut pause = PauseHarness::with_runtime_data(runtime_data);
+    let mut config = FrontEndConfig::for_stage(stage);
     let mut runtime_error = None;
 
     // Best-effort: open the recovered front-end root-menu compositor from the
@@ -5432,6 +5493,7 @@ pub fn run_windowed_game_session(
                     &mut damage_owner,
                     &mut audio,
                     &mut pause,
+                    &mut config,
                     input,
                 ) {
                     Ok(outcome) => {
@@ -5493,6 +5555,7 @@ pub fn run_windowed_game_session(
             &mut damage_owner,
             &mut audio,
             &mut pause,
+            &mut config,
             input,
         ) {
             Ok(outcome) => WindowedGameFrame {
@@ -6107,6 +6170,8 @@ mod tests {
         let mut root =
             RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0).unwrap();
         let mut game = cmr_core::game_session::GameSession::new();
+        let mut config = FrontEndConfig::for_stage("");
+        let mut pause = PauseHarness::new();
         let next = cmr_core::frontend::FrontendInput {
             next: true,
             ..Default::default()
@@ -6128,7 +6193,7 @@ mod tests {
                     .effects
                     .contains(&cmr_core::frontend::FrontendEffect::StartRace)
                 {
-                    game.event_mut().commit_unconditional();
+                    config.commit(game.event_mut(), &mut pause);
                     game.event_mut().start_race_session();
                 }
             }
@@ -6159,7 +6224,10 @@ mod tests {
             1,
             "state 4 must render exactly once while transitioning to state 5: {transcript:?}"
         );
-        assert_eq!(gameplay_calls, 0, "state 4->5 must not step the race sim: {transcript:?}");
+        assert_eq!(
+            gameplay_calls, 0,
+            "state 4->5 must not step the race sim: {transcript:?}"
+        );
     }
 
     fn native_test_node(position: [i32; 3], direction: [i32; 3], split_flag: u8) -> CatNode {
@@ -6994,11 +7062,6 @@ mod tests {
             gravity: Vec3::ZERO,
         };
         let (trigger_volumes, trigger_cell_centers) = stage_trigger_inputs(&resources);
-        // Harness: the frames run starts in the race session, skipping the
-        // front end.
-        let mut event = single_stage_event("AU1");
-        event.commit_unconditional();
-        event.start_race_session();
         let mut session = windowed_drive_session(
             &compiled_pose,
             &trig,
@@ -7007,7 +7070,7 @@ mod tests {
             &aux,
             params,
             start,
-            event,
+            front_end_event(),
         )
         .with_stage_triggers(&trigger_volumes, &trigger_cell_centers)
         .unwrap();
@@ -7075,6 +7138,11 @@ mod tests {
         }
         let mut pcm: Vec<i16> = Vec::new();
         let mut pause = PauseHarness::with_runtime_data(&root);
+        // Harness: the frames run starts in the race session, skipping the
+        // front end.
+        let mut config = FrontEndConfig::for_stage("AU1");
+        config.commit(session.event_mut(), &mut pause);
+        session.event_mut().start_race_session();
         let mut advance = |session: &mut GameplaySession,
                            progress: &mut StageProgress,
                            keys: &cmr_platform_sdl3::KeyboardVkState,
@@ -7093,6 +7161,7 @@ mod tests {
                 &mut damage_owner,
                 &mut audio,
                 &mut pause,
+                &mut config,
                 WindowedInput {
                     keys,
                     gamepad: None,
@@ -7240,9 +7309,12 @@ mod tests {
                 inverse_mass: Fixed16::from_raw(0x8000),
                 gravity: Vec3::ZERO,
             },
-            InRaceScript::school_harness(),
+            InRaceScript::gameplay_harness(),
             start,
-        );
+        )
+        .with_event(front_end_event());
+        let mut pause = PauseHarness::new();
+        let mut config = FrontEndConfig::for_stage("AU1");
         let mut keyboard = KeyboardDriver::player_one();
         let mut analog = AnalogDriver::new();
         let response = DriveResponse {
@@ -7271,7 +7343,8 @@ mod tests {
                     &mut fade,
                     &mut damage_owner,
                     &mut RaceAudio::default(),
-                    &mut PauseHarness::new(),
+                    &mut pause,
+                    &mut config,
                     WindowedInput {
                         keys: $keys,
                         gamepad: None,

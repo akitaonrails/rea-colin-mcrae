@@ -49,6 +49,46 @@ pub struct EventConfig {
     pub results_16c: [[u8; 16]; 16],
 }
 
+impl EventConfig {
+    /// Read the fields from the live block (`DAT_00d3ca80`,
+    /// [`crate::config_commit::live`]).
+    ///
+    /// # Panics
+    ///
+    /// If `live` is shorter than `0x26c` bytes.
+    pub fn from_live(live: &[u8]) -> Self {
+        let (slots, _) = live[0x16c..0x26c].as_chunks::<16>();
+        let results_16c = std::array::from_fn(|slot| slots[slot]);
+        Self {
+            flags_000: live[0x00],
+            difficulty_018: live[0x18],
+            stage_mask_164: live[0x164],
+            stage_count_165: live[0x165],
+            mode_166: live[0x166],
+            progress_167: live[0x167],
+            cursor_168: live[0x168],
+            results_16c,
+        }
+    }
+
+    /// Write the fields back into the live block.
+    ///
+    /// # Panics
+    ///
+    /// If `live` is shorter than `0x26c` bytes.
+    pub fn store_live(&self, live: &mut [u8]) {
+        live[0x00] = self.flags_000;
+        live[0x18] = self.difficulty_018;
+        live[0x164] = self.stage_mask_164;
+        live[0x165] = self.stage_count_165;
+        live[0x166] = self.mode_166;
+        live[0x167] = self.progress_167;
+        live[0x168] = self.cursor_168;
+        let (slots, _) = live[0x16c..0x26c].as_chunks_mut::<16>();
+        slots.copy_from_slice(&self.results_16c);
+    }
+}
+
 /// The globals the event flow reads and writes besides the config block.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EventGlobals {
@@ -330,15 +370,6 @@ impl EventState {
         }
     }
 
-    /// The two writes the front end's commit `FUN_004b93f0` always makes:
-    /// the event counter and the pending-advance bit are cleared, so the new
-    /// session's state 1 chooses its first event. (The rest of the commit
-    /// copies the cmRally.cfg image and is not reconstructed.)
-    pub fn commit_unconditional(&mut self) {
-        self.cfg.progress_167 &= 0xc0;
-        self.cfg.mode_166 &= 0x7f;
-    }
-
     /// The front end's race hand-off (`FUN_004c20f0` phase 2, result 3):
     /// `DAT_00506228 = 0`, `DAT_00d3ca84 = 1`.
     pub fn start_race_session(&mut self) {
@@ -609,6 +640,21 @@ mod tests {
         let mut stages = event(2, 0x23);
         stages.rewind_for_restart();
         assert_eq!(stages.cfg.cursor_168, 0x23);
+    }
+
+    #[test]
+    fn the_config_round_trips_through_the_live_block() {
+        let mut live = vec![0u8; 0x300];
+        let mut e = event(0x42, 0x35);
+        e.cfg.flags_000 = 1;
+        e.cfg.difficulty_018 = 0x18;
+        e.cfg.stage_mask_164 = 0x0f;
+        e.cfg.stage_count_165 = 7;
+        e.cfg.progress_167 = 0x83;
+        e.cfg.results_16c[15][15] = 9;
+        e.cfg.store_live(&mut live);
+        assert_eq!((live[0x166], live[0x168], live[0x26b]), (0x42, 0x35, 9));
+        assert_eq!(EventConfig::from_live(&live), e.cfg);
     }
 
     #[test]
