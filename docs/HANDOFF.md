@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
+Updated: 2026-11-02 (rally school race, instructor, crash damage)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: play the tumbling impact sound
+feat: blend shadows and sprites on horizon-less GPU stages
 ```
 
 Start by confirming the checkout and progress footer:
@@ -215,65 +215,28 @@ tyre inputs (`DAT_004f6b50/6f10/777c` are now in `SessionTyreTables`).
 
 ## Highest-priority remaining work
 
-1. (Done: steer cut, deadzones and `+0x700` are wired in the four-wheel step.)
-   The four-wheel translation is now the integrator's own
-   (`impl.four-wheel-native-translation`): no harness steering, drag, throttle
-   push or lateral grip, so `speed_ec` is native. The control processor's
-   pedal and steering halves are reconstructed and wired
-   (`impl.pedal-response-processor`, `impl.steering-response-processor`):
-   steering now rotates the lane source. The gearbox is reconstructed too
-   (`impl.gearbox-processor`) and runs when `FourWheelIterationParams::gearbox`
-   is `Some`; build it with `derive_compiled_gearbox_tables` and
-   `compiled_drive_ratios`. Still open: the sources of the
-   digital steer scalars `+0x44c..+0x45c` (block-copied; no direct store) and of
-   the tables `DAT_004f74ac`, `DAT_0050e188`, `DAT_0050e4fc`. The car
-   constants (mass, inertia, pedal scalars, `+0x408`) now derive from case
-   words via `derive_compiled_four_wheel_constants`
-   (`impl.compiled-four-wheel-constants`); the windowed session can obtain them
-   from `SessionCompiledPose`'s direct cases and selector once it moves to the
-   four-wheel path. `SessionCompiledPose::compiled_car` now derives those
-   inputs, but the owned-data probe (`obs.au1-four-wheel-probe`, run with
-   `CMR_RUNTIME_DATA=... cargo test -p cmr-app --release
-   probe_compiled_four_wheel_car_on_au1 -- --ignored --nocapture`) shows the
-   car cannot move yet. The per-player car-setup block behind
-   `DAT_0050e170..` is now recovered (`cmr-core::car_setup`,
-   `populate_car_setup`) and the engine force is split into the drive slots
-   before the wheel passes (`impl.car-setup-and-drive-torque`): the probe's
-   engine revs against the real redline. The producer's brake torques and its
-   grounded/airborne and per-lane gates are now wired
-   (`impl.wheel-brake-and-producer-gates`): on AU1 the car is grounded, its
-   driven wheels spin and the limiter cuts, but the second loop's
-   accumulators stay zero. Next: source the `SecondWheelParams` tyre inputs
-   (`transition_gain/base`, `alternate_gain/base`, `correction_gate`,
-   `accumulation_limit`, `correction_alternate`, `coefficient_34`,
-   `config_scale`), the first-loop slip `limit` (`+0x378`) and the front brake
-   share `+0x170`, then gravity/suspension in `FUN_0040d810`, before item 2.
-   `rea.official-eu.tyre-input-sources` maps them: extend the reviewed
-   executable-table store with `DAT_004f6b50`, `DAT_004f6f10` and
-   `DAT_004f777c` (static data; never commit values), produce the per-wheel
-   surface words `+0x42a..+0x430` from the stage surface under each wheel,
-   and keep searching for the writer of control `+0x35c..+0x378`.
-2. Move the windowed session from `GameplaySession::new_with_car` to the already
-   recovered four-wheel path only after supplying its authenticated runtime
-   inputs. The current planar path changes heading but does not evolve the full
-   `MotionState::basis`, which limits collision and body-render accuracy.
-3. Republish contact flags/count `+0x68c..+0x698/+0x674` per tick from live
-   lane/hull state. The current values are the authenticated setup snapshot.
-4. Implement the concrete mutable object behind `StaticDamageOwner`, including
-   deformation/effect state, while preserving the synchronous ordered contract.
-5. Add a controlled owned-media test that deliberately reaches a known static
-   object and asserts contact, depenetration, history, and next-tick consumption.
-   The latest AU1 driving test only establishes that collision execution did not
-   error; it does not prove that a scene object was contacted.
-6. Once four-wheel basis publication is live, render the car body from that basis
-   rather than the static root plus planar heading adapter. Then recover the CMR1
-   wheel-node/phase consumer and add animation tests. Previous review found that
-   guessing wheel animation before this basis transition would compound errors.
+The earlier items (four-wheel path, contact flags, the static damage owner,
+the body basis) are done; see `docs/CONVERSION_TIMELINE.md` for the history.
+Open now, in order:
 
-The next `docs/DECOMP_MAP.md` focus is therefore
-`four-wheel-window-path-angular-collision-and-car-animation`; counters remain
-117 complete, 2 partial, 119 total because this materially advances I14 without
-closing it.
+1. Moving objects (`FUN_0043f790`/`FUN_0043faf0`/`FUN_00440d90`): the
+   knockable props, including the rally school's cones. Without them the
+   school's cone tasks never count a hit, the instructor's object speech never
+   fires and the object impacts never damage the car. Notes in progress:
+   `.work/moving-objects-notes.md`.
+2. Night headlights (`FUN_0044add0` cluster): the flare draw, the electrics
+   flicker `FUN_0044b000` and the lamp breakage `FUN_0044a770`. Notes in
+   progress: `.work/headlights-notes.md`.
+3. Car-vs-car contact (`FUN_00441f30`/`FUN_00442860`) for the head-to-head
+   stages; the contact point is in `.work/car-damage-contact-notes.md`.
+4. Replays (`replay.rs` has the trace format): the input-trace re-simulation
+   behind the school's demonstration runs (`Pans/*/exit.rsp`,
+   `Pans/Skid/intro.rsp`) and the `.ssr` files. Playback re-runs the physics
+   from a raw car-state seed, so it needs the seed mapped onto `RaceState` and
+   a bit-exact sim; until then the binary's no-replay path runs.
+5. The intro FMV codec (IV50) for the front end's opening movie.
+
+The next `docs/DECOMP_MAP.md` focus stays on the gameplay gaps above.
 
 ## Evidence and boundaries
 
