@@ -77,6 +77,11 @@ pub fn c_format(fmt: &[u8], args: &[FormatArg]) -> Vec<u8> {
                 field.extend(digits);
                 Some(field)
             }
+            (Some(b'c'), Some(&FormatArg::Int(value))) => {
+                let mut field = vec![b' '; width.saturating_sub(1)];
+                field.push(value as u8);
+                Some(field)
+            }
             (Some(b's'), Some(&FormatArg::Bytes(text))) => {
                 let text = &text[..precision.map_or(text.len(), |n| n.min(text.len()))];
                 let mut field = vec![b' '; width.saturating_sub(text.len())];
@@ -135,5 +140,18 @@ mod tests {
         assert_eq!(c_format(b"stage %d", &[]), b"stage %d");
         assert_eq!(c_format(b"%s", &[FormatArg::Int(1)]), b"%s");
         assert_eq!(c_format(b"%x and %", &[]), b"%x and %");
+    }
+
+    #[test]
+    fn a_char_takes_the_low_byte() {
+        let out = c_format(
+            b"CAC%04d%c: %s",
+            &[
+                FormatArg::Int(42),
+                FormatArg::Int(i64::from(b'7')),
+                FormatArg::Bytes(b"123"),
+            ],
+        );
+        assert_eq!(out, b"CAC00427: 123");
     }
 }

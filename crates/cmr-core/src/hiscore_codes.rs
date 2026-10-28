@@ -152,6 +152,89 @@ pub fn championship_codes(img: &[u8], schedule: &[u8]) -> Vec<Option<Vec<u8>>> {
     codes
 }
 
+/// What a results record code packs (`FUN_00430ee0`'s type argument).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordKind {
+    /// Type 0: the championship points.
+    Championship,
+    /// Type 1: the rally time.
+    Rally,
+    /// Type 2: the stage time.
+    Stage,
+}
+
+/// `FUN_00430ee0(type, player, value, out, key)`: the code the results show
+/// for a record just set (`key` 0) or a CAC competition entry (`key` the
+/// competition number). `D` starts at `0x5a5a5a5a` and takes the same
+/// fields the hi-score tables pack; `B` is the record salt `DAT_0055002c`
+/// over the type's two low bits. `live` is the live block, `slot` the
+/// player's result slot (the championship's rally wins at `+0x179`). The
+/// secret series shows `" "`.
+#[allow(clippy::too_many_arguments)]
+pub fn record_code(
+    kind: RecordKind,
+    live: &[u8],
+    player: usize,
+    slot: usize,
+    value: i32,
+    salt: u8,
+    key: u32,
+    schedule: &[u8],
+) -> Vec<u8> {
+    if live[0x166] & 0x40 != 0 {
+        return b" ".to_vec();
+    }
+    let car = u32::from(live[0xb6 + 0x9c * player]);
+    let manual = (car >> 4) & 1;
+    let hundredths = (value % 100) as u32 & 0x7f;
+    let seconds = ((value / 100) % 60) as u32 & 0x3f;
+    let minutes = (value / 6000) as u32 & 0x3f;
+    let cursor = u32::from(live[0x168]);
+    let b = (salt << 2) | 2;
+    let (d, b) = match kind {
+        RecordKind::Stage => (
+            0x4000_0000
+                | manual << 29
+                | hundredths << 22
+                | seconds << 16
+                | (car & 0xf) << 12
+                | ((cursor >> 4) & 7) << 9
+                | (cursor & 7) << 6
+                | minutes,
+            b & 0xfc,
+        ),
+        RecordKind::Rally => (
+            0x5800_0000
+                | hundredths << 20
+                | seconds << 14
+                | manual << 13
+                | (car & 0xf) << 9
+                | (cursor & 7) << 6
+                | minutes,
+            (b & 0xfd) | 1,
+        ),
+        RecordKind::Championship => (
+            0x5a58_0000
+                | ((u32::from(live[0x18]) >> 3) & 3) << 16
+                | (value as u32 & 0x7f) << 9
+                | (u32::from(live[0x179 + 16 * slot]) & 0xf) << 5
+                | manual << 4
+                | (car & 0xf),
+            (b & 0xfe) | 2,
+        ),
+    };
+    code(key, xor_bytes(d, (b >> 1) & 0x7e), b, schedule)
+}
+
+/// `FUN_004ba510(n)`: the CAC number's check character, `'0'` plus the
+/// digit-difference's ones digit XOR its tens digit (`':'..'?'` when that
+/// exceeds 9).
+pub fn cac_check(n: i32) -> u8 {
+    let digit = |k: i32| (n / k) % 10;
+    let a = (10 * (digit(1000) - digit(100)) + (digit(10) - digit(1))).abs();
+    b'0' + ((a % 10) ^ (a / 10)) as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +279,52 @@ mod tests {
         img[0xc98 + 0xc] = 0x85;
         let champ = championship_codes(&img, &schedule);
         assert!(champ[0].as_ref().is_some_and(|c| !c.is_empty()));
+    }
+
+    #[test]
+    fn a_new_records_code_matches_its_table_code() {
+        let schedule: Vec<u8> = (0..SCHEDULE_LEN as u8)
+            .map(|i| i.wrapping_mul(37))
+            .collect();
+        let mut img = vec![0u8; 0x1e20];
+        img[0xffc + 0x1a..0xffc + 0x1c].copy_from_slice(&0xffffu16.to_le_bytes());
+        let record = crate::hiscore_records::StageRecord {
+            name: b"A",
+            car: 3,
+            splits: [0; 7],
+            time: 12_345,
+            manual: true,
+            extra: 21,
+        };
+        assert!(crate::hiscore_records::best_stage(
+            &mut img, false, 0, 0, &record
+        ));
+        for place in 0..5 {
+            let at = 0xd88 + place * 16;
+            img[at..at + 4].copy_from_slice(&0x7ffffu32.to_le_bytes());
+        }
+        let place = crate::hiscore_records::best_rally(&mut img, 0, b"A", 3, 54_321, true, 21);
+        assert_eq!(place, Some(0));
+        let mut live = vec![0u8; 0x6c4];
+        live[0xb6] = 0x13;
+        let stage = record_code(RecordKind::Stage, &live, 0, 0, 12_345, 21, 0, &schedule);
+        assert_eq!(stage, best_stage_codes(&img, &schedule)[0]);
+        let rally = record_code(RecordKind::Rally, &live, 0, 0, 54_321, 21, 0, &schedule);
+        assert_eq!(Some(rally), best_rally_codes(&img, &schedule)[0]);
+        live[0x166] = 0x40;
+        assert_eq!(
+            record_code(RecordKind::Stage, &live, 0, 0, 1, 0, 0, &schedule),
+            b" "
+        );
+    }
+
+    #[test]
+    fn the_cac_check_can_leave_the_digits() {
+        // |10 (1 - 2) + (3 - 4)| = 11: 1 ^ 1.
+        assert_eq!(cac_check(1234), b'0');
+        assert_eq!(cac_check(1900), b'8');
+        assert_eq!(cac_check(990), b'9');
+        // |10 (3 - 0) + (1 - 2)| = 29: 9 ^ 2 = 11, past '9'.
+        assert_eq!(cac_check(3012), b';');
     }
 }

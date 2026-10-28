@@ -280,6 +280,11 @@ struct ResultsHold {
     effects: Vec<DirectorEffect>,
     /// The save dialog between directors (its cursor is a process global).
     save: crate::save_dialog::SaveDialog,
+    /// The record pages' globals between directors.
+    record_globals: crate::results_director::RecordGlobals,
+    /// The record image a finished director handed back, until the host
+    /// takes it.
+    records_out: Option<crate::results_director::RecordRun>,
 }
 
 impl ResultsHold {
@@ -297,18 +302,36 @@ impl ResultsHold {
             return;
         }
         let input = std::mem::take(&mut self.input);
-        let save = &mut self.save;
-        let director = self.director.get_or_insert_with(|| {
-            ResultsDirector::start(event, DirectorContext::default())
-                .with_save_dialog(std::mem::take(save))
-        });
+        if self.director.is_none() {
+            let director = ResultsDirector::start(event, DirectorContext::default());
+            self.director = Some(self.carried(director));
+        }
+        let director = self.director.as_mut().expect("just started");
         self.effects.extend(director.tick(event, input));
         inputs.boundary_active = event.globals.results_550024;
         if !inputs.boundary_active {
             // Continue, restart and quit clear the init flag `DAT_00550020`.
             if let Some(mut director) = self.director.take() {
-                self.save = director.take_save_dialog();
+                self.keep(&mut director);
             }
+        }
+    }
+
+    /// A new director with what the last one left (the save dialog and the
+    /// record globals).
+    fn carried(&mut self, director: ResultsDirector) -> ResultsDirector {
+        director
+            .with_save_dialog(std::mem::take(&mut self.save))
+            .with_record_globals(std::mem::take(&mut self.record_globals))
+    }
+
+    /// Keep what a finished director leaves for the next one and the host.
+    fn keep(&mut self, director: &mut ResultsDirector) {
+        self.save = director.take_save_dialog();
+        let (records, globals) = director.take_records();
+        self.record_globals = globals;
+        if records.is_some() {
+            self.records_out = records;
         }
     }
 }
@@ -542,13 +565,27 @@ impl<'a> GameplaySession<'a> {
     /// `FUN_00443c80` runs at the finish line (single player, not the
     /// school, a demo or a network session), with the standings computed
     /// there.
-    pub fn start_results(&mut self, context: DirectorContext) {
-        let event = self.session.event_mut();
-        let save = match self.results.director.take() {
-            Some(mut last) => last.take_save_dialog(),
-            None => std::mem::take(&mut self.results.save),
-        };
-        self.results.director = Some(ResultsDirector::start(event, context).with_save_dialog(save));
+    /// `records` is the host's record image for the record checks (none:
+    /// they are skipped).
+    pub fn start_results(
+        &mut self,
+        context: DirectorContext,
+        records: Option<crate::results_director::RecordRun>,
+    ) {
+        if let Some(mut last) = self.results.director.take() {
+            self.results.keep(&mut last);
+        }
+        let mut director = ResultsDirector::start(self.session.event_mut(), context);
+        if let Some(records) = records {
+            director = director.with_records(records);
+        }
+        self.results.director = Some(self.results.carried(director));
+    }
+
+    /// The record image the last finished director handed back (with any
+    /// record its checks wrote), once.
+    pub fn take_record_image(&mut self) -> Option<crate::results_director::RecordRun> {
+        self.results.records_out.take()
     }
 
     /// The host's answer to the save dialog's slot read.

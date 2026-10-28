@@ -17,7 +17,8 @@
 //! championship and rally complete pages (`FUN_0042df90`, `FUN_0042e0c0`).
 //! The confirmations (`FUN_0042e210`: the dialog menu's three lines,
 //! `FUN_004aacb0`, then a box sized to the widest) are drawn too, and the
-//! save page's dialog (`FUN_0043bc90`). The super-special result and the
+//! save page's dialog (`FUN_0043bc90`), and the record notices and CAC
+//! code pages (0xc..=0x11). The super-special result and the
 //! bonus car draw the frame only for now. Not drawn: the team and flag icons
 //! (`FUN_0042e5c0`) and the time trial's record rows (`FUN_0042b6b0`). The
 //! host supplies the stage name (`FUN_004ba470`: the executable's name table
@@ -355,6 +356,7 @@ pub fn results_draw_plan<'a>(
         9 | 10 => confirmation(&mut painter, input, text)?,
         0x14 => championship_complete(&mut painter, input, highlight, text)?,
         0x15 => rally_complete(&mut painter, input, highlight, text)?,
+        0xc..=0x11 => record_page(&mut painter, input, highlight, text)?,
         _ => {}
     }
     Ok(painter.plan)
@@ -702,6 +704,280 @@ fn championship_complete(
         BODY_COLOR,
         0x12,
     )
+}
+
+/// `"%s^%02d:%02d.%02d"` (`0x4ed718`): a name over a time (unsigned
+/// division).
+fn name_time(name: &[u8], time: u32) -> Vec<u8> {
+    [name, b"^", &time_text(time)].concat()
+}
+
+/// The stage line: `"%s - %s"` (`0x4ed740`) on a super-special stage, else
+/// `"%s - %s %d ( %s )"` (`0x4ed72c`) with the stage number and name (a
+/// missing name prints as the CRT's `"(null)"`, as for a special country's
+/// seventh stage).
+fn stage_line(input: &ResultsDrawInput, place: &[u8], text: &dyn Fn(i32) -> Vec<u8>) -> Vec<u8> {
+    if !input.event.globals.school_d3ca88 && input.event.super_special() {
+        c_format(
+            b"%s - %s",
+            &[FormatArg::Bytes(place), FormatArg::Bytes(&text(0x44))],
+        )
+    } else {
+        long_stage_line(input, place, text)
+    }
+}
+
+/// `"%s - %s %d ( %s )"`: the place, the stage word, number and name.
+fn long_stage_line(
+    input: &ResultsDrawInput,
+    place: &[u8],
+    text: &dyn Fn(i32) -> Vec<u8>,
+) -> Vec<u8> {
+    c_format(
+        b"%s - %s %d ( %s )",
+        &[
+            FormatArg::Bytes(place),
+            FormatArg::Bytes(&text(0x25)),
+            FormatArg::Int(i64::from(input.event.cfg.cursor_168 >> 4) + 1),
+            FormatArg::Bytes(input.stage_name.unwrap_or(b"(null)")),
+        ],
+    )
+}
+
+/// A placed row's value (`order[position - 1]`), 0 past the order.
+fn placed_time(rows: &[ResultsRow], position: usize) -> u32 {
+    position
+        .checked_sub(1)
+        .and_then(|i| rows.get(i))
+        .map_or(0, |row| row.time)
+}
+
+/// Pages 0xc..=0x11: the record notices (`FUN_0042cf60`, `FUN_0042d2c0`,
+/// `FUN_0042d440`) and the CAC code pages (`FUN_0042caf0`, `FUN_0042cdc0`,
+/// `FUN_0042ce80`), over the frames `FUN_0042d0e0` and `FUN_0042cc10`.
+/// Names come from the record image's live block; the team icons are not
+/// drawn. In a time trial the stage time is the player's own (`0x54fce4`,
+/// inferred to hold the finish time).
+fn record_page(
+    painter: &mut Painter,
+    input: &ResultsDrawInput,
+    highlight: [u8; 4],
+    text: &dyn Fn(i32) -> Vec<u8>,
+) -> Result<(), TextLayoutError> {
+    let director = input.director;
+    let Some(run) = director.records() else {
+        return Ok(());
+    };
+    let live = crate::config_commit::live(&run.image);
+    let name = |p: usize| crate::results_director::player_name(live, p);
+    let g = director.record_globals();
+    let cfg = &input.event.cfg;
+    let country = text(0x3c + i32::from(cfg.cursor_168 & 0xf));
+    let context = director.context();
+    let stage_time = |p: usize| {
+        if cfg.mode_166 & 3 == 2 {
+            run.players
+                .get(p)
+                .map_or(0, |finish| finish.stage_time as u32)
+        } else {
+            placed_time(input.stage_rows, context.stage_position)
+        }
+    };
+    let championship_total = |position: usize| {
+        position
+            .checked_sub(1)
+            .and_then(|i| input.championship_rows.get(i))
+            .map_or(0, |row| row.total(usize::from(cfg.cursor_168 & 0xf)))
+    };
+    let total_line = |total: u8| {
+        let points = c_format(&text(0xdf), &[FormatArg::Int(i64::from(total))]);
+        [&name(0)[..], b"^", &points].concat()
+    };
+    let ordinal = |place: i32| text(0xc3 + place);
+    match director.page() {
+        0xf => {
+            let line = stage_line(input, &country, text);
+            let local = name_time(&name(0), stage_time(0));
+            cac_frame(
+                painter,
+                live,
+                highlight,
+                &text(0x135),
+                &line,
+                &local,
+                &g.stage_cac,
+            )
+        }
+        0x10 => {
+            let local = name_time(&name(0), placed_time(input.rally_rows, 1));
+            cac_frame(
+                painter,
+                live,
+                highlight,
+                &text(0x136),
+                &country,
+                &local,
+                &g.rally_cac,
+            )
+        }
+        0x11 => {
+            let local = total_line(championship_total(1));
+            cac_frame(
+                painter,
+                live,
+                highlight,
+                &text(0x137),
+                b"",
+                &local,
+                &g.championship_cac,
+            )
+        }
+        0xc => {
+            let q = usize::from(g.stage_player);
+            // The secret series names its place `0x45` and always the stage.
+            let line = if cfg.mode_166 & 0x40 != 0 {
+                long_stage_line(input, &text(0x45), text)
+            } else {
+                stage_line(input, &country, text)
+            };
+            let line = [&text(0xd3)[..], b"^", &line].concat();
+            let local = name_time(&name(q), stage_time(q));
+            notice_frame(
+                painter,
+                input,
+                highlight,
+                &text(0xdd),
+                &line,
+                &local,
+                &g.stage_code,
+                text,
+            )
+        }
+        0xd => {
+            let q = usize::from(g.rally_shown[0]).min(1);
+            let place = g.rally_places[q];
+            let mut line = if place == 0 {
+                text(0xd3)
+            } else {
+                c_format(&text(0xd4), &[FormatArg::Bytes(&ordinal(place))])
+            };
+            line.push(b'^');
+            line.extend_from_slice(&country);
+            let local = name_time(
+                &name(q),
+                placed_time(input.rally_rows, context.rally_position),
+            );
+            notice_frame(
+                painter,
+                input,
+                highlight,
+                &text(0xdc),
+                &line,
+                &local,
+                &g.rally_code,
+                text,
+            )
+        }
+        _ => {
+            let local = total_line(championship_total(context.championship_position));
+            let d = i32::from((cfg.difficulty_018 >> 3) & 3);
+            let line = if g.championship_place == 0 {
+                text(0xd5 + d)
+            } else {
+                c_format(
+                    &text(0xd8 + d),
+                    &[FormatArg::Bytes(&ordinal(g.championship_place))],
+                )
+            };
+            notice_frame(
+                painter,
+                input,
+                highlight,
+                &text(0xdb),
+                &line,
+                &local,
+                &g.championship_code,
+                text,
+            )
+        }
+    }
+}
+
+/// `FUN_0042cc10(title, line1, line2, code)`: a CAC code page.
+fn cac_frame(
+    painter: &mut Painter,
+    live: &[u8],
+    highlight: [u8; 4],
+    title: &[u8],
+    line1: &[u8],
+    line2: &[u8],
+    code: &[u8],
+) -> Result<(), TextLayoutError> {
+    let l = painter.layout;
+    painter.text(
+        l.title_x,
+        l.title_y,
+        title,
+        PauseFont::Title,
+        TITLE_COLOR,
+        0x31,
+    )?;
+    painter.text_q16(0x8000, 0x4000, line1, PauseFont::Result, BODY_COLOR, 0x12)?;
+    painter.text_q16(0x8000, 0x6666, line2, PauseFont::Title, BODY_COLOR, 0x12)?;
+    let n = u16::from_le_bytes([live[0x20], live[0x21]]);
+    let check = crate::hiscore_codes::cac_check(i32::from(n));
+    let line = c_format(
+        b"CAC%04d%c: %s",
+        &[
+            FormatArg::Int(i64::from(n)),
+            FormatArg::Int(i64::from(check)),
+            FormatArg::Bytes(code),
+        ],
+    );
+    painter.text_q16(0x8000, 0x9999, &line, PauseFont::Title, highlight, 0x12)
+}
+
+/// `FUN_0042d0e0(player, title, line1, line2, code)`: a record notice (the
+/// player picks only the icons, not drawn); the code line is not drawn in
+/// the secret series.
+#[allow(clippy::too_many_arguments)]
+fn notice_frame(
+    painter: &mut Painter,
+    input: &ResultsDrawInput,
+    highlight: [u8; 4],
+    title: &[u8],
+    line1: &[u8],
+    line2: &[u8],
+    code: &[u8],
+    text: &dyn Fn(i32) -> Vec<u8>,
+) -> Result<(), TextLayoutError> {
+    let l = painter.layout;
+    painter.text(
+        l.title_x,
+        l.title_y,
+        title,
+        PauseFont::Title,
+        TITLE_COLOR,
+        0x31,
+    )?;
+    painter.text_q16(
+        0x8000,
+        0x4000,
+        &text(0x77),
+        PauseFont::Title,
+        highlight,
+        0x22,
+    )?;
+    painter.text_q16(0x8000, 0x5999, line1, PauseFont::Result, BODY_COLOR, 0x12)?;
+    painter.text_q16(0x8000, 0x9999, line2, PauseFont::Title, highlight, 0x12)?;
+    if input.event.cfg.mode_166 & 0x40 == 0 {
+        let line = c_format(
+            b"%s: %s",
+            &[FormatArg::Bytes(&text(0xde)), FormatArg::Bytes(code)],
+        );
+        painter.text_q16(0x8000, 0xcccc, &line, PauseFont::Result, BODY_COLOR, 0x12)?;
+    }
+    Ok(())
 }
 
 /// `FUN_0042e0c0`: the rally finished, and a line by difficulty (none for
@@ -1245,5 +1521,101 @@ mod tests {
     fn times_format_as_minutes_seconds_hundredths() {
         assert_eq!(time_text(12_345), b"02:03.45");
         assert_eq!(time_text(0), b"00:00.00");
+    }
+
+    /// Each run's lines joined by `^`.
+    fn lines(plan: &ResultsDrawPlan) -> Vec<Vec<u8>> {
+        plan.runs
+            .iter()
+            .map(|run| {
+                let lines: Vec<&[u8]> = run.plan.lines.iter().map(|l| &l.bytes[..]).collect();
+                lines.join(&b'^')
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_record_pages_show_the_code_and_the_notice() {
+        use crate::results_director::{PlayerFinish, RecordRun};
+        let font = font();
+        let mut event = EventState::default();
+        event.cfg.cursor_168 = 0x21;
+        event.cfg.stage_count_165 = 6;
+        let mut image = Box::new([0u8; crate::config::LEGACY_CONFIG_SIZE]);
+        for record in 0..(7 * 9) {
+            let at = 0xffc + record * 30 + 0x1a;
+            image[at..at + 2].copy_from_slice(&0xffffu16.to_le_bytes());
+        }
+        let live = crate::config_commit::live_mut(&mut image);
+        live[0x2c..0x31].copy_from_slice(b"COLIN");
+        live[0x20..0x22].copy_from_slice(&1234u16.to_le_bytes());
+        let run = RecordRun {
+            image,
+            schedule: vec![0; crate::hiscore_codes::SCHEDULE_LEN],
+            players: vec![PlayerFinish {
+                slot: 0,
+                stage_time: 6123,
+                splits: [0; 7],
+            }],
+            salt: 0,
+        };
+        let context = DirectorContext {
+            stage_position: 1,
+            rally_position: 1,
+            screen_height: 480,
+            ..Default::default()
+        };
+        let mut director = ResultsDirector::start(&mut event, context).with_records(run);
+        let confirm = DirectorInput {
+            confirm: true,
+            ..Default::default()
+        };
+        director.tick(&mut event, confirm);
+        while director.settle() > 0 {
+            director.tick(&mut event, DirectorInput::default());
+        }
+        assert_eq!(director.page(), 0xf);
+        let rows = [ResultsRow {
+            name: b"COLIN",
+            time: 6123,
+            player: true,
+        }];
+        let text = |id: i32| format!("T{id:X}").into_bytes();
+        let mut pulse = ResultsPulse::default();
+        let plan = results_draw_plan(&input(&director, &event, &rows), &mut pulse, &text, &|_| {
+            &font
+        })
+        .unwrap();
+        let code = director.record_globals().stage_cac.clone();
+        let cac = [&b"CAC12340: "[..], &code].concat();
+        assert_eq!(
+            lines(&plan),
+            [
+                b"T135".to_vec(),
+                b"T3D - T25 3 ( STAGE )".to_vec(),
+                b"COLIN^01:01.23".to_vec(),
+                cac,
+            ]
+        );
+        director.tick(&mut event, confirm);
+        while director.settle() > 0 {
+            director.tick(&mut event, DirectorInput::default());
+        }
+        assert_eq!(director.page(), 0xc);
+        let plan = results_draw_plan(&input(&director, &event, &rows), &mut pulse, &text, &|_| {
+            &font
+        })
+        .unwrap();
+        let code = director.record_globals().stage_code.clone();
+        assert_eq!(
+            lines(&plan),
+            [
+                b"TDD".to_vec(),
+                b"T77".to_vec(),
+                b"TD3^T3D - T25 3 ( STAGE )".to_vec(),
+                b"COLIN^01:01.23".to_vec(),
+                [&b"TDE: "[..], &code].concat(),
+            ]
+        );
     }
 }

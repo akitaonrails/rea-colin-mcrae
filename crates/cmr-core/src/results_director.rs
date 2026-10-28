@@ -11,14 +11,95 @@
 //! menu cursor; the confirmations are two-item vertical menus defaulting to
 //! "no" (both shipped dialog records hold 0 at `+0x58`).
 //!
-//! Not reconstructed: the stage, rally and championship record checks
-//! (`FUN_004ba370`/`FUN_004ba260`/`FUN_004ba120`) and their notice and code
-//! pages, which the confirm skips; network and head-to-head pages. Page 5
-//! runs the save dialog ([`crate::save_dialog`]) every tick until it ends. A description of disassembly, not original source.
+//! Pages 1, 2 and 3 confirm through the stage, rally and championship
+//! record checks when the host supplies the record image ([`RecordRun`]):
+//! a record goes to its notice page (0xc, 0xd, 0xe), a CAC competition
+//! entry first to its code page (0xf, 0x10, 0x11), and each then to the
+//! usual continuation. Without the image the checks are skipped (harness).
+//! Page 5 runs the save dialog ([`crate::save_dialog`]) every tick until it
+//! ends. Not reconstructed: network and head-to-head pages. A description
+//! of disassembly, not original source.
 //! Evidence: `rea.official-eu.results-director`.
 
+use crate::config::LEGACY_CONFIG_SIZE;
+use crate::config_commit::{live, live_mut};
 use crate::event_flow::{EventState, SPECIAL_COUNTRIES};
+use crate::hiscore_codes::{RecordKind, record_code};
 use crate::standings::last_stage_of_rally;
+
+/// One player's finish as the record checks read it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlayerFinish {
+    /// The player's result slot (`DAT_0057af94[p]`).
+    pub slot: usize,
+    /// The stage time (`DAT_0054ff88[slot]`, hundredths).
+    pub stage_time: i32,
+    /// The seven split times (`0x5ffa6c + 0x24 p`, low halves).
+    pub splits: [u16; 7],
+}
+
+/// What the record checks need from the host: the cmRally.cfg image (the
+/// live block inside it is the race's), the code key schedule, each
+/// player's finish, and the record salt `DAT_0055002c` the init draws
+/// ([`record_salt`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordRun {
+    pub image: Box<[u8; LEGACY_CONFIG_SIZE]>,
+    pub schedule: Vec<u8>,
+    pub players: Vec<PlayerFinish>,
+    pub salt: u8,
+}
+
+/// `FUN_0042f860`'s salt from one `rand()` draw scaled to Q16
+/// ([`crate::game_rng::GameLcg::next_q16`]): `(q16 * 63) >> 16`, 0..=62.
+pub fn record_salt(q16: i32) -> u8 {
+    (q16.wrapping_mul(63) >> 16) as u8
+}
+
+/// The record pages' globals, which outlive one director (none is reset by
+/// the init): carry them with [`ResultsDirector::with_record_globals`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecordGlobals {
+    /// `DAT_0054fdc9`: the stage records set; `DAT_0054fdc8` the last
+    /// player who set one.
+    pub stage_count: u8,
+    pub stage_player: u8,
+    /// `DAT_0054fe54`: the rally records set; `DAT_0054fe4c` the players
+    /// (`[0]` the one shown); `DAT_0054fc44` their places (-1 for none).
+    pub rally_count: u8,
+    pub rally_shown: [u8; 2],
+    pub rally_places: [i32; 2],
+    /// `DAT_0054fc4c` and `DAT_0054fee0`: the championship place and
+    /// whether it was a record.
+    pub championship_place: i32,
+    pub championship_recorded: bool,
+    /// The six code buffers: the stage record `0x54fc04` and CAC `0x54ffd8`,
+    /// the rally `0x54fb44` and `0x54fc20`, the championship `0x54fbdc` and
+    /// `0x54fbf0`.
+    pub stage_code: Vec<u8>,
+    pub stage_cac: Vec<u8>,
+    pub rally_code: Vec<u8>,
+    pub rally_cac: Vec<u8>,
+    pub championship_code: Vec<u8>,
+    pub championship_cac: Vec<u8>,
+}
+
+/// `FUN_004ba5b0(live + 0x20)`: no cheat is on (helium, night and weather
+/// are allowed).
+fn no_cheats(live: &[u8]) -> bool {
+    live[0x24] & 0x40 == 0 && live[0x25] & 0x3f == 0 && live[0x26] & 0x9f == 0
+}
+
+/// The CAC competition number `live.u16[0x20]`.
+fn cac_number(live: &[u8]) -> u16 {
+    u16::from_le_bytes([live[0x20], live[0x21]])
+}
+
+/// Player `p`'s name in the live block (`live + 0x2c + 0x9c p`, to its NUL).
+pub fn player_name(live: &[u8], player: usize) -> Vec<u8> {
+    let name = &live[0x2c + 0x9c * player..0x2c + 0x9c * (player + 1)];
+    name[..name.iter().position(|&c| c == 0).unwrap_or(name.len())].to_vec()
+}
 
 /// One tick's input (`FUN_00430980`): fresh presses, and Up/Down held
 /// (`DAT_0054fff0`/`DAT_0054fff4`) for the scrolling tables.
@@ -89,6 +170,8 @@ pub struct ResultsDirector {
     /// The save dialog (its globals outlive one director: carry it with
     /// [`ResultsDirector::with_save_dialog`]).
     save: crate::save_dialog::SaveDialog,
+    records: Option<RecordRun>,
+    record_globals: RecordGlobals,
 }
 
 /// The results tables' scroll: the first shown row `DAT_0054ffcc`, the
@@ -222,7 +305,42 @@ impl ResultsDirector {
             rows,
             scroll,
             save: crate::save_dialog::SaveDialog::default(),
+            records: None,
+            record_globals: RecordGlobals::default(),
         }
+    }
+
+    /// This director with the record image and finishes the checks read.
+    #[must_use]
+    pub fn with_records(mut self, records: RecordRun) -> Self {
+        self.records = Some(records);
+        self
+    }
+
+    /// This director with the record globals the last one left.
+    #[must_use]
+    pub fn with_record_globals(mut self, globals: RecordGlobals) -> Self {
+        self.record_globals = globals;
+        self
+    }
+
+    /// The record pages' globals.
+    pub const fn record_globals(&self) -> &RecordGlobals {
+        &self.record_globals
+    }
+
+    /// The record image, with any record the checks wrote (the host keeps
+    /// it as its cmRally.cfg image).
+    pub fn records(&self) -> Option<&RecordRun> {
+        self.records.as_ref()
+    }
+
+    /// Hand the record image and globals on (the director is done).
+    pub fn take_records(&mut self) -> (Option<RecordRun>, RecordGlobals) {
+        (
+            self.records.take(),
+            std::mem::take(&mut self.record_globals),
+        )
     }
 
     /// This director with the dialog the last one left.
@@ -311,6 +429,12 @@ impl ResultsDirector {
                 if open { 5 } else { self.after_save(event) }
             }
             page if !input.confirm => page,
+            0xf if self.record_globals.stage_count > 0 => 0xc,
+            0xf | 0xc => self.after_stage_results(event, &mut effects),
+            0x10 if self.record_globals.rally_count > 0 => 0xd,
+            0x10 | 0xd => self.after_rally_results(event),
+            0x11 if self.record_globals.championship_recorded => 0xe,
+            0x11 | 0xe => self.after_championship(event),
             6 => 1,
             8 => {
                 event.globals.continues_4ed7d8 = false;
@@ -343,11 +467,39 @@ impl ResultsDirector {
         if !input.confirm {
             return self.page;
         }
-        match self.page {
-            1 => self.after_stage_results(event, effects),
-            2 => self.after_rally_results(event),
-            _ => self.after_championship(event),
+        if self.records.is_none() {
+            return match self.page {
+                1 => self.after_stage_results(event, effects),
+                2 => self.after_rally_results(event),
+                _ => self.after_championship(event),
+            };
         }
+        match self.page {
+            1 => self.stage_check(event, effects),
+            2 => self.rally_check(event),
+            _ => self.championship_check(event),
+        }
+    }
+
+    fn stage_check(&mut self, event: &mut EventState, effects: &mut Vec<DirectorEffect>) -> u8 {
+        let mut run = self.records.take().expect("the checks run with the image");
+        let page = stage_records(&mut run, &mut self.record_globals, event);
+        self.records = Some(run);
+        page.unwrap_or_else(|| self.after_stage_results(event, effects))
+    }
+
+    fn rally_check(&mut self, event: &mut EventState) -> u8 {
+        let mut run = self.records.take().expect("the checks run with the image");
+        let page = rally_records(&mut run, &mut self.record_globals, event);
+        self.records = Some(run);
+        page.unwrap_or_else(|| self.after_rally_results(event))
+    }
+
+    fn championship_check(&mut self, event: &mut EventState) -> u8 {
+        let mut run = self.records.take().expect("the checks run with the image");
+        let page = championship_records(&mut run, &mut self.record_globals, event);
+        self.records = Some(run);
+        page.unwrap_or_else(|| self.after_championship(event))
     }
 
     fn centre_on(&mut self, position: usize) {
@@ -565,6 +717,246 @@ impl ResultsDirector {
             .and_then(|schedule| schedule.get(usize::from(country)).copied())
             .is_some_and(|bits| u32::from(bits) & (1u32 << stage) != 0)
     }
+}
+
+/// A writer's mark `live[0x18] |= 0x40`, `live[0x19] += 1`, mirrored into
+/// the event.
+fn mark(run: &mut RecordRun, event: &mut EventState) {
+    let live = live_mut(&mut run.image);
+    crate::hiscore_records::mark_live(live);
+    event.cfg.difficulty_018 = live[0x18];
+}
+
+/// `FUN_00430ca0`, page 1's confirm: each player's stage time against
+/// the stage record (`FUN_004ba370`), the CAC stage competition (numbers
+/// `1..=3000`, alone and not head to head), then the notice or
+/// [`Self::after_stage_results`].
+fn stage_records(run: &mut RecordRun, g: &mut RecordGlobals, event: &mut EventState) -> Option<u8> {
+    event.cfg.store_live(live_mut(&mut run.image));
+    if !no_cheats(live(&run.image)) {
+        return None;
+    }
+    g.stage_count = 0;
+    let cursor = event.cfg.cursor_168;
+    let secret = event.cfg.mode_166 & 0x40 != 0;
+    for (p, finish) in run.players.clone().iter().enumerate() {
+        let live = live(&run.image);
+        let car = live[0xb6 + 0x9c * p];
+        let name = player_name(live, p);
+        let record = crate::hiscore_records::StageRecord {
+            name: &name,
+            car: car & 0xf,
+            splits: finish.splits,
+            time: finish.stage_time,
+            manual: (car >> 4) & 1 != 0,
+            extra: run.salt,
+        };
+        if crate::hiscore_records::best_stage(
+            &mut run.image[..],
+            secret,
+            cursor & 0xf,
+            cursor >> 4,
+            &record,
+        ) {
+            mark(run, event);
+            g.stage_code = record_code(
+                RecordKind::Stage,
+                live_of(run),
+                p,
+                finish.slot,
+                finish.stage_time,
+                run.salt,
+                0,
+                &run.schedule,
+            );
+            g.stage_player = p as u8;
+            g.stage_count = g.stage_count.wrapping_add(1);
+        }
+    }
+    if !event.split_screen() && !event.head_to_head() {
+        let n = cac_number(live(&run.image));
+        if (1..=3000).contains(&n) {
+            let first = run.players.first().copied().unwrap_or_default();
+            g.stage_cac = record_code(
+                RecordKind::Stage,
+                live_of(run),
+                0,
+                first.slot,
+                first.stage_time,
+                run.salt,
+                u32::from(n),
+                &run.schedule,
+            );
+            return Some(0xf);
+        }
+    }
+    if g.stage_count > 0 { Some(0xc) } else { None }
+}
+
+/// `FUN_004313f0`'s confirm: at the rally's stage 5 (6 in a special
+/// country), outside a single special-series rally, each player's rally
+/// time against the rally's top five (`FUN_004ba260`); with two records
+/// the better place is shown (a tie shows player 2); then the CAC rally
+/// competition (`3001..=6000`), the notice or
+/// [`Self::after_rally_results`].
+fn rally_records(run: &mut RecordRun, g: &mut RecordGlobals, event: &mut EventState) -> Option<u8> {
+    let country = event.cfg.cursor_168 & 0xf;
+    let last = if SPECIAL_COUNTRIES.contains(&country) {
+        6
+    } else {
+        5
+    };
+    let mode = event.cfg.mode_166;
+    if (mode & 3 == 1 && mode & 0x20 != 0) || event.cfg.cursor_168 >> 4 != last {
+        return None;
+    }
+    event.cfg.store_live(live_mut(&mut run.image));
+    if !no_cheats(live(&run.image)) {
+        return None;
+    }
+    g.rally_count = 0;
+    let mut times = [0i32; 2];
+    for (p, finish) in run.players.clone().iter().enumerate().take(2) {
+        let live = live(&run.image);
+        let car = live[0xb6 + 0x9c * p];
+        let at = 0x16c + 16 * finish.slot;
+        times[p] = i32::from_le_bytes([live[at], live[at + 1], live[at + 2], live[at + 3]]);
+        let name = player_name(live, p);
+        let place = crate::hiscore_records::best_rally(
+            &mut run.image[..],
+            country,
+            &name,
+            car & 0xf,
+            times[p],
+            (car >> 4) & 1 != 0,
+            run.salt,
+        );
+        g.rally_places[p] = place.map_or(-1, |place| place as i32);
+        if place.is_some() {
+            mark(run, event);
+            g.rally_shown[p] = p as u8;
+            g.rally_count = g.rally_count.wrapping_add(1);
+        }
+    }
+    if g.rally_count == 2 && g.rally_places[1] <= g.rally_places[0] {
+        g.rally_shown[0] = g.rally_shown[1];
+    }
+    let slot = |p: usize| run.players.get(p).map_or(0, |finish| finish.slot);
+    if g.rally_count > 0 {
+        let q = usize::from(g.rally_shown[0]).min(1);
+        g.rally_code = record_code(
+            RecordKind::Rally,
+            live_of(run),
+            q,
+            slot(q),
+            times[q],
+            run.salt,
+            0,
+            &run.schedule,
+        );
+    }
+    if !event.split_screen() && !event.head_to_head() {
+        let n = cac_number(live(&run.image));
+        if (3001..=6000).contains(&n) {
+            g.rally_cac = record_code(
+                RecordKind::Rally,
+                live_of(run),
+                0,
+                slot(0),
+                times[0],
+                run.salt,
+                u32::from(n),
+                &run.schedule,
+            );
+            return Some(0x10);
+        }
+    }
+    if g.rally_count > 0 { Some(0xd) } else { None }
+}
+
+/// `FUN_00431730`'s confirm: at the championship's last stage, player
+/// 1's points (the sum of the slot's first six bytes, eight with a
+/// difficulty) and rally wins (`+0xd`) against the difficulty's top five
+/// (`FUN_004ba120`); then the CAC championship competition
+/// (`6001..=9999`), the notice or [`Self::after_championship`].
+fn championship_records(
+    run: &mut RecordRun,
+    g: &mut RecordGlobals,
+    event: &mut EventState,
+) -> Option<u8> {
+    event.cfg.store_live(live_mut(&mut run.image));
+    let slot = run.players.first().map_or(0, |finish| finish.slot);
+    let live = live(&run.image);
+    let wins = i32::from(live[0x179 + 16 * slot] as i8);
+    let difficulty = live[0x18] & 0x18 != 0;
+    let last = if difficulty { 7 } else { 5 };
+    let points: u32 = live[0x170 + 16 * slot..=0x170 + 16 * slot + last]
+        .iter()
+        .map(|&b| u32::from(b))
+        .sum();
+    let final_stage = if difficulty {
+        i32::from(live[0x165] & 0xf) - 1
+    } else {
+        2
+    };
+    if usize::from(live[0x168] & 0xf) < last
+        || i32::from(live[0x168] >> 4) < final_stage
+        || !no_cheats(live)
+    {
+        return None;
+    }
+    let car = live[0xb6];
+    let name = player_name(live, 0);
+    let table = (live[0x18] >> 3) & 3;
+    let place = crate::hiscore_records::championship(
+        &mut run.image[..],
+        &name,
+        car & 0xf,
+        wins,
+        points as i32,
+        table,
+        (car >> 4) & 1 != 0,
+        run.salt,
+    );
+    g.championship_place = place.map_or(-1, |place| place as i32);
+    g.championship_recorded = place.is_some();
+    if place.is_some() {
+        mark(run, event);
+        g.championship_code = record_code(
+            RecordKind::Championship,
+            live_of(run),
+            0,
+            slot,
+            points as i32,
+            run.salt,
+            0,
+            &run.schedule,
+        );
+    }
+    let n = cac_number(live_of(run));
+    if (6001..=9999).contains(&n) {
+        g.championship_cac = record_code(
+            RecordKind::Championship,
+            live_of(run),
+            0,
+            slot,
+            points as i32,
+            run.salt,
+            u32::from(n),
+            &run.schedule,
+        );
+        return Some(0x11);
+    }
+    if g.championship_recorded {
+        Some(0xe)
+    } else {
+        None
+    }
+}
+
+/// The live block of a run's image.
+fn live_of(run: &RecordRun) -> &[u8] {
+    live(&run.image)
 }
 
 /// `FUN_0042f560` (time trial: `FUN_00432460`): restart the rally; outside a
@@ -885,5 +1277,146 @@ mod tests {
         );
         assert_eq!(d.page(), 8);
         assert_eq!(d.menu(), (1, 2));
+    }
+
+    /// A record image whose tables every time beats, with the player named
+    /// and the CAC number `cac`.
+    fn run(cac: u16, time: i32) -> RecordRun {
+        let mut image = Box::new([0u8; LEGACY_CONFIG_SIZE]);
+        for record in 0..(7 * 9) {
+            let at = 0xffc + record * 30 + 0x1a;
+            image[at..at + 2].copy_from_slice(&0xffffu16.to_le_bytes());
+        }
+        for record in 0..(5 * 9) {
+            let at = 0xd7c + record * 16 + 0xc;
+            image[at..at + 4].copy_from_slice(&0x7ffffu32.to_le_bytes());
+        }
+        let live = live_mut(&mut image);
+        live[0x2c..0x31].copy_from_slice(b"COLIN");
+        live[0x20..0x22].copy_from_slice(&cac.to_le_bytes());
+        RecordRun {
+            image,
+            schedule: vec![7; crate::hiscore_codes::SCHEDULE_LEN],
+            players: vec![PlayerFinish {
+                slot: 3,
+                stage_time: time,
+                splits: [1, 2, 3, 4, 5, 6, 7],
+            }],
+            salt: 9,
+        }
+    }
+
+    #[test]
+    fn a_stage_record_shows_its_notice_before_the_rally_results() {
+        let mut event = event(0, 0x21, 0);
+        event.cfg.car_0b6 = 0x12;
+        let mut director =
+            ResultsDirector::start(&mut event, context(1)).with_records(run(0, 4321));
+        press(&mut director, &mut event, confirm());
+        assert_eq!(director.page(), 0xc);
+        let g = director.record_globals();
+        assert_eq!((g.stage_count, g.stage_player), (1, 0));
+        assert!(!g.stage_code.is_empty());
+        let image = &director.records().unwrap().image;
+        let at = 0xffc + (7 + 2) * 30;
+        assert_eq!(&image[at..at + 5], b"COLIN");
+        assert_eq!(
+            u16::from_le_bytes([image[at + 0x1a], image[at + 0x1b]]),
+            4321
+        );
+        assert_eq!(image[at + 0x1c] & 0xf, 2, "the car");
+        assert_eq!(live(image)[0x19], 1);
+        assert_eq!(event.cfg.difficulty_018 & 0x40, 0x40);
+        press(&mut director, &mut event, confirm());
+        assert_eq!(director.page(), 2);
+    }
+
+    #[test]
+    fn a_cac_entry_shows_its_code_page_first() {
+        let mut event = event(0, 0x21, 0);
+        let mut director =
+            ResultsDirector::start(&mut event, context(1)).with_records(run(1234, 4321));
+        press(&mut director, &mut event, confirm());
+        assert_eq!(director.page(), 0xf);
+        assert!(!director.record_globals().stage_cac.is_empty());
+        press(&mut director, &mut event, confirm());
+        assert_eq!(director.page(), 0xc);
+        press(&mut director, &mut event, confirm());
+        assert_eq!(director.page(), 2);
+        // A rally competition number does not stop at the stage.
+        let mut event = self::event(0, 0x21, 0);
+        let mut director =
+            ResultsDirector::start(&mut event, context(1)).with_records(run(4000, 0x10000));
+        press(&mut director, &mut event, confirm());
+        assert_eq!(director.page(), 2, "65536 hundredths cannot record");
+    }
+
+    #[test]
+    fn a_cheat_skips_the_checks() {
+        let mut event = event(0, 0x21, 0);
+        event.cfg.unlocks_024 = 0x40;
+        let mut director =
+            ResultsDirector::start(&mut event, context(1)).with_records(run(1234, 4321));
+        press(&mut director, &mut event, confirm());
+        assert_eq!(director.page(), 2);
+        assert_eq!(director.record_globals().stage_count, 0);
+    }
+
+    #[test]
+    fn a_rally_record_needs_stage_five() {
+        // Stage index 5 of country 0 (not special): the rally's end.
+        let mut event = event(1, 0x50, 0);
+        let mut records = run(0, 0x10000);
+        live_mut(&mut records.image)[0x16c + 16 * 3..0x170 + 16 * 3]
+            .copy_from_slice(&90_000i32.to_le_bytes());
+        event.cfg.results_16c[3][..4].copy_from_slice(&90_000i32.to_le_bytes());
+        let mut director = ResultsDirector::start(&mut event, context(1)).with_records(records);
+        press(&mut director, &mut event, confirm());
+        assert_eq!(director.page(), 2);
+        press(&mut director, &mut event, confirm());
+        assert_eq!(director.page(), 0xd);
+        let g = director.record_globals();
+        assert_eq!((g.rally_count, g.rally_places[0]), (1, 0));
+        let image = &director.records().unwrap().image;
+        assert_eq!(&image[0xd7c..0xd81], b"COLIN");
+        press(&mut director, &mut event, confirm());
+        assert_eq!(director.page(), 4, "a single rally's end goes to the menu");
+        // Stage 4 is not checked.
+        let mut event = self::event(1, 0x40, 0);
+        let mut director =
+            ResultsDirector::start(&mut event, context(1)).with_records(run(0, 0x10000));
+        press(&mut director, &mut event, confirm());
+        press(&mut director, &mut event, confirm());
+        assert_ne!(director.page(), 0xd);
+    }
+
+    #[test]
+    fn a_championship_record_at_the_last_stage() {
+        // Novice: country 5, stage 2; points 6 + 5 (bytes +0x170..=+0x175).
+        let mut event = event(0, 0x25, 0);
+        event.cfg.results_16c[3][4..10].copy_from_slice(&[1, 2, 3, 0, 5, 0]);
+        event.cfg.results_16c[3][0xd] = 2;
+        let mut director =
+            ResultsDirector::start(&mut event, context(1)).with_records(run(0, 0x10000));
+        director.page = 3;
+        press(&mut director, &mut event, confirm());
+        assert_eq!(director.page(), 0xe);
+        let g = director.record_globals();
+        assert_eq!((g.championship_place, g.championship_recorded), (0, true));
+        let image = &director.records().unwrap().image;
+        assert_eq!(image[0xc98 + 0xc], 0x80 | 11);
+        assert_eq!(image[0xc98 + 0xd] & 0xf, 2, "the rally wins");
+        press(&mut director, &mut event, confirm());
+        assert_eq!(director.page(), 0x14, "the championship is complete");
+    }
+
+    #[test]
+    fn the_salt_spans_zero_to_sixty_two() {
+        assert_eq!(record_salt(0), 0);
+        assert_eq!(record_salt(0x8000), 31);
+        // The largest draw scales just under 1 (`0x38000100` rounds below
+        // 1 / 32767).
+        let top = (f64::from(0x7fff) * f64::from(f32::from_bits(0x3800_0100)) * 65536.0) as i32;
+        assert_eq!(record_salt(top), 62);
     }
 }

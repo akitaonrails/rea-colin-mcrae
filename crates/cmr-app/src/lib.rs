@@ -6641,19 +6641,72 @@ impl RaceResults {
 
     /// The results init `FUN_0042f860` once the race reaches state 8 after
     /// the finish (`FUN_00443c80` latches the stage time there).
-    fn frame(&mut self, session: &mut GameplaySession, progress: &StageProgress) {
+    /// The record checks' run is the front end's cmRally.cfg image, which
+    /// comes back with any record the checks wrote.
+    fn frame(
+        &mut self,
+        session: &mut GameplaySession,
+        progress: &StageProgress,
+        config: &mut FrontEndConfig,
+        rng: &mut GameLcg,
+    ) {
         if session.state().id() == 8
             && !session.event().globals.school_d3ca88
             && let Some(time) = progress.finish_centiseconds()
         {
-            self.finish(session, time as u32);
+            let records = self.record_run(config, progress, time, rng);
+            self.finish(session, time as u32, records);
         }
+        if let Some(run) = session.take_record_image() {
+            config.image = run.image;
+        }
+    }
+
+    /// What the record checks read: the image, the code schedule (none
+    /// without the static tables: the checks are skipped), the one player's
+    /// slot, time and splits, and the init's salt draw.
+    fn record_run(
+        &self,
+        config: &FrontEndConfig,
+        progress: &StageProgress,
+        time: i32,
+        rng: &mut GameLcg,
+    ) -> Option<cmr_core::results_director::RecordRun> {
+        if self.finished {
+            return None;
+        }
+        let schedule = self
+            .static_tables
+            .as_ref()?
+            .tables()
+            .block("hiscore_code_schedule")?
+            .to_vec();
+        let slot = self.rivals.as_ref()?.player_slots.first().copied()?;
+        let mut splits = [0u16; 7];
+        for (split, &t) in splits.iter_mut().zip(progress.split_times()) {
+            *split = t as u16;
+        }
+        Some(cmr_core::results_director::RecordRun {
+            image: config.image.clone(),
+            schedule,
+            players: vec![cmr_core::results_director::PlayerFinish {
+                slot: usize::from(slot),
+                stage_time: time,
+                splits,
+            }],
+            salt: cmr_core::results_director::record_salt(rng.next_q16()),
+        })
     }
 
     /// The results init `FUN_0042f860` at the finish: the standings
     /// `FUN_0042fab0`, then the director. Without the rival records the
     /// player is alone and placed first (harness).
-    fn finish(&mut self, session: &mut GameplaySession, stage_time: u32) {
+    fn finish(
+        &mut self,
+        session: &mut GameplaySession,
+        stage_time: u32,
+        records: Option<cmr_core::results_director::RecordRun>,
+    ) {
         if self.finished {
             return;
         }
@@ -6677,7 +6730,7 @@ impl RaceResults {
             save_schedule: self.save_schedule(),
             screen_height: ROOT_EXTENT.height,
         };
-        session.start_results(context);
+        session.start_results(context, records);
     }
 
     /// `FUN_0042fab0` for the one player.
@@ -6984,7 +7037,7 @@ pub fn run_windowed_game_session(
                                 input,
                             )
                         });
-                        results.frame(&mut session, &progress);
+                        results.frame(&mut session, &progress, &mut config, &mut camera.rng);
                         match frame {
                             Ok(outcome) => {
                                 // A composed world frame wins; otherwise the interactive
@@ -7079,7 +7132,7 @@ pub fn run_windowed_game_session(
                 input,
             )
         });
-        results.frame(&mut session, &progress);
+        results.frame(&mut session, &progress, &mut config, &mut camera.rng);
         match frame {
             Ok(outcome) => WindowedGameFrame {
                 present: outcome.world.or(outcome.loading_interstitial),
@@ -10361,7 +10414,7 @@ mod tests {
             },
             InRaceScript::gameplay_harness(),
         );
-        results.finish(&mut session, 12_345);
+        results.finish(&mut session, 12_345, None);
         let director = session.results().expect("the finish starts the results");
         assert_eq!(director.page(), 1);
         assert!(session.event().globals.results_550024);
