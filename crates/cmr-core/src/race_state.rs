@@ -411,6 +411,11 @@ pub struct FourWheelIterationParams<'a> {
     /// `ctl +0x128/+0x12c`, the crest threshold and speed-loss gain of the
     /// grip assist (from the auxiliary control patch `FUN_00407270`).
     pub crest_128_12c: [i32; 2],
+    /// `ctl +0x11c/+0x120/+0x124` read by the suspension animation
+    /// `FUN_00410350` (from the auxiliary control patch).
+    pub suspension: crate::wheel_animation::SuspensionConstants,
+    /// Setup block `+0x800..+0x80c`: the wheel wobble and camber words.
+    pub wheel_setup_800: [i32; 4],
     /// Resolved global/callback inputs; Rebuild takes precedence over Exchange.
     pub lane_rebuild: bool,
     pub lane_exchange: bool,
@@ -540,6 +545,12 @@ pub fn populate_car_setup(wheel: &mut FourWheelIterationParams<'_>, setup: &CarS
     for (first, constant) in wheel.first.iter_mut().zip(setup.wheel_constants_83c) {
         first.wheel_constant = constant;
     }
+    wheel.wheel_setup_800 = [
+        setup.setup_800[0],
+        setup.setup_800[1],
+        setup.setup_800[2],
+        setup.setup_800[3],
+    ];
     if let Some(gearbox) = &mut wheel.gearbox {
         gearbox.gear_two_skip = setup.gear_two_skip();
     }
@@ -621,6 +632,8 @@ pub struct FourWheelState {
     pub barrier_contact_6dc: bool,
     /// `DAT_0050c574`, `+0x6e0` and the `+0x75c` timer.
     pub trigger_walk: TriggerWalkState,
+    /// The wheel and suspension animation words the renderer draws.
+    pub wheels: crate::wheel_animation::WheelAnimationState,
 }
 
 /// Apply neutral-gear zeroing or the ordinary post-step tracking update.
@@ -1045,6 +1058,7 @@ impl CarState {
                     previous_contact_6e0: false,
                     penalty_timer_75c: 0,
                 },
+                wheels: crate::wheel_animation::WheelAnimationState::REST,
             },
             ground: None,
         }
@@ -2200,6 +2214,62 @@ impl RaceState {
         Ok(())
     }
 
+    /// The mechanics routine's render-spin block for this car
+    /// (`0x43b3a4`, after the trigger walk).
+    pub fn animate_wheel_spin(
+        &mut self,
+        controls: &Controls,
+        wheel: &FourWheelIterationParams<'_>,
+    ) {
+        let four_wheel = &mut self.car.four_wheel;
+        crate::wheel_animation::spin_step(
+            &mut four_wheel.wheels,
+            &crate::wheel_animation::SpinInput {
+                raw_2a8: four_wheel.first.map(|first| first.wheel_speed),
+                smoothed_2b8: four_wheel.smoothed_wheel_speeds,
+                handbrake_30c: i32::from(controls.handbrake),
+                brake_308: controls.raw_pedals.brake_308,
+                split_170: wheel.driven_smoothing.split_170,
+            },
+        );
+    }
+
+    /// `FUN_00417e20`, run per car before the ground pass.
+    pub fn animate_wheel_wobble(&mut self, wheel: &FourWheelIterationParams<'_>) {
+        let four_wheel = &mut self.car.four_wheel;
+        crate::wheel_animation::wobble_step(
+            &mut four_wheel.wheels,
+            four_wheel.smoothed_wheel_speeds,
+            wheel.wheel_setup_800,
+            &self.trig,
+        );
+    }
+
+    /// `FUN_00410350`, the last step of the ground pass.
+    pub fn animate_suspension(&mut self, wheel: &FourWheelIterationParams<'_>) {
+        let Some(ground) = self.car.ground else {
+            return;
+        };
+        let car = &mut self.car;
+        crate::wheel_animation::suspension_step(
+            &mut car.four_wheel.wheels,
+            &crate::wheel_animation::SuspensionInput {
+                normal: car.motion.projection_axis,
+                row1: car.motion.basis[1],
+                probe_y: std::array::from_fn(|i| ground.probes[i][1]),
+                lane_words: std::array::from_fn(|i| ground.lanes.lane_words[i]),
+                constants: wheel.suspension,
+                out_of_control_680: car.collision.response_state_680,
+                surface_types: std::array::from_fn(|i| ground.lanes.type_words[i]),
+                probe_clear: std::array::from_fn(|i| ground.thresholds.flags_73a[i] != 0),
+                upright_404: car.four_wheel.upright_404,
+                speed_ec: car.four_wheel.speed_ec,
+                contact_vectors: std::array::from_fn(|i| car.four_wheel.contact_vectors_4bc[i]),
+            },
+            &self.trig,
+        );
+    }
+
     /// The trigger walk `FUN_00403a00` for this car over the `.dat` records of
     /// its cell (`FUN_0048fd20` of the current centre), followed by the
     /// mechanics routine's probe snapshot into `+0x15c`. Barrier pushes,
@@ -3172,6 +3242,8 @@ mod tests {
             hull_contact_offsets: [Vec3::ZERO; 4],
             // Harness value: never crest.
             crest_128_12c: [i32::MAX, 0],
+            suspension: crate::wheel_animation::SuspensionConstants::default(),
+            wheel_setup_800: [0; 4],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {

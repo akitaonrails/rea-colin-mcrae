@@ -1955,6 +1955,9 @@ per frame.
 A finished stage now returns to the menu and a new stage starts from its setup
 (`impl.gameplay-script-and-stage-restart`), instead of the app stopping.
 
+The wheels now spin, steer, follow the suspension and vibrate on rough surfaces
+(`impl.wheel-animation`).
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

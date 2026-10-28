@@ -431,6 +431,7 @@ The HUD value preparation `FUN_00464130` feeds the live rev, speed and gear.
 The `.dat` trigger walk `FUN_00403a00` with the barrier walls `FUN_00401fd0` runs each tick.
 Co-driver calls play through the recovered sequencer `FUN_00444450`.
 A finished stage returns to the menu band; re-entering driving restores the stage setup.
+The wheel/suspension animation and wheel node pose (`FUN_00410350`, `FUN_00417e20`, `FUN_00439ee0`) are reconstructed.
 
 ## Update rules
 
@@ -441,14 +442,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-29T04:25:00Z
-milestone=change-view-binding
+updated_utc=2026-10-29T06:00:00Z
+milestone=wheel-animation
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-handling-out-of-control-path-and-car-animation
-next_exit_gate=damage-and-engine-audio
+next_exit_gate=engine-audio
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

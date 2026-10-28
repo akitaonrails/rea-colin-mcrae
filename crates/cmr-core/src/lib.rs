@@ -155,4 +155,5 @@ pub mod vehicle_dynamics;
 pub mod vertical_path;
 pub mod video_player;
 pub mod weather;
+pub mod wheel_animation;
 pub mod window;

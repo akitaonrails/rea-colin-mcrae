@@ -273,6 +273,8 @@ mod tests {
             hull_contact_offsets: [Vec3::ZERO; 4],
             // Harness value: never crest.
             crest_128_12c: [i32::MAX, 0],
+            suspension: crate::wheel_animation::SuspensionConstants::default(),
+            wheel_setup_800: [0; 4],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {

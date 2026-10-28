@@ -27,7 +27,6 @@ use cmr_formats::c3d::{C3dFile, C3dGroup1Record};
 
 use crate::c3d_mesh::{AssembleNodeMeshError, AssembledMesh, assemble_scene_meshes};
 use crate::c3d_scene_graph::{DrawOp, SceneAssemblyError, SceneGraph};
-use crate::c3d_transform::scene_world_transforms;
 
 /// The single render pass the scene walk emits. Every node a freshly parsed C3D
 /// yields carries the all-passes default mask ([`SceneGraph::from_c3d_group0`]),
@@ -61,8 +60,27 @@ impl<'a> StageScene<'a> {
         root_world: &[i32; 16],
         vertex_type: u32,
     ) -> Result<Self, StageSceneError> {
+        Self::from_c3d_with_locals(scene, root_world, vertex_type, &[])
+    }
+
+    /// [`Self::from_c3d`] with some nodes' local matrices replaced (the posed
+    /// wheel nodes of a car).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_c3d`].
+    pub fn from_c3d_with_locals(
+        scene: &'a C3dFile,
+        root_world: &[i32; 16],
+        vertex_type: u32,
+        overrides: &[(usize, [i32; 16])],
+    ) -> Result<Self, StageSceneError> {
         let graph = SceneGraph::from_c3d_group0(scene.group0_records())?;
-        let worlds = scene_world_transforms(scene.group0_records(), root_world);
+        let worlds = crate::c3d_transform::scene_world_transforms_with_locals(
+            scene.group0_records(),
+            root_world,
+            overrides,
+        );
         let roots: Vec<usize> = scene
             .group0_records()
             .enumerate()

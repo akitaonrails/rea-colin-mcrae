@@ -2419,11 +2419,25 @@ impl StageRenderResources {
         camera: &[i32; 16],
         car_world: Option<&[i32; 16]>,
     ) -> Result<RenderedStageFrameOutput, StageFrameError> {
-        let car_node_worlds = self
-            .car_scene
-            .as_ref()
-            .zip(car_world)
-            .map(|(scene, root)| scene_world_transforms(scene.group0_records(), root));
+        self.compose_with_posed_car(camera, car_world, &[])
+    }
+
+    /// [`Self::compose_with_car`] with the car's wheel nodes posed by the
+    /// render interpolation (`FUN_00439ee0`): `wheels` pairs a car record index
+    /// with its local matrix.
+    pub fn compose_with_posed_car(
+        &mut self,
+        camera: &[i32; 16],
+        car_world: Option<&[i32; 16]>,
+        wheels: &[(usize, [i32; 16])],
+    ) -> Result<RenderedStageFrameOutput, StageFrameError> {
+        let car_node_worlds = self.car_scene.as_ref().zip(car_world).map(|(scene, root)| {
+            cmr_core::c3d_transform::scene_world_transforms_with_locals(
+                scene.group0_records(),
+                root,
+                wheels,
+            )
+        });
         let horizon_node_worlds =
             self.bundle
                 .horizon()
@@ -2469,13 +2483,21 @@ impl StageRenderResources {
                 }
             }
         }
-        self.compose_software(camera, car_world)
+        self.compose_software(camera, car_world, wheels)
+    }
+
+    /// The player car's wheel nodes, rest poses and radius (`FUN_00404310`,
+    /// `FUN_00480e60`), or `None` without a car model or its four wheels.
+    #[must_use]
+    pub fn wheel_rig(&self) -> Option<WheelRig> {
+        WheelRig::from_scene(self.car_scene.as_ref()?)
     }
 
     fn compose_software(
         &self,
         camera: &[i32; 16],
         car_world: Option<&[i32; 16]>,
+        wheels: &[(usize, [i32; 16])],
     ) -> Result<RenderedStageFrameOutput, StageFrameError> {
         let scene = StageScene::from_c3d(
             self.bundle.scene(),
@@ -2523,10 +2545,11 @@ impl StageRenderResources {
             car_world,
         ) {
             let car_policy = in_race_car_load_policy(WINDOWED_BODY_LOAD_BRANCH, false);
-            let car = StageScene::from_c3d(
+            let car = StageScene::from_c3d_with_locals(
                 car_scene,
                 car_world,
                 node_mesh_vertex_type(car_policy.load_flags),
+                wheels,
             )
             .map_err(StageFrameError::Scene)?;
             let car_frame = compose_stage_scene_frame_color_key(
@@ -2739,6 +2762,72 @@ impl HostClock for WallClock {
 /// recovered FSM, input chain, and render routes drive the session. Player-car
 /// rendering and the in-race HUD remain separate composition work.
 ///
+/// The player car's wheel nodes as the car setup finds them
+/// (`FUN_00495050(model, 1..4)`, the first record with that id), their rest
+/// rows and translations (copied to `+0x5a4` at `0x4043b1`), and the wheel
+/// radius `FUN_00480e60` derives from node 6: its y scale (`1.0` from the node
+/// init `FUN_00492310`) times the y bound `+0x94` of its attached mesh, halved
+/// toward zero. The attached mesh is taken as the first entry of the record's
+/// mesh list (an inference).
+#[derive(Clone, Copy, Debug)]
+pub struct WheelRig {
+    records: [usize; 4],
+    rest_rows: [[Vec3; 3]; 4],
+    rest_translation: [[i32; 3]; 4],
+    radius: i32,
+}
+
+impl WheelRig {
+    fn from_scene(scene: &C3dFile) -> Option<Self> {
+        let records: Vec<_> = scene.group0_records().collect();
+        let find = |id: u16| records.iter().position(|record| record.node_id() == id);
+        let indices = [find(1)?, find(2)?, find(3)?, find(4)?];
+        let poses = indices.map(|index| {
+            cmr_core::wheel_animation::matrix_rows(&records[index].affine_matrix_q16())
+        });
+        let radius_node = &records[find(6)?];
+        let mesh = usize::from(radius_node.values().next()?);
+        let bound = scene.group1_records().nth(mesh)?.collision_bounds_q16()[1];
+        let radius = cmr_core::car_resources::wheel_radius(0x1_0000, bound, false);
+        Some(Self {
+            records: indices,
+            rest_rows: poses.map(|(rows, _)| rows),
+            rest_translation: poses.map(|(_, translation)| translation),
+            radius,
+        })
+    }
+
+    /// The four posed wheel locals for the car's current animation words.
+    fn locals(
+        &self,
+        car: &CarState,
+        setup_800: [i32; 4],
+        analog_steer: bool,
+        trig: &[i32],
+    ) -> Vec<(usize, [i32; 16])> {
+        let input = cmr_core::wheel_animation::WheelPoseInput {
+            rest_rows: self.rest_rows,
+            rest_translation: self.rest_translation,
+            wheel_radius: self.radius,
+            half_height_30: car.motion.compiled_half_words.y.raw(),
+            steer_angle: if analog_steer {
+                car.four_wheel.steering.target_3e2
+            } else {
+                car.four_wheel.steering.angle_3e0
+            },
+            setup_800,
+            rear_steer: false,
+            no_ride_offset: false,
+        };
+        (0..4)
+            .filter_map(|wheel| {
+                cmr_core::wheel_animation::wheel_pose(&car.four_wheel.wheels, &input, wheel, trig)
+                    .map(|local| (self.records[wheel], local))
+            })
+            .collect()
+    }
+}
+
 /// The windowed session's camera state is the recovered multi-mode view
 /// controller. The view modes, their placement math, and the cycle order are
 /// recovered behavior ([`ViewController`]/[`cmr_core::camera_view`]); the
@@ -2962,6 +3051,7 @@ fn advance_game_frame<C: HostClock>(
     };
     let controls = drive.controls;
     let change_view = drive.car.change_view_fired;
+    let steer_analog = drive.car.steer_analog;
     let advanced = if let Some(parsed) = resources.static_collision_scene() {
         session
             .try_advance_with_static_collision(
@@ -3010,8 +3100,14 @@ fn advance_game_frame<C: HostClock>(
             resources.bundle.nodes().map_or(0, <[CatNode]>::len),
             session.stage_clock(),
         );
+        // A four-wheel car's wheel nodes are posed from its animation words
+        // (`FUN_00439ee0`); the planar harness has none.
+        let wheels = match (session.wheel_setup_800(), resources.wheel_rig()) {
+            (Some(setup_800), Some(rig)) => rig.locals(&car, setup_800, steer_analog, &camera.trig),
+            _ => Vec::new(),
+        };
         let world = resources
-            .compose_with_car(&camera_world, Some(&car_world))
+            .compose_with_posed_car(&camera_world, Some(&car_world), &wheels)
             .map(|rendered| rendered.frame)?;
         compose_live_race_hud(resources, world, hud_input)
     })?;
@@ -3226,10 +3322,14 @@ impl SessionAuxControl {
         Ok(Self { set })
     }
 
-    /// `ctl +0x128/+0x12c` of the patch for the session's zero config: its
-    /// option byte selects the default policy, and the patch's global word is
+    /// Control words of the patch for the session's zero config: its option
+    /// byte selects the default policy, and the patch's global word is
     /// `DAT_004eac6c`.
-    fn crest_words(&self, state_word_48: i32) -> Result<[i32; 2], String> {
+    fn patch_words<const N: usize>(
+        &self,
+        state_word_48: i32,
+        offsets: [u16; N],
+    ) -> Result<[i32; N], String> {
         use cmr_core::compiled_car_initializer::{AUX_CONTROL_WORD_OFFSETS, AuxControlOption};
         let patch = self
             .set
@@ -3248,7 +3348,7 @@ impl SessionAuxControl {
                 .expect("the patch writes this word");
             patch.words[index]
         };
-        Ok([word(0x128), word(0x12c)])
+        Ok(offsets.map(word))
     }
 }
 
@@ -3445,6 +3545,8 @@ impl SessionWheelInputs {
             hull_contact_offsets: [Vec3::ZERO; 4],
             // Harness value: never crest.
             crest_128_12c: [i32::MAX, 0],
+            suspension: cmr_core::wheel_animation::SuspensionConstants::default(),
+            wheel_setup_800: [0; 4],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -3991,9 +4093,18 @@ impl SessionCompiledPose {
         // `FUN_0041b160` reads the player's sensitivity option; the session's
         // zero config selects option 0.
         wheel.steering = cmr_core::steering_response::steering_sensitivity(wheel.steering, 0);
-        wheel.crest_128_12c = aux
-            .crest_words(car.constants.state_word_48)
+        let [crest_128, crest_12c, travel_11c, limit_120, rate_124] = aux
+            .patch_words(
+                car.constants.state_word_48,
+                [0x128, 0x12c, 0x11c, 0x120, 0x124],
+            )
             .map_err(SessionFourWheelError::AuxControl)?;
+        wheel.crest_128_12c = [crest_128, crest_12c];
+        wheel.suspension = cmr_core::wheel_animation::SuspensionConstants {
+            travel_gain_11c: travel_11c,
+            limit_120,
+            rate_124,
+        };
         Ok(wheel)
     }
 }
@@ -5812,6 +5923,28 @@ mod tests {
             "frames static_collision_scene={}",
             resources.static_collision_scene().is_some()
         );
+        if let Some(rig) = resources.wheel_rig() {
+            eprintln!(
+                "frames wheel rig records={:?} radius={:#x} rest={:x?} rows0={:x?}",
+                rig.records,
+                rig.radius,
+                rig.rest_translation,
+                rig.rest_rows[0].map(|row| [row.x.raw(), row.y.raw(), row.z.raw()]),
+            );
+            let car = session.car();
+            eprintln!(
+                "frames wheel half_y={:#x} pose0={:x?}",
+                car.motion.compiled_half_words.y.raw(),
+                rig.locals(
+                    &car,
+                    [0; 4],
+                    false,
+                    &cmr_core::fixed_point::build_sine_table()
+                )
+            );
+        } else {
+            eprintln!("frames wheel rig missing");
+        }
         let mut keyboard = KeyboardDriver::player_one();
         let mut analog = AnalogDriver::new();
         let response = DriveResponse {

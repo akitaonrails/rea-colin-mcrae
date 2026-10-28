@@ -308,6 +308,13 @@ impl<'a> GameplaySession<'a> {
         ))
     }
 
+    /// The four-wheel car's setup wheel words `+0x800..+0x80c`, or `None`
+    /// for the planar harness.
+    #[must_use]
+    pub fn wheel_setup_800(&self) -> Option<[i32; 4]> {
+        self.wheel.as_ref().map(|wheel| wheel.wheel_setup_800)
+    }
+
     /// What the reset dispatcher did on the last four-wheel tick.
     #[must_use]
     pub fn last_reset(&self) -> ResetOutcome {
@@ -358,6 +365,7 @@ impl<'a> GameplaySession<'a> {
     /// (`0x43b50a`, `0x43b517`).
     fn four_wheel_tail(
         &mut self,
+        controls: &Controls,
         progress: &mut StageProgress,
         sample: &mut crate::race_state::TraceSample,
     ) -> Result<(), WheelPostprocessError> {
@@ -383,6 +391,11 @@ impl<'a> GameplaySession<'a> {
             }
             self.last_trigger_events = events;
         }
+        // The render-spin block (`0x43b3a4`) runs before the per-car loop,
+        // whose order is `FUN_00417e20`, the ground pass (ending in
+        // `FUN_00410350`), `FUN_00415df0` and the reset.
+        self.race.animate_wheel_spin(controls, wheel);
+        self.race.animate_wheel_wobble(wheel);
         if let Some(geometry) = self.ground_geometry {
             let mut config = |_lane: usize| Ok::<u8, std::convert::Infallible>(0);
             self.race.run_ground_pass(
@@ -390,6 +403,7 @@ impl<'a> GameplaySession<'a> {
                 &mut geometry.eight_lane_providers(),
                 &mut config,
             )?;
+            self.race.animate_suspension(wheel);
             let environment = self.reset_environment;
             let dispatch = ResetDispatchInput {
                 nodes: progress.nodes(),
@@ -479,7 +493,7 @@ impl<'a> GameplaySession<'a> {
             Some(if self.wheel.is_some() {
                 let race_before = self.race.clone();
                 let mut sample = self.four_wheel_drive(&controls)?;
-                if let Err(error) = self.four_wheel_tail(progress, &mut sample) {
+                if let Err(error) = self.four_wheel_tail(&controls, progress, &mut sample) {
                     self.race = race_before;
                     return Err(error);
                 }
@@ -546,7 +560,8 @@ impl<'a> GameplaySession<'a> {
                 return Err(StaticGameplayAdvanceError::Collision(error));
             }
             sample.car = self.race.car();
-            if four_wheel && let Err(error) = self.four_wheel_tail(progress, &mut sample) {
+            if four_wheel && let Err(error) = self.four_wheel_tail(&controls, progress, &mut sample)
+            {
                 self.race = race_before;
                 return Err(StaticGameplayAdvanceError::Wheel(error));
             }
@@ -763,6 +778,8 @@ mod tests {
             hull_contact_offsets: [Vec3::ZERO; 4],
             // Harness value: never crest.
             crest_128_12c: [i32::MAX, 0],
+            suspension: crate::wheel_animation::SuspensionConstants::default(),
+            wheel_setup_800: [0; 4],
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: crate::race_state::FourWheelPostprocessParams {

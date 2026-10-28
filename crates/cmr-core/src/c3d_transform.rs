@@ -146,17 +146,34 @@ pub fn scene_world_transforms<'a>(
     records: impl IntoIterator<Item = C3dGroup0Record<'a>>,
     root_world: &[i32; 16],
 ) -> Vec<[i32; 16]> {
+    scene_world_transforms_with_locals(records, root_world, &[])
+}
+
+/// [`scene_world_transforms`] with some records' local matrices replaced, as
+/// the render interpolation `FUN_00439ee0` poses the car's wheel nodes before
+/// the scene is drawn. `overrides` pairs a record index with its local matrix.
+#[must_use]
+pub fn scene_world_transforms_with_locals<'a>(
+    records: impl IntoIterator<Item = C3dGroup0Record<'a>>,
+    root_world: &[i32; 16],
+    overrides: &[(usize, [i32; 16])],
+) -> Vec<[i32; 16]> {
     let records: Vec<C3dGroup0Record<'a>> = records.into_iter().collect();
     let inputs: Vec<NodeWorldInput> = records
         .iter()
-        .map(|record| {
+        .enumerate()
+        .map(|(index, record)| {
             let parent = record.parent_index();
             let parent_is_world_root = parent
                 .and_then(|p| records.get(p))
                 .is_some_and(|p| p.node_class() == WORLD_ROOT_CLASS as u32);
+            let local = overrides
+                .iter()
+                .find(|(target, _)| *target == index)
+                .map_or_else(|| record.affine_matrix_q16(), |(_, local)| *local);
             NodeWorldInput {
                 parent,
-                local: record.affine_matrix_q16(),
+                local,
                 parent_is_world_root,
                 inherit_parent_world: false,
                 is_focus: false,
