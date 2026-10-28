@@ -1387,6 +1387,44 @@ pub const ANGLE0_ALIGNMENT_GATE: Fixed16 = Fixed16::from_raw(0xcccc);
 /// (`+0x700`, `0x40b15b`).
 pub const RESTING_SPEED: Fixed16 = Fixed16::from_raw(0xa3d);
 
+/// The raw steer magnitudes in the control record (`+0x2fc` left, `+0x300`
+/// right), as written by the in-race mapper `FUN_00449580`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RawSteer {
+    pub left_2fc: i32,
+    pub right_300: i32,
+}
+
+/// Speed bound below which the mechanics driver zeroes both steer magnitudes
+/// (`FUN_00407690`, `CMP EAX,0x147; JGE` at `0x407b58`).
+pub const LOW_SPEED_STEER_CUT: i32 = 0x147;
+
+/// The mechanics driver's low-speed steer cut (`0x407b4c..0x407b6b`).
+///
+/// It runs before the steering consumer `FUN_0041b5b0` and every integrator,
+/// against `+0xec` as left by the previous tick's integrator. The absolute
+/// value is a wrapping `NEG` under a signed `JGE`, so `i32::MIN` stays negative
+/// and is cut.
+#[must_use]
+pub fn apply_low_speed_steer_cut(steer: RawSteer, speed_ec: i32) -> RawSteer {
+    if speed_ec.wrapping_abs() < LOW_SPEED_STEER_CUT {
+        RawSteer::default()
+    } else {
+        steer
+    }
+}
+
+/// Per-tick words the integrator's angle deadzones read besides the angles.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ContactDeadzoneGate {
+    /// `+0x742 > 0` (`0x40afcc`). When false the deadzones are skipped.
+    pub contacts_active_742: bool,
+    /// The steer magnitudes after [`apply_low_speed_steer_cut`].
+    pub steer: RawSteer,
+    /// Control `+0x404`, as [`upright_flag_404`] at the start of the tick.
+    pub upright_404: bool,
+}
+
 /// Inputs to the contact-gated angle deadzones of `FUN_0040a4a0`
 /// (`0x40afc7..0x40b0a3`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1493,18 +1531,22 @@ pub struct AngularOrientationOutcome {
 }
 
 /// Compose momentum integration, the moment-overflow trigger, optional
-/// clamping, angle conversion, selective resets, and the three-stage
-/// orientation update in native order.
+/// clamping, angle conversion, the contact-gated deadzones, selective resets,
+/// and the three-stage orientation update in native order.
 ///
 /// `out_of_control` is the live `+0x680/+0x688/+0xbc` state and
 /// `projection_axis` the live `+0x324` axis. The angle conversion branches on
 /// `+0x680` *after* the trigger, so the tick that trips it already uses the
-/// out-of-control conversion.
+/// out-of-control conversion. Both conversion branches reach the deadzones
+/// (`0x40af30` jumps, `0x40afc3` falls through to `0x40afc7`), which read the
+/// alignment `dot(+0x324, +0x264)` against the pre-update basis row 1 and run
+/// before the control-axis resets (`0x40b0ad`).
 #[must_use]
 pub fn apply_angular_orientation_pipeline(
     input: AngularOrientationInput,
     out_of_control: OutOfControlState,
     projection_axis: Vec3,
+    deadzone: ContactDeadzoneGate,
     trig: &[i32],
 ) -> Option<AngularOrientationOutcome> {
     let momentum = apply_angular_momentum_step(input.momentum);
@@ -1528,6 +1570,16 @@ pub fn apply_angular_orientation_pipeline(
         angle(current.y, momentum.delta_velocity.y),
         angle(current.z, momentum.delta_velocity.z),
     ];
+    let angles = apply_contact_angle_deadzones(
+        angles,
+        AngleDeadzoneInputs {
+            contacts_active_742: deadzone.contacts_active_742,
+            alignment_264: projection_axis.dot(input.basis[1]),
+            steer_left_2fc: deadzone.steer.left_2fc,
+            steer_right_300: deadzone.steer.right_300,
+            word_404: i32::from(deadzone.upright_404),
+        },
+    );
     let reset = apply_control_axis_resets(current, angles, input.control);
     let basis = integrate_orientation(input.basis, reset.angle_increments, trig)?;
     Some(AngularOrientationOutcome {
@@ -2238,6 +2290,7 @@ mod tests {
             },
             OutOfControlState::default(),
             Vec3::ZERO,
+            ContactDeadzoneGate::default(),
             &trig,
         )
         .unwrap();
@@ -2278,6 +2331,7 @@ mod tests {
                 },
                 OutOfControlState::default(),
                 Vec3::ZERO,
+                ContactDeadzoneGate::default(),
                 &trig[..0x100],
             ),
             None
@@ -2551,6 +2605,100 @@ mod tests {
     }
 
     #[test]
+    fn low_speed_steer_cut_zeroes_both_magnitudes_strictly_below_0x147() {
+        let steer = RawSteer {
+            left_2fc: 0xfc00,
+            right_300: 0x400,
+        };
+        for slow in [0, 0x146, -0x146, i32::MIN] {
+            assert_eq!(
+                apply_low_speed_steer_cut(steer, slow),
+                RawSteer::default(),
+                "{slow:#x}"
+            );
+        }
+        for fast in [0x147, -0x147, i32::MAX] {
+            assert_eq!(apply_low_speed_steer_cut(steer, fast), steer, "{fast:#x}");
+        }
+    }
+
+    #[test]
+    fn pipeline_applies_the_contact_deadzones_to_the_converted_angles() {
+        let trig = crate::fixed_point::build_sine_table();
+        let input = AngularOrientationInput {
+            momentum: AngularMomentumStepInput {
+                prior_moment: Vec3::ZERO,
+                contact_moment: Vec3::ZERO,
+                moment_scale: Fixed16::ONE,
+                inertia_scale: Vec3::ZERO,
+                angular_velocity: raw_v(0x400, -0x400, 0x400),
+                time_step: Fixed16::from_raw(0x8000),
+            },
+            clamp_enabled: false,
+            control: ControlAxisFlags {
+                mode_3ec: 0,
+                axis_3f4: 0,
+                axis_3f8: 0,
+            },
+            basis: standard_basis(),
+        };
+        let run = |axis: Vec3, deadzone: ContactDeadzoneGate| {
+            apply_angular_orientation_pipeline(
+                input,
+                OutOfControlState::default(),
+                axis,
+                deadzone,
+                &trig,
+            )
+            .unwrap()
+        };
+        let up = standard_basis()[1];
+        let open = run(up, ContactDeadzoneGate::default());
+        assert!(
+            open.angle_increments
+                .iter()
+                .all(|angle| *angle != 0 && i32::from(*angle).abs() < ANGLE_DEADZONE_BAM),
+            "the fixture must produce small nonzero angles: {:?}",
+            open.angle_increments
+        );
+        assert_ne!(open.basis, input.basis);
+
+        // Contacting, aligned with row 1, not steering: every axis is zeroed and
+        // the basis is left unchanged.
+        let gate = ContactDeadzoneGate {
+            contacts_active_742: true,
+            steer: RawSteer::default(),
+            upright_404: true,
+        };
+        let still = run(up, gate);
+        assert_eq!(still.angle_increments, [0; 3]);
+        assert_eq!(still.basis, input.basis);
+
+        // Steering while upright keeps Y; a projection axis off row 1 keeps X.
+        let steering = ContactDeadzoneGate {
+            steer: RawSteer {
+                left_2fc: 0,
+                right_300: 0x400,
+            },
+            ..gate
+        };
+        let steered = run(standard_basis()[2], steering);
+        assert_eq!(
+            steered.angle_increments,
+            [open.angle_increments[0], open.angle_increments[1], 0]
+        );
+        // The same steer with `+0x404` clear zeroes Y again.
+        let tipped = run(
+            standard_basis()[2],
+            ContactDeadzoneGate {
+                upright_404: false,
+                ..steering
+            },
+        );
+        assert_eq!(tipped.angle_increments, [open.angle_increments[0], 0, 0]);
+    }
+
+    #[test]
     fn pipeline_trips_on_the_decayed_moment_and_uses_out_of_control_angles() {
         let trig = crate::fixed_point::build_sine_table();
         let input = |prior_x: i32| AngularOrientationInput {
@@ -2575,6 +2723,7 @@ mod tests {
                 input(prior_x),
                 OutOfControlState::default(),
                 raw_v(0, 0, 0x10000),
+                ContactDeadzoneGate::default(),
                 &trig,
             )
             .unwrap()

@@ -3980,6 +3980,7 @@ pub fn run_headless_game_session() -> HeadlessGameSessionOutput {
         steer_rate: 0,
         forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
         handbrake: false,
+        raw_steer: Default::default(),
     };
     drive_headless_session(&mut session, controls).expect("the simplified session is infallible")
 }
@@ -4079,6 +4080,7 @@ pub fn run_headless_four_wheel_game_session(
         steer_rate: 0,
         forward_force: Fixed16::ONE,
         handbrake: false,
+        raw_steer: Default::default(),
     };
     Ok(drive_headless_session(&mut session, controls)?)
 }

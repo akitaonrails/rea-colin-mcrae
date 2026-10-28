@@ -52,15 +52,15 @@ use crate::static_world_collision::{
     StaticCollisionExecutionError, StaticContactHistory, resolve_static_world_collisions,
 };
 use crate::vehicle_dynamics::{
-    AngularOrientationInput, ContactBasisInput, ContactVectorUpdateInput,
+    AngularOrientationInput, ContactBasisInput, ContactDeadzoneGate, ContactVectorUpdateInput,
     GeometricPostprocessError, GeometricPostprocessLane, LaneDirectionSources,
-    LookupDependentCandidateError, OutOfControlState, SurfaceCoefficientIndexError,
+    LookupDependentCandidateError, OutOfControlState, RawSteer, SurfaceCoefficientIndexError,
     TranslationStepInput, apply_angular_orientation_pipeline, apply_contact_vector_updates,
-    apply_geometric_lane_postprocess, apply_lateral_grip, apply_translation_step,
-    build_contact_basis_vectors, construct_lane_directions, contact_count_scale,
-    contact_global_update_gate, derive_lane_direction_pair, drag, net_accel,
-    resolve_lane_direction_mode, stabilize_lane_source_s, sum_contact_moments,
-    sum_translation_lane_forces, transform_contact_force,
+    apply_geometric_lane_postprocess, apply_lateral_grip, apply_low_speed_steer_cut,
+    apply_translation_step, build_contact_basis_vectors, construct_lane_directions,
+    contact_count_scale, contact_global_update_gate, derive_lane_direction_pair, drag, net_accel,
+    resolve_lane_direction_mode, resting_flag_700, stabilize_lane_source_s, sum_contact_moments,
+    sum_translation_lane_forces, transform_contact_force, upright_flag_404,
 };
 use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
 
@@ -75,7 +75,7 @@ pub struct SimParams {
 }
 
 /// A driver's per-tick inputs for the harness.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Controls {
     /// Signed BAM steering rate added to the heading each tick.
     pub steer_rate: i16,
@@ -83,6 +83,9 @@ pub struct Controls {
     pub forward_force: Fixed16,
     /// Whether the handbrake is held (halves lateral grip).
     pub handbrake: bool,
+    /// The recovered raw steer magnitudes `+0x2fc/+0x300`, which the
+    /// four-wheel integrator's deadzones read after the low-speed cut.
+    pub raw_steer: RawSteer,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -423,6 +426,10 @@ pub struct FourWheelState {
     /// Persistent response at `control+0x2d8`, initialized from wheel params.
     pub response_2d8: i32,
     pub engine_inputs_initialized: bool,
+    /// Control `+0x404`, recomputed at the start of each four-wheel tick.
+    pub upright_404: bool,
+    /// Resting flag at `state+0x700`, written by the integrator each tick.
+    pub resting_700: bool,
 }
 
 /// Apply neutral-gear zeroing or the ordinary post-step tracking update.
@@ -739,6 +746,8 @@ impl CarState {
                 idle_countdown_6ec: 0,
                 response_2d8: 0,
                 engine_inputs_initialized: false,
+                upright_404: false,
+                resting_700: false,
             },
         }
     }
@@ -895,7 +904,7 @@ impl RaceState {
     /// into velocity, apply the recovered half-delta position update, apply the
     /// lateral-grip constraint, and advance the stage clock.
     pub fn step(&mut self, controls: &Controls, params: &SimParams) -> TraceSample {
-        let mut sample = self.step_with_optional_world_force(controls, params, None, false);
+        let (mut sample, _) = self.step_with_optional_world_force(controls, params, None, false);
         self.finish_mechanics_tick();
         sample.car = self.car;
         sample
@@ -918,7 +927,7 @@ impl RaceState {
         params: &SimParams,
         world_force: Option<Vec3>,
         contacts_active: bool,
-    ) -> TraceSample {
+    ) -> (TraceSample, Fixed16) {
         self.car.heading = self.car.heading.wrapping_add(controls.steer_rate as u16);
         let forward = self.forward_unit();
 
@@ -947,11 +956,12 @@ impl RaceState {
 
         self.clock = advance_stage_clock(self.clock, stage_clock_step(false));
 
-        TraceSample {
+        let sample = TraceSample {
             clock: self.clock,
             centiseconds: elapsed_centiseconds(self.clock, self.start_clock),
             car: self.car,
-        }
+        };
+        (sample, translation.speed)
     }
 
     fn execute_first_wheel_state(
@@ -1133,7 +1143,7 @@ impl RaceState {
                 (postprocess.wheel_contacts[index], lanes[index].accumulator)
             }),
         );
-        let mut sample = self.step_with_optional_world_force(
+        let (mut sample, _) = self.step_with_optional_world_force(
             controls,
             params,
             Some(force),
@@ -1183,10 +1193,14 @@ impl RaceState {
         let thresholds = derive_compiled_lane_thresholds(wheel.lane_threshold_inputs);
         let scale_528 =
             contact_count_scale(wheel.angular.momentum.moment_scale, thresholds.count_742);
-        let update_gate = contact_global_update_gate(transform_contact_force(
-            self.car.motion.basis,
-            self.car.motion.projection_axis,
-        ));
+        // The mechanics driver `FUN_00407690` cuts the steer magnitudes against
+        // the previous tick's `+0xec`, then recomputes `+0x404` from the same
+        // start-of-tick body axis, before any integrator runs.
+        let steer = apply_low_speed_steer_cut(controls.raw_steer, self.car.four_wheel.speed_ec);
+        let body_axis =
+            transform_contact_force(self.car.motion.basis, self.car.motion.projection_axis);
+        self.car.four_wheel.upright_404 = upright_flag_404(body_axis);
+        let update_gate = contact_global_update_gate(body_axis);
         let mut contact_update_inputs = wheel.contact_update_inputs;
         for (index, (input, vector)) in contact_update_inputs
             .iter_mut()
@@ -1321,7 +1335,7 @@ impl RaceState {
         );
         // The native low-speed suppression is gated on the threshold scan's
         // contact count `+0x742 > 0` (`0x40afcc`), not on the wheel flags.
-        let mut sample = self.step_with_optional_world_force(
+        let (mut sample, new_speed) = self.step_with_optional_world_force(
             controls,
             params,
             Some(force),
@@ -1421,9 +1435,17 @@ impl RaceState {
             angular,
             self.car.collision.out_of_control(),
             self.car.motion.projection_axis,
+            ContactDeadzoneGate {
+                contacts_active_742: thresholds.count_742 > 0,
+                steer,
+                upright_404: self.car.four_wheel.upright_404,
+            },
             &self.trig,
         )
         .expect("the race-state trig table is complete");
+        // `+0x700` tests the integrator's recomputed speed, not `speed_ec`,
+        // which this harness recomputes after its planar lateral grip.
+        self.car.four_wheel.resting_700 = resting_flag_700(orientation.angle_increments, new_speed);
         self.car.motion.basis = orientation.basis;
         self.car.motion.angular_velocity = orientation.angular_velocity;
         // The angular pass consumed the decayed moment
@@ -1479,6 +1501,7 @@ mod tests {
                 steer_rate: 0,
                 forward_force: Fixed16::ONE,
                 handbrake: false,
+                raw_steer: Default::default(),
             };
             ticks
         ]
@@ -1629,6 +1652,7 @@ mod tests {
                 steer_rate: 0,
                 forward_force: Fixed16::ZERO,
                 handbrake: false,
+                raw_steer: Default::default(),
             },
             &SimParams {
                 inverse_mass: Fixed16::ZERO,
@@ -1644,6 +1668,7 @@ mod tests {
                 steer_rate: 0,
                 forward_force: Fixed16::ZERO,
                 handbrake: false,
+                raw_steer: Default::default(),
             },
             &SimParams {
                 inverse_mass: Fixed16::ZERO,
@@ -2424,13 +2449,62 @@ mod tests {
                     wheel.postprocess.wheel_contacts,
                     wheel.contact_offsets,
                 ));
+        // `wheel` has no contacting lane, so the deadzones are skipped.
+        assert_eq!(
+            derive_compiled_lane_thresholds(wheel.lane_threshold_inputs).count_742,
+            0
+        );
         let expected_orientation = apply_angular_orientation_pipeline(
             expected_angular,
             car.collision.out_of_control(),
             car.motion.projection_axis,
+            ContactDeadzoneGate::default(),
             &trig,
         )
         .unwrap();
+        let start_axis = transform_contact_force(car.motion.basis, car.motion.projection_axis);
+        assert_eq!(
+            sample.car.four_wheel.upright_404,
+            upright_flag_404(start_axis)
+        );
+        // An upright car with no rotation or throttle: on contact the
+        // deadzones zero the one-LSB residual angles, the basis holds, and the
+        // slow new speed marks it at rest. Without contact the same residual
+        // rotates the basis and the flag stays clear.
+        let mut calm_car = car;
+        calm_car.motion.projection_axis = vector([0, 0x10000, 0]);
+        calm_car.motion.angular_velocity = Vec3::ZERO;
+        calm_car.motion.moment = Vec3::ZERO;
+        let calm_step = |wheel: &FourWheelIterationParams<'_>| {
+            RaceState::new(calm_car)
+                .step_with_all_four_wheels(&Controls::default(), &params(), wheel)
+                .unwrap()
+        };
+        let calm = calm_step(&contacting);
+        assert!(calm.car.four_wheel.upright_404);
+        assert_eq!(calm.car.motion.basis, calm_car.motion.basis);
+        assert!(calm.car.four_wheel.resting_700);
+        let loose = calm_step(&wheel);
+        assert!(loose.car.four_wheel.upright_404);
+        assert_ne!(loose.car.motion.basis, calm_car.motion.basis);
+        assert!(!loose.car.four_wheel.resting_700);
+
+        // With contacting lanes the deadzones run on the cut steer and the
+        // start-of-tick `+0x404`; the fixture starts at rest, so any steer is cut
+        // and a steered tick matches an unsteered one.
+        let steered = Controls {
+            raw_steer: RawSteer {
+                left_2fc: 0xfc00,
+                right_300: 0,
+            },
+            ..straight_throttle(1)[0]
+        };
+        assert_eq!(car.four_wheel.speed_ec, 0);
+        let steered_contacting = RaceState::new(car)
+            .step_with_all_four_wheels(&steered, &params(), &contacting)
+            .unwrap();
+        assert_eq!(steered_contacting.car.motion, suppressed.car.motion);
+        assert_eq!(steered_contacting.car.four_wheel, suppressed.car.four_wheel);
         assert_eq!(sample.car.motion.basis, expected_orientation.basis);
         assert_eq!(
             sample.car.motion.angular_velocity,
@@ -2500,6 +2574,7 @@ mod tests {
                 steer_rate: 0x40,
                 forward_force: Fixed16::ONE,
                 handbrake: false,
+                raw_steer: Default::default(),
             };
             16
         ];

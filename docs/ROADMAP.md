@@ -1809,6 +1809,16 @@ upright-cone test on the projection axis in the body frame, now reconstructed,
 and a low-speed steer cut (`|+0xec| < 0x147` zeroes `+0x2fc/+0x300`), observed
 but not yet reconstructed.
 
+The deadzones and `+0x700` are now wired into the four-wheel step. The steer cut
+is confirmed at instruction level and reconstructed; `Controls` carries the raw
+steer magnitudes from the input map; the step publishes `+0x404` from the
+start-of-tick body axis and `+0x700` from the integrator's recomputed speed; and
+the deadzones run inside the angular pipeline between angle conversion and the
+control-axis resets, the order the integrator uses. The planar windowed path
+still skips this pass, the cut reads the harness speed (recomputed after the
+planar lateral grip), and the steering consumer `FUN_0041b5b0` is not
+reconstructed, so the cut does not yet reach the derived steering rate.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

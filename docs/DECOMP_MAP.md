@@ -389,7 +389,7 @@ gate now passes. I14 remains
 partial after the first atomic planar static-collision pass: owned-media contact
 accuracy, per-tick contact publication, suspension, animation, and the other
 race-completion boundaries remain. The angular `+0x3d8` lifecycle is now
-recovered: it decays in place by `+0x48` rather than clearing, a recovered
+recovered: the integrator decays it in place by `+0x48` and the driver then clears it, a recovered
 moment-overflow trigger sets `+0x680/+0x688/+0xbc`, and the momentum order is
 corrected; the four-wheel step publishes all three, while the live planar
 session does not yet run this pass. The low-speed position suppression now
@@ -397,8 +397,9 @@ tests the recomputed new speed under the `+0x742` gate; the angle deadzones and
 `+0x700` are pure tested gates. The per-car driver `FUN_00407690` clears the
 moment every tick, so an end-of-tick clear now fixes the four-wheel write-back
 and the live planar session's compounding angular impulses; `+0x404` is
-recovered as an upright-cone test. The deadzones still await the raw steer
-magnitudes in the simulation step.
+recovered as an upright-cone test. The four-wheel step now threads the raw
+steer magnitudes through the instruction-confirmed low-speed cut and runs the
+deadzones and `+0x700` in native order; the planar windowed path does not.
 
 ## Update rules
 
@@ -409,14 +410,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T04:45:00Z
-milestone=clear-angular-moment-each-mechanics-tick
+updated_utc=2026-10-28T01:40:00Z
+milestone=wire-steer-cut-angle-deadzones-and-resting-flag
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-window-path-angular-collision-and-car-animation
-next_exit_gate=controlled-owned-media-static-contact-and-raw-steer-to-sim-threading
+next_exit_gate=controlled-owned-media-static-contact-and-four-wheel-window-path
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

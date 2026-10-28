@@ -24,6 +24,7 @@
 use crate::fixed_point::Fixed16;
 use crate::input_map::{CarControls, FULL_SCALE};
 use crate::race_state::Controls;
+use crate::vehicle_dynamics::RawSteer;
 
 /// The sim's full-scale response to a full-scale control demand. The caller owns
 /// these magnitudes (a documented harness choice until the drivetrain
@@ -59,6 +60,10 @@ pub fn car_controls_to_sim(controls: &CarControls, response: &DriveResponse) -> 
         steer_rate,
         forward_force,
         handbrake: controls.handbrake,
+        raw_steer: RawSteer {
+            left_2fc: controls.steer_left,
+            right_300: controls.steer_right,
+        },
     }
 }
 
@@ -100,6 +105,23 @@ mod tests {
         assert_eq!(out.forward_force, Fixed16::from_raw(8 << 16));
         assert_eq!(out.steer_rate, 0);
         assert!(!out.handbrake);
+    }
+
+    #[test]
+    fn raw_steer_magnitudes_pass_through_unscaled_and_unswapped() {
+        let cc = CarControls {
+            steer_left: 0xfc00,
+            steer_right: 0x400,
+            ..controls()
+        };
+        let out = car_controls_to_sim(&cc, &response());
+        assert_eq!(
+            out.raw_steer,
+            RawSteer {
+                left_2fc: 0xfc00,
+                right_300: 0x400,
+            }
+        );
     }
 
     #[test]

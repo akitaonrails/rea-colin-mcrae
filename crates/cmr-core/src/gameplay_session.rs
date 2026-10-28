@@ -397,6 +397,7 @@ mod tests {
             steer_rate: 0,
             forward_force: Fixed16::from_raw(8 << 16),
             handbrake: false,
+            raw_steer: Default::default(),
         }
     }
 
@@ -693,6 +694,7 @@ mod tests {
             steer_rate: 0,
             forward_force: Fixed16::ZERO,
             handbrake: false,
+            raw_steer: Default::default(),
         };
         for _ in 0..1_000 {
             session.advance(&StationaryClock, frontend_menu(), still, &mut progress);

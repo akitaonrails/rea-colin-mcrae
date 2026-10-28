@@ -354,6 +354,7 @@ mod tests {
                 steer_rate: 0,
                 forward_force: Fixed16::ONE,
                 handbrake: false,
+                raw_steer: Default::default(),
             };
             ticks
         ]

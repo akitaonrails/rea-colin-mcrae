@@ -2570,7 +2570,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   four-wheel decayed write-back and the live planar session's compounding
   angular impulses. The driver also writes `+0x404` (an upright-cone test on the
   body-frame projection axis, now reconstructed) and cuts steering below
-  `|+0xec| < 0x147` (observed only).
+  `|+0xec| < 0x147`.
+- The four-wheel step now runs the full contact-gated tail: it cuts the raw
+  steer magnitudes (carried in `Controls` from the input map), publishes
+  `+0x404` and `+0x700`, and applies the angle deadzones between angle
+  conversion and the control-axis resets. The planar windowed path does not run
+  this pass, and the steering consumer `FUN_0041b5b0` is not reconstructed.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning
