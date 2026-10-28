@@ -266,6 +266,7 @@ mod tests {
             steering: crate::steering_response::SteeringParams::default(),
             steering_car_factor_e188: 0x1_0000,
             steering_surface_factors: [0; 2],
+            gearbox: None,
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -359,6 +360,7 @@ mod tests {
                 handbrake: false,
                 raw_steer: Default::default(),
                 raw_pedals: Default::default(),
+                raw_gear_command_314: 0,
             };
             ticks
         ]

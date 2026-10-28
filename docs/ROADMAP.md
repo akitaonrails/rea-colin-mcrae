@@ -1846,7 +1846,15 @@ analog routines turn the cut steer magnitudes into the wheel angle `+0x3e0`,
 and the four-wheel step rotates the lane source by the per-car base plus that
 angle, so steering now reaches the wheel forces. The digital rate and minimum
 deflection (`+0x44c..+0x45c`) and the surface/car-type steering tables are not
-yet sourced, and the processor's gearbox part remains.
+yet sourced.
+
+The gearbox completes the control processor: automatic, manual and
+brake-to-reverse modes, the deferred shift request and the reversing mode are
+reconstructed. An optional live gearbox in the four-wheel step now feeds gear,
+shift request, drive ratio and reversing mode to the drivetrain and pedals each
+tick, and its tables derive from the compiled initializer. The four-wheel car
+can now accelerate through the gears, steer and brake under its own recovered
+rules; moving the windowed session onto it is next.
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI

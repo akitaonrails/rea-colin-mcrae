@@ -3246,6 +3246,7 @@ impl SessionWheelInputs {
             steering: cmr_core::steering_response::SteeringParams::default(),
             steering_car_factor_e188: 0x1_0000,
             steering_surface_factors: [0; 2],
+            gearbox: None,
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -3989,6 +3990,7 @@ pub fn run_headless_game_session() -> HeadlessGameSessionOutput {
         handbrake: false,
         raw_steer: Default::default(),
         raw_pedals: Default::default(),
+        raw_gear_command_314: 0,
     };
     drive_headless_session(&mut session, controls).expect("the simplified session is infallible")
 }
@@ -4118,6 +4120,7 @@ pub fn run_headless_four_wheel_game_session(
         handbrake: false,
         raw_steer: Default::default(),
         raw_pedals: Default::default(),
+        raw_gear_command_314: 0,
     };
     Ok(drive_headless_session(&mut session, controls)?)
 }

@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-10-28 (control-processor steering)
+Updated: 2026-10-28 (control-processor gearbox)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: recover and wire the control processor's steering
+feat: recover the gearbox and drive it from the four-wheel step
 ```
 
 Start by confirming the checkout and progress footer:
@@ -83,7 +83,7 @@ ef78049 feat: derive canonical collision response state
 
 ## Verification state
 
-Green at handoff (2,342 tests, 35 ignored):
+Green at handoff (2,356 tests, 35 ignored):
 
 ```sh
 cargo test --workspace --all-targets
@@ -94,7 +94,7 @@ Focused collision, session rollback, keyboard/analog, SDL gamepad, app build,
 and full-workspace tests pass. Logs from the last run are ignored under:
 
 ```text
-.work/steering-response-workspace-test.log
+.work/gearbox-workspace-test.log
 ```
 
 The authenticated AU1 test:
@@ -122,15 +122,18 @@ contacted (item 5 below).
    push or lateral grip, so `speed_ec` is native. The control processor's
    pedal and steering halves are reconstructed and wired
    (`impl.pedal-response-processor`, `impl.steering-response-processor`):
-   steering now rotates the lane source. Still open: its gearbox part
-   (`FUN_0041b810`/`FUN_0041bb30`/`FUN_0041bf00`), and the sources of the
+   steering now rotates the lane source. The gearbox is reconstructed too
+   (`impl.gearbox-processor`) and runs when `FourWheelIterationParams::gearbox`
+   is `Some`; build it with `derive_compiled_gearbox_tables` and
+   `compiled_drive_ratios`. Still open: the sources of the
    digital steer scalars `+0x44c..+0x45c` (block-copied; no direct store) and of
    the tables `DAT_004f74ac`, `DAT_0050e188`, `DAT_0050e4fc`. The car
    constants (mass, inertia, pedal scalars, `+0x408`) now derive from case
    words via `derive_compiled_four_wheel_constants`
    (`impl.compiled-four-wheel-constants`); the windowed session can obtain them
    from `SessionCompiledPose`'s direct cases and selector once it moves to the
-   four-wheel path. The gearbox comes before item 2.
+   four-wheel path. Item 2 is next: build a windowed four-wheel session from
+   `SessionCompiledPose` (case words, families, constants, gearbox tables).
 2. Move the windowed session from `GameplaySession::new_with_car` to the already
    recovered four-wheel path only after supplying its authenticated runtime
    inputs. The current planar path changes heading but does not evolve the full

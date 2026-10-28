@@ -2590,6 +2590,9 @@ languages rather than fabricating or silently aliasing Italian assets.
 - The processor's steering half turns the cut steer magnitudes into the wheel
   angle `+0x3e0`, which the four-wheel step adds to the lane-source rotation.
   Its rate scalars `+0x44c..+0x45c` and the steering tables are still inputs.
+- The processor's gearbox (automatic, manual, brake-to-reverse) owns the gear,
+  the deferred shift request `+0x40c` and the reversing mode `+0x408`; an
+  optional live gearbox in the four-wheel step feeds them to the drivetrain.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

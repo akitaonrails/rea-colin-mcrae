@@ -405,7 +405,7 @@ push or lateral grip; inverse mass `+0x4c` is an explicit input), and the
 control processor's pedal ramps feed throttle, brake and handbrake responses to
 the drivetrain. Their car constants derive from the compiled initializer stages.
 Its steering half now turns steer input into the wheel angle that rotates the
-lane source.
+lane source, and its gearbox drives gear, shift request and reversing mode.
 
 ## Update rules
 
@@ -416,14 +416,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T03:35:00Z
-milestone=control-processor-steering
+updated_utc=2026-10-28T04:20:00Z
+milestone=control-processor-gearbox
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-window-path-angular-collision-and-car-animation
-next_exit_gate=controlled-owned-media-static-contact-and-four-wheel-window-path
+next_exit_gate=four-wheel-window-path-with-compiled-car-inputs
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

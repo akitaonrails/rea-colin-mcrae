@@ -22,7 +22,7 @@
 //! plane; the recovered input-map half channels remain unchanged.
 
 use crate::fixed_point::Fixed16;
-use crate::input_map::{CarControls, FULL_SCALE};
+use crate::input_map::{CarControls, FULL_SCALE, GearCommand};
 use crate::pedal_response::RawPedals;
 use crate::race_state::Controls;
 use crate::vehicle_dynamics::RawSteer;
@@ -71,6 +71,11 @@ pub fn car_controls_to_sim(controls: &CarControls, response: &DriveResponse) -> 
             brake_308: controls.brake,
             throttle_analog_414: controls.throttle_analog,
             brake_analog_418: controls.brake_analog,
+        },
+        raw_gear_command_314: match controls.gear_command {
+            GearCommand::None => 0,
+            GearCommand::Up => 1,
+            GearCommand::Down => -1,
         },
     }
 }
@@ -131,6 +136,24 @@ mod tests {
                 analog_410: false,
             }
         );
+    }
+
+    #[test]
+    fn gear_commands_become_the_signed_314_byte() {
+        for (command, raw) in [
+            (GearCommand::None, 0),
+            (GearCommand::Up, 1),
+            (GearCommand::Down, -1),
+        ] {
+            let cc = CarControls {
+                gear_command: command,
+                ..controls()
+            };
+            assert_eq!(
+                car_controls_to_sim(&cc, &response()).raw_gear_command_314,
+                raw
+            );
+        }
     }
 
     #[test]

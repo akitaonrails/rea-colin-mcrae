@@ -4220,6 +4220,62 @@ pub fn derive_compiled_four_wheel_constants(
     })
 }
 
+fn case_control_word(words: &CompiledCaseWords, offset: u16) -> i32 {
+    let index = COMPILED_CONTROL_WORD_OFFSETS
+        .iter()
+        .position(|candidate| *candidate == offset)
+        .expect("the offset is in the recovered case schema");
+    words.control_words[index]
+}
+
+/// Derive the control processor's gearbox tables from one car's case words,
+/// config flags and compiled control families.
+///
+/// Thresholds come from the direct case words (`+0x194..+0x1a4` upper,
+/// `+0x1b8..+0x1c8` lower) and the post-helper patch (`+0x1a8` upper for gear
+/// 6, `+0x1b4` lower for gear 1); ratios and inverses are the families at
+/// `+0x1d0` and `+0x1f0`; the scale is the effective `+0x15c`. Entries for
+/// gears 0 and 7 are left zero: no recovered stage writes them, and no walk
+/// decision depends on them.
+///
+/// # Errors
+///
+/// Returns the shared stage error for a common-prefix or post-helper
+/// reciprocal that would fault the shipped `IDIV`.
+pub fn derive_compiled_gearbox_tables(
+    words: CompiledCaseWords,
+    config_flags: u8,
+    families: &CompiledControlFamilies,
+) -> Result<crate::gearbox::GearboxTables, RecoveredCompiledStageError> {
+    let prefix = derive_compiled_common_prefix(words, config_flags)
+        .map_err(RecoveredCompiledStageError::Prefix)?;
+    let control_word_15c = prefix.control_word_15c.unwrap_or(words.control_words[3]);
+    let post_helper =
+        derive_compiled_post_helper_effects(prefix.control_word_148, control_word_15c)
+            .map_err(RecoveredCompiledStageError::PostHelper)?;
+    let mut upper_190 = [0; 8];
+    let mut lower_1b0 = [0; 8];
+    for gear in 1..=6_u16 {
+        upper_190[usize::from(gear)] = if gear == 6 {
+            post_helper_word(&post_helper, 0x1a8)
+        } else {
+            case_control_word(&words, 0x190 + gear * 4)
+        };
+        lower_1b0[usize::from(gear)] = if gear == 1 {
+            post_helper_word(&post_helper, 0x1b4)
+        } else {
+            case_control_word(&words, 0x1b0 + gear * 4)
+        };
+    }
+    Ok(crate::gearbox::GearboxTables {
+        upper_190,
+        lower_1b0,
+        ratio_1d0: families.post_processed_raw,
+        inverse_1f0: families.reciprocal,
+        redline_15c: control_word_15c,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10915,6 +10971,55 @@ mod tests {
             Err(RecoveredCompiledStageError::Prefix(
                 CompiledCommonPrefixReciprocalOverflow { state_word_48: 1 }
             ))
+        );
+    }
+
+    #[test]
+    fn gearbox_tables_take_case_words_post_helper_words_and_families() {
+        let words = synthetic_case(4);
+        let families = CompiledControlFamilies {
+            post_processed_raw: std::array::from_fn(|index| 0x1_0000 * (8 - index as i32)),
+            reciprocal: std::array::from_fn(|index| 0x100 + index as i32),
+            raw_copy: [0; COMPILED_CONTROL_FAMILY_WORD_COUNT],
+            reciprocal_copy: [0; COMPILED_CONTROL_FAMILY_WORD_COUNT],
+        };
+        let tables = derive_compiled_gearbox_tables(words, 0, &families).unwrap();
+        let word = |offset: u16| case_control_word(&words, offset);
+        assert_eq!(
+            tables.upper_190,
+            [
+                0,
+                word(0x194),
+                word(0x198),
+                word(0x19c),
+                word(0x1a0),
+                word(0x1a4),
+                0x0fae1,
+                0
+            ]
+        );
+        assert_eq!(
+            tables.lower_1b0,
+            [
+                0,
+                0x8000,
+                word(0x1b8),
+                word(0x1bc),
+                word(0x1c0),
+                word(0x1c4),
+                word(0x1c8),
+                0
+            ]
+        );
+        assert_eq!(tables.ratio_1d0, families.post_processed_raw);
+        assert_eq!(tables.inverse_1f0, families.reciprocal);
+        assert_eq!(tables.redline_15c, words.control_words[3]);
+        let scaled =
+            derive_compiled_gearbox_tables(words, COMPILED_COMMON_CONTROL_SCALE_MASK, &families)
+                .unwrap();
+        assert_eq!(
+            scaled.redline_15c,
+            common_prefix_q16_mul(words.control_words[3], 0x1_3333)
         );
     }
 }

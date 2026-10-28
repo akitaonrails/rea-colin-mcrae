@@ -37,6 +37,7 @@ use crate::drivetrain::{
     track_smoothed_wheel_speed,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
+use crate::gearbox::{GearOutOfRange, GearboxInputs, GearboxParams, GearboxState, apply_gearbox};
 use crate::legacy_math::sqrt_q16;
 use crate::live_static_collision_car_frame::{
     ActiveCellRecordBuildError, LiveStaticCollisionCarFrameInput,
@@ -94,6 +95,8 @@ pub struct Controls {
     /// The recovered raw pedal words `+0x304/+0x308` and analog flags
     /// `+0x414/+0x418`, which the four-wheel control processor ramps.
     pub raw_pedals: RawPedals,
+    /// The mapper's gear command `+0x314` (`1` up, `-1` down, `0` none).
+    pub raw_gear_command_314: i8,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -169,6 +172,15 @@ pub fn populate_compiled_gear_ratio(
     first.gear_ratio = ratio.raw();
     second.gear_ratio = ratio.raw();
     Some(ratio)
+}
+
+/// The drivetrain's raw gear ratio for every gear, by the same rule as
+/// [`populate_compiled_gear_ratio`]: `qmul(raw_copy[gear], factor_c860)`.
+#[must_use]
+pub fn compiled_drive_ratios(families: &CompiledControlFamilies, factor_c860: Fixed16) -> [i32; 8] {
+    families
+        .raw_copy
+        .map(|raw| derive_gear_ratio(Fixed16::from_raw(raw), factor_c860).raw())
 }
 
 /// Derive the main force-pass scales once and apply them to both wheel inputs.
@@ -351,6 +363,11 @@ pub struct FourWheelIterationParams<'a> {
     pub steering: SteeringParams,
     pub steering_car_factor_e188: i32,
     pub steering_surface_factors: [i32; 2],
+    /// The live gearbox. `None` keeps the fixed gear, shift and ratio words in
+    /// `first`/`second` (the pre-gearbox harness); `Some` runs the control
+    /// processor's gearbox each tick and feeds its gear, shift request
+    /// `+0x40c`, drive ratio and reversing mode `+0x408` to the drivetrain.
+    pub gearbox: Option<GearboxParams>,
     /// Resolved global/callback inputs; Rebuild takes precedence over Exchange.
     pub lane_rebuild: bool,
     pub lane_exchange: bool,
@@ -473,6 +490,8 @@ pub struct FourWheelState {
     pub pedals: PedalResponseState,
     /// The control processor's steering words (`+0x318/+0x114/+0x3e0/+0x3e2`).
     pub steering: SteeringState,
+    /// The control processor's gearbox words (`+0x43a/+0x43f/+0x40c/...`).
+    pub gearbox: GearboxState,
     /// Control `+0x404`, recomputed at the start of each four-wheel tick.
     pub upright_404: bool,
     /// Resting flag at `state+0x700`, written by the integrator each tick.
@@ -554,9 +573,20 @@ fn update_driven_wheel_speeds(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WheelPostprocessError {
     LaneIndex(usize),
-    ContactVectorIndex { lane: usize, vector_index: usize },
+    ContactVectorIndex {
+        lane: usize,
+        vector_index: usize,
+    },
     Candidate(LookupDependentCandidateError),
     Geometry(GeometricPostprocessError),
+    /// The live gearbox reached a gear outside its eight-entry tables.
+    Gear(GearOutOfRange),
+}
+
+impl From<GearOutOfRange> for WheelPostprocessError {
+    fn from(error: GearOutOfRange) -> Self {
+        Self::Gear(error)
+    }
 }
 
 impl From<LookupDependentCandidateError> for WheelPostprocessError {
@@ -793,6 +823,7 @@ impl CarState {
                 idle_countdown_6ec: 0,
                 pedals: PedalResponseState::ZERO,
                 steering: SteeringState::ZERO,
+                gearbox: GearboxState::ZERO,
                 upright_404: false,
                 resting_700: false,
             },
@@ -1238,7 +1269,43 @@ impl RaceState {
         // the previous tick's `+0xec`, then recomputes `+0x404` from the same
         // start-of-tick body axis, before any integrator runs.
         let steer = apply_low_speed_steer_cut(controls.raw_steer, self.car.four_wheel.speed_ec);
-        // The control processor `FUN_0041b5b0` follows the cut: its steering
+        // The control processor `FUN_0041b5b0` follows the cut. Its gearbox
+        // runs first (only with a live gearbox) and decides this tick's gear,
+        // shift request and reversing mode.
+        let live_gear = match wheel.gearbox {
+            Some(gearbox) => {
+                let state = apply_gearbox(
+                    self.car.four_wheel.gearbox,
+                    GearboxInputs {
+                        mode_3f0: gearbox.mode_3f0,
+                        gear_command_314: controls.raw_gear_command_314,
+                        throttle_304: controls.raw_pedals.throttle_304,
+                        brake_308: controls.raw_pedals.brake_308,
+                        engine_2e0: self.car.four_wheel.engine_2e0,
+                        wheel_flags_73a: gearbox.wheel_flags_73a,
+                        gear_two_skip: gearbox.gear_two_skip,
+                        player_locked: gearbox.player_locked,
+                        residual_43b: self.car.four_wheel.residual_enable,
+                        brake_reverse_enabled: gearbox.brake_reverse_enabled,
+                    },
+                    &gearbox.tables,
+                )?;
+                let gear = i32::from(state.gear_43a);
+                let ratio = usize::try_from(gear)
+                    .ok()
+                    .and_then(|index| gearbox.drive_ratios.get(index).copied())
+                    .ok_or(GearOutOfRange { gear })?;
+                self.car.four_wheel.gearbox = state;
+                Some((gear, i32::from(state.shift_40c), ratio))
+            }
+            None => None,
+        };
+        let mode_408 = if wheel.gearbox.is_some() {
+            i32::from(self.car.four_wheel.gearbox.reverse_mode_408)
+        } else {
+            wheel.driven_smoothing.mode_408
+        };
+        // Its steering
         // half turns the cut magnitudes into the wheel angle `+0x3e0`, then its
         // pedal half ramps the raw pedals into this tick's responses.
         self.car.four_wheel.steering = apply_steering(
@@ -1253,11 +1320,7 @@ impl RaceState {
                 velocity: self.car.velocity,
             },
         );
-        let pedal_inputs = PedalInputs::from_raw(
-            controls.raw_pedals,
-            controls.handbrake,
-            wheel.driven_smoothing.mode_408,
-        );
+        let pedal_inputs = PedalInputs::from_raw(controls.raw_pedals, controls.handbrake, mode_408);
         self.car.four_wheel.pedals = apply_pedal_responses(
             self.car.four_wheel.pedals,
             pedal_inputs,
@@ -1312,11 +1375,19 @@ impl RaceState {
         let mut first = wheel.first;
         for input in &mut first {
             input.flag_43b = i32::from(self.car.four_wheel.residual_enable);
+            if let Some((gear, shift, ratio)) = live_gear {
+                input.gear = gear;
+                input.config_40c = shift;
+                input.gear_ratio = ratio;
+            }
         }
         let mut second = wheel.second.clone();
         for input in &mut second {
             // The second loop's gear-ratio gate reads the brake response.
             input.config_2ec = self.car.four_wheel.pedals.brake_response_2ec;
+            if let Some((_, _, ratio)) = live_gear {
+                input.gear_ratio = ratio;
+            }
         }
         for (lane, vector_index) in wheel.contact_vector_indices.into_iter().enumerate() {
             let Some(vector) = contact_vectors.get(vector_index) else {
@@ -1482,6 +1553,7 @@ impl RaceState {
         let driven_scalars =
             driven_smoothing_scalars(&self.car.four_wheel, &first[0], &wheel.driven_smoothing);
         let driven_smoothing = DrivenWheelUpdateParams {
+            mode_408,
             throttle_304: pedal_inputs.throttle_304,
             brake_308: pedal_inputs.brake_308,
             ..wheel.driven_smoothing
@@ -1592,6 +1664,7 @@ mod tests {
                 handbrake: false,
                 raw_steer: Default::default(),
                 raw_pedals: Default::default(),
+                raw_gear_command_314: 0,
             };
             ticks
         ]
@@ -1744,6 +1817,7 @@ mod tests {
                 handbrake: false,
                 raw_steer: Default::default(),
                 raw_pedals: Default::default(),
+                raw_gear_command_314: 0,
             },
             &SimParams {
                 inverse_mass: Fixed16::ZERO,
@@ -1761,6 +1835,7 @@ mod tests {
                 handbrake: false,
                 raw_steer: Default::default(),
                 raw_pedals: Default::default(),
+                raw_gear_command_314: 0,
             },
             &SimParams {
                 inverse_mass: Fixed16::ZERO,
@@ -1908,6 +1983,28 @@ mod tests {
         );
         assert_eq!(first.wheel_vector, [0x10000, -0x20000, 0x30000]);
         assert_eq!(first.state_vector, [3, 4, 5]);
+    }
+
+    #[test]
+    fn compiled_drive_ratios_match_the_per_gear_population_rule() {
+        let families = CompiledControlFamilies {
+            post_processed_raw: [0; 8],
+            reciprocal: [0; 8],
+            raw_copy: std::array::from_fn(|gear| 0x1_0000 + gear as i32 * 0x3000),
+            reciprocal_copy: [0; 8],
+        };
+        let factor = Fixed16::from_raw(0x1_8000);
+        let ratios = compiled_drive_ratios(&families, factor);
+        let trig = build_sine_table();
+        for (gear, expected) in ratios.into_iter().enumerate() {
+            let mut first = FirstWheelParams {
+                gear: gear as i32,
+                ..first_wheel_params()
+            };
+            let mut second = second_wheel_params(&trig);
+            let ratio = populate_compiled_gear_ratio(&mut first, &mut second, &families, factor);
+            assert_eq!(ratio.map(Fixed16::raw), Some(expected));
+        }
     }
 
     #[test]
@@ -2306,6 +2403,7 @@ mod tests {
             steering: SteeringParams::default(),
             steering_car_factor_e188: 0x1_0000,
             steering_surface_factors: [0; 2],
+            gearbox: None,
             lane_rebuild: false,
             lane_exchange: false,
             postprocess: FourWheelPostprocessParams {
@@ -2575,6 +2673,80 @@ mod tests {
             .step_with_all_four_wheels(&left, &steerable)
             .unwrap();
         assert_eq!(parked.car.four_wheel.steering, SteeringState::ZERO);
+
+        // A live gearbox: a high engine speed in first requests an upshift on
+        // this tick and applies it on the next, after the residual countdown.
+        let mut tables = crate::gearbox::GearboxTables {
+            redline_15c: 0x1_0000,
+            ..Default::default()
+        };
+        for gear in 1..=6 {
+            tables.lower_1b0[gear] = 0x1_0000;
+            tables.upper_190[gear] = 0x3_0000;
+            tables.ratio_1d0[gear] = (8 - gear as i32) * 0x1_0000;
+            tables.inverse_1f0[gear] = 0x1_0000 / (8 - gear as i32);
+        }
+        let mut geared = wheel.clone();
+        geared.gearbox = Some(GearboxParams {
+            tables,
+            drive_ratios: std::array::from_fn(|gear| gear as i32 * 0x1000),
+            ..GearboxParams::default()
+        });
+        let mut revving = car;
+        revving.four_wheel.residual_enable = 0;
+        revving.four_wheel.gearbox = GearboxState::at_setup(true);
+        revving.four_wheel.engine_2e0 = 0x5_0000;
+        let mut live = RaceState::new(revving);
+        let requested = live
+            .step_with_all_four_wheels(&pressed_controls, &geared)
+            .unwrap();
+        let gearbox = requested.car.four_wheel.gearbox;
+        assert_eq!(gearbox.gear_43a, 1);
+        assert!(gearbox.shift_40c);
+        assert!(gearbox.target_43f > 1);
+        let applied = live
+            .step_with_all_four_wheels(&pressed_controls, &geared)
+            .unwrap();
+        assert_eq!(applied.car.four_wheel.gearbox.gear_43a, gearbox.target_43f);
+        assert!(!applied.car.four_wheel.gearbox.shift_40c);
+
+        // Mode 2 with the brake held at rest selects reverse and sets `+0x408`
+        // in the same tick, so the pedal half lets the brake drive `+0x2d8`.
+        let mut reversing = geared.clone();
+        reversing.gearbox = Some(GearboxParams {
+            mode_3f0: 2,
+            brake_reverse_enabled: true,
+            wheel_flags_73a: [1; 4],
+            ..geared.gearbox.unwrap()
+        });
+        let braking = Controls {
+            raw_pedals: RawPedals {
+                brake_308: 0x1_0000,
+                brake_analog_418: true,
+                ..RawPedals::default()
+            },
+            ..straight_throttle(1)[0]
+        };
+        let mut idle_car = revving;
+        idle_car.four_wheel.engine_2e0 = 0;
+        let reversed = RaceState::new(idle_car)
+            .step_with_all_four_wheels(&braking, &reversing)
+            .unwrap();
+        assert!(reversed.car.four_wheel.gearbox.reverse_mode_408);
+        assert_eq!(reversed.car.four_wheel.gearbox.target_43f, 7);
+        assert_eq!(reversed.car.four_wheel.pedals.response_2d8, 0x8000);
+        assert_eq!(reversed.car.four_wheel.pedals.brake_response_2ec, 0);
+
+        // A gear outside the tables is reported, not guessed.
+        let mut lost = revving;
+        lost.four_wheel.gearbox = GearboxState {
+            gear_43a: -1,
+            ..GearboxState::ZERO
+        };
+        assert_eq!(
+            RaceState::new(lost).step_with_all_four_wheels(&pressed_controls, &geared),
+            Err(WheelPostprocessError::Gear(GearOutOfRange { gear: -1 }))
+        );
         assert_eq!(
             pressed.car.motion.lane_source_s,
             stabilize_lane_source_s(
@@ -2769,6 +2941,7 @@ mod tests {
                 handbrake: false,
                 raw_steer: Default::default(),
                 raw_pedals: Default::default(),
+                raw_gear_command_314: 0,
             };
             16
         ];
