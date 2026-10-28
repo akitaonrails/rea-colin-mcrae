@@ -227,6 +227,11 @@ impl SchoolRace {
         }
     }
 
+    /// The loops done (`DAT_005fbe28`).
+    pub const fn laps(&self) -> i32 {
+        self.lap
+    }
+
     /// The lines are armed (`DAT_005f9e94`).
     pub const fn armed(&self) -> bool {
         self.armed

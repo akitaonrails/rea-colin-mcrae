@@ -231,6 +231,8 @@ pub struct GameplaySession<'a> {
     /// The state whose render handler the last frame planned (`None` when
     /// the render gate skipped it).
     rendered_state: Option<u8>,
+    /// The same, kept for the frame's draws.
+    render_state: Option<u8>,
     /// The player's setup block (`0x50d950`) with its damage fractions,
     /// the wet-brake flag `+0xbb4`, the gearbox's unscaled ratio copies
     /// (`ctl +0x210/+0x230`), and a finish awaiting the damage write-back
@@ -681,6 +683,7 @@ impl<'a> GameplaySession<'a> {
             sim_ticks: 0,
             fade: RaceFade::default(),
             rendered_state: None,
+            render_state: None,
             car_setup: crate::car_setup::CarSetupBlock::RESET,
             wet_brakes: false,
             gear_copies: None,
@@ -1138,6 +1141,7 @@ impl<'a> GameplaySession<'a> {
             .plan
             .and_then(|plan| plan.render)
             .map(|state| state.id());
+        self.render_state = self.rendered_state;
         self.track_stage_end(stepped);
 
         Ok(GameplayFrame {
@@ -1239,6 +1243,7 @@ impl<'a> GameplaySession<'a> {
             .plan
             .and_then(|plan| plan.render)
             .map(|state| state.id());
+        self.render_state = self.rendered_state;
         self.track_stage_end(stepped);
 
         Ok(GameplayFrame {
@@ -1459,6 +1464,12 @@ impl<'a> GameplaySession<'a> {
     /// The race's fade channel and its options.
     pub fn race_fade_mut(&mut self) -> &mut RaceFade {
         &mut self.fade
+    }
+
+    /// The state whose render handler this frame's advance planned.
+    #[must_use]
+    pub const fn render_state(&self) -> Option<u8> {
+        self.render_state
     }
 
     /// The compositor's fade step for this frame's render (`FUN_00422ca0`

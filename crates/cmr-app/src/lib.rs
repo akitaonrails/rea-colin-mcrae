@@ -151,7 +151,7 @@ use cmr_video::c3d_software_raster::SoftwareC3dIndexedQuantization;
 use cmr_video::software_load_interstitial::{
     LoadInterstitialComposeError, compose_load_interstitial,
 };
-use cmr_video::software_pause_overlay::compose_pause_overlay;
+use cmr_video::software_pause_overlay::{compose_pause_overlay, compose_text_overlay};
 use cmr_video::software_race_hud::{RaceHudComposeError, compose_race_hud_commands};
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
@@ -5202,6 +5202,15 @@ fn advance_game_frame<C: HostClock>(
         FadeComposite::Shutdown => None,
         _ => world,
     };
+    // The school's status line and loop counter, queued by the B handlers
+    // and the shared composite through the same text path as the pause
+    // menu's, and so drawn with it after the quad.
+    let world = match (session.school_task(), session.render_state(), world) {
+        (Some(task), Some(state), Some(frame)) => {
+            Some(pause.draw_school_text(frame, &task.race, state))
+        }
+        (_, _, world) => world,
+    };
     // State 0xa: the pause menu's panel and text over the world (B handler
     // `FUN_004233e0` -> `FUN_00468dd0`), queued after the quad.
     let world = match (advanced.route, world) {
@@ -5671,6 +5680,13 @@ impl PauseAssets {
         })
     }
 
+    /// `FUN_0049b010`: one string, empty for a missing id.
+    fn string(&self, id: i32) -> Vec<u8> {
+        usize::try_from(id)
+            .map(|id| self.text.lookup(id).to_vec())
+            .unwrap_or_default()
+    }
+
     fn font(&self, font: PauseFont) -> &BitmapFont {
         match font {
             PauseFont::Title => &self.title,
@@ -5716,36 +5732,73 @@ impl PauseHarness {
         }
     }
 
+    /// The fonts and strings for a display width, loaded on first use.
+    fn load_assets(&mut self, width: u16) {
+        if self
+            .assets
+            .as_ref()
+            .is_none_or(|(loaded, _)| *loaded != width)
+        {
+            self.assets = self
+                .runtime_data
+                .as_deref()
+                .and_then(|root| PauseAssets::load(root, width, self.language))
+                .map(|assets| (width, assets));
+        }
+    }
+
+    /// The school task's status line and loop counter
+    /// ([`cmr_core::school_text`]) over `frame`. The school's text table
+    /// (`RallSchl\Language`) matches the game's line for line in the
+    /// shipped data, so the loaded table serves both.
+    fn draw_school_text(
+        &mut self,
+        frame: SoftwarePresentedFrame,
+        race: &cmr_core::school_race::SchoolRace,
+        state: u8,
+    ) -> SoftwarePresentedFrame {
+        let extent = frame.extent();
+        self.load_assets(extent.width);
+        let Some((_, assets)) = self.assets.as_ref() else {
+            return frame;
+        };
+        let text = |id: i32| assets.string(id);
+        let Ok(runs) = cmr_core::school_text::school_text_runs(
+            race,
+            state,
+            &text,
+            assets.font(PauseFont::Title),
+            extent.width,
+            extent.height,
+        ) else {
+            return frame;
+        };
+        if runs.is_empty() {
+            return frame;
+        }
+        match compose_text_overlay(frame.clone(), &[], &runs, |font| assets.font(font)) {
+            Ok((drawn, _)) => drawn,
+            Err(_) => frame,
+        }
+    }
+
     /// `FUN_00468dd0`: the current pause menu's panel and text over `frame`.
     /// The display is taken as alpha-capable and not mode 6 (the D3D path
     /// the queued glyphs model). Without the fonts or text the world shows
     /// unchanged.
     fn draw(&mut self, frame: SoftwarePresentedFrame) -> SoftwarePresentedFrame {
         let extent = frame.extent();
-        let (Some(menus), Some(current)) =
-            (self.controller.menus.as_ref(), self.controller.current)
+        let (Some(_), Some(current)) = (self.controller.menus.as_ref(), self.controller.current)
         else {
             return frame;
         };
-        if self
-            .assets
-            .as_ref()
-            .is_none_or(|(width, _)| *width != extent.width)
-        {
-            self.assets = self
-                .runtime_data
-                .as_deref()
-                .and_then(|root| PauseAssets::load(root, extent.width, self.language))
-                .map(|assets| (extent.width, assets));
-        }
-        let Some((_, assets)) = self.assets.as_ref() else {
+        self.load_assets(extent.width);
+        let (Some(menus), Some((_, assets))) =
+            (self.controller.menus.as_ref(), self.assets.as_ref())
+        else {
             return frame;
         };
-        let text = |id: i32| {
-            usize::try_from(id)
-                .map(|id| assets.text.lookup(id).to_vec())
-                .unwrap_or_default()
-        };
+        let text = |id: i32| assets.string(id);
         let display = PauseDisplay {
             width: extent.width,
             height: extent.height,
@@ -12632,6 +12685,56 @@ mod tests {
     /// bar, the setup list, a category page, the repair list and the stage
     /// view, written under `.work/frames-service`. The setup costs, damage
     /// and player name are synthetic.
+    /// The school's status line and loop counter in the user's
+    /// `title.fon` over a grey frame (`.work/frames-school/text.ppm`).
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data; writes a frame under .work"]
+    fn imported_school_text_frame() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let reference =
+            cmr_formats::school_rsf::parse_rsf(&vec![0; cmr_formats::school_rsf::RSF_BLOCK_SIZE])
+                .unwrap();
+        let scoring =
+            cmr_core::school_race::SchoolScoring::from_blocks(&[0; 288], &[0; 288]).unwrap();
+        let mut race = cmr_core::school_race::SchoolRace::start(1, 0, 10, reference, scoring);
+        race.fsm = 2;
+        let mut palette = [PaletteEntry {
+            red: 0,
+            green: 0,
+            blue: 0,
+            flags: 0,
+        }; 256];
+        for (i, entry) in palette.iter_mut().enumerate() {
+            let v = i as u8;
+            *entry = PaletteEntry {
+                red: v & 0xe0,
+                green: (v << 3) & 0xe0,
+                blue: (v << 6) & 0xc0,
+                flags: 0,
+            };
+        }
+        let frame = SoftwarePresentedFrame::from_indexed(
+            ROOT_EXTENT,
+            vec![0x49; 640 * 480].into_boxed_slice(),
+            Box::new(palette),
+        )
+        .unwrap();
+        let mut pause = PauseHarness::with_runtime_data(&root, Language::English);
+        let drawn = pause.draw_school_text(frame.clone(), &race, 5);
+        assert_ne!(drawn.pixels(), frame.pixels(), "the text drew");
+        let rgba = drawn.expand_rgba8().unwrap();
+        let mut ppm = b"P6\n640 480\n255\n".to_vec();
+        let (pixels, _) = rgba.pixels().as_chunks::<4>();
+        for pixel in pixels {
+            ppm.extend_from_slice(&pixel[..3]);
+        }
+        let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/frames-school");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::write(out_dir.join("text.ppm"), ppm).unwrap();
+    }
+
     /// Every shipped school task's reference run parses, and its `.dat`
     /// lines number into the ids the run's records carry.
     #[test]

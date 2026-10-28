@@ -163,6 +163,7 @@ pub mod save_dialog;
 pub mod scalar_tween;
 pub mod school_menu;
 pub mod school_race;
+pub mod school_text;
 pub mod screen_fade;
 pub mod service_draw;
 pub mod service_screen;
