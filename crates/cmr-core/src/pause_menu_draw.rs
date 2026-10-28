@@ -78,6 +78,8 @@ pub struct PauseTextRun {
     pub font: PauseFont,
     pub color: [u8; 4],
     pub plan: TextPlan,
+    /// The rectangle the glyphs are cut to (`FUN_00497bb0`), if any.
+    pub clip: Option<OverlayQuad>,
 }
 
 /// Everything one paused frame draws over the world.
@@ -202,6 +204,7 @@ pub fn pause_draw_plan<'a>(
             font: PauseFont::Title,
             color: TITLE_COLOR,
             plan,
+            clip: None,
         });
     }
     for (index, item) in menu.items.iter().enumerate() {
@@ -222,7 +225,12 @@ pub fn pause_draw_plan<'a>(
         let (plan, next, width) = text_q16(fonts(font), &label, 0x8000, cursor, CENTRED, w, h)?;
         cursor = next + ITEM_GAP_Q16;
         widest = widest.max(width);
-        runs.push(PauseTextRun { font, color, plan });
+        runs.push(PauseTextRun {
+            font,
+            color,
+            plan,
+            clip: None,
+        });
     }
     let (panel, _, _) = pause_panel_quad(widest, cursor, w, h);
     Ok(PauseDrawPlan {
@@ -237,13 +245,13 @@ pub fn pause_draw_plan<'a>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::pause_menu::{PauseMenuConditions, PauseOptions, build_pause_menus};
     use cmr_formats::font::{FontLimits, parse_legacy_font};
 
     /// A synthetic FON: an 8x8 8-bit atlas with uppercase glyphs 2x4 each.
-    fn font() -> BitmapFont {
+    pub(crate) fn font() -> BitmapFont {
         let width = 8u32;
         let height = 8u32;
         let mut file = Vec::new();

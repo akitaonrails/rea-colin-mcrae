@@ -3291,6 +3291,7 @@ fn advance_game_frame<C: HostClock>(
     audio: &mut RaceAudio,
     pause: &mut PauseHarness,
     config: &mut FrontEndConfig,
+    results: &mut RaceResults,
     input: WindowedInput,
 ) -> Result<GameFrameOutcome, WindowedStageFrameError> {
     let mut pause_effects = Vec::new();
@@ -3401,8 +3402,13 @@ fn advance_game_frame<C: HostClock>(
     // transition is visible. Any other route clears the fade.
     // State 0xa: the pause menu's panel and text over the world (B handler
     // `FUN_004233e0` -> `FUN_00468dd0`).
+    // State 8 while the results director runs: its pages over the world
+    // (B handler `FUN_00423260` -> `FUN_0042ae80`).
     let world = match (advanced.route, world) {
         (Some(RenderRoute::OverlayAlt), Some(frame)) => Some(pause.draw(frame)),
+        (Some(RenderRoute::StageWorld(_)), Some(frame)) if session.results().is_some() => {
+            Some(results.draw(session, config, frame))
+        }
         (_, world) => world,
     };
     let world = if advanced.route == Some(RenderRoute::FadeComposite) {
@@ -5704,44 +5710,149 @@ struct RaceResults {
     /// Each rival slot's tier by country (record `+9 + country`), from the
     /// reviewed rival records; `None` without the store.
     tiers: Option<[[u8; 9]; 16]>,
+    /// Each rival slot's name (record `+0`), empty without the store.
+    names: Vec<Vec<u8>>,
     rivals: Option<cmr_core::stage_rivals::StageRivals>,
     standings: Option<cmr_core::standings::Standings>,
     finished: bool,
     /// The results keys held last tick, for the press edge (`FUN_0043baa0`).
     held_keys: u8,
+    runtime_data: PathBuf,
+    /// The results fonts and text, by display width.
+    assets: Option<(u16, PauseAssets)>,
+    pulse: cmr_core::results_draw::ResultsPulse,
 }
 
 impl RaceResults {
     fn open(runtime_data: &Path) -> Self {
-        let tiers =
+        let store =
             cmr_assets::ReviewedRivalRecordsProfile::from_json(REVIEWED_RIVAL_RECORDS_PROFILE)
                 .ok()
                 .and_then(|reviewed| {
-                    match cmr_assets::RivalRecordsStore::open(
+                    cmr_assets::RivalRecordsStore::open(
                         &session_sidecar_store(
                             runtime_data,
                             cmr_assets::RIVAL_RECORDS_STORE_DIRECTORY,
                         ),
                         &reviewed,
-                    ) {
-                        Ok(store) => Some(std::array::from_fn(|slot| {
-                            let raw = store.records().records[slot].raw;
-                            std::array::from_fn(|country| raw[9 + country])
-                        })),
-                        Err(error) => {
-                            eprintln!(
-                                "cmr-app: rival records unavailable ({error:?}); no rival times"
-                            );
-                            None
-                        }
-                    }
+                    )
+                    .inspect_err(|error| {
+                        eprintln!("cmr-app: rival records unavailable ({error:?}); no rival times");
+                    })
+                    .ok()
                 });
+        let records = store.as_ref().map(|store| &store.records().records);
         Self {
-            tiers,
+            tiers: records.map(|records| {
+                std::array::from_fn(|slot| {
+                    std::array::from_fn(|country| records[slot].raw[9 + country])
+                })
+            }),
+            names: records.map_or_else(Vec::new, |records| {
+                records.iter().map(|record| record.name.clone()).collect()
+            }),
             rivals: None,
             standings: None,
             finished: false,
             held_keys: 0,
+            runtime_data: runtime_data.to_owned(),
+            assets: None,
+            pulse: cmr_core::results_draw::ResultsPulse::default(),
+        }
+    }
+
+    /// State 8's render `FUN_00423260` while the director runs: the results
+    /// page `FUN_0042ae80` over the replaying world. The display is taken as
+    /// alpha-capable (as the pause menu does) and the scroll is drawn at the
+    /// tick's end (`t = 1`, harness). Without the fonts or text the world
+    /// shows unchanged.
+    fn draw(
+        &mut self,
+        session: &GameplaySession,
+        config: &FrontEndConfig,
+        frame: SoftwarePresentedFrame,
+    ) -> SoftwarePresentedFrame {
+        let Some(director) = session.results() else {
+            return frame;
+        };
+        let extent = frame.extent();
+        if self
+            .assets
+            .as_ref()
+            .is_none_or(|(width, _)| *width != extent.width)
+        {
+            self.assets = PauseAssets::load(&self.runtime_data, extent.width)
+                .map(|assets| (extent.width, assets));
+        }
+        let Some((_, assets)) = self.assets.as_ref() else {
+            return frame;
+        };
+        let player_slot = self
+            .rivals
+            .as_ref()
+            .and_then(|rivals| rivals.player_slots.first().copied());
+        // `cfg + 0x2c`: the player's name, NUL-terminated.
+        let live = cmr_core::config_commit::live(&config.image);
+        let player_name = live.get(0x2c..0x2c + 0x10).map_or(&[][..], |name| {
+            name.split(|&byte| byte == 0).next().unwrap_or(&[])
+        });
+        let rows =
+            |order: &[cmr_core::standings::Placed]| -> Vec<cmr_core::results_draw::ResultsRow> {
+                order
+                    .iter()
+                    .map(|placed| {
+                        let player = Some(placed.slot) == player_slot;
+                        cmr_core::results_draw::ResultsRow {
+                            name: if player {
+                                player_name
+                            } else {
+                                self.names
+                                    .get(usize::from(placed.slot))
+                                    .map_or(&[][..], Vec::as_slice)
+                            },
+                            time: placed.value,
+                            player,
+                        }
+                    })
+                    .collect()
+            };
+        let (stage_rows, rally_rows) = self
+            .standings
+            .as_ref()
+            .map_or((Vec::new(), Vec::new()), |standings| {
+                (rows(&standings.stage), rows(&standings.rally))
+            });
+        let input = cmr_core::results_draw::ResultsDrawInput {
+            director,
+            event: session.event(),
+            stage_rows: &stage_rows,
+            rally_rows: &rally_rows,
+            stage_name: None,
+            scroll_t_q16: 0x10000,
+            width: extent.width,
+            height: extent.height,
+            panel_capable: true,
+        };
+        let text = |id: i32| {
+            usize::try_from(id)
+                .map(|id| assets.text.lookup(id).to_vec())
+                .unwrap_or_default()
+        };
+        let Ok(plan) =
+            cmr_core::results_draw::results_draw_plan(&input, &mut self.pulse, &text, &|font| {
+                assets.font(font)
+            })
+        else {
+            return frame;
+        };
+        match cmr_video::software_pause_overlay::compose_text_overlay(
+            frame.clone(),
+            &plan.quads,
+            &plan.runs,
+            |font| assets.font(font),
+        ) {
+            Ok((drawn, _)) => drawn,
+            Err(_) => frame,
         }
     }
 
@@ -5764,6 +5875,8 @@ impl RaceResults {
             up: edge & 4 != 0,
             down: edge & 8 != 0,
             confirm: edge & 0x10 != 0,
+            up_held: held & 4 != 0,
+            down_held: held & 8 != 0,
         }
     }
 
@@ -5846,6 +5959,7 @@ impl RaceResults {
             rally_position,
             championship_position,
             save_schedule: None,
+            screen_height: ROOT_EXTENT.height,
         };
         session.start_results(context);
     }
@@ -6092,6 +6206,7 @@ pub fn run_windowed_game_session(
                         &mut audio,
                         &mut pause,
                         &mut config,
+                        &mut results,
                         input,
                     )
                 });
@@ -6169,6 +6284,7 @@ pub fn run_windowed_game_session(
                 &mut audio,
                 &mut pause,
                 &mut config,
+                &mut results,
                 input,
             )
         });
@@ -7760,6 +7876,7 @@ mod tests {
         config.preset_setup(2);
         config.commit(session.event_mut(), &mut pause);
         session.event_mut().start_race_session();
+        let mut results = RaceResults::open(Path::new("/nonexistent-runtime-data"));
         let mut advance = |session: &mut GameplaySession,
                            progress: &mut StageProgress,
                            keys: &cmr_platform_sdl3::KeyboardVkState,
@@ -7779,6 +7896,7 @@ mod tests {
                 &mut audio,
                 &mut pause,
                 &mut config,
+                &mut results,
                 WindowedInput {
                     keys,
                     gamepad: None,
@@ -8100,6 +8218,7 @@ mod tests {
                     &mut RaceAudio::default(),
                     &mut pause,
                     &mut config,
+                    &mut RaceResults::open(Path::new("/nonexistent-runtime-data")),
                     WindowedInput {
                         keys: $keys,
                         gamepad: None,
@@ -9419,5 +9538,106 @@ mod tests {
         assert_eq!(director.page(), 1);
         assert!(session.event().globals.results_550024);
         assert!(session.event().globals.continues_4ed7d8);
+    }
+
+    /// Draws the results pages with the reviewed fonts and text over a
+    /// mid-grey frame and writes them under `.work/frames-results`.
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data; writes frames under .work"]
+    fn imported_results_pages_frames() {
+        use cmr_core::results_director::{DirectorContext, DirectorInput, ResultsDirector};
+        use cmr_core::results_draw::{
+            ResultsDrawInput, ResultsPulse, ResultsRow, results_draw_plan,
+        };
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/frames-results");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let assets = PauseAssets::load(&root, 640).expect("fonts and text");
+        // A 6x6x6 colour cube so the overlay colours resolve.
+        let palette: Box<[cmr_formats::riff_palette::PaletteEntry; 256]> =
+            Box::new(std::array::from_fn(|index| {
+                let index = index.min(215) as u8;
+                cmr_formats::riff_palette::PaletteEntry {
+                    red: index / 36 * 51,
+                    green: index / 6 % 6 * 51,
+                    blue: index % 6 * 51,
+                    flags: 0,
+                }
+            }));
+        let mut event = EventState::default();
+        event.cfg.difficulty_018 = 0x08;
+        event.cfg.stage_count_165 = 6;
+        event.cfg.cursor_168 = 0x10;
+        let mut director = ResultsDirector::start(
+            &mut event,
+            DirectorContext {
+                stage_position: 3,
+                rally_position: 3,
+                championship_position: 3,
+                screen_height: 480,
+                ..Default::default()
+            },
+        );
+        let names: Vec<Vec<u8>> = (0..16)
+            .map(|i| format!("DRIVER {i}").into_bytes())
+            .collect();
+        let rows: Vec<ResultsRow> = (0..16)
+            .map(|i| ResultsRow {
+                name: &names[i],
+                time: 31_000 + i as u32 * 137,
+                player: i == 2,
+            })
+            .collect();
+        let text = |id: i32| {
+            usize::try_from(id)
+                .map(|id| assets.text.lookup(id).to_vec())
+                .unwrap_or_default()
+        };
+        let mut pulse = ResultsPulse::default();
+        let confirm = DirectorInput {
+            confirm: true,
+            ..Default::default()
+        };
+        for name in ["stage", "rally", "menu"] {
+            let input = ResultsDrawInput {
+                director: &director,
+                event: &event,
+                stage_rows: &rows,
+                rally_rows: &rows,
+                stage_name: None,
+                scroll_t_q16: 0x10000,
+                width: 640,
+                height: 480,
+                panel_capable: true,
+            };
+            let plan =
+                results_draw_plan(&input, &mut pulse, &text, &|font| assets.font(font)).unwrap();
+            let frame = SoftwarePresentedFrame::from_indexed(
+                ROOT_EXTENT,
+                vec![86u8; 640 * 480].into_boxed_slice(),
+                palette.clone(),
+            )
+            .unwrap();
+            let (drawn, _) = cmr_video::software_pause_overlay::compose_text_overlay(
+                frame,
+                &plan.quads,
+                &plan.runs,
+                |font| assets.font(font),
+            )
+            .unwrap();
+            let rgba = drawn.expand_rgba8().unwrap();
+            let mut ppm = b"P6\n640 480\n255\n".to_vec();
+            let (pixels, _) = rgba.pixels().as_chunks::<4>();
+            for pixel in pixels {
+                ppm.extend_from_slice(&pixel[..3]);
+            }
+            std::fs::write(out_dir.join(format!("{name}.ppm")), ppm).unwrap();
+            director.tick(&mut event, confirm);
+            while director.settle() > 0 && event.globals.results_550024 {
+                director.tick(&mut event, DirectorInput::default());
+            }
+        }
     }
 }

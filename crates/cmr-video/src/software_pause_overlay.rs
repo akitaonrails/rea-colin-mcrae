@@ -11,7 +11,8 @@
 //! nearest-palette quantization (full-palette Manhattan distance, lowest index
 //! on ties, shared with the race HUD) are this backend's documented policy.
 
-use cmr_core::pause_menu_draw::{PauseDrawPlan, PauseFont};
+use cmr_core::overlay_alt::OverlayQuad;
+use cmr_core::pause_menu_draw::{PauseDrawPlan, PauseFont, PauseTextRun};
 use cmr_formats::font::BitmapFont;
 
 use crate::software_race_hud::{modulate_channel, nearest_palette_index, source_over_channel};
@@ -39,6 +40,17 @@ pub fn compose_pause_overlay<'a>(
     plan: &PauseDrawPlan,
     fonts: impl Fn(PauseFont) -> &'a BitmapFont,
 ) -> Result<(SoftwarePresentedFrame, PauseOverlayOutcome), SoftwareRgba8Error> {
+    compose_text_overlay(frame, &[(plan.panel, plan.panel_color)], &plan.runs, fonts)
+}
+
+/// Draw untextured rectangles (in order, each blended source-over by its
+/// alpha byte) and then the text runs over `frame`.
+pub fn compose_text_overlay<'a>(
+    frame: SoftwarePresentedFrame,
+    quads: &[(OverlayQuad, [u8; 4])],
+    runs: &[PauseTextRun],
+    fonts: impl Fn(PauseFont) -> &'a BitmapFont,
+) -> Result<(SoftwarePresentedFrame, PauseOverlayOutcome), SoftwareRgba8Error> {
     let extent = frame.extent();
     let width = usize::from(extent.width);
     let height = usize::from(extent.height);
@@ -46,43 +58,57 @@ pub fn compose_pause_overlay<'a>(
     let mut pixels = frame.pixels().to_vec();
     let mut outcome = PauseOverlayOutcome::default();
 
-    let [red, green, blue, alpha] = plan.panel_color;
-    let left = usize::from(plan.panel.x).min(width);
-    let top = usize::from(plan.panel.y).min(height);
-    let right = (usize::from(plan.panel.x) + usize::from(plan.panel.w)).min(width);
-    let bottom = (usize::from(plan.panel.y) + usize::from(plan.panel.h)).min(height);
-    let mut panel_cache = [None::<u8>; 256];
-    for y in top..bottom {
-        for pixel in &mut pixels[y * width + left..y * width + right] {
-            let destination = usize::from(*pixel);
-            *pixel = *panel_cache[destination].get_or_insert_with(|| {
-                let under = palette[destination];
-                let rgb = [
-                    source_over_channel(red, under.red, alpha),
-                    source_over_channel(green, under.green, alpha),
-                    source_over_channel(blue, under.blue, alpha),
-                ];
-                nearest_palette_index(rgb, &palette)
-            });
-            outcome.panel_pixels += 1;
+    for &(quad, [red, green, blue, alpha]) in quads {
+        let left = usize::from(quad.x).min(width);
+        let top = usize::from(quad.y).min(height);
+        let right = (usize::from(quad.x) + usize::from(quad.w)).min(width);
+        let bottom = (usize::from(quad.y) + usize::from(quad.h)).min(height);
+        let mut panel_cache = [None::<u8>; 256];
+        for y in top..bottom {
+            for pixel in &mut pixels[y * width + left..y * width + right] {
+                let destination = usize::from(*pixel);
+                *pixel = *panel_cache[destination].get_or_insert_with(|| {
+                    let under = palette[destination];
+                    let rgb = [
+                        source_over_channel(red, under.red, alpha),
+                        source_over_channel(green, under.green, alpha),
+                        source_over_channel(blue, under.blue, alpha),
+                    ];
+                    nearest_palette_index(rgb, &palette)
+                });
+                outcome.panel_pixels += 1;
+            }
         }
     }
 
-    for run in &plan.runs {
+    for run in runs {
         let font = fonts(run.font);
         let atlas = font.atlas();
         let atlas_width = atlas.width as usize;
+        let (clip_x, clip_y, clip_right, clip_bottom) =
+            run.clip
+                .map_or((0, 0, width as i32, height as i32), |clip| {
+                    (
+                        i32::from(clip.x),
+                        i32::from(clip.y),
+                        i32::from(clip.x) + i32::from(clip.w),
+                        i32::from(clip.y) + i32::from(clip.h),
+                    )
+                });
+        let (clip_x, clip_y) = (clip_x.max(0), clip_y.max(0));
+        let (clip_right, clip_bottom) =
+            (clip_right.min(width as i32), clip_bottom.min(height as i32));
         let mut glyph_cache = [None::<Option<u8>>; 256];
         for blit in &run.plan.blits {
             outcome.glyphs_drawn += 1;
             for row in 0..i32::from(blit.source.height) {
                 let target_y = blit.destination.y + row;
-                if target_y < 0 || target_y as usize >= height {
+                if target_y < clip_y || target_y >= clip_bottom {
                     continue;
                 }
                 for column in 0..i32::from(blit.source.width) {
                     let target_x = blit.destination.x + column;
-                    if target_x < 0 || target_x as usize >= width {
+                    if target_x < clip_x || target_x >= clip_right {
                         continue;
                     }
                     let source_x = i32::from(blit.source.x) + column;
@@ -121,8 +147,7 @@ pub fn compose_pause_overlay<'a>(
 mod tests {
     use super::*;
     use cmr_core::display::DisplayExtent;
-    use cmr_core::overlay_alt::OverlayQuad;
-    use cmr_core::pause_menu_draw::{PauseTextRun, text_q16};
+    use cmr_core::pause_menu_draw::text_q16;
     use cmr_formats::font::{FontLimits, parse_legacy_font};
     use cmr_formats::riff_palette::PaletteEntry;
 
@@ -206,6 +231,7 @@ mod tests {
                 font: PauseFont::Result,
                 color: [0x80, 0x80, 0x80, 0xff],
                 plan: text,
+                clip: None,
             }],
         };
         let (out, outcome) = compose_pause_overlay(frame(200), &plan, |_| &font).unwrap();

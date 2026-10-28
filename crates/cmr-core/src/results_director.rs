@@ -22,7 +22,8 @@
 use crate::event_flow::{EventState, SPECIAL_COUNTRIES};
 use crate::standings::last_stage_of_rally;
 
-/// One tick's input (`FUN_00430980`): fresh presses.
+/// One tick's input (`FUN_00430980`): fresh presses, and Up/Down held
+/// (`DAT_0054fff0`/`DAT_0054fff4`) for the scrolling tables.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DirectorInput {
     pub confirm: bool,
@@ -30,6 +31,8 @@ pub struct DirectorInput {
     pub right: bool,
     pub up: bool,
     pub down: bool,
+    pub up_held: bool,
+    pub down_held: bool,
 }
 
 /// What the race was.
@@ -45,6 +48,9 @@ pub struct DirectorContext {
     pub championship_position: usize,
     /// The save schedule `0x4ed8e4` (one byte per country), when extracted.
     pub save_schedule: Option<[u8; 9]>,
+    /// The display height (`*(DAT_00502518 + 4)`), which sets the table's
+    /// row pitch.
+    pub screen_height: u16,
 }
 
 /// A host effect of one tick.
@@ -72,6 +78,92 @@ pub struct ResultsDirector {
     /// "yes".
     dialog: Option<u8>,
     context: DirectorContext,
+    /// `DAT_0054fc3c`: the table rows, 16 with a difficulty set and 8 without.
+    rows: u8,
+    scroll: Scroll,
+}
+
+/// The results tables' scroll: the first shown row `DAT_0054ffcc`, the
+/// pixel offset `DAT_0054fc3e` (animating towards `-pitch * index`), the
+/// tick's starting offset `DAT_0054ffc8` and the down/up animations
+/// `DAT_0055000c`/`DAT_00550010`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Scroll {
+    pub index: i32,
+    pub offset: i16,
+    pub start: i16,
+    down: bool,
+    up: bool,
+}
+
+/// `-(H * 37 / 480)`: one row up.
+fn negative_pitch(height: i32) -> i32 {
+    -height.wrapping_mul(37) / 480
+}
+
+impl Scroll {
+    /// `FUN_0042fa40(position)`: show the row five above `position`, within
+    /// the table.
+    fn centre_on(&mut self, position: i32, rows: u8, height: i32) {
+        let mut index = position - 5;
+        if index < 0 {
+            index = 0;
+        } else if index > i32::from(rows) - 8 {
+            index = i32::from(rows) - 8;
+        }
+        self.index = index;
+        self.offset = negative_pitch(height).wrapping_mul(index) as i16;
+        self.start = self.offset;
+    }
+
+    /// `FUN_00430b30(max)`: held Down/Up start a one-row scroll, which moves
+    /// `5 * H / 480` pixels a tick until it lands.
+    fn step(&mut self, max: i32, input: DirectorInput, height: i32) {
+        self.start = self.offset;
+        let step = height.wrapping_mul(5) / 480;
+        let target = |index: i32| negative_pitch(height).wrapping_mul(index);
+        let mut down = self.down;
+        if !self.down && !self.up {
+            if self.index < max && input.down_held {
+                down = true;
+                self.down = true;
+                self.index += 1;
+            }
+            if self.index > 0 && input.up_held {
+                self.index -= 1;
+                self.up = true;
+            }
+        }
+        if down {
+            self.offset = self.offset.wrapping_sub(step as i16);
+            if i32::from(self.offset) <= target(self.index) {
+                self.offset = target(self.index) as i16;
+                self.down = false;
+            }
+        }
+        if self.up {
+            self.offset = self.offset.wrapping_add(step as i16);
+            if i32::from(self.offset) >= target(self.index) {
+                self.offset = target(self.index) as i16;
+                self.up = false;
+            }
+        }
+    }
+
+    /// `FUN_00430480(t)`: the drawn offset `DAT_0054f9f0` between this
+    /// tick's start and end, `t` in Q16, rounded half up.
+    #[must_use]
+    pub fn drawn(&self, t_q16: i32) -> i16 {
+        let start = i32::from(self.start) << 16;
+        let delta = (i32::from(self.offset) << 16).wrapping_sub(start);
+        let value = ((i64::from(t_q16) * i64::from(delta)) >> 16) as i32 + start;
+        let whole = value >> 16;
+        (if value - (whole << 16) >= 0x8000 {
+            whole + 1
+        } else {
+            whole
+        }) as i16
+    }
 }
 
 /// The post-stage menu items.
@@ -101,6 +193,17 @@ impl ResultsDirector {
         }
         event.globals.restart_550018 = false;
         event.globals.results_550024 = true;
+        let rows = if event.cfg.difficulty_018 & 0x18 != 0 {
+            16
+        } else {
+            8
+        };
+        let mut scroll = Scroll::default();
+        scroll.centre_on(
+            context.stage_position as i32,
+            rows,
+            i32::from(context.screen_height),
+        );
         Self {
             page,
             settle: 0,
@@ -108,7 +211,30 @@ impl ResultsDirector {
             menu,
             dialog: None,
             context,
+            rows,
+            scroll,
         }
+    }
+
+    /// The five-tick settle after a page change (`DAT_0054fc5c`); the pages
+    /// draw nothing while it runs.
+    pub const fn settle(&self) -> u8 {
+        self.settle
+    }
+
+    /// `DAT_0054fc3c`.
+    pub const fn rows(&self) -> u8 {
+        self.rows
+    }
+
+    /// The tables' scroll.
+    pub const fn scroll(&self) -> &Scroll {
+        &self.scroll
+    }
+
+    /// What the race was.
+    pub const fn context(&self) -> &DirectorContext {
+        &self.context
     }
 
     /// The current page id.
@@ -146,10 +272,8 @@ impl ResultsDirector {
             4 => self.post_stage_menu(event, input, &mut effects),
             9 => self.confirmation(event, input, 9, quit),
             10 => self.confirmation(event, input, 10, restart),
+            1..=3 => self.scrolling_page(event, input, &mut effects),
             page if !input.confirm => page,
-            1 => self.after_stage_results(event, &mut effects),
-            2 => self.after_rally_results(event),
-            3 => self.after_championship(event),
             5 => self.after_save(event),
             6 => 1,
             8 => {
@@ -165,6 +289,34 @@ impl ResultsDirector {
             self.settle = 5;
         }
         effects
+    }
+
+    /// Pages 1, 2 and 3 (`0x430af0`, `0x4313f0`, `0x431730`): the table
+    /// scrolls (the stage results not in a time trial), then Return moves on.
+    fn scrolling_page(
+        &mut self,
+        event: &mut EventState,
+        input: DirectorInput,
+        effects: &mut Vec<DirectorEffect>,
+    ) -> u8 {
+        if self.page != 1 || event.cfg.mode_166 & 3 != 2 {
+            let max = i32::from(self.rows) - 8;
+            self.scroll
+                .step(max, input, i32::from(self.context.screen_height));
+        }
+        if !input.confirm {
+            return self.page;
+        }
+        match self.page {
+            1 => self.after_stage_results(event, effects),
+            2 => self.after_rally_results(event),
+            _ => self.after_championship(event),
+        }
+    }
+
+    fn centre_on(&mut self, position: usize) {
+        let height = i32::from(self.context.screen_height);
+        self.scroll.centre_on(position as i32, self.rows, height);
     }
 
     /// `0x431ae0`: the save dialog (`FUN_0043bce0`, not reconstructed) has
@@ -186,6 +338,7 @@ impl ResultsDirector {
         event: &mut EventState,
         effects: &mut Vec<DirectorEffect>,
     ) -> u8 {
+        self.centre_on(self.context.rally_position);
         let mode = event.cfg.mode_166 & 3;
         if mode == 2 {
             return 4;
@@ -210,6 +363,7 @@ impl ResultsDirector {
     /// when offered); at its end the championship standings, except that a
     /// championship ends with GAME OVER outside the top six.
     fn after_rally_results(&mut self, event: &mut EventState) -> u8 {
+        self.centre_on(self.context.championship_position);
         if !last_stage_of_rally(event) {
             return if self.save_offered(event) { 5 } else { 4 };
         }
@@ -231,6 +385,7 @@ impl ResultsDirector {
     /// otherwise the reach and the progress counters rise and the bonus event
     /// is armed for a top-three rally.
     fn after_championship(&mut self, event: &mut EventState) -> u8 {
+        self.centre_on(self.context.stage_position);
         self.menu_items[0] = item::CONTINUE;
         self.menu = 0x01;
         let cfg = &mut event.cfg;
@@ -621,6 +776,56 @@ mod tests {
         assert_eq!(d.after_save(&e), 4);
         let e = event(0, 0x01, 0);
         assert_eq!(d.after_save(&e), 4);
+    }
+
+    #[test]
+    fn the_tables_scroll_a_row_at_a_time() {
+        let mut e = event(0, 0x10, 0x08);
+        let mut d = ResultsDirector::start(
+            &mut e,
+            DirectorContext {
+                stage_position: 12,
+                screen_height: 480,
+                ..context(1)
+            },
+        );
+        // Sixteen rows; row 12 shows from row 7 (pitch 37 at 480 high).
+        assert_eq!(d.rows(), 16);
+        assert_eq!((d.scroll().index, d.scroll().offset), (7, -259));
+        let down = DirectorInput {
+            down_held: true,
+            ..Default::default()
+        };
+        d.tick(&mut e, down);
+        assert_eq!((d.scroll().index, d.scroll().offset), (8, -264));
+        for _ in 0..7 {
+            d.tick(&mut e, DirectorInput::default());
+        }
+        assert_eq!((d.scroll().index, d.scroll().offset), (8, -296));
+        // The last row is the limit.
+        for _ in 0..20 {
+            d.tick(&mut e, down);
+        }
+        assert_eq!(d.scroll().index, 8);
+        // Halfway through a tick the drawn offset is the rounded midpoint.
+        let scroll = Scroll {
+            start: -10,
+            offset: -15,
+            ..Scroll::default()
+        };
+        assert_eq!(scroll.drawn(0x8000), -12);
+        assert_eq!(scroll.drawn(0x10000), -15);
+        // A novice's eight rows never scroll.
+        let mut novice = event(0, 0x10, 0);
+        let d = ResultsDirector::start(
+            &mut novice,
+            DirectorContext {
+                stage_position: 8,
+                screen_height: 480,
+                ..context(1)
+            },
+        );
+        assert_eq!((d.rows(), d.scroll().index), (8, 0));
     }
 
     #[test]
