@@ -1856,6 +1856,14 @@ tick, and its tables derive from the compiled initializer. The four-wheel car
 can now accelerate through the gears, steer and brake under its own recovered
 rules; moving the windowed session onto it is next.
 
+A probe of that four-wheel step on the reviewed AU1 data (`obs.au1-four-wheel-probe`)
+shows the control processor working but the car not moving at all: the engine
+response table `DAT_0050e1ac` is zero, the drive torque split is not wired into
+the wheel forces, and no gravity or ground-contact force reaches the lanes. The
+windowed session stays planar until those exist; the per-car-type table block
+(stride `0xcd0` at `DAT_0050e170..`) and the ground part of `FUN_0040d810` are
+the next recovery targets.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

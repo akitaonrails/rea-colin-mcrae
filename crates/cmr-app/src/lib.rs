@@ -30,7 +30,7 @@ use cmr_core::compiled_car_initializer::{
     CompiledEightLaneExecutionFailure, CompiledEightLaneExecutionState, CompiledFourWheelConstants,
     CompiledHalfSignState, CompiledLaneDispatchFailurePhase, CompiledPostLaneBasisEffects,
     CompiledSetupPoseError, CompiledSetupPoseInputs, CompiledSetupPoseLaneInputs,
-    DecodedCompiledLaneGeometryError, derive_compiled_half_sign_state,
+    DecodedCompiledLaneGeometryError, RecoveredCompiledStageError, derive_compiled_half_sign_state,
     execute_stage_compiled_setup_pose,
 };
 use cmr_core::deferred_palette::DeferredPaletteCommitOutcome;
@@ -3389,6 +3389,8 @@ pub enum SessionCompiledPoseError {
     UnsupportedStage(String),
     Geometry(StageCompiledGeometryLoadError),
     Execution(SessionCompiledPoseCoreError),
+    /// The selected car's case words fault a recovered initializer stage.
+    CarInputs(RecoveredCompiledStageError),
 }
 
 fn compiled_setup_failure_metadata<ProviderError, ConfigError>(
@@ -3430,6 +3432,7 @@ impl SessionCompiledPoseError {
             Self::UnsupportedStage(_) => "compiled-pose-unsupported-stage",
             Self::Geometry(_) => "compiled-pose-geometry",
             Self::Execution(error) => compiled_setup_failure_metadata(error).0,
+            Self::CarInputs(_) => "compiled-pose-car-inputs",
         }
     }
 
@@ -3473,6 +3476,7 @@ impl fmt::Display for SessionCompiledPoseError {
                 "stage {stage:?} has no ordinary-stage authenticated geometry identity"
             ),
             Self::Geometry(error) => error.fmt(formatter),
+            Self::CarInputs(error) => write!(formatter, "cannot derive car inputs: {error}"),
             Self::Execution(CompiledSetupPoseError::CommonPrefix(error)) => error.fmt(formatter),
             Self::Execution(CompiledSetupPoseError::Lanes(
                 CompiledEightLaneExecutionFailure::Dispatch {
@@ -3503,6 +3507,7 @@ impl std::error::Error for SessionCompiledPoseError {
             Self::SelectorProfile(error) => Some(error),
             Self::SelectorStore(error) => Some(error),
             Self::Geometry(error) => Some(error),
+            Self::CarInputs(error) => Some(error),
             Self::Execution(CompiledSetupPoseError::CommonPrefix(error)) => Some(error),
             Self::UnknownCarCode(_)
             | Self::UnsupportedStage(_)
@@ -3648,6 +3653,68 @@ impl SessionCompiledPose {
             effects.lanes.state.lane_words,
             effects.sources.contact_basis,
         ))
+    }
+}
+
+/// Everything the four-wheel step needs from one car's compiled case words,
+/// under the zero config the session's pose setup also uses.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the windowed session moves to the four-wheel path once its force inputs exist"
+    )
+)]
+#[derive(Clone, Copy, Debug)]
+struct SessionCompiledCar {
+    families: CompiledControlFamilies,
+    constants: CompiledFourWheelConstants,
+    gearbox_tables: cmr_core::gearbox::GearboxTables,
+    half_state: CompiledHalfSignState,
+}
+
+impl SessionCompiledPose {
+    /// Derive the selected car's four-wheel inputs from its direct case words.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the windowed session moves to the four-wheel path once its force inputs exist"
+        )
+    )]
+    fn compiled_car(&self) -> Result<SessionCompiledCar, SessionCompiledPoseError> {
+        use cmr_core::compiled_car_initializer::{
+            derive_compiled_control_families, derive_compiled_four_wheel_constants,
+            derive_compiled_gearbox_tables, transform_compiled_control_family,
+        };
+        let words = self
+            .direct_cases
+            .apply(CompiledCaseWords::default(), self.selector)
+            .words;
+        let families = derive_compiled_control_families(transform_compiled_control_family(
+            words.control_family(),
+            0,
+        ))
+        .map_err(|error| {
+            SessionCompiledPoseError::CarInputs(RecoveredCompiledStageError::Family(error))
+        })?;
+        let constants = derive_compiled_four_wheel_constants(words, 0)
+            .map_err(SessionCompiledPoseError::CarInputs)?;
+        let gearbox_tables = derive_compiled_gearbox_tables(words, 0, &families)
+            .map_err(SessionCompiledPoseError::CarInputs)?;
+        // Under the zero config the prefix does not rescale the state words,
+        // so these are the effective words the pose setup also derives from.
+        let half_state = derive_compiled_half_sign_state([
+            words.state_words[0],
+            words.state_words[1],
+            words.state_words[2],
+        ]);
+        Ok(SessionCompiledCar {
+            families,
+            constants,
+            gearbox_tables,
+            half_state,
+        })
     }
 }
 
@@ -5696,6 +5763,79 @@ mod tests {
             inputs.populate_second_wheel(&mut second, 120),
             Err(SurfaceCoefficientIndexError { index: 120 })
         );
+    }
+
+    #[test]
+    #[ignore = "diagnostic probe: requires the reviewed installed-EU root in CMR_RUNTIME_DATA"]
+    fn probe_compiled_four_wheel_car_on_au1() {
+        use cmr_core::gearbox::{GearboxParams, GearboxState};
+        use cmr_core::pedal_response::RawPedals;
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let (_resources, _nodes, mut start, _, actor_rows) = native_stage_setup(
+            &root.join("Game/Au/1"),
+            &root,
+            "AU1",
+            Some("Sub"),
+            StageRendererChoice::Software,
+        )
+        .unwrap();
+        let mut pose = SessionCompiledPose::open(&root, "AU1", "Sub").unwrap();
+        pose.adjust_spawn(&mut start, actor_rows).unwrap();
+        let car = pose.compiled_car().unwrap();
+        let inputs = SessionWheelInputs::open(&root).unwrap();
+        let trig = cmr_core::fixed_point::build_sine_table();
+        let mut wheel = inputs
+            .four_wheel_params(
+                &trig,
+                &car.families,
+                &car.half_state,
+                Fixed16::ONE,
+                &car.constants,
+                [0; 4],
+            )
+            .unwrap();
+        wheel.gearbox = Some(GearboxParams {
+            tables: car.gearbox_tables,
+            drive_ratios: cmr_core::race_state::compiled_drive_ratios(&car.families, Fixed16::ONE),
+            ..GearboxParams::default()
+        });
+        start.four_wheel.gearbox = GearboxState::at_setup(true);
+        let mut state = cmr_core::race_state::RaceState::new(start);
+        let throttle = Controls {
+            raw_pedals: RawPedals {
+                throttle_304: 0xffbe,
+                ..RawPedals::default()
+            },
+            ..Controls::default()
+        };
+        let origin = start.position;
+        for tick in 0..250 {
+            let sample = match state.step_with_all_four_wheels(&throttle, &wheel) {
+                Ok(sample) => sample,
+                Err(error) => panic!("tick {tick}: {error:?}"),
+            };
+            if tick % 25 == 0 || tick == 249 {
+                let car = sample.car;
+                let moved = car.position.sub(origin);
+                eprintln!(
+                    "probe tick={tick} gear={} shift={} engine={:#x} speed={:#x} \
+                     resp2d8={:#x} moved=({:#x},{:#x},{:#x}) y_axis=({:#x},{:#x},{:#x})",
+                    car.four_wheel.gearbox.gear_43a,
+                    car.four_wheel.gearbox.shift_40c,
+                    car.four_wheel.engine_2e0,
+                    car.four_wheel.speed_ec,
+                    car.four_wheel.pedals.response_2d8,
+                    moved.x.raw(),
+                    moved.y.raw(),
+                    moved.z.raw(),
+                    car.motion.basis[1].x.raw(),
+                    car.motion.basis[1].y.raw(),
+                    car.motion.basis[1].z.raw(),
+                );
+            }
+        }
     }
 
     #[test]

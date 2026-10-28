@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-10-28 (control-processor gearbox)
+Updated: 2026-10-28 (four-wheel owned-data probe)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: recover the gearbox and drive it from the four-wheel step
+test: probe the compiled four-wheel car on owned AU1 data
 ```
 
 Start by confirming the checkout and progress footer:
@@ -83,7 +83,7 @@ ef78049 feat: derive canonical collision response state
 
 ## Verification state
 
-Green at handoff (2,356 tests, 35 ignored):
+Green at handoff (2,356 tests, 36 ignored):
 
 ```sh
 cargo test --workspace --all-targets
@@ -94,7 +94,7 @@ Focused collision, session rollback, keyboard/analog, SDL gamepad, app build,
 and full-workspace tests pass. Logs from the last run are ignored under:
 
 ```text
-.work/gearbox-workspace-test.log
+.work/four-wheel-probe-workspace-test.log
 ```
 
 The authenticated AU1 test:
@@ -132,8 +132,15 @@ contacted (item 5 below).
    words via `derive_compiled_four_wheel_constants`
    (`impl.compiled-four-wheel-constants`); the windowed session can obtain them
    from `SessionCompiledPose`'s direct cases and selector once it moves to the
-   four-wheel path. Item 2 is next: build a windowed four-wheel session from
-   `SessionCompiledPose` (case words, families, constants, gearbox tables).
+   four-wheel path. `SessionCompiledPose::compiled_car` now derives those
+   inputs, but the owned-data probe (`obs.au1-four-wheel-probe`, run with
+   `CMR_RUNTIME_DATA=... cargo test -p cmr-app --release
+   probe_compiled_four_wheel_car_on_au1 -- --ignored --nocapture`) shows the
+   car cannot move yet: recover the per-car-type table block (`DAT_0050e170..`,
+   stride `0xcd0`: `e1ac` engine response, `e170` gear-2 skip, `e188` steering,
+   `e18c` wheel constant, `e4fc` base angle), wire `drive_torque_split` into the
+   first-wheel forces, and recover gravity/ground contact in `FUN_0040d810`
+   before item 2.
 2. Move the windowed session from `GameplaySession::new_with_car` to the already
    recovered four-wheel path only after supplying its authenticated runtime
    inputs. The current planar path changes heading but does not evolve the full
