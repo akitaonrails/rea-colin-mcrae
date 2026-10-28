@@ -143,6 +143,67 @@ pub fn compose_text_overlay<'a>(
     Ok((frame, outcome))
 }
 
+/// Draw the results' queued icons (`FUN_0049b1d0`, lane 1, after the text)
+/// over `frame`: each source rectangle of its sheet stretched to the
+/// destination (nearest texel; the queue's flush is not decoded, so the
+/// sampling is this backend's policy), cut to its clip and the frame, with
+/// the sheet's black keyed out as the upload's ARGB4444 rule does and every
+/// other colour (nibble-expanded) quantized to the frame's palette. A
+/// missing sheet draws nothing.
+pub fn compose_icon_overlay<'a>(
+    frame: SoftwarePresentedFrame,
+    icons: &[cmr_core::results_draw::IconBlit],
+    sheets: impl Fn(cmr_core::results_draw::IconSheet) -> Option<&'a cmr_formats::bitmap::IndexedBitmap>,
+) -> Result<SoftwarePresentedFrame, SoftwareRgba8Error> {
+    let extent = frame.extent();
+    let (width, height) = (i32::from(extent.width), i32::from(extent.height));
+    let palette = Box::new(*frame.palette());
+    let mut pixels = frame.pixels().to_vec();
+    for icon in icons {
+        let Some(sheet) = sheets(icon.sheet) else {
+            continue;
+        };
+        let [sx, sy, sw, sh] = icon.src.map(i32::from);
+        let [dx, dy, dw, dh] = icon.dst.map(i32::from);
+        if dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0 {
+            continue;
+        }
+        let (mut left, mut top, mut right, mut bottom) = (0, 0, width, height);
+        if let Some(clip) = icon.clip {
+            left = left.max(i32::from(clip.x));
+            top = top.max(i32::from(clip.y));
+            right = right.min(i32::from(clip.x) + i32::from(clip.w));
+            bottom = bottom.min(i32::from(clip.y) + i32::from(clip.h));
+        }
+        let mut cache = [None::<Option<u8>>; 256];
+        for row in 0..dh {
+            let y = dy + row;
+            let texel_y = sy + row * sh / dh;
+            if y < top || y >= bottom || texel_y < 0 || texel_y as u32 >= sheet.height {
+                continue;
+            }
+            for column in 0..dw {
+                let x = dx + column;
+                let texel_x = sx + column * sw / dw;
+                if x < left || x >= right || texel_x < 0 || texel_x as u32 >= sheet.width {
+                    continue;
+                }
+                let index =
+                    sheet.pixels[texel_y as usize * sheet.width as usize + texel_x as usize];
+                let colour = *cache[usize::from(index)].get_or_insert_with(|| {
+                    let entry = sheet.palette.get(usize::from(index))?;
+                    texel([entry.red, entry.green, entry.blue])
+                        .map(|rgb| nearest_palette_index(rgb, &palette))
+                });
+                if let Some(colour) = colour {
+                    pixels[y as usize * width as usize + x as usize] = colour;
+                }
+            }
+        }
+    }
+    SoftwarePresentedFrame::from_indexed(extent, pixels.into_boxed_slice(), palette)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

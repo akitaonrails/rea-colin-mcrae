@@ -47,6 +47,8 @@ pub struct Placed {
 /// The three orders and each player's position in them (1-based).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Standings {
+    /// `DAT_0054ff88`: every slot's stage time.
+    pub stage_times: [u32; 16],
     /// `DAT_0054fdcc`, positions `DAT_0054fc6c/70`.
     pub stage: [Placed; 16],
     pub stage_positions: Vec<usize>,
@@ -182,6 +184,7 @@ pub fn compute_standings(event: &mut EventState, finish: &StageFinish) -> Option
     });
     let championship = select_largest(&scores);
     Some(Standings {
+        stage_times,
         stage_positions: positions(&stage, &finish.players),
         rally_positions: positions(&rally, &finish.players),
         championship_positions: positions(&championship, &finish.players),

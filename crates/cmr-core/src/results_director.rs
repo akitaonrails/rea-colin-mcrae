@@ -34,8 +34,9 @@ pub struct PlayerFinish {
     pub slot: usize,
     /// The stage time (`DAT_0054ff88[slot]`, hundredths).
     pub stage_time: i32,
-    /// The seven split times (`0x5ffa6c + 0x24 p`, low halves).
-    pub splits: [u16; 7],
+    /// The seven split clocks (`0x5ffa6c + 0x24 p`; the stage record keeps
+    /// their low halves).
+    pub splits: [u32; 7],
 }
 
 /// What the record checks need from the host: the cmRally.cfg image (the
@@ -746,7 +747,7 @@ fn stage_records(run: &mut RecordRun, g: &mut RecordGlobals, event: &mut EventSt
         let record = crate::hiscore_records::StageRecord {
             name: &name,
             car: car & 0xf,
-            splits: finish.splits,
+            splits: finish.splits.map(|split| split as u16),
             time: finish.stage_time,
             manual: (car >> 4) & 1 != 0,
             extra: run.salt,

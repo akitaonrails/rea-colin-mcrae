@@ -598,6 +598,8 @@ pub(crate) mod tests {
                 ("name_cheat_24", 0x0050905c, Block { len: 12 }),
                 ("name_cheat_25", 0x00509050, Block { len: 10 }),
                 ("cheat_speech_slots", 0x00509430, Block { len: 40 }),
+                ("results_flag_rects", 0x004ed5f8, Block { len: 64 }),
+                ("results_logo_rects", 0x004ed638, Block { len: 104 }),
             ]
         );
         // Same executable identity as the reviewed stage-weather profile.

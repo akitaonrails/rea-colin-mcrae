@@ -121,9 +121,11 @@
       { "name": "name_cheat_23", "kind": "block", "va": 5279848, "len": 12 },
       { "name": "name_cheat_24", "kind": "block", "va": 5279836, "len": 12 },
       { "name": "name_cheat_25", "kind": "block", "va": 5279824, "len": 10 },
-      { "name": "cheat_speech_slots", "kind": "block", "va": 5280816, "len": 40 }
+      { "name": "cheat_speech_slots", "kind": "block", "va": 5280816, "len": 40 },
+      { "name": "results_flag_rects", "kind": "block", "va": 5166584, "len": 64 },
+      { "name": "results_logo_rects", "kind": "block", "va": 5166648, "len": 104 }
     ],
-    "payload_sha256": "dbe0e5f1bf01948485e390841fcf5a2f9482bc567a891928aa5b646b1fece187",
+    "payload_sha256": "74569caaaa9008f2d65f6d91e70bbca947e562539637e223a1cb84118d67e80b",
     "output_encoding": "cmr-static-tables-v1"
   }
 }

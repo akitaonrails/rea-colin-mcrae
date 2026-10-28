@@ -17,10 +17,12 @@
 //! championship and rally complete pages (`FUN_0042df90`, `FUN_0042e0c0`).
 //! The confirmations (`FUN_0042e210`: the dialog menu's three lines,
 //! `FUN_004aacb0`, then a box sized to the widest) are drawn too, and the
-//! save page's dialog (`FUN_0043bc90`), and the record notices and CAC
-//! code pages (0xc..=0x11). The super-special result and the
-//! bonus car draw the frame only for now. Not drawn: the team and flag icons
-//! (`FUN_0042e5c0`) and the time trial's record rows (`FUN_0042b6b0`). The
+//! save page's dialog (`FUN_0043bc90`), the record notices and CAC code
+//! pages (0xc..=0x11), the super-special result (`FUN_0042d6b0`), the bonus
+//! car (`FUN_0042db60`) and the time trial's columns (`FUN_0042b6b0`). The
+//! flags and make logos (`FUN_0042e5c0`) are queued as icons on sprite lane
+//! 1, drawn after the text. Not drawn: the head-to-head and network pages.
+//! The
 //! host supplies the stage name (`FUN_004ba470`: the executable's name table
 //! `0x506f80`, from the reviewed static tables). The table rows are cut to
 //! `0x54f9e8` by `FUN_00497bb0`; that the queued glyph path treats those
@@ -188,6 +190,55 @@ pub struct ResultsRow<'a> {
     pub name: &'a [u8],
     pub time: u32,
     pub player: bool,
+    /// The make logo (`live[0xb6 + 0x9c p] & 0xf` for a player, the rival
+    /// record's byte `0x506e48 + 20 slot` otherwise).
+    pub logo: u8,
+}
+
+/// One entrant of the super-special result: its name, make logo, stage
+/// time (`DAT_0054ff88[slot]`) and whether it is a player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Entrant<'a> {
+    pub name: &'a [u8],
+    pub logo: u8,
+    pub time: u32,
+    pub player: bool,
+}
+
+/// One column of the time trial's page: a name, the seven split clocks and
+/// the stage time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeTrialColumn<'a> {
+    pub name: &'a [u8],
+    pub splits: [u32; 7],
+    pub time: u32,
+}
+
+/// The icons' sheets (`FUN_0042e2d0`): `images\logos2.bmp` and
+/// `images\milllogo.bmp` (make logo 12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconSheet {
+    Logos,
+    Mill,
+}
+
+/// One queued icon (`FUN_0049b1d0`, lane 1, flags 8): the sheet's source
+/// rectangle, the destination and the optional clip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IconBlit {
+    pub sheet: IconSheet,
+    /// `x, y, w, h` (i16).
+    pub src: [i16; 4],
+    pub dst: [i16; 4],
+    pub clip: Option<OverlayQuad>,
+}
+
+/// The icons' source rectangles: the flags `0x4ed5f8` (8 × `{i16 x, y, w,
+/// h}`) and the make logos `0x4ed638` (13), from the user's executable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IconRects<'a> {
+    pub flags: &'a [u8],
+    pub logos: &'a [u8],
 }
 
 /// One championship row: the placed slot's name, whether it is a player,
@@ -231,6 +282,17 @@ pub struct ResultsDrawInput<'a> {
     pub car_short_names: &'a [Vec<u8>],
     /// The save slots' line formats.
     pub save_label_formats: crate::save_dialog::SlotLabelFormats<'a>,
+    /// The icons' rectangles (none: no icons).
+    pub icon_rects: IconRects<'a>,
+    /// The super-special result's player and opponent (page 6).
+    pub super_special: Option<[Entrant<'a>; 2]>,
+    /// The time trial's record (the stage's best, copied at the results'
+    /// init) then each player (page 1 in a time trial).
+    pub time_trial: &'a [TimeTrialColumn<'a>],
+    /// `0x506dd0`: the cars' names (the bonus car page).
+    pub car_names: &'a [Vec<u8>],
+    /// `0x506dc8`: the bonus countries then their cars.
+    pub bonus_cars: &'a [u8],
 }
 
 /// The rectangles and text one results frame draws, in order.
@@ -238,10 +300,13 @@ pub struct ResultsDrawInput<'a> {
 pub struct ResultsDrawPlan {
     pub quads: Vec<(OverlayQuad, [u8; 4])>,
     pub runs: Vec<PauseTextRun>,
+    /// Sprite lane 1, flushed after the text.
+    pub icons: Vec<IconBlit>,
 }
 
 struct Painter<'f, 'a> {
     fonts: &'f dyn Fn(PauseFont) -> &'a BitmapFont,
+    rects: IconRects<'f>,
     layout: ResultsLayout,
     plan: ResultsDrawPlan,
     clip: Option<OverlayQuad>,
@@ -295,6 +360,59 @@ impl Painter<'_, '_> {
         });
     }
 
+    /// `FUN_0042e5c0(index, x, y, kind, anchor, clip)`: a flag (kind 0) or
+    /// make logo (kind 1) scaled to the display (`w * W / 640`, `h * H /
+    /// 480`) and anchored by `anchor`; an unhandled anchor leaves the
+    /// destination at the source's sheet position. `clip` cuts it to the
+    /// table band.
+    fn icon(&mut self, index: u8, x: i32, y: i32, kind: u8, anchor: u8, clip: bool) {
+        let rects = self.rects;
+        let (table, sheet) = match kind {
+            0 => (rects.flags, IconSheet::Logos),
+            1 if index == 0xc => (rects.logos, IconSheet::Mill),
+            1 => (rects.logos, IconSheet::Logos),
+            _ => return,
+        };
+        // No bounds check in the native: a flag past 8 reads the logos.
+        let at = usize::from(index) * 8;
+        let bytes = if kind == 0 && at >= rects.flags.len() {
+            rects.logos.get(at - rects.flags.len()..)
+        } else {
+            table.get(at..)
+        };
+        let Some(entry) = bytes.and_then(|b| b.get(..8)) else {
+            return;
+        };
+        let word = |i: usize| i16::from_le_bytes([entry[2 * i], entry[2 * i + 1]]);
+        let src = [word(0), word(1), word(2), word(3)];
+        let (width, height) = (self.layout.width, self.layout.height);
+        let w = (i32::from(src[2]) * width / 640) as i16;
+        let h = (i32::from(src[3]) * height / 480) as i16;
+        let (x, y) = (x as i16, y as i16);
+        let (dx, dy) = match anchor {
+            0x11 => (x, y),
+            0x12 => (x.wrapping_sub(w / 2), y),
+            0x13 => (x.wrapping_sub(w), y),
+            0x22 => (x.wrapping_sub(w / 2), y.wrapping_sub(h / 2)),
+            0x31 => (x, y.wrapping_sub(3 * h / 2)),
+            0x32 => (x.wrapping_sub(w / 2), y.wrapping_sub(3 * h / 2)),
+            _ => (src[0], src[1]),
+        };
+        let band = height << 14 >> 16;
+        let clip = clip.then(|| OverlayQuad {
+            x: 0,
+            y: band as u16,
+            w: width as u16,
+            h: (fraction(height, 0xf0a3) - band) as u16,
+        });
+        self.plan.icons.push(IconBlit {
+            sheet,
+            src,
+            dst: [dx, dy, w, h],
+            clip,
+        });
+    }
+
     fn fill(&mut self, x: i32, y: i32, w: i32, h: i32, color: [u8; 4]) {
         let quad = OverlayQuad {
             x: x as u16,
@@ -329,6 +447,7 @@ pub fn results_draw_plan<'a>(
     let layout = ResultsLayout::new(input.width, input.height);
     let mut painter = Painter {
         fonts,
+        rects: input.icon_rects,
         layout,
         plan: ResultsDrawPlan::default(),
         clip: None,
@@ -357,6 +476,8 @@ pub fn results_draw_plan<'a>(
         0x14 => championship_complete(&mut painter, input, highlight, text)?,
         0x15 => rally_complete(&mut painter, input, highlight, text)?,
         0xc..=0x11 => record_page(&mut painter, input, highlight, text)?,
+        6 => super_special_result(&mut painter, input, highlight, text)?,
+        0x12 => bonus_car(&mut painter, input, highlight, text)?,
         _ => {}
     }
     Ok(painter.plan)
@@ -417,6 +538,7 @@ fn table(
             color,
             0x22,
         )?;
+        painter.icon(row.logo, l.team_x, y, 1, 0x22, true);
     }
     painter.clip = None;
     Ok(())
@@ -445,7 +567,8 @@ fn corner(painter: &mut Painter, text: &[u8]) -> Result<(), TextLayoutError> {
     )
 }
 
-/// `FUN_0042b1d0`.
+/// `FUN_0042b1d0`: the table, or in a time trial the record's and each
+/// player's columns (`FUN_0042b6b0`); then the corner text and flag.
 fn stage_results(
     painter: &mut Painter,
     input: &ResultsDrawInput,
@@ -463,7 +586,9 @@ fn stage_results(
         TITLE_COLOR,
         0x31,
     )?;
-    if !time_trial {
+    if time_trial {
+        time_trial_columns(painter, input, highlight)?;
+    } else {
         headers(painter, text)?;
         table(painter, input, input.stage_rows, highlight)?;
         rule(painter, input);
@@ -475,6 +600,64 @@ fn stage_results(
     };
     if let Some(name) = name {
         corner(painter, &name)?;
+    }
+    let country = input.event.cfg.cursor_168 & 0xf;
+    painter.icon(country, l.corner_x, l.title_y + 2, 0, 0x31, false);
+    Ok(())
+}
+
+/// The time trial's columns: the record and each player (two columns
+/// alone, three in split screen or head to head; a third entry otherwise
+/// reuses the second column). Each column (`FUN_0042b6b0`) is the name,
+/// the eight sector times and the total, or on a super-special stage the
+/// name and total only.
+fn time_trial_columns(
+    painter: &mut Painter,
+    input: &ResultsDrawInput,
+    highlight: [u8; 4],
+) -> Result<(), TextLayoutError> {
+    let l = painter.layout;
+    let (w, h) = (l.width, l.height);
+    let event = input.event;
+    let three = !event.globals.school_d3ca88 && (event.split_screen() || event.head_to_head());
+    let columns: &[i32] = if three {
+        &[fraction(w, 0x2e14), w >> 1, fraction(w, 0xd1eb)]
+    } else {
+        &[fraction(w, 0x547a), fraction(w, 0xa8f5)]
+    };
+    let y0 = fraction(h, 0x3ae1);
+    let pitch = fraction(h, 0xf5c);
+    let mut x = columns[0];
+    for (k, column) in input.time_trial.iter().enumerate() {
+        if let Some(&next) = columns.get(k) {
+            x = next;
+        }
+        let color = if k > 0 { highlight } else { BODY_COLOR };
+        if event.super_special() {
+            painter.text(
+                x,
+                y0 + 3 * pitch,
+                column.name,
+                PauseFont::Title,
+                color,
+                0x22,
+            )?;
+            let total = time_text(column.time);
+            painter.text(x, y0 + 4 * pitch, &total, PauseFont::Title, color, 0x22)?;
+            continue;
+        }
+        painter.text(x, y0, column.name, PauseFont::Title, color, 0x22)?;
+        for i in 0..8 {
+            let sector = match i {
+                0 => column.splits[0],
+                7 => column.time.wrapping_sub(column.splits[6]),
+                _ => column.splits[i].wrapping_sub(column.splits[i - 1]),
+            };
+            let y = y0 + (i as i32 + 1) * pitch;
+            painter.text(x, y, &time_text(sector), PauseFont::Result, color, 0x22)?;
+        }
+        let total = time_text(column.time);
+        painter.text(x, y0 + 10 * pitch, &total, PauseFont::Title, color, 0x22)?;
     }
     Ok(())
 }
@@ -512,6 +695,7 @@ fn rally_results(
         )?;
         let stage = i64::from(cursor >> 4) + 1;
         corner(painter, &c_format(&text(0xe5), &[FormatArg::Int(stage)]))?;
+        painter.icon(cursor & 0xf, l.corner_x, l.title_y - 1, 0, 0x31, true);
     }
     rule(painter, input);
     Ok(())
@@ -547,6 +731,12 @@ fn championship(
             BODY_COLOR,
             flags,
         )?;
+    }
+    // One flag per column, numbered by column (a novice's start one pitch
+    // right but still count from 0).
+    for column in 0..columns {
+        let x = first_column + column as i32 * l.country_pitch;
+        painter.icon(column as u8, x, l.header_y, 0, 0x32, false);
     }
     let scroll = input.director.scroll();
     let offset = i32::from(scroll.drawn(input.scroll_t_q16));
@@ -603,6 +793,8 @@ fn championship(
         )?;
         let name = text(0x3c + country as i32);
         corner(painter, &c_format(&text(0xe6), &[FormatArg::Bytes(&name)]))?;
+        let index = country as u8;
+        painter.icon(index, l.corner_x, l.title_y - 1, 0, 0x31, true);
     }
     championship_rules(painter, input, columns);
     Ok(())
@@ -846,6 +1038,7 @@ fn record_page(
                 painter,
                 input,
                 highlight,
+                live[0xb6 + 0x9c * q] & 0xf,
                 &text(0xdd),
                 &line,
                 &local,
@@ -871,6 +1064,7 @@ fn record_page(
                 painter,
                 input,
                 highlight,
+                live[0xb6 + 0x9c * q] & 0xf,
                 &text(0xdc),
                 &line,
                 &local,
@@ -893,6 +1087,7 @@ fn record_page(
                 painter,
                 input,
                 highlight,
+                live[0xb6] & 0xf,
                 &text(0xdb),
                 &line,
                 &local,
@@ -901,6 +1096,117 @@ fn record_page(
             )
         }
     }
+}
+
+/// `FUN_0042d6b0`: the super-special result, the faster entrant first (a
+/// tie lists the opponent first), each with two make logos, then the
+/// country and its flag.
+fn super_special_result(
+    painter: &mut Painter,
+    input: &ResultsDrawInput,
+    highlight: [u8; 4],
+    text: &dyn Fn(i32) -> Vec<u8>,
+) -> Result<(), TextLayoutError> {
+    let l = painter.layout;
+    let (w, h) = (l.width, l.height);
+    painter.text(
+        l.title_x,
+        l.title_y,
+        &text(0x7f),
+        PauseFont::Title,
+        TITLE_COLOR,
+        0x31,
+    )?;
+    if let Some([mine, theirs]) = input.super_special {
+        let (first, second) = if mine.time < theirs.time {
+            (mine, theirs)
+        } else {
+            (theirs, mine)
+        };
+        for (heading, (heading_y, y), entrant) in [
+            (0x81, (0x4000, 0x5999), first),
+            (0x82, (0x9999, 0xb333), second),
+        ] {
+            painter.text_q16(
+                0x8000,
+                heading_y,
+                &text(heading),
+                PauseFont::Title,
+                TITLE_COLOR,
+                0x12,
+            )?;
+            let color = if entrant.player {
+                highlight
+            } else {
+                BODY_COLOR
+            };
+            let line = name_time(entrant.name, entrant.time);
+            painter.text_q16(0x8000, y, &line, PauseFont::Title, color, 0x12)?;
+            for x in [0x4ccc, 0xb333] {
+                painter.icon(entrant.logo, fraction(w, x), fraction(h, y), 1, 0x12, true);
+            }
+        }
+    }
+    let country = input.event.cfg.cursor_168 & 0xf;
+    corner(painter, &text(0x3c + i32::from(country)))?;
+    painter.icon(country, l.corner_x, l.title_y - 1, 0, 0x31, true);
+    Ok(())
+}
+
+/// `FUN_0042db60`: the bonus car the special country awards (the first
+/// listed country's car when none matches: car 0), its name and its two
+/// logos, whose anchors (`0x23`, `0x21`) the icon routine does not handle,
+/// so they land at the logo's sheet position.
+fn bonus_car(
+    painter: &mut Painter,
+    input: &ResultsDrawInput,
+    highlight: [u8; 4],
+    text: &dyn Fn(i32) -> Vec<u8>,
+) -> Result<(), TextLayoutError> {
+    let l = painter.layout;
+    let (w, h) = (l.width, l.height);
+    let country = input.event.cfg.cursor_168 & 0xf;
+    let (countries, cars) = input.bonus_cars.split_at(input.bonus_cars.len().min(4));
+    let car = countries
+        .iter()
+        .position(|&c| c == country)
+        .and_then(|i| cars.get(i).copied())
+        .unwrap_or(0);
+    painter.text(
+        l.title_x,
+        l.title_y,
+        &text(0x106),
+        PauseFont::Title,
+        TITLE_COLOR,
+        0x31,
+    )?;
+    painter.text_q16(
+        0x8000,
+        0x4000,
+        &text(0x77),
+        PauseFont::Title,
+        highlight,
+        0x12,
+    )?;
+    painter.text_q16(
+        0x8000,
+        0x5999,
+        &text(0x107),
+        PauseFont::Result,
+        BODY_COLOR,
+        0x12,
+    )?;
+    let name = input
+        .car_names
+        .get(usize::from(car))
+        .map_or(&[][..], Vec::as_slice);
+    painter.text_q16(0x8000, 0x9999, name, PauseFont::Title, highlight, 0x22)?;
+    // The x positions (around the name's half width `DAT_00a2006c`) are
+    // discarded by the unhandled anchors.
+    for anchor in [0x23, 0x21] {
+        painter.icon(car, w >> 1, fraction(h, 0x9999), 1, anchor, true);
+    }
+    Ok(())
 }
 
 /// `FUN_0042cc10(title, line1, line2, code)`: a CAC code page.
@@ -924,6 +1230,17 @@ fn cac_frame(
     )?;
     painter.text_q16(0x8000, 0x4000, line1, PauseFont::Result, BODY_COLOR, 0x12)?;
     painter.text_q16(0x8000, 0x6666, line2, PauseFont::Title, BODY_COLOR, 0x12)?;
+    let (w, h) = (l.width, l.height);
+    for x in [0x4ccc, 0xb333] {
+        painter.icon(
+            live[0xb6] & 0xf,
+            fraction(w, x),
+            fraction(h, 0x6666),
+            1,
+            0x12,
+            true,
+        );
+    }
     let n = u16::from_le_bytes([live[0x20], live[0x21]]);
     let check = crate::hiscore_codes::cac_check(i32::from(n));
     let line = c_format(
@@ -937,14 +1254,14 @@ fn cac_frame(
     painter.text_q16(0x8000, 0x9999, &line, PauseFont::Title, highlight, 0x12)
 }
 
-/// `FUN_0042d0e0(player, title, line1, line2, code)`: a record notice (the
-/// player picks only the icons, not drawn); the code line is not drawn in
-/// the secret series.
+/// `FUN_0042d0e0(player, title, line1, line2, code)`: a record notice with
+/// the player's make logos; the code line is not drawn in the secret series.
 #[allow(clippy::too_many_arguments)]
 fn notice_frame(
     painter: &mut Painter,
     input: &ResultsDrawInput,
     highlight: [u8; 4],
+    car: u8,
     title: &[u8],
     line1: &[u8],
     line2: &[u8],
@@ -970,6 +1287,10 @@ fn notice_frame(
     )?;
     painter.text_q16(0x8000, 0x5999, line1, PauseFont::Result, BODY_COLOR, 0x12)?;
     painter.text_q16(0x8000, 0x9999, line2, PauseFont::Title, highlight, 0x12)?;
+    let (w, h) = (l.width, l.height);
+    for x in [0x4ccc, 0xb333] {
+        painter.icon(car, fraction(w, x), fraction(h, 0x9999), 1, 0x12, true);
+    }
     if input.event.cfg.mode_166 & 0x40 == 0 {
         let line = c_format(
             b"%s: %s",
@@ -1281,6 +1602,11 @@ mod tests {
             panel_capable: true,
             car_short_names: &[],
             save_label_formats: Default::default(),
+            icon_rects: IconRects::default(),
+            super_special: None,
+            time_trial: &[],
+            car_names: &[],
+            bonus_cars: &[],
         }
     }
 
@@ -1303,6 +1629,7 @@ mod tests {
                 name: b"AB",
                 time: 6000 + i,
                 player: i == 0,
+                logo: 0,
             })
             .collect();
         let mut pulse = ResultsPulse::default();
@@ -1579,6 +1906,7 @@ mod tests {
             name: b"COLIN",
             time: 6123,
             player: true,
+            logo: 0,
         }];
         let text = |id: i32| format!("T{id:X}").into_bytes();
         let mut pulse = ResultsPulse::default();
@@ -1617,5 +1945,145 @@ mod tests {
                 [&b"TDE: "[..], &code].concat(),
             ]
         );
+    }
+
+    /// Synthetic rects: flag i at `(0, 12 i)` 24x12, logo i at `(52 i, 0)`
+    /// 52x22.
+    fn rects() -> (Vec<u8>, Vec<u8>) {
+        let pack = |n: usize, f: &dyn Fn(usize) -> [i16; 4]| -> Vec<u8> {
+            (0..n)
+                .flat_map(|i| f(i).into_iter().flat_map(i16::to_le_bytes))
+                .collect()
+        };
+        (
+            pack(8, &|i| [0, 12 * i as i16, 24, 12]),
+            pack(13, &|i| [52 * i as i16, 0, 52, 22]),
+        )
+    }
+
+    #[test]
+    fn icons_scale_anchor_and_clip() {
+        let font = font();
+        let (flags, logos) = rects();
+        let fonts = |_: PauseFont| &font;
+        let mut painter = Painter {
+            fonts: &fonts,
+            rects: IconRects {
+                flags: &flags,
+                logos: &logos,
+            },
+            layout: ResultsLayout::new(320, 240),
+            plan: ResultsDrawPlan::default(),
+            clip: None,
+        };
+        painter.icon(3, 100, 50, 1, 0x22, true);
+        painter.icon(2, 100, 50, 0, 0x32, false);
+        painter.icon(12, 0, 0, 1, 0x11, false);
+        painter.icon(9, 0, 0, 0, 0x11, false);
+        painter.icon(4, 100, 50, 1, 0x23, false);
+        let icons = &painter.plan.icons;
+        // 52x22 at 320x240 -> 26x11; centred.
+        assert_eq!(icons[0].dst, [87, 45, 26, 11]);
+        assert_eq!(
+            icons[0].clip,
+            Some(OverlayQuad {
+                x: 0,
+                y: 60,
+                w: 320,
+                h: 225 - 60
+            })
+        );
+        // A bottom anchor lifts by 1.5 h: 12x6 -> y - 9.
+        assert_eq!((icons[1].src[1], icons[1].dst), (24, [94, 41, 12, 6]));
+        assert_eq!(icons[2].sheet, IconSheet::Mill);
+        // Flag 9 reads the logo table's entry 1.
+        assert_eq!(icons[3].src, [52, 0, 52, 22]);
+        // An unhandled anchor keeps the sheet position.
+        assert_eq!(icons[4].dst, [208, 0, 26, 11]);
+    }
+
+    #[test]
+    fn the_super_special_result_lists_the_faster_first() {
+        let font = font();
+        let mut event = EventState::default();
+        event.cfg.cursor_168 = 0x67;
+        let director = ResultsDirector::start(
+            &mut event,
+            DirectorContext {
+                super_special: true,
+                ..Default::default()
+            },
+        );
+        let (flags, logos) = rects();
+        let mine = Entrant {
+            name: b"ME",
+            logo: 1,
+            time: 5000,
+            player: true,
+        };
+        let theirs = Entrant {
+            name: b"THEM",
+            logo: 2,
+            time: 5000,
+            player: false,
+        };
+        let text = |id: i32| format!("T{id:X}").into_bytes();
+        let mut pulse = ResultsPulse::default();
+        let mut draw_input = input(&director, &event, &[]);
+        draw_input.super_special = Some([mine, theirs]);
+        draw_input.icon_rects = IconRects {
+            flags: &flags,
+            logos: &logos,
+        };
+        assert_eq!(director.page(), 6, "a super-special stage opens on page 6");
+        let plan = results_draw_plan(&draw_input, &mut pulse, &text, &|_| &font).unwrap();
+        let lines = lines(&plan);
+        assert_eq!(lines[2], b"THEM^00:50.00", "a tie lists the opponent first");
+        assert_eq!(lines[4], b"ME^00:50.00");
+        assert_eq!(
+            plan.runs[4].color,
+            pulse.color(),
+            "the player is highlighted"
+        );
+        assert_eq!(plan.runs[2].color, BODY_COLOR);
+        assert_eq!(plan.icons.len(), 5);
+        assert_eq!(plan.icons[4].src, [0, 84, 24, 12], "the country's flag");
+    }
+
+    #[test]
+    fn the_time_trial_draws_a_column_per_entry() {
+        let font = font();
+        let mut event = EventState::default();
+        event.cfg.mode_166 = 2;
+        let director = ResultsDirector::start(&mut event, DirectorContext::default());
+        let columns = [
+            TimeTrialColumn {
+                name: b"BEST",
+                splits: [100, 200, 300, 400, 500, 600, 700],
+                time: 900,
+            },
+            TimeTrialColumn {
+                name: b"ME",
+                splits: [110, 220, 330, 440, 550, 660, 770],
+                time: 1000,
+            },
+        ];
+        let mut draw_input = input(&director, &event, &[]);
+        draw_input.time_trial = &columns;
+        let text = |id: i32| format!("T{id:X}").into_bytes();
+        let mut pulse = ResultsPulse::default();
+        let plan = results_draw_plan(&draw_input, &mut pulse, &text, &|_| &font).unwrap();
+        let lines = lines(&plan);
+        // Title, then per column: name, 8 sectors, total.
+        assert_eq!(lines.len(), 1 + 2 * 10 + 1);
+        assert_eq!(lines[1], b"BEST");
+        assert_eq!(lines[2], b"00:01.00");
+        assert_eq!(
+            lines[9], b"00:02.00",
+            "the last sector is the total less split 7"
+        );
+        assert_eq!(lines[10], b"00:09.00");
+        assert_eq!(plan.runs[1].color, BODY_COLOR);
+        assert_ne!(plan.runs[11].color, BODY_COLOR, "players are highlighted");
     }
 }

@@ -3921,6 +3921,66 @@ struct PauseHarness {
     cheat_speech: Vec<u32>,
 }
 
+/// `FUN_0042e2d0`: the results icons' sheets from the game's images.
+fn load_icon_sheets(runtime_data: &Path) -> [Option<cmr_formats::bitmap::IndexedBitmap>; 2] {
+    let store = ReviewedProfile::from_json(REVIEWED_PROFILE)
+        .ok()
+        .and_then(|reviewed| {
+            AssetStore::open(runtime_data, &reviewed, DecodeLimits::default()).ok()
+        });
+    ["Game/Images/LOGOS2.BMP", "Game/Images/MillLogo.bmp"].map(|path| {
+        let bytes = store.as_ref()?.load(path).ok()?;
+        cmr_formats::bitmap::parse_indexed_bitmap(
+            &bytes,
+            cmr_formats::bitmap::BitmapLimits::default(),
+        )
+        .ok()
+    })
+}
+
+/// The time trial's columns (`FUN_0042fab0`'s copies): the stage's best
+/// record from the record image (`FUN_004ba4b0`; its name, splits widened
+/// from the stored halves and time), then each player's name, splits and
+/// stage time.
+fn time_trial_columns<'a>(
+    director: &'a cmr_core::results_director::ResultsDirector,
+    event: &EventState,
+) -> Vec<cmr_core::results_draw::TimeTrialColumn<'a>> {
+    let Some(run) = director.records() else {
+        return Vec::new();
+    };
+    if event.cfg.mode_166 & 3 != 2 {
+        return Vec::new();
+    }
+    let (country, stage) = (
+        usize::from(event.cfg.cursor_168 & 0xf),
+        usize::from(event.cfg.cursor_168 >> 4),
+    );
+    let base = if event.cfg.mode_166 & 0x40 != 0 {
+        0x175e + 30 * stage
+    } else {
+        0xffc + 30 * (7 * country + stage)
+    };
+    let image = &run.image[..];
+    let word = |at: usize| u32::from(u16::from_le_bytes([image[at], image[at + 1]]));
+    let until_nul =
+        |bytes: &'a [u8]| &bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())];
+    let mut columns = vec![cmr_core::results_draw::TimeTrialColumn {
+        name: until_nul(&image[base..base + 0xc]),
+        splits: std::array::from_fn(|i| word(base + 0xc + 2 * i)),
+        time: word(base + 0x1a),
+    }];
+    let live = cmr_core::config_commit::live(&run.image);
+    for (p, finish) in run.players.iter().enumerate() {
+        columns.push(cmr_core::results_draw::TimeTrialColumn {
+            name: until_nul(&live[0x2c + 0x9c * p..0x2c + 0x9c * (p + 1)]),
+            splits: finish.splits,
+            time: finish.stage_time as u32,
+        });
+    }
+    columns
+}
+
 /// The name entry's encoded cheat names (`name_cheat_00..`), in test order.
 fn name_cheats(store: &cmr_assets::StaticTablesStore) -> Vec<Vec<u8>> {
     (0..cmr_core::frontend_name_entry::CHEAT_COUNT)
@@ -6424,6 +6484,11 @@ struct RaceResults {
     tiers: Option<[[u8; 9]; 16]>,
     /// Each rival slot's name (record `+0`), empty without the store.
     names: Vec<Vec<u8>>,
+    /// Each rival slot's make logo (record `+8`, `0x506e48`).
+    logos: Vec<u8>,
+    /// The results icons' sheets (`FUN_0042e2d0`: `images\logos2.bmp`,
+    /// `images\milllogo.bmp`), loaded with the fonts.
+    icon_sheets: Option<[Option<cmr_formats::bitmap::IndexedBitmap>; 2]>,
     rivals: Option<cmr_core::stage_rivals::StageRivals>,
     standings: Option<cmr_core::standings::Standings>,
     finished: bool,
@@ -6464,6 +6529,10 @@ impl RaceResults {
             names: records.map_or_else(Vec::new, |records| {
                 records.iter().map(|record| record.name.clone()).collect()
             }),
+            logos: records.map_or_else(Vec::new, |records| {
+                records.iter().map(|record| record.raw[8]).collect()
+            }),
+            icon_sheets: None,
             rivals: None,
             standings: None,
             finished: false,
@@ -6526,6 +6595,9 @@ impl RaceResults {
             self.assets = PauseAssets::load(&self.runtime_data, extent.width)
                 .map(|assets| (extent.width, assets));
         }
+        if self.icon_sheets.is_none() {
+            self.icon_sheets = Some(load_icon_sheets(&self.runtime_data));
+        }
         let Some((_, assets)) = self.assets.as_ref() else {
             return frame;
         };
@@ -6554,6 +6626,14 @@ impl RaceResults {
                             },
                             time: placed.value,
                             player,
+                            logo: if player {
+                                live[0xb6] & 0xf
+                            } else {
+                                self.logos
+                                    .get(usize::from(placed.slot))
+                                    .copied()
+                                    .unwrap_or(0)
+                            },
                         }
                     })
                     .collect()
@@ -6583,6 +6663,12 @@ impl RaceResults {
             })
             .collect();
         let stage_name = self.stage_name(session.event());
+        let time_trial = time_trial_columns(director, session.event());
+        let tables = self
+            .static_tables
+            .as_ref()
+            .map(cmr_assets::StaticTablesStore::tables);
+        let block = |name: &str| tables.and_then(|t| t.block(name)).unwrap_or(&[]);
         let input = cmr_core::results_draw::ResultsDrawInput {
             director,
             event: session.event(),
@@ -6611,6 +6697,16 @@ impl RaceResults {
                     .and_then(|t| t.tables().string("save_slot_label_narrow"))
                     .unwrap_or(&[]),
             },
+            icon_rects: cmr_core::results_draw::IconRects {
+                flags: block("results_flag_rects"),
+                logos: block("results_logo_rects"),
+            },
+            // The opponent's time comes from the opponent car (`FUN_00430100`),
+            // which the session does not run.
+            super_special: None,
+            time_trial: &time_trial,
+            car_names: tables.and_then(|t| t.strings("car_names")).unwrap_or(&[]),
+            bonus_cars: block("bonus_car_countries"),
         };
         let text = |id: i32| {
             usize::try_from(id)
@@ -6624,15 +6720,27 @@ impl RaceResults {
         else {
             return frame;
         };
-        match cmr_video::software_pause_overlay::compose_text_overlay(
+        let Ok((drawn, _)) = cmr_video::software_pause_overlay::compose_text_overlay(
             frame.clone(),
             &plan.quads,
             &plan.runs,
             |font| assets.font(font),
-        ) {
-            Ok((drawn, _)) => drawn,
-            Err(_) => frame,
-        }
+        ) else {
+            return frame;
+        };
+        let sheets = self.icon_sheets.as_ref();
+        cmr_video::software_pause_overlay::compose_icon_overlay(
+            drawn.clone(),
+            &plan.icons,
+            |sheet| {
+                let index = match sheet {
+                    cmr_core::results_draw::IconSheet::Logos => 0,
+                    cmr_core::results_draw::IconSheet::Mill => 1,
+                };
+                sheets.and_then(|sheets| sheets[index].as_ref())
+            },
+        )
+        .unwrap_or(drawn)
     }
 
     /// The results director's input `FUN_00430980`: `GetAsyncKeyState` of
@@ -6751,9 +6859,9 @@ impl RaceResults {
             .block("hiscore_code_schedule")?
             .to_vec();
         let slot = self.rivals.as_ref()?.player_slots.first().copied()?;
-        let mut splits = [0u16; 7];
+        let mut splits = [0u32; 7];
         for (split, &t) in splits.iter_mut().zip(progress.split_times()) {
-            *split = t as u16;
+            *split = t as u32;
         }
         Some(cmr_core::results_director::RecordRun {
             image: config.image.clone(),
@@ -10540,6 +10648,7 @@ mod tests {
                 name: &names[i],
                 time: 31_000 + i as u32 * 137,
                 player: i == 2,
+                logo: (i % 13) as u8,
             })
             .collect();
         let text = |id: i32| {
@@ -10564,6 +10673,10 @@ mod tests {
         event.cfg.cursor_168 = 0x51; // the last stage of the second rally
         let car_short_names: Vec<Vec<u8>> =
             vec![b"IMPREZA".to_vec(), b"CELICA".to_vec(), b"ESCORT".to_vec()];
+        let tables = open_static_tables(&root).expect("static tables");
+        let block = |name: &str| tables.tables().block(name).unwrap_or(&[]);
+        let sheets = load_icon_sheets(&root);
+        assert!(sheets.iter().all(Option::is_some), "both icon sheets load");
         let mut render = |name: &str, director: &ResultsDirector, event: &EventState| {
             let input = ResultsDrawInput {
                 director,
@@ -10581,6 +10694,14 @@ mod tests {
                     wide: b"%s - %s - %s - %s %s %d - ",
                     narrow: b"%s - %s - %s - %s - %d - ",
                 },
+                icon_rects: cmr_core::results_draw::IconRects {
+                    flags: block("results_flag_rects"),
+                    logos: block("results_logo_rects"),
+                },
+                super_special: None,
+                time_trial: &[],
+                car_names: &[],
+                bonus_cars: &[],
             };
             let plan =
                 results_draw_plan(&input, &mut pulse, &text, &|font| assets.font(font)).unwrap();
@@ -10595,6 +10716,15 @@ mod tests {
                 &plan.quads,
                 &plan.runs,
                 |font| assets.font(font),
+            )
+            .unwrap();
+            let drawn = cmr_video::software_pause_overlay::compose_icon_overlay(
+                drawn,
+                &plan.icons,
+                |sheet| match sheet {
+                    cmr_core::results_draw::IconSheet::Logos => sheets[0].as_ref(),
+                    cmr_core::results_draw::IconSheet::Mill => sheets[1].as_ref(),
+                },
             )
             .unwrap();
             let rgba = drawn.expand_rgba8().unwrap();
