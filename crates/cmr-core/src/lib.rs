@@ -58,6 +58,8 @@ pub mod display;
 pub mod display_contract;
 pub mod drive_controls;
 pub mod drivetrain;
+pub mod engine_listener;
+pub mod engine_sound;
 pub mod fixed_point;
 pub mod font_assets;
 pub mod font_raster;

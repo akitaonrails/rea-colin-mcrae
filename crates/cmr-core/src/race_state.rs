@@ -1132,6 +1132,12 @@ impl RaceState {
         self.car
     }
 
+    /// Store `car +0x6ec`, which the engine sound's reset-countdown branch
+    /// (`FUN_00488d60`) rewrites after Mechanics.
+    pub fn set_idle_countdown_6ec(&mut self, countdown: i16) {
+        self.car.four_wheel.idle_countdown_6ec = countdown;
+    }
+
     /// Resolve one post-integration static-scene pass and atomically publish
     /// depenetration, alternate velocity, next-tick corrections, history, and
     /// persistent response flags into the live car.

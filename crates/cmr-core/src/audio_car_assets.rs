@@ -12,9 +12,10 @@
 //! never payload). See evidence `rea.official-eu.audio-wave-inventory`.
 //!
 //! Inferences: the `T`/`M`/`S` suffix is a rev band (top/mid/slow) and the
-//! `F`/`R` prefix is a stereo-pan pair (front/rear, i.e. left/right) within a
-//! band - not on/off power, which is a separate throttle gate (see
-//! [`crate::audio_engine`] and evidence `rea.official-eu.audio-engine-crossfade`);
+//! `F`/`R` prefix is the front/rear emitter of a band (the engine tick gives `F`
+//! layers the front emitter's proximity and position and `R` layers the
+//! rear's; see [`crate::engine_sound`] - an earlier reading of a left/right
+//! stereo pair is corrected);
 //! the per-car `<ABBR>` is a three-ish-character model code. The crossfade/pitch
 //! rules are recovered in `crate::audio_engine`; the role of the shared
 //! `OP1..OP5`/`POP2` pops remains unknown.
@@ -101,14 +102,49 @@ pub const SHARED_ENGINE_SOUNDS: [&str; 8] = [
 pub const CAR_WAVE_RATE_HZ: u32 = 11_025;
 pub const CAR_WAVE_BITS: u16 = 16;
 
-/// The 14 car waves in the recovered load order of `FUN_004872b0` (the index is
-/// the slot offset from the car base slot). The six per-car engine layers and
-/// `WHINE` interleave with the shared chatter/pop-loop/ignition/gear waves;
-/// slots 8..15 (the shared tail) load only when `DAT_00550c08 == 2`.
+/// The 14 car wave slots in the recovered load order of `FUN_004872b0` (the
+/// index is the slot offset from the car base slot), for the seven rally cars
+/// (loader rows 0..=6). The kit cars (rows 7..=11) load [`KIT_CAR_POPS`] into
+/// slots 7..=11 instead of `CHATTER`/`POPLOOP1..4`; see [`car_wave_names`].
 pub const CAR_LOAD_SEQUENCE: [&str; 14] = [
     "FS", "RS", "FM", "RM", "WHINE", "FT", "RT", "CHATTER", "POPLOOP1", "POPLOOP2", "POPLOOP3",
     "POPLOOP4", "IGNITION", "GEAR",
 ];
+
+/// The base directory every car wave name is appended to (`s_sounds_car_`,
+/// after the install root `FUN_00496730`).
+pub const CAR_SOUND_DIR: &str = r"sounds\car\";
+
+/// A car wave path relative to the media source root: the loader prepends
+/// the installation root `FUN_00496730` (`<CDPath>\game\`), so the
+/// [`CAR_SOUND_DIR`] path sits under `game\`, as for the co-driver speech.
+pub fn car_wave_source_path(name: &str) -> String {
+    format!("game\\{CAR_SOUND_DIR}{name}")
+}
+
+/// Slots 7..=11 of the kit-car rows 7..=11 (`0x4f88a4` row table).
+pub const KIT_CAR_POPS: [&str; 5] = ["POP1.WAV", "POP2.WAV", "POP3.WAV", "POP4.WAV", "POP5.WAV"];
+
+/// The loader's per-row car (`0x4f88a4`, 12 rows of 14 name pointers): row 0
+/// is SUBARU and row 11 is ESCORT, the reverse of [`CARS`].
+pub fn car_for_row(row: u32) -> Option<&'static CarEngineSet> {
+    let row = usize::try_from(row).ok()?;
+    CARS.len().checked_sub(row + 1).map(|index| &CARS[index])
+}
+
+/// The 14 wave names of a loader row, relative to [`CAR_SOUND_DIR`], in slot
+/// order: per-car layers as `<DIR>\<LAYER>-<ABBR>.WAV`, shared waves bare.
+pub fn car_wave_names(row: u32) -> Option<[String; 14]> {
+    let car = car_for_row(row)?;
+    let kit = row >= 7;
+    Some(std::array::from_fn(|slot| {
+        match (slot, CAR_LOAD_SEQUENCE[slot]) {
+            (7..=11, _) if kit => KIT_CAR_POPS[slot - 7].to_owned(),
+            (_, layer @ ("FS" | "RS" | "FM" | "RM" | "FT" | "RT")) => car.layer_path(layer),
+            (_, shared) => format!("{shared}.WAV"),
+        }
+    }))
+}
 
 /// Map the car-selection nibble - the low 4 bits of the config byte at
 /// `DAT_00d3ca80 + 0xb6` - to the loader's per-car row index, reproducing the
@@ -188,6 +224,27 @@ mod tests {
         assert_eq!(CAR_LOAD_SEQUENCE[4], "WHINE");
         assert_eq!(CAR_LOAD_SEQUENCE[7], "CHATTER");
         assert_eq!(CAR_LOAD_SEQUENCE[13], "GEAR");
+    }
+
+    #[test]
+    fn loader_rows_run_from_subaru_to_escort() {
+        assert_eq!(car_for_row(0).unwrap().dir, "SUBARU");
+        assert_eq!(car_for_row(11).unwrap().dir, "ESCORT");
+        assert!(car_for_row(12).is_none());
+        let rally = car_wave_names(0).unwrap();
+        assert_eq!(rally[0], r"SUBARU\FS-SUB.WAV");
+        assert_eq!(rally[4], "WHINE.WAV");
+        assert_eq!(rally[7], "CHATTER.WAV");
+        assert_eq!(rally[13], "GEAR.WAV");
+        let kit = car_wave_names(11).unwrap();
+        assert_eq!(kit[6], r"ESCORT\RT-ESC.WAV");
+        assert_eq!(&kit[7..12], KIT_CAR_POPS.map(str::to_owned).as_slice());
+        assert_eq!(kit[12], "IGNITION.WAV");
+        assert!(car_wave_names(12).is_none());
+        assert_eq!(
+            car_wave_source_path("GEAR.WAV"),
+            r"game\sounds\car\GEAR.WAV"
+        );
     }
 
     #[test]

@@ -12,13 +12,21 @@ use std::path::{Path, PathBuf};
 
 use cmr_assets::{
     AssetStore, AssetStoreError, CarSelectorStore, CarSelectorStoreError, CompiledInitializerStore,
-    CompiledInitializerStoreError, ReviewedCarSelectorProfile, ReviewedCarSelectorProfileError,
-    ReviewedCompiledInitializerProfile, ReviewedCompiledInitializerProfileError, ReviewedProfile,
+    CompiledInitializerStoreError, EngineAudioTablesStore, EngineAudioTablesStoreError,
+    ReviewedCarSelectorProfile, ReviewedCarSelectorProfileError,
+    ReviewedCompiledInitializerProfile, ReviewedCompiledInitializerProfileError,
+    ReviewedEngineAudioTablesProfile, ReviewedEngineAudioTablesProfileError, ReviewedProfile,
     ReviewedProfileError, ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile,
     ReviewedSurfaceProfileError, ReviewedTyreTablesProfile, ReviewedTyreTablesProfileError,
     SurfaceCapabilityStore, SurfaceTableStore, SurfaceTableStoreError, TyreTablesStore,
     TyreTablesStoreError,
 };
+use cmr_core::audio_car_assets::{
+    CAR_WAVE_BITS, CAR_WAVE_RATE_HZ, car_row_index_for_selector, car_wave_names,
+    car_wave_source_path,
+};
+use cmr_core::audio_mixer::AudioMixer;
+use cmr_core::audio_render::{FileWaveSource, SoftwareMixer};
 use cmr_core::c3d_camera::MATRIX_IDENTITY_Q16;
 use cmr_core::c3d_mesh::node_mesh_vertex_type;
 use cmr_core::c3d_render::VERTEXTYPE_LVERTEX;
@@ -41,6 +49,11 @@ use cmr_core::drive_controls::DriveResponse;
 use cmr_core::drivetrain::{
     SURFACE_CAPABILITY_COUNT, SURFACE_ID_COUNT, ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE,
     accumulate_effect_enables_from_extracted,
+};
+use cmr_core::engine_listener::{ListenerInput, update_listener};
+use cmr_core::engine_sound::{
+    EngineAudioTables, EngineSoundConfig, EngineSoundState, EngineVoices, RevBandTable,
+    antilag_family_for_nibble,
 };
 use cmr_core::fixed_point::{Fixed16, Vec3};
 use cmr_core::frontend::{FrontendPhase, RootSelection};
@@ -103,6 +116,7 @@ use cmr_gpu_contract::{PersistentRawC3dGpuBackend, PersistentRawC3dIndexedBacken
 use cmr_gpu_stage::{
     PreparedRawStage, PreparedRawStageError, PreparedRawStageLayer, PreparedRawStageStats,
 };
+use cmr_platform_sdl3::SharedSoftwareMixer;
 use cmr_platform_sdl3::input::GamepadDrivingState;
 use cmr_platform_sdl3::{
     InteractiveRootError, SdlHostError, WindowedGameFrame, WindowedInput, present_software_frame,
@@ -153,6 +167,9 @@ const CAR_SELECTOR_STORE_DIRECTORY: &str = "official-eu-car-selectors";
 const REVIEWED_TYRE_TABLES_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-tyre-surface-tables-v1.json");
 const TYRE_TABLES_STORE_DIRECTORY: &str = "official-eu-tyre-surface-tables";
+const REVIEWED_ENGINE_AUDIO_TABLES_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-engine-audio-tables-v1.json");
+const ENGINE_AUDIO_TABLES_STORE_DIRECTORY: &str = "official-eu-engine-audio-tables";
 const REVIEWED_AUX_CONTROL_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-aux-control-constants-v1.json");
 const AUX_CONTROL_STORE_DIRECTORY: &str = "official-eu-aux-control-constants";
@@ -2876,6 +2893,16 @@ impl ViewHarness {
         self.controller = ViewController::new(self.controller.mode());
     }
 
+    /// The camera record's mode word `+4`: the `Blending` sentinel while a
+    /// crossfade runs, else the active mode.
+    fn record_mode(&self) -> i32 {
+        if self.controller.is_blending() {
+            CameraMode::Blending.raw() as i32
+        } else {
+            self.controller.mode().raw() as i32
+        }
+    }
+
     fn car_world(&self, position: Vec3, heading: u16) -> [i32; 16] {
         cmr_core::gameplay_camera::car_world_q16(&self.trig, position, heading)
     }
@@ -3034,6 +3061,7 @@ fn advance_game_frame<C: HostClock>(
     camera: &mut ViewHarness,
     fade: &mut Option<ScalarTween>,
     damage_owner: &mut NoStaticDamageOwner,
+    engine: &mut Option<EngineAudio>,
     input: WindowedInput,
 ) -> Result<GameFrameOutcome, WindowedStageFrameError> {
     let root_tick = root_interaction.tick_for_game_session(input.frontend, clock.millis(), true);
@@ -3072,6 +3100,7 @@ fn advance_game_frame<C: HostClock>(
         camera.snap();
     }
     let reset_fade = session.car().four_wheel.reset.fade_428;
+    let mut tick_camera = None;
     let world = compose_world_for_route(advanced.route, || {
         // Compose the live world for every route that reaches the shared viewport
         // compositor 0x422ca0: the in-race StageWorld states and the overlay
@@ -3092,6 +3121,7 @@ fn advance_game_frame<C: HostClock>(
             (car.heading, camera.car_world(car.position, car.heading))
         };
         let camera_world = camera.update(change_view, car.position, heading, false);
+        tick_camera = Some(camera_world);
         let car_world = car_model_world_q16(&harness_car_world);
         let hud_input = live_race_hud_inputs(
             car,
@@ -3134,6 +3164,15 @@ fn advance_game_frame<C: HostClock>(
     } else {
         world
     };
+    // The engine sound (`FUN_0047ec20` then `FUN_00488d60`) runs after this
+    // tick's Mechanics, which includes the camera driver, in every in-race
+    // handler 5..=9 (the pause state 0xa skips it).
+    if let (Some(engine), Some(mixer), Some(camera_world)) =
+        (engine.as_mut(), input.audio, tick_camera.as_ref())
+        && (5..=9).contains(&session.state().id())
+    {
+        engine.tick(mixer, session, camera, camera_world);
+    }
     let loading_interstitial = loading_interstitial_for_route(
         advanced.route,
         resources.loading_background(),
@@ -3376,6 +3415,176 @@ impl std::error::Error for SessionTyreTablesError {
             Self::Store(error) => Some(error),
         }
     }
+}
+
+/// The windowed session's engine sound: the recovered tick
+/// ([`cmr_core::engine_sound`]) and listener ([`cmr_core::engine_listener`])
+/// over the authenticated static band tables, driving the software mixer.
+///
+/// Harness choices (the shipped values are runtime state): mixer channels
+/// from [`ENGINE_CHANNEL_BASE`] (the allocator `FUN_004957c0` is runtime),
+/// player 0 only, no helium mode (`cfg[0x25] & 4`), the effects master at its
+/// static default `DAT_004f653c = 100`, real play (`DAT_00d3ca88 == 0`), and
+/// the camera view's LCG as the shared `rand()` state.
+struct EngineAudio {
+    tables: EngineAudioTables,
+    car_nibble: u8,
+    state: EngineSoundState,
+    config: Option<EngineSoundConfig>,
+}
+
+/// The first mixer channel of the engine's eight (0 is music, 1 speech).
+const ENGINE_CHANNEL_BASE: u32 = 2;
+
+impl EngineAudio {
+    /// Open the band tables, or `None` when the store is absent or rejected
+    /// (the session then runs without engine sound).
+    fn open(runtime_data: &Path, car_nibble: u8) -> Option<Self> {
+        let tables = match open_engine_audio_tables(runtime_data) {
+            Ok(tables) => tables,
+            Err(error) => {
+                eprintln!("cmr-app: engine sound disabled: {error}");
+                return None;
+            }
+        };
+        Some(Self {
+            tables,
+            car_nibble,
+            state: EngineSoundState::new(),
+            config: None,
+        })
+    }
+
+    /// The car loader `FUN_004872b0`: register the row's 14 waves in slot
+    /// order, the loader's stray `FUN_0047eb70(7, 0x1a0a)` on absolute
+    /// channel 7, then the init `FUN_00487250`.
+    fn load(&mut self, mixer: &mut SoftwareMixer<FileWaveSource>) -> Option<EngineSoundConfig> {
+        let row = car_row_index_for_selector(self.car_nibble);
+        let names = car_wave_names(row)?;
+        let mut slots = Vec::with_capacity(names.len());
+        for name in &names {
+            let path = car_wave_source_path(name);
+            slots.push(
+                mixer
+                    .load_wave(&path, CAR_WAVE_RATE_HZ, CAR_WAVE_BITS, false)
+                    .ok()?,
+            );
+        }
+        let config = EngineSoundConfig {
+            channel_base: ENGINE_CHANNEL_BASE,
+            wave_base: slots[0].ordinal(),
+            antilag_family_540: antilag_family_for_nibble(self.car_nibble),
+            car_nibble: self.car_nibble,
+            helium: false,
+            master_percent: 100,
+        };
+        EngineVoices::set_volume(mixer, 7, config.master_percent * 0x1a0a / 100);
+        self.state.stage_init(mixer, &config, false);
+        Some(config)
+    }
+
+    fn tick(
+        &mut self,
+        mixer: &SharedSoftwareMixer,
+        session: &mut GameplaySession,
+        camera: &mut ViewHarness,
+        camera_world: &[i32; 16],
+    ) {
+        let Some(car_words) = session.engine_sound_car() else {
+            return;
+        };
+        let Ok(mut mixer) = mixer.lock() else {
+            return;
+        };
+        let config = match self.config {
+            Some(config) => config,
+            None => match self.load(&mut mixer) {
+                Some(config) => *self.config.insert(config),
+                None => return,
+            },
+        };
+        let car = session.car();
+        let camera_mode = camera.record_mode();
+        let listener = match update_listener(&ListenerInput {
+            camera: *camera_world,
+            camera_mode,
+            forward_258: vec3_raw(car.motion.basis[0]),
+            centre_c8: vec3_raw(car.position),
+            half_length_2c: car.motion.compiled_half_words.x.raw(),
+        }) {
+            Ok(output) => output.listener,
+            Err(error) => {
+                eprintln!("cmr-app: engine listener skipped: {error}");
+                return;
+            }
+        };
+        match self.state.update(
+            &mut *mixer,
+            &config,
+            &self.tables,
+            &mut camera.rng,
+            0,
+            &car_words,
+            camera_mode,
+            &listener,
+        ) {
+            Ok(outcome) => session.set_idle_countdown_6ec(outcome.idle_countdown_6ec),
+            Err(error) => eprintln!("cmr-app: engine sound tick failed: {error}"),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum EngineAudioOpenError {
+    Profile(ReviewedEngineAudioTablesProfileError),
+    Store(EngineAudioTablesStoreError),
+    Tables(cmr_core::engine_sound::EngineSoundError),
+}
+
+impl std::fmt::Display for EngineAudioOpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Profile(error) => write!(f, "engine audio profile: {error:?}"),
+            Self::Store(error) => write!(f, "engine audio tables store: {error:?}"),
+            Self::Tables(error) => write!(f, "engine audio tables: {error}"),
+        }
+    }
+}
+
+fn vec3_raw(v: Vec3) -> [i32; 3] {
+    [v.x.raw(), v.y.raw(), v.z.raw()]
+}
+
+fn engine_band(band: &cmr_formats::pe_engine_audio_tables::EngineSoundBand) -> RevBandTable {
+    RevBandTable {
+        count: band.count,
+        lo: band.lo,
+        hi: band.hi,
+        pitch: band.pitch.clone(),
+        volume: band.vol.clone(),
+    }
+}
+
+fn open_engine_audio_tables(
+    runtime_data: &Path,
+) -> Result<EngineAudioTables, EngineAudioOpenError> {
+    let reviewed =
+        ReviewedEngineAudioTablesProfile::from_json(REVIEWED_ENGINE_AUDIO_TABLES_PROFILE)
+            .map_err(EngineAudioOpenError::Profile)?;
+    let store = EngineAudioTablesStore::open(
+        &session_sidecar_store(runtime_data, ENGINE_AUDIO_TABLES_STORE_DIRECTORY),
+        &reviewed,
+    )
+    .map_err(EngineAudioOpenError::Store)?;
+    let t = store.tables();
+    EngineAudioTables::new(
+        engine_band(&t.slow),
+        engine_band(&t.mid),
+        engine_band(&t.top),
+        engine_band(&t.whine),
+        t.upshift_dip,
+    )
+    .map_err(EngineAudioOpenError::Tables)
 }
 
 /// Authenticated static tyre/surface tables for the wheel-force producer.
@@ -4296,6 +4505,7 @@ pub fn run_windowed_game_session(
     let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
     let mut damage_owner = NoStaticDamageOwner;
+    let mut engine = EngineAudio::open(runtime_data, compiled_pose.selector as u8);
     let mut runtime_error = None;
 
     // Best-effort: open the recovered front-end root-menu compositor from the
@@ -4326,6 +4536,7 @@ pub fn run_windowed_game_session(
                     &mut camera,
                     &mut fade,
                     &mut damage_owner,
+                    &mut engine,
                     input,
                 ) {
                     Ok(outcome) => {
@@ -4386,6 +4597,7 @@ pub fn run_windowed_game_session(
             &mut camera,
             &mut fade,
             &mut damage_owner,
+            &mut engine,
             input,
         ) {
             Ok(outcome) => WindowedGameFrame {
@@ -5958,11 +6170,23 @@ mod tests {
         let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
         let mut root_interaction =
             RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0).unwrap();
+        // `CMR_FRAMES_AUDIO=1` runs the engine sound over a software mixer
+        // rooted at the runtime data and writes the mix to `engine.wav`.
+        let audio_mixer: Option<SharedSoftwareMixer> =
+            std::env::var_os("CMR_FRAMES_AUDIO").map(|_| {
+                let mut mixer = SoftwareMixer::with_source(FileWaveSource::new(&root));
+                mixer.initialize().unwrap();
+                std::sync::Arc::new(std::sync::Mutex::new(mixer))
+            });
+        let mut engine = audio_mixer
+            .as_ref()
+            .and_then(|_| EngineAudio::open(&root, compiled_pose.selector as u8));
+        let mut pcm: Vec<i16> = Vec::new();
         let mut advance = |session: &mut GameplaySession,
                            progress: &mut StageProgress,
                            keys: &cmr_platform_sdl3::KeyboardVkState,
                            frontend: cmr_core::frontend::FrontendInput| {
-            advance_game_frame(
+            let outcome = advance_game_frame(
                 session,
                 &mut keyboard,
                 &mut analog,
@@ -5974,13 +6198,22 @@ mod tests {
                 &mut camera,
                 &mut fade,
                 &mut damage_owner,
+                &mut engine,
                 WindowedInput {
                     keys,
                     gamepad: None,
                     frontend,
+                    audio: audio_mixer.as_ref(),
                 },
             )
-            .unwrap()
+            .unwrap();
+            if let Some(mixer) = audio_mixer.as_ref() {
+                // One 40 ms tick of 22050 Hz stereo output.
+                let mut block = vec![0i16; 882 * 2];
+                mixer.lock().unwrap().render(&mut block);
+                pcm.extend_from_slice(&block);
+            }
+            outcome
         };
         let idle = cmr_core::frontend::FrontendInput::default();
         advance(&mut session, &mut progress, &keys, idle);
@@ -6057,6 +6290,34 @@ mod tests {
                 }
             }
         }
+        drop(advance);
+        if audio_mixer.is_some() {
+            let peak = pcm.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+            eprintln!("frames engine audio samples={} peak={peak}", pcm.len());
+            std::fs::write(out_dir.join("engine.wav"), stereo_wav(&pcm, 22_050)).unwrap();
+        }
+    }
+
+    /// A 16-bit stereo PCM WAV of the given interleaved samples.
+    fn stereo_wav(samples: &[i16], rate: u32) -> Vec<u8> {
+        let data_len = (samples.len() * 2) as u32;
+        let mut out = Vec::with_capacity(44 + data_len as usize);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_len).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&(rate * 4).to_le_bytes());
+        out.extend_from_slice(&4u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            out.extend_from_slice(&sample.to_le_bytes());
+        }
+        out
     }
 
     #[test]
@@ -6108,10 +6369,12 @@ mod tests {
                     &mut camera,
                     &mut fade,
                     &mut damage_owner,
+                    &mut None,
                     WindowedInput {
                         keys: $keys,
                         gamepad: None,
                         frontend: $frontend,
+                        audio: None,
                     },
                 )
                 .unwrap()

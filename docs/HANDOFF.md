@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: animate and pose the car's wheels
+feat: play the recovered engine sound
 ```
 
 Start by confirming the checkout and progress footer:
@@ -147,10 +147,14 @@ The HUD rev, speed and gear come from `FUN_00464130` (`impl.race-hud-prepare`).
 The `.dat` trigger walk and barrier walls run each tick
 (`impl.trigger-walk-and-barriers`), and the co-driver speaks
 (`impl.codriver-speech`). The windowed session runs a player's race and returns
-to the menu after the finish (`impl.gameplay-script-and-stage-restart`). The wheels are animated and posed (`impl.wheel-animation`). Next: engine audio
-(`FUN_00487e00`; static notes in `.work/engine-audio-notes.md`: the band tables
-are static `.data`, so they need a reviewed extraction like the tyre tables),
-then the pause menu and the player option bytes.
+to the menu after the finish (`impl.gameplay-script-and-stage-restart`). The wheels are animated and posed (`impl.wheel-animation`). The engine sound
+plays (`impl.engine-sound`): extract its tables once with
+`cargo run -q -p cmr-assets -- extract-engine-audio-tables --source <dir with Rally.exe> --profile profiles/official-eu-engine-audio-tables-v1.json --output runtime-data/official-eu-engine-audio-tables`;
+`CMR_FRAMES_AUDIO=1` on the ignored frames test writes `engine.wav`. Open
+points: QMixer panning of `SetPosition`, `car +0x764`, and the tyre profile's
+`wheel_terms_777c` read (8 variants x 120 x 6 bytes from `0x4f777c`) overlaps
+the engine tables at `0x4f82e0..0x4f8bac`, so one of its extents is wrong.
+Next: the pause menu and the player option bytes, impact/surface sounds.
 `FUN_0041f630` only feeds impact sound/FFB/shudder. Trees appear to be `.sht` sprites, which the native
 excludes from static collision. Done so far: the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`

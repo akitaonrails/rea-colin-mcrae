@@ -144,6 +144,8 @@ pub struct GameplaySession<'a> {
     last_reset: ResetOutcome,
     stage_triggers: Option<StageTriggers<'a>>,
     last_trigger_events: Vec<TriggerEvent>,
+    /// `ctl +0x304` as the last four-wheel tick read it.
+    last_throttle_304: i32,
     /// The car as the stage setup left it, restored when a new stage starts.
     stage_start: CarState,
     /// The sim has stepped since the stage started.
@@ -254,6 +256,7 @@ impl<'a> GameplaySession<'a> {
             last_reset: ResetOutcome::default(),
             stage_triggers: None,
             last_trigger_events: Vec::new(),
+            last_throttle_304: 0,
             stage_start: CarState::at_rest(),
             race_started: false,
             stage_dirty: false,
@@ -344,6 +347,36 @@ impl<'a> GameplaySession<'a> {
         Ok(self)
     }
 
+    /// The car and control words the engine sound `FUN_00488d60` reads after
+    /// this tick's Mechanics, or `None` for the planar harness. `car +0x764`
+    /// (the reset-branch ignition flag) has no recovered writer in this
+    /// session and reads as zero.
+    #[must_use]
+    pub fn engine_sound_car(&self) -> Option<crate::engine_sound::EngineSoundCar> {
+        let wheel = self.wheel.as_ref()?;
+        let car = self.race.car();
+        let four = &car.four_wheel;
+        Some(crate::engine_sound::EngineSoundCar {
+            engine_speed_2e8: four.engine_speed_2e8,
+            redline_reciprocal_160: crate::drivetrain::reciprocal_or_minus_one(
+                wheel.engine_smoothing.redline_15c,
+            ),
+            speed_ec: four.speed_ec,
+            gear_43a: four.gearbox.gear_43a,
+            throttle_response_2d8: four.pedals.response_2d8,
+            throttle_pedal_304: self.last_throttle_304,
+            reset_timer_75c: four.trigger_walk.penalty_timer_75c,
+            idle_6e8: four.idle_6e8,
+            idle_countdown_6ec: four.idle_countdown_6ec,
+            ignition_764: 0,
+        })
+    }
+
+    /// Write back the engine sound's `car +0x6ec`.
+    pub fn set_idle_countdown_6ec(&mut self, countdown: i16) {
+        self.race.set_idle_countdown_6ec(countdown);
+    }
+
     /// The trigger walk's effects on the last four-wheel tick.
     #[must_use]
     pub fn last_trigger_events(&self) -> &[TriggerEvent] {
@@ -372,6 +405,7 @@ impl<'a> GameplaySession<'a> {
         let wheel = self.wheel.as_ref().expect("a four-wheel session");
         self.last_reset = ResetOutcome::default();
         self.last_trigger_events.clear();
+        self.last_throttle_304 = controls.raw_pedals.throttle_304;
         if let Some(triggers) = self.stage_triggers.as_mut() {
             let events = self
                 .race

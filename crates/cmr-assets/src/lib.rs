@@ -10,6 +10,9 @@ mod catalog;
 mod compiled_initializer_import;
 mod compiled_initializer_profile;
 mod compiled_initializer_store;
+mod engine_audio_tables_import;
+mod engine_audio_tables_profile;
+mod engine_audio_tables_store;
 mod import;
 mod path;
 mod profile;
@@ -60,6 +63,18 @@ pub use compiled_initializer_profile::{
     ReviewedCompiledInitializerProfileError,
 };
 pub use compiled_initializer_store::{CompiledInitializerStore, CompiledInitializerStoreError};
+pub use engine_audio_tables_import::{
+    ENGINE_AUDIO_TABLES_DATA_FILE, ENGINE_AUDIO_TABLES_IMPORT_SCHEMA_VERSION,
+    ENGINE_AUDIO_TABLES_STATE_FILE, EngineAudioTablesImportError, EngineAudioTablesImportFile,
+    EngineAudioTablesImportShape, EngineAudioTablesImportSummary, extract_engine_audio_tables,
+};
+pub use engine_audio_tables_profile::{
+    ENGINE_AUDIO_TABLES_PROFILE_SCHEMA_VERSION, EngineAudioTablesEncoding,
+    EngineAudioTablesExecutable, EngineAudioTablesProfile, EngineAudioTablesProfileError,
+    EngineAudioTablesSpec, EngineSoundBandSpec, ReviewedEngineAudioTablesProfile,
+    ReviewedEngineAudioTablesProfileError,
+};
+pub use engine_audio_tables_store::{EngineAudioTablesStore, EngineAudioTablesStoreError};
 pub use import::{ImportError, ImportSummary, import_source};
 pub use path::normalize_relative_path;
 pub use profile::{

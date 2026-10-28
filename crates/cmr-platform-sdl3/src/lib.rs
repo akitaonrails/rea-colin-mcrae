@@ -747,6 +747,9 @@ pub struct WindowedInput<'a> {
     pub gamepad: Option<&'a GamepadDrivingState>,
     /// Edge-triggered menu input from the same keyboard/gamepad event stream.
     pub frontend: FrontendInput,
+    /// The open software mixer, when the audio device opened, for game-side
+    /// sound that must run inside the simulation tick (the engine sound).
+    pub audio: Option<&'a SharedSoftwareMixer>,
 }
 
 /// One windowed game-session frame, returned by the `step` callback of
@@ -876,6 +879,7 @@ where
         ))
     });
     let mut speech = host.as_ref().and_then(SpeechBank::load);
+    let game_mixer = host.as_ref().map(AudioHost::mixer);
 
     let pacing_clock = Instant::now();
     let mut pacing = FixedStepDeadline::new(Duration::ZERO, GAME_SESSION_TICK_INTERVAL);
@@ -941,6 +945,7 @@ where
             keys: &keys,
             gamepad: (!open_gamepads.is_empty()).then_some(&pad),
             frontend: frontend.poll(),
+            audio: game_mixer.as_ref(),
         };
         let frame = step(input);
         if frame.stopped {

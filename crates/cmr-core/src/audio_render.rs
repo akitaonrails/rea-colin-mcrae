@@ -133,6 +133,8 @@ struct Voice {
     step: f64,
     /// Whether the voice loops at end-of-wave.
     looping: bool,
+    /// The frame a looping voice wraps back to (`QMIX_PLAYPARAMS.lStartLoop`).
+    loop_start: usize,
 }
 
 /// Per-channel mix state.
@@ -224,8 +226,17 @@ impl<B: WaveSource> SoftwareMixer<B> {
                 };
                 if voice.cursor as usize >= frames {
                     if voice.looping {
-                        // Wrap, preserving the fractional overshoot.
-                        voice.cursor %= frames as f64;
+                        // Wrap to the loop start, preserving the fractional
+                        // overshoot. A loop start at or past the end loops the
+                        // whole wave (backend policy: QMixer's handling of that
+                        // case is not in the image).
+                        let start = if voice.loop_start < frames {
+                            voice.loop_start
+                        } else {
+                            0
+                        };
+                        let span = (frames - start) as f64;
+                        voice.cursor = start as f64 + (voice.cursor - frames as f64) % span;
                     } else {
                         channel.voice = None;
                     }
@@ -247,6 +258,25 @@ fn volume_gain(volume: i32) -> f32 {
 /// Saturating conversion of a mixed accumulator to 16-bit.
 fn clamp_i16(sample: i32) -> i16 {
     sample.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+}
+
+impl<B: WaveSource> SoftwareMixer<B> {
+    /// `FUN_00495a80`: play a slot forever, wrapping to `loop_start` frames
+    /// after the first pass. The offset is the `QMIX_PLAYPARAMS` loop-start
+    /// word; reading it as a sample-frame index is an inference from the
+    /// QMixer ABI (the DLL is not in the image).
+    pub fn play_with_loop_start(
+        &mut self,
+        slot: WaveSlotId,
+        channel: ChannelId,
+        loop_start: u32,
+    ) -> Result<(), MixerError> {
+        self.play(slot, channel, PLAY_LOOPING)?;
+        if let Some(voice) = self.channel_mut(channel).voice.as_mut() {
+            voice.loop_start = loop_start as usize;
+        }
+        Ok(())
+    }
 }
 
 impl<B: WaveSource> AudioMixer for SoftwareMixer<B> {
@@ -299,6 +329,7 @@ impl<B: WaveSource> AudioMixer for SoftwareMixer<B> {
             cursor: 0.0,
             step: frequency as f64 / output_rate,
             looping: flags == PLAY_LOOPING,
+            loop_start: 0,
         });
         Ok(())
     }
@@ -341,6 +372,56 @@ impl<B: WaveSource> AudioMixer for SoftwareMixer<B> {
             return false;
         }
         self.channels[channel.index() as usize].voice.is_some()
+    }
+}
+
+/// The engine sound drives the software mixer directly. Channel and wave ids
+/// are absolute (the engine adds its own bases); an out-of-range channel or an
+/// unknown slot is a no-op, like the game's null-handle guards.
+impl<B: WaveSource> crate::engine_sound::EngineVoices for SoftwareMixer<B> {
+    fn playing(&self, channel: u32) -> bool {
+        ChannelId::new(channel).is_ok_and(|ch| self.is_channel_busy(ch))
+    }
+
+    fn play(&mut self, wave: u32, channel: u32, loops: u32) {
+        if let Ok(ch) = ChannelId::new(channel) {
+            let _ = AudioMixer::play(self, WaveSlotId::from_ordinal(wave), ch, loops);
+        }
+    }
+
+    fn play_with_loop_start(&mut self, wave: u32, channel: u32, loop_start: u32) {
+        if let Ok(ch) = ChannelId::new(channel) {
+            let _ = SoftwareMixer::play_with_loop_start(
+                self,
+                WaveSlotId::from_ordinal(wave),
+                ch,
+                loop_start,
+            );
+        }
+    }
+
+    fn stop(&mut self, channel: u32) {
+        if let Ok(ch) = ChannelId::new(channel) {
+            let _ = AudioMixer::stop(self, ch);
+        }
+    }
+
+    fn set_volume(&mut self, channel: u32, volume: i32) {
+        if let Ok(ch) = ChannelId::new(channel) {
+            let _ = AudioMixer::set_volume(self, ch, volume);
+        }
+    }
+
+    fn set_frequency(&mut self, channel: u32, frequency: u32) {
+        if let Ok(ch) = ChannelId::new(channel) {
+            let _ = AudioMixer::set_frequency(self, ch, frequency);
+        }
+    }
+
+    fn set_position(&mut self, channel: u32, position: Position3d) {
+        if let Ok(ch) = ChannelId::new(channel) {
+            let _ = AudioMixer::set_position(self, ch, position);
+        }
     }
 }
 
@@ -475,6 +556,39 @@ mod tests {
         mixer.render(&mut out);
         assert_eq!(out, [10, 10, 20, 20, 10, 10, 20, 20, 10, 10]);
         assert!(mixer.is_channel_busy(ch(1)));
+    }
+
+    #[test]
+    fn engine_voices_drive_the_mixer_and_ignore_bad_ids() {
+        use crate::engine_sound::EngineVoices;
+        let mut mixer = SoftwareMixer::with_source(bank(&[("e", mono(&[7, 8], 11_025))]));
+        mixer.initialize().unwrap();
+        let slot = mixer.load_wave("e", 11_025, 16, false).unwrap();
+        EngineVoices::play(&mut mixer, slot.ordinal(), 3, PLAY_LOOPING);
+        assert!(EngineVoices::playing(&mixer, 3));
+        EngineVoices::play(&mut mixer, 99, 4, PLAY_LOOPING);
+        assert!(!EngineVoices::playing(&mixer, 4));
+        EngineVoices::stop(&mut mixer, 3);
+        assert!(!EngineVoices::playing(&mixer, 3));
+        EngineVoices::set_volume(&mut mixer, 500, 0);
+        assert!(!EngineVoices::playing(&mixer, 500));
+    }
+
+    #[test]
+    fn loop_start_voice_wraps_to_its_offset() {
+        let mut mixer = SoftwareMixer::with_source(bank(&[("ig", mono(&[1, 2, 3, 4], 22_050))]));
+        mixer.initialize().unwrap();
+        let slot = mixer.load_wave("ig", 22_050, 16, false).unwrap();
+        mixer.play_with_loop_start(slot, ch(2), 2).unwrap();
+        let mut out = [0i16; 16]; // 8 frames
+        mixer.render(&mut out);
+        let left: Vec<i16> = out.iter().step_by(2).copied().collect();
+        assert_eq!(left, [1, 2, 3, 4, 3, 4, 3, 4]);
+        // A start past the end loops the whole wave.
+        mixer.play_with_loop_start(slot, ch(2), 9).unwrap();
+        mixer.render(&mut out);
+        let left: Vec<i16> = out.iter().step_by(2).copied().collect();
+        assert_eq!(left, [1, 2, 3, 4, 1, 2, 3, 4]);
     }
 
     #[test]

@@ -1958,6 +1958,11 @@ A finished stage now returns to the menu and a new stage starts from its setup
 The wheels now spin, steer, follow the suspension and vibrate on rough surfaces
 (`impl.wheel-animation`).
 
+The car now sounds: the recovered engine tick crossfades the per-car rev-band
+loops, adds the whine, overrun pops, blow-off, anti-lag and gear clunk, and
+balances front/rear emitters from the camera (`impl.engine-sound`). The band
+tables come from the user's executable through a reviewed extraction.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

@@ -7,20 +7,20 @@
 //! frequency control `FUN_00495bd0`; volume goes through the master-scaled
 //! setter `FUN_0047eb70`. See evidence `rea.official-eu.audio-engine-crossfade`.
 //!
-//! The three rev bands are stereo pairs of slots - Slow `0`(FS)/`1`(RS),
-//! Mid `2`(FM)/`3`(RM), Top `5`(FT)/`6`(RT) - with the even "F" slot and odd "R"
-//! slot forming a left/right pan pair (the recovered pan helpers subtract the
-//! pan term for F and add it for R). Slot `4` is WHINE and slot `7` carries the
-//! overrun/one-shot chatter.
+//! The three rev bands are front/rear emitter pairs of slots - Slow
+//! `0`(FS)/`1`(RS), Mid `2`(FM)/`3`(RM), Top `5`(FT)/`6`(RT). The "F" layer takes
+//! the front emitter's proximity and position, the "R" layer the rear's; the
+//! `±20%` term the volume helpers subtract for F and add for R is a front/rear
+//! balance from the camera heading (this corrects an earlier left/right stereo
+//! reading). Slot `4` is WHINE and slot `7` carries the overrun/one-shot
+//! chatter. The full tick is reconstructed in [`crate::engine_sound`].
 //!
 //! Observations encoded here: the band-index crossfade formula and its
 //! out-of-window muting, the idle pitch, the per-layer channel arithmetic, and
-//! the slot/band layout. Inferences: F/R is a stereo-pan split (not on/off
-//! power - on/off power is the separate T-band throttle gate `DAT_00829548`);
-//! Slow/Mid/Top are rev bands. Unknowns (left to the caller or later recovery):
-//! the per-band `(lo, hi, count)` constants and the volume/pitch index tables
-//! (data tables not reproduced here), and the ignition trigger (played
-//! elsewhere).
+//! the slot/band layout. Inferences: F/R is a front/rear emitter split (not
+//! on/off power - on/off power is the separate T-band throttle gate
+//! `DAT_00829548`); Slow/Mid/Top are rev bands. The per-band tables are static
+//! `.data`, extracted from the user's copy (never committed).
 
 /// Idle / out-of-range pitch, equal to the car waves' native rate (`0x2b11` =
 /// 11025): the engine tick resets a layer to this pitch when its band is out of
@@ -33,7 +33,7 @@ pub const WHINE_SLOT: u32 = 4;
 /// The overrun/chatter one-shot slot offset.
 pub const CHATTER_SLOT: u32 = 7;
 
-/// An engine rev band, each a stereo pair of looping layer slots.
+/// An engine rev band, each a front/rear pair of looping layer slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineRevBand {
     /// Low revs: slots 0 (FS) / 1 (RS). Volume-only crossfade (fixed pitch).
@@ -45,7 +45,7 @@ pub enum EngineRevBand {
 }
 
 impl EngineRevBand {
-    /// The `(front, rear)` slot offsets of the band's stereo pair: the first is
+    /// The `(front, rear)` slot offsets of the band's emitter pair: the first is
     /// the "F" layer (the recovered pan helper subtracts the pan term), the
     /// second the "R" layer (adds it). The pair is the discriminator - the slot
     /// numbers are not simply even/odd (the Top band is 5/6).

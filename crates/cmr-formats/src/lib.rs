@@ -11,6 +11,7 @@ mod pe32;
 pub mod pe_aux_control_initializer;
 pub mod pe_car_selector;
 pub mod pe_compiled_initializer;
+pub mod pe_engine_audio_tables;
 pub mod pe_surface;
 pub mod pe_tyre_tables;
 pub mod riff_palette;
