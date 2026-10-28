@@ -165,6 +165,13 @@ pub fn codriver_relative_path(language: SpeechLanguage, filename: &str) -> Strin
     format!("{}codriver\\{filename}", language.dir())
 }
 
+/// The pacenote wave path relative to the media source root: the in-game
+/// root is `<CDPath>\game\` (`FUN_0043bb60`), so the loader's path sits under
+/// `game\`.
+pub fn codriver_source_path(language: SpeechLanguage, filename: &str) -> String {
+    format!("game\\{}", codriver_relative_path(language, filename))
+}
+
 /// One extracted component of a packed pacenote word: the observed field (its
 /// right shift and mask) and the bank slot offset it plays
 /// (`slot_delta + value`).

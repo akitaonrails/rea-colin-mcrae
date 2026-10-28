@@ -3066,6 +3066,20 @@ fn advance_game_frame<C: HostClock>(
         stopped: session.is_stopped(),
         // The recovered front-end music plays during the menu band (states 1..4).
         music_active: matches!(advanced.band, SessionBand::Menu),
+        codriver_calls: if advanced.stepped {
+            session
+                .last_trigger_events()
+                .iter()
+                .filter_map(|event| match *event {
+                    cmr_core::trigger_walk::TriggerEvent::CodriverCall { payload, .. } => {
+                        Some(payload as u32)
+                    }
+                    _ => None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -3077,6 +3091,8 @@ struct GameFrameOutcome {
     root_render_input: Option<RootRenderInput>,
     stopped: bool,
     music_active: bool,
+    /// Co-driver note words the trigger walk submitted this frame.
+    codriver_calls: Vec<u32>,
 }
 
 /// Reviewed surface inputs owned by a game session.
@@ -4234,6 +4250,7 @@ pub fn run_windowed_game_session(
                             present,
                             stopped: outcome.stopped,
                             music_active: outcome.music_active,
+                            codriver_calls: outcome.codriver_calls,
                         }
                     }
                     Err(error) => {
@@ -4242,6 +4259,7 @@ pub fn run_windowed_game_session(
                             present: None,
                             stopped: true,
                             music_active: false,
+                            codriver_calls: Vec::new(),
                         }
                     }
                 }
@@ -4277,6 +4295,7 @@ pub fn run_windowed_game_session(
                 present: outcome.world.or(outcome.loading_interstitial),
                 stopped: outcome.stopped,
                 music_active: outcome.music_active,
+                codriver_calls: outcome.codriver_calls,
             },
             Err(error) => {
                 runtime_error = Some(error);
@@ -4284,6 +4303,7 @@ pub fn run_windowed_game_session(
                     present: None,
                     stopped: true,
                     music_active: false,
+                    codriver_calls: Vec::new(),
                 }
             }
         }

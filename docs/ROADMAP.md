@@ -1948,6 +1948,10 @@ barrier walls push the car back and bounce it, kill volumes reset it, type-1
 records move the checkpoint cursor and co-driver calls fire. The earlier labels
 (split, finish, sound) for types 0, 1 and 2 were wrong.
 
+The co-driver now speaks (`impl.codriver-speech`): the walk's calls feed the
+recovered sequencer `FUN_00444450`, which plays the 40-wave bank one sample
+per frame.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

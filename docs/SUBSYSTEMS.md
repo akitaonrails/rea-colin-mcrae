@@ -2611,6 +2611,8 @@ languages rather than fabricating or silently aliasing Italian assets.
 - The `.dat` trigger walk `FUN_00403a00` runs per tick over the car's cell:
   barrier walls (`FUN_00401fd0`) push and bounce the car, kill volumes set the
   reset latch, cursor records move the checkpoint cursor, co-driver calls fire.
+- Co-driver calls are spoken by the recovered sequencer `FUN_00444450` from
+  the 40-wave bank on the speech channel.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

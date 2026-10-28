@@ -761,6 +761,9 @@ pub struct WindowedGameFrame {
     /// Whether the recovered front-end music should play this frame (true during
     /// the front-end/menu band; false while racing or stopped).
     pub music_active: bool,
+    /// Co-driver note words submitted this frame (`FUN_00444380`), spoken by
+    /// the recovered sequencer `FUN_00444450` on the speech channel.
+    pub codriver_calls: Vec<u32>,
 }
 
 /// The documented harness music config byte for the windowed session's front-end
@@ -856,8 +859,8 @@ where
     // the recovered music controller on channel 0. Any failure (no source root,
     // no device, missing wave) leaves `audio` as None and the session runs
     // silent.
-    let mut audio = source_root.and_then(|root| {
-        let host = AudioHost::open(&sdl, root).ok()?;
+    let host = source_root.and_then(|root| AudioHost::open(&sdl, root).ok());
+    let mut music = host.as_ref().and_then(|host| {
         let name = FRONTEND_MUSIC.trim_start_matches(['\\', '/']);
         let slot = host
             .mixer()
@@ -865,14 +868,14 @@ where
             .ok()?
             .load_wave(name, 22_050, 16, false)
             .ok()?;
-        let music = MusicController::new(
+        Some(MusicController::new(
             ChannelId::new(0).ok()?,
             slot,
             FRONTEND_MUSIC_CONFIG_BYTE,
             FRONTEND_MUSIC_CONFIG_BYTE,
-        );
-        Some((host, music))
+        ))
     });
+    let mut speech = host.as_ref().and_then(SpeechBank::load);
 
     let pacing_clock = Instant::now();
     let mut pacing = FixedStepDeadline::new(Duration::ZERO, GAME_SESSION_TICK_INTERVAL);
@@ -946,7 +949,15 @@ where
         // Drive the recovered front-end music: start/fade it in during the
         // front-end band (entering the frontend context gate), stop it otherwise,
         // applying the emitted mixer commands to the shared software mixer.
-        if let Some((host, music)) = audio.as_mut()
+        if let Some(host) = host.as_ref()
+            && let Some(speech) = speech.as_mut()
+            && let Ok(mut mixer) = host.mixer().lock()
+        {
+            let commands = speech.frame(&*mixer, &frame.codriver_calls);
+            let _ = apply_commands(&mut *mixer, &commands);
+        }
+        if let Some(host) = host.as_ref()
+            && let Some(music) = music.as_mut()
             && let Ok(mut mixer) = host.mixer().lock()
         {
             let commands = if frame.music_active {
@@ -983,6 +994,88 @@ where
     }
 
     Ok(())
+}
+
+/// The co-driver speech bank (`FUN_00444160`: the 40 pacenote waves at
+/// 11025 Hz / 16-bit / mono, the speech channel at volume `0x7d00`) and the
+/// recovered sequencer that drains the queued note words one sample per
+/// frame. Harness choices: English speech (the language byte
+/// `DAT_00d3ca80[0x18] & 7` is runtime config), a normal (unmirrored) stage,
+/// and mixer channel 1 for speech (the native allocates it at runtime).
+struct SpeechBank {
+    channel: ChannelId,
+    slots: Vec<Option<WaveSlotId>>,
+    sequencer: cmr_core::pacenote_schedule::CodriverSequencer,
+}
+
+impl SpeechBank {
+    fn load(host: &AudioHost) -> Option<Self> {
+        use cmr_core::audio_pacenote::{
+            PACENOTE_WAVE_BITS, PACENOTE_WAVE_RATE_HZ, PACENOTE_WAVES, codriver_source_path,
+            select_speech_language,
+        };
+        let language = select_speech_language(0, false);
+        let shared = host.mixer();
+        let mut mixer = shared.lock().ok()?;
+        let slots: Vec<Option<WaveSlotId>> = PACENOTE_WAVES
+            .iter()
+            .map(|file| {
+                mixer
+                    .load_wave(
+                        &codriver_source_path(language, file),
+                        PACENOTE_WAVE_RATE_HZ,
+                        PACENOTE_WAVE_BITS,
+                        false,
+                    )
+                    .ok()
+            })
+            .collect();
+        if slots.iter().all(Option::is_none) {
+            return None;
+        }
+        let channel = ChannelId::new(1).ok()?;
+        let _ = apply_commands(
+            &mut *mixer,
+            &[cmr_core::audio_mixer::MixerCommand::SetVolume {
+                channel,
+                volume: cmr_core::audio_pacenote::PACENOTE_CHANNEL_VOLUME,
+            }],
+        );
+        Some(Self {
+            channel,
+            slots,
+            sequencer: cmr_core::pacenote_schedule::CodriverSequencer::default(),
+        })
+    }
+
+    /// One frame: the sequencer runs before this frame's calls are queued
+    /// (`FUN_00444450` precedes the mechanics that submit them).
+    fn frame<M: AudioMixer>(
+        &mut self,
+        mixer: &M,
+        calls: &[u32],
+    ) -> Vec<cmr_core::audio_mixer::MixerCommand> {
+        use cmr_core::audio_mixer::MixerCommand;
+        let mut commands = Vec::new();
+        let busy = mixer.is_channel_busy(self.channel);
+        if let Some(slot) = self.sequencer.tick(busy)
+            && let Some(Some(wave)) = usize::try_from(slot).ok().and_then(|i| self.slots.get(i))
+        {
+            commands.push(MixerCommand::Play {
+                slot: *wave,
+                channel: self.channel,
+                flags: cmr_core::audio_pacenote::PACENOTE_PLAY_FLAGS,
+            });
+            commands.push(MixerCommand::SetVolume {
+                channel: self.channel,
+                volume: cmr_core::audio_pacenote::PACENOTE_CHANNEL_VOLUME,
+            });
+        }
+        for &word in calls {
+            self.sequencer.submit(word, false);
+        }
+        commands
+    }
 }
 
 /// What the interactive loop should do after a batch of host events.
@@ -1045,6 +1138,39 @@ fn feed_input_event(event: &Event, mapper: &mut FrontendInputMapper) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_speech_bank_speaks_a_queued_call_from_the_next_frame() {
+        use cmr_core::audio_mixer::MixerCommand;
+        use cmr_core::audio_render::{FileWaveSource, SoftwareMixer};
+        let mixer = SoftwareMixer::with_source(FileWaveSource::new(std::env::temp_dir()));
+        let mut bank = SpeechBank {
+            channel: ChannelId::new(1).unwrap(),
+            slots: (0..40)
+                .map(|i| Some(WaveSlotId::from_ordinal(100 + i)))
+                .collect(),
+            sequencer: cmr_core::pacenote_schedule::CodriverSequencer::default(),
+        };
+        // "3": the number field at bits 3-6 speaks slot 2 + 3.
+        assert!(bank.frame(&mixer, &[3 << 3]).is_empty());
+        let commands = bank.frame(&mixer, &[]);
+        assert_eq!(
+            commands,
+            [
+                MixerCommand::Play {
+                    slot: WaveSlotId::from_ordinal(105),
+                    channel: bank.channel,
+                    flags: cmr_core::audio_pacenote::PACENOTE_PLAY_FLAGS,
+                },
+                MixerCommand::SetVolume {
+                    channel: bank.channel,
+                    volume: cmr_core::audio_pacenote::PACENOTE_CHANNEL_VOLUME,
+                },
+            ]
+        );
+        // The spent entry advances with nothing behind it: silence.
+        assert!(bank.frame(&mixer, &[]).is_empty());
+    }
 
     #[test]
     fn fixed_step_deadline_ignores_early_event_wakeups() {

@@ -377,9 +377,28 @@ impl FileWaveSource {
         let normalized = cmr_assets::normalize_relative_path(name)?;
         let mut path = self.root.clone();
         for part in normalized.split('/') {
-            path.push(part);
+            path.push(Self::fold_component(&path, part));
         }
         Some(path)
+    }
+
+    /// The shipped game ran on a case-insensitive filesystem: resolve one
+    /// component to the existing entry whose name matches ignoring ASCII case,
+    /// preferring an exact match, else keep the requested spelling.
+    fn fold_component(directory: &Path, part: &str) -> String {
+        if directory.join(part).exists() {
+            return part.to_owned();
+        }
+        std::fs::read_dir(directory)
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter_map(|entry| entry.file_name().into_string().ok())
+                    .filter(|candidate| candidate.eq_ignore_ascii_case(part))
+                    .min()
+            })
+            .unwrap_or_else(|| part.to_owned())
     }
 
     /// Read and decode the wave at a resolved path, refusing non-regular files.
@@ -598,6 +617,28 @@ mod tests {
         // Missing file is a silent miss, not an error.
         assert!(source.fetch(r"sounds\car\NOPE.WAV").is_none());
 
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn file_wave_source_matches_names_ignoring_ascii_case() {
+        let root = unique_temp_dir("case");
+        std::fs::create_dir_all(root.join("Game/Sounds/Speech/English/CoDriver")).unwrap();
+        std::fs::write(
+            root.join("Game/Sounds/Speech/English/CoDriver/Into.wav"),
+            mono_wav_bytes(&[4, 5], 11_025),
+        )
+        .unwrap();
+        let source = FileWaveSource::new(&root);
+        let wave = source
+            .fetch(r"game\sounds\speech\english\codriver\INTO.WAV")
+            .unwrap();
+        assert_eq!(wave.samples, vec![4, 5]);
+        assert!(
+            source
+                .fetch(r"game\sounds\speech\english\codriver\LEFT.WAV")
+                .is_none()
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

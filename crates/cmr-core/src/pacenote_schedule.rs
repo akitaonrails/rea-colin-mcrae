@@ -315,6 +315,70 @@ impl PacenoteRing {
     }
 }
 
+/// The single-player co-driver speech queue: the submit path of
+/// `FUN_00444380` that enqueues into the audio ring, and the per-frame
+/// sequencer `FUN_00444450`.
+///
+/// `FUN_00444450` (pseudocode level), outside replays: when the speech channel
+/// is busy, or the ring is empty, nothing happens. A zero head entry advances
+/// the head; if the new head is queued and carries a corner field (`& 0x78`),
+/// the INTO link (`+0x27`) plays and the into flag `DAT_005590f0` is set.
+/// Otherwise the lowest set field plays (`slot_delta + value`, in
+/// [`PACENOTE_WORD_FIELDS`] order), is cleared and the remainder is written
+/// back; the number field is kept in `DAT_00559110`, the direction field
+/// clears the into flag. A non-zero entry with no recognised field plays
+/// nothing and stays at the head. Each play is followed by restoring the
+/// channel volume (`FUN_0047eba0(channel, 0x7d00)`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CodriverSequencer {
+    ring: PacenoteRing,
+    /// `DAT_005590f0`: the last play was the INTO link.
+    pub into_link_5590f0: bool,
+    /// `DAT_00559110`: the last number/severity value spoken.
+    pub last_number_559110: u32,
+}
+
+impl CodriverSequencer {
+    /// `FUN_00444380`'s audio path (one viewport and one car, or player 0):
+    /// swap the direction on a mirrored stage, then enqueue.
+    pub fn submit(&mut self, word: u32, mirrored: bool) {
+        self.ring.enqueue(swap_modifier(word, mirrored));
+    }
+
+    /// One `FUN_00444450` call. Returns the bank-relative slot to play on the
+    /// speech channel, after which the caller restores its volume.
+    pub fn tick(&mut self, channel_busy: bool) -> Option<i32> {
+        if channel_busy {
+            return None;
+        }
+        let entry = self.ring.head()?;
+        if entry == 0 {
+            self.ring.advance();
+            if self
+                .ring
+                .head()
+                .is_some_and(|next| next & INTO_LINK_TRIGGER_MASK != 0)
+            {
+                self.into_link_5590f0 = true;
+                return Some(crate::audio_pacenote::INTO_LINK_SLOT_OFFSET as i32);
+            }
+            return None;
+        }
+        let (index, field) = PACENOTE_WORD_FIELDS
+            .iter()
+            .enumerate()
+            .find(|(_, field)| (entry >> field.shift) & field.mask != 0)?;
+        let value = (entry >> field.shift) & field.mask;
+        match index {
+            2 => self.last_number_559110 = value,
+            3 => self.into_link_5590f0 = false,
+            _ => {}
+        }
+        self.ring.set_head(entry & !(field.mask << field.shift));
+        Some(field.slot_delta + value as i32)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,5 +541,46 @@ mod tests {
         }
         // Tail wrapped back onto the head: the ring reads empty despite writes.
         assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn the_sequencer_speaks_one_field_per_free_tick_and_links_corners() {
+        let mut speech = CodriverSequencer::default();
+        assert_eq!(speech.tick(false), None);
+        // "3 RIGHT" (number 3 at bits 3-6, direction 1 at bits 7-8), then
+        // "CAUTION" alone, then another corner "2 LEFT".
+        speech.submit((3 << 3) | (1 << 7), false);
+        speech.submit(1, false);
+        speech.submit((2 << 3) | (2 << 7), false);
+        assert_eq!(speech.tick(true), None, "a busy channel waits");
+        assert_eq!(speech.tick(false), Some(2 + 3));
+        assert_eq!(speech.last_number_559110, 3);
+        assert_eq!(speech.tick(false), Some(0xa + 1));
+        // The emptied entry advances; CAUTION has no corner field: no link.
+        assert_eq!(speech.tick(false), None);
+        assert_eq!(speech.tick(false), Some(0));
+        // The next entry is a corner: the INTO link plays first.
+        assert_eq!(speech.tick(false), Some(0x27));
+        assert!(speech.into_link_5590f0);
+        assert_eq!(speech.tick(false), Some(2 + 2));
+        assert_eq!(speech.tick(false), Some(0xa + 2));
+        assert!(!speech.into_link_5590f0);
+        assert_eq!(speech.tick(false), None);
+        assert_eq!(speech.tick(false), None);
+    }
+
+    #[test]
+    fn a_mirrored_stage_swaps_the_spoken_direction() {
+        let mut speech = CodriverSequencer::default();
+        speech.submit(1 << 7, true);
+        assert_eq!(speech.tick(false), Some(0xa + 2));
+    }
+
+    #[test]
+    fn an_entry_without_a_known_field_stays_at_the_head() {
+        let mut speech = CodriverSequencer::default();
+        speech.submit(1 << 20, false);
+        assert_eq!(speech.tick(false), None);
+        assert_eq!(speech.tick(false), None);
     }
 }
