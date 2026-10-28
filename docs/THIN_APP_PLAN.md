@@ -7,8 +7,9 @@ changes.
 
 ## Status (2026-11-02)
 
-**Current milestone:** M2 (runs as-is via our launcher). `CMRLauncher.exe`
-exists and brings the official exe to the main menu under Wine. The repository has been restructured: the source reconstruction is parked
+**Current milestone:** M2 (runs as-is via our launcher). Under Wine the
+official exe is **playable** through `CMRLauncher.exe`: menus, stage load and
+driving with the keyboard. Left for M2: the Proton runner and the gamepad. The repository has been restructured: the source reconstruction is parked
 at tag `recomp-parked-2026-11-02` and copied in full (with its local notes) to
 `/mnt/data/Projects/rea-colin-mcrae-recomp`.
 
@@ -16,30 +17,29 @@ at tag `recomp-parked-2026-11-02` and copied in full (with its local notes) to
 | --- | --- | --- |
 | M0 Reference preserved, repo restructured | nothing lost; clean start | **done** (`0783334`) |
 | M1 Inventory + feasibility probes | every requirement has a covered, licence-checked path | **done** for M2's needs; remaining probes listed below |
-| M2 Runs as-is on Linux (Proton) via our launcher | the user's folder → playable game, no manual steps | **in progress**: menu reached from a fresh Wine prefix; a stage, input and the Proton runner still to check |
+| M2 Runs as-is on Linux (Proton) via our launcher | the user's folder → playable game, no manual steps | **in progress**: playable under Wine 11.20 (fresh prefix, keyboard); Proton runner (L1) and gamepad (C1) open |
 | M3 Runs as-is on Windows 10/11 | same package natively | blocked: needs a Windows machine to test |
 | M4 Gamepad, audio, movies complete | full experience, analog pad | not started |
 | M5 Enhancements (opt-in): resolution, widescreen | 4K / 16:9 | not started; feasibility open |
 | M6 Enhancement: 60 fps | smooth motion | not started; feasibility open |
 
 **Last findings:**
-- `CMRLauncher.exe` (Rust, 32-bit Windows, `crates/cmr-launcher`) runs the
-  **official, unpatched** EU v1.5 exe from a brand-new Wine 11.20 prefix with
-  no manual setup: it copies the game to a private runtime folder, writes the
-  registry, starts `Rally.exe` suspended, applies F1-F5 in memory (each site
-  checked against the file first) and resumes it. The game reached the
-  Codemasters screen and the main menu.
-- Audio plays (QSound under Wine): recorded from a private null sink at the
-  menu.
-- Second launch copies nothing and leaves the game's own registry values
-  alone.
+- **Playable under Wine 11.20**: `CMRLauncher.exe` takes the official,
+  unpatched EU v1.5 exe from a brand-new prefix to the menus, a championship
+  stage in New Zealand (3D, HUD, timer) and driving: throttle and steering on
+  the default keyboard keys move the car (21 mph in first gear, turning).
+- Stage loading works with Wine's default Windows version (no XP mode), so
+  the community pack's "Win7+ stage crash" (S1) doesn't show here.
+- Sound plays at the menu and in the race (private null sink recordings).
+- A save copied from the user's earlier setup kept the car still: its control
+  settings point player 1 at another device (most likely a gamepad Wine now
+  sees). A fresh save uses the keyboard. Gamepad handling is probe C1.
 
 **Next:**
-1. Drive the menus into a stage on the headless display (needs scripted key
-   input), check probe S1 (stage-load crash on Win7+ reported by the
-   community pack).
-2. Settle the Linux runner (L1) and run the launcher under Proton.
-3. Probe C1 (gamepad).
+1. Settle the Linux runner (L1) and run the launcher under Proton.
+2. Probe C1: gamepad (WinMM joystick under Wine/Proton) and what the
+   launcher should do about saves bound to a missing device.
+3. Windows 10/11 (M3) needs a Windows machine: G2 renderer and D1 dplayx.
 
 ## Goal and ground rules
 
@@ -78,8 +78,8 @@ Sources: the decomp ledger (`docs/recomp/EVIDENCE.md`), the API inventory
 | R3 | Paths under ~127 characters (`OpenFile`) | Keep the runtime folder short (its own drive letter or a short root) | ours | evidence |
 | R4 | OS gate: only the Win9x platform passes (`FUN_0049dcb0`) | In-memory fix F4 | ours | **verified** (community exe with the same fix runs) |
 | R5 | CD check: a CD-ROM drive containing `\setup\game\objects\cars\subday.c3d`, probed on almost every load (`FUN_00496ca0`); the files themselves come from `CDPath` | In-memory fix F1 | ours | **verified** (same) |
-| R6 | DirectDraw + Direct3D 5 (`DirectDrawCreate`; 8-bit 640x480 front end, 16-bit race, Ramp/HAL device, `DrawIndexedPrimitive`, back-buffer and Z-buffer reads each frame, `WaitForVerticalBlank` must succeed) | Linux: Proton's built-in ddraw/wined3d. Windows: one of G2 | wined3d (LGPL-2.1, part of Wine/Proton) | evidence (it runs a patched exe in the distrobox setup); *probe G1* in our setup |
-| R7 | Audio: QSound `qmixer.dll` | It ships with the user's game and uses DirectSound, which Windows and Wine both provide; a replacement is only needed if it fails | the game's own file | **verified** at the menu under Wine |
+| R6 | DirectDraw + Direct3D 5 (`DirectDrawCreate`; 8-bit 640x480 front end, 16-bit race, Ramp/HAL device, `DrawIndexedPrimitive`, back-buffer and Z-buffer reads each frame, `WaitForVerticalBlank` must succeed) | Linux: Wine/Proton's built-in ddraw/wined3d (with F2/F3). Windows: one of G2 | wined3d (LGPL-2.1, part of Wine/Proton) | **verified** under Wine (front end and race, 640x480 and 800x600); Windows: G2 |
+| R7 | Audio: QSound `qmixer.dll` | It ships with the user's game and uses DirectSound, which Windows and Wine both provide; a replacement is only needed if it fails | the game's own file | **verified** under Wine (menu and race) |
 | R8 | Joysticks via WinMM, with joystick ids taken from DirectInput 7 enumeration (no DirectInput means no pads) | Xidi: `winmm.dll` + `dinput.dll` presenting XInput pads; or the platform's own WinMM | Xidi (BSD-3-Clause) | *probe C1* (Xidi failed to load in the old distrobox setup; cause unknown) |
 | R9 | Force feedback (DirectInput 7 effects) | Optional; the platform's DirectInput or Xidi | (platform) | optional |
 | R10 | DirectPlay `dplayx.dll`, statically imported (the exe won't load without it) | Proton: built-in. Windows 10/11: the system DLL prompts to install the DirectPlay feature, so bundle Wine's `dplayx.dll` built for Windows or a small stub | Wine dplayx (LGPL-2.1) or ours | Proton: evidence; Windows: *probe D1* (needs Windows) |
@@ -152,8 +152,8 @@ Excluded: dgVoodoo2 (closed source; crashes under Wine), cnc-ddraw
 | --- | --- | --- | --- |
 | G1 | Does Wine's built-in renderer run the game? | Headless gamescope + Wine 11.20 | **yes** with F1-F5 (title, service screen); official exe without F2 crashes at the Ramp device |
 | P1 | Launcher applies F1-F5 in memory (start suspended, write, resume) | `CMRLauncher.exe` under Wine 11.20 | **yes**: official exe reaches the main menu |
-| A1 | QMixer audio plays | Record a private null sink during a run | **yes** at the menu (Wine 11.20); in-race audio still to hear |
-| S1 | Stage loading under NT-family Windows versions (community pack: crashes on Win7+ without XP compatibility mode) | Load a stage with the default Wine version; if it crashes, find the cause | — |
+| A1 | QMixer audio plays | Record a private null sink during a run | **yes** at the menu and in the race (Wine 11.20) |
+| S1 | Stage loading under NT-family Windows versions (community pack: crashes on Win7+ without XP compatibility mode) | Load a stage with the default Wine version; if it crashes, find the cause | **no crash** under Wine 11.20 (two stages: New Zealand, Greece); real Windows still to see (M3) |
 | C1 | Analog pad works via Xidi or WinMM under Proton | Plug a pad during G1, check the controller menu | — |
 | D1 | `dplayx` on Windows 10/11 | Windows machine | blocked |
 | V1 | Intro playback with an open-source decoder | After M2 | — |

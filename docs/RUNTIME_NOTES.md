@@ -55,3 +55,21 @@ registry values from `THIN_APP_PLAN.md` R2 imported with `regedit /S`.
 - Sound was recorded from a private PipeWire null sink (`PULSE_SINK`): music
   at the menu, peak 8608. An earlier run went to the user's speakers; the
   harness now always uses the null sink.
+
+## 2026-11-02: driving
+
+- Key input on the private display: XTest via `.work/rt/xkeys.py` (live
+  command file). Wine's `+key` trace shows the presses arriving as the right
+  virtual keys (`VK_UP` 0x26, `VK_LEFT` 0x25, Escape).
+- The game polls keys by level (`GetAsyncKeyState`, in race `FUN_0049cfb0`
+  with key codes from the control settings), so a held key carries into the
+  next screen and very short or mid-animation presses get lost; 60 ms
+  presses with a pause after each work best.
+- With the save copied from the earlier distrobox setup, Up/arrows did
+  nothing in the race (gear showed R) while Escape opened the pause menu: its
+  control settings select another device for player 1. A fresh save
+  (no `save\` folder in the source) used the keyboard: the car drove (21 mph
+  in first, steering left into a fence) in New Zealand stage 1.
+- The game starts fine without a `save\` folder.
+- Stage loads under Wine's default Windows version: New Zealand (800x600 from
+  the old save, 640x480 fresh) and Greece.
