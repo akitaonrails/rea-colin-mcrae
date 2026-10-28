@@ -378,6 +378,31 @@ pub struct EngineForce {
     pub engine_2e0: i32,
 }
 
+/// Distribute the engine force to the four wheels' drive slots
+/// `state+0x534..+0x540` (`FUN_0040ce40`, `0x40cfd1..0x40d0aa`), just before the
+/// wheel-force producer `FUN_0040d810` runs.
+///
+/// In gear with no pending shift, `t = qmul(+0x530, ratio)` with `ratio` the
+/// control `+0x1d0[gear]`; each front wheel gets `qmul(t, +0x158) / 2` and each
+/// rear wheel `t / 2` minus that, both halvings truncating toward zero
+/// (`CDQ; SUB; SAR 1`). Neutral or a pending shift zeroes all four.
+#[must_use]
+pub fn distribute_drive_torque(
+    force_530: i32,
+    gear: i32,
+    shift_40c: bool,
+    ratio: i32,
+    split_158: i32,
+) -> [i32; 4] {
+    if gear == 0 || shift_40c {
+        return [0; 4];
+    }
+    let total = q16_mul(force_530, ratio);
+    let front = q16_mul(total, split_158) / 2;
+    let rear = (total / 2).wrapping_sub(front);
+    [front, front, rear, rear]
+}
+
 /// Produce `state+0x530` before wheel-force execution.
 #[must_use]
 pub fn derive_engine_force(input: EngineForceInput) -> EngineForce {
@@ -1698,6 +1723,29 @@ pub fn execute_first_wheel_iteration(input: FirstWheelInputs) -> FirstWheelEffec
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn drive_torque_splits_front_and_rear_with_truncating_halves() {
+        // t = qmul(3.0, 2.0) = 6.0; front = qmul(6.0, 0.25) / 2 = 0.75.
+        assert_eq!(
+            distribute_drive_torque(0x3_0000, 1, false, 0x2_0000, 0x4000),
+            [0xc000, 0xc000, 0x3_0000 - 0xc000, 0x3_0000 - 0xc000]
+        );
+        // Negative odd values truncate toward zero, not down.
+        let [front, _, rear, _] = distribute_drive_torque(-3, 1, false, 0x1_0000, 0x1_0000);
+        assert_eq!((front, rear), (-1, -1 - -1));
+        assert_eq!(
+            distribute_drive_torque(0x3_0000, 0, false, 0x2_0000, 0x4000),
+            [0; 4]
+        );
+        assert_eq!(
+            distribute_drive_torque(0x3_0000, 2, true, 0x2_0000, 0x4000),
+            [0; 4]
+        );
+        // All-front split leaves nothing for the rear.
+        let [front, _, rear, _] = distribute_drive_torque(0x2_0000, 3, false, 0x1_0000, 0x1_0000);
+        assert_eq!((front, rear), (0x1_0000, 0));
+    }
+
     use super::*;
 
     #[test]

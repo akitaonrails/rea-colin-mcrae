@@ -645,6 +645,7 @@ mod tests {
             control_word_188: 0x3333,
             control_u16_3e4: 0x02aa,
             control_byte_440: 3,
+            control_word_15c: 0x5_0000,
         };
         crate::race_state::populate_compiled_four_wheel_constants(&mut wheel, &constants);
         assert_eq!(wheel.inverse_mass_4c.raw(), 0x218);
@@ -677,6 +678,27 @@ mod tests {
             ),
             (0x3333, 0x02aa, 3)
         );
+        assert_eq!(wheel.engine_smoothing.redline_15c, 0x5_0000);
+        assert_eq!(wheel.engine_force.redline_15c, 0x5_0000);
+    }
+
+    #[test]
+    fn setup_block_fills_engine_steering_wheel_and_gearbox_words() {
+        let trig = crate::fixed_point::build_sine_table();
+        let mut wheel = four_wheel_params(&trig);
+        wheel.gearbox = Some(crate::gearbox::GearboxParams::default());
+        let mut setup = crate::car_setup::CarSetupBlock::RESET;
+        setup.engine_response_85c = 0xe000;
+        setup.steering_factor_838 = 0xd000;
+        setup.wheel_constants_83c = [1, 2, 3, 4];
+        setup.base_angle_bac = -5;
+        setup.setup_800[8] = 0xb334;
+        crate::race_state::populate_car_setup(&mut wheel, &setup);
+        assert_eq!(wheel.engine_force.response_e1ac, 0xe000);
+        assert_eq!(wheel.steering_car_factor_e188, 0xd000);
+        assert_eq!(wheel.lane_direction_angle, -5);
+        assert_eq!(wheel.first.map(|first| first.wheel_constant), [1, 2, 3, 4]);
+        assert!(wheel.gearbox.unwrap().gear_two_skip);
     }
 
     #[test]

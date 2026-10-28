@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-10-28 (four-wheel owned-data probe)
+Updated: 2026-10-28 (car-setup block and drive torque)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-test: probe the compiled four-wheel car on owned AU1 data
+feat: recover the car-setup block and the engine drive split
 ```
 
 Start by confirming the checkout and progress footer:
@@ -83,7 +83,7 @@ ef78049 feat: derive canonical collision response state
 
 ## Verification state
 
-Green at handoff (2,356 tests, 36 ignored):
+Green at handoff (2,365 tests, 36 ignored):
 
 ```sh
 cargo test --workspace --all-targets
@@ -94,7 +94,7 @@ Focused collision, session rollback, keyboard/analog, SDL gamepad, app build,
 and full-workspace tests pass. Logs from the last run are ignored under:
 
 ```text
-.work/four-wheel-probe-workspace-test.log
+.work/car-setup-workspace-test.log
 ```
 
 The authenticated AU1 test:
@@ -136,10 +136,14 @@ contacted (item 5 below).
    inputs, but the owned-data probe (`obs.au1-four-wheel-probe`, run with
    `CMR_RUNTIME_DATA=... cargo test -p cmr-app --release
    probe_compiled_four_wheel_car_on_au1 -- --ignored --nocapture`) shows the
-   car cannot move yet: recover the per-car-type table block (`DAT_0050e170..`,
-   stride `0xcd0`: `e1ac` engine response, `e170` gear-2 skip, `e188` steering,
-   `e18c` wheel constant, `e4fc` base angle), wire `drive_torque_split` into the
-   first-wheel forces, and recover gravity/ground contact in `FUN_0040d810`
+   car cannot move yet. The per-player car-setup block behind
+   `DAT_0050e170..` is now recovered (`cmr-core::car_setup`,
+   `populate_car_setup`) and the engine force is split into the drive slots
+   before the wheel passes (`impl.car-setup-and-drive-torque`): the probe's
+   engine revs against the real redline, but wheel speeds stay zero. Next:
+   inventory and source the remaining `FirstWheelParams`/`SecondWheelParams`
+   harness fields (wheel/state vectors, splits, slip limit, transition gains,
+   surface vectors) and recover gravity/ground contact in `FUN_0040d810`
    before item 2.
 2. Move the windowed session from `GameplaySession::new_with_car` to the already
    recovered four-wheel path only after supplying its authenticated runtime

@@ -4163,6 +4163,9 @@ pub struct CompiledFourWheelConstants {
     pub control_word_188: i32,
     pub control_u16_3e4: u16,
     pub control_byte_440: u8,
+    /// The effective `+0x15c` engine-speed scale (redline): the common
+    /// prefix's scaled value, else the direct case word.
+    pub control_word_15c: i32,
 }
 
 fn post_helper_word(effects: &CompiledPostHelperEffects, offset: u16) -> i32 {
@@ -4217,6 +4220,7 @@ pub fn derive_compiled_four_wheel_constants(
         control_word_188: post_helper_word(&post_helper, 0x188),
         control_u16_3e4: post_helper.control_u16[0],
         control_byte_440: post_helper.control_bytes[0],
+        control_word_15c,
     })
 }
 
@@ -10924,6 +10928,10 @@ mod tests {
             assert_eq!(constants.state_word_4c, prefix.state_word_4c);
             assert_eq!(constants.control_word_148, prefix.control_word_148);
             assert_eq!(constants.control_word_16c, words.control_words[2]);
+            assert_eq!(
+                constants.control_word_15c,
+                prefix.control_word_15c.unwrap_or(words.control_words[3])
+            );
             assert_eq!(
                 (
                     constants.control_word_150,

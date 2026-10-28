@@ -2593,6 +2593,9 @@ languages rather than fabricating or silently aliasing Italian assets.
 - The processor's gearbox (automatic, manual, brake-to-reverse) owns the gear,
   the deferred shift request `+0x40c` and the reversing mode `+0x408`; an
   optional live gearbox in the four-wheel step feeds them to the drivetrain.
+- The per-player car-setup block (`DAT_0050d950 + slot * 0xcd0`) supplies engine
+  response, steering factor, wheel constants, base angle and the gear-2 skip;
+  the engine force is split into the four drive slots before the wheel passes.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

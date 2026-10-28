@@ -20,6 +20,7 @@
 //!
 //! See evidence `impl.sim-race-state-trace`.
 
+use crate::car_setup::CarSetupBlock;
 use crate::compiled_car_initializer::{
     CompiledControlClearLoop, CompiledControlFamilies, CompiledFourWheelConstants,
     CompiledHalfSignState, CompiledLaneThresholdInputs, CompiledPostLaneBasisEffects,
@@ -31,10 +32,10 @@ use crate::drivetrain::{
     SecondWheelInputs, SmoothedEngineSpeedInput, SmoothedSpeedGateInput, advance_idle_oscillation,
     advance_idle_reset, advance_residual_enable, apply_rev_limiter,
     derive_driven_smoothing_scalars, derive_engine_force, derive_force_pass_scales,
-    derive_gear_ratio, derive_smoothed_engine_speed, equalize_wheel_speeds,
-    execute_first_wheel_iteration, execute_second_wheel_core, integrate_driven_wheel_speed,
-    integrate_engine_from_raw_wheels, integrate_idle_engine, smoothed_speed_uses_tracking,
-    track_smoothed_wheel_speed,
+    derive_gear_ratio, derive_smoothed_engine_speed, distribute_drive_torque,
+    equalize_wheel_speeds, execute_first_wheel_iteration, execute_second_wheel_core,
+    integrate_driven_wheel_speed, integrate_engine_from_raw_wheels, integrate_idle_engine,
+    smoothed_speed_uses_tracking, track_smoothed_wheel_speed,
 };
 use crate::fixed_point::{Fixed16, TRIG_TABLE_LEN, Vec3, build_sine_table, cos_bam, sin_bam};
 use crate::gearbox::{GearOutOfRange, GearboxInputs, GearboxParams, GearboxState, apply_gearbox};
@@ -427,6 +428,25 @@ pub fn populate_compiled_four_wheel_constants(
     wheel.steering.centering_188 = constants.control_word_188;
     wheel.steering.max_angle_3e4 = constants.control_u16_3e4 as i16;
     wheel.steering.flags_440 = constants.control_byte_440;
+    wheel.engine_smoothing.redline_15c = constants.control_word_15c;
+    wheel.engine_force.redline_15c = constants.control_word_15c;
+}
+
+/// Populate the per-slot setup-block scalars the four-wheel passes read: the
+/// engine response `DAT_0050e1ac` (`+0x85c`), steering factor `DAT_0050e188`
+/// (`+0x838`), per-lane wheel constants `DAT_0050e18c[lane]` (`+0x83c`), base
+/// steer angle `DAT_0050e4fc` (`+0xbac`) and, with a live gearbox, the gear-2
+/// skip from `DAT_0050e170` (`+0x820`).
+pub fn populate_car_setup(wheel: &mut FourWheelIterationParams<'_>, setup: &CarSetupBlock) {
+    wheel.engine_force.response_e1ac = setup.engine_response_85c;
+    wheel.steering_car_factor_e188 = setup.steering_factor_838;
+    wheel.lane_direction_angle = setup.base_angle_bac;
+    for (first, constant) in wheel.first.iter_mut().zip(setup.wheel_constants_83c) {
+        first.wheel_constant = constant;
+    }
+    if let Some(gearbox) = &mut wheel.gearbox {
+        gearbox.gear_two_skip = setup.gear_two_skip();
+    }
 }
 
 /// Populate each update's limit and threshold from the interleaved compiled
@@ -1410,6 +1430,32 @@ impl RaceState {
                 directions.direction_a[lane],
             );
         }
+        // `FUN_0040ce40`: the engine force `+0x530`, then its distribution to
+        // the four drive slots `+0x534..+0x540`, both before the wheel-force
+        // producer `FUN_0040d810` reads those slots.
+        let engine_force = derive_engine_force(EngineForceInput {
+            limiter_444: self.car.four_wheel.limiter_444,
+            cut_448: self.car.four_wheel.limiter_cut_448,
+            engine_2e0: self.car.four_wheel.engine_2e0,
+            redline_15c: wheel.engine_smoothing.redline_15c,
+            gear: first[0].gear,
+            config_40c: first[0].config_40c,
+            response_2d8: self.car.four_wheel.pedals.response_2d8,
+            throttle_304: pedal_inputs.throttle_304,
+            ..wheel.engine_force
+        });
+        self.car.four_wheel.engine_force_530 = engine_force.force_530;
+        self.car.four_wheel.engine_2e0 = engine_force.engine_2e0;
+        let torques = distribute_drive_torque(
+            engine_force.force_530,
+            first[0].gear,
+            first[0].config_40c != 0,
+            first[0].gear_ratio,
+            first[0].config_158,
+        );
+        for (state, torque) in self.car.four_wheel.first.iter_mut().zip(torques) {
+            state.force = torque;
+        }
         let mut prior_speeds = [0; 4];
         for index in (0..4).rev() {
             prior_speeds[index] = self.car.four_wheel.first[index].wheel_speed;
@@ -1498,19 +1544,6 @@ impl RaceState {
             centiseconds: elapsed_centiseconds(self.clock, self.start_clock),
             car: self.car,
         };
-        let engine_force = derive_engine_force(EngineForceInput {
-            limiter_444: self.car.four_wheel.limiter_444,
-            cut_448: self.car.four_wheel.limiter_cut_448,
-            engine_2e0: self.car.four_wheel.engine_2e0,
-            redline_15c: wheel.engine_smoothing.redline_15c,
-            gear: first[0].gear,
-            config_40c: first[0].config_40c,
-            response_2d8: self.car.four_wheel.pedals.response_2d8,
-            throttle_304: pedal_inputs.throttle_304,
-            ..wheel.engine_force
-        });
-        self.car.four_wheel.engine_force_530 = engine_force.force_530;
-        self.car.four_wheel.engine_2e0 = engine_force.engine_2e0;
         if first[0].gear_ratio != 0 && first[0].config_40c == 0 {
             self.car.four_wheel.engine_2e0 = integrate_engine_from_raw_wheels(
                 self.car.four_wheel.engine_2e0,

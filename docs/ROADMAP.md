@@ -1864,6 +1864,15 @@ windowed session stays planar until those exist; the per-car-type table block
 (stride `0xcd0` at `DAT_0050e170..`) and the ground part of `FUN_0040d810` are
 the next recovery targets.
 
+That block is now recovered: it is the per-player car-setup block, reset by car
+setup and derived from the setup sliders (and damage) at race start, and the
+four-wheel step reads its engine response, steering factor, wheel constants,
+base angle and gear-2 skip. The engine force now runs before the wheel passes
+and is split into the four drive slots each tick, as the original does. On the
+owned AU1 data the engine now revs against the car's real redline, but the
+wheels still do not turn: the remaining first/second-wheel inputs and ground
+contact are next.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

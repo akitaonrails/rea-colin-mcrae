@@ -4147,6 +4147,7 @@ const HEADLESS_HARNESS_FOUR_WHEEL_CONSTANTS: CompiledFourWheelConstants =
         control_word_188: 0,
         control_u16_3e4: 0,
         control_byte_440: 0,
+        control_word_15c: 0x1_0000,
     };
 
 /// Run the headless FSM with authenticated coefficients and compiled geometry.
@@ -5801,6 +5802,12 @@ mod tests {
             drive_ratios: cmr_core::race_state::compiled_drive_ratios(&car.families, Fixed16::ONE),
             ..GearboxParams::default()
         });
+        // No config setup bytes or damage flag are read here: the slot keeps
+        // the car-setup reset values (`FUN_0041e3f0`).
+        cmr_core::race_state::populate_car_setup(
+            &mut wheel,
+            &cmr_core::car_setup::CarSetupBlock::RESET,
+        );
         start.four_wheel.gearbox = GearboxState::at_setup(true);
         let mut state = cmr_core::race_state::RaceState::new(start);
         let throttle = Controls {
