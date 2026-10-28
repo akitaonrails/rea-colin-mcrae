@@ -119,6 +119,7 @@ use cmr_core::vehicle_dynamics::{
     SOLVER_GLOBAL_CONSTANTS, SurfaceCoefficientIndexError, integrate_orientation,
 };
 use cmr_core::weather::{StageWeatherEffects, particles};
+use cmr_core::wet_sound::{WetLoad, WetSoundState, WetTickInput, load_wet_bank};
 use cmr_formats::bitmap::{BitmapError, BitmapLimits, IndexedBitmap, parse_indexed_bitmap};
 use cmr_formats::c3d::{C3dError, C3dFile, C3dLimits, parse_c3d};
 use cmr_formats::font::{BitmapFont, FontError, FontLimits, parse_legacy_font};
@@ -3962,8 +3963,11 @@ struct EffectsAudio {
     srf: Vec<u8>,
     surface: SurfaceSoundState,
     prang: PrangSoundState,
-    /// The surface and prang slot bases once loaded.
-    banks: Option<(u32, u32)>,
+    wet: WetSoundState,
+    wet_k: i32,
+    wet_surfaces: [i32; 15],
+    /// The surface, prang and wet slot bases once loaded.
+    banks: Option<(u32, u32, u32)>,
     camera_mode: Option<i32>,
 }
 
@@ -3971,6 +3975,8 @@ struct EffectsAudio {
 /// the native allocation order, see [`ENGINE_CHANNEL_BASE`]).
 const PRANG_CHANNEL_BASE: u32 = 9;
 const SURFACE_CHANNEL_BASE: u32 = 15;
+/// The wet/rain channel (`FUN_0048d340`, after the surface bank).
+const WET_CHANNEL: u32 = 19;
 
 impl EffectsAudio {
     fn open(runtime_data: &Path, srf: Option<Vec<u8>>) -> Option<Self> {
@@ -3999,6 +4005,9 @@ impl EffectsAudio {
         Some(Self {
             surface: SurfaceSoundState::new(&tables),
             prang: PrangSoundState::new(t.prang_full_volume),
+            wet: WetSoundState::default(),
+            wet_k: t.wet_volume_k,
+            wet_surfaces: t.wet_surfaces,
             full_volume: t.prang_full_volume,
             prang_names: t.prang_names.clone(),
             tables,
@@ -4009,13 +4018,16 @@ impl EffectsAudio {
     }
 
     /// The prang loader `FUN_00469ac0` (48 waves, five channels at the full
-    /// volume) and the surface loader `FUN_004892b0` (the `.srf` groups,
-    /// four channels at volume 0), in the stage-load order.
+    /// volume), the surface loader `FUN_004892b0` (the `.srf` groups, four
+    /// channels at volume 0) and the wet loader `FUN_0048d340`, in the
+    /// stage-load order. Harness: the weather type is 0 (not the rain type 3),
+    /// so `rain_in` is not loaded.
     fn load(
         &mut self,
         mixer: &mut SoftwareMixer<FileWaveSource>,
         master_percent: i32,
-    ) -> Option<(u32, u32)> {
+        camera_mode: i32,
+    ) -> Option<(u32, u32, u32)> {
         let mut prang_base = None;
         for path in prang_wave_paths(&self.prang_names) {
             let slot = mixer
@@ -4060,7 +4072,33 @@ impl EffectsAudio {
         for n in 0..4 {
             EngineVoices::set_volume(mixer, SURFACE_CHANNEL_BASE + n, 0);
         }
-        Some((surface_base, prang_base?))
+        let wet_bank = load_wet_bank(
+            &mut self.wet,
+            WetLoad {
+                rain_weather: false,
+                wet_surface: bank.wet,
+                camera_mode,
+            },
+        );
+        EngineVoices::set_volume(mixer, WET_CHANNEL, 0);
+        let mut wet_base = 0;
+        for (index, path) in wet_bank.waves.iter().enumerate() {
+            let slot = mixer
+                .load_wave(
+                    &format!("game\\{path}"),
+                    CAR_WAVE_RATE_HZ,
+                    CAR_WAVE_BITS,
+                    false,
+                )
+                .ok()?;
+            if index == 0 {
+                wet_base = slot.ordinal();
+            }
+        }
+        if wet_bank.start_rain {
+            EngineVoices::play(mixer, wet_base, WET_CHANNEL, u32::MAX);
+        }
+        Some((surface_base, prang_base?, wet_base))
     }
 
     /// `FUN_0048b650`.
@@ -4086,9 +4124,9 @@ impl EffectsAudio {
         let Ok(mut mixer) = mixer.lock() else {
             return;
         };
-        let (surface_base, prang_base) = match self.banks {
+        let (surface_base, prang_base, wet_base) = match self.banks {
             Some(banks) => banks,
-            None => match self.load(&mut mixer, master_percent) {
+            None => match self.load(&mut mixer, master_percent, camera_mode) {
                 Some(banks) => *self.banks.insert(banks),
                 None => return,
             },
@@ -4174,6 +4212,28 @@ impl EffectsAudio {
                 upright_404: words.upright_404,
                 out_of_control_680: words.out_of_control_680,
                 contact: words.contact,
+            },
+        );
+        // FUN_0048d4c0 reads the surface words after the surface tick's
+        // rewrite. `ctl +0x164` only feeds the rain branch, which needs
+        // `rain_in` and so never runs in this session.
+        let words = session.surface_sound_words().unwrap_or(words);
+        self.wet.tick(
+            &mut *mixer,
+            wet_base,
+            WET_CHANNEL,
+            &WetTickInput {
+                surfaces: words.surfaces,
+                contact: std::array::from_fn(|wheel| words.contact[wheel]),
+                longitudinal: words.longitudinal,
+                lateral: words.lateral,
+                speed_ec: words.speed_ec,
+                control_164: 0,
+                camera_mode,
+                wet_surfaces: self.wet_surfaces,
+                wet_k: self.wet_k,
+                centre_proximity,
+                master_percent,
             },
         );
     }
