@@ -16,6 +16,9 @@ use cmr_formats::school_rsf::{LineRecord, RSF_RECORDS, SchoolReference};
 use crate::game_rng::GameLcg;
 use crate::legacy_math::{signed_ratio_angle, sqrt_q16};
 
+mod advice;
+pub use advice::{Instructor, advice_path};
+
 /// The scorer's row for a task (`FUN_00472c60`).
 pub const fn score_row(level: u8, task: u8) -> usize {
     (match level {
@@ -62,8 +65,27 @@ pub struct SchoolCar {
     pub handbrake: i32,
     pub throttle: i32,
     pub gear: u8,
-    /// `DAT_00552f68`: an object contact this frame.
+    /// `DAT_00552f68`: an object contact this frame, and `FUN_00443980`
+    /// its object's surface.
     pub object_contact: bool,
+    pub contact_surface: i8,
+    /// Control `+0x308`/`+0x30c` (brake and handbrake demands) and
+    /// `+0x414` (analog throttle).
+    pub brake_demand: i32,
+    pub handbrake_demand: i32,
+    pub analog_throttle: bool,
+    /// Control `+0x42a`: the wheel surfaces.
+    pub surfaces: [i16; 4],
+    /// Car `+0x680`: out of control.
+    pub crashed: bool,
+    /// `FUN_00476030`'s damage total (`DAT_0050e0d8[i]`, `i != 0xc`) and
+    /// the last impact's severity (`DAT_005fbe8c`, from `FUN_0041f630`).
+    pub damage: i32,
+    pub severity: i32,
+    /// `DAT_0057c448 - DAT_0057ae70`: `.cat` nodes left; `FUN_004671f0(0)`:
+    /// five reverse crossings in a row.
+    pub cat_remaining: i32,
+    pub reverse_count_5: bool,
 }
 
 /// The state that outlives a task (`0x4f51c4..0x4f51d8`, only written by
@@ -72,6 +94,8 @@ pub struct SchoolCar {
 pub struct SchoolStatics {
     pub ring: [i32; 5],
     pub lap_latch: i32,
+    /// The instructor's speech words, also never reset by a task.
+    pub instructor: Instructor,
 }
 
 impl Default for SchoolStatics {
@@ -79,6 +103,7 @@ impl Default for SchoolStatics {
         Self {
             ring: [-1; 5],
             lap_latch: 999,
+            instructor: Instructor::default(),
         }
     }
 }
@@ -86,10 +111,9 @@ impl Default for SchoolStatics {
 /// What the task asks of the host this tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchoolCue {
-    /// `FUN_00475d20`: the fourth lap is done ("near end", cat `0xe`).
-    NearEnd,
-    /// `FUN_004753c0`: too many cones ("Objects" wav `77 + 3 + r`).
-    TooManyCones(u8),
+    /// `FUN_00475e90`: play this advice-bank wav ([`advice_path`]) on the
+    /// advice channel.
+    Advice(u8),
 }
 
 /// The control words the finish settle forces (`FUN_004719f0`).
@@ -145,9 +169,11 @@ pub struct SchoolRace {
     clock_running: bool,
     clock_start: i32,
     now: i32,
-    /// `DAT_005ef43c` (task FSM), `DAT_005ef470` (start wait).
+    /// `DAT_005ef43c` (task FSM), `DAT_005ef470` (start wait),
+    /// `DAT_005ef474` (the wait's idle nag armed).
     pub fsm: u8,
     wait: i32,
+    wait_nag_armed: bool,
     /// `DAT_005fc070` (contact frames), `DAT_005fc054` (failed by time or
     /// cones), `DAT_005fbe78` (abandoned).
     pub cones: i32,
@@ -212,6 +238,7 @@ impl SchoolRace {
             now: 0,
             fsm: u8::from(!loop_task && !(level == 0 && task == 0)),
             wait: 0,
+            wait_nag_armed: false,
             cones: 0,
             contact_latch: false,
             failed: false,
@@ -292,6 +319,7 @@ impl SchoolRace {
         id: i32,
         car: &SchoolCar,
         statics: &mut SchoolStatics,
+        rng: &mut GameLcg,
     ) -> Vec<SchoolCue> {
         let mut cues = Vec::new();
         if !self.armed {
@@ -372,7 +400,7 @@ impl SchoolRace {
                     self.uncrossed.fill(true);
                     return cues;
                 }
-                cues.push(SchoolCue::NearEnd);
+                self.near_end_speech(&mut statics.instructor, car, &mut cues);
                 self.laps_done = true;
                 return cues;
             }
@@ -380,7 +408,14 @@ impl SchoolRace {
             self.finishing = true;
         }
         if !self.finishing {
-            self.line_error(self.index);
+            let errors = self.line_error(self.index);
+            if (self.level != 2 || self.task <= 1)
+                && clock
+                && id != first
+                && !(self.level == 0 && self.task == 0)
+            {
+                self.line_advice(errors, &mut statics.instructor, car, rng, &mut cues);
+            }
         }
         cues
     }
@@ -424,8 +459,9 @@ impl SchoolRace {
     }
 
     /// `FUN_004723b0(k)`: the crossing against the reference, into the
-    /// scorer's sums.
-    fn line_error(&mut self, k: i32) {
+    /// scorer's sums; returns `{speed, direction, sliding, distance, brake,
+    /// handbrake, cones}` for the advice.
+    fn line_error(&mut self, k: i32) -> [i32; 7] {
         let k = k.clamp(0, RSF_RECORDS as i32 - 1) as usize;
         let a = self.captures[k];
         let b = self.reference.records.get(k).copied().unwrap_or_default();
@@ -442,13 +478,15 @@ impl SchoolRace {
         if (a.heading < 0x200 && h > 0x600) || (a.heading > 0x600 && h < 0x200) {
             h = 0x800 - h;
         }
-        self.penalties[1] =
-            self.penalties[1].wrapping_add((i32::from(a.heading) - i32::from(h)).abs());
-        self.penalties[4] = self.penalties[4].wrapping_add(a.speed.wrapping_sub(b.speed));
-        let slide = (a.slide as i32).abs() - (b.slide as i32).abs();
+        let direction = i32::from(a.heading) - i32::from(h);
+        self.penalties[1] = self.penalties[1].wrapping_add(direction.abs());
+        let speed = a.speed.wrapping_sub(b.speed);
+        self.penalties[4] = self.penalties[4].wrapping_add(speed);
+        let slide = (a.slide as i32).wrapping_abs() - (b.slide as i32).wrapping_abs();
         self.penalties[2] = self.penalties[2].wrapping_add(slide.abs());
-        let brakes = (a.brake - b.brake).abs() + (a.handbrake - b.handbrake).abs();
-        self.penalties[5] = self.penalties[5].wrapping_add(brakes);
+        let (brake, handbrake) = (a.brake - b.brake, a.handbrake - b.handbrake);
+        self.penalties[5] = self.penalties[5].wrapping_add(brake.abs() + handbrake.abs());
+        [speed, direction, slide, dist, brake, handbrake, position]
     }
 
     /// `FUN_00473430`: disarm the lines and stop the run's time.
@@ -479,79 +517,104 @@ impl SchoolRace {
     }
 
     /// One state-5 tick after Mechanics: the clock, the settle, the task
-    /// FSM. `pause` is `FUN_0043bc60(0)`.
+    /// FSM `FUN_0046e230` with the instructor's speech.
     pub fn tick(
         &mut self,
         car: &SchoolCar,
         flag_551af0: bool,
         rng: &mut GameLcg,
-        speaking: bool,
+        statics: &mut SchoolStatics,
     ) -> Vec<SchoolCue> {
         let mut cues = Vec::new();
-        self.now = self.now.wrapping_add(ticks_per_second(flag_551af0));
+        let step = ticks_per_second(flag_551af0);
+        self.now = self.now.wrapping_add(step);
         if self.finishing && !self.done {
             self.settle(car);
         }
         if self.done {
             return cues;
         }
+        let ins = &mut statics.instructor;
         // `FUN_004752e0` (its reference latch is idempotent).
         let over_time = self.over_time();
-        match self.fsm {
-            0 | 1 => {
-                if self.fsm == 0 {
+        let entry = self.fsm;
+        match entry {
+            0 | 1 | 4 => {
+                if entry == 0 {
+                    // The wait for the throttle, with the idle nag timed in
+                    // its seconds; a timeout nags with `t = 1000`.
                     let limit = match self.level {
                         0 => 0x14_0000,
                         1 => 0xa_0000,
                         _ => 0x2_0000,
                     };
-                    self.wait = self.wait.wrapping_add(ticks_per_second(flag_551af0));
-                    if !self.clock_running && (self.wait > limit || car.throttle != 0) {
-                        self.wait = 0;
-                        self.race_start();
-                        self.fsm = 1;
+                    if !self.wait_nag_armed {
+                        self.idle_nag(ins, 0, true, car, rng, &mut cues);
+                        self.wait_nag_armed = true;
+                    }
+                    self.idle_nag(ins, self.wait >> 16, false, car, rng, &mut cues);
+                    self.wait = self.wait.wrapping_add(step);
+                    if !self.clock_running {
+                        let timed_out = self.wait > limit;
+                        if timed_out {
+                            self.idle_nag(ins, 1000, false, car, rng, &mut cues);
+                            self.idle_nag(ins, 0, true, car, rng, &mut cues);
+                        }
+                        if timed_out || car.throttle != 0 {
+                            self.wait = 0;
+                            self.race_start();
+                            self.wait_nag_armed = false;
+                            self.fsm = 1;
+                        }
                     }
                 }
                 if over_time {
                     self.fsm = 2;
                 }
-                if self.laps_done {
+                if entry != 4 && self.laps_done {
                     self.fsm = 4;
                 }
-                // `FUN_00474c50` latches the contact flag where the advice
-                // runs; `FUN_00475230` counts the latched frames.
+                // `FUN_00474c50` latches the contact flag and speaks;
+                // `FUN_00475230` counts the latched frames.
                 if (self.level != 2 || self.task <= 1) && !self.finishing {
                     self.contact_latch = car.object_contact;
+                    self.speech_frame(ins, car, rng, &mut cues);
                 }
-                if (self.loop_task || (self.level == 0 && self.task == 0)) && self.contact_latch {
-                    self.cones += 1;
-                }
-                let limit = CONE_LIMIT
-                    .get(usize::from(self.level))
-                    .copied()
-                    .unwrap_or(0);
-                if (self.loop_task || (self.level == 0 && self.task == 0)) && self.cones > limit {
-                    // `5fc078 = 0`: the cone speech is due.
-                    self.cones_spoken = false;
-                    self.fsm = 3;
+                let counted = self.loop_task || (self.level == 0 && self.task == 0);
+                if entry != 4 && counted {
+                    if self.contact_latch {
+                        self.cones += 1;
+                    }
+                    let limit = CONE_LIMIT
+                        .get(usize::from(self.level))
+                        .copied()
+                        .unwrap_or(0);
+                    if self.cones > limit {
+                        // `5fc078 = 0`: the cone speech is due.
+                        self.cones_spoken = false;
+                        self.fsm = 3;
+                    }
                 }
             }
             2 => {
                 self.failed = true;
                 self.stop_marker();
                 self.end(rng);
+                // A failed task's end also clears `DAT_005fbef4`.
+                ins.fail_phase2 = false;
             }
             3 => {
                 self.failed = true;
                 if !self.cones_spoken {
+                    self.cones_speech(ins, car, rng, &mut cues);
                     self.cones_spoken = true;
-                    cues.push(SchoolCue::TooManyCones((3 + rng.next_raw() % 3) as u8));
-                } else if !speaking {
+                }
+                if !Self::instructor_speaking(ins, car) {
                     self.stop_marker();
                     self.end(rng);
+                    ins.fail_phase2 = false;
                 }
             }
-            4 if over_time => self.fsm = 2,
             _ => {}
         }
         cues
@@ -864,14 +927,16 @@ mod tests {
     fn run(race: &mut SchoolRace, xs: &[(i32, i32)], statics: &mut SchoolStatics) {
         let mut rng = GameLcg::new(1);
         for &(id, x) in xs {
-            race.cross(id, &at(x, 0x8_0000), statics);
-            race.tick(&at(x, 0x8_0000), false, &mut rng, false);
+            statics.instructor.begin_frame(false);
+            race.cross(id, &at(x, 0x8_0000), statics, &mut rng);
+            race.tick(&at(x, 0x8_0000), false, &mut rng, statics);
         }
         for _ in 0..200 {
             if race.done {
                 break;
             }
-            race.tick(&at(xs.last().unwrap().1, 0), false, &mut rng, false);
+            statics.instructor.begin_frame(false);
+            race.tick(&at(xs.last().unwrap().1, 0), false, &mut rng, statics);
         }
     }
 
@@ -913,10 +978,12 @@ mod tests {
         race.race_start();
         let mut rng = GameLcg::new(1);
         let mut statics = SchoolStatics::default();
-        race.cross(0, &at(0, 0x8_0000), &mut statics);
+        statics.instructor.begin_frame(false);
+        race.cross(0, &at(0, 0x8_0000), &mut statics, &mut rng);
         // 1 s of reference plus 40 s of slack.
         for _ in 0..(44 * 25) {
-            race.tick(&at(0, 0), false, &mut rng, false);
+            statics.instructor.begin_frame(false);
+            race.tick(&at(0, 0), false, &mut rng, &mut statics);
         }
         assert!(race.done);
         assert_eq!(race.fsm, 2);
@@ -931,21 +998,27 @@ mod tests {
         let mut race = SchoolRace::start(1, 0, 3, reference(&lines, 1000), scoring());
         assert!(race.loop_task && !race.hud && race.fsm == 0);
         let mut rng = GameLcg::new(1);
-        race.tick(&at(0, 0), false, &mut rng, false);
+        let mut statics = SchoolStatics::default();
+        statics.instructor.begin_frame(false);
+        race.tick(&at(0, 0), false, &mut rng, &mut statics);
         assert_eq!(race.fsm, 0, "no throttle yet");
         let mut go = at(0, 0);
         go.throttle = 0xfc00;
-        race.tick(&go, false, &mut rng, false);
+        statics.instructor.begin_frame(false);
+        race.tick(&go, false, &mut rng, &mut statics);
         assert_eq!(race.fsm, 1);
         let mut hit = go;
         hit.object_contact = true;
         for _ in 0..9 {
-            race.tick(&hit, false, &mut rng, false);
+            statics.instructor.begin_frame(false);
+            race.tick(&hit, false, &mut rng, &mut statics);
         }
         assert_eq!(race.fsm, 3, "more than 8 contact frames");
-        let cues = race.tick(&hit, false, &mut rng, false);
-        assert!(matches!(cues[..], [SchoolCue::TooManyCones(3..=5)]));
-        race.tick(&hit, false, &mut rng, false);
+        statics.instructor.begin_frame(false);
+        let cues = race.tick(&hit, false, &mut rng, &mut statics);
+        assert!(matches!(cues[..], [SchoolCue::Advice(80..=82)]));
+        statics.instructor.begin_frame(false);
+        race.tick(&hit, false, &mut rng, &mut statics);
         assert!(race.done, "the speech is over");
     }
 

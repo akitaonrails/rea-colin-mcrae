@@ -1101,7 +1101,7 @@ impl<'a> GameplaySession<'a> {
         };
         if driving_sample.is_some() {
             self.wet_tick(&controls);
-            self.school_after_drive(&controls);
+            self.school_after_drive(&controls, progress);
         }
         let script = self.script;
         let results = &mut self.results;
@@ -1203,7 +1203,7 @@ impl<'a> GameplaySession<'a> {
         };
         if driving_sample.is_some() {
             self.wet_tick(&controls);
-            self.school_after_drive(&controls);
+            self.school_after_drive(&controls, progress);
         }
         let script = self.script;
         let results = &mut self.results;
@@ -1308,6 +1308,10 @@ impl<'a> GameplaySession<'a> {
 
     /// `FUN_004716b0`: the school task the stage load starts.
     pub fn start_school_task(&mut self, race: crate::school_race::SchoolRace) {
+        // `FUN_00473540`'s tail: the advice words rearmed.
+        self.school_statics
+            .instructor
+            .start_task(race.level, race.task);
         self.school = Some(SchoolTask {
             race,
             intro: 0,
@@ -1360,11 +1364,17 @@ impl<'a> GameplaySession<'a> {
         self.school.as_mut().and_then(|task| task.marks_out.take())
     }
 
-    /// The car words the school reads.
-    fn school_car(&self, contact: bool) -> crate::school_race::SchoolCar {
+    /// The car words the school reads. No moving objects (cones) are
+    /// reconstructed, so there is never an object contact; the damage
+    /// table `DAT_0050e0d8` (crash damage) is not reconstructed, so its
+    /// total and the impact severity stay 0.
+    fn school_car(&self, progress: Option<&StageProgress>) -> crate::school_race::SchoolCar {
         let car = self.race.car();
         let four = &car.four_wheel;
         let raw = |v: Vec3| [v.x.raw(), v.y.raw(), v.z.raw()];
+        let surfaces = car.ground.map_or([0; 4], |ground| {
+            std::array::from_fn(|w| ground.lanes.type_words[w] as i16)
+        });
         crate::school_race::SchoolCar {
             position: raw(car.position),
             velocity: raw(car.velocity),
@@ -1376,7 +1386,18 @@ impl<'a> GameplaySession<'a> {
             handbrake: four.pedals.handbrake_torque_2f4,
             throttle: 0,
             gear: four.gearbox.gear_43a as u8,
-            object_contact: contact,
+            object_contact: false,
+            contact_surface: 0,
+            brake_demand: 0,
+            handbrake_demand: 0,
+            analog_throttle: false,
+            surfaces,
+            crashed: car.collision.response_state_680,
+            damage: 0,
+            severity: 0,
+            cat_remaining: progress
+                .map_or(i32::MAX, |p| p.nodes().len() as i32 - p.cursor() as i32),
+            reverse_count_5: progress.is_some_and(|p| p.reverse_crossings() == 5),
         }
     }
 
@@ -1389,7 +1410,7 @@ impl<'a> GameplaySession<'a> {
             triggers.config.school = school;
             triggers.config.school_lines_armed = armed;
         }
-        let car = self.school_car(false);
+        let car = self.school_car(None);
         if let Some(settle) = self
             .school
             .as_ref()
@@ -1407,9 +1428,12 @@ impl<'a> GameplaySession<'a> {
     }
 
     /// After a state-5 drive: the crossings the walk saw, then the task.
-    fn school_after_drive(&mut self, controls: &Controls) {
-        let mut car = self.school_car(false);
+    fn school_after_drive(&mut self, controls: &Controls, progress: &StageProgress) {
+        let mut car = self.school_car(Some(progress));
         car.throttle = controls.raw_pedals.throttle_304;
+        car.brake_demand = controls.raw_pedals.brake_308;
+        car.handbrake_demand = i32::from(controls.handbrake);
+        car.analog_throttle = controls.raw_pedals.throttle_analog_414;
         let lines: Vec<i32> = self
             .last_trigger_events
             .iter()
@@ -1422,11 +1446,16 @@ impl<'a> GameplaySession<'a> {
             return;
         };
         let was_done = task.race.done;
+        self.school_statics.instructor.begin_frame(task.speaking);
         for line in lines {
-            let cues = task.race.cross(line, &car, &mut self.school_statics);
+            let cues = task
+                .race
+                .cross(line, &car, &mut self.school_statics, &mut self.rng);
             task.cues.extend(cues.into_iter().map(SchoolHostCue::Task));
         }
-        let cues = task.race.tick(&car, false, &mut self.rng, task.speaking);
+        let cues = task
+            .race
+            .tick(&car, false, &mut self.rng, &mut self.school_statics);
         task.cues.extend(cues.into_iter().map(SchoolHostCue::Task));
         if task.race.done && !was_done {
             task.marks_out = Some(task.race.marks());
@@ -2227,7 +2256,7 @@ mod tests {
 
     #[test]
     fn a_school_task_runs_its_intro_task_and_exit() {
-        use crate::school_race::{SchoolCue, SchoolRace, SchoolScoring};
+        use crate::school_race::{SchoolCue, SchoolRace, SchoolScoring, advice_path};
         let script = InRaceScript {
             quit_requested: false,
             ..InRaceScript::school_harness()
@@ -2271,11 +2300,10 @@ mod tests {
             seen.iter()
                 .any(|c| matches!(c, SchoolHostCue::ExitSpeech(_)))
         );
-        assert!(
-            !seen
-                .iter()
-                .any(|c| matches!(c, SchoolHostCue::Task(SchoolCue::NearEnd)))
-        );
+        assert!(seen.iter().all(|c| match c {
+            SchoolHostCue::Task(SchoolCue::Advice(i)) => advice_path(*i).is_some(),
+            _ => true,
+        }));
         assert_eq!(
             states,
             [7, 5, 9, 0xb, 2],

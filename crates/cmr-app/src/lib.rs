@@ -4346,7 +4346,12 @@ fn play_school_cue(
             format!("game\\rallschl\\sounds\\{dir}\\intro{k}\\{n}.wav")
         }
         SchoolHostCue::ExitSpeech(i) => format!("game\\rallschl\\sounds\\{dir}\\exit\\{i}.wav"),
-        SchoolHostCue::Task(_) => return,
+        SchoolHostCue::Task(cmr_core::school_race::SchoolCue::Advice(index)) => {
+            let Some(file) = cmr_core::school_race::advice_path(index) else {
+                return;
+            };
+            format!("game\\rallschl\\sounds\\{dir}\\{file}")
+        }
     };
     let slot = mixer
         .lock()
@@ -12776,6 +12781,15 @@ mod tests {
                 assert!(run.time_cs > 0);
                 assert!(lines > 0 && max_line < lines);
             }
+        }
+        // Every advice wav the instructor can pick resolves in the user's
+        // English sounds.
+        use cmr_core::audio_render::WaveSource;
+        let source = cmr_core::audio_render::FileWaveSource::new(&root);
+        for index in 0..91 {
+            let file = cmr_core::school_race::advice_path(index).unwrap();
+            let path = format!("game\\rallschl\\sounds\\english\\{file}");
+            assert!(source.fetch(&path).is_some(), "{path}");
         }
     }
 

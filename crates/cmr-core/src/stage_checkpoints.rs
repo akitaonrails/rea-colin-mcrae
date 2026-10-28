@@ -99,6 +99,9 @@ pub struct StageProgress<'a> {
     split_times: Vec<i32>,
     finished: bool,
     finish_centiseconds: Option<i32>,
+    /// `DAT_0057b008[car]`: regressions since the last forward crossing,
+    /// held at 5.
+    reverse_crossings: u8,
 }
 
 impl<'a> StageProgress<'a> {
@@ -117,7 +120,15 @@ impl<'a> StageProgress<'a> {
             split_times: Vec::new(),
             finished: false,
             finish_centiseconds: None,
+            reverse_crossings: 0,
         }
+    }
+
+    /// `DAT_0057b008[car]`: regressions in a row, at most 5
+    /// (`FUN_004671f0` tests for 5).
+    #[must_use]
+    pub fn reverse_crossings(&self) -> u8 {
+        self.reverse_crossings
     }
 
     /// The current node cursor (`DAT_0057ae70[car]`).
@@ -183,6 +194,11 @@ impl<'a> StageProgress<'a> {
 
         // Regression: the car has moved back in front of the previous node.
         if self.cursor > 0 && horizontal_dot(&self.nodes[self.cursor - 1], car_pos).raw() > 0 {
+            // At 5 the binary sets `DAT_0057b0a8 = 0xf` instead (not
+            // modelled: its consumer is not recovered).
+            if self.reverse_crossings != 5 {
+                self.reverse_crossings += 1;
+            }
             self.cursor -= 1;
             return StageEvent::Regressed { to: self.cursor };
         }
@@ -197,6 +213,7 @@ impl<'a> StageProgress<'a> {
                 self.split_times.push(clock_centiseconds);
             }
             self.cursor += 1;
+            self.reverse_crossings = 0;
 
             if self.splits_passed >= FINISH_GATE_COUNT || self.cursor >= self.nodes.len() {
                 self.finished = true;
@@ -410,6 +427,22 @@ mod tests {
         assert_eq!(p.update(at(2, 0), 40), StageEvent::Advanced { node: 0 });
         assert_eq!(p.splits_passed(), 1);
         assert_eq!(p.split_times(), &[30]);
+    }
+
+    #[test]
+    fn regressions_count_up_to_five_and_a_forward_crossing_clears_them() {
+        let nodes = straight_line([0, 0, 0]);
+        let mut p = StageProgress::new(&nodes, 0);
+        p.update(at(2, 0), 0);
+        p.update(at(3, 0), 0);
+        assert_eq!(p.cursor(), 2);
+        for _ in 0..7 {
+            p.set_cursor(2);
+            p.update(at(1, 0), 0);
+        }
+        assert_eq!(p.reverse_crossings(), 5, "held at 5");
+        p.update(at(3, 0), 0);
+        assert_eq!(p.reverse_crossings(), 0);
     }
 
     #[test]
