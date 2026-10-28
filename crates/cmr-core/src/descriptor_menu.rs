@@ -5,9 +5,9 @@
 //! `FUN_004aee60(menu, bits)` applies one input step and returns the menu to
 //! switch to. This module reconstructs the subset the pause menus reach:
 //! vertical lists with wrap, the back/submenu/value/action item kinds, the
-//! enter/commit/leave callbacks and the four sound-table slots. The linked
-//! neighbour menus (`+0x20..+0x3c`), the type-6 value kind and the item
-//! out-pointers are all zero in every pause menu and are not modelled.
+//! enter/commit/leave callbacks, the four sound-table slots, and the linked
+//! neighbour menus (`+0x20..+0x3c`, which the service screen chains). The
+//! type-6 value kind and the item out-pointers are not modelled.
 //! A description of disassembly, not original source. Evidence:
 //! `rea.official-eu.pause-menu`.
 //!
@@ -157,6 +157,20 @@ pub struct Menu {
     pub sounds: Option<u32>,
     /// `+0x494`: the last adjusted value.
     pub last_value: i32,
+    /// `+0x20..+0x3c` (`FUN_004aecb0`): the neighbours past each edge.
+    pub links: MenuLinks,
+}
+
+/// A menu's neighbour links: the menu and the key of the item to select
+/// there. Up/down are followed by a move past the first/last item; the
+/// cross axis (left/right on a vertical list, up/down on a horizontal one)
+/// by an adjust press, before any value change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MenuLinks {
+    pub previous: Option<(MenuId, i32)>,
+    pub next: Option<(MenuId, i32)>,
+    pub decrement: Option<(MenuId, i32)>,
+    pub increment: Option<(MenuId, i32)>,
 }
 
 impl Menu {
@@ -178,6 +192,7 @@ impl Menu {
             on_leave: None,
             sounds,
             last_value: 0,
+            links: MenuLinks::default(),
         }
     }
 
@@ -322,6 +337,18 @@ impl MenuSet {
         (self.pending.take(), events)
     }
 
+    /// `FUN_004aea80` on a link target: the pending menu becomes `target`
+    /// with the keyed item selected, else its last item (`up`) or first.
+    fn link_to(&mut self, target: MenuId, key: i32, up: bool) {
+        let menu = &mut self.menus[target.0];
+        menu.selected = menu.find(key).unwrap_or(if up {
+            menu.items.len().saturating_sub(1)
+        } else {
+            0
+        });
+        self.pending = Some(target);
+    }
+
     /// The input part of the step; returns the gated back input.
     fn input_step(&mut self, id: MenuId, input: u32, events: &mut Vec<MenuEvent>) -> bool {
         let menu = &mut self.menus[id.0];
@@ -351,7 +378,56 @@ impl MenuSet {
             }
         }
 
-        if count > 0 && (previous || next) {
+        // A move past the first/last item follows the link: the linked menu
+        // selects the keyed item, else its last (up) or first (down).
+        let edge_link = if previous && menu.selected == 0 {
+            menu.links.previous.map(|link| (link, true))
+        } else if next && count > 0 && menu.selected + 1 == count {
+            menu.links.next.map(|link| (link, false))
+        } else {
+            None
+        };
+        if let Some(((target, key), up)) = edge_link {
+            let sounds = menu.sounds;
+            let selected = menu.selected;
+            self.link_to(target, key, up);
+            if let Some(table) = sounds {
+                events.push(MenuEvent::Sound {
+                    menu: id,
+                    table,
+                    sound: MenuSound::Move,
+                    item: selected,
+                    ok: true,
+                });
+            }
+        }
+        let edge_linked = edge_link.is_some();
+        let menu = &mut self.menus[id.0];
+        let cross_link = if left {
+            menu.links.decrement.map(|link| (link, true))
+        } else if right {
+            menu.links.increment.map(|link| (link, false))
+        } else {
+            None
+        };
+        if let Some(((target, key), up)) = cross_link {
+            let sounds = menu.sounds;
+            let selected = menu.selected;
+            self.link_to(target, key, up);
+            if let Some(table) = sounds {
+                events.push(MenuEvent::Sound {
+                    menu: id,
+                    table,
+                    sound: MenuSound::Move,
+                    item: selected,
+                    ok: true,
+                });
+            }
+        }
+        let cross_linked = cross_link.is_some();
+        let menu = &mut self.menus[id.0];
+
+        if count > 0 && (previous || next) && !edge_linked {
             let at_edge = if previous {
                 menu.selected == 0
             } else {
@@ -398,7 +474,7 @@ impl MenuSet {
         let selected = menu.selected;
         let item = &mut menu.items[selected];
         let confirm_effective = confirm && item.enabled;
-        if item.kind == ItemKind::Value {
+        if item.kind == ItemKind::Value && !cross_linked {
             // `0x4af1d0`: a confirm on an item with `+0x2f` increments as
             // Right does, except that an item with an activate callback only
             // cues it.
@@ -467,6 +543,43 @@ impl MenuSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn links_jump_past_the_edges_and_across() {
+        let mut set = MenuSet::default();
+        let a = set.add(Menu::new(-1, None, Some(1)));
+        let b = set.add(Menu::new(-1, None, Some(1)));
+        for menu in [a, b] {
+            for key in 1..=3 {
+                let mut item = MenuItem::new(ItemKind::Action, 0, 0);
+                item.key = key;
+                set.menu_mut(menu).items.push(item);
+            }
+        }
+        set.menu_mut(a).links = MenuLinks {
+            previous: Some((b, 2)),
+            next: Some((b, 0)),
+            decrement: Some((b, 3)),
+            increment: None,
+        };
+        // Up from the first item: the keyed item.
+        let (next, events) = set.step(a, bits::UP);
+        assert_eq!(next, Some(b));
+        assert_eq!(set.menu(b).selected, 1);
+        assert!(matches!(events[0], MenuEvent::Sound { ok: true, .. }));
+        // Down from the last: key 0 is absent, so the first item.
+        set.menu_mut(a).selected = 2;
+        set.menu_mut(b).selected = 2;
+        assert_eq!(set.step(a, bits::DOWN).0, Some(b));
+        assert_eq!(set.menu(b).selected, 0);
+        // Left on a vertical list follows the cross link.
+        set.menu_mut(a).selected = 1;
+        assert_eq!(set.step(a, bits::LEFT).0, Some(b));
+        assert_eq!(set.menu(b).selected, 2);
+        // A move inside the list stays.
+        assert_eq!(set.step(a, bits::DOWN).0, None);
+        assert_eq!(set.menu(a).selected, 2);
+    }
 
     fn value_item(text: i32, key: i32, count: i32, value: i32) -> MenuItem {
         let mut item = MenuItem::new(ItemKind::Value, text, 0);
