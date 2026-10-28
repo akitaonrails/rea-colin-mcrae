@@ -124,7 +124,7 @@ use cmr_core::vehicle_dynamics::{
     AngularMomentumStepInput, AngularOrientationInput, ControlAxisFlags, GeometricPostprocessLane,
     SOLVER_GLOBAL_CONSTANTS, SurfaceCoefficientIndexError, integrate_orientation,
 };
-use cmr_core::weather::{StageWeatherEffects, particles};
+use cmr_core::weather::StageWeatherEffects;
 use cmr_core::wet_sound::{WetLoad, WetSoundState, WetTickInput, load_wet_bank};
 use cmr_formats::bitmap::{BitmapError, BitmapLimits, IndexedBitmap, parse_indexed_bitmap};
 use cmr_formats::c3d::{C3dError, C3dFile, C3dLimits, parse_c3d};
@@ -5345,23 +5345,6 @@ impl SessionSurfaceInputs {
     pub fn stage_weather_effects(&self) -> Option<StageWeatherEffects> {
         self.stage_effect_enables()
             .map(|counters| StageWeatherEffects::from_counters(&counters))
-    }
-
-    #[must_use]
-    pub fn stage_particle_effect(&self, type_byte: u8) -> Option<particles::ParticleEffect> {
-        self.stage_weather_effects()
-            .and_then(|effects| particles::gated_particle_effect(type_byte, effects))
-    }
-
-    #[must_use]
-    pub fn stage_spawn_particle<'a>(
-        &self,
-        pools: &'a mut particles::ParticlePools,
-        pool: usize,
-        input: particles::ParticleSpawn,
-    ) -> Option<(bool, &'a particles::ParticleRecord)> {
-        self.stage_particle_effect(input.type_byte)?;
-        pools.spawn(pool, input)
     }
 }
 
@@ -11176,34 +11159,12 @@ mod tests {
         );
         let weather = inputs.stage_weather_effects().unwrap();
         assert!(weather.splash && weather.dust && weather.snow);
-        assert_eq!(
-            inputs.stage_particle_effect(0x01),
-            Some(particles::ParticleEffect::Dust)
-        );
-        let spawn = particles::ParticleSpawn {
-            position: [1, 2, 3],
-            vector_24: [4, 5, 6],
-            word_30: 7,
-            word_34: 8,
-            word_46: 9,
-            type_byte: 1,
-            tuning: [10, 11],
-            random: 0x090603,
-            night: false,
-            global_flag: true,
-        };
-        let mut pools = particles::ParticlePools::default();
-        let (_, record) = inputs.stage_spawn_particle(&mut pools, 0, spawn).unwrap();
-        assert_eq!(record.position, [1, 2, 3]);
-        assert_eq!(record.flags, 3);
         std::fs::write(media.join("AU1.srf"), [120]).unwrap();
         let inputs =
             SessionSurfaceInputs::open_stage(&media, &temp.0, "AU1", DecodeLimits::default())
                 .unwrap();
         assert_eq!(inputs.stage_effect_enables(), None);
         assert_eq!(inputs.stage_weather_effects(), None);
-        assert_eq!(inputs.stage_particle_effect(0x01), None);
-        assert!(inputs.stage_spawn_particle(&mut pools, 0, spawn).is_none());
         assert!(matches!(
             SessionSurfaceInputs::open_stage(&media, &temp.0, "MISSING", DecodeLimits::default()),
             Err(SessionSurfaceInputsError::MissingStageSurfaceData)
