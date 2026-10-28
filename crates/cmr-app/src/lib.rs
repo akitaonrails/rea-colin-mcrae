@@ -5450,6 +5450,73 @@ impl SessionCompiledPose {
     }
 }
 
+/// The current setup screen's frame (`FUN_004c1bc0`), when a setup screen is
+/// the front end's current menu.
+fn setup_screen_commands(
+    root: &RootInteraction,
+    static_tables: Option<&cmr_assets::StaticTablesStore>,
+    state: &mut cmr_core::frontend_screen_frame::ScreenFrameState,
+    text: &cmr_core::localization::IndexedTextTable,
+    fonts: &cmr_core::font_raster::UploadedFontPool,
+) -> Option<Vec<cmr_core::frontend_screen_frame::ScreenCommand>> {
+    use cmr_core::frontend_setup::SetupKind;
+    let screen = root.state().active_screen();
+    let kind = [
+        (
+            cmr_core::frontend::CHAMPIONSHIP_SETUP_SCREEN_ID,
+            SetupKind::Championship,
+        ),
+        (cmr_core::frontend::RALLY_SCREEN_ID, SetupKind::Rally),
+        (
+            cmr_core::frontend::TIME_TRIAL_SCREEN_ID,
+            SetupKind::TimeTrial,
+        ),
+    ]
+    .into_iter()
+    .find(|(id, _)| *id == screen)?
+    .1;
+    let screens = root.screens();
+    let menu = screens.menu(screen)?;
+    let tables = static_tables.map(cmr_assets::StaticTablesStore::tables);
+    let empty: &[Vec<u8>] = &[];
+    let arrows = tables.and_then(|tables| {
+        Some((
+            tables.string("frontend_arrow_left")?,
+            tables.string("frontend_arrow_right")?,
+        ))
+    });
+    let input = cmr_core::frontend_screen_frame::SetupDrawInput {
+        kind,
+        menu,
+        cars: &screens.setup(kind).cars,
+        channels: screens.channels(),
+        item_flags: screens.layout(kind).item_flags as u8,
+        camera: root.camera(),
+        extent: ROOT_EXTENT,
+        data: cmr_core::frontend_screen_frame::SetupDrawData {
+            car_names: tables.and_then(|t| t.strings("car_names")).unwrap_or(empty),
+            country_table: tables
+                .and_then(|t| t.block("frontend_country_table"))
+                .unwrap_or(&[]),
+            arrows,
+            oscillation: tables
+                .and_then(|t| t.block("frontend_arrow_oscillation"))
+                .unwrap_or(&[]),
+        },
+    };
+    let lookup = |id: i32| {
+        usize::try_from(id)
+            .map(|id| text.lookup(id).to_vec())
+            .unwrap_or_default()
+    };
+    Some(cmr_core::frontend_screen_frame::plan_setup_frame(
+        &input,
+        state,
+        &lookup,
+        &|style| fonts.font(style),
+    ))
+}
+
 /// The reviewed static tables of the user's executable, when extracted.
 fn open_static_tables(runtime_data: &Path) -> Option<cmr_assets::StaticTablesStore> {
     let reviewed =
@@ -6247,6 +6314,15 @@ pub fn run_windowed_game_session(
     if let Some(layouts) = static_tables.as_ref().and_then(setup_layouts) {
         root_interaction = root_interaction.with_setup_layouts(layouts);
     }
+    if let Some(block) = static_tables.as_ref().and_then(|store| {
+        store
+            .tables()
+            .block("frontend_camera_targets_and_records")
+            .and_then(cmr_core::frontend_camera::CameraBlock::parse)
+    }) {
+        root_interaction = root_interaction.with_camera_block(block);
+    }
+    let mut screen_state = cmr_core::frontend_screen_frame::ScreenFrameState::default();
     let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
     let mut damage_owner = NoStaticDamageOwner;
@@ -6345,6 +6421,16 @@ pub fn run_windowed_game_session(
                             root.render(render_input)
                                 .ok()
                                 .and_then(|_| root.backend().presented_frame().cloned())
+                        } else if let Some(commands) = setup_screen_commands(
+                            &root_interaction,
+                            static_tables.as_ref(),
+                            &mut screen_state,
+                            root.text(),
+                            root.fonts(),
+                        ) {
+                            root.render_screen(&commands)
+                                .ok()
+                                .and_then(|()| root.backend().presented_frame().cloned())
                         } else {
                             None
                         };
@@ -9799,5 +9885,115 @@ mod tests {
                 director.tick(&mut event, DirectorInput::default());
             }
         }
+    }
+
+    /// Drives the front end into the championship and rally setups and writes
+    /// their frames under `.work/frames-setup`.
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data; writes frames under .work"]
+    fn imported_setup_screen_frames() {
+        let root_dir = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/frames-setup");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let reviewed = ReviewedProfile::from_json(REVIEWED_PROFILE).unwrap();
+        let (store, startup) = open_root_session_inputs(&root_dir, &reviewed).unwrap();
+        let tables = open_static_tables(&root_dir).expect("static tables");
+        let mut config = FrontEndConfig::new("", 0);
+        let request = SoftwareRootMenuSessionRequest::official_eu_initial_software_default_config(
+            Language::English,
+            VisualVariant::Normal,
+        );
+        with_software_root_menu_session(&store, startup, request, |root| {
+            let mut interaction =
+                RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0)
+                    .unwrap()
+                    .with_setup_layouts(setup_layouts(&tables).unwrap())
+                    .with_camera_block(
+                        cmr_core::frontend_camera::CameraBlock::parse(
+                            tables
+                                .tables()
+                                .block("frontend_camera_targets_and_records")
+                                .unwrap(),
+                        )
+                        .unwrap(),
+                    );
+            let mut state = cmr_core::frontend_screen_frame::ScreenFrameState::default();
+            let mut now = 0;
+            let mut tick = |interaction: &mut RootInteraction,
+                            input: cmr_core::frontend::FrontendInput,
+                            held: Option<u8>,
+                            config: &mut FrontEndConfig| {
+                now += 20;
+                interaction.tick_for_game_session(
+                    input,
+                    cmr_core::root_menu_interactive::FrontendKeys { held, pad: 0 },
+                    now,
+                    true,
+                    &mut config.image,
+                )
+            };
+            let write = |name: &str, frame: &SoftwarePresentedFrame| {
+                let rgba = frame.expand_rgba8().unwrap();
+                let extent = rgba.extent();
+                let mut ppm = format!("P6\n{} {}\n255\n", extent.width, extent.height).into_bytes();
+                let (pixels, _) = rgba.pixels().as_chunks::<4>();
+                for pixel in pixels {
+                    ppm.extend_from_slice(&pixel[..3]);
+                }
+                std::fs::write(out_dir.join(format!("{name}.ppm")), ppm).unwrap();
+            };
+            let confirm = cmr_core::frontend::FrontendInput {
+                confirm: true,
+                ..Default::default()
+            };
+            let next = cmr_core::frontend::FrontendInput {
+                next: true,
+                ..Default::default()
+            };
+            for (name, presses) in [
+                ("championship", vec![confirm]),
+                ("rally", vec![next, confirm]),
+            ] {
+                while interaction.state().phase() != cmr_core::frontend::FrontendPhase::Interactive
+                    || interaction.state().active_screen() != cmr_core::frontend::ROOT_SCREEN_ID
+                {
+                    let _ = tick(&mut interaction, Default::default(), None, &mut config);
+                    // Leave a setup with Escape when one is up.
+                    if interaction.state().active_screen() != cmr_core::frontend::ROOT_SCREEN_ID
+                        && interaction.screens().slides_idle()
+                    {
+                        let _ = tick(
+                            &mut interaction,
+                            Default::default(),
+                            Some(0x1b),
+                            &mut config,
+                        );
+                        let _ = tick(&mut interaction, Default::default(), None, &mut config);
+                    }
+                }
+                for press in presses {
+                    let _ = tick(&mut interaction, press, None, &mut config);
+                }
+                for frame in 0..40 {
+                    let _ = tick(&mut interaction, Default::default(), None, &mut config);
+                    if let Some(commands) = setup_screen_commands(
+                        &interaction,
+                        Some(&tables),
+                        &mut state,
+                        root.text(),
+                        root.fonts(),
+                    ) {
+                        root.render_screen(&commands).unwrap();
+                        if frame % 8 == 7 || frame == 39 {
+                            let presented = root.backend().presented_frame().cloned().unwrap();
+                            write(&format!("{name}-{frame:02}"), &presented);
+                        }
+                    }
+                }
+            }
+        })
+        .unwrap();
     }
 }

@@ -329,6 +329,44 @@ impl SoftwareRootMenuSession<'_, '_, '_, '_> {
         .map_err(|source| SoftwareRootMenuRenderError::Frame(Box::new(source)))
     }
 
+    /// Draw one front-end sub-screen frame (`FUN_004c1bc0` with a setup
+    /// menu current) from its planned commands, with this session's fonts,
+    /// backdrop and selection bitmaps and palette state.
+    pub fn render_screen(
+        &mut self,
+        commands: &[cmr_core::frontend_screen_frame::ScreenCommand],
+    ) -> Result<(), String> {
+        cmr_core::frontend_screen_frame::execute_screen_frame(
+            commands,
+            self.fonts,
+            self.bitmaps,
+            RootFramePaletteResources {
+                bits_per_pixel: self.target.mode.bits_per_pixel,
+                arena: self.palette_arena,
+                state: self.palette_state,
+                renderer_cache: self.renderer_palette_cache,
+                global_cache: self.global_palette_cache,
+            },
+            self.sources,
+            self.target.back,
+            self.target.mode.extent,
+            self.text_layout_limits,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    /// The fonts the session uploaded.
+    #[must_use]
+    pub fn fonts(&self) -> &cmr_core::font_raster::UploadedFontPool {
+        self.fonts
+    }
+
+    /// The front-end text table.
+    #[must_use]
+    pub fn text(&self) -> &cmr_core::localization::IndexedTextTable {
+        self.text
+    }
+
     #[must_use]
     pub fn backend(&self) -> &SoftwareIndexedBackend {
         self.sources.backend()

@@ -25,6 +25,7 @@ use crate::{
         InvalidRootSelection, RACE_SENTINEL_SCREEN_ID, RALLY_SCHOOL_SENTINEL_SCREEN_ID,
         ROOT_SCREEN_ID, ScreenId, TransitionResult,
     },
+    frontend_camera::{Camera, CameraBlock},
     frontend_flow::{FrontendScreens, ScreenEffect, SetupLayout},
     frontend_keys::{KeyRepeat, menu_bits},
     frontend_name_entry::NameKey,
@@ -93,12 +94,12 @@ impl CameraTransition {
 
     /// `FUN_0044f600`: 1 while the ease runs, the hand-off code from its
     /// sixth step, 0 once it has ended.
-    fn step(&mut self) -> u32 {
+    fn step(&mut self, camera: &mut Camera) -> u32 {
         if self.tween.is_finished() {
             self.latch = 0;
             return 0;
         }
-        self.tween.evaluate_and_advance();
+        camera.place(self.tween.evaluate_and_advance());
         self.steps += 1;
         if self.steps == (CAMERA_STEPS / 2) as u32 {
             self.latch = self.code;
@@ -114,6 +115,9 @@ pub struct RootInteraction {
     viewport_extent: DisplayExtent,
     screens: FrontendScreens,
     camera: CameraTransition,
+    /// `DAT_004f1300/4`.
+    position: Camera,
+    targets: Option<CameraBlock>,
     repeat: KeyRepeat,
 }
 
@@ -133,14 +137,37 @@ impl RootInteraction {
             viewport_extent,
             screens: FrontendScreens::new(None),
             camera: CameraTransition::start(ROOT_SCREEN_ID),
+            position: Camera::at(
+                crate::root_menu_visual::ROOT_INITIAL_HORIZONTAL_TRANSFORM_Q16,
+                crate::root_menu_visual::ROOT_INITIAL_VERTICAL_TRANSFORM_Q16,
+            ),
+            targets: None,
             repeat: KeyRepeat::default(),
         })
+    }
+
+    /// Use the camera targets and the row arc of the user's executable
+    /// (block `0x507a78`); the boot camera is the root's target.
+    #[must_use]
+    pub fn with_camera_block(mut self, block: CameraBlock) -> Self {
+        if let Some((x, y)) = block.target(ROOT_SCREEN_ID) {
+            self.position = Camera::at(x, y);
+        }
+        self.screens.set_geometry(block.arc(), self.viewport_extent);
+        self.targets = Some(block);
+        self
+    }
+
+    /// The camera position `DAT_004f1300/4`.
+    #[must_use]
+    pub const fn camera(&self) -> Camera {
+        self.position
     }
 
     /// Use the setups' layout descriptors from the user's executable.
     #[must_use]
     pub fn with_setup_layouts(mut self, layouts: [SetupLayout; 3]) -> Self {
-        self.screens = FrontendScreens::new(Some(layouts));
+        self.screens.set_layouts(layouts);
         self
     }
 
@@ -234,6 +261,8 @@ impl RootInteraction {
             match *effect {
                 FrontendEffect::BeginTransition { to, .. } => {
                     self.camera = CameraTransition::start(to);
+                    self.position
+                        .aim(self.targets.as_ref().and_then(|block| block.target(to)));
                 }
                 FrontendEffect::Activate(screen) if FrontendScreens::handles(screen) => {
                     if let Some(record) = record.as_deref_mut() {
@@ -258,7 +287,7 @@ impl RootInteraction {
         match self.state.phase() {
             FrontendPhase::AdvanceToPending => {
                 let target = self.state.pending_screen();
-                match self.camera.step() {
+                match self.camera.step(&mut self.position) {
                     3 => TransitionResult::StartRace,
                     4 => TransitionResult::StartRallySchool,
                     0 if target.is_some_and(|screen| is_reconstructed(screen, with_record)) => {
@@ -268,7 +297,7 @@ impl RootInteraction {
                 }
             }
             FrontendPhase::AdvanceToInteractive => {
-                self.camera.step();
+                self.camera.step(&mut self.position);
                 TransitionResult::Complete
             }
             FrontendPhase::Interactive | FrontendPhase::BeginTransition => {
@@ -277,17 +306,34 @@ impl RootInteraction {
         }
     }
 
+    /// The root is drawn while it is the current menu: interactive, and
+    /// while the camera leaves it (its chrome is gated on the phase).
     fn current_render_input(&self) -> Option<RootRenderInput> {
+        let phase = self.state.phase();
         if self.state.frontend_active()
-            && self.state.phase() == FrontendPhase::Interactive
             && self.state.active_screen() == ROOT_SCREEN_ID
+            && matches!(
+                phase,
+                FrontendPhase::Interactive
+                    | FrontendPhase::BeginTransition
+                    | FrontendPhase::AdvanceToPending
+            )
+            && (phase == FrontendPhase::Interactive
+                || self
+                    .state
+                    .pending_screen()
+                    .is_some_and(|pending| pending != ROOT_SCREEN_ID))
         {
-            Some(steady_root_render_input(
+            let mut input = steady_root_render_input(
                 self.state.root_selection(),
                 self.language,
                 self.viewport_extent,
                 false,
-            ))
+            );
+            input.phase = phase;
+            input.horizontal_transform_q16 = self.position.x;
+            input.vertical_transform_q16 = self.position.y;
+            Some(input)
         } else {
             None
         }
@@ -439,7 +485,11 @@ mod tests {
             now += 1;
             let tick = driver.tick(FrontendInput::default(), now, true);
             assert!(!tick.exit_requested);
-            assert!(tick.render_input.is_none());
+            // The root stays drawn (without its chrome) while it is left.
+            assert!(
+                tick.render_input
+                    .is_none_or(|input| input.phase != FrontendPhase::Interactive)
+            );
         }
         assert_ne!(driver.state().phase(), FrontendPhase::Interactive);
     }

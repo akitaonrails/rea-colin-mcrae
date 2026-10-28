@@ -348,9 +348,6 @@ impl IndexedVideoBackend for SoftwareIndexedBackend {
         destination: Self::Surface,
         plan: BlitPlan,
     ) -> Result<(), Self::Error> {
-        if plan.method == BlitMethod::Stretch {
-            return Err(SoftwareVideoError::UnsupportedStretch);
-        }
         if plan
             .color_key
             .is_some_and(|key| key.low != 0 || key.high != 0)
@@ -377,12 +374,13 @@ impl IndexedVideoBackend for SoftwareIndexedBackend {
         else {
             return Err(SoftwareVideoError::InvalidRectangle);
         };
+        let stretch = plan.method == BlitMethod::Stretch;
         if source_width <= 0
             || source_height <= 0
             || destination_width <= 0
             || destination_height <= 0
-            || source_width != destination_width
-            || source_height != destination_height
+            || (!stretch
+                && (source_width != destination_width || source_height != destination_height))
             || plan.source.left < 0
             || plan.source.top < 0
             || plan.destination.left < 0
@@ -393,6 +391,29 @@ impl IndexedVideoBackend for SoftwareIndexedBackend {
             || plan.destination.bottom > destination_surface.height as i32
         {
             return Err(SoftwareVideoError::InvalidRectangle);
+        }
+        if stretch {
+            // `Blt` with a size change: the driver's sampling is not in the
+            // image, so this backend samples nearest-neighbour from the
+            // source origin (`source + offset * source_size / destination_size`),
+            // as the RGB16 stretch does (documented backend policy).
+            for row in 0..destination_height as usize {
+                let source_y = plan.source.top as usize
+                    + row * source_height as usize / destination_height as usize;
+                for column in 0..destination_width as usize {
+                    let source_x = plan.source.left as usize
+                        + column * source_width as usize / destination_width as usize;
+                    let pixel = source_surface.pixels[source_y * source_surface.width + source_x];
+                    if plan.color_key.is_some() && pixel == 0 {
+                        continue;
+                    }
+                    destination_surface.pixels[(plan.destination.top as usize + row)
+                        * destination_surface.width
+                        + plan.destination.left as usize
+                        + column] = pixel;
+                }
+            }
+            return Ok(());
         }
         for row in 0..source_height as usize {
             let source_start =
@@ -565,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_stretch_rule_fails_both_copies_without_leaking_source() {
+    fn a_stretched_startup_copy_samples_nearest_neighbour() {
         let mut display = IndexedDisplay::initialize(
             SoftwareIndexedBackend::default(),
             IndexedMode {
@@ -582,9 +603,14 @@ mod tests {
         let outcome = display
             .show_startup_surface(&surface(4, vec![0, 1, 2, 3]))
             .unwrap();
-        assert_eq!(outcome.front, Err(SoftwareVideoError::UnsupportedStretch));
-        assert_eq!(outcome.back, Err(SoftwareVideoError::UnsupportedStretch));
-        assert_eq!(display.into_backend().uploaded_source_count(), 0);
+        assert_eq!(outcome.front, Ok(()));
+        assert_eq!(outcome.back, Ok(()));
+        let front = display.frame_target().back;
+        let backend = display.into_backend();
+        assert_eq!(
+            backend.surface(front).unwrap().pixels,
+            vec![0, 0, 1, 1, 2, 2, 3, 3]
+        );
     }
 
     #[test]

@@ -18,9 +18,14 @@
       { "name": "bonus_car_countries", "kind": "block", "va": 5270984, "len": 8 },
       { "name": "car_names", "kind": "string-pointers", "va": 5270992, "count": 16 },
       { "name": "stage_names", "kind": "string-pointers", "va": 5271424, "count": 54 },
-      { "name": "school_stage_name", "kind": "string", "va": 5272864 }
+      { "name": "school_stage_name", "kind": "string", "va": 5272864 },
+      { "name": "frontend_arrow_oscillation", "kind": "block", "va": 5277720, "len": 16 },
+      { "name": "frontend_arrow_left", "kind": "string", "va": 5277748 },
+      { "name": "frontend_arrow_right", "kind": "string", "va": 5277752 },
+      { "name": "car_short_names", "kind": "string-pointers", "va": 5271048, "count": 14 },
+      { "name": "car_stats", "kind": "block", "va": 5279256, "len": 168 }
     ],
-    "payload_sha256": "55722ec4c0e55ac20fd472982dff37ff32750d1612264eaa1d58df1921856e00",
+    "payload_sha256": "076b6a1766ee32ac9fa1d0937f2739be143409601c18bb5e88c2469c2a9267ac",
     "output_encoding": "cmr-static-tables-v1"
   }
 }

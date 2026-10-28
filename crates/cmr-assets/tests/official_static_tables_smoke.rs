@@ -52,7 +52,7 @@ fn reviewed_official_static_tables_extract_and_reopen_without_exposing_values() 
     );
     let summary = result.expect("checked successful extraction");
     assert_eq!(summary.shape.format_version, STATIC_TABLES_FORMAT_VERSION);
-    assert_eq!(summary.shape.entry_count, 10);
+    assert_eq!(summary.shape.entry_count, 15);
 
     let store = StaticTablesStore::open(&output, &reviewed);
     assert!(store.is_ok(), "official static-tables store reopen failed");
@@ -66,10 +66,15 @@ fn reviewed_official_static_tables_extract_and_reopen_without_exposing_values() 
         ("frontend_country_table", 0x50),
         ("results_save_schedule", 9),
         ("bonus_car_countries", 8),
+        ("frontend_arrow_oscillation", 16),
+        ("car_stats", 168),
     ] {
         assert_eq!(tables.block(name).map(<[u8]>::len), Some(len), "{name}");
     }
     assert_eq!(tables.strings("car_names").map(<[_]>::len), Some(16));
     assert_eq!(tables.strings("stage_names").map(<[_]>::len), Some(54));
     assert!(tables.string("school_stage_name").is_some());
+    assert!(tables.string("frontend_arrow_left").is_some());
+    assert!(tables.string("frontend_arrow_right").is_some());
+    assert_eq!(tables.strings("car_short_names").map(<[_]>::len), Some(14));
 }

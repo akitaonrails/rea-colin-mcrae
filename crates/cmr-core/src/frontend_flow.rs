@@ -20,6 +20,7 @@
 
 use crate::config::LEGACY_CONFIG_SIZE;
 use crate::descriptor_menu::{Menu, MenuEvent, MenuId, MenuNav, MenuSet};
+use crate::display::DisplayExtent;
 use crate::frontend::{
     CHAMPIONSHIP_NEXT_SCREEN_ID, CHAMPIONSHIP_SETUP_SCREEN_ID, NETWORK_SCREEN_ID,
     RACE_SENTINEL_SCREEN_ID, RALLY_NAME_SCREEN_ID, RALLY_SCREEN_ID, ROOT_SCREEN_ID,
@@ -101,12 +102,13 @@ impl Slides {
         self.tweens = tweens;
     }
 
-    /// Evaluate every active tween; true when none is active.
-    fn tick(&mut self) -> bool {
+    /// Evaluate every active tween, reporting each active one's value;
+    /// true when none was active.
+    fn tick(&mut self, mut each: impl FnMut(usize, i32)) -> bool {
         let mut idle = true;
-        for tween in &mut self.tweens {
+        for (index, tween) in self.tweens.iter_mut().enumerate() {
             if !tween.is_finished() {
-                tween.evaluate_and_advance();
+                each(index, tween.evaluate_and_advance());
                 idle = false;
             }
         }
@@ -141,6 +143,20 @@ pub struct FrontendScreens {
     name_leaving: bool,
     /// `DAT_00bbabec`: the "no animation" option (`!(record[0x10] & 0x20)`).
     no_animation: bool,
+    /// The row arc, the sine table and the display extent, when known.
+    geometry: Option<Geometry>,
+    /// `DAT_00d8ffe0`: the seven row channels' Q16 positions.
+    channels: [(i32, i32); 7],
+    /// `DAT_00d90038/c`: the info anchor, and its slide `0xd90040`.
+    info: (i32, i32),
+    info_slide: Option<ScalarTween>,
+}
+
+struct Geometry {
+    arc: crate::frontend_camera::Arc,
+    sine: Box<[i32; crate::fixed_point::TRIG_TABLE_LEN]>,
+    width: i32,
+    height: i32,
 }
 
 /// Menu ids in the set, in build order.
@@ -232,7 +248,41 @@ impl FrontendScreens {
             slides: Slides::default(),
             name_leaving: false,
             no_animation: false,
+            geometry: None,
+            channels: [(0, 0); 7],
+            info: (0, 0),
+            info_slide: None,
         }
+    }
+
+    /// The setups' layout descriptors.
+    pub fn set_layouts(&mut self, layouts: [SetupLayout; 3]) {
+        self.layouts = layouts;
+    }
+
+    /// The row arc and the display extent the row positions use.
+    pub fn set_geometry(&mut self, arc: crate::frontend_camera::Arc, extent: DisplayExtent) {
+        self.geometry = Some(Geometry {
+            arc,
+            sine: Box::new(crate::frontend_camera::sine_table()),
+            width: i32::from(extent.width),
+            height: i32::from(extent.height),
+        });
+    }
+
+    /// The row channels' positions (`DAT_00d8ffe0`).
+    pub const fn channels(&self) -> &[(i32, i32); 7] {
+        &self.channels
+    }
+
+    /// The info anchor (`DAT_00d90038/c`).
+    pub const fn info_anchor(&self) -> (i32, i32) {
+        self.info
+    }
+
+    /// The layout descriptor of a setup screen.
+    pub fn layout(&self, kind: SetupKind) -> &SetupLayout {
+        &self.layouts[SETUPS.iter().position(|&k| k == kind).unwrap_or(0)]
     }
 
     /// Whether `screen` is one of these.
@@ -297,6 +347,7 @@ impl FrontendScreens {
                     .map(|c| self.slide(i32::from(c.angles[0]), i32::from(c.angles[1]), c.delay_in))
                     .collect();
                 self.slides.start(tweens);
+                self.info_slide = Some(self.slide(0x10000, 0, 0));
             }
             Some(Kind::Name(i)) => {
                 self.name.enter(NAMES[i], record);
@@ -374,10 +425,37 @@ impl FrontendScreens {
         record: &mut Record,
         effects: &mut Vec<ScreenEffect>,
     ) -> Option<MenuId> {
-        let idle = self.slides.tick();
+        let mut values = [None; 7];
+        let idle = self.slides.tick(|index, value| {
+            if let Some(slot) = values.get_mut(index) {
+                *slot = Some(value);
+            }
+        });
         match kind {
-            // `FUN_004c9040`.
-            Kind::Setup(_) => {
+            // `FUN_004c9040`: the rows move on the arc (`FUN_004c43b0`), the
+            // info anchor slides in, and the navigation returns once no row
+            // channel is active.
+            Kind::Setup(i) => {
+                if let Some(geometry) = &self.geometry {
+                    for (channel, value) in values.iter().enumerate() {
+                        if let Some(angle) = value {
+                            self.channels[channel] = crate::frontend_camera::arc_position(
+                                geometry.arc,
+                                *angle,
+                                &geometry.sine,
+                                geometry.width,
+                                geometry.height,
+                            );
+                        }
+                    }
+                }
+                let layout = self.layouts[*i];
+                if let Some(slide) = self.info_slide.as_mut()
+                    && !slide.is_finished()
+                {
+                    let value = slide.evaluate_and_advance();
+                    self.info = (value.wrapping_add(layout.info[0]), layout.info[1]);
+                }
                 if idle {
                     self.set.menu_mut(menu).nav = MenuNav::ALL;
                 }
@@ -435,6 +513,11 @@ impl FrontendScreens {
                     })
                     .collect();
                 self.slides.start(tweens);
+                self.info_slide = Some(if self.no_animation {
+                    ScalarTween::ease_out(0x10000, 0x10000, 15, 0)
+                } else {
+                    ScalarTween::ease_in(0, 0x10000, 15, 0)
+                });
                 self.name.next_player = 0;
             }
             // `0x4c5ec0`.

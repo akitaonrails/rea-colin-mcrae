@@ -184,7 +184,8 @@ result, the bonus car and the save page draw the frame only. The race hand-off c
 cmRally.cfg record (`impl.config-commit`). Front-end screens are in
 `.work/frontend-menu-tree-notes.md` and `.work/frontend-setup-draw-notes.md`. The window's front end now runs the
 real setup, name-entry and stage-select screens (`impl.frontend-setup-flow`; arrows, Return, Escape, letters):
-they are not drawn yet (only the root is), and the car chosen in the setup is not loaded (the session's car is
+the setups are drawn (`impl.frontend-setup-draw`: rows, bar, arrows; no preview panels yet), the name
+entries and stage select are not, and the car chosen in the setup is not loaded (the session's car is
 the `--car-code` one). Static tables (`impl.static-tables`) need
 `cargo run -q -p cmr-assets -- extract-static-tables --source <dir with Rally.exe> --profile profiles/official-eu-static-tables-v1.json --output runtime-data/official-eu-static-tables`. Next: the front-end setup screens (they edit
 the record, so a chosen stage and car load), the car-to-car impact site
