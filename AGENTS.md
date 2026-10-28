@@ -18,8 +18,11 @@ shipped binaries and user-owned data. It is not a distribution of the game.
   are ignored by Git.
 - Describe decompiler output as pseudocode, not original source. Separate
   observations, inferences, design decisions, and unknowns.
-- Do not execute shipped binaries unless a runtime experiment is explicitly
-  scoped, isolated, and documented. Static analysis is the default.
+- Running the user's original game binaries (`Rally.exe` and its companions)
+  is allowed (owner decision, 2026-11-02) for the compatibility-layer work:
+  run them from a local game folder outside the repository, never commit the
+  binaries or anything copied out of them, and record runtime observations in
+  the evidence ledger as runtime evidence (separate from static evidence).
 
 ## Reconstruction order
 
