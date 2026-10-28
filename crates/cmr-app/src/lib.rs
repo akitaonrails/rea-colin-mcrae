@@ -3935,6 +3935,8 @@ struct SchoolHost {
     /// The movies still to play and the one playing.
     movies: std::collections::VecDeque<(String, [i32; 4])>,
     playing: Option<MoviePlayback>,
+    /// The intro wav the task load picked (`Intro<k>\<n>`).
+    intro_wav: Option<(u8, u8)>,
 }
 
 /// A movie `FUN_004af8a0` plays in a window rectangle until it ends or
@@ -4311,6 +4313,47 @@ impl SchoolHost {
                 })
                 .collect();
         }
+    }
+}
+
+/// Whether a mixer channel is playing.
+fn channel_busy(mixer: &SharedSoftwareMixer, channel: u32) -> bool {
+    let (Ok(mixer), Ok(channel)) = (mixer.lock(), ChannelId::new(channel)) else {
+        return false;
+    };
+    cmr_core::audio_mixer::AudioMixer::is_channel_busy(&*mixer, channel)
+}
+
+/// The school's instructor speech (`FUN_00474cb0`, `FUN_00474cd0`) on its
+/// channel at `0x7d00`; the advice wavs are not loaded.
+fn play_school_cue(
+    mixer: &SharedSoftwareMixer,
+    language: Language,
+    intro: Option<(u8, u8)>,
+    cue: cmr_core::gameplay_session::SchoolHostCue,
+) {
+    use cmr_core::gameplay_session::SchoolHostCue;
+    // `FUN_00473470`: the language's sounds directory.
+    let dir = Path::new(language.game_path())
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("english");
+    let path = match cue {
+        SchoolHostCue::IntroSpeech => {
+            let Some((k, n)) = intro else {
+                return;
+            };
+            format!("game\\rallschl\\sounds\\{dir}\\intro{k}\\{n}.wav")
+        }
+        SchoolHostCue::ExitSpeech(i) => format!("game\\rallschl\\sounds\\{dir}\\exit\\{i}.wav"),
+        SchoolHostCue::Task(_) => return,
+    };
+    let slot = mixer
+        .lock()
+        .ok()
+        .and_then(|mut m| m.load_wave(&path, 11_025, 16, false).ok());
+    if let Some(slot) = slot {
+        play_slot_on(mixer, slot, SCHOOL_SPEECH_CHANNEL, 0x7d00);
     }
 }
 
@@ -4998,6 +5041,11 @@ fn advance_game_frame<C: HostClock>(
     let controls = drive.controls;
     let change_view = drive.car.change_view_fired;
     let steer_analog = drive.car.steer_analog;
+    // The session draws on the game's one `rand()`.
+    *session.rng_mut() = camera.rng;
+    if let Some(mixer) = input.audio {
+        session.set_school_speaking(channel_busy(mixer, SCHOOL_SPEECH_CHANNEL));
+    }
     let advanced = if let Some(parsed) = resources.static_collision_scene() {
         session
             .try_advance_with_static_collision(
@@ -5014,8 +5062,18 @@ fn advance_game_frame<C: HostClock>(
             .try_advance(clock, menu_inputs, controls, progress)
             .map_err(SessionFourWheelError::Producer)?
     };
+    camera.rng = *session.rng_mut();
     if session.last_reset().camera_reset {
         camera.snap();
+    }
+    // The school task's speech and, at its end, its marks.
+    for cue in session.take_school_cues() {
+        if let Some(mixer) = input.audio {
+            play_school_cue(mixer, results.language, results.school.intro_wav, cue);
+        }
+    }
+    if let Some(marks) = session.take_school_marks() {
+        cmr_core::config_commit::live_mut(&mut config.image)[0x6bc..0x6c0].copy_from_slice(&marks);
     }
     // `FUN_00420db0` at the finish (not in time trial): the damage back into
     // player 1's record, where the service screen reads it.
@@ -5099,6 +5157,10 @@ fn advance_game_frame<C: HostClock>(
             FadeComposite::Quad(alpha) if quad_under_hud => world.under_black_quad(alpha),
             _ => world,
         };
+        // `DAT_00551ae4`: the school hides the HUD on some tasks.
+        if session.school_task().is_some_and(|task| !task.race.hud) {
+            return Ok(world);
+        }
         compose_live_race_hud(resources, world, hud_input)
     })?;
     // The results director's cues: `FUN_00467ef0(0, 0, 1)` (FORWARD) on a
@@ -7043,7 +7105,15 @@ fn stage_statics(
             .nodes()
             .ok_or(StageFrameError::MissingNodes)?
             .to_vec();
-        let (trigger_volumes, cell_centers) = stage_trigger_inputs(resources);
+        let (mut trigger_volumes, cell_centers) = stage_trigger_inputs(resources);
+        // `FUN_004732a0` (school only): the lines numbered at the load.
+        if media_root
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .contains("RALLSCHL")
+        {
+            cmr_core::school_race::number_lines(&mut trigger_volumes);
+        }
         Ok(StageStatics {
             nodes,
             trigger_volumes,
@@ -7921,6 +7991,10 @@ fn reload_stage_for_event<'a>(
         return Ok(());
     }
     reload_changed_stage(session, resources, progress, audio, camera, loaded, context)?;
+    // The school's stage load (`FUN_004716b0`) and setup (`FUN_0046ee70`).
+    if session.event().globals.school_d3ca88 {
+        start_school_task(session, loaded, config, results, &mut camera.rng);
+    }
     // `FUN_00420c70` in the car load: player 1's carried damage.
     let live = cmr_core::config_commit::live_mut(&mut config.image);
     if let Ok(record) = <&mut [u8; 0x1c]>::try_from(&mut live[0x9a..0xb6])
@@ -7939,6 +8013,51 @@ fn reload_stage_for_event<'a>(
         &mut camera.rng,
     );
     Ok(())
+}
+
+/// `FUN_004716b0` and `FUN_0046ee70` for the loaded school stage: the
+/// reference run beside the stage (`<stage>.rsf`), the forced setup, the
+/// scorer's tables and the intro wav's pick. A missing reference run
+/// cancels the school session as the native does.
+fn start_school_task(
+    session: &mut GameplaySession,
+    loaded: &LoadedStageKey,
+    config: &mut FrontEndConfig,
+    results: &mut RaceResults,
+    rng: &mut GameLcg,
+) {
+    let school = session.event().cfg.school_6c0;
+    let (level, task) = ((school >> 3) & 3, school >> 5);
+    let reference =
+        read_decoded_section(&loaded.dir, &loaded.name, ".rsf", DecodeLimits::default())
+            .ok()
+            .flatten()
+            .and_then(|bytes| cmr_formats::school_rsf::parse_rsf(&bytes).ok());
+    let Some(reference) = reference else {
+        eprintln!("cmr-app: no school reference run for {}", loaded.name);
+        session.event_mut().globals.school_d3ca88 = false;
+        return;
+    };
+    let live = cmr_core::config_commit::live_mut(&mut config.image);
+    cmr_core::school_race::force_setup(live, level, task);
+    let tables = results
+        .static_tables
+        .as_ref()
+        .map(cmr_assets::StaticTablesStore::tables);
+    let block = |name: &str| tables.and_then(|t| t.block(name)).unwrap_or(&[]);
+    let Some(mut scoring) = cmr_core::school_race::SchoolScoring::from_blocks(
+        block("school_score_offsets"),
+        block("school_score_scales"),
+    ) else {
+        eprintln!("cmr-app: school scorer tables unavailable");
+        return;
+    };
+    scoring.setup = [live[0x91], live[0x93], live[0x95], live[0x97], live[0x99]];
+    let lines = session.school_line_count();
+    session.start_school_task(cmr_core::school_race::SchoolRace::start(
+        level, task, lines, reference, scoring,
+    ));
+    results.school.intro_wav = Some(cmr_core::school_race::intro_wav(task, rng));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -12513,6 +12632,50 @@ mod tests {
     /// bar, the setup list, a category page, the repair list and the stage
     /// view, written under `.work/frames-service`. The setup costs, damage
     /// and player name are synthetic.
+    /// Every shipped school task's reference run parses, and its `.dat`
+    /// lines number into the ids the run's records carry.
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data"]
+    fn imported_school_tasks_parse_and_number() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        for level in ["easy", "medium", "hard"] {
+            let dir = root.join("Game/RallSchl/Tracks").join(level);
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let task_dir = entry.unwrap().path();
+                let name = task_dir
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_ascii_uppercase();
+                let rsf = read_decoded_section(&task_dir, &name, ".rsf", DecodeLimits::default())
+                    .unwrap()
+                    .expect("reference run");
+                let run = cmr_formats::school_rsf::parse_rsf(&rsf).unwrap();
+                let dat = read_decoded_section(&task_dir, &name, ".dat", DecodeLimits::default())
+                    .unwrap()
+                    .expect("triggers");
+                let mut volumes = cmr_formats::stage::parse_trigger_volumes(&dat).unwrap();
+                let lines = cmr_core::school_race::number_lines(&mut volumes);
+                let max_line = run
+                    .records
+                    .iter()
+                    .filter(|r| r.speed != 0 || r.line != 0)
+                    .map(|r| i32::from(r.line))
+                    .max()
+                    .unwrap_or(0);
+                eprintln!(
+                    "{level}/{name}: time {} cs, {lines} lines, max recorded line {max_line}, trailing {}",
+                    run.time_cs,
+                    run.trailing.len()
+                );
+                assert!(run.time_cs > 0);
+                assert!(lines > 0 && max_line < lines);
+            }
+        }
+    }
+
     #[test]
     #[ignore = "requires the reviewed installed-EU runtime data; writes frames under .work"]
     fn imported_service_screen_frames() {

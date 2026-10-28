@@ -604,6 +604,8 @@ pub(crate) mod tests {
                 ("stage_info_surfaces", 0x004f4448, Block { len: 240 }),
                 ("stage_lengths", 0x004f48e0, Block { len: 63 }),
                 ("tyre_mark_surfaces", 0x004ec800, Block { len: 960 }),
+                ("school_score_offsets", 0x004f4f80, Block { len: 288 }),
+                ("school_score_scales", 0x004f50a0, Block { len: 288 }),
             ]
         );
         // Same executable identity as the reviewed stage-weather profile.

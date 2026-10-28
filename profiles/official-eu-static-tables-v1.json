@@ -127,9 +127,11 @@
       { "name": "service_screen_data", "kind": "block", "va": 5201864, "len": 232 },
       { "name": "stage_info_surfaces", "kind": "block", "va": 5194824, "len": 240 },
       { "name": "stage_lengths", "kind": "block", "va": 5196000, "len": 63 },
-      { "name": "tyre_mark_surfaces", "kind": "block", "va": 5163008, "len": 960 }
+      { "name": "tyre_mark_surfaces", "kind": "block", "va": 5163008, "len": 960 },
+      { "name": "school_score_offsets", "kind": "block", "va": 5197696, "len": 288 },
+      { "name": "school_score_scales", "kind": "block", "va": 5197984, "len": 288 }
     ],
-    "payload_sha256": "e006dc81373c2cdbf6ea941e888d71b2349cfaa9c6955081a5b6ea927a67008b",
+    "payload_sha256": "8fed1ce4bca1b91bdad15812c1763325f927e9172cfcc099ea9e5924a98111f9",
     "output_encoding": "cmr-static-tables-v1"
   }
 }

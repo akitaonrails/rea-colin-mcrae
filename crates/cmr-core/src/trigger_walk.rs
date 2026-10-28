@@ -89,8 +89,10 @@ pub struct TriggerWalkConfig {
     pub player: u8,
     /// `DAT_00551ad8`, which replaces the mask player in the `FUN_00401030` mode.
     pub split_player_551ad8: u8,
-    /// `DAT_00d3ca88`.
-    pub replay: bool,
+    /// `DAT_00d3ca88`: the rally school.
+    pub school: bool,
+    /// `DAT_005f9e94`: the school's lines are armed.
+    pub school_lines_armed: bool,
     /// `DAT_00d3ca80 +0x25/+0x166/+0x168`.
     pub config_25: u8,
     pub config_166: u8,
@@ -110,7 +112,8 @@ impl TriggerWalkConfig {
         Self {
             player: 0,
             split_player_551ad8: 0,
-            replay: false,
+            school: false,
+            school_lines_armed: false,
             config_25: 0,
             config_166: 0,
             config_168: 0,
@@ -120,11 +123,11 @@ impl TriggerWalkConfig {
     }
 
     fn mode_401000(&self) -> bool {
-        matches!(self.config_166 & 0x1c, 4 | 0xc) && !self.replay
+        matches!(self.config_166 & 0x1c, 4 | 0xc) && !self.school
     }
 
     fn mode_401030(&self) -> bool {
-        self.config_166 & 0x1c == 8 && !self.replay
+        self.config_166 & 0x1c == 8 && !self.school
     }
 
     fn loop_mode(&self) -> bool {
@@ -143,6 +146,8 @@ pub enum TriggerEvent {
     ResetLatch { record: usize },
     /// `FUN_00403e70(index)`.
     SurfaceSwitch { record: usize, index: u8 },
+    /// `FUN_00471b30(line)`: a rally-school line crossed.
+    SchoolLine { record: usize, line: i32 },
     /// `+0x75c` armed with this many ticks.
     PenaltyTimer { record: usize, ticks: i16 },
     /// `FUN_00401fd0` touched the car; `impact` is set on a first-contact
@@ -235,7 +240,7 @@ pub fn walk_triggers(
             |car: &BarrierCar, mode| trigger_geometry_contains(&volume, &car.bounds, mode);
         match volume.raw_type {
             0 => {
-                if (config.replay || config.config_25 & 8 == 0 || config.loop_mode())
+                if (config.school || config.config_25 & 8 == 0 || config.loop_mode())
                     && contains(car, TriggerGeometryMode::Bidirectional)
                 {
                     if !car.out_of_control_680 {
@@ -244,7 +249,7 @@ pub fn walk_triggers(
                             payload: volume.payload,
                         });
                     }
-                    if config.replay
+                    if config.school
                         || !config.mode_401030()
                         || !config.loop_mode()
                         || config.player == 0
@@ -254,7 +259,7 @@ pub fn walk_triggers(
                 }
             }
             1 => {
-                if !config.replay
+                if !config.school
                     && !config.loop_mode()
                     && contains(car, TriggerGeometryMode::Bidirectional)
                 {
@@ -264,7 +269,19 @@ pub fn walk_triggers(
                     });
                 }
             }
-            3..=5 => {}
+            // `0x403bf7`: a school line crossed (`FUN_00471b30(+0x24)`).
+            3 => {
+                if config.school
+                    && config.school_lines_armed
+                    && contains(car, TriggerGeometryMode::Bidirectional)
+                {
+                    events.push(TriggerEvent::SchoolLine {
+                        record,
+                        line: volume.payload,
+                    });
+                }
+            }
+            4 | 5 => {}
             6 => {
                 if current_points_intersect_open_y_span(&volume, &car.bounds)
                     && contains(car, TriggerGeometryMode::Bidirectional)
@@ -273,7 +290,7 @@ pub fn walk_triggers(
                 }
             }
             7..=0x0b => {
-                if (config.replay || !config.mode_401000())
+                if (config.school || !config.mode_401000())
                     && contains(car, TriggerGeometryMode::RequireSavedNonPositive)
                     && config.condition_592f00 != 8
                 {
@@ -284,7 +301,7 @@ pub fn walk_triggers(
                 }
             }
             0x15 => {
-                if !config.replay
+                if !config.school
                     && !config.mode_401000()
                     && contains(car, TriggerGeometryMode::Bidirectional)
                     && state.penalty_timer_75c == 0

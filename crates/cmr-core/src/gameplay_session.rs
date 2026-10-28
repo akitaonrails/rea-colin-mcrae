@@ -239,6 +239,59 @@ pub struct GameplaySession<'a> {
     wet_brakes: bool,
     gear_copies: Option<([i32; 8], [i32; 8])>,
     damage_writeback: bool,
+    /// The rally school's task (`FUN_004716b0` at the stage load) and the
+    /// words that outlive it.
+    school: Option<SchoolTask>,
+    school_statics: crate::school_race::SchoolStatics,
+    /// The game's `rand()` (`DAT_0050b690`) as the session draws on it; the
+    /// host copies its generator in before an advance and back after.
+    rng: crate::game_rng::GameLcg,
+}
+
+/// The rally school's task in a session: the in-race logic, the intro
+/// (state 7) and exit (state 9) phases, and what the host plays.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchoolTask {
+    pub race: crate::school_race::SchoolRace,
+    /// 0 not started, 1 requested, 2 playing, 3 done.
+    intro: u8,
+    /// 0 waiting for the fade (`5ef458`), 1 speech due (`5ef45c`), 2
+    /// requested, 3 playing, 4 done.
+    exit: u8,
+    /// The host's instructor channel is playing.
+    pub speaking: bool,
+    cues: Vec<SchoolHostCue>,
+    marks_out: Option<[u8; 4]>,
+}
+
+/// What the school asks the host to play.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchoolHostCue {
+    /// `FUN_00474cb0`: the intro wav chosen at load.
+    IntroSpeech,
+    /// `FUN_00474cd0`: the exit wav by the marks' total.
+    ExitSpeech(u8),
+    /// A line's or the task's cue.
+    Task(crate::school_race::SchoolCue),
+}
+
+impl SchoolTask {
+    /// `FUN_00474cd0`'s pick: the total of the eight nibbles.
+    fn exit_wav(marks: [u8; 4], rng: &mut crate::game_rng::GameLcg) -> u8 {
+        let total: u32 = marks
+            .iter()
+            .map(|&b| u32::from(b & 0xf) + u32::from(b >> 4))
+            .sum();
+        if total > 75 {
+            7
+        } else if total > 70 {
+            4 + (rng.next_raw() % 3) as u8
+        } else if total > 40 {
+            1 + (rng.next_raw() % 3) as u8
+        } else {
+            0
+        }
+    }
 }
 
 /// The fade channel `0x82b37c` as the race drives it
@@ -282,6 +335,11 @@ impl RaceFade {
 
     fn fade_out(&mut self) {
         self.fade.fade_out(self.count(), self.instant);
+    }
+
+    /// `FUN_0048df80(N)`.
+    fn fade_in_race(&mut self) {
+        self.fade.fade_in(self.count(), self.instant);
     }
 
     /// State 4's load (`FUN_00421da0` tail): `FUN_0044e980`'s fade in is
@@ -429,6 +487,65 @@ impl ResultsHold {
     }
 }
 
+/// The school's gates in states 5, 7 and 9. The intro and exit
+/// demonstration replays (`.rsp`) are not reconstructed, so the binary's
+/// path without them runs: state 7 plays the intro wav and waits for it
+/// (`0x437f3a`); state 9 waits out the task end's fade, fades in at black,
+/// plays the exit wav by the total and waits for it (`0x4384f2`).
+fn school_gates(
+    state: u8,
+    task: &mut SchoolTask,
+    fade: &mut RaceFade,
+    rng: &mut crate::game_rng::GameLcg,
+    inputs: &mut InRaceInputs,
+) {
+    match state {
+        5 => {
+            // The ordinary race start runs the clock of the tasks that do
+            // not wait for the throttle.
+            if task.race.fsm == 1 {
+                task.race.race_start();
+            }
+            inputs.stage_finished = task.race.done;
+            inputs.replay_ready = task.race.done;
+        }
+        7 => {
+            match task.intro {
+                0 => {
+                    task.cues.push(SchoolHostCue::IntroSpeech);
+                    task.intro = 1;
+                }
+                1 => task.intro = 2,
+                2 if !task.speaking => task.intro = 3,
+                _ => {}
+            }
+            inputs.replay_intro_done = task.intro == 3;
+        }
+        9 => {
+            match task.exit {
+                0 if fade.fade.idle() => {
+                    if fade.fade.evaluate() == 0 {
+                        task.race.hud = false;
+                        fade.fade_in_race();
+                    } else {
+                        task.exit = 1;
+                    }
+                }
+                1 => {
+                    let wav = SchoolTask::exit_wav(task.race.marks(), rng);
+                    task.cues.push(SchoolHostCue::ExitSpeech(wav));
+                    task.exit = 2;
+                }
+                2 => task.exit = 3,
+                3 if !task.speaking => task.exit = 4,
+                _ => {}
+            }
+            inputs.flyby_cinematic_done = task.exit == 4;
+        }
+        _ => {}
+    }
+}
+
 /// One gameplay-band handler: the recovered race-flow table over the script,
 /// the pause flow, the results director and the live finish. A restart
 /// chosen in the pause menu sets `DAT_00550018` on its way to the hub
@@ -443,8 +560,13 @@ fn in_race_next(
     results: &mut ResultsHold,
     fade: &mut RaceFade,
     finish_writeback: &mut bool,
+    school: Option<&mut SchoolTask>,
+    rng: &mut crate::game_rng::GameLcg,
 ) -> GameState {
     let mut inputs = pause.apply(script.with_finish(finished, event.globals.school_d3ca88));
+    if let Some(task) = school.filter(|_| inputs.school_session) {
+        school_gates(state.id(), task, fade, rng, &mut inputs);
+    }
     inputs.fade_done = fade.fade.idle();
     inputs.results_page_up = fade.display_up;
     if state.id() == 0xA
@@ -563,6 +685,9 @@ impl<'a> GameplaySession<'a> {
             wet_brakes: false,
             gear_copies: None,
             damage_writeback: false,
+            school: None,
+            school_statics: crate::school_race::SchoolStatics::default(),
+            rng: crate::game_rng::GameLcg::new(1),
         }
     }
 
@@ -951,6 +1076,10 @@ impl<'a> GameplaySession<'a> {
         progress: &mut StageProgress,
     ) -> Result<GameplayFrame, WheelPostprocessError> {
         self.begin_stage_if_reentered(progress);
+        let mut controls = controls;
+        if self.school.is_some() && self.session.current().id() == 5 {
+            self.school_pre_drive(&mut controls);
+        }
         let pause = std::mem::take(&mut self.pause_flow);
         let driving_sample = if self.session.current().id() == 5 && !pause.enter_pause {
             Some(if self.wheel.is_some() {
@@ -969,12 +1098,15 @@ impl<'a> GameplaySession<'a> {
         };
         if driving_sample.is_some() {
             self.wet_tick(&controls);
+            self.school_after_drive(&controls);
         }
         let script = self.script;
         let results = &mut self.results;
         let sim_ticks = &mut self.sim_ticks;
         let fade = &mut self.fade;
         let writeback = &mut self.damage_writeback;
+        let school = &mut self.school;
+        let rng = &mut self.rng;
         let before = self.session.current().id();
         let mut stepped = false;
 
@@ -995,6 +1127,8 @@ impl<'a> GameplaySession<'a> {
                 results,
                 fade,
                 writeback,
+                school.as_mut(),
+                rng,
             )
         });
         if before == 4 && self.session.current().id() != 4 {
@@ -1027,6 +1161,10 @@ impl<'a> GameplaySession<'a> {
         damage_owner: &mut D,
     ) -> Result<GameplayFrame, StaticGameplayAdvanceError<D::Error>> {
         self.begin_stage_if_reentered(progress);
+        let mut controls = controls;
+        if self.school.is_some() && self.session.current().id() == 5 {
+            self.school_pre_drive(&mut controls);
+        }
         let pause = std::mem::take(&mut self.pause_flow);
         let driving_sample = if self.session.current().id() == 5 && !pause.enter_pause {
             let race_before = self.race.clone();
@@ -1061,12 +1199,15 @@ impl<'a> GameplaySession<'a> {
         };
         if driving_sample.is_some() {
             self.wet_tick(&controls);
+            self.school_after_drive(&controls);
         }
         let script = self.script;
         let results = &mut self.results;
         let sim_ticks = &mut self.sim_ticks;
         let fade = &mut self.fade;
         let writeback = &mut self.damage_writeback;
+        let school = &mut self.school;
+        let rng = &mut self.rng;
         let before = self.session.current().id();
         let mut stepped = false;
 
@@ -1087,6 +1228,8 @@ impl<'a> GameplaySession<'a> {
                 results,
                 fade,
                 writeback,
+                school.as_mut(),
+                rng,
             )
         });
         if before == 4 && self.session.current().id() != 4 {
@@ -1151,6 +1294,140 @@ impl<'a> GameplaySession<'a> {
     /// record (`FUN_00420db0`).
     pub fn take_damage_writeback(&mut self) -> bool {
         std::mem::take(&mut self.damage_writeback)
+    }
+
+    /// The game's `rand()` the session draws on.
+    pub fn rng_mut(&mut self) -> &mut crate::game_rng::GameLcg {
+        &mut self.rng
+    }
+
+    /// `FUN_004716b0`: the school task the stage load starts.
+    pub fn start_school_task(&mut self, race: crate::school_race::SchoolRace) {
+        self.school = Some(SchoolTask {
+            race,
+            intro: 0,
+            exit: 0,
+            speaking: false,
+            cues: Vec::new(),
+            marks_out: None,
+        });
+    }
+
+    /// `DAT_005fbe18`: the loaded stage's school lines (their numbers are
+    /// `0..count`).
+    #[must_use]
+    pub fn school_line_count(&self) -> i32 {
+        self.stage_triggers.as_ref().map_or(0, |triggers| {
+            triggers
+                .runtime
+                .iter()
+                .filter(|t| t.volume().raw_type == 3)
+                .map(|t| t.volume().payload + 1)
+                .max()
+                .unwrap_or(0)
+        })
+    }
+
+    /// The school task, if one runs.
+    #[must_use]
+    pub const fn school_task(&self) -> Option<&SchoolTask> {
+        self.school.as_ref()
+    }
+
+    /// Whether the host's instructor channel is playing (states 7 and 9
+    /// wait on it).
+    pub fn set_school_speaking(&mut self, speaking: bool) {
+        if let Some(task) = self.school.as_mut() {
+            task.speaking = speaking;
+        }
+    }
+
+    /// The speech and cues the school asked for since the last call.
+    pub fn take_school_cues(&mut self) -> Vec<SchoolHostCue> {
+        self.school
+            .as_mut()
+            .map(|task| std::mem::take(&mut task.cues))
+            .unwrap_or_default()
+    }
+
+    /// The marks of a task that just ended, for `cfg[0x6bc..0x6bf]`.
+    pub fn take_school_marks(&mut self) -> Option<[u8; 4]> {
+        self.school.as_mut().and_then(|task| task.marks_out.take())
+    }
+
+    /// The car words the school reads.
+    fn school_car(&self, contact: bool) -> crate::school_race::SchoolCar {
+        let car = self.race.car();
+        let four = &car.four_wheel;
+        let raw = |v: Vec3| [v.x.raw(), v.y.raw(), v.z.raw()];
+        crate::school_race::SchoolCar {
+            position: raw(car.position),
+            velocity: raw(car.velocity),
+            speed: four.speed_ec,
+            forward_xz: [car.motion.basis[0].x.raw(), car.motion.basis[0].z.raw()],
+            lateral: raw(car.motion.basis[2]),
+            word_3e0: four.steering.angle_3e0,
+            brake: four.pedals.brake_response_2ec,
+            handbrake: four.pedals.handbrake_torque_2f4,
+            throttle: 0,
+            gear: four.gearbox.gear_43a as u8,
+            object_contact: contact,
+        }
+    }
+
+    /// Before a state-5 drive: the walk's school words and the finish
+    /// settle's control words (`FUN_004718d0` in place of the control map).
+    fn school_pre_drive(&mut self, controls: &mut Controls) {
+        let school = self.session.event().globals.school_d3ca88;
+        let armed = self.school.as_ref().is_some_and(|t| t.race.armed());
+        if let Some(triggers) = self.stage_triggers.as_mut() {
+            triggers.config.school = school;
+            triggers.config.school_lines_armed = armed;
+        }
+        let car = self.school_car(false);
+        if let Some(settle) = self
+            .school
+            .as_ref()
+            .and_then(|t| t.race.settle_controls(&car))
+        {
+            if settle.throttle_zero {
+                controls.raw_pedals.throttle_304 = 0;
+                controls.forward_force = Fixed16::ZERO;
+            }
+            if settle.brake_one {
+                controls.raw_pedals.brake_308 = 1;
+                controls.handbrake = true;
+            }
+        }
+    }
+
+    /// After a state-5 drive: the crossings the walk saw, then the task.
+    fn school_after_drive(&mut self, controls: &Controls) {
+        let mut car = self.school_car(false);
+        car.throttle = controls.raw_pedals.throttle_304;
+        let lines: Vec<i32> = self
+            .last_trigger_events
+            .iter()
+            .filter_map(|e| match *e {
+                TriggerEvent::SchoolLine { line, .. } => Some(line),
+                _ => None,
+            })
+            .collect();
+        let Some(task) = self.school.as_mut() else {
+            return;
+        };
+        let was_done = task.race.done;
+        for line in lines {
+            let cues = task.race.cross(line, &car, &mut self.school_statics);
+            task.cues.extend(cues.into_iter().map(SchoolHostCue::Task));
+        }
+        let cues = task.race.tick(&car, false, &mut self.rng, task.speaking);
+        task.cues.extend(cues.into_iter().map(SchoolHostCue::Task));
+        if task.race.done && !was_done {
+            task.marks_out = Some(task.race.marks());
+            // `FUN_00471810`'s fade out (12 frames).
+            self.fade.fade_out();
+        }
     }
 
     /// `FUN_00420260` after a four-wheel tick: water wets the brakes and
@@ -1935,6 +2212,67 @@ mod tests {
         );
         assert_eq!(*hub.last().unwrap(), FadeComposite::Clear);
         assert_eq!(wrote_back, 1, "the finish hands the damage back once");
+    }
+
+    #[test]
+    fn a_school_task_runs_its_intro_task_and_exit() {
+        use crate::school_race::{SchoolCue, SchoolRace, SchoolScoring};
+        let script = InRaceScript {
+            quit_requested: false,
+            ..InRaceScript::school_harness()
+        };
+        let mut session = GameplaySession::new(params(), script);
+        let nodes = line();
+        let mut progress = StageProgress::new(&nodes, 0);
+        for _ in 0..50 {
+            if session.state().id() == 4 {
+                break;
+            }
+            rendered(&mut session, &mut progress);
+        }
+        assert_eq!(session.state().id(), 4);
+        let reference = cmr_formats::school_rsf::SchoolReference {
+            time_cs: 100,
+            records: vec![cmr_formats::school_rsf::LineRecord::default(); 200],
+            trailing: Vec::new(),
+        };
+        let scoring = SchoolScoring {
+            offsets: [[0; 6]; 12],
+            scales: [[1; 6]; 12],
+            damage_sum: 0,
+            setup: [0; 5],
+        };
+        session.start_school_task(SchoolRace::start(0, 2, 3, reference, scoring));
+        let mut seen = Vec::new();
+        let mut states = Vec::new();
+        for _ in 0..3000 {
+            rendered(&mut session, &mut progress);
+            seen.extend(session.take_school_cues());
+            if states.last() != Some(&session.state().id()) {
+                states.push(session.state().id());
+            }
+            if session.state().id() == 2 {
+                break;
+            }
+        }
+        assert_eq!(seen.first(), Some(&SchoolHostCue::IntroSpeech));
+        assert!(
+            seen.iter()
+                .any(|c| matches!(c, SchoolHostCue::ExitSpeech(_)))
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|c| matches!(c, SchoolHostCue::Task(SchoolCue::NearEnd)))
+        );
+        assert_eq!(
+            states,
+            [7, 5, 9, 0xb, 2],
+            "the task timed out, then the exit"
+        );
+        let marks = session.take_school_marks().expect("the scorer ran");
+        assert_eq!(marks[3] & 0xf, 7, "gears");
+        assert_eq!(session.event().cfg.school_6c0 & 7, 4, "the results come up");
     }
 
     #[test]

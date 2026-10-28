@@ -20,6 +20,7 @@ pub mod pe_surface;
 pub mod pe_surface_audio_tables;
 pub mod pe_tyre_tables;
 pub mod riff_palette;
+pub mod school_rsf;
 pub mod stage;
 pub mod stored_asset;
 pub mod wav;
