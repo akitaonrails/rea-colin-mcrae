@@ -2578,8 +2578,12 @@ languages rather than fabricating or silently aliasing Italian assets.
   this pass, and the steering consumer `FUN_0041b5b0` is not reconstructed.
 - The four-wheel step translates as the integrator does (damping by the previous
   `+0xec`, inverse mass `+0x4c`, pending correction, recomputed `+0xec`), with
-  no harness steering, drag, throttle push or lateral grip. Pedals still reach
-  the drivetrain only as fixed parameters.
+  no harness steering, drag, throttle push or lateral grip.
+- The control processor `FUN_0041b5b0` ramps the raw pedals into `+0x2d8`
+  (throttle response), `+0x2ec` (brake response) and `+0x2f4` (handbrake
+  torque) with a quarter-sine ease; the four-wheel step now feeds those and the
+  raw pedal words to the drivetrain. Its gearbox and steering parts are not yet
+  reconstructed.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

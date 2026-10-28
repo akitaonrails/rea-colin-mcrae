@@ -42,6 +42,9 @@ use crate::live_static_collision_car_frame::{
     LiveStaticCollisionFrameBridgeError, PreviousCarXz, UpperHullDeformationScalars,
     build_active_cell_record, build_live_static_collision_car_frame,
 };
+use crate::pedal_response::{
+    PedalInputs, PedalResponseParams, PedalResponseState, RawPedals, apply_pedal_responses,
+};
 use crate::stage_timing::{advance_stage_clock, elapsed_centiseconds, stage_clock_step};
 use crate::static_collision_kernel::{
     RecoveredStaticCollisionKernel, StaticKernelContext, StaticKernelError,
@@ -86,6 +89,9 @@ pub struct Controls {
     /// The recovered raw steer magnitudes `+0x2fc/+0x300`, which the
     /// four-wheel integrator's deadzones read after the low-speed cut.
     pub raw_steer: RawSteer,
+    /// The recovered raw pedal words `+0x304/+0x308` and analog flags
+    /// `+0x414/+0x418`, which the four-wheel control processor ramps.
+    pub raw_pedals: RawPedals,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -330,8 +336,10 @@ pub struct FourWheelIterationParams<'a> {
     pub contact_update_inputs: [ContactVectorUpdateInput; 8],
     /// Lane/source-Y values for the native `FUN_004126b0` enable/count scan.
     pub lane_threshold_inputs: CompiledLaneThresholdInputs,
-    /// Control response and timestep used by the persistent `+0x5d4` stabilizer.
-    pub lane_response_2d8: Fixed16,
+    /// Per-car scalars for the control processor's pedal ramps
+    /// (`+0x148/+0x150/+0x16c/+0x174/+0x17c/+0x184`).
+    pub pedal_response: PedalResponseParams,
+    /// Timestep used by the persistent `+0x5d4` stabilizer.
     pub lane_time_step: Fixed16,
     pub lane_direction_angle: i16,
     /// Resolved global/callback inputs; Rebuild takes precedence over Exchange.
@@ -426,9 +434,9 @@ pub struct FourWheelState {
     pub engine_force_530: i32,
     pub idle_6e8: i32,
     pub idle_countdown_6ec: i16,
-    /// Persistent response at `control+0x2d8`, initialized from wheel params.
-    pub response_2d8: i32,
-    pub engine_inputs_initialized: bool,
+    /// The control processor's ramps and responses, including the throttle
+    /// response `control+0x2d8` read by the engine force and lane stabilizer.
+    pub pedals: PedalResponseState,
     /// Control `+0x404`, recomputed at the start of each four-wheel tick.
     pub upright_404: bool,
     /// Resting flag at `state+0x700`, written by the integrator each tick.
@@ -747,8 +755,7 @@ impl CarState {
                 engine_force_530: 0,
                 idle_6e8: 0,
                 idle_countdown_6ec: 0,
-                response_2d8: 0,
-                engine_inputs_initialized: false,
+                pedals: PedalResponseState::ZERO,
                 upright_404: false,
                 resting_700: false,
             },
@@ -1180,10 +1187,6 @@ impl RaceState {
                 return Err(WheelPostprocessError::ContactVectorIndex { lane, vector_index });
             }
         }
-        if !self.car.four_wheel.engine_inputs_initialized {
-            self.car.four_wheel.response_2d8 = wheel.lane_response_2d8.raw();
-            self.car.four_wheel.engine_inputs_initialized = true;
-        }
         self.car.four_wheel.residual_enable = advance_residual_enable(
             self.car.four_wheel.residual_enable,
             wheel.first[0].config_158,
@@ -1198,6 +1201,20 @@ impl RaceState {
         // the previous tick's `+0xec`, then recomputes `+0x404` from the same
         // start-of-tick body axis, before any integrator runs.
         let steer = apply_low_speed_steer_cut(controls.raw_steer, self.car.four_wheel.speed_ec);
+        // The control processor `FUN_0041b5b0` follows the cut and ramps the
+        // raw pedals into the responses the drivetrain reads this tick.
+        let pedal_inputs = PedalInputs::from_raw(
+            controls.raw_pedals,
+            controls.handbrake,
+            wheel.driven_smoothing.mode_408,
+        );
+        self.car.four_wheel.pedals = apply_pedal_responses(
+            self.car.four_wheel.pedals,
+            pedal_inputs,
+            wheel.pedal_response,
+            &self.trig,
+        )
+        .expect("the race-state trig table is complete");
         let body_axis =
             transform_contact_force(self.car.motion.basis, self.car.motion.projection_axis);
         self.car.four_wheel.upright_404 = upright_flag_404(body_axis);
@@ -1219,7 +1236,7 @@ impl RaceState {
             self.car.motion.lane_source_s,
             self.car.motion.basis[0],
             self.car.motion.basis[1],
-            Fixed16::from_raw(self.car.four_wheel.response_2d8),
+            Fixed16::from_raw(self.car.four_wheel.pedals.response_2d8),
             wheel.lane_time_step,
         );
         self.car.motion.lane_source_s = source_s;
@@ -1245,6 +1262,10 @@ impl RaceState {
             input.flag_43b = i32::from(self.car.four_wheel.residual_enable);
         }
         let mut second = wheel.second.clone();
+        for input in &mut second {
+            // The second loop's gear-ratio gate reads the brake response.
+            input.config_2ec = self.car.four_wheel.pedals.brake_response_2ec;
+        }
         for (lane, vector_index) in wheel.contact_vector_indices.into_iter().enumerate() {
             let Some(vector) = contact_vectors.get(vector_index) else {
                 return Err(WheelPostprocessError::ContactVectorIndex { lane, vector_index });
@@ -1361,7 +1382,8 @@ impl RaceState {
             redline_15c: wheel.engine_smoothing.redline_15c,
             gear: first[0].gear,
             config_40c: first[0].config_40c,
-            response_2d8: self.car.four_wheel.response_2d8,
+            response_2d8: self.car.four_wheel.pedals.response_2d8,
+            throttle_304: pedal_inputs.throttle_304,
             ..wheel.engine_force
         });
         self.car.four_wheel.engine_force_530 = engine_force.force_530;
@@ -1387,7 +1409,7 @@ impl RaceState {
             self.car.four_wheel.engine_2e0 = oscillation.engine_2e0;
             self.car.four_wheel.idle_countdown_6ec = oscillation.countdown_6ec;
             if let Some(response) = oscillation.response_2d8 {
-                self.car.four_wheel.response_2d8 = response;
+                self.car.four_wheel.pedals.response_2d8 = response;
             }
         } else if self.car.four_wheel.idle_6e8 != 0 {
             (
@@ -1407,11 +1429,16 @@ impl RaceState {
         self.car.four_wheel.limiter_cut_448 = rev_limit.cut.raw();
         let driven_scalars =
             driven_smoothing_scalars(&self.car.four_wheel, &first[0], &wheel.driven_smoothing);
+        let driven_smoothing = DrivenWheelUpdateParams {
+            throttle_304: pedal_inputs.throttle_304,
+            brake_308: pedal_inputs.brake_308,
+            ..wheel.driven_smoothing
+        };
         update_driven_wheel_speeds(
             &mut self.car.four_wheel,
             &first,
             controls.handbrake,
-            &wheel.driven_smoothing,
+            &driven_smoothing,
             driven_scalars,
         );
         if first[0].gear_ratio == 0 {
@@ -1512,6 +1539,7 @@ mod tests {
                 forward_force: Fixed16::ONE,
                 handbrake: false,
                 raw_steer: Default::default(),
+                raw_pedals: Default::default(),
             };
             ticks
         ]
@@ -1663,6 +1691,7 @@ mod tests {
                 forward_force: Fixed16::ZERO,
                 handbrake: false,
                 raw_steer: Default::default(),
+                raw_pedals: Default::default(),
             },
             &SimParams {
                 inverse_mass: Fixed16::ZERO,
@@ -1679,6 +1708,7 @@ mod tests {
                 forward_force: Fixed16::ZERO,
                 handbrake: false,
                 raw_steer: Default::default(),
+                raw_pedals: Default::default(),
             },
             &SimParams {
                 inverse_mass: Fixed16::ZERO,
@@ -2215,7 +2245,10 @@ mod tests {
                 lane_words: [0; 8],
                 source_y: [0x199a; 8],
             },
-            lane_response_2d8: Fixed16::from_raw(0x8000),
+            pedal_response: PedalResponseParams {
+                throttle_max_148: 0x8000,
+                ..PedalResponseParams::default()
+            },
             lane_time_step: crate::vehicle_dynamics::SOLVER_GLOBAL_CONSTANTS.time_step,
             lane_direction_angle: 0,
             lane_rebuild: false,
@@ -2389,7 +2422,8 @@ mod tests {
             car.motion.lane_source_s,
             car.motion.basis[0],
             car.motion.basis[1],
-            wheel.lane_response_2d8,
+            // No pedal is pressed, so the processor's `+0x2d8` is zero.
+            Fixed16::ZERO,
             wheel.lane_time_step,
         );
         let (source_p, source_r) = derive_lane_direction_pair(
@@ -2430,6 +2464,49 @@ mod tests {
             .step_with_all_four_wheels(&Controls::default(), &wheel)
             .unwrap();
         assert_eq!(coasting.car, sample.car);
+
+        // An analog full throttle goes through the control processor: `+0x2d8`
+        // becomes `qmul(+0x148, 0x10000)`, the lane stabilizer reads it this
+        // tick, and the raw `+0x304` reaches the driven-wheel gate, which now
+        // takes the integrating branch on every lane (`config_158 = 1`).
+        let pressed_controls = Controls {
+            raw_pedals: RawPedals {
+                throttle_304: 0x1_0000,
+                throttle_analog_414: true,
+                ..RawPedals::default()
+            },
+            ..straight_throttle(1)[0]
+        };
+        let pressed = RaceState::new(car)
+            .step_with_all_four_wheels(&pressed_controls, &wheel)
+            .unwrap();
+        assert_eq!(pressed.car.four_wheel.pedals.response_2d8, 0x8000);
+        assert_eq!(
+            pressed.car.motion.lane_source_s,
+            stabilize_lane_source_s(
+                car.motion.lane_source_s,
+                car.motion.basis[0],
+                car.motion.basis[1],
+                Fixed16::from_raw(0x8000),
+                wheel.lane_time_step,
+            )
+        );
+        for lane in 0..4 {
+            assert!(!smoothed_speed_uses_tracking(SmoothedSpeedGateInput {
+                lane,
+                mode_408: wheel.driven_smoothing.mode_408,
+                throttle_304: 0x1_0000,
+                brake_308: 0,
+                handbrake_30c: 0,
+                config_158: wheel.first[lane].config_158,
+                split_170: wheel.driven_smoothing.split_170,
+                limiter_444: 0,
+            }));
+        }
+        assert_ne!(
+            pressed.car.four_wheel.smoothed_wheel_speeds,
+            sample.car.four_wheel.smoothed_wheel_speeds
+        );
         // Every lane passes `0 + 0x1999 < 0x199a`, so `+0x742 == 0` and the
         // native low-speed suppression is off even though the wheel flags are
         // set: the position advances.
@@ -2596,6 +2673,7 @@ mod tests {
                 forward_force: Fixed16::ONE,
                 handbrake: false,
                 raw_steer: Default::default(),
+                raw_pedals: Default::default(),
             };
             16
         ];

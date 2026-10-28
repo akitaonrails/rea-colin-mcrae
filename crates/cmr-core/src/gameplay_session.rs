@@ -395,6 +395,7 @@ mod tests {
             forward_force: Fixed16::from_raw(8 << 16),
             handbrake: false,
             raw_steer: Default::default(),
+            raw_pedals: Default::default(),
         }
     }
 
@@ -462,7 +463,7 @@ mod tests {
                 lane_words: [0; 8],
                 source_y: [0x199a; 8],
             },
-            lane_response_2d8: Fixed16::ZERO,
+            pedal_response: crate::pedal_response::PedalResponseParams::default(),
             lane_time_step: Fixed16::ZERO,
             lane_direction_angle: 0,
             lane_rebuild: false,
@@ -693,6 +694,7 @@ mod tests {
             forward_force: Fixed16::ZERO,
             handbrake: false,
             raw_steer: Default::default(),
+            raw_pedals: Default::default(),
         };
         for _ in 0..1_000 {
             session.advance(&StationaryClock, frontend_menu(), still, &mut progress);

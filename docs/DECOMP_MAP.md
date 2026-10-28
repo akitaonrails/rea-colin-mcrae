@@ -401,7 +401,9 @@ recovered as an upright-cone test. The four-wheel step now threads the raw
 steer magnitudes through the instruction-confirmed low-speed cut and runs the
 deadzones and `+0x700` in native order; the planar windowed path does not. Its
 translation is now the integrator's own (no harness steering, drag, throttle
-push or lateral grip; inverse mass `+0x4c` is an explicit input).
+push or lateral grip; inverse mass `+0x4c` is an explicit input), and the
+control processor's pedal ramps feed throttle, brake and handbrake responses to
+the drivetrain.
 
 ## Update rules
 
@@ -412,8 +414,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T02:05:00Z
-milestone=native-four-wheel-translation
+updated_utc=2026-10-28T02:40:00Z
+milestone=control-processor-pedal-responses
 completed=117
 partial=2
 not_started=0

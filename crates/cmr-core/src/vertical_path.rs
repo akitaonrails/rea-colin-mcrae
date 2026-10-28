@@ -260,7 +260,7 @@ mod tests {
                 lane_words: [0; 8],
                 source_y: [0x199a; 8],
             },
-            lane_response_2d8: Fixed16::ZERO,
+            pedal_response: crate::pedal_response::PedalResponseParams::default(),
             lane_time_step: Fixed16::ZERO,
             lane_direction_angle: 0,
             lane_rebuild: false,
@@ -355,6 +355,7 @@ mod tests {
                 forward_force: Fixed16::ONE,
                 handbrake: false,
                 raw_steer: Default::default(),
+                raw_pedals: Default::default(),
             };
             ticks
         ]

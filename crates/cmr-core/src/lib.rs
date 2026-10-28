@@ -93,6 +93,7 @@ pub mod net_transport;
 pub mod options_screen;
 pub mod overlay_alt;
 pub mod pacenote_schedule;
+pub mod pedal_response;
 pub mod present_scaling;
 pub mod presentation;
 pub mod profile_store;

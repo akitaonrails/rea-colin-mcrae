@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-10-28 (native four-wheel translation)
+Updated: 2026-10-28 (control-processor pedal responses)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-refactor: translate the four-wheel step through the integrator path
+feat: ramp the pedals through the control processor
 ```
 
 Start by confirming the checkout and progress footer:
@@ -83,7 +83,7 @@ ef78049 feat: derive canonical collision response state
 
 ## Verification state
 
-Green at handoff (2,319 tests, 35 ignored):
+Green at handoff (2,329 tests, 35 ignored):
 
 ```sh
 cargo test --workspace --all-targets
@@ -94,7 +94,7 @@ Focused collision, session rollback, keyboard/analog, SDL gamepad, app build,
 and full-workspace tests pass. Logs from the last run are ignored under:
 
 ```text
-.work/four-wheel-translation-workspace-test.log
+.work/pedal-response-workspace-test.log
 ```
 
 The authenticated AU1 test:
@@ -120,9 +120,10 @@ contacted (item 5 below).
    The four-wheel translation is now the integrator's own
    (`impl.four-wheel-native-translation`): no harness steering, drag, throttle
    push or lateral grip, so `speed_ec` is native. Still open: the steering
-   consumer `FUN_0041b5b0` is not reconstructed; throttle/brake `+0x304/+0x308`
-   reach the drivetrain only as fixed `FourWheelIterationParams` inputs, not
-   from `Controls`; and the app builder fills inertia, moment scale and
+   consumer (the steering part of `FUN_0041b5b0`, `FUN_0041c290`/`FUN_0041c3f0`)
+   and its gearbox part (`FUN_0041b810`/`FUN_0041bb30`/`FUN_0041bf00`) are not
+   reconstructed; the pedal half is (`impl.pedal-response-processor`), but its
+   ramp scalars `PedalResponseParams` are harness defaults; and the app builder fills inertia, moment scale and
    `inverse_mass_4c` from harness values rather than the car's compiled prefix
    (`derive_compiled_common_prefix` `+0x48/+0x4c`,
    `derive_compiled_suffix_defaults` `+0x50..+0x58`). Do those before item 2.

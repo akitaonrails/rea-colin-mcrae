@@ -1827,6 +1827,14 @@ now moves only through lane and non-wheel forces, so the next step is routing
 throttle and brake `+0x304/+0x308` from `Controls` into the drivetrain, and
 filling mass, inertia and `+0x4c` from the car's compiled prefix.
 
+The pedal half of the control processor `FUN_0041b5b0` is now recovered and
+wired. Raw throttle, brake and handbrake travel from the input map through
+`Controls` into its ramps, which produce the throttle response `+0x2d8`, the
+brake response `+0x2ec` and the handbrake torque `+0x2f4` each tick; the
+four-wheel step hands them, and the raw pedal words, to their recovered
+drivetrain consumers. The ramp scalars are still harness inputs, and the
+processor's gearbox and steering parts are next.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

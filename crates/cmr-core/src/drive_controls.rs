@@ -23,6 +23,7 @@
 
 use crate::fixed_point::Fixed16;
 use crate::input_map::{CarControls, FULL_SCALE};
+use crate::pedal_response::RawPedals;
 use crate::race_state::Controls;
 use crate::vehicle_dynamics::RawSteer;
 
@@ -63,6 +64,12 @@ pub fn car_controls_to_sim(controls: &CarControls, response: &DriveResponse) -> 
         raw_steer: RawSteer {
             left_2fc: controls.steer_left,
             right_300: controls.steer_right,
+        },
+        raw_pedals: RawPedals {
+            throttle_304: controls.throttle,
+            brake_308: controls.brake,
+            throttle_analog_414: controls.throttle_analog,
+            brake_analog_418: controls.brake_analog,
         },
     }
 }
@@ -120,6 +127,26 @@ mod tests {
             RawSteer {
                 left_2fc: 0xfc00,
                 right_300: 0x400,
+            }
+        );
+    }
+
+    #[test]
+    fn raw_pedal_words_and_analog_flags_pass_through() {
+        let cc = CarControls {
+            throttle: 0xfc00,
+            brake: 0x8000,
+            throttle_analog: true,
+            brake_analog: false,
+            ..controls()
+        };
+        assert_eq!(
+            car_controls_to_sim(&cc, &response()).raw_pedals,
+            RawPedals {
+                throttle_304: 0xfc00,
+                brake_308: 0x8000,
+                throttle_analog_414: true,
+                brake_analog_418: false,
             }
         );
     }
