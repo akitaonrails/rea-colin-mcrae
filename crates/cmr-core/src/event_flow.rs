@@ -45,6 +45,9 @@ pub struct EventConfig {
     /// `+0x25`: bit 7 forces a night stage, bit 6 weather type 5
     /// ([`crate::stage_weather`]).
     pub options_025: u8,
+    /// `+0x26`: the cheat/effect bits (bit 0 and bit 4 turn the crash
+    /// damage off, bit 1 the effects, bit 3 the alternate throttle).
+    pub effects_026: u8,
     /// `+0xb6`: player 1's car (low nibble) and manual gearbox (bit 4).
     pub car_0b6: u8,
     /// `+0x164`: the selected-stages mask.
@@ -84,6 +87,7 @@ impl EventConfig {
             unlocks_023: live[0x23],
             unlocks_024: live[0x24],
             options_025: live[0x25],
+            effects_026: live[0x26],
             car_0b6: live[0xb6],
             stage_mask_164: live[0x164],
             stage_count_165: live[0x165],
@@ -109,6 +113,7 @@ impl EventConfig {
         live[0x23] = self.unlocks_023;
         live[0x24] = self.unlocks_024;
         live[0x25] = self.options_025;
+        live[0x26] = self.effects_026;
         live[0xb6] = self.car_0b6;
         live[0x164] = self.stage_mask_164;
         live[0x165] = self.stage_count_165;

@@ -66,8 +66,10 @@ pub struct DamagePart {
     pub rest: Vec<DamagePrim>,
     pub crush: Vec<DamagePrim>,
     pub live: Vec<DamagePrim>,
-    /// LOD 0's group-1 record.
+    /// LOD 0's group-1 record, and the node's group-0 record (its scene
+    /// node).
     pub live_record: usize,
+    pub node_index: usize,
     /// The material walk's stop, in original prim order: the live prim
     /// that takes the crushed prim's material on detach.
     material_prim: usize,
@@ -106,8 +108,19 @@ impl DamagePart {
             crush: reversed(lod1),
             live: reversed(lod0),
             live_record,
+            node_index: 0,
             material_prim,
         })
+    }
+
+    /// The live prims with their place in the node's draw group (original
+    /// order; the chains are reversed).
+    pub fn live_in_draw_order(&self) -> impl Iterator<Item = (usize, &DamagePrim)> {
+        let len = self.live.len();
+        self.live
+            .iter()
+            .enumerate()
+            .map(move |(c, prim)| (len - 1 - c, prim))
     }
 
     /// The chain-order index of an original-order prim.
@@ -253,8 +266,9 @@ impl CarDamage {
         let body = nodes.iter().position(|n| n.node_id() == BODY_NODE_ID)?;
         let children = nodes
             .iter()
-            .filter(|n| n.parent_index() == Some(body))
-            .filter_map(|node| {
+            .enumerate()
+            .filter(|(_, n)| n.parent_index() == Some(body))
+            .filter_map(|(node_index, node)| {
                 let lods: Vec<usize> = node.values().map(usize::from).collect();
                 let prims = |lod: usize| {
                     lods.get(lod)
@@ -262,7 +276,10 @@ impl CarDamage {
                         .map(|&record| lod_prims(record))
                         .unwrap_or_default()
                 };
-                DamagePart::new(node.node_id(), *lods.first()?, prims(0), prims(1), prims(2))
+                let mut part =
+                    DamagePart::new(node.node_id(), *lods.first()?, prims(0), prims(1), prims(2))?;
+                part.node_index = node_index;
+                Some(part)
             })
             .collect();
         Some(Self::new(children, low_detail, model))

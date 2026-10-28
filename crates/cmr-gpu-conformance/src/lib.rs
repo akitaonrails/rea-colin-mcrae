@@ -901,6 +901,48 @@ mod tests {
     }
 
     #[test]
+    fn a_dynamic_prim_rewrites_in_place_and_keeps_its_topology() {
+        let bytes = drawable_stage_c3d(&indexed_bitmap_4x4());
+        let file = parse_c3d(&bytes, C3dLimits::default()).unwrap();
+        let scene = StageScene::from_c3d(&file, &MATRIX_IDENTITY_Q16, VERTEXTYPE_LVERTEX).unwrap();
+        let textures = StageC3dTextures::prepare(&file, BitmapLimits::default()).unwrap();
+        let mut prepared = PreparedRawStage::prepare_layers(
+            [
+                PreparedRawStageLayer::opaque(&scene, &textures),
+                PreparedRawStageLayer::keyed_dynamic(&scene, &textures, 0, 0),
+            ],
+            DisplayExtent {
+                width: 64,
+                height: 48,
+            },
+            &active_palette(),
+        )
+        .unwrap();
+        let before = prepared.mesh_vertices(1).unwrap().to_vec();
+        let moved: Vec<C3dStageVertex> = before
+            .iter()
+            .map(|_| C3dStageVertex::from_raw_components([1 << 16, 0, 0, 0, 0, 0, 0, 0]))
+            .collect();
+        // Node 0's prim 0 on the dynamic layer is mesh 1; the opaque copy
+        // stays.
+        assert_eq!(
+            prepared.rewrite_dynamic_prim(0, 0, 0, &moved, 0).unwrap(),
+            Some(1)
+        );
+        assert_eq!(prepared.mesh_vertices(1).unwrap(), &moved[..]);
+        assert_eq!(prepared.mesh_vertices(0).unwrap(), &before[..]);
+        assert_eq!(
+            prepared.rewrite_dynamic_prim(0, 0, 9, &moved, 0).unwrap(),
+            None,
+            "no such prim"
+        );
+        assert!(matches!(
+            prepared.rewrite_dynamic_prim(0, 0, 0, &moved[..1], 0),
+            Err(PreparedRawStageError::Contract(_))
+        ));
+    }
+
+    #[test]
     #[ignore = "requires SDL_VIDEO_DRIVER=offscreen plus Vulkan-capable wgpu and SDL_GPU devices"]
     fn both_backends_match_exactly_on_one_raw_recovered_c3d_packet() {
         let bytes = drawable_stage_c3d(&indexed_bitmap_4x4());

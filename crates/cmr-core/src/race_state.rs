@@ -799,6 +799,9 @@ pub struct StaticMaterialImpact {
 pub struct StaticCollisionStep {
     pub contacts: usize,
     pub impacts: Vec<StaticMaterialImpact>,
+    /// The breakage cues (`FUN_0046a2a0`): the damage's kind and the world
+    /// contact, in hit order.
+    pub contact_effects: Vec<(i32, [i32; 3])>,
 }
 
 /// Orientation and angular inputs shared by the native motion/contact passes.
@@ -1144,6 +1147,8 @@ pub struct RaceState {
 pub struct TumbleImpact {
     pub severity_vector: [i32; 3],
     pub point: [i32; 3],
+    /// The car-local contact `car +0x3f0` the damage dents around.
+    pub contact_3f0: [i32; 3],
 }
 
 impl RaceState {
@@ -1301,7 +1306,35 @@ impl RaceState {
             .flatten()
             .collect();
         self.car = committed;
-        Ok(StaticCollisionStep { contacts, impacts })
+        let contact_effects = kernel
+            .hits()
+            .iter()
+            .filter_map(|hit| match hit {
+                crate::static_collision_kernel::StaticKernelHit::Normal { response, .. } => {
+                    Some(response.events.iter().filter_map(|event| match *event {
+                        crate::static_collision_response::StaticResponseEvent::ContactEffect {
+                            handle,
+                            world_contact,
+                        } => Some((
+                            handle,
+                            [
+                                world_contact.x.raw(),
+                                world_contact.y.raw(),
+                                world_contact.z.raw(),
+                            ],
+                        )),
+                        _ => None,
+                    }))
+                }
+                crate::static_collision_kernel::StaticKernelHit::Alternate { .. } => None,
+            })
+            .flatten()
+            .collect();
+        Ok(StaticCollisionStep {
+            contacts,
+            impacts,
+            contact_effects,
+        })
     }
 
     /// The unit forward vector for the current heading on the x/z plane.
@@ -2304,6 +2337,7 @@ impl RaceState {
             self.last_tumble_impact = Some(TumbleImpact {
                 severity_vector: [impact.x.raw(), impact.y.raw(), impact.z.raw()],
                 point: contact.point,
+                contact_3f0: contact.contact_3f0,
             });
         }
         self.car.position = after.position;

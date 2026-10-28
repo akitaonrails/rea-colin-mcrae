@@ -113,6 +113,50 @@ struct DynamicDraw {
     draw: usize,
     world_set: usize,
     node: usize,
+    /// The prim's place in its node's active draw group, its mesh and its
+    /// layer (for a later in-place rewrite).
+    prim: usize,
+    mesh: u32,
+    layer: usize,
+}
+
+/// Upload one layer-local ordinal's texture once, returning its id, or
+/// `None` when the layer cannot resolve it.
+fn texture_id_for(
+    layer_index: usize,
+    layer: &PreparedRawStageLayer<'_, '_>,
+    ordinal: i16,
+    prepared_textures: &mut Vec<C3dIndexedTexture>,
+    texture_by_ordinal: &mut BTreeMap<(usize, i16), u32>,
+) -> Result<Option<u32>, PreparedRawStageError> {
+    let key = (layer_index, ordinal);
+    if let Some(&existing) = texture_by_ordinal.get(&key) {
+        return Ok(Some(existing));
+    }
+    let Some(sampled) = layer.textures.texture_for_ordinal(ordinal) else {
+        return Ok(None);
+    };
+    let [width, height] = sampled.extent();
+    let texture = C3dIndexedTexture::new(
+        DisplayExtent { width, height },
+        sampled.indices().to_vec(),
+        sampled
+            .palette()
+            .iter()
+            .copied()
+            .map(C3dRgb8::from)
+            .collect::<Vec<_>>(),
+        layer.color_key_index,
+    )?;
+    let id = u32::try_from(prepared_textures.len()).map_err(|_| {
+        PreparedRawStageError::ResourceCountOverflow {
+            resource: "texture",
+            count: prepared_textures.len(),
+        }
+    })?;
+    prepared_textures.push(texture);
+    texture_by_ordinal.insert(key, id);
+    Ok(Some(id))
 }
 
 /// An owned raw-GPU view of one already parsed stage scene.
@@ -128,6 +172,7 @@ pub struct PreparedRawStage {
     draws: Box<[C3dDraw]>,
     dynamic_draws: Box<[DynamicDraw]>,
     dynamic_world_set_count: usize,
+    texture_by_ordinal: BTreeMap<(usize, i16), u32>,
     stats: PreparedRawStageStats,
 }
 
@@ -182,38 +227,17 @@ impl PreparedRawStage {
                     stats.empty_lod_nodes += 1;
                     continue;
                 };
-                for prim in draw_group.prims() {
-                    let ordinal = prim.selector();
-                    let Some(sampled) = layer.textures.texture_for_ordinal(ordinal) else {
+                for (prim_index, prim) in draw_group.prims().iter().enumerate() {
+                    let Some(texture_id) = texture_id_for(
+                        layer_index,
+                        &layer,
+                        prim.selector(),
+                        &mut prepared_textures,
+                        &mut texture_by_ordinal,
+                    )?
+                    else {
                         stats.unresolved_prims += 1;
                         continue;
-                    };
-
-                    let key = (layer_index, ordinal);
-                    let texture_id = if let Some(&existing) = texture_by_ordinal.get(&key) {
-                        existing
-                    } else {
-                        let [width, height] = sampled.extent();
-                        let texture = C3dIndexedTexture::new(
-                            DisplayExtent { width, height },
-                            sampled.indices().to_vec(),
-                            sampled
-                                .palette()
-                                .iter()
-                                .copied()
-                                .map(C3dRgb8::from)
-                                .collect::<Vec<_>>(),
-                            layer.color_key_index,
-                        )?;
-                        let id = u32::try_from(prepared_textures.len()).map_err(|_| {
-                            PreparedRawStageError::ResourceCountOverflow {
-                                resource: "texture",
-                                count: prepared_textures.len(),
-                            }
-                        })?;
-                        prepared_textures.push(texture);
-                        texture_by_ordinal.insert(key, id);
-                        id
                     };
 
                     let mesh_id = u32::try_from(meshes.len()).map_err(|_| {
@@ -247,7 +271,31 @@ impl PreparedRawStage {
                             draw: draw_index,
                             world_set,
                             node: op.node,
+                            prim: prim_index,
+                            mesh: mesh_id,
+                            layer: layer_index,
                         });
+                    }
+                }
+            }
+            // A dynamic layer (the car) can swap a prim to a material only
+            // its other LODs use (the crash damage), so those are uploaded
+            // too.
+            if layer.dynamic_world_set.is_some() {
+                for op in layer.scene.draw_order() {
+                    let Some(mesh) = layer.scene.mesh(op.node) else {
+                        continue;
+                    };
+                    for lod in 0..mesh.lod_count() {
+                        for prim in mesh.lod(lod).map_or(&[][..], |group| group.prims()) {
+                            texture_id_for(
+                                layer_index,
+                                &layer,
+                                prim.selector(),
+                                &mut prepared_textures,
+                                &mut texture_by_ordinal,
+                            )?;
+                        }
                     }
                 }
             }
@@ -276,8 +324,52 @@ impl PreparedRawStage {
             draws: draws.into_boxed_slice(),
             dynamic_draws: dynamic_draws.into_boxed_slice(),
             dynamic_world_set_count,
+            texture_by_ordinal,
             stats,
         })
+    }
+
+    /// Rewrite one dynamic-layer prim in place (the car's crash damage): its
+    /// vertices, same count, and its material when that ordinal was
+    /// uploaded. Returns the mesh whose GPU vertex buffer must be re-uploaded,
+    /// or `None` when no such prim was prepared.
+    ///
+    /// # Errors
+    ///
+    /// [`PreparedRawStageError::Contract`] when the vertex count differs.
+    pub fn rewrite_dynamic_prim(
+        &mut self,
+        world_set: usize,
+        node: usize,
+        prim: usize,
+        vertices: &[C3dStageVertex],
+        ordinal: i16,
+    ) -> Result<Option<u32>, PreparedRawStageError> {
+        let Some(dynamic) = self
+            .dynamic_draws
+            .iter()
+            .copied()
+            .find(|d| d.world_set == world_set && d.node == node && d.prim == prim)
+        else {
+            return Ok(None);
+        };
+        self.resources
+            .replace_mesh_vertices(dynamic.mesh, vertices)?;
+        if let Some(&texture) = self.texture_by_ordinal.get(&(dynamic.layer, ordinal)) {
+            let old = self.draws[dynamic.draw];
+            self.draws[dynamic.draw] =
+                C3dDraw::new(old.mesh(), texture, old.world(), old.submission())?;
+        }
+        Ok(Some(dynamic.mesh))
+    }
+
+    /// The current vertices of a prepared mesh.
+    #[must_use]
+    pub fn mesh_vertices(&self, mesh: u32) -> Option<&[C3dStageVertex]> {
+        self.resources
+            .meshes()
+            .get(mesh as usize)
+            .map(C3dMeshResource::vertices)
     }
 
     /// Borrows the immutable upload inputs for a persistent GPU scene.

@@ -89,6 +89,8 @@ pub struct BarrierCar {
 pub struct BarrierImpact {
     pub severity_vector: [i32; 3],
     pub point: [i32; 3],
+    /// The car-local contact `car +0x3f0` the damage dents around.
+    pub contact_3f0: [i32; 3],
 }
 
 /// `FUN_00401450`'s horizontal box: unit axis `(x, z)`, its perpendicular
@@ -377,6 +379,7 @@ pub fn barrier_response(
         let center = car.bounds.current_position;
         car.impact = Some(BarrierImpact {
             severity_vector: change,
+            contact_3f0: local,
             point: std::array::from_fn(|axis| {
                 q(row2[axis], local[2])
                     .wrapping_add(q(row1[axis], local[1]))

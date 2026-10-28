@@ -241,6 +241,17 @@ pub struct GameplaySession<'a> {
     wet_brakes: bool,
     gear_copies: Option<([i32; 8], [i32; 8])>,
     damage_writeback: bool,
+    /// The player car's crash damage (parts and setup-block words), the
+    /// impacts' breakage cues for the host, and whether the live meshes
+    /// changed since the host last copied them.
+    car_damage: Option<crate::car_crash_damage::CarDamage>,
+    breakage_cues: Vec<(crate::car_crash_damage::BreakageKind, [i32; 3])>,
+    damage_mesh_dirty: bool,
+    /// `DAT_005fbe8c`: the last impact's severity (the school reads it).
+    last_severity_5fbe8c: i32,
+    /// Car `+0x760`: a penalty reset ran this stage (only ever set), which
+    /// turns the crash damage off.
+    car_760: bool,
     /// The rally school's task (`FUN_004716b0` at the stage load) and the
     /// words that outlive it.
     school: Option<SchoolTask>,
@@ -293,6 +304,49 @@ impl SchoolTask {
         } else {
             0
         }
+    }
+}
+
+/// The static pass's damage owner (`FUN_0043d760` -> `FUN_0041f630`):
+/// each new contact dents the car in pass order and hands the detach's
+/// kind back as the effect handle the pass cues with. With the damage off
+/// the kind is not written (the caller's zero).
+struct CrashDamageOwner<'a, D> {
+    inner: &'a mut D,
+    damage: Option<&'a mut crate::car_crash_damage::CarDamage>,
+    /// Per committed contact: its impact table (with the damage on) and its
+    /// severity.
+    impacts: Vec<(Option<[i32; crate::car_crash_damage::MAX_PARTS]>, i32)>,
+}
+
+impl<D: StaticDamageOwner> StaticDamageOwner for CrashDamageOwner<'_, D> {
+    type Error = D::Error;
+
+    fn type_one_effect_gate_blocked(&mut self) -> Result<bool, Self::Error> {
+        self.inner.type_one_effect_gate_blocked()
+    }
+
+    fn capture_debug_material(&self) -> bool {
+        self.inner.capture_debug_material()
+    }
+
+    fn commit_contact(
+        &mut self,
+        request: crate::static_collision_response::StaticDamageRequest,
+    ) -> Result<crate::static_collision_response::DamageResult, Self::Error> {
+        let result = self.inner.commit_contact(request)?;
+        let severity = request.severity.raw();
+        let Some(damage) = self.damage.as_deref_mut() else {
+            self.impacts.push((None, severity));
+            return Ok(result);
+        };
+        let c = request.contact_3f0;
+        damage.dent([c.x.raw(), c.y.raw(), c.z.raw()], severity);
+        let kind = damage.detach();
+        self.impacts.push((Some(damage.impact_864), severity));
+        Ok(crate::static_collision_response::DamageResult {
+            effect_handle: kind.map_or(0, |kind| kind as i32),
+        })
     }
 }
 
@@ -688,6 +742,11 @@ impl<'a> GameplaySession<'a> {
             wet_brakes: false,
             gear_copies: None,
             damage_writeback: false,
+            car_damage: None,
+            breakage_cues: Vec::new(),
+            damage_mesh_dirty: false,
+            last_severity_5fbe8c: 0,
+            car_760: false,
             school: None,
             school_statics: crate::school_race::SchoolStatics::default(),
             rng: crate::game_rng::GameLcg::new(1),
@@ -1017,6 +1076,10 @@ impl<'a> GameplaySession<'a> {
             }
             self.last_reset = outcome;
         }
+        // The barrier walls' and the ground pass's `FUN_0041f630` calls ran
+        // before this tick's reset could set `+0x760`.
+        self.apply_tail_impacts();
+        self.car_760 |= self.last_reset.penalty_done_760;
         sample.car = self.race.car();
         Ok(())
     }
@@ -1052,6 +1115,7 @@ impl<'a> GameplaySession<'a> {
         progress.restart();
         self.last_reset = ResetOutcome::default();
         self.last_trigger_events.clear();
+        self.car_760 = false;
         self.stage_dirty = false;
     }
 
@@ -1180,12 +1244,23 @@ impl<'a> GameplaySession<'a> {
             } else {
                 self.race.step(&controls, &self.params)
             };
-            match self.race.resolve_static_collision_after_step(
+            let enabled = self.damage_enabled();
+            let mut owner = CrashDamageOwner {
+                inner: damage_owner,
+                damage: self.car_damage.as_mut().filter(|_| enabled),
+                impacts: Vec::new(),
+            };
+            let result = self.race.resolve_static_collision_after_step(
                 previous_center_xz,
                 parsed,
-                damage_owner,
-            ) {
-                Ok(step) => self.last_static_impacts = step.impacts,
+                &mut owner,
+            );
+            let committed = std::mem::take(&mut owner.impacts);
+            match result {
+                Ok(step) => {
+                    self.commit_static_damage(&committed, &step.contact_effects);
+                    self.last_static_impacts = step.impacts;
+                }
                 Err(error) => {
                     self.race = race_before;
                     return Err(StaticGameplayAdvanceError::Collision(error));
@@ -1295,6 +1370,161 @@ impl<'a> GameplaySession<'a> {
         &self.car_setup
     }
 
+    /// The stage load's part setup (`FUN_0041efe0`) for the player car:
+    /// fresh parts, no deformation.
+    pub fn attach_car_damage(&mut self, mut damage: crate::car_crash_damage::CarDamage) {
+        damage.clear_impacts();
+        self.car_damage = Some(damage);
+        self.damage_mesh_dirty = false;
+        self.breakage_cues.clear();
+    }
+
+    /// The player car's crash damage.
+    #[must_use]
+    pub const fn car_damage(&self) -> Option<&crate::car_crash_damage::CarDamage> {
+        self.car_damage.as_ref()
+    }
+
+    /// Whether the live part meshes changed since the last call (the host
+    /// then writes them into the model it draws).
+    pub fn take_damage_mesh_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.damage_mesh_dirty)
+    }
+
+    /// The breakage cues (`FUN_0046a2a0`'s kind and the world point) since
+    /// the last call.
+    pub fn take_breakage_cues(&mut self) -> Vec<(crate::car_crash_damage::BreakageKind, [i32; 3])> {
+        std::mem::take(&mut self.breakage_cues)
+    }
+
+    /// `FUN_00474da0`'s damage total: the parts' deformation but part 12.
+    #[must_use]
+    pub fn damage_total(&self) -> i32 {
+        self.car_damage.as_ref().map_or(0, |damage| {
+            damage.deform_788[..damage.count]
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i != 0xc)
+                .fold(0i32, |sum, (_, &d)| sum.wrapping_add(d))
+        })
+    }
+
+    /// Whether `FUN_0041f630` runs the damage: `cfg[0x26] & 0x11` clear and
+    /// no penalty run (`car +0x760`).
+    fn damage_enabled(&self) -> bool {
+        self.session.event().cfg.effects_026 & 0x11 == 0 && !self.car_760
+    }
+
+    /// `FUN_0041f630`'s tail for one impact of `severity` at the car-local
+    /// `contact_3f0`: with the damage on, the dents, the detach and its cue
+    /// at `point`, and the handling re-derived (`FUN_00420740`); then the
+    /// school's severity hook.
+    pub fn crash_impact(&mut self, contact_3f0: [i32; 3], severity: i32, point: [i32; 3]) {
+        if self.damage_enabled()
+            && let Some(damage) = self.car_damage.as_mut()
+        {
+            damage.dent(contact_3f0, severity);
+            if let Some(kind) = damage.detach() {
+                self.breakage_cues.push((kind, point));
+            }
+            self.damage_mesh_dirty = true;
+            let table = damage.impact_864;
+            let indices = damage.layout.handling_cc1;
+            self.rederive_handling(&table, indices);
+        }
+        if self.session.event().globals.school_d3ca88 {
+            self.last_severity_5fbe8c = severity;
+        }
+    }
+
+    /// The barrier walls' impacts (`0x402558`, gated by `+0x6e0` where the
+    /// walk builds them) then the ground pass's landing or tumbling impact
+    /// (`0x411fb2`/`0x413990`, skipped with `cfg[0x26] & 2`), in that order.
+    fn apply_tail_impacts(&mut self) {
+        let barriers: Vec<_> = self
+            .last_trigger_events
+            .iter()
+            .filter_map(|event| match *event {
+                TriggerEvent::Barrier {
+                    impact: Some(impact),
+                    ..
+                } => Some((impact.contact_3f0, impact.severity_vector, impact.point)),
+                _ => None,
+            })
+            .collect();
+        let ground = self
+            .race
+            .last_tumble_impact()
+            .filter(|_| self.session.event().cfg.effects_026 & 2 == 0)
+            .map(|impact| (impact.contact_3f0, impact.severity_vector, impact.point));
+        for (contact, vector, point) in barriers.into_iter().chain(ground) {
+            let severity = crate::prang_sound::impact_severity(vector);
+            self.crash_impact(contact, severity, point);
+        }
+    }
+
+    /// The static pass's committed contacts in order: the handling for each
+    /// (`FUN_00420740`), the school's severity hook, and the pass's
+    /// breakage cues.
+    fn commit_static_damage(
+        &mut self,
+        impacts: &[(Option<[i32; crate::car_crash_damage::MAX_PARTS]>, i32)],
+        contact_effects: &[(i32, [i32; 3])],
+    ) {
+        let indices = self
+            .car_damage
+            .as_ref()
+            .map(|damage| damage.layout.handling_cc1);
+        for (table, severity) in impacts {
+            if let (Some(table), Some(indices)) = (table, indices) {
+                self.damage_mesh_dirty = true;
+                self.rederive_handling(table, indices);
+            }
+            if self.session.event().globals.school_d3ca88 {
+                self.last_severity_5fbe8c = *severity;
+            }
+        }
+        for &(handle, point) in contact_effects {
+            let kind = match handle {
+                1 => crate::car_crash_damage::BreakageKind::Headlight,
+                2 => crate::car_crash_damage::BreakageKind::Screen,
+                3 => crate::car_crash_damage::BreakageKind::Mirror,
+                _ => continue,
+            };
+            self.breakage_cues.push((kind, point));
+        }
+    }
+
+    /// `FUN_00420740` after an impact: the fractions raised by the impact
+    /// table, the handling and gear ratios re-derived.
+    fn rederive_handling(&mut self, table: &[i32], indices: [u8; 6]) {
+        let Some(wheel) = self.wheel.as_mut() else {
+            return;
+        };
+        let Some(gearbox) = wheel.gearbox.as_mut() else {
+            return;
+        };
+        let (ratios, inverses) = *self
+            .gear_copies
+            .get_or_insert((gearbox.tables.ratio_1d0, gearbox.tables.inverse_1f0));
+        let Ok((block, gears)) = crate::car_setup::derive_car_setup(
+            self.car_setup,
+            crate::car_setup::SetupDamage {
+                table_864: table,
+                indices_cc1: indices,
+            },
+            wheel.pedal_response.throttle_max_148,
+            ratios,
+            inverses,
+        ) else {
+            return;
+        };
+        gearbox.tables.ratio_1d0 = gears.ratio_1d0;
+        gearbox.tables.inverse_1f0 = gears.inverse_1f0;
+        crate::race_state::populate_car_setup(wheel, &block);
+        self.car_setup = block;
+    }
+
     /// A finish since the last call: the host writes the damage back to the
     /// record (`FUN_00420db0`).
     pub fn take_damage_writeback(&mut self) -> bool {
@@ -1365,9 +1595,7 @@ impl<'a> GameplaySession<'a> {
     }
 
     /// The car words the school reads. No moving objects (cones) are
-    /// reconstructed, so there is never an object contact; the damage
-    /// table `DAT_0050e0d8` (crash damage) is not reconstructed, so its
-    /// total and the impact severity stay 0.
+    /// reconstructed, so there is never an object contact.
     fn school_car(&self, progress: Option<&StageProgress>) -> crate::school_race::SchoolCar {
         let car = self.race.car();
         let four = &car.four_wheel;
@@ -1393,8 +1621,8 @@ impl<'a> GameplaySession<'a> {
             analog_throttle: false,
             surfaces,
             crashed: car.collision.response_state_680,
-            damage: 0,
-            severity: 0,
+            damage: self.damage_total(),
+            severity: self.last_severity_5fbe8c,
             cat_remaining: progress
                 .map_or(i32::MAX, |p| p.nodes().len() as i32 - p.cursor() as i32),
             reverse_count_5: progress.is_some_and(|p| p.reverse_crossings() == 5),
@@ -2252,6 +2480,47 @@ mod tests {
         );
         assert_eq!(*hub.last().unwrap(), FadeComposite::Clear);
         assert_eq!(wrote_back, 1, "the finish hands the damage back once");
+    }
+
+    #[test]
+    fn an_impact_dents_the_car_unless_the_damage_is_off() {
+        use crate::car_crash_damage::{BreakageKind, CarDamage, DamagePart, DamagePrim};
+        let prim = |x: i32, material: i16| DamagePrim {
+            positions: vec![[x, 0, 0]],
+            uvs: vec![[0, 0]],
+            material,
+            entries: vec![0],
+            faces: 0..1,
+        };
+        // Node 7 is part 1, the high-detail mirror.
+        let part = |id| {
+            DamagePart::new(
+                id,
+                0,
+                vec![prim(0x8000, 1)],
+                vec![prim(0x4000, 2)],
+                vec![prim(0x8000, 1)],
+            )
+            .unwrap()
+        };
+        let damage = CarDamage::new(vec![part(6), part(7)], false, 0);
+        let mut session = GameplaySession::new(params(), InRaceScript::gameplay_harness());
+        session.attach_car_damage(damage.clone());
+        session.crash_impact([0x8000, 0, 0], 0x1_0000, [1, 2, 3]);
+        assert!(session.take_damage_mesh_dirty());
+        assert!(!session.take_damage_mesh_dirty(), "taken once");
+        assert!(session.damage_total() > 0);
+        assert_eq!(
+            session.take_breakage_cues(),
+            [(BreakageKind::Mirror, [1, 2, 3])]
+        );
+        // `cfg[0x26] & 1` turns the damage off.
+        let mut off = GameplaySession::new(params(), InRaceScript::gameplay_harness());
+        off.event_mut().cfg.effects_026 = 1;
+        off.attach_car_damage(damage);
+        off.crash_impact([0x8000, 0, 0], 0x1_0000, [0; 3]);
+        assert!(!off.take_damage_mesh_dirty());
+        assert_eq!(off.damage_total(), 0);
     }
 
     #[test]

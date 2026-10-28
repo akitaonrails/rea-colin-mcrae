@@ -177,6 +177,7 @@ pub struct WgpuIndexedPaletteBackend {
 
 struct WgpuPreparedMesh {
     vertex: wgpu::Buffer,
+    vertex_count: usize,
     index: wgpu::Buffer,
     index_count: u32,
 }
@@ -915,6 +916,46 @@ impl RawC3dGpuBackend for WgpuIndexedPaletteBackend {
     }
 }
 
+impl WgpuIndexedPaletteBackend {
+    /// Rewrite one prepared mesh's vertex buffer in place, keeping its
+    /// vertex count (the car's crash damage moves vertices, never adds or
+    /// drops them). Mirrors
+    /// [`cmr_gpu_contract::C3dResourceSet::replace_mesh_vertices`].
+    ///
+    /// # Errors
+    ///
+    /// [`WgpuBackendError::RawContract`] for an unknown mesh or a changed
+    /// vertex count; the buffer is left as it was.
+    pub fn rewrite_prepared_mesh_vertices(
+        &self,
+        scene: &mut WgpuPreparedC3dScene,
+        mesh: u32,
+        vertices: &[cmr_gpu_contract::C3dStageVertex],
+    ) -> Result<(), WgpuBackendError> {
+        let resource_count = scene.meshes.len();
+        let slot = scene
+            .meshes
+            .get(mesh as usize)
+            .ok_or(WgpuBackendError::RawContract(
+                RawC3dContractError::MeshRewriteOutOfBounds {
+                    resource: mesh,
+                    resource_count,
+                },
+            ))?;
+        if slot.vertex_count != vertices.len() {
+            return Err(WgpuBackendError::RawContract(
+                RawC3dContractError::MeshRewriteVertexCount {
+                    expected: slot.vertex_count,
+                    actual: vertices.len(),
+                },
+            ));
+        }
+        self.queue
+            .write_buffer(&slot.vertex, 0, &c3d_vertex_bytes(vertices));
+        Ok(())
+    }
+}
+
 impl PersistentRawC3dGpuBackend for WgpuIndexedPaletteBackend {
     type Error = WgpuBackendError;
     type PreparedScene = WgpuPreparedC3dScene;
@@ -978,6 +1019,7 @@ impl PersistentRawC3dGpuBackend for WgpuIndexedPaletteBackend {
                     &c3d_vertex_bytes(mesh.vertices()),
                     wgpu::BufferUsages::VERTEX,
                 ),
+                vertex_count: mesh.vertices().len(),
                 index: create_initialized_buffer(
                     &self.device,
                     &self.queue,
@@ -2219,6 +2261,36 @@ mod tests {
         assert!(first_timing.submit_to_completion_ns > 0);
         assert!(second_timing.cpu_encode_submit_ns > 0);
         assert!(second_timing.submit_to_completion_ns > 0);
+
+        // A rewritten vertex buffer renders as a freshly prepared one with
+        // the same vertices; a changed count is refused.
+        let shifted = [
+            vertex(-ONE / 4, -ONE / 2, 2 * ONE, 0, ONE),
+            vertex(ONE / 4, ONE / 2, 2 * ONE, ONE / 2, 0),
+            vertex(3 * ONE / 4, -ONE / 2, 2 * ONE, ONE, ONE),
+        ];
+        backend
+            .rewrite_prepared_mesh_vertices(&mut prepared, 0, &shifted)
+            .unwrap();
+        let rewritten = backend
+            .render_prepared_readback(&mut prepared, prepared_frame)
+            .unwrap();
+        let fresh_resources = C3dResourceSet::new(
+            [C3dMeshResource::new(shifted, [0, 1, 2]).unwrap()],
+            resources.textures().to_vec(),
+        );
+        let fresh_upload = C3dSceneUpload::new(extent, &fresh_resources, &active_palette).unwrap();
+        let mut fresh = backend.prepare_c3d_scene(fresh_upload).unwrap();
+        let fresh_pixels = backend
+            .render_prepared_readback(&mut fresh, prepared_frame)
+            .unwrap();
+        assert_eq!(rewritten, fresh_pixels);
+        assert_ne!(rewritten, prepared_pixels);
+        assert!(
+            backend
+                .rewrite_prepared_mesh_vertices(&mut prepared, 0, &shifted[..2])
+                .is_err()
+        );
     }
 
     #[test]

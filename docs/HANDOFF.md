@@ -193,9 +193,9 @@ button setups, with their previews, flags, logos and the turning 3D car
 setup (`impl.chosen-car`). Before a stage the country welcome screen (state 2,
 `impl.welcome-screen`) and the service screen (state 3, `impl.service-screen-draw`,
 `.work/service-screen-draw-notes.md`) run from the user's assets; the damage
-write-back `FUN_00420db0` is wired (`impl.car-damage`), but crash damage
-(`FUN_0041f630` -> `FUN_0041f880`, `.work/car-damage-notes.md`) still needs the
-car's crushed meshes, so only water damages the car.
+write-back `FUN_00420db0` is wired (`impl.car-damage`), and crashes dent the car
+(`impl.car-crash-damage`, `impl.crash-damage-wiring`, `.work/car-damage-notes.md`,
+`.work/car-damage-contact-notes.md`) except from moving objects and other cars.
 The race fades follow the binary (`impl.race-fade`, `.work/race-fade-notes.md`);
 the rally school's screens run in state 2 (`impl.school-menu`,
 `.work/school-menu-notes.md`) with their Video 1 movies (`impl.msvideo1-movies`);

@@ -744,6 +744,36 @@ impl C3dResourceSet {
     pub fn textures(&self) -> &[C3dIndexedTexture] {
         &self.textures
     }
+
+    /// Replace one mesh's vertices in place, keeping its topology: the new
+    /// list must have the same length, so every index stays in range. A
+    /// persistent backend re-uploads that mesh's vertex buffer to match.
+    ///
+    /// # Errors
+    ///
+    /// [`RawC3dContractError::MeshRewriteOutOfBounds`] for an unknown mesh,
+    /// [`RawC3dContractError::MeshRewriteVertexCount`] for a length change.
+    pub fn replace_mesh_vertices(
+        &mut self,
+        mesh: u32,
+        vertices: &[C3dStageVertex],
+    ) -> Result<(), RawC3dContractError> {
+        let count = self.meshes.len();
+        let slot = self.meshes.get_mut(mesh as usize).ok_or(
+            RawC3dContractError::MeshRewriteOutOfBounds {
+                resource: mesh,
+                resource_count: count,
+            },
+        )?;
+        if slot.vertices.len() != vertices.len() {
+            return Err(RawC3dContractError::MeshRewriteVertexCount {
+                expected: slot.vertices.len(),
+                actual: vertices.len(),
+            });
+        }
+        slot.vertices.copy_from_slice(vertices);
+        Ok(())
+    }
 }
 
 /// Validated per-frame raw C3D draw stream.
@@ -1073,6 +1103,14 @@ pub enum RawC3dContractError {
     PreparedSceneLayoutMismatch {
         prepared: C3dPreparedSceneLayout,
         frame: C3dPreparedSceneLayout,
+    },
+    MeshRewriteOutOfBounds {
+        resource: u32,
+        resource_count: usize,
+    },
+    MeshRewriteVertexCount {
+        expected: usize,
+        actual: usize,
     },
 }
 
@@ -1581,6 +1619,36 @@ mod tests {
         )
         .unwrap();
         C3dResourceSet::new(vec![mesh], vec![texture])
+    }
+
+    #[test]
+    fn a_mesh_rewrite_keeps_its_topology_and_rejects_length_changes() {
+        let vertices = [raw_vertex(1), raw_vertex(2), raw_vertex(3)];
+        let mesh = C3dMeshResource::new(vertices.to_vec(), vec![0, 1, 2]).unwrap();
+        let mut set = C3dResourceSet::new(vec![mesh], Vec::new());
+        let moved = [raw_vertex(4), raw_vertex(5), raw_vertex(6)];
+        set.replace_mesh_vertices(0, &moved).unwrap();
+        assert_eq!(set.meshes()[0].vertices(), &moved);
+        assert_eq!(set.meshes()[0].indices(), &[0, 1, 2]);
+        assert_eq!(
+            set.replace_mesh_vertices(0, &moved[..2]),
+            Err(RawC3dContractError::MeshRewriteVertexCount {
+                expected: 3,
+                actual: 2
+            })
+        );
+        assert_eq!(
+            set.replace_mesh_vertices(1, &moved),
+            Err(RawC3dContractError::MeshRewriteOutOfBounds {
+                resource: 1,
+                resource_count: 1
+            })
+        );
+        assert_eq!(
+            set.meshes()[0].vertices(),
+            &moved,
+            "a refusal changes nothing"
+        );
     }
 
     #[test]

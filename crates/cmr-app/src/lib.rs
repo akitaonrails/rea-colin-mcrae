@@ -1982,6 +1982,26 @@ impl WgpuStageRenderer {
         self.prepared.stats()
     }
 
+    /// Rewrite one car prim (the dynamic layer, world set 0) in place.
+    fn rewrite_car_prim(
+        &mut self,
+        node: usize,
+        prim: usize,
+        vertices: &[cmr_gpu_contract::C3dStageVertex],
+        ordinal: i16,
+    ) -> Result<(), StageFrameError> {
+        let mesh = self
+            .prepared
+            .rewrite_dynamic_prim(0, node, prim, vertices, ordinal)
+            .map_err(StageFrameError::GpuPrepare)?;
+        if let Some(mesh) = mesh {
+            self.backend
+                .rewrite_prepared_mesh_vertices(&mut self.scene, mesh, vertices)
+                .map_err(|error| StageFrameError::GpuInit(error.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Rasterizes one camera frame and returns it as the recovered indexed
     /// presentation value (active-palette slots + the active palette).
     fn compose(
@@ -2226,6 +2246,8 @@ pub struct StageRenderResources {
     scenery_textures: Option<StageC3dTextures>,
     horizon_textures: Option<StageC3dTextures>,
     car_scene: Option<C3dFile>,
+    /// The car model as loaded, before any crash damage.
+    car_scene_pristine: Option<C3dFile>,
     car_textures: Option<StageC3dTextures>,
     race_hud: Option<RaceHudAssets>,
     /// The car shadows (`FUN_004a4f20`), once the race setup attached them.
@@ -2331,6 +2353,7 @@ impl StageRenderResources {
             scenery_textures,
             horizon_textures,
             car_scene: None,
+            car_scene_pristine: None,
             car_textures: None,
             race_hud: None,
             shadow: None,
@@ -2490,9 +2513,68 @@ impl StageRenderResources {
         let scene = parse_c3d(&bytes, C3dLimits::default()).map_err(StageFrameError::CarScene)?;
         let textures = StageC3dTextures::prepare(&scene, BitmapLimits::default())
             .map_err(StageFrameError::Texture)?;
+        self.car_scene_pristine = Some(scene.clone());
         self.car_scene = Some(scene);
         self.car_textures = Some(textures);
         self.rebuild_gpu_foreground()
+    }
+
+    /// The state-4 car load (`FUN_00480e60` then `FUN_0041efe0`): the car
+    /// model as loaded again and its fresh damage parts. `model` is the car
+    /// model index `car +0x739`.
+    fn fresh_car_damage(&mut self, model: u8) -> Option<cmr_core::car_crash_damage::CarDamage> {
+        let pristine = self.car_scene_pristine.as_ref()?;
+        let damage = cmr_core::car_crash_damage::CarDamage::from_c3d(pristine, false, model)?;
+        if self.car_scene.as_ref() != Some(pristine) {
+            self.car_scene = Some(pristine.clone());
+            self.sync_gpu_car(&damage);
+        }
+        Some(damage)
+    }
+
+    /// Copy the damaged live meshes into the car model both renderers draw.
+    fn apply_car_damage(&mut self, damage: &cmr_core::car_crash_damage::CarDamage) {
+        if let Some(scene) = self.car_scene.as_mut() {
+            damage.write_live(scene);
+        }
+        self.sync_gpu_car(damage);
+    }
+
+    /// Rewrite the GPU's car prims from the live meshes (the vertex
+    /// normals stay the model's).
+    fn sync_gpu_car(&mut self, damage: &cmr_core::car_crash_damage::CarDamage) {
+        let (Some(gpu), Some(scene)) = (self.gpu.as_mut(), self.car_scene.as_ref()) else {
+            return;
+        };
+        let records: Vec<_> = scene.group1_records().collect();
+        for part in damage.parts.iter().flatten() {
+            let Some(record) = records.get(part.live_record) else {
+                continue;
+            };
+            let entries: Vec<_> = record.entries_32().collect();
+            for (prim_index, prim) in part.live_in_draw_order() {
+                let vertices: Vec<cmr_gpu_contract::C3dStageVertex> = prim
+                    .entries
+                    .iter()
+                    .zip(&prim.positions)
+                    .zip(&prim.uvs)
+                    .map(|((&entry, p), uv)| {
+                        let n = entries
+                            .get(usize::from(entry))
+                            .map_or([0; 3], |e| e.normal_q16());
+                        cmr_gpu_contract::C3dStageVertex::from_raw_components([
+                            p[0], p[1], p[2], uv[0], uv[1], n[0], n[1], n[2],
+                        ])
+                    })
+                    .collect();
+                if let Err(error) =
+                    gpu.rewrite_car_prim(part.node_index, prim_index, &vertices, prim.material)
+                {
+                    eprintln!("cmr-app: GPU car damage update failed ({error})");
+                    return;
+                }
+            }
+        }
     }
 
     /// Load and retain every source-owned bitmap/font referenced by the
@@ -5082,6 +5164,12 @@ fn advance_game_frame<C: HostClock>(
     }
     // `FUN_00420db0` at the finish (not in time trial): the damage back into
     // player 1's record, where the service screen reads it.
+    // The crash damage's dents into the drawn car model.
+    if session.take_damage_mesh_dirty()
+        && let Some(damage) = session.car_damage()
+    {
+        resources.apply_car_damage(damage);
+    }
     if session.take_damage_writeback() && session.event().cfg.mode_166 & 3 != 2 {
         let event = session.event();
         let carry = event.globals.school_d3ca88 || event.cfg.cursor_168 & 0xf0 != 0x50;
@@ -6450,8 +6538,8 @@ impl EffectsAudio {
         let centre = vec3_raw(car.position);
         // Impacts fire inside Mechanics, so only on a stepped tick: static
         // scenery first (`FUN_0043d760`), then the barrier walk
-        // (`FUN_00401fd0`), then the tumbling contact (`FUN_00412860`). The damage model that yields the breakage kind is
-        // not reconstructed, so no breakage cue plays.
+        // (`FUN_00401fd0`), then the tumbling contact (`FUN_00412860`); the
+        // crash damage's breakage cues (`FUN_0046a2a0`) follow.
         if stepped {
             let static_impacts = session
                 .last_static_impacts()
@@ -6492,6 +6580,25 @@ impl EffectsAudio {
                     master_percent,
                 };
                 play_impact(&self.prang, &mut out, severity, azimuth, object_type);
+            }
+            for (kind, point) in session.take_breakage_cues() {
+                let Ok(azimuth) = point_azimuth(camera_world, camera_mode, centre, point) else {
+                    continue;
+                };
+                let mut out = PrangVoices {
+                    voices: &mut *mixer,
+                    slot_base: banks.prang,
+                    channel_base: PRANG_CHANNEL_BASE,
+                    centre_proximity,
+                    master_percent,
+                };
+                cmr_core::prang_sound::play_breakage(
+                    &self.prang,
+                    &mut out,
+                    rng,
+                    kind as i32,
+                    azimuth,
+                );
             }
         }
         self.crowd_tick(
@@ -8049,6 +8156,12 @@ fn reload_stage_for_event<'a>(
         return Ok(());
     }
     reload_changed_stage(session, resources, progress, audio, camera, loaded, context)?;
+    // The car load reloads the model and sets its parts up afresh
+    // (`FUN_00480e60`, `FUN_0041efe0`); the model index is `cfg[0xb6]`'s.
+    let model = session.event().cfg.car_0b6 & 0xf;
+    if let Some(damage) = resources.fresh_car_damage(model) {
+        session.attach_car_damage(damage);
+    }
     // The school's stage load (`FUN_004716b0`) and setup (`FUN_0046ee70`).
     if session.event().globals.school_d3ca88 {
         start_school_task(session, loaded, config, results, &mut camera.rng);
@@ -10679,6 +10792,10 @@ mod tests {
         .with_stage_triggers(&trigger_volumes, &trigger_cell_centers)
         .unwrap();
         assert!(session.is_four_wheel());
+        // The harness skips the state-4 car load: its fresh damage parts.
+        if let Some(damage) = resources.fresh_car_damage(0) {
+            session.attach_car_damage(damage);
+        }
         eprintln!(
             "frames static_collision_scene={}",
             resources.static_collision_scene().is_some()
@@ -10855,6 +10972,13 @@ mod tests {
             if frame % every == 0 || frame + 1 == frames {
                 let car = session.car();
                 let moved = car.position.sub(origin);
+                eprintln!(
+                    "frames frame={frame} damage total={:#x} detached={:?}",
+                    session.damage_total(),
+                    session
+                        .car_damage()
+                        .map(|d| d.detached_bb8[..d.count].to_vec())
+                );
                 eprintln!(
                     "frames frame={frame} state={} cursor={} speed={:#x} moved=({:#x},{:#x},{:#x}) row0=({:#x},{:#x},{:#x}) gear={} contacts={:?}",
                     session.state().id(),
