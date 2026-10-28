@@ -808,10 +808,7 @@ mod tests {
         let commands = plan(input(&transcript));
         assert_eq!(commands.len(), 9);
         assert_eq!(text(&commands[0]).font, FontStyle::Title);
-        assert_eq!(
-            text(&commands[0]).identity,
-            SetupTextIdentity::Localized(0)
-        );
+        assert_eq!(text(&commands[0]).identity, SetupTextIdentity::Localized(0));
         assert_eq!(text(&commands[1]).font, FontStyle::Options);
         assert_eq!(text(&commands[2]).font, FontStyle::Options);
         assert!(matches!(

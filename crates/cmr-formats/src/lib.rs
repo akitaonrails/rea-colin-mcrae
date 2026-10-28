@@ -12,6 +12,7 @@ pub mod pe_aux_control_initializer;
 pub mod pe_car_selector;
 pub mod pe_compiled_initializer;
 pub mod pe_engine_audio_tables;
+pub mod pe_stage_weather_tables;
 pub mod pe_surface;
 pub mod pe_surface_audio_tables;
 pub mod pe_tyre_tables;

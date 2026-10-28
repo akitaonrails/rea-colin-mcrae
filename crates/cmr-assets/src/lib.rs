@@ -18,6 +18,9 @@ mod path;
 mod profile;
 mod resolver;
 mod schema;
+mod stage_weather_tables_import;
+mod stage_weather_tables_profile;
+mod stage_weather_tables_store;
 mod store;
 mod surface_audio_tables_import;
 mod surface_audio_tables_profile;
@@ -88,6 +91,19 @@ pub use schema::{
     IMPORT_STATE_SCHEMA_VERSION, PROFILE_SCHEMA_VERSION, SchemaStatus, import_state_schema_status,
     profile_schema_status,
 };
+pub use stage_weather_tables_import::{
+    STAGE_WEATHER_TABLES_DATA_FILE, STAGE_WEATHER_TABLES_IMPORT_SCHEMA_VERSION,
+    STAGE_WEATHER_TABLES_STATE_FILE, STAGE_WEATHER_TABLES_STORE_DIRECTORY,
+    StageWeatherTablesImportError, StageWeatherTablesImportFile, StageWeatherTablesImportShape,
+    StageWeatherTablesImportSummary, extract_stage_weather_tables,
+};
+pub use stage_weather_tables_profile::{
+    ReviewedStageWeatherTablesProfile, ReviewedStageWeatherTablesProfileError,
+    STAGE_WEATHER_TABLES_PROFILE_SCHEMA_VERSION, StageWeatherTablesEncoding,
+    StageWeatherTablesExecutable, StageWeatherTablesProfile, StageWeatherTablesProfileError,
+    StageWeatherTablesSpec,
+};
+pub use stage_weather_tables_store::{StageWeatherTablesStore, StageWeatherTablesStoreError};
 pub use store::{AssetStore, AssetStoreError};
 pub use surface_audio_tables_import::{
     SURFACE_AUDIO_TABLES_DATA_FILE, SURFACE_AUDIO_TABLES_IMPORT_SCHEMA_VERSION,

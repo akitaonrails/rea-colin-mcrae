@@ -586,8 +586,7 @@ where
         ground.thresholds = scan(&ground);
         if previous_count != 0 {
             respond(&mut car);
-        } else if let Some(probe) = (0..8).find(|&probe| ground.thresholds.flags_73a[probe] == 0)
-        {
+        } else if let Some(probe) = (0..8).find(|&probe| ground.thresholds.flags_73a[probe] == 0) {
             // The first touching probe's contact vector along the normal,
             // times 4, is the severity vector's x.
             let along = car.normal.dot(car.contact_vectors[probe]).raw();

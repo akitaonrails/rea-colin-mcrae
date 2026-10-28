@@ -104,6 +104,7 @@ use cmr_core::settings_store::{DataPaths, SettingsError, SettingsImage};
 use cmr_core::stage_checkpoints::StageProgress;
 use cmr_core::stage_compiled_geometry::{StageCompiledGeometry, StageCompiledGeometryLoadError};
 use cmr_core::stage_timing::elapsed_centiseconds;
+use cmr_core::stage_weather::{StageWeather, StageWeatherTables, select_weather};
 use cmr_core::startup::{StartupLanguage, StartupScreen};
 use cmr_core::startup_display::{
     StartupDisplay, StartupDisplayError, StartupDisplayRequest, initialize_startup_display,
@@ -196,6 +197,8 @@ const REVIEWED_ENGINE_AUDIO_TABLES_PROFILE: &[u8] =
 const ENGINE_AUDIO_TABLES_STORE_DIRECTORY: &str = "official-eu-engine-audio-tables";
 const REVIEWED_SURFACE_AUDIO_TABLES_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-surface-audio-tables-v1.json");
+const REVIEWED_STAGE_WEATHER_TABLES_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-stage-weather-tables-v1.json");
 const SURFACE_AUDIO_TABLES_STORE_DIRECTORY: &str = "official-eu-surface-audio-tables";
 const REVIEWED_AUX_CONTROL_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-aux-control-constants-v1.json");
@@ -2378,11 +2381,22 @@ impl StageRenderResources {
         runtime_data: &Path,
         car_code: &str,
     ) -> Result<(), StageFrameError> {
+        self.attach_car_model(runtime_data, car_code, false)
+    }
+
+    /// The car body `FUN_0044da00` names: the NIGHT model on a night stage
+    /// (`FUN_0046b240() == 8`), otherwise the DAY model.
+    pub fn attach_car_model(
+        &mut self,
+        runtime_data: &Path,
+        car_code: &str,
+        night: bool,
+    ) -> Result<(), StageFrameError> {
         let reviewed =
             ReviewedProfile::from_json(REVIEWED_PROFILE).map_err(StageFrameError::Profile)?;
         let store = AssetStore::open(runtime_data, &reviewed, DecodeLimits::default())
             .map_err(StageFrameError::CarAsset)?;
-        let relative = car_body_path(car_code, false, false).replace('\\', "/");
+        let relative = car_body_path(car_code, night, false).replace('\\', "/");
         let path = format!("Game/{relative}");
         let bytes = store.load(&path).map_err(StageFrameError::CarAsset)?;
         let scene = parse_c3d(&bytes, C3dLimits::default()).map_err(StageFrameError::CarScene)?;
@@ -4152,9 +4166,20 @@ struct EffectsAudio {
     crowd_points: Vec<[i32; 3]>,
     crowd_k: i32,
     ambience: AmbienceController,
+    /// The stage's weather (`FUN_0046b220`/`FUN_0046b230`), or the harness
+    /// clear weather without the reviewed weather tables.
+    weather: StageWeather,
     banks: Option<EffectBanks>,
     camera_mode: Option<i32>,
 }
+
+/// The weather the session assumes without the reviewed weather tables:
+/// type, detail and lighting 0 (harness).
+const CLEAR_WEATHER: StageWeather = StageWeather {
+    weather_type: 0,
+    detail: 0,
+    lighting: 0,
+};
 
 /// The first wave slot of each effects bank once loaded.
 #[derive(Clone, Copy)]
@@ -4173,15 +4198,13 @@ const SURFACE_CHANNEL_BASE: u32 = 15;
 const WET_CHANNEL: u32 = 19;
 /// The crowd/weather ambience channel (`FUN_0041cd30`, after the wet one).
 const AMBIENCE_CHANNEL: u32 = 20;
-/// Harness: the weather-detail level `FUN_0046b230` is not the storm level
-/// 3, so the thunder waves are not loaded and the storm never runs.
-const AMBIENCE_WEATHER_DETAIL: i32 = 0;
 
 impl EffectsAudio {
     fn open(
         runtime_data: &Path,
         srf: Option<Vec<u8>>,
         crowd_points: Vec<[i32; 3]>,
+        weather: StageWeather,
     ) -> Option<Self> {
         let reviewed =
             ReviewedSurfaceAudioTablesProfile::from_json(REVIEWED_SURFACE_AUDIO_TABLES_PROFILE)
@@ -4218,6 +4241,7 @@ impl EffectsAudio {
             crowd_points,
             crowd_k: t.crowd_volume_k,
             ambience: AmbienceController::new(),
+            weather,
             banks: None,
             camera_mode: None,
         })
@@ -4227,8 +4251,8 @@ impl EffectsAudio {
     /// volume), the surface loader `FUN_004892b0` (the `.srf` groups, four
     /// channels at volume 0) and the wet loader `FUN_0048d340`, in the
     /// stage-load order, then the ambience loader `FUN_0041cd30` (its channel
-    /// at volume 0). Harness: the weather type is 0 (not the rain type 3),
-    /// so `rain_in` is not loaded.
+    /// at volume 0). The weather type 3 loads `rain_in` and the detail 3 the
+    /// storm waves.
     fn load(
         &mut self,
         mixer: &mut SoftwareMixer<FileWaveSource>,
@@ -4282,7 +4306,7 @@ impl EffectsAudio {
         let wet_bank = load_wet_bank(
             &mut self.wet,
             WetLoad {
-                rain_weather: false,
+                rain_weather: self.weather.weather_type == 3,
                 wet_surface: bank.wet,
                 camera_mode,
             },
@@ -4306,7 +4330,7 @@ impl EffectsAudio {
             EngineVoices::play(mixer, wet_base, WET_CHANNEL, u32::MAX);
         }
         EngineVoices::set_volume(mixer, AMBIENCE_CHANNEL, 0);
-        let ambience = load_weather_ambience(mixer, "game\\", AMBIENCE_WEATHER_DETAIL).ok()?;
+        let ambience = load_weather_ambience(mixer, "game\\", self.weather.detail as i32).ok()?;
         Some(EffectBanks {
             surface: surface_base,
             prang: prang_base?,
@@ -4481,8 +4505,8 @@ impl EffectsAudio {
     }
 
     /// `FUN_0041cfe0`, from the in-race handlers 5, 6 and 8 only (not the
-    /// states 7 or 9). Storm off (see [`AMBIENCE_WEATHER_DETAIL`]), so the
-    /// abduct and thunder branches never run.
+    /// states 7 or 9). The storm timer (`FUN_0048cf20`) is not
+    /// reconstructed, so the abduct and thunder branches never run.
     fn crowd_tick(
         &mut self,
         mixer: &mut SoftwareMixer<FileWaveSource>,
@@ -5448,6 +5472,7 @@ struct LoadedStage {
     start: CarState,
     pose: SessionCompiledPose,
     srf: Option<Vec<u8>>,
+    weather: StageWeather,
 }
 
 fn load_windowed_stage(
@@ -5456,9 +5481,15 @@ fn load_windowed_stage(
     stage: &str,
     car_code: &str,
     renderer: StageRendererChoice,
+    weather: StageWeather,
 ) -> Result<LoadedStage, WindowedStageFrameError> {
-    let (resources, _, mut start, _, actor_rows) =
-        native_stage_setup(media_root, runtime_data, stage, Some(car_code), renderer)?;
+    let (mut resources, _, mut start, _, actor_rows) =
+        native_stage_setup(media_root, runtime_data, stage, None, renderer)?;
+    resources.attach_car_model(
+        runtime_data,
+        car_code,
+        weather.lighting == cmr_core::stage_weather::NIGHT_LIGHTING,
+    )?;
     // Each load models a fresh process/session: its lane arrays are
     // loader-zeroed, authenticated setup runs once, and only the recovered
     // setup-time center-Y, half state, AK11 normal, and corrected basis are fed
@@ -5478,6 +5509,38 @@ fn load_windowed_stage(
         start,
         pose,
         srf,
+        weather,
+    })
+}
+
+/// The reviewed weather tables of the user's executable, when extracted
+/// (`cmr-assets extract-stage-weather-tables`).
+fn open_stage_weather_tables(runtime_data: &Path) -> Option<StageWeatherTables> {
+    let reviewed = cmr_assets::ReviewedStageWeatherTablesProfile::from_json(
+        REVIEWED_STAGE_WEATHER_TABLES_PROFILE,
+    )
+    .ok()?;
+    let store = match cmr_assets::StageWeatherTablesStore::open(
+        &session_sidecar_store(
+            runtime_data,
+            cmr_assets::STAGE_WEATHER_TABLES_STORE_DIRECTORY,
+        ),
+        &reviewed,
+    ) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("cmr-app: stage weather unavailable ({error:?}); using clear weather");
+            return None;
+        }
+    };
+    let t = store.tables();
+    Some(StageWeatherTables {
+        school_type: t.school_type,
+        stage_type: t.stage_type,
+        school_detail: t.school_detail,
+        stage_detail: t.stage_detail,
+        school_lighting: t.school_lighting,
+        stage_lighting: t.stage_lighting,
     })
 }
 
@@ -5514,6 +5577,7 @@ struct StageReloadContext<'a> {
     tyre_tables: &'a Result<SessionTyreTables, SessionTyreTablesError>,
     aux: &'a Result<SessionAuxControl, String>,
     params: SimParams,
+    weather_tables: Option<&'a StageWeatherTables>,
 }
 
 /// The stage load of state 4's render handler `FUN_00421da0`: just before
@@ -5528,7 +5592,7 @@ fn reload_stage_for_event<'a>(
     progress: &mut StageProgress<'static>,
     audio: &mut RaceAudio,
     camera: &mut ViewHarness,
-    loaded: &mut String,
+    loaded: &mut (String, StageWeather),
     context: &StageReloadContext<'a>,
 ) -> Result<(), WindowedStageFrameError> {
     if session.state().id() != 4 {
@@ -5537,10 +5601,15 @@ fn reload_stage_for_event<'a>(
     let Some(base) = cmr_core::stage_path::stage_base(session.event()) else {
         return Ok(());
     };
-    if base
-        .rsplit('\\')
-        .next()
-        .is_some_and(|name| name.eq_ignore_ascii_case(loaded))
+    // `FUN_00449ba0` picks the weather as state 4 arms the race.
+    let weather = context.weather_tables.map_or(CLEAR_WEATHER, |tables| {
+        select_weather(tables, session.event())
+    });
+    if weather == loaded.1
+        && base
+            .rsplit('\\')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(&loaded.0))
     {
         return Ok(());
     }
@@ -5555,6 +5624,7 @@ fn reload_stage_for_event<'a>(
         &name,
         context.car_code,
         context.renderer,
+        weather,
     )?;
     let mut next = windowed_drive_session(
         &stage.pose,
@@ -5576,9 +5646,10 @@ fn reload_stage_for_event<'a>(
         context.runtime_data,
         stage.srf,
         stage_crowd_points(resources),
+        weather,
     );
     *camera = ViewHarness::new();
-    *loaded = name;
+    *loaded = (name, weather);
     Ok(())
 }
 
@@ -5662,7 +5733,16 @@ pub fn run_windowed_game_session(
         start,
         pose: compiled_pose,
         srf,
-    } = load_windowed_stage(media_root, runtime_data, stage, car_code, renderer)?;
+        weather,
+    } = load_windowed_stage(
+        media_root,
+        runtime_data,
+        stage,
+        car_code,
+        renderer,
+        CLEAR_WEATHER,
+    )?;
+    let weather_tables = open_stage_weather_tables(runtime_data);
     let nodes = &statics.nodes;
     let mut initial_view = ViewHarness::new();
     let initial_camera = initial_view.update(false, start.position, start.heading, false);
@@ -5718,13 +5798,13 @@ pub fn run_windowed_game_session(
     let mut damage_owner = NoStaticDamageOwner;
     let mut audio = RaceAudio {
         engine: EngineAudio::open(runtime_data, compiled_pose.selector as u8),
-        effects: EffectsAudio::open(runtime_data, srf, stage_crowd_points(&resources)),
+        effects: EffectsAudio::open(runtime_data, srf, stage_crowd_points(&resources), weather),
     };
     let mut pause = PauseHarness::with_runtime_data(runtime_data);
     let mut config =
         FrontEndConfig::new(stage, compiled_pose.selector as u8).with_file(runtime_data);
     let mut runtime_error = None;
-    let mut loaded_stage = stage.to_ascii_uppercase();
+    let mut loaded_stage = (stage.to_ascii_uppercase(), weather);
     let reload = StageReloadContext {
         game_root: media_root
             .parent()
@@ -5738,6 +5818,7 @@ pub fn run_windowed_game_session(
         tyre_tables: &tyre_tables,
         aux: &aux,
         params,
+        weather_tables: weather_tables.as_ref(),
     };
 
     // Best-effort: open the recovered front-end root-menu compositor from the
@@ -7439,7 +7520,7 @@ mod tests {
             .ok()
             .flatten();
             let crowd = stage_crowd_points(&resources);
-            audio.effects = EffectsAudio::open(&root, srf, crowd);
+            audio.effects = EffectsAudio::open(&root, srf, crowd, CLEAR_WEATHER);
         }
         let mut pcm: Vec<i16> = Vec::new();
         let mut pause = PauseHarness::with_runtime_data(&root);
@@ -7642,7 +7723,8 @@ mod tests {
             start,
             pose,
             ..
-        } = load_windowed_stage(&media, &root, "AU1", "Sub", renderer).unwrap();
+        } = load_windowed_stage(&media, &root, "AU1", "Sub", renderer, CLEAR_WEATHER).unwrap();
+        let weather_tables = open_stage_weather_tables(&root);
         let trig = cmr_core::fixed_point::build_sine_table();
         let wheel_inputs = SessionWheelInputs::open(&root);
         let tyre_tables = SessionTyreTables::open(&root);
@@ -7668,7 +7750,7 @@ mod tests {
         let mut config = FrontEndConfig::new("AU1", pose.selector as u8);
         let mut audio = RaceAudio::default();
         let mut camera = ViewHarness::new();
-        let mut loaded = "AU1".to_owned();
+        let mut loaded = ("AU1".to_owned(), CLEAR_WEATHER);
         let reload = StageReloadContext {
             game_root: media.parent().and_then(Path::parent).map(Path::to_path_buf),
             runtime_data: &root,
@@ -7679,6 +7761,7 @@ mod tests {
             tyre_tables: &tyre_tables,
             aux: &aux,
             params,
+            weather_tables: weather_tables.as_ref(),
         };
         // The championship setup's choices, committed at the hand-off.
         config.preset_setup(0);
@@ -7708,11 +7791,11 @@ mod tests {
             }
         }
         assert_eq!(session.state().id(), 5);
-        assert_eq!(loaded, "NZ1");
+        assert_eq!(loaded.0, "NZ1");
         assert_eq!(session.event().cfg.cursor_168, 0);
         assert_ne!(session.car().position, start.position);
         eprintln!(
-            "championship: stage={loaded} nodes={} start={:?}",
+            "championship: stage={loaded:?} nodes={} start={:?}",
             statics.nodes.len(),
             session.car().position
         );
