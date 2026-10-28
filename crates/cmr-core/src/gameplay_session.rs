@@ -64,6 +64,25 @@ pub struct InRaceScript {
 }
 
 impl InRaceScript {
+    /// The script for a player's own race (`DAT_00d3ca88 == 0`): the stage
+    /// world is ready, the stage-boundary director and the results page are
+    /// treated as done and the fade as complete, nothing is quit or restarted,
+    /// and no next championship stage is armed, so a finished stage runs
+    /// `5 -> 8 -> 0xb -> 3` back to the menu band (the `FUN_0048df30` "show
+    /// menu" predicate is not recovered and stays clear). Harness stand-ins.
+    #[must_use]
+    pub const fn gameplay_harness() -> Self {
+        InRaceScript {
+            frontend_active: false,
+            stage_world_ready: true,
+            replay_ready: false,
+            replay_intro_done: false,
+            flyby_cinematic_done: false,
+            quit_requested: false,
+            fade_done: true,
+        }
+    }
+
     /// The headless/front-end harness script: every sequencer gate satisfied so
     /// the recovered front-end path (`5 -> 9 -> 0xb -> 0xc`) runs to completion
     /// once the tracker raises the finish. Matches the headless game session.
@@ -125,6 +144,12 @@ pub struct GameplaySession<'a> {
     last_reset: ResetOutcome,
     stage_triggers: Option<StageTriggers<'a>>,
     last_trigger_events: Vec<TriggerEvent>,
+    /// The car as the stage setup left it, restored when a new stage starts.
+    stage_start: CarState,
+    /// The sim has stepped since the stage started.
+    race_started: bool,
+    /// The FSM left the gameplay band after a race; the next drive re-inits.
+    stage_dirty: bool,
     sim_ticks: u32,
 }
 
@@ -132,6 +157,8 @@ pub struct GameplaySession<'a> {
 /// the cell centres `FUN_0048fd20` selects the car's cell from.
 struct StageTriggers<'a> {
     runtime: Vec<RuntimeTrigger>,
+    /// The freshly loaded state (`FUN_00469630` clears `+0x2e` at load).
+    initial: Vec<RuntimeTrigger>,
     cells: TriggerCells,
     cell_centers: &'a [Vec3],
     config: TriggerWalkConfig,
@@ -183,6 +210,7 @@ impl<'a> GameplaySession<'a> {
     pub fn new_with_car(params: SimParams, script: InRaceScript, car: CarState) -> Self {
         let mut session = Self::new(params, script);
         session.race = RaceState::new(car);
+        session.stage_start = car;
         session
     }
 
@@ -206,6 +234,7 @@ impl<'a> GameplaySession<'a> {
     ) -> Self {
         let mut session = Self::with_optional_wheel(params, script, Some(wheel));
         session.race = RaceState::new(car);
+        session.stage_start = car;
         session
     }
 
@@ -225,6 +254,9 @@ impl<'a> GameplaySession<'a> {
             last_reset: ResetOutcome::default(),
             stage_triggers: None,
             last_trigger_events: Vec::new(),
+            stage_start: CarState::at_rest(),
+            race_started: false,
+            stage_dirty: false,
             sim_ticks: 0,
         }
     }
@@ -294,8 +326,10 @@ impl<'a> GameplaySession<'a> {
         volumes: &[cmr_formats::stage::TriggerVolume],
         cell_centers: &'a [Vec3],
     ) -> Result<Self, TriggerCellOutOfRange> {
+        let runtime = initialize_runtime_triggers(volumes);
         self.stage_triggers = Some(StageTriggers {
-            runtime: initialize_runtime_triggers(volumes),
+            initial: runtime.clone(),
+            runtime,
             cells: link_trigger_cells(volumes, cell_centers.len())?,
             cell_centers,
             config: TriggerWalkConfig::single_player_harness(),
@@ -400,6 +434,32 @@ impl<'a> GameplaySession<'a> {
             .expect("the simplified race step is infallible")
     }
 
+    /// A new stage starts when driving resumes after the FSM left the gameplay
+    /// band: the stage load re-creates the car from its setup, reloads the
+    /// trigger records and restarts the checkpoint tracker.
+    fn begin_stage_if_reentered(&mut self, progress: &mut StageProgress) {
+        if self.session.current().id() != 5 || !self.stage_dirty {
+            return;
+        }
+        self.race = RaceState::new(self.stage_start);
+        if let Some(triggers) = self.stage_triggers.as_mut() {
+            triggers.runtime.clone_from(&triggers.initial);
+        }
+        progress.restart();
+        self.last_reset = ResetOutcome::default();
+        self.last_trigger_events.clear();
+        self.stage_dirty = false;
+    }
+
+    /// Note when a race hands back to the menu band.
+    fn track_stage_end(&mut self, stepped: bool) {
+        self.race_started |= stepped;
+        if self.race_started && (1..=4).contains(&self.session.current().id()) {
+            self.stage_dirty = true;
+            self.race_started = false;
+        }
+    }
+
     /// Advance one frame, preserving checked four-wheel producer failures. When
     /// already in state 5, the driving step completes before the FSM frame, so an
     /// error does not advance the FSM, stage progress, or simulation tick count.
@@ -414,6 +474,7 @@ impl<'a> GameplaySession<'a> {
         controls: Controls,
         progress: &mut StageProgress,
     ) -> Result<GameplayFrame, WheelPostprocessError> {
+        self.begin_stage_if_reentered(progress);
         let driving_sample = if self.session.current().id() == 5 {
             Some(if self.wheel.is_some() {
                 let race_before = self.race.clone();
@@ -443,6 +504,7 @@ impl<'a> GameplaySession<'a> {
             let inputs = script.with_finish(progress.finished());
             race_flow_next(state, inputs).unwrap_or(state)
         });
+        self.track_stage_end(stepped);
 
         Ok(GameplayFrame {
             band: frame.band,
@@ -464,6 +526,7 @@ impl<'a> GameplaySession<'a> {
         parsed: &ParsedStaticCollisionScene,
         damage_owner: &mut D,
     ) -> Result<GameplayFrame, StaticGameplayAdvanceError<D::Error>> {
+        self.begin_stage_if_reentered(progress);
         let driving_sample = if self.session.current().id() == 5 {
             let race_before = self.race.clone();
             let previous_center_xz = PreviousCarXz::capture(race_before.car().position);
@@ -505,6 +568,7 @@ impl<'a> GameplaySession<'a> {
             let inputs = script.with_finish(progress.finished());
             race_flow_next(state, inputs).unwrap_or(state)
         });
+        self.track_stage_end(stepped);
 
         Ok(GameplayFrame {
             band: frame.band,
@@ -1003,6 +1067,46 @@ mod tests {
             }
         }
         assert!(saw_stage_world, "the driving tick presents the stage world");
+    }
+
+    #[test]
+    fn a_finished_race_returns_to_the_menu_and_the_next_stage_starts_fresh() {
+        let mut session = GameplaySession::new(params(), InRaceScript::gameplay_harness());
+        let nodes = line();
+        let mut progress = StageProgress::new(&nodes, 0);
+        let mut frames = 0u32;
+        let mut left_gameplay = false;
+        let mut finish_position = Vec3::ZERO;
+        while frames < 100_000 {
+            frames += 1;
+            let frame =
+                session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            if progress.finished() && !frame.stepped && session.state().id() <= 4 {
+                left_gameplay = true;
+                finish_position = session.car().position;
+                break;
+            }
+        }
+        assert!(
+            left_gameplay,
+            "a normal finish runs 5 -> 8 -> 0xb back to the menu band"
+        );
+        assert!(!session.is_stopped());
+        assert!(finish_position.x.raw() > 0);
+        // The menu flow starts the stage again; the first drive starts over.
+        let mut restarted = false;
+        while frames < 200_000 {
+            frames += 1;
+            let frame =
+                session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
+            if frame.stepped {
+                restarted = true;
+                assert!(session.car().position.x.raw() < finish_position.x.raw());
+                assert!(!progress.finished());
+                break;
+            }
+        }
+        assert!(restarted);
     }
 
     #[test]

@@ -4097,7 +4097,7 @@ fn windowed_drive_session<'a>(
             start.four_wheel.gearbox = cmr_core::gearbox::GearboxState::at_setup(true);
             GameplaySession::new_with_four_wheel_and_car(
                 params,
-                InRaceScript::frontend_harness(),
+                InRaceScript::gameplay_harness(),
                 wheel,
                 start,
             )
@@ -4105,7 +4105,7 @@ fn windowed_drive_session<'a>(
         }
         Err(error) => {
             eprintln!("cmr-app: four-wheel inputs unavailable ({error}); using the planar harness");
-            GameplaySession::new_with_car(params, InRaceScript::frontend_harness(), start)
+            GameplaySession::new_with_car(params, InRaceScript::gameplay_harness(), start)
         }
     }
 }

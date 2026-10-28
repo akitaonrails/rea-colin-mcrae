@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: speak the co-driver calls
+feat: return to the menu after a stage and restart cleanly
 ```
 
 Start by confirming the checkout and progress footer:
@@ -146,8 +146,11 @@ animation routines are presentation-only (`rea.official-eu.car-animation-words`)
 The HUD rev, speed and gear come from `FUN_00464130` (`impl.race-hud-prepare`).
 The `.dat` trigger walk and barrier walls run each tick
 (`impl.trigger-walk-and-barriers`), and the co-driver speaks
-(`impl.codriver-speech`). Next: the damage call `FUN_0041f630`, engine audio,
-the player option bytes, then the animation words for rendering. Trees appear to be `.sht` sprites, which the native
+(`impl.codriver-speech`). The windowed session runs a player's race and returns
+to the menu after the finish (`impl.gameplay-script-and-stage-restart`). Next:
+engine audio (`FUN_00487e00`; static notes in `.work/engine-audio-notes.md`),
+pause input, the player option bytes, then the animation words for rendering.
+`FUN_0041f630` only feeds impact sound/FFB/shudder. Trees appear to be `.sht` sprites, which the native
 excludes from static collision. Done so far: the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`
 from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground`),

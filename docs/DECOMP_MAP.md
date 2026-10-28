@@ -430,6 +430,7 @@ and the car reset (`FUN_00467210` dispatcher, `FUN_00414850` fade and placement)
 The HUD value preparation `FUN_00464130` feeds the live rev, speed and gear.
 The `.dat` trigger walk `FUN_00403a00` with the barrier walls `FUN_00401fd0` runs each tick.
 Co-driver calls play through the recovered sequencer `FUN_00444450`.
+A finished stage returns to the menu band; re-entering driving restores the stage setup.
 
 ## Update rules
 
@@ -440,8 +441,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-29T03:00:00Z
-milestone=codriver-speech
+updated_utc=2026-10-29T03:45:00Z
+milestone=gameplay-script-and-stage-restart
 completed=117
 partial=2
 not_started=0

@@ -1952,6 +1952,9 @@ The co-driver now speaks (`impl.codriver-speech`): the walk's calls feed the
 recovered sequencer `FUN_00444450`, which plays the 40-wave bank one sample
 per frame.
 
+A finished stage now returns to the menu and a new stage starts from its setup
+(`impl.gameplay-script-and-stage-restart`), instead of the app stopping.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

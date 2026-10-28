@@ -126,6 +126,13 @@ impl<'a> StageProgress<'a> {
         self.cursor
     }
 
+    /// Start the run again from node 0 with every split pending, as a fresh
+    /// stage load does.
+    pub fn restart(&mut self) {
+        let car = self.car_bit.trailing_zeros() as u8;
+        *self = Self::new(self.nodes, car);
+    }
+
     /// The parsed nodes this cursor walks.
     #[must_use]
     pub fn nodes(&self) -> &'a [CatNode] {
