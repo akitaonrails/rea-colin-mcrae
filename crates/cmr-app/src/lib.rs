@@ -1726,20 +1726,20 @@ fn native_stage_start_from_csp(start_record: CspStart) -> NativeStageStart {
     let angles = start_record.rotation_bam.map(|angle| angle as i16);
     let native_basis = integrate_orientation(identity_basis, angles, &trig)
         .expect("the complete 4096-entry trig table admits every CSP angle");
-    // CSP stores the authored actor rotation in the native basis, while the
-    // planar gameplay harness publishes +Z as forward. Retain that rotation
-    // while remapping the CSP basis into the harness convention; the separate
-    // C3D render adapter handles the body model's local +X-forward basis.
-    let basis = [
-        native_basis[2],
-        native_basis[1],
+    // The integrated CSP basis is the native one: the car rolls along row 0
+    // (`+0x258`, the tyre model's lane source), row 1 is up and row 2 its
+    // left. The planar harness publishes `[right, up, forward]` columns.
+    let negate = |vector: Vec3| {
         Vec3::new(
-            Fixed16::from_raw(native_basis[0].x.raw().wrapping_neg()),
-            Fixed16::from_raw(native_basis[0].y.raw().wrapping_neg()),
-            Fixed16::from_raw(native_basis[0].z.raw().wrapping_neg()),
-        ),
-    ];
-    let heading = start_record.rotation_bam[1].wrapping_add(0x800) & 0x0fff;
+            Fixed16::from_raw(vector.x.raw().wrapping_neg()),
+            Fixed16::from_raw(vector.y.raw().wrapping_neg()),
+            Fixed16::from_raw(vector.z.raw().wrapping_neg()),
+        )
+    };
+    let basis = [negate(native_basis[2]), native_basis[1], native_basis[0]];
+    let forward = native_basis[0];
+    let yaw = f64::from(forward.z.raw()).atan2(f64::from(forward.x.raw()));
+    let heading = ((yaw * (4096.0 / std::f64::consts::TAU)).round() as i64).rem_euclid(4096) as u16;
     let mut start = CarState::at_rest();
     start.position = position;
     start.heading = heading;
@@ -1748,27 +1748,7 @@ fn native_stage_start_from_csp(start_record: CspStart) -> NativeStageStart {
     start.motion.lane_source_s = basis[2];
     let mut camera = ViewHarness::new();
     let initial_camera = camera.update(false, position, heading, false);
-    // The authored rotation leads along `-native_basis[0]` (the harness forward
-    // above), while the native car rolls along its `+0x258` row (the tyre
-    // model's lane source). Inference: the setup rows are the integrated basis
-    // turned half a turn about the up axis; the native CSP-to-basis routine is
-    // not yet recovered.
-    let negate = |vector: Vec3| {
-        [
-            vector.x.raw().wrapping_neg(),
-            vector.y.raw().wrapping_neg(),
-            vector.z.raw().wrapping_neg(),
-        ]
-    };
-    let actor_rows = [
-        negate(native_basis[0]),
-        [
-            native_basis[1].x.raw(),
-            native_basis[1].y.raw(),
-            native_basis[1].z.raw(),
-        ],
-        negate(native_basis[2]),
-    ];
+    let actor_rows = native_basis.map(|vector| [vector.x.raw(), vector.y.raw(), vector.z.raw()]);
     (start, initial_camera, actor_rows)
 }
 
@@ -3954,6 +3934,42 @@ fn native_stage_setup(
     Ok((resources, nodes, start, initial_camera, actor_rows))
 }
 
+/// The windowed session's driving sim: the complete four-wheel producer with
+/// the ground pass when the reviewed surface and tyre stores are present,
+/// otherwise the planar harness.
+fn windowed_drive_session<'a>(
+    compiled_pose: &'a SessionCompiledPose,
+    trig: &'a [i32],
+    wheel_inputs: &Result<SessionWheelInputs, SessionSurfaceInputsError>,
+    tyre_tables: &'a Result<SessionTyreTables, SessionTyreTablesError>,
+    params: SimParams,
+    mut start: CarState,
+) -> GameplaySession<'a> {
+    let four_wheel = match (wheel_inputs, tyre_tables) {
+        (Ok(inputs), Ok(tables)) => compiled_pose
+            .compiled_four_wheel_params(inputs, trig, tables.tables())
+            .map_err(|error| error.to_string()),
+        (Err(error), _) => Err(error.to_string()),
+        (_, Err(error)) => Err(error.to_string()),
+    };
+    match four_wheel {
+        Ok(wheel) => {
+            start.four_wheel.gearbox = cmr_core::gearbox::GearboxState::at_setup(true);
+            GameplaySession::new_with_four_wheel_and_car(
+                params,
+                InRaceScript::frontend_harness(),
+                wheel,
+                start,
+            )
+            .with_ground_geometry(&compiled_pose.geometry)
+        }
+        Err(error) => {
+            eprintln!("cmr-app: four-wheel inputs unavailable ({error}); using the planar harness");
+            GameplaySession::new_with_car(params, InRaceScript::frontend_harness(), start)
+        }
+    }
+}
+
 pub fn run_windowed_game_session(
     media_root: &Path,
     runtime_data: &Path,
@@ -3990,34 +4006,17 @@ pub fn run_windowed_game_session(
         inverse_mass: Fixed16::from_raw(0x8000),
         gravity: Vec3::ZERO,
     };
-    // The complete four-wheel producer drives the session when the reviewed
-    // surface and tyre stores are present; otherwise the planar harness runs.
     let trig = cmr_core::fixed_point::build_sine_table();
     let wheel_inputs = SessionWheelInputs::open(runtime_data);
     let tyre_tables = SessionTyreTables::open(runtime_data);
-    let four_wheel = match (&wheel_inputs, &tyre_tables) {
-        (Ok(inputs), Ok(tables)) => compiled_pose
-            .compiled_four_wheel_params(inputs, &trig, tables.tables())
-            .map_err(|error| error.to_string()),
-        (Err(error), _) => Err(error.to_string()),
-        (_, Err(error)) => Err(error.to_string()),
-    };
-    let mut session = match four_wheel {
-        Ok(wheel) => {
-            start.four_wheel.gearbox = cmr_core::gearbox::GearboxState::at_setup(true);
-            GameplaySession::new_with_four_wheel_and_car(
-                params,
-                InRaceScript::frontend_harness(),
-                wheel,
-                start,
-            )
-            .with_ground_geometry(&compiled_pose.geometry)
-        }
-        Err(error) => {
-            eprintln!("cmr-app: four-wheel inputs unavailable ({error}); using the planar harness");
-            GameplaySession::new_with_car(params, InRaceScript::frontend_harness(), start)
-        }
-    };
+    let mut session = windowed_drive_session(
+        &compiled_pose,
+        &trig,
+        &wheel_inputs,
+        &tyre_tables,
+        params,
+        start,
+    );
     let mut keyboard = KeyboardDriver::player_one();
     let mut analog = AnalogDriver::new();
     let response = DriveResponse {
@@ -5580,6 +5579,164 @@ mod tests {
             car_frame.stats().covered,
             car_frame.stats().depth_rejected,
         );
+    }
+
+    /// Drives the windowed frame loop with the four-wheel producer on owned
+    /// AU1 data and writes every `CMR_FRAMES_EVERY`th world frame as a PPM
+    /// under `CMR_FRAMES_DIR` (default: the workspace `.work/frames`). `CMR_FRAMES_STEER`
+    /// (`left`/`right`) holds that key from `CMR_FRAMES_STEER_AFTER`.
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data; writes frames under .work"]
+    fn imported_au1_four_wheel_window_frames() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let env_number = |name: &str, default: usize| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(default)
+        };
+        let frames = env_number("CMR_FRAMES_TICKS", 300);
+        let every = env_number("CMR_FRAMES_EVERY", 50).max(1);
+        let steer_after = env_number("CMR_FRAMES_STEER_AFTER", usize::MAX);
+        let steer_vk = match std::env::var("CMR_FRAMES_STEER").as_deref() {
+            Ok("left") => Some(0x25),
+            Ok("right") => Some(0x27),
+            _ => None,
+        };
+        let out_dir = std::env::var_os("CMR_FRAMES_DIR").map_or_else(
+            || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/frames"),
+            PathBuf::from,
+        );
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let (mut resources, nodes, mut start, _, actor_rows) = native_stage_setup(
+            &root.join("Game/Au/1"),
+            &root,
+            "AU1",
+            Some("Sub"),
+            StageRendererChoice::Software,
+        )
+        .unwrap();
+        let mut compiled_pose = SessionCompiledPose::open(&root, "AU1", "Sub").unwrap();
+        compiled_pose.adjust_spawn(&mut start, actor_rows).unwrap();
+        let trig = cmr_core::fixed_point::build_sine_table();
+        let wheel_inputs = SessionWheelInputs::open(&root);
+        let tyre_tables = SessionTyreTables::open(&root);
+        let params = SimParams {
+            inverse_mass: Fixed16::from_raw(0x8000),
+            gravity: Vec3::ZERO,
+        };
+        let mut session = windowed_drive_session(
+            &compiled_pose,
+            &trig,
+            &wheel_inputs,
+            &tyre_tables,
+            params,
+            start,
+        );
+        assert!(session.is_four_wheel());
+        let mut keyboard = KeyboardDriver::player_one();
+        let mut analog = AnalogDriver::new();
+        let response = DriveResponse {
+            max_forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
+            max_steer_rate: GAME_SESSION_MAX_STEER_RATE,
+        };
+        let mut progress = StageProgress::new(&nodes, 0);
+        let mut camera = ViewHarness::new();
+        let mut fade = None;
+        let mut damage_owner = NoStaticDamageOwner;
+        let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
+        let mut root_interaction =
+            RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0).unwrap();
+        let mut advance = |session: &mut GameplaySession,
+                           progress: &mut StageProgress,
+                           keys: &cmr_platform_sdl3::KeyboardVkState,
+                           frontend: cmr_core::frontend::FrontendInput| {
+            advance_game_frame(
+                session,
+                &mut keyboard,
+                &mut analog,
+                &response,
+                &mut root_interaction,
+                progress,
+                &StationaryClock,
+                &mut resources,
+                &mut camera,
+                &mut fade,
+                &mut damage_owner,
+                WindowedInput {
+                    keys,
+                    gamepad: None,
+                    frontend,
+                },
+            )
+            .unwrap()
+        };
+        let idle = cmr_core::frontend::FrontendInput::default();
+        advance(&mut session, &mut progress, &keys, idle);
+        advance(&mut session, &mut progress, &keys, idle);
+        advance(
+            &mut session,
+            &mut progress,
+            &keys,
+            cmr_core::frontend::FrontendInput {
+                next: true,
+                ..Default::default()
+            },
+        );
+        advance(
+            &mut session,
+            &mut progress,
+            &keys,
+            cmr_core::frontend::FrontendInput {
+                confirm: true,
+                ..Default::default()
+            },
+        );
+        for _ in 0..8 {
+            if session.state().id() == 5 {
+                break;
+            }
+            advance(&mut session, &mut progress, &keys, idle);
+        }
+        assert_eq!(session.state().id(), 5);
+        let origin = session.car().position;
+        keys.apply_vk(0x26, true);
+        for frame in 0..frames {
+            if let Some(vk) = steer_vk {
+                keys.apply_vk(vk, frame >= steer_after);
+            }
+            let outcome = advance(&mut session, &mut progress, &keys, idle);
+            if frame % every == 0 || frame + 1 == frames {
+                let car = session.car();
+                let moved = car.position.sub(origin);
+                eprintln!(
+                    "frames frame={frame} state={} cursor={} speed={:#x} moved=({:#x},{:#x},{:#x}) row0=({:#x},{:#x},{:#x}) gear={}",
+                    session.state().id(),
+                    progress.cursor(),
+                    car.four_wheel.speed_ec,
+                    moved.x.raw(),
+                    moved.y.raw(),
+                    moved.z.raw(),
+                    car.motion.basis[0].x.raw(),
+                    car.motion.basis[0].y.raw(),
+                    car.motion.basis[0].z.raw(),
+                    car.four_wheel.gearbox.gear_43a,
+                );
+                if let Some(world) = outcome.world {
+                    let rgba = world.expand_rgba8().unwrap();
+                    let extent = rgba.extent();
+                    let mut ppm =
+                        format!("P6\n{} {}\n255\n", extent.width, extent.height).into_bytes();
+                    let (pixels, _) = rgba.pixels().as_chunks::<4>();
+                    for pixel in pixels {
+                        ppm.extend_from_slice(&pixel[..3]);
+                    }
+                    std::fs::write(out_dir.join(format!("frame-{frame:05}.ppm")), ppm).unwrap();
+                }
+            }
+        }
     }
 
     #[test]

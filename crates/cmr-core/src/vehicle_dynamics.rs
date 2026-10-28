@@ -1211,7 +1211,15 @@ pub fn rotate_basis_axis_angle(
             cosine.mul(Fixed16::ONE.sub(zz)).add(zz),
         ),
     ];
-    Some(basis.map(|vector| normalize_geometric_residual(transform_contact_force(rows, vector))))
+    // `FUN_004184e0` transforms each axis as a row vector,
+    // `out_i = m[i] v0 + m[4 + i] v1 + m[8 + i] v2` (the same convention as
+    // `FUN_0048dfe0`), which is the transpose of the row-dot product.
+    let columns = [
+        Vec3::new(rows[0].x, rows[1].x, rows[2].x),
+        Vec3::new(rows[0].y, rows[1].y, rows[2].y),
+        Vec3::new(rows[0].z, rows[1].z, rows[2].z),
+    ];
+    Some(basis.map(|vector| normalize_geometric_residual(transform_contact_force(columns, vector))))
 }
 
 /// Apply the recovered `FUN_004184e0` stage order: basis axes 1, 2, then 0.
@@ -2981,9 +2989,11 @@ mod tests {
         let trig = crate::fixed_point::build_sine_table();
         assert_eq!(
             rotate_basis_axis_angle(basis, basis[2], 0x400, &trig),
+            // The native row-vector transform: a quarter turn about z takes
+            // x to +y and y to -x.
             Some([
-                raw_v(0, -0xfff2, 0),
-                raw_v(0xfff2, 0, 0),
+                raw_v(0, 0xfff2, 0),
+                raw_v(-0xfff2, 0, 0),
                 raw_v(0, 0, 0xfff2),
             ])
         );
@@ -2991,10 +3001,13 @@ mod tests {
             integrate_orientation(basis, [0x400, 0, 0], &trig),
             Some([
                 raw_v(0xfff2, 0, 0),
-                raw_v(0, 0, -0xfff2),
-                raw_v(0, 0xfff2, 0),
+                raw_v(0, 0, 0xfff2),
+                raw_v(0, -0xfff2, 0),
             ])
         );
+        // The same convention as the lane rotation `FUN_00492ca0`/`FUN_0048dfe0`.
+        let matrix = axis_angle_matrix(basis[2], 0x400, &trig).unwrap();
+        assert_eq!(transform_by_matrix(basis[0], &matrix), raw_v(0, 0x10000, 0));
     }
 
     #[test]

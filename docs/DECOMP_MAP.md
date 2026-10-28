@@ -421,7 +421,9 @@ along its body axis through the gears on AU1. With the compiled spawn rows facin
 inference), it drives down the AU1 road and passes 21 checkpoints under
 throttle alone before it tumbles (out-of-control path not reconstructed). The steering words (`FUN_0041b160`), the
 axis-angle lane rotation and the compiled drive split are now sourced, and the
-windowed session runs the four-wheel producer.
+windowed session runs the four-wheel producer. With the orientation update's native row-vector
+transform, steering turns the car the right way: rendered windowed frames show
+it following the AU1 road around a bend.
 
 ## Update rules
 
@@ -432,14 +434,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T14:20:00Z
-milestone=steering-and-drive-split
+updated_utc=2026-10-28T15:40:00Z
+milestone=orientation-row-vector-transform
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-handling-out-of-control-path-and-car-animation
-next_exit_gate=stable-four-wheel-driving-on-au1
+next_exit_gate=out-of-control-path-and-trackside-collision
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

@@ -1920,6 +1920,12 @@ row through the native axis-angle matrix, and every wheel reads the compiled
 `+0x158` split, so all four wheels drive. The windowed session now runs the
 four-wheel producer with the ground pass and draws the car from its basis.
 
+The orientation update now uses the native row-vector transform
+(`impl.orientation-row-vector-transform`); the transposed version had turned
+every rotation backwards, which the spawn half-turn and the harness `+0x800`
+heading were compensating. Rendered frames of the windowed loop on AU1 now show
+the car following the road around a right bend under right steer.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions
