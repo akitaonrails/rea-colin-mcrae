@@ -423,7 +423,8 @@ throttle alone before it tumbles (out-of-control path not reconstructed). The st
 axis-angle lane rotation and the compiled drive split are now sourced, and the
 windowed session runs the four-wheel producer. With the orientation update's native row-vector
 transform, steering turns the car the right way: rendered windowed frames show
-it following the AU1 road around a bend.
+it following the AU1 road around a bend. The out-of-control (tumbling) path `FUN_004115d0` with
+`FUN_00412860`/`FUN_00413a80` is reconstructed.
 
 ## Update rules
 
@@ -434,14 +435,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T15:40:00Z
-milestone=orientation-row-vector-transform
+updated_utc=2026-10-28T17:30:00Z
+milestone=tumbling-ground-pass
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
 current_focus=four-wheel-handling-out-of-control-path-and-car-animation
-next_exit_gate=out-of-control-path-and-trackside-collision
+next_exit_gate=bank-slide-divergence-and-wheel-animation
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

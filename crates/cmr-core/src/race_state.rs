@@ -60,6 +60,7 @@ use crate::static_world_collision::{
     StaticCollisionExecutionError, StaticContactHistory, resolve_static_world_collisions,
 };
 use crate::steering_response::{SteeringInputs, SteeringParams, SteeringState, apply_steering};
+use crate::tumble::{TumbleState, arm_righting};
 use crate::tyre_load::{
     TyreGains, TyreLoadInputs, TyreSurfaceIndexError, WheelSurfaceTerms, apply_tyre_load_pass,
     derive_wheel_surface_terms, wheel_candidate_bases,
@@ -599,6 +600,10 @@ pub struct FourWheelState {
     pub tyre_gains: TyreGains,
     /// This tick's support sums `+0x3fc + 12i`, cleared by the driver.
     pub support_3fc: [Vec3; 8],
+    /// The out-of-control words of the tumbling pass.
+    pub tumble: TumbleState,
+    /// This tick's contact vectors `+0x4bc..+0x518` (`FUN_00409f90`).
+    pub contact_vectors_4bc: [Vec3; 8],
 }
 
 /// Apply neutral-gear zeroing or the ordinary post-step tracking update.
@@ -960,6 +965,20 @@ impl CarState {
                     gain_36c: [0; 4],
                 },
                 support_3fc: [Vec3::ZERO; 8],
+                tumble: TumbleState {
+                    righting_3ec: false,
+                    roof_3f4: false,
+                    side_3f8: false,
+                    end_3fc: false,
+                    roof_ticks_43c: 0,
+                    side_ticks_43d: 0,
+                    end_ticks_43e: 0,
+                    hull_ticks_678: 0,
+                    inverted_684: false,
+                    lowest_wheel_64c: 0,
+                    lowest_wheel_650: 0,
+                },
+                contact_vectors_4bc: [Vec3::ZERO; 8],
             },
             ground: None,
         }
@@ -1473,6 +1492,12 @@ impl RaceState {
         }
         let contact_vectors =
             build_contact_basis_vectors(self.car.motion.contact_basis(self.car.velocity));
+        self.car.four_wheel.contact_vectors_4bc = contact_vectors;
+        // The driver arms the righting animation while it is idle
+        // (`FUN_004102e0`, `0x4079dc`).
+        if !self.car.four_wheel.tumble.righting_3ec {
+            arm_righting(&mut self.car.four_wheel.tumble);
+        }
         for (lane, vector_index) in wheel.contact_vector_indices.into_iter().enumerate() {
             if vector_index >= contact_vectors.len() {
                 return Err(WheelPostprocessError::ContactVectorIndex { lane, vector_index });
@@ -1979,7 +2004,11 @@ impl RaceState {
             speed_ec: self.car.four_wheel.speed_ec,
             resting_700: self.car.four_wheel.resting_700,
             out_of_control_680: self.car.collision.response_state_680,
+            recovery_688: self.car.collision.recovery_latch_688,
             axis_snapshot_bc: self.car.collision.out_of_control_axis_bc,
+            tumble: self.car.four_wheel.tumble,
+            contact_vectors: self.car.four_wheel.contact_vectors_4bc,
+            impact_3cc: None,
         };
         let (after, ground) = run_ground_pass(
             car,
@@ -2001,9 +2030,10 @@ impl RaceState {
                 } => failed_lane,
             },
         })?;
-        if after.out_of_control_680 && !self.car.collision.response_state_680 {
-            // The tilt test sets `+0x680` and `+0x688` together.
-            self.car.collision.recovery_latch_688 = true;
+        self.car.collision.recovery_latch_688 = after.recovery_688;
+        self.car.four_wheel.tumble = after.tumble;
+        if let Some(impact) = after.impact_3cc {
+            self.car.collision.pending_linear_3cc = impact;
         }
         self.car.position = after.position;
         self.car.velocity = after.velocity;
@@ -3421,6 +3451,7 @@ mod tests {
                 lane_words: [0; 8],
                 source_y: [0; 8],
             }),
+            wheel_reach_648_644: [0; 2],
         });
         let tyre_free = RaceState::new(ground_car)
             .step_with_all_four_wheels(&straight_throttle(1)[0], &wheel)

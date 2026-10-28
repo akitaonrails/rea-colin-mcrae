@@ -1926,6 +1926,11 @@ every rotation backwards, which the spawn half-turn and the harness `+0x800`
 heading were compensating. Rendered frames of the windowed loop on AU1 now show
 the car following the road around a right bend under right steer.
 
+The out-of-control path `FUN_004115d0` is reconstructed (`impl.tumbling-ground-pass`):
+a car that loses control keeps touching the ground, damps its spin, counts roof
+and side time toward the righting animation and the totalled latch, and recovers
+when settled upright. A blow-up after sliding into a steep AU1 bank remains open.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

@@ -3759,6 +3759,10 @@ impl SessionCompiledPose {
                     source_y: probes.map(|probe| probe[1]),
                 },
             ),
+            wheel_reach_648_644: [
+                effects.effective_state_words[6],
+                effects.effective_state_words[7],
+            ],
         });
         Ok(publish_session_compiled_pose(
             start,
@@ -5636,6 +5640,10 @@ mod tests {
             start,
         );
         assert!(session.is_four_wheel());
+        eprintln!(
+            "frames static_collision_scene={}",
+            resources.static_collision_scene().is_some()
+        );
         let mut keyboard = KeyboardDriver::player_one();
         let mut analog = AnalogDriver::new();
         let response = DriveResponse {
@@ -5712,7 +5720,7 @@ mod tests {
                 let car = session.car();
                 let moved = car.position.sub(origin);
                 eprintln!(
-                    "frames frame={frame} state={} cursor={} speed={:#x} moved=({:#x},{:#x},{:#x}) row0=({:#x},{:#x},{:#x}) gear={}",
+                    "frames frame={frame} state={} cursor={} speed={:#x} moved=({:#x},{:#x},{:#x}) row0=({:#x},{:#x},{:#x}) gear={} contacts={:?}",
                     session.state().id(),
                     progress.cursor(),
                     car.four_wheel.speed_ec,
@@ -5723,6 +5731,11 @@ mod tests {
                     car.motion.basis[0].y.raw(),
                     car.motion.basis[0].z.raw(),
                     car.four_wheel.gearbox.gear_43a,
+                    (
+                        car.four_wheel.engine_2e0,
+                        car.four_wheel.gearbox,
+                        car.four_wheel.pedals.response_2d8
+                    ),
                 );
                 if let Some(world) = outcome.world {
                     let rgba = world.expand_rgba8().unwrap();
@@ -6177,6 +6190,12 @@ mod tests {
             .compiled_four_wheel_params(&inputs, &trig, tyre_tables.tables())
             .unwrap();
         start.four_wheel.gearbox = GearboxState::at_setup(true);
+        if let Some(gearbox) = &wheel.gearbox {
+            eprintln!(
+                "probe gearbox tables={:x?} ratios={:x?} redline={:#x}",
+                gearbox.tables, gearbox.drive_ratios, wheel.engine_smoothing.redline_15c
+            );
+        }
         let mut state = cmr_core::race_state::RaceState::new(start);
         let throttle = Controls {
             raw_pedals: RawPedals {
@@ -6260,7 +6279,11 @@ mod tests {
                 car: state.car(),
             };
             progress.update(sample.car.position, tick);
-            if tick % every == 0 || tick == ticks - 1 {
+            let from = std::env::var("CMR_PROBE_FROM")
+                .ok()
+                .and_then(|value| value.parse::<i32>().ok())
+                .unwrap_or(0);
+            if tick >= from && (tick % every == 0 || tick == ticks - 1) {
                 let car = sample.car;
                 let moved = car.position.sub(origin);
                 eprintln!(
@@ -6311,7 +6334,7 @@ mod tests {
                     );
                 }
                 eprintln!(
-                    "probe   omega=({:#x},{:#x},{:#x}) ratio3b0={:x?} angle={:x?} component={:x?} source_s=({:#x},{:#x},{:#x})",
+                    "probe   omega=({:#x},{:#x},{:#x}) ratio3b0={:x?} angle={:x?} component={:x?} source_s=({:#x},{:#x},{:#x}) ooc={} tumble={:?}",
                     car.motion.angular_velocity.x.raw(),
                     car.motion.angular_velocity.y.raw(),
                     car.motion.angular_velocity.z.raw(),
@@ -6321,6 +6344,17 @@ mod tests {
                     car.motion.lane_source_s.x.raw(),
                     car.motion.lane_source_s.y.raw(),
                     car.motion.lane_source_s.z.raw(),
+                    car.collision.response_state_680,
+                    (
+                        car.motion.projection_axis.x.raw(),
+                        car.motion.projection_axis.y.raw(),
+                        car.motion.projection_axis.z.raw(),
+                        car.ground.map(|ground| (
+                            ground.lanes.lane_words,
+                            ground.thresholds.flags_73a,
+                            ground.probes.map(|p| p[1])
+                        ))
+                    ),
                 );
                 eprintln!(
                     "probe   steering={:x?} gains35c={:x?} gains36c={:x?} surfaces={:?}",
