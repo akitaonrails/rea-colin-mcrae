@@ -171,7 +171,11 @@ state 4 loads the event's stage (`impl.stage-reload`), so a championship runs
 NZ1 onwards. `--source` must be a stage directory `<root>/Game/<CC>/<n>`.
 The record persists as `<runtime-data>/save/cmRally.cfg` (`impl.cfg-file`).
 Stage weather (`impl.stage-weather`) needs
-`cargo run -q -p cmr-assets -- extract-stage-weather-tables --source <dir with Rally.exe> --profile profiles/official-eu-stage-weather-tables-v1.json --output runtime-data/official-eu-stage-weather-tables`. The race hand-off commits the
+`cargo run -q -p cmr-assets -- extract-stage-weather-tables --source <dir with Rally.exe> --profile profiles/official-eu-stage-weather-tables-v1.json --output runtime-data/official-eu-stage-weather-tables`;
+the rivals' times (`impl.rival-times`) need `extract-rival-records` the same way
+(`profiles/official-eu-rival-records-v1.json`, output `runtime-data/official-eu-rival-records`).
+Post-stage results are documented in `.work/post-stage-results-notes.md`;
+standings are computed (`impl.standings`) but the result pages are not drawn yet. The race hand-off commits the
 cmRally.cfg record (`impl.config-commit`). Front-end screens are in
 `.work/frontend-menu-tree-notes.md`. Next: the front-end setup screens (they edit
 the record, so a chosen stage and car load), the car-to-car impact site

@@ -7,10 +7,11 @@ use std::process::ExitCode;
 
 use cmr_assets::{
     ReviewedAuxControlProfile, ReviewedCarSelectorProfile, ReviewedCompiledInitializerProfile,
-    ReviewedEngineAudioTablesProfile, ReviewedProfile, ReviewedStageWeatherTablesProfile,
-    ReviewedSurfaceAudioTablesProfile, ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile,
-    ReviewedTyreTablesProfile, catalog_standard_source, extract_aux_control_constants,
-    extract_car_selectors, extract_compiled_car_initializer, extract_engine_audio_tables,
+    ReviewedEngineAudioTablesProfile, ReviewedProfile, ReviewedRivalRecordsProfile,
+    ReviewedStageWeatherTablesProfile, ReviewedSurfaceAudioTablesProfile,
+    ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile, ReviewedTyreTablesProfile,
+    catalog_standard_source, extract_aux_control_constants, extract_car_selectors,
+    extract_compiled_car_initializer, extract_engine_audio_tables, extract_rival_records,
     extract_stage_weather_tables, extract_surface_audio_tables, extract_surface_capabilities,
     extract_surface_tables, extract_tyre_surface_tables, import_source, verify_source,
 };
@@ -150,6 +151,16 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<String, String> {
                 .map_err(|error| error.to_string())?;
             serde_json::to_string(&summary).map_err(|error| error.to_string())
         }
+        Some("extract-rival-records") => {
+            let source = required_path(&options, "--source")?;
+            let profile_path = required_path(&options, "--profile")?;
+            let output = required_path(&options, "--output")?;
+            reject_unknown(&options, &["--source", "--profile", "--output"])?;
+            let reviewed = load_rival_records_profile(&profile_path)?;
+            let summary = extract_rival_records(&source, &output, &reviewed)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_string(&summary).map_err(|error| error.to_string())
+        }
         Some("extract-aux-control-constants") => {
             let source = required_path(&options, "--source")?;
             let profile_path = required_path(&options, "--profile")?;
@@ -274,6 +285,12 @@ fn load_stage_weather_tables_profile(
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+fn load_rival_records_profile(path: &Path) -> Result<ReviewedRivalRecordsProfile, String> {
+    let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    ReviewedRivalRecordsProfile::from_json(&document)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn load_aux_control_profile(path: &Path) -> Result<ReviewedAuxControlProfile, String> {
     let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     ReviewedAuxControlProfile::from_json(&document)
@@ -291,7 +308,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-surface-capabilities|extract-compiled-car-initializer|extract-car-selectors|extract-tyre-surface-tables|extract-engine-audio-tables|extract-surface-audio-tables|extract-stage-weather-tables|extract-aux-control-constants> [options]".to_owned()
+    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-surface-capabilities|extract-compiled-car-initializer|extract-car-selectors|extract-tyre-surface-tables|extract-engine-audio-tables|extract-surface-audio-tables|extract-stage-weather-tables|extract-rival-records|extract-aux-control-constants> [options]".to_owned()
 }
 
 #[cfg(test)]
@@ -598,6 +615,13 @@ mod tests {
                 "stage-weather-profile.json",
                 "--output",
                 "runtime-data/stage-weather-tables",
+            ],
+            &[
+                "extract-rival-records",
+                "--profile",
+                "rival-profile.json",
+                "--output",
+                "runtime-data/rival-records",
             ],
             &[
                 "extract-aux-control-constants",
@@ -913,6 +937,70 @@ mod tests {
             error.contains("cannot extract stage weather tables"),
             "{error}"
         );
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn rival_records_extraction_requires_profile_and_output() {
+        assert_eq!(
+            run(args(&["extract-rival-records", "--source", "source"])),
+            Err("missing required option --profile".to_owned())
+        );
+        assert_eq!(
+            run(args(&[
+                "extract-rival-records",
+                "--source",
+                "source",
+                "--profile",
+                "profile.json",
+            ])),
+            Err("missing required option --output".to_owned())
+        );
+        assert_eq!(
+            run(args(&[
+                "extract-rival-records",
+                "--source",
+                "source",
+                "--profile",
+                "profile.json",
+                "--output",
+                "out",
+                "--extra",
+                "x",
+            ])),
+            Err("unknown option --extra".to_owned())
+        );
+    }
+
+    #[test]
+    fn rival_records_cli_authenticates_then_rejects_a_non_pe_without_output() {
+        let temp = Temp::new();
+        let source = temp.0.join("source");
+        fs::create_dir(&source).unwrap();
+        let executable = b"identified synthetic non-PE";
+        fs::write(source.join("Rally.exe"), executable).unwrap();
+        let mut profile: cmr_assets::RivalRecordsProfile = serde_json::from_slice(include_bytes!(
+            "../../../profiles/official-eu-rival-records-v1.json"
+        ))
+        .unwrap();
+        profile.id = "synthetic-cli-rival-records".into();
+        profile.executable.size = executable.len() as u64;
+        profile.executable.sha256 = digest(executable);
+        let profile_path = temp.0.join("rival-profile.json");
+        fs::write(&profile_path, serde_json::to_vec(&profile).unwrap()).unwrap();
+        let output = temp.0.join("rival-output");
+        let error = run([
+            OsString::from("extract-rival-records"),
+            OsString::from("--source"),
+            source.into_os_string(),
+            OsString::from("--profile"),
+            profile_path.into_os_string(),
+            OsString::from("--output"),
+            output.clone().into_os_string(),
+        ]
+        .into_iter())
+        .unwrap_err();
+        assert!(error.contains("cannot extract rival records"), "{error}");
         assert!(!output.exists());
     }
 

@@ -197,6 +197,8 @@ const REVIEWED_ENGINE_AUDIO_TABLES_PROFILE: &[u8] =
 const ENGINE_AUDIO_TABLES_STORE_DIRECTORY: &str = "official-eu-engine-audio-tables";
 const REVIEWED_SURFACE_AUDIO_TABLES_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-surface-audio-tables-v1.json");
+const REVIEWED_RIVAL_RECORDS_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-rival-records-v1.json");
 const REVIEWED_STAGE_WEATHER_TABLES_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-stage-weather-tables-v1.json");
 const SURFACE_AUDIO_TABLES_STORE_DIRECTORY: &str = "official-eu-surface-audio-tables";
@@ -5578,6 +5580,8 @@ struct StageReloadContext<'a> {
     aux: &'a Result<SessionAuxControl, String>,
     params: SimParams,
     weather_tables: Option<&'a StageWeatherTables>,
+    /// The loaded car's selector, standing in for its car nibble.
+    car: u8,
 }
 
 /// The stage load of state 4's render handler `FUN_00421da0`: just before
@@ -5592,12 +5596,37 @@ fn reload_stage_for_event<'a>(
     progress: &mut StageProgress<'static>,
     audio: &mut RaceAudio,
     camera: &mut ViewHarness,
-    loaded: &mut (String, StageWeather),
+    loaded: &mut (String, StageWeather, PathBuf),
     context: &StageReloadContext<'a>,
+    results: &mut RaceResults,
 ) -> Result<(), WindowedStageFrameError> {
     if session.state().id() != 4 {
         return Ok(());
     }
+    reload_changed_stage(session, resources, progress, audio, camera, loaded, context)?;
+    // The CatsEye load in the same stage load rolls the rivals' times.
+    let nodes = progress.nodes();
+    results.stage_load(
+        session.event_mut(),
+        &loaded.2,
+        &loaded.0,
+        nodes,
+        context.car,
+        &mut camera.rng,
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reload_changed_stage<'a>(
+    session: &mut GameplaySession<'a>,
+    resources: &mut StageRenderResources,
+    progress: &mut StageProgress<'static>,
+    audio: &mut RaceAudio,
+    camera: &mut ViewHarness,
+    loaded: &mut (String, StageWeather, PathBuf),
+    context: &StageReloadContext<'a>,
+) -> Result<(), WindowedStageFrameError> {
     let Some(base) = cmr_core::stage_path::stage_base(session.event()) else {
         return Ok(());
     };
@@ -5648,9 +5677,147 @@ fn reload_stage_for_event<'a>(
         stage_crowd_points(resources),
         weather,
     );
+    // A fresh view; the shared `rand()` generator carries on.
+    let rng = camera.rng;
     *camera = ViewHarness::new();
-    *loaded = (name, weather);
+    camera.rng = rng;
+    *loaded = (name, weather, dir);
     Ok(())
+}
+
+/// A file in `dir` named `name` in any ASCII case, as the Windows lookup is.
+fn find_case_insensitive(dir: &Path, name: &str) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|file| file.to_str())
+                .is_some_and(|file| file.eq_ignore_ascii_case(name))
+        })
+}
+
+/// The race's results: the rivals' stage times rolled at each stage load and
+/// the standings computed at the finish.
+struct RaceResults {
+    /// Each rival slot's tier by country (record `+9 + country`), from the
+    /// reviewed rival records; `None` without the store.
+    tiers: Option<[[u8; 9]; 16]>,
+    rivals: Option<cmr_core::stage_rivals::StageRivals>,
+    standings: Option<cmr_core::standings::Standings>,
+    finished: bool,
+}
+
+impl RaceResults {
+    fn open(runtime_data: &Path) -> Self {
+        let tiers =
+            cmr_assets::ReviewedRivalRecordsProfile::from_json(REVIEWED_RIVAL_RECORDS_PROFILE)
+                .ok()
+                .and_then(|reviewed| {
+                    match cmr_assets::RivalRecordsStore::open(
+                        &session_sidecar_store(
+                            runtime_data,
+                            cmr_assets::RIVAL_RECORDS_STORE_DIRECTORY,
+                        ),
+                        &reviewed,
+                    ) {
+                        Ok(store) => Some(std::array::from_fn(|slot| {
+                            let raw = store.records().records[slot].raw;
+                            std::array::from_fn(|country| raw[9 + country])
+                        })),
+                        Err(error) => {
+                            eprintln!(
+                                "cmr-app: rival records unavailable ({error:?}); no rival times"
+                            );
+                            None
+                        }
+                    }
+                });
+        Self {
+            tiers,
+            rivals: None,
+            standings: None,
+            finished: false,
+        }
+    }
+
+    /// The CatsEye load `FUN_00466350` during state 4's stage load: the pace
+    /// file `<stage><n|i|e>.cjp` by difficulty and the rivals' times, on the
+    /// shared `rand()` generator. Harness: one player whose car nibble is the
+    /// loaded car's selector, and no reversed stages.
+    fn stage_load(
+        &mut self,
+        event: &mut EventState,
+        stage_dir: &Path,
+        stage: &str,
+        nodes: &[CatNode],
+        car: u8,
+        rng: &mut GameLcg,
+    ) {
+        self.finished = false;
+        self.standings = None;
+        let Some(tiers) = self.tiers else {
+            self.rivals = None;
+            return;
+        };
+        let country = usize::from(event.cfg.cursor_168 & 0xf).min(8);
+        let pace = cmr_core::stage_rivals::pace_suffix(event.cfg.difficulty_018)
+            .and_then(|suffix| find_case_insensitive(stage_dir, &format!("{stage}{suffix}")))
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|raw| {
+                let decoded = decode_stored_asset(&raw, DecodeLimits::default()).ok()?;
+                cmr_core::stage_rivals::StagePace::parse(decoded.bytes())
+            });
+        let split_nodes: Vec<bool> = nodes.iter().map(|node| node.split_flag != 0).collect();
+        self.rivals = cmr_core::stage_rivals::stage_rivals(
+            event,
+            &cmr_core::stage_rivals::StageRivalInput {
+                pace,
+                split_nodes: &split_nodes,
+                tiers: std::array::from_fn(|slot| tiers[slot][country]),
+                players: 1,
+                player_cars: [car, 0],
+                super_special: false,
+                reversed: false,
+            },
+            rng,
+        );
+    }
+
+    /// The results init `FUN_0042f860` once the race reaches state 8 after
+    /// the finish (`FUN_00443c80` latches the stage time there).
+    fn frame(&mut self, session: &mut GameplaySession, progress: &StageProgress) {
+        if session.state().id() == 8
+            && let Some(time) = progress.finish_centiseconds()
+        {
+            self.finish(session.event_mut(), time as u32);
+        }
+    }
+
+    /// `FUN_0042fab0` at the finish (the results init `FUN_0042f860`).
+    fn finish(&mut self, event: &mut EventState, stage_time: u32) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        let Some(rivals) = &self.rivals else {
+            return;
+        };
+        let Some(&slot) = rivals.player_slots.first() else {
+            return;
+        };
+        self.standings = cmr_core::standings::compute_standings(
+            event,
+            &cmr_core::standings::StageFinish {
+                rival_times: rivals.times,
+                players: vec![(slot, stage_time)],
+                opponent_slot: 0,
+                disqualified: false,
+                head_to_head_pending: false,
+            },
+        );
+    }
 }
 
 /// The event state at process start: the front end is up.
@@ -5804,7 +5971,12 @@ pub fn run_windowed_game_session(
     let mut config =
         FrontEndConfig::new(stage, compiled_pose.selector as u8).with_file(runtime_data);
     let mut runtime_error = None;
-    let mut loaded_stage = (stage.to_ascii_uppercase(), weather);
+    let mut loaded_stage = (
+        stage.to_ascii_uppercase(),
+        weather,
+        media_root.to_path_buf(),
+    );
+    let mut results = RaceResults::open(runtime_data);
     let reload = StageReloadContext {
         game_root: media_root
             .parent()
@@ -5819,6 +5991,7 @@ pub fn run_windowed_game_session(
         aux: &aux,
         params,
         weather_tables: weather_tables.as_ref(),
+        car: compiled_pose.selector as u8,
     };
 
     // Best-effort: open the recovered front-end root-menu compositor from the
@@ -5849,6 +6022,7 @@ pub fn run_windowed_game_session(
                     &mut camera,
                     &mut loaded_stage,
                     &reload,
+                    &mut results,
                 )
                 .and_then(|()| {
                     advance_game_frame(
@@ -5869,6 +6043,7 @@ pub fn run_windowed_game_session(
                         input,
                     )
                 });
+                results.frame(&mut session, &progress);
                 match frame {
                     Ok(outcome) => {
                         // A composed world frame wins; otherwise the interactive
@@ -5923,6 +6098,7 @@ pub fn run_windowed_game_session(
             &mut camera,
             &mut loaded_stage,
             &reload,
+            &mut results,
         )
         .and_then(|()| {
             advance_game_frame(
@@ -5943,6 +6119,7 @@ pub fn run_windowed_game_session(
                 input,
             )
         });
+        results.frame(&mut session, &progress);
         match frame {
             Ok(outcome) => WindowedGameFrame {
                 present: outcome.world.or(outcome.loading_interstitial),
@@ -7750,7 +7927,7 @@ mod tests {
         let mut config = FrontEndConfig::new("AU1", pose.selector as u8);
         let mut audio = RaceAudio::default();
         let mut camera = ViewHarness::new();
-        let mut loaded = ("AU1".to_owned(), CLEAR_WEATHER);
+        let mut loaded = ("AU1".to_owned(), CLEAR_WEATHER, media.clone());
         let reload = StageReloadContext {
             game_root: media.parent().and_then(Path::parent).map(Path::to_path_buf),
             runtime_data: &root,
@@ -7762,7 +7939,9 @@ mod tests {
             aux: &aux,
             params,
             weather_tables: weather_tables.as_ref(),
+            car: pose.selector as u8,
         };
+        let mut results = RaceResults::open(&root);
         // The championship setup's choices, committed at the hand-off.
         config.preset_setup(0);
         config.commit(session.event_mut(), &mut pause);
@@ -7776,6 +7955,7 @@ mod tests {
                 &mut camera,
                 &mut loaded,
                 &reload,
+                &mut results,
             )
             .unwrap();
             session
@@ -7794,6 +7974,17 @@ mod tests {
         assert_eq!(loaded.0, "NZ1");
         assert_eq!(session.event().cfg.cursor_168, 0);
         assert_ne!(session.car().position, start.position);
+        // The stage load rolled the rivals' times for NZ1.
+        let rivals = results.rivals.as_ref().expect("rival times");
+        assert_eq!(rivals.player_slots.len(), 1);
+        assert!(
+            rivals
+                .times
+                .iter()
+                .filter(|&&t| t != u32::MAX && t != 0)
+                .count()
+                >= 8
+        );
         eprintln!(
             "championship: stage={loaded:?} nodes={} start={:?}",
             statics.nodes.len(),

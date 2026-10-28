@@ -17,6 +17,9 @@ mod import;
 mod path;
 mod profile;
 mod resolver;
+mod rival_records_import;
+mod rival_records_profile;
+mod rival_records_store;
 mod schema;
 mod stage_weather_tables_import;
 mod stage_weather_tables_profile;
@@ -87,6 +90,17 @@ pub use profile::{
     AssetFile, AssetProfile, ProfileError, ReviewedProfile, ReviewedProfileError, StorageEncoding,
 };
 pub use resolver::{AssetIndex, ResolveError};
+pub use rival_records_import::{
+    RIVAL_RECORDS_DATA_FILE, RIVAL_RECORDS_IMPORT_SCHEMA_VERSION, RIVAL_RECORDS_STATE_FILE,
+    RIVAL_RECORDS_STORE_DIRECTORY, RivalRecordsImportError, RivalRecordsImportFile,
+    RivalRecordsImportShape, RivalRecordsImportSummary, extract_rival_records,
+};
+pub use rival_records_profile::{
+    RIVAL_RECORDS_PROFILE_SCHEMA_VERSION, ReviewedRivalRecordsProfile,
+    ReviewedRivalRecordsProfileError, RivalRecordsEncoding, RivalRecordsExecutable,
+    RivalRecordsProfile, RivalRecordsProfileError, RivalRecordsSpec,
+};
+pub use rival_records_store::{RivalRecordsStore, RivalRecordsStoreError};
 pub use schema::{
     IMPORT_STATE_SCHEMA_VERSION, PROFILE_SCHEMA_VERSION, SchemaStatus, import_state_schema_status,
     profile_schema_status,
