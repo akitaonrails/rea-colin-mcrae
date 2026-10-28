@@ -29,7 +29,7 @@ mod app {
     use std::path::{Path, PathBuf};
 
     use cmr_launcher::config::{self, Settings};
-    use cmr_launcher::{edition, fill_cave_data, fixes, pe, prepare, registry, runtime};
+    use cmr_launcher::{edition, fill_data, fixes, pe, prepare, registry, runtime};
 
     use crate::win32;
 
@@ -180,15 +180,32 @@ mod app {
                 let mut writes = prepare(&image, edition.fixes, &skip, cave)?;
                 let axes = win32::centred_axes();
                 let bytes: Vec<u8> = axes.iter().flat_map(|a| a.to_le_bytes()).collect();
-                if fill_cave_data(&mut writes, cave.wrapping_add(fixes::F7_TABLE), &bytes) {
+                if fill_data(&mut writes, cave.wrapping_add(fixes::F7_TABLE), &bytes) {
                     log_line(&format!(
                         "F7 axes per joystick (1 = Z, 2 = R): {:?}",
                         &axes[..4]
                     ));
                 }
+                if let Some(factor) = settings.draw_distance {
+                    let q16 = |v: u32| ((u64::from(v) * u64::from(factor)) >> 16) as u32;
+                    let cap = q16(fixes::F12_CAP).to_le_bytes();
+                    let filled = fill_data(
+                        &mut writes,
+                        cave.wrapping_add(fixes::F12_FACTOR),
+                        &factor.to_le_bytes(),
+                    ) && fixes::F12_CAPS
+                        .iter()
+                        .all(|&a| fill_data(&mut writes, a, &cap));
+                    if filled {
+                        log_line(&format!(
+                            "F12 draw distance x{:.2}",
+                            f64::from(factor) / 65536.0
+                        ));
+                    }
+                }
                 if let Some((w, h)) = settings.resolution {
                     let size: Vec<u8> = [w, h].iter().flat_map(|v| v.to_le_bytes()).collect();
-                    if fill_cave_data(&mut writes, cave.wrapping_add(fixes::F10_SIZE), &size) {
+                    if fill_data(&mut writes, cave.wrapping_add(fixes::F10_SIZE), &size) {
                         log_line(&format!("F10 race resolution {w}x{h}"));
                     }
                 }

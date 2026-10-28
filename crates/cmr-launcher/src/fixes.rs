@@ -149,7 +149,7 @@ fn rel32(at: u32, len: u32, to: u32) -> [u8; 4] {
 /// The community-patched EU v1.5 (`46500c8e…`) carries F1-F5 on disk; it
 /// is the same build, so F6 applies at the same addresses.
 pub static COMMUNITY_EU_15: FixSet = FixSet {
-    fixes: &[F6, F7, F8, F9, F10, F11],
+    fixes: &[F6, F7, F8, F9, F10, F11, F12],
 };
 
 /// Official EU v1.5 (`0eb6ea96…`).
@@ -225,6 +225,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         F9,
         F10,
         F11,
+        F12,
     ],
 };
 
@@ -523,6 +524,101 @@ const F11: Fix = Fix {
     ],
 };
 
+const F12_ARS: u32 = 0x1e0;
+/// F12's factor, Q16 (0x10000 = 1.0), filled by the launcher.
+pub const F12_FACTOR: u32 = 0x224;
+const F12_TRIGGER: u32 = 0x230;
+const _: () =
+    assert!(F12_ARS >= F11_Q + 4 && F12_FACTOR >= F12_ARS + 65 && F12_TRIGGER >= F12_FACTOR + 4);
+/// The country-1 cap, 200.0 in Q16, compared and stored at two places each.
+pub const F12_CAPS: [u32; 4] = [0x0043_5e91, 0x0043_5e98, 0x0043_5f6a, 0x0043_5f71];
+pub const F12_CAP: u32 = 0x00c8_0000;
+
+/// Draw distance. Each stage's `.ars` file gives the object wedge, far
+/// plane and LOD wedge (`0x4f6838`/`0x4f683c`/`0x4f6840`, usually 150, 150
+/// and 100 m), section triggers set the far plane from the table at
+/// `0x4ea38c` (50..250 m), and one country caps it at 200 m; the menu's
+/// distance options then scale it every frame and the terrain and object
+/// culls follow the far plane. F12 multiplies those raw sources by one
+/// factor, so the game's own per-frame logic is unchanged: after the `.ars`
+/// load (`0x4809a7`, before the shared tail re-applies the projection),
+/// where the trigger table is read (`0x403ea7`), and the cap constants
+/// (filled by the launcher). The front end is not touched. Opt-in
+/// (`draw_distance`).
+const F12: Fix = Fix {
+    id: "F12",
+    what: "longer draw distance (stage distances times a factor)",
+    optional: true,
+    code: &[
+        // mov ecx,[0x4f6838] -> jmp ; nop
+        Piece {
+            at: At::Image(0x0048_09a7),
+            ops: &[Op::Jmp(At::Cave(F12_ARS)), Op::Raw(&[NOP])],
+        },
+        Piece {
+            at: At::Cave(F12_ARS),
+            ops: &[
+                // [0x4f6838] = [0x4f6838] * factor (Q16)
+                Op::Raw(&[0xa1, 0x38, 0x68, 0x4f, 0x00]), // mov eax,[g]
+                Op::Raw(&[0xf7, 0x2d]),                   // imul dword [factor]
+                Op::Addr(At::Cave(F12_FACTOR)),
+                Op::Raw(&[0x0f, 0xac, 0xd0, 0x10]), // shrd eax,edx,16
+                Op::Raw(&[0xa3, 0x38, 0x68, 0x4f, 0x00]), // mov [g],eax
+                // [0x4f683c] = [0x4f683c] * factor (Q16)
+                Op::Raw(&[0xa1, 0x3c, 0x68, 0x4f, 0x00]), // mov eax,[g]
+                Op::Raw(&[0xf7, 0x2d]),                   // imul dword [factor]
+                Op::Addr(At::Cave(F12_FACTOR)),
+                Op::Raw(&[0x0f, 0xac, 0xd0, 0x10]), // shrd eax,edx,16
+                Op::Raw(&[0xa3, 0x3c, 0x68, 0x4f, 0x00]), // mov [g],eax
+                // [0x4f6840] = [0x4f6840] * factor (Q16)
+                Op::Raw(&[0xa1, 0x40, 0x68, 0x4f, 0x00]), // mov eax,[g]
+                Op::Raw(&[0xf7, 0x2d]),                   // imul dword [factor]
+                Op::Addr(At::Cave(F12_FACTOR)),
+                Op::Raw(&[0x0f, 0xac, 0xd0, 0x10]), // shrd eax,edx,16
+                Op::Raw(&[0xa3, 0x40, 0x68, 0x4f, 0x00]), // mov [g],eax
+                // the shared tail: projection and wedges from the globals
+                Op::Jmp(At::Image(0x0048_09cb)),
+            ],
+        },
+        Piece {
+            at: At::Cave(F12_FACTOR),
+            ops: &[Op::Raw(&[0x00, 0x00, 0x01, 0x00])], // 1.0 until filled
+        },
+        // mov eax,[eax*4+0x4ea38c] -> jmp ; nop ; nop
+        Piece {
+            at: At::Image(0x0040_3ea7),
+            ops: &[Op::Jmp(At::Cave(F12_TRIGGER)), Op::Raw(&[NOP, NOP])],
+        },
+        Piece {
+            at: At::Cave(F12_TRIGGER),
+            ops: &[
+                Op::Raw(&[0x8b, 0x04, 0x85, 0x8c, 0xa3, 0x4e, 0x00]), // the table read
+                Op::Raw(&[0xf7, 0x2d]),                               // imul dword [factor]
+                Op::Addr(At::Cave(F12_FACTOR)),
+                Op::Raw(&[0x0f, 0xac, 0xd0, 0x10]), // shrd eax,edx,16
+                Op::Jmp(At::Image(0x0040_3eae)),
+            ],
+        },
+        // The cap's immediates; the launcher writes the scaled value.
+        Piece {
+            at: At::Image(F12_CAPS[0]),
+            ops: &[Op::Raw(&F12_CAP.to_le_bytes())],
+        },
+        Piece {
+            at: At::Image(F12_CAPS[1]),
+            ops: &[Op::Raw(&F12_CAP.to_le_bytes())],
+        },
+        Piece {
+            at: At::Image(F12_CAPS[2]),
+            ops: &[Op::Raw(&F12_CAP.to_le_bytes())],
+        },
+        Piece {
+            at: At::Image(F12_CAPS[3]),
+            ops: &[Op::Raw(&F12_CAP.to_le_bytes())],
+        },
+    ],
+};
+
 /// 24 bytes: ecx = |[esp+d8] - 0x8000|; if ecx > ebx { ebx = ecx; eax = [esp+d8] }.
 const fn take_if_further(d8: u8) -> [u8; 24] {
     [
@@ -558,12 +654,12 @@ mod tests {
     }
 
     #[test]
-    fn fixes_are_f1_to_f6_in_order() {
+    fn fixes_are_in_order() {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
         assert_eq!(
             ids,
             [
-                "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11"
+                "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"
             ]
         );
     }
@@ -667,6 +763,33 @@ mod tests {
     }
 
     #[test]
+    fn f12_scales_the_three_ars_values_and_the_trigger_read() {
+        let ars = at(CAVE + F12_ARS);
+        assert_eq!(ars.len(), 65);
+        for (i, g) in [0x4f6838u32, 0x4f683c, 0x4f6840].iter().enumerate() {
+            let b = &ars[i * 20..i * 20 + 20];
+            assert_eq!(b[0], 0xa1);
+            assert_eq!(b[1..5], g.to_le_bytes());
+            assert_eq!(b[7..11], (CAVE + F12_FACTOR).to_le_bytes());
+            assert_eq!(b[15], 0xa3);
+            assert_eq!(b[16..20], g.to_le_bytes());
+        }
+        let rel = u32::from_le_bytes(ars[61..65].try_into().unwrap());
+        assert_eq!((CAVE + F12_ARS + 65).wrapping_add(rel), 0x4809cb);
+        let trig = at(CAVE + F12_TRIGGER);
+        assert_eq!(trig.len(), 22);
+        let rel = u32::from_le_bytes(trig[18..22].try_into().unwrap());
+        assert_eq!((CAVE + F12_TRIGGER + 22).wrapping_add(rel), 0x403eae);
+        for cap in F12_CAPS {
+            assert_eq!(
+                at(cap),
+                F12_CAP.to_le_bytes(),
+                "placeholder is the original"
+            );
+        }
+    }
+
+    #[test]
     fn simple_stubs() {
         assert_eq!(at(0x496ca0), [0xb8, 1, 0, 0, 0, 0xc3]);
         assert_eq!(at(0x497cef), [0x10]);
@@ -688,7 +811,7 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F11_Q + 4);
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F12_TRIGGER + 22);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
@@ -708,7 +831,7 @@ mod tests {
 
     #[test]
     fn only_optional_fixes_can_be_skipped() {
-        let skip = ["F6", "F7", "F10", "F11", "F1"];
+        let skip = ["F6", "F7", "F10", "F11", "F12", "F1"];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
         assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9"]);
         assert_eq!(OFFICIAL_EU_15.cave_size(&skip), F9_CAVE + 24);
@@ -719,7 +842,7 @@ mod tests {
                 .all(|w| w.fix != "F6")
         );
         assert_eq!(
-            COMMUNITY_EU_15.cave_size(&["F6", "F7", "F10", "F11"]),
+            COMMUNITY_EU_15.cave_size(&["F6", "F7", "F10", "F11", "F12"]),
             F9_CAVE + 24
         );
     }

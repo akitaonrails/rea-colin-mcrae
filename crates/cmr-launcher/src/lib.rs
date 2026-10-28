@@ -49,14 +49,13 @@ pub fn prepare(
         .collect()
 }
 
-/// Replaces the bytes of the cave piece at `address` (a data area such as
-/// `fixes::F7_TABLE`, reserved with zeros) with launch-time values. Returns
-/// false when no such piece is active or the size differs.
-pub fn fill_cave_data(writes: &mut [CheckedWrite], address: u32, bytes: &[u8]) -> bool {
-    match writes
-        .iter_mut()
-        .find(|w| !w.write.in_image && w.write.address == address)
-    {
+/// Replaces the bytes of the write at `address` with launch-time values: a
+/// cave data area such as `fixes::F7_TABLE`, or an immediate in the game's
+/// code whose piece carries the original value as a placeholder (the check
+/// against the file still compares the original bytes). Returns false when
+/// no such write is active or the size differs.
+pub fn fill_data(writes: &mut [CheckedWrite], address: u32, bytes: &[u8]) -> bool {
+    match writes.iter_mut().find(|w| w.write.address == address) {
         Some(w) if w.write.bytes.len() == bytes.len() => {
             w.write.bytes = bytes.to_vec();
             true
@@ -98,16 +97,18 @@ mod tests {
     }
 
     #[test]
-    fn cave_data_is_filled_only_when_sizes_match() {
+    fn data_is_filled_only_when_sizes_match() {
         let file = pe::tests::synthetic(&[0x55, 0x8b, 0xec, 0x90]);
         let img = Image::parse(&file).unwrap();
         let mut w = prepare(&img, &TEST_FIXES, &[], 0x500000).unwrap();
-        assert!(!fill_cave_data(&mut w, 0x500000, &[1, 2]));
-        assert!(fill_cave_data(&mut w, 0x500000, &[1, 2, 3, 4, 5]));
+        assert!(!fill_data(&mut w, 0x500000, &[1, 2]));
+        assert!(fill_data(&mut w, 0x500000, &[1, 2, 3, 4, 5]));
         assert_eq!(w[1].write.bytes, [1, 2, 3, 4, 5]);
-        assert!(
-            !fill_cave_data(&mut w, 0x401002, &[0]),
-            "image writes are not data"
+        // An image placeholder is replaced; its original bytes stay as read.
+        assert!(fill_data(&mut w, 0x401002, &[0x90]));
+        assert_eq!(
+            (w[0].write.bytes.as_slice(), w[0].original.as_slice()),
+            (&[0x90][..], &[0xec][..])
         );
     }
 

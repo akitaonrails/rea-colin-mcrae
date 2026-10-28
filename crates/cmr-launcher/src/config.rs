@@ -24,6 +24,8 @@ pub struct Settings {
     pub resolution: Option<(u32, u32)>,
     /// Hor+ widescreen projection (fix F11). Off unless set.
     pub widescreen: Option<bool>,
+    /// Draw distance factor in Q16 (fix F12), 1.0 to 3.0. Off unless set.
+    pub draw_distance: Option<u32>,
 }
 
 pub const FILE_NAME: &str = "launcher.cfg";
@@ -73,6 +75,12 @@ gamepad_axes = true
 # shows more to the sides instead of stretching the 4:3 picture. Has no
 # effect at 4:3.
 #widescreen = true
+
+# Draw distance: multiplies every stage's view distance (usually 150 m)
+# and its object distances, 1.0 to 3.0; the game's own Track Distance and
+# Object Distance options still apply on top. Longer distances cost speed
+# and can show flicker far away (the game's 16-bit depth buffer).
+#draw_distance = 1.5
 ";
 
 pub const USAGE: &str = "\
@@ -103,6 +111,14 @@ fn parse_resolution(v: &str) -> Option<(u32, u32)> {
     let w: u32 = w.trim().parse().ok()?;
     let h: u32 = h.trim().parse().ok()?;
     ((320..=7680).contains(&w) && (240..=4320).contains(&h)).then_some((w, h))
+}
+
+/// A factor 1.0..=3.0 as Q16.
+fn parse_factor(v: &str) -> Option<u32> {
+    let f: f64 = v.parse().ok()?;
+    (1.0..=3.0)
+        .contains(&f)
+        .then(|| (f * 65536.0).round() as u32)
 }
 
 fn parse_language(v: &str) -> Option<String> {
@@ -152,6 +168,10 @@ impl Settings {
                     Some(b) => s.widescreen = Some(b),
                     None => bad("widescreen needs true or false, not"),
                 },
+                "draw_distance" => match parse_factor(value) {
+                    Some(f) => s.draw_distance = Some(f),
+                    None => bad("draw_distance needs a number from 1.0 to 3.0, not"),
+                },
                 "resolution" => match parse_resolution(value) {
                     Some(r) => s.resolution = Some(r),
                     None => bad("resolution needs WIDTHxHEIGHT (320x240 to 7680x4320), not"),
@@ -172,6 +192,7 @@ impl Settings {
             gamepad_axes: over.gamepad_axes.or(self.gamepad_axes),
             resolution: over.resolution.or(self.resolution),
             widescreen: over.widescreen.or(self.widescreen),
+            draw_distance: over.draw_distance.or(self.draw_distance),
         }
     }
 
@@ -189,6 +210,9 @@ impl Settings {
         }
         if self.widescreen != Some(true) {
             skip.push("F11");
+        }
+        if self.draw_distance.is_none() {
+            skip.push("F12");
         }
         skip
     }
@@ -273,16 +297,17 @@ mod tests {
                 ..Settings::default()
             }
         );
-        assert_eq!(s.skipped_fixes(), ["F10", "F11"]);
+        assert_eq!(s.skipped_fixes(), ["F10", "F11", "F12"]);
     }
 
     #[test]
     fn file_values_and_args_win() {
-        let text = "game = C:\\old\nruntime=C:\\rt\nlanguage = french\nclose_quits = no\ngamepad_axes=off\nresolution = 1920X1440\n";
+        let text = "game = C:\\old\nruntime=C:\\rt\nlanguage = french\nclose_quits = no\ngamepad_axes=off\nresolution = 1920X1440\ndraw_distance=1.5\n";
         let (saved, warnings) = Settings::parse_file(text);
         assert!(warnings.is_empty());
         assert_eq!(saved.language.as_deref(), Some("FRENCH"));
         assert_eq!(saved.resolution, Some((1920, 1440)));
+        assert_eq!(saved.draw_distance, Some(0x18000));
         assert_eq!(saved.skipped_fixes(), ["F6", "F7", "F11"]);
         let m = saved.merged(args(&["--game", r"C:\new"]).unwrap());
         assert_eq!(m.game, Some(PathBuf::from(r"C:\new")));
