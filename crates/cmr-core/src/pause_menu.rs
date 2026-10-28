@@ -352,8 +352,6 @@ pub struct PauseController {
     pub previous_mask_550c20: u32,
     /// `DAT_00551b28`.
     pub prepause_551b28: u8,
-    /// `DAT_00550018`: the restart request the hub reads.
-    pub restart_request_550018: bool,
 }
 
 /// Inputs of one driving-state pause poll.
@@ -556,7 +554,6 @@ impl PauseController {
             return PauseDecision::Quit;
         }
         if real_play && self.restart_680 {
-            self.restart_request_550018 = true;
             effects.push(PauseEffect::FadeOut { frames: fade });
             return PauseDecision::Restart;
         }
@@ -884,7 +881,6 @@ mod tests {
         );
         press(&mut c, up, &mut options);
         assert_eq!(press(&mut c, enter, &mut options), PauseDecision::Restart);
-        assert!(c.restart_request_550018);
     }
 
     #[test]

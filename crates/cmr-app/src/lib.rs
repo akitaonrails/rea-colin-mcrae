@@ -61,9 +61,10 @@ use cmr_core::engine_sound::{
     EngineAudioTables, EngineSoundConfig, EngineSoundState, EngineVoices, RevBandTable,
     antilag_family_for_nibble,
 };
+use cmr_core::event_flow::EventState;
 use cmr_core::fixed_point::{Fixed16, Vec3};
 use cmr_core::frontend::{FrontendPhase, RootSelection};
-use cmr_core::game_menu_flow::{FrontendMenuSignal, MenuFlowInputs, frontend_menu_signal};
+use cmr_core::game_menu_flow::MenuFlowInputs;
 use cmr_core::game_rng::GameLcg;
 use cmr_core::game_session::SessionBand;
 use cmr_core::gameplay_input::{AnalogDriver, KeyboardDriver};
@@ -92,7 +93,7 @@ use cmr_core::race_state::{
     populate_compiled_gear_ratio, populate_force_pass_scales, populate_surface_table_factor,
 };
 use cmr_core::render_compose::{fade_duration_frames, fade_level_to_modulation_byte, fade_out};
-use cmr_core::render_route::{RenderRoute, composes_frontend_root, presents_world_scene};
+use cmr_core::render_route::{RenderRoute, presents_world_scene};
 use cmr_core::root_menu_assets::VisualVariant;
 use cmr_core::root_menu_interactive::RootInteraction;
 use cmr_core::root_menu_visual::{
@@ -3053,27 +3054,45 @@ fn loading_interstitial_for_route(
         .map_err(StageFrameError::LoadingOverlayCompose)
 }
 
-fn root_menu_flow_inputs(state_id: u8, interaction: &RootInteraction) -> MenuFlowInputs {
-    match frontend_menu_signal(interaction.state()) {
-        FrontendMenuSignal::Stay => MenuFlowInputs {
-            frontend_active: true,
-            ..MenuFlowInputs::default()
-        },
-        FrontendMenuSignal::Advance if state_id == 2 => MenuFlowInputs {
-            frontend_active: true,
-            root_menu_ready: true,
-            screen_graph_ready: true,
-            ..MenuFlowInputs::default()
-        },
-        FrontendMenuSignal::Quit if state_id == 2 => MenuFlowInputs {
-            frontend_active: true,
-            root_menu_ready: true,
-            screen_graph_ready: false,
-            menu_status_quit: true,
-            ..MenuFlowInputs::default()
-        },
-        FrontendMenuSignal::Advance | FrontendMenuSignal::Quit => MenuFlowInputs::default(),
+/// The pre-race waits this session satisfies at once. Harness: the country
+/// welcome screen (`FUN_0048dde0`) is not reconstructed, so it counts as
+/// dismissed (the native screen also ends on a key press); no interstitial is
+/// pending.
+const PRE_RACE_INPUTS: MenuFlowInputs = MenuFlowInputs {
+    welcome_done: true,
+    school_menu_done: false,
+    school_quit: false,
+    school_status_quit: false,
+    preload_pending: false,
+    preload_done: false,
+};
+
+/// The descriptor front end's frame (`FUN_004c20f0`), run only while no
+/// session is: its race hand-off starts the race session (after the two
+/// unconditional writes of the commit `FUN_004b93f0`), its rally-school
+/// hand-off the school session.
+fn front_end_frame(
+    session: &mut GameplaySession,
+    root_interaction: &mut RootInteraction,
+    input: cmr_core::frontend::FrontendInput,
+    now: u32,
+) -> cmr_core::root_menu_interactive::RootTick {
+    let tick = root_interaction.tick_for_game_session(input, now, true);
+    for effect in &tick.effects {
+        let event = session.event_mut();
+        match effect {
+            cmr_core::frontend::FrontendEffect::StartRace => {
+                event.commit_unconditional();
+                event.start_race_session();
+            }
+            cmr_core::frontend::FrontendEffect::StartRallySchool => {
+                event.commit_unconditional();
+                event.start_school_session();
+            }
+            _ => {}
+        }
     }
+    tick
 }
 
 /// One windowed-game-session frame of the input/advance/world-compose work the
@@ -3110,8 +3129,17 @@ fn advance_game_frame<C: HostClock>(
     let pause_flow = pause.frame(session, progress, input.keys, &mut pause_effects);
     session.set_pause_flow(pause_flow);
     pause.apply(&pause_effects, input.audio, audio);
-    let root_tick = root_interaction.tick_for_game_session(input.frontend, clock.millis(), true);
-    let menu_inputs = root_menu_flow_inputs(session.state().id(), root_interaction);
+    let root_tick = if session.event().in_session() {
+        None
+    } else {
+        Some(front_end_frame(
+            session,
+            root_interaction,
+            input.frontend,
+            clock.millis(),
+        ))
+    };
+    let menu_inputs = PRE_RACE_INPUTS;
     let drive = if let Some(pad) = input.gamepad.filter(|pad| analog_driving_is_active(pad)) {
         analog.poll(
             pad.steer_axis(),
@@ -3275,13 +3303,12 @@ fn advance_game_frame<C: HostClock>(
         STAGE_LOADING_PROGRESS_CAP,
     )?;
     Ok(GameFrameOutcome {
-        route: advanced.route,
         world,
         loading_interstitial,
-        root_render_input: root_tick.render_input,
-        stopped: session.is_stopped(),
-        // The recovered front-end music plays during the menu band (states 1..4).
-        music_active: matches!(advanced.band, SessionBand::Menu),
+        exit_requested: root_tick.as_ref().is_some_and(|tick| tick.exit_requested),
+        root_render_input: root_tick.and_then(|tick| tick.render_input),
+        // The recovered front-end music plays while the front end runs.
+        music_active: advanced.band == SessionBand::FrontEnd,
         codriver_calls: if advanced.stepped {
             session
                 .last_trigger_events()
@@ -3301,11 +3328,11 @@ fn advance_game_frame<C: HostClock>(
 
 /// What one [`advance_game_frame`] produced for the windowed loop.
 struct GameFrameOutcome {
-    route: Option<RenderRoute>,
     world: Option<SoftwarePresentedFrame>,
     loading_interstitial: Option<SoftwarePresentedFrame>,
     root_render_input: Option<RootRenderInput>,
-    stopped: bool,
+    /// The front end's exit screen ended the process (`DAT_0096efe8 = 1`).
+    exit_requested: bool,
     music_active: bool,
     /// Co-driver note words the trigger walk submitted this frame.
     codriver_calls: Vec<u32>,
@@ -3724,7 +3751,9 @@ impl PauseHarness {
                 ) {
                     PauseDecision::Stay => {}
                     PauseDecision::QuitHotkey => flow.quit = true,
-                    PauseDecision::Quit | PauseDecision::Restart => {}
+                    PauseDecision::Quit => {}
+                    // The handler sets `DAT_00550018` on its way to the hub.
+                    PauseDecision::Restart => flow.restart = true,
                     PauseDecision::Alternate => flow.resume_alt = true,
                     PauseDecision::Resume { to_entry_state } => {
                         flow.resume = true;
@@ -3732,16 +3761,10 @@ impl PauseHarness {
                     }
                 }
             }
-            1..=4 => {
-                // The race init `FUN_00437510` clears the restart request
-                // (`0x437341`) before the next stage.
-                self.controller.restart_request_550018 = false;
-            }
             _ => {}
         }
-        // The quit word and the restart request persist into the hub.
+        // The quit word persists into the hub.
         flow.quit |= self.controller.quit_678;
-        flow.restart |= self.controller.restart_request_550018;
         flow
     }
 
@@ -5202,9 +5225,41 @@ fn native_stage_setup(
     Ok((resources, nodes, start, initial_camera, actor_rows))
 }
 
+/// The country directories in the native country order (`0x4f0db8`).
+const COUNTRY_CODES: [&str; 8] = ["NZ", "GR", "MC", "AU", "SW", "CO", "IN", "UK"];
+
+/// The event a session over one `--stage` runs. Harness for the unbuilt
+/// setup screens and the cmRally.cfg commit `FUN_004b93f0`: a native
+/// selected-stages event (mode 2) whose mask holds only that stage of its
+/// country, with the country's stage count (6, or 7 for a special country),
+/// as the time-trial setup commits it. State 1 then picks the stage, and the
+/// hub ends the session after it. A stage name outside `<CC><n>` falls back to
+/// a championship from the first country. The front end is up.
+fn single_stage_event(stage: &str) -> EventState {
+    let mut event = EventState::default();
+    event.globals.frontend_506228 = true;
+    let (code, number) = stage.split_at(stage.len().min(2));
+    let country = COUNTRY_CODES
+        .iter()
+        .position(|candidate| candidate.eq_ignore_ascii_case(code));
+    let index = number.parse::<u8>().ok().and_then(|n| n.checked_sub(1));
+    if let (Some(country), Some(index)) = (country, index) {
+        let country = country as u8;
+        let count = 6 + u8::from(cmr_core::event_flow::SPECIAL_COUNTRIES.contains(&country));
+        if index < count {
+            event.cfg.mode_166 = 2;
+            event.cfg.cursor_168 = country;
+            event.cfg.stage_count_165 = count;
+            event.cfg.stage_mask_164 = 1 << index;
+        }
+    }
+    event
+}
+
 /// The windowed session's driving sim: the complete four-wheel producer with
 /// the ground pass when the reviewed surface and tyre stores are present,
 /// otherwise the planar harness.
+#[allow(clippy::too_many_arguments)]
 fn windowed_drive_session<'a>(
     compiled_pose: &'a SessionCompiledPose,
     trig: &'a [i32],
@@ -5213,6 +5268,7 @@ fn windowed_drive_session<'a>(
     aux: &Result<SessionAuxControl, String>,
     params: SimParams,
     mut start: CarState,
+    event: EventState,
 ) -> GameplaySession<'a> {
     let four_wheel = match (wheel_inputs, tyre_tables, aux) {
         (Ok(inputs), Ok(tables), Ok(aux)) => compiled_pose
@@ -5232,10 +5288,12 @@ fn windowed_drive_session<'a>(
                 start,
             )
             .with_ground_geometry(&compiled_pose.geometry)
+            .with_event(event)
         }
         Err(error) => {
             eprintln!("cmr-app: four-wheel inputs unavailable ({error}); using the planar harness");
             GameplaySession::new_with_car(params, InRaceScript::gameplay_harness(), start)
+                .with_event(event)
         }
     }
 }
@@ -5307,6 +5365,7 @@ pub fn run_windowed_game_session(
         &aux,
         params,
         start,
+        single_stage_event(stage),
     )
     .with_stage_triggers(&trigger_volumes, &trigger_cell_centers)
     .map_err(WindowedStageFrameError::StageTriggers)?;
@@ -5382,17 +5441,16 @@ pub fn run_windowed_game_session(
                             outcome.world
                         } else if outcome.loading_interstitial.is_some() {
                             outcome.loading_interstitial
-                        } else if outcome.route.is_some_and(composes_frontend_root) {
-                            outcome.root_render_input.and_then(|render_input| {
-                                root.render(render_input).ok()?;
-                                root.backend().presented_frame().cloned()
-                            })
+                        } else if let Some(render_input) = outcome.root_render_input {
+                            root.render(render_input)
+                                .ok()
+                                .and_then(|_| root.backend().presented_frame().cloned())
                         } else {
                             None
                         };
                         WindowedGameFrame {
                             present,
-                            stopped: outcome.stopped,
+                            stopped: outcome.exit_requested,
                             music_active: outcome.music_active,
                             codriver_calls: outcome.codriver_calls,
                         }
@@ -5439,7 +5497,7 @@ pub fn run_windowed_game_session(
         ) {
             Ok(outcome) => WindowedGameFrame {
                 present: outcome.world.or(outcome.loading_interstitial),
-                stopped: outcome.stopped,
+                stopped: outcome.exit_requested,
                 music_active: outcome.music_active,
                 codriver_calls: outcome.codriver_calls,
             },
@@ -5546,25 +5604,26 @@ impl HeadlessGameSessionOutput {
 /// ([`race_flow_next`]) with the recovered checkpoint tracker
 /// ([`StageProgress`]) raising the finish.
 ///
-/// The session runs in **front-end mode** (`frontend_active`) so the recovered
-/// graph terminates cleanly through the real tables: the menu band routes
-/// `1 -> 2 -> 3 -> 4 -> 7` (`frontend_loop` confirmed, `load_arm` -> entry `7`),
-/// then the gameplay band runs `7 -> 5 -> 9 -> 0xb -> 0xc -> 0`. In state `5`
+/// The session is a **rally-school** session so the recovered graph
+/// terminates cleanly through the real tables: the pre-race band routes
+/// `1 -> 2 -> 3 -> 4 -> 7` (the school menu confirmed, `load_arm` -> entry
+/// `7`), then the gameplay band runs `7 -> 5 -> 9 -> 0xb -> 0xc`, where the
+/// hub ends the session and hands back to the front end. In state `5`
 /// (the main driving tick) the deterministic race sim steps one fixed tick per
 /// frame under a stationary clock and feeds the car's world position to a
 /// [`StageProgress`] walking the synthetic [`headless_checkpoint_line`]; when
 /// the tracker crosses the final gate it raises `stage_finished`, and the
 /// recovered [`drive_next`](cmr_core::game_race_flow::drive_next) table hands off
-/// to the front-end finish-flyby (`9`). Every in-race transition is
+/// to the finish-flyby (`9`). Every in-race transition is
 /// [`race_flow_next`], not an ad-hoc choice; the drive force, the synthetic
-/// checkpoint line, and the scripted front-end sequencer inputs (the replay/
+/// checkpoint line, and the scripted school sequencer inputs (the replay/
 /// fade/quit flags) are documented **harness** stand-ins for the real subsystems.
 pub fn run_headless_game_session() -> HeadlessGameSessionOutput {
     let params = SimParams {
         inverse_mass: Fixed16::ONE,
         gravity: Vec3::ZERO,
     };
-    let mut session = GameplaySession::new(params, InRaceScript::frontend_harness());
+    let mut session = GameplaySession::new(params, InRaceScript::school_harness());
     let controls = Controls {
         steer_rate: 0,
         forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
@@ -5582,15 +5641,13 @@ fn drive_headless_session(
 ) -> Result<HeadlessGameSessionOutput, WheelPostprocessError> {
     let clock = StationaryClock;
     let menu_inputs = MenuFlowInputs {
-        frontend_active: true,
-        root_menu_ready: true,
-        screen_graph_ready: true,
+        school_menu_done: true,
         ..MenuFlowInputs::default()
     };
     let nodes = headless_checkpoint_line();
     let mut progress = StageProgress::new(&nodes, 0);
     let mut frames = 0u32;
-    while !session.is_stopped() && frames < GAME_SESSION_MAX_FRAMES {
+    while session.event().in_session() && frames < GAME_SESSION_MAX_FRAMES {
         frames += 1;
         session.try_advance(&clock, menu_inputs, controls, &mut progress)?;
     }
@@ -5711,7 +5768,7 @@ pub fn run_headless_four_wheel_game_session(
     start.motion.projection_axis = Vec3::new(Fixed16::ZERO, Fixed16::ONE, Fixed16::ZERO);
     let mut session = GameplaySession::new_with_four_wheel_and_car(
         params,
-        InRaceScript::frontend_harness(),
+        InRaceScript::school_harness(),
         wheel,
         start,
     );
@@ -6046,73 +6103,54 @@ mod tests {
     }
 
     #[test]
-    fn rally_leave_pulses_state_two_then_clears_the_frontend_gate() {
-        let mut root =
-            RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0).unwrap();
-        let _ = root.tick_for_game_session(Default::default(), 1, true);
-        let _ = root.tick_for_game_session(Default::default(), 2, true);
-        assert!(root_menu_flow_inputs(2, &root).frontend_active);
-
-        let _ = root.tick_for_game_session(
-            cmr_core::frontend::FrontendInput {
-                next: true,
-                ..Default::default()
-            },
-            3,
-            true,
-        );
-        let _ = root.tick_for_game_session(
-            cmr_core::frontend::FrontendInput {
-                confirm: true,
-                ..Default::default()
-            },
-            4,
-            true,
-        );
-        let _ = root.tick_for_game_session(Default::default(), 5, true);
-        let _ = root.tick_for_game_session(Default::default(), 6, true);
-
-        let state_two = root_menu_flow_inputs(2, &root);
-        assert!(state_two.frontend_active);
-        assert!(state_two.root_menu_ready);
-        assert!(state_two.screen_graph_ready);
-        let state_three = root_menu_flow_inputs(3, &root);
-        assert_eq!(state_three, MenuFlowInputs::default());
-
+    fn the_rally_entry_starts_a_race_session_that_seeds_the_fsm() {
         let mut root =
             RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0).unwrap();
         let mut game = cmr_core::game_session::GameSession::new();
-        let pulses = [
-            Default::default(),
-            Default::default(),
-            cmr_core::frontend::FrontendInput {
-                next: true,
-                ..Default::default()
-            },
-            cmr_core::frontend::FrontendInput {
-                confirm: true,
-                ..Default::default()
-            },
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        ];
+        let next = cmr_core::frontend::FrontendInput {
+            next: true,
+            ..Default::default()
+        };
+        let confirm = cmr_core::frontend::FrontendInput {
+            confirm: true,
+            ..Default::default()
+        };
+        let mut pulses = vec![Default::default(), Default::default(), next, confirm];
+        pulses.resize(14, Default::default());
         let mut transcript = Vec::new();
         let mut gameplay_calls = 0;
+        let mut front_end_frames = 0;
         for (now, pulse) in pulses.into_iter().enumerate() {
-            let _ = root.tick_for_game_session(pulse, now as u32 + 1, true);
-            let menu = root_menu_flow_inputs(game.current().id(), &root);
-            let frame = game.run_frame(&StationaryClock, menu, |state| {
+            if !game.event().in_session() {
+                front_end_frames += 1;
+                let tick = root.tick_for_game_session(pulse, now as u32 + 1, true);
+                if tick
+                    .effects
+                    .contains(&cmr_core::frontend::FrontendEffect::StartRace)
+                {
+                    game.event_mut().commit_unconditional();
+                    game.event_mut().start_race_session();
+                }
+            }
+            let frame = game.run_frame(&StationaryClock, PRE_RACE_INPUTS, |state, _| {
                 gameplay_calls += 1;
                 state
             });
-            transcript.push((
-                frame.plan.render.map(cmr_core::game_state::GameState::id),
-                frame.plan.state.id(),
-            ));
+            if let Some(plan) = frame.plan {
+                transcript.push((
+                    plan.render.map(cmr_core::game_state::GameState::id),
+                    plan.state.id(),
+                ));
+            }
+            if game.current().id() == 5 {
+                break;
+            }
         }
+        assert!(front_end_frames > 0);
         assert_eq!(game.current().id(), 5);
+        // The seed frame renders state 1; the championship's first stage
+        // shows its welcome screen (state 2) before loading.
+        assert_eq!(transcript[0], (Some(1), 2), "{transcript:?}");
         assert_eq!(
             transcript
                 .iter()
@@ -6121,7 +6159,7 @@ mod tests {
             1,
             "state 4 must render exactly once while transitioning to state 5: {transcript:?}"
         );
-        assert_eq!(gameplay_calls, 0, "state 4->5 must not step the race sim");
+        assert_eq!(gameplay_calls, 0, "state 4->5 must not step the race sim: {transcript:?}");
     }
 
     fn native_test_node(position: [i32; 3], direction: [i32; 3], split_flag: u8) -> CatNode {
@@ -6956,6 +6994,11 @@ mod tests {
             gravity: Vec3::ZERO,
         };
         let (trigger_volumes, trigger_cell_centers) = stage_trigger_inputs(&resources);
+        // Harness: the frames run starts in the race session, skipping the
+        // front end.
+        let mut event = single_stage_event("AU1");
+        event.commit_unconditional();
+        event.start_race_session();
         let mut session = windowed_drive_session(
             &compiled_pose,
             &trig,
@@ -6964,6 +7007,7 @@ mod tests {
             &aux,
             params,
             start,
+            event,
         )
         .with_stage_triggers(&trigger_volumes, &trigger_cell_centers)
         .unwrap();
@@ -7196,7 +7240,7 @@ mod tests {
                 inverse_mass: Fixed16::from_raw(0x8000),
                 gravity: Vec3::ZERO,
             },
-            InRaceScript::frontend_harness(),
+            InRaceScript::school_harness(),
             start,
         );
         let mut keyboard = KeyboardDriver::player_one();
@@ -8059,9 +8103,10 @@ mod tests {
         let second = run_headless_game_session();
         assert_eq!(first, second, "the session must be deterministic");
 
-        // It drives the FSM to the terminal stopped state, having stepped the
-        // in-race sim and crossed the recovered checkpoint tracker's final gate.
-        assert_eq!(first.final_state, 0);
+        // The hub ends the session in 0xc and hands back to the front end,
+        // having stepped the in-race sim and crossed the recovered checkpoint
+        // tracker's final gate.
+        assert_eq!(first.final_state, 0xc);
         assert!(first.finished);
         assert!(first.finish_centiseconds.is_some());
         assert!(first.sim_ticks > 0);

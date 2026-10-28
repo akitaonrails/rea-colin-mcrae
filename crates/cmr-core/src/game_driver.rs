@@ -86,6 +86,12 @@ impl FrameDriver {
         }
     }
 
+    /// `FUN_004440a0(0)`: clear the init-done flag, so the next frame seeds
+    /// the live state from the state-1 handler again.
+    pub fn clear_init(&mut self) {
+        self.initialized = false;
+    }
+
     /// Whether the first-run init has seeded the live state.
     pub const fn is_initialized(&self) -> bool {
         self.initialized
@@ -115,9 +121,16 @@ impl FrameDriver {
         H: FnMut(GameState) -> GameState,
     {
         if !self.initialized {
+            // `0x443e9b..0x443ebf`: seed from the state-1 handler, run state
+            // 1's render handler `FUN_00421cc0` directly and return.
             let seed = handler(GameState::boot());
             self.machine = GameStateMachine::boot(seed);
             self.initialized = true;
+            return FramePlan {
+                ticks: 0,
+                state: seed,
+                render: Some(GameState::boot()),
+            };
         }
 
         let ticks = if self.machine.current().is_in_race() {
@@ -190,7 +203,8 @@ mod tests {
         let mut driver = FrameDriver::new();
         assert!(!driver.is_initialized());
 
-        // The boot handler is asked for the seed with the boot state, returns 3.
+        // The boot handler is asked for the seed with the boot state, returns 3;
+        // the seed frame renders state 1 and dispatches nothing else.
         let seen = Cell::new(None);
         let plan = driver.run_frame(&clock, |cur| {
             if cur == GameState::boot() {
@@ -203,7 +217,14 @@ mod tests {
         assert_eq!(seen.get(), Some(GameState::boot()));
         assert!(driver.is_initialized());
         assert_eq!(plan.state, state(3));
-        assert_eq!(plan.ticks, 1);
+        assert_eq!(plan.ticks, 0);
+        assert_eq!(plan.render, Some(GameState::boot()));
+        let next = driver.run_frame(&clock, |cur| cur);
+        assert_eq!((next.state, next.ticks), (state(3), 1));
+        // Clearing the init flag seeds again.
+        driver.clear_init();
+        let reseeded = driver.run_frame(&clock, |_| state(2));
+        assert_eq!((reseeded.state, reseeded.ticks), (state(2), 0));
     }
 
     #[test]

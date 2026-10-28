@@ -13,14 +13,19 @@ pub const CHAMPIONSHIP_SETUP_SCREEN_ID: ScreenId = ScreenId(0x00d4_0900);
 pub const RALLY_SCREEN_ID: ScreenId = ScreenId(0x00d4_8230);
 pub const CHAMPIONSHIP_NEXT_SCREEN_ID: ScreenId = ScreenId(0x00d4_5cf8);
 pub const EXIT_SCREEN_ID: ScreenId = ScreenId(0x00d4_2058);
-pub const ATTRACT_SCREEN_ID: ScreenId = ScreenId(0x00d4_37c8);
+/// The empty "go to race" screen: a transition to it returns result 3
+/// (`FUN_0044f6d0`), which leaves the front end for a race session.
+pub const RACE_SENTINEL_SCREEN_ID: ScreenId = ScreenId(0x00d4_37c8);
+/// The empty rally-school screen (root entry 3): a transition to it returns
+/// result 4, which leaves the front end for a rally-school session.
+pub const RALLY_SCHOOL_SENTINEL_SCREEN_ID: ScreenId = ScreenId(0x00d4_6b10);
 pub const ROOT_FOOTER_TEXT_INDEX: usize = 253;
 
 const ROOT_ENTRIES: [ScreenEntry; 7] = [
     ScreenEntry::new(0, CHAMPIONSHIP_SETUP_SCREEN_ID),
     ScreenEntry::new(1, RALLY_SCREEN_ID),
     ScreenEntry::new(120, ScreenId(0x00d4_b240)),
-    ScreenEntry::new(3, ScreenId(0x00d4_6b10)),
+    ScreenEntry::new(3, RALLY_SCHOOL_SENTINEL_SCREEN_ID),
     ScreenEntry::new(4, ScreenId(0x00d4_53b8)),
     ScreenEntry::new(5, ScreenId(0x00d4_0da0)),
     ScreenEntry::new(6, EXIT_SCREEN_ID),
@@ -162,8 +167,8 @@ impl FrontendInput {
 pub enum TransitionResult {
     Pending,
     Complete,
-    LeaveFrontendA,
-    LeaveFrontendB,
+    StartRace,
+    StartRallySchool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -174,10 +179,10 @@ pub enum FrontendEffect {
         to: ScreenId,
     },
     Activate(ScreenId),
-    LeaveFrontendA,
+    StartRace,
     /// Synchronizes config fields into runtime/profile state; this is not file I/O.
     ApplyConfigToProfileState,
-    LeaveFrontendB,
+    StartRallySchool,
     DisableConfigSave,
     StartAttract(ScreenId),
     SaveConfig,
@@ -187,8 +192,8 @@ pub enum FrontendEffect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendContinuation {
     Running,
-    LeaveFrontendA,
-    LeaveFrontendB,
+    StartRace,
+    StartRallySchool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -308,11 +313,11 @@ impl FrontendState {
         if input.any() {
             self.idle_since = now;
         } else if now.wrapping_sub(self.idle_since) > 59_999 {
-            self.pending = Some(ATTRACT_SCREEN_ID);
+            self.pending = Some(RACE_SENTINEL_SCREEN_ID);
             self.phase = FrontendPhase::BeginTransition;
             return vec![
                 FrontendEffect::DisableConfigSave,
-                FrontendEffect::StartAttract(ATTRACT_SCREEN_ID),
+                FrontendEffect::StartAttract(RACE_SENTINEL_SCREEN_ID),
             ];
         }
 
@@ -340,15 +345,15 @@ impl FrontendState {
     ) -> Vec<FrontendEffect> {
         match transition {
             TransitionResult::Pending => Vec::new(),
-            TransitionResult::LeaveFrontendA => {
-                self.continuation = FrontendContinuation::LeaveFrontendA;
-                vec![FrontendEffect::LeaveFrontendA]
+            TransitionResult::StartRace => {
+                self.continuation = FrontendContinuation::StartRace;
+                vec![FrontendEffect::StartRace]
             }
-            TransitionResult::LeaveFrontendB => {
-                self.continuation = FrontendContinuation::LeaveFrontendB;
+            TransitionResult::StartRallySchool => {
+                self.continuation = FrontendContinuation::StartRallySchool;
                 vec![
                     FrontendEffect::ApplyConfigToProfileState,
-                    FrontendEffect::LeaveFrontendB,
+                    FrontendEffect::StartRallySchool,
                 ]
             }
             TransitionResult::Complete => {
@@ -628,17 +633,17 @@ mod tests {
     fn phase_two_exposes_both_distinct_terminal_frontend_leave_results() {
         for (result, expected_effects, expected_continuation) in [
             (
-                TransitionResult::LeaveFrontendA,
-                vec![FrontendEffect::LeaveFrontendA],
-                FrontendContinuation::LeaveFrontendA,
+                TransitionResult::StartRace,
+                vec![FrontendEffect::StartRace],
+                FrontendContinuation::StartRace,
             ),
             (
-                TransitionResult::LeaveFrontendB,
+                TransitionResult::StartRallySchool,
                 vec![
                     FrontendEffect::ApplyConfigToProfileState,
-                    FrontendEffect::LeaveFrontendB,
+                    FrontendEffect::StartRallySchool,
                 ],
-                FrontendContinuation::LeaveFrontendB,
+                FrontendContinuation::StartRallySchool,
             ),
         ] {
             let mut state = FrontendState::after_startup_art(0, 0).unwrap();
@@ -700,11 +705,11 @@ mod tests {
             ),
             vec![
                 FrontendEffect::DisableConfigSave,
-                FrontendEffect::StartAttract(ATTRACT_SCREEN_ID)
+                FrontendEffect::StartAttract(RACE_SENTINEL_SCREEN_ID)
             ]
         );
         assert_eq!(state.phase, FrontendPhase::BeginTransition);
-        assert_eq!(state.pending, Some(ATTRACT_SCREEN_ID));
+        assert_eq!(state.pending, Some(RACE_SENTINEL_SCREEN_ID));
     }
 
     #[test]

@@ -1971,6 +1971,14 @@ darkened panel with the game's own fonts and strings (`impl.pause-menu-draw`).
 The car now rolls and skids audibly on each surface, thumps on landings, and
 barrier hits play their impact sounds (`impl.surface-and-prang-sound`).
 
+The front end now runs outside the game state machine, as `FUN_004c1e00`
+does: confirming a race starts a race session, and the state machine seeds
+from state 1, which chooses the event (championship, single rally or
+selected stages). After each stage the hub runs the recovered event advance;
+when the event is over the session ends and the front end comes back
+(`impl.event-flow`). The setup screens and the config commit are still
+missing, so a windowed session is a one-stage event for its `--stage`.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

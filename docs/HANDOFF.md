@@ -163,7 +163,12 @@ Surface/skid, landing and barrier impact sounds play
 (`impl.surface-and-prang-sound`; tables via `extract-surface-audio-tables`).
 The wet-tyre sound plays (`impl.wet-sound`). The crowd ambience is wired
 (`impl.crowd-sound`) but no shipped `.obj` has a crowd node (id `0xe`), so it
-stays silent, as natively; storm/thunder are unwired. Next: the `FUN_004115d0` body-contact impact
+stays silent, as natively; storm/thunder are unwired. The front end runs outside the FSM and
+the event flow (state 1 event choice, the hub's advance/rewind/end of
+session) is recovered (`impl.event-flow`); the race starts from the root
+"rally" entry (harness) as a one-stage event. Front-end screens are in
+`.work/frontend-menu-tree-notes.md`. Next: the front-end setup screens and the
+cmRally.cfg commit `FUN_004b93f0` (so a chosen stage loads), the `FUN_004115d0` body-contact impact
 site (`FUN_00412860`'s is wired), then the championship progression
 behind the hub predicates. Scenery impacts play (`impl.static-impact-sound`).
 `FUN_0041f630` only feeds impact sound/FFB/shudder. Trees appear to be `.sht` sprites, which the native

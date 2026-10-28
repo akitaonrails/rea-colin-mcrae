@@ -10,31 +10,31 @@
 //! - **State 5** main driving tick (`FUN_00437ac0`) -> `{5,8,9,0xa}`: not
 //!   world-ready -> stay `5`; a pause request -> `0xa`; the stage-finished flag
 //!   (`DAT_00514468`, set by the checkpoint tracker [`crate::stage_checkpoints`])
-//!   -> `8` in normal play, or `9` in front-end/replay when the replay is armed
+//!   -> `8` in normal play, or `9` in the rally school when the replay is armed
 //!   (`DAT_005fbdec`); else keep driving `5`.
 //! - **State 6** pre-stage / interstitial overlay (`FUN_00437690`) ->
-//!   `{6,8,0xb}`: a front-end session or a missing loader handle -> `0xb`; not
+//!   `{6,8,0xb}`: a rally-school session or a missing loader handle -> `0xb`; not
 //!   world-ready -> stay `6`; fresh input or finished -> `8`; not yet ready -> `6`;
 //!   once ready, the "congratulations" scroller completing -> `0xb` else `6`.
 //! - **State 7** stage-entry / replay-camera transition (`FUN_00437ef0`) ->
 //!   `{5,7,0xa}`: pause -> `0xa` (remembering state `7`); normal play -> straight
-//!   to driving `5`; front-end intro/replay still running -> hold `7`, done -> `5`.
+//!   to driving `5`; rally-school intro/replay still running -> hold `7`, done -> `5`.
 //! - **State 8** stage-boundary grid/countdown & settle (`FUN_00438100`) ->
 //!   `{8,0xb}`: stay `8` while in normal play, not skipping, and the pre-stage
 //!   camera-intro director / input gate is still running; otherwise -> `0xb`.
-//! - **State 9** front-end finish-flyby / replay (`FUN_004384a0`) -> `{9,0xa,0xb}`:
-//!   pause -> `0xa`; normal play loops at `9`; in front-end mode the results
+//! - **State 9** rally-school finish-flyby / replay (`FUN_004384a0`) -> `{9,0xa,0xb}`:
+//!   pause -> `0xa`; normal play loops at `9`; in the rally school the results
 //!   cinematic completing -> `0xb` else `9`.
 //! - **State 0xa** in-race pause / overlay (`FUN_00438970`) ->
 //!   `{5,7,8,9,0xa,0xb}`: quit, or a normal-play restart, -> `0xb`; the
-//!   resume-alt item -> `9` (front-end) / `8` (normal); the resume item -> `7`
-//!   (front-end, paused from `7`) / `5`; nothing chosen -> stay `0xa`.
+//!   resume-alt item -> `9` (rally school) / `8` (normal); the resume item -> `7`
+//!   (rally school, paused from `7`) / `5`; nothing chosen -> stay `0xa`.
 //! - **State 0xb** post-race / inter-stage hub (`FUN_00438b90`) ->
-//!   `{2,3,5,0xb,0xc}`: fade not done or results page up -> hold `0xb`; a
-//!   front-end quit -> `0xc`, otherwise the front end returns to `2`; a
-//!   real-play restart rewinds the progress and returns to the menu band; an
-//!   allowed next stage -> `5`; else the progression checks pick the quit
-//!   funnel `0xc` or the menu band (see [`hub_next`]).
+//!   `{2,3,5,0xb,0xc}`: fade not done or results page up -> hold `0xb`; in
+//!   the rally school a quit -> `0xc`, otherwise `2`; a restart rewinds the
+//!   event and returns to the menu band; a head-to-head next stage -> `5`;
+//!   else the event advance picks the end of the session `0xc` or the menu
+//!   band (see [`hub_next`]).
 //!
 //! This module reconstructs those seven decision tables over [`InRaceInputs`] -
 //! the recovered globals and probe results are **inputs**, not reimplemented
@@ -45,6 +45,7 @@
 //! Every produced edge is checked against the recovered transition graph
 //! ([`crate::game_state::GameState::is_known_transition`]).
 
+use crate::event_flow::EventState;
 use crate::game_state::GameState;
 
 /// The recovered sub-state globals and per-frame probe results the in-race
@@ -53,9 +54,9 @@ use crate::game_state::GameState;
 /// inside the handlers and their callees, so here they are inputs.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct InRaceInputs {
-    /// An interactive front-end/attract/replay session is active
-    /// (`DAT_00d3ca88 != 0`): gates nearly every in-race branch.
-    pub frontend_active: bool,
+    /// A rally-school session (`DAT_00d3ca88 != 0`), filled from the
+    /// [`EventState`]: gates nearly every in-race branch.
+    pub school_session: bool,
     /// The stage world has finished loading (`DAT_005144a0`, via `FUN_00421ca0`);
     /// states 5/6 stay put until it is set.
     pub stage_world_ready: bool,
@@ -113,22 +114,6 @@ pub struct InRaceInputs {
     /// State 0xb: the screen fade-to-black has completed (`FUN_0048dfd0`); the hub
     /// holds until it is set.
     pub fade_done: bool,
-    /// State 0xb: a next/first stage is allowed to start (`FUN_00401030 != 0`);
-    /// clear routes to the menu-band exit.
-    pub next_stage_allowed: bool,
-    /// State 0xb: the championship/sequence is exhausted (`DAT_00551ad8 != 0`),
-    /// routing to the menu-band exit instead of the next stage.
-    pub championship_exhausted: bool,
-    /// State 0xb, normal-play exit: the "show the front-end menu" predicate
-    /// (`FUN_0048df30 != 0`) selects `2` over `3`.
-    pub show_menu: bool,
-    /// State 0xb: `FUN_0048df30` evaluated after the restart rewind.
-    pub restart_show_menu: bool,
-    /// State 0xb: `cfg[0] & 1` forces the quit funnel `0xc`.
-    pub config_bit0: bool,
-    /// State 0xb: the championship progression step `FUN_00436f00` returned
-    /// nonzero (the event goes on); zero funnels to `0xc`.
-    pub event_continues: bool,
 }
 
 fn race_state(id: u8) -> GameState {
@@ -145,7 +130,7 @@ pub fn drive_next(inputs: InRaceInputs) -> GameState {
         return race_state(0xA);
     }
     if inputs.stage_finished {
-        if !inputs.frontend_active {
+        if !inputs.school_session {
             return race_state(8);
         }
         if inputs.replay_ready {
@@ -158,7 +143,7 @@ pub fn drive_next(inputs: InRaceInputs) -> GameState {
 /// State 6 pre-stage / interstitial overlay (`FUN_00437690`): hold the overlay,
 /// start the stage, or drop to the hub.
 pub fn prestage_next(inputs: InRaceInputs) -> GameState {
-    if inputs.frontend_active || inputs.loader_missing {
+    if inputs.school_session || inputs.loader_missing {
         return race_state(0xB);
     }
     if !inputs.stage_world_ready {
@@ -183,7 +168,7 @@ pub fn entry_next(inputs: InRaceInputs) -> GameState {
     if inputs.pause_requested {
         return race_state(0xA);
     }
-    if !inputs.frontend_active || inputs.replay_intro_done {
+    if !inputs.school_session || inputs.replay_intro_done {
         race_state(5)
     } else {
         race_state(7)
@@ -193,7 +178,7 @@ pub fn entry_next(inputs: InRaceInputs) -> GameState {
 /// State 8 stage-boundary grid/countdown & settle (`FUN_00438100`): hold while
 /// the director/gate runs, else funnel to the hub.
 pub fn boundary_next(inputs: InRaceInputs) -> GameState {
-    if !inputs.frontend_active && !inputs.boundary_skip && inputs.boundary_active {
+    if !inputs.school_session && !inputs.boundary_skip && inputs.boundary_active {
         race_state(8)
     } else {
         race_state(0xB)
@@ -206,7 +191,7 @@ pub fn flyby_next(inputs: InRaceInputs) -> GameState {
     if inputs.pause_requested {
         return race_state(0xA);
     }
-    if inputs.frontend_active && inputs.flyby_cinematic_done {
+    if inputs.school_session && inputs.flyby_cinematic_done {
         race_state(0xB)
     } else {
         race_state(9)
@@ -216,18 +201,18 @@ pub fn flyby_next(inputs: InRaceInputs) -> GameState {
 /// State 0xa in-race pause / overlay (`FUN_00438970`): resume to the remembered
 /// state, restart/quit to the hub, or stay paused.
 pub fn pause_next(inputs: InRaceInputs) -> GameState {
-    if inputs.quit_requested || (!inputs.frontend_active && inputs.restart_requested) {
+    if inputs.quit_requested || (!inputs.school_session && inputs.restart_requested) {
         return race_state(0xB);
     }
     if inputs.resume_alt {
-        return if inputs.frontend_active {
+        return if inputs.school_session {
             race_state(9)
         } else {
             race_state(8)
         };
     }
     if inputs.resume {
-        return if inputs.frontend_active && inputs.prepause_was_7 {
+        return if inputs.school_session && inputs.prepause_was_7 {
             race_state(7)
         } else {
             race_state(5)
@@ -239,36 +224,46 @@ pub fn pause_next(inputs: InRaceInputs) -> GameState {
 /// State 0xb post-race / inter-stage hub (`FUN_00438b90`), instruction level:
 ///
 /// 1. Fade not done (`FUN_0048dfd0`) or the results page up -> hold `0xb`.
-/// 2. Front-end (`DAT_00d3ca88 != 0`): quit (`FUN_00468d70`) -> `0xc`, else `2`.
-/// 3. Real play, restart (`DAT_00550018`): the championship progress is
-///    rewound, then `FUN_0048df30 ? 2 : 3` ([`InRaceInputs::restart_show_menu`]).
-/// 4. Real play, no quit, a next stage allowed (`FUN_00401030`) and the
-///    sequence not exhausted (`DAT_00551ad8`): the next stage starts -> `5`.
-/// 5. Otherwise (`0x438e03`): `cfg[0] & 1`, quit, the progression step
-///    `FUN_00436f00` returning 0, or `FUN_0042a840` set -> `0xc`; else
-///    `FUN_0048df30 ? 2 : 3`.
-pub fn hub_next(inputs: InRaceInputs) -> GameState {
+/// 2. Rally school: quit (`FUN_00468d70`) -> the end-session block, else `2`.
+/// 3. Restart (`DAT_00550018`): the event is rewound
+///    ([`EventState::rewind_for_restart`]), then `FUN_0048df30 ? 2 : 3`.
+/// 4. No quit, head to head (`FUN_00401030`) and the sequence byte
+///    `DAT_00551ad8` clear: the next stage is armed in place -> `5`.
+/// 5. Otherwise (`0x438e03`): the demo (`cfg[0] & 1`), quit, the event over
+///    ([`EventState::advance`] returning 0) or `FUN_0042a840` -> the
+///    end-session block (`0x438c2e`, [`EventState::end_session`]) and `0xc`;
+///    else `FUN_0048df30 ? 2 : 3`.
+pub fn hub_next(inputs: InRaceInputs, event: &mut EventState) -> GameState {
     if !inputs.fade_done || inputs.results_page_up {
         return race_state(0xB);
     }
-    let menu_band = |show_menu: bool| race_state(if show_menu { 2 } else { 3 });
-    if inputs.frontend_active {
-        return race_state(if inputs.quit_requested { 0xC } else { 2 });
+    let quit = |event: &mut EventState| {
+        event.end_session();
+        race_state(0xC)
+    };
+    let menu_band = |event: &EventState| race_state(if event.show_welcome() { 2 } else { 3 });
+    if event.globals.school_d3ca88 {
+        return if inputs.quit_requested {
+            quit(event)
+        } else {
+            race_state(2)
+        };
     }
-    if inputs.restart_requested {
-        return menu_band(inputs.restart_show_menu);
+    if event.globals.restart_550018 {
+        event.rewind_for_restart();
+        return menu_band(event);
     }
-    if !inputs.quit_requested && inputs.next_stage_allowed && !inputs.championship_exhausted {
+    if !inputs.quit_requested && event.head_to_head() && event.globals.sequence_551ad8 == 0 {
         return race_state(5);
     }
-    if inputs.config_bit0
+    if event.cfg.flags_000 & 1 != 0
         || inputs.quit_requested
-        || !inputs.event_continues
+        || !event.advance()
         || inputs.prestage_ready
     {
-        return race_state(0xC);
+        return quit(event);
     }
-    menu_band(inputs.show_menu)
+    menu_band(event)
 }
 
 /// The next state for an in-race state (`5..=0xb`), or `None` for any other
@@ -276,7 +271,11 @@ pub fn hub_next(inputs: InRaceInputs) -> GameState {
 /// `handler` oracle a [`crate::game_driver::FrameDriver`] /
 /// [`crate::game_session::GameSession`] uses while the FSM is in the gameplay
 /// band, the in-race counterpart of [`crate::game_menu_flow::menu_flow_next`].
-pub fn race_flow_next(state: GameState, inputs: InRaceInputs) -> Option<GameState> {
+pub fn race_flow_next(
+    state: GameState,
+    inputs: InRaceInputs,
+    event: &mut EventState,
+) -> Option<GameState> {
     match state.id() {
         5 => Some(drive_next(inputs)),
         6 => Some(prestage_next(inputs)),
@@ -284,7 +283,7 @@ pub fn race_flow_next(state: GameState, inputs: InRaceInputs) -> Option<GameStat
         8 => Some(boundary_next(inputs)),
         9 => Some(flyby_next(inputs)),
         0xA => Some(pause_next(inputs)),
-        0xB => Some(hub_next(inputs)),
+        0xB => Some(hub_next(inputs, event)),
         _ => None,
     }
 }
@@ -335,7 +334,7 @@ mod tests {
         assert_eq!(
             drive_next(InRaceInputs {
                 stage_finished: true,
-                frontend_active: true,
+                school_session: true,
                 replay_ready: true,
                 ..ready
             }),
@@ -345,7 +344,7 @@ mod tests {
         assert_eq!(
             drive_next(InRaceInputs {
                 stage_finished: true,
-                frontend_active: true,
+                school_session: true,
                 replay_ready: false,
                 ..ready
             }),
@@ -358,7 +357,7 @@ mod tests {
         // Front-end or missing loader -> hub.
         assert_eq!(
             prestage_next(InRaceInputs {
-                frontend_active: true,
+                school_session: true,
                 ..Default::default()
             }),
             state(0xB)
@@ -429,7 +428,7 @@ mod tests {
         // Front-end, intro running -> hold 7.
         assert_eq!(
             entry_next(InRaceInputs {
-                frontend_active: true,
+                school_session: true,
                 ..Default::default()
             }),
             state(7)
@@ -437,7 +436,7 @@ mod tests {
         // Front-end, intro done -> 5.
         assert_eq!(
             entry_next(InRaceInputs {
-                frontend_active: true,
+                school_session: true,
                 replay_intro_done: true,
                 ..Default::default()
             }),
@@ -460,7 +459,7 @@ mod tests {
         // Front-end -> hub.
         assert_eq!(
             boundary_next(InRaceInputs {
-                frontend_active: true,
+                school_session: true,
                 boundary_active: true,
                 ..Default::default()
             }),
@@ -492,7 +491,7 @@ mod tests {
         // Front-end, cinematic running -> 9.
         assert_eq!(
             flyby_next(InRaceInputs {
-                frontend_active: true,
+                school_session: true,
                 ..Default::default()
             }),
             state(9)
@@ -500,7 +499,7 @@ mod tests {
         // Front-end, cinematic done -> hub.
         assert_eq!(
             flyby_next(InRaceInputs {
-                frontend_active: true,
+                school_session: true,
                 flyby_cinematic_done: true,
                 ..Default::default()
             }),
@@ -539,7 +538,7 @@ mod tests {
         assert_eq!(
             pause_next(InRaceInputs {
                 resume_alt: true,
-                frontend_active: true,
+                school_session: true,
                 ..Default::default()
             }),
             state(9)
@@ -556,7 +555,7 @@ mod tests {
         assert_eq!(
             pause_next(InRaceInputs {
                 resume: true,
-                frontend_active: true,
+                school_session: true,
                 prepause_was_7: true,
                 ..Default::default()
             }),
@@ -566,122 +565,138 @@ mod tests {
         assert_eq!(
             pause_next(InRaceInputs {
                 resume: true,
-                frontend_active: true,
+                school_session: true,
                 ..Default::default()
             }),
             state(5)
         );
     }
 
+    fn race_event(mode: u8, cursor: u8) -> EventState {
+        let mut event = EventState::default();
+        event.cfg.mode_166 = mode;
+        event.cfg.cursor_168 = cursor;
+        event.globals.continues_4ed7d8 = true;
+        event.globals.race_session_d3ca84 = true;
+        event
+    }
+
     #[test]
     fn hub_matches_the_recovered_table() {
-        // Fade not done -> hold.
-        assert_eq!(hub_next(InRaceInputs::default()), state(0xB));
+        let mut event = race_event(0, 0x10);
+        assert_eq!(hub_next(InRaceInputs::default(), &mut event), state(0xB));
         let faded = InRaceInputs {
             fade_done: true,
             ..Default::default()
         };
-        // Results page up -> hold.
-        assert_eq!(
-            hub_next(InRaceInputs {
-                results_page_up: true,
-                ..faded
-            }),
-            state(0xB)
-        );
-        // Front-end quit -> 0xc.
-        assert_eq!(
-            hub_next(InRaceInputs {
-                frontend_active: true,
-                quit_requested: true,
-                ..faded
-            }),
-            state(0xC)
-        );
-        let going_on = InRaceInputs {
-            event_continues: true,
+        let page = InRaceInputs {
+            results_page_up: true,
             ..faded
         };
-        // A real-play restart returns to the menu band, never straight to 5.
-        assert_eq!(
-            hub_next(InRaceInputs {
-                restart_requested: true,
-                restart_show_menu: true,
-                ..faded
-            }),
-            state(2)
-        );
-        assert_eq!(
-            hub_next(InRaceInputs {
-                restart_requested: true,
-                ..faded
-            }),
-            state(3)
-        );
-        // Allowed next stage -> drive 5, unless quitting or exhausted.
-        let next = InRaceInputs {
-            next_stage_allowed: true,
-            ..going_on
-        };
-        assert_eq!(hub_next(next), state(5));
-        assert_eq!(
-            hub_next(InRaceInputs {
-                championship_exhausted: true,
-                ..next
-            }),
-            state(3)
-        );
-        // Not allowed: the progression checks.
-        assert_eq!(
-            hub_next(InRaceInputs {
-                show_menu: true,
-                ..going_on
-            }),
-            state(2)
-        );
-        assert_eq!(hub_next(going_on), state(3));
-        assert_eq!(hub_next(faded), state(0xC), "the progression step ended");
-        for funnel in [
-            InRaceInputs {
-                config_bit0: true,
-                ..going_on
-            },
-            InRaceInputs {
-                quit_requested: true,
-                ..going_on
-            },
-            InRaceInputs {
-                prestage_ready: true,
-                ..going_on
-            },
+        assert_eq!(hub_next(page, &mut event), state(0xB));
+        assert_eq!(event.cfg.cursor_168, 0x10, "holding does not advance");
+
+        // The championship goes on: stage 2 of 3, no welcome screen.
+        assert_eq!(hub_next(faded, &mut event), state(3));
+        assert_eq!(event.cfg.cursor_168, 0x20);
+        // The next country shows its welcome screen.
+        assert_eq!(hub_next(faded, &mut event), state(2));
+        assert_eq!(event.cfg.cursor_168, 0x01);
+
+        // An event that is over ends the session.
+        let mut stages = race_event(2, 0x03);
+        stages.cfg.stage_mask_164 = 1;
+        stages.cfg.stage_count_165 = 6;
+        assert_eq!(hub_next(faded, &mut stages), state(0xC));
+        assert!(stages.globals.frontend_506228 && !stages.globals.race_session_d3ca84);
+        assert!(stages.globals.reseed_requested);
+        assert_eq!(stages.globals.word_4f6848, 1);
+
+        // The demo, a quit and FUN_0042a840 end it too.
+        for (flags, inputs) in [
+            (1, faded),
+            (
+                0,
+                InRaceInputs {
+                    quit_requested: true,
+                    ..faded
+                },
+            ),
+            (
+                0,
+                InRaceInputs {
+                    prestage_ready: true,
+                    ..faded
+                },
+            ),
         ] {
-            assert_eq!(hub_next(funnel), state(0xC));
+            let mut e = race_event(0, 0x10);
+            e.cfg.flags_000 = flags;
+            assert_eq!(hub_next(inputs, &mut e), state(0xC));
         }
-        // Front end: quit -> 0xc, otherwise 2, whatever else is set.
+    }
+
+    #[test]
+    fn hub_restart_rewinds_and_head_to_head_rearms() {
+        let faded = InRaceInputs {
+            fade_done: true,
+            ..Default::default()
+        };
+        let mut restart = race_event(0, 0x23);
+        restart.cfg.progress_167 = 5;
+        restart.globals.restart_550018 = true;
+        assert_eq!(hub_next(faded, &mut restart), state(2));
         assert_eq!(
-            hub_next(InRaceInputs {
-                frontend_active: true,
-                restart_requested: true,
-                ..faded
-            }),
-            state(2)
+            (restart.cfg.cursor_168, restart.cfg.progress_167),
+            (0x03, 3)
         );
+        let mut stages = race_event(2, 0x23);
+        stages.globals.restart_550018 = true;
+        assert_eq!(hub_next(faded, &mut stages), state(3));
+
+        let mut h2h = race_event(8, 0x10);
+        assert_eq!(hub_next(faded, &mut h2h), state(5));
+        assert_eq!(h2h.cfg.cursor_168, 0x10);
+        h2h.globals.sequence_551ad8 = 1;
+        assert_eq!(hub_next(faded, &mut h2h), state(3));
+    }
+
+    #[test]
+    fn hub_in_the_rally_school() {
+        let faded = InRaceInputs {
+            fade_done: true,
+            ..Default::default()
+        };
+        let mut school = race_event(0, 0x10);
+        school.globals.school_d3ca88 = true;
+        school.globals.restart_550018 = true;
+        assert_eq!(hub_next(faded, &mut school), state(2));
+        let quit = InRaceInputs {
+            quit_requested: true,
+            ..faded
+        };
+        assert_eq!(hub_next(quit, &mut school), state(0xC));
+        assert!(!school.globals.school_d3ca88);
     }
 
     #[test]
     fn race_flow_next_only_covers_the_gameplay_band() {
         let inputs = InRaceInputs::default();
+        let mut event = EventState::default();
         for id in 5u8..=0xB {
-            assert!(race_flow_next(state(id), inputs).is_some(), "{id} covered");
+            assert!(
+                race_flow_next(state(id), inputs, &mut event).is_some(),
+                "{id} covered"
+            );
         }
         for id in [0u8, 1, 2, 3, 4, 0xC] {
-            assert_eq!(race_flow_next(state(id), inputs), None);
+            assert_eq!(race_flow_next(state(id), inputs, &mut event), None);
         }
     }
 
     #[test]
     fn every_race_flow_edge_is_a_recovered_transition() {
-        // A deterministic seeded sweep over the 26-bit input space (a full 2^26
+        // A deterministic seeded sweep over the 32-bit input space (a full 2^32
         // enumeration is wasteful; this LCG walk covers a large, reproducible
         // sample) confirms every produced next state is a recovered edge.
         let mut seed: u32 = 0x1234_5678;
@@ -689,7 +704,7 @@ mod tests {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             let bits = seed;
             let inputs = InRaceInputs {
-                frontend_active: bits & (1 << 0) != 0,
+                school_session: bits & (1 << 0) != 0,
                 stage_world_ready: bits & (1 << 1) != 0,
                 stage_finished: bits & (1 << 2) != 0,
                 pause_requested: bits & (1 << 3) != 0,
@@ -709,16 +724,14 @@ mod tests {
                 prepause_was_7: bits & (1 << 17) != 0,
                 results_page_up: bits & (1 << 18) != 0,
                 fade_done: bits & (1 << 19) != 0,
-                next_stage_allowed: bits & (1 << 20) != 0,
-                championship_exhausted: bits & (1 << 21) != 0,
-                show_menu: bits & (1 << 22) != 0,
-                restart_show_menu: bits & (1 << 23) != 0,
-                config_bit0: bits & (1 << 24) != 0,
-                event_continues: bits & (1 << 25) != 0,
             };
             for id in 5u8..=0xB {
+                let mut event = race_event((bits >> 20) as u8 & 0x1f, (bits >> 25) as u8 & 0x33);
+                event.globals.school_d3ca88 = inputs.school_session;
+                event.globals.restart_550018 = bits & (1 << 30) != 0;
+                event.cfg.flags_000 = u8::from(bits & (1 << 31) != 0);
                 let from = state(id);
-                let next = race_flow_next(from, inputs).expect("5..=0xb is covered");
+                let next = race_flow_next(from, inputs, &mut event).expect("5..=0xb is covered");
                 assert!(
                     from.is_known_transition(next),
                     "state {id} -> {} is not a recovered edge",

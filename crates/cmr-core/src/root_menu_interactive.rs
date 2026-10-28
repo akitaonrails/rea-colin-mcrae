@@ -5,10 +5,13 @@
 //! per-frame [`FrontendInput`] into a [`RootRenderInput`] to present.
 //!
 //! The driver owns no clock: the caller supplies a monotonically increasing
-//! `now`. Its default transition policy completes only the recovered root and
-//! exit screens. A game-session host may explicitly enable the recovered Rally
-//! hand-off; every other confirmed entry begins its transition and then waits,
-//! because the destination screens are not yet reconstructed. The live
+//! `now`. A transition to the race sentinel `0xd437c8` or the rally-school
+//! sentinel `0xd46b10` yields result 3 or 4 (`FUN_0044f6d0`); a transition to
+//! the root or exit screen completes; every other confirmed entry begins its
+//! transition and then waits, because the destination screens are not yet
+//! reconstructed. Harness: a game-session host may let the root "rally" entry
+//! stand in for its unbuilt setup and name-entry screens, whose Continue leads
+//! to the race sentinel, so confirming it starts the race. The live
 //! selection's chrome is snapped to its recovered endpoint via
 //! [`steady_root_render_input`]; the in-between tween is a separate,
 //! not-yet-recovered concern. None of this models the original transition
@@ -18,7 +21,8 @@ use crate::{
     display::DisplayExtent,
     frontend::{
         EXIT_SCREEN_ID, FrontendEffect, FrontendInput, FrontendPhase, FrontendState,
-        InvalidRootSelection, RALLY_SCREEN_ID, ROOT_SCREEN_ID, ScreenId, TransitionResult,
+        InvalidRootSelection, RACE_SENTINEL_SCREEN_ID, RALLY_SCHOOL_SENTINEL_SCREEN_ID,
+        RALLY_SCREEN_ID, ROOT_SCREEN_ID, ScreenId, TransitionResult,
     },
     localization::Language,
     root_menu_visual::{RootRenderInput, steady_root_render_input},
@@ -72,9 +76,8 @@ impl RootInteraction {
         self.tick_with_rally_launch(input, now, save_allowed, false)
     }
 
-    /// Advances one tick while allowing the recovered Rally root entry to leave
-    /// the front end through `LeaveFrontendB`. Other unbuilt destinations remain
-    /// pending.
+    /// Advances one tick with the harness rally launch: confirming the root
+    /// "rally" entry starts the race. Other unbuilt destinations remain pending.
     #[must_use]
     pub fn tick_for_game_session(
         &mut self,
@@ -110,8 +113,12 @@ impl RootInteraction {
             FrontendPhase::Interactive | FrontendPhase::BeginTransition => None,
         };
         match target {
+            Some(screen) if screen == RACE_SENTINEL_SCREEN_ID => TransitionResult::StartRace,
+            Some(screen) if screen == RALLY_SCHOOL_SENTINEL_SCREEN_ID => {
+                TransitionResult::StartRallySchool
+            }
             Some(screen) if rally_launch && screen == RALLY_SCREEN_ID => {
-                TransitionResult::LeaveFrontendB
+                TransitionResult::StartRace
             }
             Some(screen) if is_reconstructed_screen(screen) => TransitionResult::Complete,
             _ => TransitionResult::Pending,
@@ -314,13 +321,7 @@ mod tests {
             }
         )));
         let leave = rally.tick_for_game_session(FrontendInput::default(), 6, true);
-        assert_eq!(
-            leave.effects,
-            vec![
-                FrontendEffect::ApplyConfigToProfileState,
-                FrontendEffect::LeaveFrontendB
-            ]
-        );
+        assert_eq!(leave.effects, vec![FrontendEffect::StartRace]);
 
         let mut championship = driver(0);
         let _ = settle_to_interactive(&mut championship);

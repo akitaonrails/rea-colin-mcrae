@@ -20,6 +20,7 @@
 //! only `stage_finished` comes from the live tracker.
 
 use crate::car_reset::ResetDispatchInput;
+use crate::event_flow::EventState;
 use crate::fixed_point::{Fixed16, Vec3};
 use crate::game_menu_flow::MenuFlowInputs;
 use crate::game_race_flow::{InRaceInputs, race_flow_next};
@@ -41,14 +42,16 @@ use crate::trigger_walk::{
 };
 
 /// The in-race sequencer inputs that are not the player's live controls: the
-/// replay/flyby/fade/quit flags and the front-end/world-ready gates the recovered
+/// replay/flyby/fade/quit flags and the world-ready gate the recovered
 /// in-race graph branches on. A **harness stand-in** for the real subsystems
-/// (`race_flow` documents each); only `stage_finished` is supplied live, from the
-/// checkpoint tracker.
+/// (`race_flow` documents each); only `stage_finished` is supplied live, from
+/// the checkpoint tracker, and the session kind comes from the
+/// [`crate::event_flow::EventState`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InRaceScript {
-    /// Running under the front-end sequencer (`frontend_active`).
-    pub frontend_active: bool,
+    /// Harness: the front end starts a rally-school session instead of a race
+    /// (the session's initial [`EventState`] unless one is supplied).
+    pub school_session: bool,
     /// The stage world has finished loading (`stage_world_ready`).
     pub stage_world_ready: bool,
     /// The replay camera is ready (`replay_ready`).
@@ -61,60 +64,58 @@ pub struct InRaceScript {
     pub quit_requested: bool,
     /// The quit fade has completed (`fade_done`).
     pub fade_done: bool,
-    /// The hub's progression step `FUN_00436f00` returns nonzero
-    /// (`event_continues`).
-    pub event_continues: bool,
-    /// `FUN_0048df30` after a restart rewind (`restart_show_menu`).
-    pub restart_show_menu: bool,
 }
 
 impl InRaceScript {
-    /// The script for a player's own race (`DAT_00d3ca88 == 0`): the stage
-    /// world is ready, the stage-boundary director and the results page are
-    /// treated as done and the fade as complete, nothing is quit or restarted,
-    /// and no next championship stage is armed, so a finished stage runs
-    /// `5 -> 8 -> 0xb -> 3` back to the menu band. Harness stand-ins, except
-    /// the two hub predicates, which are evaluated for an all-zero config
-    /// block (`DAT_00d3ca80`) and the static `DAT_004ed7d8 = 1`:
-    /// `FUN_00436f00` advances the stage counter `cfg[0x168] >> 4` to 1 and
-    /// returns 1, after which `FUN_0048df30` is 0 (`3`); after a restart rewind
-    /// the counter is 0 and `FUN_0048df30` is 1 (`2`).
+    /// A player's race session: the stage world is ready, the stage-boundary
+    /// director and the results page are treated as done and the fade as
+    /// complete, and nothing is quit. Harness stand-ins; the hub's event
+    /// advance and welcome screen are the recovered [`EventState`] logic.
     #[must_use]
     pub const fn gameplay_harness() -> Self {
         InRaceScript {
-            frontend_active: false,
+            school_session: false,
             stage_world_ready: true,
             replay_ready: false,
             replay_intro_done: false,
             flyby_cinematic_done: false,
             quit_requested: false,
             fade_done: true,
-            event_continues: true,
-            restart_show_menu: true,
         }
     }
 
-    /// The headless/front-end harness script: every sequencer gate satisfied so
-    /// the recovered front-end path (`5 -> 9 -> 0xb -> 0xc`) runs to completion
-    /// once the tracker raises the finish. Matches the headless game session.
+    /// A rally-school session with every sequencer gate satisfied, so the
+    /// school path (`4 -> 7 -> 5 -> 9 -> 0xb -> 0xc`) runs to completion once
+    /// the tracker raises the finish. Matches the headless game session.
     #[must_use]
-    pub const fn frontend_harness() -> Self {
+    pub const fn school_harness() -> Self {
         InRaceScript {
-            frontend_active: true,
+            school_session: true,
             stage_world_ready: true,
             replay_ready: true,
             replay_intro_done: true,
             flyby_cinematic_done: true,
             quit_requested: true,
             fade_done: true,
-            event_continues: true,
-            restart_show_menu: false,
         }
     }
 
-    fn with_finish(self, stage_finished: bool) -> InRaceInputs {
+    /// The session the front end starts for this script: a rally-school
+    /// session, or a race over the default (championship) config block.
+    #[must_use]
+    pub fn initial_event(self) -> EventState {
+        let mut event = EventState::default();
+        if self.school_session {
+            event.start_school_session();
+        } else {
+            event.start_race_session();
+        }
+        event
+    }
+
+    fn with_finish(self, stage_finished: bool, school_session: bool) -> InRaceInputs {
         InRaceInputs {
-            frontend_active: self.frontend_active,
+            school_session,
             stage_world_ready: self.stage_world_ready,
             stage_finished,
             replay_ready: self.replay_ready,
@@ -122,8 +123,6 @@ impl InRaceScript {
             flyby_cinematic_done: self.flyby_cinematic_done,
             quit_requested: self.quit_requested,
             fade_done: self.fade_done,
-            event_continues: self.event_continues,
-            restart_show_menu: self.restart_show_menu,
             ..InRaceInputs::default()
         }
     }
@@ -270,7 +269,47 @@ impl ResetEnvironment {
     }
 }
 
+/// One gameplay-band handler: the recovered race-flow table over the script,
+/// the pause flow and the live finish. A restart chosen in the pause menu sets
+/// `DAT_00550018` on its way to the hub (`0x4389fa`).
+fn in_race_next(
+    state: GameState,
+    event: &mut EventState,
+    pause: PauseFlow,
+    script: InRaceScript,
+    finished: bool,
+) -> GameState {
+    let inputs = pause.apply(script.with_finish(finished, event.globals.school_d3ca88));
+    if state.id() == 0xA
+        && !inputs.quit_requested
+        && !inputs.school_session
+        && inputs.restart_requested
+    {
+        event.globals.restart_550018 = true;
+    }
+    race_flow_next(state, inputs, event).unwrap_or(state)
+}
+
 impl<'a> GameplaySession<'a> {
+    /// Replace the session's config block and globals (the front end's
+    /// commit), before the first frame.
+    #[must_use]
+    pub fn with_event(mut self, event: EventState) -> Self {
+        self.session = GameSession::with_event(event);
+        self
+    }
+
+    /// The event bookkeeping and session flags.
+    #[must_use]
+    pub const fn event(&self) -> &EventState {
+        self.session.event()
+    }
+
+    /// The event bookkeeping and session flags.
+    pub fn event_mut(&mut self) -> &mut EventState {
+        self.session.event_mut()
+    }
+
     /// A fresh simplified session at the boot state with the car at rest.
     #[must_use]
     pub fn new(params: SimParams, script: InRaceScript) -> Self {
@@ -316,7 +355,7 @@ impl<'a> GameplaySession<'a> {
         wheel: Option<FourWheelIterationParams<'a>>,
     ) -> Self {
         GameplaySession {
-            session: GameSession::new(),
+            session: GameSession::with_event(script.initial_event()),
             race: RaceState::new(CarState::at_rest()),
             params,
             script,
@@ -657,7 +696,7 @@ impl<'a> GameplaySession<'a> {
         let sim_ticks = &mut self.sim_ticks;
         let mut stepped = false;
 
-        let frame = self.session.run_frame(clock, menu_inputs, |state| {
+        let frame = self.session.run_frame(clock, menu_inputs, |state, event| {
             if state.id() == 5
                 && let Some(sample) = driving_sample
             {
@@ -665,14 +704,13 @@ impl<'a> GameplaySession<'a> {
                 progress.update(sample.car.position, sample.centiseconds);
                 stepped = true;
             }
-            let inputs = pause.apply(script.with_finish(progress.finished()));
-            race_flow_next(state, inputs).unwrap_or(state)
+            in_race_next(state, event, pause, script, progress.finished())
         });
         self.track_stage_end(stepped);
 
         Ok(GameplayFrame {
             band: frame.band,
-            route: frame.plan.render.map(render_route),
+            route: frame.plan.and_then(|plan| plan.render).map(render_route),
             stepped,
         })
     }
@@ -727,7 +765,7 @@ impl<'a> GameplaySession<'a> {
         let sim_ticks = &mut self.sim_ticks;
         let mut stepped = false;
 
-        let frame = self.session.run_frame(clock, menu_inputs, |state| {
+        let frame = self.session.run_frame(clock, menu_inputs, |state, event| {
             if state.id() == 5
                 && let Some(sample) = driving_sample
             {
@@ -735,14 +773,13 @@ impl<'a> GameplaySession<'a> {
                 progress.update(sample.car.position, sample.centiseconds);
                 stepped = true;
             }
-            let inputs = pause.apply(script.with_finish(progress.finished()));
-            race_flow_next(state, inputs).unwrap_or(state)
+            in_race_next(state, event, pause, script, progress.finished())
         });
         self.track_stage_end(stepped);
 
         Ok(GameplayFrame {
             band: frame.band,
-            route: frame.plan.render.map(render_route),
+            route: frame.plan.and_then(|plan| plan.render).map(render_route),
             stepped,
         })
     }
@@ -837,11 +874,12 @@ mod tests {
         }
     }
 
+    /// Every pre-race wait satisfied: the welcome screen and the school menu
+    /// are done.
     fn frontend_menu() -> MenuFlowInputs {
         MenuFlowInputs {
-            frontend_active: true,
-            root_menu_ready: true,
-            screen_graph_ready: true,
+            welcome_done: true,
+            school_menu_done: true,
             ..MenuFlowInputs::default()
         }
     }
@@ -993,7 +1031,7 @@ mod tests {
         let trig = crate::fixed_point::build_sine_table();
         let wheel = four_wheel_params(&trig);
         let mut session =
-            GameplaySession::new_with_four_wheel(params(), InRaceScript::frontend_harness(), wheel);
+            GameplaySession::new_with_four_wheel(params(), InRaceScript::school_harness(), wheel);
         let nodes = line();
         let mut progress = StageProgress::new(&nodes, 0);
         for _ in 0..1000 {
@@ -1008,11 +1046,8 @@ mod tests {
 
         let mut invalid = four_wheel_params(&trig);
         invalid.contact_vector_indices[0] = 8;
-        let mut session = GameplaySession::new_with_four_wheel(
-            params(),
-            InRaceScript::frontend_harness(),
-            invalid,
-        );
+        let mut session =
+            GameplaySession::new_with_four_wheel(params(), InRaceScript::school_harness(), invalid);
         let mut progress = StageProgress::new(&nodes, 0);
         let mut failure = None;
         for _ in 0..1000 {
@@ -1036,7 +1071,7 @@ mod tests {
 
     #[test]
     fn static_collision_advance_is_atomic_before_progress_and_fsm_commit() {
-        let mut session = GameplaySession::new(params(), InRaceScript::frontend_harness());
+        let mut session = GameplaySession::new(params(), InRaceScript::school_harness());
         let nodes = line();
         let mut progress = StageProgress::new(&nodes, 0);
         let invalid = empty_collision_scene(2);
@@ -1070,7 +1105,7 @@ mod tests {
         assert_eq!(session.sim_ticks(), 0);
         assert!(!progress.finished());
 
-        let mut session = GameplaySession::new(params(), InRaceScript::frontend_harness());
+        let mut session = GameplaySession::new(params(), InRaceScript::school_harness());
         let mut progress = StageProgress::new(&nodes, 0);
         let valid = empty_collision_scene(1);
         for _ in 0..1000 {
@@ -1186,7 +1221,7 @@ mod tests {
         let trig = crate::fixed_point::build_sine_table();
         let wheel = four_wheel_params(&trig);
         let mut session =
-            GameplaySession::new_with_four_wheel(params(), InRaceScript::frontend_harness(), wheel);
+            GameplaySession::new_with_four_wheel(params(), InRaceScript::school_harness(), wheel);
         let nodes = line();
         let mut progress = StageProgress::new(&nodes, 0);
         for _ in 0..100 {
@@ -1199,18 +1234,18 @@ mod tests {
     }
 
     #[test]
-    fn a_forward_drive_runs_the_fsm_from_boot_to_stopped() {
-        let mut session = GameplaySession::new(params(), InRaceScript::frontend_harness());
+    fn a_forward_drive_runs_the_school_session_back_to_the_front_end() {
+        let mut session = GameplaySession::new(params(), InRaceScript::school_harness());
         let nodes = line();
         let mut progress = StageProgress::new(&nodes, 0);
 
         let mut frames = 0u32;
-        while !session.is_stopped() && frames < 100_000 {
+        while session.event().in_session() && frames < 100_000 {
             frames += 1;
             session.advance(&StationaryClock, frontend_menu(), forward(), &mut progress);
         }
-        assert!(session.is_stopped());
-        assert_eq!(session.state().id(), 0);
+        assert!(session.event().globals.frontend_506228);
+        assert_eq!(session.state().id(), 0xc);
         assert!(progress.finished());
         assert!(session.sim_ticks() > 0);
         // The car advanced in +x under the forward force.
@@ -1219,7 +1254,7 @@ mod tests {
 
     #[test]
     fn the_in_race_band_presents_the_stage_world_route() {
-        let mut session = GameplaySession::new(params(), InRaceScript::frontend_harness());
+        let mut session = GameplaySession::new(params(), InRaceScript::school_harness());
         let nodes = line();
         let mut progress = StageProgress::new(&nodes, 0);
 
@@ -1325,7 +1360,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pause_restart_returns_to_the_menu_band_and_quit_stops_the_game() {
+    fn a_pause_restart_returns_to_the_menu_band_and_quit_ends_the_session() {
         let nodes = line();
         for (flow, expected) in [
             (
@@ -1340,7 +1375,7 @@ mod tests {
                     quit: true,
                     ..PauseFlow::default()
                 },
-                0,
+                0xc,
             ),
         ] {
             let mut session = GameplaySession::new(params(), InRaceScript::gameplay_harness());
@@ -1368,7 +1403,7 @@ mod tests {
     fn a_still_car_never_reaches_the_finish_line() {
         // With no forward force the car never crosses a gate, so the FSM stays in
         // the gameplay band (never funnels through the finish).
-        let mut session = GameplaySession::new(params(), InRaceScript::frontend_harness());
+        let mut session = GameplaySession::new(params(), InRaceScript::school_harness());
         let nodes = line();
         let mut progress = StageProgress::new(&nodes, 0);
         let still = Controls {

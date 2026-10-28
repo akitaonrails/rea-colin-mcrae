@@ -1,43 +1,40 @@
-//! The whole-program session loop: the composition that runs the top-level FSM
-//! from boot through the menu and load states into the in-race band and back out
-//! to the terminal quit, driving one [`crate::game_driver::FrameDriver`] with a
-//! band-routed handler.
+//! The whole-program session loop: the per-frame driver `FUN_004c1e00` around
+//! the top-level FSM.
 //!
-//! The dispatch needs a total handler `GameState -> GameState` (the next state
-//! each state's update handler returns). This module routes that handler by band
-//! from the pieces already reconstructed:
+//! While `DAT_00506228` is set the descriptor front end runs and the FSM is not
+//! ticked ([`SessionBand::FrontEnd`]). The front end's race or rally-school
+//! hand-off ([`EventState::start_race_session`],
+//! [`EventState::start_school_session`]) clears it, and from then on every frame
+//! runs the tick driver `FUN_00443e90` ([`FrameDriver`]). The first tick of a
+//! session seeds the FSM: `DAT_004ed7d8 = 1` and the state-1 handler. When the
+//! post-race hub ends the session ([`EventState::end_session`]), the init-done
+//! flag is cleared, so the next session seeds again, and the front end resumes.
+//!
+//! The FSM's handlers are routed by band:
 //!
 //! - **`0` / `0xc`** (terminal): the shipped handlers are `xor eax,eax; ret`, so
-//!   both return `0` - the quit funnel `0xc -> 0` and the stopped self-loop.
-//! - **`1..=4`** (boot / menu / pre-load / load-arm): the recovered decision
-//!   tables ([`crate::game_menu_flow::menu_flow_next`]) over a per-frame
-//!   [`MenuFlowInputs`].
-//! - **`5..=0xb`** (in-race and post-race/results): a caller-supplied handler.
-//!   The in-race transition triggers are per-state race logic recovered
-//!   separately (the fixed-step sim in `race_state`/`vertical_path`); this loop
-//!   defers them exactly as the dispatch does, so a backend plugs the race sim in
-//!   without this module modelling it.
+//!   both return `0`.
+//! - **`1..=4`**: [`crate::game_menu_flow::menu_flow_next`] over the
+//!   [`EventState`] and a per-frame [`MenuFlowInputs`].
+//! - **`5..=0xb`**: a caller-supplied handler, given the [`EventState`] too.
 //!
-//! The [`FrameDriver`] already reproduces `FUN_00443e90`: first-frame boot
-//! seeding, the in-race catch-up loop vs the single menu dispatch, and the
-//! render-skip gate. This session is the faithful top-level `run` around it; the
-//! native per-state handler bodies for the gameplay band and the real backend
-//! present remain the caller's. See `rea.official-eu.game-fsm`,
-//! `rea.official-eu.game-fsm-menu`.
+//! See `rea.official-eu.game-fsm`, `rea.official-eu.game-fsm-menu`,
+//! `rea.official-eu.event-flow`.
 
+use crate::event_flow::EventState;
 use crate::game_driver::{FrameDriver, FramePlan};
 use crate::game_menu_flow::{MenuFlowInputs, menu_flow_next};
 use crate::game_state::GameState;
 use crate::host_loop::HostClock;
 
-/// Which band the live state is in this frame, so a caller knows whether its
-/// in-race handler was consulted.
+/// What ran this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionBand {
+    /// No session: the descriptor front end ran instead of the FSM.
+    FrontEnd,
     /// A terminal state (`0` stopped, or `0xc` the quit funnel).
     Terminal,
-    /// The boot/menu/pre-load/load-arm band (`1..=4`), driven by the recovered
-    /// menu-flow decision tables.
+    /// The pre-race band (`1..=4`).
     Menu,
     /// The in-race / post-race band (`5..=0xb`), driven by the supplied handler.
     Gameplay,
@@ -56,17 +53,17 @@ impl SessionBand {
 /// What one [`GameSession::run_frame`] produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionFrame {
-    /// The underlying driver's plan (dispatch count, live state, render target).
-    pub plan: FramePlan,
+    /// The driver's plan; `None` when the front end ran.
+    pub plan: Option<FramePlan>,
     /// The band of the state the frame dispatched *from* (whose handler ran).
     pub band: SessionBand,
 }
 
-/// The top-level game session: a [`FrameDriver`] plus the band-routing that
-/// turns the reconstructed pieces into one runnable loop.
+/// The top-level game session.
 #[derive(Debug, Clone)]
 pub struct GameSession {
     driver: FrameDriver,
+    event: EventState,
 }
 
 impl Default for GameSession {
@@ -76,11 +73,19 @@ impl Default for GameSession {
 }
 
 impl GameSession {
-    /// A fresh session whose first frame seeds the live state from the boot
-    /// handler (FSM state `1`).
+    /// The session at process start: the front end is up (`DAT_00506228 = 1`)
+    /// and the FSM is not yet seeded.
     pub fn new() -> Self {
+        let mut event = EventState::default();
+        event.globals.frontend_506228 = true;
+        Self::with_event(event)
+    }
+
+    /// A session over a prepared config block and globals.
+    pub fn with_event(event: EventState) -> Self {
         GameSession {
             driver: FrameDriver::new(),
+            event,
         }
     }
 
@@ -89,20 +94,24 @@ impl GameSession {
         self.driver.current()
     }
 
-    /// Whether the session has reached the terminal stopped state (`0`), i.e. the
-    /// quit funnel has fully drained.
+    /// The event bookkeeping and session flags.
+    pub const fn event(&self) -> &EventState {
+        &self.event
+    }
+
+    /// The event bookkeeping and session flags.
+    pub fn event_mut(&mut self) -> &mut EventState {
+        &mut self.event
+    }
+
+    /// Whether the FSM has reached the stopped state (`0`).
     pub fn is_stopped(&self) -> bool {
         self.driver.current().is_terminal()
     }
 
-    /// Run one frame. `menu_inputs` supplies the recovered predicate inputs for
-    /// the menu band this frame; `in_race` is consulted for the gameplay band
-    /// (`5..=0xb`) to produce that state's next state. Terminal states resolve to
-    /// the stopped state without consulting either.
-    ///
-    /// The band reported is that of the state the frame dispatched from; on the
-    /// very first frame the driver also seeds from the boot handler (state `1`),
-    /// which routes through the menu band.
+    /// Run one frame. With no session the front end owns the frame and the
+    /// FSM is untouched. Otherwise the tick driver runs: `menu_inputs` feeds the
+    /// pre-race band and `in_race` produces each gameplay state's next state.
     pub fn run_frame<C, H>(
         &mut self,
         clock: &C,
@@ -111,21 +120,38 @@ impl GameSession {
     ) -> SessionFrame
     where
         C: HostClock,
-        H: FnMut(GameState) -> GameState,
+        H: FnMut(GameState, &mut EventState) -> GameState,
     {
+        if !self.event.in_session() {
+            return SessionFrame {
+                plan: None,
+                band: SessionBand::FrontEnd,
+            };
+        }
+        if !self.driver.is_initialized() {
+            self.event.globals.continues_4ed7d8 = true;
+        }
         let dispatched_from = self.driver.current();
+        let seeding = !self.driver.is_initialized();
+        let event = &mut self.event;
         let plan = self
             .driver
             .run_frame(clock, |state| match SessionBand::of(state) {
                 SessionBand::Terminal => GameState::stopped(),
-                SessionBand::Menu => {
-                    menu_flow_next(state, menu_inputs).expect("states 1..=4 are the menu band")
-                }
-                SessionBand::Gameplay => in_race(state),
+                SessionBand::Menu => menu_flow_next(state, menu_inputs, event)
+                    .expect("states 1..=4 are the menu band"),
+                SessionBand::Gameplay | SessionBand::FrontEnd => in_race(state, event),
             });
+        if std::mem::take(&mut self.event.globals.reseed_requested) {
+            self.driver.clear_init();
+        }
         SessionFrame {
-            plan,
-            band: SessionBand::of(dispatched_from),
+            plan: Some(plan),
+            band: if seeding {
+                SessionBand::Menu
+            } else {
+                SessionBand::of(dispatched_from)
+            },
         }
     }
 
@@ -147,127 +173,98 @@ mod tests {
     struct FakeClock {
         now: Cell<u32>,
     }
-    impl FakeClock {
-        fn at(start: u32) -> Self {
-            FakeClock {
-                now: Cell::new(start),
-            }
-        }
-    }
     impl HostClock for FakeClock {
         fn millis(&self) -> u32 {
             self.now.get()
         }
     }
+    fn clock() -> FakeClock {
+        FakeClock { now: Cell::new(0) }
+    }
 
-    /// Menu inputs that drive the direct (non-interactive) path straight through
-    /// boot -> pre-load -> load into state 5: no front-end session, nothing
-    /// pending, no resume, race-type bit clear.
-    fn direct_to_race() -> MenuFlowInputs {
-        MenuFlowInputs::default()
+    /// A one-stage selected-stages event (mode 2, stage 2 of the mask).
+    fn one_stage() -> EventState {
+        let mut event = EventState::default();
+        event.cfg.mode_166 = 2;
+        event.cfg.stage_mask_164 = 0b100;
+        event.cfg.stage_count_165 = 6;
+        event.globals.frontend_506228 = true;
+        event
     }
 
     #[test]
-    fn boot_runs_straight_through_the_menu_band_to_the_in_race_band() {
-        let clock = FakeClock::at(0);
-        let mut session = GameSession::new();
-
-        // Frame 1: boot seeds state 1 -> 3 (direct path), then dispatches 3 -> 4.
-        let frame = session.run_frame(&clock, direct_to_race(), |s| s);
-        assert_eq!(frame.band, SessionBand::Menu);
-        assert_eq!(session.current(), state(4));
-
-        // Frame 2: state 4 load/arm -> 5 (direct race-type path).
-        let frame = session.run_frame(&clock, direct_to_race(), |s| s);
-        assert_eq!(frame.band, SessionBand::Menu);
-        assert_eq!(session.current(), state(5));
-        assert!(session.current().is_in_race());
+    fn the_front_end_owns_the_frame_until_a_session_starts() {
+        let clock = clock();
+        let mut session = GameSession::with_event(one_stage());
+        let frame = session.run_frame(&clock, MenuFlowInputs::default(), |_, _| {
+            panic!("no session")
+        });
+        assert_eq!(frame.band, SessionBand::FrontEnd);
+        assert!(frame.plan.is_none());
+        assert!(!session.driver.is_initialized());
     }
 
     #[test]
-    fn the_in_race_handler_drives_the_gameplay_band() {
-        let clock = FakeClock::at(0);
-        let mut session = GameSession::new();
-        // Advance to state 5 (boot->3->4->5) with the direct path.
-        session.run_frame(&clock, direct_to_race(), |s| s); // -> 4
-        session.run_frame(&clock, direct_to_race(), |s| s); // -> 5
+    fn a_race_session_seeds_from_state_one_and_runs_to_the_race() {
+        let clock = clock();
+        let mut session = GameSession::with_event(one_stage());
+        session.event_mut().start_race_session();
+        // The seed frame runs the state-1 handler only: the first selected
+        // stage is chosen and mode 2 skips the welcome screen.
+        let frame = session.run_frame(&clock, MenuFlowInputs::default(), |s, _| s);
+        assert_eq!(frame.band, SessionBand::Menu);
+        assert_eq!(session.current(), state(3));
+        assert_eq!(session.event().cfg.cursor_168, 0x20);
+        assert!(session.event().globals.continues_4ed7d8);
+        session.run_frame(&clock, MenuFlowInputs::default(), |s, _| s); // -> 4
+        session.run_frame(&clock, MenuFlowInputs::default(), |s, _| s); // -> 5
         assert_eq!(session.current(), state(5));
+    }
 
-        // Now the gameplay band consults the in-race handler. Self-loop once,
-        // then finish to the post-race state 0xb (a recovered 5 edge? 5 -> {5,8,
-        // 9,0xa}; 0xb is reached from 8/9/0xa). Drive 5 -> 9 -> 0xb.
-        let frame = session.run_frame(&clock, direct_to_race(), |s| {
-            assert_eq!(s, state(5));
-            state(9)
+    #[test]
+    fn the_hub_ends_the_session_and_the_next_one_seeds_again() {
+        let clock = clock();
+        let mut session = GameSession::with_event(one_stage());
+        session.event_mut().start_race_session();
+        for _ in 0..3 {
+            session.run_frame(&clock, MenuFlowInputs::default(), |s, _| s);
+        }
+        assert_eq!(session.current(), state(5));
+        // The handler plays the hub's end of the event.
+        let frame = session.run_frame(&clock, MenuFlowInputs::default(), |_, event| {
+            event.end_session();
+            state(0xC)
         });
         assert_eq!(frame.band, SessionBand::Gameplay);
-        assert_eq!(session.current(), state(9));
-
-        let frame = session.run_frame(&clock, direct_to_race(), |s| {
-            assert_eq!(s, state(9));
-            state(0xB)
+        assert!(!session.driver.is_initialized());
+        let frame = session.run_frame(&clock, MenuFlowInputs::default(), |_, _| {
+            panic!("back in the front end")
         });
-        assert_eq!(frame.band, SessionBand::Gameplay);
-        assert_eq!(session.current(), state(0xB));
+        assert_eq!(frame.band, SessionBand::FrontEnd);
+
+        // A new session seeds from state 1 again.
+        session.event_mut().cfg.progress_167 = 0;
+        session.event_mut().start_race_session();
+        let frame = session.run_frame(&clock, MenuFlowInputs::default(), |s, _| s);
+        assert_eq!(frame.band, SessionBand::Menu);
+        assert_eq!(session.current(), state(3));
     }
 
     #[test]
-    fn the_quit_funnel_drains_to_the_terminal_state() {
-        let clock = FakeClock::at(0);
-        let mut session = GameSession::new();
-        session.run_frame(&clock, direct_to_race(), |s| s); // 1->3, ->4
-        session.run_frame(&clock, direct_to_race(), |s| s); // ->5
-
-        // From the gameplay band drive 5 -> 0xb (via 9), then 0xb -> 0xc (quit).
-        session.run_frame(&clock, direct_to_race(), |_| state(9)); // ->9
-        session.run_frame(&clock, direct_to_race(), |_| state(0xB)); // ->0xb
-        let frame = session.run_frame(&clock, direct_to_race(), |_| state(0xC)); // ->0xc
-        assert_eq!(frame.band, SessionBand::Gameplay);
-        assert_eq!(session.current(), state(0xC));
-        assert!(!session.is_stopped());
-
-        // The terminal 0xc handler drains to the stopped state 0 without
-        // consulting the in-race handler (it would panic if called).
-        let frame = session.run_frame(&clock, direct_to_race(), |_| {
+    fn the_terminal_states_drain_to_stopped() {
+        let clock = clock();
+        let mut session = GameSession::with_event(one_stage());
+        session.event_mut().start_race_session();
+        for _ in 0..3 {
+            session.run_frame(&clock, MenuFlowInputs::default(), |s, _| s);
+        }
+        session.run_frame(&clock, MenuFlowInputs::default(), |_, _| state(9));
+        session.run_frame(&clock, MenuFlowInputs::default(), |_, _| state(0xB));
+        session.run_frame(&clock, MenuFlowInputs::default(), |_, _| state(0xC));
+        let frame = session.run_frame(&clock, MenuFlowInputs::default(), |_, _| {
             panic!("terminal state must not consult the in-race handler")
         });
         assert_eq!(frame.band, SessionBand::Terminal);
-        assert_eq!(session.current(), state(0));
-        assert!(session.is_stopped());
-
-        // The stopped state self-loops.
-        session.run_frame(&clock, direct_to_race(), |_| {
-            panic!("stopped state must not consult the in-race handler")
-        });
-        assert!(session.is_stopped());
-    }
-
-    #[test]
-    fn an_interactive_menu_can_quit_before_any_race() {
-        let clock = FakeClock::at(0);
-        let mut session = GameSession::new();
-
-        // An interactive front-end session seeds boot -> 2 and holds in the menu.
-        let interactive = MenuFlowInputs {
-            frontend_active: true,
-            root_menu_ready: false,
-            ..Default::default()
-        };
-        let frame = session.run_frame(&clock, interactive, |s| s);
-        assert_eq!(frame.band, SessionBand::Menu);
-        assert_eq!(session.current(), state(2));
-
-        // The user requests quit: the front-end branch returns 0xc, which then
-        // drains to the stopped state.
-        let quitting = MenuFlowInputs {
-            frontend_active: true,
-            root_menu_ready: true,
-            screen_graph_ready: false,
-            ..Default::default()
-        };
-        session.run_frame(&clock, quitting, |s| s);
-        assert_eq!(session.current(), state(0xC));
-        session.run_frame(&clock, direct_to_race(), |s| s);
         assert!(session.is_stopped());
     }
 }
