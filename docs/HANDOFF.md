@@ -165,8 +165,10 @@ The wet-tyre sound plays (`impl.wet-sound`). The crowd ambience is wired
 (`impl.crowd-sound`) but no shipped `.obj` has a crowd node (id `0xe`), so it
 stays silent, as natively; storm/thunder are unwired. The front end runs outside the FSM and
 the event flow (state 1 event choice, the hub's advance/rewind/end of
-session) is recovered (`impl.event-flow`); the race starts from the root
-"rally" entry (harness) as a one-stage event. The race hand-off commits the
+session) is recovered (`impl.event-flow`). Confirming Championship, Rally or
+Time Trial at the root starts that event (harness for the setup screens), and
+state 4 loads the event's stage (`impl.stage-reload`), so a championship runs
+NZ1 onwards. `--source` must be a stage directory `<root>/Game/<CC>/<n>`. The race hand-off commits the
 cmRally.cfg record (`impl.config-commit`). Front-end screens are in
 `.work/frontend-menu-tree-notes.md`. Next: the front-end setup screens (they edit
 the record, so a chosen stage and car load), loading/saving cmRally.cfg, the `FUN_004115d0` body-contact impact

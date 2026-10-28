@@ -2696,6 +2696,9 @@ pub enum WindowedStageFrameError {
     Present(SdlHostError),
     /// A stage `.dat` record names a cell outside the main-C3D grid.
     StageTriggers(cmr_core::trigger_walk::TriggerCellOutOfRange),
+    /// The event's next stage (`FUN_0044d4c0`'s base) has no directory under
+    /// the game root the `--source` stage directory sits in.
+    StageNotFound(String),
 }
 
 impl WindowedStageFrameError {
@@ -2709,6 +2712,7 @@ impl WindowedStageFrameError {
             Self::StaticCollision(_) => "static-collision-session",
             Self::Present(_) => "present-host",
             Self::StageTriggers(_) => "stage-triggers",
+            Self::StageNotFound(_) => "stage-not-found",
         }
     }
 }
@@ -2741,6 +2745,12 @@ impl fmt::Display for WindowedStageFrameError {
                     "stage .dat record outside the cell grid: {source:?}"
                 )
             }
+            Self::StageNotFound(base) => {
+                write!(
+                    formatter,
+                    "the event's stage {base} is not under the game root"
+                )
+            }
         }
     }
 }
@@ -2751,7 +2761,7 @@ impl std::error::Error for WindowedStageFrameError {
             Self::Setup(source) => Some(source),
             Self::CompiledPose(source) => Some(source),
             Self::Session(source) => Some(source),
-            Self::StaticCollision(_) | Self::StageTriggers(_) => None,
+            Self::StaticCollision(_) | Self::StageTriggers(_) | Self::StageNotFound(_) => None,
             Self::Present(source) => Some(source),
         }
     }
@@ -3074,18 +3084,17 @@ struct FrontEndConfig {
     /// A session ran since the front end last had the frame, so its return
     /// copies the results back (`FUN_004b9600`).
     returning: bool,
+    /// The `--stage` country and stage number the harness setup chooses.
+    stage: Option<(u8, u8)>,
+    /// The car the session loaded (the `--car-code` selector).
+    car: u8,
 }
 
 impl FrontEndConfig {
-    /// The record for a session over one `--stage`. Harness for the unbuilt
-    /// setup screens: the reset `FUN_004b98b0` (with a fixed token, the English
-    /// language and the small-memory branch), then the choices the time-trial
-    /// setup and its stage select would write: mode 2 (`record[0x180]`), the
-    /// stage's country (`record[0x181]`) and only that stage in the country's
-    /// mask (`record[0x16c + 2c]`). State 1 then picks the stage, and the hub
-    /// ends the session after it. A stage name outside `<CC><n>` keeps the
-    /// default championship.
-    fn for_stage(stage: &str) -> Self {
+    /// The record at process start: the reset `FUN_004b98b0` with a fixed
+    /// token, the English language and the small-memory branch (harness: the
+    /// cmRally.cfg file is not read yet).
+    fn new(stage: &str, car: u8) -> Self {
         let mut image = Box::new([0; cmr_core::config::LEGACY_CONFIG_SIZE]);
         cmr_core::config_commit::apply_defaults(
             &mut image,
@@ -3096,22 +3105,32 @@ impl FrontEndConfig {
             },
             None,
         );
-        let (code, number) = stage.split_at(stage.len().min(2));
-        let country = COUNTRY_CODES
-            .iter()
-            .position(|candidate| candidate.eq_ignore_ascii_case(code));
-        let index = number.parse::<u8>().ok().and_then(|n| n.checked_sub(1));
-        if let (Some(country), Some(index)) = (country, index) {
-            let at = 0x16c + country * 2;
-            if index < image[at + 1] & 0xf {
-                image[0x180] = 2;
-                image[0x181] = country as u8;
-                image[at] |= 1 << index;
-            }
-        }
         Self {
             image,
             returning: false,
+            stage: cmr_core::stage_path::parse_stage_name(stage),
+            car,
+        }
+    }
+
+    /// Harness for the unbuilt setup and name-entry screens: the choices they
+    /// write into the record before the race hand-off. The mode is the one the
+    /// launching setup screen's enter callback writes (`record[0x180]`); the
+    /// car nibble (`record[0xbe]`) is the loaded car; a championship starts
+    /// from country 0, a rally or time trial from the `--stage` country, and a
+    /// time trial selects only the `--stage` stage (`record[0x16c + 2c]`).
+    fn preset_setup(&mut self, mode: u8) {
+        let image = &mut self.image;
+        image[0x180] = (image[0x180] & !3) | (mode & 3);
+        image[0xbe] = (image[0xbe] & 0xf0) | (self.car & 0xf);
+        let (country, number) = self.stage.unwrap_or((0, 1));
+        image[0x181] = if mode == 0 { 0 } else { country };
+        if mode == 2 {
+            let at = 0x16c + usize::from(country) * 2;
+            let index = number - 1;
+            if index < image[at + 1] & 0xf {
+                image[at] = 1 << index;
+            }
         }
     }
 
@@ -3160,6 +3179,9 @@ fn front_end_frame(
     for effect in &tick.effects {
         match effect {
             cmr_core::frontend::FrontendEffect::StartRace => {
+                if let Some(mode) = root_interaction.race_mode() {
+                    config.preset_setup(mode);
+                }
                 config.commit(session.event_mut(), pause);
                 session.event_mut().start_race_session();
             }
@@ -4953,10 +4975,68 @@ impl std::error::Error for SessionCompiledPoseError {
     }
 }
 
+/// Stage data that is fixed once loaded and borrowed by the driving session
+/// or the checkpoint tracker. A stage load replaces those borrowers, so each
+/// stage's data is built once and kept for the process (the native loads it
+/// into fixed buffers instead); memory is bounded by the number of stages.
+fn interned<T: Send + Sync + 'static, E>(
+    cache: &'static std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, &'static T>>,
+    >,
+    key: String,
+    build: impl FnOnce() -> Result<T, E>,
+) -> Result<&'static T, E> {
+    let cache = cache.get_or_init(Default::default);
+    if let Some(found) = cache.lock().ok().and_then(|map| map.get(&key).copied()) {
+        return Ok(found);
+    }
+    let value: &'static T = Box::leak(Box::new(build()?));
+    if let Ok(mut map) = cache.lock() {
+        map.insert(key, value);
+    }
+    Ok(value)
+}
+
+static STAGE_GEOMETRY: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, &'static StageCompiledGeometry>>,
+> = std::sync::OnceLock::new();
+
+/// The checkpoint nodes and the trigger records with their cell centres.
+struct StageStatics {
+    nodes: Vec<CatNode>,
+    trigger_volumes: Vec<cmr_formats::stage::TriggerVolume>,
+    cell_centers: Vec<Vec3>,
+}
+
+static STAGE_SCENES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, &'static StageStatics>>,
+> = std::sync::OnceLock::new();
+
+fn stage_statics(
+    media_root: &Path,
+    stage: &str,
+    resources: &StageRenderResources,
+) -> Result<&'static StageStatics, StageFrameError> {
+    let key = format!("{}|{}", media_root.display(), stage.to_ascii_uppercase());
+    interned(&STAGE_SCENES, key, || {
+        let nodes = resources
+            .bundle
+            .nodes()
+            .ok_or(StageFrameError::MissingNodes)?
+            .to_vec();
+        let (trigger_volumes, cell_centers) = stage_trigger_inputs(resources);
+        Ok(StageStatics {
+            nodes,
+            trigger_volumes,
+            cell_centers,
+        })
+    })
+}
+
 /// Authenticated compiled inputs and mutable loader-zero state for one window.
 struct SessionCompiledPose {
     direct_cases: CompiledDirectCaseSet,
-    geometry: StageCompiledGeometry,
+    geometry: &'static StageCompiledGeometry,
     selector: u32,
     lanes: FreshProcessLaneState,
 }
@@ -5032,8 +5112,12 @@ impl SessionCompiledPose {
 
         let stage_base = ordinary_stage_asset_base(stage)
             .ok_or_else(|| SessionCompiledPoseError::UnsupportedStage(stage.to_owned()))?;
-        let geometry = StageCompiledGeometry::load(&assets, &stage_base)
-            .map_err(SessionCompiledPoseError::Geometry)?;
+        let geometry = interned(
+            &STAGE_GEOMETRY,
+            format!("{}|{stage_base}", runtime_data.display()),
+            || StageCompiledGeometry::load(&assets, &stage_base),
+        )
+        .map_err(SessionCompiledPoseError::Geometry)?;
         Ok(Self {
             direct_cases,
             geometry,
@@ -5070,7 +5154,7 @@ impl SessionCompiledPose {
             &self.direct_cases,
             input,
             state,
-            &self.geometry,
+            self.geometry,
             &mut config,
         )
         .map_err(SessionCompiledPoseError::Execution)?;
@@ -5306,8 +5390,146 @@ fn native_stage_setup(
     Ok((resources, nodes, start, initial_camera, actor_rows))
 }
 
-/// The country directories in the native country order (`0x4f0db8`).
-const COUNTRY_CODES: [&str; 8] = ["NZ", "GR", "MC", "AU", "SW", "CO", "IN", "UK"];
+/// One stage loaded for the windowed session.
+struct LoadedStage {
+    resources: StageRenderResources,
+    statics: &'static StageStatics,
+    start: CarState,
+    pose: SessionCompiledPose,
+    srf: Option<Vec<u8>>,
+}
+
+fn load_windowed_stage(
+    media_root: &Path,
+    runtime_data: &Path,
+    stage: &str,
+    car_code: &str,
+    renderer: StageRendererChoice,
+) -> Result<LoadedStage, WindowedStageFrameError> {
+    let (resources, _, mut start, _, actor_rows) =
+        native_stage_setup(media_root, runtime_data, stage, Some(car_code), renderer)?;
+    // Each load models a fresh process/session: its lane arrays are
+    // loader-zeroed, authenticated setup runs once, and only the recovered
+    // setup-time center-Y, half state, AK11 normal, and corrected basis are fed
+    // into the session. Deformation scalars are retained as an exact setup
+    // result, but live collision does not consume or evolve them yet.
+    let mut pose = SessionCompiledPose::open(runtime_data, stage, car_code)
+        .map_err(WindowedStageFrameError::CompiledPose)?;
+    pose.adjust_spawn(&mut start, actor_rows)
+        .map_err(WindowedStageFrameError::CompiledPose)?;
+    let statics = stage_statics(media_root, stage, &resources)?;
+    let srf = read_decoded_section(media_root, stage, ".srf", DecodeLimits::default())
+        .ok()
+        .flatten();
+    Ok(LoadedStage {
+        resources,
+        statics,
+        start,
+        pose,
+        srf,
+    })
+}
+
+/// The directory of a native stage base (`AU\1\AU1`) under the game root and
+/// the stage name, each component matched case-insensitively as the
+/// Windows file system does.
+fn resolve_stage_dir(game_root: &Path, base: &str) -> Option<(PathBuf, String)> {
+    let mut parts: Vec<&str> = base.split('\\').collect();
+    let name = parts.pop()?.to_owned();
+    let mut dir = game_root.to_path_buf();
+    for part in parts {
+        dir = std::fs::read_dir(&dir)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|file| file.to_str())
+                    .is_some_and(|file| file.eq_ignore_ascii_case(part))
+            })?;
+    }
+    Some((dir, name))
+}
+
+/// What a stage reload needs besides the stage.
+struct StageReloadContext<'a> {
+    /// The `game` directory the `--source` stage directory `<CC>\<n>` sits in.
+    game_root: Option<PathBuf>,
+    runtime_data: &'a Path,
+    car_code: &'a str,
+    renderer: StageRendererChoice,
+    trig: &'a [i32],
+    wheel_inputs: &'a Result<SessionWheelInputs, SessionSurfaceInputsError>,
+    tyre_tables: &'a Result<SessionTyreTables, SessionTyreTablesError>,
+    aux: &'a Result<SessionAuxControl, String>,
+    params: SimParams,
+}
+
+/// The stage load of state 4's render handler `FUN_00421da0`: just before
+/// the race is armed, load the stage the event points at (`FUN_0044d4c0`)
+/// when it is not the loaded one, carrying the FSM over to the new stage's
+/// driving session. (The native reloads every time; the same stage's files
+/// load to the same state, which the stage start resets anyway.)
+#[allow(clippy::too_many_arguments)]
+fn reload_stage_for_event<'a>(
+    session: &mut GameplaySession<'a>,
+    resources: &mut StageRenderResources,
+    progress: &mut StageProgress<'static>,
+    audio: &mut RaceAudio,
+    camera: &mut ViewHarness,
+    loaded: &mut String,
+    context: &StageReloadContext<'a>,
+) -> Result<(), WindowedStageFrameError> {
+    if session.state().id() != 4 {
+        return Ok(());
+    }
+    let Some(base) = cmr_core::stage_path::stage_base(session.event(), 0) else {
+        return Ok(());
+    };
+    if base
+        .rsplit('\\')
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case(loaded))
+    {
+        return Ok(());
+    }
+    let (dir, name) = context
+        .game_root
+        .as_deref()
+        .and_then(|root| resolve_stage_dir(root, &base))
+        .ok_or_else(|| WindowedStageFrameError::StageNotFound(base.clone()))?;
+    let stage = load_windowed_stage(
+        &dir,
+        context.runtime_data,
+        &name,
+        context.car_code,
+        context.renderer,
+    )?;
+    let mut next = windowed_drive_session(
+        &stage.pose,
+        context.trig,
+        context.wheel_inputs,
+        context.tyre_tables,
+        context.aux,
+        context.params,
+        stage.start,
+        EventState::default(),
+    )
+    .with_stage_triggers(&stage.statics.trigger_volumes, &stage.statics.cell_centers)
+    .map_err(WindowedStageFrameError::StageTriggers)?;
+    next.replace_game_session(session.game_session().clone());
+    *session = next;
+    *resources = stage.resources;
+    *progress = StageProgress::new(&stage.statics.nodes, 0);
+    audio.effects = EffectsAudio::open(
+        context.runtime_data,
+        stage.srf,
+        stage_crowd_points(resources),
+    );
+    *camera = ViewHarness::new();
+    *loaded = name;
+    Ok(())
+}
 
 /// The event state at process start: the front end is up.
 fn front_end_event() -> EventState {
@@ -5321,7 +5543,7 @@ fn front_end_event() -> EventState {
 /// otherwise the planar harness.
 #[allow(clippy::too_many_arguments)]
 fn windowed_drive_session<'a>(
-    compiled_pose: &'a SessionCompiledPose,
+    compiled_pose: &SessionCompiledPose,
     trig: &'a [i32],
     wheel_inputs: &Result<SessionWheelInputs, SessionSurfaceInputsError>,
     tyre_tables: &'a Result<SessionTyreTables, SessionTyreTablesError>,
@@ -5347,7 +5569,7 @@ fn windowed_drive_session<'a>(
                 wheel,
                 start,
             )
-            .with_ground_geometry(&compiled_pose.geometry)
+            .with_ground_geometry(compiled_pose.geometry)
             .with_event(event)
         }
         Err(error) => {
@@ -5383,18 +5605,14 @@ pub fn run_windowed_game_session(
     car_code: &str,
     renderer: StageRendererChoice,
 ) -> Result<(), WindowedStageFrameError> {
-    let (mut resources, nodes, mut start, _, actor_rows) =
-        native_stage_setup(media_root, runtime_data, stage, Some(car_code), renderer)?;
-    // This owner models one fresh process/session: its lane arrays are
-    // loader-zeroed once, authenticated setup runs once, and only the recovered
-    // setup-time center-Y, half state, AK11 normal, and corrected basis are fed
-    // into the existing session. Deformation scalars are retained as an exact
-    // setup result, but live collision does not consume or evolve them yet.
-    let mut compiled_pose = SessionCompiledPose::open(runtime_data, stage, car_code)
-        .map_err(WindowedStageFrameError::CompiledPose)?;
-    let _compiled_deformation_scalars = compiled_pose
-        .adjust_spawn(&mut start, actor_rows)
-        .map_err(WindowedStageFrameError::CompiledPose)?;
+    let LoadedStage {
+        mut resources,
+        statics,
+        start,
+        pose: compiled_pose,
+        srf,
+    } = load_windowed_stage(media_root, runtime_data, stage, car_code, renderer)?;
+    let nodes = &statics.nodes;
     let mut initial_view = ViewHarness::new();
     let initial_camera = initial_view.update(false, start.position, start.heading, false);
     eprintln!("cmr-app: {}", resources.renderer_status().stable_summary());
@@ -5416,7 +5634,6 @@ pub fn run_windowed_game_session(
     let wheel_inputs = SessionWheelInputs::open(runtime_data);
     let tyre_tables = SessionTyreTables::open(runtime_data);
     let aux = SessionAuxControl::open(runtime_data);
-    let (trigger_volumes, trigger_cell_centers) = stage_trigger_inputs(&resources);
     let mut session = windowed_drive_session(
         &compiled_pose,
         &trig,
@@ -5427,7 +5644,7 @@ pub fn run_windowed_game_session(
         start,
         front_end_event(),
     )
-    .with_stage_triggers(&trigger_volumes, &trigger_cell_centers)
+    .with_stage_triggers(&statics.trigger_volumes, &statics.cell_centers)
     .map_err(WindowedStageFrameError::StageTriggers)?;
     let mut keyboard = KeyboardDriver::player_one();
     let mut analog = AnalogDriver::new();
@@ -5435,7 +5652,7 @@ pub fn run_windowed_game_session(
         max_forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
         max_steer_rate: GAME_SESSION_MAX_STEER_RATE,
     };
-    let mut progress = StageProgress::new(&nodes, 0);
+    let mut progress = StageProgress::new(nodes, 0);
     let initial = compose_live_race_hud(
         &resources,
         initial_world,
@@ -5448,16 +5665,28 @@ pub fn run_windowed_game_session(
     let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
     let mut damage_owner = NoStaticDamageOwner;
-    let srf = read_decoded_section(media_root, stage, ".srf", DecodeLimits::default())
-        .ok()
-        .flatten();
     let mut audio = RaceAudio {
         engine: EngineAudio::open(runtime_data, compiled_pose.selector as u8),
         effects: EffectsAudio::open(runtime_data, srf, stage_crowd_points(&resources)),
     };
     let mut pause = PauseHarness::with_runtime_data(runtime_data);
-    let mut config = FrontEndConfig::for_stage(stage);
+    let mut config = FrontEndConfig::new(stage, compiled_pose.selector as u8);
     let mut runtime_error = None;
+    let mut loaded_stage = stage.to_ascii_uppercase();
+    let reload = StageReloadContext {
+        game_root: media_root
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf),
+        runtime_data,
+        car_code,
+        renderer,
+        trig: &trig,
+        wheel_inputs: &wheel_inputs,
+        tyre_tables: &tyre_tables,
+        aux: &aux,
+        params,
+    };
 
     // Best-effort: open the recovered front-end root-menu compositor from the
     // runtime-data root so the interactive front-end route (state 2) presents the
@@ -5479,23 +5708,35 @@ pub fn run_windowed_game_session(
         );
         let built = with_software_root_menu_session(&store, startup, request, |root| {
             run_windowed_game_session_loop(&initial, Some(audio_root), |input: WindowedInput| {
-                match advance_game_frame(
+                let frame = reload_stage_for_event(
                     &mut session,
-                    &mut keyboard,
-                    &mut analog,
-                    &response,
-                    &mut root_interaction,
-                    &mut progress,
-                    &clock,
                     &mut resources,
-                    &mut camera,
-                    &mut fade,
-                    &mut damage_owner,
+                    &mut progress,
                     &mut audio,
-                    &mut pause,
-                    &mut config,
-                    input,
-                ) {
+                    &mut camera,
+                    &mut loaded_stage,
+                    &reload,
+                )
+                .and_then(|()| {
+                    advance_game_frame(
+                        &mut session,
+                        &mut keyboard,
+                        &mut analog,
+                        &response,
+                        &mut root_interaction,
+                        &mut progress,
+                        &clock,
+                        &mut resources,
+                        &mut camera,
+                        &mut fade,
+                        &mut damage_owner,
+                        &mut audio,
+                        &mut pause,
+                        &mut config,
+                        input,
+                    )
+                });
+                match frame {
                     Ok(outcome) => {
                         // A composed world frame wins; otherwise the interactive
                         // front-end route presents the recovered root-menu frame.
@@ -5541,23 +5782,35 @@ pub fn run_windowed_game_session(
     }
 
     run_windowed_game_session_loop(&initial, Some(audio_root), |input: WindowedInput| {
-        match advance_game_frame(
+        let frame = reload_stage_for_event(
             &mut session,
-            &mut keyboard,
-            &mut analog,
-            &response,
-            &mut root_interaction,
-            &mut progress,
-            &clock,
             &mut resources,
-            &mut camera,
-            &mut fade,
-            &mut damage_owner,
+            &mut progress,
             &mut audio,
-            &mut pause,
-            &mut config,
-            input,
-        ) {
+            &mut camera,
+            &mut loaded_stage,
+            &reload,
+        )
+        .and_then(|()| {
+            advance_game_frame(
+                &mut session,
+                &mut keyboard,
+                &mut analog,
+                &response,
+                &mut root_interaction,
+                &mut progress,
+                &clock,
+                &mut resources,
+                &mut camera,
+                &mut fade,
+                &mut damage_owner,
+                &mut audio,
+                &mut pause,
+                &mut config,
+                input,
+            )
+        });
+        match frame {
             Ok(outcome) => WindowedGameFrame {
                 present: outcome.world.or(outcome.loading_interstitial),
                 stopped: outcome.exit_requested,
@@ -6170,7 +6423,7 @@ mod tests {
         let mut root =
             RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0).unwrap();
         let mut game = cmr_core::game_session::GameSession::new();
-        let mut config = FrontEndConfig::for_stage("");
+        let mut config = FrontEndConfig::new("", 0);
         let mut pause = PauseHarness::new();
         let next = cmr_core::frontend::FrontendInput {
             next: true,
@@ -7140,7 +7393,8 @@ mod tests {
         let mut pause = PauseHarness::with_runtime_data(&root);
         // Harness: the frames run starts in the race session, skipping the
         // front end.
-        let mut config = FrontEndConfig::for_stage("AU1");
+        let mut config = FrontEndConfig::new("AU1", 0);
+        config.preset_setup(2);
         config.commit(session.event_mut(), &mut pause);
         session.event_mut().start_race_session();
         let mut advance = |session: &mut GameplaySession,
@@ -7292,6 +7546,91 @@ mod tests {
 
     #[test]
     #[ignore = "requires the reviewed installed-EU runtime data"]
+    fn a_championship_from_the_au1_window_loads_its_first_stage() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let media = root.join("Game/Au/1");
+        let renderer = StageRendererChoice::Software;
+        let LoadedStage {
+            mut resources,
+            statics,
+            start,
+            pose,
+            ..
+        } = load_windowed_stage(&media, &root, "AU1", "Sub", renderer).unwrap();
+        let trig = cmr_core::fixed_point::build_sine_table();
+        let wheel_inputs = SessionWheelInputs::open(&root);
+        let tyre_tables = SessionTyreTables::open(&root);
+        let aux = SessionAuxControl::open(&root);
+        let params = SimParams {
+            inverse_mass: Fixed16::from_raw(0x8000),
+            gravity: Vec3::ZERO,
+        };
+        let mut session = windowed_drive_session(
+            &pose,
+            &trig,
+            &wheel_inputs,
+            &tyre_tables,
+            &aux,
+            params,
+            start,
+            front_end_event(),
+        )
+        .with_stage_triggers(&statics.trigger_volumes, &statics.cell_centers)
+        .unwrap();
+        let mut progress = StageProgress::new(&statics.nodes, 0);
+        let mut pause = PauseHarness::new();
+        let mut config = FrontEndConfig::new("AU1", pose.selector as u8);
+        let mut audio = RaceAudio::default();
+        let mut camera = ViewHarness::new();
+        let mut loaded = "AU1".to_owned();
+        let reload = StageReloadContext {
+            game_root: media.parent().and_then(Path::parent).map(Path::to_path_buf),
+            runtime_data: &root,
+            car_code: "Sub",
+            renderer,
+            trig: &trig,
+            wheel_inputs: &wheel_inputs,
+            tyre_tables: &tyre_tables,
+            aux: &aux,
+            params,
+        };
+        // The championship setup's choices, committed at the hand-off.
+        config.preset_setup(0);
+        config.commit(session.event_mut(), &mut pause);
+        session.event_mut().start_race_session();
+        for _ in 0..8 {
+            reload_stage_for_event(
+                &mut session,
+                &mut resources,
+                &mut progress,
+                &mut audio,
+                &mut camera,
+                &mut loaded,
+                &reload,
+            )
+            .unwrap();
+            session
+                .try_advance(&StationaryClock, PRE_RACE_INPUTS, Controls::default(), &mut progress)
+                .unwrap();
+            if session.state().id() == 5 {
+                break;
+            }
+        }
+        assert_eq!(session.state().id(), 5);
+        assert_eq!(loaded, "NZ1");
+        assert_eq!(session.event().cfg.cursor_168, 0);
+        assert_ne!(session.car().position, start.position);
+        eprintln!(
+            "championship: stage={loaded} nodes={} start={:?}",
+            statics.nodes.len(),
+            session.car().position
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data"]
     fn imported_au1_live_input_moves_the_world_and_advances_checkpoints() {
         let root = std::env::var_os("CMR_RUNTIME_DATA")
             .map(PathBuf::from)
@@ -7314,7 +7653,7 @@ mod tests {
         )
         .with_event(front_end_event());
         let mut pause = PauseHarness::new();
-        let mut config = FrontEndConfig::for_stage("AU1");
+        let mut config = FrontEndConfig::new("AU1", 0);
         let mut keyboard = KeyboardDriver::player_one();
         let mut analog = AnalogDriver::new();
         let response = DriveResponse {

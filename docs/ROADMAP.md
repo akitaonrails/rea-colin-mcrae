@@ -1976,8 +1976,10 @@ does: confirming a race starts a race session, and the state machine seeds
 from state 1, which chooses the event (championship, single rally or
 selected stages). After each stage the hub runs the recovered event advance;
 when the event is over the session ends and the front end comes back
-(`impl.event-flow`). The setup screens and the config commit are still
-missing, so a windowed session is a one-stage event for its `--stage`.
+(`impl.event-flow`). The race hand-off commits the cmRally.cfg record, and the
+stage load follows the event, so the root's Championship, Rally and Time
+Trial entries run their events stage after stage. The setup screens are not
+built yet: their choices come from `--stage` and `--car-code`.
 
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI

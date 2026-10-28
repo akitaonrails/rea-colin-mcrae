@@ -12,6 +12,8 @@ pub const CHAMPIONSHIP_SETUP_SCREEN_ID: ScreenId = ScreenId(0x00d4_0900);
 /// Destination of root selection 1, whose matching root object is `Rally.C3D`.
 pub const RALLY_SCREEN_ID: ScreenId = ScreenId(0x00d4_8230);
 pub const CHAMPIONSHIP_NEXT_SCREEN_ID: ScreenId = ScreenId(0x00d4_5cf8);
+/// Destination of root selection 2 (text 0x78), the time-trial setup.
+pub const TIME_TRIAL_SCREEN_ID: ScreenId = ScreenId(0x00d4_b240);
 pub const EXIT_SCREEN_ID: ScreenId = ScreenId(0x00d4_2058);
 /// The empty "go to race" screen: a transition to it returns result 3
 /// (`FUN_0044f6d0`), which leaves the front end for a race session.
@@ -24,7 +26,7 @@ pub const ROOT_FOOTER_TEXT_INDEX: usize = 253;
 const ROOT_ENTRIES: [ScreenEntry; 7] = [
     ScreenEntry::new(0, CHAMPIONSHIP_SETUP_SCREEN_ID),
     ScreenEntry::new(1, RALLY_SCREEN_ID),
-    ScreenEntry::new(120, ScreenId(0x00d4_b240)),
+    ScreenEntry::new(120, TIME_TRIAL_SCREEN_ID),
     ScreenEntry::new(3, RALLY_SCHOOL_SENTINEL_SCREEN_ID),
     ScreenEntry::new(4, ScreenId(0x00d4_53b8)),
     ScreenEntry::new(5, ScreenId(0x00d4_0da0)),

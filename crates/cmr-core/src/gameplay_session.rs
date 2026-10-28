@@ -789,6 +789,18 @@ impl<'a> GameplaySession<'a> {
         self.session.report_render(overran);
     }
 
+    /// The top-level FSM session (driver, event state, session flags).
+    #[must_use]
+    pub const fn game_session(&self) -> &GameSession {
+        &self.session
+    }
+
+    /// Carry an FSM session over from the previous stage's driving session,
+    /// as the stage load replaces only the stage and the car.
+    pub fn replace_game_session(&mut self, session: GameSession) {
+        self.session = session;
+    }
+
     /// Whether the session has drained to the terminal stopped state.
     #[must_use]
     pub fn is_stopped(&self) -> bool {

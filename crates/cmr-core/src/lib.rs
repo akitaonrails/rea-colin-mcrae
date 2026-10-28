@@ -144,6 +144,7 @@ pub mod sim_clock;
 pub mod source_store;
 pub mod stage_checkpoints;
 pub mod stage_compiled_geometry;
+pub mod stage_path;
 pub mod stage_timing;
 pub mod stage_triggers;
 pub mod startup;

@@ -446,8 +446,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-29T18:40:00Z
-milestone=config-commit
+updated_utc=2026-10-29T20:00:00Z
+milestone=stage-reload
 completed=117
 partial=2
 not_started=0

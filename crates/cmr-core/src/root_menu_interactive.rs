@@ -9,9 +9,11 @@
 //! sentinel `0xd46b10` yields result 3 or 4 (`FUN_0044f6d0`); a transition to
 //! the root or exit screen completes; every other confirmed entry begins its
 //! transition and then waits, because the destination screens are not yet
-//! reconstructed. Harness: a game-session host may let the root "rally" entry
-//! stand in for its unbuilt setup and name-entry screens, whose Continue leads
-//! to the race sentinel, so confirming it starts the race. The live
+//! reconstructed. Harness: a game-session host may let the championship, rally
+//! and time-trial entries stand in for their unbuilt setup and name-entry
+//! screens, whose Continue leads to the race sentinel, so confirming one starts
+//! the race ([`RootInteraction::race_mode`] names the mode its setup screen's
+//! enter callback writes). The live
 //! selection's chrome is snapped to its recovered endpoint via
 //! [`steady_root_render_input`]; the in-between tween is a separate,
 //! not-yet-recovered concern. None of this models the original transition
@@ -20,9 +22,10 @@
 use crate::{
     display::DisplayExtent,
     frontend::{
-        EXIT_SCREEN_ID, FrontendEffect, FrontendInput, FrontendPhase, FrontendState,
-        InvalidRootSelection, RACE_SENTINEL_SCREEN_ID, RALLY_SCHOOL_SENTINEL_SCREEN_ID,
-        RALLY_SCREEN_ID, ROOT_SCREEN_ID, ScreenId, TransitionResult,
+        CHAMPIONSHIP_SETUP_SCREEN_ID, EXIT_SCREEN_ID, FrontendEffect, FrontendInput, FrontendPhase,
+        FrontendState, InvalidRootSelection, RACE_SENTINEL_SCREEN_ID,
+        RALLY_SCHOOL_SENTINEL_SCREEN_ID, RALLY_SCREEN_ID, ROOT_SCREEN_ID, ScreenId,
+        TIME_TRIAL_SCREEN_ID, TransitionResult,
     },
     localization::Language,
     root_menu_visual::{RootRenderInput, steady_root_render_input},
@@ -76,8 +79,9 @@ impl RootInteraction {
         self.tick_with_rally_launch(input, now, save_allowed, false)
     }
 
-    /// Advances one tick with the harness rally launch: confirming the root
-    /// "rally" entry starts the race. Other unbuilt destinations remain pending.
+    /// Advances one tick with the harness race launch: confirming the root
+    /// championship, rally or time-trial entry starts the race. Other unbuilt
+    /// destinations remain pending.
     #[must_use]
     pub fn tick_for_game_session(
         &mut self,
@@ -117,7 +121,7 @@ impl RootInteraction {
             Some(screen) if screen == RALLY_SCHOOL_SENTINEL_SCREEN_ID => {
                 TransitionResult::StartRallySchool
             }
-            Some(screen) if rally_launch && screen == RALLY_SCREEN_ID => {
+            Some(screen) if rally_launch && race_mode_of(screen).is_some() => {
                 TransitionResult::StartRace
             }
             Some(screen) if is_reconstructed_screen(screen) => TransitionResult::Complete,
@@ -139,6 +143,27 @@ impl RootInteraction {
         } else {
             None
         }
+    }
+}
+
+/// The event mode (`record[0x180]`) the setup screen's enter callback writes:
+/// 0 championship (`0xd40900`), 1 single rally (`0xd48230`), 2 time trial
+/// (`0xd4b240`).
+fn race_mode_of(screen: ScreenId) -> Option<u8> {
+    match screen {
+        CHAMPIONSHIP_SETUP_SCREEN_ID => Some(0),
+        RALLY_SCREEN_ID => Some(1),
+        TIME_TRIAL_SCREEN_ID => Some(2),
+        _ => None,
+    }
+}
+
+impl RootInteraction {
+    /// The mode of the setup screen the harness launch left through, while
+    /// its transition is under way.
+    #[must_use]
+    pub fn race_mode(&self) -> Option<u8> {
+        self.state.pending_screen().and_then(race_mode_of)
     }
 }
 
@@ -293,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn game_session_policy_launches_only_the_rally_entry() {
+    fn game_session_policy_launches_the_three_race_entries() {
         let mut rally = driver(0);
         let _ = settle_to_interactive(&mut rally);
         let _ = rally.tick_for_game_session(
@@ -320,6 +345,7 @@ mod tests {
                 ..
             }
         )));
+        assert_eq!(rally.race_mode(), Some(1));
         let leave = rally.tick_for_game_session(FrontendInput::default(), 6, true);
         assert_eq!(leave.effects, vec![FrontendEffect::StartRace]);
 
@@ -334,9 +360,25 @@ mod tests {
             true,
         );
         let _ = championship.tick_for_game_session(FrontendInput::default(), 4, true);
-        for now in 5..8 {
-            let tick = championship.tick_for_game_session(FrontendInput::default(), now, true);
-            assert!(tick.effects.is_empty());
+        assert_eq!(championship.race_mode(), Some(0));
+        let leave = championship.tick_for_game_session(FrontendInput::default(), 5, true);
+        assert_eq!(leave.effects, vec![FrontendEffect::StartRace]);
+
+        // The options entry (4) has no launch.
+        let mut options = driver(4);
+        let _ = settle_to_interactive(&mut options);
+        let _ = options.tick_for_game_session(
+            FrontendInput {
+                confirm: true,
+                ..FrontendInput::default()
+            },
+            3,
+            true,
+        );
+        for now in 4..8 {
+            let tick = options.tick_for_game_session(FrontendInput::default(), now, true);
+            assert!(!tick.effects.contains(&FrontendEffect::StartRace));
         }
+        assert_eq!(options.race_mode(), None);
     }
 }
