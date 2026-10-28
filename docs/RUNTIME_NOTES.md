@@ -26,3 +26,21 @@ registry values from `THIN_APP_PLAN.md` R2 imported with `regedit /S`.
 - A CD-type drive letter (`dosdevices\r:` → a folder with `setup\game` →
   the game's `Game`, `HKLM\Software\Wine\Drives "r:"="cdrom"`) was added for
   the CD probe; not yet confirmed because of the black frames.
+
+## 2026-11-02: test harness and the fix list
+
+- Xvfb is unusable: Wine's `ddraw.dll` page-faults (`ddraw+0x2d6a0`, read of
+  `0x102`) on its software OpenGL, with both the official and the patched
+  exe. Steam's runtime container (`_v2-entry-point`) on Xvfb showed nothing at
+  all, not even `winecfg`.
+- Headless gamescope (`gamescope --backend headless`, `gaming` distrobox,
+  NVIDIA PRIME variables) runs Wine 11.20 on the real GPU without showing
+  anything on the user's desktop; `gamescopectl screenshot <path>` captures
+  the composited frame. (X11 root grabs are black there.)
+- The ChemicalFlood exe (`46500c8e…`) reached the Codemasters screen and then
+  the service screen from the user's save, at 640x480.
+- The official EU v1.5 exe with `win98` and a CD-type drive crashed at
+  `0x4a69ff`: `IDirect3D2::CreateDevice` for the front end's 8-bit Ramp device
+  failed and the game used the null device.
+- `cmp` of the two exes: exactly 87 bytes in 5 places, the fixes F1-F5 in
+  `THIN_APP_PLAN.md`.

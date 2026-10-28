@@ -23,20 +23,23 @@ at tag `recomp-parked-2026-11-02` and copied in full (with its local notes) to
 | M6 Enhancement: 60 fps | smooth motion | not started; feasibility open |
 
 **Last findings:**
-- The official EU v1.5 `Rally.exe` starts under GE-Proton from a copied folder
-  once its registry paths are set, and stops at its own "Wrong operating
-  system" box. It accepts only the Windows 9x platform.
-- With Wine reporting Windows 98, it passed the version gate and opened its
-  window.
-- The CD check and graphics are not yet confirmed: the virtual-display runs
-  were black, and running Proton outside Steam's runtime container broke font
-  and OpenGL init.
+- The complete fix list is known (inventory F1-F5). The community-patched
+  exe in the user's install is byte-for-byte the official EU v1.5 plus 87
+  bytes in five places, and every one of them matches a problem the decomp
+  explains.
+- With those fixes the game runs under Wine 11.20 on the real GPU. On a
+  private headless display it showed the Codemasters screen, then the
+  service screen from an existing save.
+- The unpatched official exe crashes when it creates the front end's Ramp
+  3D device (F2).
+- Test harness: headless gamescope (real GPU, nothing on the user's desktop,
+  `gamescopectl screenshot`). Xvfb doesn't work, because Wine's DirectDraw
+  crashes on its software OpenGL.
 
 **Next:**
-1. Settle the Linux runner (`umu-launcher` or Steam, inventory L1).
-2. Finish probe G1 (does Proton's built-in renderer reach the menu and a
-   stage).
-3. Probes P1/P2: the in-memory version and CD fixes.
+1. M2 implementation: the launcher with the in-memory fixes F1-F5.
+2. Settle the Linux runner (L1).
+3. Then probes A1/C1 (audio, gamepad) through to a stage.
 
 ## Goal and ground rules
 
@@ -73,8 +76,8 @@ Sources: the decomp ledger (`docs/recomp/EVIDENCE.md`), the API inventory
 | R1 | Game files in place without the 1998 installer | Launcher builds a runtime folder (links/copies) from the user's folder | ours | **verified**: the game starts from a copied folder |
 | R2 | Registry: `CDPath`, `HDPath`, `AVIPath`, `WAVPath`, `Language`, `Hardware`, `Initialised` under `Codemasters\Rally\1.00`; missing `Language`/`Hardware` read uninitialized memory, so always write them | Launcher writes them (Wine prefix HKLM; Windows VirtualStore under HKCU, no admin) | ours | **verified** on Proton (read by the game); Windows path: evidence (UAC docs) |
 | R3 | Paths under ~127 characters (`OpenFile`) | Keep the runtime folder short (its own drive letter or a short root) | ours | evidence |
-| R4 | OS gate: only the Win9x platform passes (`FUN_0049dcb0`) | In-memory patch for known hashes (P1); on Proton alone a per-app `win98` version also works | ours | **verified** with `win98`; the patch itself is *probe P1* |
-| R5 | CD check: a CD-ROM drive containing `\setup\game\objects\cars\subday.c3d`, probed on almost every load (`FUN_00496ca0`); the files themselves come from `CDPath` | In-memory patch to "found" (P2); fallback: a CD-type drive letter (Wine), which has no Windows equivalent without admin | ours | *probe P2* |
+| R4 | OS gate: only the Win9x platform passes (`FUN_0049dcb0`) | In-memory fix F4 | ours | **verified** (community exe with the same fix runs) |
+| R5 | CD check: a CD-ROM drive containing `\setup\game\objects\cars\subday.c3d`, probed on almost every load (`FUN_00496ca0`); the files themselves come from `CDPath` | In-memory fix F1 | ours | **verified** (same) |
 | R6 | DirectDraw + Direct3D 5 (`DirectDrawCreate`; 8-bit 640x480 front end, 16-bit race, Ramp/HAL device, `DrawIndexedPrimitive`, back-buffer and Z-buffer reads each frame, `WaitForVerticalBlank` must succeed) | Linux: Proton's built-in ddraw/wined3d. Windows: one of G2 | wined3d (LGPL-2.1, part of Wine/Proton) | evidence (it runs a patched exe in the distrobox setup); *probe G1* in our setup |
 | R7 | Audio: QSound `qmixer.dll` | It ships with the user's game and uses DirectSound, which Windows and Wine both provide; a replacement is only needed if it fails | the game's own file | evidence (distrobox setup plays with sound); *probe A1* |
 | R8 | Joysticks via WinMM, with joystick ids taken from DirectInput 7 enumeration (no DirectInput means no pads) | Xidi: `winmm.dll` + `dinput.dll` presenting XInput pads; or the platform's own WinMM | Xidi (BSD-3-Clause) | *probe C1* (Xidi failed to load in the old distrobox setup; cause unknown) |
@@ -85,12 +88,26 @@ Sources: the decomp ledger (`docs/recomp/EVIDENCE.md`), the API inventory
 | R13 | Display mode switching to 640x480/800x600 and scaling to modern screens | Proton scales low fullscreen modes to the display; on Windows the GPU driver does | (platform) | *probe G1* |
 | R14 | Process quirks: realtime priority, `rdtsc` calibration, a 25/50 Hz timer thread, Debug CRT | Nothing to do; noted in case of trouble | n/a | evidence |
 
+### Game-specific fixes (applied in memory by the launcher)
+
+Derived from the decomp and confirmed by the community-patched exe, which is
+the official EU v1.5 plus exactly these changes. We reimplement each fix
+ourselves and apply it in memory; the file on disk is never changed.
+
+| # | Address (EU v1.5) | Problem | Fix | State |
+| --- | --- | --- | --- | --- |
+| F1 | `0x495f09`, `0x495f59` (calls to `FUN_00496ca0`) | CD-ROM probe on every load | treat the probe as found | verified (equivalent) |
+| F2 | `0x497cee` (`mov edi,8`) | the front end sets an 8-bit palettized mode and creates a Ramp 3D device; Wine's renderer and modern Windows have neither, so `CreateDevice` fails and the game dereferences null (`0x4a69ff`, seen) | use a 16-bit mode | verified (equivalent) |
+| F3 | `0x497df5` (`jne`) | with F2, the GDI system-palette block (8-bit only) would run in 16-bit | run it only when a palette is supplied (extra test of the caller's palette argument) | verified (equivalent) |
+| F4 | `0x49dcb0` | Win9x-only OS gate | accept | verified (equivalent) |
+| F5 | `0x4ae590..0x4ae5ac` | reads the VGA palette with `in`/`out` port I/O, a privileged instruction on NT-family Windows | skip the port reads | verified (equivalent) |
+
 ### Editions
 
 | Executable (SHA-256) | What it is | What we need to do | State |
 | --- | --- | --- | --- |
-| `0eb6ea96…` | Official EU v1.5 (the decomp's reference) | R4 + R5 in-memory fixes | P1/P2 |
-| `46500c8e…` | ChemicalFlood pack exe (the user's installed copy) | Already patched by the pack for R4/R5; run as-is | evidence |
+| `0eb6ea96…` | Official EU v1.5 (the decomp's reference) | F1-F5 in memory | fixes known; launcher to build |
+| `46500c8e…` | ChemicalFlood pack exe (the user's installed copy) = EU v1.5 + F1-F5 on disk | run as-is | **verified** under Wine 11.20 |
 | `b445fd0d…` | `Game.exe` (1998 launcher/intro player) | Not needed to play | evidence |
 | others (US v1.5, v1.0 CD) | Unknown until users bring them | Per-hash patch tables | open |
 
@@ -133,9 +150,8 @@ Excluded: dgVoodoo2 (closed source; crashes under Wine), cnc-ddraw
 
 | Id | Question | Method | Result |
 | --- | --- | --- | --- |
-| G1 | Does Proton's built-in renderer run the official exe through the menus and a stage? | Run via L1's runner with `win98`, then with P1/P2 | started: window opens; menu not yet seen |
-| P1 | In-memory OS-gate fix works | Launcher: start suspended, patch `0x49dcb0` to "accept", resume | — |
-| P2 | In-memory CD-check fix works | Patch `0x496ca0` to return 1 | — |
+| G1 | Does Wine's built-in renderer run the game? | Headless gamescope + Wine 11.20 | **yes** with F1-F5 (title, service screen); official exe without F2 crashes at the Ramp device |
+| P1 | Launcher applies F1-F5 in memory (start suspended, write, resume) | M2 implementation | — |
 | A1 | QMixer audio plays under Proton | Listen / log during G1 | — |
 | C1 | Analog pad works via Xidi or WinMM under Proton | Plug a pad during G1, check the controller menu | — |
 | D1 | `dplayx` on Windows 10/11 | Windows machine | blocked |
