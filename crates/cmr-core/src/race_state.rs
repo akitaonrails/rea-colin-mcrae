@@ -630,6 +630,10 @@ pub struct FourWheelState {
     pub trigger_prior_15c: [[i32; 3]; 8],
     /// `+0x3f0..+0x3f8`: the last barrier impact point (body frame).
     pub barrier_impact_3f0: [i32; 3],
+    /// `ctl +0x380/+0x38c/+0x398/+0x3a4`: the force-pass head's published
+    /// lane vectors (A lane 0, A lane 2, B lane 0, B lane 2), which the wheel
+    /// particles read.
+    pub head_vectors_380: [Vec3; 4],
     /// `+0x6dc`: a barrier touched the car in the last walk (read by the
     /// rollover trigger on the next tick).
     pub barrier_contact_6dc: bool,
@@ -1072,6 +1076,7 @@ impl CarState {
                 saved_position_3e4: Vec3::ZERO,
                 trigger_prior_15c: [[0; 3]; 8],
                 barrier_impact_3f0: [0; 3],
+                head_vectors_380: [Vec3::ZERO; 4],
                 barrier_contact_6dc: false,
                 trigger_walk: TriggerWalkState {
                     selected_probe_574: 0,
@@ -1833,6 +1838,7 @@ impl RaceState {
             },
             resolve_lane_direction_mode(wheel.lane_rebuild, wheel.lane_exchange),
         );
+        self.car.four_wheel.head_vectors_380 = directions.published_unique_vectors();
         let mut first = wheel.first;
         for input in &mut first {
             input.flag_43b = i32::from(self.car.four_wheel.residual_enable);

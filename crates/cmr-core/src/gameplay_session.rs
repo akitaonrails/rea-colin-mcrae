@@ -737,6 +737,30 @@ impl<'a> GameplaySession<'a> {
         })
     }
 
+    /// The car and control words the wheel particles read this tick
+    /// (`FUN_00428360`/`FUN_00425280`), or `None` before the car has a
+    /// ground state.
+    pub fn wheel_particle_car(&self) -> Option<crate::car_particles::WheelCar> {
+        let car = self.race.car();
+        let ground = car.ground?;
+        let four = &car.four_wheel;
+        let raw = |v: Vec3| [v.x.raw(), v.y.raw(), v.z.raw()];
+        Some(crate::car_particles::WheelCar {
+            velocity: raw(car.velocity),
+            speed: four.speed_ec,
+            probes: ground.probes,
+            up: raw(car.motion.basis[1]),
+            contact: car.motion.contact_distance_flags,
+            flags_73a: std::array::from_fn(|w| ground.thresholds.flags_73a[w]),
+            wheel_speed: std::array::from_fn(|w| four.first[w].wheel_speed),
+            head: four.head_vectors_380.map(raw),
+            longitudinal: std::array::from_fn(|w| four.second[w].ratio_at_3b0),
+            lateral: four.lateral_dot_3c0,
+            surfaces: std::array::from_fn(|w| ground.lanes.type_words[w] as i16),
+            gear: four.gearbox.gear_43a,
+        })
+    }
+
     /// Write back the surface words the surface sound rewrites into the
     /// control record (`ctl +0x42a`).
     pub fn set_surface_words(&mut self, surfaces: [i16; 4]) {

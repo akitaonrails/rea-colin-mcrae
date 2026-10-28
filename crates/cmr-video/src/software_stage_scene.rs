@@ -221,6 +221,103 @@ impl StageSceneFrame {
         Ok(())
     }
 
+    /// The particle sprites (`FUN_004a4460`, kind 2): each quad's corners in
+    /// world units, its texture keyed on index 0 and modulated by the
+    /// vertex grey, blended by the vertex alpha over the frame
+    /// (SRCALPHA/INVSRCALPHA) and re-quantized to the frame palette. The
+    /// sprites are depth-tested against the scene and write a scratch depth
+    /// copy among themselves (the native's z-write is inherited, unknown).
+    pub fn blend_sprites(
+        &mut self,
+        camera_world_q16: &[i32; 16],
+        sprites: &[SpriteQuad<'_>],
+    ) -> Result<(), StageSceneComposeError> {
+        if sprites.is_empty() {
+            return Ok(());
+        }
+        let [width, height] = self.extent;
+        let identity = [
+            0x1_0000, 0, 0, 0, 0, 0x1_0000, 0, 0, 0, 0, 0x1_0000, 0, 0, 0, 0, 0x1_0000,
+        ];
+        let transforms = SoftwareC3dTransformState::for_gameplay_scene(
+            width,
+            height,
+            camera_world_q16,
+            &identity,
+        )?;
+        let palette = *self.palette;
+        let mut cache = std::collections::HashMap::<(u8, [u8; 3], u8, u8), u8>::new();
+        let mut scratch = self.depth.clone();
+        for sprite in sprites {
+            let (u0, u1) = if sprite.flip { (1.0, 0.0) } else { (0.0, 1.0) };
+            let uv = [[u0, 1.0], [u0, 0.0], [u1, 1.0], [u1, 0.0]];
+            let diffuse = (u32::from(sprite.alpha) << 24) | (u32::from(sprite.grey) * 0x01_0101);
+            let vertices: Vec<crate::c3d_software_raster::SoftwareC3dLitVertex> = (0..4)
+                .map(|i| crate::c3d_software_raster::SoftwareC3dLitVertex {
+                    position: sprite.corners[i],
+                    diffuse,
+                    uv: uv[i],
+                })
+                .collect();
+            let batch = crate::c3d_software_raster::preflight_lit_triangle_list(
+                &vertices,
+                &[0, 3, 2, 0, 1, 3],
+                transforms,
+            )?;
+            let texture = sprite.texture;
+            let (tw, th) = (texture.width as usize, texture.height as usize);
+            let pixels = &mut self.pixels;
+            let grey = u32::from(sprite.grey);
+            let alpha = sprite.alpha;
+            crate::c3d_software_raster::rasterize_c3d_fragments_untextured(
+                &batch,
+                &mut scratch,
+                |fragment| {
+                    let [u, v] = fragment.uv();
+                    let tx = ((u * tw as f32) as usize).min(tw.saturating_sub(1));
+                    let ty = ((v * th as f32) as usize).min(th.saturating_sub(1));
+                    let Some(&index) = texture.pixels.get(ty * tw + tx) else {
+                        return;
+                    };
+                    if index == 0 {
+                        return;
+                    }
+                    let Some(entry) = texture.palette.get(usize::from(index)) else {
+                        return;
+                    };
+                    let rgb = [entry.red, entry.green, entry.blue]
+                        .map(|c| ((u32::from(c) * grey) / 255) as u8);
+                    let [x, y] = fragment.position();
+                    let at = usize::from(y) * usize::from(width) + usize::from(x);
+                    let under = pixels[at];
+                    // Backend policy: the blend went to a 16-bit display; an
+                    // ordered 4x4 offset keeps a translucent blend from
+                    // quantizing back to the colour under it.
+                    let bayer = BAYER_4X4[usize::from(y & 3)][usize::from(x & 3)];
+                    pixels[at] = *cache.entry((under, rgb, alpha, bayer)).or_insert_with(|| {
+                        let base = palette[usize::from(under)];
+                        let a = f32::from(alpha) / 255.0;
+                        let offset = (f32::from(bayer) - 7.5) * DITHER_STEP;
+                        let mix = |b: u8, s: u8| {
+                            (f32::from(b) * (1.0 - a) + f32::from(s) * a + offset)
+                                .round()
+                                .clamp(0.0, 255.0) as u8
+                        };
+                        nearest_index(
+                            [
+                                mix(base.red, rgb[0]),
+                                mix(base.green, rgb[1]),
+                                mix(base.blue, rgb[2]),
+                            ],
+                            &palette,
+                        )
+                    });
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     /// Depth-composites a later independently rendered opaque world graph into
     /// this frame. The nearer depth wins per pixel and `other` wins equal-depth
     /// ties, reproducing `LessEqual` submission to one shared depth buffer while
@@ -249,6 +346,22 @@ impl StageSceneFrame {
         self.add_stats(other);
         Ok(self)
     }
+}
+
+/// The ordered-dither matrix and step the sprite blend quantizes with.
+const BAYER_4X4: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+const DITHER_STEP: f32 = 2.0;
+
+/// One particle sprite for [`StageSceneFrame::blend_sprites`]: the four
+/// corners (v0 `(a0, b0)`, v1 `(a0, b1)`, v2 `(a1, b0)`, v3 `(a1, b1)`) in
+/// world units, the vertex alpha and grey, the U mirror and the texture.
+#[derive(Clone, Copy, Debug)]
+pub struct SpriteQuad<'a> {
+    pub corners: [[f32; 3]; 4],
+    pub alpha: u8,
+    pub grey: u8,
+    pub flip: bool,
+    pub texture: &'a cmr_formats::bitmap::IndexedBitmap,
 }
 
 /// The palette entry nearest `rgb` (Manhattan distance, lowest index on

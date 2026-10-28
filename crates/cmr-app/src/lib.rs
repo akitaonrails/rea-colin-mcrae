@@ -1989,7 +1989,7 @@ impl WgpuStageRenderer {
         camera: &[i32; 16],
         dynamic_worlds: Option<&[[i32; 16]]>,
         horizon_worlds: Option<&[[i32; 16]]>,
-        shadows: Option<(&[ShadowDraw], &[u8])>,
+        post: Option<&PostBlend<'_>>,
     ) -> Result<SoftwarePresentedFrame, StageFrameError> {
         let frame = if self.prepared.dynamic_world_set_count() == 0 {
             self.prepared.prepared_frame_for(camera)
@@ -2021,10 +2021,10 @@ impl WgpuStageRenderer {
                     (w, h, z_near, cmr_core::c3d_camera::HORIZON_Z_FAR),
                 )
                 .map_err(StageFrameError::GpuPrepare)?;
-            if let Some((draws, alpha)) = shadows {
-                // The shadows over the GPU frame with its depth: whatever is
-                // nearer (the car, the objects) rejects their fragments, as
-                // drawing those after the shadow covers it.
+            if let Some(post) = post {
+                // The shadows and sprites over the GPU frame with its depth:
+                // whatever is nearer (the car, the objects) rejects their
+                // fragments, as drawing those after the shadow covers it.
                 let (indexed, depth) = self
                     .backend
                     .render_prepared_layered_indexed_readback_with_depth(
@@ -2045,9 +2045,7 @@ impl WgpuStageRenderer {
                     self.palette,
                     depth,
                 );
-                scene
-                    .blend_shadows(camera, draws, alpha)
-                    .map_err(StageFrameError::Compose)?;
+                post(&mut scene)?;
                 return scene.to_presented_frame().map_err(StageFrameError::Present);
             }
             self.backend
@@ -2234,6 +2232,10 @@ pub struct StageRenderResources {
     shadow: Option<StageShadow>,
     /// This frame's planned shadow triangles (`FUN_004a51f0`'s queue).
     shadow_draws: Vec<ShadowDraw>,
+    /// The wheel particles and their textures, once the race setup
+    /// attached them, and this frame's sprites.
+    particles: Option<StageParticles>,
+    sprite_draws: Vec<SpriteDraw>,
     palette: [PaletteEntry; 256],
     node_count: usize,
     draw_ops: usize,
@@ -2332,6 +2334,8 @@ impl StageRenderResources {
             race_hud: None,
             shadow: None,
             shadow_draws: Vec::new(),
+            particles: None,
+            sprite_draws: Vec::new(),
             palette,
             node_count,
             draw_ops,
@@ -2565,6 +2569,164 @@ impl StageRenderResources {
     /// template rebuilt (kept while paused, state `0xa`), pulled toward the
     /// camera, and queued unless the view is inside the car. A car without
     /// live ground contact (the planar harness) casts none.
+    /// The wheel particles for a race on `stage` (`FUN_00424160`): the
+    /// capability tables, the stage's lighting and weather, and every
+    /// sprite table's frames under `Game\\Images` by the stage's country.
+    /// Without the surface tables the stage has no particles.
+    pub fn attach_particles(&mut self, runtime_data: &Path, stage: &str, weather: StageWeather) {
+        use cmr_core::car_particles::{SPRITE_TABLES, texture_country, texture_paths};
+        let Ok(surfaces) = SessionSurfaceInputs::open(runtime_data) else {
+            self.particles = None;
+            return;
+        };
+        let country = cmr_core::stage_path::parse_stage_name(stage).map_or(0, |(c, _)| c);
+        let stage_index =
+            cmr_core::stage_path::parse_stage_name(stage).map_or(0, |(_, n)| n.saturating_sub(1));
+        let store = ReviewedProfile::from_json(REVIEWED_PROFILE)
+            .ok()
+            .and_then(|reviewed| {
+                AssetStore::open(runtime_data, &reviewed, DecodeLimits::default()).ok()
+            });
+        let mut textures = std::collections::HashMap::new();
+        let cc = texture_country(false, false, country);
+        for sprites in SPRITE_TABLES {
+            for (frame, candidates) in texture_paths(sprites, cc).into_iter().enumerate() {
+                let bitmap = candidates.iter().find_map(|path| {
+                    store
+                        .as_ref()?
+                        .load(&format!("Game/{}", path.replace('\\', "/")))
+                        .ok()
+                        .and_then(|bytes| {
+                            cmr_formats::bitmap::parse_indexed_bitmap(
+                                &bytes,
+                                BitmapLimits::default(),
+                            )
+                            .ok()
+                        })
+                });
+                if let Some(bitmap) = bitmap {
+                    textures.insert((sprites, frame), bitmap);
+                }
+            }
+        }
+        let night = weather.lighting == cmr_core::stage_weather::NIGHT_LIGHTING;
+        let lit = cmr_core::stage_weather::stage_lights(weather).map_or([0xc8; 3], |lights| {
+            [
+                lights.colors[0][0],
+                lights.colors[0][1],
+                lights.colors[0][2],
+            ]
+        });
+        self.particles = Some(StageParticles {
+            system: cmr_core::car_particles::ParticleSystem::new(1, true),
+            tables: surfaces.store.tables().values.to_vec(),
+            solid: surfaces.runtime_fifth,
+            night,
+            weather_type: weather.weather_type,
+            country,
+            lit,
+            fixed_grey: cmr_core::car_particles::fixed_grey(
+                night,
+                weather.weather_type,
+                weather.detail,
+                false,
+                country,
+                stage_index,
+            ),
+            textures,
+        });
+    }
+
+    /// One sim tick of the wheel particles (`FUN_00428320` inside
+    /// Mechanics, then `FUN_00427d00`), drawing on the shared `rand()`.
+    fn tick_particles(
+        &mut self,
+        session: &GameplaySession,
+        enabled: bool,
+        rng: &mut GameLcg,
+        trig: &[i32; cmr_core::fixed_point::TRIG_TABLE_LEN],
+    ) {
+        let Some(particles) = self.particles.as_mut() else {
+            return;
+        };
+        let Some(car) = session.wheel_particle_car() else {
+            return;
+        };
+        particles.system.enabled = enabled;
+        let stage = cmr_core::car_particles::ParticleStage {
+            tables: &particles.tables,
+            solid: &particles.solid,
+            night: particles.night,
+            weather_type: particles.weather_type,
+            country: particles.country,
+            lit: particles.lit,
+            fixed_grey: particles.fixed_grey,
+            blend: cmr_core::car_particles::DEFAULT_BLEND,
+        };
+        particles.system.spawn(&[car], &stage, rng, trig);
+        particles.system.update(rng);
+    }
+
+    /// `FUN_00428b80` for the player's viewport: the sprites in their
+    /// camera-facing corners, far to near (`t = 1`: the tick just ran).
+    fn plan_particles(
+        &mut self,
+        session: &GameplaySession,
+        camera_world: &[i32; 16],
+        interior_view: bool,
+        single_alpha: bool,
+    ) {
+        self.sprite_draws.clear();
+        let Some(particles) = self.particles.as_mut() else {
+            return;
+        };
+        if !particles.system.enabled {
+            return;
+        }
+        let Some(car) = session.wheel_particle_car() else {
+            return;
+        };
+        let camera = [camera_world[12], camera_world[13], camera_world[14]];
+        let right = [camera_world[0], camera_world[1], camera_world[2]];
+        let up = [camera_world[4], camera_world[5], camera_world[6]];
+        let forward = [camera_world[8], camera_world[9], camera_world[10]];
+        // The spray's side test: the camera looks along the car's travel.
+        let heading = session.car().motion.basis[0];
+        let along = i64::from(heading.x.raw()) * i64::from(forward[0])
+            + i64::from(heading.z.raw()) * i64::from(forward[2]);
+        let view = cmr_core::car_particles::BillboardView {
+            camera,
+            own: true,
+            own_hidden: interior_view,
+            speed: car.speed,
+            single_alpha,
+            night: particles.night,
+            splash_side: along >= 0,
+        };
+        let Some(state) = particles.system.cars.first_mut() else {
+            return;
+        };
+        let snapshot = state.snapshot(0x1_0000);
+        let list = state.billboards(&snapshot, &view);
+        for billboard in list {
+            if !particles
+                .textures
+                .contains_key(&(billboard.sprites, billboard.frame))
+            {
+                continue;
+            }
+            let corners = cmr_core::car_particles::billboard_corners(&billboard, right, up)
+                .map(|c| c.map(|v| (f64::from(v) / 65536.0) as f32));
+            self.sprite_draws.push(SpriteDraw {
+                corners,
+                alpha: billboard.alpha,
+                grey: billboard.grey,
+                flip: billboard.flip,
+                key: (billboard.sprites, billboard.frame),
+            });
+        }
+    }
+
     fn plan_shadow(
         &mut self,
         session: &GameplaySession,
@@ -2738,16 +2900,27 @@ impl StageRenderResources {
                     scene_world_transforms(horizon.group0_records(), &root)
                 });
         if let Some(gpu) = self.gpu.as_mut() {
-            let shadows = self
+            let shadow = self
                 .shadow
                 .as_ref()
-                .filter(|_| !self.shadow_draws.is_empty())
-                .map(|shadow| (&self.shadow_draws[..], &shadow.alpha[..]));
+                .filter(|_| !self.shadow_draws.is_empty());
+            let shadow_draws = &self.shadow_draws;
+            let sprites = (self.particles.as_ref(), &self.sprite_draws);
+            let blend = |scene: &mut cmr_video::software_stage_scene::StageSceneFrame| {
+                if let Some(shadow) = shadow {
+                    scene
+                        .blend_shadows(camera, shadow_draws, &shadow.alpha)
+                        .map_err(StageFrameError::Compose)?;
+                }
+                blend_sprite_draws(scene, camera, sprites.0, sprites.1)
+            };
+            let post: Option<&PostBlend<'_>> =
+                (shadow.is_some() || !self.sprite_draws.is_empty()).then_some(&blend);
             match gpu.compose(
                 camera,
                 car_node_worlds.as_deref(),
                 horizon_node_worlds.as_deref(),
-                shadows,
+                post,
             ) {
                 Ok(frame) => {
                     return Ok(RenderedStageFrameOutput {
@@ -2904,6 +3077,14 @@ impl StageRenderResources {
         } else {
             frame
         };
+        // `FUN_004a4460`: the particle sprites after the world and the cars.
+        let mut frame = frame;
+        blend_sprite_draws(
+            &mut frame,
+            camera,
+            self.particles.as_ref(),
+            &self.sprite_draws,
+        )?;
 
         let presented = frame
             .to_presented_frame()
@@ -4244,6 +4425,10 @@ fn load_game_text(
     cmr_core::localization_assets::load_game_text_table(&store, language).ok()
 }
 
+/// A blend over the read-back GPU frame (the shadows and the sprites).
+type PostBlend<'a> = dyn Fn(&mut cmr_video::software_stage_scene::StageSceneFrame) -> Result<(), StageFrameError>
+    + 'a;
+
 /// One queued shadow: its pre-lit vertices and triangle indices.
 type ShadowDraw = (
     Vec<cmr_video::c3d_software_raster::SoftwareC3dLitVertex>,
@@ -4252,6 +4437,58 @@ type ShadowDraw = (
 
 /// The per-stage shadow state (`FUN_004a4f20`, `FUN_00449bd0`,
 /// `FUN_0047b000`'s caches).
+/// The stage's wheel particles (`FUN_00424160`'s state).
+struct StageParticles {
+    system: cmr_core::car_particles::ParticleSystem,
+    tables: Vec<[u8; 120]>,
+    solid: [u8; SURFACE_ID_COUNT],
+    night: bool,
+    weather_type: u32,
+    country: u8,
+    lit: [u8; 3],
+    fixed_grey: Option<u8>,
+    textures: std::collections::HashMap<
+        (cmr_core::car_particles::Sprites, usize),
+        cmr_formats::bitmap::IndexedBitmap,
+    >,
+}
+
+/// One planned sprite: its corners in world units and its texture key.
+struct SpriteDraw {
+    corners: [[f32; 3]; 4],
+    alpha: u8,
+    grey: u8,
+    flip: bool,
+    key: (cmr_core::car_particles::Sprites, usize),
+}
+
+/// Blend the planned sprites into a composed frame.
+fn blend_sprite_draws(
+    frame: &mut cmr_video::software_stage_scene::StageSceneFrame,
+    camera: &[i32; 16],
+    particles: Option<&StageParticles>,
+    draws: &[SpriteDraw],
+) -> Result<(), StageFrameError> {
+    let Some(particles) = particles else {
+        return Ok(());
+    };
+    let quads: Vec<cmr_video::software_stage_scene::SpriteQuad> = draws
+        .iter()
+        .filter_map(|draw| {
+            Some(cmr_video::software_stage_scene::SpriteQuad {
+                corners: draw.corners,
+                alpha: draw.alpha,
+                grey: draw.grey,
+                flip: draw.flip,
+                texture: particles.textures.get(&draw.key)?,
+            })
+        })
+        .collect();
+    frame
+        .blend_sprites(camera, &quads)
+        .map_err(StageFrameError::Compose)
+}
+
 struct StageShadow {
     sun: cmr_core::car_shadow::ShadowSun,
     alpha: Vec<u8>,
@@ -4729,6 +4966,14 @@ fn advance_game_frame<C: HostClock>(
     if session.last_reset().camera_reset {
         camera.snap();
     }
+    // The wheel particles' spawn and update ride the sim tick
+    // (`DAT_0054f8b0`: the options' effects bit and `cfg[0x26] & 2`).
+    let live_cfg = cmr_core::config_commit::live(&config.image);
+    let particles_enabled = config.image[0x10] & 0x80 != 0 && live_cfg[0x26] & 2 == 0;
+    let single_alpha = live_cfg[0xb] != 0;
+    if advanced.stepped {
+        resources.tick_particles(session, particles_enabled, &mut camera.rng, &camera.trig);
+    }
     // The render's compositor step: the screen fade's black quad
     // (`FUN_00423170`), or state 0xb's display shutdown.
     let fade_step = session.composite_fade();
@@ -4779,6 +5024,7 @@ fn advance_game_frame<C: HostClock>(
             _ => Vec::new(),
         };
         resources.plan_shadow(session, &camera_world, camera.interior());
+        resources.plan_particles(session, &camera_world, camera.interior(), single_alpha);
         let world = resources
             .compose_with_posed_car(&camera_world, Some(&car_world), &wheels)
             .map(|rendered| rendered.frame)?;
@@ -7509,6 +7755,7 @@ fn load_windowed_stage(
         weather.lighting == cmr_core::stage_weather::NIGHT_LIGHTING,
     )?;
     resources.attach_shadows(runtime_data, media_root, stage, weather);
+    resources.attach_particles(runtime_data, stage, weather);
     // Each load models a fresh process/session: its lane arrays are
     // loader-zeroed, authenticated setup runs once, and only the recovered
     // setup-time center-Y, half state, AK11 normal, and corrected basis are fed
@@ -9898,6 +10145,7 @@ mod tests {
                 native_stage_setup(&root.join("Game/Au/1"), &root, "AU1", Some("Sub"), choice)
                     .unwrap();
             resources.attach_shadows(&root, &root.join("Game/Au/1"), "AU1", CLEAR_WEATHER);
+            resources.attach_particles(&root, "AU1", CLEAR_WEATHER);
             // A 3 x 3 quad on the ground ahead of the camera, around the car.
             let p = [start.position.x, start.position.y, start.position.z]
                 .map(|c| (f64::from(c.raw()) / 65536.0) as f32);
@@ -10170,6 +10418,7 @@ mod tests {
         )
         .unwrap();
         resources.attach_shadows(&root, &root.join("Game/Au/1"), "AU1", CLEAR_WEATHER);
+        resources.attach_particles(&root, "AU1", CLEAR_WEATHER);
         let mut compiled_pose = SessionCompiledPose::open(&root, "AU1", "Sub").unwrap();
         compiled_pose.adjust_spawn(&mut start, actor_rows).unwrap();
         let trig = cmr_core::fixed_point::build_sine_table();
