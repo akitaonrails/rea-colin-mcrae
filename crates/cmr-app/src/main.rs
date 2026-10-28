@@ -86,6 +86,7 @@ fn main() -> ExitCode {
                     stage,
                     car_code,
                     config.stage_renderer(),
+                    config.language(),
                 ) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => {

@@ -343,6 +343,7 @@ pub struct AppOptions {
     stage: Option<String>,
     car_code: Option<String>,
     renderer: StageRendererChoice,
+    language: Option<Language>,
 }
 
 impl AppOptions {
@@ -358,6 +359,7 @@ impl AppOptions {
         let mut stage = None;
         let mut car_code = None;
         let mut renderer = None;
+        let mut language = None;
 
         while let Some(argument) = arguments.next() {
             if argument == OsStr::new("--headless-root-frame") {
@@ -412,6 +414,26 @@ impl AppOptions {
                 });
                 continue;
             }
+            // The installed language, which the native reads from the
+            // registry (`FUN_00496890`).
+            if argument == OsStr::new("--language") {
+                if language.is_some() {
+                    return Err(ConfigError::DuplicateOption("--language"));
+                }
+                let value = arguments
+                    .next()
+                    .ok_or(ConfigError::MissingOptionValue("--language"))?;
+                let value = value.into_string().map_err(ConfigError::NonUtf8Language)?;
+                language = Some(match value.as_str() {
+                    "english" => Language::English,
+                    "french" => Language::French,
+                    "german" => Language::German,
+                    "spanish" => Language::Spanish,
+                    "italian" => Language::Italian,
+                    _ => return Err(ConfigError::InvalidLanguage(value)),
+                });
+                continue;
+            }
             if argument == OsStr::new("--stage") {
                 if stage.is_some() {
                     return Err(ConfigError::DuplicateOption("--stage"));
@@ -462,6 +484,7 @@ impl AppOptions {
             stage,
             car_code,
             renderer: renderer.unwrap_or_default(),
+            language,
         })
     }
 
@@ -542,6 +565,7 @@ impl AppOptions {
             stage: self.stage,
             car_code: self.car_code,
             renderer: self.renderer,
+            language: self.language.unwrap_or(Language::English),
         })
     }
 }
@@ -556,11 +580,17 @@ pub struct RuntimeConfig {
     stage: Option<String>,
     car_code: Option<String>,
     renderer: StageRendererChoice,
+    language: Language,
 }
 
 impl RuntimeConfig {
     pub fn command(&self) -> AppCommand {
         self.command
+    }
+
+    /// The installed language (`--language`, English by default).
+    pub fn language(&self) -> Language {
+        self.language
     }
 
     /// The selected stage base name, if one was supplied.
@@ -640,6 +670,10 @@ pub enum ConfigError {
     NonUtf8Renderer(OsString),
     /// `--renderer` named an unknown renderer.
     InvalidRenderer(String),
+    /// `--language` carried a non-UTF-8 value.
+    NonUtf8Language(OsString),
+    /// `--language` named an unknown language.
+    InvalidLanguage(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -696,6 +730,13 @@ impl fmt::Display for ConfigError {
             Self::NonUtf8Renderer(value) => {
                 write!(formatter, "--renderer must be valid UTF-8, got {value:?}")
             }
+            Self::NonUtf8Language(value) => {
+                write!(formatter, "--language must be valid UTF-8, got {value:?}")
+            }
+            Self::InvalidLanguage(value) => write!(
+                formatter,
+                "unknown language {value:?}; expected english, french, german, spanish or italian"
+            ),
             Self::InvalidRenderer(value) => write!(
                 formatter,
                 "invalid renderer {value:?}; expected auto, software, or gpu"
@@ -3122,7 +3163,7 @@ impl FrontEndConfig {
     /// cmRally.cfg file is not read yet).
     #[cfg(test)]
     fn new(stage: &str, car: u8) -> Self {
-        Self::with_default_table(stage, car, None, None, b"Player")
+        Self::with_default_table(stage, car, None, None, b"Player", Language::English)
     }
 
     /// [`FrontEndConfig::new`] with the executable's default hi-score and
@@ -3135,13 +3176,14 @@ impl FrontEndConfig {
         default_table: Option<&[u8]>,
         computer_name: Option<&[u8]>,
         player_text: &[u8],
+        language: Language,
     ) -> Self {
         let mut image = Box::new([0; cmr_core::config::LEGACY_CONFIG_SIZE]);
         cmr_core::config_commit::apply_defaults(
             &mut image,
             cmr_core::config_commit::DefaultsHost {
                 token: 0xaa00_0000,
-                language: 0,
+                language: language as u8,
                 large_memory: false,
                 computer_name,
                 player_text,
@@ -3919,6 +3961,8 @@ struct PauseHarness {
     frontend_bank: Option<cmr_core::frontend_sounds::FrontendBank>,
     /// `0x509430`: the spoken cheat line's slot per language.
     cheat_speech: Vec<u32>,
+    /// The installed language of the in-game text.
+    language: Language,
 }
 
 /// `FUN_0042e2d0`: the results icons' sheets from the game's images.
@@ -4005,15 +4049,15 @@ fn name_cheats(store: &cmr_assets::StaticTablesStore) -> Vec<Vec<u8>> {
 /// (`FUN_004b98b0`: `"%s %d"` of text `0x5f`).
 const DEFAULT_PLAYER_TEXT: usize = 0x5f;
 
-/// Text `0x5f` of the English game text table (empty without the assets).
-fn default_player_text(runtime_data: &Path) -> Vec<u8> {
+/// Text `0x5f` of the game text table (empty without the assets).
+fn default_player_text(runtime_data: &Path, language: Language) -> Vec<u8> {
     let Ok(reviewed) = ReviewedProfile::from_json(REVIEWED_PROFILE) else {
         return Vec::new();
     };
     AssetStore::open(runtime_data, &reviewed, DecodeLimits::default())
         .ok()
         .and_then(|store| {
-            cmr_core::localization_assets::load_game_text_table(&store, Language::English).ok()
+            cmr_core::localization_assets::load_game_text_table(&store, language).ok()
         })
         .map(|text| text.lookup(DEFAULT_PLAYER_TEXT).to_vec())
         .unwrap_or_default()
@@ -4041,7 +4085,7 @@ struct PauseAssets {
 }
 
 impl PauseAssets {
-    fn load(runtime_data: &Path, width: u16) -> Option<Self> {
+    fn load(runtime_data: &Path, width: u16, language: Language) -> Option<Self> {
         let reviewed = ReviewedProfile::from_json(REVIEWED_PROFILE).ok()?;
         let store = AssetStore::open(runtime_data, &reviewed, DecodeLimits::default()).ok()?;
         let font = |font: PauseFont| {
@@ -4052,8 +4096,7 @@ impl PauseAssets {
             title: font(PauseFont::Title)?,
             result: font(PauseFont::Result)?,
             result_grey: font(PauseFont::ResultGrey)?,
-            text: cmr_core::localization_assets::load_game_text_table(&store, Language::English)
-                .ok()?,
+            text: cmr_core::localization_assets::load_game_text_table(&store, language).ok()?,
         })
     }
 
@@ -4088,14 +4131,16 @@ impl PauseHarness {
             frontend_sound_paths: Vec::new(),
             frontend_bank: None,
             cheat_speech: Vec::new(),
+            language: Language::English,
             assets: None,
             runtime_data: None,
         }
     }
 
-    fn with_runtime_data(runtime_data: &Path) -> Self {
+    fn with_runtime_data(runtime_data: &Path, language: Language) -> Self {
         Self {
             runtime_data: Some(runtime_data.to_owned()),
+            language,
             ..Self::new()
         }
     }
@@ -4119,7 +4164,7 @@ impl PauseHarness {
             self.assets = self
                 .runtime_data
                 .as_deref()
-                .and_then(|root| PauseAssets::load(root, extent.width))
+                .and_then(|root| PauseAssets::load(root, extent.width, self.language))
                 .map(|assets| (extent.width, assets));
         }
         let Some((_, assets)) = self.assets.as_ref() else {
@@ -6507,10 +6552,12 @@ struct RaceResults {
     assets: Option<(u16, PauseAssets)>,
     pulse: cmr_core::results_draw::ResultsPulse,
     static_tables: Option<cmr_assets::StaticTablesStore>,
+    /// The installed language of the results' text.
+    language: Language,
 }
 
 impl RaceResults {
-    fn open(runtime_data: &Path) -> Self {
+    fn open(runtime_data: &Path, language: Language) -> Self {
         let store =
             cmr_assets::ReviewedRivalRecordsProfile::from_json(REVIEWED_RIVAL_RECORDS_PROFILE)
                 .ok()
@@ -6549,6 +6596,7 @@ impl RaceResults {
             assets: None,
             pulse: cmr_core::results_draw::ResultsPulse::default(),
             static_tables: open_static_tables(runtime_data),
+            language,
         }
     }
 
@@ -6600,7 +6648,7 @@ impl RaceResults {
             .as_ref()
             .is_none_or(|(width, _)| *width != extent.width)
         {
-            self.assets = PauseAssets::load(&self.runtime_data, extent.width)
+            self.assets = PauseAssets::load(&self.runtime_data, extent.width, self.language)
                 .map(|assets| (extent.width, assets));
         }
         if self.icon_sheets.is_none() {
@@ -7021,6 +7069,7 @@ pub fn run_windowed_game_session(
     stage: &str,
     car_code: &str,
     renderer: StageRendererChoice,
+    language: Language,
 ) -> Result<(), WindowedStageFrameError> {
     let LoadedStage {
         mut resources,
@@ -7085,7 +7134,7 @@ pub fn run_windowed_game_session(
     )?;
     let clock = WallClock::new();
     let mut root_interaction =
-        RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, clock.millis())
+        RootInteraction::from_saved_selection(0, language, ROOT_EXTENT, clock.millis())
             .expect("zero is a valid recovered root selection");
     let static_tables = open_static_tables(runtime_data);
     if let Some(layouts) = static_tables.as_ref().and_then(setup_layouts) {
@@ -7113,12 +7162,12 @@ pub fn run_windowed_game_session(
         engine: EngineAudio::open(runtime_data, compiled_pose.selector as u8),
         effects: EffectsAudio::open(runtime_data, srf, stage_crowd_points(&resources), weather),
     };
-    let mut pause = PauseHarness::with_runtime_data(runtime_data);
+    let mut pause = PauseHarness::with_runtime_data(runtime_data, language);
     if let Some(tables) = static_tables.as_ref() {
         pause.set_frontend_sounds(tables);
     }
     let computer_name = host_computer_name();
-    let player_text = default_player_text(runtime_data);
+    let player_text = default_player_text(runtime_data, language);
     let mut config = FrontEndConfig::with_default_table(
         stage,
         compiled_pose.selector as u8,
@@ -7127,6 +7176,7 @@ pub fn run_windowed_game_session(
             .and_then(|t| t.tables().block("config_default_table")),
         computer_name.as_deref(),
         &player_text,
+        language,
     )
     .with_file(runtime_data);
     // `FUN_004ba060` at the config load: the record's bindings over the
@@ -7144,7 +7194,7 @@ pub fn run_windowed_game_session(
         car: compiled_pose.selector as u8,
     };
     let car_codes = open_car_codes(runtime_data);
-    let mut results = RaceResults::open(runtime_data);
+    let mut results = RaceResults::open(runtime_data, language);
     let reload = StageReloadContext {
         game_root: media_root
             .parent()
@@ -7177,7 +7227,7 @@ pub fn run_windowed_game_session(
     let audio_root = runtime_data;
     if let Some((store, startup)) = front_end {
         let request = SoftwareRootMenuSessionRequest::official_eu_initial_software_default_config(
-            Language::English,
+            language,
             VisualVariant::Normal,
         );
         let palette_paths = frontend_palette_paths(static_tables.as_ref(), &config.image[..]);
@@ -8932,14 +8982,15 @@ mod tests {
             audio.effects = EffectsAudio::open(&root, srf, crowd, CLEAR_WEATHER);
         }
         let mut pcm: Vec<i16> = Vec::new();
-        let mut pause = PauseHarness::with_runtime_data(&root);
+        let mut pause = PauseHarness::with_runtime_data(&root, Language::English);
         // Harness: the frames run starts in the race session, skipping the
         // front end.
         let mut config = FrontEndConfig::new("AU1", 0);
         config.preset_setup(2);
         config.commit(session.event_mut(), &mut pause);
         session.event_mut().start_race_session();
-        let mut results = RaceResults::open(Path::new("/nonexistent-runtime-data"));
+        let mut results =
+            RaceResults::open(Path::new("/nonexistent-runtime-data"), Language::English);
         let mut advance = |session: &mut GameplaySession,
                            progress: &mut StageProgress,
                            keys: &cmr_platform_sdl3::KeyboardVkState,
@@ -9182,7 +9233,7 @@ mod tests {
             params,
             weather_tables: weather_tables.as_ref(),
         };
-        let mut results = RaceResults::open(&root);
+        let mut results = RaceResults::open(&root, Language::English);
         // The championship setup's choices, committed at the hand-off.
         config.preset_setup(0);
         config.commit(session.event_mut(), &mut pause);
@@ -9289,7 +9340,10 @@ mod tests {
                     &mut RaceAudio::default(),
                     &mut pause,
                     &mut config,
-                    &mut RaceResults::open(Path::new("/nonexistent-runtime-data")),
+                    &mut RaceResults::open(
+                        Path::new("/nonexistent-runtime-data"),
+                        Language::English,
+                    ),
                     WindowedInput {
                         keys: $keys,
                         gamepad: None,
@@ -10174,6 +10228,48 @@ mod tests {
     }
 
     #[test]
+    fn the_language_option_selects_the_installed_language() {
+        let config = runtime_config(
+            arguments(&[
+                "--headless-root-frame",
+                "--runtime-data",
+                "rd",
+                "--language",
+                "german",
+            ]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.language(), Language::German);
+        let config = runtime_config(
+            arguments(&["--headless-root-frame", "--runtime-data", "rd"]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.language(), Language::English, "the default");
+        assert_eq!(
+            AppOptions::parse(arguments(&[
+                "--headless-root-frame",
+                "--language",
+                "klingon"
+            ])),
+            Err(ConfigError::InvalidLanguage("klingon".to_owned()))
+        );
+        assert_eq!(
+            AppOptions::parse(arguments(&[
+                "--headless-root-frame",
+                "--language",
+                "french",
+                "--language",
+                "french"
+            ])),
+            Err(ConfigError::DuplicateOption("--language"))
+        );
+    }
+
+    #[test]
     fn rejects_unknown_duplicate_and_incomplete_options() {
         assert_eq!(
             AppOptions::parse(arguments(&["runtime-data"])),
@@ -10594,7 +10690,8 @@ mod tests {
 
     #[test]
     fn the_finish_starts_the_results_on_the_press_edge() {
-        let mut results = RaceResults::open(Path::new("/nonexistent-runtime-data"));
+        let mut results =
+            RaceResults::open(Path::new("/nonexistent-runtime-data"), Language::English);
         let mut keys = cmr_platform_sdl3::KeyboardVkState::new();
         keys.apply_vk(0x0d, true);
         assert!(results.poll_keys(&keys).confirm);
@@ -10632,7 +10729,7 @@ mod tests {
             .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
         let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/frames-results");
         std::fs::create_dir_all(&out_dir).unwrap();
-        let assets = PauseAssets::load(&root, 640).expect("fonts and text");
+        let assets = PauseAssets::load(&root, 640, Language::English).expect("fonts and text");
         // A 6x6x6 colour cube so the overlay colours resolve.
         let palette: Box<[cmr_formats::riff_palette::PaletteEntry; 256]> =
             Box::new(std::array::from_fn(|index| {

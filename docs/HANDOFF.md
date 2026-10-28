@@ -190,7 +190,8 @@ setups, name entries (with the cheat and CAC codes, `impl.frontend-name-codes`),
 stage select, Load, Options and its sub-screens, and the control, analogue and
 button setups, with their previews, flags, logos and the turning 3D car
 (`impl.frontend-car-preview`); the stage load attaches the car chosen in the
-setup (`impl.chosen-car`). Static tables (`impl.static-tables`) need
+setup (`impl.chosen-car`). `--language english|french|german|spanish|italian`
+stands in for the registry's installed language (English by default). Static tables (`impl.static-tables`) need
 `cargo run -q -p cmr-assets -- extract-static-tables --source <dir with Rally.exe> --profile profiles/official-eu-static-tables-v1.json --output runtime-data/official-eu-static-tables`. Next: the car-to-car impact site
 (the `FUN_004115d0` landing and `FUN_00412860` tumbling impacts are wired), then the championship progression
 behind the hub predicates. Scenery impacts play (`impl.static-impact-sound`).
