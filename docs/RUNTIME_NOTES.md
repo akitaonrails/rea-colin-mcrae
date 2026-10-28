@@ -73,3 +73,25 @@ registry values from `THIN_APP_PLAN.md` R2 imported with `regedit /S`.
 - The game starts fine without a `save\` folder.
 - Stage loads under Wine's default Windows version: New Zealand (800x600 from
   the old save, 640x480 fresh) and Greece.
+
+## 2026-11-02: Proton in Steam's runtime container
+
+- Harness: `.work/rt/run-gs-proton.sh` runs
+  `SteamLinuxRuntime_sniper/_v2-entry-point --verb=waitforexitandrun --
+  GE-Proton11-1/proton waitforexitandrun CMRLauncher.exe` inside headless
+  gamescope in the `gaming` distrobox. It must start from `$HOME`: from a
+  host path bwrap tries to enter `/run/host/...` and fails.
+- First runs: the launcher worked (registry, copy, F1-F5) but the game died
+  with c0000005 at `0x4a69fc`. Proton log: `wined3d_caps_gl_ctx_create Failed
+  to find a suitable pixel format`, then `d3d_device_create ... the current
+  DirectDrawRenderer does not support this`. `renderer=vulkan` gave the same
+  refusal (no Direct3D 1-7 device on that backend here).
+- Cause: inside the distrobox, `/usr/lib32/libnvidia-glsi.so.615.78.08` is a
+  bind mount of the host's 64-bit `/usr/lib/libnvidia-glsi.so.615.78.08`;
+  pressure-vessel's i386 capsule rejects it, so the 32-bit NVIDIA GLX/EGL
+  libs are dropped. `PRESSURE_VESSEL_GRAPHICS_PROVIDER=/` didn't help.
+- `PROTON_USE_WOW64=1` (32-bit code on 64-bit Unix libraries) fixed it:
+  menus, stage, driving at 42 mph in first. Plain Wine 11.20 in the distrobox
+  already runs this way.
+- Under Proton the legal/Codemasters screen is black for its ~30 s; Enter
+  skips it.

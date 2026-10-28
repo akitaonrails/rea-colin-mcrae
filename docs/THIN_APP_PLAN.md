@@ -8,8 +8,9 @@ changes.
 ## Status (2026-11-02)
 
 **Current milestone:** M2 (runs as-is via our launcher). Under Wine the
-official exe is **playable** through `CMRLauncher.exe`: menus, stage load and
-driving with the keyboard. Left for M2: the Proton runner and the gamepad. The repository has been restructured: the source reconstruction is parked
+official exe is **playable** through `CMRLauncher.exe`, with plain Wine and
+with Proton in Steam's runtime container: menus, stage load and driving with
+the keyboard. Left for M2: the gamepad (C1). The repository has been restructured: the source reconstruction is parked
 at tag `recomp-parked-2026-11-02` and copied in full (with its local notes) to
 `/mnt/data/Projects/rea-colin-mcrae-recomp`.
 
@@ -17,7 +18,7 @@ at tag `recomp-parked-2026-11-02` and copied in full (with its local notes) to
 | --- | --- | --- |
 | M0 Reference preserved, repo restructured | nothing lost; clean start | **done** (`0783334`) |
 | M1 Inventory + feasibility probes | every requirement has a covered, licence-checked path | **done** for M2's needs; remaining probes listed below |
-| M2 Runs as-is on Linux (Proton) via our launcher | the user's folder → playable game, no manual steps | **in progress**: playable under Wine 11.20 (fresh prefix, keyboard); Proton runner (L1) and gamepad (C1) open |
+| M2 Runs as-is on Linux (Proton) via our launcher | the user's folder → playable game, no manual steps | **in progress**: playable under Wine 11.20 and GE-Proton 11 (fresh prefixes, keyboard); gamepad (C1) open |
 | M3 Runs as-is on Windows 10/11 | same package natively | blocked: needs a Windows machine to test |
 | M4 Gamepad, audio, movies complete | full experience, analog pad | not started |
 | M5 Enhancements (opt-in): resolution, widescreen | 4K / 16:9 | not started; feasibility open |
@@ -35,10 +36,22 @@ at tag `recomp-parked-2026-11-02` and copied in full (with its local notes) to
   settings point player 1 at another device (most likely a gamepad Wine now
   sees). A fresh save uses the keyboard. Gamepad handling is probe C1.
 
+- **Proton:** GE-Proton 11-1 inside Steam's sniper runtime container (the way
+  Steam runs a non-Steam game) runs the launcher and the game: menus,
+  New Zealand stage 1, driving at 42 mph. On this machine it needed
+  `PROTON_USE_WOW64=1`, because the gaming container's 32-bit
+  `libnvidia-glsi` is a bind mount of the host's 64-bit file, so Steam's
+  runtime finds no 32-bit OpenGL driver; without it wined3d gets no GL
+  context, DirectDraw has no 3D and the game crashes at `0x4a69fc`. A host
+  with proper 32-bit drivers shouldn't need it.
+- Under Proton the Codemasters/legal screen shows black (it rendered under
+  plain Wine); the menus and races render normally.
+
 **Next:**
-1. Settle the Linux runner (L1) and run the launcher under Proton.
-2. Probe C1: gamepad (WinMM joystick under Wine/Proton) and what the
+1. Probe C1: gamepad (WinMM joystick under Wine/Proton) and what the
    launcher should do about saves bound to a missing device.
+2. Write the Linux how-to (Steam "Add a non-Steam game" + Proton; plain
+   Wine) and package a release zip.
 3. Windows 10/11 (M3) needs a Windows machine: G2 renderer and D1 dplayx.
 
 ## Goal and ground rules
@@ -119,7 +132,7 @@ folders come first.
 
 | # | Need | Option | State |
 | --- | --- | --- | --- |
-| L1 | Run our Windows launcher under Proton without hand-built environments | `umu-launcher` (GPL-3.0) runs Proton inside Steam's runtime container outside Steam, or the user adds the launcher to Steam as a non-Steam game | *probe*: our manual `proton run` outside the container broke FreeType/OpenGL init |
+| L1 | Run our Windows launcher under Proton without hand-built environments | The user adds `CMRLauncher.exe` to Steam as a non-Steam game with Proton (Steam runs it in the sniper container); plain `wine` also works; `umu-launcher` (GPL-3.0) is the no-Steam route | **verified**: GE-Proton 11-1 in the sniper container plays (this machine needed `PROTON_USE_WOW64=1`, see Status); plain Wine 11.20 plays |
 | L2 | Dual-GPU laptops pick the right GPU | Steam/umu handle PRIME; document the override | evidence (needed in the distrobox setup) |
 
 ### Graphics on Windows (G2)
