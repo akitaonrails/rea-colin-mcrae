@@ -61,6 +61,8 @@ pub struct MenuItem {
     pub enabled: bool,
     /// `+0x2d`: drawn.
     pub visible: bool,
+    /// `+0x2f` (`FUN_004aea40`): confirming a value item also increments it.
+    pub confirm_increments: bool,
 }
 
 impl MenuItem {
@@ -79,6 +81,7 @@ impl MenuItem {
             activate: None,
             enabled: true,
             visible: true,
+            confirm_increments: false,
         }
     }
 }
@@ -396,13 +399,21 @@ impl MenuSet {
         let item = &mut menu.items[selected];
         let confirm_effective = confirm && item.enabled;
         if item.kind == ItemKind::Value {
-            if left || right {
+            // `0x4af1d0`: a confirm on an item with `+0x2f` increments as
+            // Right does, except that an item with an activate callback only
+            // cues it.
+            let confirm_increment = !left && !right && confirm_effective && item.confirm_increments;
+            if left || right || confirm_increment {
                 let direction = if left {
                     ValueDirection::Decrement
                 } else {
                     ValueDirection::Increment
                 };
-                let ok = item.value.adjust(direction);
+                let ok = if confirm_increment && item.activate.is_some() {
+                    true
+                } else {
+                    item.value.adjust(direction)
+                };
                 if let Some(table) = menu.sounds {
                     events.push(MenuEvent::Sound {
                         menu: id,

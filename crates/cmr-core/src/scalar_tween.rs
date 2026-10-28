@@ -11,11 +11,13 @@
 //! initial-delay countdown (`+0x24`), and the current counter (`+0x28`,
 //! incremented by one per evaluation and clamped below `target+3`).
 //!
-//! This module reconstructs the **linear** curve (mode `0`) only - the mode the
-//! screen fade uses ([`crate::render_compose::fade_in`] /
-//! [`crate::render_compose::fade_out`]). The ease modes (`2`/`3` triangular, `1`/`4`
-//! variants) are recovered in the evidence ledger but not yet reconstructed; a
-//! [`ScalarTween`] is therefore always linear here.
+//! This module reconstructs the **linear** curve (mode `0`), which the screen
+//! fade uses ([`crate::render_compose::fade_in`] /
+//! [`crate::render_compose::fade_out`]), and the two triangular ease curves the
+//! front-end menus use: mode `2` ([`ScalarTween::ease_out`]) and mode `3`
+//! ([`ScalarTween::ease_in`]). Modes `1`/`4` (a table-driven tail) are not
+//! reconstructed. The Q12 product is rounded toward zero (`cdq; and edx,0xfff;
+//! add; sar 0xc`, `0x4ad6d8`).
 //!
 //! The evaluator order is preserved exactly: the output uses the counter value
 //! from *before* this frame's increment (`fraction`), the increment is clamped at
@@ -26,12 +28,29 @@
 /// `(slope * fraction) >> 12`).
 pub const TWEEN_SLOPE_SHIFT: u32 = 12;
 
+/// The curve a [`ScalarTween`] follows (`+0x00`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Curve {
+    /// Mode 0.
+    Linear,
+    /// Mode 2.
+    EaseOut,
+    /// Mode 3.
+    EaseIn,
+}
+
 /// One linear scalar tween: a value that ramps from `start` to `end` over
 /// `target` evaluations (frames). Reconstructs the linear path of `FUN_004ad5b0`
 /// / `FUN_004ad720`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScalarTween {
+    curve: Curve,
+    /// `+0x08`: the base the slope is added to.
     start: i32,
+    /// `+0x10`: the value returned while the delay runs (the trigger's
+    /// first value).
+    first: i32,
+    /// `+0x0c`: the end value.
     end: i32,
     target: i32,
     counter: i32,
@@ -54,7 +73,9 @@ impl ScalarTween {
             (0, 0, true)
         };
         Self {
+            curve: Curve::Linear,
             start,
+            first: start,
             end,
             target,
             counter: 0,
@@ -62,6 +83,68 @@ impl ScalarTween {
             delay: delay.max(0),
             finished,
         }
+    }
+
+    /// `FUN_004ad720` mode 2: an ease-out from `from` to `to` over `steps`
+    /// evaluations after `delay`: the slope is `((from - to) << 12) / T` with
+    /// `T = steps * (steps + 1) / 2`, the base `to`, and each step weighs
+    /// `(n - c + 1)(n - c) / 2`, so the value starts at `from` and slows into
+    /// `to`.
+    #[must_use]
+    pub fn ease_out(from: i32, to: i32, steps: i32, delay: i32) -> Self {
+        Self::triangular(Curve::EaseOut, from, to, steps, delay)
+    }
+
+    /// `FUN_004ad720` mode 3: an ease-in from `from` to `to`: slope
+    /// `((to - from) << 12) / T`, base `from`, weight `c (c + 1) / 2`.
+    #[must_use]
+    pub fn ease_in(from: i32, to: i32, steps: i32, delay: i32) -> Self {
+        Self::triangular(Curve::EaseIn, from, to, steps, delay)
+    }
+
+    fn triangular(curve: Curve, from: i32, to: i32, steps: i32, delay: i32) -> Self {
+        let total = steps.wrapping_mul(steps.wrapping_add(1)) / 2;
+        let (start, numerator) = match curve {
+            Curve::EaseOut => (to, from.wrapping_sub(to)),
+            _ => (from, to.wrapping_sub(from)),
+        };
+        let slope_q12 = if total != 0 {
+            numerator
+                .wrapping_shl(TWEEN_SLOPE_SHIFT)
+                .wrapping_div(total)
+        } else {
+            0
+        };
+        Self {
+            curve,
+            start,
+            first: from,
+            end: to,
+            target: steps,
+            counter: 0,
+            slope_q12,
+            delay: delay.max(0),
+            finished: steps <= 0,
+        }
+    }
+
+    /// The weight of the pre-increment counter `c = min(counter, n)` (a
+    /// byte), by curve.
+    fn fraction(&self) -> i32 {
+        let c = i32::from(self.counter.min(self.target) as u8);
+        let n = self.target;
+        match self.curve {
+            Curve::Linear => c,
+            Curve::EaseOut => (n - c + 1).wrapping_mul(n - c) / 2,
+            Curve::EaseIn => (c + 1).wrapping_mul(c) / 2,
+        }
+    }
+
+    fn value(&self, fraction: i32) -> i32 {
+        let product = self.slope_q12.wrapping_mul(fraction);
+        // Rounded toward zero.
+        let rounded = product.wrapping_add((product >> 31) & 0xfff) >> TWEEN_SLOPE_SHIFT;
+        rounded.wrapping_add(self.start)
     }
 
     /// The current output without advancing (the value the last
@@ -73,10 +156,9 @@ impl ScalarTween {
         if self.finished {
             self.end
         } else if self.delay > 0 || self.counter == 0 {
-            self.start
+            self.first
         } else {
-            let fraction = self.counter;
-            ((self.slope_q12 * fraction) >> TWEEN_SLOPE_SHIFT) + self.start
+            self.value(self.fraction())
         }
     }
 
@@ -98,14 +180,14 @@ impl ScalarTween {
         }
         if self.delay > 0 {
             self.delay -= 1;
-            return self.start;
+            return self.first;
         }
-        let fraction = self.counter;
+        let fraction = self.fraction();
         if self.counter < self.target + 3 {
             self.counter += 1;
         }
         if self.counter < self.target {
-            ((self.slope_q12 * fraction) >> TWEEN_SLOPE_SHIFT) + self.start
+            self.value(fraction)
         } else {
             self.finished = true;
             self.end
@@ -156,6 +238,43 @@ mod tests {
         assert_eq!(t.evaluate_and_advance(), 0); // fraction 0 -> start
         assert_eq!(t.evaluate_and_advance(), 0x1000); // end
         assert!(t.is_finished());
+    }
+
+    #[test]
+    fn a_descending_ramp_rounds_toward_zero() {
+        // (0 - 10) << 12 / 3 = -13653; at fraction 1 the product -13653 >> 12
+        // rounds toward zero to -3 (a floor would give -4).
+        let mut t = ScalarTween::linear(10, 0, 3, 0);
+        assert_eq!(t.evaluate_and_advance(), 10);
+        assert_eq!(t.evaluate_and_advance(), 7);
+        assert_eq!(t.evaluate_and_advance(), 0);
+    }
+
+    #[test]
+    fn the_ease_out_starts_fast_and_lands_on_the_end() {
+        // 15 steps from 0x10000 to 0 (the setup info anchor's slide-in).
+        let mut t = ScalarTween::ease_out(0x10000, 0, 15, 0);
+        let values: Vec<i32> = (0..16).map(|_| t.evaluate_and_advance()).collect();
+        // c = 0 weighs T = 120: the start value, give or take the Q12 slope.
+        assert!((values[0] - 0x10000).abs() < 16);
+        // The steps shrink: an ease-out.
+        assert!(values[0] - values[1] > values[12] - values[13]);
+        assert_eq!(values[14], 0);
+        assert!(t.is_finished());
+    }
+
+    #[test]
+    fn the_ease_in_starts_slow_and_delays_return_the_first_value() {
+        let mut t = ScalarTween::ease_in(0, 0x10000, 15, 2);
+        assert_eq!(t.evaluate_and_advance(), 0);
+        assert_eq!(t.evaluate_and_advance(), 0);
+        let values: Vec<i32> = (0..15).map(|_| t.evaluate_and_advance()).collect();
+        assert_eq!(values[0], 0);
+        assert!(values[1] - values[0] < values[13] - values[12]);
+        assert_eq!(values[14], 0x10000);
+        // Mode 2 with equal ends (the "no animation" option) is the end at once.
+        let mut instant = ScalarTween::ease_out(0x8000, 0x8000, 15, 0);
+        assert_eq!(instant.evaluate_and_advance(), 0x8000);
     }
 
     #[test]

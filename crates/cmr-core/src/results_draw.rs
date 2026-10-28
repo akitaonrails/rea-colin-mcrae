@@ -19,9 +19,9 @@
 //! `FUN_004aacb0`, then a box sized to the widest) are drawn too. The
 //! super-special result, the bonus car and the save page draw the frame
 //! only for now. Not drawn: the team and flag icons
-//! (`FUN_0042e5c0`), the time trial's record rows (`FUN_0042b6b0`), and the
-//! stage name when the host has none (`FUN_004ba470` reads the executable's
-//! name table `0x506f80`, which is not extracted). The table rows are cut to
+//! (`FUN_0042e5c0`) and the time trial's record rows (`FUN_0042b6b0`). The
+//! host supplies the stage name (`FUN_004ba470`: the executable's name table
+//! `0x506f80`, from the reviewed static tables). The table rows are cut to
 //! `0x54f9e8` by `FUN_00497bb0`; that the queued glyph path treats those
 //! eight bytes as a clip rectangle is an inference. A description of
 //! disassembly, not original source. Evidence:

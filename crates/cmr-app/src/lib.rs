@@ -198,6 +198,8 @@ const REVIEWED_ENGINE_AUDIO_TABLES_PROFILE: &[u8] =
 const ENGINE_AUDIO_TABLES_STORE_DIRECTORY: &str = "official-eu-engine-audio-tables";
 const REVIEWED_SURFACE_AUDIO_TABLES_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-surface-audio-tables-v1.json");
+const REVIEWED_STATIC_TABLES_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-static-tables-v1.json");
 const REVIEWED_RIVAL_RECORDS_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-rival-records-v1.json");
 const REVIEWED_STAGE_WEATHER_TABLES_PROFILE: &[u8] =
@@ -3101,9 +3103,11 @@ struct FrontEndConfig {
     /// A session ran since the front end last had the frame, so its return
     /// copies the results back (`FUN_004b9600`).
     returning: bool,
-    /// The `--stage` country and stage number the harness setup chooses.
+    /// The `--stage` country and stage number the test setup chooses.
+    #[cfg_attr(not(test), allow(dead_code))]
     stage: Option<(u8, u8)>,
     /// The car the session loaded (the `--car-code` selector).
+    #[cfg_attr(not(test), allow(dead_code))]
     car: u8,
     /// `save\cmRally.cfg` under the writable root, when there is one.
     file: Option<PathBuf>,
@@ -3181,6 +3185,7 @@ impl FrontEndConfig {
     /// car nibble (`record[0xbe]`) is the loaded car; a championship starts
     /// from country 0, a rally or time trial from the `--stage` country, and a
     /// time trial selects only the `--stage` stage (`record[0x16c + 2c]`).
+    #[cfg(test)]
     fn preset_setup(&mut self, mode: u8) {
         let image = &mut self.image;
         image[0x180] = (image[0x180] & !3) | (mode & 3);
@@ -3226,27 +3231,36 @@ impl FrontEndConfig {
 }
 
 /// The descriptor front end's frame (`FUN_004c20f0`), run only while no
-/// session is: its race hand-off commits the record and starts the race
-/// session, its rally-school hand-off the school session.
+/// session is: the screens edit the cmRally.cfg record, the name entry (or
+/// the stage select) commits it (`FUN_004b93f0`), and the camera's hand-off
+/// starts the race session (the rally school commits at its hand-off).
 fn front_end_frame(
     session: &mut GameplaySession,
     root_interaction: &mut RootInteraction,
     config: &mut FrontEndConfig,
     pause: &mut PauseHarness,
     input: cmr_core::frontend::FrontendInput,
+    keys: &cmr_platform_sdl3::KeyboardVkState,
     now: u32,
 ) -> cmr_core::root_menu_interactive::RootTick {
     config.resume(session.event(), pause);
-    let tick = root_interaction.tick_for_game_session(input, now, true);
+    let held = cmr_core::frontend_keys::held_key(|vk| keys.is_down(vk));
+    let tick = root_interaction.tick_for_game_session(
+        input,
+        cmr_core::root_menu_interactive::FrontendKeys { held, pad: 0 },
+        now,
+        true,
+        &mut config.image,
+    );
+    for effect in &tick.screen_effects {
+        if *effect == cmr_core::frontend_flow::ScreenEffect::CommitRecord {
+            config.commit(session.event_mut(), pause);
+        }
+    }
     for effect in &tick.effects {
         match effect {
-            // The commit, then the front end's teardown `FUN_004c25a0`, which
-            // saves the record.
+            // The front end's teardown `FUN_004c25a0` saves the record.
             cmr_core::frontend::FrontendEffect::StartRace => {
-                if let Some(mode) = root_interaction.race_mode() {
-                    config.preset_setup(mode);
-                }
-                config.commit(session.event_mut(), pause);
                 config.save();
                 session.event_mut().start_race_session();
             }
@@ -3308,6 +3322,7 @@ fn advance_game_frame<C: HostClock>(
             config,
             pause,
             input.frontend,
+            input.keys,
             clock.millis(),
         ))
     };
@@ -5435,6 +5450,37 @@ impl SessionCompiledPose {
     }
 }
 
+/// The reviewed static tables of the user's executable, when extracted.
+fn open_static_tables(runtime_data: &Path) -> Option<cmr_assets::StaticTablesStore> {
+    let reviewed =
+        cmr_assets::ReviewedStaticTablesProfile::from_json(REVIEWED_STATIC_TABLES_PROFILE).ok()?;
+    cmr_assets::StaticTablesStore::open(
+        &session_sidecar_store(runtime_data, cmr_assets::STATIC_TABLES_STORE_DIRECTORY),
+        &reviewed,
+    )
+    .inspect_err(|error| {
+        eprintln!("cmr-app: static tables unavailable ({error:?}); setup slides without delays");
+    })
+    .ok()
+}
+
+/// The three setup layout descriptors.
+fn setup_layouts(
+    store: &cmr_assets::StaticTablesStore,
+) -> Option<[cmr_core::frontend_flow::SetupLayout; 3]> {
+    let layout = |name: &str| {
+        store
+            .tables()
+            .block(name)
+            .and_then(cmr_core::frontend_flow::SetupLayout::parse)
+    };
+    Some([
+        layout("frontend_setup_layout_championship")?,
+        layout("frontend_setup_layout_rally")?,
+        layout("frontend_setup_layout_time_trial")?,
+    ])
+}
+
 fn session_sidecar_store(runtime_data: &Path, directory: &str) -> PathBuf {
     let nested = runtime_data.join(directory);
     if nested.is_dir() {
@@ -5743,6 +5789,7 @@ struct RaceResults {
     /// The results fonts and text, by display width.
     assets: Option<(u16, PauseAssets)>,
     pulse: cmr_core::results_draw::ResultsPulse,
+    static_tables: Option<cmr_assets::StaticTablesStore>,
 }
 
 impl RaceResults {
@@ -5780,7 +5827,36 @@ impl RaceResults {
             runtime_data: runtime_data.to_owned(),
             assets: None,
             pulse: cmr_core::results_draw::ResultsPulse::default(),
+            static_tables: open_static_tables(runtime_data),
         }
+    }
+
+    /// The save schedule `0x4ed8e4`.
+    fn save_schedule(&self) -> Option<[u8; 9]> {
+        let block = self
+            .static_tables
+            .as_ref()?
+            .tables()
+            .block("results_save_schedule")?;
+        block.try_into().ok()
+    }
+
+    /// `FUN_004ba470(country, stage)`: the rally school's name, or the name
+    /// table `0x506f80` for country < 9 and stage < 6, else none.
+    fn stage_name(&self, event: &EventState) -> Option<Vec<u8>> {
+        let tables = self.static_tables.as_ref()?.tables();
+        if event.globals.school_d3ca88 {
+            return tables.string("school_stage_name").map(<[u8]>::to_vec);
+        }
+        let country = usize::from(event.cfg.cursor_168 & 0xf);
+        let stage = usize::from(event.cfg.cursor_168 >> 4);
+        if country >= 9 || stage >= 6 {
+            return None;
+        }
+        tables
+            .strings("stage_names")?
+            .get(country * 6 + stage)
+            .cloned()
     }
 
     /// State 8's render `FUN_00423260` while the director runs: the results
@@ -5862,13 +5938,14 @@ impl RaceResults {
                 }),
             })
             .collect();
+        let stage_name = self.stage_name(session.event());
         let input = cmr_core::results_draw::ResultsDrawInput {
             director,
             event: session.event(),
             stage_rows: &stage_rows,
             rally_rows: &rally_rows,
             championship_rows: &championship_rows,
-            stage_name: None,
+            stage_name: stage_name.as_deref(),
             scroll_t_q16: 0x10000,
             width: extent.width,
             height: extent.height,
@@ -5999,7 +6076,7 @@ impl RaceResults {
             stage_position,
             rally_position,
             championship_position,
-            save_schedule: None,
+            save_schedule: self.save_schedule(),
             screen_height: ROOT_EXTENT.height,
         };
         session.start_results(context);
@@ -6166,6 +6243,10 @@ pub fn run_windowed_game_session(
     let mut root_interaction =
         RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, clock.millis())
             .expect("zero is a valid recovered root selection");
+    let static_tables = open_static_tables(runtime_data);
+    if let Some(layouts) = static_tables.as_ref().and_then(setup_layouts) {
+        root_interaction = root_interaction.with_setup_layouts(layouts);
+    }
     let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
     let mut damage_owner = NoStaticDamageOwner;
@@ -6953,20 +7034,40 @@ mod tests {
             confirm: true,
             ..Default::default()
         };
-        let mut pulses = vec![Default::default(), Default::default(), next, confirm];
-        pulses.resize(14, Default::default());
         let mut transcript = Vec::new();
         let mut gameplay_calls = 0;
         let mut front_end_frames = 0;
-        for (now, pulse) in pulses.into_iter().enumerate() {
+        let mut root_presses = vec![next, confirm].into_iter();
+        for now in 0..400u32 {
             if !game.event().in_session() {
                 front_end_frames += 1;
-                let tick = root.tick_for_game_session(pulse, now as u32 + 1, true);
+                let state = root.state();
+                let interactive = state.phase() == cmr_core::frontend::FrontendPhase::Interactive;
+                let on_root = state.active_screen() == cmr_core::frontend::ROOT_SCREEN_ID;
+                // The root takes its two presses; the rally setup's Continue
+                // and the name entry take Return taps (press, release).
+                let pulse = if interactive && on_root {
+                    root_presses.next().unwrap_or_default()
+                } else {
+                    Default::default()
+                };
+                let held = (interactive && !on_root && now % 2 == 0).then_some(0x0d);
+                let tick = root.tick_for_game_session(
+                    pulse,
+                    cmr_core::root_menu_interactive::FrontendKeys { held, pad: 0 },
+                    now * 20 + 1,
+                    true,
+                    &mut config.image,
+                );
+                for effect in &tick.screen_effects {
+                    if *effect == cmr_core::frontend_flow::ScreenEffect::CommitRecord {
+                        config.commit(game.event_mut(), &mut pause);
+                    }
+                }
                 if tick
                     .effects
                     .contains(&cmr_core::frontend::FrontendEffect::StartRace)
                 {
-                    config.commit(game.event_mut(), &mut pause);
                     game.event_mut().start_race_session();
                 }
             }
@@ -8271,28 +8372,35 @@ mod tests {
             };
         }
 
-        advance!(&keys, cmr_core::frontend::FrontendInput::default());
-        advance!(&keys, cmr_core::frontend::FrontendInput::default());
-        advance!(
-            &keys,
+        // The root's rally entry, then Return taps through the rally setup's
+        // Continue and the name entry.
+        let mut root_presses = [
             cmr_core::frontend::FrontendInput {
                 next: true,
                 ..Default::default()
-            }
-        );
-        advance!(
-            &keys,
+            },
             cmr_core::frontend::FrontendInput {
                 confirm: true,
                 ..Default::default()
-            }
-        );
-        for _ in 0..8 {
+            },
+        ]
+        .into_iter();
+        for frame in 0..400 {
             if session.state().id() == 5 {
                 break;
             }
-            advance!(&keys, cmr_core::frontend::FrontendInput::default());
+            let state = root_interaction.state();
+            let interactive = state.phase() == cmr_core::frontend::FrontendPhase::Interactive;
+            let on_root = state.active_screen() == cmr_core::frontend::ROOT_SCREEN_ID;
+            let pulse = if interactive && on_root && !session.event().in_session() {
+                root_presses.next().unwrap_or_default()
+            } else {
+                Default::default()
+            };
+            keys.apply_vk(0x0d, interactive && !on_root && frame % 2 == 0);
+            advance!(&keys, pulse);
         }
+        keys.apply_vk(0x0d, false);
         assert_eq!(session.state().id(), 5);
         let initial = advance!(&keys, cmr_core::frontend::FrontendInput::default())
             .world

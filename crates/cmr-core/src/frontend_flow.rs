@@ -1,0 +1,659 @@
+//! The front end's setup, name-entry and stage-select screens as the
+//! descriptor-menu tree `FUN_004be540` builds, driven the way the stepper
+//! `FUN_004c20f0` drives them.
+//!
+//! Each frame the stepper steps the current menu (`FUN_004aee60`) and then
+//! the frame draws it; the draw callbacks have side effects the next step
+//! reads (the setups' PLAYERS item hides the second car, the car and country
+//! items gate Continue; the stage select's predraw routes OK). So a frame here
+//! is [`FrontendScreens::step`] then [`FrontendScreens::draw_effects`]. The
+//! name entries get no menu bits (`0x4c2258`): their commit runs the key
+//! handler. A screen accepts input only once its slide-in has ended: the
+//! setups' seven row channels (`FUN_004c4410`, 15-step ease-outs after each
+//! row's delay from the screen's layout descriptor), the name entries' two
+//! slides and the stage select's slide (15 steps each).
+//!
+//! The layout descriptors are static data of the user's executable; without
+//! them every row delay is taken as zero (harness). A description of
+//! disassembly, not original source. Evidence:
+//! `rea.official-eu.frontend-flow`.
+
+use crate::config::LEGACY_CONFIG_SIZE;
+use crate::descriptor_menu::{Menu, MenuEvent, MenuId, MenuNav, MenuSet};
+use crate::frontend::{
+    CHAMPIONSHIP_NEXT_SCREEN_ID, CHAMPIONSHIP_SETUP_SCREEN_ID, NETWORK_SCREEN_ID,
+    RACE_SENTINEL_SCREEN_ID, RALLY_NAME_SCREEN_ID, RALLY_SCREEN_ID, ROOT_SCREEN_ID,
+    STAGE_SELECT_SCREEN_ID, ScreenId, TIME_TRIAL_NAME_SCREEN_ID, TIME_TRIAL_SCREEN_ID,
+};
+use crate::frontend_name_entry::{NameEntry, NameKey, NameOutcome, NameScreen};
+use crate::frontend_setup::{SetupKind, SetupScreen, key};
+use crate::frontend_stage_select::{PostOutcome, StageSelect};
+use crate::scalar_tween::ScalarTween;
+
+type Record = [u8; LEGACY_CONFIG_SIZE];
+
+/// One row channel of a setup layout descriptor (8 bytes).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SlideChannel {
+    /// The angles the row swings through: in `a0 -> a1`, out `a1 -> a2`.
+    pub angles: [i16; 3],
+    pub delay_in: u8,
+    pub delay_out: u8,
+}
+
+/// A setup screen's layout descriptor (`0x5092e8`/`0x509338`/`0x509388`,
+/// 0x50 bytes).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SetupLayout {
+    pub channels: [SlideChannel; 7],
+    /// `+0x38`/`+0x3c`: the info box anchor (Q16).
+    pub info: [i32; 2],
+    /// `+0x40`.
+    pub info_flags: u32,
+    /// `+0x48`: the item text flags.
+    pub item_flags: u32,
+}
+
+impl SetupLayout {
+    /// Parse the 0x50-byte descriptor; `None` when it is shorter.
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 0x50 {
+            return None;
+        }
+        let i16_at = |at: usize| i16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        let u32_at = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        let channels = std::array::from_fn(|k| {
+            let at = 8 * k;
+            SlideChannel {
+                angles: [i16_at(at), i16_at(at + 2), i16_at(at + 4)],
+                delay_in: bytes[at + 6],
+                delay_out: bytes[at + 7],
+            }
+        });
+        Some(Self {
+            channels,
+            info: [u32_at(0x38) as i32, u32_at(0x3c) as i32],
+            info_flags: u32_at(0x40),
+            item_flags: u32_at(0x48),
+        })
+    }
+}
+
+/// What a frame asks the host to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenEffect {
+    /// `FUN_004b93f0`: commit the record to the live block.
+    CommitRecord,
+    /// A menu sound-table slot.
+    Sound(MenuEvent),
+}
+
+/// The tweens a screen's commit waits on.
+#[derive(Clone, Debug, Default)]
+struct Slides {
+    tweens: Vec<ScalarTween>,
+}
+
+impl Slides {
+    fn start(&mut self, tweens: Vec<ScalarTween>) {
+        self.tweens = tweens;
+    }
+
+    /// Evaluate every active tween; true when none is active.
+    fn tick(&mut self) -> bool {
+        let mut idle = true;
+        for tween in &mut self.tweens {
+            if !tween.is_finished() {
+                tween.evaluate_and_advance();
+                idle = false;
+            }
+        }
+        idle
+    }
+
+    fn idle(&self) -> bool {
+        self.tweens.iter().all(ScalarTween::is_finished)
+    }
+}
+
+const SETUPS: [SetupKind; 3] = [
+    SetupKind::Championship,
+    SetupKind::Rally,
+    SetupKind::TimeTrial,
+];
+const NAMES: [NameScreen; 3] = [
+    NameScreen::Championship,
+    NameScreen::Rally,
+    NameScreen::TimeTrial,
+];
+
+/// The menu tree of the setup flow.
+pub struct FrontendScreens {
+    set: MenuSet,
+    setups: [SetupScreen; 3],
+    stage: StageSelect,
+    name: NameEntry,
+    layouts: [SetupLayout; 3],
+    slides: Slides,
+    /// `0x508fe8`: the name entry is leaving.
+    name_leaving: bool,
+    /// `DAT_00bbabec`: the "no animation" option (`!(record[0x10] & 0x20)`).
+    no_animation: bool,
+}
+
+/// Menu ids in the set, in build order.
+mod id {
+    use crate::descriptor_menu::MenuId;
+    pub const ROOT: MenuId = MenuId(0);
+    pub const SETUP: [MenuId; 3] = [MenuId(1), MenuId(2), MenuId(3)];
+    pub const NAME: [MenuId; 3] = [MenuId(4), MenuId(5), MenuId(6)];
+    pub const STAGE: MenuId = MenuId(7);
+    pub const RACE: MenuId = MenuId(8);
+    pub const NETWORK: MenuId = MenuId(9);
+}
+
+const SCREENS: [(MenuId, ScreenId); 10] = [
+    (id::ROOT, ROOT_SCREEN_ID),
+    (id::SETUP[0], CHAMPIONSHIP_SETUP_SCREEN_ID),
+    (id::SETUP[1], RALLY_SCREEN_ID),
+    (id::SETUP[2], TIME_TRIAL_SCREEN_ID),
+    (id::NAME[0], CHAMPIONSHIP_NEXT_SCREEN_ID),
+    (id::NAME[1], RALLY_NAME_SCREEN_ID),
+    (id::NAME[2], TIME_TRIAL_NAME_SCREEN_ID),
+    (id::STAGE, STAGE_SELECT_SCREEN_ID),
+    (id::RACE, RACE_SENTINEL_SCREEN_ID),
+    (id::NETWORK, NETWORK_SCREEN_ID),
+];
+
+fn menu_of(screen: ScreenId) -> Option<MenuId> {
+    SCREENS.iter().find(|(_, s)| *s == screen).map(|(m, _)| *m)
+}
+
+fn screen_of(menu: MenuId) -> Option<ScreenId> {
+    SCREENS.iter().find(|(m, _)| *m == menu).map(|(_, s)| *s)
+}
+
+enum Kind {
+    Setup(usize),
+    Name(usize),
+    Stage,
+}
+
+fn kind_of(menu: MenuId) -> Option<Kind> {
+    if let Some(i) = id::SETUP.iter().position(|&m| m == menu) {
+        Some(Kind::Setup(i))
+    } else if let Some(i) = id::NAME.iter().position(|&m| m == menu) {
+        Some(Kind::Name(i))
+    } else if menu == id::STAGE {
+        Some(Kind::Stage)
+    } else {
+        None
+    }
+}
+
+impl FrontendScreens {
+    /// The tree, with the setups' layout descriptors when the host has them.
+    pub fn new(layouts: Option<[SetupLayout; 3]>) -> Self {
+        let mut set = MenuSet::default();
+        set.add(Menu::new(-1, None, None));
+        // The setups' commit `FUN_004c9040` (`0x4c90b0`) and post `0x4c90c0`.
+        let setups: [SetupScreen; 3] = std::array::from_fn(|i| {
+            let mut setup = SetupScreen::build(SETUPS[i], id::ROOT, id::NAME[i]);
+            setup.menu.on_commit = Some(0x004c_9040);
+            setup.menu.on_post = Some(0x004c_90c0);
+            setup
+        });
+        for setup in &setups {
+            set.add(setup.menu.clone());
+        }
+        // The name entries' commit `0x4c5e30` and post `0x4c5ec0`.
+        for (i, _) in NAMES.iter().enumerate() {
+            let mut menu = Menu::new(0xed, Some(id::SETUP[i]), Some(0x00d9_0050));
+            menu.nav = MenuNav::NONE;
+            menu.on_commit = Some(0x004c_5e30);
+            menu.on_post = Some(0x004c_5ec0);
+            set.add(menu);
+        }
+        // The stage select's commit `0x4c8320` and post `0x4c84d0`.
+        let mut stage = StageSelect::build(id::NAME[2], id::RACE, id::NETWORK);
+        stage.menu.on_commit = Some(0x004c_8320);
+        stage.menu.on_post = Some(0x004c_84d0);
+        set.add(stage.menu.clone());
+        set.add(Menu::new(-1, None, None));
+        set.add(Menu::new(-1, None, None));
+        Self {
+            set,
+            setups,
+            stage,
+            name: NameEntry::default(),
+            layouts: layouts.unwrap_or_default(),
+            slides: Slides::default(),
+            name_leaving: false,
+            no_animation: false,
+        }
+    }
+
+    /// Whether `screen` is one of these.
+    pub fn handles(screen: ScreenId) -> bool {
+        menu_of(screen).and_then(kind_of).is_some()
+    }
+
+    /// The setup screen's state, for the draw.
+    pub fn setup(&self, kind: SetupKind) -> &SetupScreen {
+        &self.setups[SETUPS.iter().position(|&k| k == kind).unwrap_or(0)]
+    }
+
+    /// The name entry's state, for the draw.
+    pub const fn name_entry(&self) -> &NameEntry {
+        &self.name
+    }
+
+    /// The stage select's state, for the draw.
+    pub const fn stage_select(&self) -> &StageSelect {
+        &self.stage
+    }
+
+    /// A 15-step ease-out, or its "no animation" form.
+    fn slide(&self, from: i32, to: i32, delay: u8) -> ScalarTween {
+        if self.no_animation {
+            ScalarTween::ease_out(to, to, 15, 0)
+        } else {
+            ScalarTween::ease_out(from, to, 15, i32::from(delay))
+        }
+    }
+
+    /// The name entry's and stage select's two slide-outs: 15-step ease-ins
+    /// from 0 to `0x10000`.
+    fn slide_outs(&self) -> Vec<ScalarTween> {
+        let tween = if self.no_animation {
+            ScalarTween::ease_out(0x10000, 0x10000, 15, 0)
+        } else {
+            ScalarTween::ease_in(0, 0x10000, 15, 0)
+        };
+        vec![tween, tween]
+    }
+
+    /// `FUN_004aed50(menu, went_back)`: activate `screen` and run its enter
+    /// callback, then the stepper's step with no input in the same frame.
+    pub fn activate(&mut self, screen: ScreenId, record: &mut Record) -> Vec<ScreenEffect> {
+        let Some(menu) = menu_of(screen) else {
+            return Vec::new();
+        };
+        self.no_animation = record[0x10] & 0x20 == 0;
+        let went_back = self.set.went_back;
+        let _ = self.set.activate(menu, None, u8::from(went_back));
+        match kind_of(menu) {
+            Some(Kind::Setup(i)) => {
+                let layout = self.layouts[i];
+                self.setups[i].menu = self.set.menu(menu).clone();
+                self.setups[i].enter(record);
+                self.setups[i].apply_players();
+                *self.set.menu_mut(menu) = self.setups[i].menu.clone();
+                let tweens = layout
+                    .channels
+                    .iter()
+                    .map(|c| self.slide(i32::from(c.angles[0]), i32::from(c.angles[1]), c.delay_in))
+                    .collect();
+                self.slides.start(tweens);
+            }
+            Some(Kind::Name(i)) => {
+                self.name.enter(NAMES[i], record);
+                self.name_leaving = false;
+                let tweens = vec![self.slide(0x10000, 0, 0), self.slide(0x10000, 0, 0)];
+                self.slides.start(tweens);
+            }
+            Some(Kind::Stage) => {
+                self.stage.menu = self.set.menu(menu).clone();
+                self.stage.enter(record);
+                *self.set.menu_mut(menu) = self.stage.menu.clone();
+                let tweens = vec![self.slide(0x10000, 0, 0), self.slide(0x10000, 0, 0)];
+                self.slides.start(tweens);
+            }
+            None => {}
+        }
+        let (_, effects) = self.step(screen, 0, NameKey::default(), record);
+        effects
+    }
+
+    /// One stepper step of `screen` with the menu `bits` (the name entries
+    /// read `key` instead). Returns the screen the step left for, if any.
+    pub fn step(
+        &mut self,
+        screen: ScreenId,
+        bits: u32,
+        key: NameKey,
+        record: &mut Record,
+    ) -> (Option<ScreenId>, Vec<ScreenEffect>) {
+        let Some(menu) = menu_of(screen) else {
+            return (None, Vec::new());
+        };
+        let Some(kind) = kind_of(menu) else {
+            return (None, Vec::new());
+        };
+        let bits = if matches!(kind, Kind::Name(_)) {
+            0
+        } else {
+            bits
+        };
+        let mut effects = Vec::new();
+        let (pending, events) = self.set.step(menu, bits);
+        let mut pending = pending;
+        for event in events {
+            match event {
+                MenuEvent::Sound { .. } => effects.push(ScreenEffect::Sound(event)),
+                MenuEvent::Commit { .. } => {
+                    if let Some(target) = self.commit(&kind, menu, key, record, &mut effects) {
+                        pending = Some(target);
+                    }
+                }
+                MenuEvent::Post { back, .. } => self.post(&kind, menu, back, record, &mut effects),
+                _ => {}
+            }
+        }
+        // A commit that set the pending menu completes the step's tail.
+        if pending.is_some() && self.set.pending.is_some() {
+            let (resolved, events) = self.set.resolve_pending(menu);
+            pending = resolved.or(pending);
+            for event in events {
+                if let MenuEvent::Post { back, .. } = event {
+                    self.post(&kind, menu, back, record, &mut effects);
+                }
+            }
+        }
+        (pending.and_then(screen_of), effects)
+    }
+
+    /// The commit callbacks.
+    fn commit(
+        &mut self,
+        kind: &Kind,
+        menu: MenuId,
+        key: NameKey,
+        record: &mut Record,
+        effects: &mut Vec<ScreenEffect>,
+    ) -> Option<MenuId> {
+        let idle = self.slides.tick();
+        match kind {
+            // `FUN_004c9040`.
+            Kind::Setup(_) => {
+                if idle {
+                    self.set.menu_mut(menu).nav = MenuNav::ALL;
+                }
+                None
+            }
+            // `0x4c5e30`.
+            Kind::Name(_) => {
+                if !idle || self.name_leaving {
+                    return None;
+                }
+                match self.name.key(key, record) {
+                    NameOutcome::Editing => None,
+                    NameOutcome::Leave { target, commit } => {
+                        if commit {
+                            effects.push(ScreenEffect::CommitRecord);
+                        }
+                        let target = menu_of(target)?;
+                        self.set.pending = Some(target);
+                        Some(target)
+                    }
+                }
+            }
+            // `0x4c8320`.
+            Kind::Stage => {
+                self.stage.menu = self.set.menu(menu).clone();
+                self.stage.commit(record, idle);
+                *self.set.menu_mut(menu) = self.stage.menu.clone();
+                None
+            }
+        }
+    }
+
+    /// The post callbacks: the slide-outs and the record writes.
+    fn post(
+        &mut self,
+        kind: &Kind,
+        menu: MenuId,
+        back: bool,
+        record: &mut Record,
+        effects: &mut Vec<ScreenEffect>,
+    ) {
+        match kind {
+            // `0x4c90c0`.
+            Kind::Setup(i) => {
+                let i = *i;
+                self.setups[i].menu = self.set.menu(menu).clone();
+                self.setups[i].post(record);
+                self.set.menu_mut(menu).nav = MenuNav::NONE;
+                let layout = self.layouts[i];
+                let tweens = layout
+                    .channels
+                    .iter()
+                    .map(|c| {
+                        self.slide(i32::from(c.angles[1]), i32::from(c.angles[2]), c.delay_out)
+                    })
+                    .collect();
+                self.slides.start(tweens);
+                self.name.next_player = 0;
+            }
+            // `0x4c5ec0`.
+            Kind::Name(_) => {
+                self.slides.start(self.slide_outs());
+                self.name_leaving = true;
+            }
+            // `0x4c84d0`.
+            Kind::Stage => {
+                self.stage.menu = self.set.menu(menu).clone();
+                match self.stage.post(record, back) {
+                    PostOutcome::Back { next_player } => self.name.next_player = next_player,
+                    PostOutcome::Commit => effects.push(ScreenEffect::CommitRecord),
+                }
+                self.slides.start(self.slide_outs());
+            }
+        }
+    }
+
+    /// The frame's draw callbacks' side effects on `screen`.
+    pub fn draw_effects(&mut self, screen: ScreenId, record: &Record) {
+        let Some(menu) = menu_of(screen) else {
+            return;
+        };
+        match kind_of(menu) {
+            Some(Kind::Setup(i)) => {
+                let setup = &mut self.setups[i];
+                setup.menu = self.set.menu(menu).clone();
+                setup.apply_players();
+                let gate = setup.continue_enabled(record);
+                if let Some(index) = setup.menu.find(key::CONTINUE) {
+                    setup.menu.items[index].enabled = gate;
+                }
+                *self.set.menu_mut(menu) = setup.menu.clone();
+            }
+            Some(Kind::Stage) => {
+                self.stage.menu = self.set.menu(menu).clone();
+                self.stage.predraw(record);
+                *self.set.menu_mut(menu) = self.stage.menu.clone();
+            }
+            _ => {}
+        }
+    }
+
+    /// The current menu of `screen`, for the draw.
+    pub fn menu(&self, screen: ScreenId) -> Option<&Menu> {
+        menu_of(screen).map(|menu| self.set.menu(menu))
+    }
+
+    /// Whether the slides have ended.
+    pub fn slides_idle(&self) -> bool {
+        self.slides.idle()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::descriptor_menu::bits;
+
+    fn record() -> Box<Record> {
+        let mut record = Box::new([0u8; LEGACY_CONFIG_SIZE]);
+        crate::config_commit::apply_defaults(
+            &mut record,
+            crate::config_commit::DefaultsHost {
+                token: 0,
+                language: 0,
+                large_memory: false,
+            },
+            None,
+        );
+        record
+    }
+
+    /// Step until the slides end (no input).
+    fn settle(screens: &mut FrontendScreens, screen: ScreenId, record: &mut Record) {
+        for _ in 0..40 {
+            screens.step(screen, 0, NameKey::default(), record);
+            screens.draw_effects(screen, record);
+        }
+    }
+
+    #[test]
+    fn a_championship_runs_setup_name_and_race() {
+        let mut record = record();
+        let mut screens = FrontendScreens::new(None);
+        screens.activate(CHAMPIONSHIP_SETUP_SCREEN_ID, &mut record);
+        // Input is ignored during the slide-in.
+        let (left, _) = screens.step(
+            CHAMPIONSHIP_SETUP_SCREEN_ID,
+            bits::CONFIRM,
+            NameKey::default(),
+            &mut record,
+        );
+        assert_eq!(left, None);
+        settle(&mut screens, CHAMPIONSHIP_SETUP_SCREEN_ID, &mut record);
+        // Continue (selected first) leads to the name entry.
+        let (left, _) = screens.step(
+            CHAMPIONSHIP_SETUP_SCREEN_ID,
+            bits::CONFIRM,
+            NameKey::default(),
+            &mut record,
+        );
+        assert_eq!(left, Some(CHAMPIONSHIP_NEXT_SCREEN_ID));
+        assert_eq!(record[0x180] & 3, 0);
+        screens.activate(CHAMPIONSHIP_NEXT_SCREEN_ID, &mut record);
+        settle(&mut screens, CHAMPIONSHIP_NEXT_SCREEN_ID, &mut record);
+        let mut effects = Vec::new();
+        let mut left = None;
+        for vk in [b'A', 0, b'B', 0, 0x0d] {
+            let (target, more) = screens.step(
+                CHAMPIONSHIP_NEXT_SCREEN_ID,
+                0,
+                NameKey { vk, pad: 0 },
+                &mut record,
+            );
+            effects.extend(more);
+            left = left.or(target);
+        }
+        assert_eq!(left, Some(RACE_SENTINEL_SCREEN_ID));
+        assert!(effects.contains(&ScreenEffect::CommitRecord));
+        assert_eq!(&record[0x34..0x37], b"AB\0");
+    }
+
+    #[test]
+    fn back_from_a_setup_returns_to_the_root() {
+        let mut record = record();
+        let mut screens = FrontendScreens::new(None);
+        screens.activate(RALLY_SCREEN_ID, &mut record);
+        settle(&mut screens, RALLY_SCREEN_ID, &mut record);
+        let (left, _) = screens.step(RALLY_SCREEN_ID, bits::BACK, NameKey::default(), &mut record);
+        assert_eq!(left, Some(ROOT_SCREEN_ID));
+        assert_eq!(record[0x180] & 3, 1);
+    }
+
+    #[test]
+    fn a_locked_country_disables_continue() {
+        let mut record = record();
+        record[0x181] = 3; // locked by default for a rally
+        let mut screens = FrontendScreens::new(None);
+        screens.activate(RALLY_SCREEN_ID, &mut record);
+        settle(&mut screens, RALLY_SCREEN_ID, &mut record);
+        let menu = screens.menu(RALLY_SCREEN_ID).unwrap();
+        let continue_item = menu.find(key::CONTINUE).unwrap();
+        assert!(!menu.items[continue_item].enabled);
+    }
+
+    #[test]
+    fn a_time_trial_ends_on_the_stage_select() {
+        let mut record = record();
+        let mut screens = FrontendScreens::new(None);
+        screens.activate(TIME_TRIAL_SCREEN_ID, &mut record);
+        settle(&mut screens, TIME_TRIAL_SCREEN_ID, &mut record);
+        let (left, _) = screens.step(
+            TIME_TRIAL_SCREEN_ID,
+            bits::CONFIRM,
+            NameKey::default(),
+            &mut record,
+        );
+        assert_eq!(left, Some(TIME_TRIAL_NAME_SCREEN_ID));
+        screens.activate(TIME_TRIAL_NAME_SCREEN_ID, &mut record);
+        settle(&mut screens, TIME_TRIAL_NAME_SCREEN_ID, &mut record);
+        let (left, effects) = screens.step(
+            TIME_TRIAL_NAME_SCREEN_ID,
+            0,
+            NameKey { vk: 0x0d, pad: 0 },
+            &mut record,
+        );
+        assert_eq!(left, Some(STAGE_SELECT_SCREEN_ID));
+        assert!(effects.contains(&ScreenEffect::CommitRecord));
+        screens.activate(STAGE_SELECT_SCREEN_ID, &mut record);
+        settle(&mut screens, STAGE_SELECT_SCREEN_ID, &mut record);
+        // Turn the first stage on, then up (wrapping) to OK and confirm.
+        let mut left = None;
+        let mut effects = Vec::new();
+        screens.step(
+            STAGE_SELECT_SCREEN_ID,
+            bits::CONFIRM,
+            NameKey::default(),
+            &mut record,
+        );
+        screens.draw_effects(STAGE_SELECT_SCREEN_ID, &record);
+        for _ in 0..8 {
+            let (target, more) = screens.step(
+                STAGE_SELECT_SCREEN_ID,
+                bits::UP,
+                NameKey::default(),
+                &mut record,
+            );
+            screens.draw_effects(STAGE_SELECT_SCREEN_ID, &record);
+            left = left.or(target);
+            effects.extend(more);
+            let menu = screens.menu(STAGE_SELECT_SCREEN_ID).unwrap();
+            if menu.selected == crate::frontend_stage_select::OK_ITEM {
+                break;
+            }
+        }
+        let (target, more) = screens.step(
+            STAGE_SELECT_SCREEN_ID,
+            bits::CONFIRM,
+            NameKey::default(),
+            &mut record,
+        );
+        left = left.or(target);
+        effects.extend(more);
+        assert_eq!(left, Some(RACE_SENTINEL_SCREEN_ID));
+        assert!(effects.contains(&ScreenEffect::CommitRecord));
+        let country = usize::from(record[0x181] & 0xf);
+        assert_ne!(record[0x16c + 2 * country], 0);
+    }
+
+    #[test]
+    fn the_layout_descriptor_parses() {
+        let mut bytes = vec![0u8; 0x50];
+        bytes[6] = 3;
+        bytes[0x38..0x3c].copy_from_slice(&0x8000i32.to_le_bytes());
+        let layout = SetupLayout::parse(&bytes).unwrap();
+        assert_eq!(layout.channels[0].delay_in, 3);
+        assert_eq!(layout.info[0], 0x8000);
+        assert!(SetupLayout::parse(&bytes[..0x4f]).is_none());
+    }
+}

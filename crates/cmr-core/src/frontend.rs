@@ -15,6 +15,14 @@ pub const CHAMPIONSHIP_NEXT_SCREEN_ID: ScreenId = ScreenId(0x00d4_5cf8);
 /// Destination of root selection 2 (text 0x78), the time-trial setup.
 pub const TIME_TRIAL_SCREEN_ID: ScreenId = ScreenId(0x00d4_b240);
 pub const EXIT_SCREEN_ID: ScreenId = ScreenId(0x00d4_2058);
+/// The rally name entry.
+pub const RALLY_NAME_SCREEN_ID: ScreenId = ScreenId(0x00d4_7d90);
+/// The time-trial name entry.
+pub const TIME_TRIAL_NAME_SCREEN_ID: ScreenId = ScreenId(0x00d4_6fb0);
+/// The time-trial stage select.
+pub const STAGE_SELECT_SCREEN_ID: ScreenId = ScreenId(0x00d4_7450);
+/// The network selection.
+pub const NETWORK_SCREEN_ID: ScreenId = ScreenId(0x00d4_b6e0);
 /// The empty "go to race" screen: a transition to it returns result 3
 /// (`FUN_0044f6d0`), which leaves the front end for a race session.
 pub const RACE_SENTINEL_SCREEN_ID: ScreenId = ScreenId(0x00d4_37c8);
@@ -301,6 +309,15 @@ impl FrontendState {
                 }
                 Vec::new()
             }
+        }
+    }
+
+    /// A sub-screen's step left for `to` (`FUN_004af3a0` through the
+    /// stepper's phase 1): the transition begins on the next step.
+    pub fn begin_transition(&mut self, to: ScreenId) {
+        if self.phase == FrontendPhase::Interactive {
+            self.pending = Some(to);
+            self.phase = FrontendPhase::BeginTransition;
         }
     }
 

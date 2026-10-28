@@ -1,37 +1,41 @@
-//! Pure interactive controller for the recovered root menu.
+//! Pure interactive controller for the recovered front end: the root menu,
+//! the setup, name-entry and stage-select screens ([`FrontendScreens`]), and
+//! the screen-to-screen camera transition.
 //!
-//! This composes the recovered [`FrontendState`] controller with a minimal
-//! transition driver and the steady render bridge so a host loop can turn
-//! per-frame [`FrontendInput`] into a [`RootRenderInput`] to present.
-//!
-//! The driver owns no clock: the caller supplies a monotonically increasing
-//! `now`. A transition to the race sentinel `0xd437c8` or the rally-school
-//! sentinel `0xd46b10` yields result 3 or 4 (`FUN_0044f6d0`); a transition to
-//! the root or exit screen completes; every other confirmed entry begins its
-//! transition and then waits, because the destination screens are not yet
-//! reconstructed. Harness: a game-session host may let the championship, rally
-//! and time-trial entries stand in for their unbuilt setup and name-entry
-//! screens, whose Continue leads to the race sentinel, so confirming one starts
-//! the race ([`RootInteraction::race_mode`] names the mode its setup screen's
-//! enter callback writes). The live
-//! selection's chrome is snapped to its recovered endpoint via
-//! [`steady_root_render_input`]; the in-between tween is a separate,
-//! not-yet-recovered concern. None of this models the original transition
-//! timing, so it is not a compatibility claim.
+//! This composes the recovered [`FrontendState`] controller with the
+//! stepper's transition (`FUN_004c20f0` phases 2-4): a confirmed screen
+//! change starts the 13-step camera ease `FUN_0044f6d0`; each following step
+//! evaluates it (`FUN_0044f600`), which on its sixth step returns the hand-off
+//! code (3 for the race sentinel `0xd437c8`, 4 for the rally-school sentinel
+//! `0xd46b10`), leaving the front end, and once it has ended activates the
+//! destination. While the camera moves, the screen being left keeps stepping
+//! with no input (its slide-out); after the activation the new screen steps
+//! once more with no input before it takes input. The sub-screens read the
+//! front end's repeated key (`FUN_004c2970`) and its menu bits
+//! (`FUN_004c25f0`). Destinations that are not reconstructed (options, load,
+//! network) wait. The root's own input stays the host's [`FrontendInput`].
+//! The live selection's chrome is snapped to its recovered endpoint via
+//! [`steady_root_render_input`].
 
 use crate::{
+    config::LEGACY_CONFIG_SIZE,
     display::DisplayExtent,
     frontend::{
-        CHAMPIONSHIP_SETUP_SCREEN_ID, EXIT_SCREEN_ID, FrontendEffect, FrontendInput, FrontendPhase,
-        FrontendState, InvalidRootSelection, RACE_SENTINEL_SCREEN_ID,
-        RALLY_SCHOOL_SENTINEL_SCREEN_ID, RALLY_SCREEN_ID, ROOT_SCREEN_ID, ScreenId,
-        TIME_TRIAL_SCREEN_ID, TransitionResult,
+        EXIT_SCREEN_ID, FrontendEffect, FrontendInput, FrontendPhase, FrontendState,
+        InvalidRootSelection, RACE_SENTINEL_SCREEN_ID, RALLY_SCHOOL_SENTINEL_SCREEN_ID,
+        ROOT_SCREEN_ID, ScreenId, TransitionResult,
     },
+    frontend_flow::{FrontendScreens, ScreenEffect, SetupLayout},
+    frontend_keys::{KeyRepeat, menu_bits},
+    frontend_name_entry::NameKey,
     localization::Language,
     root_menu_visual::{RootRenderInput, steady_root_render_input},
+    scalar_tween::ScalarTween,
 };
 
-/// Host-visible outcome of one interactive root-menu tick.
+type Record = [u8; LEGACY_CONFIG_SIZE];
+
+/// Host-visible outcome of one interactive front-end tick.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootTick {
     /// Steady render input while the interactive root screen is showing, or
@@ -40,20 +44,83 @@ pub struct RootTick {
     pub render_input: Option<RootRenderInput>,
     /// Recovered controller effects emitted by this tick, in order.
     pub effects: Vec<FrontendEffect>,
+    /// The sub-screens' effects (the record commit, menu sounds).
+    pub screen_effects: Vec<ScreenEffect>,
     /// Whether the recovered controller has requested process exit.
     pub exit_requested: bool,
 }
 
-/// Minimal interactive root-menu driver over the recovered [`FrontendState`].
+/// The keyboard and pad state the sub-screens read each frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrontendKeys {
+    /// `FUN_0049d1c0`'s held key.
+    pub held: Option<u8>,
+    /// The device's pad bits.
+    pub pad: u32,
+}
+
+/// The camera transition `FUN_0044f6d0`/`FUN_0044f600`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CameraTransition {
+    tween: ScalarTween,
+    /// `DAT_0055d76c`.
+    steps: u32,
+    /// `DAT_0055d768`.
+    latch: u32,
+    /// `DAT_004f1310`.
+    code: u32,
+}
+
+/// `DAT_0055d770`: the camera ease's steps.
+const CAMERA_STEPS: i32 = 13;
+
+impl CameraTransition {
+    fn start(to: ScreenId) -> Self {
+        let code = if to == RACE_SENTINEL_SCREEN_ID {
+            3
+        } else if to == RALLY_SCHOOL_SENTINEL_SCREEN_ID {
+            4
+        } else {
+            2
+        };
+        Self {
+            tween: ScalarTween::ease_out(0, 0x10000, CAMERA_STEPS, 0),
+            steps: 0,
+            latch: 1,
+            code,
+        }
+    }
+
+    /// `FUN_0044f600`: 1 while the ease runs, the hand-off code from its
+    /// sixth step, 0 once it has ended.
+    fn step(&mut self) -> u32 {
+        if self.tween.is_finished() {
+            self.latch = 0;
+            return 0;
+        }
+        self.tween.evaluate_and_advance();
+        self.steps += 1;
+        if self.steps == (CAMERA_STEPS / 2) as u32 {
+            self.latch = self.code;
+        }
+        self.latch
+    }
+}
+
+/// Interactive front-end driver over the recovered [`FrontendState`].
 pub struct RootInteraction {
     state: FrontendState,
     language: Language,
     viewport_extent: DisplayExtent,
+    screens: FrontendScreens,
+    camera: CameraTransition,
+    repeat: KeyRepeat,
 }
 
 impl RootInteraction {
     /// Starts the driver from the recovered saved-selection byte, in the same
-    /// post-startup-art state the recovered frontend bootstraps into.
+    /// post-startup-art state the recovered frontend bootstraps into (its
+    /// camera transition to the root already started, `0x4c0b32`).
     pub fn from_saved_selection(
         saved_selection: u8,
         language: Language,
@@ -64,7 +131,17 @@ impl RootInteraction {
             state: FrontendState::after_startup_art(saved_selection, now)?,
             language,
             viewport_extent,
+            screens: FrontendScreens::new(None),
+            camera: CameraTransition::start(ROOT_SCREEN_ID),
+            repeat: KeyRepeat::default(),
         })
+    }
+
+    /// Use the setups' layout descriptors from the user's executable.
+    #[must_use]
+    pub fn with_setup_layouts(mut self, layouts: [SetupLayout; 3]) -> Self {
+        self.screens = FrontendScreens::new(Some(layouts));
+        self
     }
 
     /// Borrows the underlying recovered controller for inspection.
@@ -73,59 +150,130 @@ impl RootInteraction {
         &self.state
     }
 
-    /// Advances the controller by one tick and reports what to present.
+    /// The sub-screens, for the draw.
     #[must_use]
-    pub fn tick(&mut self, input: FrontendInput, now: u32, save_allowed: bool) -> RootTick {
-        self.tick_with_rally_launch(input, now, save_allowed, false)
+    pub const fn screens(&self) -> &FrontendScreens {
+        &self.screens
     }
 
-    /// Advances one tick with the harness race launch: confirming the root
-    /// championship, rally or time-trial entry starts the race. Other unbuilt
-    /// destinations remain pending.
+    /// Advances the root alone by one tick (no record: the sub-screens are
+    /// not entered).
+    #[must_use]
+    pub fn tick(&mut self, input: FrontendInput, now: u32, save_allowed: bool) -> RootTick {
+        self.advance(input, FrontendKeys::default(), now, save_allowed, None)
+    }
+
+    /// Advances the whole front end by one tick over the cmRally.cfg
+    /// `record` the screens edit.
     #[must_use]
     pub fn tick_for_game_session(
         &mut self,
         input: FrontendInput,
+        keys: FrontendKeys,
         now: u32,
         save_allowed: bool,
+        record: &mut Record,
     ) -> RootTick {
-        self.tick_with_rally_launch(input, now, save_allowed, true)
+        self.advance(input, keys, now, save_allowed, Some(record))
     }
 
-    fn tick_with_rally_launch(
+    fn advance(
         &mut self,
         input: FrontendInput,
+        keys: FrontendKeys,
         now: u32,
         save_allowed: bool,
-        rally_launch: bool,
+        mut record: Option<&mut Record>,
     ) -> RootTick {
-        let transition = self.resolve_transition(rally_launch);
+        let phase = self.state.phase();
+        let active = self.state.active_screen();
+        let mut screen_effects = Vec::new();
+        let sub_screen = FrontendScreens::handles(active);
+        // Phase 1 reads the repeated key every frame (`0x4c2249`).
+        let key = if phase == FrontendPhase::Interactive {
+            self.repeat.poll(keys.held, now)
+        } else {
+            0
+        };
+        if let Some(record) = record.as_deref_mut()
+            && sub_screen
+        {
+            let bits = if phase == FrontendPhase::Interactive {
+                menu_bits(key, keys.pad)
+            } else {
+                0
+            };
+            let name_key = if phase == FrontendPhase::Interactive {
+                NameKey {
+                    vk: key,
+                    pad: keys.pad,
+                }
+            } else {
+                NameKey::default()
+            };
+            // Phase 3 steps the new screen after the camera check; phases 2
+            // and 4 step the old one; phase 1 steps it with the input.
+            let (target, effects) = self.screens.step(active, bits, name_key, record);
+            screen_effects.extend(effects);
+            self.screens.draw_effects(active, record);
+            if phase == FrontendPhase::Interactive {
+                if let Some(target) = target {
+                    self.state.begin_transition(target);
+                }
+                return RootTick {
+                    render_input: None,
+                    effects: Vec::new(),
+                    screen_effects,
+                    exit_requested: self.state.exit_requested(),
+                };
+            }
+        }
+        let transition = self.resolve_transition(record.is_some());
         let effects = self.state.step(input, now, transition, save_allowed);
+        for effect in &effects {
+            match *effect {
+                FrontendEffect::BeginTransition { to, .. } => {
+                    self.camera = CameraTransition::start(to);
+                }
+                FrontendEffect::Activate(screen) if FrontendScreens::handles(screen) => {
+                    if let Some(record) = record.as_deref_mut() {
+                        screen_effects.extend(self.screens.activate(screen, record));
+                        self.screens.draw_effects(screen, record);
+                    }
+                }
+                _ => {}
+            }
+        }
         RootTick {
             render_input: self.current_render_input(),
             exit_requested: self.state.exit_requested(),
             effects,
+            screen_effects,
         }
     }
 
-    /// Completes only transitions whose destination screen is reconstructed
-    /// (the root screen itself and the exit screen); all others stay pending.
-    fn resolve_transition(&self, rally_launch: bool) -> TransitionResult {
-        let target = match self.state.phase() {
-            FrontendPhase::AdvanceToPending => self.state.pending_screen(),
-            FrontendPhase::AdvanceToInteractive => Some(self.state.active_screen()),
-            FrontendPhase::Interactive | FrontendPhase::BeginTransition => None,
-        };
-        match target {
-            Some(screen) if screen == RACE_SENTINEL_SCREEN_ID => TransitionResult::StartRace,
-            Some(screen) if screen == RALLY_SCHOOL_SENTINEL_SCREEN_ID => {
-                TransitionResult::StartRallySchool
+    /// The camera step of phases 2 and 3: the hand-off codes leave the
+    /// front end; the end of the ease activates a reconstructed destination.
+    fn resolve_transition(&mut self, with_record: bool) -> TransitionResult {
+        match self.state.phase() {
+            FrontendPhase::AdvanceToPending => {
+                let target = self.state.pending_screen();
+                match self.camera.step() {
+                    3 => TransitionResult::StartRace,
+                    4 => TransitionResult::StartRallySchool,
+                    0 if target.is_some_and(|screen| is_reconstructed(screen, with_record)) => {
+                        TransitionResult::Complete
+                    }
+                    _ => TransitionResult::Pending,
+                }
             }
-            Some(screen) if rally_launch && race_mode_of(screen).is_some() => {
-                TransitionResult::StartRace
+            FrontendPhase::AdvanceToInteractive => {
+                self.camera.step();
+                TransitionResult::Complete
             }
-            Some(screen) if is_reconstructed_screen(screen) => TransitionResult::Complete,
-            _ => TransitionResult::Pending,
+            FrontendPhase::Interactive | FrontendPhase::BeginTransition => {
+                TransitionResult::Pending
+            }
         }
     }
 
@@ -146,34 +294,16 @@ impl RootInteraction {
     }
 }
 
-/// The event mode (`record[0x180]`) the setup screen's enter callback writes:
-/// 0 championship (`0xd40900`), 1 single rally (`0xd48230`), 2 time trial
-/// (`0xd4b240`).
-fn race_mode_of(screen: ScreenId) -> Option<u8> {
-    match screen {
-        CHAMPIONSHIP_SETUP_SCREEN_ID => Some(0),
-        RALLY_SCREEN_ID => Some(1),
-        TIME_TRIAL_SCREEN_ID => Some(2),
-        _ => None,
-    }
-}
-
-impl RootInteraction {
-    /// The mode of the setup screen the harness launch left through, while
-    /// its transition is under way.
-    #[must_use]
-    pub fn race_mode(&self) -> Option<u8> {
-        self.state.pending_screen().and_then(race_mode_of)
-    }
-}
-
-fn is_reconstructed_screen(screen: ScreenId) -> bool {
-    screen == ROOT_SCREEN_ID || screen == EXIT_SCREEN_ID
+fn is_reconstructed(screen: ScreenId, with_record: bool) -> bool {
+    screen == ROOT_SCREEN_ID
+        || screen == EXIT_SCREEN_ID
+        || (with_record && FrontendScreens::handles(screen))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frontend::{CHAMPIONSHIP_NEXT_SCREEN_ID, CHAMPIONSHIP_SETUP_SCREEN_ID};
     use crate::root_menu_visual::steady_root_render_input;
 
     const EXTENT: DisplayExtent = DisplayExtent {
@@ -185,23 +315,46 @@ mod tests {
         RootInteraction::from_saved_selection(saved, Language::English, EXTENT, 0).unwrap()
     }
 
-    fn settle_to_interactive(driver: &mut RootInteraction) -> RootTick {
-        // The recovered bootstrap takes two completed transitions to reach the
-        // interactive root screen.
-        let _ = driver.tick(FrontendInput::default(), 1, true);
-        driver.tick(FrontendInput::default(), 2, true)
+    fn press(input: FrontendInput) -> FrontendInput {
+        input
+    }
+
+    const CONFIRM: FrontendInput = FrontendInput {
+        previous: false,
+        next: false,
+        confirm: true,
+        cancel: false,
+    };
+
+    /// Tick with no input until the front end is interactive again.
+    fn settle(driver: &mut RootInteraction, now: &mut u32) -> RootTick {
+        loop {
+            *now += 1;
+            let tick = driver.tick(FrontendInput::default(), *now, true);
+            if driver.state().phase() == FrontendPhase::Interactive || *now > 1000 {
+                return tick;
+            }
+        }
     }
 
     #[test]
-    fn bootstrap_settles_on_the_interactive_root_screen() {
+    fn the_camera_takes_thirteen_steps_then_the_root_is_interactive() {
         let mut driver = driver(0);
-
-        let first = driver.tick(FrontendInput::default(), 1, true);
-        assert!(first.render_input.is_none(), "still activating the screen");
-
-        let second = driver.tick(FrontendInput::default(), 2, true);
+        let mut ticks = 0;
+        let mut now = 0;
+        let settled = loop {
+            now += 1;
+            ticks += 1;
+            let tick = driver.tick(FrontendInput::default(), now, true);
+            if tick.render_input.is_some() {
+                break tick;
+            }
+            assert!(ticks < 100);
+        };
+        // 13 eased steps, the activating step, then one more (phase 3).
+        assert_eq!(ticks, 15);
         assert_eq!(
-            second.render_input,
+            settled.render_input,
             Some(steady_root_render_input(
                 driver.state().root_selection(),
                 Language::English,
@@ -209,25 +362,20 @@ mod tests {
                 false
             ))
         );
-        assert_eq!(driver.state().phase(), FrontendPhase::Interactive);
-        assert!(!second.exit_requested);
+        assert!(!settled.exit_requested);
     }
 
     #[test]
     fn a_next_pulse_advances_the_live_selection_render_input() {
         let mut driver = driver(0);
-        let settled = settle_to_interactive(&mut driver);
-        assert_eq!(
-            settled.render_input.map(|input| input.selection.index()),
-            Some(0)
-        );
-
+        let mut now = 0;
+        let _ = settle(&mut driver, &mut now);
         let advanced = driver.tick(
-            FrontendInput {
+            press(FrontendInput {
                 next: true,
                 ..FrontendInput::default()
-            },
-            3,
+            }),
+            now + 1,
             true,
         );
         assert_eq!(
@@ -244,11 +392,11 @@ mod tests {
     fn confirming_exit_drives_through_to_the_recovered_exit_effects() {
         for (save_allowed, expect_save) in [(true, true), (false, false)] {
             let mut driver = driver(6);
-            let _ = settle_to_interactive(&mut driver);
-            // Saved selection 6 maps to 0 on load, so navigate to the exit entry.
+            let mut now = 0;
+            let _ = settle(&mut driver, &mut now);
             let last = (crate::frontend::ROOT_SCREEN.entries.len() - 1) as u8;
-            let mut now = 3;
             while driver.state().root_selection().index() != last {
+                now += 1;
                 let _ = driver.tick(
                     FrontendInput {
                         previous: true,
@@ -257,22 +405,12 @@ mod tests {
                     now,
                     save_allowed,
                 );
-                now += 1;
             }
-
-            let confirm = driver.tick(
-                FrontendInput {
-                    confirm: true,
-                    ..FrontendInput::default()
-                },
-                now,
-                save_allowed,
-            );
+            now += 1;
+            let confirm = driver.tick(CONFIRM, now, save_allowed);
             assert!(!confirm.exit_requested, "confirm begins the transition");
-
-            // Drive the remaining transition ticks until exit is requested.
             let mut exit_tick = None;
-            for _ in 0..4 {
+            for _ in 0..20 {
                 now += 1;
                 let tick = driver.tick(FrontendInput::default(), now, save_allowed);
                 if tick.exit_requested {
@@ -291,94 +429,104 @@ mod tests {
     }
 
     #[test]
-    fn confirming_an_unreconstructed_entry_waits_without_exiting() {
+    fn without_a_record_the_setup_screens_wait() {
         let mut driver = driver(0);
-        let _ = settle_to_interactive(&mut driver);
-
-        // Selection 0 targets the championship setup screen, which is not yet
-        // reconstructed.
-        let _ = driver.tick(
-            FrontendInput {
-                confirm: true,
-                ..FrontendInput::default()
-            },
-            3,
-            true,
-        );
-
-        for now in 4..10 {
+        let mut now = 0;
+        let _ = settle(&mut driver, &mut now);
+        now += 1;
+        let _ = driver.tick(CONFIRM, now, true);
+        for _ in 0..40 {
+            now += 1;
             let tick = driver.tick(FrontendInput::default(), now, true);
             assert!(!tick.exit_requested);
-            assert!(
-                tick.render_input.is_none(),
-                "it has left the interactive root screen and waits for an unbuilt screen"
-            );
+            assert!(tick.render_input.is_none());
         }
         assert_ne!(driver.state().phase(), FrontendPhase::Interactive);
     }
 
+    fn record() -> Box<Record> {
+        let mut record = Box::new([0u8; LEGACY_CONFIG_SIZE]);
+        crate::config_commit::apply_defaults(
+            &mut record,
+            crate::config_commit::DefaultsHost {
+                token: 0,
+                language: 0,
+                large_memory: false,
+            },
+            None,
+        );
+        record
+    }
+
     #[test]
-    fn game_session_policy_launches_the_three_race_entries() {
-        let mut rally = driver(0);
-        let _ = settle_to_interactive(&mut rally);
-        let _ = rally.tick_for_game_session(
-            FrontendInput {
-                next: true,
-                ..FrontendInput::default()
-            },
-            3,
-            true,
-        );
-        let _ = rally.tick_for_game_session(
-            FrontendInput {
-                confirm: true,
-                ..FrontendInput::default()
-            },
-            4,
-            true,
-        );
-        let begin = rally.tick_for_game_session(FrontendInput::default(), 5, true);
-        assert!(begin.effects.iter().any(|effect| matches!(
-            effect,
-            FrontendEffect::BeginTransition {
-                to: RALLY_SCREEN_ID,
-                ..
-            }
-        )));
-        assert_eq!(rally.race_mode(), Some(1));
-        let leave = rally.tick_for_game_session(FrontendInput::default(), 6, true);
-        assert_eq!(leave.effects, vec![FrontendEffect::StartRace]);
-
-        let mut championship = driver(0);
-        let _ = settle_to_interactive(&mut championship);
-        let _ = championship.tick_for_game_session(
-            FrontendInput {
-                confirm: true,
-                ..FrontendInput::default()
-            },
-            3,
-            true,
-        );
-        let _ = championship.tick_for_game_session(FrontendInput::default(), 4, true);
-        assert_eq!(championship.race_mode(), Some(0));
-        let leave = championship.tick_for_game_session(FrontendInput::default(), 5, true);
-        assert_eq!(leave.effects, vec![FrontendEffect::StartRace]);
-
-        // The options entry (4) has no launch.
-        let mut options = driver(4);
-        let _ = settle_to_interactive(&mut options);
-        let _ = options.tick_for_game_session(
-            FrontendInput {
-                confirm: true,
-                ..FrontendInput::default()
-            },
-            3,
-            true,
-        );
-        for now in 4..8 {
-            let tick = options.tick_for_game_session(FrontendInput::default(), now, true);
-            assert!(!tick.effects.contains(&FrontendEffect::StartRace));
+    fn a_championship_goes_from_the_root_through_its_screens_to_the_race() {
+        let mut driver = driver(0);
+        let mut record = record();
+        let mut now = 0;
+        let mut tick = |driver: &mut RootInteraction,
+                        input: FrontendInput,
+                        held: Option<u8>,
+                        record: &mut Record| {
+            now += 50;
+            driver.tick_for_game_session(input, FrontendKeys { held, pad: 0 }, now, true, record)
+        };
+        while driver.state().phase() != FrontendPhase::Interactive {
+            let _ = tick(&mut driver, FrontendInput::default(), None, &mut record);
         }
-        assert_eq!(options.race_mode(), None);
+        let _ = tick(&mut driver, CONFIRM, None, &mut record);
+        // The camera, the setup's activation and its slide-in.
+        let mut frames = 0;
+        while !(driver.state().active_screen() == CHAMPIONSHIP_SETUP_SCREEN_ID
+            && driver.state().phase() == FrontendPhase::Interactive
+            && driver.screens().slides_idle())
+        {
+            let _ = tick(&mut driver, FrontendInput::default(), None, &mut record);
+            frames += 1;
+            assert!(frames < 100);
+        }
+        // The commit re-enables the navigation after the step that read the
+        // input, so one more frame passes before Return is taken.
+        let _ = tick(&mut driver, FrontendInput::default(), None, &mut record);
+        assert!(
+            driver
+                .screens()
+                .menu(CHAMPIONSHIP_SETUP_SCREEN_ID)
+                .is_some_and(|menu| menu.nav.confirms)
+        );
+        // Return on Continue; release; the name entry.
+        let _ = tick(
+            &mut driver,
+            FrontendInput::default(),
+            Some(0x0d),
+            &mut record,
+        );
+        let mut frames = 0;
+        while !(driver.state().active_screen() == CHAMPIONSHIP_NEXT_SCREEN_ID
+            && driver.state().phase() == FrontendPhase::Interactive
+            && driver.screens().slides_idle())
+        {
+            let _ = tick(&mut driver, FrontendInput::default(), None, &mut record);
+            frames += 1;
+            assert!(frames < 100);
+        }
+        let _ = tick(&mut driver, FrontendInput::default(), None, &mut record);
+        let enter = tick(
+            &mut driver,
+            FrontendInput::default(),
+            Some(0x0d),
+            &mut record,
+        );
+        assert!(enter.screen_effects.contains(&ScreenEffect::CommitRecord));
+        // The camera's sixth step hands off to the race.
+        let mut started = false;
+        for _ in 0..20 {
+            let tick = tick(&mut driver, FrontendInput::default(), None, &mut record);
+            if tick.effects.contains(&FrontendEffect::StartRace) {
+                started = true;
+                break;
+            }
+        }
+        assert!(started);
+        assert_eq!(record[0x180] & 3, 0, "a championship");
     }
 }
