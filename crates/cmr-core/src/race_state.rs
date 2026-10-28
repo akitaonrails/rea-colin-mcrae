@@ -20,6 +20,10 @@
 //!
 //! See evidence `impl.sim-race-state-trace`.
 
+use crate::car_reset::{
+    ResetDispatchInput, ResetFadeState, ResetNodeError, ResetPlacement, place_on_target,
+    select_reset_target, step_reset_fade,
+};
 use crate::car_setup::CarSetupBlock;
 use crate::compiled_car_initializer::{
     CompiledControlClearLoop, CompiledControlFamilies, CompiledFourWheelConstants,
@@ -600,6 +604,8 @@ pub struct FourWheelState {
     pub rollover: RolloverState,
     /// `+0x330`: the ground normal saved before the last ground pass.
     pub previous_normal_330: Vec3,
+    /// The reset words `ctl +0x41c/+0x424/+0x428/+0x460` (`FUN_00414850`).
+    pub reset: ResetFadeState,
 }
 
 /// Apply neutral-gear zeroing or the ordinary post-step tracking update.
@@ -693,6 +699,23 @@ pub enum WheelPostprocessError {
     TyreSurface(TyreSurfaceIndexError),
     /// A wheel surface word outside the roll-limit table.
     RollSurface(RollSurfaceIndexError),
+    /// The reset dispatcher read outside the `.cat` nodes.
+    ResetNode(ResetNodeError),
+}
+
+/// Report a ground-query failure by the lane that failed.
+fn ground_query_error<P, C>(
+    failure: crate::compiled_car_initializer::CompiledEightLaneExecutionFailure<P, C>,
+) -> WheelPostprocessError {
+    use crate::compiled_car_initializer::CompiledEightLaneExecutionFailure::{Config, Dispatch};
+    let (Dispatch { failed_lane, .. } | Config { failed_lane, .. }) = failure;
+    WheelPostprocessError::GroundQuery { failed_lane }
+}
+
+impl From<ResetNodeError> for WheelPostprocessError {
+    fn from(error: ResetNodeError) -> Self {
+        Self::ResetNode(error)
+    }
 }
 
 impl From<RollSurfaceIndexError> for WheelPostprocessError {
@@ -990,10 +1013,34 @@ impl CarState {
                     roll_angle_60c: 0,
                 },
                 previous_normal_330: Vec3::ZERO,
+                reset: ResetFadeState {
+                    active_41c: false,
+                    countdown_424: 0,
+                    fade_428: 0,
+                    penalty_460: false,
+                },
             },
             ground: None,
         }
     }
+}
+
+/// What one [`RaceState::run_reset`] call did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResetOutcome {
+    /// The dispatcher's write of `DAT_0057ae70[player]`.
+    pub cursor: Option<i32>,
+    /// The car was placed on the reset target this tick.
+    pub placed: bool,
+    /// `DAT_00551560[player]`: the mechanics routine snaps the camera
+    /// (`FUN_00434870`) before its next update.
+    pub camera_reset: bool,
+    /// The screen fade level `ctl +0x428`.
+    pub fade_428: u8,
+    /// The penalty countdown reached zero (sound cue `0x21c0000`).
+    pub penalty_cue: bool,
+    /// A penalty reset ended (car `+0x760 = 1`).
+    pub penalty_done_760: bool,
 }
 
 /// A snapshot emitted per tick for the trace.
@@ -2094,18 +2141,7 @@ impl RaceState {
             providers,
             config,
         )
-        .map_err(|failure| WheelPostprocessError::GroundQuery {
-            failed_lane: match failure {
-                crate::compiled_car_initializer::CompiledEightLaneExecutionFailure::Dispatch {
-                    failed_lane,
-                    ..
-                }
-                | crate::compiled_car_initializer::CompiledEightLaneExecutionFailure::Config {
-                    failed_lane,
-                    ..
-                } => failed_lane,
-            },
-        })?;
+        .map_err(ground_query_error)?;
         self.car.collision.recovery_latch_688 = after.recovery_688;
         self.car.four_wheel.tumble = after.tumble;
         if let Some(impact) = after.impact_3cc {
@@ -2120,6 +2156,113 @@ impl RaceState {
         self.car.collision.out_of_control_axis_bc = after.axis_snapshot_bc;
         self.car.ground = Some(ground);
         Ok(())
+    }
+
+    /// The reset dispatcher `FUN_00467210` and its fade-and-place routine
+    /// `FUN_00414850` for this car, run after the ground pass. Returns the
+    /// dispatcher's cursor write and the presentation effects. On error
+    /// nothing is written back.
+    ///
+    /// # Errors
+    ///
+    /// A node index outside the `.cat` array or a failed placement query.
+    pub fn run_reset<P, C>(
+        &mut self,
+        dispatch: &ResetDispatchInput,
+        providers: &mut [P; 8],
+        config: &mut C,
+    ) -> Result<ResetOutcome, WheelPostprocessError>
+    where
+        P: crate::compiled_car_initializer::CompiledLaneGeometryProvider,
+        C: crate::compiled_car_initializer::CompiledLaneConfigProvider,
+    {
+        let Some(ground) = self.car.ground else {
+            return Ok(ResetOutcome::default());
+        };
+        let mut dispatch = *dispatch;
+        dispatch.position = self.car.position;
+        dispatch.row0 = self.car.motion.basis[0];
+        let Some(target) = select_reset_target(ground.lanes.latch_67c != 0, &dispatch)? else {
+            return Ok(ResetOutcome::default());
+        };
+        let mut reset = self.car.four_wheel.reset;
+        let step = step_reset_fade(&mut reset, false);
+        let placement = if step.place {
+            Some(place_on_target(&target, ground, providers, config).map_err(ground_query_error)?)
+        } else {
+            None
+        };
+        self.car.four_wheel.reset = reset;
+        if step.finished
+            && let Some(ground) = self.car.ground.as_mut()
+        {
+            ground.lanes.latch_67c = 0;
+        }
+        if let Some(placement) = placement {
+            self.apply_reset_placement(placement);
+        }
+        Ok(ResetOutcome {
+            cursor: target.cursor,
+            placed: step.place,
+            camera_reset: step.place,
+            fade_428: self.car.four_wheel.reset.fade_428,
+            penalty_cue: step.penalty_cue,
+            penalty_done_760: step.penalty_done_760,
+        })
+    }
+
+    /// `FUN_00414850`'s state writes after the placement geometry: the motion,
+    /// collision, tumbling, rollover, drivetrain, pedal, steering and lane
+    /// words it clears, and gear 1. Words it clears that this reconstruction
+    /// does not model (`ctl +0x88..+0x90`, `+0x130..+0x138`, `+0x2e4`,
+    /// `+0x3e8`, car `+0x39c..+0x3c8`, `+0x3e4`, `+0x544`, `+0x550`,
+    /// `+0x75c`) are not represented.
+    pub fn apply_reset_placement(&mut self, placement: ResetPlacement) {
+        let car = &mut self.car;
+        let mut ground = placement.ground;
+        // `ctl +0x3d0..+0x3de` handles and car `+0x618..+0x634` accumulators.
+        ground.lanes.handles = [0; 8];
+        ground.lanes.accumulator_words = [0; 8];
+        car.ground = Some(ground);
+        car.position = placement.position;
+        car.velocity = Vec3::ZERO;
+        car.motion.basis = placement.basis;
+        car.motion.projection_axis = placement.normal;
+        car.motion.contact_distance_flags = placement.contact_flags;
+        car.motion.contact_count_674 = i32::from(placement.contact_count);
+        car.motion.angular_velocity = Vec3::ZERO;
+        car.motion.moment = Vec3::ZERO;
+        car.motion.lane_source_s = placement.basis[0];
+        car.collision.pending_linear_3cc = Vec3::ZERO;
+        car.collision.response_state_680 = false;
+        car.collision.recovery_latch_688 = false;
+        car.collision.out_of_control_axis_bc =
+            Vec3::new(Fixed16::ZERO, Fixed16::ONE, Fixed16::ZERO);
+        let wheel = &mut car.four_wheel;
+        wheel.speed_ec = 0;
+        wheel.start_basis_27c = placement.basis;
+        wheel.previous_normal_330 = placement.normal;
+        wheel.rollover = RolloverState::default();
+        wheel.tumble.hull_ticks_678 = 0;
+        wheel.tumble.inverted_684 = false;
+        wheel.tumble.righting_3ec = false;
+        wheel.tumble.roof_3f4 = false;
+        wheel.tumble.side_3f8 = false;
+        wheel.tumble.end_3fc = false;
+        for first in &mut wheel.first {
+            first.wheel_speed = 0;
+            first.force = 0;
+        }
+        wheel.smoothed_wheel_speeds = [0; 4];
+        wheel.pedals = crate::pedal_response::PedalResponseState::default();
+        wheel.engine_2e0 = 0;
+        wheel.engine_speed_2e8 = 0;
+        wheel.steering.position_318 = 0;
+        wheel.steering.angle_3e0 = 0;
+        wheel.steering.target_3e2 = 0;
+        wheel.gearbox.reverse_mode_408 = false;
+        wheel.gearbox.gear_43a = 1;
+        wheel.limiter_444 = false;
     }
 
     /// Run a scripted control sequence, returning the per-tick trace.

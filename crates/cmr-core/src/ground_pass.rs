@@ -208,14 +208,14 @@ pub fn rebuild_ground_probes(
     .vectors
 }
 
-fn scan(ground: &GroundContact) -> CompiledLaneThresholdEffects {
+pub(crate) fn scan(ground: &GroundContact) -> CompiledLaneThresholdEffects {
     derive_compiled_lane_thresholds(CompiledLaneThresholdInputs {
         lane_words: ground.lanes.lane_words,
         source_y: ground.probes.map(|probe| probe[1]),
     })
 }
 
-fn query<P, C>(
+pub(crate) fn query<P, C>(
     ground: &mut GroundContact,
     eight_lanes: bool,
     providers: &mut [P; 8],

@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: reconstruct the integrator head and native contact sum
+feat: reconstruct the car reset to the road
 ```
 
 Start by confirming the checkout and progress footer:
@@ -141,8 +141,11 @@ frames under `.work/frames`. The out-of-control path is reconstructed
 (`impl.tumbling-ground-pass`), and so is the integrator head
 (`impl.integrator-head`), which removed the bank-slide blow-up. Run the probe
 with `CMR_RUNTIME_DATA="$PWD/runtime-data/installed-eu-derived-assets-v2"`.
-Next: wheel animation `FUN_00410350`, the player option bytes, respawn and
-totalled handling. Trees appear to be `.sht` sprites, which the native
+The car reset is reconstructed (`impl.car-reset`); the wheel/suspension
+animation routines are presentation-only (`rea.official-eu.car-animation-words`).
+Next: the player option bytes, the live HUD gear/rev words (the HUD still uses
+harness gear 1, rev 0), the `+0x75c` penalty timer, then the animation words
+for rendering. Trees appear to be `.sht` sprites, which the native
 excludes from static collision. Done so far: the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`
 from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground`),

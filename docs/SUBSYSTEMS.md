@@ -2606,6 +2606,8 @@ languages rather than fabricating or silently aliasing Italian assets.
   trigger `FUN_0040bfe0` before the native contact sum, which adds each
   touching probe's support and lane force and its moment about the probe
   offset; an out-of-control car takes the tumbling pass `FUN_004115d0`.
+- A wrecked, sunk or stuck car (latch `+0x67c`) is reset by `FUN_00467210` and
+  `FUN_00414850`: fade out, placement on the last eligible `.cat` node, fade in.
 - Verification covers source-owned fixtures, reviewed-import and offscreen SDL
   runs on Linux, and a clean Windows-target `cargo check`. CI defines portable,
   cross-target and full-workspace jobs; native Windows and Actions provisioning

@@ -1935,6 +1935,11 @@ The integrator head is reconstructed (`impl.integrator-head`): the grip assist
 `FUN_0040b240`, the rollover trigger `FUN_0040bfe0` and the native force and
 moment sum over the touching probes. With them the AU1 bank-slide blow-up is gone.
 
+The car reset is reconstructed (`impl.car-reset`): once a car is wrecked, sunk or
+stuck (latch `+0x67c`), the screen fades out, the car is placed back on the
+last eligible `.cat` node facing along the road, and the fade comes back in.
+The suspension and wheel animation routines are presentation-only.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

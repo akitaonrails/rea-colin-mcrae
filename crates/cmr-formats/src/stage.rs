@@ -547,8 +547,8 @@ pub fn parse_csp_starts(bytes: &[u8]) -> Result<CspStarts, StageError> {
     })
 }
 
-/// One `.cat` node: a position, a tangent/direction, a split flag, and a
-/// sequence index. The byte at `+0x19` is an unrecovered field, preserved.
+/// One `.cat` node: a position, a tangent/direction, a split flag, a reset
+/// exclusion byte, and a sequence index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CatNode {
     /// Position `(x, y, z)` at `+0x00/+0x04/+0x08`.
@@ -557,7 +557,8 @@ pub struct CatNode {
     pub direction: [i32; 3],
     /// Split/checkpoint flag at `+0x18` (nonzero = split node).
     pub split_flag: u8,
-    /// Preserved unknown byte at `+0x19`.
+    /// Byte at `+0x19`: nonzero excludes the node as a reset target (the
+    /// dispatcher `FUN_00467210` skips back over such nodes).
     pub reserved: u8,
     /// Node sequence index at `+0x1A` (recomputed on mirror).
     pub seq_index: u16,

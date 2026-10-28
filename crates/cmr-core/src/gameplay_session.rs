@@ -19,7 +19,8 @@
 //! documented [`InRaceScript`] harness stand-in until those subsystems are wired;
 //! only `stage_finished` comes from the live tracker.
 
-use crate::fixed_point::Fixed16;
+use crate::car_reset::ResetDispatchInput;
+use crate::fixed_point::{Fixed16, Vec3};
 use crate::game_menu_flow::MenuFlowInputs;
 use crate::game_race_flow::{InRaceInputs, race_flow_next};
 use crate::game_session::{GameSession, SessionBand};
@@ -28,7 +29,7 @@ use crate::host_loop::HostClock;
 use crate::live_static_collision_car_frame::PreviousCarXz;
 use crate::race_state::{
     CarState, Controls, FourWheelIterationParams, LiveStaticCollisionStepError, RaceState,
-    SimParams, WheelPostprocessError,
+    ResetOutcome, SimParams, WheelPostprocessError,
 };
 use crate::render_route::{RenderRoute, render_route};
 use crate::stage_checkpoints::StageProgress;
@@ -116,7 +117,43 @@ pub struct GameplaySession<'a> {
     script: InRaceScript,
     wheel: Option<FourWheelIterationParams<'a>>,
     ground_geometry: Option<&'a crate::stage_compiled_geometry::StageCompiledGeometry>,
+    reset_environment: ResetEnvironment,
+    last_reset: ResetOutcome,
     sim_ticks: u32,
+}
+
+/// The words `FUN_00467210` reads besides the car and the `.cat` cursor.
+///
+/// [`ResetEnvironment::single_player_harness`] is the harness choice: the
+/// race-start init `FUN_00437510` sets `DAT_0057b0ac[player] = 100` on both
+/// of its branches, so a running race passes the gate; the mode bits
+/// `DAT_00d3ca80 +0x166/+0x168` and the loop offset `DAT_0057b030` are not
+/// recovered and are zero (the plain mode); the comparison car is car record
+/// 1, which the setup clear at `0x404431` zeroes and a single-player race is
+/// inferred to leave at the origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResetEnvironment {
+    pub race_state_57b0ac: i32,
+    pub replay_d3ca88: bool,
+    pub config_166: u8,
+    pub config_168: u8,
+    pub loop_offset_57b030: i32,
+    pub comparison_xz: [i32; 2],
+}
+
+impl ResetEnvironment {
+    /// The harness defaults described on the type.
+    #[must_use]
+    pub const fn single_player_harness() -> Self {
+        Self {
+            race_state_57b0ac: crate::car_reset::RACE_RUNNING_57B0AC,
+            replay_d3ca88: false,
+            config_166: 0,
+            config_168: 0,
+            loop_offset_57b030: 0,
+            comparison_xz: [0, 0],
+        }
+    }
 }
 
 impl<'a> GameplaySession<'a> {
@@ -169,6 +206,8 @@ impl<'a> GameplaySession<'a> {
             script,
             wheel,
             ground_geometry: None,
+            reset_environment: ResetEnvironment::single_player_harness(),
+            last_reset: ResetOutcome::default(),
             sim_ticks: 0,
         }
     }
@@ -191,12 +230,30 @@ impl<'a> GameplaySession<'a> {
         self
     }
 
+    /// Replace the reset dispatcher's environment words.
+    #[must_use]
+    pub fn with_reset_environment(mut self, environment: ResetEnvironment) -> Self {
+        self.reset_environment = environment;
+        self
+    }
+
+    /// What the reset dispatcher did on the last four-wheel tick.
+    #[must_use]
+    pub fn last_reset(&self) -> ResetOutcome {
+        self.last_reset
+    }
+
+    /// One four-wheel mechanics tick: the producer and integrator, then the
+    /// ground pass `FUN_00410a60` and the reset `FUN_00467210`, in the order of
+    /// the mechanics routine's per-car tail (`0x43b50a`, `0x43b517`).
     fn four_wheel_tick(
         &mut self,
         controls: &Controls,
+        progress: &mut StageProgress,
     ) -> Result<crate::race_state::TraceSample, WheelPostprocessError> {
         let wheel = self.wheel.as_ref().expect("a four-wheel session");
         let mut sample = self.race.step_with_all_four_wheels(controls, wheel)?;
+        self.last_reset = ResetOutcome::default();
         if let Some(geometry) = self.ground_geometry {
             let mut config = |_lane: usize| Ok::<u8, std::convert::Infallible>(0);
             self.race.run_ground_pass(
@@ -204,6 +261,28 @@ impl<'a> GameplaySession<'a> {
                 &mut geometry.eight_lane_providers(),
                 &mut config,
             )?;
+            let environment = self.reset_environment;
+            let dispatch = ResetDispatchInput {
+                nodes: progress.nodes(),
+                cursor: i32::try_from(progress.cursor()).unwrap_or(i32::MAX),
+                loop_offset_57b030: environment.loop_offset_57b030,
+                race_state_57b0ac: environment.race_state_57b0ac,
+                replay_d3ca88: environment.replay_d3ca88,
+                config_166: environment.config_166,
+                config_168: environment.config_168,
+                comparison_xz: environment.comparison_xz,
+                position: Vec3::ZERO,
+                row0: Vec3::ZERO,
+            };
+            let outcome = self.race.run_reset(
+                &dispatch,
+                &mut geometry.eight_lane_providers(),
+                &mut config,
+            )?;
+            if let Some(cursor) = outcome.cursor.and_then(|c| usize::try_from(c).ok()) {
+                progress.set_cursor(cursor);
+            }
+            self.last_reset = outcome;
             sample.car = self.race.car();
         }
         Ok(sample)
@@ -242,7 +321,7 @@ impl<'a> GameplaySession<'a> {
     ) -> Result<GameplayFrame, WheelPostprocessError> {
         let driving_sample = if self.session.current().id() == 5 {
             Some(if self.wheel.is_some() {
-                self.four_wheel_tick(&controls)?
+                self.four_wheel_tick(&controls, progress)?
             } else {
                 self.race.step(&controls, &self.params)
             })
@@ -288,7 +367,7 @@ impl<'a> GameplaySession<'a> {
             let race_before = self.race.clone();
             let previous_center_xz = PreviousCarXz::capture(race_before.car().position);
             let mut sample = if self.wheel.is_some() {
-                self.four_wheel_tick(&controls)
+                self.four_wheel_tick(&controls, progress)
                     .map_err(StaticGameplayAdvanceError::Wheel)?
             } else {
                 self.race.step(&controls, &self.params)

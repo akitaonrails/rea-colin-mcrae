@@ -2782,6 +2782,14 @@ impl ViewHarness {
         self.controller.update(position, heading, pal)
     }
 
+    /// The reset's camera snap (`DAT_00551560` -> `FUN_00434870`): the
+    /// native re-initializes the view's camera slots. This harness rebuilds the
+    /// controller in its current mode, an approximation until `FUN_00436730`
+    /// is reconstructed.
+    fn snap(&mut self) {
+        self.controller = ViewController::new(self.controller.mode());
+    }
+
     fn car_world(&self, position: Vec3, heading: u16) -> [i32; 16] {
         cmr_core::gameplay_camera::car_world_q16(&self.trig, position, heading)
     }
@@ -2965,6 +2973,10 @@ fn advance_game_frame<C: HostClock>(
             .try_advance(clock, menu_inputs, controls, progress)
             .map_err(SessionFourWheelError::Producer)?
     };
+    if session.last_reset().camera_reset {
+        camera.snap();
+    }
+    let reset_fade = session.car().four_wheel.reset.fade_428;
     let world = compose_world_for_route(advanced.route, || {
         // Compose the live world for every route that reaches the shared viewport
         // compositor 0x422ca0: the in-race StageWorld states and the overlay
@@ -3010,6 +3022,14 @@ fn advance_game_frame<C: HostClock>(
         world.map(|frame| frame.modulated(fade_level_to_modulation_byte(level)))
     } else {
         *fade = None;
+        world
+    };
+    // The reset fade `ctl +0x428` is copied into the viewport record each tick
+    // (`0x43b6f5`); its renderer is not recovered, so it is presented as a
+    // modulate toward black, fully black at the placement tick (an inference).
+    let world = if reset_fade > 0 {
+        world.map(|frame| frame.modulated(0xff - reset_fade))
+    } else {
         world
     };
     let loading_interstitial = loading_interstitial_for_route(
@@ -6349,6 +6369,37 @@ mod tests {
                 &mut config,
             ) {
                 panic!("tick {tick} ground: {error:?}");
+            }
+            let environment = cmr_core::gameplay_session::ResetEnvironment::single_player_harness();
+            let dispatch = cmr_core::car_reset::ResetDispatchInput {
+                nodes: progress.nodes(),
+                cursor: progress.cursor() as i32,
+                loop_offset_57b030: environment.loop_offset_57b030,
+                race_state_57b0ac: environment.race_state_57b0ac,
+                replay_d3ca88: environment.replay_d3ca88,
+                config_166: environment.config_166,
+                config_168: environment.config_168,
+                comparison_xz: environment.comparison_xz,
+                position: Vec3::ZERO,
+                row0: Vec3::ZERO,
+            };
+            match state.run_reset(
+                &dispatch,
+                &mut pose.geometry.eight_lane_providers(),
+                &mut config,
+            ) {
+                Ok(outcome) => {
+                    if let Some(cursor) = outcome.cursor {
+                        progress.set_cursor(cursor as usize);
+                    }
+                    if outcome.placed {
+                        eprintln!(
+                            "probe reset placed at tick {tick} cursor={:?}",
+                            outcome.cursor
+                        );
+                    }
+                }
+                Err(error) => panic!("tick {tick} reset: {error:?}"),
             }
             let sample = cmr_core::race_state::TraceSample {
                 clock: Fixed16::ZERO,

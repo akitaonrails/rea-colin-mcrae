@@ -31,6 +31,7 @@ pub mod camera_mode;
 pub mod camera_placement;
 pub mod camera_trackside;
 pub mod camera_view;
+pub mod car_reset;
 pub mod car_resources;
 pub mod car_setup;
 pub mod championship_assets;

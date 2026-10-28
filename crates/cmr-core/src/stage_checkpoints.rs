@@ -126,6 +126,18 @@ impl<'a> StageProgress<'a> {
         self.cursor
     }
 
+    /// The parsed nodes this cursor walks.
+    #[must_use]
+    pub fn nodes(&self) -> &'a [CatNode] {
+        self.nodes
+    }
+
+    /// Write the cursor directly, as the reset dispatcher `FUN_00467210`
+    /// does. Splits already passed stay passed.
+    pub fn set_cursor(&mut self, cursor: usize) {
+        self.cursor = cursor;
+    }
+
     /// The number of splits this car has passed (`DAT_005ffb88[car]`).
     #[must_use]
     pub fn splits_passed(&self) -> u32 {
