@@ -182,8 +182,65 @@ pub const fn resolve_lane_direction_mode(rebuild: bool, exchange: bool) -> LaneD
     }
 }
 
-/// Produce P/R from S and `+0x264`: copy S for a zero angle, otherwise rotate it
-/// through the recovered axis-angle matrix, then form the unnormalized raw cross.
+/// `FUN_00492ca0`: the 4x4 axis-angle matrix about `axis` for `angle` (BAM),
+/// built from `s = sin(-angle)` and `c = cos(-angle)` of the runtime sine
+/// table, `t = 1 - c`, and the Q16 axis products. Returns `None` when the
+/// table has no entry for an index.
+#[must_use]
+pub fn axis_angle_matrix(axis: Vec3, angle: i16, trig: &[i32]) -> Option<[i32; 16]> {
+    let q = |left: i32, right: i32| Fixed16::from_raw(left).mul(Fixed16::from_raw(right)).raw();
+    let negative = i32::from(angle).wrapping_neg();
+    let sin = *trig.get((negative & 0xfff) as usize)?;
+    let cos = *trig.get((negative.wrapping_add(0x400) & 0xfff) as usize)?;
+    let t = 0x1_0000_i32.wrapping_sub(cos);
+    let [x, y, z] = [axis.x.raw(), axis.y.raw(), axis.z.raw()];
+    let (xx, yy, zz) = (q(x, x), q(y, y), q(z, z));
+    let xy = q(q(x, y), t);
+    let xz = q(q(x, z), t);
+    let yz = q(q(z, y), t);
+    let one = 0x1_0000_i32;
+    Some([
+        xx.wrapping_add(q(cos, one.wrapping_sub(xx))),
+        xy.wrapping_sub(q(z, sin)),
+        xz.wrapping_add(q(y, sin)),
+        0,
+        xy.wrapping_add(q(z, sin)),
+        yy.wrapping_add(q(cos, one.wrapping_sub(yy))),
+        yz.wrapping_sub(q(x, sin)),
+        0,
+        xz.wrapping_sub(q(y, sin)),
+        q(x, sin).wrapping_add(yz),
+        q(cos, one.wrapping_sub(zz)).wrapping_add(zz),
+        0,
+        0,
+        0,
+        0,
+        one,
+    ])
+}
+
+/// `FUN_0048dfe0`: transform a vector by the 3x3 part of a 4x4 matrix as a
+/// row vector (`out_i = m[i] v0 + m[4 + i] v1 + m[8 + i] v2`).
+#[must_use]
+pub fn transform_by_matrix(vector: Vec3, matrix: &[i32; 16]) -> Vec3 {
+    let q = |left: i32, right: i32| Fixed16::from_raw(left).mul(Fixed16::from_raw(right)).raw();
+    let [v0, v1, v2] = [vector.x.raw(), vector.y.raw(), vector.z.raw()];
+    let component = |i: usize| {
+        q(matrix[8 + i], v2)
+            .wrapping_add(q(matrix[4 + i], v1))
+            .wrapping_add(q(matrix[i], v0))
+    };
+    Vec3::new(
+        Fixed16::from_raw(component(0)),
+        Fixed16::from_raw(component(1)),
+        Fixed16::from_raw(component(2)),
+    )
+}
+
+/// Produce P/R from S and `+0x264`: copy S for a zero angle, otherwise rotate
+/// it about `+0x264` through the axis-angle matrix `FUN_00492ca0` and
+/// `FUN_0048dfe0` and normalize it (`0x408443..0x40852a`), then form the
+/// unnormalized raw cross.
 #[must_use]
 pub fn derive_lane_direction_pair(
     source_s: Vec3,
@@ -194,7 +251,18 @@ pub fn derive_lane_direction_pair(
     let source_p = if angle == 0 {
         source_s
     } else {
-        integrate_orientation([source_s; 3], [0, angle, 0], trig)?[0]
+        let matrix = axis_angle_matrix(cross_operand, angle, trig)?;
+        let rotated = transform_by_matrix(source_s, &matrix);
+        let normalized = crate::compiled_car_initializer::normalize_compiled_lane_vector([
+            rotated.x.raw(),
+            rotated.y.raw(),
+            rotated.z.raw(),
+        ]);
+        Vec3::new(
+            Fixed16::from_raw(normalized[0]),
+            Fixed16::from_raw(normalized[1]),
+            Fixed16::from_raw(normalized[2]),
+        )
     };
     Some((source_p, wrapping_cross(source_p, cross_operand)))
 }
@@ -2008,11 +2076,21 @@ mod tests {
             Some((source, raw_v(0, 0, 0x10000)))
         );
         let trig = crate::fixed_point::build_sine_table();
-        let rotated = integrate_orientation([source; 3], [0, 0x400, 0], &trig).unwrap()[0];
-        assert_eq!(
-            derive_lane_direction_pair(source, axis, 0x400, &trig),
-            Some((rotated, wrapping_cross(rotated, axis)))
-        );
+        // A quarter turn about the up axis takes +X to -Z, and the opposite
+        // turn to +Z: the rotation keeps the steer sign.
+        let matrix = axis_angle_matrix(axis, 0x400, &trig).unwrap();
+        assert_eq!(&matrix[..3], &[0, 0, -0x10000]);
+        assert_eq!(matrix[5], 0x10000);
+        assert_eq!(matrix[15], 0x10000);
+        assert_eq!(transform_by_matrix(source, &matrix), raw_v(0, 0, -0x10000));
+        let (left, left_cross) = derive_lane_direction_pair(source, axis, 0x400, &trig).unwrap();
+        let (right, _) = derive_lane_direction_pair(source, axis, -0x400, &trig).unwrap();
+        assert!(left.z.raw() < -0xff00 && left.x.raw().abs() < 0x10);
+        assert!(right.z.raw() > 0xff00 && right.x.raw().abs() < 0x10);
+        assert_eq!(left_cross, wrapping_cross(left, axis));
+        // A small turn stays close to the source and on the matching side.
+        let (slight, _) = derive_lane_direction_pair(source, axis, 0x40, &trig).unwrap();
+        assert!(slight.x.raw() > 0xfc00 && slight.z.raw() < 0);
         assert_eq!(derive_lane_direction_pair(source, axis, 1, &[]), None);
     }
 

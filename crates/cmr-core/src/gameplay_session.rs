@@ -173,6 +173,13 @@ impl<'a> GameplaySession<'a> {
         }
     }
 
+    /// Whether this session steps the complete four-wheel producer, whose car
+    /// pose lives in `MotionState::basis` rather than the planar heading.
+    #[must_use]
+    pub fn is_four_wheel(&self) -> bool {
+        self.wheel.is_some()
+    }
+
     /// Run the per-car ground pass `FUN_00410a60` against this stage geometry
     /// after every four-wheel step whose car carries live ground contact.
     #[must_use]
@@ -670,6 +677,7 @@ mod tests {
             inertia_50_54_58: [1, 2, 1],
             control_word_148: 0x3_0000,
             control_word_16c: 0x2_0000,
+            control_word_158: 1,
             control_word_150: 0x0ccc,
             control_word_174: 0x0ccd,
             control_word_17c: 0x0cce,

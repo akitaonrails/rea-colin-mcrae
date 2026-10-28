@@ -1914,6 +1914,12 @@ row 0 reversed). Under throttle alone the four-wheel car now drives down the
 AU1 road and passes 21 checkpoints before it leaves the ground and tumbles,
 which needs the out-of-control path `FUN_004115d0`.
 
+Steering and the drive split are now sourced (`impl.steering-and-drive-split`):
+the steering words come from `FUN_0041b160`, the lane source turns about the up
+row through the native axis-angle matrix, and every wheel reads the compiled
+`+0x158` split, so all four wheels drive. The windowed session now runs the
+four-wheel producer with the ground pass and draws the car from its basis.
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

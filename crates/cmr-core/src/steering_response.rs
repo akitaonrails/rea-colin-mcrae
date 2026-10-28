@@ -118,6 +118,30 @@ fn qmul(left: i32, right: i32) -> i32 {
     Fixed16::from_raw(left).mul(Fixed16::from_raw(right)).raw()
 }
 
+/// The steering-sensitivity words `FUN_0041b160` writes into every control
+/// record (`0x60041c - 8 + 0x464 * i`, eight records) from the low three bits
+/// of the player option byte `+0x97` of the `0x9c`-byte records behind
+/// `DAT_00d3ca80`: option 0 is `(0xccc, 2.0, 0x8000)`, option 2 is
+/// `(0x1999, 4.0, 0x10000)` and every other option `(0x1333, 3.0, 0xc000)` as
+/// `(+0x44c rate, divisor, +0x458 analog gain)`. Every option stores
+/// `+0x450 = 1.0 / divisor`, `+0x454 = 0xb333` and `+0x45c = 0`.
+#[must_use]
+pub fn steering_sensitivity(params: SteeringParams, option_97: u8) -> SteeringParams {
+    let (rate, divisor, gain) = match option_97 & 7 {
+        0 => (0xccc, 0x2_0000, 0x8000),
+        2 => (0x1999, 0x4_0000, 0x1_0000),
+        _ => (0x1333, 0x3_0000, 0xc000),
+    };
+    SteeringParams {
+        rate_44c: rate,
+        speed_scale_450: ((i64::from(ONE) << 16) / i64::from(divisor)) as i32,
+        speed_cap_454: 0xb333,
+        analog_gain_458: gain,
+        min_deflection_45c: 0,
+        ..params
+    }
+}
+
 /// `FUN_0041c6c0`: the maximum angle `DAT_0050d738`.
 #[must_use]
 pub fn max_steer_angle(params: SteeringParams, inputs: SteeringInputs) -> i32 {
@@ -300,6 +324,46 @@ pub fn apply_steering(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sensitivity_options_set_rate_reduction_and_gain() {
+        let base = SteeringParams {
+            centering_188: 7,
+            time_step: ONE,
+            min_deflection_45c: 9,
+            ..SteeringParams::default()
+        };
+        let low = steering_sensitivity(base, 0);
+        assert_eq!(
+            (
+                low.rate_44c,
+                low.speed_scale_450,
+                low.speed_cap_454,
+                low.analog_gain_458
+            ),
+            (0xccc, 0x8000, 0xb333, 0x8000)
+        );
+        assert_eq!((low.min_deflection_45c, low.centering_188), (0, 7));
+        let high = steering_sensitivity(base, 2);
+        assert_eq!(
+            (high.rate_44c, high.speed_scale_450, high.analog_gain_458),
+            (0x1999, 0x4000, 0x1_0000)
+        );
+        for option in [1, 3, 7] {
+            let middle = steering_sensitivity(base, option);
+            assert_eq!(
+                (
+                    middle.rate_44c,
+                    middle.speed_scale_450,
+                    middle.analog_gain_458
+                ),
+                (0x1333, 0x5555, 0xc000)
+            );
+        }
+        // Only the low three bits select the option.
+        assert_eq!(steering_sensitivity(base, 0x0a), high);
+        assert_eq!(steering_sensitivity(base, 0xf8), low);
+    }
 
     fn v(x: i32, y: i32, z: i32) -> Vec3 {
         Vec3::new(

@@ -1772,6 +1772,37 @@ fn native_stage_start_from_csp(start_record: CspStart) -> NativeStageStart {
     (start, initial_camera, actor_rows)
 }
 
+/// The harness render pose of a four-wheel car: the yaw of its rolling row
+/// `+0x258` as a 4096-unit heading for the camera (harness forward is
+/// `(cos, 0, sin)`), and a car world matrix in the harness column layout built
+/// from the full basis (right = `-row2`, up = `row1`, forward = `row0`).
+fn four_wheel_render_pose(car: &CarState) -> (u16, [i32; 16]) {
+    let [forward, up, left] = car.motion.basis;
+    let yaw = f64::from(forward.z.raw()).atan2(f64::from(forward.x.raw()));
+    let heading = (yaw * (4096.0 / std::f64::consts::TAU)).round() as i64;
+    let heading = heading.rem_euclid(4096) as u16;
+    let one = Fixed16::ONE.raw();
+    let world = [
+        left.x.raw().wrapping_neg(),
+        left.y.raw().wrapping_neg(),
+        left.z.raw().wrapping_neg(),
+        0,
+        up.x.raw(),
+        up.y.raw(),
+        up.z.raw(),
+        0,
+        forward.x.raw(),
+        forward.y.raw(),
+        forward.z.raw(),
+        0,
+        car.position.x.raw(),
+        car.position.y.raw(),
+        car.position.z.raw(),
+        one,
+    ];
+    (heading, world)
+}
+
 fn car_model_world_q16(car_world: &[i32; 16]) -> [i32; 16] {
     // A controlled chase-camera differential identifies this as the rear-view
     // orientation: local +X maps to harness forward and local -Z maps to
@@ -2963,8 +2994,14 @@ fn advance_game_frame<C: HostClock>(
         // cinematic) on its rising edge.
         let car = session.car();
         let change_view_down = input.keys.is_down(ViewHarness::CHANGE_VIEW_VK);
-        let camera_world = camera.update(change_view_down, car.position, car.heading, false);
-        let harness_car_world = camera.car_world(car.position, car.heading);
+        // A four-wheel car's pose is its evolving basis; the planar harness
+        // keeps only a heading.
+        let (heading, harness_car_world) = if session.is_four_wheel() {
+            four_wheel_render_pose(&car)
+        } else {
+            (car.heading, camera.car_world(car.position, car.heading))
+        };
+        let camera_world = camera.update(change_view_down, car.position, heading, false);
         let car_world = car_model_world_q16(&harness_car_world);
         let hud_input = live_race_hud_inputs(
             car,
@@ -3764,13 +3801,6 @@ impl SessionCompiledPose {
 
 /// Everything the four-wheel step needs from one car's compiled case words,
 /// under the zero config the session's pose setup also uses.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the windowed session moves to the four-wheel path once its force inputs exist"
-    )
-)]
 #[derive(Clone, Copy, Debug)]
 struct SessionCompiledCar {
     families: CompiledControlFamilies,
@@ -3783,13 +3813,6 @@ struct SessionCompiledCar {
 
 impl SessionCompiledPose {
     /// Derive the selected car's four-wheel inputs from its direct case words.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the windowed session moves to the four-wheel path once its force inputs exist"
-        )
-    )]
     fn compiled_car(&self) -> Result<SessionCompiledCar, SessionCompiledPoseError> {
         use cmr_core::compiled_car_initializer::{
             derive_compiled_control_families, derive_compiled_four_wheel_constants,
@@ -3828,6 +3851,46 @@ impl SessionCompiledPose {
             half_state,
             variant_758,
         })
+    }
+
+    /// The selected car's complete four-wheel inputs: the compiled constants,
+    /// gearbox and tyre variant, the authenticated surface coefficients, the
+    /// car-setup reset values (no config setup bytes are read) and the static
+    /// tyre tables.
+    fn compiled_four_wheel_params<'a>(
+        &self,
+        inputs: &SessionWheelInputs,
+        trig: &'a [i32],
+        tyre_tables: &'a cmr_formats::pe_tyre_tables::TyreSurfaceTables,
+    ) -> Result<FourWheelIterationParams<'a>, SessionFourWheelError> {
+        let car = self
+            .compiled_car()
+            .map_err(SessionFourWheelError::CompiledCar)?;
+        let mut wheel = inputs.four_wheel_params(
+            trig,
+            &car.families,
+            &car.half_state,
+            Fixed16::ONE,
+            &car.constants,
+            [0; 4],
+        )?;
+        wheel.gearbox = Some(cmr_core::gearbox::GearboxParams {
+            tables: car.gearbox_tables,
+            drive_ratios: cmr_core::race_state::compiled_drive_ratios(&car.families, Fixed16::ONE),
+            ..cmr_core::gearbox::GearboxParams::default()
+        });
+        cmr_core::race_state::populate_car_setup(
+            &mut wheel,
+            &cmr_core::car_setup::CarSetupBlock::RESET,
+        );
+        wheel.tyre = Some(cmr_core::race_state::TyreSurfaceInputs {
+            tables: tyre_tables,
+            variant_758: car.variant_758,
+        });
+        // `FUN_0041b160` reads the player's sensitivity option; the session's
+        // zero config selects option 0.
+        wheel.steering = cmr_core::steering_response::steering_sensitivity(wheel.steering, 0);
+        Ok(wheel)
     }
 }
 
@@ -3927,8 +3990,34 @@ pub fn run_windowed_game_session(
         inverse_mass: Fixed16::from_raw(0x8000),
         gravity: Vec3::ZERO,
     };
-    let mut session =
-        GameplaySession::new_with_car(params, InRaceScript::frontend_harness(), start);
+    // The complete four-wheel producer drives the session when the reviewed
+    // surface and tyre stores are present; otherwise the planar harness runs.
+    let trig = cmr_core::fixed_point::build_sine_table();
+    let wheel_inputs = SessionWheelInputs::open(runtime_data);
+    let tyre_tables = SessionTyreTables::open(runtime_data);
+    let four_wheel = match (&wheel_inputs, &tyre_tables) {
+        (Ok(inputs), Ok(tables)) => compiled_pose
+            .compiled_four_wheel_params(inputs, &trig, tables.tables())
+            .map_err(|error| error.to_string()),
+        (Err(error), _) => Err(error.to_string()),
+        (_, Err(error)) => Err(error.to_string()),
+    };
+    let mut session = match four_wheel {
+        Ok(wheel) => {
+            start.four_wheel.gearbox = cmr_core::gearbox::GearboxState::at_setup(true);
+            GameplaySession::new_with_four_wheel_and_car(
+                params,
+                InRaceScript::frontend_harness(),
+                wheel,
+                start,
+            )
+            .with_ground_geometry(&compiled_pose.geometry)
+        }
+        Err(error) => {
+            eprintln!("cmr-app: four-wheel inputs unavailable ({error}); using the planar harness");
+            GameplaySession::new_with_car(params, InRaceScript::frontend_harness(), start)
+        }
+    };
     let mut keyboard = KeyboardDriver::player_one();
     let mut analog = AnalogDriver::new();
     let response = DriveResponse {
@@ -4209,6 +4298,7 @@ pub enum SessionFourWheelError {
     Inputs(SessionSurfaceInputsError),
     Surface(SurfaceCoefficientIndexError),
     Producer(WheelPostprocessError),
+    CompiledCar(SessionCompiledPoseError),
 }
 
 impl fmt::Display for SessionFourWheelError {
@@ -4217,6 +4307,7 @@ impl fmt::Display for SessionFourWheelError {
             Self::Inputs(error) => write!(formatter, "session wheel inputs failed: {error}"),
             Self::Surface(error) => write!(formatter, "invalid wheel surface index: {error:?}"),
             Self::Producer(error) => write!(formatter, "four-wheel producer failed: {error:?}"),
+            Self::CompiledCar(error) => write!(formatter, "compiled car inputs failed: {error}"),
         }
     }
 }
@@ -4252,6 +4343,7 @@ const HEADLESS_HARNESS_FOUR_WHEEL_CONSTANTS: CompiledFourWheelConstants =
         inertia_50_54_58: [0x1_0000; 3],
         control_word_148: 0,
         control_word_16c: 0,
+        control_word_158: 1,
         control_word_150: 0,
         control_word_174: 0,
         control_word_17c: 0,
@@ -5905,7 +5997,7 @@ mod tests {
     #[test]
     #[ignore = "diagnostic probe: requires the reviewed installed-EU root in CMR_RUNTIME_DATA"]
     fn probe_compiled_four_wheel_car_on_au1() {
-        use cmr_core::gearbox::{GearboxParams, GearboxState};
+        use cmr_core::gearbox::GearboxState;
         use cmr_core::pedal_response::RawPedals;
         let root = std::env::var_os("CMR_RUNTIME_DATA")
             .map(PathBuf::from)
@@ -5921,36 +6013,13 @@ mod tests {
         let mut progress = StageProgress::new(&nodes, 0);
         let mut pose = SessionCompiledPose::open(&root, "AU1", "Sub").unwrap();
         pose.adjust_spawn(&mut start, actor_rows).unwrap();
-        let car = pose.compiled_car().unwrap();
         let inputs = SessionWheelInputs::open(&root).unwrap();
-        let trig = cmr_core::fixed_point::build_sine_table();
-        let mut wheel = inputs
-            .four_wheel_params(
-                &trig,
-                &car.families,
-                &car.half_state,
-                Fixed16::ONE,
-                &car.constants,
-                [0; 4],
-            )
-            .unwrap();
-        wheel.gearbox = Some(GearboxParams {
-            tables: car.gearbox_tables,
-            drive_ratios: cmr_core::race_state::compiled_drive_ratios(&car.families, Fixed16::ONE),
-            ..GearboxParams::default()
-        });
-        // No config setup bytes or damage flag are read here: the slot keeps
-        // the car-setup reset values (`FUN_0041e3f0`).
-        cmr_core::race_state::populate_car_setup(
-            &mut wheel,
-            &cmr_core::car_setup::CarSetupBlock::RESET,
-        );
-        start.four_wheel.gearbox = GearboxState::at_setup(true);
         let tyre_tables = SessionTyreTables::open(&root).unwrap();
-        wheel.tyre = Some(cmr_core::race_state::TyreSurfaceInputs {
-            tables: tyre_tables.tables(),
-            variant_758: car.variant_758,
-        });
+        let trig = cmr_core::fixed_point::build_sine_table();
+        let wheel = pose
+            .compiled_four_wheel_params(&inputs, &trig, tyre_tables.tables())
+            .unwrap();
+        start.four_wheel.gearbox = GearboxState::at_setup(true);
         let mut state = cmr_core::race_state::RaceState::new(start);
         let throttle = Controls {
             raw_pedals: RawPedals {
@@ -5996,9 +6065,28 @@ mod tests {
             .ok()
             .and_then(|value| value.parse::<i32>().ok())
             .unwrap_or(250);
-        eprintln!("probe inverse_mass_4c={:#x}", wheel.inverse_mass_4c.raw());
+        eprintln!(
+            "probe inverse_mass_4c={:#x} offsets={:x?} config_158={:#x}",
+            wheel.inverse_mass_4c.raw(),
+            wheel
+                .contact_offsets
+                .map(|offset| [offset.x.raw(), offset.y.raw(), offset.z.raw()]),
+            wheel.first[0].config_158,
+        );
         for tick in 0..ticks {
-            if let Err(error) = state.step_with_all_four_wheels(&throttle, &wheel) {
+            let steer_after = std::env::var("CMR_PROBE_STEER_AFTER")
+                .ok()
+                .and_then(|value| value.parse::<i32>().ok());
+            let mut controls = throttle;
+            if steer_after.is_some_and(|after| tick >= after) {
+                let right = std::env::var("CMR_PROBE_STEER").as_deref() == Ok("right");
+                controls.raw_steer = cmr_core::vehicle_dynamics::RawSteer {
+                    left_2fc: if right { 0 } else { 0xfc00 },
+                    right_300: if right { 0xfc00 } else { 0 },
+                    analog_410: false,
+                };
+            }
+            if let Err(error) = state.step_with_all_four_wheels(&controls, &wheel) {
                 panic!("tick {tick}: {error:?}");
             }
             let mut config = |_lane: usize| Ok::<u8, std::convert::Infallible>(0);
@@ -6078,7 +6166,8 @@ mod tests {
                     car.motion.lane_source_s.z.raw(),
                 );
                 eprintln!(
-                    "probe   gains35c={:x?} gains36c={:x?} surfaces={:?}",
+                    "probe   steering={:x?} gains35c={:x?} gains36c={:x?} surfaces={:?}",
+                    car.four_wheel.steering,
                     car.four_wheel.tyre_gains.gain_35c,
                     car.four_wheel.tyre_gains.gain_36c,
                     car.ground.map(|ground| ground.lanes.type_words),

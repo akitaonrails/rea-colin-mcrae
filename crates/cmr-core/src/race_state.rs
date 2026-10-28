@@ -437,6 +437,9 @@ pub fn populate_compiled_four_wheel_constants(
     constants: &CompiledFourWheelConstants,
 ) {
     wheel.inverse_mass_4c = Fixed16::from_raw(constants.state_word_4c);
+    for first in &mut wheel.first {
+        first.config_158 = constants.control_word_158;
+    }
     wheel.angular.momentum.moment_scale = Fixed16::from_raw(constants.state_word_48);
     let [x, y, z] = constants.inertia_50_54_58.map(Fixed16::from_raw);
     wheel.angular.momentum.inertia_scale = Vec3::new(x, y, z);
@@ -449,6 +452,8 @@ pub fn populate_compiled_four_wheel_constants(
         handbrake_max_184: constants.control_word_184,
     };
     wheel.driven_smoothing.mode_408 = constants.control_word_408;
+    // The steering slew multiplies its rate by `DAT_004eac6c`.
+    wheel.steering.time_step = SOLVER_GLOBAL_CONSTANTS.time_step.raw();
     wheel.steering.centering_188 = constants.control_word_188;
     wheel.steering.max_angle_3e4 = constants.control_u16_3e4 as i16;
     wheel.steering.flags_440 = constants.control_byte_440;

@@ -419,7 +419,9 @@ does not advance. With the second loop's residual inputs, small-residual
 normalization and mirrored contact vectors corrected, the car now accelerates
 along its body axis through the gears on AU1. With the compiled spawn rows facing the road (an
 inference), it drives down the AU1 road and passes 21 checkpoints under
-throttle alone before it tumbles (out-of-control path not reconstructed).
+throttle alone before it tumbles (out-of-control path not reconstructed). The steering words (`FUN_0041b160`), the
+axis-angle lane rotation and the compiled drive split are now sourced, and the
+windowed session runs the four-wheel producer.
 
 ## Update rules
 
@@ -430,14 +432,14 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T13:15:00Z
-milestone=spawn-rows-face-the-road
+updated_utc=2026-10-28T14:20:00Z
+milestone=steering-and-drive-split
 completed=117
 partial=2
 not_started=0
 blocked=0
 total=119
-current_focus=four-wheel-window-path-angular-collision-and-car-animation
-next_exit_gate=steered-four-wheel-window-session
+current_focus=four-wheel-handling-out-of-control-path-and-car-animation
+next_exit_gate=stable-four-wheel-driving-on-au1
 auxiliary_reference=psx-p0-complete-p1-static-map-partial-p2-replay-cursor-resolved
 <!-- PROGRESS-TAIL-END -->

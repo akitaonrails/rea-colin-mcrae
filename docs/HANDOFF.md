@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-fix: turn the compiled spawn rows to face the road
+feat: source the steering words and drive split for the windowed car
 ```
 
 Start by confirming the checkout and progress footer:
@@ -129,8 +129,12 @@ the car accelerates along its body axis through the gears on AU1
 (`CMR_PROBE_TICKS=1500`). With the spawn rows facing the road
 (`impl.spawn-rows-face-the-road`) it drives down the road under throttle and
 the cursor reaches 21 before the car leaves the ground and tumbles near tick
-1000 (the out-of-control path `FUN_004115d0` is missing). Next, in order:
-build the windowed session on
+1000 (the out-of-control path `FUN_004115d0` is missing). Steering and the
+drive split are now sourced and the windowed session runs the four-wheel
+producer (`impl.steering-and-drive-split`); `CMR_PROBE_STEER=left|right` with
+`CMR_PROBE_STEER_AFTER=<tick>` scripts the probe's steering. Next: explain the
+unsteered yaw after tick 300 (render frames to see the terrain), then the
+out-of-control path. Done so far: the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`
 from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground`),
 render the car body from `MotionState::basis`, then the out-of-control path

@@ -4199,6 +4199,9 @@ pub struct CompiledFourWheelConstants {
     pub control_word_148: i32,
     /// Control `+0x16c`: full brake response.
     pub control_word_16c: i32,
+    /// Control `+0x158`: the drive split the wheel-force producer and the
+    /// drivetrain read (front wheels compare it with `0`, rear with `1.0`).
+    pub control_word_158: i32,
     /// Control `+0x150/+0x174/+0x17c/+0x184/+0x408` from the post-helper patch.
     pub control_word_150: i32,
     pub control_word_174: i32,
@@ -4272,6 +4275,7 @@ pub fn derive_compiled_four_wheel_constants(
         inertia_50_54_58: suffix.state_words_50_54_58,
         control_word_148: prefix.control_word_148,
         control_word_16c: words.control_words[2],
+        control_word_158: case_control_word(&words, 0x158),
         control_word_150: post_helper_word(&post_helper, 0x150),
         control_word_174: post_helper_word(&post_helper, 0x174),
         control_word_17c: post_helper_word(&post_helper, 0x17c),
@@ -11047,6 +11051,9 @@ mod tests {
             assert_eq!(constants.state_word_4c, prefix.state_word_4c);
             assert_eq!(constants.control_word_148, prefix.control_word_148);
             assert_eq!(constants.control_word_16c, words.control_words[2]);
+            // The drive split is the direct case word, never rescaled.
+            assert_eq!(COMPILED_CONTROL_WORD_OFFSETS[1], 0x158);
+            assert_eq!(constants.control_word_158, words.control_words[1]);
             assert_eq!(
                 constants.control_word_15c,
                 prefix.control_word_15c.unwrap_or(words.control_words[3])
