@@ -187,7 +187,22 @@ pub fn sync(game: &Path, runtime: &Path) -> io::Result<usize> {
         file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(stamp.mtime))?;
     }
     fs::write(&manifest_path, format_manifest(&plan.manifest))?;
+    ensure_save_dir(runtime)?;
     Ok(plan.copy.len())
+}
+
+/// The game writes `save\cmRally.cfg` and `SAVE\SAVESLOT*.cms` with
+/// `OpenFile`, which does not create folders; the 1998 installer made this
+/// one. Any existing spelling is kept (Wine on Linux is case-sensitive on
+/// disk).
+fn ensure_save_dir(runtime: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(runtime)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() && entry.file_name().eq_ignore_ascii_case("save") {
+            return Ok(());
+        }
+    }
+    fs::create_dir(runtime.join("save"))
 }
 
 #[cfg(test)]
@@ -289,6 +304,33 @@ mod tests {
 
         fs::remove_dir_all(&game).unwrap();
         fs::remove_dir_all(&rt).unwrap();
+    }
+
+    #[test]
+    fn sync_creates_a_missing_save_folder_once() {
+        let game = temp("nosave");
+        let rt = temp("nosave-rt");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("Rally.exe"), b"exe").unwrap();
+        sync(&game, &rt).unwrap();
+        assert!(rt.join("save").is_dir());
+        sync(&game, &rt).unwrap();
+
+        // An existing folder in another spelling is reused.
+        let rt2 = temp("nosave-rt2");
+        fs::create_dir_all(rt2.join("SAVE")).unwrap();
+        sync(&game, &rt2).unwrap();
+        let dirs: Vec<_> = fs::read_dir(&rt2)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().unwrap().is_dir())
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(dirs, ["SAVE"]);
+
+        for d in [game, rt, rt2] {
+            fs::remove_dir_all(d).unwrap();
+        }
     }
 
     #[test]

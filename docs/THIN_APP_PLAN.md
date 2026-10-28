@@ -86,7 +86,7 @@ Sources: the decomp ledger (`docs/recomp/EVIDENCE.md`), the API inventory
 
 | # | Requirement | How it's covered | Component (licence) | State |
 | --- | --- | --- | --- | --- |
-| R1 | Game files in place without the 1998 installer | Launcher copies the folder to `%LOCALAPPDATA%\CMRLauncher\Rally` (copies, not links: the game writes `save\`); later launches copy only files changed in the source; save files are never overwritten | ours | **verified** (launcher) |
+| R1 | Game files in place without the 1998 installer | Launcher copies the folder to `%LOCALAPPDATA%\CMRLauncher\Rally` (copies, not links: the game writes `save\`); later launches copy only files changed in the source; save files are never overwritten; creates `save\` when the source has none (the game can't create it) | ours | **verified** (launcher) |
 | R2 | Registry: `CDPath`, `HDPath`, `AVIPath`, `WAVPath`, `Language`, `Hardware`, `Initialised` under `Codemasters\Rally\1.00`; missing `Language`/`Hardware` read uninitialized memory, so always write them | Launcher writes the paths every launch and seeds the game-owned values once (HKLM 32-bit view; when access is denied, the HKCU VirtualStore copy that UAC virtualization reads) | ours | **verified** under Wine; the Windows VirtualStore path: evidence (UAC docs) |
 | R3 | Paths under ~127 characters (`OpenFile`) | Keep the runtime folder short (its own drive letter or a short root) | ours | evidence |
 | R4 | OS gate: only the Win9x platform passes (`FUN_0049dcb0`) | In-memory fix F4 | ours | **verified** (community exe with the same fix runs) |

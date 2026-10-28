@@ -95,3 +95,15 @@ registry values from `THIN_APP_PLAN.md` R2 imported with `regedit /S`.
   already runs this way.
 - Under Proton the legal/Codemasters screen is black for its ~30 s; Enter
   skips it.
+
+## 2026-11-02: save folder, menu input
+
+- From a source folder without `save\`, the game ran but never wrote
+  `save\cmRally.cfg`: it creates files with `OpenFile`, which doesn't create
+  folders (the installer made it). The launcher now creates `save` in the
+  runtime folder when no folder of that name exists; the next run wrote
+  `cmRally.cfg` (7.7 KB).
+- Idling 30 s on the main menu, the selected item never changed, so no
+  connected device (an 8BitDo pad and a Moonlander keyboard's joystick
+  interface are visible to Wine) drives the menu by itself. The menu's
+  odd jumps come from the game polling key levels during its ring animation.
