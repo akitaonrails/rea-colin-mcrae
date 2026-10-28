@@ -1,5 +1,6 @@
 //! The subset of the C runtime's `sprintf` (`FUN_004cfbd0`) the game's text
-//! formats use: `%d`, `%Nd`, `%0Nd`, `%s` and `%%`. An unsupported or
+//! formats use: `%d`, `%Nd`, `%0Nd`, `%.Nd` (at least N digits, the `0`
+//! flag then ignored), `%s`, `%.Ns` (at most N bytes) and `%%`. An unsupported or
 //! unmatched conversion is copied through unchanged, so a malformed format
 //! never reads past its arguments.
 
@@ -39,13 +40,30 @@ pub fn c_format(fmt: &[u8], args: &[FormatArg]) -> Vec<u8> {
             width = width * 10 + usize::from(digit - b'0');
             index += 1;
         }
+        let mut precision = None;
+        if fmt.get(index) == Some(&b'.') {
+            index += 1;
+            let mut digits = 0usize;
+            while let Some(digit) = fmt.get(index).filter(|byte| byte.is_ascii_digit()) {
+                digits = digits * 10 + usize::from(digit - b'0');
+                index += 1;
+            }
+            precision = Some(digits);
+        }
         let converted = match (fmt.get(index), args.clone().next()) {
             (Some(b'd'), Some(&FormatArg::Int(value))) => {
-                let digits = value.unsigned_abs().to_string().into_bytes();
+                let mut digits = value.unsigned_abs().to_string().into_bytes();
+                if let Some(minimum) = precision {
+                    if value == 0 && minimum == 0 {
+                        digits.clear();
+                    }
+                    let lead = minimum.saturating_sub(digits.len());
+                    digits.splice(0..0, std::iter::repeat_n(b'0', lead));
+                }
                 let sign = usize::from(value < 0);
                 let pad = width.saturating_sub(digits.len() + sign);
                 let mut field = Vec::new();
-                if zero {
+                if zero && precision.is_none() {
                     if value < 0 {
                         field.push(b'-');
                     }
@@ -60,6 +78,7 @@ pub fn c_format(fmt: &[u8], args: &[FormatArg]) -> Vec<u8> {
                 Some(field)
             }
             (Some(b's'), Some(&FormatArg::Bytes(text))) => {
+                let text = &text[..precision.map_or(text.len(), |n| n.min(text.len()))];
                 let mut field = vec![b' '; width.saturating_sub(text.len())];
                 field.extend_from_slice(text);
                 Some(field)
@@ -101,6 +120,10 @@ mod tests {
             b"AFTER KENYA"
         );
         assert_eq!(c_format(b"100%%", &[]), b"100%");
+        assert_eq!(c_format(b"F%.3d.bmp", &[FormatArg::Int(7)]), b"F007.bmp");
+        assert_eq!(c_format(b"%05.3d", &[FormatArg::Int(-7)]), b" -007");
+        assert_eq!(c_format(b"[%.0d]", &[FormatArg::Int(0)]), b"[]");
+        assert_eq!(c_format(b"%.2s", &[FormatArg::Bytes(b"ABC")]), b"AB");
         assert_eq!(
             c_format(b"%3d|%03d", &[FormatArg::Int(-4), FormatArg::Int(-4)]),
             b" -4|-04"

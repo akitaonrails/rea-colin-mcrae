@@ -90,6 +90,20 @@ impl ScreenBitmap {
     }
 }
 
+/// Load, parse and upload one 8-bit image with the identity mapping, or
+/// `None` when it is missing or malformed.
+fn upload<B: IndexedVideoBackend>(
+    store: &AssetStore,
+    palette: &LegacyPalette256,
+    sources: &mut UploadedSourceStore<'_, B>,
+    path: &str,
+) -> Option<UploadedIndexedBitmap> {
+    let bytes = store.load(path).ok()?;
+    let parsed = parse_indexed_bitmap(&bytes, BitmapLimits::default()).ok()?;
+    let surface = indexed_surface(parsed, palette.clone(), PaletteMapping::Identity).ok()?;
+    sources.upload_bitmap(&surface).ok()
+}
+
 /// The uploaded sub-screen bitmaps.
 #[derive(Clone, Debug, Default)]
 pub struct ScreenBitmapPool {
@@ -105,13 +119,7 @@ impl ScreenBitmapPool {
     ) -> Self {
         let slots = ScreenBitmap::ALL
             .iter()
-            .map(|bitmap| {
-                let bytes = store.load(bitmap.path()).ok()?;
-                let parsed = parse_indexed_bitmap(&bytes, BitmapLimits::default()).ok()?;
-                let surface =
-                    indexed_surface(parsed, palette.clone(), PaletteMapping::Identity).ok()?;
-                sources.upload_bitmap(&surface).ok()
-            })
+            .map(|bitmap| upload(store, palette, sources, bitmap.path()))
             .collect();
         Self { slots }
     }
@@ -138,6 +146,131 @@ mod tests {
         assert!(
             ScreenBitmapPool::default()
                 .get(ScreenBitmap::Name)
+                .is_none()
+        );
+    }
+}
+
+/// The front end's palette arena (`FUN_004c46f0`): disk.pal at 0, the ten
+/// flag groups from 1 (`DAT_00d4ce54`), the six root icons from 11
+/// (`DAT_00d4ce50`; the unlocked set with `record[0x2b] & 1`), one at 17
+/// (`DAT_00d4ce5c`), the fourteen car logos from 18 (`DAT_00d4ce58`) and one
+/// at 32 (`DAT_00d8ce68`). `FUN_004c4820(id, kind)` adds the kind's base.
+pub mod palette {
+    pub const FLAGS: i32 = 1;
+    pub const ICONS: i32 = 11;
+    pub const SINGLE_17: i32 = 17;
+    pub const CARS: i32 = 18;
+    pub const SINGLE_32: i32 = 32;
+    pub const COUNT: usize = 33;
+}
+
+/// The arena's paths after disk.pal (indices 1..33), from the executable's
+/// tables in the static tables: the flag palettes, the root icons' (the
+/// unlocked set with `record[0x2b] & 1`), `0x5088b4`, the car logos' and
+/// `0x50895c`. Each is relative to the front end's root (`new_fe\`).
+pub fn arena_paths(
+    flags: &[Vec<u8>],
+    icons: &[Vec<u8>],
+    single_17: &[u8],
+    cars: &[Vec<u8>],
+    single_32: &[u8],
+) -> Vec<String> {
+    let path = |bytes: &[u8]| format!("new_fe\\{}", String::from_utf8_lossy(bytes));
+    let mut paths: Vec<String> = flags.iter().map(|p| path(p)).collect();
+    paths.extend(icons.iter().map(|p| path(p)));
+    paths.push(path(single_17));
+    paths.extend(cars.iter().map(|p| path(p)));
+    paths.push(path(single_32));
+    paths
+}
+
+/// A flag or logo image of the previews.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenImage {
+    /// `DAT_00d494bc[15 group + frame]`: frame `0..15` of flag group `0..10`.
+    Flag { group: u8, frame: u8 },
+    /// `DAT_00d4123c[car]`: the car's manufacturer logo.
+    Logo { car: u8 },
+}
+
+/// The uploaded flag frames and car logos.
+#[derive(Clone, Debug, Default)]
+pub struct ScreenImagePool {
+    flags: Vec<Option<UploadedIndexedBitmap>>,
+    logos: Vec<Option<UploadedIndexedBitmap>>,
+}
+
+impl ScreenImagePool {
+    /// Load the 150 flag frames (`FUN_004c4ad0`: the prefix `0x508cec`, the
+    /// group's name and `"%.3d.bmp"` of 1..=15, under the front end's root)
+    /// and the 14 car logos.
+    pub fn load<B: IndexedVideoBackend>(
+        store: &AssetStore,
+        palette: &LegacyPalette256,
+        sources: &mut UploadedSourceStore<'_, B>,
+        flag_prefix: &[u8],
+        flag_groups: &[Vec<u8>],
+        flag_format: &[u8],
+    ) -> Self {
+        let mut flags = Vec::with_capacity(150);
+        for group in flag_groups {
+            for frame in 1..=15i64 {
+                let name = crate::c_format::c_format(
+                    flag_format,
+                    &[crate::c_format::FormatArg::Int(frame)],
+                );
+                let mut path = b"new_fe\\".to_vec();
+                path.extend_from_slice(flag_prefix);
+                path.extend_from_slice(group);
+                path.extend(name);
+                flags.push(upload(
+                    store,
+                    palette,
+                    sources,
+                    &String::from_utf8_lossy(&path),
+                ));
+            }
+        }
+        let logos = crate::championship_assets::CHAMPIONSHIP_CARS
+            .iter()
+            .map(|car| upload(store, palette, sources, car.logo.descriptor().path))
+            .collect();
+        Self { flags, logos }
+    }
+
+    /// The uploaded image, when it loaded.
+    pub fn get(&self, image: ScreenImage) -> Option<UploadedIndexedBitmap> {
+        match image {
+            ScreenImage::Flag { group, frame } => self
+                .flags
+                .get(usize::from(group) * 15 + usize::from(frame))
+                .copied()
+                .flatten(),
+            ScreenImage::Logo { car } => self.logos.get(usize::from(car)).copied().flatten(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    #[test]
+    fn the_arena_paths_keep_the_native_order() {
+        let flags: Vec<Vec<u8>> = (0..10).map(|i| format!("F{i}").into_bytes()).collect();
+        let icons: Vec<Vec<u8>> = (0..6).map(|i| format!("I{i}").into_bytes()).collect();
+        let cars: Vec<Vec<u8>> = (0..14).map(|i| format!("C{i}").into_bytes()).collect();
+        let paths = arena_paths(&flags, &icons, b"S17", &cars, b"S32");
+        assert_eq!(paths.len(), palette::COUNT - 1);
+        assert_eq!(paths[(palette::FLAGS - 1) as usize], "new_fe\\F0");
+        assert_eq!(paths[(palette::ICONS - 1) as usize], "new_fe\\I0");
+        assert_eq!(paths[(palette::SINGLE_17 - 1) as usize], "new_fe\\S17");
+        assert_eq!(paths[(palette::CARS - 1) as usize], "new_fe\\C0");
+        assert_eq!(paths[(palette::SINGLE_32 - 1) as usize], "new_fe\\S32");
+        assert!(
+            ScreenImagePool::default()
+                .get(ScreenImage::Logo { car: 0 })
                 .is_none()
         );
     }

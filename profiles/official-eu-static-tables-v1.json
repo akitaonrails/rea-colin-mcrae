@@ -48,9 +48,28 @@
       { "name": "frontend_sound_17", "kind": "string", "va": 5280872 },
       { "name": "frontend_sound_18", "kind": "string", "va": 5280856 },
       { "name": "car_stats_format", "kind": "string", "va": 5279520 },
-      { "name": "car_locked_line", "kind": "string", "va": 5279504 }
+      { "name": "car_locked_line", "kind": "string", "va": 5279504 },
+      { "name": "frontend_palette_disk", "kind": "string", "va": 5277856 },
+      { "name": "frontend_palette_17", "kind": "string", "va": 5277876 },
+      { "name": "frontend_palette_32", "kind": "string", "va": 5278044 },
+      { "name": "frontend_palettes_flags", "kind": "string-pointers", "va": 5277900, "count": 10 },
+      { "name": "frontend_palettes_icons", "kind": "string-pointers", "va": 5277940, "count": 6 },
+      { "name": "frontend_palettes_icons_unlocked", "kind": "string-pointers", "va": 5277964, "count": 6 },
+      { "name": "frontend_palettes_cars", "kind": "string-pointers", "va": 5277988, "count": 14 },
+      { "name": "frontend_flag_prefix", "kind": "string", "va": 5278956 },
+      { "name": "frontend_flag_format", "kind": "string", "va": 5278944 },
+      { "name": "frontend_flag_00", "kind": "string", "va": 5279156 },
+      { "name": "frontend_flag_01", "kind": "string", "va": 5279132 },
+      { "name": "frontend_flag_02", "kind": "string", "va": 5279108 },
+      { "name": "frontend_flag_03", "kind": "string", "va": 5279084 },
+      { "name": "frontend_flag_04", "kind": "string", "va": 5279060 },
+      { "name": "frontend_flag_05", "kind": "string", "va": 5279040 },
+      { "name": "frontend_flag_06", "kind": "string", "va": 5279020 },
+      { "name": "frontend_flag_07", "kind": "string", "va": 5279000 },
+      { "name": "frontend_flag_08", "kind": "string", "va": 5278980 },
+      { "name": "frontend_flag_09", "kind": "string", "va": 5278964 }
     ],
-    "payload_sha256": "adac7dd21039d0e0877fba0b58589450d2a92969c15f26603cb173e75812888a",
+    "payload_sha256": "14a03e8ba48f5781edb1fae07a58c8ac85b8e79139013e64e46854f6ff579c3b",
     "output_encoding": "cmr-static-tables-v1"
   }
 }

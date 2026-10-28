@@ -274,7 +274,7 @@ pub struct SoftwareRootMenuSession<'session, 'asset, 'catalog, 'backend> {
     visibility: &'session mut RootMenuC3dVisibilityLatches,
     executor: &'session mut RootMenuC3dBatchExecutor<'catalog, SoftwareC3dSampledTexture>,
     route_state: &'session FrontendC3dRouteState,
-    palette_arena: &'session [[PaletteEntry; 256]; 1],
+    palette_arena: &'session [[PaletteEntry; 256]],
     palette_state: &'session mut DeferredPaletteState,
     renderer_palette_cache: &'session mut [PaletteEntry; 256],
     global_palette_cache: &'session mut [PaletteEntry; 256],
@@ -336,12 +336,14 @@ impl SoftwareRootMenuSession<'_, '_, '_, '_> {
         &mut self,
         commands: &[cmr_core::frontend_screen_frame::ScreenCommand],
         screen_bitmaps: &cmr_core::frontend_screen_bitmaps::ScreenBitmapPool,
+        images: &cmr_core::frontend_screen_bitmaps::ScreenImagePool,
     ) -> Result<(), String> {
         cmr_core::frontend_screen_frame::execute_screen_frame(
             commands,
             self.fonts,
             self.bitmaps,
             screen_bitmaps,
+            images,
             RootFramePaletteResources {
                 bits_per_pixel: self.target.mode.bits_per_pixel,
                 arena: self.palette_arena,
@@ -366,6 +368,35 @@ impl SoftwareRootMenuSession<'_, '_, '_, '_> {
             entries: self.palette_arena[0],
         };
         cmr_core::frontend_screen_bitmaps::ScreenBitmapPool::load(store, &palette, self.sources)
+    }
+
+    /// Load and upload the flag frames (`FUN_004c4ad0`) and the car logos
+    /// over the disk palette (identity mapping: each is drawn while its own
+    /// palette is current).
+    pub fn load_screen_images(
+        &mut self,
+        store: &AssetStore,
+        flag_prefix: &[u8],
+        flag_groups: &[Vec<u8>],
+        flag_format: &[u8],
+    ) -> cmr_core::frontend_screen_bitmaps::ScreenImagePool {
+        let palette = cmr_formats::riff_palette::LegacyPalette256 {
+            entries: self.palette_arena[0],
+        };
+        cmr_core::frontend_screen_bitmaps::ScreenImagePool::load(
+            store,
+            &palette,
+            self.sources,
+            flag_prefix,
+            flag_groups,
+            flag_format,
+        )
+    }
+
+    /// The size of the palette arena.
+    #[must_use]
+    pub fn palette_count(&self) -> usize {
+        self.palette_arena.len()
     }
 
     /// The fonts the session uploaded.
@@ -453,6 +484,20 @@ pub fn with_software_root_menu_session<R>(
     request: SoftwareRootMenuSessionRequest,
     run: impl FnOnce(&mut SoftwareRootMenuSession<'_, '_, '_, '_>) -> R,
 ) -> Result<SoftwareRootMenuSessionRun<R>, SoftwareRootMenuSessionBuildError> {
+    with_software_root_menu_session_palettes(store, startup, request, &[], run)
+}
+
+/// [`with_software_root_menu_session`] with the rest of the front end's
+/// palette arena (`FUN_004c46f0`, indices 1.. after disk.pal): each path is
+/// loaded in order; one that cannot be loaded keeps disk.pal at its index so
+/// the indices stay in place.
+pub fn with_software_root_menu_session_palettes<R>(
+    store: &AssetStore,
+    startup: StartupDisplay<SoftwareIndexedBackend>,
+    request: SoftwareRootMenuSessionRequest,
+    palette_paths: &[String],
+    run: impl FnOnce(&mut SoftwareRootMenuSession<'_, '_, '_, '_>) -> R,
+) -> Result<SoftwareRootMenuSessionRun<R>, SoftwareRootMenuSessionBuildError> {
     let palette_bytes = store
         .load(ROOT_MENU_DISK_PALETTE_PATH)
         .map_err(SoftwareRootMenuSessionBuildError::PaletteAsset)?;
@@ -508,7 +553,14 @@ pub fn with_software_root_menu_session<R>(
     let bitmap_diagnostics = uploaded_bitmaps.optional_diagnostics;
     let uploaded_bitmaps = uploaded_bitmaps.pool;
 
-    let palette_arena = [disk_palette.entries];
+    let mut palette_arena = vec![disk_palette.entries];
+    palette_arena.extend(palette_paths.iter().map(|path| {
+        store
+            .load(path)
+            .ok()
+            .and_then(|bytes| parse_legacy_palette_256(&bytes).ok())
+            .map_or(disk_palette.entries, |palette| palette.entries)
+    }));
     let mut palette_state = DeferredPaletteState::new();
     let palette_request = palette_state.request(ROOT_MENU_DISK_PALETTE_INDEX);
     debug_assert_eq!(palette_request, PaletteRequestOutcome::PendingUpdated);

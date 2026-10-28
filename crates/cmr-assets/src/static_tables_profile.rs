@@ -509,6 +509,41 @@ pub(crate) mod tests {
                 ("frontend_sound_18", 0x0050_9458, String),
                 ("car_stats_format", 0x0050_8f20, String),
                 ("car_locked_line", 0x0050_8f10, String),
+                ("frontend_palette_disk", 0x0050_88a0, String),
+                ("frontend_palette_17", 0x0050_88b4, String),
+                ("frontend_palette_32", 0x0050_895c, String),
+                (
+                    "frontend_palettes_flags",
+                    0x0050_88cc,
+                    StringPointers { count: 10 }
+                ),
+                (
+                    "frontend_palettes_icons",
+                    0x0050_88f4,
+                    StringPointers { count: 6 }
+                ),
+                (
+                    "frontend_palettes_icons_unlocked",
+                    0x0050_890c,
+                    StringPointers { count: 6 }
+                ),
+                (
+                    "frontend_palettes_cars",
+                    0x0050_8924,
+                    StringPointers { count: 14 }
+                ),
+                ("frontend_flag_prefix", 0x0050_8cec, String),
+                ("frontend_flag_format", 0x0050_8ce0, String),
+                ("frontend_flag_00", 0x0050_8db4, String),
+                ("frontend_flag_01", 0x0050_8d9c, String),
+                ("frontend_flag_02", 0x0050_8d84, String),
+                ("frontend_flag_03", 0x0050_8d6c, String),
+                ("frontend_flag_04", 0x0050_8d54, String),
+                ("frontend_flag_05", 0x0050_8d40, String),
+                ("frontend_flag_06", 0x0050_8d2c, String),
+                ("frontend_flag_07", 0x0050_8d18, String),
+                ("frontend_flag_08", 0x0050_8d04, String),
+                ("frontend_flag_09", 0x0050_8cf4, String),
             ]
         );
         // Same executable identity as the reviewed stage-weather profile.

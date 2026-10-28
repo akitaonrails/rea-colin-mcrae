@@ -44,6 +44,15 @@ pub enum ScreenCommand {
         size: Option<(i32, i32)>,
         keyed: bool,
     },
+    /// A flag frame or car logo (0, 0, 0xb6, 0x80), opaque.
+    Image {
+        image: crate::frontend_screen_bitmaps::ScreenImage,
+        x: i32,
+        y: i32,
+    },
+    /// `FUN_004c4920`: request a palette of the arena, committed at the
+    /// frame's end in 8-bit mode (`FUN_004c4960`).
+    Palette(i32),
     /// Text with the legacy alignment flags.
     Text {
         font: FontStyle,
@@ -55,10 +64,121 @@ pub enum ScreenCommand {
 }
 
 /// The frame state the draw keeps: the arrow oscillation index
-/// `DAT_00d4ce3c`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// `DAT_00d4ce3c`, the previews' palette caches (`DAT_00508cdc` flag group,
+/// `DAT_00508ed4` car) and the flags' shared frame (`DAT_00d8ce70`) and its
+/// time (`DAT_00d8ce74`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenFrameState {
     pub arrow_tick: u8,
+    pub flag_cache: i32,
+    pub car_cache: i32,
+    pub flag_frame: u8,
+    pub flag_time: u32,
+    /// The setup entries already seen (harness bookkeeping for the reset).
+    pub setup_entries: u32,
+}
+
+impl Default for ScreenFrameState {
+    fn default() -> Self {
+        Self {
+            arrow_tick: 0,
+            flag_cache: -2,
+            car_cache: -1,
+            flag_frame: 0,
+            flag_time: 0,
+            setup_entries: 0,
+        }
+    }
+}
+
+impl ScreenFrameState {
+    /// The setups' shared enter `FUN_004c8c20`: `DAT_00508cdc = -2`,
+    /// `DAT_00508ed4 = -1`.
+    pub fn enter_setup(&mut self) {
+        self.flag_cache = -2;
+        self.car_cache = -1;
+    }
+
+    /// Reset the caches once for each setup entry since the last frame.
+    pub fn sync_setup_entries(&mut self, entries: u32) {
+        if entries != self.setup_entries {
+            self.setup_entries = entries;
+            self.enter_setup();
+        }
+    }
+
+    /// `FUN_004c4990(group, mode)` at the anchor: the group's palette when it
+    /// changes, the current frame, and the frame advancing every 50 ms.
+    #[allow(clippy::too_many_arguments)]
+    pub fn flag(
+        &mut self,
+        group: i32,
+        wide: bool,
+        anchor: (i32, i32),
+        camera: Camera,
+        extent: DisplayExtent,
+        now_ms: u32,
+        commands: &mut Vec<ScreenCommand>,
+    ) {
+        let w = i32::from(extent.width);
+        let h = i32::from(extent.height);
+        let (ox, oy) = camera.offset();
+        if group != self.flag_cache {
+            commands.push(ScreenCommand::Palette(
+                crate::frontend_screen_bitmaps::palette::FLAGS + group,
+            ));
+            self.flag_cache = group;
+            self.car_cache = -1;
+        }
+        commands.push(ScreenCommand::Image {
+            image: crate::frontend_screen_bitmaps::ScreenImage::Flag {
+                group: group.clamp(0, 9) as u8,
+                frame: self.flag_frame,
+            },
+            x: q(w, anchor.0.wrapping_add(ox)) + if wide { 0x116 } else { 0x90 },
+            y: q(h, anchor.1.wrapping_add(oy)),
+        });
+        let elapsed = now_ms.wrapping_sub(self.flag_time) as i32;
+        if elapsed.unsigned_abs() > 50 {
+            self.flag_frame = (self.flag_frame + 1) % 15;
+            self.flag_time = now_ms;
+        }
+    }
+
+    /// `FUN_004c4d30`'s logo and palette (the model's transform and its
+    /// visibility latch are not drawn): the logo at the anchor
+    /// (`q(W, X + 0x3999)`, or `q(W, X) + 0x116` in the wide layout), then the
+    /// car's palette when the car changes, invalidating the flag cache.
+    pub fn car_logo(
+        &mut self,
+        car: u8,
+        wide: bool,
+        anchor: (i32, i32),
+        camera: Camera,
+        extent: DisplayExtent,
+        commands: &mut Vec<ScreenCommand>,
+    ) {
+        let w = i32::from(extent.width);
+        let h = i32::from(extent.height);
+        let (ox, oy) = camera.offset();
+        let x = anchor.0.wrapping_add(ox);
+        commands.push(ScreenCommand::Image {
+            image: crate::frontend_screen_bitmaps::ScreenImage::Logo { car },
+            x: if wide {
+                q(w, x) + 0x116
+            } else {
+                q(w, x.wrapping_add(0x3999))
+            },
+            y: q(h, anchor.1.wrapping_add(oy)),
+        });
+        if i32::from(car) != self.car_cache {
+            commands.push(ScreenCommand::Palette(
+                crate::frontend_screen_bitmaps::palette::CARS + i32::from(car),
+            ));
+            self.car_cache = i32::from(car);
+            self.flag_cache = -2;
+        }
+    }
 }
 
 /// The executable's strings and tables the rows read.
@@ -101,6 +221,8 @@ pub struct SetupDrawInput<'a> {
     pub info_flags: u32,
     /// The cmRally.cfg record the previews read.
     pub record: &'a [u8],
+    /// `FUN_004cf750`: the millisecond clock the flags animate by.
+    pub now_ms: u32,
 }
 
 fn q(value: i32, fraction: i32) -> i32 {
@@ -224,6 +346,7 @@ pub fn plan_setup_frame<'f>(
         if selected {
             preview_commands(
                 input,
+                state,
                 item.key,
                 item.value.value,
                 text,
@@ -293,6 +416,7 @@ fn info_box<'f>(
 /// the chequered flag are not drawn yet.
 fn preview_commands<'f>(
     input: &SetupDrawInput,
+    state: &mut ScreenFrameState,
     item_key: i32,
     value: i32,
     text: &dyn Fn(i32) -> Vec<u8>,
@@ -378,6 +502,15 @@ fn preview_commands<'f>(
                 .cloned()
                 .unwrap_or_default();
             info_box(input, &short, &line2, fonts, commands);
+            // `FUN_004c4d30(car, allowed, k != 1, 1)`.
+            state.car_logo(
+                car,
+                input.info_flags & 0xf != 1,
+                input.info,
+                input.camera,
+                input.extent,
+                commands,
+            );
         }
         key::COUNTRY => {
             let at = 8 * value.max(0) as usize;
@@ -394,6 +527,16 @@ fn preview_commands<'f>(
             });
             let line2 = text(if ok { id(6) } else { 0x8c });
             info_box(input, &text(id(4)), &line2, fonts, commands);
+            let group = flag_group(input.data.country_table, value.max(0) as usize);
+            state.flag(
+                group,
+                false,
+                input.info,
+                input.camera,
+                input.extent,
+                input.now_ms,
+                commands,
+            );
         }
         key::CONTINUE => {
             let mode = record.get(0x180).map_or(0, |b| b & 3);
@@ -404,6 +547,16 @@ fn preview_commands<'f>(
                 _ => text(0x21),
             };
             info_box(input, &text(0x18), &line2, fonts, commands);
+            // The chequered flag.
+            state.flag(
+                9,
+                false,
+                input.info,
+                input.camera,
+                input.extent,
+                input.now_ms,
+                commands,
+            );
         }
         _ => {}
     }
@@ -569,6 +722,7 @@ fn q16_text<'f>(
 /// name field, the parent setup's title and the summary.
 pub fn plan_name_entry_frame<'f>(
     input: &NameDrawInput,
+    state: &mut ScreenFrameState,
     text: &dyn Fn(i32) -> Vec<u8>,
     fonts: &dyn Fn(FontStyle) -> &'f BitmapFont,
 ) -> Vec<ScreenCommand> {
@@ -673,9 +827,22 @@ pub fn plan_name_entry_frame<'f>(
         flags: title_flags,
         text: text(title_id),
     });
+    let anchor_x = input.info.0.wrapping_sub(input.slides[1]);
+    // `FUN_004c4d30(car, 1, 1, 1)`: the logo in the wide layout.
+    let car = input
+        .record
+        .get(0xbe + 0x9c * input.player)
+        .map_or(0, |b| b & 0xf);
+    state.car_logo(
+        car,
+        true,
+        (anchor_x, input.info.1),
+        input.camera,
+        extent,
+        &mut commands,
+    );
     // `FUN_004c4fc0`: the summary at the anchor.
     let mode = input.record.get(0x180).map_or(0, |b| b & 3);
-    let anchor_x = input.info.0.wrapping_sub(input.slides[1]);
     let x = anchor_x.wrapping_add(ox).wrapping_add(0xb5c2);
     let y = input.info.1.wrapping_add(oy).wrapping_add(if mode == 0 {
         0x4a3d
@@ -745,6 +912,15 @@ pub fn plan_name_entry_frame<'f>(
     commands
 }
 
+/// A country's picture group: the first dword of its 8-byte record in the
+/// table `0x508850` (group 0 when the table is short).
+fn flag_group(country_table: &[u8], country: usize) -> i32 {
+    let at = country * 8;
+    country_table
+        .get(at..at + 4)
+        .map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
 /// What one stage-select frame draws from (`0x4c8680`).
 pub struct StageDrawInput<'a> {
     pub menu: &'a Menu,
@@ -759,12 +935,18 @@ pub struct StageDrawInput<'a> {
     pub row_format: &'a [u8],
     /// `0x506dc8`: the bonus countries (country 8's record rows).
     pub bonus_countries: &'a [u8],
+    /// `0x508850`: the countries' flag groups.
+    pub country_table: &'a [u8],
+    /// The time-trial descriptor's info anchor (`+0x38`, `+0x3c`).
+    pub info: (i32, i32),
+    pub now_ms: u32,
 }
 
 /// `0x4c8680`: the panel, the time-trial title, the heading, each shown
 /// stage's label and best time with its LED, and the OK text and button.
 pub fn plan_stage_select_frame<'f>(
     input: &StageDrawInput,
+    state: &mut ScreenFrameState,
     text: &dyn Fn(i32) -> Vec<u8>,
     fonts: &dyn Fn(FontStyle) -> &'f BitmapFont,
 ) -> Vec<ScreenCommand> {
@@ -892,6 +1074,17 @@ pub fn plan_stage_select_frame<'f>(
         size: None,
         keyed: true,
     });
+    // `FUN_004c4690(c)`: the country's flag in the wide layout.
+    let group = flag_group(input.country_table, country);
+    state.flag(
+        group,
+        true,
+        input.info,
+        input.camera,
+        extent,
+        input.now_ms,
+        &mut commands,
+    );
     commands
 }
 
@@ -921,7 +1114,8 @@ pub fn execute_screen_frame<B>(
     fonts: &crate::font_raster::UploadedFontPool,
     bitmaps: &crate::root_menu_bitmap_raster::UploadedRootMenuBitmapPool,
     screen_bitmaps: &crate::frontend_screen_bitmaps::ScreenBitmapPool,
-    palette: crate::root_menu_frame::RootFramePaletteResources<'_>,
+    images: &crate::frontend_screen_bitmaps::ScreenImagePool,
+    mut palette: crate::root_menu_frame::RootFramePaletteResources<'_>,
     sources: &mut crate::source_store::UploadedSourceStore<'_, B>,
     destination: B::Surface,
     extent: DisplayExtent,
@@ -1037,6 +1231,34 @@ where
                         .map_err(|error| ScreenFrameError::Selection(format!("{error:?}")))?;
                 }
             }
+            ScreenCommand::Image { image, x, y } => {
+                let Some(uploaded) = images.get(*image) else {
+                    continue;
+                };
+                let decision = crate::indexed_bitmap_raster::plan_indexed_bitmap_blit_for_extent(
+                    uploaded.extent(),
+                    crate::indexed_bitmap_raster::IndexedBitmapRect {
+                        x: 0,
+                        y: 0,
+                        width: 0xb6,
+                        height: 0x80,
+                    },
+                    crate::indexed_bitmap_raster::IndexedBitmapRect {
+                        x: *x,
+                        y: *y,
+                        width: 0xb6,
+                        height: 0x80,
+                    },
+                    extent,
+                    None,
+                );
+                if let Ok(crate::blit::BlitDecision::Blit(plan)) = decision {
+                    uploaded
+                        .blit(sources, destination, plan)
+                        .map_err(|error| ScreenFrameError::Selection(format!("{error:?}")))?;
+                }
+            }
+            ScreenCommand::Palette(index) => palette.request_loaded(*index),
             ScreenCommand::Text {
                 font,
                 x,
@@ -1125,6 +1347,7 @@ mod tests {
             info: (0x8000, 0x4000),
             info_flags: 0,
             record: &[],
+            now_ms: 0,
         };
         let mut state = ScreenFrameState::default();
         let text = |id: i32| format!("T{id:X}").into_bytes();
@@ -1166,7 +1389,20 @@ mod tests {
             }
         ));
         assert!(matches!(&commands[7], ScreenCommand::Text { text, .. } if text == b"T76"));
-        assert_eq!(commands.len(), 10);
+        // The car's logo then its palette (`FUN_004c4d30`), narrow layout,
+        // before the rows below the selected one.
+        assert!(matches!(
+            commands[8],
+            ScreenCommand::Image {
+                image: crate::frontend_screen_bitmaps::ScreenImage::Logo { car: 6 },
+                ..
+            }
+        ));
+        assert_eq!(
+            commands[9],
+            ScreenCommand::Palette(crate::frontend_screen_bitmaps::palette::CARS + 6)
+        );
+        assert_eq!(commands.len(), 12);
         assert_eq!(state.arrow_tick, 1);
         // The bar starts 31 pixels left of the text at 640 wide.
         let ScreenCommand::Selection { x, h, .. } = commands[2] else {
@@ -1200,7 +1436,8 @@ mod tests {
             player_format: b"%s %d",
         };
         let text = |id: i32| format!("T{id:X}").into_bytes();
-        let commands = plan_name_entry_frame(&input, &text, &|_| &font);
+        let commands =
+            plan_name_entry_frame(&input, &mut ScreenFrameState::default(), &text, &|_| &font);
         let bitmaps: Vec<ScreenBitmap> = commands
             .iter()
             .filter_map(|command| match command {
@@ -1265,9 +1502,13 @@ mod tests {
             labels: &labels,
             row_format: b"%s %d:%02d.%02d",
             bonus_countries: &[],
+            country_table: &[],
+            info: (0, 0),
+            now_ms: 0,
         };
         let text = |id: i32| format!("T{id:X}").into_bytes();
-        let commands = plan_stage_select_frame(&input, &text, &|_| &font);
+        let commands =
+            plan_stage_select_frame(&input, &mut ScreenFrameState::default(), &text, &|_| &font);
         let leds: Vec<ScreenBitmap> = commands
             .iter()
             .filter_map(|command| match command {
@@ -1285,12 +1526,105 @@ mod tests {
             command,
             ScreenCommand::Text { text, .. } if text == b"1 1:01.23"
         )));
+        // The button, then the country's flag (group 0 of an empty table).
         assert!(matches!(
             commands.last(),
-            Some(ScreenCommand::Bitmap {
-                bitmap: ScreenBitmap::DoneIn,
+            Some(ScreenCommand::Image {
+                image: crate::frontend_screen_bitmaps::ScreenImage::Flag { group: 0, .. },
                 ..
             })
         ));
+        assert!(matches!(
+            commands[commands.len() - 3],
+            ScreenCommand::Bitmap {
+                bitmap: ScreenBitmap::DoneIn,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_flag_requests_its_group_palette_once_and_animates_every_50_ms() {
+        use crate::frontend_screen_bitmaps::{ScreenImage, palette};
+        let extent = DisplayExtent {
+            width: 640,
+            height: 480,
+        };
+        let camera = Camera::at(0x8000, 0x8000);
+        let mut state = ScreenFrameState::default();
+        let mut commands = Vec::new();
+        state.flag(
+            3,
+            false,
+            (0x1_0000, 0x8000),
+            camera,
+            extent,
+            0,
+            &mut commands,
+        );
+        assert_eq!(commands[0], ScreenCommand::Palette(palette::FLAGS + 3));
+        assert_eq!(
+            commands[1],
+            ScreenCommand::Image {
+                image: ScreenImage::Flag { group: 3, frame: 0 },
+                x: 640 + 0x90,
+                y: 240,
+            }
+        );
+        assert_eq!(state.car_cache, -1, "a flag change invalidates the car");
+        // 50 ms is not past the threshold; 51 is.
+        commands.clear();
+        state.flag(3, true, (0, 0), camera, extent, 50, &mut commands);
+        assert_eq!(commands.len(), 1, "same group: no palette");
+        assert_eq!(state.flag_frame, 0, "50 ms is not past the threshold");
+        let mut frames = Vec::new();
+        for now in [60, 101, 102, 160] {
+            commands.clear();
+            state.flag(3, true, (0, 0), camera, extent, now, &mut commands);
+            frames.push(state.flag_frame);
+        }
+        assert_eq!(frames, [1, 1, 1, 2]);
+        // Frame 14 wraps to 0.
+        state.flag_frame = 14;
+        state.flag(3, true, (0, 0), camera, extent, 1000, &mut commands);
+        assert_eq!(state.flag_frame, 0);
+    }
+
+    #[test]
+    fn a_car_logo_requests_the_car_palette_after_its_blit() {
+        use crate::frontend_screen_bitmaps::{ScreenImage, palette};
+        let extent = DisplayExtent {
+            width: 640,
+            height: 480,
+        };
+        let camera = Camera::at(0x8000, 0x8000);
+        let mut state = ScreenFrameState {
+            flag_cache: 4,
+            ..Default::default()
+        };
+        let mut commands = Vec::new();
+        state.car_logo(6, false, (0, 0), camera, extent, &mut commands);
+        assert_eq!(
+            commands,
+            vec![
+                ScreenCommand::Image {
+                    image: ScreenImage::Logo { car: 6 },
+                    x: q(640, 0x3999),
+                    y: 0,
+                },
+                ScreenCommand::Palette(palette::CARS + 6),
+            ]
+        );
+        assert_eq!(state.flag_cache, -2, "the car invalidates the flag");
+        commands.clear();
+        state.car_logo(6, true, (0x8000, 0), camera, extent, &mut commands);
+        assert_eq!(commands.len(), 1, "same car: no palette");
+        assert!(matches!(commands[0], ScreenCommand::Image { x, .. } if x == 320 + 0x116));
+        // A setup entry resets both caches once.
+        state.sync_setup_entries(1);
+        assert_eq!((state.flag_cache, state.car_cache), (-2, -1));
+        state.car_cache = 6;
+        state.sync_setup_entries(1);
+        assert_eq!(state.car_cache, 6);
     }
 }

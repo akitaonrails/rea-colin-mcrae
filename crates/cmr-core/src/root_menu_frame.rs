@@ -13,7 +13,7 @@ use cmr_formats::riff_palette::PaletteEntry;
 
 use crate::deferred_palette::{
     DeferredPaletteAdapter, DeferredPaletteCommitError, DeferredPaletteCommitOutcome,
-    DeferredPaletteState, commit_deferred_palette,
+    DeferredPaletteState, PaletteArenaIndex, commit_deferred_palette,
 };
 use crate::display::{DisplayExtent, IndexedVideoBackend};
 use crate::font_raster::UploadedFontPool;
@@ -65,6 +65,16 @@ pub struct RootFramePaletteResources<'a> {
     pub state: &'a mut DeferredPaletteState,
     pub renderer_cache: &'a mut [PaletteEntry; 256],
     pub global_cache: &'a mut [PaletteEntry; 256],
+}
+
+impl RootFramePaletteResources<'_> {
+    /// `FUN_004c4920`'s request of arena entry `index`; an entry the arena
+    /// did not load leaves the request out.
+    pub fn request_loaded(&mut self, index: i32) {
+        if usize::try_from(index).is_ok_and(|i| i < self.arena.len()) {
+            self.state.request(PaletteArenaIndex::new(index));
+        }
+    }
 }
 
 pub struct RootFrameResources<'a, C> {
@@ -201,7 +211,7 @@ where
 pub fn execute_root_frame<B, C>(
     input: RootRenderInput,
     mut resources: RootFrameResources<'_, C>,
-    palette: RootFramePaletteResources<'_>,
+    mut palette: RootFramePaletteResources<'_>,
     sources: &mut UploadedSourceStore<'_, B>,
     destination: B::Surface,
     text_limits: TextLayoutLimits,
@@ -240,6 +250,14 @@ where
             | RenderCommand::ChromeAnimation { .. }
             | RenderCommand::SelectedChrome { .. }
             | RenderCommand::CenterIcon { .. } => {
+                // The root item draw `0x4cf590` requests the selected icon's
+                // palette (`FUN_004c4920(icon, 2)`, arena base 11) before its
+                // blit; an arena without the icon palettes leaves it out.
+                if let RenderCommand::CenterIcon { visual_index, .. } = command {
+                    palette.request_loaded(
+                        crate::frontend_screen_bitmaps::palette::ICONS + i32::from(visual_index),
+                    );
+                }
                 match execute_root_bitmap_command(
                     sources,
                     resources.bitmaps,

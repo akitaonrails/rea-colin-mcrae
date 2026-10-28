@@ -155,7 +155,7 @@ use cmr_video::software_pause_overlay::compose_pause_overlay;
 use cmr_video::software_race_hud::{RaceHudComposeError, compose_race_hud_commands};
 use cmr_video::software_root_menu_session::{
     SoftwareRootMenuRenderError, SoftwareRootMenuSessionBuildError, SoftwareRootMenuSessionRequest,
-    with_software_root_menu_session,
+    with_software_root_menu_session, with_software_root_menu_session_palettes,
 };
 use cmr_video::software_stage_scene::{
     StageC3dTextureError, StageC3dTextures, StageSceneComposeError, StageSceneFrameStats,
@@ -5525,12 +5525,14 @@ fn screen_commands(
     state: &mut cmr_core::frontend_screen_frame::ScreenFrameState,
     text: &cmr_core::localization::IndexedTextTable,
     fonts: &cmr_core::font_raster::UploadedFontPool,
+    now_ms: u32,
 ) -> Option<Vec<cmr_core::frontend_screen_frame::ScreenCommand>> {
     use cmr_core::frontend as fe;
     use cmr_core::frontend_screen_frame as frame;
     use cmr_core::frontend_setup::SetupKind;
     let screen = root.state().active_screen();
     let screens = root.screens();
+    state.sync_setup_entries(screens.setup_entries());
     let menu = screens.menu(screen)?;
     let tables = static_tables.map(cmr_assets::StaticTablesStore::tables);
     let empty: &[Vec<u8>] = &[];
@@ -5556,6 +5558,9 @@ fn screen_commands(
     };
     let slides = screens.slide_values();
     let slide = |index: usize| slides.get(index).copied().unwrap_or(0);
+    let country_table = tables
+        .and_then(|t| t.block("frontend_country_table"))
+        .unwrap_or(&[]);
     if screen == fe::STAGE_SELECT_SCREEN_ID {
         let input = frame::StageDrawInput {
             menu,
@@ -5572,8 +5577,16 @@ fn screen_commands(
             bonus_countries: tables
                 .and_then(|t| t.block("bonus_car_countries"))
                 .unwrap_or(&[]),
+            country_table,
+            info: {
+                let layout = screens.layout(SetupKind::TimeTrial);
+                (layout.info[0], layout.info[1])
+            },
+            now_ms,
         };
-        return Some(frame::plan_stage_select_frame(&input, &lookup, &font));
+        return Some(frame::plan_stage_select_frame(
+            &input, state, &lookup, &font,
+        ));
     }
     let kind = setup_kind(screen)?;
     if [
@@ -5599,7 +5612,7 @@ fn screen_commands(
                 .and_then(|t| t.string("name_entry_player_format"))
                 .unwrap_or(b"%s %d"),
         };
-        return Some(frame::plan_name_entry_frame(&input, &lookup, &font));
+        return Some(frame::plan_name_entry_frame(&input, state, &lookup, &font));
     }
     let arrows = tables.and_then(|tables| {
         Some((
@@ -5617,9 +5630,7 @@ fn screen_commands(
         extent: ROOT_EXTENT,
         data: frame::SetupDrawData {
             car_names,
-            country_table: tables
-                .and_then(|t| t.block("frontend_country_table"))
-                .unwrap_or(&[]),
+            country_table,
             arrows,
             oscillation: tables
                 .and_then(|t| t.block("frontend_arrow_oscillation"))
@@ -5638,8 +5649,63 @@ fn screen_commands(
         info: screens.info_anchor(),
         info_flags: screens.layout(kind).info_flags,
         record,
+        now_ms,
     };
     Some(frame::plan_setup_frame(&input, state, &lookup, &font))
+}
+
+/// The front end's palette arena after disk.pal (`FUN_004c46f0`), from the
+/// reviewed static tables: the root icons' set is the unlocked one with
+/// `record[0x2b] & 1`. Without the tables the arena keeps disk.pal alone and
+/// the previews' palette requests are left out.
+fn frontend_palette_paths(
+    static_tables: Option<&cmr_assets::StaticTablesStore>,
+    record: &[u8],
+) -> Vec<String> {
+    let Some(tables) = static_tables.map(cmr_assets::StaticTablesStore::tables) else {
+        return Vec::new();
+    };
+    let icons = if record.get(0x2b).is_some_and(|b| b & 1 != 0) {
+        "frontend_palettes_icons_unlocked"
+    } else {
+        "frontend_palettes_icons"
+    };
+    let (Some(flags), Some(icons), Some(single_17), Some(cars), Some(single_32)) = (
+        tables.strings("frontend_palettes_flags"),
+        tables.strings(icons),
+        tables.string("frontend_palette_17"),
+        tables.strings("frontend_palettes_cars"),
+        tables.string("frontend_palette_32"),
+    ) else {
+        return Vec::new();
+    };
+    cmr_core::frontend_screen_bitmaps::arena_paths(flags, icons, single_17, cars, single_32)
+}
+
+/// The previews' flag frames and car logos, when the static tables name them.
+fn load_screen_images(
+    root: &mut cmr_video::software_root_menu_session::SoftwareRootMenuSession<'_, '_, '_, '_>,
+    store: &cmr_assets::AssetStore,
+    static_tables: Option<&cmr_assets::StaticTablesStore>,
+) -> cmr_core::frontend_screen_bitmaps::ScreenImagePool {
+    let Some(tables) = static_tables.map(cmr_assets::StaticTablesStore::tables) else {
+        return Default::default();
+    };
+    let groups: Option<Vec<Vec<u8>>> = (0..10)
+        .map(|i| {
+            tables
+                .string(&format!("frontend_flag_{i:02}"))
+                .map(<[u8]>::to_vec)
+        })
+        .collect();
+    let (Some(prefix), Some(groups), Some(format)) = (
+        tables.string("frontend_flag_prefix"),
+        groups,
+        tables.string("frontend_flag_format"),
+    ) else {
+        return Default::default();
+    };
+    root.load_screen_images(store, prefix, &groups, format)
 }
 
 /// The car codes by selector from the reviewed car-selector store.
@@ -6554,86 +6620,99 @@ pub fn run_windowed_game_session(
             Language::English,
             VisualVariant::Normal,
         );
-        let built = with_software_root_menu_session(&store, startup, request, |root| {
-            let screen_bitmaps = root.load_screen_bitmaps(&store);
-            run_windowed_game_session_loop(&initial, Some(audio_root), |input: WindowedInput| {
-                session.set_results_input(results.poll_keys(input.keys));
-                let frame = reload_stage_for_event(
-                    &mut session,
-                    &mut resources,
-                    &mut progress,
-                    &mut audio,
-                    &mut camera,
-                    &mut loaded_stage,
-                    &reload,
-                    &mut results,
+        let palette_paths = frontend_palette_paths(static_tables.as_ref(), &config.image[..]);
+        let built = with_software_root_menu_session_palettes(
+            &store,
+            startup,
+            request,
+            &palette_paths,
+            |root| {
+                let screen_bitmaps = root.load_screen_bitmaps(&store);
+                let screen_images = load_screen_images(root, &store, static_tables.as_ref());
+                run_windowed_game_session_loop(
+                    &initial,
+                    Some(audio_root),
+                    |input: WindowedInput| {
+                        session.set_results_input(results.poll_keys(input.keys));
+                        let frame = reload_stage_for_event(
+                            &mut session,
+                            &mut resources,
+                            &mut progress,
+                            &mut audio,
+                            &mut camera,
+                            &mut loaded_stage,
+                            &reload,
+                            &mut results,
+                        )
+                        .and_then(|()| {
+                            advance_game_frame(
+                                &mut session,
+                                &mut keyboard,
+                                &mut analog,
+                                &response,
+                                &mut root_interaction,
+                                &mut progress,
+                                &clock,
+                                &mut resources,
+                                &mut camera,
+                                &mut fade,
+                                &mut damage_owner,
+                                &mut audio,
+                                &mut pause,
+                                &mut config,
+                                &mut results,
+                                input,
+                            )
+                        });
+                        results.frame(&mut session, &progress);
+                        match frame {
+                            Ok(outcome) => {
+                                // A composed world frame wins; otherwise the interactive
+                                // front-end route presents the recovered root-menu frame.
+                                let present = if outcome.world.is_some() {
+                                    outcome.world
+                                } else if outcome.loading_interstitial.is_some() {
+                                    outcome.loading_interstitial
+                                } else if let Some(render_input) = outcome.root_render_input {
+                                    root.render(render_input)
+                                        .ok()
+                                        .and_then(|_| root.backend().presented_frame().cloned())
+                                } else if let Some(commands) = screen_commands(
+                                    &root_interaction,
+                                    static_tables.as_ref(),
+                                    &config.image[..],
+                                    &mut screen_state,
+                                    root.text(),
+                                    root.fonts(),
+                                    clock.millis(),
+                                ) {
+                                    root.render_screen(&commands, &screen_bitmaps, &screen_images)
+                                        .ok()
+                                        .and_then(|()| root.backend().presented_frame().cloned())
+                                } else {
+                                    None
+                                };
+                                WindowedGameFrame {
+                                    present,
+                                    stopped: outcome.exit_requested,
+                                    music_active: outcome.music_active,
+                                    codriver_calls: outcome.codriver_calls,
+                                }
+                            }
+                            Err(error) => {
+                                runtime_error = Some(error);
+                                WindowedGameFrame {
+                                    present: None,
+                                    stopped: true,
+                                    music_active: false,
+                                    codriver_calls: Vec::new(),
+                                }
+                            }
+                        }
+                    },
                 )
-                .and_then(|()| {
-                    advance_game_frame(
-                        &mut session,
-                        &mut keyboard,
-                        &mut analog,
-                        &response,
-                        &mut root_interaction,
-                        &mut progress,
-                        &clock,
-                        &mut resources,
-                        &mut camera,
-                        &mut fade,
-                        &mut damage_owner,
-                        &mut audio,
-                        &mut pause,
-                        &mut config,
-                        &mut results,
-                        input,
-                    )
-                });
-                results.frame(&mut session, &progress);
-                match frame {
-                    Ok(outcome) => {
-                        // A composed world frame wins; otherwise the interactive
-                        // front-end route presents the recovered root-menu frame.
-                        let present = if outcome.world.is_some() {
-                            outcome.world
-                        } else if outcome.loading_interstitial.is_some() {
-                            outcome.loading_interstitial
-                        } else if let Some(render_input) = outcome.root_render_input {
-                            root.render(render_input)
-                                .ok()
-                                .and_then(|_| root.backend().presented_frame().cloned())
-                        } else if let Some(commands) = screen_commands(
-                            &root_interaction,
-                            static_tables.as_ref(),
-                            &config.image[..],
-                            &mut screen_state,
-                            root.text(),
-                            root.fonts(),
-                        ) {
-                            root.render_screen(&commands, &screen_bitmaps)
-                                .ok()
-                                .and_then(|()| root.backend().presented_frame().cloned())
-                        } else {
-                            None
-                        };
-                        WindowedGameFrame {
-                            present,
-                            stopped: outcome.exit_requested,
-                            music_active: outcome.music_active,
-                            codriver_calls: outcome.codriver_calls,
-                        }
-                    }
-                    Err(error) => {
-                        runtime_error = Some(error);
-                        WindowedGameFrame {
-                            present: None,
-                            stopped: true,
-                            music_active: false,
-                            codriver_calls: Vec::new(),
-                        }
-                    }
-                }
-            })
-        });
+            },
+        );
         if let Ok(run) = built {
             run.output.map_err(WindowedStageFrameError::Present)?;
             if let Some(error) = runtime_error {
@@ -10094,88 +10173,100 @@ mod tests {
             Language::English,
             VisualVariant::Normal,
         );
-        with_software_root_menu_session(&store, startup, request, |root| {
-            let mut interaction =
-                RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0)
-                    .unwrap()
-                    .with_setup_layouts(setup_layouts(&tables).unwrap())
-                    .with_camera_block(
-                        cmr_core::frontend_camera::CameraBlock::parse(
-                            tables
-                                .tables()
-                                .block("frontend_camera_targets_and_records")
-                                .unwrap(),
-                        )
-                        .unwrap(),
-                    );
-            let mut state = cmr_core::frontend_screen_frame::ScreenFrameState::default();
-            let mut now = 0;
-            let mut tick = |interaction: &mut RootInteraction,
+        let palette_paths = frontend_palette_paths(Some(&tables), &config.image[..]);
+        with_software_root_menu_session_palettes(
+            &store,
+            startup,
+            request,
+            &palette_paths,
+            |root| {
+                let mut interaction =
+                    RootInteraction::from_saved_selection(0, Language::English, ROOT_EXTENT, 0)
+                        .unwrap()
+                        .with_setup_layouts(setup_layouts(&tables).unwrap())
+                        .with_camera_block(
+                            cmr_core::frontend_camera::CameraBlock::parse(
+                                tables
+                                    .tables()
+                                    .block("frontend_camera_targets_and_records")
+                                    .unwrap(),
+                            )
+                            .unwrap(),
+                        );
+                let mut state = cmr_core::frontend_screen_frame::ScreenFrameState::default();
+                let now = std::cell::Cell::new(0u32);
+                let tick = |interaction: &mut RootInteraction,
                             input: cmr_core::frontend::FrontendInput,
                             held: Option<u8>,
                             config: &mut FrontEndConfig| {
-                now += 20;
-                interaction.tick_for_game_session(
-                    input,
-                    cmr_core::root_menu_interactive::FrontendKeys { held, pad: 0 },
-                    now,
-                    true,
-                    &mut config.image,
-                )
-            };
-            let write = |name: &str, frame: &SoftwarePresentedFrame| {
-                let rgba = frame.expand_rgba8().unwrap();
-                let extent = rgba.extent();
-                let mut ppm = format!("P6\n{} {}\n255\n", extent.width, extent.height).into_bytes();
-                let (pixels, _) = rgba.pixels().as_chunks::<4>();
-                for pixel in pixels {
-                    ppm.extend_from_slice(&pixel[..3]);
+                    now.set(now.get() + 20);
+                    interaction.tick_for_game_session(
+                        input,
+                        cmr_core::root_menu_interactive::FrontendKeys { held, pad: 0 },
+                        now.get(),
+                        true,
+                        &mut config.image,
+                    )
+                };
+                let write = |name: &str, frame: &SoftwarePresentedFrame| {
+                    let rgba = frame.expand_rgba8().unwrap();
+                    let extent = rgba.extent();
+                    let mut ppm =
+                        format!("P6\n{} {}\n255\n", extent.width, extent.height).into_bytes();
+                    let (pixels, _) = rgba.pixels().as_chunks::<4>();
+                    for pixel in pixels {
+                        ppm.extend_from_slice(&pixel[..3]);
+                    }
+                    std::fs::write(out_dir.join(format!("{name}.ppm")), ppm).unwrap();
+                };
+                let confirm = cmr_core::frontend::FrontendInput {
+                    confirm: true,
+                    ..Default::default()
+                };
+                let next = cmr_core::frontend::FrontendInput {
+                    next: true,
+                    ..Default::default()
+                };
+                let screen_bitmaps = root.load_screen_bitmaps(&store);
+                let screen_images = load_screen_images(root, &store, Some(&tables));
+                // The time trial: its setup, name entry and stage select.
+                for press in [next, next, confirm] {
+                    while interaction.state().phase()
+                        != cmr_core::frontend::FrontendPhase::Interactive
+                    {
+                        let _ = tick(&mut interaction, Default::default(), None, &mut config);
+                    }
+                    let _ = tick(&mut interaction, press, None, &mut config);
                 }
-                std::fs::write(out_dir.join(format!("{name}.ppm")), ppm).unwrap();
-            };
-            let confirm = cmr_core::frontend::FrontendInput {
-                confirm: true,
-                ..Default::default()
-            };
-            let next = cmr_core::frontend::FrontendInput {
-                next: true,
-                ..Default::default()
-            };
-            let screen_bitmaps = root.load_screen_bitmaps(&store);
-            // The time trial: its setup, name entry and stage select.
-            for press in [next, next, confirm] {
-                while interaction.state().phase() != cmr_core::frontend::FrontendPhase::Interactive
-                {
-                    let _ = tick(&mut interaction, Default::default(), None, &mut config);
-                }
-                let _ = tick(&mut interaction, press, None, &mut config);
-            }
-            for frame in 0..400 {
-                let held = (frame % 30 == 29).then_some(0x0d);
-                let ticked = tick(&mut interaction, Default::default(), held, &mut config);
-                if ticked
-                    .effects
-                    .contains(&cmr_core::frontend::FrontendEffect::StartRace)
-                {
-                    break;
-                }
-                if let Some(commands) = screen_commands(
-                    &interaction,
-                    Some(&tables),
-                    &config.image[..],
-                    &mut state,
-                    root.text(),
-                    root.fonts(),
-                ) {
-                    root.render_screen(&commands, &screen_bitmaps).unwrap();
-                    if frame % 30 == 28 {
-                        let screen = interaction.state().active_screen().legacy_value();
-                        let presented = root.backend().presented_frame().cloned().unwrap();
-                        write(&format!("tt-{frame:03}-{screen:x}"), &presented);
+                for frame in 0..400 {
+                    let held = (frame % 30 == 29).then_some(0x0d);
+                    let ticked = tick(&mut interaction, Default::default(), held, &mut config);
+                    if ticked
+                        .effects
+                        .contains(&cmr_core::frontend::FrontendEffect::StartRace)
+                    {
+                        break;
+                    }
+                    if let Some(commands) = screen_commands(
+                        &interaction,
+                        Some(&tables),
+                        &config.image[..],
+                        &mut state,
+                        root.text(),
+                        root.fonts(),
+                        now.get(),
+                    ) {
+                        root.render_screen(&commands, &screen_bitmaps, &screen_images)
+                            .unwrap();
+                        if frame % 30 == 28 {
+                            let screen = interaction.state().active_screen().legacy_value();
+                            let presented = root.backend().presented_frame().cloned().unwrap();
+                            write(&format!("tt-{frame:03}-{screen:x}"), &presented);
+                        }
                     }
                 }
-            }
-        })
+            },
+        )
         .unwrap();
     }
 

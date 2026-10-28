@@ -150,6 +150,8 @@ pub struct FrontendScreens {
     name_leaving: bool,
     /// `DAT_00bbabec`: the "no animation" option (`!(record[0x10] & 0x20)`).
     no_animation: bool,
+    /// How many times a setup screen was entered (the draw's caches reset).
+    setup_entries: u32,
     /// The row arc, the sine table and the display extent, when known.
     geometry: Option<Geometry>,
     /// `DAT_00d8ffe0`: the seven row channels' Q16 positions.
@@ -255,6 +257,7 @@ impl FrontendScreens {
             slides: Slides::default(),
             name_leaving: false,
             no_animation: false,
+            setup_entries: 0,
             geometry: None,
             channels: [(0, 0); 7],
             info: (0, 0),
@@ -356,6 +359,7 @@ impl FrontendScreens {
                     .collect();
                 self.slides.start(tweens);
                 self.info_slide = Some(self.slide(0x10000, 0, 0));
+                self.setup_entries = self.setup_entries.wrapping_add(1);
             }
             Some(Kind::Name(i)) => {
                 cues.push(ScreenEffect::Cue {
@@ -590,6 +594,12 @@ impl FrontendScreens {
     /// The current menu of `screen`, for the draw.
     pub fn menu(&self, screen: ScreenId) -> Option<&Menu> {
         menu_of(screen).map(|menu| self.set.menu(menu))
+    }
+
+    /// How many times a setup screen was entered: the draw resets its
+    /// preview caches on each entry (`FUN_004c8c20`).
+    pub fn setup_entries(&self) -> u32 {
+        self.setup_entries
     }
 
     /// Whether the slides have ended.
