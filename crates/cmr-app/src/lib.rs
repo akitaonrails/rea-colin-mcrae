@@ -3368,6 +3368,13 @@ fn front_end_frame(
                 None
             }
             cmr_core::frontend_flow::ScreenEffect::Keyboard { .. } => None,
+            cmr_core::frontend_flow::ScreenEffect::NameCue(cue) => {
+                if let Some(mixer) = audio {
+                    let language = usize::from(config.image[0x20] & 7);
+                    pause.play_name_cue(mixer, cue, language, master);
+                }
+                None
+            }
             cmr_core::frontend_flow::ScreenEffect::Sound(_) => None,
         };
         if let (Some((slot, ok)), Some(mixer)) = (cue, audio) {
@@ -3910,6 +3917,20 @@ struct PauseHarness {
     /// static tables, and the loaded channel and base slot.
     frontend_sound_paths: Vec<String>,
     frontend_bank: Option<cmr_core::frontend_sounds::FrontendBank>,
+    /// `0x509430`: the spoken cheat line's slot per language.
+    cheat_speech: Vec<u32>,
+}
+
+/// The name entry's encoded cheat names (`name_cheat_00..`), in test order.
+fn name_cheats(store: &cmr_assets::StaticTablesStore) -> Vec<Vec<u8>> {
+    (0..cmr_core::frontend_name_entry::CHEAT_COUNT)
+        .map_while(|i| {
+            store
+                .tables()
+                .block(&format!("name_cheat_{i:02}"))
+                .map(<[u8]>::to_vec)
+        })
+        .collect()
 }
 
 /// The game text the reset names a player without a computer name by
@@ -3998,6 +4019,7 @@ impl PauseHarness {
             menu_cues: None,
             frontend_sound_paths: Vec::new(),
             frontend_bank: None,
+            cheat_speech: Vec::new(),
             assets: None,
             runtime_data: None,
         }
@@ -4206,6 +4228,39 @@ impl PauseHarness {
             .filter_map(|index| tables.string(&format!("frontend_sound_{index:02}")))
             .map(|name| format!("new_fe\\{prefix}{}", String::from_utf8_lossy(name)))
             .collect();
+        self.cheat_speech = tables
+            .block("cheat_speech_slots")
+            .map(|block| {
+                block
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| u32::from_le_bytes(*b))
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+
+    /// The front-end bank (`FUN_004c9a60`), loaded on first use.
+    fn frontend_bank(
+        &mut self,
+        mixer: &mut cmr_core::audio_render::SoftwareMixer<cmr_core::audio_render::FileWaveSource>,
+    ) -> Option<cmr_core::frontend_sounds::FrontendBank> {
+        if self.frontend_bank.is_none() {
+            let mut base = None;
+            for path in &self.frontend_sound_paths {
+                let slot = mixer
+                    .load_wave(path, cmr_core::frontend_sounds::WAVE_RATE_HZ, 16, false)
+                    .ok()?;
+                base.get_or_insert(slot);
+            }
+            let channel = ChannelId::new(FRONTEND_SOUND_CHANNEL).ok()?;
+            self.frontend_bank = Some(cmr_core::frontend_sounds::FrontendBank {
+                channel,
+                base: base?,
+            });
+        }
+        self.frontend_bank
     }
 
     /// A front-end cue (`0x4c9870` and its siblings) on the bank's channel,
@@ -4214,25 +4269,39 @@ impl PauseHarness {
         let Ok(mut mixer) = mixer.lock() else {
             return;
         };
-        if self.frontend_bank.is_none() {
-            let mut base = None;
-            for path in &self.frontend_sound_paths {
-                let Ok(slot) =
-                    mixer.load_wave(path, cmr_core::frontend_sounds::WAVE_RATE_HZ, 16, false)
-                else {
-                    return;
-                };
-                base.get_or_insert(slot);
-            }
-            let (Some(base), Ok(channel)) = (base, ChannelId::new(FRONTEND_SOUND_CHANNEL)) else {
-                return;
-            };
-            self.frontend_bank = Some(cmr_core::frontend_sounds::FrontendBank { channel, base });
-        }
-        if let Some(bank) = self.frontend_bank {
+        if let Some(bank) = self.frontend_bank(&mut mixer) {
             let commands = cmr_core::frontend_sounds::cue(bank, slot, ok, master);
             let _ = apply_commands(&mut *mixer, &commands);
         }
+    }
+
+    /// The name entry's code and cheat cues; the spoken cheat line is the
+    /// language's entry of `0x509430`.
+    fn play_name_cue(
+        &mut self,
+        mixer: &SharedSoftwareMixer,
+        cue: cmr_core::frontend_name_entry::NameCue,
+        language: usize,
+        master: i32,
+    ) {
+        use cmr_core::frontend_name_entry::NameCue;
+        let Ok(mut mixer) = mixer.lock() else {
+            return;
+        };
+        let Some(bank) = self.frontend_bank(&mut mixer) else {
+            return;
+        };
+        let commands = match cue {
+            NameCue::Code => cmr_core::frontend_sounds::code_cue(bank, master),
+            NameCue::CheatOff => cmr_core::frontend_sounds::cheat_off_cue(bank, master),
+            NameCue::CheatOn => {
+                let Some(speech) = self.cheat_speech.get(language).copied() else {
+                    return;
+                };
+                cmr_core::frontend_sounds::cheat_on_cue(bank, speech, master)
+            }
+        };
+        let _ = apply_commands(&mut *mixer, &commands);
     }
 
     /// A menu play helper (`FUN_00467dd0` and its siblings) on the menu
@@ -6916,7 +6985,9 @@ pub fn run_windowed_game_session(
     }
     root_interaction = root_interaction.with_save_slots(save_slot_reader(runtime_data));
     if let Some(store) = static_tables.as_ref() {
-        root_interaction = root_interaction.with_option_templates(option_templates(store));
+        root_interaction = root_interaction
+            .with_option_templates(option_templates(store))
+            .with_name_cheats(name_cheats(store));
     }
     let mut screen_state = cmr_core::frontend_screen_frame::ScreenFrameState::default();
     let mut camera = ViewHarness::new();
@@ -10577,6 +10648,23 @@ mod tests {
 
     /// Drives the front end into the championship and rally setups and writes
     /// their frames under `.work/frames-setup`.
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data"]
+    fn imported_cheat_names_decode_to_typeable_names() {
+        let root_dir = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let tables = open_static_tables(&root_dir).expect("static tables");
+        let cheats = name_cheats(&tables);
+        assert_eq!(cheats.len(), cmr_core::frontend_name_entry::CHEAT_COUNT);
+        for cheat in &cheats {
+            let name = cmr_core::frontend_name_entry::decode_string(cheat);
+            assert_eq!(name.len() + 1, cheat.len(), "decodes to its terminator");
+            assert!(name.len() < cmr_core::frontend_name_entry::NAME_BUFFER);
+            assert!(name.iter().all(|c| c.is_ascii_uppercase()), "typeable");
+        }
+    }
+
     #[test]
     #[ignore = "requires the reviewed installed-EU runtime data; writes frames under .work"]
     fn imported_setup_screen_frames() {

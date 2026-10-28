@@ -174,6 +174,13 @@ impl RootInteraction {
         self.screens.install_keyboard_record(record);
     }
 
+    /// The name entry's encoded cheat names (`FUN_004c6880`'s strings).
+    #[must_use]
+    pub fn with_name_cheats(mut self, cheats: Vec<Vec<u8>>) -> Self {
+        self.screens.set_name_cheats(cheats);
+        self
+    }
+
     /// The host's save-slot reader the Load screen calls on entry.
     #[must_use]
     pub fn with_save_slots(mut self, reader: crate::frontend_flow::SlotReader) -> Self {

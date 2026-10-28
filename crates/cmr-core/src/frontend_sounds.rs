@@ -79,6 +79,69 @@ pub fn cue(bank: FrontendBank, slot: u32, ok: bool, master: i32) -> Vec<MixerCom
     commands
 }
 
+/// The bank's channel `k` (`FUN_004c9930(k)`), when in range.
+fn channel(bank: FrontendBank, k: u32) -> Option<ChannelId> {
+    ChannelId::new(bank.channel.index() + k).ok()
+}
+
+/// `FUN_004c98b0(channel, volume)`: the volume scaled by the master.
+fn volume(channel: ChannelId, volume: i32, master: i32) -> MixerCommand {
+    MixerCommand::SetVolume {
+        channel,
+        volume: volume.wrapping_mul(master) / 100,
+    }
+}
+
+fn play(bank: FrontendBank, slot: u32, channel: ChannelId) -> MixerCommand {
+    MixerCommand::Play {
+        slot: bank.base.with_offset(slot),
+        channel,
+        flags: PLAY_ONE_SHOT,
+    }
+}
+
+/// `FUN_004c9940`, a cheat switched on: channels 2 and 1 stop, the
+/// language's spoken line `speech` (`0x509430[img[0x20] & 7]`) plays on
+/// channel 2 at full volume and CHEATON (17) on channel 1 at `0x2710`.
+/// Both slots are raw ids in the native; they name these waves when the
+/// bank is the first allocation (base 0), which this plays relative to the
+/// bank (inference).
+pub fn cheat_on_cue(bank: FrontendBank, speech: u32, master: i32) -> Vec<MixerCommand> {
+    let (Some(one), Some(two)) = (channel(bank, 1), channel(bank, 2)) else {
+        return Vec::new();
+    };
+    vec![
+        MixerCommand::StopChannel { channel: two },
+        MixerCommand::StopChannel { channel: one },
+        play(bank, speech, two),
+        volume(two, 0x7fff, master),
+        play(bank, 0x11, one),
+        volume(one, 0x2710, master),
+    ]
+}
+
+/// `FUN_004c99c0`, a cheat switched off: CHEATOFF (18, a raw id like the
+/// cheat-on slots) on channel 1.
+pub fn cheat_off_cue(bank: FrontendBank, master: i32) -> Vec<MixerCommand> {
+    let Some(one) = channel(bank, 1) else {
+        return Vec::new();
+    };
+    vec![play(bank, 0x12, one), volume(one, 0x7fff, master)]
+}
+
+/// `FUN_004c99f0`, a valid CAC code: every mixer channel stops
+/// (`FUN_00495b30`, the music's too), then COMPO (bank + 16) plays on the
+/// bank's channel.
+pub fn code_cue(bank: FrontendBank, master: i32) -> Vec<MixerCommand> {
+    let mut commands: Vec<MixerCommand> = (0..crate::audio_mixer::MIXER_CHANNEL_CAPACITY)
+        .filter_map(|index| ChannelId::new(index).ok())
+        .map(|channel| MixerCommand::StopChannel { channel })
+        .collect();
+    commands.push(play(bank, 0x10, bank.channel));
+    commands.push(volume(bank.channel, 0x7fff, master));
+    commands
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +184,35 @@ mod tests {
                 volume: 0x7fff * 40 / 100
             }]
         );
+    }
+
+    #[test]
+    fn the_cheat_and_code_cues() {
+        let bank = FrontendBank {
+            channel: ChannelId::new(21).unwrap(),
+            base: WaveSlotId::from_ordinal(40),
+        };
+        let on = cheat_on_cue(bank, 6, 50);
+        assert_eq!(on.len(), 6);
+        assert!(matches!(on[2], MixerCommand::Play { slot, channel, .. }
+            if slot == WaveSlotId::from_ordinal(46) && channel.index() == 23));
+        assert_eq!(
+            on[5],
+            MixerCommand::SetVolume {
+                channel: ChannelId::new(22).unwrap(),
+                volume: 5000
+            }
+        );
+        let off = cheat_off_cue(bank, 100);
+        assert!(
+            matches!(off[0], MixerCommand::Play { slot, .. } if slot == WaveSlotId::from_ordinal(58))
+        );
+        let code = code_cue(bank, 100);
+        assert_eq!(
+            code.len(),
+            crate::audio_mixer::MIXER_CHANNEL_CAPACITY as usize + 2
+        );
+        assert!(matches!(code[30], MixerCommand::Play { slot, channel, .. }
+            if slot == WaveSlotId::from_ordinal(56) && channel.index() == 21));
     }
 }

@@ -9,10 +9,10 @@
 //! The front end runs on the 8-bit display, so text and bitmaps take the
 //! direct path: palette-index blits in issue order (glyph colours do not
 //! apply). Value rows draw only their value (the car's full name, the gear,
-//! the players' mode, the country), never the item label. Not drawn yet: the
-//! preview panels (`FUN_004c5450`, `FUN_004c4540`, `FUN_004c9430`,
-//! `FUN_004c9370`), the cars in 3D, the stage thumbnails and the flag
-//! animations. The name entries (`0x4c6180`) and the stage select
+//! the players' mode, the country), never the item label. The preview
+//! panels (`FUN_004c5450`, `FUN_004c4540`, `FUN_004c9430`, `FUN_004c9370`),
+//! the flags and the car logos are drawn; the cars in 3D are not. The name
+//! entries (`0x4c6180`) and the stage select
 //! (`0x4c8680`) are drawn by [`plan_name_entry_frame`] and
 //! [`plan_stage_select_frame`]. A description of
 //! disassembly, not original source. Evidence:
@@ -445,8 +445,8 @@ fn info_box_at<'f>(
 /// The selected row's preview: the players hint (`FUN_004c9430`) with its
 /// picture, the car's stats (`FUN_004c54a0` for the car rows and the gear
 /// rows' cars), the country's name and description (`FUN_004c4540`), and
-/// Continue's hint (`FUN_004c9370`). The car logos and models, the flags and
-/// the chequered flag are not drawn yet.
+/// Continue's hint (`FUN_004c9370`), with the flags and car logos. The car
+/// models are not drawn.
 fn preview_commands<'f>(
     input: &SetupDrawInput,
     state: &mut ScreenFrameState,

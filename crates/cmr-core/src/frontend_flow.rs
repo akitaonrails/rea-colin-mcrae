@@ -105,6 +105,8 @@ pub enum ScreenEffect {
     /// A keyboard device record changed: the host refreshes the driving
     /// bindings of `player` from [`FrontendScreens::controls`].
     Keyboard { player: u8 },
+    /// The name entry took a code or cheat and is entered again.
+    NameCue(crate::frontend_name_entry::NameCue),
 }
 
 /// The control screens' cues (the device type change is the host's input
@@ -386,6 +388,11 @@ impl FrontendScreens {
     /// keyboard device records.
     pub fn install_keyboard_record(&mut self, record: &Record) {
         self.controls.install_record(record);
+    }
+
+    /// The name entry's encoded cheat names, from the user's executable.
+    pub fn set_name_cheats(&mut self, cheats: Vec<Vec<u8>>) {
+        self.name.set_cheats(cheats);
     }
 
     /// The control screens' state.
@@ -743,6 +750,11 @@ impl FrontendScreens {
                 }
                 match self.name.key(key, record) {
                     NameOutcome::Editing => None,
+                    NameOutcome::Again { cue } => {
+                        effects.push(ScreenEffect::NameCue(cue));
+                        self.set.pending = Some(menu);
+                        Some(menu)
+                    }
                     NameOutcome::Leave { target, commit } => {
                         if commit {
                             effects.push(ScreenEffect::CommitRecord);
@@ -1032,6 +1044,36 @@ mod tests {
         assert_eq!(left, Some(RACE_SENTINEL_SCREEN_ID));
         assert!(effects.contains(&ScreenEffect::CommitRecord));
         assert_eq!(&record[0x34..0x37], b"AB\0");
+    }
+
+    #[test]
+    fn a_cac_code_enters_the_name_screen_again() {
+        let mut record = record();
+        let mut screens = FrontendScreens::new(None);
+        screens.activate(CHAMPIONSHIP_NEXT_SCREEN_ID, &mut record);
+        settle(&mut screens, CHAMPIONSHIP_NEXT_SCREEN_ID, &mut record);
+        let mut effects = Vec::new();
+        let mut left = None;
+        for &vk in b"CAC12340\r" {
+            for vk in [vk, 0] {
+                let (target, more) = screens.step(
+                    CHAMPIONSHIP_NEXT_SCREEN_ID,
+                    0,
+                    NameKey { vk, pad: 0 },
+                    &mut record,
+                );
+                effects.extend(more);
+                left = left.or(target);
+            }
+        }
+        assert_eq!(left, Some(CHAMPIONSHIP_NEXT_SCREEN_ID));
+        assert!(effects.contains(&ScreenEffect::NameCue(
+            crate::frontend_name_entry::NameCue::Code
+        )));
+        assert!(!effects.contains(&ScreenEffect::CommitRecord));
+        assert_eq!(u16::from_le_bytes([record[0x28], record[0x29]]), 1234);
+        screens.activate(CHAMPIONSHIP_NEXT_SCREEN_ID, &mut record);
+        assert_eq!(screens.name_entry().name(), b"Player 1");
     }
 
     #[test]
