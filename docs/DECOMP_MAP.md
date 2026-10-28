@@ -446,8 +446,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-31T18:00:00Z
-milestone=service-screen-logic
+updated_utc=2026-10-31T19:30:00Z
+milestone=welcome-screen
 completed=117
 partial=2
 not_started=0

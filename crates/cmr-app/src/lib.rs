@@ -3303,6 +3303,133 @@ fn loading_interstitial_for_route(
         .map_err(StageFrameError::LoadingOverlayCompose)
 }
 
+/// The country welcome screen as state 2 runs it (`FUN_0048dde0`): its
+/// assets, the drawn image and the sequencer.
+struct WelcomeHost {
+    screen: Option<cmr_core::welcome_screen::WelcomeScreen>,
+    palette: [PaletteEntry; 256],
+    pixels: Vec<u8>,
+    last_ms: Option<u32>,
+    /// The bound keys held last frame (`FUN_0049cb20` takes their edges).
+    held: u32,
+}
+
+impl Default for WelcomeHost {
+    fn default() -> Self {
+        Self {
+            screen: None,
+            palette: cmr_core::welcome_screen::BLACK,
+            pixels: Vec::new(),
+            last_ms: None,
+            held: 0,
+        }
+    }
+}
+
+impl WelcomeHost {
+    /// One state-2 frame: the first loads and draws (`FUN_0048db20`), each
+    /// shows the sequencer's palette step; `true` once it has ended. The
+    /// blocking fades take one step per 60 Hz vertical blank of host time
+    /// (backend policy).
+    fn frame(
+        &mut self,
+        runtime_data: &Path,
+        event: &EventState,
+        language: Language,
+        now: u32,
+        held: u32,
+    ) -> (bool, Option<SoftwarePresentedFrame>) {
+        use cmr_core::welcome_screen::{WELCOME_CODES, WelcomeAssets, WelcomeScreen, draw};
+        // The armed special event skips the screen.
+        if event.globals.special_55001c {
+            return (true, None);
+        }
+        let key = held & !self.held != 0;
+        self.held = held;
+        if self.screen.is_none() {
+            let country = event.cfg.cursor_168 & 0xf;
+            let code = WELCOME_CODES
+                .get(usize::from(country))
+                .copied()
+                .unwrap_or("NEW");
+            let store = ReviewedProfile::from_json(REVIEWED_PROFILE)
+                .ok()
+                .and_then(|reviewed| {
+                    AssetStore::open(runtime_data, &reviewed, DecodeLimits::default()).ok()
+                });
+            let lower = code.to_ascii_lowercase();
+            let load = |path: String| store.as_ref().and_then(|store| store.load(&path).ok());
+            let dir = format!("Game/Welcome/{code}");
+            let palette = load(format!("{dir}/{lower}.pal"))
+                .and_then(|bytes| cmr_formats::riff_palette::parse_legacy_palette_256(&bytes).ok())
+                .map_or(cmr_core::welcome_screen::BLACK, |p| p.entries);
+            let font = |name: String| {
+                load(format!("{dir}/Fonts/{name}"))
+                    .and_then(|bytes| parse_legacy_font(&bytes, FontLimits::default()).ok())
+            };
+            let assets = WelcomeAssets {
+                palette,
+                welcome_font: font(format!("{lower}_wel.fon")),
+                main_font: font(format!("main_{lower}.fon")),
+                flag: load(format!("{dir}/flag_{lower}.bmp")).and_then(|bytes| {
+                    cmr_formats::bitmap::parse_indexed_bitmap(&bytes, BitmapLimits::default()).ok()
+                }),
+            };
+            let text = load_game_text(runtime_data, language);
+            let lookup = |id: i32| {
+                usize::try_from(id)
+                    .ok()
+                    .and_then(|id| text.as_ref().map(|t| t.lookup(id).to_vec()))
+                    .unwrap_or_default()
+            };
+            self.pixels = draw(
+                &assets,
+                ROOT_EXTENT.width,
+                ROOT_EXTENT.height,
+                country,
+                event.cfg.mode_166 & 0x20 != 0,
+                &lookup,
+            )
+            .unwrap_or_else(|_| {
+                vec![0; usize::from(ROOT_EXTENT.width) * usize::from(ROOT_EXTENT.height)]
+            });
+            self.palette = assets.palette;
+            self.screen = Some(WelcomeScreen::default());
+            self.last_ms = Some(now);
+        }
+        let steps = self.last_ms.map_or(1, |last| {
+            (now.wrapping_sub(last) as usize * 60 / 1000).max(1)
+        });
+        self.last_ms = Some(now);
+        let screen = self.screen.as_mut().expect("loaded above");
+        let view = screen.frame(steps, now, key);
+        let done = screen.done();
+        if done {
+            // The teardown; the next welcome loads again.
+            self.screen = None;
+        }
+        let frame = view.and_then(|view| {
+            SoftwarePresentedFrame::from_indexed(
+                ROOT_EXTENT,
+                self.pixels.clone().into_boxed_slice(),
+                Box::new(view.palette(&self.palette)),
+            )
+            .ok()
+        });
+        (done, frame)
+    }
+}
+
+/// The game text table (`FUN_0049b010`).
+fn load_game_text(
+    runtime_data: &Path,
+    language: Language,
+) -> Option<cmr_core::localization::IndexedTextTable> {
+    let reviewed = ReviewedProfile::from_json(REVIEWED_PROFILE).ok()?;
+    let store = AssetStore::open(runtime_data, &reviewed, DecodeLimits::default()).ok()?;
+    cmr_core::localization_assets::load_game_text_table(&store, language).ok()
+}
+
 /// The per-stage shadow state (`FUN_004a4f20`, `FUN_00449bd0`,
 /// `FUN_0047b000`'s caches).
 struct StageShadow {
@@ -3324,10 +3451,9 @@ impl cmr_core::car_shadow::ShadowGround for KeepHeight {
     }
 }
 
-/// The pre-race waits this session satisfies at once. Harness: the country
-/// welcome screen (`FUN_0048dde0`) is not reconstructed, so it counts as
-/// dismissed (the native screen also ends on a key press); no interstitial is
-/// pending.
+/// The pre-race waits a session without the windowed screens satisfies at
+/// once: the welcome screen counts as dismissed (the windowed session runs
+/// it, [`WelcomeHost`]); no interstitial is pending.
 const PRE_RACE_INPUTS: MenuFlowInputs = MenuFlowInputs {
     welcome_done: true,
     school_menu_done: false,
@@ -3691,7 +3817,24 @@ fn advance_game_frame<C: HostClock>(
             clock.millis(),
         ))
     };
-    let menu_inputs = PRE_RACE_INPUTS;
+    let mut menu_inputs = PRE_RACE_INPUTS;
+    // State 2 in a race: the country welcome screen (`FUN_0048dde0`).
+    let mut welcome = None;
+    if session.state().id() == 2 && !session.event().globals.school_d3ca88 {
+        let keyboards = root_interaction.screens().controls().keyboards;
+        let held = keyboards.iter().fold(0, |mask, keyboard| {
+            mask | keyboard.held_mask(|vk| input.keys.is_down(vk))
+        }) | input.gamepad.map_or(0, |pad| pad.buttons());
+        let (done, frame) = results.welcome.frame(
+            &results.runtime_data.clone(),
+            session.event(),
+            results.language,
+            clock.millis(),
+            held,
+        );
+        menu_inputs.welcome_done = done;
+        welcome = frame;
+    }
     let drive = if let Some(pad) = input.gamepad.filter(|pad| analog_driving_is_active(pad)) {
         analog.poll(
             pad.steer_axis(),
@@ -3883,6 +4026,7 @@ fn advance_game_frame<C: HostClock>(
         STAGE_LOADING_PROGRESS_CAP,
     )?;
     Ok(GameFrameOutcome {
+        welcome,
         world,
         loading_interstitial,
         exit_requested: root_tick.as_ref().is_some_and(|tick| tick.exit_requested),
@@ -3908,6 +4052,8 @@ fn advance_game_frame<C: HostClock>(
 
 /// What one [`advance_game_frame`] produced for the windowed loop.
 struct GameFrameOutcome {
+    /// The country welcome screen's frame (state 2).
+    welcome: Option<SoftwarePresentedFrame>,
     world: Option<SoftwarePresentedFrame>,
     loading_interstitial: Option<SoftwarePresentedFrame>,
     root_render_input: Option<RootRenderInput>,
@@ -6755,6 +6901,8 @@ struct RaceResults {
     static_tables: Option<cmr_assets::StaticTablesStore>,
     /// The installed language of the results' text.
     language: Language,
+    /// The country welcome screen state 2 shows.
+    welcome: WelcomeHost,
 }
 
 impl RaceResults {
@@ -6798,6 +6946,7 @@ impl RaceResults {
             pulse: cmr_core::results_draw::ResultsPulse::default(),
             static_tables: open_static_tables(runtime_data),
             language,
+            welcome: WelcomeHost::default(),
         }
     }
 
@@ -7485,7 +7634,9 @@ pub fn run_windowed_game_session(
                             Ok(outcome) => {
                                 // A composed world frame wins; otherwise the interactive
                                 // front-end route presents the recovered root-menu frame.
-                                let present = if outcome.world.is_some() {
+                                let present = if outcome.welcome.is_some() {
+                                    outcome.welcome
+                                } else if outcome.world.is_some() {
                                     outcome.world
                                 } else if outcome.loading_interstitial.is_some() {
                                     outcome.loading_interstitial
@@ -7583,7 +7734,10 @@ pub fn run_windowed_game_session(
         results.frame(&mut session, &progress, &mut config, &mut camera.rng);
         match frame {
             Ok(outcome) => WindowedGameFrame {
-                present: outcome.world.or(outcome.loading_interstitial),
+                present: outcome
+                    .welcome
+                    .or(outcome.world)
+                    .or(outcome.loading_interstitial),
                 stopped: outcome.exit_requested,
                 music_active: outcome.music_active,
                 codriver_calls: outcome.codriver_calls,
@@ -11095,6 +11249,44 @@ mod tests {
 
     /// Drives the front end into the championship and rally setups and writes
     /// their frames under `.work/frames-setup`.
+    #[test]
+    #[ignore = "requires the reviewed installed-EU runtime data; writes a frame under .work"]
+    fn imported_welcome_screen_frame() {
+        let root = std::env::var_os("CMR_RUNTIME_DATA")
+            .map(PathBuf::from)
+            .expect("set CMR_RUNTIME_DATA to the reviewed installed-EU root");
+        let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.work/frames-welcome");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        for country in [0u8, 3, 7] {
+            let mut host = WelcomeHost::default();
+            let mut event = EventState::default();
+            event.cfg.cursor_168 = country;
+            let mut now = 0;
+            let mut shown = None;
+            for _ in 0..40 {
+                now += 40;
+                let (done, frame) = host.frame(&root, &event, Language::English, now, 0);
+                assert!(!done);
+                shown = frame;
+            }
+            let frame = shown.expect("a welcome frame");
+            let rgba = frame.expand_rgba8().unwrap();
+            let mut ppm = b"P6\n640 480\n255\n".to_vec();
+            let (pixels, _) = rgba.pixels().as_chunks::<4>();
+            for pixel in pixels {
+                ppm.extend_from_slice(&pixel[..3]);
+            }
+            std::fs::write(out_dir.join(format!("welcome-{country}.ppm")), ppm).unwrap();
+            // Past two seconds the fade out ends it.
+            let mut ended = false;
+            for _ in 0..80 {
+                now += 40;
+                ended |= host.frame(&root, &event, Language::English, now, 0).0;
+            }
+            assert!(ended);
+        }
+    }
+
     #[test]
     #[ignore = "requires the reviewed installed-EU runtime data"]
     fn imported_cheat_names_decode_to_typeable_names() {
