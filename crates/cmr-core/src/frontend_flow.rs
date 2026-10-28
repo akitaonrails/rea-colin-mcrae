@@ -26,6 +26,7 @@ use crate::frontend::{
     RACE_SENTINEL_SCREEN_ID, RALLY_NAME_SCREEN_ID, RALLY_SCREEN_ID, ROOT_SCREEN_ID,
     STAGE_SELECT_SCREEN_ID, ScreenId, TIME_TRIAL_NAME_SCREEN_ID, TIME_TRIAL_SCREEN_ID,
 };
+use crate::frontend_controls::{ControlScreen, ControlScreens, ControlsEffect, InputDevices};
 use crate::frontend_load::{LoadScreen, SlotFile};
 use crate::frontend_name_entry::{NameEntry, NameKey, NameOutcome, NameScreen};
 use crate::frontend_options::{DisplayCaps, OptionScreen, OptionsEffect, OptionsScreens};
@@ -103,6 +104,18 @@ pub enum ScreenEffect {
     Volumes { effects: i32, music: i32 },
 }
 
+/// The control screens' cues (the device type change is the host's input
+/// layer, not modelled here).
+fn control_effects(changes: Vec<ControlsEffect>) -> impl Iterator<Item = ScreenEffect> {
+    changes.into_iter().filter_map(|change| match change {
+        ControlsEffect::SlideCue => Some(ScreenEffect::Cue {
+            slot: crate::frontend_sounds::SLIDE_CUE,
+            ok: true,
+        }),
+        ControlsEffect::DeviceType { .. } => None,
+    })
+}
+
 /// The host's reader of the twelve save-slot files (`FUN_0044ed90`).
 pub type SlotReader = Box<dyn FnMut() -> Vec<SlotFile>>;
 
@@ -159,8 +172,11 @@ pub struct FrontendScreens {
     load: LoadScreen,
     slot_reader: Option<SlotReader>,
     options: OptionsScreens,
+    controls: ControlScreens,
     /// The host's display hardware for the advanced graphics.
     display: DisplayCaps,
+    /// The host's input devices for the control setup.
+    devices: InputDevices,
     layouts: [SetupLayout; 3],
     slides: Slides,
     /// `0x508fe8`: the name entry is leaving.
@@ -227,6 +243,12 @@ fn menu_of(screen: ScreenId) -> Option<MenuId> {
                 .position(|&o| o.screen() == screen)?;
             Some(MenuId(OPTIONS_BASE + index))
         })
+        .or_else(|| {
+            let index = ControlScreen::ALL
+                .iter()
+                .position(|&c| c.screen() == screen)?;
+            Some(MenuId(CONTROLS.0 + index))
+        })
 }
 
 fn screen_of(menu: MenuId) -> Option<ScreenId> {
@@ -238,6 +260,10 @@ fn screen_of(menu: MenuId) -> Option<ScreenId> {
             let index = menu.0.checked_sub(OPTIONS_BASE)?;
             OptionScreen::ALL.get(index).map(|o| o.screen())
         })
+        .or_else(|| {
+            let index = menu.0.checked_sub(CONTROLS.0)?;
+            ControlScreen::ALL.get(index).map(|c| c.screen())
+        })
 }
 
 enum Kind {
@@ -246,6 +272,7 @@ enum Kind {
     Stage,
     Load,
     Option(OptionScreen),
+    Control(ControlScreen),
 }
 
 fn kind_of(menu: MenuId) -> Option<Kind> {
@@ -259,7 +286,13 @@ fn kind_of(menu: MenuId) -> Option<Kind> {
         Some(Kind::Load)
     } else {
         let index = menu.0.checked_sub(OPTIONS_BASE)?;
-        OptionScreen::ALL.get(index).map(|&o| Kind::Option(o))
+        OptionScreen::ALL
+            .get(index)
+            .map(|&o| Kind::Option(o))
+            .or_else(|| {
+                let index = menu.0.checked_sub(CONTROLS.0)?;
+                ControlScreen::ALL.get(index).map(|&c| Kind::Control(c))
+            })
     }
 }
 
@@ -297,12 +330,8 @@ impl FrontendScreens {
         set.add(load.menu.clone());
         let options = OptionsScreens::build(&mut set, id::ROOT, CONTROLS, &[0; LEGACY_CONFIG_SIZE]);
         debug_assert_eq!(options.id(OptionScreen::Options), MenuId(OPTIONS_BASE));
-        // The control setup `0xd45858` (not reconstructed yet).
-        set.add(Menu::new(
-            0xc1,
-            Some(options.id(OptionScreen::Settings)),
-            None,
-        ));
+        let controls = ControlScreens::build(&mut set, options.id(OptionScreen::Settings));
+        debug_assert_eq!(controls.id(ControlScreen::Control), CONTROLS);
         Self {
             set,
             setups,
@@ -311,7 +340,9 @@ impl FrontendScreens {
             load,
             slot_reader: None,
             options,
+            controls,
             display: DisplayCaps::DEFAULT,
+            devices: InputDevices::KEYBOARDS,
             layouts: layouts.unwrap_or_default(),
             slides: Slides::default(),
             name_leaving: false,
@@ -337,6 +368,16 @@ impl FrontendScreens {
     /// The options row screens' slide templates.
     pub fn set_option_templates(&mut self, templates: crate::frontend_options::RowTemplates) {
         self.options.set_templates(templates);
+    }
+
+    /// The host's input devices the control setup asks about.
+    pub fn set_input_devices(&mut self, devices: InputDevices) {
+        self.devices = devices;
+    }
+
+    /// The control screens' state.
+    pub const fn controls(&self) -> &ControlScreens {
+        &self.controls
     }
 
     /// The options subtree's state.
@@ -470,6 +511,22 @@ impl FrontendScreens {
                 self.options
                     .enter(screen, arg, self.set.menu_mut(menu), record, &display);
             }
+            Some(Kind::Control(screen)) => {
+                let mut changes = Vec::new();
+                let (player, devices, no_animation) =
+                    (self.options.player, self.devices, self.no_animation);
+                self.controls.enter(
+                    screen,
+                    u8::from(went_back),
+                    self.set.menu_mut(menu),
+                    record,
+                    player,
+                    &devices,
+                    no_animation,
+                    &mut changes,
+                );
+                cues.extend(control_effects(changes));
+            }
             Some(Kind::Load) => {
                 let files = self
                     .slot_reader
@@ -542,6 +599,38 @@ impl FrontendScreens {
                     };
                     let item = self.set.menu(menu).items[item].clone();
                     if let Some(target) = self.options.activate(screen, &item, record) {
+                        self.set.pending = Some(target);
+                        pending = Some(target);
+                    }
+                }
+                // `0x4cda80`: the control setup's OK picks the next screen.
+                MenuEvent::Activate {
+                    item,
+                    callback: 0x004c_da80,
+                    ..
+                } => {
+                    let mut changes = Vec::new();
+                    let player = self.options.player;
+                    let (target, parent) =
+                        self.controls
+                            .control_ok(self.set.menu(menu), record, player, &mut changes);
+                    effects.extend(control_effects(changes));
+                    self.set.menu_mut(menu).items[item].kind =
+                        crate::descriptor_menu::ItemKind::Submenu(target);
+                    self.set
+                        .menu_mut(self.controls.id(ControlScreen::Buttons))
+                        .parent = Some(parent);
+                    self.set.pending = Some(target);
+                    pending = Some(target);
+                }
+                // `0x4cdc30`: the button setup's OK returns to its parent's
+                // parent.
+                MenuEvent::Activate {
+                    callback: 0x004c_dc30,
+                    ..
+                } => {
+                    let parent = self.set.menu(menu).parent;
+                    if let Some(target) = parent.and_then(|p| self.set.menu(p).parent) {
                         self.set.pending = Some(target);
                         pending = Some(target);
                     }
@@ -669,6 +758,13 @@ impl FrontendScreens {
                 }
                 None
             }
+            // `0x4cee30`.
+            Kind::Control(_) => {
+                let devices = self.devices;
+                self.controls
+                    .commit(self.set.menu_mut(menu), &devices, false);
+                None
+            }
             // `0x4c76c0`.
             Kind::Load => {
                 self.load.menu = self.set.menu(menu).clone();
@@ -737,6 +833,20 @@ impl FrontendScreens {
                         .into_iter()
                         .map(|slot| ScreenEffect::Cue { slot, ok: true }),
                 );
+            }
+            Kind::Control(screen) => {
+                let mut changes = Vec::new();
+                let (player, no_animation) = (self.options.player, self.no_animation);
+                self.controls.post(
+                    *screen,
+                    back,
+                    self.set.menu_mut(menu),
+                    record,
+                    player,
+                    no_animation,
+                    &mut changes,
+                );
+                effects.extend(control_effects(changes));
             }
             // `0x4c7770`.
             Kind::Load => {

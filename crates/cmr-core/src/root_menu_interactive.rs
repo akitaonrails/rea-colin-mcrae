@@ -722,4 +722,82 @@ mod tests {
         assert_eq!(record[0x20] & 0x18, 0);
         wait_for(&mut driver, OptionScreen::Options.screen(), &mut record);
     }
+
+    #[test]
+    fn the_settings_open_the_control_setup() {
+        use crate::frontend_controls::ControlScreen;
+        assert!(FrontendScreens::handles(ControlScreen::Control.screen()));
+        let mut driver = driver(4);
+        let mut record = record();
+        let now = std::cell::Cell::new(0);
+        let tick = |driver: &mut RootInteraction, held: Option<u8>, record: &mut Record| {
+            now.set(now.get() + 50);
+            driver.tick_for_game_session(
+                FrontendInput::default(),
+                FrontendKeys { held, pad: 0 },
+                now.get(),
+                true,
+                record,
+            )
+        };
+        let press = |driver: &mut RootInteraction, vk: u8, record: &mut Record| {
+            let mut frames = 0;
+            loop {
+                let active = driver.state().active_screen();
+                if driver.state().phase() == FrontendPhase::Interactive
+                    && driver
+                        .screens()
+                        .menu(active)
+                        .is_some_and(|m| m.nav.confirms)
+                {
+                    break;
+                }
+                let _ = tick(driver, None, record);
+                frames += 1;
+                assert!(frames < 200, "{active:?} takes input");
+            }
+            let _ = tick(driver, Some(vk), record);
+            let _ = tick(driver, None, record);
+        };
+        while driver.state().phase() != FrontendPhase::Interactive {
+            let _ = tick(&mut driver, None, &mut record);
+        }
+        now.set(now.get() + 50);
+        let _ = driver.tick_for_game_session(
+            CONFIRM,
+            FrontendKeys::default(),
+            now.get(),
+            true,
+            &mut record,
+        );
+        press(&mut driver, 0x0d, &mut record);
+        for vk in [0x28, 0x28, 0x0d] {
+            press(&mut driver, vk, &mut record);
+        }
+        let mut frames = 0;
+        while driver.state().active_screen() != ControlScreen::Control.screen() {
+            let _ = tick(&mut driver, None, &mut record);
+            frames += 1;
+            assert!(
+                frames < 100,
+                "the control setup opens (at {:?}, pending {:?}, phase {:?})",
+                driver.state().active_screen(),
+                driver.state().pending_screen(),
+                driver.state().phase()
+            );
+        }
+        for _ in 0..30 {
+            let _ = tick(&mut driver, None, &mut record);
+        }
+        assert_eq!(
+            driver.screens().controls().panel_x,
+            0x1999,
+            "the panel slid in"
+        );
+        let menu = driver
+            .screens()
+            .menu(ControlScreen::Control.screen())
+            .unwrap();
+        assert!(menu.nav.confirms && !menu.nav.backs);
+    }
 }

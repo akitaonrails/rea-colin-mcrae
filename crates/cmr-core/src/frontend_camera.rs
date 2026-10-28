@@ -72,6 +72,9 @@ impl CameraBlock {
             .map(|(_, address)| *address)
             .or_else(|| {
                 crate::frontend_options::OptionScreen::of(screen).map(|o| o.camera_target())
+            })
+            .or_else(|| {
+                crate::frontend_controls::ControlScreen::of(screen).map(|c| c.camera_target())
             })?;
         Some((self.i32_at(address)?, self.i32_at(address + 4)?))
     }

@@ -73,6 +73,7 @@ pub mod frontend_c3d_resources;
 pub mod frontend_c3d_route;
 pub mod frontend_c3d_scene;
 pub mod frontend_camera;
+pub mod frontend_controls;
 pub mod frontend_flow;
 pub mod frontend_keys;
 pub mod frontend_load;

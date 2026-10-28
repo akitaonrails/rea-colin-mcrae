@@ -1925,6 +1925,144 @@ fn championship_table<'f>(
     }
 }
 
+/// What one control-screen frame draws from.
+pub struct ControlsDrawInput<'a> {
+    pub screen: crate::frontend_controls::ControlScreen,
+    pub menu: &'a Menu,
+    pub controls: &'a crate::frontend_controls::ControlScreens,
+    pub camera: Camera,
+    pub extent: DisplayExtent,
+    pub arrow_left: &'a [u8],
+    pub arrow_right: &'a [u8],
+    /// `"%s %d"` (`0x4f624c`).
+    pub method_format: &'a [u8],
+}
+
+/// The control setup's (`FUN_004cdd80`) and analogue setup's
+/// (`FUN_004ce420`) frames: the backdrop, the panel `OPTION.BMP` at
+/// `(CX, 0x2666)`, the title, then each item's label (`RED_DY` selected,
+/// `BLUE_DY` otherwise, `GREY_DY` for a disabled analogue row; submenus and
+/// actions `0xccc` right with the DONE button) and its value in an LCD
+/// between the arrows: the method (`0xb9`, or `0xba` and the number), the
+/// type (`0xbb`/`0xbc`/`0xbd`), the analogue switches (`0x37` off, `0x36`
+/// on) and force feedback (`0x63`/`0x62`). The disabled control-setup
+/// colour `0x5024a8` is not applied (font colours).
+pub fn plan_controls_frame<'f>(
+    input: &ControlsDrawInput,
+    text: &dyn Fn(i32) -> Vec<u8>,
+    fonts: &dyn Fn(FontStyle) -> &'f BitmapFont,
+) -> Vec<ScreenCommand> {
+    use crate::c_format::{FormatArg, c_format};
+    use crate::frontend_controls::{ControlScreen, key};
+    use crate::frontend_screen_bitmaps::ScreenBitmap;
+    let extent = input.extent;
+    let w = i32::from(extent.width);
+    let h = i32::from(extent.height);
+    let (ox, oy) = input.camera.offset();
+    let cx = input.controls.panel_x;
+    let mut commands = vec![
+        backdrop(input.camera, w, h),
+        ScreenCommand::Bitmap {
+            bitmap: ScreenBitmap::Option,
+            source: None,
+            x: q(w, cx),
+            y: q(h, 0x2666),
+            size: None,
+            keyed: true,
+        },
+        ScreenCommand::Text {
+            font: FontStyle::Title,
+            x: q(w, (-0x6b85_i32).wrapping_add(ox)),
+            y: q(h, (-0xf333_i32).wrapping_add(oy)),
+            flags: 0x11,
+            text: text(input.menu.title_id),
+        },
+    ];
+    let analogue = input.screen == ControlScreen::Analogue;
+    let (label_x, first, gap) = input.controls.layout;
+    let lx = cx + label_x;
+    let mut y = 0x2666 + first;
+    let glyph = |x: i32, y: i32, font: FontStyle, s: &[u8], commands: &mut Vec<ScreenCommand>| {
+        commands.push(ScreenCommand::Text {
+            font,
+            x: q(w, x),
+            y: q(h, y),
+            flags: 0x11,
+            text: s.to_vec(),
+        });
+    };
+    for (index, item) in input.menu.items.iter().enumerate() {
+        let row_y = y;
+        let selected = index == input.menu.selected;
+        let font = if analogue && !item.enabled {
+            FontStyle::GreyDynamic
+        } else if selected {
+            FontStyle::RedDynamic
+        } else {
+            FontStyle::BlueDynamic
+        };
+        let label = text(item.text_id);
+        if item.kind == ItemKind::Value {
+            let (command, next) = q16_text(fonts, font, &label, lx, row_y, 0x11, extent);
+            commands.push(command);
+            y = next;
+        } else {
+            let (command, next) = q16_text(fonts, font, &label, lx + 0xccc, row_y, 0x11, extent);
+            commands.push(command);
+            y = next;
+            done_button(lx + 0xccc, row_y, selected, extent, &mut commands);
+        }
+        y += gap;
+        if item.kind != ItemKind::Value {
+            continue;
+        }
+        let v = item.value.value;
+        let (vx, width, right, value) = match (input.screen, item.key) {
+            (ControlScreen::Control, key::METHOD) => (
+                cx + 0x63d7,
+                0x5eb8,
+                0x6872,
+                if v == 0 {
+                    text(0xb9)
+                } else {
+                    c_format(
+                        input.method_format,
+                        &[FormatArg::Bytes(&text(0xba)), FormatArg::Int(i64::from(v))],
+                    )
+                },
+            ),
+            (ControlScreen::Control, key::TYPE) => (
+                cx + 0x63d7,
+                0x5eb8,
+                0x6872,
+                match v {
+                    -1 => Vec::new(),
+                    0 => text(0xbb),
+                    1 => text(0xbc),
+                    _ => text(0xbd),
+                },
+            ),
+            (ControlScreen::Analogue, key::STEERING | key::ACCELERATION | key::BRAKE) => (
+                cx + 0x7333,
+                0x3b64,
+                0x451e,
+                text(if v == 0 { 0x37 } else { 0x36 }),
+            ),
+            (ControlScreen::Analogue, key::FORCE_FEEDBACK) => (
+                cx + 0x7333,
+                0x3b64,
+                0x451e,
+                text(if v == 0 { 0x63 } else { 0x62 }),
+            ),
+            _ => continue,
+        };
+        glyph(vx, row_y, font, input.arrow_left, &mut commands);
+        lcd_field(vx + 0x7ef, row_y, width, &value, extent, &mut commands);
+        glyph(vx + right, row_y, font, input.arrow_right, &mut commands);
+    }
+    commands
+}
+
 /// Why a screen frame could not be executed.
 #[derive(Debug)]
 pub enum ScreenFrameError<E, F> {

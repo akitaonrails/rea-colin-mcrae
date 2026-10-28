@@ -5646,6 +5646,20 @@ fn screen_commands(
     let country_table = tables
         .and_then(|t| t.block("frontend_country_table"))
         .unwrap_or(&[]);
+    if let Some(control) = cmr_core::frontend_controls::ControlScreen::of(screen) {
+        let string = |name: &str| tables.and_then(|t| t.string(name)).unwrap_or(&[]);
+        let input = frame::ControlsDrawInput {
+            screen: control,
+            menu,
+            controls: screens.controls(),
+            camera: root.camera(),
+            extent: ROOT_EXTENT,
+            arrow_left: string("frontend_arrow_left"),
+            arrow_right: string("frontend_arrow_right"),
+            method_format: string("name_entry_player_format"),
+        };
+        return Some(frame::plan_controls_frame(&input, &lookup, &font));
+    }
     if let Some(option) = cmr_core::frontend_options::OptionScreen::of(screen) {
         let string = |name: &str| tables.and_then(|t| t.string(name)).unwrap_or(&[]);
         let input = frame::OptionsDrawInput {
@@ -10657,6 +10671,46 @@ mod tests {
                             let screen = interaction.state().active_screen().legacy_value();
                             let presented = root.backend().presented_frame().cloned().unwrap();
                             write(&format!("opt-{frame:03}-{screen:x}"), &presented);
+                        }
+                    }
+                }
+                // The controls: back to Options, Settings, Controller 1,
+                // then OK (keyboard) on to the button setup. Each key is
+                // pressed once the current screen takes input.
+                let keys: &[u8] = &[0x1b, 0x1b, 0x26, 0x0d, 0x28, 0x28, 0x0d, 0x28, 0x28, 0x0d];
+                let mut next_key = 0;
+                let mut idle = 0;
+                for frame in 0..400u32 {
+                    let active = interaction.state().active_screen();
+                    let ready = interaction.state().phase()
+                        == cmr_core::frontend::FrontendPhase::Interactive
+                        && interaction
+                            .screens()
+                            .menu(active)
+                            .is_some_and(|menu| menu.nav.confirms);
+                    idle = if ready { idle + 1 } else { 0 };
+                    let held = (idle > 3 && next_key < keys.len()).then(|| {
+                        next_key += 1;
+                        idle = 0;
+                        keys[next_key - 1]
+                    });
+                    let _ = tick(&mut interaction, Default::default(), held, &mut config);
+                    if let Some(commands) = screen_commands(
+                        &interaction,
+                        Some(&tables),
+                        &config.image[..],
+                        &mut state,
+                        root.text(),
+                        root.fonts(),
+                        now.get(),
+                        led_step(&screen_bitmaps),
+                    ) {
+                        root.render_screen(&commands, &screen_bitmaps, &screen_images)
+                            .unwrap();
+                        if frame % 10 == 9 {
+                            let screen = interaction.state().active_screen().legacy_value();
+                            let presented = root.backend().presented_frame().cloned().unwrap();
+                            write(&format!("ctl-{frame:03}-{screen:x}"), &presented);
                         }
                     }
                 }
