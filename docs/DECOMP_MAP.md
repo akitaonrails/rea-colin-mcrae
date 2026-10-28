@@ -421,8 +421,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-10-28T08:40:00Z
-milestone=ground-pass-correction-and-lane-source-seed
+updated_utc=2026-10-28T09:20:00Z
+milestone=grounded-base-force
 completed=117
 partial=2
 not_started=0

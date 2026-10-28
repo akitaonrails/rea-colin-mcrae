@@ -60,7 +60,6 @@ use crate::static_world_collision::{
     StaticCollisionExecutionError, StaticContactHistory, resolve_static_world_collisions,
 };
 use crate::steering_response::{SteeringInputs, SteeringParams, SteeringState, apply_steering};
-use crate::vehicle_dynamics::classify_contact_distance_lanes;
 use crate::vehicle_dynamics::{
     AngularOrientationInput, ContactBasisInput, ContactDeadzoneGate, ContactVectorUpdateInput,
     GeometricPostprocessError, GeometricPostprocessLane, LaneDirectionSources,
@@ -72,6 +71,7 @@ use crate::vehicle_dynamics::{
     resolve_lane_direction_mode, resting_flag_700, stabilize_lane_source_s, sum_contact_moments,
     sum_translation_lane_forces, transform_contact_force, upright_flag_404,
 };
+use crate::vehicle_dynamics::{classify_contact_distance_lanes, grounded_base_force, slope_grip};
 use cmr_formats::pe_surface::SurfaceCoefficientFamilies;
 
 /// Fixed per-tick parameters of the integration harness (not recovered game
@@ -1337,6 +1337,7 @@ impl RaceState {
             self.car.four_wheel.speed_ec,
         );
         self.car.four_wheel.start_basis_27c = self.car.motion.basis;
+        let start_normal = self.car.motion.projection_axis;
         // With live ground contact, the threshold scan and the contact-distance
         // gate `FUN_0040d740` read the current lane words and probe points.
         let threshold_inputs = match &self.car.ground {
@@ -1632,8 +1633,17 @@ impl RaceState {
             contact_update_inputs,
             self.car.four_wheel.contact_updates,
         );
-        let force = sum_translation_lane_forces(
+        // `FUN_004095e0` replaces the driver's gravity base force with its
+        // ground projection while a probe touches, using the slope grip of
+        // the start-of-tick normal (`FUN_00408f50`).
+        let base_force = grounded_base_force(
             wheel.postprocess.base_force,
+            start_normal,
+            slope_grip(start_normal.y),
+            thresholds.count_742,
+        );
+        let force = sum_translation_lane_forces(
+            base_force,
             wheel.postprocess.non_wheel_forces,
             std::array::from_fn(|index| {
                 (
@@ -3082,8 +3092,12 @@ mod tests {
         let mut contacting = wheel.clone();
         contacting.lane_threshold_inputs.source_y = [0; 8];
         assert!(derive_compiled_lane_thresholds(contacting.lane_threshold_inputs).count_742 > 0);
+        // Only the grounded base force acts here: `grounded_base_force` keeps
+        // `1 - grip` of the tangential +x base force on the flat start normal.
+        let mut base_only = contacting.clone();
+        base_only.postprocess.wheel_contacts = [false; 4];
         let suppressed = RaceState::new(car)
-            .step_with_all_four_wheels(&straight_throttle(1)[0], &contacting)
+            .step_with_all_four_wheels(&straight_throttle(1)[0], &base_only)
             .unwrap();
         assert!(suppressed.car.velocity.x > Fixed16::ZERO);
         assert!(
@@ -3161,7 +3175,7 @@ mod tests {
         };
         assert_eq!(car.four_wheel.speed_ec, 0);
         let steered_contacting = RaceState::new(car)
-            .step_with_all_four_wheels(&steered, &contacting)
+            .step_with_all_four_wheels(&steered, &base_only)
             .unwrap();
         assert_eq!(steered_contacting.car.motion, suppressed.car.motion);
         assert_eq!(steered_contacting.car.four_wheel, suppressed.car.four_wheel);

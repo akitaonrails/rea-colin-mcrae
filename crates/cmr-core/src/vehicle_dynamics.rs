@@ -1037,6 +1037,25 @@ pub fn slope_grip(surface_normal_y: Fixed16) -> Fixed16 {
     ramp.mul(SLOPE_GRIP_FLAT)
 }
 
+/// The base force after `FUN_004095e0`'s ground projection: while a probe
+/// touches (`+0x742 > 0`) the normal component of the base force is removed
+/// and the rest scaled by `1 - grip` (`DAT_0050c5a4 = `[`slope_grip`]`(+0x328)`).
+/// The native computes the projection also when only `+0x674 > 0`, but stores
+/// it only when `+0x742 > 0`, so only that count decides the result.
+#[must_use]
+pub fn grounded_base_force(base: Vec3, normal: Vec3, grip: Fixed16, count_742: u8) -> Vec3 {
+    if count_742 == 0 {
+        return base;
+    }
+    let along = base.dot(normal);
+    let keep = Fixed16::ONE.sub(grip);
+    Vec3::new(
+        base.x.sub(normal.x.mul(along)).mul(keep),
+        base.y.sub(normal.y.mul(along)).mul(keep),
+        base.z.sub(normal.z.mul(along)).mul(keep),
+    )
+}
+
 /// Net acceleration from the summed force, reproducing the integrator's
 /// `accel = force * invMass + gravity`.
 pub fn net_accel(force: Vec3, inverse_mass: Fixed16, gravity: Vec3) -> Vec3 {
@@ -2608,6 +2627,34 @@ mod tests {
         assert!(!resting_flag_700([0, 1, 0], Fixed16::ZERO));
         // Signed compare: a negative speed word counts as slow.
         assert!(resting_flag_700([0, 0, 0], Fixed16::from_raw(-1)));
+    }
+
+    #[test]
+    fn grounded_base_force_drops_the_normal_part_and_keeps_one_minus_grip() {
+        let gravity = raw_v(0, -0x4_0000, 0);
+        let up = raw_v(0, 0x1_0000, 0);
+        // Airborne: unchanged.
+        assert_eq!(
+            grounded_base_force(gravity, up, SLOPE_GRIP_FLAT, 0),
+            gravity
+        );
+        // Flat ground: gravity is all normal, so nothing is left.
+        assert_eq!(
+            grounded_base_force(gravity, up, SLOPE_GRIP_FLAT, 4),
+            Vec3::ZERO
+        );
+        // A 45-degree slope keeps the tangential part times 1 - grip.
+        let slope = raw_v(0xb505, 0xb505, 0);
+        let along = gravity.dot(slope);
+        let keep = Fixed16::ONE.sub(slope_grip(slope.y));
+        assert_eq!(
+            grounded_base_force(gravity, slope, slope_grip(slope.y), 1),
+            Vec3::new(
+                gravity.x.sub(slope.x.mul(along)).mul(keep),
+                gravity.y.sub(slope.y.mul(along)).mul(keep),
+                gravity.z.sub(slope.z.mul(along)).mul(keep),
+            )
+        );
     }
 
     #[test]

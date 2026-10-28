@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-fix: seed the lane source and correct the ground-pass claim
+feat: project the base force onto the ground while grounded
 ```
 
 Start by confirming the checkout and progress footer:
@@ -122,7 +122,9 @@ and the checkpoint cursor never advances (a correction to `834e4c9`). Run
 `CMR_RUNTIME_DATA="$PWD/runtime-data/installed-eu-derived-assets-v2" cargo test
 -p cmr-app --release probe_compiled_four_wheel_car_on_au1 -- --ignored
 --nocapture` (it prints the cursor). Next, in order: source the second loop's
-tyre inputs so lane forces appear, then build the windowed session on
+tyre inputs so lane forces appear (`rea.official-eu.tyre-load-pass`: the gains
+`+0x35c/+0x36c` come from `FUN_004095e0`; extend the tyre store with each
+8-byte record's first dword at `0x4f6b4c/0x4f6f0c`), then build the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`
 from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground`),
 render the car body from `MotionState::basis`, then the out-of-control path
