@@ -43,10 +43,14 @@ pub enum ScreenBitmap {
     Join,
     /// `DAT_00d424f8`: `images\LOAD\LOADPAN.BMP`.
     LoadPanel,
+    /// `DAT_00d403f8`: `images\HISCORE\HIPANEL.BMP`.
+    HiPanel,
+    /// `DAT_00d4cd80`: `images\LEDS\LIGONGR.BMP`.
+    LightOnGreen,
 }
 
 impl ScreenBitmap {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::InfoRight,
         Self::Name,
         Self::NameSmall,
@@ -64,6 +68,8 @@ impl ScreenBitmap {
         Self::Host,
         Self::Join,
         Self::LoadPanel,
+        Self::HiPanel,
+        Self::LightOnGreen,
     ];
 
     /// The imported path.
@@ -86,6 +92,8 @@ impl ScreenBitmap {
             Self::Host => "New_Fe/Images/Players/host.bmp",
             Self::Join => "New_Fe/Images/Players/join.bmp",
             Self::LoadPanel => "New_Fe/Images/Load/loadpan.bmp",
+            Self::HiPanel => "New_Fe/Images/Hiscore/hipanel.BMP",
+            Self::LightOnGreen => "New_Fe/Images/LEDs/ligongr.bmp",
         }
     }
 

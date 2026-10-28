@@ -767,6 +767,10 @@ pub struct WindowedGameFrame {
     /// Co-driver note words submitted this frame (`FUN_00444380`), spoken by
     /// the recovered sequencer `FUN_00444450` on the speech channel.
     pub codriver_calls: Vec<u32>,
+    /// The music volume byte (`live[7]`) and fade target byte (`img[0xf]`)
+    /// the record holds, when the caller has the record; otherwise the
+    /// harness bytes stay.
+    pub music_config: Option<[u8; 2]>,
 }
 
 /// The documented harness music config byte for the windowed session's front-end
@@ -965,6 +969,9 @@ where
             && let Some(music) = music.as_mut()
             && let Ok(mut mixer) = host.mixer().lock()
         {
+            if let Some([volume, fade]) = frame.music_config {
+                music.set_config(volume, fade);
+            }
             let commands = if frame.music_active {
                 if music.is_active() {
                     let busy = mixer.is_channel_busy(music.channel());

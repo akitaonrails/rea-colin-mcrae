@@ -158,6 +158,16 @@ impl RootInteraction {
         self
     }
 
+    /// The options row screens' slide templates from the user's executable.
+    #[must_use]
+    pub fn with_option_templates(
+        mut self,
+        templates: crate::frontend_options::RowTemplates,
+    ) -> Self {
+        self.screens.set_option_templates(templates);
+        self
+    }
+
     /// The host's save-slot reader the Load screen calls on entry.
     #[must_use]
     pub fn with_save_slots(mut self, reader: crate::frontend_flow::SlotReader) -> Self {
@@ -657,5 +667,59 @@ mod tests {
             }
         }
         assert!(started, "the load starts the race");
+    }
+
+    #[test]
+    fn the_options_screens_are_reached_and_write_the_record() {
+        use crate::frontend_options::OptionScreen;
+        let mut driver = driver(4);
+        let mut record = record();
+        record[0x20] = (record[0x20] & !0x18) | 0x08;
+        let now = std::cell::Cell::new(0);
+        let tick = |driver: &mut RootInteraction,
+                    input: FrontendInput,
+                    held: Option<u8>,
+                    record: &mut Record| {
+            now.set(now.get() + 50);
+            driver.tick_for_game_session(
+                input,
+                FrontendKeys { held, pad: 0 },
+                now.get(),
+                true,
+                record,
+            )
+        };
+        let wait_for = |driver: &mut RootInteraction, screen: ScreenId, record: &mut Record| {
+            let mut frames = 0;
+            while !(driver.state().active_screen() == screen
+                && driver.state().phase() == FrontendPhase::Interactive)
+            {
+                let _ = tick(driver, FrontendInput::default(), None, record);
+                frames += 1;
+                assert!(frames < 100, "{screen:?} is reached");
+            }
+            let _ = tick(driver, FrontendInput::default(), None, record);
+        };
+        wait_for(&mut driver, ROOT_SCREEN_ID, &mut record);
+        let _ = tick(&mut driver, CONFIRM, None, &mut record);
+        wait_for(&mut driver, OptionScreen::Options.screen(), &mut record);
+        // Down twice to Difficulty, Return.
+        for vk in [0x28, 0x28, 0x0d] {
+            let _ = tick(&mut driver, FrontendInput::default(), Some(vk), &mut record);
+            let _ = tick(&mut driver, FrontendInput::default(), None, &mut record);
+        }
+        wait_for(&mut driver, OptionScreen::Difficulty.screen(), &mut record);
+        let menu = driver
+            .screens()
+            .menu(OptionScreen::Difficulty.screen())
+            .unwrap();
+        assert_eq!(menu.selected, 1, "intermediate selected");
+        // Up to Novice, Return: written, and back to Options.
+        for vk in [0x26, 0x0d] {
+            let _ = tick(&mut driver, FrontendInput::default(), Some(vk), &mut record);
+            let _ = tick(&mut driver, FrontendInput::default(), None, &mut record);
+        }
+        assert_eq!(record[0x20] & 0x18, 0);
+        wait_for(&mut driver, OptionScreen::Options.screen(), &mut record);
     }
 }

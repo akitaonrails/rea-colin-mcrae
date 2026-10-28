@@ -71,9 +71,26 @@
       { "name": "load_summary_format", "kind": "string", "va": 5280008 },
       { "name": "load_slot_line_format", "kind": "string", "va": 5280032 },
       { "name": "save_slot_label_wide", "kind": "string", "va": 5182148 },
-      { "name": "save_slot_label_narrow", "kind": "string", "va": 5182176 }
+      { "name": "save_slot_label_narrow", "kind": "string", "va": 5182176 },
+      { "name": "options_rows_options", "kind": "block", "va": 5288696, "len": 32 },
+      { "name": "options_rows_settings", "kind": "block", "va": 5281216, "len": 40 },
+      { "name": "options_rows_difficulty", "kind": "block", "va": 5281096, "len": 32 },
+      { "name": "options_rows_hiscores", "kind": "block", "va": 5281344, "len": 32 },
+      { "name": "options_bar_minus", "kind": "string", "va": 5166828 },
+      { "name": "options_bar_plus", "kind": "string", "va": 5203524 },
+      { "name": "options_device_one", "kind": "string", "va": 5281324 },
+      { "name": "options_device_zero", "kind": "string", "va": 5281316 },
+      { "name": "options_chipset_7", "kind": "string", "va": 5281304 },
+      { "name": "options_resolution_512", "kind": "string", "va": 5281292 },
+      { "name": "options_resolution_640", "kind": "string", "va": 5281280 },
+      { "name": "options_resolution_800", "kind": "string", "va": 5281268 },
+      { "name": "options_resolution_320", "kind": "string", "va": 5281256 },
+      { "name": "hiscore_rank_format", "kind": "string", "va": 5281376 },
+      { "name": "hiscore_time_format", "kind": "string", "va": 5281380 },
+      { "name": "hiscore_number_format", "kind": "string", "va": 5166824 },
+      { "name": "hiscore_code_schedule", "kind": "block", "va": 5165336, "len": 32 }
     ],
-    "payload_sha256": "37e8d9418883772d622a967aa60b9313b5fe526132b42e684da14d64a40f8802",
+    "payload_sha256": "3d419592288ea9a28adcf4c6be77432c425f1768804c5c810b7586cc5c93557b",
     "output_encoding": "cmr-static-tables-v1"
   }
 }

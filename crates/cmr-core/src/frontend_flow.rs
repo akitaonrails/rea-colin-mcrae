@@ -28,6 +28,7 @@ use crate::frontend::{
 };
 use crate::frontend_load::{LoadScreen, SlotFile};
 use crate::frontend_name_entry::{NameEntry, NameKey, NameOutcome, NameScreen};
+use crate::frontend_options::{DisplayCaps, OptionScreen, OptionsEffect, OptionsScreens};
 use crate::frontend_setup::{SetupKind, SetupScreen, key};
 use crate::frontend_stage_select::{PostOutcome, StageSelect};
 use crate::scalar_tween::ScalarTween;
@@ -97,6 +98,9 @@ pub enum ScreenEffect {
     /// it, then apply [`crate::frontend_load::apply_to_live`] with the slot's
     /// record ([`FrontendScreens::load_screen`]).
     LoadGame { slot: u8 },
+    /// The sound options' front-end volumes (`FUN_004c9860`/`FUN_004c97f0`,
+    /// percent).
+    Volumes { effects: i32, music: i32 },
 }
 
 /// The host's reader of the twelve save-slot files (`FUN_0044ed90`).
@@ -154,6 +158,9 @@ pub struct FrontendScreens {
     name: NameEntry,
     load: LoadScreen,
     slot_reader: Option<SlotReader>,
+    options: OptionsScreens,
+    /// The host's display hardware for the advanced graphics.
+    display: DisplayCaps,
     layouts: [SetupLayout; 3],
     slides: Slides,
     /// `0x508fe8`: the name entry is leaving.
@@ -204,12 +211,33 @@ const SCREENS: [(MenuId, ScreenId); 11] = [
     (id::LOAD, LOAD_SCREEN_ID),
 ];
 
+/// The options subtree's menus follow the Load screen, in
+/// [`OptionScreen::ALL`] order; the control setup's menu after them.
+const OPTIONS_BASE: usize = 11;
+const CONTROLS: MenuId = MenuId(OPTIONS_BASE + OptionScreen::ALL.len());
+
 fn menu_of(screen: ScreenId) -> Option<MenuId> {
-    SCREENS.iter().find(|(_, s)| *s == screen).map(|(m, _)| *m)
+    SCREENS
+        .iter()
+        .find(|(_, s)| *s == screen)
+        .map(|(m, _)| *m)
+        .or_else(|| {
+            let index = OptionScreen::ALL
+                .iter()
+                .position(|&o| o.screen() == screen)?;
+            Some(MenuId(OPTIONS_BASE + index))
+        })
 }
 
 fn screen_of(menu: MenuId) -> Option<ScreenId> {
-    SCREENS.iter().find(|(m, _)| *m == menu).map(|(_, s)| *s)
+    SCREENS
+        .iter()
+        .find(|(m, _)| *m == menu)
+        .map(|(_, s)| *s)
+        .or_else(|| {
+            let index = menu.0.checked_sub(OPTIONS_BASE)?;
+            OptionScreen::ALL.get(index).map(|o| o.screen())
+        })
 }
 
 enum Kind {
@@ -217,6 +245,7 @@ enum Kind {
     Name(usize),
     Stage,
     Load,
+    Option(OptionScreen),
 }
 
 fn kind_of(menu: MenuId) -> Option<Kind> {
@@ -229,7 +258,8 @@ fn kind_of(menu: MenuId) -> Option<Kind> {
     } else if menu == id::LOAD {
         Some(Kind::Load)
     } else {
-        None
+        let index = menu.0.checked_sub(OPTIONS_BASE)?;
+        OptionScreen::ALL.get(index).map(|&o| Kind::Option(o))
     }
 }
 
@@ -265,6 +295,14 @@ impl FrontendScreens {
         set.add(Menu::new(-1, None, None));
         let load = LoadScreen::build(id::ROOT);
         set.add(load.menu.clone());
+        let options = OptionsScreens::build(&mut set, id::ROOT, CONTROLS, &[0; LEGACY_CONFIG_SIZE]);
+        debug_assert_eq!(options.id(OptionScreen::Options), MenuId(OPTIONS_BASE));
+        // The control setup `0xd45858` (not reconstructed yet).
+        set.add(Menu::new(
+            0xc1,
+            Some(options.id(OptionScreen::Settings)),
+            None,
+        ));
         Self {
             set,
             setups,
@@ -272,6 +310,8 @@ impl FrontendScreens {
             name: NameEntry::default(),
             load,
             slot_reader: None,
+            options,
+            display: DisplayCaps::DEFAULT,
             layouts: layouts.unwrap_or_default(),
             slides: Slides::default(),
             name_leaving: false,
@@ -287,6 +327,21 @@ impl FrontendScreens {
     /// The host's save-slot reader the Load screen's enter calls.
     pub fn set_slot_reader(&mut self, reader: SlotReader) {
         self.slot_reader = Some(reader);
+    }
+
+    /// The host's display hardware the advanced graphics ask about.
+    pub fn set_display_caps(&mut self, caps: DisplayCaps) {
+        self.display = caps;
+    }
+
+    /// The options row screens' slide templates.
+    pub fn set_option_templates(&mut self, templates: crate::frontend_options::RowTemplates) {
+        self.options.set_templates(templates);
+    }
+
+    /// The options subtree's state.
+    pub const fn options(&self) -> &OptionsScreens {
+        &self.options
     }
 
     /// The Load screen's state, for the draw and the host's load.
@@ -400,6 +455,21 @@ impl FrontendScreens {
                 let tweens = vec![self.slide(0x10000, 0, 0), self.slide(0x10000, 0, 0)];
                 self.slides.start(tweens);
             }
+            Some(Kind::Option(screen)) => {
+                let arg = u8::from(went_back);
+                let display = self.display;
+                let no_animation = self.no_animation;
+                let slides =
+                    self.options
+                        .enter_presentation(screen, self.set.menu_mut(menu), no_animation);
+                cues.extend(
+                    slides
+                        .into_iter()
+                        .map(|slot| ScreenEffect::Cue { slot, ok: true }),
+                );
+                self.options
+                    .enter(screen, arg, self.set.menu_mut(menu), record, &display);
+            }
             Some(Kind::Load) => {
                 let files = self
                     .slot_reader
@@ -458,8 +528,24 @@ impl FrontendScreens {
                     sound: crate::descriptor_menu::MenuSound::Move,
                     ..
                 } if matches!(kind, Kind::Load) && !self.load.move_sound => {}
+                // The sound options' enter clears the value entry `0xd90064`.
+                MenuEvent::Sound {
+                    sound: crate::descriptor_menu::MenuSound::ValueChange,
+                    ..
+                } if matches!(kind, Kind::Option(OptionScreen::Sound))
+                    && self.options.value_cue_muted => {}
                 MenuEvent::Sound { .. } => effects.push(ScreenEffect::Sound(event)),
                 // `0x4c7b40`: an occupied slot loads and starts the race.
+                MenuEvent::Activate { item, .. } if matches!(kind, Kind::Option(_)) => {
+                    let Kind::Option(screen) = kind else {
+                        unreachable!()
+                    };
+                    let item = self.set.menu(menu).items[item].clone();
+                    if let Some(target) = self.options.activate(screen, &item, record) {
+                        self.set.pending = Some(target);
+                        pending = Some(target);
+                    }
+                }
                 MenuEvent::Activate { item, .. } if matches!(kind, Kind::Load) => {
                     if self.load.activate(item, record) {
                         effects.push(ScreenEffect::LoadGame { slot: item as u8 });
@@ -551,6 +637,38 @@ impl FrontendScreens {
                     }
                 }
             }
+            Kind::Option(screen) => {
+                let geometry = self.geometry.as_ref();
+                let place = |angle: i32| {
+                    geometry.map_or((0, 0), |g| {
+                        crate::frontend_camera::arc_position(
+                            g.arc, angle, &g.sine, g.width, g.height,
+                        )
+                    })
+                };
+                self.options
+                    .commit_presentation(*screen, self.set.menu_mut(menu), &place);
+                let display = self.display;
+                let mut changes = Vec::new();
+                self.options.commit(
+                    *screen,
+                    self.set.menu_mut(menu),
+                    record,
+                    &display,
+                    &mut changes,
+                );
+                // `FUN_004ad710` from the graphics commit.
+                self.no_animation = record[0x10] & 0x20 == 0;
+                for change in changes {
+                    effects.push(match change {
+                        OptionsEffect::Volumes { effects, music } => {
+                            ScreenEffect::Volumes { effects, music }
+                        }
+                        OptionsEffect::PreviewCue => ScreenEffect::Cue { slot: 2, ok: true },
+                    });
+                }
+                None
+            }
             // `0x4c76c0`.
             Kind::Load => {
                 self.load.menu = self.set.menu(menu).clone();
@@ -608,6 +726,17 @@ impl FrontendScreens {
                 });
                 self.slides.start(self.slide_outs());
                 self.name_leaving = true;
+            }
+            Kind::Option(screen) => {
+                let no_animation = self.no_animation;
+                let slides =
+                    self.options
+                        .post_presentation(*screen, self.set.menu_mut(menu), no_animation);
+                effects.extend(
+                    slides
+                        .into_iter()
+                        .map(|slot| ScreenEffect::Cue { slot, ok: true }),
+                );
             }
             // `0x4c7770`.
             Kind::Load => {

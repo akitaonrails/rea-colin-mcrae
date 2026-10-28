@@ -23,7 +23,7 @@ pub const STATIC_TABLES_FORMAT_VERSION: u32 = 1;
 /// Reviewed image base of the official EU executable.
 pub const OFFICIAL_EU_STATIC_TABLES_IMAGE_BASE: u32 = 0x0040_0000;
 /// Upper bound on the number of entries in one layout.
-pub const STATIC_TABLES_MAX_ENTRIES: usize = 64;
+pub const STATIC_TABLES_MAX_ENTRIES: usize = 128;
 /// Upper bound on an entry name's length in bytes.
 pub const STATIC_TABLE_NAME_MAX_BYTES: usize = 64;
 /// Upper bound on a block's byte length.

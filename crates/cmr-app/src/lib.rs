@@ -3258,6 +3258,15 @@ impl FrontEndConfig {
         self.returning = true;
     }
 
+    /// The music bytes the front-end music reads: the live volume (`+7`) and
+    /// the record's fade target (`img[0xf]`).
+    fn music_bytes(&self) -> [u8; 2] {
+        [
+            cmr_core::config_commit::live(&self.image)[7],
+            self.image[0xf],
+        ]
+    }
+
     /// The live writes of the Load screen's activate after its commit.
     fn apply_loaded(&mut self, record: &[u8], event: &mut EventState) {
         let live = cmr_core::config_commit::live_mut(&mut self.image);
@@ -3328,6 +3337,9 @@ fn front_end_frame(
                 },
             ) => cmr_core::frontend_sounds::cue_slot(table, sound).map(|slot| (slot, ok)),
             cmr_core::frontend_flow::ScreenEffect::Cue { slot, ok } => Some((slot, ok)),
+            // The effects master is read back from `img[0xd]` and the music's
+            // fade target from `img[0xf]` each frame.
+            cmr_core::frontend_flow::ScreenEffect::Volumes { .. } => None,
             cmr_core::frontend_flow::ScreenEffect::Sound(_) => None,
         };
         if let (Some((slot, ok)), Some(mixer)) = (cue, audio) {
@@ -5589,6 +5601,7 @@ impl SessionCompiledPose {
 
 /// The current sub-screen's frame (`FUN_004c1bc0`), when a setup, name-entry
 /// or stage-select screen is the front end's current menu.
+#[allow(clippy::too_many_arguments)]
 fn screen_commands(
     root: &RootInteraction,
     static_tables: Option<&cmr_assets::StaticTablesStore>,
@@ -5597,6 +5610,7 @@ fn screen_commands(
     text: &cmr_core::localization::IndexedTextTable,
     fonts: &cmr_core::font_raster::UploadedFontPool,
     now_ms: u32,
+    led_step: i32,
 ) -> Option<Vec<cmr_core::frontend_screen_frame::ScreenCommand>> {
     use cmr_core::frontend as fe;
     use cmr_core::frontend_screen_frame as frame;
@@ -5632,6 +5646,43 @@ fn screen_commands(
     let country_table = tables
         .and_then(|t| t.block("frontend_country_table"))
         .unwrap_or(&[]);
+    if let Some(option) = cmr_core::frontend_options::OptionScreen::of(screen) {
+        let string = |name: &str| tables.and_then(|t| t.string(name)).unwrap_or(&[]);
+        let input = frame::OptionsDrawInput {
+            screen: option,
+            menu,
+            options: screens.options(),
+            camera: root.camera(),
+            extent: ROOT_EXTENT,
+            record,
+            strings: frame::OptionsStrings {
+                arrow_left: string("frontend_arrow_left"),
+                arrow_right: string("frontend_arrow_right"),
+                bar_minus: string("options_bar_minus"),
+                bar_plus: string("options_bar_plus"),
+                device_one: string("options_device_one"),
+                device_zero: string("options_device_zero"),
+                chipset_7: string("options_chipset_7"),
+                resolutions: [
+                    string("options_resolution_320"),
+                    string("options_resolution_512"),
+                    string("options_resolution_640"),
+                    string("options_resolution_800"),
+                ],
+                rank_format: string("hiscore_rank_format"),
+                time_format: string("hiscore_time_format"),
+                number_format: string("hiscore_number_format"),
+                code_schedule: tables
+                    .and_then(|t| t.block("hiscore_code_schedule"))
+                    .unwrap_or(&[]),
+                car_short_names: tables
+                    .and_then(|t| t.strings("car_short_names"))
+                    .unwrap_or(empty),
+            },
+            led_step,
+        };
+        return Some(frame::plan_options_frame(&input, state, &lookup, &font));
+    }
     if screen == fe::LOAD_SCREEN_ID {
         let input = frame::LoadDrawInput {
             screen: screens.load_screen(),
@@ -5820,6 +5871,34 @@ fn save_slot_reader(writable_root: &Path) -> cmr_core::frontend_flow::SlotReader
             })
             .collect()
     })
+}
+
+/// The options row screens' slide templates from the reviewed static
+/// tables.
+fn option_templates(
+    store: &cmr_assets::StaticTablesStore,
+) -> cmr_core::frontend_options::RowTemplates {
+    use cmr_core::frontend_options::RowTemplates;
+    let rows = |name: &str, n| {
+        store
+            .tables()
+            .block(name)
+            .map(|bytes| RowTemplates::parse_channels(bytes, n))
+            .unwrap_or_default()
+    };
+    RowTemplates {
+        options: rows("options_rows_options", 4),
+        settings: rows("options_rows_settings", 5),
+        difficulty: rows("options_rows_difficulty", 4),
+        hi_scores: rows("options_rows_hiscores", 4),
+    }
+}
+
+/// `LIGONGR.BMP`'s width plus 2: the options LED bars' step.
+fn led_step(bitmaps: &cmr_core::frontend_screen_bitmaps::ScreenBitmapPool) -> i32 {
+    bitmaps
+        .get(cmr_core::frontend_screen_bitmaps::ScreenBitmap::LightOnGreen)
+        .map_or(2, |bitmap| bitmap.extent().0 as i32 + 2)
 }
 
 /// The car codes by selector from the reviewed car-selector store.
@@ -6671,7 +6750,6 @@ pub fn run_windowed_game_session(
     )
     .with_stage_triggers(&statics.trigger_volumes, &statics.cell_centers)
     .map_err(WindowedStageFrameError::StageTriggers)?;
-    let mut keyboard = KeyboardDriver::player_one();
     let mut analog = AnalogDriver::new();
     let response = DriveResponse {
         max_forward_force: Fixed16::from_raw(GAME_SESSION_DRIVE_FORCE_Q16),
@@ -6700,6 +6778,9 @@ pub fn run_windowed_game_session(
         root_interaction = root_interaction.with_camera_block(block);
     }
     root_interaction = root_interaction.with_save_slots(save_slot_reader(runtime_data));
+    if let Some(store) = static_tables.as_ref() {
+        root_interaction = root_interaction.with_option_templates(option_templates(store));
+    }
     let mut screen_state = cmr_core::frontend_screen_frame::ScreenFrameState::default();
     let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
@@ -6714,6 +6795,12 @@ pub fn run_windowed_game_session(
     }
     let mut config =
         FrontEndConfig::new(stage, compiled_pose.selector as u8).with_file(runtime_data);
+    // `FUN_004ba060` at the config load: player 1's record bindings over the
+    // keyboard defaults.
+    let mut keyboard = KeyboardDriver::new(
+        cmr_core::input_map::KeyBindings::PLAYER1.with_record(&config.image[..], 0),
+        cmr_core::input_map::ControlConfig::default(),
+    );
     let mut runtime_error = None;
     let mut loaded_stage = LoadedStageKey {
         name: stage.to_ascii_uppercase(),
@@ -6823,6 +6910,7 @@ pub fn run_windowed_game_session(
                                     root.text(),
                                     root.fonts(),
                                     clock.millis(),
+                                    led_step(&screen_bitmaps),
                                 ) {
                                     root.render_screen(&commands, &screen_bitmaps, &screen_images)
                                         .ok()
@@ -6835,6 +6923,7 @@ pub fn run_windowed_game_session(
                                     stopped: outcome.exit_requested,
                                     music_active: outcome.music_active,
                                     codriver_calls: outcome.codriver_calls,
+                                    music_config: Some(config.music_bytes()),
                                 }
                             }
                             Err(error) => {
@@ -6844,6 +6933,7 @@ pub fn run_windowed_game_session(
                                     stopped: true,
                                     music_active: false,
                                     codriver_calls: Vec::new(),
+                                    music_config: Some(config.music_bytes()),
                                 }
                             }
                         }
@@ -6901,6 +6991,7 @@ pub fn run_windowed_game_session(
                 stopped: outcome.exit_requested,
                 music_active: outcome.music_active,
                 codriver_calls: outcome.codriver_calls,
+                music_config: Some(config.music_bytes()),
             },
             Err(error) => {
                 runtime_error = Some(error);
@@ -6909,6 +7000,7 @@ pub fn run_windowed_game_session(
                     stopped: true,
                     music_active: false,
                     codriver_calls: Vec::new(),
+                    music_config: Some(config.music_bytes()),
                 }
             }
         }
@@ -10435,6 +10527,7 @@ mod tests {
                         root.text(),
                         root.fonts(),
                         now.get(),
+                        led_step(&screen_bitmaps),
                     ) {
                         root.render_screen(&commands, &screen_bitmaps, &screen_images)
                             .unwrap();
@@ -10495,12 +10588,75 @@ mod tests {
                         root.text(),
                         root.fonts(),
                         now.get(),
+                        led_step(&screen_bitmaps),
                     ) {
                         root.render_screen(&commands, &screen_bitmaps, &screen_images)
                             .unwrap();
                         if frame % 10 == 9 {
                             let presented = root.backend().presented_frame().cloned().unwrap();
                             write(&format!("load-{frame:03}"), &presented);
+                        }
+                    }
+                }
+                // The options: Settings, Graphics (Return), then Sound;
+                // back out; the hi-scores' best stage times.
+                let mut interaction =
+                    RootInteraction::from_saved_selection(4, Language::English, ROOT_EXTENT, 0)
+                        .unwrap()
+                        .with_setup_layouts(setup_layouts(&tables).unwrap())
+                        .with_camera_block(
+                            cmr_core::frontend_camera::CameraBlock::parse(
+                                tables
+                                    .tables()
+                                    .block("frontend_camera_targets_and_records")
+                                    .unwrap(),
+                            )
+                            .unwrap(),
+                        )
+                        .with_option_templates(option_templates(&tables));
+                while interaction.state().phase() != cmr_core::frontend::FrontendPhase::Interactive
+                {
+                    let _ = tick(&mut interaction, Default::default(), None, &mut config);
+                }
+                let _ = tick(&mut interaction, confirm, None, &mut config);
+                let presses: &[(u32, u8)] = &[
+                    (40, 0x0d),  // Settings
+                    (80, 0x0d),  // Graphics
+                    (120, 0x28), // down to game displays
+                    (150, 0x1b), // back to Settings
+                    (190, 0x28), // Sound
+                    (200, 0x0d),
+                    (240, 0x28), // speech volume
+                    (260, 0x1b), // back
+                    (300, 0x1b), // back to Options
+                    (340, 0x28), // Hi-scores
+                    (350, 0x0d),
+                    (390, 0x28), // best rally
+                    (400, 0x28), // best stage
+                    (410, 0x0d),
+                ];
+                for frame in 0..460u32 {
+                    let held = presses
+                        .iter()
+                        .find(|(at, _)| *at == frame)
+                        .map(|(_, vk)| *vk);
+                    let _ = tick(&mut interaction, Default::default(), held, &mut config);
+                    if let Some(commands) = screen_commands(
+                        &interaction,
+                        Some(&tables),
+                        &config.image[..],
+                        &mut state,
+                        root.text(),
+                        root.fonts(),
+                        now.get(),
+                        led_step(&screen_bitmaps),
+                    ) {
+                        root.render_screen(&commands, &screen_bitmaps, &screen_images)
+                            .unwrap();
+                        if frame % 10 == 9 {
+                            let screen = interaction.state().active_screen().legacy_value();
+                            let presented = root.backend().presented_frame().cloned().unwrap();
+                            write(&format!("opt-{frame:03}-{screen:x}"), &presented);
                         }
                     }
                 }

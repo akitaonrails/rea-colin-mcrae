@@ -222,6 +222,33 @@ impl KeyBindings {
         },
     };
 
+    /// `FUN_0049d3f0(dev, mask, code)` on a keyboard record: a single-bit
+    /// `mask` binds its action bit to `code`'s low byte (`+0x78 + bit`); any
+    /// other mask is ignored.
+    pub fn install(&mut self, mask: u16, code: u32) {
+        if mask.count_ones() == 1 {
+            let byte = code as u8;
+            self.codes[mask.trailing_zeros() as usize] = (byte != 0).then_some(byte);
+        }
+    }
+
+    /// `FUN_004ba060` for one player at the config load: the eight bindings
+    /// of the record's player block (`+0x64` masks, `+0x78` codes) installed
+    /// over the keyboard's defaults.
+    #[must_use]
+    pub fn with_record(mut self, record: &[u8], player: usize) -> Self {
+        let base = player * crate::settings_store::PLAYER_STRIDE;
+        for n in 0..crate::control_bindings::BINDING_COUNT {
+            let at = base + crate::control_bindings::keymask_offset(n);
+            let mask = u16::from_le_bytes([record[at], record[at + 1]]);
+            let at = base + crate::control_bindings::physcode_offset(n);
+            let code =
+                u32::from_le_bytes([record[at], record[at + 1], record[at + 2], record[at + 3]]);
+            self.install(mask, code);
+        }
+        self
+    }
+
     /// Build the level mask for a keyboard from a key-down predicate: bit `n` is
     /// set when its bound VK code is down (`FUN_0049cfb0`).
     #[must_use]
@@ -690,5 +717,32 @@ mod tests {
                 .throttle;
         }
         assert_eq!(last, 0);
+    }
+}
+
+#[cfg(test)]
+mod record_binding_tests {
+    use super::*;
+
+    #[test]
+    fn the_record_bindings_install_over_the_defaults() {
+        let mut record = vec![0u8; 0x200];
+        let base = crate::settings_store::PLAYER_STRIDE;
+        // Player 2: binding 0 maps mask 0x40 (change view) to 'V'; binding 1
+        // has a two-bit mask and is ignored; a zero mask is ignored too.
+        record[base + 0x64..base + 0x66].copy_from_slice(&0x40u16.to_le_bytes());
+        record[base + 0x78..base + 0x7c].copy_from_slice(&0x56u32.to_le_bytes());
+        record[base + 0x66..base + 0x68].copy_from_slice(&3u16.to_le_bytes());
+        record[base + 0x7c..base + 0x80].copy_from_slice(&0x57u32.to_le_bytes());
+        let bindings = KeyBindings::PLAYER2.with_record(&record, 1);
+        assert_eq!(bindings.codes[6], Some(0x56));
+        assert_eq!(bindings.codes[0], KeyBindings::PLAYER2.codes[0]);
+        assert_eq!(
+            KeyBindings::PLAYER1.with_record(&record, 0),
+            KeyBindings::PLAYER1
+        );
+        let mut b = KeyBindings::PLAYER1;
+        b.install(0x8000, 0x41);
+        assert_eq!(b.codes[15], Some(0x41));
     }
 }

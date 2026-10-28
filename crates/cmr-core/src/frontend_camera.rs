@@ -66,8 +66,14 @@ impl CameraBlock {
 
     /// The camera target of `screen`, or `None` (a null target: no move).
     pub fn target(&self, screen: ScreenId) -> Option<(i32, i32)> {
-        let (_, address) = TARGETS.iter().find(|(s, _)| *s == screen)?;
-        Some((self.i32_at(*address)?, self.i32_at(address + 4)?))
+        let address = TARGETS
+            .iter()
+            .find(|(s, _)| *s == screen)
+            .map(|(_, address)| *address)
+            .or_else(|| {
+                crate::frontend_options::OptionScreen::of(screen).map(|o| o.camera_target())
+            })?;
+        Some((self.i32_at(address)?, self.i32_at(address + 4)?))
     }
 
     /// The arc record.

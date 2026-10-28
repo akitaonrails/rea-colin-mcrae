@@ -56,6 +56,12 @@ impl MusicController {
         }
     }
 
+    /// The record's current music bytes (the sound options edit them).
+    pub fn set_config(&mut self, volume_config: u8, fade_config: u8) {
+        self.volume_config = volume_config;
+        self.fade_config = fade_config;
+    }
+
     /// The music channel.
     pub fn channel(&self) -> ChannelId {
         self.channel

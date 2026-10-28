@@ -548,6 +548,23 @@ pub(crate) mod tests {
                 ("load_slot_line_format", 0x0050_9120, String),
                 ("save_slot_label_wide", 0x004f_12c4, String),
                 ("save_slot_label_narrow", 0x004f_12e0, String),
+                ("options_rows_options", 0x0050b2f8, Block { len: 32 }),
+                ("options_rows_settings", 0x005095c0, Block { len: 40 }),
+                ("options_rows_difficulty", 0x00509548, Block { len: 32 }),
+                ("options_rows_hiscores", 0x00509640, Block { len: 32 }),
+                ("options_bar_minus", 0x004ed6ec, String),
+                ("options_bar_plus", 0x004f6644, String),
+                ("options_device_one", 0x0050962c, String),
+                ("options_device_zero", 0x00509624, String),
+                ("options_chipset_7", 0x00509618, String),
+                ("options_resolution_512", 0x0050960c, String),
+                ("options_resolution_640", 0x00509600, String),
+                ("options_resolution_800", 0x005095f4, String),
+                ("options_resolution_320", 0x005095e8, String),
+                ("hiscore_rank_format", 0x00509660, String),
+                ("hiscore_time_format", 0x00509664, String),
+                ("hiscore_number_format", 0x004ed6e8, String),
+                ("hiscore_code_schedule", 0x004ed118, Block { len: 32 }),
             ]
         );
         // Same executable identity as the reviewed stage-weather profile.

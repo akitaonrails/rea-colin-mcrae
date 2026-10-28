@@ -58,6 +58,12 @@ pub const ROOT_SCREEN: ScreenSpec = ScreenSpec {
 pub struct ScreenId(u32);
 
 impl ScreenId {
+    /// The menu object at `address` (a recovered identifier).
+    #[must_use]
+    pub const fn from_legacy(address: u32) -> Self {
+        Self(address)
+    }
+
     /// Exposes the recovered identifier for evidence correlation and trace tests.
     #[must_use]
     pub const fn legacy_value(self) -> u32 {
