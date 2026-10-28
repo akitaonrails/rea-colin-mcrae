@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "official-eu-static-tables-v1",
+  "executable": {
+    "path": "Rally.exe",
+    "size": 1114190,
+    "sha256": "0eb6ea9652219b9a35c0a6134bf0cdf316dce21215b724cdfc10ba85eb95982a"
+  },
+  "tables": {
+    "image_base": 4194304,
+    "entries": [
+      { "name": "frontend_setup_layout_championship", "kind": "block", "va": 5280488, "len": 80 },
+      { "name": "frontend_setup_layout_rally", "kind": "block", "va": 5280568, "len": 80 },
+      { "name": "frontend_setup_layout_time_trial", "kind": "block", "va": 5280648, "len": 80 },
+      { "name": "frontend_camera_targets_and_records", "kind": "block", "va": 5274232, "len": 296 },
+      { "name": "frontend_country_table", "kind": "block", "va": 5277776, "len": 80 },
+      { "name": "results_save_schedule", "kind": "block", "va": 5167332, "len": 9 },
+      { "name": "bonus_car_countries", "kind": "block", "va": 5270984, "len": 8 },
+      { "name": "car_names", "kind": "string-pointers", "va": 5270992, "count": 16 },
+      { "name": "stage_names", "kind": "string-pointers", "va": 5271424, "count": 54 },
+      { "name": "school_stage_name", "kind": "string", "va": 5272864 }
+    ],
+    "payload_sha256": "55722ec4c0e55ac20fd472982dff37ff32750d1612264eaa1d58df1921856e00",
+    "output_encoding": "cmr-static-tables-v1"
+  }
+}

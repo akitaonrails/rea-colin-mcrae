@@ -8,12 +8,13 @@ use std::process::ExitCode;
 use cmr_assets::{
     ReviewedAuxControlProfile, ReviewedCarSelectorProfile, ReviewedCompiledInitializerProfile,
     ReviewedEngineAudioTablesProfile, ReviewedProfile, ReviewedRivalRecordsProfile,
-    ReviewedStageWeatherTablesProfile, ReviewedSurfaceAudioTablesProfile,
-    ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile, ReviewedTyreTablesProfile,
-    catalog_standard_source, extract_aux_control_constants, extract_car_selectors,
-    extract_compiled_car_initializer, extract_engine_audio_tables, extract_rival_records,
-    extract_stage_weather_tables, extract_surface_audio_tables, extract_surface_capabilities,
-    extract_surface_tables, extract_tyre_surface_tables, import_source, verify_source,
+    ReviewedStageWeatherTablesProfile, ReviewedStaticTablesProfile,
+    ReviewedSurfaceAudioTablesProfile, ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile,
+    ReviewedTyreTablesProfile, catalog_standard_source, extract_aux_control_constants,
+    extract_car_selectors, extract_compiled_car_initializer, extract_engine_audio_tables,
+    extract_rival_records, extract_stage_weather_tables, extract_static_tables,
+    extract_surface_audio_tables, extract_surface_capabilities, extract_surface_tables,
+    extract_tyre_surface_tables, import_source, verify_source,
 };
 
 fn main() -> ExitCode {
@@ -161,6 +162,16 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<String, String> {
                 .map_err(|error| error.to_string())?;
             serde_json::to_string(&summary).map_err(|error| error.to_string())
         }
+        Some("extract-static-tables") => {
+            let source = required_path(&options, "--source")?;
+            let profile_path = required_path(&options, "--profile")?;
+            let output = required_path(&options, "--output")?;
+            reject_unknown(&options, &["--source", "--profile", "--output"])?;
+            let reviewed = load_static_tables_profile(&profile_path)?;
+            let summary = extract_static_tables(&source, &output, &reviewed)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_string(&summary).map_err(|error| error.to_string())
+        }
         Some("extract-aux-control-constants") => {
             let source = required_path(&options, "--source")?;
             let profile_path = required_path(&options, "--profile")?;
@@ -291,6 +302,12 @@ fn load_rival_records_profile(path: &Path) -> Result<ReviewedRivalRecordsProfile
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+fn load_static_tables_profile(path: &Path) -> Result<ReviewedStaticTablesProfile, String> {
+    let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    ReviewedStaticTablesProfile::from_json(&document)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn load_aux_control_profile(path: &Path) -> Result<ReviewedAuxControlProfile, String> {
     let document = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     ReviewedAuxControlProfile::from_json(&document)
@@ -308,7 +325,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-surface-capabilities|extract-compiled-car-initializer|extract-car-selectors|extract-tyre-surface-tables|extract-engine-audio-tables|extract-surface-audio-tables|extract-stage-weather-tables|extract-rival-records|extract-aux-control-constants> [options]".to_owned()
+    "usage: cmr-assets <catalog|verify|import|extract-surface-tables|extract-surface-capabilities|extract-compiled-car-initializer|extract-car-selectors|extract-tyre-surface-tables|extract-engine-audio-tables|extract-surface-audio-tables|extract-stage-weather-tables|extract-rival-records|extract-static-tables|extract-aux-control-constants> [options]".to_owned()
 }
 
 #[cfg(test)]
@@ -622,6 +639,13 @@ mod tests {
                 "rival-profile.json",
                 "--output",
                 "runtime-data/rival-records",
+            ],
+            &[
+                "extract-static-tables",
+                "--profile",
+                "static-tables-profile.json",
+                "--output",
+                "runtime-data/static-tables",
             ],
             &[
                 "extract-aux-control-constants",
@@ -1001,6 +1025,70 @@ mod tests {
         .into_iter())
         .unwrap_err();
         assert!(error.contains("cannot extract rival records"), "{error}");
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn static_tables_extraction_requires_profile_and_output() {
+        assert_eq!(
+            run(args(&["extract-static-tables", "--source", "source"])),
+            Err("missing required option --profile".to_owned())
+        );
+        assert_eq!(
+            run(args(&[
+                "extract-static-tables",
+                "--source",
+                "source",
+                "--profile",
+                "profile.json",
+            ])),
+            Err("missing required option --output".to_owned())
+        );
+        assert_eq!(
+            run(args(&[
+                "extract-static-tables",
+                "--source",
+                "source",
+                "--profile",
+                "profile.json",
+                "--output",
+                "out",
+                "--extra",
+                "x",
+            ])),
+            Err("unknown option --extra".to_owned())
+        );
+    }
+
+    #[test]
+    fn static_tables_cli_authenticates_then_rejects_a_non_pe_without_output() {
+        let temp = Temp::new();
+        let source = temp.0.join("source");
+        fs::create_dir(&source).unwrap();
+        let executable = b"identified synthetic non-PE";
+        fs::write(source.join("Rally.exe"), executable).unwrap();
+        let mut profile: cmr_assets::StaticTablesProfile = serde_json::from_slice(include_bytes!(
+            "../../../profiles/official-eu-static-tables-v1.json"
+        ))
+        .unwrap();
+        profile.id = "synthetic-cli-static-tables".into();
+        profile.executable.size = executable.len() as u64;
+        profile.executable.sha256 = digest(executable);
+        let profile_path = temp.0.join("static-tables-profile.json");
+        fs::write(&profile_path, serde_json::to_vec(&profile).unwrap()).unwrap();
+        let output = temp.0.join("static-tables-output");
+        let error = run([
+            OsString::from("extract-static-tables"),
+            OsString::from("--source"),
+            source.into_os_string(),
+            OsString::from("--profile"),
+            profile_path.into_os_string(),
+            OsString::from("--output"),
+            output.clone().into_os_string(),
+        ]
+        .into_iter())
+        .unwrap_err();
+        assert!(error.contains("cannot extract static tables"), "{error}");
         assert!(!output.exists());
     }
 

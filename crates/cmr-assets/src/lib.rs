@@ -24,6 +24,9 @@ mod schema;
 mod stage_weather_tables_import;
 mod stage_weather_tables_profile;
 mod stage_weather_tables_store;
+mod static_tables_import;
+mod static_tables_profile;
+mod static_tables_store;
 mod store;
 mod surface_audio_tables_import;
 mod surface_audio_tables_profile;
@@ -118,6 +121,18 @@ pub use stage_weather_tables_profile::{
     StageWeatherTablesSpec,
 };
 pub use stage_weather_tables_store::{StageWeatherTablesStore, StageWeatherTablesStoreError};
+pub use static_tables_import::{
+    STATIC_TABLES_DATA_FILE, STATIC_TABLES_IMPORT_SCHEMA_VERSION, STATIC_TABLES_STATE_FILE,
+    STATIC_TABLES_STORE_DIRECTORY, StaticTablesImportError, StaticTablesImportFile,
+    StaticTablesImportShape, StaticTablesImportSummary, extract_static_tables,
+};
+pub use static_tables_profile::{
+    ReviewedStaticTablesProfile, ReviewedStaticTablesProfileError,
+    STATIC_TABLES_PROFILE_SCHEMA_VERSION, StaticTablesEncoding, StaticTablesEntryKind,
+    StaticTablesEntrySpec, StaticTablesExecutable, StaticTablesProfile, StaticTablesProfileError,
+    StaticTablesSpec,
+};
+pub use static_tables_store::{StaticTablesStore, StaticTablesStoreError};
 pub use store::{AssetStore, AssetStoreError};
 pub use surface_audio_tables_import::{
     SURFACE_AUDIO_TABLES_DATA_FILE, SURFACE_AUDIO_TABLES_IMPORT_SCHEMA_VERSION,
