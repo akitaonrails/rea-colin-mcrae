@@ -19,6 +19,9 @@ mod profile;
 mod resolver;
 mod schema;
 mod store;
+mod surface_audio_tables_import;
+mod surface_audio_tables_profile;
+mod surface_audio_tables_store;
 mod surface_import;
 mod surface_profile;
 mod surface_store;
@@ -86,6 +89,18 @@ pub use schema::{
     profile_schema_status,
 };
 pub use store::{AssetStore, AssetStoreError};
+pub use surface_audio_tables_import::{
+    SURFACE_AUDIO_TABLES_DATA_FILE, SURFACE_AUDIO_TABLES_IMPORT_SCHEMA_VERSION,
+    SURFACE_AUDIO_TABLES_STATE_FILE, SurfaceAudioTablesImportError, SurfaceAudioTablesImportFile,
+    SurfaceAudioTablesImportShape, SurfaceAudioTablesImportSummary, extract_surface_audio_tables,
+};
+pub use surface_audio_tables_profile::{
+    ReviewedSurfaceAudioTablesProfile, ReviewedSurfaceAudioTablesProfileError,
+    SURFACE_AUDIO_TABLES_PROFILE_SCHEMA_VERSION, SurfaceAudioTablesEncoding,
+    SurfaceAudioTablesExecutable, SurfaceAudioTablesProfile, SurfaceAudioTablesProfileError,
+    SurfaceAudioTablesSpec,
+};
+pub use surface_audio_tables_store::{SurfaceAudioTablesStore, SurfaceAudioTablesStoreError};
 pub use surface_import::{
     SURFACE_CAPABILITY_DATA_FILE, SURFACE_CAPABILITY_IMPORT_SCHEMA_VERSION,
     SURFACE_CAPABILITY_STATE_FILE, SURFACE_DATA_FILE, SURFACE_IMPORT_SCHEMA_VERSION,

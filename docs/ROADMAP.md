@@ -1968,6 +1968,9 @@ default item), restarts or quits, and its sound submenu sets the effects and
 speech volumes (`impl.pause-menu`). The menu draws its title, items and the
 darkened panel with the game's own fonts and strings (`impl.pause-menu-draw`).
 
+The car now rolls and skids audibly on each surface, thumps on landings, and
+barrier hits play their impact sounds (`impl.surface-and-prang-sound`).
+
 The build and verification infrastructure is complete. Linux reviewed-import
 and offscreen SDL checks pass; the portable Windows target checks cleanly; CI
 covers portable/cross-target/full-workspace jobs. Native Windows and Actions

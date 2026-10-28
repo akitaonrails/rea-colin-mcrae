@@ -145,8 +145,13 @@ pub enum TriggerEvent {
     SurfaceSwitch { record: usize, index: u8 },
     /// `+0x75c` armed with this many ticks.
     PenaltyTimer { record: usize, ticks: i16 },
-    /// `FUN_00401fd0` touched the car.
-    Barrier { record: usize, kind: u8 },
+    /// `FUN_00401fd0` touched the car; `impact` is set on a first-contact
+    /// tick.
+    Barrier {
+        record: usize,
+        kind: u8,
+        impact: Option<crate::barrier_collision::BarrierImpact>,
+    },
 }
 
 /// The walk's persistent car words besides the barrier car.
@@ -300,6 +305,7 @@ pub fn walk_triggers(
                         events.push(TriggerEvent::Barrier {
                             record,
                             kind: if raw_type == 2 { 0 } else { raw_type },
+                            impact: car.impact.take(),
                         });
                     }
                 }
@@ -384,6 +390,8 @@ mod tests {
             out_of_control_680: false,
             recovery_688: false,
             contact_6dc: false,
+            previous_contact_6e0: false,
+            impact: None,
         }
     }
 
@@ -429,19 +437,39 @@ mod tests {
     fn a_barrier_record_pushes_the_car_and_sets_the_contact_words() {
         let mut car = crossing_car();
         let (events, _, state) = walk(&[record(2, 0, 0)], &mut car);
-        assert_eq!(events, [TriggerEvent::Barrier { record: 0, kind: 0 }]);
+        let [
+            TriggerEvent::Barrier {
+                record: 0,
+                kind: 0,
+                impact: Some(impact),
+            },
+        ] = events.as_slice()
+        else {
+            panic!("one first-contact barrier event: {events:?}");
+        };
+        // The severity vector is the velocity change pushed out of the wall.
+        assert!(impact.severity_vector[0] > 0);
         assert!(car.contact_6dc && state.previous_contact_6e0);
+        // A second contact walk reports no impact.
+        let mut again = crossing_car();
+        again.previous_contact_6e0 = true;
+        let (events, _, _) = walk(&[record(2, 0, 0)], &mut again);
+        assert!(matches!(
+            events.as_slice(),
+            [TriggerEvent::Barrier { impact: None, .. }]
+        ));
         assert!(car.velocity[0] > 0);
         // An unlisted type is a barrier of its own kind.
         let mut car = crossing_car();
         let (events, _, _) = walk(&[record(0x13, 0, 0)], &mut car);
-        assert_eq!(
-            events,
+        assert!(matches!(
+            events.as_slice(),
             [TriggerEvent::Barrier {
                 record: 0,
-                kind: 0x13
+                kind: 0x13,
+                ..
             }]
-        );
+        ));
     }
 
     #[test]
@@ -610,13 +638,17 @@ mod tests {
                 &TriggerWalkConfig::single_player_harness(),
             )
             .unwrap();
-        assert_eq!(
-            events,
+        assert!(matches!(
+            events.as_slice(),
             [
                 TriggerEvent::ResetLatch { record: 1 },
-                TriggerEvent::Barrier { record: 0, kind: 0 },
+                TriggerEvent::Barrier {
+                    record: 0,
+                    kind: 0,
+                    ..
+                },
             ]
-        );
+        ));
         let after = race.car();
         assert_eq!(after.ground.unwrap().lanes.latch_67c, 1);
         assert!(after.position.x > car.position.x);

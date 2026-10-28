@@ -1001,12 +1001,16 @@ where
     Ok(())
 }
 
+/// The co-driver speech channel (`FUN_00444160`'s allocation, 14 in the
+/// native stage-load order: pause cues 0, engine 1..=8, prangs 9..=13).
+pub const SPEECH_CHANNEL: u32 = 14;
+
 /// The co-driver speech bank (`FUN_00444160`: the 40 pacenote waves at
 /// 11025 Hz / 16-bit / mono, the speech channel at volume `0x7d00`) and the
 /// recovered sequencer that drains the queued note words one sample per
 /// frame. Harness choices: English speech (the language byte
-/// `DAT_00d3ca80[0x18] & 7` is runtime config), a normal (unmirrored) stage,
-/// and mixer channel 1 for speech (the native allocates it at runtime).
+/// `DAT_00d3ca80[0x18] & 7` is runtime config) and a normal (unmirrored)
+/// stage; the channel follows the native allocation order ([`SPEECH_CHANNEL`]).
 struct SpeechBank {
     channel: ChannelId,
     slots: Vec<Option<WaveSlotId>>,
@@ -1038,7 +1042,7 @@ impl SpeechBank {
         if slots.iter().all(Option::is_none) {
             return None;
         }
-        let channel = ChannelId::new(1).ok()?;
+        let channel = ChannelId::new(SPEECH_CHANNEL).ok()?;
         let _ = apply_commands(
             &mut *mixer,
             &[cmr_core::audio_mixer::MixerCommand::SetVolume {

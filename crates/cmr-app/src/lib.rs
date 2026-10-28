@@ -16,10 +16,10 @@ use cmr_assets::{
     ReviewedCarSelectorProfile, ReviewedCarSelectorProfileError,
     ReviewedCompiledInitializerProfile, ReviewedCompiledInitializerProfileError,
     ReviewedEngineAudioTablesProfile, ReviewedEngineAudioTablesProfileError, ReviewedProfile,
-    ReviewedProfileError, ReviewedSurfaceCapabilityProfile, ReviewedSurfaceProfile,
-    ReviewedSurfaceProfileError, ReviewedTyreTablesProfile, ReviewedTyreTablesProfileError,
-    SurfaceCapabilityStore, SurfaceTableStore, SurfaceTableStoreError, TyreTablesStore,
-    TyreTablesStoreError,
+    ReviewedProfileError, ReviewedSurfaceAudioTablesProfile, ReviewedSurfaceCapabilityProfile,
+    ReviewedSurfaceProfile, ReviewedSurfaceProfileError, ReviewedTyreTablesProfile,
+    ReviewedTyreTablesProfileError, SurfaceAudioTablesStore, SurfaceCapabilityStore,
+    SurfaceTableStore, SurfaceTableStoreError, TyreTablesStore, TyreTablesStoreError,
 };
 use cmr_core::audio_car_assets::{
     CAR_WAVE_BITS, CAR_WAVE_RATE_HZ, car_row_index_for_selector, car_wave_names,
@@ -52,6 +52,7 @@ use cmr_core::drivetrain::{
     SURFACE_CAPABILITY_COUNT, SURFACE_ID_COUNT, ZERO_INITIALIZED_RUNTIME_FIFTH_CAPABILITY_TABLE,
     accumulate_effect_enables_from_extracted,
 };
+use cmr_core::engine_listener::point_azimuth;
 use cmr_core::engine_listener::{ListenerInput, update_listener};
 use cmr_core::engine_sound::{
     EngineAudioTables, EngineSoundConfig, EngineSoundState, EngineVoices, RevBandTable,
@@ -74,6 +75,10 @@ use cmr_core::pause_menu::{
 };
 use cmr_core::pause_menu_draw::{PauseDisplay, PauseFont, pause_draw_plan};
 use cmr_core::pause_request::PauseKeyGates;
+use cmr_core::prang_sound::{
+    PrangSoundState, PrangVoices, ThumpInput, barrier_object_type, impact_severity, play_impact,
+    prang_wave_paths,
+};
 use cmr_core::race_hud_plan::{
     CommonGaugeInset, RaceHudBitmap, RaceHudFont, RaceHudPlanError, RaceHudPreparedInputs,
     plan_normal_single_player_race_hud,
@@ -105,6 +110,10 @@ use cmr_core::static_collision_scene_builder::{
     build_parsed_static_collision_scene,
 };
 use cmr_core::surface::PaletteMapping;
+use cmr_core::surface_sound::{
+    SurfaceAudioTables, SurfaceSoundState, SurfaceTickInput, load_surface_bank, set_surface_class,
+    stop_surface_channels,
+};
 use cmr_core::vehicle_dynamics::{
     AngularMomentumStepInput, AngularOrientationInput, ControlAxisFlags, GeometricPostprocessLane,
     SOLVER_GLOBAL_CONSTANTS, SurfaceCoefficientIndexError, integrate_orientation,
@@ -180,6 +189,9 @@ const TYRE_TABLES_STORE_DIRECTORY: &str = "official-eu-tyre-surface-tables";
 const REVIEWED_ENGINE_AUDIO_TABLES_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-engine-audio-tables-v1.json");
 const ENGINE_AUDIO_TABLES_STORE_DIRECTORY: &str = "official-eu-engine-audio-tables";
+const REVIEWED_SURFACE_AUDIO_TABLES_PROFILE: &[u8] =
+    include_bytes!("../../../profiles/official-eu-surface-audio-tables-v1.json");
+const SURFACE_AUDIO_TABLES_STORE_DIRECTORY: &str = "official-eu-surface-audio-tables";
 const REVIEWED_AUX_CONTROL_PROFILE: &[u8] =
     include_bytes!("../../../profiles/official-eu-aux-control-constants-v1.json");
 const AUX_CONTROL_STORE_DIRECTORY: &str = "official-eu-aux-control-constants";
@@ -3086,14 +3098,14 @@ fn advance_game_frame<C: HostClock>(
     camera: &mut ViewHarness,
     fade: &mut Option<ScalarTween>,
     damage_owner: &mut NoStaticDamageOwner,
-    engine: &mut Option<EngineAudio>,
+    audio: &mut RaceAudio,
     pause: &mut PauseHarness,
     input: WindowedInput,
 ) -> Result<GameFrameOutcome, WindowedStageFrameError> {
     let mut pause_effects = Vec::new();
     let pause_flow = pause.frame(session, progress, input.keys, &mut pause_effects);
     session.set_pause_flow(pause_flow);
-    pause.apply(&pause_effects, input.audio, engine.as_ref());
+    pause.apply(&pause_effects, input.audio, audio);
     let root_tick = root_interaction.tick_for_game_session(input.frontend, clock.millis(), true);
     let menu_inputs = root_menu_flow_inputs(session.state().id(), root_interaction);
     let drive = if let Some(pad) = input.gamepad.filter(|pad| analog_driving_is_active(pad)) {
@@ -3207,20 +3219,48 @@ fn advance_game_frame<C: HostClock>(
     } else {
         world
     };
-    // The engine sound (`FUN_0047ec20` then `FUN_00488d60`) runs after this
-    // tick's Mechanics, which includes the camera driver, in every in-race
-    // handler 5..=9 (the pause state 0xa skips it).
-    if let (Some(engine), Some(mixer), Some(camera_world)) =
-        (engine.as_mut(), input.audio, tick_camera.as_ref())
+    // The listener `FUN_0047ec20` and the engine sound `FUN_00488d60` run
+    // after this tick's Mechanics (which includes the camera driver) in every
+    // in-race handler 5..=9 (the pause state 0xa skips them); on the single
+    // view the surface, landing, wet and crowd routines follow.
+    if let (Some(mixer), Some(camera_world)) = (input.audio, tick_camera.as_ref())
         && (5..=9).contains(&session.state().id())
     {
-        engine.tick(
-            mixer,
-            session,
-            camera,
-            camera_world,
-            pause.options.effects_master_4f653c,
-        );
+        let car = session.car();
+        let camera_mode = camera.record_mode();
+        match update_listener(&ListenerInput {
+            camera: *camera_world,
+            camera_mode,
+            forward_258: vec3_raw(car.motion.basis[0]),
+            centre_c8: vec3_raw(car.position),
+            half_length_2c: car.motion.compiled_half_words.x.raw(),
+        }) {
+            Ok(listener) => {
+                let master = pause.options.effects_master_4f653c;
+                if let Some(engine) = audio.engine.as_mut() {
+                    engine.tick(
+                        mixer,
+                        session,
+                        &mut camera.rng,
+                        camera_mode,
+                        &listener.listener,
+                        master,
+                    );
+                }
+                if let Some(effects) = audio.effects.as_mut() {
+                    effects.tick(
+                        mixer,
+                        session,
+                        &mut camera.rng,
+                        camera_world,
+                        camera_mode,
+                        listener.centre_proximity_9e4,
+                        master,
+                    );
+                }
+            }
+            Err(error) => eprintln!("cmr-app: listener skipped: {error}"),
+        }
     }
     let loading_interstitial = loading_interstitial_for_route(
         advanced.route,
@@ -3539,10 +3579,11 @@ impl PauseAssets {
     }
 }
 
-/// The pause menu cue channel (harness; after the engine's 2..=9).
-const PAUSE_MENU_CHANNEL: u32 = 10;
-/// The co-driver speech channel the SDL speech bank uses (harness).
-const SPEECH_CHANNEL: u32 = 1;
+/// The pause menu cue channel (`FUN_00468f50`, the first allocation).
+const PAUSE_MENU_CHANNEL: u32 = 0;
+/// The co-driver speech channel (`FUN_00444160`), shared with the SDL
+/// speech bank.
+const SPEECH_CHANNEL: u32 = cmr_platform_sdl3::SPEECH_CHANNEL;
 
 impl PauseHarness {
     fn new() -> Self {
@@ -3702,7 +3743,7 @@ impl PauseHarness {
         &mut self,
         effects: &[PauseEffect],
         mixer: Option<&SharedSoftwareMixer>,
-        engine: Option<&EngineAudio>,
+        audio: &RaceAudio,
     ) {
         let Some(mixer) = mixer else {
             return;
@@ -3710,8 +3751,13 @@ impl PauseHarness {
         for effect in effects {
             match *effect {
                 PauseEffect::MuteEngine { car } => {
-                    if let Some(engine) = engine {
+                    if let Some(engine) = audio.engine.as_ref() {
                         engine.mute(mixer, u32::from(car));
+                    }
+                }
+                PauseEffect::StopSurfaceLoops => {
+                    if let Some(effects) = audio.effects.as_ref() {
+                        effects.stop_surface(mixer);
                     }
                 }
                 PauseEffect::MuteSpeech => set_speech_volume(mixer, 0),
@@ -3749,8 +3795,7 @@ impl PauseHarness {
                 }
                 // No surface loops, force feedback or telemetry in this
                 // session; the fade is the hub route's tween.
-                PauseEffect::StopSurfaceLoops
-                | PauseEffect::ZeroForceFeedback
+                PauseEffect::ZeroForceFeedback
                 | PauseEffect::FadeOut { .. }
                 | PauseEffect::CommitTelemetryAndStopAudio => {}
             }
@@ -3780,8 +3825,14 @@ fn load_menu_cues(mixer: &mut SoftwareMixer<FileWaveSource>) -> Option<MenuChann
     })
 }
 
-/// The first mixer channel of the engine's eight (0 is music, 1 speech).
-const ENGINE_CHANNEL_BASE: u32 = 2;
+/// The first mixer channel of the engine's eight. The windowed session uses
+/// the native allocation order, inferred from the stage-load sequence with
+/// the channel counter starting at 0: the pause menu cues (`FUN_00468f50`,
+/// 0), the engine (1..=8), the prang bank (9..=13), the speech channel
+/// (`FUN_00444160`, 14) and the surface bank (15..=18). So the surface tick's
+/// absolute `stop(0x11)` lands on surface channel 2 and the car loader's
+/// `FUN_0047eb70(7, ..)` on the engine's RT channel.
+const ENGINE_CHANNEL_BASE: u32 = 1;
 
 impl EngineAudio {
     /// Open the band tables, or `None` when the store is absent or rejected
@@ -3848,13 +3899,15 @@ impl EngineAudio {
         }
     }
 
-    /// `master_percent` is the live effects master `DAT_004f653c`.
+    /// `FUN_00488d60(0)` with this tick's listener; `master_percent` is the
+    /// live effects master `DAT_004f653c`.
     fn tick(
         &mut self,
         mixer: &SharedSoftwareMixer,
         session: &mut GameplaySession,
-        camera: &mut ViewHarness,
-        camera_world: &[i32; 16],
+        rng: &mut GameLcg,
+        camera_mode: i32,
+        listener: &cmr_core::engine_sound::EngineListener,
         master_percent: i32,
     ) {
         let Some(car_words) = session.engine_sound_car() else {
@@ -3874,34 +3927,255 @@ impl EngineAudio {
             master_percent,
             ..config
         };
-        let car = session.car();
-        let camera_mode = camera.record_mode();
-        let listener = match update_listener(&ListenerInput {
-            camera: *camera_world,
-            camera_mode,
-            forward_258: vec3_raw(car.motion.basis[0]),
-            centre_c8: vec3_raw(car.position),
-            half_length_2c: car.motion.compiled_half_words.x.raw(),
-        }) {
-            Ok(output) => output.listener,
-            Err(error) => {
-                eprintln!("cmr-app: engine listener skipped: {error}");
-                return;
-            }
-        };
         match self.state.update(
             &mut *mixer,
             &config,
             &self.tables,
-            &mut camera.rng,
+            rng,
             0,
             &car_words,
             camera_mode,
-            &listener,
+            listener,
         ) {
             Ok(outcome) => session.set_idle_countdown_6ec(outcome.idle_countdown_6ec),
             Err(error) => eprintln!("cmr-app: engine sound tick failed: {error}"),
         }
+    }
+}
+
+/// The race's sound banks: the engine ([`EngineAudio`]) and the surface,
+/// landing and impact effects ([`EffectsAudio`]).
+#[derive(Default)]
+struct RaceAudio {
+    engine: Option<EngineAudio>,
+    effects: Option<EffectsAudio>,
+}
+
+/// The surface roll/skid (`FUN_00489890`), landing thump (`FUN_0046a030`)
+/// and impact (`FUN_00469e80`) sounds over the extracted static tables and
+/// the stage's `.srf` list. The wet/rain (`FUN_0048d4c0`) and crowd
+/// (`FUN_0041cfe0`) channels are not loaded in this session.
+struct EffectsAudio {
+    tables: SurfaceAudioTables,
+    prang_names: Vec<String>,
+    full_volume: i32,
+    srf: Vec<u8>,
+    surface: SurfaceSoundState,
+    prang: PrangSoundState,
+    /// The surface and prang slot bases once loaded.
+    banks: Option<(u32, u32)>,
+    camera_mode: Option<i32>,
+}
+
+/// The prang bank's five channels and the surface bank's four (harness:
+/// the native allocation order, see [`ENGINE_CHANNEL_BASE`]).
+const PRANG_CHANNEL_BASE: u32 = 9;
+const SURFACE_CHANNEL_BASE: u32 = 15;
+
+impl EffectsAudio {
+    fn open(runtime_data: &Path, srf: Option<Vec<u8>>) -> Option<Self> {
+        let reviewed =
+            ReviewedSurfaceAudioTablesProfile::from_json(REVIEWED_SURFACE_AUDIO_TABLES_PROFILE)
+                .ok()?;
+        let store = match SurfaceAudioTablesStore::open(
+            &session_sidecar_store(runtime_data, SURFACE_AUDIO_TABLES_STORE_DIRECTORY),
+            &reviewed,
+        ) {
+            Ok(store) => store,
+            Err(error) => {
+                eprintln!("cmr-app: surface/impact sound disabled: {error:?}");
+                return None;
+            }
+        };
+        let t = store.tables();
+        let tables = SurfaceAudioTables {
+            counts: t.counts.map(|c| [c.ski, c.i, c.sko, c.o]),
+            class_percent: t.class_volume_percent,
+            surface_group: t.surface_group,
+            wet_surfaces: t.wet_surfaces,
+            surface_k: t.surface_volume_k,
+            initial_last_state: t.initial_last_state,
+        };
+        Some(Self {
+            surface: SurfaceSoundState::new(&tables),
+            prang: PrangSoundState::new(t.prang_full_volume),
+            full_volume: t.prang_full_volume,
+            prang_names: t.prang_names.clone(),
+            tables,
+            srf: srf.unwrap_or_default(),
+            banks: None,
+            camera_mode: None,
+        })
+    }
+
+    /// The prang loader `FUN_00469ac0` (48 waves, five channels at the full
+    /// volume) and the surface loader `FUN_004892b0` (the `.srf` groups,
+    /// four channels at volume 0), in the stage-load order.
+    fn load(
+        &mut self,
+        mixer: &mut SoftwareMixer<FileWaveSource>,
+        master_percent: i32,
+    ) -> Option<(u32, u32)> {
+        let mut prang_base = None;
+        for path in prang_wave_paths(&self.prang_names) {
+            let slot = mixer
+                .load_wave(
+                    &format!("game\\{path}"),
+                    CAR_WAVE_RATE_HZ,
+                    CAR_WAVE_BITS,
+                    false,
+                )
+                .ok()?;
+            prang_base.get_or_insert(slot.ordinal());
+        }
+        for n in 0..5 {
+            EngineVoices::set_volume(
+                mixer,
+                PRANG_CHANNEL_BASE + n,
+                master_percent.wrapping_mul(self.full_volume) / 100,
+            );
+        }
+        self.prang = PrangSoundState::new(self.full_volume);
+        let bank = match load_surface_bank(&self.tables, &self.srf, &mut self.surface) {
+            Ok(bank) => bank,
+            Err(error) => {
+                eprintln!("cmr-app: surface bank: {error}");
+                return None;
+            }
+        };
+        let mut surface_base = 0;
+        for (index, name) in bank.waves.iter().enumerate() {
+            let slot = mixer
+                .load_wave(
+                    &format!("game\\sounds\\newsurfs\\{name}"),
+                    CAR_WAVE_RATE_HZ,
+                    CAR_WAVE_BITS,
+                    false,
+                )
+                .ok()?;
+            if index == 0 {
+                surface_base = slot.ordinal();
+            }
+        }
+        for n in 0..4 {
+            EngineVoices::set_volume(mixer, SURFACE_CHANNEL_BASE + n, 0);
+        }
+        Some((surface_base, prang_base?))
+    }
+
+    /// `FUN_0048b650`.
+    fn stop_surface(&self, mixer: &SharedSoftwareMixer) {
+        if self.banks.is_some()
+            && let Ok(mut mixer) = mixer.lock()
+        {
+            stop_surface_channels(&mut *mixer, SURFACE_CHANNEL_BASE, true);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn tick(
+        &mut self,
+        mixer: &SharedSoftwareMixer,
+        session: &mut GameplaySession,
+        rng: &mut GameLcg,
+        camera_world: &[i32; 16],
+        camera_mode: i32,
+        centre_proximity: i32,
+        master_percent: i32,
+    ) {
+        let Ok(mut mixer) = mixer.lock() else {
+            return;
+        };
+        let (surface_base, prang_base) = match self.banks {
+            Some(banks) => banks,
+            None => match self.load(&mut mixer, master_percent) {
+                Some(banks) => *self.banks.insert(banks),
+                None => return,
+            },
+        };
+        // FUN_0048b680 runs when the camera driver sets a mode.
+        if self.camera_mode != Some(camera_mode) {
+            self.camera_mode = Some(camera_mode);
+            set_surface_class(
+                &mut self.surface,
+                &mut *mixer,
+                SURFACE_CHANNEL_BASE,
+                0,
+                camera_mode,
+            );
+        }
+        let car = session.car();
+        let centre = vec3_raw(car.position);
+        // Impacts fire inside Mechanics (the barrier walk's FUN_0041f630 ->
+        // FUN_00469e80); the damage model that yields the breakage kind is
+        // not reconstructed, so no breakage cue plays.
+        for event in session.last_trigger_events() {
+            let cmr_core::trigger_walk::TriggerEvent::Barrier {
+                kind,
+                impact: Some(impact),
+                ..
+            } = *event
+            else {
+                continue;
+            };
+            let severity = impact_severity(impact.severity_vector);
+            let Some(object_type) = barrier_object_type(kind).filter(|_| severity > 0) else {
+                continue;
+            };
+            let Ok(azimuth) = point_azimuth(camera_world, camera_mode, centre, impact.point) else {
+                continue;
+            };
+            let mut out = PrangVoices {
+                voices: &mut *mixer,
+                slot_base: prang_base,
+                channel_base: PRANG_CHANNEL_BASE,
+                centre_proximity,
+                master_percent,
+            };
+            play_impact(&self.prang, &mut out, severity, azimuth, object_type);
+        }
+        let Some(words) = session.surface_sound_words() else {
+            return;
+        };
+        let input = SurfaceTickInput {
+            surfaces: words.surfaces,
+            contact: std::array::from_fn(|wheel| words.contact[wheel]),
+            longitudinal: words.longitudinal,
+            lateral: words.lateral,
+            speed_ec: words.speed_ec,
+            effects_off: false,
+            centre_proximity,
+            master_percent,
+        };
+        match self.surface.tick(
+            &mut *mixer,
+            &self.tables,
+            rng,
+            surface_base,
+            SURFACE_CHANNEL_BASE,
+            &input,
+        ) {
+            Ok(outcome) => session.set_surface_words(outcome.surfaces),
+            Err(error) => eprintln!("cmr-app: surface sound tick failed: {error}"),
+        }
+        let mut out = PrangVoices {
+            voices: &mut *mixer,
+            slot_base: prang_base,
+            channel_base: PRANG_CHANNEL_BASE,
+            centre_proximity,
+            master_percent,
+        };
+        // `car +0x704`, which the thump sets, has no reconstructed reader.
+        let _ = self.prang.thump(
+            &mut out,
+            rng,
+            &ThumpInput {
+                effects_off: false,
+                upright_404: words.upright_404,
+                out_of_control_680: words.out_of_control_680,
+                contact: words.contact,
+            },
+        );
     }
 }
 
@@ -4876,7 +5150,13 @@ pub fn run_windowed_game_session(
     let mut camera = ViewHarness::new();
     let mut fade: Option<ScalarTween> = None;
     let mut damage_owner = NoStaticDamageOwner;
-    let mut engine = EngineAudio::open(runtime_data, compiled_pose.selector as u8);
+    let srf = read_decoded_section(media_root, stage, ".srf", DecodeLimits::default())
+        .ok()
+        .flatten();
+    let mut audio = RaceAudio {
+        engine: EngineAudio::open(runtime_data, compiled_pose.selector as u8),
+        effects: EffectsAudio::open(runtime_data, srf),
+    };
     let mut pause = PauseHarness::with_runtime_data(runtime_data);
     let mut runtime_error = None;
 
@@ -4912,7 +5192,7 @@ pub fn run_windowed_game_session(
                     &mut camera,
                     &mut fade,
                     &mut damage_owner,
-                    &mut engine,
+                    &mut audio,
                     &mut pause,
                     input,
                 ) {
@@ -4974,7 +5254,7 @@ pub fn run_windowed_game_session(
             &mut camera,
             &mut fade,
             &mut damage_owner,
-            &mut engine,
+            &mut audio,
             &mut pause,
             input,
         ) {
@@ -6556,9 +6836,19 @@ mod tests {
                 mixer.initialize().unwrap();
                 std::sync::Arc::new(std::sync::Mutex::new(mixer))
             });
-        let mut engine = audio_mixer
-            .as_ref()
-            .and_then(|_| EngineAudio::open(&root, compiled_pose.selector as u8));
+        let mut audio = RaceAudio::default();
+        if audio_mixer.is_some() {
+            audio.engine = EngineAudio::open(&root, compiled_pose.selector as u8);
+            let srf = read_decoded_section(
+                &root.join("Game/Au/1"),
+                "AU1",
+                ".srf",
+                DecodeLimits::default(),
+            )
+            .ok()
+            .flatten();
+            audio.effects = EffectsAudio::open(&root, srf);
+        }
         let mut pcm: Vec<i16> = Vec::new();
         let mut pause = PauseHarness::with_runtime_data(&root);
         let mut advance = |session: &mut GameplaySession,
@@ -6577,7 +6867,7 @@ mod tests {
                 &mut camera,
                 &mut fade,
                 &mut damage_owner,
-                &mut engine,
+                &mut audio,
                 &mut pause,
                 WindowedInput {
                     keys,
@@ -6756,7 +7046,7 @@ mod tests {
                     &mut camera,
                     &mut fade,
                     &mut damage_owner,
-                    &mut None,
+                    &mut RaceAudio::default(),
                     &mut PauseHarness::new(),
                     WindowedInput {
                         keys: $keys,

@@ -161,6 +161,32 @@ fn emitter_angle(heading: i32, nx: i32, nz: i32) -> Result<i16, ListenerError> {
     Ok(widened.wrapping_add(stored).clamp(-0x400, 0x400))
 }
 
+/// `FUN_0047f6e0(p, point)`: the azimuth (`±90`) of a world point for the
+/// impact and breakage cues. The point is taken relative to the camera in
+/// mode 6, else to the car centre, normalized in 3D (with the x/z pre-shift),
+/// and run through the emitter angle and widening; unlike the engine's
+/// emitter position there is no interior check.
+pub fn point_azimuth(
+    camera: &[i32; 16],
+    camera_mode: i32,
+    centre_c8: [i32; 3],
+    point: [i32; 3],
+) -> Result<i32, ListenerError> {
+    let heading = i32::from(camera_heading(camera[8], camera[10])?);
+    let reference = if camera_mode == CAMERA_RELATIVE_MODE {
+        [camera[12], camera[13], camera[14]]
+    } else {
+        centre_c8
+    };
+    let d = normalize_xyz(
+        point[0].wrapping_sub(reference[0]),
+        point[1].wrapping_sub(reference[1]),
+        point[2].wrapping_sub(reference[2]),
+    );
+    let angle = emitter_angle(heading, d[0], d[2])?;
+    Ok((i32::from(angle) * 0x1680) >> 16)
+}
+
 /// `FUN_0047ec20(p)`.
 pub fn update_listener(input: &ListenerInput) -> Result<ListenerOutput, ListenerError> {
     let cam = &input.camera;
@@ -337,6 +363,20 @@ mod tests {
             from_car.front_proximity_9ec,
             from_camera.front_proximity_9ec
         );
+    }
+
+    #[test]
+    fn a_point_to_the_side_has_a_full_azimuth() {
+        // Camera behind a car facing +z, looking +z: a point on the car's
+        // right (+x) is at a quarter turn, just short of exactly lateral.
+        let camera = camera_at([0, 0, -6 * ONE], [0, 0, ONE]);
+        let side = point_azimuth(&camera, 5, [0; 3], [4 * ONE, 0, 1]).unwrap();
+        assert!(side.abs() > 80 && side.abs() <= 90, "{side}");
+        let ahead = point_azimuth(&camera, 5, [0; 3], [0, 0, 4 * ONE]).unwrap();
+        assert_eq!(ahead, 0);
+        let other = point_azimuth(&camera, 5, [0; 3], [-4 * ONE, 0, 1]).unwrap();
+        // `>> 16` floors, so the mirror image can differ by one.
+        assert!(other.signum() == -side.signum() && (other + side).abs() <= 1);
     }
 
     #[test]

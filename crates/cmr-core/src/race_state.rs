@@ -615,6 +615,9 @@ pub struct FourWheelState {
     pub tumble: TumbleState,
     /// This tick's contact vectors `+0x4bc..+0x518` (`FUN_00409f90`).
     pub contact_vectors_4bc: [Vec3; 8],
+    /// `ctl +0x3c0 + 4w`: the second loop's lateral dot
+    /// `local_98[w] . car(+0x4bc + 12w)`, kept while airborne.
+    pub lateral_dot_3c0: [i32; 4],
     /// The rollover words `+0x734/+0x610/+0x614/+0x60c`.
     pub rollover: RolloverState,
     /// `+0x330`: the ground normal saved before the last ground pass.
@@ -1036,6 +1039,7 @@ impl CarState {
                     lowest_wheel_650: 0,
                 },
                 contact_vectors_4bc: [Vec3::ZERO; 8],
+                lateral_dot_3c0: [0; 4],
                 rollover: RolloverState {
                     slope_ticks_734: 0,
                     roll_610: 0,
@@ -1130,6 +1134,16 @@ impl RaceState {
     /// The current car state.
     pub fn car(&self) -> CarState {
         self.car
+    }
+
+    /// Store the four wheel surface words `ctl +0x42a`, which the surface
+    /// sound `FUN_00489890` rewrites after Mechanics.
+    pub fn set_surface_words(&mut self, surfaces: [i16; 4]) {
+        if let Some(ground) = self.car.ground.as_mut() {
+            for (word, surface) in ground.lanes.type_words.iter_mut().zip(surfaces) {
+                *word = surface as u16;
+            }
+        }
     }
 
     /// Store `car +0x6ec`, which the engine sound's reset-countdown branch
@@ -1906,6 +1920,7 @@ impl RaceState {
                 directions.direction_b[index],
                 index,
             );
+            self.car.four_wheel.lateral_dot_3c0[index] = second[index].axis_dot;
             Self::execute_second_wheel_state(
                 &mut self.car.four_wheel.second[index],
                 prior_speeds[index],
@@ -2327,6 +2342,8 @@ impl RaceState {
             out_of_control_680: self.car.collision.response_state_680,
             recovery_688: self.car.collision.recovery_latch_688,
             contact_6dc: self.car.four_wheel.barrier_contact_6dc,
+            previous_contact_6e0: self.car.four_wheel.trigger_walk.previous_contact_6e0,
+            impact: None,
         };
         let mut walk_state = self.car.four_wheel.trigger_walk;
         let events = walk_triggers(triggers, cells, cell, config, &mut car, &mut walk_state)?;

@@ -7,7 +7,7 @@ Updated: 2026-10-28 (per-tick ground pass; lane forces still zero)
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: draw the pause menu
+feat: play the surface, landing and impact sounds
 ```
 
 Start by confirming the checkout and progress footer:
@@ -159,10 +159,11 @@ the engine tables at `0x4f82e0..0x4f8bac`; that is the native's own reach:
 in the shipped image.
 Escape pauses and the menu is drawn (`impl.pause-menu`, `impl.pause-menu-draw`;
 `CMR_FRAMES_PAUSE_AT=<frame>` on the ignored frames test taps Escape).
-Next: the surface/skid, landing and impact
-sounds (`.work/surface-impact-audio-notes.md`, which also lists the static
-tables to extract and the `audio_surface.rs` errors), then the championship
-progression behind the hub predicates.
+Surface/skid, landing and barrier impact sounds play
+(`impl.surface-and-prang-sound`; tables via `extract-surface-audio-tables`).
+Next: the wet/rain and crowd feeders (`.work/surface-impact-audio-notes.md`
+sections 6 and 7), the other impact sites (body contact, objects), then the
+championship progression behind the hub predicates.
 `FUN_0041f630` only feeds impact sound/FFB/shudder. Trees appear to be `.sht` sprites, which the native
 excludes from static collision. Done so far: the windowed session on
 `GameplaySession::new_with_four_wheel_and_car(...).with_ground_geometry(...)`

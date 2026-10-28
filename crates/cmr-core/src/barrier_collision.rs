@@ -31,10 +31,11 @@
 //!   along its travel from the saved centre `+0x3e4` until the post leaves the
 //!   box.
 //!
-//! Not reconstructed: the damage call `FUN_0041f630` (on the first contact
-//! tick), sparks, sounds, camera shake and the scrape records. The pending
-//! correction `+0x3cc` is swapped for the damage call and restored, so it is
-//! unchanged.
+//! On the first contact tick (`+0x6e0` clear) the velocity change is swapped
+//! into `+0x3cc` for the severity call `FUN_0041f630` and restored; the
+//! response reports it with the world contact point as a [`BarrierImpact`]
+//! for the impact sound. Not reconstructed: the damage model inside that
+//! call, sparks, camera shake and the scrape records.
 
 use cmr_formats::stage::TriggerVolume;
 
@@ -74,6 +75,20 @@ pub struct BarrierCar {
     pub recovery_688: bool,
     /// `+0x6dc`: a barrier touched the car this walk.
     pub contact_6dc: bool,
+    /// `+0x6e0`: the previous walk's contact; while set the severity call
+    /// `FUN_0041f630` (and so the impact sound) is skipped.
+    pub previous_contact_6e0: bool,
+    /// The impact this response reported, cleared by each call.
+    pub impact: Option<BarrierImpact>,
+}
+
+/// What the first contact tick hands the severity call `FUN_0041f630` and
+/// the impact sound: the velocity change (swapped into `+0x3cc` for the
+/// call) and the world contact point `FUN_0048dfe0(+0x3f0, basis) + +0xc8`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BarrierImpact {
+    pub severity_vector: [i32; 3],
+    pub point: [i32; 3],
 }
 
 /// `FUN_00401450`'s horizontal box: unit axis `(x, z)`, its perpendicular
@@ -292,6 +307,7 @@ pub fn barrier_response(
     car: &mut BarrierCar,
     scratch: &mut BarrierScratch,
 ) -> bool {
+    car.impact = None;
     let flagged = volume.event_flag != 0;
     let mode = if flagged {
         TriggerGeometryMode::Bidirectional
@@ -354,6 +370,21 @@ pub fn barrier_response(
             local[axis]
         }
     });
+    if !car.previous_contact_6e0 {
+        // FUN_0048dfe0: row0 * x + row1 * y + row2 * z.
+        let [row0, row1, row2] = car.basis.map(raw);
+        let local = car.impact_3f0;
+        let center = car.bounds.current_position;
+        car.impact = Some(BarrierImpact {
+            severity_vector: change,
+            point: std::array::from_fn(|axis| {
+                q(row2[axis], local[2])
+                    .wrapping_add(q(row1[axis], local[1]))
+                    .wrapping_add(q(row0[axis], local[0]))
+                    .wrapping_add(center[axis])
+            }),
+        });
+    }
     if !car.out_of_control_680 {
         let magnitude = sqrt_q16(
             q(change[0], change[0])
@@ -453,6 +484,8 @@ mod tests {
             out_of_control_680: false,
             recovery_688: false,
             contact_6dc: false,
+            previous_contact_6e0: false,
+            impact: None,
         }
     }
 

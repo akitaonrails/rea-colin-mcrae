@@ -129,6 +129,24 @@ impl InRaceScript {
     }
 }
 
+/// The car and control words the surface and landing sounds read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurfaceSoundWords {
+    /// `ctl +0x42a + 2i`.
+    pub surfaces: [i16; 4],
+    /// `car +0x73a..+0x741`.
+    pub contact: [u8; 8],
+    /// `ctl +0x3b0 + 4i` / `ctl +0x3c0 + 4i`.
+    pub longitudinal: [i32; 4],
+    pub lateral: [i32; 4],
+    /// `car +0xec`.
+    pub speed_ec: i32,
+    /// `ctl +0x404`.
+    pub upright_404: bool,
+    /// `car +0x680`.
+    pub out_of_control_680: bool,
+}
+
 /// The pause words the in-race handlers read on the next frame, from the
 /// host's [`crate::pause_menu::PauseController`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -426,6 +444,30 @@ impl<'a> GameplaySession<'a> {
     /// The pause words for the next frame only.
     pub fn set_pause_flow(&mut self, flow: PauseFlow) {
         self.pause_flow = flow;
+    }
+
+    /// The words the surface and landing sounds (`FUN_00489890`,
+    /// `FUN_0046a030`) read after Mechanics, or `None` without ground contact.
+    #[must_use]
+    pub fn surface_sound_words(&self) -> Option<SurfaceSoundWords> {
+        let car = self.race.car();
+        let ground = car.ground?;
+        let four = &car.four_wheel;
+        Some(SurfaceSoundWords {
+            surfaces: std::array::from_fn(|wheel| ground.lanes.type_words[wheel] as i16),
+            contact: ground.thresholds.flags_73a,
+            longitudinal: std::array::from_fn(|wheel| four.second[wheel].ratio_at_3b0),
+            lateral: four.lateral_dot_3c0,
+            speed_ec: four.speed_ec,
+            upright_404: four.upright_404,
+            out_of_control_680: car.collision.response_state_680,
+        })
+    }
+
+    /// Write back the surface words the surface sound rewrites into the
+    /// control record (`ctl +0x42a`).
+    pub fn set_surface_words(&mut self, surfaces: [i16; 4]) {
+        self.race.set_surface_words(surfaces);
     }
 
     /// Write back the engine sound's `car +0x6ec`.

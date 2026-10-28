@@ -279,6 +279,9 @@ pub trait EngineVoices {
     fn set_frequency(&mut self, channel: u32, frequency: u32);
     /// `FUN_00495c30`.
     fn set_position(&mut self, channel: u32, position: Position3d);
+    /// `FUN_00495d40`: some open channel is playing `wave` (the wave each
+    /// channel last played, `DAT_00a0bd88`, and that channel still busy).
+    fn wave_busy(&self, wave: u32) -> bool;
 }
 
 /// Per-stage settings the loader and options provide.
@@ -1193,6 +1196,9 @@ mod tests {
         }
         fn set_position(&mut self, channel: u32, position: Position3d) {
             self.ops.push(Op::Position(channel, position.x));
+        }
+        fn wave_busy(&self, _wave: u32) -> bool {
+            false
         }
     }
 

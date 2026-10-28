@@ -423,6 +423,14 @@ impl<B: WaveSource> crate::engine_sound::EngineVoices for SoftwareMixer<B> {
             let _ = AudioMixer::set_position(self, ch, position);
         }
     }
+
+    fn wave_busy(&self, wave: u32) -> bool {
+        self.channels.iter().any(|channel| {
+            channel
+                .voice
+                .is_some_and(|voice| voice.wave_index == wave as usize)
+        })
+    }
 }
 
 /// A [`SoftwareMixer`] over an in-memory name->wave map.
