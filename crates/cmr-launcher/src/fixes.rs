@@ -148,7 +148,9 @@ fn rel32(at: u32, len: u32, to: u32) -> [u8; 4] {
 
 /// The community-patched EU v1.5 (`46500c8e…`) carries F1-F5 on disk; it
 /// is the same build, so F6 applies at the same addresses.
-pub static COMMUNITY_EU_15: FixSet = FixSet { fixes: &[F6] };
+pub static COMMUNITY_EU_15: FixSet = FixSet {
+    fixes: &[F6, F7, F8, F9],
+};
 
 /// Official EU v1.5 (`0eb6ea96…`).
 pub static OFFICIAL_EU_15: FixSet = FixSet {
@@ -218,6 +220,9 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
             }],
         },
         F6,
+        F7,
+        F8,
+        F9,
     ],
 };
 
@@ -252,6 +257,165 @@ const F6: Fix = Fix {
     ],
 };
 
+/// Cave offset of F7's code and of its per-joystick axis table (16 dwords,
+/// one per WinMM id; filled by the launcher, see `F7_TABLE`).
+const F7_CAVE: u32 = 0x40;
+pub const F7_TABLE: u32 = 0xc0;
+const _: () = assert!(F7_CAVE >= F6_CAVE + 20 && F7_TABLE >= F7_CAVE + F7_CODE_LEN);
+const F7_CODE_LEN: u32 = 93;
+/// `F7_TABLE` bits: use the Z axis (a pad's combined triggers) and the R
+/// axis (a pad's right stick, up/down) for throttle and brake.
+pub const AXIS_Z: u32 = 1;
+pub const AXIS_R: u32 = 2;
+
+/// The game's analog joystick read (`FUN_0049cdf0`) asks WinMM for X, Y and
+/// buttons only, so on a modern pad only the left stick drives: X steers, Y
+/// is throttle (up) and brake (down). F7 also asks for Z and R and feeds the
+/// game's Y with whichever of left-stick Y, Z or R is pushed furthest from
+/// centre, for axes the launcher enabled for that joystick (only axes that
+/// exist and rest at centre, so wheel pedals are never picked up). Up on
+/// the right stick and R2 read low like left-stick up, so they accelerate;
+/// down and L2 brake. Menus still follow the left stick.
+const F7: Fix = Fix {
+    id: "F7",
+    what: "gamepads: triggers and right stick work as throttle and brake",
+    optional: true,
+    code: &[
+        // JOYINFOEX.dwFlags 0x483 -> 0x48f (also return Z and R).
+        Piece {
+            at: At::Image(0x0049_ce1b),
+            ops: &[Op::Raw(&[0x8f])],
+        },
+        // `mov eax,[esp+0x14]` (Y) ; `push ebx` -> jmp to the cave.
+        Piece {
+            at: At::Image(0x0049_ce6f),
+            ops: &[Op::Jmp(At::Cave(F7_CAVE))],
+        },
+        Piece {
+            at: At::Cave(F7_CAVE),
+            ops: &[
+                // push ebx (replaced) ; then Y/Z/R sit at esp+0x18/0x1c/0x20
+                Op::Raw(&[0x53]),
+                // mov eax,[esi+0x10] (WinMM id) ; and eax,0xf
+                Op::Raw(&[0x8b, 0x46, 0x10, 0x83, 0xe0, 0x0f]),
+                // mov edx,[eax*4+table]
+                Op::Raw(&[0x8b, 0x14, 0x85]),
+                Op::Addr(At::Cave(F7_TABLE)),
+                // mov eax,[esp+0x18] (best = Y)
+                Op::Raw(&[0x8b, 0x44, 0x24, 0x18]),
+                // lea ebx,[eax-0x8000] ; test ebx,ebx ; jns +2 ; neg ebx
+                Op::Raw(&[
+                    0x8d, 0x98, 0x00, 0x80, 0xff, 0xff, 0x85, 0xdb, 0x79, 0x02, 0xf7, 0xdb,
+                ]),
+                // test dl,AXIS_Z ; je +24
+                Op::Raw(&[0xf6, 0xc2, AXIS_Z as u8, 0x74, 0x18]),
+                // the candidate at [esp+0x1c] wins if further from centre
+                Op::Raw(&TAKE_IF_FURTHER_Z),
+                // test dl,AXIS_R ; je +24
+                Op::Raw(&[0xf6, 0xc2, AXIS_R as u8, 0x74, 0x18]),
+                Op::Raw(&TAKE_IF_FURTHER_R),
+                // back to `lea ecx,[eax-0x8000]`, which scales Y
+                Op::Jmp(At::Image(0x0049_ce74)),
+            ],
+        },
+        // The table, zero (no extra axes) until the launcher fills it.
+        Piece {
+            at: At::Cave(F7_TABLE),
+            ops: &[Op::Raw(&[0; 64])],
+        },
+    ],
+};
+
+const F8_CAVE: u32 = 0x100;
+const F8_SEEN: u32 = 0x118;
+const F9_CAVE: u32 = 0x120;
+const _: () =
+    assert!(F8_CAVE >= F7_TABLE + 64 && F8_SEEN >= F8_CAVE + 22 && F9_CAVE >= F8_SEEN + 4);
+
+/// The joystick presence probe (`FUN_0049d5c0`) asks WinMM for every id each
+/// call and reports only the ones that answer. Control Setup runs it every
+/// frame and clamps CONTROL METHOD to the joysticks it reports, so one failed
+/// read (Wine briefly returns JOYERR_UNPLUGGED while it rescans devices, and
+/// wireless pads doze) drops the choice back to KEYBOARD or below; OK then
+/// saves device 0 with the joystick's type (see F9). F8 makes a joystick that
+/// has answered once stay present for the session.
+const F8: Fix = Fix {
+    id: "F8",
+    what: "joysticks that answered once stay present (no random fall-back to keyboard)",
+    optional: false,
+    code: &[
+        // pop edi ; pop esi ; mov eax,ebx ; pop ebp -> jmp to the cave
+        Piece {
+            at: At::Image(0x0049_d60e),
+            ops: &[Op::Jmp(At::Cave(F8_CAVE))],
+        },
+        Piece {
+            at: At::Cave(F8_CAVE),
+            ops: &[
+                Op::Raw(&[0x5f, 0x5e]), // pop edi ; pop esi
+                Op::Raw(&[0x0b, 0x1d]), // or ebx,[seen]
+                Op::Addr(At::Cave(F8_SEEN)),
+                Op::Raw(&[0x89, 0x1d]), // mov [seen],ebx
+                Op::Addr(At::Cave(F8_SEEN)),
+                Op::Raw(&[0x8b, 0xc3, 0x5d]), // mov eax,ebx ; pop ebp
+                Op::Jmp(At::Image(0x0049_d613)),
+            ],
+        },
+        Piece {
+            at: At::Cave(F8_SEEN),
+            ops: &[Op::Raw(&[0; 4])],
+        },
+    ],
+};
+
+/// The device-type setter (`FUN_0049d670(record, type)`) writes any type into
+/// any record. Records 0 and 1 are the two keyboards (their `+0x78` holds key
+/// codes), but Control Setup's OK passes record 0 with the joystick's type
+/// when CONTROL METHOD ended below KEYBOARD (F8), and the startup loop
+/// (`0x4b9ed7`) re-applies whatever was saved. The game then reads the
+/// keyboard record as an analog joystick: key codes as axes, full lock and
+/// full brake, the car circles in reverse. F9 keeps records 0 and 1 of type 1
+/// (keyboard), which also repairs a save already in that state.
+const F9: Fix = Fix {
+    id: "F9",
+    what: "keyboard device records always stay keyboards",
+    optional: false,
+    code: &[
+        // mov ecx,[esp+8] ; lea eax,[eax+eax*4] -> jmp to the cave ; nop ; nop
+        Piece {
+            at: At::Image(0x0049_d67d),
+            ops: &[Op::Jmp(At::Cave(F9_CAVE)), Op::Raw(&[NOP, NOP])],
+        },
+        Piece {
+            at: At::Cave(F9_CAVE),
+            ops: &[
+                Op::Raw(&[0x8b, 0x4c, 0x24, 0x08]),       // mov ecx,[esp+8] (type)
+                Op::Raw(&[0x83, 0x7c, 0x24, 0x04, 0x01]), // cmp dword [esp+4],1 (record)
+                Op::Raw(&[0x77, 0x05]),                   // ja +5
+                Op::Raw(&[0xb9, 0x01, 0x00, 0x00, 0x00]), // mov ecx,1
+                Op::Raw(&[0x8d, 0x04, 0x80]),             // lea eax,[eax+eax*4]
+                Op::Jmp(At::Image(0x0049_d684)),
+            ],
+        },
+    ],
+};
+
+/// 24 bytes: ecx = |[esp+d8] - 0x8000|; if ecx > ebx { ebx = ecx; eax = [esp+d8] }.
+const fn take_if_further(d8: u8) -> [u8; 24] {
+    [
+        0x8b, 0x4c, 0x24, d8, // mov ecx,[esp+d8]
+        0x81, 0xe9, 0x00, 0x80, 0x00, 0x00, // sub ecx,0x8000
+        0x79, 0x02, // jns +2
+        0xf7, 0xd9, // neg ecx
+        0x3b, 0xcb, // cmp ecx,ebx
+        0x7e, 0x06, // jle +6
+        0x8b, 0xd9, // mov ebx,ecx
+        0x8b, 0x44, 0x24, d8, // mov eax,[esp+d8]
+    ]
+}
+const TAKE_IF_FURTHER_Z: [u8; 24] = take_if_further(0x1c);
+const TAKE_IF_FURTHER_R: [u8; 24] = take_if_further(0x20);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,7 +437,7 @@ mod tests {
     #[test]
     fn fixes_are_f1_to_f6_in_order() {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
-        assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F6"]);
+        assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9"]);
     }
 
     #[test]
@@ -286,6 +450,43 @@ mod tests {
         assert_eq!(cave[15], 0xe9);
         let rel = u32::from_le_bytes(cave[16..20].try_into().unwrap());
         assert_eq!((CAVE + F6_CAVE + 20).wrapping_add(rel), 0x49dde6);
+    }
+
+    #[test]
+    fn f7_code_fits_and_reads_its_table() {
+        let code = at(CAVE + F7_CAVE);
+        assert_eq!(code.len() as u32, F7_CODE_LEN);
+        assert_eq!(&code[7..10], [0x8b, 0x14, 0x85]);
+        assert_eq!(code[10..14], (CAVE + F7_TABLE).to_le_bytes());
+        // Both je skip exactly one 24-byte candidate block.
+        assert_eq!(&code[30..35], [0xf6, 0xc2, 1, 0x74, 24]);
+        assert_eq!(&code[59..64], [0xf6, 0xc2, 2, 0x74, 24]);
+        assert_eq!(code[88], 0xe9);
+        let rel = u32::from_le_bytes(code[89..93].try_into().unwrap());
+        assert_eq!((CAVE + F7_CAVE + 93).wrapping_add(rel), 0x49ce74);
+        assert_eq!(at(0x49ce1b), [0x8f]);
+        assert_eq!(at(CAVE + F7_TABLE), [0; 64]);
+    }
+
+    #[test]
+    fn f8_and_f9_jump_back_to_the_right_places() {
+        let back = |code: &[u8], jmp_at: usize, base: u32| {
+            assert_eq!(code[jmp_at], 0xe9);
+            let rel = u32::from_le_bytes(code[jmp_at + 1..jmp_at + 5].try_into().unwrap());
+            (base + jmp_at as u32 + 5).wrapping_add(rel)
+        };
+        let f8 = at(CAVE + F8_CAVE);
+        assert_eq!(f8.len(), 22);
+        assert_eq!(f8[4..8], (CAVE + F8_SEEN).to_le_bytes());
+        assert_eq!(f8[10..14], (CAVE + F8_SEEN).to_le_bytes());
+        assert_eq!(back(&f8, 17, CAVE + F8_CAVE), 0x49d613);
+        let f9 = at(CAVE + F9_CAVE);
+        assert_eq!(f9.len(), 24);
+        // ja skips exactly the 5-byte `mov ecx,1`.
+        assert_eq!(&f9[9..11], [0x77, 0x05]);
+        assert_eq!(f9[11], 0xb9);
+        assert_eq!(back(&f9, 19, CAVE + F9_CAVE), 0x49d684);
+        assert_eq!(at(0x49d67d)[5..], [0x90, 0x90]);
     }
 
     #[test]
@@ -310,7 +511,7 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F6_CAVE + 20);
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F9_CAVE + 24);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
@@ -330,17 +531,17 @@ mod tests {
 
     #[test]
     fn only_optional_fixes_can_be_skipped() {
-        let skip = ["F6", "F1"];
+        let skip = ["F6", "F7", "F1"];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
-        assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5"]);
-        assert_eq!(OFFICIAL_EU_15.cave_size(&skip), 22);
+        assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9"]);
+        assert_eq!(OFFICIAL_EU_15.cave_size(&skip), F9_CAVE + 24);
         assert!(
             OFFICIAL_EU_15
                 .assemble(CAVE, &skip)
                 .iter()
                 .all(|w| w.fix != "F6")
         );
-        assert_eq!(COMMUNITY_EU_15.cave_size(&["F6"]), 0);
+        assert_eq!(COMMUNITY_EU_15.cave_size(&["F6", "F7"]), F9_CAVE + 24);
     }
 
     #[test]

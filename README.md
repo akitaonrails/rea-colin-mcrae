@@ -31,8 +31,11 @@ is still being settled. The launcher keeps its copy of the game, saves and
 
 Settings live in `launcher.cfg` in the same folder, written with comments on
 the first run (a `launcher.cfg` next to `CMRLauncher.exe` takes its place for
-portable installs). Besides the folders and language it holds `close_quits`:
-closing the window quits the game, or `false` for the original behaviour.
+portable installs). Besides the folders and language it holds `close_quits`
+(closing the window quits the game, or `false` for the original behaviour)
+and `gamepad_axes` (a pad's triggers and right stick work as throttle and
+brake). `CMRLauncher --controllers` lists the joysticks the game can see and
+logs what each stick, trigger and button sends.
 
 ## Building
 

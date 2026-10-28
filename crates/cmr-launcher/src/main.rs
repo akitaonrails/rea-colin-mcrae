@@ -29,7 +29,7 @@ mod app {
     use std::path::{Path, PathBuf};
 
     use cmr_launcher::config::{self, Settings};
-    use cmr_launcher::{edition, pe, prepare, registry, runtime};
+    use cmr_launcher::{edition, fill_cave_data, fixes, pe, prepare, registry, runtime};
 
     use crate::win32;
 
@@ -84,6 +84,21 @@ mod app {
     }
 
     pub fn run() -> Result<u32, String> {
+        let mut args = std::env::args().skip(1).peekable();
+        if args.peek().map(String::as_str) == Some("--controllers") {
+            args.next();
+            let seconds = args.next().and_then(|s| s.parse().ok()).unwrap_or(30);
+            win32::controllers(seconds, &mut |line| log_line(line));
+            win32::message(
+                "Colin McRae Rally launcher",
+                &format!(
+                    "Controller report written to {}",
+                    home().join("launcher.log").display()
+                ),
+                false,
+            );
+            return Ok(0);
+        }
         let settings_path = settings_path();
         let existing = fs::read_to_string(&settings_path).ok();
         let file_text = existing.as_deref().unwrap_or(config::TEMPLATE);
@@ -161,7 +176,18 @@ mod app {
             &rt.join(EXE),
             &rt,
             edition.fixes.cave_size(&skip),
-            |cave| prepare(&image, edition.fixes, &skip, cave),
+            |cave| {
+                let mut writes = prepare(&image, edition.fixes, &skip, cave)?;
+                let axes = win32::centred_axes();
+                let bytes: Vec<u8> = axes.iter().flat_map(|a| a.to_le_bytes()).collect();
+                if fill_cave_data(&mut writes, cave.wrapping_add(fixes::F7_TABLE), &bytes) {
+                    log_line(&format!(
+                        "F7 axes per joystick (1 = Z, 2 = R): {:?}",
+                        &axes[..4]
+                    ));
+                }
+                Ok(writes)
+            },
             &mut |line| log_line(line),
         )?;
         log_line(&format!("game exited with {code}"));

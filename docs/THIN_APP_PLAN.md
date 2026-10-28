@@ -60,14 +60,53 @@ at tag `recomp-parked-2026-11-02` and copied in full (with its local notes) to
   reproduced since. The game toggles `ZENABLE` per draw; to investigate when
   it shows again (R16).
 
+- **Gamepads (C1), findings.** The game enumerates pads with DirectInput and
+  reads them with WinMM `joyGetPosEx`: X, Y and buttons only. A modern pad
+  arrives through Wine's WinMM as X/Y = left stick, Z = both triggers on one
+  axis (R2 low, L2 high), R/U = right stick, POV = d-pad, buttons 1..10
+  (Xbox order; a Nintendo-layout 8BitDo reports A/B as 2/1). Three game-side
+  problems, none specific to one machine:
+  1. Only the left stick drives (Y up = throttle, down = brake); triggers
+     and the right stick are never read. Fixed by F7 (optional,
+     `gamepad_axes`).
+  2. Control Setup re-probes the pads every frame and clamps CONTROL METHOD
+     to the pads that answered; Wine briefly reports `JOYERR_UNPLUGGED`
+     (about 2% of reads in a trace, likely its periodic device rescan or a
+     dozing wireless pad), so the choice falls back to KEYBOARD or below,
+     and OK then saves device 0 with the joystick's type. Fixed by F8.
+  3. With that save the game reads the keyboard record as an analog
+     joystick (key codes as axes): full lock and full brake, the car
+     circles in reverse, the keyboard does nothing. Fixed by F9, which also
+     repairs such saves at start-up.
+  Verified headless with a virtual Xbox-style pad (uinput, harness only):
+  the broken save no longer circles (F9); the pad steers and L2 brakes.
+  Still open (C2-C6 in the probes table): R2/right-stick throttle not yet
+  confirmed on a real pad; Control Setup -> Analogue -> Button Setup can
+  loop back to Control Setup with no way out by keyboard (looked like a
+  freeze); Button Setup's capture recorded the wrong control twice; RUN
+  JOYSTICK PANEL deactivates the game and opens `joy.cpl`, which cannot
+  show inside gamescope (the game then waits); the d-pad is never read.
+- **Resolution (E1), research.** Each race re-creates DirectDraw at the
+  RESOLUTION setting (`cfg[0xb]`, 4 slots up to 800x600; call `0x421ea9`),
+  while the front end always runs at 640x480. A race above 800x600 is a
+  small in-memory patch (return W x H for the 640x480 slot at
+  `0x497d43`), but the in-race HUD uses absolute 640/800 tables and fonts,
+  and the projection assumes 4:3 (`FUN_00435d10`), so 16:9 needs a second
+  patch. Forcing the whole game to 1440x1080 broke the front end (menu
+  drawn in the corner, then a hang). Plan in the Enhancements table.
+
 **Next:**
-1. R15: handle a portrait main screen in the launcher (give the game a
+1. C1: confirm F7-F9 with a real pad (R2/L2, right stick), then fix the
+   Control Setup loop and the binding capture (C3, C4), map the d-pad and
+   offer an A/B swap for Nintendo-layout pads (C5), and keep RUN JOYSTICK
+   PANEL from hanging (C6).
+2. R15: handle a portrait main screen in the launcher (give the game a
    landscape mode list or a clear message).
-2. Probe C1: gamepad (WinMM joystick under Wine/Proton) and what the
-   launcher should do about saves bound to a missing device.
-3. Write the Linux how-to (Steam "Add a non-Steam game" + Proton; plain
+3. E1: race resolution as an opt-in `resolution` setting (front end stays
+   640x480), then the HUD scaling and the 16:9 projection.
+4. Write the Linux how-to (Steam "Add a non-Steam game" + Proton; plain
    Wine) and package a release zip.
-4. Windows 10/11 (M3) needs a Windows machine: G2 renderer and D1 dplayx.
+5. Windows 10/11 (M3) needs a Windows machine: G2 renderer and D1 dplayx.
 
 ## Goal and ground rules
 
@@ -108,7 +147,7 @@ Sources: the decomp ledger (`docs/recomp/EVIDENCE.md`), the API inventory
 | R5 | CD check: a CD-ROM drive containing `\setup\game\objects\cars\subday.c3d`, probed on almost every load (`FUN_00496ca0`); the files themselves come from `CDPath` | In-memory fix F1 | ours | **verified** (same) |
 | R6 | DirectDraw + Direct3D 5 (`DirectDrawCreate`; 8-bit 640x480 front end, 16-bit race, Ramp/HAL device, `DrawIndexedPrimitive`, back-buffer and Z-buffer reads each frame, `WaitForVerticalBlank` must succeed) | Linux: Wine/Proton's built-in ddraw/wined3d (with F2/F3). Windows: one of G2 | wined3d (LGPL-2.1, part of Wine/Proton) | **verified** under Wine (front end and race, 640x480 and 800x600); Windows: G2 |
 | R7 | Audio: QSound `qmixer.dll` | It ships with the user's game and uses DirectSound, which Windows and Wine both provide; a replacement is only needed if it fails | the game's own file | **verified** under Wine (menu and race) |
-| R8 | Joysticks via WinMM, with joystick ids taken from DirectInput 7 enumeration (no DirectInput means no pads) | Xidi: `winmm.dll` + `dinput.dll` presenting XInput pads; or the platform's own WinMM | Xidi (BSD-3-Clause) | *probe C1* (Xidi failed to load in the old distrobox setup; cause unknown) |
+| R8 | Joysticks via WinMM, with joystick ids taken from DirectInput 7 enumeration (no DirectInput means no pads) | The platform's own WinMM and DirectInput (Wine's map XInput-style pads to X/Y/Z/R/U + POV + buttons) plus fixes F7-F9; Xidi only if Windows needs it | (platform); Xidi (BSD-3-Clause) as fallback | Wine: enumeration and reads work (traced); see C1 |
 | R9 | Force feedback (DirectInput 7 effects) | Optional; the platform's DirectInput or Xidi | (platform) | optional |
 | R10 | DirectPlay `dplayx.dll`, statically imported (the exe won't load without it) | Proton: built-in. Windows 10/11: the system DLL prompts to install the DirectPlay feature, so bundle Wine's `dplayx.dll` built for Windows or a small stub | Wine dplayx (LGPL-2.1) or ours | Proton: evidence; Windows: *probe D1* (needs Windows) |
 | R11 | In-game movies (rally school): MCI `avivideo`, MS Video 1 | System codec: `msvidc32` on Windows and in Wine | (platform) | evidence |
@@ -132,13 +171,16 @@ ourselves and apply it in memory; the file on disk is never changed.
 | F4 | `0x49dcb0` | Win9x-only OS gate | accept | **verified** (launcher, Wine) |
 | F5 | `0x4ae590..0x4ae5ac` | reads the VGA palette with `in`/`out` port I/O, a privileged instruction on NT-family Windows | skip the port reads | **verified** (launcher, Wine) |
 | F6 | `0x49de78` (WndProc jump-table entry for `WM_CLOSE`) | the window procedure swallows `WM_CLOSE`, so Alt+F4 or the window manager's close leaves the game running full screen; under gamescope the window looks frozen | on `WM_CLOSE` set the main loop's quit flag `0x96efe8`; the game shuts down through its own teardown (also applied to the community exe, which lacks it) | **verified** (Wine, gamescope on Hyprland: closes in ~1 s; during a load it quits when the load ends) |
+| F7 | `0x49ce1b`, `0x49ce6f` (analog joystick read `FUN_0049cdf0`) | the game reads X/Y/buttons only, so on a modern pad only the left stick drives | also request Z and R; feed the game's Y with whichever of left-stick Y, Z (triggers) or R (right stick) is furthest from centre, for axes the launcher found present and centred at start (pedals are left out); optional (`gamepad_axes`) | applies cleanly; L2 brake seen; R2/right stick to confirm on a real pad |
+| F8 | `0x49d60e` (joystick probe `FUN_0049d5c0`) | Control Setup clamps CONTROL METHOD to the pads that answered this frame; a transient `JOYERR_UNPLUGGED` under Wine drops it to KEYBOARD or below | a pad that answered once stays present for the session (sticky mask in the fix memory) | applies cleanly |
+| F9 | `0x49d67d` (device-type setter `FUN_0049d670`) | a joystick type written to keyboard record 0 (from F8's case, or a save made before F8) makes the game read key codes as joystick axes: the car circles in reverse | records 0 and 1 always keep type 1 (keyboard); repairs such saves at start-up | **verified** headless (broken save: car waits at the start instead of circling) |
 
 ### Editions
 
 | Executable (SHA-256) | What it is | What we need to do | State |
 | --- | --- | --- | --- |
-| `0eb6ea96…` | Official EU v1.5 (the decomp's reference) | F1-F6 in memory | **verified**: menu via the launcher |
-| `46500c8e…` | ChemicalFlood pack exe (the user's installed copy) = EU v1.5 + F1-F5 on disk | F6 in memory | **verified** under Wine 11.20 |
+| `0eb6ea96…` | Official EU v1.5 (the decomp's reference) | F1-F9 in memory | **verified**: menu via the launcher |
+| `46500c8e…` | ChemicalFlood pack exe (the user's installed copy) = EU v1.5 + F1-F5 on disk | F6-F9 in memory | **verified** under Wine 11.20 |
 | `b445fd0d…` | `Game.exe` (1998 launcher/intro player) | Not needed to play | evidence |
 | others (US v1.5, v1.0 CD) | Unknown until users bring them | Per-hash patch tables | open |
 
@@ -172,7 +214,7 @@ Excluded: dgVoodoo2 (closed source; crashes under Wine), cnc-ddraw
 
 | # | Goal | Approach | State |
 | --- | --- | --- | --- |
-| E1 | Higher internal resolution (up to 4K) | Needs a renderer that renders the 3D above the game's mode: check wined3d, dxwrapper and D7VK for a resolution override; otherwise a thin DirectDraw layer of our own on top of the chosen open-source renderer | **risk**: no confirmed open-source path yet |
+| E1 | Higher race resolution (1080p, aiming at 4K) | The race re-creates DirectDraw at the RESOLUTION slot (`0x421ea9`; front end stays 640x480). (a) In-memory: hook the 16-bit slot load at `0x497d43` to return the configured W x H for slot 2 (640x480 fonts and HUD tables match), bypassing the 800x600 enumeration filter; then scale the absolute HUD tables (`0x45d0fd`, fonts by width) and add a Hor+ 16:9 projection (`0x435d44`, viewport `0x4a6f15`/`0x4a6f6f`). (b) Alternative: keep 640x480 and supersample in the renderer, if a bundled renderer offers it. Risks: `SetDisplayMode` failures are ignored (the mode must exist: gamescope/Proton provide it), culling tuned for 4:3, CPU locks at 4K | researched; to implement as opt-in `resolution` |
 | E2 | Widescreen | Widen the projection (renderer side) **and** patch the game's own view-culling constants in memory (`c3d_terrain_cull`/`c3d_camera` in the decomp); re-anchor or keep the HUD | evidence for where to patch; **risk** until E1's renderer is chosen |
 | E3 | 60 fps | Physics is a fixed 25 Hz tick (50 Hz option), driven by a WinMM timer thread in races; smooth 60 fps needs render-side interpolation inside the game loop | **risk**: needs a design study of the frame driver (`FUN_00443e90`) |
 | E4 | Texture filtering, MSAA, borderless window | Renderer settings, if the chosen renderer exposes them | open |
@@ -185,7 +227,12 @@ Excluded: dgVoodoo2 (closed source; crashes under Wine), cnc-ddraw
 | P1 | Launcher applies F1-F5 in memory (start suspended, write, resume) | `CMRLauncher.exe` under Wine 11.20 | **yes**: official exe reaches the main menu |
 | A1 | QMixer audio plays | Record a private null sink during a run | **yes** at the menu and in the race (Wine 11.20) |
 | S1 | Stage loading under NT-family Windows versions (community pack: crashes on Win7+ without XP compatibility mode) | Load a stage with the default Wine version; if it crashes, find the cause | **no crash** under Wine 11.20 (two stages: New Zealand, Greece); real Windows still to see (M3) |
-| C1 | Analog pad works via Xidi or WinMM under Proton | Plug a pad during G1, check the controller menu | — |
+| C1 | Analog pad works via WinMM under Wine/Proton | `CMRLauncher --controllers` (lists pads, logs every axis/button), then drive | **in progress**: works with F7-F9 headless; real-pad confirmation pending |
+| C2 | R2/L2 and right stick drive with F7 on a real pad | user test with an Xbox-layout and a Nintendo-layout pad | open |
+| C3 | Control Setup -> Analogue -> Button Setup loops back with no exit | trace the menu parent chain (`0xd445e4`) | open |
+| C4 | Button Setup capture records a direction/the wrong button | trace capture (`state::CAPTURE`) edges vs F7's flags | open |
+| C5 | d-pad (POV) not read; A/B order differs per pad | map POV to the digital flags in F7; optional A/B swap setting | open |
+| C6 | RUN JOYSTICK PANEL hangs under gamescope | the game deactivates itself and opens `joy.cpl`; skip it (in memory) when no desktop can show it | open |
 | D1 | `dplayx` on Windows 10/11 | Windows machine | blocked |
 | V1 | Intro playback with an open-source decoder | After M2 | — |
 

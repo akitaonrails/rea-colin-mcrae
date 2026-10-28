@@ -129,3 +129,35 @@ registry values from `THIN_APP_PLAN.md` R2 imported with `regedit /S`.
 - Played by the user: menus, a New Zealand stage, driving. One screenshot
   showed trees drawn over the hills; not seen again (R16).
 
+## 2026-11-02: gamepads
+
+- Pad: 8BitDo Ultimate 2 (USB). A desktop key mapper (AntiMicroX, from
+  another project) was turning pad presses into keys; that is what made the
+  pad "work" in KEYBOARD mode (stick as arrows, Start as Enter). With it
+  stopped, the pad does nothing in KEYBOARD mode, as expected.
+- `CMRLauncher --controllers` (WinMM, the game's API): one device "Wine
+  joystick driver", 5 axes, 10 buttons, POV. Left stick X/Y; right stick U
+  (across) and R (up = low); both triggers on Z (R2 low, L2 high); A/B/X/Y =
+  buttons 2/1/4/3 on this pad (Nintendo order), L1 5, R1 6, Select 7,
+  Start 8, L3 9, R3 10. A virtual Xbox 360 pad (uinput, `.work/rt/vpad.py`)
+  maps the same way with A/B = 1/2.
+- Control Setup has three screens: CONTROL METHOD / CONTROLLER TYPE, then
+  ANALOGUE SETUP (steering, acceleration, braking: analogue or digital;
+  force feedback), then BUTTON SETUP (handbrake 5, gear up 6, gear down 4,
+  camera 3 by default). Settings reach `cmRally.cfg` only when leaving
+  Options.
+- The front end reads only the keyboard while player 1 is on the keyboard;
+  once player 1 is on a pad, the pad drives the menus.
+- Relay trace (`joyGetPosEx` only): the game polls every pad many times per
+  frame; about 2% of reads returned `JOYERR_UNPLUGGED` (0xa7) with the pad
+  connected. With JOYSTICK 2 chosen, the saved player block read device 0
+  (keyboard) with type 2 (analogue): the clamp described under F8. A memory
+  dump (winedbg) showed record 0 at type 2 with key codes in its axis
+  slots; the car circled in reverse at ~21 mph with no input and ignored
+  the keyboard. With F9 the same save starts normally.
+- An F8 build that left the fix memory read-only crashed (0xC0000005) on
+  the first probe; the fix memory now stays writable.
+- Left-stick steering and L2 braking seen in a race with the virtual pad;
+  R2 and right-stick throttle not yet confirmed (the scripted navigation
+  into races is unreliable; a real-pad test is next).
+

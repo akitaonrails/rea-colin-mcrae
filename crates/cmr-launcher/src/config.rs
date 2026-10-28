@@ -17,6 +17,8 @@ pub struct Settings {
     pub language: Option<String>,
     /// Closing the window quits the game (fix F6). Default on.
     pub close_quits: Option<bool>,
+    /// Pad triggers and right stick work as throttle/brake (fix F7). Default on.
+    pub gamepad_axes: Option<bool>,
 }
 
 pub const FILE_NAME: &str = "launcher.cfg";
@@ -45,6 +47,16 @@ game =
 # game. Set to false for the original 1998 behaviour, where closing the
 # window does nothing.
 close_quits = true
+
+# Gamepads (CONTROL METHOD: JOYSTICK, CONTROLLER TYPE: ANALOGUE JOYSTICK):
+# the left stick steers; R2 or the right stick up accelerates, L2 or the
+# right stick down brakes (left stick up/down still works too, and moves
+# through the menus). In Options > Settings > Controller 1 choose
+# JOYSTICK 1, ANALOGUE JOYSTICK, and set steering, acceleration and braking
+# to ANALOGUE. Only axes that rest at centre are used, so wheel pedals are
+# not affected. Set to false for the original handling, where only the left
+# stick drives.
+gamepad_axes = true
 ";
 
 pub const USAGE: &str = "\
@@ -53,6 +65,10 @@ CMRLauncher [--game <folder>] [--runtime <folder>] [--language <name>]
   --game      the folder with your installed Rally.exe (remembered)
   --runtime   where the launcher keeps its private copy
   --language  ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN
+
+CMRLauncher --controllers [seconds]
+  lists the joysticks the game can see and logs every stick, trigger and
+  button you move for that long (default 30) to launcher.log
 
 Other settings are in launcher.cfg (see the comments in it).";
 
@@ -103,6 +119,10 @@ impl Settings {
                     Some(b) => s.close_quits = Some(b),
                     None => bad("close_quits needs true or false, not"),
                 },
+                "gamepad_axes" => match parse_bool(value) {
+                    Some(b) => s.gamepad_axes = Some(b),
+                    None => bad("gamepad_axes needs true or false, not"),
+                },
                 _ => {}
             }
         }
@@ -116,6 +136,7 @@ impl Settings {
             runtime: over.runtime.or(self.runtime),
             language: over.language.or(self.language),
             close_quits: over.close_quits.or(self.close_quits),
+            gamepad_axes: over.gamepad_axes.or(self.gamepad_axes),
         }
     }
 
@@ -124,6 +145,9 @@ impl Settings {
         let mut skip = Vec::new();
         if self.close_quits == Some(false) {
             skip.push("F6");
+        }
+        if self.gamepad_axes == Some(false) {
+            skip.push("F7");
         }
         skip
     }
@@ -204,6 +228,7 @@ mod tests {
             s,
             Settings {
                 close_quits: Some(true),
+                gamepad_axes: Some(true),
                 ..Settings::default()
             }
         );
@@ -212,11 +237,11 @@ mod tests {
 
     #[test]
     fn file_values_and_args_win() {
-        let text = "game = C:\\old\nruntime=C:\\rt\nlanguage = french\nclose_quits = no\n";
+        let text = "game = C:\\old\nruntime=C:\\rt\nlanguage = french\nclose_quits = no\ngamepad_axes=off\n";
         let (saved, warnings) = Settings::parse_file(text);
         assert!(warnings.is_empty());
         assert_eq!(saved.language.as_deref(), Some("FRENCH"));
-        assert_eq!(saved.skipped_fixes(), ["F6"]);
+        assert_eq!(saved.skipped_fixes(), ["F6", "F7"]);
         let m = saved.merged(args(&["--game", r"C:\new"]).unwrap());
         assert_eq!(m.game, Some(PathBuf::from(r"C:\new")));
         assert_eq!(m.runtime, Some(PathBuf::from(r"C:\rt")));

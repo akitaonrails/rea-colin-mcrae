@@ -9,13 +9,15 @@ use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE,
 };
+use windows_sys::Win32::Media::Multimedia::{
+    JOYCAPSW, JOYERR_NOERROR, JOYINFOEX, joyGetDevCapsW, joyGetPosEx,
+};
 use windows_sys::Win32::System::Diagnostics::Debug::{
     FlushInstructionCache, ReadProcessMemory, WriteProcessMemory,
 };
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, VirtualAllocEx,
-    VirtualProtectEx,
+    MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAllocEx, VirtualProtectEx,
 };
 use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_32KEY,
@@ -185,12 +187,10 @@ fn read(process: HANDLE, address: u32, len: usize) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-fn write(
-    process: HANDLE,
-    address: u32,
-    bytes: &[u8],
-    final_protect: Option<u32>,
-) -> Result<(), String> {
+/// Writes `bytes` and restores the page protection that was there: the
+/// game's code pages, or our cave, which stays read-write-execute because
+/// fixes keep state in it (F8).
+fn write(process: HANDLE, address: u32, bytes: &[u8]) -> Result<(), String> {
     let at = address as usize as *const c_void;
     let mut old = 0u32;
     unsafe {
@@ -203,13 +203,7 @@ fn write(
         let mut done = 0usize;
         let ok = WriteProcessMemory(process, at, bytes.as_ptr().cast(), bytes.len(), &mut done);
         let mut ignored = 0u32;
-        VirtualProtectEx(
-            process,
-            at,
-            bytes.len(),
-            final_protect.unwrap_or(old),
-            &mut ignored,
-        );
+        VirtualProtectEx(process, at, bytes.len(), old, &mut ignored);
         if ok == 0 || done != bytes.len() {
             return Err(format!(
                 "cannot write game memory at 0x{address:08x}: {}",
@@ -289,8 +283,7 @@ pub fn run_patched(
         }
     }
     for w in &writes {
-        let protect = (!w.write.in_image).then_some(PAGE_EXECUTE_READ);
-        write(process, w.write.address, &w.write.bytes, protect)?;
+        write(process, w.write.address, &w.write.bytes)?;
         log(&format!(
             "{} applied at 0x{:08x} ({} bytes)",
             w.write.fix,
@@ -312,4 +305,154 @@ pub fn run_patched(
         GetExitCodeProcess(process, &mut code);
     }
     Ok(code)
+}
+
+/// One `joyGetPosEx` read with the given `JOY_RETURN*` flags; the error code
+/// on failure.
+fn joy_pos(id: u32, flags: u32) -> Result<JOYINFOEX, u32> {
+    let mut info = JOYINFOEX {
+        dwSize: size_of::<JOYINFOEX>() as u32,
+        dwFlags: flags,
+        ..Default::default()
+    };
+    match unsafe { joyGetPosEx(id, &mut info) } {
+        JOYERR_NOERROR => Ok(info),
+        err => Err(err),
+    }
+}
+
+/// Lists the joysticks WinMM reports (the API the game reads them with, ids
+/// 0..15 in the game's order), then watches them for `seconds` and logs
+/// every axis move past a quarter of its range and every button change, so a
+/// user can see which control reaches the game as which axis or button.
+pub fn controllers(seconds: u32, log: &mut dyn FnMut(&str)) {
+    const AXES: [&str; 6] = ["X", "Y", "Z", "R", "U", "V"];
+    let read = |id: u32| {
+        // JOY_RETURNALL: X Y Z R U V, hat, buttons
+        joy_pos(id, 0xff).ok().map(|info| {
+            let axes = [
+                info.dwXpos,
+                info.dwYpos,
+                info.dwZpos,
+                info.dwRpos,
+                info.dwUpos,
+                info.dwVpos,
+            ];
+            (axes, info.dwButtons, info.dwPOV)
+        })
+    };
+    let mut live = Vec::new();
+    for id in 0..16u32 {
+        let mut caps = JOYCAPSW::default();
+        if unsafe { joyGetDevCapsW(id as usize, &mut caps, size_of::<JOYCAPSW>() as u32) }
+            != JOYERR_NOERROR
+        {
+            continue;
+        }
+        let (pname, axes, buttons, flags) =
+            (caps.szPname, caps.wNumAxes, caps.wNumButtons, caps.wCaps);
+        let name = String::from_utf16_lossy(&pname);
+        let name = name.trim_end_matches('\0');
+        let state = read(id);
+        log(&format!(
+            "joystick {} (game: JOYSTICK {}): \"{name}\", {} axes, {} buttons, caps 0x{:x}{}",
+            id,
+            id + 1,
+            axes,
+            buttons,
+            flags,
+            if state.is_some() {
+                ""
+            } else {
+                ", not answering"
+            }
+        ));
+        // The game's own analog read: X, Y, buttons, JOY_RETURNCENTERED.
+        let mut game = JOYINFOEX {
+            dwSize: size_of::<JOYINFOEX>() as u32,
+            dwFlags: 0x483,
+            ..Default::default()
+        };
+        let r = unsafe { joyGetPosEx(id, &mut game) };
+        let (gx, gy, gb) = (game.dwXpos, game.dwYpos, game.dwButtons);
+        log(&format!(
+            "  as the game reads it (0x483): result {r}, X {gx}, Y {gy}, buttons 0x{gb:x}"
+        ));
+        if let Some(s) = state {
+            log(&format!("  at rest: X Y Z R U V = {:?}, hat {}", s.0, s.2));
+            live.push((id, s));
+        }
+    }
+    if live.is_empty() {
+        log("no joysticks found");
+        return;
+    }
+    log(&format!(
+        "watching for {seconds} s: move every stick and trigger, press every button"
+    ));
+    let steps = seconds * 20;
+    for _ in 0..steps {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        for (id, last) in live.iter_mut() {
+            let Some(now) = read(*id) else { continue };
+            for (i, name) in AXES.iter().enumerate() {
+                let (a, b) = (last.0[i] as i64, now.0[i] as i64);
+                if (a - b).abs() > 0x4000 {
+                    log(&format!("joystick {}: axis {name} {a} -> {b}", *id + 1));
+                    last.0[i] = now.0[i];
+                }
+            }
+            let changed = last.1 ^ now.1;
+            for bit in 0..32 {
+                if changed & (1 << bit) != 0 {
+                    let state = if now.1 & (1 << bit) != 0 {
+                        "down"
+                    } else {
+                        "up"
+                    };
+                    log(&format!("joystick {}: button {} {state}", *id + 1, bit + 1));
+                }
+            }
+            last.1 = now.1;
+            if now.2 != last.2 {
+                log(&format!(
+                    "joystick {}: hat {} -> {}",
+                    *id + 1,
+                    last.2,
+                    now.2
+                ));
+                last.2 = now.2;
+            }
+        }
+    }
+    log("done watching");
+}
+
+/// For F7: per WinMM id, which extra axes (Z, R) exist and rest near centre
+/// now. Pedals and sliders rest at one end, so they are left out.
+pub fn centred_axes() -> [u32; 16] {
+    use cmr_launcher::fixes::{AXIS_R, AXIS_Z};
+    const JOYCAPS_HASZ: u32 = 1;
+    const JOYCAPS_HASR: u32 = 2;
+    let near_centre = |v: u32| (v as i64 - 0x8000).abs() < 0x2000;
+    let mut table = [0u32; 16];
+    for (id, slot) in table.iter_mut().enumerate() {
+        let mut caps = JOYCAPSW::default();
+        if unsafe { joyGetDevCapsW(id, &mut caps, size_of::<JOYCAPSW>() as u32) } != JOYERR_NOERROR
+        {
+            continue;
+        }
+        // X Y Z R and buttons
+        let Ok(info) = joy_pos(id as u32, 0x8f) else {
+            continue;
+        };
+        let (has, z, r) = (caps.wCaps, info.dwZpos, info.dwRpos);
+        if has & JOYCAPS_HASZ != 0 && near_centre(z) {
+            *slot |= AXIS_Z;
+        }
+        if has & JOYCAPS_HASR != 0 && near_centre(r) {
+            *slot |= AXIS_R;
+        }
+    }
+    table
 }
