@@ -102,6 +102,7 @@ pub mod hiscore_records;
 pub mod host_lifecycle;
 pub mod host_loop;
 pub mod indexed_bitmap_raster;
+pub mod indexed_canvas;
 pub mod input;
 pub mod input_calibration;
 pub mod input_device;

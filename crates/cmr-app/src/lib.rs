@@ -3408,9 +3408,9 @@ impl ServiceHost {
         fade: &mut cmr_core::screen_fade::ScreenFade,
     ) -> (bool, bool, Option<SoftwarePresentedFrame>) {
         use cmr_core::service_draw::{
-            DIAL_SEGMENTS, FONT_NAMES, ICON_NAMES, PLAQUE_FRAMES, STAGE_PICTURES, ServiceAssets,
-            ServiceDrawContext, ServiceDrawTables, ServiceFont, ServiceFonts, ServiceFrame, Sprite,
-            draw_service_frame, picture_path, plaque_path,
+            CanvasFont, CanvasFonts, DIAL_SEGMENTS, FONT_NAMES, ICON_NAMES, PLAQUE_FRAMES,
+            STAGE_PICTURES, ServiceAssets, ServiceDrawContext, ServiceDrawTables, ServiceFrame,
+            Sprite, draw_service_frame, picture_path, plaque_path,
         };
         use cmr_core::service_screen::{
             ServiceContext, ServiceScreen, ServiceTables, service_pending,
@@ -3471,10 +3471,10 @@ impl ServiceHost {
                     })
                     .map(|bitmap| Sprite::new(bitmap, &palette))
             };
-            let fonts: ServiceFonts = FONT_NAMES.map(|name| {
+            let fonts: CanvasFonts = FONT_NAMES.map(|name| {
                 load(&format!("Game/SetRep/Fonts/{name}.fon"))
                     .and_then(|bytes| parse_legacy_font(&bytes, FontLimits::default()).ok())
-                    .map(|font| ServiceFont::new(font, &palette))
+                    .map(|font| CanvasFont::new(font, &palette))
             });
             let pictures = (0..STAGE_PICTURES)
                 .map(|i| picture_path(i, live, school).and_then(bitmap))

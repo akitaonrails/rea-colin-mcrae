@@ -12,11 +12,11 @@
 //! A description of disassembly, not original source. Evidence:
 //! `rea.official-eu.service-screen-draw`.
 
-use cmr_formats::bitmap::IndexedBitmap;
-use cmr_formats::font::{BitmapFont, TextLayoutError};
+use cmr_formats::font::TextLayoutError;
 use cmr_formats::riff_palette::PaletteEntry;
 
-use crate::blit::{BlitDecision, BlitMethod, ColorKey, RectI16, plan_legacy_blit};
+use crate::blit::RectI16;
+pub use crate::indexed_canvas::{Canvas, CanvasFont, Sprite, nearest_index};
 use crate::service_screen::{ServiceScreen, key};
 
 /// The part icons' bitmap names (`0x4f60c0`), in slot order.
@@ -69,86 +69,21 @@ pub fn plaque_path(i: usize, live: &[u8], school: bool) -> Option<String> {
     Some(format!("{cc}\\plaque\\{cc}{:02}.bmp", i + 1))
 }
 
-/// A loaded bitmap with the load-time remap of its palette onto the live one
-/// (`FUN_00499320` at 8 bits: entries 1..255 to the nearest of the live
-/// entries 1..255 by L1 RGB distance, first minimum; 0 stays 0).
-#[derive(Clone, Debug)]
-pub struct Sprite {
-    pub bitmap: IndexedBitmap,
-    map: [u8; 256],
-}
-
-fn remap_table(source: &[[u8; 3]], live: &[PaletteEntry; 256]) -> [u8; 256] {
-    std::array::from_fn(|i| {
-        if i == 0 {
-            return 0;
-        }
-        let Some(&[r, g, b]) = source.get(i) else {
-            return i as u8;
-        };
-        (1..256)
-            .min_by_key(|&j| {
-                let c = live[j];
-                u16::from(r.abs_diff(c.red))
-                    + u16::from(g.abs_diff(c.green))
-                    + u16::from(b.abs_diff(c.blue))
-            })
-            .unwrap_or(0) as u8
-    })
-}
-
-fn bitmap_rgb(bitmap: &IndexedBitmap) -> Vec<[u8; 3]> {
-    bitmap
-        .palette
-        .iter()
-        .map(|e| [e.red, e.green, e.blue])
-        .collect()
-}
-
-impl Sprite {
-    pub fn new(bitmap: IndexedBitmap, live: &[PaletteEntry; 256]) -> Self {
-        let map = remap_table(&bitmap_rgb(&bitmap), live);
-        Self { bitmap, map }
-    }
-
-    fn width(&self) -> i32 {
-        self.bitmap.width as i32
-    }
-
-    fn height(&self) -> i32 {
-        self.bitmap.height as i32
-    }
-}
-
-/// A loaded font with the same load-time remap of its atlas (`FUN_004972d0`).
-#[derive(Clone, Debug)]
-pub struct ServiceFont {
-    pub font: BitmapFont,
-    map: [u8; 256],
-}
-
-impl ServiceFont {
-    pub fn new(font: BitmapFont, live: &[PaletteEntry; 256]) -> Self {
-        let map = remap_table(&bitmap_rgb(font.atlas()), live);
-        Self { font, map }
-    }
-}
-
-/// The font file names (`setrep\fonts\*.fon`), in [`ServiceFonts`] order.
+/// The font file names (`setrep\fonts\*.fon`), in [`CanvasFonts`] order.
 pub const FONT_NAMES: [&str; 11] = [
     "diggreen", "diggrey", "digWG", "digred", "tripwhi", "tripwg", "tripgrey", "tripdgre",
     "tripgre", "tripyel", "tripyg",
 ];
 
 /// The eleven fonts, in [`FONT_NAMES`] order.
-pub type ServiceFonts = [Option<ServiceFont>; 11];
+pub type CanvasFonts = [Option<CanvasFont>; 11];
 
 /// The screen's assets (`load_graphics` 0x479e70).
 #[derive(Clone, Debug)]
 pub struct ServiceAssets {
     /// `ini\setrpal.pal`, the live palette.
     pub palette: [PaletteEntry; 256],
-    pub fonts: ServiceFonts,
+    pub fonts: CanvasFonts,
     pub backdrop: Option<Sprite>,
     /// `dial\%03d.bmp`, 30 segments.
     pub dial: Vec<Option<Sprite>>,
@@ -216,156 +151,8 @@ fn qx(v: i32, w: i32) -> i32 {
     v.wrapping_mul(w) >> 16
 }
 
-/// `FUN_004ae2f0`: the index nearest an RGB by L1 distance, strict `<`.
-pub fn nearest_index(rgb: [u8; 3], palette: &[PaletteEntry; 256]) -> u8 {
-    let mut best = (u16::MAX, 0u8);
-    for (i, c) in palette.iter().enumerate() {
-        let d = u16::from(rgb[0].abs_diff(c.red))
-            + u16::from(rgb[1].abs_diff(c.green))
-            + u16::from(rgb[2].abs_diff(c.blue));
-        if d < best.0 {
-            best = (d, i as u8);
-        }
-    }
-    best.1
-}
-
 fn scale(rgb: [u8; 3], fade: i32) -> [u8; 3] {
     rgb.map(|c| ((i32::from(c) * fade) >> 16) as u8)
-}
-
-/// The back surface and the draw's shared y cursor (`DAT_005fef74`).
-struct Painter<'a> {
-    pixels: &'a mut [u8],
-    w: i32,
-    h: i32,
-    palette: &'a [PaletteEntry; 256],
-    y: i32,
-}
-
-impl Painter<'_> {
-    /// `FUN_0049e3e0`: the recovered clip, then a keyed (index 0) or opaque
-    /// copy; a stretch samples nearest-neighbour (backend policy), and a
-    /// clip that inverts the source draws nothing.
-    fn blit(&mut self, sprite: &Sprite, src: RectI16, dst: RectI16, keyed: bool) {
-        let key = keyed.then_some(ColorKey { low: 0, high: 0 });
-        let BlitDecision::Blit(plan) =
-            plan_legacy_blit(src, dst, self.w as i16, self.h as i16, key)
-        else {
-            return;
-        };
-        let (s, d) = (plan.source, plan.destination);
-        let (sw, sh) = (s.right - s.left, s.bottom - s.top);
-        let (dw, dh) = (d.right - d.left, d.bottom - d.top);
-        if sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 {
-            return;
-        }
-        let bw = sprite.width();
-        for row in 0..dh {
-            for column in 0..dw {
-                let (sx, sy) = match plan.method {
-                    BlitMethod::Fast => (s.left + column, s.top + row),
-                    BlitMethod::Stretch => (s.left + column * sw / dw, s.top + row * sh / dh),
-                };
-                if sx < 0 || sy < 0 || sx >= bw || sy >= sprite.height() {
-                    continue;
-                }
-                let index = sprite.bitmap.pixels[(sy * bw + sx) as usize];
-                if keyed && index == 0 {
-                    continue;
-                }
-                let at = ((d.top + row) * self.w + d.left + column) as usize;
-                self.pixels[at] = sprite.map[usize::from(index)];
-            }
-        }
-    }
-
-    /// `FUN_0049f000`: a keyed copy at the bitmap's own size, pixel x, y.
-    fn sprite(&mut self, sprite: Option<&Sprite>, x: i32, y: i32) {
-        let Some(sprite) = sprite else {
-            return;
-        };
-        let (w, h) = (sprite.width() as i16, sprite.height() as i16);
-        let src = RectI16 {
-            x: 0,
-            y: 0,
-            width: w,
-            height: h,
-        };
-        let dst = RectI16 {
-            x: x as i16,
-            y: y as i16,
-            width: w,
-            height: h,
-        };
-        self.blit(sprite, src, dst, true);
-    }
-
-    /// `FUN_0049e350`: a colour fill of the nearest index. The rectangle is
-    /// not clipped; one leaving the surface is taken to fail the Blt and
-    /// draw nothing (inference: DirectDraw without a clipper).
-    fn fill(&mut self, x: i32, y: i32, w: i32, h: i32, rgb: [u8; 3]) {
-        if w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > self.w || y + h > self.h {
-            return;
-        }
-        let index = nearest_index(rgb, self.palette);
-        for row in y..y + h {
-            let start = (row * self.w + x) as usize;
-            self.pixels[start..start + w as usize].fill(index);
-        }
-    }
-
-    /// `FUN_00497b40` on the direct glyph path: the text at a Q16 position;
-    /// returns the Q16 y after the last line and the widest line in pixels
-    /// (`DAT_00a20068`). A missing font draws nothing and keeps y.
-    fn text(
-        &mut self,
-        font: Option<&ServiceFont>,
-        text: &[u8],
-        x: i32,
-        y: i32,
-        flags: u8,
-    ) -> Result<(i32, i32), TextLayoutError> {
-        let Some(font) = font else {
-            return Ok((y, 0));
-        };
-        let (plan, next, _) = crate::pause_menu_draw::text_q16(
-            &font.font,
-            text,
-            x,
-            y,
-            flags,
-            self.w as u16,
-            self.h as u16,
-        )?;
-        let atlas = font.font.atlas();
-        let aw = atlas.width as i32;
-        for blit in &plan.blits {
-            for row in 0..i32::from(blit.source.height) {
-                for column in 0..i32::from(blit.source.width) {
-                    let (dx, dy) = (blit.destination.x + column, blit.destination.y + row);
-                    if dx < 0 || dy < 0 || dx >= self.w || dy >= self.h {
-                        continue;
-                    }
-                    let sx = i32::from(blit.source.x) + column;
-                    let sy = i32::from(blit.source.y) + row;
-                    let Some(&index) = atlas.pixels.get((sy * aw + sx) as usize) else {
-                        continue;
-                    };
-                    if index != 0 {
-                        self.pixels[(dy * self.w + dx) as usize] = font.map[usize::from(index)];
-                    }
-                }
-            }
-        }
-        let widest = plan
-            .lines
-            .iter()
-            .map(|line| line.measured_width)
-            .max()
-            .unwrap_or(0);
-        Ok((next, widest))
-    }
 }
 
 /// The inputs of one frame.
@@ -408,7 +195,7 @@ struct Draw<'a, 'b> {
     frame: &'b ServiceFrame<'a>,
     screen: &'b mut ServiceScreen,
     live: &'b [u8],
-    painter: Painter<'b>,
+    painter: Canvas<'b>,
 }
 
 /// `FUN_00476770`: one frame into `pixels` (the back surface, `width *
@@ -431,7 +218,7 @@ pub fn draw_service_frame(
     let mut draw = Draw {
         frame,
         live,
-        painter: Painter {
+        painter: Canvas {
             pixels,
             w: i32::from(frame.context.width),
             h: i32::from(frame.context.height),
@@ -1226,24 +1013,6 @@ impl Draw<'_, '_> {
 mod tests {
     use super::*;
 
-    fn grey() -> [PaletteEntry; 256] {
-        std::array::from_fn(|i| PaletteEntry {
-            red: i as u8,
-            green: i as u8,
-            blue: i as u8,
-            flags: 0,
-        })
-    }
-
-    #[test]
-    fn the_fill_colour_is_the_first_nearest_index() {
-        let palette = grey();
-        assert_eq!(nearest_index([10, 10, 10], &palette), 10);
-        let mut dup = palette;
-        dup[3] = dup[7];
-        assert_eq!(nearest_index([7, 7, 7], &dup), 3, "the first minimum wins");
-    }
-
     #[test]
     fn the_paths_follow_the_country_school_and_secret() {
         let mut live = vec![0u8; 0x6c4];
@@ -1267,17 +1036,6 @@ mod tests {
         live[0x166] = 0;
         live[0x168] = 0x08;
         assert_eq!(picture_path(0, &live, false), None, "country 8 has no code");
-    }
-
-    #[test]
-    fn the_remap_keeps_zero_and_matches_the_live_entries_from_one() {
-        let live = grey();
-        let source = vec![[5, 5, 5], [0, 0, 0], [200, 200, 200]];
-        let map = remap_table(&source, &live);
-        assert_eq!(map[0], 0);
-        assert_eq!(map[1], 1, "black maps to the nearest of 1..255");
-        assert_eq!(map[2], 200);
-        assert_eq!(map[3], 3, "entries past the source palette stay");
     }
 
     fn empty_assets(palette: [PaletteEntry; 256]) -> ServiceAssets {
@@ -1444,21 +1202,5 @@ mod tests {
             3,
             "0x4b scaled 18 times by 15/16 (about 0x17) is nearer 0x13"
         );
-    }
-
-    #[test]
-    fn a_fill_leaving_the_surface_draws_nothing() {
-        let palette = grey();
-        let mut pixels = vec![0u8; 16];
-        let mut painter = Painter {
-            pixels: &mut pixels,
-            w: 4,
-            h: 4,
-            palette: &palette,
-            y: 0,
-        };
-        painter.fill(3, 0, 2, 1, [9, 9, 9]);
-        painter.fill(1, 1, 2, 2, [9, 9, 9]);
-        assert_eq!(pixels, [0, 0, 0, 0, 0, 9, 9, 0, 0, 9, 9, 0, 0, 0, 0, 0]);
     }
 }
