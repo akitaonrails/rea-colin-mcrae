@@ -1,66 +1,47 @@
 # Project rules
 
-This repository reconstructs the Windows release of Colin McRae Rally from
-shipped binaries and user-owned data. It is not a distribution of the game.
+This repository builds a self-contained compatibility package that runs the
+user's own copy of the 1998 PC Colin McRae Rally on modern Windows and on
+Linux (Proton/Wine). It is not a distribution of the game.
 
 ## Non-negotiable boundaries
 
 - Never commit, vendor, embed, or publish original executables, DLLs, media,
-  archives, fonts, palettes, tracks, car data, or other game assets.
-- Read original media in place. Generated manifests may contain paths relative
-  to a user-selected source root, sizes, hashes, and format metadata, but not
-  payload bytes.
-- Never commit a developer's absolute original-media path. Commands and code
-  must accept an explicit `--source` root or use the documented
-  `CMR_ORIGINAL_DIR` example variable.
-- Put local REA snapshots and investigation output under `.work/`.
-- Put imported or converted user data under `runtime-data/`. Both directories
-  are ignored by Git.
-- Describe decompiler output as pseudocode, not original source. Separate
-  observations, inferences, design decisions, and unknowns.
-- Running the user's original game binaries (`Rally.exe` and its companions)
-  is allowed (owner decision, 2026-11-02) for the compatibility-layer work:
-  run them from a local game folder outside the repository, never commit the
-  binaries or anything copied out of them, and record runtime observations in
-  the evidence ledger as runtime evidence (separate from static evidence).
+  archives, fonts, palettes, tracks, car data, or other game assets, or
+  anything copied out of them.
+- The user's game folder is read only. The launcher builds a separate runtime
+  folder from it.
+- Never commit a developer's absolute game path. Commands and code take an
+  explicit path (or `CMR_GAME_DIR` in examples).
+- Put local experiments, traces and investigation output under `.work/`.
+- Running the user's original game binaries is allowed (owner decision,
+  2026-11-02): run them from a local folder outside the repository and record
+  notable runtime observations in `docs/RUNTIME_NOTES.md`.
 
-## Reconstruction order
+## Product rules
 
-1. Establish exact artifact identities and evidence provenance.
-2. Recover file formats, ABI boundaries, state machines, and subsystem behavior.
-3. Implement an original-compatible build against explicit compatibility
-   interfaces.
-4. Verify behavior with differential fixtures or controlled observations.
-5. Add modern platform backends (such as SDL) without weakening the
-   compatibility baseline.
-
-Do not modernize behavior while it is still being recovered. A modern backend
-must implement an already-defined project interface and pass the same relevant
-contract tests.
+- **Self-contained.** The user installs this package and points it at the
+  game. Never require third-party patches, wrappers, codec packs,
+  compatibility modes or manual registry edits; whatever the game needs is
+  bundled and configured by us.
+- **Windows first, easy on Linux.** Ship Windows binaries that also run under
+  Proton or Wine with no extra setup.
+- **Reuse open source.** Where a maintained open-source component already does
+  the job (graphics wrappers, controller layers, decoders), bundle and
+  configure it instead of writing our own. Check licences before bundling and
+  record each component with its licence and source in `THIRD_PARTY.md`.
+- **Game fixes stay in memory.** Game-specific fixes are applied at run time
+  from our hook library, keyed to the exact executable by hash, never by
+  patching files on disk.
+- The faithful, unchanged game is the default. Enhancements (resolution,
+  widescreen, frame rate) are opt-in settings.
 
 ## Code and commits
 
-- Prefer Rust for new code when it does not obstruct binary-compatible layouts,
-  calling conventions, or faithful translation. Isolate unavoidable C/C++ or
-  assembly behind narrow interfaces.
-- Keep parsers pure and bounds-checked. Preserve unknown fields and reject
-  malformed or truncated input with useful offsets.
-- Tests and fixtures must be source-owned and redistributable. Tiny synthetic
-  fixtures may reproduce a format shape; do not derive fixtures by copying game
-  payloads.
-- Recover behavior in test-backed increments. Every completed parser rule,
-  state transition, or compatibility contract needs focused unit coverage,
-  including meaningful malformed and boundary cases, before its milestone
-  commit. Run the full existing suite to prevent regression before advancing.
-- Express platform/backend expectations as shared contract tests so the later
-  modern backend is checked against the same behavior as the compatibility
-  implementation.
-- Make milestone commits only after the relevant checks pass. Use Conventional
-  Commit subjects.
-- Update the evidence ledger and roadmap in the same milestone that changes a
-  compatibility claim.
-- Update `docs/DECOMP_MAP.md` and recompute its final progress-tail counters in
-  every milestone that completes or materially advances a reconstruction item.
-  Keep the progress block as the final lines so a developer can monitor it with
-  `tail`/`watch`.
-
+- Rust for our own code. Keep `unsafe` and Win32 FFI in narrow modules.
+- Unit-test the logic that can run on the host (edition detection, runtime
+  folder layout, configuration, patch tables) before each milestone commit;
+  record what was checked by running the game.
+- Use Conventional Commit subjects. Commit at working milestones.
+- The parked reconstruction documents in `docs/recomp/` are reference
+  material: cite them, do not keep extending them.
