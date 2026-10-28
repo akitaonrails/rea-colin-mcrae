@@ -446,8 +446,8 @@ watched with `tail`; recompute its counters from the checklist instead of
 estimating them.
 
 <!-- PROGRESS-TAIL-BEGIN -->
-updated_utc=2026-11-02T02:30:00Z
-milestone=obb-corner-order
+updated_utc=2026-11-02T03:30:00Z
+milestone=moving-objects-core-parked
 completed=117
 partial=2
 not_started=0

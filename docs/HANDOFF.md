@@ -1,13 +1,13 @@
 # Reconstruction handoff
 
-Updated: 2026-11-02 (rally school race, instructor, crash damage)
+Updated: 2026-11-02 (PARKED: see "Parked" below; tag `recomp-parked-2026-11-02`)
 
 ## Resume point
 
 Work resumes from the `main` commit whose subject is:
 
 ```text
-feat: blend shadows and sprites on horizon-less GPU stages
+feat: reconstruct the moving objects' load and update (parked)
 ```
 
 Start by confirming the checkout and progress footer:
@@ -212,6 +212,41 @@ from `SessionCompiledPose` (`compiled_car`, `geometry`, seeded `CarState::ground
 render the car body from `MotionState::basis`, then the out-of-control path
 `FUN_004115d0`, suspension/wheel animation `FUN_00410350`, and the remaining
 tyre inputs (`DAT_004f6b50/6f10/777c` are now in `SessionTyreTables`).
+
+## Parked (2026-11-02)
+
+The source reconstruction is paused in favour of a separate, thinner effort:
+running the original `Rally.exe` on modern systems through replacement
+libraries. This tree is kept as the reference; nothing here was removed. The
+tag `recomp-parked-2026-11-02` marks the stop point.
+
+Where it stopped:
+
+- Moving objects (item 1 below) are half done. `cmr-core::moving_objects`
+  (committed, unit-tested, **not wired**) loads them from the stage `.obj`
+  (`FUN_00482140`), buckets them in the cell grid and runs the per-tick update
+  (`FUN_00450d40`: impulses, gravity, ground contact, damping, the rest-pose
+  settle, cones). Still to write: the car-object pass `FUN_0043f790` /
+  `FUN_0043fa10` / `FUN_00440a10` / `FUN_00441b80` / `FUN_00440d90` /
+  `FUN_0043faf0` / `FUN_004439b0` (pseudocode in `.work/moving-objects-notes.md`
+  §4; reuse `build_live_car_projection`, `produce_static_response_input`, the
+  static response's crash constants and the session's `CrashDamageOwner`),
+  then the wiring: load at state 4 next to the static scene, the pass right
+  after the static pass, the update after the trigger walk and before the
+  ground pass, the school flags (`DAT_00552f68`, `DAT_00558fb0`), and drawing
+  the objects' node locals in both renderers (the `.obj` GPU layer must become
+  a dynamic world set). Every shipped stage has moving objects (typically 7;
+  school tasks 18-41 cones).
+- Night headlights (item 2) are fully recovered in `.work/headlights-notes.md`
+  but not reconstructed: front/pod/rear lamp flares (additive sprites), the
+  electrics flicker, pod-lamp breakage, and the night light pool that relights
+  the stage's vertex colours around each car (without it night stages render
+  unlit). The notes also say `BreakageKind::Headlight` is probably the rear
+  lamps.
+- Fixed just before parking: the static y-gate swap (`5f37427`) and the OBB
+  corner order (`bc07a27`).
+
+`.work/` (git-ignored) holds all the recovery notes; keep it with the tree.
 
 ## Highest-priority remaining work
 
