@@ -214,6 +214,7 @@ mod app {
                 "warning: {HOOKS_DLL} not found next to the launcher; the HUD is not scaled"
             ));
             skip.push("F13");
+            skip.push("F16");
         }
         if !skip.is_empty() {
             log_line(&format!(

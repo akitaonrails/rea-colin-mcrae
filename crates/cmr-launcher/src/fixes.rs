@@ -156,7 +156,7 @@ fn rel32(at: u32, len: u32, to: u32) -> [u8; 4] {
 /// The community-patched EU v1.5 (`46500c8e…`) carries F1-F5 on disk; it
 /// is the same build, so F6 applies at the same addresses.
 pub static COMMUNITY_EU_15: FixSet = FixSet {
-    fixes: &[F6, F7, F8, F9, F10, F11, F12, F13, F14, F15],
+    fixes: &[F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16],
 };
 
 /// Official EU v1.5 (`0eb6ea96…`).
@@ -236,6 +236,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         F13,
         F14,
         F15,
+        F16,
     ],
 };
 
@@ -638,8 +639,13 @@ const F12: Fix = Fix {
 /// entry makes its stub do nothing, so the game runs as without F13.
 pub const F13_TABLE: u32 = 0x250;
 /// The exports F13's table holds, in order.
-pub const F13_EXPORTS: [&str; 3] = ["cmr_hud_begin", "cmr_hud_end", "cmr_hud_rects"];
-const _: () = assert!(F13_TABLE >= F12_TRIGGER + 22 && F13_TABLE + 12 <= 0x280);
+pub const F13_EXPORTS: [&str; 4] = [
+    "cmr_hud_begin",
+    "cmr_hud_end",
+    "cmr_hud_rects",
+    "cmr_fe_present",
+];
+const _: () = assert!(F13_TABLE >= F12_TRIGGER + 22 && F13_TABLE + 16 <= 0x280);
 
 /// With a race resolution the game never had (F10), the HUD mixes 640x480
 /// rectangles scaled by W/640, fractions of W/H and absolute pixel tables
@@ -947,7 +953,7 @@ const F13: Fix = Fix {
         },
         Piece {
             at: At::Cave(F13_TABLE),
-            ops: &[Op::Raw(&[0; 12])], // begin, end, rects: filled by the launcher
+            ops: &[Op::Raw(&[0; 16])], // begin, end, rects, fe_present: filled by the launcher
         },
     ],
 };
@@ -1008,6 +1014,103 @@ const F15: Fix = Fix {
     }],
 };
 
+const F16_MODE: u32 = 0x540;
+const F16_PRESENT: u32 = 0x570;
+const F16_LEGAL: u32 = 0x5a0;
+const F16_RET: u32 = 0x5d0;
+const _: () = assert!(
+    F16_MODE >= 0x500 + 46
+        && F16_PRESENT >= F16_MODE + 33
+        && F16_LEGAL >= F16_PRESENT + 34
+        && F16_RET >= F16_LEGAL + 37
+);
+
+/// The front end (intro, menus) is drawn at 640x480 and can't be drawn
+/// larger; with a race resolution it sat small in a corner of the screen.
+/// F16 sets the front end's screen mode to the race resolution while the
+/// game keeps its 640x480 sizes (`0x497db9`, the 8-bit/front-end branch of
+/// the display init, only when F10's size is filled), and replaces its
+/// `Flip` (`0x498705`) with `cmr_fe_present`, which copies the 640x480
+/// picture to the screen enlarged with sharp pixels into a centred 4:3 area.
+/// The library returns 0 (and the game flips as before) whenever the game
+/// already draws at the screen size, e.g. in races. The legal screen is
+/// copied straight to the screen without a flip, so it is presented once
+/// right after it is drawn (`FUN_004c2fb0`, called at `0x4c1e5f`). Applied
+/// with F13.
+const F16: Fix = Fix {
+    id: "F16",
+    what: "intro and menus enlarged to the screen (needs cmrhooks.dll)",
+    optional: true,
+    code: &[
+        // mov edx,[0x5022f4] ; cmp edx,esi -> jmp ; 3 x nop
+        Piece {
+            at: At::Image(0x0049_7db9),
+            ops: &[Op::Jmp(At::Cave(F16_MODE)), Op::Raw(&[NOP; 3])],
+        },
+        Piece {
+            at: At::Cave(F16_MODE),
+            ops: &[
+                Op::Raw(&[0x83, 0x3d]), // cmp dword [width],0
+                Op::Addr(At::Cave(F10_SIZE)),
+                Op::Raw(&[0x00, 0x74, 0x0b]), // ; je +11
+                Op::Raw(&[0x8b, 0x0d]),       // mov ecx,[width]  (SetDisplayMode's W)
+                Op::Addr(At::Cave(F10_SIZE)),
+                Op::Raw(&[0xa1]), // mov eax,[height] (its H)
+                Op::Addr(At::Cave(F10_SIZE + 4)),
+                // the replaced instructions
+                Op::Raw(&[0x8b, 0x15, 0xf4, 0x22, 0x50, 0x00, 0x3b, 0xd6]),
+                Op::Jmp(At::Image(0x0049_7dc1)),
+            ],
+        },
+        // mov eax,[esi+0x10] ; push 1 ; push 0 ; mov ecx,[eax] ; push eax ;
+        // call [ecx+0x2c] (Flip) -> jmp ; 8 x nop
+        Piece {
+            at: At::Image(0x0049_8705),
+            ops: &[Op::Jmp(At::Cave(F16_PRESENT)), Op::Raw(&[NOP; 8])],
+        },
+        Piece {
+            at: At::Cave(F16_PRESENT),
+            ops: &[
+                Op::Raw(&[0xa1]), // mov eax,[fe_present]
+                Op::Addr(At::Cave(F13_TABLE + 12)),
+                Op::Raw(&[0x85, 0xc0, 0x74, 0x07]), // test eax,eax ; jz +7
+                Op::Raw(&[0x56, 0xff, 0xd0]),       // push esi (display) ; call eax
+                Op::Raw(&[0x85, 0xc0, 0x75, 0x0d]), // test eax,eax ; jnz +13 (presented)
+                // the replaced Flip
+                Op::Raw(&[
+                    0x8b, 0x46, 0x10, 0x6a, 0x01, 0x6a, 0x00, 0x8b, 0x08, 0x50, 0xff, 0x51, 0x2c,
+                ]),
+                Op::Jmp(At::Image(0x0049_8712)),
+            ],
+        },
+        // call 0x4c2fb0 (draws the legal screen) -> call the stub
+        Piece {
+            at: At::Image(0x004c_1e5f),
+            ops: &[Op::Call(At::Cave(F16_LEGAL))],
+        },
+        Piece {
+            at: At::Cave(F16_LEGAL),
+            ops: &[
+                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
+                Op::Addr(At::Cave(F16_RET)),
+                Op::Call(At::Image(0x004c_2fb0)), // its argument is still pushed (stdcall)
+                Op::Raw(&[0x60, 0xa1]),           // pushad ; mov eax,[fe_present]
+                Op::Addr(At::Cave(F13_TABLE + 12)),
+                Op::Raw(&[0x85, 0xc0, 0x74, 0x08]), // test eax,eax ; jz +8
+                Op::Raw(&[0xff, 0x35, 0x18, 0x25, 0x50, 0x00]), // push dword [0x502518] (display)
+                Op::Raw(&[0xff, 0xd0]),             // call eax
+                Op::Raw(&[0x61, 0xff, 0x35]),       // popad ; push dword [ret]
+                Op::Addr(At::Cave(F16_RET)),
+                Op::Raw(&[0xc3]), // ret
+            ],
+        },
+        Piece {
+            at: At::Cave(F16_RET),
+            ops: &[Op::Raw(&[0; 4])],
+        },
+    ],
+};
+
 /// 24 bytes: ecx = |[esp+d8] - 0x8000|; if ecx > ebx { ebx = ecx; eax = [esp+d8] }.
 const fn take_if_further(d8: u8) -> [u8; 24] {
     [
@@ -1047,7 +1150,7 @@ mod tests {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
         let expected: Vec<_> = (1..=ids.len()).map(|i| format!("F{i}")).collect();
         assert_eq!(ids, expected);
-        assert_eq!(ids.len(), 15);
+        assert_eq!(ids.len(), 16);
     }
 
     #[test]
@@ -1174,6 +1277,39 @@ mod tests {
     }
 
     #[test]
+    fn f16_jumps_back_and_keeps_the_flip() {
+        let back = |code: &[u8], base: u32| {
+            let n = code.len();
+            assert_eq!(code[n - 5], 0xe9);
+            let rel = u32::from_le_bytes(code[n - 4..].try_into().unwrap());
+            (base + n as u32).wrapping_add(rel)
+        };
+        let mode = at(CAVE + F16_MODE);
+        assert_eq!(mode.len(), 33);
+        // je +11 skips exactly the two size loads.
+        assert_eq!(&mode[7..9], [0x74, 11]);
+        assert_eq!(mode[9..11], [0x8b, 0x0d]);
+        assert_eq!(mode[15], 0xa1);
+        assert_eq!(back(&mode, CAVE + F16_MODE), 0x497dc1);
+        let present = at(CAVE + F16_PRESENT);
+        assert_eq!(present.len(), 34);
+        assert_eq!(present[1..5], (CAVE + F13_TABLE + 12).to_le_bytes());
+        // jz +7 lands on the original Flip, jnz +13 jumps over it.
+        assert_eq!(&present[7..9], [0x74, 7]);
+        assert_eq!(&present[14..16], [0x75, 13]);
+        assert_eq!(&present[16..19], [0x8b, 0x46, 0x10]);
+        assert_eq!(back(&present, CAVE + F16_PRESENT), 0x498712);
+        assert_eq!(at(0x498705).len(), 13);
+        assert_eq!(at(0x497db9).len(), 8);
+        let legal = at(CAVE + F16_LEGAL);
+        assert_eq!(legal.len(), 37);
+        // jz +8 skips exactly the display push and the call.
+        assert_eq!(&legal[19..21], [0x74, 8]);
+        assert_eq!(&legal[21..23], [0xff, 0x35]);
+        assert_eq!(&legal[27..29], [0xff, 0xd0]);
+    }
+
+    #[test]
     fn simple_stubs() {
         assert_eq!(at(0x496ca0), [0xb8, 1, 0, 0, 0, 0xc3]);
         assert_eq!(at(0x497cef), [0x10]);
@@ -1196,7 +1332,7 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), 0x500 + 46);
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F16_RET + 4);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
@@ -1216,7 +1352,7 @@ mod tests {
 
     #[test]
     fn only_optional_fixes_can_be_skipped() {
-        let skip = ["F6", "F7", "F10", "F11", "F12", "F13", "F14", "F1"];
+        let skip = ["F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F1"];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
         assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9", "F15"]);
         assert_eq!(OFFICIAL_EU_15.cave_size(&skip), F9_CAVE + 24);
@@ -1227,7 +1363,7 @@ mod tests {
                 .all(|w| w.fix != "F6")
         );
         assert_eq!(
-            COMMUNITY_EU_15.cave_size(&["F6", "F7", "F10", "F11", "F12", "F13", "F14"]),
+            COMMUNITY_EU_15.cave_size(&["F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16"]),
             F9_CAVE + 24
         );
     }
