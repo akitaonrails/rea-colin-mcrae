@@ -31,11 +31,13 @@ code or data, [I] inferred. Status and the fix list are in
   frame), the game sees a virtual 640x480 screen, so every piece resolves
   in one space (640x480 rectangles, W/H fractions, the absolute rev-dial
   tables, the 640 fonts); every sprite it queues (`0x49b420`/`0x49b1d0`,
-  destination and clip rectangles) is mapped onto a 4:3 canvas centred on
-  the real screen. Text glyphs are queued sprites too, so they scale. The
+  destination and clip rectangles) is scaled by H/480 onto the real screen.
+  On screens wider than 4:3 the HUD goes to the corners: pieces centred in
+  the left 30% of the virtual screen keep to the left edge, the right 30%
+  to the right edge, the middle (countdown, centred text) stays centred. Text glyphs are queued sprites too, so they scale. The
   logic is in `cmrhooks.dll` (crate `cmr-hooks`); the launcher loads it
   into the suspended game and fills F13's hook table. Seen at run time:
-  1440x1080 and 1920x1080 (16:9, HUD 4:3 centred) correct. Not covered
+  1440x1080 and 1920x1080 (16:9, HUD in the corners) correct. Not covered
   yet: the pause menu and results pages (Q16 layouts, so placed right but
   stretched at 16:9 and with small text), split-screen views, the rotated
   needle dial's pivot.
