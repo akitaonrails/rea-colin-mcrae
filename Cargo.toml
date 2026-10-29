@@ -1,0 +1,18 @@
+[workspace]
+members = ["crates/cmr-launcher", "crates/cmr-hooks"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+sha2 = "0.11.1"
+windows-sys = "0.61"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+strip = true

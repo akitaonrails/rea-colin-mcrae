@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(objdump *)",
+      "mcp__rea__procedure_pseudo_code",
+      "Bash(nvidia-smi --query*)",
+      "mcp__rea__batch_decompile",
+      "mcp__rea__procedure_callers",
+      "mcp__rea__resolve_containing_procedure",
+      "mcp__rea__xrefs",
+      "Bash(systemctl --user is-active *)",
+      "mcp__ai-memory__memory_message_list",
+      "Bash(systemctl --user show *)",
+      "mcp__ai-memory__memory_read_session_observations",
+      "mcp__rea__read_bytes",
+      "Bash(nvidia-smi -q)",
+      "mcp__rea__read_function_instructions",
+      "mcp__ai-memory__memory_handoff_list",
+      "mcp__ai-memory__memory_query",
+      "Bash(systemctl --user status *)",
+      "Bash(systemctl --user list-units *)",
+      "mcp__rea__search_strings",
+      "mcp__rea__procedure_assembly",
+      "mcp__rea__search_bytes",
+      "mcp__rea__list_documents"
+    ]
+  }
+}

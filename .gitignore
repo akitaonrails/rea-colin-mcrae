@@ -1,0 +1,22 @@
+# Local reverse-engineering evidence and provider snapshots.
+/.work/
+
+# User-supplied, extracted, or converted game data. Never commit these.
+/runtime-data/
+/original-data/
+/assets/
+
+# Local deep-work orchestration state.
+/.slim/deepwork/
+
+# Build output.
+/target/
+/build/
+/dist/
+__pycache__/
+*.pyc
+
+# Editor and operating-system noise.
+.DS_Store
+*.swp
+*~

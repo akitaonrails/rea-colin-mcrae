@@ -1,0 +1,28 @@
+[package]
+name = "cmr-launcher"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Runs the user's own copy of Colin McRae Rally (1998, PC) on modern Windows and under Proton/Wine"
+
+[[bin]]
+name = "CMRLauncher"
+path = "src/main.rs"
+
+[dependencies]
+sha2.workspace = true
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_Media_Multimedia",
+    "Win32_Security",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+]
