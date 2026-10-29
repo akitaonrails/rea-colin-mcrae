@@ -165,3 +165,15 @@ registry values from `THIN_APP_PLAN.md` R2 imported with `regedit /S`.
   triggers and right stick; menus follow the pad; no visual glitches.
   Clicking RUN JOYSTICK PANEL by accident still hangs the game (C6).
 
+
+## Game updates run on a timer thread (2026-10-29)
+
+In a race the game's update handlers (state machine column A, via
+`0x443db0`) run on a multimedia-timer thread (`timeSetEvent` in `0x4a7790`,
+callback `0x4a7920`) when the profile field `[0xd3ca80]+0x14` is 0, as on
+the test setup; rendering stays on the main thread. Layout code such as the
+results pages' `0x42e320` runs on that thread, so anything that changes what
+the game sees (F13's screen size) has to hold for both threads. Read from
+the running game with the harness scripts `.work/rt/peek.py`/`peekptr.py`
+(`/proc/<pid>/mem`); `.work/rt/poke.py 0x514468 1` forces the stage end for
+tests.

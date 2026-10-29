@@ -1,10 +1,15 @@
-//! Which screen size the game sees, section by section (F13).
+//! Which screen size the game sees (F13).
 //!
-//! During a race frame the game sees a virtual 640x480 screen, the size all
-//! of its 2D layouts were made for, and the 2D primitives scale what it
-//! draws onto the real screen. Only the code that needs the real screen
-//! (display and 3D set-up, the 3D draw) runs in a "real" section, where the
-//! real size is back and 2D scaling pauses.
+//! In a race at a size the game has no layout for, its display state holds
+//! a virtual 640x480 screen, the size all of its 2D was made for; the 2D
+//! primitives scale what it draws onto the real screen. The game's update
+//! code runs on a multimedia-timer thread while the main thread renders, so
+//! the virtual size stays in place for the whole race instead of being
+//! swapped per frame. Only code that needs the real screen (display and 3D
+//! set-up, clears, the projection and the scene draw) runs in a "real"
+//! section with the real size and 2D scaling paused. The caller makes real
+//! sections and updates mutually exclusive (one recursive lock), so an
+//! update never sees the real size.
 
 use crate::canvas::{Canvas, VIRTUAL, is_native};
 
@@ -24,47 +29,39 @@ fn needs_scaling(s: (i32, i32)) -> bool {
 
 #[derive(Debug, Default)]
 pub struct Sections {
-    /// Nested frame/HUD sections; bit `i` of `anchored` is set when level
-    /// `i` is a race HUD section (side pieces anchored to the screen edges).
-    depth: u32,
-    anchored: u32,
+    /// The game's display state holds the virtual screen; `real` is the
+    /// real one.
+    active: bool,
+    real: (i32, i32),
     /// Nested real sections.
     real_depth: u32,
-    /// The game's real screen size, valid while `active`.
-    real: (i32, i32),
-    /// The game currently sees the virtual screen.
-    active: bool,
+    /// Nested race HUD sections (side pieces anchored to the screen edges).
+    hud_depth: u32,
 }
 
 impl Sections {
     pub const fn new() -> Sections {
         Sections {
-            depth: 0,
-            anchored: 0,
-            real_depth: 0,
-            real: (0, 0),
             active: false,
+            real: (0, 0),
+            real_depth: 0,
+            hud_depth: 0,
         }
     }
 
-    /// The game sees the virtual screen (a race frame at a size it has no
-    /// layout for).
+    /// The game sees the virtual screen.
     pub fn active(&self) -> bool {
         self.active
     }
 
     /// The mapping from the virtual screen, while 2D scaling is on.
-    pub fn canvas(&self) -> Option<Canvas> {
+    /// `anchored` asks for the race HUD's mapping when a HUD section is open.
+    pub fn canvas(&self, anchored: bool) -> Option<Canvas> {
         (self.active && self.real_depth == 0)
-            .then(|| Canvas::new(self.real.0, self.real.1, self.anchored != 0))
+            .then(|| Canvas::new(self.real.0, self.real.1, anchored && self.hud_depth > 0))
     }
 
-    /// In a race, shows the game the virtual screen if its real one needs
-    /// scaling.
     fn activate(&mut self, screen: &mut impl Screen) {
-        if self.active || self.real_depth > 0 || !screen.in_race() {
-            return;
-        }
         if let Some(s) = screen.size().filter(|&s| needs_scaling(s)) {
             self.real = s;
             self.active = true;
@@ -72,28 +69,19 @@ impl Sections {
         }
     }
 
-    /// A frame (`anchored` false) or race HUD section begins.
-    pub fn enter(&mut self, anchored: bool, screen: &mut impl Screen) {
-        if self.depth < 32 && anchored {
-            self.anchored |= 1 << self.depth;
-        }
-        self.depth += 1;
-        self.activate(screen);
-    }
-
-    /// A frame or HUD section ends; after the outermost one the game sees
-    /// its real screen again.
-    pub fn leave(&mut self, screen: &mut impl Screen) {
-        if self.depth == 0 {
+    /// Before each game update: entering a race at a size that needs
+    /// scaling shows the virtual screen; leaving it shows the real one.
+    pub fn update(&mut self, screen: &mut impl Screen) {
+        if self.real_depth > 0 {
             return;
         }
-        self.depth -= 1;
-        if self.depth < 32 {
-            self.anchored &= !(1 << self.depth);
-        }
-        if self.depth == 0 && self.active {
-            self.active = false;
-            screen.set_size(self.real);
+        match (self.active, screen.in_race()) {
+            (false, true) => self.activate(screen),
+            (true, false) => {
+                self.active = false;
+                screen.set_size(self.real);
+            }
+            _ => {}
         }
     }
 
@@ -116,18 +104,19 @@ impl Sections {
         if self.real_depth > 0 {
             return;
         }
-        if self.active {
-            match screen.size() {
-                Some(s) if needs_scaling(s) => {
-                    self.real = s;
-                    screen.set_size(VIRTUAL);
-                }
-                _ => self.active = false,
-            }
-        } else if self.depth > 0 {
-            // A race display created inside a frame: scale from now on.
+        self.active = false;
+        if screen.in_race() {
             self.activate(screen);
         }
+    }
+
+    /// A race HUD layout or draw call begins or ends.
+    pub fn hud_begin(&mut self) {
+        self.hud_depth += 1;
+    }
+
+    pub fn hud_end(&mut self) {
+        self.hud_depth = self.hud_depth.saturating_sub(1);
     }
 }
 
@@ -157,29 +146,31 @@ mod tests {
     }
 
     #[test]
-    fn a_race_frame_sees_640x480_and_gets_its_screen_back() {
+    fn a_race_keeps_the_virtual_screen_between_updates() {
         let (mut s, mut g) = (Sections::new(), race((3840, 2160)));
-        s.enter(false, &mut g);
+        s.update(&mut g);
         assert_eq!(g.size, (640, 480));
-        assert!(s.canvas().is_some());
-        s.leave(&mut g);
-        assert_eq!(g.size, (3840, 2160));
-        assert!(s.canvas().is_none());
+        assert!(s.canvas(false).is_some());
+        s.update(&mut g);
+        assert_eq!(g.size, (640, 480), "no per-update swapping");
     }
 
     #[test]
     fn real_sections_see_the_real_screen_without_scaling() {
         let (mut s, mut g) = (Sections::new(), race((1920, 1080)));
-        s.enter(false, &mut g);
+        s.update(&mut g);
         s.real_begin(&mut g);
         assert_eq!(g.size, (1920, 1080));
-        assert!(s.canvas().is_none(), "3D projected sprites are not scaled");
+        assert!(
+            s.canvas(false).is_none(),
+            "3D projected sprites are not scaled"
+        );
         s.real_begin(&mut g);
         s.real_end(&mut g);
         assert_eq!(g.size, (1920, 1080), "nested: still real");
         s.real_end(&mut g);
         assert_eq!(g.size, (640, 480));
-        assert!(s.canvas().is_some());
+        assert!(s.canvas(false).is_some());
     }
 
     #[test]
@@ -189,54 +180,57 @@ mod tests {
             size: (1920, 1080),
             race: false,
         };
-        s.enter(false, &mut fe);
+        s.update(&mut fe);
         assert_eq!(fe.size, (1920, 1080));
-        s.leave(&mut fe);
         let mut native = race((800, 600));
-        s.enter(false, &mut native);
+        s.update(&mut native);
         assert_eq!(native.size, (800, 600));
         assert!(!s.active());
-        s.leave(&mut native);
     }
 
     #[test]
-    fn a_race_display_created_mid_frame_scales_from_then_on() {
-        // Loading: the frame starts in the front end's 640x480.
+    fn a_race_display_set_up_scales_from_then_on() {
+        // Loading: the race starts in the front end's 640x480.
         let (mut s, mut g) = (Sections::new(), race((640, 480)));
-        s.enter(false, &mut g);
+        s.update(&mut g);
         assert!(!s.active());
         s.real_begin(&mut g);
         g.size = (2560, 1440); // display set-up
         s.real_end(&mut g);
         assert_eq!(g.size, (640, 480));
         assert!(s.active());
-        s.leave(&mut g);
-        assert_eq!(g.size, (2560, 1440));
+        assert_eq!(s.canvas(false).unwrap(), Canvas::new(2560, 1440, false));
     }
 
     #[test]
-    fn back_to_the_front_end_keeps_its_640x480() {
+    fn back_to_the_front_end() {
+        // Through a display set-up: the front end's 640x480 is kept.
         let (mut s, mut g) = (Sections::new(), race((1920, 1080)));
-        s.enter(false, &mut g);
+        s.update(&mut g);
+        g.race = false;
         s.real_begin(&mut g);
-        g.size = (640, 480); // the front end's display
+        g.size = (640, 480);
         s.real_end(&mut g);
         assert!(!s.active());
-        s.leave(&mut g);
-        assert_eq!(g.size, (640, 480), "not overwritten by the old race size");
+        assert_eq!(g.size, (640, 480));
+        // Without one: the real size comes back at the next update.
+        let (mut s, mut g) = (Sections::new(), race((1920, 1080)));
+        s.update(&mut g);
+        g.race = false;
+        s.update(&mut g);
+        assert_eq!(g.size, (1920, 1080));
     }
 
     #[test]
-    fn hud_sections_anchor_only_while_open() {
+    fn only_the_hud_is_anchored() {
         let (mut s, mut g) = (Sections::new(), race((1920, 1080)));
-        s.enter(false, &mut g);
-        let whole = s.canvas().unwrap();
-        s.enter(true, &mut g);
-        let hud = s.canvas().unwrap();
+        s.update(&mut g);
+        let whole = s.canvas(true).unwrap();
+        s.hud_begin();
+        let hud = s.canvas(true).unwrap();
         assert_ne!(whole, hud);
-        s.leave(&mut g);
-        assert_eq!(s.canvas().unwrap(), whole);
-        assert_eq!(g.size, (640, 480), "still inside the frame");
-        s.leave(&mut g);
+        assert_eq!(s.canvas(false).unwrap(), whole, "other threads' 2D");
+        s.hud_end();
+        assert_eq!(s.canvas(true).unwrap(), whole);
     }
 }

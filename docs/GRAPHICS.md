@@ -28,28 +28,36 @@ code or data, [I] inferred. Status and the fix list are in
   race fonts by the resolution byte (`0x4f0e1c`); some pieces scale 640x480
   rectangles by W/640, H/480 (`0x461a60`) or use Q16 fractions of W/H.
 - **F13** (in-race 2D): one general rule instead of per-screen patches.
-  In a race state (4 loading .. 0xb replay), each game tick (`0x443e90`)
-  sees a virtual 640x480 screen, the size all of the game's 2D was laid out
-  for, so the HUD, every message, the pause menu, results, replay overlay
-  and loading screen resolve in one space with no per-screen work. The 2D
-  primitives map every rectangle onto a 4:3 area centred on the real
-  screen: the sprite and text queues `0x49b420`/`0x49b1d0` (destination and
-  clip), the direct blit `0x49e3e0` and the panel `0x49e200`. A rectangle
-  covering the whole virtual width or height (backdrop, fade, dimming
-  panel, letterbox) spans the real screen. Only code that needs the real
-  screen runs in "real" sections, with the real size and scaling paused:
-  display set-up `0x497be0`, 3D device and viewport set-up `0x4a6950`, the
-  clears `0x49ffc0`/`0x49ff80`, the projection `0x435d10` and the scene
-  draw `0x49fe30` (which projects some effects to screen coordinates
-  itself). A display change inside a real section updates the real size (a
-  return to the front end's 640x480 ends scaling). The race HUD's layout
-  and draw calls are marked so its side pieces anchor to the screen edges.
-  The state logic is `cmr-hooks::sections` (host tests); the front end is
-  never touched (it has F16). Seen at run time (3840x2160): menus, service
+  In a race state (4 loading .. 0xb replay) at a size the game has no
+  layout for, its display state holds a virtual 640x480 screen for the
+  whole race: the size all of its 2D was laid out for, so the HUD, every
+  message, the pause menu, results, replay overlay and loading screen
+  resolve in one space with no per-screen work. The 2D primitives map
+  every rectangle onto a 4:3 area centred on the real screen: the sprite
+  and text queues `0x49b420`/`0x49b1d0` (destination and clip), the direct
+  blit `0x49e3e0` and the panel `0x49e200`. A rectangle covering the whole
+  virtual width or height (backdrop, fade, dimming panel, letterbox) spans
+  the real screen. Only code that needs the real screen runs in "real"
+  sections, with the real size and scaling paused: display set-up
+  `0x497be0`, 3D device and viewport set-up `0x4a6950`, the clears
+  `0x49ffc0`/`0x49ff80`, the projection `0x435d10` and the scene draw
+  `0x49fe30` (which projects some effects to screen coordinates itself). A
+  display change inside a real section updates the real size (a return to
+  the front end's 640x480 ends scaling).
+- The game updates on a multimedia-timer thread (`timeSetEvent`, callback
+  `0x443db0`) while the main thread renders; the results layout
+  (`0x42e320`), for one, is computed there. So the virtual size is never
+  swapped per frame: updates and real sections take one recursive lock, and
+  an update never sees the real size. Before this, the results table was
+  laid out in real pixels and fell off screen.
+- The race HUD's layout and draw calls are marked so its side pieces anchor
+  to the screen edges (only for the thread drawing it). The state logic is
+  `cmr-hooks::sections` (host tests); the front end is never touched (it
+  has F16). Seen at run time at 1920x1080 and 3840x2160: menus, service
   screen, loading screen, race HUD in the corners, pause, quit back to the
-  enlarged menu. Still to see: STAGE COMPLETE, results and replay overlay
-  (need a finished stage). Not covered: split-screen views, the rotated
-  needle dial's pivot.
+  enlarged menu, and (with the stage end forced in a test) the stage
+  results table. Not covered: split-screen views, the rotated needle dial's
+  pivot.
 - Forcing the whole game (front end too) above 640x480 breaks the front
   end (menu drawn in the corner, then a hang), so the front end stays at
   640x480.
