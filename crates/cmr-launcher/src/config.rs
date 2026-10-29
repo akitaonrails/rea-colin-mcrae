@@ -62,7 +62,7 @@ close_quits = true
 # JOYSTICK 1, ANALOGUE JOYSTICK, and set steering, acceleration and braking
 # to ANALOGUE. Only axes that rest at centre are used, so wheel pedals are
 # not affected. Set to false for the original handling, where only the left
-# stick drives.
+# stick drives. With it on, the pad's Start button also pauses a race.
 gamepad_axes = true
 
 # Race resolution, e.g. 1440x1080 (4:3) or 2880x2160. It replaces the
@@ -204,6 +204,7 @@ impl Settings {
         }
         if self.gamepad_axes == Some(false) {
             skip.push("F7");
+            skip.push("F14");
         }
         if self.resolution.is_none() {
             skip.push("F10");
@@ -309,7 +310,7 @@ mod tests {
         assert_eq!(saved.language.as_deref(), Some("FRENCH"));
         assert_eq!(saved.resolution, Some((1920, 1440)));
         assert_eq!(saved.draw_distance, Some(0x18000));
-        assert_eq!(saved.skipped_fixes(), ["F6", "F7", "F11"]);
+        assert_eq!(saved.skipped_fixes(), ["F6", "F7", "F14", "F11"]);
         let m = saved.merged(args(&["--game", r"C:\new"]).unwrap());
         assert_eq!(m.game, Some(PathBuf::from(r"C:\new")));
         assert_eq!(m.runtime, Some(PathBuf::from(r"C:\rt")));

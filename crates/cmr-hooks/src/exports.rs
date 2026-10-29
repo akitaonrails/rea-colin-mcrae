@@ -5,6 +5,10 @@ use core::ptr::addr_of_mut;
 
 use crate::canvas::{Canvas, Rect, VIRTUAL, is_native};
 
+/// `cmr_hud_rects`' clip index for calls without a clip rectangle (the
+/// stubs push 0x7f; any index from 16 up means none).
+const NO_CLIP: u32 = 16;
+
 /// The game's display state; `+0` width, `+4` height.
 const DISPLAY: *const *mut i32 = 0x0050_2518 as *const *mut i32;
 
@@ -93,10 +97,11 @@ pub extern "stdcall" fn cmr_hud_end() {
     hud.canvas = None;
 }
 
-/// At the entry of a sprite-queue call (`0x49b420`/`0x49b1d0`): `args`
-/// points at its arguments; argument 1 is the destination rectangle and
-/// `clip` the index of the optional clip rectangle. Both are replaced by
-/// scaled copies; the game's own rectangles are not changed.
+/// At the entry of a sprite-queue call (`0x49b420`/`0x49b1d0`) or a panel
+/// (`0x49e200`): `args` points at its arguments; argument 1 is the
+/// destination rectangle and `clip` the index of the optional clip
+/// rectangle (`NO_CLIP` for none). Both are replaced by scaled copies; the
+/// game's own rectangles are not changed.
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_hud_rects(args: *mut *mut Rect, clip: u32) {
     let hud = hud();
@@ -107,6 +112,9 @@ pub extern "stdcall" fn cmr_hud_rects(args: *mut *mut Rect, clip: u32) {
         if !(*dst).is_null() {
             hud.dst = canvas.map(**dst);
             *dst = addr_of_mut!(hud.dst);
+        }
+        if clip >= NO_CLIP {
+            return;
         }
         let c = args.add(clip as usize);
         if !(*c).is_null() {

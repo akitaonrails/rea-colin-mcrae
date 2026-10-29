@@ -156,7 +156,7 @@ fn rel32(at: u32, len: u32, to: u32) -> [u8; 4] {
 /// The community-patched EU v1.5 (`46500c8e…`) carries F1-F5 on disk; it
 /// is the same build, so F6 applies at the same addresses.
 pub static COMMUNITY_EU_15: FixSet = FixSet {
-    fixes: &[F6, F7, F8, F9, F10, F11, F12, F13],
+    fixes: &[F6, F7, F8, F9, F10, F11, F12, F13, F14],
 };
 
 /// Official EU v1.5 (`0eb6ea96…`).
@@ -234,6 +234,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         F11,
         F12,
         F13,
+        F14,
     ],
 };
 
@@ -647,7 +648,7 @@ const _: () = assert!(F13_TABLE >= F12_TRIGGER + 22 && F13_TABLE + 12 <= 0x280);
 /// maps every sprite it queues onto a 4:3 canvas centred on the real screen
 /// (`cmrhooks.dll`, `canvas`). The wrapped calls: HUD layout `0x462230`,
 /// timer font `0x47fda0`, HUD `0x464930` (race and replay), stage time
-/// `0x47fe50`, countdown `0x423570`, GO `0x423700`; the sprite queues
+/// `0x47fe50`, countdown `0x423570`, GO `0x423700`, pause menu `0x468dd0`; the sprite queues
 /// `0x49b420`/`0x49b1d0`. Applied with F10; the library leaves the game's
 /// own resolutions alone.
 const F13: Fix = Fix {
@@ -869,9 +870,92 @@ const F13: Fix = Fix {
                 Op::Jmp(At::Image(0x0049b1d5)),
             ],
         },
+        // call 0x468dd0 at 0x423405 (pause menu) -> through stub 8
+        Piece {
+            at: At::Image(0x00423405),
+            ops: &[Op::Call(At::Cave(0x480))],
+        },
+        Piece {
+            at: At::Cave(0x480),
+            ops: &[
+                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
+                Op::Addr(At::Cave(0x2e0)),
+                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
+                Op::Addr(At::Cave(F13_TABLE)),
+                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
+                Op::Call(At::Image(0x00468dd0)),
+                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
+                Op::Addr(At::Cave(F13_TABLE + 4)),
+                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
+                Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
+                Op::Addr(At::Cave(0x2e0)),
+                Op::Raw(&[0xc3]),
+            ],
+        },
+        // The pause menu's background panel (`0x49e200`, outside the sprite
+        // queues): its two calls in the pause draw go through a stub that
+        // scales the rectangle (argument 2) and then calls the panel as is.
+        Piece {
+            at: At::Image(0x0046_8e8b),
+            ops: &[Op::Call(At::Cave(0x4d0))],
+        },
+        Piece {
+            at: At::Image(0x0046_8eb2),
+            ops: &[Op::Call(At::Cave(0x4d0))],
+        },
+        Piece {
+            at: At::Cave(0x4d0),
+            ops: &[
+                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[rects]
+                Op::Addr(At::Cave(F13_TABLE + 8)),
+                Op::Raw(&[0x85, 0xc9, 0x74, 0x09]), // test ecx,ecx ; jz +9
+                // push 0x7f: "no clip" (an imm8 push is sign-extended, so
+                // 0xff would arrive as -1)
+                Op::Raw(&[0x6a, 0x7f]),
+                Op::Raw(&[0x8d, 0x44, 0x24, 0x28]), // lea eax,[esp+0x28] (argument 1)
+                Op::Raw(&[0x50, 0xff, 0xd1]),       // push eax ; call ecx
+                Op::Raw(&[0x61]),                   // popad
+                Op::Jmp(At::Image(0x0049_e200)),    // the panel, unchanged
+            ],
+        },
         Piece {
             at: At::Cave(F13_TABLE),
             ops: &[Op::Raw(&[0; 12])], // begin, end, rects: filled by the launcher
+        },
+    ],
+};
+
+const F14_CAVE: u32 = 0x4b0;
+const _: () = assert!(
+    0x480 + 46 <= F14_CAVE && F14_CAVE + 23 <= 0x4d0,
+    "F13 stubs and F14 apart"
+);
+
+/// In a race the control map (`FUN_00449580`) pauses on
+/// `GetAsyncKeyState(VK_ESCAPE)` (`0x449714`), so a pad has no pause. F14
+/// wraps that call: Escape also reads as held while the player's device
+/// holds pad button 8 (Start on Xbox-style pads; bit `0x800` of the merged
+/// level mask at `[ebp-4]`, a bit no keyboard binding uses). The game's own
+/// latch and pause menu do the rest. Grouped with F7 (`gamepad_axes`).
+const F14: Fix = Fix {
+    id: "F14",
+    what: "gamepads: Start pauses the race",
+    optional: true,
+    code: &[
+        // push 0x1b ; call [GetAsyncKeyState] -> call the cave ; 3 x nop
+        Piece {
+            at: At::Image(0x0044_9714),
+            ops: &[Op::Call(At::Cave(F14_CAVE)), Op::Raw(&[NOP; 3])],
+        },
+        Piece {
+            at: At::Cave(F14_CAVE),
+            ops: &[
+                Op::Raw(&[0x6a, 0x1b, 0xff, 0x15, 0x6c, 0x62, 0x4e, 0x00]), // the original call
+                Op::Raw(&[0xf7, 0x45, 0xfc, 0x00, 0x08, 0x00, 0x00]), // test dword [ebp-4],0x800
+                Op::Raw(&[0x74, 0x05]),                               // jz +5
+                Op::Raw(&[0x0d, 0x00, 0x80, 0x00, 0x00]),             // or eax,0x8000 (held)
+                Op::Raw(&[0xc3]),                                     // ret
+            ],
         },
     ],
 };
@@ -913,12 +997,9 @@ mod tests {
     #[test]
     fn fixes_are_in_order() {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
-        assert_eq!(
-            ids,
-            [
-                "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13"
-            ]
-        );
+        let expected: Vec<_> = (1..=ids.len()).map(|i| format!("F{i}")).collect();
+        assert_eq!(ids, expected);
+        assert_eq!(ids.len(), 14);
     }
 
     #[test]
@@ -1066,7 +1147,7 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), 0x300 + 7 * 48 + 46);
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), 0x4d0 + 26);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
@@ -1086,7 +1167,7 @@ mod tests {
 
     #[test]
     fn only_optional_fixes_can_be_skipped() {
-        let skip = ["F6", "F7", "F10", "F11", "F12", "F13", "F1"];
+        let skip = ["F6", "F7", "F10", "F11", "F12", "F13", "F14", "F1"];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
         assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9"]);
         assert_eq!(OFFICIAL_EU_15.cave_size(&skip), F9_CAVE + 24);
@@ -1097,7 +1178,7 @@ mod tests {
                 .all(|w| w.fix != "F6")
         );
         assert_eq!(
-            COMMUNITY_EU_15.cave_size(&["F6", "F7", "F10", "F11", "F12", "F13"]),
+            COMMUNITY_EU_15.cave_size(&["F6", "F7", "F10", "F11", "F12", "F13", "F14"]),
             F9_CAVE + 24
         );
     }
