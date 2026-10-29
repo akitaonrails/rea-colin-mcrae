@@ -634,328 +634,149 @@ const F12: Fix = Fix {
     ],
 };
 
-/// F13's hook table: `cmr_hud_begin`, `cmr_hud_end`, `cmr_hud_rects` in
+/// F13's hook table: the exports below (`F13_EXPORTS`) of
 /// `cmrhooks.dll`, filled by the launcher after it loads the library. A zero
 /// entry makes its stub do nothing, so the game runs as without F13.
 pub const F13_TABLE: u32 = 0x250;
 /// The exports F13's table holds, in order.
-pub const F13_EXPORTS: [&str; 4] = [
+pub const F13_EXPORTS: [&str; 6] = [
     "cmr_hud_begin",
     "cmr_hud_end",
     "cmr_hud_rects",
     "cmr_fe_present",
+    "cmr_hud_rect_at",
+    "cmr_hud_begin_whole",
 ];
-const _: () = assert!(F13_TABLE >= F12_TRIGGER + 22 && F13_TABLE + 16 <= 0x280);
+const _: () = assert!(F13_TABLE >= F12_TRIGGER + 22 && F13_TABLE + 24 <= 0x280);
+/// Table slots of the two begins: the race HUD (side pieces anchored to the
+/// screen edges) and screens laid out as a whole (mapped centred).
+const HUD: u32 = 0;
+const WHOLE: u32 = 20;
 
-/// With a race resolution the game never had (F10), the HUD mixes 640x480
-/// rectangles scaled by W/640, fractions of W/H and absolute pixel tables
-/// chosen by width (the rev dial stays at its 640x480 position), and text
-/// is drawn at the font's native size. F13 shows the HUD a virtual 640x480
-/// screen while it lays itself out (race start) and draws (each frame), and
-/// maps every sprite it queues onto a 4:3 canvas centred on the real screen
-/// (`cmrhooks.dll`, `canvas`). The wrapped calls: HUD layout `0x462230`,
-/// timer font `0x47fda0`, HUD `0x464930` (race and replay), stage time
-/// `0x47fe50`, countdown `0x423570`, GO `0x423700`, pause menu `0x468dd0`,
-/// results pages `0x42ae80`; the sprite queues
-/// `0x49b420`/`0x49b1d0`. Applied with F10; the library leaves the game's
-/// own resolutions alone.
+/// With a race resolution the game never had (F10), the in-race 2D (HUD,
+/// messages, pause, results, loading screen) mixes 640x480 rectangles scaled
+/// by W/640, fractions of W/H and absolute pixel tables chosen by width, and
+/// text is drawn at the font's native size. F13 shows these calls a virtual
+/// 640x480 screen while they run, and maps every rectangle they draw (sprite
+/// queues `0x49b420`/`0x49b1d0`, direct blit `0x49e3e0`, panel `0x49e200`)
+/// onto a 4:3 canvas centred on the real screen (`cmrhooks.dll`, `canvas`);
+/// full-screen backdrops and fades span the whole screen. The race HUD's side
+/// pieces are anchored to the screen edges. Applied with F10; the library
+/// leaves the game's own resolutions alone.
+///
+/// F13's pieces: every wrapped call (`call target` at `site` goes through a
+/// stub that calls a begin (`HUD` or `WHOLE`), the original, then `cmr_hud_end`; the
+/// return address is kept at cave `ret`), the entry hooks on the 2D
+/// primitives (their first instructions `orig` move to a stub that lets the
+/// library rescale the rectangle arguments, `arg` being the clip index for
+/// the sprite queues and the rectangle index for `cmr_hud_rect_at`), and the
+/// hook table.
+macro_rules! hud_code {
+    (
+        wraps: [$(($site:expr, $target:expr, $begin:expr, $stub:expr, $ret:expr)),* $(,)?],
+        entries: [$(($esite:expr, $nops:expr, $estub:expr, $slot:expr, $arg:expr, [$($orig:expr),*], $resume:expr)),* $(,)?] $(,)?
+    ) => {
+        &[
+            $(
+                Piece {
+                    at: At::Image($site),
+                    ops: &[Op::Call(At::Cave($stub))],
+                },
+                Piece {
+                    at: At::Cave($stub),
+                    ops: &[
+                        Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
+                        Op::Addr(At::Cave($ret)),
+                        Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
+                        Op::Addr(At::Cave(F13_TABLE + $begin)),
+                        Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
+                        Op::Call(At::Image($target)),
+                        Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
+                        Op::Addr(At::Cave(F13_TABLE + 4)),
+                        Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
+                        Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
+                        Op::Addr(At::Cave($ret)),
+                        Op::Raw(&[0xc3]),
+                    ],
+                },
+            )*
+            $(
+                Piece {
+                    at: At::Image($esite),
+                    ops: &[Op::Jmp(At::Cave($estub)), Op::Raw(&[NOP; $nops])],
+                },
+                Piece {
+                    at: At::Cave($estub),
+                    ops: &[
+                        Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[export]
+                        Op::Addr(At::Cave(F13_TABLE + $slot)),
+                        Op::Raw(&[0x85, 0xc9, 0x74, 0x09]), // test ecx,ecx ; jz +9
+                        Op::Raw(&[0x6a, $arg]),             // push arg (imm8, below 0x80)
+                        Op::Raw(&[0x8d, 0x44, 0x24, 0x28]), // lea eax,[esp+0x28] (argument 1)
+                        Op::Raw(&[0x50, 0xff, 0xd1]),       // push eax ; call ecx
+                        Op::Raw(&[0x61]),                   // popad
+                        $($orig,)*                          // the replaced instructions
+                        Op::Jmp(At::Image($resume)),
+                    ],
+                },
+            )*
+            Piece {
+                at: At::Cave(F13_TABLE),
+                // the F13_EXPORTS addresses, filled by the launcher
+                ops: &[Op::Raw(&[0; 24])],
+            },
+        ]
+    };
+}
+
+/// Cave area of F13's wrap stubs (0x30 apart) and their return slots.
+const F13_STUBS: u32 = 0x600;
+const F13_RETS: u32 = 0x980;
+/// Cave area of the entry-hook stubs (0x30 apart).
+const F13_ENTRIES: u32 = 0x9d0;
+const _: () = assert!(
+    F13_STUBS >= F16_RET + 4
+        && F13_STUBS + 18 * 0x30 <= F13_RETS
+        && F13_RETS + 18 * 4 <= F13_ENTRIES
+);
+
 const F13: Fix = Fix {
     id: "F13",
-    what: "HUD scaled to the race resolution (needs cmrhooks.dll)",
+    what: "HUD, messages and loading screen scaled to the race resolution (needs cmrhooks.dll)",
     optional: true,
-    code: &[
-        // call 0x462230 at 0x4222ab -> through stub 0
-        Piece {
-            at: At::Image(0x004222ab),
-            ops: &[Op::Call(At::Cave(0x300))],
-        },
-        Piece {
-            at: At::Cave(0x300),
-            ops: &[
-                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
-                Op::Addr(At::Cave(0x2c0)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
-                Op::Addr(At::Cave(F13_TABLE)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Call(At::Image(0x00462230)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
-                Op::Addr(At::Cave(F13_TABLE + 4)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
-                Op::Addr(At::Cave(0x2c0)),
-                Op::Raw(&[0xc3]),
-            ],
-        },
-        // call 0x47fda0 at 0x4222e7 -> through stub 1
-        Piece {
-            at: At::Image(0x004222e7),
-            ops: &[Op::Call(At::Cave(0x330))],
-        },
-        Piece {
-            at: At::Cave(0x330),
-            ops: &[
-                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
-                Op::Addr(At::Cave(0x2c4)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
-                Op::Addr(At::Cave(F13_TABLE)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Call(At::Image(0x0047fda0)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
-                Op::Addr(At::Cave(F13_TABLE + 4)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
-                Op::Addr(At::Cave(0x2c4)),
-                Op::Raw(&[0xc3]),
-            ],
-        },
-        // call 0x464930 at 0x422e1c -> through stub 2
-        Piece {
-            at: At::Image(0x00422e1c),
-            ops: &[Op::Call(At::Cave(0x360))],
-        },
-        Piece {
-            at: At::Cave(0x360),
-            ops: &[
-                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
-                Op::Addr(At::Cave(0x2c8)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
-                Op::Addr(At::Cave(F13_TABLE)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Call(At::Image(0x00464930)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
-                Op::Addr(At::Cave(F13_TABLE + 4)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
-                Op::Addr(At::Cave(0x2c8)),
-                Op::Raw(&[0xc3]),
-            ],
-        },
-        // call 0x464930 at 0x4765b2 -> through stub 3
-        Piece {
-            at: At::Image(0x004765b2),
-            ops: &[Op::Call(At::Cave(0x390))],
-        },
-        Piece {
-            at: At::Cave(0x390),
-            ops: &[
-                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
-                Op::Addr(At::Cave(0x2cc)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
-                Op::Addr(At::Cave(F13_TABLE)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Call(At::Image(0x00464930)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
-                Op::Addr(At::Cave(F13_TABLE + 4)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
-                Op::Addr(At::Cave(0x2cc)),
-                Op::Raw(&[0xc3]),
-            ],
-        },
-        // call 0x47fe50 at 0x422ea6 -> through stub 4
-        Piece {
-            at: At::Image(0x00422ea6),
-            ops: &[Op::Call(At::Cave(0x3c0))],
-        },
-        Piece {
-            at: At::Cave(0x3c0),
-            ops: &[
-                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
-                Op::Addr(At::Cave(0x2d0)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
-                Op::Addr(At::Cave(F13_TABLE)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Call(At::Image(0x0047fe50)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
-                Op::Addr(At::Cave(F13_TABLE + 4)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
-                Op::Addr(At::Cave(0x2d0)),
-                Op::Raw(&[0xc3]),
-            ],
-        },
-        // call 0x47fe50 at 0x4765c8 -> through stub 5
-        Piece {
-            at: At::Image(0x004765c8),
-            ops: &[Op::Call(At::Cave(0x3f0))],
-        },
-        Piece {
-            at: At::Cave(0x3f0),
-            ops: &[
-                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
-                Op::Addr(At::Cave(0x2d4)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
-                Op::Addr(At::Cave(F13_TABLE)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Call(At::Image(0x0047fe50)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
-                Op::Addr(At::Cave(F13_TABLE + 4)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
-                Op::Addr(At::Cave(0x2d4)),
-                Op::Raw(&[0xc3]),
-            ],
-        },
-        // call 0x423570 at 0x422f83 -> through stub 6
-        Piece {
-            at: At::Image(0x00422f83),
-            ops: &[Op::Call(At::Cave(0x420))],
-        },
-        Piece {
-            at: At::Cave(0x420),
-            ops: &[
-                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
-                Op::Addr(At::Cave(0x2d8)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
-                Op::Addr(At::Cave(F13_TABLE)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Call(At::Image(0x00423570)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
-                Op::Addr(At::Cave(F13_TABLE + 4)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
-                Op::Addr(At::Cave(0x2d8)),
-                Op::Raw(&[0xc3]),
-            ],
-        },
-        // call 0x423700 at 0x422f95 -> through stub 7
-        Piece {
-            at: At::Image(0x00422f95),
-            ops: &[Op::Call(At::Cave(0x450))],
-        },
-        Piece {
-            at: At::Cave(0x450),
-            ops: &[
-                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
-                Op::Addr(At::Cave(0x2dc)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
-                Op::Addr(At::Cave(F13_TABLE)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Call(At::Image(0x00423700)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
-                Op::Addr(At::Cave(F13_TABLE + 4)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
-                Op::Addr(At::Cave(0x2dc)),
-                Op::Raw(&[0xc3]),
-            ],
-        },
-        // sprite queue 0x49b420: scale its rectangles first
-        Piece {
-            at: At::Image(0x0049b420),
-            ops: &[Op::Jmp(At::Cave(0x280))],
-        },
-        Piece {
-            at: At::Cave(0x280),
-            ops: &[
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[rects]
-                Op::Addr(At::Cave(F13_TABLE + 8)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x09]), // test ecx,ecx ; jz +9
-                Op::Raw(&[0x6a, 8]),                // push clip index
-                Op::Raw(&[0x8d, 0x44, 0x24, 0x28]), // lea eax,[esp+0x28] (argument 1)
-                Op::Raw(&[0x50, 0xff, 0xd1]),       // push eax ; call ecx
-                Op::Raw(&[0x61]),                   // popad
-                Op::Raw(&[0x8a, 0x44, 0x24, 0x10, 0x56]), // the replaced instructions
-                Op::Jmp(At::Image(0x0049b425)),
-            ],
-        },
-        // sprite queue 0x49b1d0: scale its rectangles first
-        Piece {
-            at: At::Image(0x0049b1d0),
-            ops: &[Op::Jmp(At::Cave(0x2a0))],
-        },
-        Piece {
-            at: At::Cave(0x2a0),
-            ops: &[
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[rects]
-                Op::Addr(At::Cave(F13_TABLE + 8)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x09]), // test ecx,ecx ; jz +9
-                Op::Raw(&[0x6a, 9]),                // push clip index
-                Op::Raw(&[0x8d, 0x44, 0x24, 0x28]), // lea eax,[esp+0x28] (argument 1)
-                Op::Raw(&[0x50, 0xff, 0xd1]),       // push eax ; call ecx
-                Op::Raw(&[0x61]),                   // popad
-                Op::Raw(&[0x8a, 0x44, 0x24, 0x14, 0x56]), // the replaced instructions
-                Op::Jmp(At::Image(0x0049b1d5)),
-            ],
-        },
-        // call 0x468dd0 at 0x423405 (pause menu) -> through stub 8
-        Piece {
-            at: At::Image(0x00423405),
-            ops: &[Op::Call(At::Cave(0x480))],
-        },
-        Piece {
-            at: At::Cave(0x480),
-            ops: &[
-                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
-                Op::Addr(At::Cave(0x2e0)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
-                Op::Addr(At::Cave(F13_TABLE)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Call(At::Image(0x00468dd0)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
-                Op::Addr(At::Cave(F13_TABLE + 4)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
-                Op::Addr(At::Cave(0x2e0)),
-                Op::Raw(&[0xc3]),
-            ],
-        },
-        // The pause menu's background panel (`0x49e200`, outside the sprite
-        // queues): its two calls in the pause draw go through a stub that
-        // scales the rectangle (argument 2) and then calls the panel as is.
-        // call 0x42ae80 at 0x4232db (results pages) -> through stub 9
-        Piece {
-            at: At::Image(0x004232db),
-            ops: &[Op::Call(At::Cave(0x500))],
-        },
-        Piece {
-            at: At::Cave(0x500),
-            ops: &[
-                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
-                Op::Addr(At::Cave(0x2e4)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
-                Op::Addr(At::Cave(F13_TABLE)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Call(At::Image(0x0042ae80)),
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
-                Op::Addr(At::Cave(F13_TABLE + 4)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-                Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
-                Op::Addr(At::Cave(0x2e4)),
-                Op::Raw(&[0xc3]),
-            ],
-        },
-        // The pause menu's background panel (`0x49e200`, outside the sprite
-        // queues): its two calls in the pause draw go through a stub that
-        // scales the rectangle (argument 2) and then calls the panel as is.
-        Piece {
-            at: At::Image(0x0046_8e8b),
-            ops: &[Op::Call(At::Cave(0x4d0))],
-        },
-        Piece {
-            at: At::Image(0x0046_8eb2),
-            ops: &[Op::Call(At::Cave(0x4d0))],
-        },
-        Piece {
-            at: At::Cave(0x4d0),
-            ops: &[
-                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[rects]
-                Op::Addr(At::Cave(F13_TABLE + 8)),
-                Op::Raw(&[0x85, 0xc9, 0x74, 0x09]), // test ecx,ecx ; jz +9
-                // push 0x7f: "no clip" (an imm8 push is sign-extended, so
-                // 0xff would arrive as -1)
-                Op::Raw(&[0x6a, 0x7f]),
-                Op::Raw(&[0x8d, 0x44, 0x24, 0x28]), // lea eax,[esp+0x28] (argument 1)
-                Op::Raw(&[0x50, 0xff, 0xd1]),       // push eax ; call ecx
-                Op::Raw(&[0x61]),                   // popad
-                Op::Jmp(At::Image(0x0049_e200)),    // the panel, unchanged
-            ],
-        },
-        Piece {
-            at: At::Cave(F13_TABLE),
-            ops: &[Op::Raw(&[0; 16])], // begin, end, rects, fe_present: filled by the launcher
-        },
-    ],
+    code: hud_code! {
+        wraps: [
+            (0x0042_22ab, 0x0046_2230, HUD, F13_STUBS, F13_RETS),              // HUD layout (race start)
+            (0x0042_22e7, 0x0047_fda0, HUD, F13_STUBS + 0x30, F13_RETS + 4),   // timer font
+            (0x0042_22ec, 0x0043_6a50, WHOLE, F13_STUBS + 0x60, F13_RETS + 8),   // pause fonts
+            (0x0042_2e1c, 0x0046_4930, HUD, F13_STUBS + 0x90, F13_RETS + 12),  // HUD, each view
+            (0x0047_65b2, 0x0046_4930, HUD, F13_STUBS + 0xc0, F13_RETS + 16),  // HUD, replay
+            (0x0042_2ea6, 0x0047_fe50, HUD, F13_STUBS + 0xf0, F13_RETS + 20),  // stage time
+            (0x0047_65c8, 0x0047_fe50, HUD, F13_STUBS + 0x120, F13_RETS + 24), // stage time, replay
+            (0x0042_2f83, 0x0042_3570, WHOLE, F13_STUBS + 0x150, F13_RETS + 28), // countdown
+            (0x0042_2f95, 0x0042_3700, WHOLE, F13_STUBS + 0x180, F13_RETS + 32), // GO
+            (0x0042_3405, 0x0046_8dd0, WHOLE, F13_STUBS + 0x1b0, F13_RETS + 36), // pause menu
+            (0x0042_32db, 0x0042_ae80, WHOLE, F13_STUBS + 0x1e0, F13_RETS + 40), // results pages
+            (0x0042_2f71, 0x0042_34b0, WHOLE, F13_STUBS + 0x210, F13_RETS + 44), // STAGE COMPLETE
+            (0x0042_2e33, 0x0046_e4f0, WHOLE, F13_STUBS + 0x240, F13_RETS + 48), // rally school text
+            (0x0042_2f13, 0x0047_a9b0, WHOLE, F13_STUBS + 0x270, F13_RETS + 52), // replay overlay
+            (0x0042_2dd1, 0x0042_a930, WHOLE, F13_STUBS + 0x2a0, F13_RETS + 56), // in-race text
+            (0x0042_2ddb, 0x0046_92a0, WHOLE, F13_STUBS + 0x2d0, F13_RETS + 60), // in-race panel
+            (0x0044_e678, 0x0044_e6d0, WHOLE, F13_STUBS + 0x300, F13_RETS + 64), // loading screen
+            (0x0044_e694, 0x0044_e6d0, WHOLE, F13_STUBS + 0x330, F13_RETS + 68), // loading screen
+        ],
+        entries: [
+            // sprite queues: mov al,[esp+..] ; push esi
+            (0x0049_b420, 0, F13_ENTRIES, 8, 8, [Op::Raw(&[0x8a, 0x44, 0x24, 0x10, 0x56])], 0x0049_b425),
+            (0x0049_b1d0, 0, F13_ENTRIES + 0x30, 8, 9, [Op::Raw(&[0x8a, 0x44, 0x24, 0x14, 0x56])], 0x0049_b1d5),
+            // direct blit (destination rectangle = argument 4): sub esp,0x12c
+            (0x0049_e3e0, 1, F13_ENTRIES + 0x60, 16, 3,
+                [Op::Raw(&[0x81, 0xec, 0x2c, 0x01, 0x00, 0x00])], 0x0049_e3e6),
+            // panel (rectangle = argument 2): sub esp,0x18 ; call 0x498af0
+            (0x0049_e200, 3, F13_ENTRIES + 0x90, 16, 1,
+                [Op::Raw(&[0x83, 0xec, 0x18]), Op::Call(At::Image(0x0049_8af0))], 0x0049_e208),
+        ],
+    },
 };
 
 const F14_CAVE: u32 = 0x4b0;
@@ -1310,6 +1131,29 @@ mod tests {
     }
 
     #[test]
+    fn f13_entry_hooks_relocate_and_return() {
+        let rel = |code: &[u8], end: usize, base: u32| {
+            let r = u32::from_le_bytes(code[end - 4..end].try_into().unwrap());
+            (base + end as u32).wrapping_add(r)
+        };
+        // Panel: the replaced call is redone, then back after it.
+        let panel = at(CAVE + F13_ENTRIES + 0x90);
+        assert_eq!(panel.len(), 34);
+        assert_eq!(panel[3..7], (CAVE + F13_TABLE + 16).to_le_bytes());
+        assert_eq!(&panel[11..13], [0x6a, 1], "rectangle = argument 2");
+        assert_eq!(&panel[21..24], [0x83, 0xec, 0x18]);
+        assert_eq!(panel[24], 0xe8);
+        assert_eq!(rel(&panel, 29, CAVE + F13_ENTRIES + 0x90), 0x498af0);
+        assert_eq!(rel(&panel, 34, CAVE + F13_ENTRIES + 0x90), 0x49e208);
+        assert_eq!(at(0x49e200).len(), 8, "jmp + 3 nops covers the call");
+        // Direct blit: destination rectangle = argument 4.
+        let blit = at(CAVE + F13_ENTRIES + 0x60);
+        assert_eq!(&blit[11..13], [0x6a, 3]);
+        assert_eq!(rel(&blit, blit.len(), CAVE + F13_ENTRIES + 0x60), 0x49e3e6);
+        assert_eq!(at(0x49e3e0).len(), 6);
+    }
+
+    #[test]
     fn simple_stubs() {
         assert_eq!(at(0x496ca0), [0xb8, 1, 0, 0, 0, 0xc3]);
         assert_eq!(at(0x497cef), [0x10]);
@@ -1332,7 +1176,8 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F16_RET + 4);
+        // the last piece is the panel entry stub (34 bytes)
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F13_ENTRIES + 0x90 + 34);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
