@@ -52,9 +52,13 @@ code or data, [I] inferred. Status and the fix list are in
   the viewport clip is `dvClipY = W/H`, `dvClipHeight = 2W/H`
   (`0x4a6f03..0x4a6f71`; per view `0x49fe7d..0x49fee8`) [O].
 - Correct only for W/H ≈ 4:3 [I]; at 16:9 the picture would be stretched.
-- Hor+ plan: swap to `fild [H]; fidiv [W]` with a constant 65536·16/9, and
-  scale the clip values by (4/3)/A, so the vertical field of view stays and
-  the horizontal one widens [I]. The game's terrain cull uses a 90° wedge
+- The D3D viewport clip values do not change the picture: the game
+  transforms in software, to pixels `x·xs·W/2` and `y·ys·H/(2A)` (seen at
+  run time: changing only the clip values had no effect).
+- **F11** (Hor+): the `xs` aspect term becomes (4/3)²/A (`fild [H]; fidiv
+  [W]; fmul 65536·16/9` at `0x435d44`) and `ys` is multiplied by A/(4/3)
+  (`0x435d87`). Seen at run time: at 1920x1080 the centre of the picture is
+  identical to the 1440x1080 one and the sides show more. The game's terrain cull uses a 90° wedge
   (below), which may need widening at the screen edges.
 
 ## Draw distance (E4)

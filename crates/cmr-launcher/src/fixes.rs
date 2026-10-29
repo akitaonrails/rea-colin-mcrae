@@ -460,24 +460,26 @@ const F10: Fix = Fix {
 
 const F11_PROJ: u32 = 0x180;
 const F11_K: u32 = 0x190;
-const F11_VIEW: u32 = 0x1a0;
-const F11_Q: u32 = 0x1d0;
+const F11_YS: u32 = 0x1a0;
+const F11_K3: u32 = 0x1c0;
+const F11_T: u32 = 0x1c8;
 const _: () = assert!(
     F11_PROJ >= F10_SIZE + 8
-        && F11_K >= F11_PROJ + 11
-        && F11_VIEW >= F11_K + 8
-        && F11_Q >= F11_VIEW + 46
+        && F11_K >= F11_PROJ + 16
+        && F11_YS >= F11_K + 8
+        && F11_K3 >= F11_YS + 32
+        && F11_T >= F11_K3 + 8
 );
 
-/// The race projection (`FUN_00435d10`) scales its horizontal factor by the
-/// screen's W/H, and the viewport (`0x4a6ed0`) clips x to [-1, 1] and y to
-/// [-W/H, W/H]. Right only at 4:3: at 16:9 the view gets narrower and
-/// taller (stretched). F11 makes it Hor+: the projection always uses the
-/// 4:3 aspect, and the viewport keeps y at [-4/3, 4/3] and widens x to
-/// [-A*3/4, A*3/4] (A = viewport W/H), so the vertical field of view is the
-/// original one, the horizontal one grows with the screen and pixels stay
-/// square. At 4:3 both give exactly the original values. Opt-in
-/// (`widescreen`). Split-screen views use another path (not changed).
+/// The race projection (`FUN_00435d10`) feeds the game's own software
+/// transform, which maps to pixels as `x * xs * W/2` and `y * ys * H/(2A)`
+/// (A = W/H), with `xs` scaled by A. Right only at 4:3: at 16:9 the picture
+/// comes out 1.78x wider and 0.75x shorter than at 4:3 (stretched). F11
+/// makes it Hor+, so the pixel scale is the one of a 4:3 screen of the same
+/// height and the wider screen shows more to the sides: the aspect term of
+/// `xs` becomes (4/3)^2 / A (`0x435d44`) and `ys` is multiplied by A / (4/3)
+/// (`0x435d87`). At 4:3 both are exactly the original values. Opt-in
+/// (`widescreen`).
 const F11: Fix = Fix {
     id: "F11",
     what: "widescreen: wider view instead of a stretched one (Hor+)",
@@ -491,43 +493,45 @@ const F11: Fix = Fix {
         Piece {
             at: At::Cave(F11_PROJ),
             ops: &[
-                Op::Raw(&[0xdd, 0x05]), // fld qword [65536 * 4/3]
+                // eax = the display struct: fild [H] ; fidiv [W]
+                Op::Raw(&[0xdb, 0x40, 0x04, 0xda, 0x30]),
+                Op::Raw(&[0xdc, 0x0d]), // fmul qword [65536 * 16/9]
                 Op::Addr(At::Cave(F11_K)),
                 Op::Jmp(At::Image(0x0043_5d4f)),
             ],
         },
         Piece {
             at: At::Cave(F11_K),
-            // 65536.0 * 4/3 as a double
-            ops: &[Op::Raw(&[0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0xf5, 0x40])],
+            // 65536.0 * 16/9 as a double
+            ops: &[Op::Raw(&[0x1c, 0xc7, 0x71, 0x1c, 0xc7, 0x71, 0xfc, 0x40])],
         },
-        // mov eax,[eax+0x14] ; push eax ; mov ecx,[eax] -> jmp ; nop
+        // mov eax,0x2bae1 (the ys factor) -> jmp
         Piece {
-            at: At::Image(0x004a_6f75),
-            ops: &[Op::Jmp(At::Cave(F11_VIEW)), Op::Raw(&[NOP])],
+            at: At::Image(0x0043_5d87),
+            ops: &[Op::Jmp(At::Cave(F11_YS))],
         },
         Piece {
-            at: At::Cave(F11_VIEW),
+            at: At::Cave(F11_YS),
             ops: &[
-                // edx = the D3DVIEWPORT2; dvClipY (+0x18) holds W/H here.
-                Op::Raw(&[0xd9, 0x42, 0x18]), // fld dword [edx+0x18]
-                Op::Raw(&[0xd8, 0x0d]),       // fmul dword [0.75]
-                Op::Addr(At::Cave(F11_Q)),
-                Op::Raw(&[0xd9, 0xc0, 0xd9, 0xe0]), // fld st0 ; fchs
-                Op::Raw(&[0xd9, 0x5a, 0x14]),       // fstp [edx+0x14] dvClipX
-                Op::Raw(&[0xdc, 0xc0]),             // fadd st0,st0
-                Op::Raw(&[0xd9, 0x5a, 0x1c]),       // fstp [edx+0x1c] dvClipWidth
-                // dvClipY = 4/3 ; dvClipHeight = 8/3
-                Op::Raw(&[0xc7, 0x42, 0x18, 0xab, 0xaa, 0xaa, 0x3f]),
-                Op::Raw(&[0xc7, 0x42, 0x20, 0xab, 0xaa, 0x2a, 0x40]),
-                // the replaced instructions
-                Op::Raw(&[0x8b, 0x40, 0x14, 0x50, 0x8b, 0x08]),
-                Op::Jmp(At::Image(0x004a_6f7b)),
+                Op::Raw(&[0xa1, 0x18, 0x25, 0x50, 0x00]), // mov eax,[0x502518]
+                Op::Raw(&[0xdb, 0x00, 0xda, 0x70, 0x04]), // fild [W] ; fidiv [H]
+                Op::Raw(&[0xdc, 0x0d]),                   // fmul qword [0x2bae1 * 3/4]
+                Op::Addr(At::Cave(F11_K3)),
+                Op::Raw(&[0xdb, 0x1d]), // fistp dword [t]
+                Op::Addr(At::Cave(F11_T)),
+                Op::Raw(&[0xa1]), // mov eax,[t]
+                Op::Addr(At::Cave(F11_T)),
+                Op::Jmp(At::Image(0x0043_5d8c)),
             ],
         },
         Piece {
-            at: At::Cave(F11_Q),
-            ops: &[Op::Raw(&[0x00, 0x00, 0x40, 0x3f])], // 0.75f
+            at: At::Cave(F11_K3),
+            // 0x2bae1 * 0.75 as a double
+            ops: &[Op::Raw(&[0x00, 0x00, 0x00, 0x00, 0x46, 0x61, 0x00, 0x41])],
+        },
+        Piece {
+            at: At::Cave(F11_T),
+            ops: &[Op::Raw(&[0; 4])],
         },
     ],
 };
@@ -537,7 +541,7 @@ const F12_ARS: u32 = 0x1e0;
 pub const F12_FACTOR: u32 = 0x224;
 const F12_TRIGGER: u32 = 0x230;
 const _: () =
-    assert!(F12_ARS >= F11_Q + 4 && F12_FACTOR >= F12_ARS + 65 && F12_TRIGGER >= F12_FACTOR + 4);
+    assert!(F12_ARS >= F11_T + 4 && F12_FACTOR >= F12_ARS + 65 && F12_TRIGGER >= F12_FACTOR + 4);
 /// The country-1 cap, 200.0 in Q16, compared and stored at two places each.
 pub const F12_CAPS: [u32; 4] = [0x0043_5e91, 0x0043_5e98, 0x0043_5f6a, 0x0043_5f71];
 pub const F12_CAP: u32 = 0x00c8_0000;
@@ -989,21 +993,11 @@ mod tests {
     fn f11_constants_and_jumps() {
         assert_eq!(
             f64::from_le_bytes(at(CAVE + F11_K).try_into().unwrap()),
-            65536.0 * 4.0 / 3.0
+            65536.0 * 16.0 / 9.0
         );
         assert_eq!(
-            f32::from_le_bytes(at(CAVE + F11_Q).try_into().unwrap()),
-            0.75
-        );
-        let view = at(CAVE + F11_VIEW);
-        assert_eq!(view.len(), 46);
-        assert_eq!(
-            f32::from_le_bytes(view[24..28].try_into().unwrap()),
-            4.0 / 3.0
-        );
-        assert_eq!(
-            f32::from_le_bytes(view[31..35].try_into().unwrap()),
-            8.0 / 3.0
+            f64::from_le_bytes(at(CAVE + F11_K3).try_into().unwrap()),
+            0x2bae1 as f64 * 0.75
         );
         let back = |code: &[u8], base: u32| {
             let n = code.len();
@@ -1011,8 +1005,16 @@ mod tests {
             let rel = u32::from_le_bytes(code[n - 4..].try_into().unwrap());
             (base + n as u32).wrapping_add(rel)
         };
-        assert_eq!(back(&view, CAVE + F11_VIEW), 0x4a6f7b);
-        assert_eq!(back(&at(CAVE + F11_PROJ), CAVE + F11_PROJ), 0x435d4f);
+        let proj = at(CAVE + F11_PROJ);
+        assert_eq!(proj.len(), 16);
+        assert_eq!(back(&proj, CAVE + F11_PROJ), 0x435d4f);
+        let ys = at(CAVE + F11_YS);
+        assert_eq!(ys.len(), 32);
+        assert_eq!(back(&ys, CAVE + F11_YS), 0x435d8c);
+        // At 4:3 the factors are the original ones.
+        let a43: f64 = 4.0 / 3.0;
+        assert!(((3.0 / 4.0) * 65536.0 * 16.0 / 9.0 - a43 * 65536.0).abs() < 1e-6);
+        assert!((a43 * 0x2bae1 as f64 * 0.75 - 0x2bae1 as f64).abs() < 1e-6);
     }
 
     #[test]
