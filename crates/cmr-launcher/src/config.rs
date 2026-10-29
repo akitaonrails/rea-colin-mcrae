@@ -91,12 +91,22 @@ gamepad_axes = true
 ";
 
 pub const USAGE: &str = "\
-CMRLauncher [--game <folder>] [--runtime <folder>] [--saves <folder>] [--language <name>]
+CMRLauncher [options]
 
-  --game      the folder with your installed Rally.exe (remembered)
-  --runtime   where the launcher keeps its private copy
-  --saves     where your saves are kept
-  --language  ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN
+  --game <folder>          the folder with your installed Rally.exe (remembered)
+  --saves <folder>         where your saves are kept
+  --runtime <folder>       where the launcher keeps its private copy
+  --language <name>        ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN
+  --resolution <WxH>       race resolution, e.g. 1920x1080, or original
+  --widescreen on|off      wider view on wide screens
+  --draw-distance <n>      1.0 to 3.0
+  --gamepad-axes on|off    triggers/right stick as pedals, Start pauses
+  --close-quits on|off     closing the window quits the game
+
+These override launcher.cfg for one run (only --game is remembered).
+
+CMRLauncher --check [--game <folder>]
+  checks the game folder and tells you whether its Rally.exe is supported
 
 CMRLauncher --controllers [seconds]
   lists the joysticks the game can see and logs every stick, trigger and
@@ -112,14 +122,22 @@ fn parse_bool(v: &str) -> Option<bool> {
     }
 }
 
-/// `WxH`, within what a 1998 DirectDraw game and a modern screen can hold.
+/// `WxH`, within what a 1998 DirectDraw game and a modern screen can hold;
+/// `original` (or `off`) is `ORIGINAL`, the game's own sizes.
 fn parse_resolution(v: &str) -> Option<(u32, u32)> {
-    let lower = v.to_ascii_lowercase();
+    let lower = v.trim().to_ascii_lowercase();
+    if lower == "original" || lower == "off" {
+        return Some(ORIGINAL);
+    }
     let (w, h) = lower.split_once('x')?;
     let w: u32 = w.trim().parse().ok()?;
     let h: u32 = h.trim().parse().ok()?;
     ((320..=7680).contains(&w) && (240..=4320).contains(&h)).then_some((w, h))
 }
+
+/// `resolution` value meaning "the game's own sizes" (used to override a
+/// file's resolution from the command line).
+pub const ORIGINAL: (u32, u32) = (0, 0);
 
 /// A factor 1.0..=3.0 as Q16.
 fn parse_factor(v: &str) -> Option<u32> {
@@ -206,6 +224,11 @@ impl Settings {
         }
     }
 
+    /// The race resolution to apply, if any.
+    pub fn race_resolution(&self) -> Option<(u32, u32)> {
+        self.resolution.filter(|&r| r != ORIGINAL)
+    }
+
     /// Optional fixes these settings turn off (see `fixes::Fix::optional`).
     pub fn skipped_fixes(&self) -> Vec<&'static str> {
         let mut skip = Vec::new();
@@ -216,7 +239,7 @@ impl Settings {
             skip.push("F7");
             skip.push("F14");
         }
-        if self.resolution.is_none() {
+        if self.race_resolution().is_none() {
             skip.push("F10");
             skip.push("F13");
         }
@@ -247,6 +270,28 @@ impl Settings {
                         parse_language(&v)
                             .ok_or_else(|| format!("unknown language {v}\n\n{USAGE}"))?,
                     );
+                }
+                "--resolution" => {
+                    let v = value("--resolution")?;
+                    s.resolution = Some(parse_resolution(&v).ok_or_else(|| {
+                        format!("--resolution needs WIDTHxHEIGHT or original, not {v}\n\n{USAGE}")
+                    })?);
+                }
+                "--draw-distance" => {
+                    let v = value("--draw-distance")?;
+                    s.draw_distance = Some(parse_factor(&v).ok_or_else(|| {
+                        format!("--draw-distance needs 1.0 to 3.0, not {v}\n\n{USAGE}")
+                    })?);
+                }
+                flag @ ("--widescreen" | "--gamepad-axes" | "--close-quits") => {
+                    let v = value(flag)?;
+                    let b = parse_bool(&v)
+                        .ok_or_else(|| format!("{flag} needs on or off, not {v}\n\n{USAGE}"))?;
+                    match flag {
+                        "--widescreen" => s.widescreen = Some(b),
+                        "--gamepad-axes" => s.gamepad_axes = Some(b),
+                        _ => s.close_quits = Some(b),
+                    }
                 }
                 "--help" | "-h" | "/?" => return Err(USAGE.into()),
                 other => return Err(format!("unknown argument {other}\n\n{USAGE}")),
@@ -296,6 +341,35 @@ mod tests {
         assert!(args(&["--language", "klingon"]).is_err());
         assert!(args(&["--game"]).is_err());
         assert!(args(&["--bogus"]).is_err());
+    }
+
+    #[test]
+    fn every_setting_has_a_flag() {
+        let s = args(&[
+            "--resolution",
+            "2560x1440",
+            "--widescreen",
+            "on",
+            "--draw-distance",
+            "2",
+            "--gamepad-axes",
+            "off",
+            "--close-quits",
+            "no",
+        ])
+        .unwrap();
+        assert_eq!(s.race_resolution(), Some((2560, 1440)));
+        assert_eq!(s.widescreen, Some(true));
+        assert_eq!(s.draw_distance, Some(0x20000));
+        assert_eq!(s.skipped_fixes(), ["F6", "F7", "F14"]);
+        assert!(args(&["--widescreen", "maybe"]).is_err());
+        assert!(args(&["--draw-distance", "9"]).is_err());
+
+        // `original` on the command line overrides a file's resolution.
+        let (file, _) = Settings::parse_file("resolution = 1920x1080\n");
+        let m = file.merged(args(&["--resolution", "original"]).unwrap());
+        assert_eq!(m.race_resolution(), None);
+        assert!(m.skipped_fixes().contains(&"F10"));
     }
 
     #[test]

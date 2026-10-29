@@ -4,6 +4,7 @@
 #   cmr-play                  start the game with the saved settings
 #   cmr-play get              print the current settings (key=value)
 #   cmr-play play KEY=VALUE…  save settings, then start the game
+#   cmr-play check FOLDER     is this a supported game folder?
 #   cmr-play stop | status
 #
 # The game's settings (resolution, widescreen, saves, …) are kept in
@@ -38,12 +39,47 @@ done
 
 set_key() { # key value; an empty value comments the key out
   mkdir -p "$(dirname "$CFG")"; [ -f "$CFG" ] || : > "$CFG"
+  # Escape \ & | for sed (Windows paths have backslashes).
+  v=$(printf '%s' "$2" | sed 's/[\\&|]/\\&/g')
   if [ -z "$2" ]; then sed -i "s|^$1 *=.*|#$1 = |" "$CFG"
-  elif grep -q "^#\?$1 *=" "$CFG"; then sed -i "s|^#\?$1 *=.*|$1 = $2|" "$CFG"
-  else echo "$1 = $2" >> "$CFG"; fi
+  elif grep -q "^#\?$1 *=" "$CFG"; then sed -i "s|^#\?$1 *=.*|$1 = $v|" "$CFG"
+  else printf '%s = %s\n' "$1" "$2" >> "$CFG"; fi
 }
 get_key() { [ -f "$CFG" ] && sed -n "s|^$1 *= *||p" "$CFG" | tail -1; }
-running() { pgrep -x Rally.exe >/dev/null; }
+LOCK=$STATE/running.pid
+# Running, or still starting: Rally.exe exists, or the gamescope session we
+# started is alive (the launcher copies files before Rally.exe appears).
+running() {
+  pgrep -x Rally.exe >/dev/null && return 0
+  [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK")" 2>/dev/null
+}
+
+# Supported Rally.exe versions (SHA-256), as in crates/cmr-launcher/src/edition.rs.
+edition() {
+  case "$1" in
+    0eb6ea9652219b9a35c0a6134bf0cdf316dce21215b724cdfc10ba85eb95982a) echo "Official European v1.5" ;;
+    46500c8e22ce3e943b6855eca63ae9288261162347ca76fa36cad77cbb19c0bb) echo "European v1.5 (community pack)" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Linux folder -> the Z:\ path Wine shows it as; Z:/... and C:/... are kept.
+to_wine() {
+  case "$1" in
+    [A-Za-z]:*) echo "$1" ;;
+    *) echo "Z:$(readlink -f "$1")" ;;
+  esac
+}
+
+check() {
+  dir=$1
+  case "$dir" in Z:*|z:*) dir=${dir#??} ;; esac
+  [ -d "$dir" ] || { echo "no such folder"; return 1; }
+  exe=$(find "$dir" -maxdepth 1 -iname rally.exe | head -1)
+  [ -n "$exe" ] || { echo "no Rally.exe in this folder"; return 1; }
+  sum=$(sha256sum "$exe" | cut -d' ' -f1)
+  if name=$(edition "$sum"); then echo "ok: $name"; else echo "unsupported Rally.exe (SHA-256 $sum)"; return 1; fi
+}
 
 start() {
   if [ -z "$LAUNCHER" ] || [ ! -f "$LAUNCHER" ]; then
@@ -67,17 +103,23 @@ INNER
   setsid $RUN env WINEPREFIX="$PREFIX" \
     gamescope -w "$W" -h "$H" -f -S fit -F "$F" -- "$inner" \
     > "$STATE/play.log" 2>&1 < /dev/null &
+  echo $! > "$LOCK"
 }
 
 case "${1:-start}" in
   get)
-    for k in resolution widescreen draw_distance close_quits gamepad_axes saves game; do
+    for k in resolution widescreen draw_distance close_quits gamepad_axes saves; do
       echo "$k=$(get_key "$k")"
     done
+    g=$(get_key game); case "$g" in Z:*|z:*) g=${g#??} ;; esac
+    echo "game=$g"
     echo "scaler=$(cat "$STATE/scaler" 2>/dev/null)" ;;
   status) if running; then echo running; else echo idle; fi ;;
+  check) check "${2:-}" ;;
   stop)
     $RUN env WINEPREFIX="$PREFIX" wineserver -k 2>/dev/null
+    [ -f "$LOCK" ] && kill "$(cat "$LOCK")" 2>/dev/null
+    rm -f "$LOCK"
     echo stopped ;;
   start)
     if running; then echo "already running"; else start; fi ;;
@@ -89,6 +131,8 @@ case "${1:-start}" in
       case "$k" in
         resolution) if [ "$v" = original ]; then set_key resolution ""; else set_key resolution "$v"; fi ;;
         scaler) echo "$v" > "$STATE/scaler" ;;
+        game) if [ -n "$v" ]; then check "$v" >/dev/null || { echo "game folder: $(check "$v")"; exit 1; }
+                set_key game "$(to_wine "$v")"; fi ;;
         widescreen|draw_distance|saves|close_quits|gamepad_axes) set_key "$k" "$v" ;;
       esac
     done

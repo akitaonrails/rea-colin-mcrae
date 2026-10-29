@@ -14,7 +14,7 @@ import Quickshell.Io
 ShellRoot {
   id: root
   // cmr-play sits one folder up, next to CMRLauncher.exe.
-  readonly property string helper: Qt.resolvedUrl("../cmr-play").toString().replace("file://", "")
+  readonly property string helper: Quickshell.shellDir + "/../cmr-play"
 
   // Palette
   readonly property color cBlue: "#0f2e6e"
@@ -54,6 +54,11 @@ ShellRoot {
   property string status: "idle"
   property string message: ""
   property bool loaded: false
+  // Set when Start is pressed; cleared once the game runs or after 60 s, so
+  // the button can't start a second game while the first is loading.
+  property bool starting: false
+  property string gameCheck: ""
+  readonly property bool gameOk: gameCheck.startsWith("ok")
 
   function find(list, key, fallback) {
     const i = list.findIndex(o => o.key === key);
@@ -73,6 +78,8 @@ ShellRoot {
     quit.checked = kv.close_quits !== "false";
     pad.checked = kv.gamepad_axes !== "false";
     saves.text = kv.saves || "";
+    game.text = kv.game || "";
+    if (game.text) runCheck();
     loaded = true;
   }
 
@@ -81,6 +88,24 @@ ShellRoot {
     running: true
     stdout: StdioCollector { onStreamFinished: root.apply(text) }
   }
+  function runCheck() {
+    gameCheck = "checking…";
+    checker.command = [root.helper, "check", game.text.trim()];
+    checker.running = true;
+  }
+
+  Process {
+    id: checker
+    stdout: StdioCollector { onStreamFinished: root.gameCheck = text.trim() }
+  }
+
+  Timer {
+    id: startGuard
+    interval: 60000
+    onTriggered: root.starting = false
+  }
+  onStatusChanged: if (status === "running") starting = false
+
   Process {
     id: action
     stdout: StdioCollector { onStreamFinished: root.message = text.trim() }
@@ -171,7 +196,7 @@ ShellRoot {
   FloatingWindow {
     title: "Colin McRae Rally"
     implicitWidth: 900
-    implicitHeight: 660
+    implicitHeight: 760
     color: root.cBlue
 
     // Colin, on the left: the photo fills the side, a blue fade joins it to
@@ -248,10 +273,49 @@ ShellRoot {
         font.italic: true
       }
       Text {
-        text: root.status === "running" ? "On the stage. Super+W or Stop ends it." : "Ready."
+        text: root.status === "running" ? "On the stage. Super+W or Stop ends it."
+            : root.starting ? "Starting the game…"
+            : root.message.startsWith("game folder") ? root.message : "Ready."
         color: root.status === "running" ? root.cGold : root.cMuted
         font.family: root.family; font.pixelSize: 13
         Layout.topMargin: -8
+      }
+
+      Heading { text: "Game folder" }
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: 10
+        TextField {
+          id: game
+          Layout.fillWidth: true
+          placeholderText: "The folder with your installed Rally.exe"
+          color: root.cInk; placeholderTextColor: root.cMuted
+          font.family: root.family; font.pixelSize: 14
+          leftPadding: 12; rightPadding: 12
+          onEditingFinished: if (text.trim()) root.runCheck()
+          background: Rectangle {
+            implicitHeight: 36; radius: 6
+            color: root.cPanel
+            border.color: game.activeFocus ? root.cGold : root.cLine
+          }
+        }
+        Rectangle {
+          width: 86; height: 36; radius: 6
+          color: "transparent"; border.color: root.cGold; border.width: 1.5
+          Text {
+            anchors.centerIn: parent; text: "Check"
+            color: root.cGold; font.family: root.family; font.pixelSize: 14; font.weight: Font.DemiBold
+          }
+          HoverHandler { cursorShape: Qt.PointingHandCursor }
+          TapHandler { onTapped: root.runCheck() }
+        }
+      }
+      Text {
+        text: root.gameCheck === "" ? "A Linux path, e.g. /home/you/Games/Colin McRae Rally."
+            : root.gameOk ? "Found: " + root.gameCheck.slice(4) : root.gameCheck
+        color: root.gameCheck === "" ? root.cMuted : root.gameOk ? root.cGold : "#ff8a80"
+        font.family: root.family; font.pixelSize: 12
+        Layout.topMargin: -6
       }
 
       Heading { text: "Picture" }
@@ -316,20 +380,21 @@ ShellRoot {
         Rectangle {
           id: startStop
           readonly property bool running: root.status === "running"
+          readonly property bool busy: root.starting && !running
           width: 150; height: 46; radius: 8
-          color: running ? "transparent" : (root.loaded ? root.cGold : root.cLine)
+          color: running ? "transparent" : (root.loaded && !busy ? root.cGold : root.cLine)
           border.color: running ? root.cInk : root.cGold
           border.width: running ? 1.5 : 0
           Text {
             anchors.centerIn: parent
-            text: startStop.running ? "Stop" : "Start"
+            text: startStop.running ? "Stop" : startStop.busy ? "Starting…" : "Start"
             color: startStop.running ? root.cInk : root.cOnGold
             font.family: "Noto Sans ExtraCondensed"; font.pixelSize: 20; font.weight: Font.Black
             font.italic: true
           }
           HoverHandler { cursorShape: Qt.PointingHandCursor }
           TapHandler {
-            enabled: root.loaded
+            enabled: root.loaded && !startStop.busy
             onTapped: {
               if (startStop.running) {
                 action.command = [root.helper, "stop"];
@@ -341,7 +406,10 @@ ShellRoot {
                   "scaler=" + root.scalers[scaler.current].key,
                   "close_quits=" + (quit.checked ? "true" : "false"),
                   "gamepad_axes=" + (pad.checked ? "true" : "false"),
-                  "saves=" + saves.text.trim()];
+                  "saves=" + saves.text.trim(),
+                  "game=" + game.text.trim()];
+                root.starting = true;
+                startGuard.restart();
               }
               action.running = true;
             }

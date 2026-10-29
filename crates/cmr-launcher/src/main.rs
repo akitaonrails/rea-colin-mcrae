@@ -117,9 +117,10 @@ mod app {
         for w in &warnings {
             log_line(&format!("warning: {w}"));
         }
-        let settings = saved
-            .clone()
-            .merged(Settings::parse_args(std::env::args().skip(1))?);
+        let mut cli: Vec<String> = std::env::args().skip(1).collect();
+        let check_only = cli.iter().any(|a| a == "--check");
+        cli.retain(|a| a != "--check");
+        let settings = saved.clone().merged(Settings::parse_args(cli)?);
 
         let game = find_game(&settings)?;
         let exe_bytes = fs::read(game.join(EXE))
@@ -132,6 +133,18 @@ mod app {
         })?;
         let image = pe::Image::parse(&exe_bytes).map_err(|e| e.to_string())?;
         log_line(&format!("game: {} ({})", game.display(), edition.name));
+        if check_only {
+            win32::message(
+                "Colin McRae Rally launcher",
+                &format!(
+                    "Ready to play.\n\nGame folder: {}\nVersion: {}",
+                    game.display(),
+                    edition.name
+                ),
+                false,
+            );
+            return Ok(0);
+        }
 
         let rt = settings
             .runtime
@@ -246,7 +259,7 @@ mod app {
                         ));
                     }
                 }
-                if let Some((w, h)) = settings.resolution {
+                if let Some((w, h)) = settings.race_resolution() {
                     let size: Vec<u8> = [w, h].iter().flat_map(|v| v.to_le_bytes()).collect();
                     if fill_data(&mut writes, cave.wrapping_add(fixes::F10_SIZE), &size) {
                         log_line(&format!("F10 race resolution {w}x{h}"));
