@@ -90,7 +90,11 @@ gamepad_axes = true
 #draw_distance = 1.5
 ";
 
-pub const USAGE: &str = "\
+pub const USAGE: &str = concat!(
+    "CMRLauncher ",
+    env!("CARGO_PKG_VERSION"),
+    "\n\n",
+    "\
 CMRLauncher [options]
 
   --game <folder>          the folder with your installed Rally.exe (remembered)
@@ -112,7 +116,8 @@ CMRLauncher --controllers [seconds]
   lists the joysticks the game can see and logs every stick, trigger and
   button you move for that long (default 30) to launcher.log
 
-Other settings are in launcher.cfg (see the comments in it).";
+Other settings are in launcher.cfg (see the comments in it)."
+);
 
 fn parse_bool(v: &str) -> Option<bool> {
     match v.to_ascii_lowercase().as_str() {
