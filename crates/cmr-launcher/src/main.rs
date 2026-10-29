@@ -110,6 +110,7 @@ mod app {
             );
             return Ok(0);
         }
+        log_line(concat!("CMRLauncher ", env!("CARGO_PKG_VERSION")));
         let settings_path = settings_path();
         let existing = fs::read_to_string(&settings_path).ok();
         let file_text = existing.as_deref().unwrap_or(config::TEMPLATE);
