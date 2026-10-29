@@ -141,7 +141,8 @@ linux/cmr-play
 ```
 
 On desktops with [Quickshell](https://quickshell.org) you can use the
-launcher shown above (`qs -p linux/quickshell-launcher`); see
+launcher shown above instead (`qs -p linux/quickshell-launcher`): pick your
+game folder, press **Check**, choose your options and press **Start**. See
 [linux/README.md](linux/README.md).
 
 ## 5. Settings
@@ -163,6 +164,20 @@ Open it in any text editor; lines starting with `#` are switched off.
 | `saves = D:\Rally saves` | Where your saves are kept. | `Saved Games\Colin McRae Rally` in your user folder |
 | `language = FRENCH` | Game language on first setup: ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN. | ENGLISH |
 | `game = …` | Your game folder (filled in by `--game`). | — |
+
+Every setting can also be given on the command line for one run, for
+example in Steam's launch options:
+
+```text
+CMRLauncher.exe --resolution 1920x1080 --widescreen on --draw-distance 1.5
+CMRLauncher.exe --resolution original          # back to the game's own sizes
+CMRLauncher.exe --check --game "D:\Games\Colin McRae Rally"   # is this folder supported?
+```
+
+Flags: `--game`, `--saves`, `--runtime`, `--language`, `--resolution`,
+`--widescreen on|off`, `--draw-distance`, `--gamepad-axes on|off`,
+`--close-quits on|off`. Only `--game` is remembered; the others override
+`launcher.cfg` for that run. `CMRLauncher.exe --help` lists them.
 
 ### Gamepad
 
