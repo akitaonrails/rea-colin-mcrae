@@ -247,6 +247,7 @@ impl Settings {
         if self.race_resolution().is_none() {
             skip.push("F10");
             skip.push("F13");
+            skip.push("F16");
         }
         if self.widescreen != Some(true) {
             skip.push("F11");
@@ -389,7 +390,7 @@ mod tests {
                 ..Settings::default()
             }
         );
-        assert_eq!(s.skipped_fixes(), ["F10", "F13", "F11", "F12"]);
+        assert_eq!(s.skipped_fixes(), ["F10", "F13", "F16", "F11", "F12"]);
     }
 
     #[test]

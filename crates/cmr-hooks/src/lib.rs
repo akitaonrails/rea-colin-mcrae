@@ -14,12 +14,19 @@
 //! queues is then mapped onto a 4:3 canvas centred on the real screen.
 
 pub mod canvas;
+pub mod present;
 
 #[cfg(all(not(test), windows))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
 }
+
+/// Referenced by the unwind tables of the pre-built `core`; panics abort in
+/// this library (release profile), so it is never called.
+#[cfg(all(not(test), windows))]
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_eh_personality() {}
 
 /// The DLL entry point. The library needs no runtime start-up (it is
 /// linked without the C start files), so attaching just succeeds.

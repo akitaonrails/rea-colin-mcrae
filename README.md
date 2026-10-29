@@ -35,8 +35,9 @@ never changed: the launcher works on its own private copy.
 **Picture** (all optional)
 
 - Races at higher resolutions, up to 4K (the original stops at 800×600).
-- The HUD (speedometer, timer, pause menu) scales with the resolution and
-  sits in the corners of wide screens.
+- The intro and menus are enlarged to your screen with sharp pixels, and
+  the HUD (speedometer, timer, pause menu, results) scales with the
+  resolution and sits in the corners of wide screens.
 - 16:9 widescreen that shows more to the sides instead of stretching.
 - A longer view distance, up to 3× further down the stage.
 
@@ -212,8 +213,9 @@ Under Wine and Proton these are inside the Wine prefix (for Steam:
   1998 game can't use a portrait main screen. Make a landscape monitor your
   main display, or on Linux use `linux/cmr-play` (gamescope gives the game a
   landscape screen).
-- **At high resolutions the menus are small in a corner.** Known: the game's
-  menus are drawn at 640×480 and aren't scaled up yet; races are full screen.
+- **Menus feel less smooth at 4K.** The menus are drawn at 640×480 and
+  enlarged for your screen each frame; at 4K that copy is slow on some
+  setups. 1440p or 1080p keeps them smooth; races aren't affected.
 - **Steam/Proton: the game crashes right away with an NVIDIA card.** Some
   setups only give 32-bit programs working OpenGL through Proton's WoW64
   mode. Add `PROTON_USE_WOW64=1` in front of `%command%` in the launch
@@ -222,8 +224,8 @@ Under Wine and Proton these are inside the Wine prefix (for Steam:
 
 ## Known limitations
 
-- The menus, the intro screens and the results text aren't scaled to high
-  resolutions yet.
+- Menus at 4K can run below 30 fps (enlarged on the CPU for now).
+- A short white flash before the legal screen at high resolutions.
 - Split screen isn't adjusted for widescreen.
 - Only the European v1.5 `Rally.exe` is recognised so far.
 
