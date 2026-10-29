@@ -156,7 +156,7 @@ fn rel32(at: u32, len: u32, to: u32) -> [u8; 4] {
 /// The community-patched EU v1.5 (`46500c8e…`) carries F1-F5 on disk; it
 /// is the same build, so F6 applies at the same addresses.
 pub static COMMUNITY_EU_15: FixSet = FixSet {
-    fixes: &[F6, F7, F8, F9, F10, F11, F12, F13, F14],
+    fixes: &[F6, F7, F8, F9, F10, F11, F12, F13, F14, F15],
 };
 
 /// Official EU v1.5 (`0eb6ea96…`).
@@ -235,6 +235,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         F12,
         F13,
         F14,
+        F15,
     ],
 };
 
@@ -960,6 +961,27 @@ const F14: Fix = Fix {
     ],
 };
 
+/// The CPU clock check (`FUN_004ad240`) raises the process to real-time
+/// priority and busy-waits one second of `QueryPerformanceCounter` while
+/// counting `rdtsc` cycles in 32 bits, retrying whenever that count wraps.
+/// On CPUs above ~2 GHz it wraps in under a second, so the check repeats
+/// for several seconds, and the game calls it three times (start-up, the
+/// default detail settings at `0x4b999c`, the exit-time profiler) — the long
+/// black/legal screen at start and a slow quit. Its result (Hz, a multiple
+/// of 10^6) is only compared with 198 MHz for the default detail level and
+/// printed by the profiler. F15 returns 1 GHz at once: a fast CPU, which is
+/// what the original measured on the hardware it was made for.
+const F15: Fix = Fix {
+    id: "F15",
+    what: "no multi-second CPU clock check at start (and at exit)",
+    optional: false,
+    code: &[Piece {
+        at: At::Image(0x004a_d240),
+        // mov eax,1000000000 ; ret
+        ops: &[Op::Raw(&[0xb8, 0x00, 0xca, 0x9a, 0x3b, 0xc3])],
+    }],
+};
+
 /// 24 bytes: ecx = |[esp+d8] - 0x8000|; if ecx > ebx { ebx = ecx; eax = [esp+d8] }.
 const fn take_if_further(d8: u8) -> [u8; 24] {
     [
@@ -999,7 +1021,7 @@ mod tests {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
         let expected: Vec<_> = (1..=ids.len()).map(|i| format!("F{i}")).collect();
         assert_eq!(ids, expected);
-        assert_eq!(ids.len(), 14);
+        assert_eq!(ids.len(), 15);
     }
 
     #[test]
@@ -1131,6 +1153,7 @@ mod tests {
         assert_eq!(at(0x497cef), [0x10]);
         assert_eq!(at(0x49dcb0), [0x31, 0xc0, 0xc3]);
         assert_eq!(at(0x4ae590), [0xc2, 0x04, 0x00]);
+        assert_eq!(at(0x4ad240), [0xb8, 0x00, 0xca, 0x9a, 0x3b, 0xc3]);
     }
 
     #[test]
@@ -1169,7 +1192,7 @@ mod tests {
     fn only_optional_fixes_can_be_skipped() {
         let skip = ["F6", "F7", "F10", "F11", "F12", "F13", "F14", "F1"];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
-        assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9"]);
+        assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9", "F15"]);
         assert_eq!(OFFICIAL_EU_15.cave_size(&skip), F9_CAVE + 24);
         assert!(
             OFFICIAL_EU_15
