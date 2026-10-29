@@ -5,16 +5,18 @@
 //! these exports from small stubs; each stub checks that its table entry was
 //! filled, so without this library the game behaves as the original.
 //!
-//! **HUD canvas (F13).** With a race resolution the game never had (F10),
-//! the in-race HUD mixes three coordinate spaces: rectangles in 640x480
-//! space scaled by W/640, fractions of W/H, and absolute pixel tables picked
-//! by exact width (the rev dial), plus text drawn at the font's native size.
-//! While the HUD lays itself out and draws, the game is shown a virtual
-//! 640x480 screen, so all of it resolves in one space; every sprite it
-//! queues is then mapped onto a 4:3 canvas centred on the real screen.
+//! **In-race 2D (F13).** With a race resolution the game never had (F10),
+//! its 2D (HUD, messages, results, loading screen) mixes rectangles in
+//! 640x480 space scaled by W/640, fractions of W/H, and absolute pixel
+//! tables picked by exact width, plus text drawn at the font's native size.
+//! Each race frame is shown a virtual 640x480 screen (`sections`), so all
+//! of it resolves in the one space it was made for; the 2D primitives then
+//! map every rectangle onto a 4:3 canvas centred on the real screen
+//! (`canvas`). Display set-up and the 3D draw see the real screen.
 
 pub mod canvas;
 pub mod present;
+pub mod sections;
 
 #[cfg(all(not(test), windows))]
 #[panic_handler]

@@ -27,26 +27,27 @@ code or data, [I] inferred. Status and the fix list are in
   width (`fonts\{320x240,512x384,640x480}\…`, `images\osdnew\revs\classic\<WxH>…`);
   race fonts by the resolution byte (`0x4f0e1c`); some pieces scale 640x480
   rectangles by W/640, H/480 (`0x461a60`) or use Q16 fractions of W/H.
-- **F13** (in-race 2D): while the HUD lays itself out (race start) and
-  draws, and while the in-race messages (countdown, GO, STAGE COMPLETE,
-  rally school text), the pause menu, the results pages, the replay overlay
-  and the loading screen draw, the game sees a virtual 640x480 screen, so
-  every piece resolves in one space (640x480 rectangles, W/H fractions, the
-  absolute rev-dial tables, the 640 fonts). Every rectangle they draw is
-  scaled by H/480 onto a centred 4:3 area of the real screen: the sprite
-  queues `0x49b420`/`0x49b1d0` (destination and clip; text glyphs are
-  queued sprites too), the direct blit `0x49e3e0` (loading-screen pictures,
-  bar and rule) and the panel `0x49e200` (dimming panels). A rectangle
+- **F13** (in-race 2D): one general rule instead of per-screen patches.
+  In a race state (4 loading .. 0xb replay), each game tick (`0x443e90`)
+  sees a virtual 640x480 screen, the size all of the game's 2D was laid out
+  for, so the HUD, every message, the pause menu, results, replay overlay
+  and loading screen resolve in one space with no per-screen work. The 2D
+  primitives map every rectangle onto a 4:3 area centred on the real
+  screen: the sprite and text queues `0x49b420`/`0x49b1d0` (destination and
+  clip), the direct blit `0x49e3e0` and the panel `0x49e200`. A rectangle
   covering the whole virtual width or height (backdrop, fade, dimming
-  panel) spans the whole real screen. Only the race HUD (`cmr_hud_begin`)
-  goes to the corners on screens wider than 4:3: pieces centred in the left
-  30% of the virtual screen keep to the left edge, the right 30% to the
-  right edge, the middle stays centred. Screens laid out as a whole
-  (`cmr_hud_begin_whole`) stay centred, so their text lines stay together.
-  The logic is in `cmrhooks.dll` (crate `cmr-hooks`); the launcher loads
-  it into the suspended game and fills F13's hook table. Seen at run time
-  (1920x1080): HUD in the corners, countdown and GET READY, pause menu,
-  loading screen. Still to see: STAGE COMPLETE, results and replay overlay
+  panel, letterbox) spans the real screen. Only code that needs the real
+  screen runs in "real" sections, with the real size and scaling paused:
+  display set-up `0x497be0`, 3D device and viewport set-up `0x4a6950`, the
+  clears `0x49ffc0`/`0x49ff80`, the projection `0x435d10` and the scene
+  draw `0x49fe30` (which projects some effects to screen coordinates
+  itself). A display change inside a real section updates the real size (a
+  return to the front end's 640x480 ends scaling). The race HUD's layout
+  and draw calls are marked so its side pieces anchor to the screen edges.
+  The state logic is `cmr-hooks::sections` (host tests); the front end is
+  never touched (it has F16). Seen at run time (3840x2160): menus, service
+  screen, loading screen, race HUD in the corners, pause, quit back to the
+  enlarged menu. Still to see: STAGE COMPLETE, results and replay overlay
   (need a finished stage). Not covered: split-screen views, the rotated
   needle dial's pivot.
 - Forcing the whole game (front end too) above 640x480 breaks the front
