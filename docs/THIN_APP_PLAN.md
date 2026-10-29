@@ -108,9 +108,9 @@ at tag `recomp-parked-2026-11-02` and copied in full (with its local notes) to
   mode (Proton looks right; Wine's Wayland driver scales but showed black).
 
 **Next:**
-1. Graphics: confirm on a real screen (Proton/Steam route; Wine's Wayland
-   driver black picture), pause menu and results text at high resolution,
-  edge-anchored HUD option.
+1. Graphics: scale the 640x480 front end (splash, menus) to the screen with
+   our own stretched present (GRAPHICS.md); results pages at high
+   resolution; confirm on a real screen.
 2. Controllers: keep RUN JOYSTICK PANEL from hanging (C6), the Control
    Setup loop and binding capture (C3, C4), d-pad and A/B swap (C5).
 2. R15: handle a portrait main screen in the launcher (give the game a

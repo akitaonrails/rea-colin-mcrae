@@ -132,4 +132,12 @@ mode to the screen while also offering the race mode.
   4:3 area of the monitor, and it does not trip over a portrait monitor
   (R15), but the picture stayed black in the first try (to investigate).
   It does not run inside gamescope (no `wl_subcompositor`).
+- Tried and ruled out for the front end under gamescope: Wine's own mode
+  emulation (`UseXRandR=N`, `UseXVidMode=N`: still drawn at 640x480 in the
+  corner) and a Wine virtual desktop at 640x480 (same).
+- Plan (own fix, independent of the display): in `cmrhooks.dll`, while the
+  front end runs, keep the game's 640x480 back buffer as an off-screen
+  surface and present it with a stretching `Blt` to a primary at the race
+  (screen) resolution, centred 4:3, instead of the original `Flip`
+  (`0x49870f`). The game keeps drawing exactly as before.
 
