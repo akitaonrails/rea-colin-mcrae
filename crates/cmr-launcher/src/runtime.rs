@@ -196,13 +196,54 @@ pub fn sync(game: &Path, runtime: &Path) -> io::Result<usize> {
 /// one. Any existing spelling is kept (Wine on Linux is case-sensitive on
 /// disk).
 fn ensure_save_dir(runtime: &Path) -> io::Result<()> {
+    save_dir(runtime).map(|_| ())
+}
+
+/// The runtime folder's save folder, in whatever spelling it has; created
+/// as `save` when missing.
+pub fn save_dir(runtime: &Path) -> io::Result<PathBuf> {
     for entry in fs::read_dir(runtime)? {
         let entry = entry?;
         if entry.file_type()?.is_dir() && entry.file_name().eq_ignore_ascii_case("save") {
-            return Ok(());
+            return Ok(entry.path());
         }
     }
-    fs::create_dir(runtime.join("save"))
+    let dir = runtime.join("save");
+    fs::create_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Copies every file below `from` into `to` (creating folders), skipping
+/// files whose copy already has the same size and modification time.
+/// Returns how many files were copied. Used to keep the player's save
+/// folder (`saves` setting) and the runtime's `save` folder in step.
+pub fn mirror(from: &Path, to: &Path) -> io::Result<usize> {
+    if !from.is_dir() {
+        return Ok(0);
+    }
+    let mut copied = 0;
+    for (rel, stamp) in list(from)? {
+        let src = native(from, &rel);
+        let dst = native(to, &rel);
+        let same = fs::metadata(&dst)
+            .map(|m| m.len() == stamp.size && mtime_secs(&m) == stamp.mtime)
+            .unwrap_or(false);
+        if same {
+            continue;
+        }
+        if let Some(dir) = dst.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        if dst.exists() {
+            make_writable(&dst)?;
+        }
+        fs::copy(&src, &dst)?;
+        make_writable(&dst)?;
+        let file = fs::OpenOptions::new().write(true).open(&dst)?;
+        file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(stamp.mtime))?;
+        copied += 1;
+    }
+    Ok(copied)
 }
 
 #[cfg(test)]
@@ -331,6 +372,36 @@ mod tests {
         for d in [game, rt, rt2] {
             fs::remove_dir_all(d).unwrap();
         }
+    }
+
+    #[test]
+    fn mirror_copies_new_and_changed_files_only() {
+        let a = temp("mirror-a");
+        let b = temp("mirror-b");
+        fs::create_dir_all(&a).unwrap();
+        fs::write(a.join("cmRally.cfg"), b"one").unwrap();
+        fs::write(a.join("SAVESLOT1.cms"), b"slot").unwrap();
+        assert_eq!(mirror(&a, &b).unwrap(), 2);
+        assert_eq!(mirror(&a, &b).unwrap(), 0, "unchanged files are skipped");
+        fs::write(a.join("cmRally.cfg"), b"two!").unwrap();
+        assert_eq!(mirror(&a, &b).unwrap(), 1);
+        assert_eq!(fs::read(b.join("cmRally.cfg")).unwrap(), b"two!");
+        assert_eq!(
+            mirror(&temp("mirror-none"), &b).unwrap(),
+            0,
+            "no source folder"
+        );
+        for d in [a, b] {
+            fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    #[test]
+    fn save_dir_finds_any_spelling() {
+        let rt = temp("savedir");
+        fs::create_dir_all(rt.join("SAVE")).unwrap();
+        assert_eq!(save_dir(&rt).unwrap().file_name().unwrap(), "SAVE");
+        fs::remove_dir_all(&rt).unwrap();
     }
 
     #[test]

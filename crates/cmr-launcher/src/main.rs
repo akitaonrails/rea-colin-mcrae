@@ -67,6 +67,16 @@ mod app {
         }
     }
 
+    /// `%USERPROFILE%\Saved Games\Colin McRae Rally`, Windows' usual place
+    /// for game saves (inside the prefix under Wine/Proton).
+    fn default_saves() -> PathBuf {
+        std::env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .unwrap_or_else(home)
+            .join("Saved Games")
+            .join("Colin McRae Rally")
+    }
+
     fn find_game(settings: &Settings) -> Result<PathBuf, String> {
         if let Some(g) = &settings.game {
             return Ok(g.clone());
@@ -134,6 +144,20 @@ mod app {
             "runtime: {} ({copied} files copied)",
             rt.display()
         ));
+        // The player's saves live outside the runtime copy; the game reads
+        // and writes its own `save` folder, kept in step before and after.
+        let saves = settings.saves.clone().unwrap_or_else(default_saves);
+        let rt_save = runtime::save_dir(&rt).map_err(|e| format!("cannot prepare saves: {e}"))?;
+        if !saves.is_dir() {
+            // First run with this folder: start it from what the game has.
+            let n = runtime::mirror(&rt_save, &saves)
+                .map_err(|e| format!("cannot create {}: {e}", saves.display()))?;
+            log_line(&format!("saves: created {} ({n} files)", saves.display()));
+        }
+        let n = runtime::mirror(&saves, &rt_save)
+            .map_err(|e| format!("cannot read saves from {}: {e}", saves.display()))?;
+        log_line(&format!("saves: {} ({n} files updated)", saves.display()));
+
         if let Ok(listing) = runtime::list(&game)
             && let Some((len, rel)) = runtime::longest_path(&rt, &listing)
             && len > runtime::MAX_GAME_PATH
@@ -233,6 +257,13 @@ mod app {
             &mut |line| log_line(line),
         )?;
         log_line(&format!("game exited with {code}"));
+        match runtime::mirror(&rt_save, &saves) {
+            Ok(n) => log_line(&format!("saves: {n} files written back")),
+            Err(e) => log_line(&format!(
+                "warning: saves not written back to {}: {e}",
+                saves.display()
+            )),
+        }
         Ok(code)
     }
 }

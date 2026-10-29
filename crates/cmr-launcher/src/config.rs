@@ -14,6 +14,8 @@ use crate::registry::LANGUAGES;
 pub struct Settings {
     pub game: Option<PathBuf>,
     pub runtime: Option<PathBuf>,
+    /// Where the player's saves live (see `TEMPLATE`).
+    pub saves: Option<PathBuf>,
     pub language: Option<String>,
     /// Closing the window quits the game (fix F6). Default on.
     pub close_quits: Option<bool>,
@@ -45,6 +47,11 @@ game =
 # Where the launcher keeps its private, writable copy of the game, including
 # your saves. Default: %LOCALAPPDATA%\CMRLauncher\Rally
 #runtime =
+
+# Where your saves and settings (cmRally.cfg, SAVESLOT*.cms) are kept. They
+# are copied into the game before it starts and back when it exits.
+# Default: %USERPROFILE%\Saved Games\Colin McRae Rally
+#saves =
 
 # Game language, used when the game is first set up:
 # ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN.
@@ -84,10 +91,11 @@ gamepad_axes = true
 ";
 
 pub const USAGE: &str = "\
-CMRLauncher [--game <folder>] [--runtime <folder>] [--language <name>]
+CMRLauncher [--game <folder>] [--runtime <folder>] [--saves <folder>] [--language <name>]
 
   --game      the folder with your installed Rally.exe (remembered)
   --runtime   where the launcher keeps its private copy
+  --saves     where your saves are kept
   --language  ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN
 
 CMRLauncher --controllers [seconds]
@@ -152,6 +160,7 @@ impl Settings {
             match key {
                 "game" => s.game = Some(value.into()),
                 "runtime" => s.runtime = Some(value.into()),
+                "saves" => s.saves = Some(value.into()),
                 "language" => match parse_language(value) {
                     Some(l) => s.language = Some(l),
                     None => bad("unknown language"),
@@ -187,6 +196,7 @@ impl Settings {
         Settings {
             game: over.game.or(self.game),
             runtime: over.runtime.or(self.runtime),
+            saves: over.saves.or(self.saves),
             language: over.language.or(self.language),
             close_quits: over.close_quits.or(self.close_quits),
             gamepad_axes: over.gamepad_axes.or(self.gamepad_axes),
@@ -230,6 +240,7 @@ impl Settings {
             match arg.as_str() {
                 "--game" => s.game = Some(value("--game")?.into()),
                 "--runtime" => s.runtime = Some(value("--runtime")?.into()),
+                "--saves" => s.saves = Some(value("--saves")?.into()),
                 "--language" => {
                     let v = value("--language")?;
                     s.language = Some(
@@ -304,7 +315,7 @@ mod tests {
 
     #[test]
     fn file_values_and_args_win() {
-        let text = "game = C:\\old\nruntime=C:\\rt\nlanguage = french\nclose_quits = no\ngamepad_axes=off\nresolution = 1920X1440\ndraw_distance=1.5\n";
+        let text = "game = C:\\old\nruntime=C:\\rt\nsaves = D:\\My Saves\nlanguage = french\nclose_quits = no\ngamepad_axes=off\nresolution = 1920X1440\ndraw_distance=1.5\n";
         let (saved, warnings) = Settings::parse_file(text);
         assert!(warnings.is_empty());
         assert_eq!(saved.language.as_deref(), Some("FRENCH"));
@@ -314,6 +325,7 @@ mod tests {
         let m = saved.merged(args(&["--game", r"C:\new"]).unwrap());
         assert_eq!(m.game, Some(PathBuf::from(r"C:\new")));
         assert_eq!(m.runtime, Some(PathBuf::from(r"C:\rt")));
+        assert_eq!(m.saves, Some(PathBuf::from(r"D:\My Saves")));
     }
 
     #[test]

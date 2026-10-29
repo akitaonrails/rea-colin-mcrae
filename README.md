@@ -29,6 +29,10 @@ Wine (`wine CMRLauncher.exe --game Z:/path/to/game`); the Proton/Steam route
 is still being settled. The launcher keeps its copy of the game, saves and
 `launcher.log` under `%LOCALAPPDATA%\CMRLauncher`.
 
+Your saves (`cmRally.cfg`, `SAVESLOT*.cms`) are kept in
+`%USERPROFILE%\Saved Games\Colin McRae Rally` (setting `saves`, or `--saves`):
+they are copied into the game before it starts and back when it exits.
+
 Settings live in `launcher.cfg` in the same folder, written with comments on
 the first run (a `launcher.cfg` next to `CMRLauncher.exe` takes its place for
 portable installs). Besides the folders and language it holds `close_quits`
