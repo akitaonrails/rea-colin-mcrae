@@ -18,24 +18,16 @@ struct Hud {
     canvas: Option<Canvas>,
     dst: Rect,
     clip: Rect,
+    one: Rect,
 }
 
 static mut HUD: Hud = Hud {
     depth: 0,
     real: (0, 0),
     canvas: None,
-    dst: Rect {
-        x: 0,
-        y: 0,
-        w: 0,
-        h: 0,
-    },
-    clip: Rect {
-        x: 0,
-        y: 0,
-        w: 0,
-        h: 0,
-    },
+    dst: Rect::ZERO,
+    clip: Rect::ZERO,
+    one: Rect::ZERO,
 };
 
 fn hud() -> &'static mut Hud {
@@ -49,9 +41,21 @@ fn display() -> *mut i32 {
     unsafe { *DISPLAY }
 }
 
-/// Before a HUD layout or draw call: show the game a 640x480 screen.
+/// Before a race HUD layout or draw call: show the game a 640x480 screen,
+/// its side pieces anchored to the screen edges.
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_hud_begin() {
+    begin(true);
+}
+
+/// Before a screen laid out as a whole (loading, results, pause, messages):
+/// show the game a 640x480 screen, mapped centred.
+#[unsafe(no_mangle)]
+pub extern "stdcall" fn cmr_hud_begin_whole() {
+    begin(false);
+}
+
+fn begin(anchored: bool) {
     let hud = hud();
     hud.depth += 1;
     if hud.depth > 1 {
@@ -69,7 +73,7 @@ pub extern "stdcall" fn cmr_hud_begin() {
         return;
     }
     hud.real = real;
-    hud.canvas = Some(Canvas::new(real.0, real.1));
+    hud.canvas = Some(Canvas::new(real.0, real.1, anchored));
     unsafe {
         *d = VIRTUAL.0;
         *d.add(1) = VIRTUAL.1;
@@ -97,29 +101,33 @@ pub extern "stdcall" fn cmr_hud_end() {
     hud.canvas = None;
 }
 
-/// At the entry of a sprite-queue call (`0x49b420`/`0x49b1d0`) or a panel
-/// (`0x49e200`): `args` points at its arguments; argument 1 is the
-/// destination rectangle and `clip` the index of the optional clip
-/// rectangle (`NO_CLIP` for none). Both are replaced by scaled copies; the
-/// game's own rectangles are not changed.
+/// Replaces the rectangle argument at `slot` (if not null) by its scaled
+/// copy kept in `store`; the game's own rectangle is not changed.
+///
+/// # Safety
+/// `slot` must point at a rectangle argument of the hooked call.
+unsafe fn scale_arg(slot: *mut *mut Rect, canvas: &Canvas, store: &mut Rect) {
+    unsafe {
+        if !(*slot).is_null() {
+            *store = canvas.map(**slot);
+            *slot = store;
+        }
+    }
+}
+
+/// At the entry of a sprite-queue call (`0x49b420`/`0x49b1d0`): `args`
+/// points at its arguments; argument 2 is the destination rectangle and
+/// `clip` the index of the optional clip rectangle (`NO_CLIP` for none).
+/// Both are replaced by scaled copies.
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_hud_rects(args: *mut *mut Rect, clip: u32) {
     let hud = hud();
     let Some(canvas) = hud.canvas else { return };
     // SAFETY: the stub passes the caller's argument area.
     unsafe {
-        let dst = args.add(1);
-        if !(*dst).is_null() {
-            hud.dst = canvas.map(**dst);
-            *dst = addr_of_mut!(hud.dst);
-        }
-        if clip >= NO_CLIP {
-            return;
-        }
-        let c = args.add(clip as usize);
-        if !(*c).is_null() {
-            hud.clip = canvas.map(**c);
-            *c = addr_of_mut!(hud.clip);
+        scale_arg(args.add(1), &canvas, &mut hud.dst);
+        if clip < NO_CLIP {
+            scale_arg(args.add(clip as usize), &canvas, &mut hud.clip);
         }
     }
 }
@@ -236,4 +244,19 @@ pub extern "stdcall" fn cmr_fe_present(display: *mut u8) -> u32 {
         unlock(back);
         done
     }
+}
+
+/// At the entry of a call that takes one destination rectangle among its
+/// arguments (the direct blit `0x49e3e0`, argument 4; a panel `0x49e200`,
+/// argument 2): `args` points at argument 1, `index` is the rectangle's
+/// 0-based position. Replaced by a scaled copy while the HUD canvas is on.
+#[unsafe(no_mangle)]
+pub extern "stdcall" fn cmr_hud_rect_at(args: *mut *mut Rect, index: u32) {
+    let hud = hud();
+    let Some(canvas) = hud.canvas else { return };
+    if index >= 8 {
+        return;
+    }
+    // SAFETY: the stub passes the caller's argument area.
+    unsafe { scale_arg(args.add(index as usize), &canvas, &mut hud.one) };
 }

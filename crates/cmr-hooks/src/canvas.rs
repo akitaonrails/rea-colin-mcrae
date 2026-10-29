@@ -18,14 +18,28 @@ pub struct Rect {
     pub h: i16,
 }
 
+impl Rect {
+    pub const ZERO: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+    };
+}
+
 /// Maps virtual-screen pixels onto a `real` screen with a uniform scale
-/// `real_h / 480`. On a screen wider than 4:3 the extra width goes to the
-/// sides: pieces centred in the left 30% of the virtual screen stay at the
-/// left edge, pieces in the right 30% at the right edge, and the rest (the
-/// middle, where centred text and the countdown sit) stays centred.
+/// `real_h / 480`, centred. For the race HUD (`anchored`) the extra width of
+/// a screen wider than 4:3 goes to the sides: pieces centred in the left 30%
+/// of the virtual screen stay at the left edge, pieces in the right 30% at
+/// the right edge, and the rest (the middle, where centred text and the
+/// countdown sit) stays centred. Screens laid out as a whole (loading,
+/// results, pause) are not anchored, so their text lines stay together.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Canvas {
+    real_w: i16,
+    real_h: i16,
     scale: f32,
+    anchored: bool,
     /// Horizontal offsets for left-, centre- and right-anchored pieces.
     left: f32,
     centre: f32,
@@ -33,11 +47,14 @@ pub struct Canvas {
 }
 
 impl Canvas {
-    pub fn new(real_w: i32, real_h: i32) -> Canvas {
+    pub fn new(real_w: i32, real_h: i32, anchored: bool) -> Canvas {
         let scale = real_h as f32 / VIRTUAL.1 as f32;
         let spare = real_w as f32 - VIRTUAL.0 as f32 * scale;
         Canvas {
+            real_w: real_w as i16,
+            real_h: real_h as i16,
             scale,
+            anchored,
             left: 0.0,
             centre: spare / 2.0,
             right: spare,
@@ -45,11 +62,30 @@ impl Canvas {
     }
 
     /// Edges are mapped and rounded separately, so neighbouring pieces stay
-    /// joined without gaps.
+    /// joined without gaps. A rectangle spanning the whole virtual width (or
+    /// height) — a fade, a dimming panel, a backdrop — spans the whole real
+    /// screen in that direction instead.
     pub fn map(&self, r: Rect) -> Rect {
+        let full_w = r.x <= 0 && r.x as i32 + r.w as i32 >= VIRTUAL.0;
+        let full_h = r.y <= 0 && r.y as i32 + r.h as i32 >= VIRTUAL.1;
+        let mut out = self.map_parts(r);
+        if full_w {
+            out.x = 0;
+            out.w = self.real_w;
+        }
+        if full_h {
+            out.y = 0;
+            out.h = self.real_h;
+        }
+        out
+    }
+
+    fn map_parts(&self, r: Rect) -> Rect {
         let side = VIRTUAL.0 as f32 * 0.3;
         let centre_x = r.x as f32 + r.w as f32 / 2.0;
-        let offset = if centre_x < side {
+        let offset = if !self.anchored {
+            self.centre
+        } else if centre_x < side {
             self.left
         } else if centre_x > VIRTUAL.0 as f32 - side {
             self.right
@@ -92,15 +128,16 @@ mod tests {
 
     #[test]
     fn four_by_three_scales_uniformly() {
-        let c = Canvas::new(1440, 1080);
+        let c = Canvas::new(1440, 1080, true);
         assert_eq!(c.map(r(0, 0, 640, 480)), r(0, 0, 1440, 1080));
+        assert_eq!(c.map(r(10, 10, 600, 400)), r(23, 23, 1350, 900));
         // The rev dial's 640x480 position lands in the same place, scaled.
         assert_eq!(c.map(r(487, 316, 147, 157)), r(1096, 711, 331, 353));
     }
 
     #[test]
     fn wide_screens_push_side_pieces_to_the_edges() {
-        let c = Canvas::new(1920, 1080);
+        let c = Canvas::new(1920, 1080, true);
         // The timer (bottom left) stays at the left edge.
         assert_eq!(c.map(r(30, 430, 100, 20)), r(68, 968, 225, 45));
         // The rev dial (bottom right) goes to the right edge.
@@ -108,13 +145,31 @@ mod tests {
         // A centred message stays centred.
         let m = c.map(r(270, 200, 100, 20));
         assert_eq!(m.x + m.w / 2, 1920 / 2);
-        let c = Canvas::new(3840, 2160);
-        assert_eq!(c.map(r(0, 0, 640, 480)), r(480, 0, 2880, 2160));
+    }
+
+    #[test]
+    fn full_screen_rectangles_cover_the_real_screen() {
+        let c = Canvas::new(1920, 1080, true);
+        assert_eq!(c.map(r(0, 0, 640, 480)), r(0, 0, 1920, 1080));
+        // A full-width bar keeps its height, spans the real width.
+        assert_eq!(c.map(r(0, 100, 640, 40)), r(0, 225, 1920, 90));
+    }
+
+    #[test]
+    fn whole_screens_stay_together() {
+        let c = Canvas::new(1920, 1080, false);
+        // Two halves of a text line on the right stay side by side.
+        let a = c.map(r(400, 150, 50, 10));
+        let b = c.map(r(450, 150, 50, 10));
+        assert_eq!((a.x, a.x + a.w), (1140, 1253));
+        assert_eq!(a.x + a.w, b.x);
+        // A backdrop still covers the screen.
+        assert_eq!(c.map(r(0, 0, 640, 480)), r(0, 0, 1920, 1080));
     }
 
     #[test]
     fn neighbours_stay_joined() {
-        let c = Canvas::new(1366, 768);
+        let c = Canvas::new(1366, 768, true);
         let a = c.map(r(0, 0, 33, 10));
         let b = c.map(r(33, 0, 33, 10));
         assert_eq!(a.x + a.w, b.x);
