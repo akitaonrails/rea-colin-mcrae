@@ -649,7 +649,8 @@ const _: () = assert!(F13_TABLE >= F12_TRIGGER + 22 && F13_TABLE + 12 <= 0x280);
 /// maps every sprite it queues onto a 4:3 canvas centred on the real screen
 /// (`cmrhooks.dll`, `canvas`). The wrapped calls: HUD layout `0x462230`,
 /// timer font `0x47fda0`, HUD `0x464930` (race and replay), stage time
-/// `0x47fe50`, countdown `0x423570`, GO `0x423700`, pause menu `0x468dd0`; the sprite queues
+/// `0x47fe50`, countdown `0x423570`, GO `0x423700`, pause menu `0x468dd0`,
+/// results pages `0x42ae80`; the sprite queues
 /// `0x49b420`/`0x49b1d0`. Applied with F10; the library leaves the game's
 /// own resolutions alone.
 const F13: Fix = Fix {
@@ -890,6 +891,31 @@ const F13: Fix = Fix {
                 Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
                 Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
                 Op::Addr(At::Cave(0x2e0)),
+                Op::Raw(&[0xc3]),
+            ],
+        },
+        // The pause menu's background panel (`0x49e200`, outside the sprite
+        // queues): its two calls in the pause draw go through a stub that
+        // scales the rectangle (argument 2) and then calls the panel as is.
+        // call 0x42ae80 at 0x4232db (results pages) -> through stub 9
+        Piece {
+            at: At::Image(0x004232db),
+            ops: &[Op::Call(At::Cave(0x500))],
+        },
+        Piece {
+            at: At::Cave(0x500),
+            ops: &[
+                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
+                Op::Addr(At::Cave(0x2e4)),
+                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
+                Op::Addr(At::Cave(F13_TABLE)),
+                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
+                Op::Call(At::Image(0x0042ae80)),
+                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
+                Op::Addr(At::Cave(F13_TABLE + 4)),
+                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
+                Op::Raw(&[0xff, 0x35]),                               // push dword [ret] ; ret
+                Op::Addr(At::Cave(0x2e4)),
                 Op::Raw(&[0xc3]),
             ],
         },
@@ -1170,7 +1196,7 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), 0x4d0 + 26);
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), 0x500 + 46);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
