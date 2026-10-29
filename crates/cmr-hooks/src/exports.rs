@@ -48,10 +48,25 @@ impl Screen for Game {
     }
 }
 
-/// The scaling state and the scaled copies of the rectangles handed to the
-/// game's 2D primitives.
+/// A Win32 `CRITICAL_SECTION` (24 bytes on x86), recursive per thread.
+#[repr(C, align(4))]
+struct CriticalSection([u32; 6]);
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn InitializeCriticalSection(lock: *mut CriticalSection);
+    fn EnterCriticalSection(lock: *mut CriticalSection);
+    fn LeaveCriticalSection(lock: *mut CriticalSection);
+    fn GetCurrentThreadId() -> u32;
+}
+
+/// The scaling state, the lock that keeps updates and real sections apart,
+/// and the scaled copies of the rectangles handed to the 2D primitives.
 struct Hud {
     sections: Sections,
+    lock: CriticalSection,
+    /// The thread drawing the race HUD (the main thread).
+    hud_thread: u32,
     dst: Rect,
     clip: Rect,
     one: Rect,
@@ -59,40 +74,79 @@ struct Hud {
 
 static mut HUD: Hud = Hud {
     sections: Sections::new(),
+    lock: CriticalSection([0; 6]),
+    hud_thread: 0,
     dst: Rect::ZERO,
     clip: Rect::ZERO,
     one: Rect::ZERO,
 };
 
 fn hud() -> &'static mut Hud {
-    // SAFETY: only the game's main thread calls these exports.
+    // SAFETY: `sections` changes only inside the lock or on the main thread
+    // (HUD sections); readers outside it see whole values.
     unsafe { &mut *addr_of_mut!(HUD) }
 }
 
-/// Around each game tick (`0x443e90`): in a race, the frame's 2D sees the
-/// virtual screen.
-#[unsafe(no_mangle)]
-pub extern "stdcall" fn cmr_frame_begin() {
-    hud().sections.enter(false, &mut Game);
+fn enter() {
+    // SAFETY: initialised when the library is loaded (`init`).
+    unsafe { EnterCriticalSection(&raw mut hud().lock) }
 }
 
-/// Around the race HUD's layout and draw calls: as a frame, with the HUD's
-/// side pieces anchored to the screen edges.
+fn leave() {
+    // SAFETY: as in `enter`.
+    unsafe { LeaveCriticalSection(&raw mut hud().lock) }
+}
+
+/// The 2D mapping for the calling thread, while scaling is on.
+fn canvas() -> Option<Canvas> {
+    let hud = hud();
+    // SAFETY: a plain Win32 call.
+    let anchored = unsafe { GetCurrentThreadId() } == hud.hud_thread;
+    hud.sections.canvas(anchored)
+}
+
+/// Called once when the library is loaded.
+pub fn init() {
+    // SAFETY: before any export can run.
+    unsafe { InitializeCriticalSection(&raw mut hud().lock) }
+}
+
+/// Before each game update (`0x443db0`, on the game's timer thread or the
+/// main thread): keeps the race's virtual screen in place; never runs while
+/// a real section has the real screen.
+#[unsafe(no_mangle)]
+pub extern "stdcall" fn cmr_update_begin() {
+    enter();
+    hud().sections.update(&mut Game);
+}
+
+/// After a game update.
+#[unsafe(no_mangle)]
+pub extern "stdcall" fn cmr_update_end() {
+    leave();
+}
+
+/// Around the race HUD's layout and draw calls: its side pieces anchor to
+/// the screen edges.
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_hud_begin() {
-    hud().sections.enter(true, &mut Game);
+    let hud = hud();
+    // SAFETY: a plain Win32 call.
+    hud.hud_thread = unsafe { GetCurrentThreadId() };
+    hud.sections.hud_begin();
 }
 
-/// After a frame or HUD section.
+/// After a HUD section.
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_hud_end() {
-    hud().sections.leave(&mut Game);
+    hud().sections.hud_end();
 }
 
-/// Around code that needs the real screen (display and 3D set-up, the 3D
-/// projection and draw).
+/// Around code that needs the real screen (display and 3D set-up, clears,
+/// the 3D projection and scene draw).
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_real_begin() {
+    enter();
     hud().sections.real_begin(&mut Game);
 }
 
@@ -100,6 +154,7 @@ pub extern "stdcall" fn cmr_real_begin() {
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_real_end() {
     hud().sections.real_end(&mut Game);
+    leave();
 }
 
 /// Replaces the rectangle argument at `slot` (if not null) by its scaled
@@ -123,7 +178,7 @@ unsafe fn scale_arg(slot: *mut *mut Rect, canvas: &Canvas, store: &mut Rect) {
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_hud_rects(args: *mut *mut Rect, clip: u32) {
     let hud = hud();
-    let Some(canvas) = hud.sections.canvas() else {
+    let Some(canvas) = canvas() else {
         return;
     };
     // SAFETY: the stub passes the caller's argument area.
@@ -257,7 +312,7 @@ pub extern "stdcall" fn cmr_fe_present(display: *mut u8) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_hud_rect_at(args: *mut *mut Rect, index: u32) {
     let hud = hud();
-    let Some(canvas) = hud.sections.canvas() else {
+    let Some(canvas) = canvas() else {
         return;
     };
     if index >= 8 {

@@ -9,9 +9,9 @@
 //! its 2D (HUD, messages, results, loading screen) mixes rectangles in
 //! 640x480 space scaled by W/640, fractions of W/H, and absolute pixel
 //! tables picked by exact width, plus text drawn at the font's native size.
-//! Each race frame is shown a virtual 640x480 screen (`sections`), so all
-//! of it resolves in the one space it was made for; the 2D primitives then
-//! map every rectangle onto a 4:3 canvas centred on the real screen
+//! In a race the game is shown a virtual 640x480 screen (`sections`), so
+//! all of it resolves in the one space it was made for; the 2D primitives
+//! then map every rectangle onto a 4:3 canvas centred on the real screen
 //! (`canvas`). Display set-up and the 3D draw see the real screen.
 
 pub mod canvas;
@@ -34,7 +34,13 @@ pub extern "C" fn rust_eh_personality() {}
 /// linked without the C start files), so attaching just succeeds.
 #[cfg(all(not(test), windows))]
 #[unsafe(no_mangle)]
-pub extern "system" fn DllMainCRTStartup(_: *mut u8, _: u32, _: *mut u8) -> i32 {
+pub extern "system" fn DllMainCRTStartup(_: *mut u8, reason: u32, _: *mut u8) -> i32 {
+    const DLL_PROCESS_ATTACH: u32 = 1;
+    #[cfg(target_arch = "x86")]
+    if reason == DLL_PROCESS_ATTACH {
+        exports::init();
+    }
+    let _ = reason;
     1
 }
 
