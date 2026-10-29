@@ -1,9 +1,10 @@
 //! The functions the launcher's stubs call (stdcall, 32-bit). They run on
-//! the game's main thread, from its HUD code only.
+//! the game's main thread.
 
 use core::ptr::addr_of_mut;
 
-use crate::canvas::{Canvas, Rect, VIRTUAL, is_native};
+use crate::canvas::{Canvas, Rect};
+use crate::sections::{Screen, Sections};
 
 /// `cmr_hud_rects`' clip index for calls without a clip rectangle (the
 /// stubs push 0x7f; any index from 16 up means none).
@@ -12,93 +13,93 @@ const NO_CLIP: u32 = 16;
 /// The game's display state; `+0` width, `+4` height.
 const DISPLAY: *const *mut i32 = 0x0050_2518 as *const *mut i32;
 
+/// The game's current top-level state (`0x5590a8`). States 4 (loading) to
+/// 0xb are the race and its overlays (finish, results, replay); the front
+/// end (1..=3) has its own 640x480 picture (F16) and is left alone.
+const STATE: *const i32 = 0x0055_90a8 as *const i32;
+
+/// The game's own memory, as `Sections` sees it.
+struct Game;
+
+impl Screen for Game {
+    fn size(&self) -> Option<(i32, i32)> {
+        // SAFETY: fixed globals of the one executable these fixes are keyed
+        // to; the display struct starts with width and height.
+        unsafe {
+            let d = *DISPLAY;
+            (!d.is_null()).then(|| (*d, *d.add(1)))
+        }
+    }
+
+    fn set_size(&mut self, s: (i32, i32)) {
+        // SAFETY: as in `size`.
+        unsafe {
+            let d = *DISPLAY;
+            if !d.is_null() {
+                *d = s.0;
+                *d.add(1) = s.1;
+            }
+        }
+    }
+
+    fn in_race(&self) -> bool {
+        // SAFETY: as in `size`.
+        (4..=0xb).contains(&unsafe { *STATE })
+    }
+}
+
+/// The scaling state and the scaled copies of the rectangles handed to the
+/// game's 2D primitives.
 struct Hud {
-    depth: u32,
-    real: (i32, i32),
-    canvas: Option<Canvas>,
+    sections: Sections,
     dst: Rect,
     clip: Rect,
     one: Rect,
 }
 
 static mut HUD: Hud = Hud {
-    depth: 0,
-    real: (0, 0),
-    canvas: None,
+    sections: Sections::new(),
     dst: Rect::ZERO,
     clip: Rect::ZERO,
     one: Rect::ZERO,
 };
 
 fn hud() -> &'static mut Hud {
-    // SAFETY: only the game's main thread calls these exports, never
-    // re-entrantly beyond the depth counter.
+    // SAFETY: only the game's main thread calls these exports.
     unsafe { &mut *addr_of_mut!(HUD) }
 }
 
-fn display() -> *mut i32 {
-    // SAFETY: a fixed global of the one executable these fixes are keyed to.
-    unsafe { *DISPLAY }
+/// Around each game tick (`0x443e90`): in a race, the frame's 2D sees the
+/// virtual screen.
+#[unsafe(no_mangle)]
+pub extern "stdcall" fn cmr_frame_begin() {
+    hud().sections.enter(false, &mut Game);
 }
 
-/// Before a race HUD layout or draw call: show the game a 640x480 screen,
-/// its side pieces anchored to the screen edges.
+/// Around the race HUD's layout and draw calls: as a frame, with the HUD's
+/// side pieces anchored to the screen edges.
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_hud_begin() {
-    begin(true);
+    hud().sections.enter(true, &mut Game);
 }
 
-/// Before a screen laid out as a whole (loading, results, pause, messages):
-/// show the game a 640x480 screen, mapped centred.
-#[unsafe(no_mangle)]
-pub extern "stdcall" fn cmr_hud_begin_whole() {
-    begin(false);
-}
-
-fn begin(anchored: bool) {
-    let hud = hud();
-    hud.depth += 1;
-    if hud.depth > 1 {
-        return;
-    }
-    let d = display();
-    if d.is_null() {
-        hud.canvas = None;
-        return;
-    }
-    // SAFETY: the display struct starts with width and height.
-    let real = unsafe { (*d, *d.add(1)) };
-    if real.0 <= 0 || real.1 <= 0 || is_native(real.0, real.1) {
-        hud.canvas = None;
-        return;
-    }
-    hud.real = real;
-    hud.canvas = Some(Canvas::new(real.0, real.1, anchored));
-    unsafe {
-        *d = VIRTUAL.0;
-        *d.add(1) = VIRTUAL.1;
-    }
-}
-
-/// After the call: the real screen again.
+/// After a frame or HUD section.
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_hud_end() {
-    let hud = hud();
-    if hud.depth == 0 {
-        return;
-    }
-    hud.depth -= 1;
-    if hud.depth > 0 || hud.canvas.is_none() {
-        return;
-    }
-    let d = display();
-    if !d.is_null() {
-        unsafe {
-            *d = hud.real.0;
-            *d.add(1) = hud.real.1;
-        }
-    }
-    hud.canvas = None;
+    hud().sections.leave(&mut Game);
+}
+
+/// Around code that needs the real screen (display and 3D set-up, the 3D
+/// projection and draw).
+#[unsafe(no_mangle)]
+pub extern "stdcall" fn cmr_real_begin() {
+    hud().sections.real_begin(&mut Game);
+}
+
+/// After a real section.
+#[unsafe(no_mangle)]
+pub extern "stdcall" fn cmr_real_end() {
+    hud().sections.real_end(&mut Game);
 }
 
 /// Replaces the rectangle argument at `slot` (if not null) by its scaled
@@ -122,7 +123,9 @@ unsafe fn scale_arg(slot: *mut *mut Rect, canvas: &Canvas, store: &mut Rect) {
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_hud_rects(args: *mut *mut Rect, clip: u32) {
     let hud = hud();
-    let Some(canvas) = hud.canvas else { return };
+    let Some(canvas) = hud.sections.canvas() else {
+        return;
+    };
     // SAFETY: the stub passes the caller's argument area.
     unsafe {
         scale_arg(args.add(1), &canvas, &mut hud.dst);
@@ -199,7 +202,8 @@ unsafe fn unlock(surface: *mut usize) {
 /// game flips as it always did.
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_fe_present(display: *mut u8) -> u32 {
-    if display.is_null() {
+    // A race frame's virtual 640x480 is not the front end's picture.
+    if display.is_null() || hud().sections.active() {
         return 0;
     }
     // SAFETY: the game's display struct: +0 W, +4 H, +0x10 primary, +0x428
@@ -253,7 +257,9 @@ pub extern "stdcall" fn cmr_fe_present(display: *mut u8) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_hud_rect_at(args: *mut *mut Rect, index: u32) {
     let hud = hud();
-    let Some(canvas) = hud.canvas else { return };
+    let Some(canvas) = hud.sections.canvas() else {
+        return;
+    };
     if index >= 8 {
         return;
     }

@@ -38,6 +38,11 @@ Linux (Proton/Wine). It is not a distribution of the game.
 
 ## Code and commits
 
+- General solutions first. Before patching, find the single place a whole
+  class of cases goes through (a dispatcher, a drawing primitive, an
+  invariant) and fix it there. Do not add targeted patches one call site or
+  one screen at a time; if one is unavoidable, say why.
+
 - Rust for our own code. Keep `unsafe` and Win32 FFI in narrow modules.
 - Unit-test the logic that can run on the host (edition detection, runtime
   folder layout, configuration, patch tables) before each milestone commit;
