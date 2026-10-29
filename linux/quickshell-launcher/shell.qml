@@ -197,6 +197,10 @@ ShellRoot {
     title: "Colin McRae Rally"
     implicitWidth: 900
     implicitHeight: 760
+    // A fixed-size dialog: equal minimum and maximum sizes tell the
+    // compositor not to tile it (a tiled window can open under floating ones).
+    minimumSize: Qt.size(implicitWidth, implicitHeight)
+    maximumSize: Qt.size(implicitWidth, implicitHeight)
     color: root.cBlue
 
     // Colin, on the left: the photo fills the side, a blue fade joins it to
