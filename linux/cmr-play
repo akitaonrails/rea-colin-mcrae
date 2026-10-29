@@ -1,0 +1,97 @@
+#!/bin/sh
+# Plays Colin McRae Rally on Linux through Wine and gamescope.
+#
+#   cmr-play                  start the game with the saved settings
+#   cmr-play get              print the current settings (key=value)
+#   cmr-play play KEY=VALUE…  save settings, then start the game
+#   cmr-play stop | status
+#
+# The game's settings (resolution, widescreen, saves, …) are kept in
+# launcher.cfg inside the Wine prefix, exactly as on Windows. The scaler
+# (how gamescope enlarges the picture) is kept in ~/.config/cmr-launcher.
+#
+# Optional environment:
+#   CMR_PREFIX    Wine prefix       (default ~/.local/share/cmr-launcher/prefix)
+#   CMR_LAUNCHER  CMRLauncher.exe   (default: next to this script, or one folder up)
+#   CMR_RUN       a wrapper that runs wine and gamescope, e.g.
+#                 "distrobox enter gaming --" when they live in a container
+set -u
+HERE=$(dirname "$(readlink -f "$0")")
+PREFIX=${CMR_PREFIX:-$HOME/.local/share/cmr-launcher/prefix}
+LAUNCHER=${CMR_LAUNCHER:-}
+if [ -z "$LAUNCHER" ]; then
+  for p in "$HERE/CMRLauncher.exe" "$HERE/../CMRLauncher.exe"; do
+    [ -f "$p" ] && LAUNCHER=$(readlink -f "$p") && break
+  done
+fi
+RUN=${CMR_RUN:-}
+STATE=$HOME/.config/cmr-launcher
+mkdir -p "$STATE" "$PREFIX"
+
+# launcher.cfg is in the prefix user's AppData\Local\CMRLauncher.
+CFG=
+for d in "$PREFIX"/drive_c/users/*/AppData/Local/CMRLauncher; do
+  case "$d" in */users/Public/*|*'*'*) continue ;; esac
+  [ -d "$d" ] && CFG=$d/launcher.cfg
+done
+[ -z "$CFG" ] && CFG=$PREFIX/drive_c/users/$USER/AppData/Local/CMRLauncher/launcher.cfg
+
+set_key() { # key value; an empty value comments the key out
+  mkdir -p "$(dirname "$CFG")"; [ -f "$CFG" ] || : > "$CFG"
+  if [ -z "$2" ]; then sed -i "s|^$1 *=.*|#$1 = |" "$CFG"
+  elif grep -q "^#\?$1 *=" "$CFG"; then sed -i "s|^#\?$1 *=.*|$1 = $2|" "$CFG"
+  else echo "$1 = $2" >> "$CFG"; fi
+}
+get_key() { [ -f "$CFG" ] && sed -n "s|^$1 *= *||p" "$CFG" | tail -1; }
+running() { pgrep -x Rally.exe >/dev/null; }
+
+start() {
+  if [ -z "$LAUNCHER" ] || [ ! -f "$LAUNCHER" ]; then
+    echo "CMRLauncher.exe not found next to cmr-play (or set CMR_LAUNCHER)"; exit 1
+  fi
+  res=$(get_key resolution); W=640; H=480
+  if [ -n "$res" ]; then W=${res%x*}; H=${res#*x}; fi
+  F=$(cat "$STATE/scaler" 2>/dev/null); F=${F:-nearest}
+  inner=$STATE/inner.sh
+  cat > "$inner" <<INNER
+#!/bin/sh
+trap 'wineserver -k; exit' INT TERM HUP
+wine '$LAUNCHER'
+sleep 3; while pgrep -x Rally.exe >/dev/null; do sleep 1; done
+wineserver -k
+INNER
+  chmod +x "$inner"
+  echo "starting at ${W}x${H}, scaler $F"
+  # gamescope gives the game a landscape screen of the race size and scales
+  # it to the monitor, keeping its shape.
+  setsid $RUN env WINEPREFIX="$PREFIX" \
+    gamescope -w "$W" -h "$H" -f -S fit -F "$F" -- "$inner" \
+    > "$STATE/play.log" 2>&1 < /dev/null &
+}
+
+case "${1:-start}" in
+  get)
+    for k in resolution widescreen draw_distance close_quits gamepad_axes saves game; do
+      echo "$k=$(get_key "$k")"
+    done
+    echo "scaler=$(cat "$STATE/scaler" 2>/dev/null)" ;;
+  status) if running; then echo running; else echo idle; fi ;;
+  stop)
+    $RUN env WINEPREFIX="$PREFIX" wineserver -k 2>/dev/null
+    echo stopped ;;
+  start)
+    if running; then echo "already running"; else start; fi ;;
+  play)
+    shift
+    if running; then echo "already running"; exit 0; fi
+    for kv in "$@"; do
+      k=${kv%%=*}; v=${kv#*=}
+      case "$k" in
+        resolution) if [ "$v" = original ]; then set_key resolution ""; else set_key resolution "$v"; fi ;;
+        scaler) echo "$v" > "$STATE/scaler" ;;
+        widescreen|draw_distance|saves|close_quits|gamepad_axes) set_key "$k" "$v" ;;
+      esac
+    done
+    start ;;
+  *) echo "usage: $0 [start|get|play KEY=VALUE…|stop|status]"; exit 2 ;;
+esac

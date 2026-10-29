@@ -16,6 +16,16 @@ source. Add a row before bundling anything new.
 
 None yet. Candidates and their state are in `docs/THIN_APP_PLAN.md`.
 
+## Linux launcher artwork
+
+| File | Licence | Source |
+| --- | --- | --- |
+| `linux/quickshell-launcher/img/portrait.jpg` — Colin McRae, photo by Carolyn Williams (resized) | CC BY 2.0 | https://commons.wikimedia.org/wiki/File:Colin_Mcrae_crop.jpg |
+
+## Compiled into cmrhooks.dll
+
+Our own code only (`crates/cmr-hooks`, `no_std`).
+
 ## Used by the game but not shipped by us
 
 Provided by the user's game folder (`qmixer.dll`) or by the operating system

@@ -43,5 +43,6 @@ Linux (Proton/Wine). It is not a distribution of the game.
   folder layout, configuration, patch tables) before each milestone commit;
   record what was checked by running the game.
 - Use Conventional Commit subjects. Commit at working milestones.
-- The parked reconstruction documents in `docs/recomp/` are reference
-  material: cite them, do not keep extending them.
+- The parked source reconstruction (code and its documents) is kept outside
+  this repository as reference material (tag `recomp-parked-2026-11-02` in
+  the developer's local history); cite it, do not bring it back here.

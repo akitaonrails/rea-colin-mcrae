@@ -12,7 +12,7 @@ official exe is **playable** through `CMRLauncher.exe`, with plain Wine and
 with Proton in Steam's runtime container: menus, stage load and driving with
 the keyboard. Left for M2: the gamepad (C1). The repository has been restructured: the source reconstruction is parked
 at tag `recomp-parked-2026-11-02` and copied in full (with its local notes) to
-`/mnt/data/Projects/rea-colin-mcrae-recomp`.
+a separate local tree outside this repository.
 
 | Milestone | What it proves | State |
 | --- | --- | --- |
@@ -147,7 +147,7 @@ Legend for **State**:
 
 ### What the game needs
 
-Sources: the decomp ledger (`docs/recomp/EVIDENCE.md`), the API inventory
+Sources: the decomp ledger (the parked reconstruction's `EVIDENCE.md`, kept outside this repository), the API inventory
 (`.work/api-surface-notes.md`), the local Wine setup in
 `~/Projects/distrobox-gaming`, and the probes below.
 

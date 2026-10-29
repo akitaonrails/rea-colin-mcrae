@@ -1,7 +1,7 @@
 # Runtime notes
 
 Observations from running the user's own game. Each entry: date, setup, what
-was seen. Static facts live in `docs/recomp/` and `.work/api-surface-notes.md`.
+was seen. Static facts live in the parked reconstruction's documents (kept outside this repository) and local notes.
 
 ## 2026-11-02: first Proton runs (GE-Proton 11-1, `proton run` outside Steam)
 
