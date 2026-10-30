@@ -28,14 +28,18 @@ the corners. Click to watch (3½ minutes, with sound).*
   CD check, its Windows version check and its old graphics modes.
 - No CD needed: the game runs from its installed files.
 - Closing the window (or Alt+F4) quits the game; the original ignored it.
+- Runs on your graphics card under Wine and Proton, the faster one on PCs
+  with two, at 60 fps even at 4K.
 
 **Gamepads**
 
 - Accelerate and brake with the triggers or the right stick, not only the
   left stick; with an Xbox-style pad both triggers work at once (left-foot
   braking).
-- Optional rumble on impacts.
-- Start pauses the race.
+- Optional rumble on impacts, with a test button in the launcher.
+- Start pauses the race; the d-pad moves through the menus.
+- Modern button layout (A handbrake, bumpers shift, Y view) by default, or
+  the 1998 order, or your own.
 - Your controller choice no longer falls back to the keyboard by itself, and
   saves broken by that bug (car turning in circles) are repaired.
 
@@ -48,7 +52,8 @@ the corners. Click to watch (3½ minutes, with sound).*
   of wide screens.
 - 16:9 widescreen that shows more to the sides instead of stretching.
 - A longer view distance, up to 3× further down the stage, eased when the
-  stage changes it so scenery doesn't pop in.
+  stage changes it so scenery doesn't pop in, with a finer depth buffer so
+  distant hills don't flicker.
 - Widescreen keeps the scenery at the edges of the wider view.
 - A frame-rate cap and a vsync choice, for smooth, even frames.
 - Smooth textures (mipmaps and trilinear filtering) that don't shimmer in
@@ -58,7 +63,9 @@ the corners. Click to watch (3½ minutes, with sound).*
 
 - Your saves live in a folder you choose, outside the game.
 - Your game folder is never modified.
-- A settings window, the same on Windows and Linux, and a commented settings file.
+- A settings window, the same on Windows and Linux (larger on big screens),
+  with one-click looks (Original 1998, Enhanced, Steam Deck), and a
+  commented settings file.
 
 This project contains **no game files**. You need your own copy of the game.
 
@@ -268,9 +275,6 @@ Under Wine and Proton these are inside the Wine prefix (for Steam:
   1998 game can't use a portrait main screen. Make a landscape monitor your
   main display, or on Linux use `linux/cmr-play` (gamescope gives the game a
   landscape screen).
-- **Menus feel less smooth at 4K.** The menus are drawn at 640×480 and
-  enlarged for your screen each frame; at 4K that copy is slow on some
-  setups. 1440p or 1080p keeps them smooth; races aren't affected.
 - **Steam/Proton: the game crashes right away with an NVIDIA card.** Some
   setups only give 32-bit programs working OpenGL through Proton's WoW64
   mode. Add `PROTON_USE_WOW64=1` in front of `%command%` in the launch
@@ -279,8 +283,8 @@ Under Wine and Proton these are inside the Wine prefix (for Steam:
 
 ## Known limitations
 
-- The menus are enlarged on the CPU; at 4K with software rendering they run
-  at about 44 fps (on a GPU the copy costs much less).
+- The menus are enlarged on the CPU each frame; without a graphics card
+  (software rendering) that is slower at 4K.
 - A short white flash before the legal screen at high resolutions.
 - Split screen isn't adjusted for widescreen.
 - Only the European v1.5 `Rally.exe` is recognised so far.

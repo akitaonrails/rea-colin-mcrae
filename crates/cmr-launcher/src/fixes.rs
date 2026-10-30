@@ -248,6 +248,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         F23,
         F24,
         F25,
+        F26,
     ],
 };
 
@@ -730,7 +731,7 @@ const F12: Fix = Fix {
 /// entry makes its stub do nothing, so the game runs as without F13.
 pub const F13_TABLE: u32 = 0x250;
 /// The exports F13's table holds, in order (`slot::*` are their offsets).
-pub const F13_EXPORTS: [&str; 17] = [
+pub const F13_EXPORTS: [&str; 18] = [
     "cmr_hud_begin",
     "cmr_hud_end",
     "cmr_hud_rects",
@@ -748,6 +749,7 @@ pub const F13_EXPORTS: [&str; 17] = [
     "cmr_rumble",
     "cmr_3d_end",
     "cmr_pad_buttons",
+    "cmr_depth_visible",
 ];
 /// The table's size in bytes (one address per export).
 const F13_TABLE_LEN: usize = 4 * F13_EXPORTS.len();
@@ -771,6 +773,7 @@ mod slot {
     pub const RUMBLE: u32 = 56;
     pub const THREE_D_END: u32 = 60;
     pub const PAD_BUTTONS: u32 = 64;
+    pub const DEPTH_VISIBLE: u32 = 68;
 }
 
 /// With a race resolution the game never had (F10), the in-race 2D (HUD,
@@ -1207,7 +1210,9 @@ const F16: Fix = Fix {
 };
 
 /// The fixes that call into `cmrhooks.dll` (off without it).
-pub const HOOK_FIXES: [&str; 8] = ["F13", "F16", "F17", "F18", "F20", "F21", "F22", "F23"];
+pub const HOOK_FIXES: [&str; 9] = [
+    "F13", "F16", "F17", "F18", "F20", "F21", "F22", "F23", "F26",
+];
 
 /// RUN JOYSTICK PANEL (a controls screen, `0x4cdbc0`) calls `0x49cb90`,
 /// which tells the game window it lost focus and runs `control joy.cpl`
@@ -1226,49 +1231,49 @@ const F24: Fix = Fix {
     }],
 };
 
-const F25_CAVE: u32 = 0xe60;
-
 /// The game asks for a 16-bit depth buffer (`0x4a6e97`, the only one).
 /// With a longer view (F12) its steps grow too coarse far away and distant
-/// hills flicker through each other. F25 asks for 24 bits (256 times finer),
-/// and keeps the one place that reads depth pixels, the visibility test
-/// `0x49fa70` (16-bit only; `0xffff` = nothing in front), working: from
-/// `0x49fad4` a 24-bit pixel is read as its top 16 depth bits, so the test
-/// compares exactly as before. Grouped with F12 (`draw_distance`).
+/// hills flicker through each other. F25 asks for 24 bits (256 times finer);
+/// F26's depth test reads them. Grouped with F12 (`draw_distance`).
 const F25: Fix = Fix {
     id: "F25",
     what: "24-bit depth buffer for longer views",
     optional: true,
+    // mov dword [esp+0x24],0x10 (dwZBufferBitDepth) -> 24
+    code: &[Piece {
+        at: At::Image(0x004a_6e9b),
+        ops: &[Op::Raw(&[0x18])],
+    }],
+};
+
+const F26_CAVE: u32 = 0xe60;
+
+/// The game's depth test `0x49fa70(x, y)` (is anything drawn in front at a
+/// screen point; the only place depth pixels are read) locks the whole
+/// depth buffer to read one value. Under Wine with a GPU that copies every
+/// depth value back each frame (24 fps at 4K instead of 60). F26 sends it
+/// to `cmr_depth_visible`, which gives the same answer from that one pixel
+/// (16 or 24-bit depth); without the hook library the game's own test runs.
+const F26: Fix = Fix {
+    id: "F26",
+    what: "the depth test reads one pixel, not the whole depth buffer (needs cmrhooks.dll)",
+    optional: true,
     code: &[
-        // mov dword [esp+0x24],0x10 (dwZBufferBitDepth) -> 24
+        // mov eax,[0x50283c] ; sub esp,0x6c -> jmp ; 3 x nop
         Piece {
-            at: At::Image(0x004a_6e9b),
-            ops: &[Op::Raw(&[0x18])],
-        },
-        // cmp dword [esp+0x18],0x10 ; je -> jmp ; nop ; nop
-        Piece {
-            at: At::Image(0x0049_fad4),
-            ops: &[Op::Jmp(At::Cave(F25_CAVE)), Op::Raw(&[NOP, NOP])],
+            at: At::Image(0x0049_fa70),
+            ops: &[Op::Jmp(At::Cave(F26_CAVE)), Op::Raw(&[NOP; 3])],
         },
         Piece {
-            at: At::Cave(F25_CAVE),
+            at: At::Cave(F26_CAVE),
             ops: &[
-                // mov edx,[esp+0x18] (depth bits) ; cmp edx,16 ; je ok ;
-                // cmp edx,24 ; je ok ; else the game's "can't tell" return
-                Op::Raw(&[0x8b, 0x54, 0x24, 0x18, 0x83, 0xfa, 0x10, 0x74, 0x0a]),
-                Op::Raw(&[0x83, 0xfa, 0x18, 0x74, 0x05]),
-                Op::Jmp(At::Image(0x0049_fadb)),
-                // ok: eax = surface + pitch * y ; ecx = x
-                Op::Raw(&[0x8b, 0x44, 0x24, 0x10, 0x0f, 0xaf, 0x44, 0x24, 0x74]),
-                Op::Raw(&[0x03, 0x44, 0x24, 0x24, 0x8b, 0x4c, 0x24, 0x70]),
-                // push esi ; push 0 (the game's own, for Unlock)
-                Op::Raw(&[0x56, 0x6a, 0x00]),
-                // cmp dl,16 ; jne d24 ; mov si,[eax+ecx*2]
-                Op::Raw(&[0x80, 0xfa, 0x10, 0x75, 0x09, 0x66, 0x8b, 0x34, 0x48]),
-                Op::Jmp(At::Image(0x0049_fb02)),
-                // d24: mov esi,[eax+ecx*4] ; shr esi,8 (top 16 of 24 bits)
-                Op::Raw(&[0x8b, 0x34, 0x88, 0xc1, 0xee, 0x08]),
-                Op::Jmp(At::Image(0x0049_fb02)),
+                Op::Raw(&[0x8b, 0x0d]), // mov ecx,[cmr_depth_visible]
+                Op::Addr(At::Cave(F13_TABLE + slot::DEPTH_VISIBLE)),
+                // test ecx,ecx ; jz +2 ; jmp ecx (same arguments, its ret 8)
+                Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xe1]),
+                // the game's own test: the moved instructions, then on
+                Op::Raw(&[0xa1, 0x3c, 0x28, 0x50, 0x00, 0x83, 0xec, 0x6c]),
+                Op::Jmp(At::Image(0x0049_fa78)),
             ],
         },
     ],
@@ -1657,7 +1662,7 @@ mod tests {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
         let expected: Vec<_> = (1..=ids.len()).map(|i| format!("F{i}")).collect();
         assert_eq!(ids, expected);
-        assert_eq!(ids.len(), 25);
+        assert_eq!(ids.len(), 26);
     }
 
     #[test]
@@ -1683,30 +1688,27 @@ mod tests {
     }
 
     #[test]
-    fn f25_asks_for_24_bits_and_reads_them() {
+    fn f25_asks_for_24_bits() {
         assert_eq!(at(0x4a6e9b), [0x18]);
-        let site = at(0x49fad4);
+    }
+
+    #[test]
+    fn f26_hands_the_depth_test_to_the_hook_or_runs_the_games() {
+        let site = at(0x49fa70);
         let rel = u32::from_le_bytes(site[1..5].try_into().unwrap());
-        assert_eq!((0x49fad9u32).wrapping_add(rel), CAVE + F25_CAVE);
-        assert_eq!(&site[5..], [NOP, NOP]);
-        let c = at(CAVE + F25_CAVE);
-        assert_eq!(c.len(), 64);
-        let jump = |off: usize| {
-            assert_eq!(c[off], 0xe9);
-            let rel = u32::from_le_bytes(c[off + 1..off + 5].try_into().unwrap());
-            (CAVE + F25_CAVE + off as u32 + 5).wrapping_add(rel)
-        };
-        // je ok (+10) from 9 lands on 19; je ok (+5) from 14 too.
-        assert_eq!((c[8], c[13]), (0x0a, 0x05));
-        assert_eq!(9 + 10, 19);
-        assert_eq!(jump(14), 0x49fadb);
-        // ok: 17 bytes of address, 3 of pushes, then the width test
-        assert_eq!(&c[19..23], [0x8b, 0x44, 0x24, 0x10]);
-        assert_eq!(&c[39..44], [0x80, 0xfa, 0x10, 0x75, 0x09]);
-        // jne d24 skips the 4-byte read and its 5-byte jmp
-        assert_eq!(jump(48), 0x49fb02);
-        assert_eq!(&c[53..59], [0x8b, 0x34, 0x88, 0xc1, 0xee, 0x08]);
-        assert_eq!(jump(59), 0x49fb02);
+        assert_eq!(0x49fa75u32.wrapping_add(rel), CAVE + F26_CAVE);
+        assert_eq!(&site[5..], [NOP; 3]);
+        let c = at(CAVE + F26_CAVE);
+        assert_eq!(c.len(), 25);
+        assert_eq!(
+            c[2..6],
+            (CAVE + F13_TABLE + slot::DEPTH_VISIBLE).to_le_bytes()
+        );
+        // jz +2 skips exactly the jmp ecx
+        assert_eq!(&c[6..12], [0x85, 0xc9, 0x74, 0x02, 0xff, 0xe1]);
+        assert_eq!(&c[12..20], [0xa1, 0x3c, 0x28, 0x50, 0x00, 0x83, 0xec, 0x6c]);
+        let rel = u32::from_le_bytes(c[21..25].try_into().unwrap());
+        assert_eq!((CAVE + F26_CAVE + 25).wrapping_add(rel), 0x49fa78);
     }
 
     #[test]
@@ -2154,8 +2156,8 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        // the last piece is F25's depth read
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F25_CAVE + 64);
+        // the last piece is F26's depth test
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F26_CAVE + 25);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
@@ -2177,7 +2179,7 @@ mod tests {
     fn only_optional_fixes_can_be_skipped() {
         let skip = [
             "F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F17", "F18", "F19", "F20",
-            "F21", "F22", "F23", "F24", "F25", "F1",
+            "F21", "F22", "F23", "F24", "F25", "F26", "F1",
         ];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
         assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9", "F15"]);

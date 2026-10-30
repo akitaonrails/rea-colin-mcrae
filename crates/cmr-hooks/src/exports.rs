@@ -206,17 +206,10 @@ struct Diag {
     gap_max: i64,
     last_frame: i64,
     frame_max: i64,
+    frames: u32,
 }
 
-static mut DIAG: Diag = Diag {
-    file: None,
-    window: 0,
-    updates: 0,
-    last_update: 0,
-    gap_max: 0,
-    last_frame: 0,
-    frame_max: 0,
-};
+static mut DIAG: Diag = Diag::ZERO;
 
 fn diag() -> Option<&'static mut Diag> {
     // SAFETY: updates are serialised by the lock and frames run on the main
@@ -272,6 +265,7 @@ fn diag_frame() {
     if d.last_frame != 0 {
         d.frame_max = d.frame_max.max(t - d.last_frame);
     }
+    d.frames += 1;
     d.last_frame = t;
     if d.window == 0 {
         d.window = t;
@@ -285,7 +279,9 @@ fn diag_frame() {
         .num(d.updates)
         .text(b", update gap max ")
         .num(ms(d.gap_max))
-        .text(b" ms, frame max ")
+        .text(b" ms, fps ")
+        .num((d.frames as i64 * freq / (t - d.window).max(1)) as u32)
+        .text(b", frame max ")
         .num(ms(d.frame_max))
         .text(b" ms, state ")
         .num(Game.state() as u32)
@@ -322,6 +318,7 @@ impl Diag {
         gap_max: 0,
         last_frame: 0,
         frame_max: 0,
+        frames: 0,
     };
 }
 
@@ -514,108 +511,103 @@ unsafe fn unlock(surface: *mut usize) {
     unsafe { f(surface, core::ptr::null_mut()) };
 }
 
-/// Instead of the front end's `Flip` (`0x49870f`): when the game draws at
-/// 640x480 but the screen is larger, copy the picture to the screen enlarged
-/// and return 1 (the caller then skips the flip). Otherwise return 0 and the
-/// game flips as it always did.
+/// Instead of the game's depth test `0x49fa70(x, y)` (F26): 1 when nothing
+/// is drawn in front at screen point (x, y), as the game's own answer, but
+/// reading only that pixel of the depth buffer (the game locked all of it).
+#[unsafe(no_mangle)]
+pub extern "stdcall" fn cmr_depth_visible(x: i32, y: i32) -> u32 {
+    // SAFETY: the game's globals: 0x50283c its 3D settings (+0x28 the
+    // effect's switch), 0x502518 the display struct (+0x840 the depth
+    // buffer surface).
+    unsafe {
+        let settings = *(0x0050_283c as *const *const u8);
+        if settings.is_null() || *(settings.add(0x28) as *const u32) == 0 {
+            return 0;
+        }
+        let display = *(0x0050_2518 as *const *const u8);
+        let depth = *(display.add(0x840) as *const *mut usize);
+        if depth.is_null() {
+            return 0;
+        }
+        // A point off the screen (the game passes -1, -1 when there is
+        // none) has nothing to see: the game's own read went outside the
+        // buffer there and almost never found the far value.
+        let Some(size) = desc_of(depth) else {
+            return 0;
+        };
+        if x < 0 || y < 0 || x as u32 >= size.width || y as u32 >= size.height {
+            return 0;
+        }
+        let one = [x, y, x + 1, y + 1];
+        // The game: a failed lock counts as visible.
+        let Some(px) = lock_rect(depth, &one, DDLOCK_READONLY) else {
+            return 1;
+        };
+        // +0x18: the depth bits (dwZBufferBitDepth).
+        let bits = px.rest1[1];
+        let value = if bits == 16 {
+            u32::from(*(px.surface as *const u16))
+        } else {
+            *(px.surface as *const u32)
+        };
+        unlock(depth);
+        crate::depth::is_far(bits, value).map_or(0, u32::from)
+    }
+}
+
+/// Before the front end's `Flip` (`0x49870f`): when the game draws at
+/// 640x480 on a larger screen, enlarge its picture across the back buffer
+/// (bars included) and let the game flip as it always did. Returns 0 (flip).
+///
+/// The picture used to be written straight into the visible screen with the
+/// flip skipped, but under Wine with a GPU (GLX) inside gamescope, writes
+/// to the visible buffer are only shown now and then; a flip always is.
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_fe_present(display: *mut u8) -> u32 {
     // A race frame's virtual 640x480 is not the front end's picture.
     if display.is_null() || hud().sections.active() {
         return 0;
     }
-    // SAFETY: the game's display struct: +0 W, +4 H, +0x10 primary, +0x428
-    // back buffer (IDirectDrawSurface pointers).
+    // SAFETY: the game's display struct: +0 W, +4 H, +0x428 the back
+    // buffer (an IDirectDrawSurface of the screen's size); the picture is
+    // its top left 640x480, copied out before the back buffer is written.
     unsafe {
         let (w, h) = (*(display as *const i32), *(display.add(4) as *const i32));
-        let primary = *(display.add(0x10) as *const *mut usize);
         let back = *(display.add(0x428) as *const *mut usize);
-        if (w, h) != (640, 480) || primary.is_null() || back.is_null() {
+        if (w, h) != (640, 480) || back.is_null() {
             return 0;
         }
-        let Some(screen) = desc_of(primary) else {
+        let Some(buf) = lock(back, 0) else {
             return 0;
         };
-        if screen.width <= 640 || !(screen.bits == 16 || screen.bits == 32) {
-            return 0;
-        }
-        let Some(src) = lock(back, DDLOCK_READONLY) else {
-            return 0;
-        };
-        if src.bits != 16 || src.pitch <= 0 {
-            unlock(back);
-            return 0;
-        }
-        // The black bars only need drawing now and then (a new screen, and
-        // once a second in case something drew over them); the rest of the
-        // time only the picture is locked, uploaded and drawn.
-        let full = &mut *addr_of_mut!(FULL);
-        full.frames = if full.primary == primary {
-            full.frames + 1
-        } else {
-            0
-        };
-        full.primary = primary;
-        let (x, y, w, h) = crate::present::target(screen.width, screen.height);
-        let whole = full.frames.is_multiple_of(60);
-        let rect = [x as i32, y as i32, (x + w) as i32, (y + h) as i32];
-        let dst = if whole {
-            lock(primary, DDLOCK_WRITEONLY)
-        } else {
-            lock_rect(primary, &rect, DDLOCK_WRITEONLY)
-        };
-        let done = match dst {
-            Some(dst) if dst.pitch > 0 => {
-                let (src_px, pitch, green6) =
-                    (src.surface, src.pitch as usize, src.green_mask == 0x7e0);
-                let (out, out_pitch) = (dst.surface, dst.pitch as usize);
-                if whole {
-                    crate::present::blit(
-                        src_px,
-                        pitch,
-                        green6,
-                        out,
-                        out_pitch,
-                        screen.bits,
-                        screen.width,
-                        screen.height,
-                    );
-                } else {
-                    crate::present::blit_picture(
-                        src_px,
-                        pitch,
-                        green6,
-                        out,
-                        out_pitch,
-                        screen.bits,
-                        w,
-                        h,
-                    );
-                }
-                unlock(primary);
-                1
+        if buf.width > 640 && buf.height >= 480 && buf.bits == 16 && buf.pitch > 0 {
+            let scratch = &mut *addr_of_mut!(PICTURE);
+            let pitch = buf.pitch as usize;
+            for y in 0..480 {
+                core::ptr::copy_nonoverlapping(
+                    buf.surface.add(y * pitch) as *const u16,
+                    scratch.as_mut_ptr().add(y * 640),
+                    640,
+                );
             }
-            Some(_) => {
-                unlock(primary);
-                0
-            }
-            None => 0,
-        };
+            crate::present::blit(
+                scratch.as_ptr() as *const u8,
+                640 * 2,
+                buf.green_mask == 0x7e0,
+                buf.surface,
+                pitch,
+                16,
+                buf.width,
+                buf.height,
+            );
+        }
         unlock(back);
-        done
+        0
     }
 }
 
-/// When the front end's bars were last drawn (`cmr_fe_present`).
-struct FullFrames {
-    primary: *mut usize,
-    frames: u32,
-}
-
-static mut FULL: FullFrames = FullFrames {
-    primary: core::ptr::null_mut(),
-    frames: 0,
-};
+/// The front end's 640x480 picture while it is enlarged (`cmr_fe_present`).
+static mut PICTURE: [u16; 640 * 480] = [0; 640 * 480];
 
 fn desc_of(surface: *mut usize) -> Option<SurfaceDesc> {
     // SAFETY: a live DirectDraw surface; the descriptor is sized for it.

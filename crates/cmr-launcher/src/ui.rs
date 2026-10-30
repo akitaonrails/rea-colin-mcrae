@@ -53,7 +53,9 @@ pub fn show(settings_path: &Path, text: &str, linux: bool) -> Result<Outcome, St
             .with_max_inner_size(SIZE)
             .with_resizable(false)
             .with_maximize_button(false),
-        centered: true,
+        // Under Wine the desktop's window manager places it (on the monitor
+        // in use); Wine's idea of the main screen can be another monitor.
+        centered: !win32::is_wine(),
         ..Default::default()
     };
     let path = settings_path.to_path_buf();
@@ -259,6 +261,9 @@ impl<'a> Window<'a> {
             egui::ViewportCommand::InnerSize(size),
         ] {
             ctx.send_viewport_cmd(cmd);
+        }
+        if win32::is_wine() {
+            return;
         }
         if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
             let at = ((monitor - size) / 2.0).max(Vec2::ZERO);
