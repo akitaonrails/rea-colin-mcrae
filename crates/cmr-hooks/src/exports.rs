@@ -699,6 +699,23 @@ fn xinput() -> Option<(XInputGetState, XInputSetState)> {
     }
 }
 
+/// Where the game reads a pad's buttons (`0x49cef6`, F23): returns the
+/// buttons remapped by the player's choice (`map`, 12 bytes, see
+/// `pad::remap`) and adds the d-pad's directions to the record's flags.
+#[unsafe(no_mangle)]
+pub extern "stdcall" fn cmr_pad_buttons(info: *const u32, record: *mut u32, map: *const u8) -> u32 {
+    // SAFETY: the game's JOYINFOEX (buttons at +0x20, POV at +0x28), its
+    // device record (flags at +4) and the launcher's 12-byte map.
+    unsafe {
+        let buttons = *info.add(8);
+        if record.is_null() || map.is_null() {
+            return buttons;
+        }
+        *record.add(1) |= crate::pad::pov_directions(*info.add(10));
+        crate::pad::remap(buttons, &*(map as *const [u8; crate::pad::GAME_BUTTONS]))
+    }
+}
+
 /// After the game's control map (`0x449580`, F21): the triggers of the
 /// player's XInput pad press throttle (right) and brake (left) on their own,
 /// so both can be held; other inputs are kept when they press harder.

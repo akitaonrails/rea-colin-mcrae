@@ -173,6 +173,7 @@ saved settings.
 | `vsync = true` | `true` waits for the screen's refresh (no tearing), `false` doesn't. | the game's own |
 | `gamepad_axes = true` | Triggers and right stick work as accelerate/brake (with an Xbox-style pad, both triggers can be held at once); Start pauses. | on |
 | `rumble = 60` | Gamepad rumble on impacts, strength 1–100. Needs an Xbox-style (XInput) pad. | off |
+| `buttons = modern` | Pad buttons. `modern` (Xbox-style pads): A selects and is the handbrake, B goes back, Y changes the view, LB/RB change gear, Start pauses. Or eight pad button numbers for select, back, change view, gear down, handbrake, gear up, (unused), pause, e.g. `1,2,4,5,1,6,7,8`. The window's **Buttons** tab sets it. | `original` (the game's own order) |
 | `close_quits = true` | Closing the window (Alt+F4) quits the game. | on |
 | `saves = D:\Rally saves` | Where your saves are kept. | `Saved Games\Colin McRae Rally` in your user folder |
 | `language = FRENCH` | Game language on first setup: ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN. | ENGLISH |
@@ -199,8 +200,10 @@ In the game: **Options → Settings → Controller 1**, set **Control method** t
 your pad (Joystick 1) and **Controller type** to **Analogue joystick**, then set
 steering, acceleration and braking to **Analogue** on the next screen.
 
-Avoid **Run joystick panel** on that screen: it opens an old Windows dialog
-that can't appear on most modern setups, and the game then waits for it.
+Pick the buttons in the launcher window's **Buttons** tab (Modern is the
+usual layout for today's pads); the d-pad moves through the menus. Under
+Wine and Proton, **Run joystick panel** does nothing (it opens an old
+Windows dialog that can't appear there, and the game used to wait for it).
 
 To see what your pad sends to the game, run `CMRLauncher.exe --controllers`
 and move every stick and button; the result is written to `launcher.log`.

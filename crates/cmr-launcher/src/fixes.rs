@@ -245,6 +245,8 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         F20,
         F21,
         F22,
+        F23,
+        F24,
     ],
 };
 
@@ -303,10 +305,11 @@ const F7: Fix = Fix {
     what: "gamepads: triggers and right stick work as throttle and brake",
     optional: true,
     code: &[
-        // JOYINFOEX.dwFlags 0x483 -> 0x48f (also return Z and R).
+        // JOYINFOEX.dwFlags 0x483 -> 0x4cf (also return Z, R and the
+        // d-pad, which F23 reads).
         Piece {
             at: At::Image(0x0049_ce1b),
-            ops: &[Op::Raw(&[0x8f])],
+            ops: &[Op::Raw(&[0xcf])],
         },
         // `mov eax,[esp+0x14]` (Y) ; `push ebx` -> jmp to the cave.
         Piece {
@@ -726,7 +729,7 @@ const F12: Fix = Fix {
 /// entry makes its stub do nothing, so the game runs as without F13.
 pub const F13_TABLE: u32 = 0x250;
 /// The exports F13's table holds, in order (`slot::*` are their offsets).
-pub const F13_EXPORTS: [&str; 16] = [
+pub const F13_EXPORTS: [&str; 17] = [
     "cmr_hud_begin",
     "cmr_hud_end",
     "cmr_hud_rects",
@@ -743,6 +746,7 @@ pub const F13_EXPORTS: [&str; 16] = [
     "cmr_pedals",
     "cmr_rumble",
     "cmr_3d_end",
+    "cmr_pad_buttons",
 ];
 /// The table's size in bytes (one address per export).
 const F13_TABLE_LEN: usize = 4 * F13_EXPORTS.len();
@@ -765,6 +769,7 @@ mod slot {
     pub const PEDALS: u32 = 52;
     pub const RUMBLE: u32 = 56;
     pub const THREE_D_END: u32 = 60;
+    pub const PAD_BUTTONS: u32 = 64;
 }
 
 /// With a race resolution the game never had (F10), the in-race 2D (HUD,
@@ -1201,7 +1206,66 @@ const F16: Fix = Fix {
 };
 
 /// The fixes that call into `cmrhooks.dll` (off without it).
-pub const HOOK_FIXES: [&str; 7] = ["F13", "F16", "F17", "F18", "F20", "F21", "F22"];
+pub const HOOK_FIXES: [&str; 8] = ["F13", "F16", "F17", "F18", "F20", "F21", "F22", "F23"];
+
+/// RUN JOYSTICK PANEL (a controls screen, `0x4cdbc0`) calls `0x49cb90`,
+/// which tells the game window it lost focus and runs `control joy.cpl`
+/// hidden, expecting Windows to bring the game back when the panel
+/// closes. Under Wine (and gamescope) nothing brings it back and the game
+/// stays frozen (C6). F24 makes the item do nothing there; the launcher
+/// applies it only under Wine, so Windows keeps the panel.
+const F24: Fix = Fix {
+    id: "F24",
+    what: "RUN JOYSTICK PANEL doesn't freeze the game under Wine",
+    optional: true,
+    // mov eax,[hwnd] -> ret
+    code: &[Piece {
+        at: At::Image(0x0049_cb90),
+        ops: &[Op::Raw(&[0xc3])],
+    }],
+};
+
+const F23_CAVE: u32 = 0xe20;
+/// F23's map: for each of the game's 12 pad buttons, the physical button
+/// (1-based) that feeds it, 0 for its own; filled by the launcher.
+pub const F23_MAP: u32 = 0xe50;
+const _: () = assert!(F23_CAVE >= F11_READ + 35 && F23_MAP >= F23_CAVE + 34);
+
+/// The game turns a pad's physical button n into its button n
+/// (`0x49cef6`, in the joystick read every menu and race uses). F23 hands
+/// the buttons to `cmr_pad_buttons` first, which applies the player's
+/// button layout (`buttons`, E11) and adds the d-pad as directions (C5).
+/// Grouped with F7 (`gamepad_axes`).
+const F23: Fix = Fix {
+    id: "F23",
+    what: "pad button layout and d-pad (needs cmrhooks.dll)",
+    optional: true,
+    code: &[
+        // mov eax,[esp+0x28] (buttons) ; test al,1 -> jmp ; nop
+        Piece {
+            at: At::Image(0x0049_cef6),
+            ops: &[Op::Jmp(At::Cave(F23_CAVE)), Op::Raw(&[NOP])],
+        },
+        Piece {
+            at: At::Cave(F23_CAVE),
+            ops: &[
+                Op::Raw(&[0x8b, 0x44, 0x24, 0x28, 0x8b, 0x0d]), // mov eax,[esp+0x28] ; mov ecx,[pad]
+                Op::Addr(At::Cave(F13_TABLE + slot::PAD_BUTTONS)),
+                Op::Raw(&[0x85, 0xc9, 0x74, 0x0d, 0x68]), // test ecx,ecx ; jz +13 ; push map
+                Op::Addr(At::Cave(F23_MAP)),
+                // push esi (the record) ; lea eax,[esp+0x10] (JOYINFOEX) ;
+                // push eax ; call ecx
+                Op::Raw(&[0x56, 0x8d, 0x44, 0x24, 0x10, 0x50, 0xff, 0xd1]),
+                Op::Raw(&[0xa8, 0x01]), // test al,1 (moved)
+                Op::Jmp(At::Image(0x0049_cefc)),
+            ],
+        },
+        Piece {
+            at: At::Cave(F23_MAP),
+            ops: &[Op::Raw(&[0; 12])],
+        },
+    ],
+};
 
 /// F17's settings block: frame-rate cap (frames per second, 0 none), the
 /// `Flip` flags (0: the game's own) and the rumble strength (percent, F22),
@@ -1544,7 +1608,29 @@ mod tests {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
         let expected: Vec<_> = (1..=ids.len()).map(|i| format!("F{i}")).collect();
         assert_eq!(ids, expected);
-        assert_eq!(ids.len(), 22);
+        assert_eq!(ids.len(), 24);
+    }
+
+    #[test]
+    fn f23_hands_the_buttons_to_the_hook_and_resumes_at_the_first_test() {
+        let site = at(0x49cef6);
+        assert_eq!(site[0], 0xe9);
+        let rel = u32::from_le_bytes(site[1..5].try_into().unwrap());
+        assert_eq!(0x49cefbu32.wrapping_add(rel), CAVE + F23_CAVE);
+        assert_eq!(site[5], NOP);
+        let cave = at(CAVE + F23_CAVE);
+        assert_eq!(&cave[..6], [0x8b, 0x44, 0x24, 0x28, 0x8b, 0x0d]);
+        assert_eq!(
+            cave[6..10],
+            (CAVE + F13_TABLE + slot::PAD_BUTTONS).to_le_bytes()
+        );
+        // jz skips the 13 bytes of the call to the moved test.
+        assert_eq!(&cave[10..14], [0x85, 0xc9, 0x74, 0x0d]);
+        assert_eq!(cave[15..19], (CAVE + F23_MAP).to_le_bytes());
+        assert_eq!(&cave[27..29], [0xa8, 0x01]);
+        let rel = u32::from_le_bytes(cave[30..34].try_into().unwrap());
+        assert_eq!((CAVE + F23_CAVE + 34).wrapping_add(rel), 0x49cefc);
+        assert_eq!(at(CAVE + F23_MAP), [0; 12]);
     }
 
     #[test]
@@ -1571,7 +1657,7 @@ mod tests {
         assert_eq!(code[88], 0xe9);
         let rel = u32::from_le_bytes(code[89..93].try_into().unwrap());
         assert_eq!((CAVE + F7_CAVE + 93).wrapping_add(rel), 0x49ce74);
-        assert_eq!(at(0x49ce1b), [0x8f]);
+        assert_eq!(at(0x49ce1b), [0xcf]);
         assert_eq!(at(CAVE + F7_TABLE), [0; 64]);
     }
 
@@ -1992,8 +2078,8 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        // the last piece is F11's 35-byte copy of the view read
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F11_READ + 35);
+        // the last piece is F23's button map
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F23_MAP + 12);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
@@ -2015,7 +2101,7 @@ mod tests {
     fn only_optional_fixes_can_be_skipped() {
         let skip = [
             "F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F17", "F18", "F19", "F20",
-            "F21", "F22", "F1",
+            "F21", "F22", "F23", "F24", "F1",
         ];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
         assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9", "F15"]);
