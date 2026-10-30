@@ -28,7 +28,7 @@ const MUTED: Color32 = Color32::from_rgb(0xa7, 0xb6, 0xd9);
 const ON_GOLD: Color32 = Color32::from_rgb(0x10, 0x24, 0x4f);
 const ERROR: Color32 = Color32::from_rgb(0xff, 0x8a, 0x80);
 
-const SIZE: Vec2 = vec2(880.0, 640.0);
+const SIZE: Vec2 = vec2(form::WINDOW.0, form::WINDOW.1);
 const PHOTO_W: f32 = 300.0;
 
 /// How the window was left.
@@ -203,6 +203,10 @@ struct Window<'a> {
     path: PathBuf,
     text: String,
     error: Option<String>,
+    /// The size for this screen is set on the first frame.
+    sized: bool,
+    /// What the last rumble test found.
+    rumble_test: Option<String>,
     outcome: &'a mut Outcome,
 }
 
@@ -231,7 +235,34 @@ impl<'a> Window<'a> {
             path,
             text,
             error: None,
+            sized: false,
+            rumble_test: None,
             outcome,
+        }
+    }
+
+    /// Draws everything larger on a large screen (1.5x at 4K), as the
+    /// desktop's own scaling often doesn't reach programs under Wine, and
+    /// centres the larger window.
+    fn fit_screen(&mut self, ctx: &egui::Context) {
+        self.sized = true;
+        let native = ctx.native_pixels_per_point().unwrap_or(1.0);
+        let zoom = form::window_zoom(self.screen, native);
+        if zoom == 1.0 {
+            return;
+        }
+        ctx.set_zoom_factor(zoom);
+        let size = SIZE * zoom;
+        for cmd in [
+            egui::ViewportCommand::MinInnerSize(size),
+            egui::ViewportCommand::MaxInnerSize(size),
+            egui::ViewportCommand::InnerSize(size),
+        ] {
+            ctx.send_viewport_cmd(cmd);
+        }
+        if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+            let at = ((monitor - size) / 2.0).max(Vec2::ZERO);
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(at.to_pos2()));
         }
     }
 
@@ -275,6 +306,9 @@ fn load_portrait(ctx: &egui::Context) -> Option<TextureHandle> {
 impl eframe::App for Window<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if !self.sized {
+            self.fit_screen(&ctx);
+        }
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, BLUE);
         self.draw_photo(ui, full);
@@ -458,45 +492,41 @@ impl Window<'_> {
 
         heading(ui, "Look");
         ui.add_space(6.0);
-        let enhanced = Picture::enhanced(self.screen);
-        let enhanced_note = match enhanced.resolution {
-            Some((w, h)) => format!(
-                "{w}×{h}{}, smooth textures, longer view.",
-                if enhanced.widescreen {
-                    " widescreen"
-                } else {
-                    ""
-                }
-            ),
-            None => "Smooth textures and a longer view.".to_string(),
+        let enhanced_note = match Picture::enhanced(self.screen).resolution {
+            Some((w, h)) => format!("Your screen's {w}×{h}, smoother."),
+            None => "Smooth textures, a longer view.".to_string(),
         };
+        let best = form::recommended(self.screen);
         let cards = [
             (
                 Look::Original,
                 "Original 1998",
-                "640×480, exactly as the game shipped.".to_string(),
-                false,
+                "640×480, as the game shipped.".to_string(),
             ),
-            (Look::Enhanced, "Enhanced", enhanced_note, true),
+            (Look::Enhanced, "Enhanced", enhanced_note),
+            (
+                Look::SteamDeck,
+                "Steam Deck",
+                "1280×800 at 60 fps, easy on the battery.".to_string(),
+            ),
             (
                 Look::Custom,
                 "Custom",
-                "Pick each setting yourself in Picture.".to_string(),
-                false,
+                "Pick each setting in Picture.".to_string(),
             ),
         ];
-        let gap = 12.0;
-        let w = (ui.available_width() - 2.0 * gap) / 3.0;
+        let gap = 10.0;
+        let w = (ui.available_width() - 3.0 * gap) / 4.0;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
-            for (look, title, note, recommended) in cards {
+            for (look, title, note) in cards {
                 if look_card(
                     ui,
                     vec2(w, 104.0),
                     self.form.look == look,
                     title,
                     &note,
-                    recommended,
+                    look == best,
                 ) {
                     self.form.set_look(look, self.screen);
                     if look == Look::Custom {
@@ -581,7 +611,18 @@ impl Window<'_> {
         ui.horizontal_top(|ui| {
             field(ui, "Rumble");
             chips(ui, &form::RUMBLES, &mut self.form.rumble);
+            ui.add_space(8.0);
+            if self.form.rumble > 0 && outline_button(ui, "Test").clicked() {
+                let took = win32::test_rumble(self.form.rumble);
+                self.rumble_test = Some(match took {
+                    0 => "No pad took the rumble. Under Wine the pad's device must be writable (most desktops allow it); check that it is in X-input mode.".to_string(),
+                    _ => "Sent: your pad should have shaken for half a second. In a race it shakes on impacts.".to_string(),
+                });
+            }
         });
+        if let Some(result) = &self.rumble_test {
+            ui.label(egui::RichText::new(result).font(font(13.0)).color(GOLD));
+        }
         let pads = match self.pads {
             0 => "Rumble and separate trigger pedals need an Xbox-style (XInput) pad; none is connected now. On 8BitDo pads use X-input mode.".to_string(),
             1 => "One Xbox-style pad connected.".to_string(),

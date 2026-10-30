@@ -57,6 +57,10 @@ pub const ORIGINAL_BUTTONS: [u8; 8] = [0; 8];
 /// changes the view, the bumpers change gear, Start pauses.
 pub const MODERN_BUTTONS: [u8; 8] = [1, 2, 4, 5, 1, 6, 7, 8];
 
+/// The layout when `buttons` is unset: modern, as most pads today are
+/// Xbox-style (owner decision 2026-10-30).
+pub const DEFAULT_BUTTONS: [u8; 8] = MODERN_BUTTONS;
+
 /// `original`, `modern` or eight button numbers separated by commas.
 fn parse_buttons(v: &str) -> Option<[u8; 8]> {
     match v.trim().to_ascii_lowercase().as_str() {
@@ -208,12 +212,12 @@ gamepad_axes = true
 # unset for none. Needs an XInput pad (Xbox-style; most pads under Steam).
 #rumble = 60
 
-# Pad buttons: original (the game's own order), modern (Xbox-style pads: A
-# selects and is the handbrake, B goes back, Y changes the view, LB/RB
-# change gear, Start pauses), or for the game's buttons select, back, change
+# Pad buttons: modern (the default; Xbox-style pads: A selects and is the
+# handbrake, B goes back, Y changes the view, LB/RB change gear, Start
+# pauses), original (the game's own 1998 order), or for the game's buttons select, back, change
 # view, gear down, handbrake, gear up, (unused), pause the pad button number
 # that presses each, e.g. 1,2,4,5,1,6,7,8. The d-pad moves through menus.
-#buttons = modern
+#buttons = original
 
 # Linux (cmr-play) only: how gamescope enlarges the picture. nearest (sharp
 # pixels), pixel (sharp, all pixels the same size), fsr (smooth, then
@@ -450,7 +454,7 @@ impl Settings {
     /// (0 for its own).
     pub fn button_map(&self) -> [u8; 12] {
         let mut map = [0; 12];
-        map[..8].copy_from_slice(&self.buttons.unwrap_or(ORIGINAL_BUTTONS));
+        map[..8].copy_from_slice(&self.buttons.unwrap_or(DEFAULT_BUTTONS));
         map
     }
 
@@ -481,6 +485,7 @@ impl Settings {
         }
         if self.draw_distance.is_none() {
             skip.push("F12");
+            skip.push("F25");
         }
         if self.race_resolution().is_none()
             && self.fps_cap().is_none()
@@ -642,7 +647,12 @@ mod tests {
         let s = parse("modern").0;
         assert_eq!(s.button_map()[..8], MODERN_BUTTONS);
         assert_eq!(s.button_map()[8..], [0; 4]);
-        assert_eq!(Settings::default().button_map(), [0; 12]);
+        assert_eq!(
+            Settings::default().button_map()[..8],
+            MODERN_BUTTONS,
+            "the default"
+        );
+        assert_eq!(parse("original").0.button_map(), [0; 12]);
     }
 
     fn args(a: &[&str]) -> Result<Settings, String> {
@@ -734,7 +744,7 @@ mod tests {
         assert_eq!(
             s.skipped_fixes(),
             [
-                "F10", "F13", "F16", "F11", "F12", "F17", "F18", "F19", "F20", "F22"
+                "F10", "F13", "F16", "F11", "F12", "F25", "F17", "F18", "F19", "F20", "F22"
             ]
         );
     }

@@ -112,8 +112,8 @@ On Linux without Steam you can instead download
 2. Double-click `CMRLauncher.exe`. The settings window opens.
 3. If the game folder is empty, press **Browse…** and pick the folder with
    your `Rally.exe`; the window shows which version it found.
-4. Choose a look: **Original 1998**, **Enhanced** (fitted to your screen)
-   or **Custom**, then press **Play** (or Enter).
+4. Choose a look: **Original 1998**, **Enhanced** (fitted to your screen),
+   **Steam Deck** or **Custom**, then press **Play** (or Enter).
 
 The first start takes a few seconds while the launcher makes its private copy
 of the game. Your choices are remembered for next time.
@@ -163,9 +163,10 @@ Follow **With Steam** above in Desktop Mode (GE-Proton is installed with
 ProtonUp-Qt from Discover), then play from Game Mode:
 
 - The settings window works with the touchscreen or the right trackpad.
-  Pick **Enhanced**: it fits the Deck's 1280×800 screen with widescreen.
-- In **Buttons** choose **Modern**: A is the handbrake, the bumpers change
-  gear, Y changes the view, the triggers are the pedals and Start pauses.
+  Pick **Steam Deck**: 1280×800 widescreen at 60 fps, easy on the battery.
+- The buttons are **Modern** by default: A is the handbrake, the bumpers
+  change gear, Y changes the view, the triggers are the pedals and Start
+  pauses.
 - In the game: **Options → Settings → Controller 1**, Joystick 1, Analogue
   joystick, and steering, acceleration and braking on Analogue (see
   [Gamepad](#gamepad)).
@@ -210,8 +211,8 @@ saved settings.
 | `smooth_distance = true` | Eases the view distance when a stage changes it between sections, so scenery doesn't pop in or out at once. | off |
 | `vsync = true` | `true` waits for the screen's refresh (no tearing), `false` doesn't. | the game's own |
 | `gamepad_axes = true` | Triggers and right stick work as accelerate/brake (with an Xbox-style pad, both triggers can be held at once); Start pauses. | on |
-| `rumble = 60` | Gamepad rumble on impacts, strength 1–100. Needs an Xbox-style (XInput) pad. | off |
-| `buttons = modern` | Pad buttons. `modern` (Xbox-style pads): A selects and is the handbrake, B goes back, Y changes the view, LB/RB change gear, Start pauses. Or eight pad button numbers for select, back, change view, gear down, handbrake, gear up, (unused), pause, e.g. `1,2,4,5,1,6,7,8`. The window's **Buttons** tab sets it. | `original` (the game's own order) |
+| `rumble = 60` | Gamepad rumble on impacts, strength 1–100. Needs an Xbox-style (XInput) pad. **Test** next to it in the window shakes the pad for half a second. | off |
+| `buttons = original` | Pad buttons. `modern` (Xbox-style pads): A selects and is the handbrake, B goes back, Y changes the view, LB/RB change gear, Start pauses. `original`: the game's own 1998 order. Or eight pad button numbers for select, back, change view, gear down, handbrake, gear up, (unused), pause, e.g. `1,2,4,5,1,6,7,8`. The window's **Buttons** tab sets it. | `modern` |
 | `close_quits = true` | Closing the window (Alt+F4) quits the game. | on |
 | `saves = D:\Rally saves` | Where your saves are kept. | `Saved Games\Colin McRae Rally` in your user folder |
 | `language = FRENCH` | Game language on first setup: ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN. | ENGLISH |

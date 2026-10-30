@@ -34,7 +34,8 @@ Linux (Proton/Wine). It is not a distribution of the game.
   from our hook library, keyed to the exact executable by hash, never by
   patching files on disk.
 - The faithful, unchanged game is the default. Enhancements (resolution,
-  widescreen, frame rate) are opt-in settings.
+  widescreen, frame rate) are opt-in settings. Exception (owner decision,
+  2026-10-30): the pad button layout defaults to Modern.
 
 ## Code and commits
 

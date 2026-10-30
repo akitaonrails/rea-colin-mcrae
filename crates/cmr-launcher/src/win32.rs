@@ -94,18 +94,36 @@ pub fn xinput_pads() -> Vec<u32> {
         .collect()
 }
 
-/// Turns every XInput pad's motors off. Called after the game exits, however
-/// it ended, so a crash can't leave a pad rumbling.
-pub fn stop_rumble() {
+/// Sets both motors of every XInput pad slot; returns the slots that took
+/// it (0 from `XInputSetState`).
+fn set_motors(speed: u16) -> Vec<u32> {
     type SetState = unsafe extern "system" fn(u32, *mut [u16; 2]) -> u32;
     let Some(set) = xinput_proc(c"XInputSetState") else {
-        return;
+        return Vec::new();
     };
     // SAFETY: XInputSetState's signature; the vibration is two u16 speeds.
     let set: SetState = unsafe { std::mem::transmute(set) };
-    for i in 0..4 {
-        unsafe { set(i, &mut [0, 0]) };
-    }
+    (0..4)
+        .filter(|&i| unsafe { set(i, &mut [speed, speed]) } == 0)
+        .collect()
+}
+
+/// Turns every XInput pad's motors off. Called after the game exits, however
+/// it ended, so a crash can't leave a pad rumbling.
+pub fn stop_rumble() {
+    set_motors(0);
+}
+
+/// Shakes every XInput pad for half a second at `percent` strength (the
+/// settings window's test); returns how many pads took it.
+pub fn test_rumble(percent: u32) -> usize {
+    let speed = (percent.min(100) * 65535 / 100) as u16;
+    let took = set_motors(speed).len();
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        set_motors(0);
+    });
+    took
 }
 
 /// The main screen's size in pixels, if known.
@@ -206,42 +224,89 @@ pub fn write_registry(values: &[Value]) -> Result<&'static str, String> {
         ),
         Err(rc) => return Err(format!("cannot open the registry key (error {rc})")),
     };
-    for v in values {
-        let name = wide(v.name);
-        if v.when == When::IfMissing {
-            let rc = unsafe {
-                RegQueryValueExW(
-                    key.0,
-                    name.as_ptr(),
-                    null(),
-                    null_mut(),
-                    null_mut(),
-                    null_mut(),
-                )
-            };
-            if rc != ERROR_FILE_NOT_FOUND {
-                continue;
-            }
-        }
-        let data = wide(&v.data);
-        let rc = unsafe {
-            RegSetValueExW(
-                key.0,
-                name.as_ptr(),
-                0,
-                REG_SZ,
-                data.as_ptr().cast(),
-                (data.len() * 2) as u32,
-            )
-        };
-        if rc != ERROR_SUCCESS {
-            return Err(format!(
-                "cannot write registry value {} (error {rc})",
-                v.name
-            ));
-        }
-    }
+    write_values(&key, values)?;
     Ok(place)
+}
+
+/// Writes values into an open key (`IfMissing` ones only when absent).
+fn write_values(key: &Key, values: &[Value]) -> Result<(), String> {
+    for v in values {
+        if v.when == When::IfMissing && has_value(key, v.name) {
+            continue;
+        }
+        write_named(key, v.name, &v.data)?;
+    }
+    Ok(())
+}
+
+/// True when the key already holds a value called `name`.
+fn has_value(key: &Key, name: &str) -> bool {
+    let name = wide(name);
+    // SAFETY: an open key and a NUL-terminated name; nothing is read back.
+    let rc = unsafe {
+        RegQueryValueExW(
+            key.0,
+            name.as_ptr(),
+            null(),
+            null_mut(),
+            null_mut(),
+            null_mut(),
+        )
+    };
+    rc != ERROR_FILE_NOT_FOUND
+}
+
+/// Writes the string value `name` = `data`.
+fn write_named(key: &Key, name: &str, data: &str) -> Result<(), String> {
+    let wname = wide(name);
+    let data = wide(data);
+    // SAFETY: an open key and NUL-terminated strings.
+    let rc = unsafe {
+        RegSetValueExW(
+            key.0,
+            wname.as_ptr(),
+            0,
+            REG_SZ,
+            data.as_ptr().cast(),
+            (data.len() * 2) as u32,
+        )
+    };
+    if rc == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!("cannot write registry value {name} (error {rc})"))
+    }
+}
+
+/// Sets a string value under HKCU unless it is already there (a player's
+/// own choice is kept). Returns true when written.
+fn set_user_value_if_missing(path: &str, name: &str, data: &str) -> Result<bool, String> {
+    let key = create_key(HKEY_CURRENT_USER, path, false)
+        .map_err(|rc| format!("cannot open HKCU\\{path} (error {rc})"))?;
+    if has_value(&key, name) {
+        return Ok(false);
+    }
+    write_named(&key, name, data)?;
+    Ok(true)
+}
+
+/// Under Wine: draw OpenGL through GLX (`UseEGL` = N). Wine 11 draws
+/// through EGL by default, and where the GPU driver has no EGL for X11
+/// (NVIDIA without egl-x11) that falls back to software rendering; GLX
+/// reaches the GPU.
+pub fn prefer_gpu_opengl() -> Result<bool, String> {
+    set_user_value_if_missing(r"Software\Wine\X11 Driver", "UseEGL", "N")
+}
+
+/// On Windows with two GPUs (a laptop's integrated and discrete ones): the
+/// high-performance one for the game (the per-program choice of Settings >
+/// Display > Graphics).
+pub fn prefer_fast_gpu(exe: &Path) -> Result<bool, String> {
+    set_user_value_if_missing(
+        r"Software\Microsoft\DirectX\UserGpuPreferences",
+        &exe.display().to_string(),
+        "GpuPreference=2;",
+    )
 }
 
 struct Child {
