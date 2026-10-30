@@ -238,7 +238,36 @@ Excluded: dgVoodoo2 (closed source; crashes under Wine), cnc-ddraw
 | E4 | Draw distance | Scale the stage's far plane, object and LOD wedges and the section-trigger table by an opt-in factor (GRAPHICS.md) | **done** (F12); visual check on a long straight and the frame-rate cost still to judge |
 | E2 | Widescreen | Widen the projection (renderer side) **and** patch the game's own view-culling constants in memory (`c3d_terrain_cull`/`c3d_camera` in the decomp); re-anchor or keep the HUD | evidence for where to patch; **risk** until E1's renderer is chosen |
 | E3 | 60 fps — **not needed**: races already render decoupled from the 25 Hz tick and interpolate (190 fps measured headless at 1080p); vsync via Flip | Physics is a fixed 25 Hz tick (50 Hz option), driven by a WinMM timer thread in races; smooth 60 fps needs render-side interpolation inside the game loop | **risk**: needs a design study of the frame driver (`FUN_00443e90`) |
-| E4 | Texture filtering, MSAA, borderless window | Renderer settings, if the chosen renderer exposes them | open |
+| E4b | Texture filtering, MSAA, borderless window | split into E9 (filtering) and E6 (borderless) below | see below |
+
+### Modern improvements (round 2, planned 2026-10-30)
+
+Chosen by the owner from a list of ten. All opt-in, applied in memory or by
+our hook library, the faithful game stays the default. Done one at a time,
+each with host tests for its logic, a headless run of menus, a race, pause
+and the stage results (finish forced with `.work/rt/poke.py`), at 1080p and
+4K, before its commit. Order: cheapest and most visible first.
+
+| # | Goal | Approach | Risks | Tests | State |
+| --- | --- | --- | --- | --- | --- |
+| E5 | Menus fast at 4K (were below 30 fps) | Replace `cmr_fe_present`'s CPU copy (lock back buffer and screen, convert per pixel) with a GPU `Blt` from the 640x480 back buffer to the screen. Keep sharp pixels: check whether the driver stretches with point sampling; if not, stretch in integer steps or keep the CPU path as fallback | Wine's DirectDraw may filter stretched blits (blurry); older drivers may lack stretch | frame rate at 4K menus (target 60+); pixel comparison with the CPU result; menus, legal screen, service screen at 1080p and 4K | planned |
+| E7 | Frame pacing: frame-rate cap and vsync choice | The race renders as fast as it can (190 fps headless) between 25 Hz logic steps. A limiter in the hook library at the frame's present (high-resolution waitable timer), and a vsync switch on the game's `Flip`; settings `fps_limit`, `vsync` | timer resolution under Wine; must not slow the 25 Hz update thread | measured frame times at caps 60/120/off; logic speed unchanged (stage clock vs wall clock) | planned |
+| E6 | Borderless window, safe Alt-Tab | The game asks DirectDraw for exclusive fullscreen. Option `window = borderless`: cooperative level normal, a borderless window over the monitor, presents copied to it; lost surfaces restored on focus changes (`DDERR_SURFACELOST`) | the game's flip chain assumes fullscreen; most work of the round | Alt-Tab in menus and races (Wine); window size and position; fullscreen unchanged | planned |
+| E8 | Throttle and brake on separate triggers; rumble | WinMM reports a pad's triggers as one combined axis and the game feeds one Y axis to both pedals. Read XInput pads in the hook library and fill the control map's separate throttle (`+0x304`) and brake (`+0x308`) channels (`FUN_00449580`); rumble from the game's impact and surface events, scaled by an option | XInput under Wine (SDL backend); pads that aren't XInput keep F7 | mapping logic host tests; virtual pad run (both pedals at once, left-foot braking) | planned |
+| E9 | Texture filtering | Force the Direct3D texture filter states (bilinear/trilinear, anisotropic where the device has it) at the game's `SetRenderState` calls; mipmaps only if the textures can get them without patching data. Option `texture_filter = original/smooth/sharp` | sprites and HUD textures must stay sharp (filter only 3D); D3D5 device limits | screenshots of a stage, the HUD, menus; frame rate | planned |
+| E10 | More detail at distance | Scale the C3D mesh LOD switch distances (and fog start/end with the draw distance) by an option, as F12 does for the far plane | frame rate; pop-in moves rather than disappears | screenshots at stage points with and without; frame rate | planned |
+| E11 | Button remapping in the launcher; controller fixes C3–C6 | A per-pad button map applied where F7 reads WinMM buttons (also the d-pad, C5); skip RUN JOYSTICK PANEL (C6); look at the setup loop and capture (C3, C4) | the game's own button setup must keep working | map host tests; virtual pad in menus and race; launcher UI | planned |
+| E12 | Packaging: Linux AppImage with Wine, Steam Deck profile, Windows test pass | AppImage bundling a Wine build and gamescope use, built in CI; a Steam Deck section (controls, gamescope, Proton) in the README; ask Windows players for a test pass (issue template with the launcher log) | AppImage size; Wine build licensing (LGPL, record in THIRD_PARTY) | AppImage on a clean user (no Wine installed) | planned |
+
+Skipped for now, to revisit later:
+
+- Steering wheels with force feedback (dead zone, rotation).
+- HD texture packs loaded from the user's own folder (never shipped by us).
+- Free camera and photo mode in replays.
+- Personal records and a ghost car in Time Trial.
+- A HUD size option.
+- Check whether menu music came from CD audio tracks; if so, play the
+  user's own ripped tracks.
 
 ### Probes
 
