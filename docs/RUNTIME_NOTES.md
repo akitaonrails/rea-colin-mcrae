@@ -191,3 +191,21 @@ F11's) call a stub that, for the main thread inside 3D work, returns a copy
 of the display state with the real size (`F13_VIEW`, `cmr_3d_begin`). Update
 gaps went back to 41 ms. `CMRHOOKS_LOG=<windows path>` writes the update and
 frame timing every 5 s.
+
+## Focus loss and the game's windowed mode (2026-10-30, E6)
+
+Another window taking focus (Alt-Tab) is safe under Wine at 1024x768:
+mid-race the game pauses itself and returns at its pause menu with the
+picture intact; in the menus it carries on. On focus return the window
+procedure (`WM_ACTIVATEAPP`) calls `0x498380`, which restores every lost
+surface and reloads the textures.
+
+Setting the fullscreen flag `0x5022f4` to 0 at start (the game's dormant
+windowed mode) gives a blank screen: that path skips the mode switch but
+still draws 16-bit pixels into a desktop-format back buffer, and its present
+only waits for vertical blank without copying anything to the window.
+
+A crash during a run is now reported in `launcher.log` ("the game crashed:
+code, module+offset, registers"), from `crash.log` written by the hook
+library's crash handler. A forced crash (display pointer `0x502518` zeroed
+mid-race) logged `0xc0000005 at Rally.exe+0x9e40a`.
