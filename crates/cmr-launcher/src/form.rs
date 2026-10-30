@@ -57,6 +57,31 @@ impl Picture {
     }
 }
 
+impl Picture {
+    /// The Steam Deck's screen (1280x800, 16:10) with a light load for its
+    /// battery: smooth textures, a slightly longer view, 60 frames a second.
+    pub const STEAM_DECK: Picture = Picture {
+        resolution: Some(STEAM_DECK_SCREEN),
+        widescreen: true,
+        draw_distance: ONE * 5 / 4,
+        texture_filter: TextureFilter::Smooth,
+        fps_limit: Some(60),
+        vsync: Some(true),
+        smooth_distance: true,
+    };
+}
+
+pub const STEAM_DECK_SCREEN: (u32, u32) = (1280, 800);
+
+/// The look to recommend on a screen: Steam Deck on a Deck, else Enhanced.
+pub fn recommended(screen: Option<(u32, u32)>) -> Look {
+    if screen.and_then(landscape) == Some(STEAM_DECK_SCREEN) {
+        Look::SteamDeck
+    } else {
+        Look::Enhanced
+    }
+}
+
 /// A screen size as a landscape race resolution the game can use, or
 /// `None` when it is too small to be worth it.
 fn landscape((a, b): (u32, u32)) -> Option<(u32, u32)> {
@@ -102,6 +127,7 @@ pub const PAD_BUTTONS: [(u8, &str); 10] = [
 pub enum Look {
     Original,
     Enhanced,
+    SteamDeck,
     Custom,
 }
 
@@ -173,6 +199,26 @@ pub const SCALERS: [(Scaler, &str, &str); 4] = [
     ),
 ];
 
+/// The settings window's design size in points.
+pub const WINDOW: (f32, f32) = (880.0, 640.0);
+
+/// How much larger to draw the window on a screen (`screen` in pixels,
+/// `native` the system's own scale, 1.0 under Wine unless its DPI is set):
+/// 1x up to 1440 pixels on the shorter side, then in step with it (1.5x at
+/// 4K); never below the system's scale and never larger than 90 % of the
+/// screen. In steps of 0.05.
+pub fn window_zoom(screen: Option<(u32, u32)>, native: f32) -> f32 {
+    let native = if native > 0.0 { native } else { 1.0 };
+    let Some((w, h)) = screen else {
+        return 1.0;
+    };
+    let (w, h) = (w as f32, h as f32);
+    let fit = 0.9 * (w / WINDOW.0).min(h / WINDOW.1);
+    let target = (w.min(h) / 1440.0).max(1.0).min(fit);
+    let zoom = (target / native).max(1.0);
+    (zoom * 20.0).round() / 20.0
+}
+
 /// Race resolutions offered: the game's own, the screen's (when it is not
 /// already listed), then common sizes.
 pub fn resolutions(screen: Option<(u32, u32)>) -> Vec<(Option<(u32, u32)>, String)> {
@@ -220,8 +266,8 @@ impl Form {
             gamepad_axes: s.gamepad_axes != Some(false),
             close_quits: s.close_quits != Some(false),
             scaler: s.scaler.unwrap_or(Scaler::Nearest),
-            buttons: s.buttons.unwrap_or(config::ORIGINAL_BUTTONS),
-            layout: Form::layout_of(&s.buttons.unwrap_or(config::ORIGINAL_BUTTONS)),
+            buttons: s.buttons.unwrap_or(config::DEFAULT_BUTTONS),
+            layout: Form::layout_of(&s.buttons.unwrap_or(config::DEFAULT_BUTTONS)),
         }
     }
 
@@ -270,6 +316,8 @@ impl Form {
             Look::Original
         } else if *picture == Picture::enhanced(screen) {
             Look::Enhanced
+        } else if *picture == Picture::STEAM_DECK {
+            Look::SteamDeck
         } else {
             Look::Custom
         }
@@ -282,6 +330,7 @@ impl Form {
         match look {
             Look::Original => self.picture = Picture::ORIGINAL,
             Look::Enhanced => self.picture = Picture::enhanced(screen),
+            Look::SteamDeck => self.picture = Picture::STEAM_DECK,
             Look::Custom => {}
         }
     }
@@ -323,8 +372,7 @@ impl Form {
         put("scaler", Some(self.scaler.key().into()));
         put(
             "buttons",
-            (self.buttons != config::ORIGINAL_BUTTONS)
-                .then(|| config::buttons_value(&self.buttons)),
+            (self.buttons != config::DEFAULT_BUTTONS).then(|| config::buttons_value(&self.buttons)),
         );
         t
     }
@@ -389,6 +437,22 @@ mod tests {
     }
 
     #[test]
+    fn the_steam_deck_look_and_its_recommendation() {
+        let mut f = form(config::TEMPLATE);
+        f.set_look(Look::SteamDeck, SCREEN);
+        assert_eq!(f.picture.resolution, Some((1280, 800)));
+        assert_eq!(form(&f.save(config::TEMPLATE)).look, Look::SteamDeck);
+        assert_eq!(recommended(Some((1280, 800))), Look::SteamDeck);
+        assert_eq!(
+            recommended(Some((800, 1280))),
+            Look::SteamDeck,
+            "the Deck's panel is portrait"
+        );
+        assert_eq!(recommended(SCREEN), Look::Enhanced);
+        assert_eq!(recommended(None), Look::Enhanced);
+    }
+
+    #[test]
     fn custom_keeps_the_values_to_edit() {
         let mut f = form(config::TEMPLATE);
         f.set_look(Look::Enhanced, SCREEN);
@@ -427,13 +491,22 @@ mod tests {
     #[test]
     fn button_layouts_round_trip_and_custom_edits_spell_out_every_button() {
         let mut f = form(config::TEMPLATE);
-        assert_eq!(f.layout, Layout::Original);
-        assert_eq!(f.pad_button(4), 5, "handbrake on its own button 5");
-        f.set_layout(Layout::Modern);
-        assert_eq!(form(&f.save(config::TEMPLATE)).layout, Layout::Modern);
+        assert_eq!(f.layout, Layout::Modern, "the default");
         assert_eq!(f.pad_button(4), 1, "modern handbrake on A");
+        f.set_layout(Layout::Original);
+        let saved = f.save(config::TEMPLATE);
+        assert!(
+            saved.contains("buttons = original"),
+            "a choice away from the default is written"
+        );
+        assert_eq!(form(&saved).layout, Layout::Original);
+        assert_eq!(
+            form(&saved).pad_button(4),
+            5,
+            "handbrake on its own button 5"
+        );
 
-        let mut g = form(config::TEMPLATE);
+        let mut g = form(&saved);
         g.set_pad_button(2, 3); // change view on X: what it is already
         assert_eq!(g.layout, Layout::Original, "no change");
         g.set_pad_button(2, 4); // change view on Y
@@ -442,9 +515,52 @@ mod tests {
         let saved = g.save(config::TEMPLATE);
         assert!(saved.contains("buttons = 1,2,4,4,5,6,7,8"));
         assert_eq!(form(&saved).buttons, g.buttons);
-        // Back to the original removes the key.
-        g.set_layout(Layout::Original);
+        // Back to the default removes the key.
+        g.set_layout(Layout::Modern);
         assert_eq!(Settings::parse_file(&g.save(&saved)).0.buttons, None);
+    }
+
+    #[test]
+    fn the_window_grows_with_the_screen() {
+        assert_eq!(window_zoom(Some((1920, 1080)), 1.0), 1.0);
+        assert_eq!(window_zoom(Some((2560, 1440)), 1.0), 1.0);
+        assert_eq!(window_zoom(Some((3840, 2160)), 1.0), 1.5);
+        assert_eq!(
+            window_zoom(Some((2160, 3840)), 1.0),
+            1.5,
+            "a rotated 4K screen"
+        );
+        assert_eq!(window_zoom(Some((5120, 2880)), 1.0), 2.0);
+        // Windows already scales by 150 %: nothing more at 4K.
+        assert_eq!(window_zoom(Some((3840, 2160)), 1.5), 1.0);
+        // 125 % at 4K: the rest of the way to 1.5.
+        assert_eq!(window_zoom(Some((3840, 2160)), 1.25), 1.2);
+        // A small screen never gets a larger window than fits.
+        assert_eq!(window_zoom(Some((1280, 800)), 1.0), 1.0);
+        assert_eq!(window_zoom(None, 1.0), 1.0);
+    }
+
+    #[test]
+    fn every_scaler_is_offered_and_round_trips() {
+        assert_eq!(SCALERS.len(), Scaler::ALL.len());
+        for scaler in Scaler::ALL {
+            let (_, label, note) = SCALERS
+                .iter()
+                .find(|s| s.0 == scaler)
+                .expect("each scaler has a chip");
+            assert!(!label.is_empty() && !note.is_empty());
+            let mut f = form(config::TEMPLATE);
+            f.scaler = scaler;
+            let saved = f.save(config::TEMPLATE);
+            assert!(saved.contains(&format!("scaler = {}", scaler.key())));
+            let (s, warnings) = Settings::parse_file(&saved);
+            assert!(warnings.is_empty(), "{warnings:?}");
+            assert_eq!(s.scaler, Some(scaler));
+        }
+        // gamescope's own filter names (`-F`)
+        let keys: Vec<_> = Scaler::ALL.iter().map(|s| s.key()).collect();
+        assert_eq!(keys, ["nearest", "pixel", "fsr", "linear"]);
+        assert!(Settings::parse_file("scaler = blurry").1.len() == 1);
     }
 
     #[test]

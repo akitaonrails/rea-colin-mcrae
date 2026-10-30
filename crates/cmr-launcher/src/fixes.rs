@@ -247,6 +247,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         F22,
         F23,
         F24,
+        F25,
     ],
 };
 
@@ -1225,6 +1226,54 @@ const F24: Fix = Fix {
     }],
 };
 
+const F25_CAVE: u32 = 0xe60;
+
+/// The game asks for a 16-bit depth buffer (`0x4a6e97`, the only one).
+/// With a longer view (F12) its steps grow too coarse far away and distant
+/// hills flicker through each other. F25 asks for 24 bits (256 times finer),
+/// and keeps the one place that reads depth pixels, the visibility test
+/// `0x49fa70` (16-bit only; `0xffff` = nothing in front), working: from
+/// `0x49fad4` a 24-bit pixel is read as its top 16 depth bits, so the test
+/// compares exactly as before. Grouped with F12 (`draw_distance`).
+const F25: Fix = Fix {
+    id: "F25",
+    what: "24-bit depth buffer for longer views",
+    optional: true,
+    code: &[
+        // mov dword [esp+0x24],0x10 (dwZBufferBitDepth) -> 24
+        Piece {
+            at: At::Image(0x004a_6e9b),
+            ops: &[Op::Raw(&[0x18])],
+        },
+        // cmp dword [esp+0x18],0x10 ; je -> jmp ; nop ; nop
+        Piece {
+            at: At::Image(0x0049_fad4),
+            ops: &[Op::Jmp(At::Cave(F25_CAVE)), Op::Raw(&[NOP, NOP])],
+        },
+        Piece {
+            at: At::Cave(F25_CAVE),
+            ops: &[
+                // mov edx,[esp+0x18] (depth bits) ; cmp edx,16 ; je ok ;
+                // cmp edx,24 ; je ok ; else the game's "can't tell" return
+                Op::Raw(&[0x8b, 0x54, 0x24, 0x18, 0x83, 0xfa, 0x10, 0x74, 0x0a]),
+                Op::Raw(&[0x83, 0xfa, 0x18, 0x74, 0x05]),
+                Op::Jmp(At::Image(0x0049_fadb)),
+                // ok: eax = surface + pitch * y ; ecx = x
+                Op::Raw(&[0x8b, 0x44, 0x24, 0x10, 0x0f, 0xaf, 0x44, 0x24, 0x74]),
+                Op::Raw(&[0x03, 0x44, 0x24, 0x24, 0x8b, 0x4c, 0x24, 0x70]),
+                // push esi ; push 0 (the game's own, for Unlock)
+                Op::Raw(&[0x56, 0x6a, 0x00]),
+                // cmp dl,16 ; jne d24 ; mov si,[eax+ecx*2]
+                Op::Raw(&[0x80, 0xfa, 0x10, 0x75, 0x09, 0x66, 0x8b, 0x34, 0x48]),
+                Op::Jmp(At::Image(0x0049_fb02)),
+                // d24: mov esi,[eax+ecx*4] ; shr esi,8 (top 16 of 24 bits)
+                Op::Raw(&[0x8b, 0x34, 0x88, 0xc1, 0xee, 0x08]),
+                Op::Jmp(At::Image(0x0049_fb02)),
+            ],
+        },
+    ],
+};
+
 const F23_CAVE: u32 = 0xe20;
 /// F23's map: for each of the game's 12 pad buttons, the physical button
 /// (1-based) that feeds it, 0 for its own; filled by the launcher.
@@ -1608,7 +1657,7 @@ mod tests {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
         let expected: Vec<_> = (1..=ids.len()).map(|i| format!("F{i}")).collect();
         assert_eq!(ids, expected);
-        assert_eq!(ids.len(), 24);
+        assert_eq!(ids.len(), 25);
     }
 
     #[test]
@@ -1631,6 +1680,33 @@ mod tests {
         let rel = u32::from_le_bytes(cave[30..34].try_into().unwrap());
         assert_eq!((CAVE + F23_CAVE + 34).wrapping_add(rel), 0x49cefc);
         assert_eq!(at(CAVE + F23_MAP), [0; 12]);
+    }
+
+    #[test]
+    fn f25_asks_for_24_bits_and_reads_them() {
+        assert_eq!(at(0x4a6e9b), [0x18]);
+        let site = at(0x49fad4);
+        let rel = u32::from_le_bytes(site[1..5].try_into().unwrap());
+        assert_eq!((0x49fad9u32).wrapping_add(rel), CAVE + F25_CAVE);
+        assert_eq!(&site[5..], [NOP, NOP]);
+        let c = at(CAVE + F25_CAVE);
+        assert_eq!(c.len(), 64);
+        let jump = |off: usize| {
+            assert_eq!(c[off], 0xe9);
+            let rel = u32::from_le_bytes(c[off + 1..off + 5].try_into().unwrap());
+            (CAVE + F25_CAVE + off as u32 + 5).wrapping_add(rel)
+        };
+        // je ok (+10) from 9 lands on 19; je ok (+5) from 14 too.
+        assert_eq!((c[8], c[13]), (0x0a, 0x05));
+        assert_eq!(9 + 10, 19);
+        assert_eq!(jump(14), 0x49fadb);
+        // ok: 17 bytes of address, 3 of pushes, then the width test
+        assert_eq!(&c[19..23], [0x8b, 0x44, 0x24, 0x10]);
+        assert_eq!(&c[39..44], [0x80, 0xfa, 0x10, 0x75, 0x09]);
+        // jne d24 skips the 4-byte read and its 5-byte jmp
+        assert_eq!(jump(48), 0x49fb02);
+        assert_eq!(&c[53..59], [0x8b, 0x34, 0x88, 0xc1, 0xee, 0x08]);
+        assert_eq!(jump(59), 0x49fb02);
     }
 
     #[test]
@@ -2078,8 +2154,8 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        // the last piece is F23's button map
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F23_MAP + 12);
+        // the last piece is F25's depth read
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F25_CAVE + 64);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
@@ -2101,7 +2177,7 @@ mod tests {
     fn only_optional_fixes_can_be_skipped() {
         let skip = [
             "F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F17", "F18", "F19", "F20",
-            "F21", "F22", "F23", "F24", "F1",
+            "F21", "F22", "F23", "F24", "F25", "F1",
         ];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
         assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9", "F15"]);

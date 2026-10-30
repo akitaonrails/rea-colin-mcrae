@@ -230,6 +230,18 @@ mod app {
             .unwrap_or_else(|| "ENGLISH".into());
         let root = rt.display().to_string();
         let place = win32::write_registry(&registry::values(&root, &language))?;
+        // The GPU, not software rendering, and the faster of two GPUs.
+        let gpu = if win32::is_wine() {
+            win32::prefer_gpu_opengl().map(|w| w.then_some("Wine: OpenGL through GLX (UseEGL=N)"))
+        } else {
+            win32::prefer_fast_gpu(&rt.join(EXE))
+                .map(|w| w.then_some("Windows: high-performance GPU for the game"))
+        };
+        match gpu {
+            Ok(Some(what)) => log_line(what),
+            Ok(None) => {}
+            Err(e) => log_line(&format!("warning: {e}")),
+        }
         log_line(&format!(
             "registry written ({place}); wine: {}",
             win32::is_wine()

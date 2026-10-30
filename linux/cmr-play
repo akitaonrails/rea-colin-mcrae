@@ -46,6 +46,37 @@ running() {
   [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK")" 2>/dev/null
 }
 
+# The best GPU for the game, as environment assignments (none: the
+# default GPU). A player's own DRI_PRIME / __NV_PRIME_RENDER_OFFLOAD win.
+# - NVIDIA with its driver and OpenGL library: NVIDIA's render offload,
+#   which picks it over an integrated GPU (harmless when it drives the
+#   screen anyway).
+# - Several Mesa GPUs, the screen's one integrated (Intel, or less video
+#   memory than another): DRI_PRIME=1, the other one.
+# CMR_SYSFS replaces /sys (tests).
+gpu_env() {
+  [ -n "${DRI_PRIME:-}${__NV_PRIME_RENDER_OFFLOAD:-}" ] && return
+  sys=${CMR_SYSFS:-/sys}
+  n=0 nvidia= boot= boot_vram=0 other_vram=0
+  for d in "$sys"/class/drm/card*; do
+    case "${d##*/}" in *-*) continue ;; esac  # connectors (card0-DP-1)
+    [ -r "$d/device/vendor" ] || continue
+    n=$((n + 1))
+    vram=$(cat "$d/device/mem_info_vram_total" 2>/dev/null || echo 0)
+    [ "$(basename "$(readlink "$d/device/driver")")" = nvidia ] && nvidia=1
+    if [ "$(cat "$d/device/boot_vga" 2>/dev/null)" = 1 ]; then
+      boot=$(cat "$d/device/vendor"); boot_vram=$vram
+    elif [ "$vram" -gt "$other_vram" ]; then
+      other_vram=$vram
+    fi
+  done
+  if [ -n "$nvidia" ] && $RUN sh -c 'ldconfig -p 2>/dev/null | grep -q libGLX_nvidia.so.0'; then
+    echo "__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only"
+  elif [ "$n" -ge 2 ] && { [ "$boot" = 0x8086 ] || [ "$other_vram" -gt "$boot_vram" ]; }; then
+    echo "DRI_PRIME=1"
+  fi
+}
+
 start() {
   if [ -z "$LAUNCHER" ] || [ ! -f "$LAUNCHER" ]; then
     echo "CMRLauncher.exe not found next to cmr-play (or set CMR_LAUNCHER)"; exit 1
@@ -79,16 +110,16 @@ INNER
 # AppImage, unmounted when its script ends) until it exits.
 launch() {
   if [ -n "${CMR_WAIT:-}" ]; then
-    $RUN env WINEPREFIX="$PREFIX" "$@" > "$STATE/play.log" 2>&1
+    $RUN env WINEPREFIX="$PREFIX" $GPU "$@" > "$STATE/play.log" 2>&1
   else
-    setsid $RUN env WINEPREFIX="$PREFIX" "$@" > "$STATE/play.log" 2>&1 < /dev/null &
+    setsid $RUN env WINEPREFIX="$PREFIX" $GPU "$@" > "$STATE/play.log" 2>&1 < /dev/null &
     echo $! > "$LOCK"
   fi
 }
 
 # The settings window; its exit code says what to do next.
 settings() {
-  $RUN env WINEPREFIX="$PREFIX" wine "$LAUNCHER" --settings --linux 2>/dev/null
+  $RUN env WINEPREFIX="$PREFIX" $GPU wine "$LAUNCHER" --settings --linux 2>/dev/null
   rc=$?
   # The window ran on the desktop. Its wineserver lingers for a few seconds
   # and is tied to the desktop's display; a game started meanwhile would
@@ -99,6 +130,11 @@ settings() {
     *) return 1 ;;    # closed
   esac
 }
+
+# Tests load the functions above without running anything.
+[ -n "${CMR_PLAY_FUNCTIONS_ONLY:-}" ] && return 0
+GPU=$(gpu_env)
+[ -n "$GPU" ] && echo "GPU: $GPU"
 
 case "${1:-}" in
   "")
