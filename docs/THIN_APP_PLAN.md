@@ -298,6 +298,11 @@ as reference only, no code taken):
 
 Skipped for now, to revisit later:
 
+- HD 2D art (owner request, 2026-10-30): studied in `docs/UPSCALING.md`;
+  `crates/cmr-hd` extracts and upscales locally (912 images, 83 s, x2 and
+  x4 sets). Runtime loading (shadow surfaces at the 2D primitives, then
+  the front end on F13's model) is the next step.
+
 - Steering wheels with force feedback (dead zone, rotation).
 - HD texture packs loaded from the user's own folder (never shipped by us).
 - Free camera and photo mode in replays.

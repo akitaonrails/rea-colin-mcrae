@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/cmr-launcher", "crates/cmr-hooks"]
+members = ["crates/cmr-launcher", "crates/cmr-hooks", "crates/cmr-hd"]
 resolver = "3"
 
 [workspace.package]

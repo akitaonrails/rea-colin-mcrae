@@ -33,6 +33,20 @@ None yet. Candidates and their state are in `docs/THIN_APP_PLAN.md`.
 | `crates/cmr-launcher/assets/portrait.jpg` — Colin McRae, photo by Carolyn Williams (resized) | CC BY 2.0 (credited in the window) | https://commons.wikimedia.org/wiki/File:Colin_Mcrae_crop.jpg |
 | `crates/cmr-launcher/assets/fonts/Barlow-*.ttf`, `BarlowCondensed-*.ttf` | SIL OFL 1.1 (`assets/fonts/OFL.txt`) | https://github.com/jpt/barlow |
 
+## The cmr-hd study tool (built, not shipped)
+
+`crates/cmr-hd` (docs/UPSCALING.md) is a developer and player tool that is
+not part of the package. It links:
+
+| Component | Licence | Source |
+| --- | --- | --- |
+| `flate2` (with `miniz_oxide`) | MIT OR Apache-2.0 | https://github.com/rust-lang/flate2-rs |
+| `image` (BMP and PNG codecs) and its dependencies | MIT OR Apache-2.0 | https://github.com/image-rs/image |
+
+It runs Real-ESRGAN (`realesrgan-ncnn-vulkan`, BSD-3-Clause,
+https://github.com/xinntao/Real-ESRGAN) as a separate program the user
+downloads; nothing of it is bundled yet.
+
 ## Compiled into cmrhooks.dll
 
 Our own code only (`crates/cmr-hooks`, `no_std`).

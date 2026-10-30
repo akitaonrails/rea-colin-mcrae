@@ -304,6 +304,12 @@ release for tags named `v…`. How it works and what's left:
 [docs/GRAPHICS.md](docs/GRAPHICS.md), [docs/RUNTIME_NOTES.md](docs/RUNTIME_NOTES.md).
 Rules for contributors are in [AGENTS.md](AGENTS.md).
 
+**HD 2D art (study).** `crates/cmr-hd` extracts the menus, loading screens
+and HUD from your own game folder and upscales them with Real-ESRGAN into
+1080p and 4K sets, on your machine; the game doesn't load them yet. The
+findings and the plan for showing them in the game are in
+[docs/UPSCALING.md](docs/UPSCALING.md).
+
 The game fixes are applied in memory to the running game, keyed to the exact
 `Rally.exe`; nothing is patched on disk.
 
