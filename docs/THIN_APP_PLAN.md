@@ -250,7 +250,7 @@ and the stage results (finish forced with `.work/rt/poke.py`), at 1080p and
 
 | # | Goal | Approach | Risks | Tests | State |
 | --- | --- | --- | --- | --- | --- |
-| E5 | Menus fast at 4K (were below 30 fps) | Replace `cmr_fe_present`'s CPU copy (lock back buffer and screen, convert per pixel) with a GPU `Blt` from the 640x480 back buffer to the screen. Keep sharp pixels: check whether the driver stretches with point sampling; if not, stretch in integer steps or keep the CPU path as fallback | Wine's DirectDraw may filter stretched blits (blurry); older drivers may lack stretch | frame rate at 4K menus (target 60+); pixel comparison with the CPU result; menus, legal screen, service screen at 1080p and 4K | planned |
+| E5 | Menus fast at 4K (were 39 fps headless) | Tried a GPU `Blt` stretch from the 640x480 back buffer: under Wine (wined3d) it only works at exactly 2x (2.25x, 4x and 4.5x come out black), so it is not used. Instead the CPU copy computes each enlarged row once and copies it to its repeats, and locks and uploads only the picture (the black bars are drawn on the first frame of a screen and once a second) | — | pixel-exact host test against nearest-neighbour; 4K menus 39 → 44 fps headless (software OpenGL, upload-bound); real-GPU rate to confirm by the owner (`WINEDEBUG=fps`); menus, service, loading, race, pause, quit, results at 4K | **done** (CPU path) |
 | E7 | Frame pacing: frame-rate cap and vsync choice | The race renders as fast as it can (190 fps headless) between 25 Hz logic steps. A limiter in the hook library at the frame's present (high-resolution waitable timer), and a vsync switch on the game's `Flip`; settings `fps_limit`, `vsync` | timer resolution under Wine; must not slow the 25 Hz update thread | measured frame times at caps 60/120/off; logic speed unchanged (stage clock vs wall clock) | planned |
 | E6 | Borderless window, safe Alt-Tab | The game asks DirectDraw for exclusive fullscreen. Option `window = borderless`: cooperative level normal, a borderless window over the monitor, presents copied to it; lost surfaces restored on focus changes (`DDERR_SURFACELOST`) | the game's flip chain assumes fullscreen; most work of the round | Alt-Tab in menus and races (Wine); window size and position; fullscreen unchanged | planned |
 | E8 | Throttle and brake on separate triggers; rumble | WinMM reports a pad's triggers as one combined axis and the game feeds one Y axis to both pedals. Read XInput pads in the hook library and fill the control map's separate throttle (`+0x304`) and brake (`+0x308`) channels (`FUN_00449580`); rumble from the game's impact and surface events, scaled by an option | XInput under Wine (SDL backend); pads that aren't XInput keep F7 | mapping logic host tests; virtual pad run (both pedals at once, left-foot braking) | planned |
@@ -258,6 +258,29 @@ and the stage results (finish forced with `.work/rt/poke.py`), at 1080p and
 | E10 | More detail at distance | Scale the C3D mesh LOD switch distances (and fog start/end with the draw distance) by an option, as F12 does for the far plane | frame rate; pop-in moves rather than disappears | screenshots at stage points with and without; frame rate | planned |
 | E11 | Button remapping in the launcher; controller fixes C3–C6 | A per-pad button map applied where F7 reads WinMM buttons (also the d-pad, C5); skip RUN JOYSTICK PANEL (C6); look at the setup loop and capture (C3, C4) | the game's own button setup must keep working | map host tests; virtual pad in menus and race; launcher UI | planned |
 | E12 | Packaging: Linux AppImage with Wine, Steam Deck profile, Windows test pass | AppImage bundling a Wine build and gamescope use, built in CI; a Steam Deck section (controls, gamescope, Proton) in the README; ask Windows players for a test pass (issue template with the launcher log) | AppImage size; Wine build licensing (LGPL, record in THIRD_PARTY) | AppImage on a clean user (no Wine installed) | planned |
+
+Ideas from OpenCMR2 (a GPL-3.0 native port of Colin McRae Rally 2.0, read
+as reference only, no code taken):
+
+- x87 precision: Direct3D sets 24-bit FPU precision, Wine's DirectDraw
+  leaves 53-bit; in CMR2 that changed step scheduling and trig tables (AI
+  off its lines). Probe P1: read the FPU control word in CMR1's update
+  thread under Wine; if it differs from Windows, set it in the hook library.
+- E7: when uncapping or capping the frame rate, look for anything the game
+  advances once per drawn frame (clouds, menu marks, weather): those change
+  speed with the frame rate; logic on the 25 Hz timer thread doesn't.
+- E8: present the triggers as two pedal-style axes (or fill the separate
+  throttle/brake channels), keep them out of menu navigation, d-pad as POV.
+- E9: "point filter and no mipmaps" marks sprites, fonts and HUD: keep those
+  sharp; filter (and add anisotropy) only where the game already asks for
+  linear filtering or mipmaps.
+- E10: ease far-plane changes instead of jumping (hides pop-in), and widen
+  the view culling to the real field of view on wide screens (edge
+  scenery).
+- E6: on focus loss pause the game and audio (unless a "run in background"
+  option); hold Enter back after Alt+Enter so it doesn't confirm a menu.
+- E12: under gamescope the window may never get focus; input must not
+  depend on it.
 
 Skipped for now, to revisit later:
 

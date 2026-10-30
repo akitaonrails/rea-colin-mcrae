@@ -192,6 +192,8 @@ pub extern "stdcall" fn cmr_hud_rects(args: *mut *mut Rect, clip: u32) {
 
 // IDirectDrawSurface (v1) methods, by vtable offset.
 type Lock = unsafe extern "system" fn(*mut usize, *const u8, *mut u8, u32, usize) -> i32;
+type GetSurfaceDesc = unsafe extern "system" fn(*mut usize, *mut SurfaceDesc) -> i32;
+const GET_SURFACE_DESC: usize = 0x58 / 4;
 type Unlock = unsafe extern "system" fn(*mut usize, *mut u8) -> i32;
 const LOCK: usize = 0x64 / 4;
 const UNLOCK: usize = 0x80 / 4;
@@ -231,13 +233,19 @@ unsafe fn method<T>(obj: *mut usize, index: usize) -> T {
 /// Locks a surface; `flags` adds DDLOCK_READONLY or DDLOCK_WRITEONLY, which
 /// spares the copy back from (or to) video memory a full lock costs.
 unsafe fn lock(surface: *mut usize, flags: u32) -> Option<SurfaceDesc> {
+    unsafe { lock_rect(surface, core::ptr::null(), flags) }
+}
+
+/// `lock` of a part of the surface (`rect`: left, top, right, bottom); the
+/// returned pointer is the part's top left.
+unsafe fn lock_rect(surface: *mut usize, rect: *const [i32; 4], flags: u32) -> Option<SurfaceDesc> {
     let mut desc: SurfaceDesc = unsafe { core::mem::zeroed() };
     desc.size = core::mem::size_of::<SurfaceDesc>() as u32;
     let f: Lock = unsafe { method(surface, LOCK) };
     let hr = unsafe {
         f(
             surface,
-            core::ptr::null(),
+            rect.cast(),
             (&raw mut desc).cast(),
             DDLOCK_WAIT | flags,
             0,
@@ -270,27 +278,65 @@ pub extern "stdcall" fn cmr_fe_present(display: *mut u8) -> u32 {
         if (w, h) != (640, 480) || primary.is_null() || back.is_null() {
             return 0;
         }
+        let Some(screen) = desc_of(primary) else {
+            return 0;
+        };
+        if screen.width <= 640 || !(screen.bits == 16 || screen.bits == 32) {
+            return 0;
+        }
         let Some(src) = lock(back, DDLOCK_READONLY) else {
             return 0;
         };
-        let done = match lock(primary, DDLOCK_WRITEONLY) {
-            Some(dst)
-                if dst.width > 640
-                    && dst.pitch > 0
-                    && src.pitch > 0
-                    && src.bits == 16
-                    && (dst.bits == 16 || dst.bits == 32) =>
-            {
-                crate::present::blit(
-                    src.surface,
-                    src.pitch as usize,
-                    src.green_mask == 0x7e0,
-                    dst.surface,
-                    dst.pitch as usize,
-                    dst.bits,
-                    dst.width,
-                    dst.height,
-                );
+        if src.bits != 16 || src.pitch <= 0 {
+            unlock(back);
+            return 0;
+        }
+        // The black bars only need drawing now and then (a new screen, and
+        // once a second in case something drew over them); the rest of the
+        // time only the picture is locked, uploaded and drawn.
+        let full = &mut *addr_of_mut!(FULL);
+        full.frames = if full.primary == primary {
+            full.frames + 1
+        } else {
+            0
+        };
+        full.primary = primary;
+        let (x, y, w, h) = crate::present::target(screen.width, screen.height);
+        let whole = full.frames.is_multiple_of(60);
+        let rect = [x as i32, y as i32, (x + w) as i32, (y + h) as i32];
+        let dst = if whole {
+            lock(primary, DDLOCK_WRITEONLY)
+        } else {
+            lock_rect(primary, &rect, DDLOCK_WRITEONLY)
+        };
+        let done = match dst {
+            Some(dst) if dst.pitch > 0 => {
+                let (src_px, pitch, green6) =
+                    (src.surface, src.pitch as usize, src.green_mask == 0x7e0);
+                let (out, out_pitch) = (dst.surface, dst.pitch as usize);
+                if whole {
+                    crate::present::blit(
+                        src_px,
+                        pitch,
+                        green6,
+                        out,
+                        out_pitch,
+                        screen.bits,
+                        screen.width,
+                        screen.height,
+                    );
+                } else {
+                    crate::present::blit_picture(
+                        src_px,
+                        pitch,
+                        green6,
+                        out,
+                        out_pitch,
+                        screen.bits,
+                        w,
+                        h,
+                    );
+                }
                 unlock(primary);
                 1
             }
@@ -302,6 +348,27 @@ pub extern "stdcall" fn cmr_fe_present(display: *mut u8) -> u32 {
         };
         unlock(back);
         done
+    }
+}
+
+/// When the front end's bars were last drawn (`cmr_fe_present`).
+struct FullFrames {
+    primary: *mut usize,
+    frames: u32,
+}
+
+static mut FULL: FullFrames = FullFrames {
+    primary: core::ptr::null_mut(),
+    frames: 0,
+};
+
+fn desc_of(surface: *mut usize) -> Option<SurfaceDesc> {
+    // SAFETY: a live DirectDraw surface; the descriptor is sized for it.
+    unsafe {
+        let mut desc: SurfaceDesc = core::mem::zeroed();
+        desc.size = core::mem::size_of::<SurfaceDesc>() as u32;
+        let get: GetSurfaceDesc = method(surface, GET_SURFACE_DESC);
+        (get(surface, &mut desc) == 0).then_some(desc)
     }
 }
 
