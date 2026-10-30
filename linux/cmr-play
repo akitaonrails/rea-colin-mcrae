@@ -108,7 +108,7 @@ INNER
 
 case "${1:-start}" in
   get)
-    for k in resolution widescreen draw_distance fps_limit vsync close_quits gamepad_axes saves; do
+    for k in resolution widescreen draw_distance fps_limit vsync texture_filter smooth_distance rumble close_quits gamepad_axes saves; do
       echo "$k=$(get_key "$k")"
     done
     g=$(get_key game); case "$g" in Z:*|z:*) g=${g#??} ;; esac
@@ -133,7 +133,7 @@ case "${1:-start}" in
         scaler) echo "$v" > "$STATE/scaler" ;;
         game) if [ -n "$v" ]; then check "$v" >/dev/null || { echo "game folder: $(check "$v")"; exit 1; }
                 set_key game "$(to_wine "$v")"; fi ;;
-        widescreen|draw_distance|fps_limit|vsync|saves|close_quits|gamepad_axes) set_key "$k" "$v" ;;
+        widescreen|draw_distance|fps_limit|vsync|texture_filter|smooth_distance|rumble|saves|close_quits|gamepad_axes) set_key "$k" "$v" ;;
       esac
     done
     start ;;

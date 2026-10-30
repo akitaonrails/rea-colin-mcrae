@@ -41,6 +41,13 @@ ShellRoot {
     { key: "", label: "Original" }, { key: "30", label: "30" }, { key: "60", label: "60" },
     { key: "120", label: "120" }, { key: "144", label: "144" }
   ]
+  readonly property var filters: [
+    { key: "", label: "Original" }, { key: "smooth", label: "Smooth" }, { key: "sharp", label: "Sharp" }
+  ]
+  readonly property var rumbles: [
+    { key: "", label: "Off" }, { key: "30", label: "Light" }, { key: "60", label: "Medium" },
+    { key: "100", label: "Strong" }
+  ]
   readonly property var vsyncs: [
     { key: "", label: "As the game" }, { key: "true", label: "On" }, { key: "false", label: "Off" }
   ]
@@ -83,7 +90,10 @@ ShellRoot {
     scaler.current = find(scalers, kv.scaler || "nearest", 0);
     fps.current = find(frameRates, kv.fps_limit === "off" ? "" : (kv.fps_limit || ""), 0);
     vsync.current = find(vsyncs, kv.vsync || "", 0);
+    texfilter.current = find(filters, kv.texture_filter === "original" ? "" : (kv.texture_filter || ""), 0);
     wide.checked = kv.widescreen === "true";
+    ease.checked = kv.smooth_distance === "true";
+    rumble.current = find(rumbles, kv.rumble === "off" || kv.rumble === "0" ? "" : (kv.rumble || ""), 0);
     quit.checked = kv.close_quits !== "false";
     pad.checked = kv.gamepad_axes !== "false";
     saves.text = kv.saves || "";
@@ -205,7 +215,7 @@ ShellRoot {
   FloatingWindow {
     title: "Colin McRae Rally"
     implicitWidth: 900
-    implicitHeight: 860
+    implicitHeight: 980
     // A fixed-size dialog: equal minimum and maximum sizes tell the
     // compositor not to tile it (a tiled window can open under floating ones).
     minimumSize: Qt.size(implicitWidth, implicitHeight)
@@ -338,6 +348,8 @@ ShellRoot {
         Chips { id: res; options: root.resolutions }
         FieldLabel { text: "Draw distance" }
         Chips { id: dist; options: root.distances }
+        FieldLabel { text: "Textures" }
+        Chips { id: texfilter; options: root.filters }
         FieldLabel { text: "Frame-rate cap" }
         Chips { id: fps; options: root.frameRates }
         FieldLabel { text: "Vsync" }
@@ -354,13 +366,20 @@ ShellRoot {
         }
         Item { width: 1; height: 1 }
         Toggle { id: wide; text: "Widescreen: show more to the sides" }
+        Item { width: 1; height: 1 }
+        Toggle { id: ease; text: "Smooth view distance changes (less pop-in)" }
       }
 
       Heading { text: "Playing" }
       ColumnLayout {
         spacing: 6
-        Toggle { id: pad; checked: true; text: "Gamepad triggers, right stick and Start pause" }
+        Toggle { id: pad; checked: true; text: "Gamepad: triggers as pedals, right stick, Start pauses" }
         Toggle { id: quit; checked: true; text: "Closing the window quits the game" }
+        RowLayout {
+          spacing: 16
+          FieldLabel { text: "Rumble" }
+          Chips { id: rumble; options: root.rumbles }
+        }
       }
 
       Heading { text: "Saves" }
@@ -422,6 +441,9 @@ ShellRoot {
                   "draw_distance=" + (dist.current === 0 ? "" : root.distances[dist.current].key),
                   "fps_limit=" + root.frameRates[fps.current].key,
                   "vsync=" + root.vsyncs[vsync.current].key,
+                  "texture_filter=" + root.filters[texfilter.current].key,
+                  "smooth_distance=" + (ease.checked ? "true" : ""),
+                  "rumble=" + root.rumbles[rumble.current].key,
                   "scaler=" + root.scalers[scaler.current].key,
                   "close_quits=" + (quit.checked ? "true" : "false"),
                   "gamepad_axes=" + (pad.checked ? "true" : "false"),

@@ -177,3 +177,17 @@ the game sees (F13's screen size) has to hold for both threads. Read from
 the running game with the harness scripts `.work/rt/peek.py`/`peekptr.py`
 (`/proc/<pid>/mem`); `.work/rt/poke.py 0x514468 1` forces the stage end for
 tests.
+
+## Camera hiccups from a lock (2026-10-30)
+
+The owner saw short car/camera hiccups in races and, twice, the camera
+jumping to the car's roof and animating back. The lock F13 used to keep the
+update thread away from 3D drawing made about 40% of updates wait 2-9 ms
+(update gaps up to 49 ms instead of 40, measured with `CMRHOOKS_LOG`): the
+game draws in-between frames by time, so a late update made the car and
+camera run ahead and snap back. F13 now has no lock: the display state holds
+640x480 for the whole race and the 3D code's eight screen-size reads (plus
+F11's) call a stub that, for the main thread inside 3D work, returns a copy
+of the display state with the real size (`F13_VIEW`, `cmr_3d_begin`). Update
+gaps went back to 41 ms. `CMRHOOKS_LOG=<windows path>` writes the update and
+frame timing every 5 s.

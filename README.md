@@ -32,7 +32,9 @@ the corners. Click to watch (3½ minutes, with sound).*
 **Gamepads**
 
 - Accelerate and brake with the triggers or the right stick, not only the
-  left stick.
+  left stick; with an Xbox-style pad both triggers work at once (left-foot
+  braking).
+- Optional rumble on impacts.
 - Start pauses the race.
 - Your controller choice no longer falls back to the keyboard by itself, and
   saves broken by that bug (car turning in circles) are repaired.
@@ -45,8 +47,12 @@ the corners. Click to watch (3½ minutes, with sound).*
   loading screen) scales with the resolution; the HUD sits in the corners
   of wide screens.
 - 16:9 widescreen that shows more to the sides instead of stretching.
-- A longer view distance, up to 3× further down the stage.
+- A longer view distance, up to 3× further down the stage, eased when the
+  stage changes it so scenery doesn't pop in.
+- Widescreen keeps the scenery at the edges of the wider view.
 - A frame-rate cap and a vsync choice, for smooth, even frames.
+- Smooth textures (mipmaps and trilinear filtering) that don't shimmer in
+  the distance, or a sharp, unfiltered look.
 
 **Comfort**
 
@@ -170,8 +176,11 @@ Open it in any text editor; lines starting with `#` are switched off.
 | `widescreen = true` | On a 16:9 screen, shows more to the sides instead of stretching the picture. | off |
 | `draw_distance = 1.5` | Sees further down the stage, from `1.0` to `3.0`. Longer distances can flicker far away and cost speed. | off |
 | `fps_limit = 60` | Caps the frame rate (10 to 1000, or `off`). The driving keeps its own fixed rate; only the redraws change. | off |
+| `texture_filter = smooth` | `smooth` adds mipmaps and trilinear filtering (no shimmering far away); `sharp` shows crisp, unfiltered pixels everywhere; `original` keeps the game's. | the game's own |
+| `smooth_distance = true` | Eases the view distance when a stage changes it between sections, so scenery doesn't pop in or out at once. | off |
 | `vsync = true` | `true` waits for the screen's refresh (no tearing), `false` doesn't. | the game's own |
-| `gamepad_axes = true` | Triggers and right stick work as accelerate/brake; Start pauses. | on |
+| `gamepad_axes = true` | Triggers and right stick work as accelerate/brake (with an Xbox-style pad, both triggers can be held at once); Start pauses. | on |
+| `rumble = 60` | Gamepad rumble on impacts, strength 1–100. Needs an Xbox-style (XInput) pad. | off |
 | `close_quits = true` | Closing the window (Alt+F4) quits the game. | on |
 | `saves = D:\Rally saves` | Where your saves are kept. | `Saved Games\Colin McRae Rally` in your user folder |
 | `language = FRENCH` | Game language on first setup: ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN. | ENGLISH |
@@ -188,6 +197,7 @@ CMRLauncher.exe --check --game "D:\Games\Colin McRae Rally"   # is this folder s
 
 Flags: `--game`, `--saves`, `--runtime`, `--language`, `--resolution`,
 `--widescreen on|off`, `--draw-distance`, `--fps-limit`, `--vsync on|off`,
+`--texture-filter`, `--smooth-distance on|off`, `--rumble`,
 `--gamepad-axes on|off`, `--close-quits on|off`. Only `--game` is remembered; the others override
 `launcher.cfg` for that run. `CMRLauncher.exe --help` lists them.
 

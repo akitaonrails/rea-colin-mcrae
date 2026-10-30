@@ -47,9 +47,14 @@ code or data, [I] inferred. Status and the fix list are in
 - The game updates on a multimedia-timer thread (`timeSetEvent`, callback
   `0x443db0`) while the main thread renders; the results layout
   (`0x42e320`), for one, is computed there. So the virtual size is never
-  swapped per frame: updates and real sections take one recursive lock, and
-  an update never sees the real size. Before this, the results table was
-  laid out in real pixels and fell off screen.
+  swapped per frame. A lock between updates and 3D drawing made updates
+  late and the camera hiccup (RUNTIME_NOTES); instead the display state
+  keeps 640x480 and the 3D code's eight per-frame screen-size reads (the
+  projection, clears, scene draw, bounds check and point projection, plus
+  F11's) call a stub that returns a real-size copy of the display state for
+  the main thread inside 3D work (`F13_VIEW`, refreshed by `cmr_3d_begin`),
+  else the game's own. Only display and 3D device set-up, while a stage
+  loads or the menus return (no update thread), briefly swap the size.
 - The race HUD's layout and draw calls are marked so its side pieces anchor
   to the screen edges (only for the thread drawing it). The state logic is
   `cmr-hooks::sections` (host tests); the front end is never touched (it
