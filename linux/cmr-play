@@ -89,7 +89,12 @@ launch() {
 # The settings window; its exit code says what to do next.
 settings() {
   $RUN env WINEPREFIX="$PREFIX" wine "$LAUNCHER" --settings --linux 2>/dev/null
-  case $? in
+  rc=$?
+  # The window ran on the desktop. Its wineserver lingers for a few seconds
+  # and is tied to the desktop's display; a game started meanwhile would
+  # join it and open there instead of in gamescope. Wait for it to end.
+  $RUN env WINEPREFIX="$PREFIX" wineserver -w 2>/dev/null
+  case $rc in
     0|4) return 0 ;;  # Play pressed, or no window could be shown
     *) return 1 ;;    # closed
   esac
