@@ -197,6 +197,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmr-hd"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "image",
+ "sha2",
+]
+
+[[package]]
 name = "cmr-hooks"
 version = "0.2.1"
 

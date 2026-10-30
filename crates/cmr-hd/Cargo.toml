@@ -1,0 +1,17 @@
+[package]
+name = "cmr-hd"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Extracts the 2D images of the player's own Colin McRae Rally copy and upscales them locally (study tool; see docs/UPSCALING.md)"
+publish = false
+
+[[bin]]
+name = "cmr-hd"
+path = "src/main.rs"
+
+[dependencies]
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
+sha2.workspace = true
