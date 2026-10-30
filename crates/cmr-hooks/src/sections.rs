@@ -4,12 +4,11 @@
 //! a virtual 640x480 screen, the size all of its 2D was made for; the 2D
 //! primitives scale what it draws onto the real screen. The game's update
 //! code runs on a multimedia-timer thread while the main thread renders, so
-//! the virtual size stays in place for the whole race instead of being
-//! swapped per frame. Only code that needs the real screen (display and 3D
-//! set-up, clears, the projection and the scene draw) runs in a "real"
-//! section with the real size and 2D scaling paused. The caller makes real
-//! sections and updates mutually exclusive (one recursive lock), so an
-//! update never sees the real size.
+//! the virtual size stays in place for the whole race. The display and 3D
+//! set-up (while a stage loads or the menus return, with no update thread)
+//! run in "real" sections that briefly hold the real size; per-frame 3D code
+//! reads the real size from a copy instead (see `exports`), so nothing
+//! waits and the update thread never sees the real size.
 
 use crate::canvas::{Canvas, VIRTUAL, is_native};
 
@@ -52,6 +51,11 @@ impl Sections {
     /// The game sees the virtual screen.
     pub fn active(&self) -> bool {
         self.active
+    }
+
+    /// The real screen size, while the game sees the virtual one.
+    pub fn real_size(&self) -> Option<(i32, i32)> {
+        self.active.then_some(self.real)
     }
 
     /// The mapping from the virtual screen, while 2D scaling is on.

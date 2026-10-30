@@ -156,7 +156,9 @@ fn rel32(at: u32, len: u32, to: u32) -> [u8; 4] {
 /// The community-patched EU v1.5 (`46500c8e…`) carries F1-F5 on disk; it
 /// is the same build, so F6 applies at the same addresses.
 pub static COMMUNITY_EU_15: FixSet = FixSet {
-    fixes: &[F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16, F17],
+    fixes: &[
+        F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16, F17, F18, F19,
+    ],
 };
 
 /// Official EU v1.5 (`0eb6ea96…`).
@@ -238,6 +240,11 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         F15,
         F16,
         F17,
+        F18,
+        F19,
+        F20,
+        F21,
+        F22,
     ],
 };
 
@@ -475,6 +482,25 @@ const _: () = assert!(
         && F11_T >= F11_K3 + 8
 );
 
+/// The culling wedges' sideways factor `t` (Q16): `tan` of half the
+/// horizontal view, 1.0 at 4:3, aspect × 3/4 with F11 (filled by the
+/// launcher from the race resolution), and the immediates it replaces: the
+/// terrain cull's two (`0x4902c6`, `0x4902e5`) and the near-object
+/// triangle's two (`0x4a097e`, `0x4a099f`).
+pub const F11_CULL_T: u32 = 0xb90;
+pub const F11_CULL_IMMS: [u32; 4] = [0x0049_02c6, 0x0049_02e5, 0x004a_097e, 0x004a_099f];
+const F11_CULL_STUBS: u32 = 0xba0;
+const _: () = assert!(F11_CULL_T >= F18_CAVE + 0xc0 + 20 && F11_CULL_STUBS >= F11_CULL_T + 4);
+
+/// The culling factor `t` for a `w` x `h` race (Q16): aspect × 3/4, so 1.0
+/// at 4:3; never narrower than the original.
+pub fn cull_t(w: u32, h: u32) -> u32 {
+    if w == 0 || h == 0 {
+        return 0x10000;
+    }
+    ((u64::from(w) * 3 * 0x10000 / (u64::from(h) * 4)) as u32).max(0x10000)
+}
+
 /// The race projection (`FUN_00435d10`) feeds the game's own software
 /// transform, which maps to pixels as `x * xs * W/2` and `y * ys * H/(2A)`
 /// (A = W/H), with `xs` scaled by A. Right only at 4:3: at 16:9 the picture
@@ -482,8 +508,11 @@ const _: () = assert!(
 /// makes it Hor+, so the pixel scale is the one of a 4:3 screen of the same
 /// height and the wider screen shows more to the sides: the aspect term of
 /// `xs` becomes (4/3)^2 / A (`0x435d44`) and `ys` is multiplied by A / (4/3)
-/// (`0x435d87`). At 4:3 both are exactly the original values. Opt-in
-/// (`widescreen`).
+/// (`0x435d87`). At 4:3 both are exactly the original values. The game's
+/// culling (terrain cells `0x490040`, objects in `0x4a07d0`) keeps what is
+/// inside 90° wedges, the 4:3 view; F11 widens their sideways extents by
+/// `t` (aspect × 3/4), so scenery at the edges of a wider view isn't
+/// culled. Opt-in (`widescreen`).
 const F11: Fix = Fix {
     id: "F11",
     what: "widescreen: wider view instead of a stretched one (Hor+)",
@@ -517,9 +546,9 @@ const F11: Fix = Fix {
         Piece {
             at: At::Cave(F11_YS),
             ops: &[
-                Op::Raw(&[0xa1, 0x18, 0x25, 0x50, 0x00]), // mov eax,[0x502518]
+                Op::Call(At::Cave(F11_READ)), // eax = the display state (3D view)
                 Op::Raw(&[0xdb, 0x00, 0xda, 0x70, 0x04]), // fild [W] ; fidiv [H]
-                Op::Raw(&[0xdc, 0x0d]),                   // fmul qword [0x2bae1 * 3/4]
+                Op::Raw(&[0xdc, 0x0d]),       // fmul qword [0x2bae1 * 3/4]
                 Op::Addr(At::Cave(F11_K3)),
                 Op::Raw(&[0xdb, 0x1d]), // fistp dword [t]
                 Op::Addr(At::Cave(F11_T)),
@@ -536,6 +565,63 @@ const F11: Fix = Fix {
         Piece {
             at: At::Cave(F11_T),
             ops: &[Op::Raw(&[0; 4])],
+        },
+        // The culling wedges' sideways factor: the 1.0 immediates (filled by
+        // the launcher with t) ...
+        Piece {
+            at: At::Image(F11_CULL_IMMS[0]),
+            ops: &[Op::Raw(&[0x00, 0x00, 0x01, 0x00])],
+        },
+        Piece {
+            at: At::Image(F11_CULL_IMMS[1]),
+            ops: &[Op::Raw(&[0x00, 0x00, 0x01, 0x00])],
+        },
+        Piece {
+            at: At::Image(F11_CULL_IMMS[2]),
+            ops: &[Op::Raw(&[0x00, 0x00, 0x01, 0x00])],
+        },
+        Piece {
+            at: At::Image(F11_CULL_IMMS[3]),
+            ops: &[Op::Raw(&[0x00, 0x00, 0x01, 0x00])],
+        },
+        // ... the same t for the far-object triangle ...
+        Piece {
+            at: At::Cave(F11_CULL_T),
+            ops: &[Op::Raw(&[0x00, 0x00, 0x01, 0x00])], // 1.0 until filled
+        },
+        Piece {
+            at: At::Cave(F11_READ),
+            ops: &READ_VIEW,
+        },
+        // mov edx,[0x5022ec] (far-object extent, a side term) -> jmp ; nop
+        Piece {
+            at: At::Image(0x004a_0a21),
+            ops: &[Op::Jmp(At::Cave(F11_CULL_STUBS)), Op::Raw(&[NOP])],
+        },
+        Piece {
+            at: At::Cave(F11_CULL_STUBS),
+            ops: &[
+                Op::Raw(&[0x8b, 0x15, 0xec, 0x22, 0x50, 0x00]), // mov edx,[0x5022ec]
+                Op::Raw(&[0x50, 0x8b, 0xc2, 0xf7, 0x2d]), // push eax ; mov eax,edx ; imul dword [t]
+                Op::Addr(At::Cave(F11_CULL_T)),
+                Op::Raw(&[0x0f, 0xac, 0xd0, 0x10, 0x8b, 0xd0, 0x58]), // shrd eax,edx,16 ; mov edx,eax ; pop eax
+                Op::Jmp(At::Image(0x004a_0a21 + 6)),
+            ],
+        },
+        // mov edx,[0x5022ec] (far-object extent, a side term) -> jmp ; nop
+        Piece {
+            at: At::Image(0x004a_0a32),
+            ops: &[Op::Jmp(At::Cave(F11_CULL_STUBS + 0x20)), Op::Raw(&[NOP])],
+        },
+        Piece {
+            at: At::Cave(F11_CULL_STUBS + 0x20),
+            ops: &[
+                Op::Raw(&[0x8b, 0x15, 0xec, 0x22, 0x50, 0x00]), // mov edx,[0x5022ec]
+                Op::Raw(&[0x50, 0x8b, 0xc2, 0xf7, 0x2d]), // push eax ; mov eax,edx ; imul dword [t]
+                Op::Addr(At::Cave(F11_CULL_T)),
+                Op::Raw(&[0x0f, 0xac, 0xd0, 0x10, 0x8b, 0xd0, 0x58]), // shrd eax,edx,16 ; mov edx,eax ; pop eax
+                Op::Jmp(At::Image(0x004a_0a32 + 6)),
+            ],
         },
     ],
 };
@@ -640,7 +726,7 @@ const F12: Fix = Fix {
 /// entry makes its stub do nothing, so the game runs as without F13.
 pub const F13_TABLE: u32 = 0x250;
 /// The exports F13's table holds, in order (`slot::*` are their offsets).
-pub const F13_EXPORTS: [&str; 10] = [
+pub const F13_EXPORTS: [&str; 16] = [
     "cmr_hud_begin",
     "cmr_hud_end",
     "cmr_hud_rects",
@@ -649,10 +735,19 @@ pub const F13_EXPORTS: [&str; 10] = [
     "cmr_update_begin",
     "cmr_real_begin",
     "cmr_real_end",
-    "cmr_update_end",
+    "cmr_3d_begin",
     "cmr_present",
+    "cmr_texture_desc",
+    "cmr_texture_loaded",
+    "cmr_ease_far",
+    "cmr_pedals",
+    "cmr_rumble",
+    "cmr_3d_end",
 ];
-const _: () = assert!(F13_TABLE >= F12_TRIGGER + 22 && F13_TABLE + 40 <= 0x280);
+/// The table's size in bytes (one address per export).
+const F13_TABLE_LEN: usize = 4 * F13_EXPORTS.len();
+const _: () =
+    assert!(F13_TABLE >= F12_TRIGGER + 22 && F13_TABLE + F13_TABLE_LEN as u32 <= F14_CAVE);
 /// Offsets of the exports in F13's table.
 mod slot {
     pub const HUD: u32 = 0;
@@ -662,8 +757,14 @@ mod slot {
     pub const UPDATE: u32 = 20;
     pub const REAL: u32 = 24;
     pub const REAL_END: u32 = 28;
-    pub const UPDATE_END: u32 = 32;
+    pub const THREE_D: u32 = 32;
     pub const PRESENT: u32 = 36;
+    pub const TEXTURE_DESC: u32 = 40;
+    pub const TEXTURE_LOADED: u32 = 44;
+    pub const EASE_FAR: u32 = 48;
+    pub const PEDALS: u32 = 52;
+    pub const RUMBLE: u32 = 56;
+    pub const THREE_D_END: u32 = 60;
 }
 
 /// With a race resolution the game never had (F10), the in-race 2D (HUD,
@@ -700,7 +801,10 @@ mod slot {
 macro_rules! hud_code {
     (
         calls: [$(($site:expr, $target:expr, $begin:expr, $end:expr, $stub:expr, $ret:expr)),* $(,)?],
+        entries: [$(($nsite:expr, $nnops:expr, $nslot:expr, $nstub:expr, [$($norig:expr),*], $nresume:expr)),* $(,)?],
         functions: [$(($fsite:expr, $fnops:expr, $fbegin:expr, $fend:expr, $fstub:expr, $fret:expr, [$($forig:expr),*], $fresume:expr)),* $(,)?],
+        views: [$(($vsite:expr, $vnops:expr, $vstub:expr, $vret:expr, [$($vorig:expr),*], $vresume:expr)),* $(,)?],
+        reads: [$(($rsite:expr, $rnops:expr, $rstub:expr)),* $(,)?],
         rects: [$(($esite:expr, $nops:expr, $estub:expr, $slot:expr, $arg:expr, [$($orig:expr),*], $resume:expr)),* $(,)?] $(,)?
     ) => {
         &[
@@ -722,9 +826,37 @@ macro_rules! hud_code {
                 Piece {
                     at: At::Cave($fstub),
                     // the moved instructions follow the 46-byte stub
-                    ops: hud_code!(@locked $fbegin, $fend, $fret,
+                    ops: hud_code!(@around $fbegin, $fend, $fret,
                         Op::Call(At::Cave($fstub + 46)),
                         [$($forig,)* Op::Jmp(At::Image($fresume))]),
+                },
+            )*
+            $(
+                Piece {
+                    at: At::Image($nsite),
+                    ops: &[Op::Jmp(At::Cave($nstub)), Op::Raw(&[NOP; $nnops])],
+                },
+                Piece {
+                    at: At::Cave($nstub),
+                    ops: &[
+                        Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[export]
+                        Op::Addr(At::Cave(F13_TABLE + $nslot)),
+                        Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
+                        $($norig,)*
+                        Op::Jmp(At::Image($nresume)),
+                    ],
+                },
+            )*
+            $(
+                Piece {
+                    at: At::Image($vsite),
+                    ops: &[Op::Jmp(At::Cave($vstub)), Op::Raw(&[NOP; $vnops])],
+                },
+                Piece {
+                    at: At::Cave($vstub),
+                    // the moved instructions follow the 56-byte stub
+                    ops: hud_code!(@view $vret, Op::Call(At::Cave($vstub + 56)),
+                        [$($vorig,)* Op::Jmp(At::Image($vresume))]),
                 },
             )*
             $(
@@ -750,28 +882,59 @@ macro_rules! hud_code {
             Piece {
                 at: At::Cave(F13_TABLE),
                 // the F13_EXPORTS addresses, filled by the launcher
-                ops: &[Op::Raw(&[0; 40])],
+                ops: &[Op::Raw(&[0; F13_TABLE_LEN])],
+            },
+            $(
+                Piece {
+                    at: At::Image($rsite),
+                    ops: &[Op::Call(At::Cave($rstub)), Op::Raw(&[NOP; $rnops])],
+                },
+            )*
+            Piece {
+                at: At::Cave(F13_VIEW),
+                ops: &[Op::Raw(&[0; 12])],
+            },
+            Piece {
+                at: At::Cave(F13_READ_EAX),
+                ops: &READ_VIEW,
+            },
+            Piece {
+                at: At::Cave(F13_READ_ECX),
+                ops: &[
+                    Op::Raw(&[0x50]), // push eax
+                    Op::Call(At::Cave(F13_READ_EAX)),
+                    Op::Raw(&[0x8b, 0xc8, 0x58, 0xc3]), // mov ecx,eax ; pop eax ; ret
+                ],
+            },
+            Piece {
+                at: At::Cave(F13_READ_EDX),
+                ops: &[
+                    Op::Raw(&[0x50]), // push eax
+                    Op::Call(At::Cave(F13_READ_EAX)),
+                    Op::Raw(&[0x8b, 0xd0, 0x58, 0xc3]), // mov edx,eax ; pop eax ; ret
+                ],
             },
         ]
     };
-    // A 46-byte stub for a section that takes the library's lock: begin
-    // (locks), save the return address, `call`, put it back on the stack, end
-    // (unlocks), return; then `tail`. The return slot is only touched while
-    // the lock is held, so threads can't overwrite each other's.
-    (@locked $begin:expr, $end:expr, $ret:expr, $call:expr, [$($tail:expr),*]) => {
+    // A 56-byte stub around 3D work: `cmr_3d_begin(view)`, `call`,
+    // `cmr_3d_end(view)`, back to the saved return address; then `tail`.
+    (@view $ret:expr, $call:expr, [$($tail:expr),*]) => {
         &[
-            Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[begin]
-            Op::Addr(At::Cave(F13_TABLE + $begin)),
-            Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-            Op::Raw(&[0x8f, 0x05]),                               // pop dword [ret]
+            Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
             Op::Addr(At::Cave($ret)),
+            Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[cmr_3d_begin]
+            Op::Addr(At::Cave(F13_TABLE + slot::THREE_D)),
+            Op::Raw(&[0x85, 0xc9, 0x74, 0x07, 0x68]), // test ; jz +7 ; push view
+            Op::Addr(At::Cave(F13_VIEW)),
+            Op::Raw(&[0xff, 0xd1, 0x61]), // call ecx ; popad
             $call,
-            Op::Raw(&[0xff, 0x35]), // push dword [ret]
+            Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[cmr_3d_end]
+            Op::Addr(At::Cave(F13_TABLE + slot::THREE_D_END)),
+            Op::Raw(&[0x85, 0xc9, 0x74, 0x07, 0x68]), // test ; jz +7 ; push view
+            Op::Addr(At::Cave(F13_VIEW)),
+            Op::Raw(&[0xff, 0xd1, 0x61, 0xff, 0x35]), // call ecx ; popad ; push dword [ret]
             Op::Addr(At::Cave($ret)),
-            Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[end]
-            Op::Addr(At::Cave(F13_TABLE + $end)),
-            Op::Raw(&[0x85, 0xc9, 0x74, 0x02, 0xff, 0xd1, 0x61]), // test ; jz ; call ecx ; popad
-            Op::Raw(&[0xc3]),                                     // ret
+            Op::Raw(&[0xc3]),
             $($tail,)*
         ]
     };
@@ -802,6 +965,36 @@ const F13_CALLS: u32 = 0x600;
 const F13_FUNCTIONS: u32 = F13_CALLS + 6 * 0x30;
 const F13_RETS: u32 = 0x980;
 const F13_RECTS: u32 = 0x9d0;
+/// The 3D view block (`depth`, `main` thread id, `shadow` pointer; filled by
+/// `cmr_3d_begin`) and the stubs the 3D code's screen-size reads call, one
+/// per register: the shadow's address for the main thread inside 3D work in
+/// a race, else the game's display state (`[0x502518]`).
+pub const F13_VIEW: u32 = 0x300;
+const F13_READ_EAX: u32 = 0x310;
+const F13_READ_ECX: u32 = 0x340;
+const F13_READ_EDX: u32 = 0x370;
+/// eax = the display state the calling code should see: the real-size
+/// shadow for the main thread inside 3D work in a race (F13's view block),
+/// else the game's own. Used by F13's read stubs and F11's own copy; with
+/// F13 off the view block stays zero and this is a plain read.
+const READ_VIEW: [Op; 10] = [
+    Op::Raw(&[0xa1]), // mov eax,[view.depth]
+    Op::Addr(At::Cave(F13_VIEW)),
+    Op::Raw(&[0x85, 0xc0, 0x74, 0x14]), // test eax,eax ; jz game
+    Op::Raw(&[0x64, 0xa1, 0x24, 0x00, 0x00, 0x00]), // mov eax,fs:[0x24] (thread id)
+    Op::Raw(&[0x3b, 0x05]),             // cmp eax,[view.main]
+    Op::Addr(At::Cave(F13_VIEW + 4)),
+    Op::Raw(&[0x75, 0x06, 0xa1]), // jne game ; mov eax,[view.shadow]
+    Op::Addr(At::Cave(F13_VIEW + 8)),
+    Op::Raw(&[0xc3]),                               // ret
+    Op::Raw(&[0xa1, 0x18, 0x25, 0x50, 0x00, 0xc3]), // game: mov eax,[0x502518] ; ret
+];
+/// F11's copy of `READ_VIEW`.
+const F11_READ: u32 = 0xdf0;
+const _: () = assert!(F11_READ >= F13_VIEWS + 4 * 0x50);
+
+/// Cave area of the 3D work stubs (0x50 apart).
+const F13_VIEWS: u32 = 0xcb0;
 const _: () = assert!(
     F13_CALLS >= F16_RET + 4
         && F13_FUNCTIONS + 7 * 0x40 <= F13_RETS
@@ -822,27 +1015,44 @@ const F13: Fix = Fix {
             (0x0042_2ea6, 0x0047_fe50, slot::HUD, slot::END, F13_CALLS + 0xc0, F13_RETS + 16), // stage time
             (0x0047_65c8, 0x0047_fe50, slot::HUD, slot::END, F13_CALLS + 0xf0, F13_RETS + 20), // stage time, replay
         ],
-        functions: [
+        entries: [
             // the game update (main or timer thread): mov eax,[0x96efcc]
-            (0x0044_3db0, 0, slot::UPDATE, slot::UPDATE_END, F13_FUNCTIONS, F13_RETS + 24,
-                [Op::Raw(&[0xa1, 0xcc, 0xef, 0x96, 0x00])], 0x0044_3db5),
-            // 3D device and viewport set-up: push 0x7c ; call 0x4990d0
+            (0x0044_3db0, 0, slot::UPDATE, F13_FUNCTIONS, [Op::Raw(&[0xa1, 0xcc, 0xef, 0x96, 0x00])], 0x0044_3db5),
+        ],
+        functions: [
+            // set-up, while a stage loads or the menus return: the 3D device
+            // and viewport (push 0x7c ; call 0x4990d0) and the display (push
+            // ebx ; push ebp ; push esi ; xor esi,esi ; push edi)
             (0x004a_6950, 2, slot::REAL, slot::REAL_END, F13_FUNCTIONS + 0x180, F13_RETS + 48,
                 [Op::Raw(&[0x6a, 0x7c]), Op::Call(At::Image(0x0049_90d0))], 0x004a_6957),
-            // display set-up: push ebx ; push ebp ; push esi ; xor esi,esi ; push edi
             (0x0049_7be0, 1, slot::REAL, slot::REAL_END, F13_FUNCTIONS + 0x40, F13_RETS + 28,
                 [Op::Raw(&[0x53, 0x55, 0x56, 0x33, 0xf6, 0x57])], 0x0049_7be6),
-            // clears: sub esp,0x10 ; call 0x4aa0c0 / sub esp,0x10 ; xor eax,eax
-            (0x0049_ffc0, 3, slot::REAL, slot::REAL_END, F13_FUNCTIONS + 0x80, F13_RETS + 32,
+        ],
+        views: [
+            // per-frame 3D work: the clears (sub esp,0x10 ; call 0x4aa0c0 /
+            // sub esp,0x10 ; xor eax,eax), the projection (push ebp ; mov
+            // ebp,esp ; sub esp,8), the scene draw (mov eax,[0x50276c])
+            (0x0049_ffc0, 3, F13_VIEWS, F13_RETS + 32,
                 [Op::Raw(&[0x83, 0xec, 0x10]), Op::Call(At::Image(0x004a_a0c0))], 0x0049_ffc8),
-            (0x0049_ff80, 0, slot::REAL, slot::REAL_END, F13_FUNCTIONS + 0xc0, F13_RETS + 36,
+            (0x0049_ff80, 0, F13_VIEWS + 0x50, F13_RETS + 36,
                 [Op::Raw(&[0x83, 0xec, 0x10, 0x33, 0xc0])], 0x0049_ff85),
-            // 3D projection: push ebp ; mov ebp,esp ; sub esp,8
-            (0x0043_5d10, 1, slot::REAL, slot::REAL_END, F13_FUNCTIONS + 0x100, F13_RETS + 40,
+            (0x0043_5d10, 1, F13_VIEWS + 0xa0, F13_RETS + 40,
                 [Op::Raw(&[0x55, 0x8b, 0xec, 0x83, 0xec, 0x08])], 0x0043_5d16),
-            // 3D scene draw and flush (race and replay): mov eax,[0x50276c]
-            (0x0049_fe30, 0, slot::REAL, slot::REAL_END, F13_FUNCTIONS + 0x140, F13_RETS + 44,
+            (0x0049_fe30, 0, F13_VIEWS + 0xf0, F13_RETS + 44,
                 [Op::Raw(&[0xa1, 0x6c, 0x27, 0x50, 0x00])], 0x0049_fe35),
+        ],
+        reads: [
+            // the 3D code's screen-size reads (mov reg,[0x502518]): the
+            // projection, the clears, the scene draw, its bounds check and
+            // the point projection it shares with the update thread
+            (0x0043_5d3f, 0, F13_READ_EAX),
+            (0x0049_ffd4, 0, F13_READ_EAX),
+            (0x0049_ff8f, 0, F13_READ_EAX),
+            (0x004a_1683, 0, F13_READ_EAX),
+            (0x0048_f896, 0, F13_READ_EAX),
+            (0x004a_2ab0, 1, F13_READ_ECX),
+            (0x004b_0679, 1, F13_READ_ECX),
+            (0x004b_069f, 1, F13_READ_EDX),
         ],
         rects: [
             // sprite and text queues: mov al,[esp+..] ; push esi
@@ -991,10 +1201,11 @@ const F16: Fix = Fix {
 };
 
 /// The fixes that call into `cmrhooks.dll` (off without it).
-pub const HOOK_FIXES: [&str; 3] = ["F13", "F16", "F17"];
+pub const HOOK_FIXES: [&str; 7] = ["F13", "F16", "F17", "F18", "F20", "F21", "F22"];
 
-/// F17's settings block: frame-rate cap (frames per second, 0 none) and the
-/// `Flip` flags (0: the game's own), filled by the launcher.
+/// F17's settings block: frame-rate cap (frames per second, 0 none), the
+/// `Flip` flags (0: the game's own) and the rumble strength (percent, F22),
+/// filled by the launcher.
 pub const F17_SETTINGS: u32 = 0x5e0;
 const F17_PRESENT: u32 = F16_PRESENT;
 const _: () = assert!(
@@ -1037,7 +1248,259 @@ const F17: Fix = Fix {
         },
         Piece {
             at: At::Cave(F17_SETTINGS),
-            ops: &[Op::Raw(&[0; 8])],
+            ops: &[Op::Raw(&[0; 12])],
+        },
+    ],
+};
+
+/// Cave area of F18's stubs (0x30 apart).
+const F18_CAVE: u32 = 0xab0;
+const _: () = assert!(F18_CAVE >= F13_RECTS + 0x90 + 34);
+
+/// F18's pieces: the texture description hook, one stub after each
+/// texture upload (`IDirect3DTexture2::Load`: the replaced instructions
+/// `orig` end with the Load call; then `cmr_texture_loaded(dst)` with the
+/// destination pushed by `push_dst`; back at `resume`), and the trilinear
+/// minification stub.
+macro_rules! f18_code {
+    (loads: [$(($site:expr, $nops:expr, $stub:expr, [$($orig:expr),*], [$($push_dst:expr),*], $resume:expr)),* $(,)?]) => {
+        &[
+            // mov eax,[0x502518] -> jmp
+            Piece {
+                at: At::Image(0x0049_eb66),
+                ops: &[Op::Jmp(At::Cave(F18_CAVE))],
+            },
+            Piece {
+                at: At::Cave(F18_CAVE),
+                ops: &[
+                    Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[cmr_texture_desc]
+                    Op::Addr(At::Cave(F13_TABLE + slot::TEXTURE_DESC)),
+                    Op::Raw(&[0x85, 0xc9, 0x74, 0x07]), // test ecx,ecx ; jz +7
+                    Op::Raw(&[0x8d, 0x44, 0x24, 0x34]), // lea eax,[esp+0x34] (the description)
+                    Op::Raw(&[0x50, 0xff, 0xd1]),       // push eax ; call ecx
+                    Op::Raw(&[0x61, 0xa1, 0x18, 0x25, 0x50, 0x00]), // popad ; mov eax,[0x502518]
+                    Op::Jmp(At::Image(0x0049_eb6b)),
+                ],
+            },
+            $(
+                Piece {
+                    at: At::Image($site),
+                    ops: &[Op::Jmp(At::Cave($stub)), Op::Raw(&[NOP; $nops])],
+                },
+                Piece {
+                    at: At::Cave($stub),
+                    ops: &[
+                        Op::Raw(&[$($orig),*]),
+                        Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[cmr_texture_loaded]
+                        Op::Addr(At::Cave(F13_TABLE + slot::TEXTURE_LOADED)),
+                        Op::Raw(&[0x85, 0xc9, 0x74, 0x05]), // test ecx,ecx ; jz +5 (push + call)
+                        Op::Raw(&[$($push_dst),*, 0xff, 0xd1]), // push dst ; call ecx
+                        Op::Raw(&[0x61]),                       // popad
+                        Op::Jmp(At::Image($resume)),
+                    ],
+                },
+            )*
+            // push esi ; push 0x12 ; mov eax,[edx+0x10] (TEXTUREMIN = mode) -> jmp ; nop
+            Piece {
+                at: At::Image(0x004a_243e),
+                ops: &[Op::Jmp(At::Cave(F18_CAVE + 0xc0)), Op::Raw(&[NOP; 1])],
+            },
+            Piece {
+                at: At::Cave(F18_CAVE + 0xc0),
+                ops: &[
+                    Op::Raw(&[0x83, 0xfe, 0x02, 0x75, 0x04]), // cmp esi,2 (linear) ; jne +4
+                    Op::Raw(&[0x6a, 0x06, 0xeb, 0x01]),       // push 6 (LINEARMIPLINEAR) ; jmp +1
+                    Op::Raw(&[0x56]),                         // push esi
+                    Op::Raw(&[0x6a, 0x12, 0x8b, 0x42, 0x10]), // push 0x12 ; mov eax,[edx+0x10]
+                    Op::Jmp(At::Image(0x004a_2444)),
+                ],
+            },
+        ]
+    };
+}
+
+/// Race textures are uploaded once (`IDirect3DTexture2::Load` from a
+/// system-memory copy) with no smaller levels, so they shimmer far away.
+/// F18 (`texture_filter = smooth`) gives video-memory textures a mipmap
+/// chain at the texture helper's `CreateSurface` (`0x49eb66`), fills it after
+/// each of the three uploads (`cmrhooks.dll`, `mipmap`), and turns the
+/// game's linear minification into trilinear (`0x4a243e`, in its filter
+/// setter `0x4a23e0`); draws it sets to nearest (sprites, HUD) stay sharp.
+const F18: Fix = Fix {
+    id: "F18",
+    what: "smooth textures: mipmaps and trilinear filtering (needs cmrhooks.dll)",
+    optional: true,
+    code: f18_code! {
+        loads: [
+            // mov eax,[ebx+0x18] ; mov edx,[esi] ; push edx ; push eax ;
+            // mov ecx,[eax] ; call [ecx+0x14]; dst = [ebx+0x18]
+            (0x0049_a142, 7, F18_CAVE + 0x30,
+                [0x8b, 0x43, 0x18, 0x8b, 0x16, 0x52, 0x50, 0x8b, 0x08, 0xff, 0x51, 0x14],
+                [0xff, 0x73, 0x18], 0x0049_a14e),
+            // mov eax,[ebx] ; mov ecx,[ebp] ; push ecx ; push eax ;
+            // mov edx,[eax] ; call [edx+0x14]; dst = [ebx]
+            (0x0049_a448, 7, F18_CAVE + 0x60,
+                [0x8b, 0x03, 0x8b, 0x4d, 0x00, 0x51, 0x50, 0x8b, 0x10, 0xff, 0x52, 0x14],
+                [0xff, 0x33, 0x90], 0x0049_a454),
+            // mov eax,[esi] ; mov edx,[edi] ; push edx ; push eax ;
+            // mov ecx,[eax] ; call [ecx+0x14]; dst = [esi]
+            (0x0049_acfa, 6, F18_CAVE + 0x90,
+                [0x8b, 0x06, 0x8b, 0x17, 0x52, 0x50, 0x8b, 0x08, 0xff, 0x51, 0x14],
+                [0xff, 0x36, 0x90], 0x0049_ad05),
+        ]
+    },
+};
+
+/// The game filters textures whenever the device can (`0x4a9fe0` returns the
+/// capability). F19 (`texture_filter = sharp`) answers "can't", so every
+/// texture is drawn with nearest pixels, like the game without filtering.
+const F19: Fix = Fix {
+    id: "F19",
+    what: "sharp textures: nearest pixels everywhere",
+    optional: true,
+    code: &[Piece {
+        at: At::Image(0x004a_9fe0),
+        ops: &[Op::Raw(&[0x31, 0xc0, 0xc3])], // xor eax,eax ; ret
+    }],
+};
+
+const F20_CAVE: u32 = 0xbe0;
+const _: () = assert!(F20_CAVE >= F11_CULL_STUBS + 0x20 + 27);
+
+/// Stage sections switch the far plane at once (`0x403eb0`, from 50 to 250
+/// m), so a band of scenery pops in or out in one frame. Where the race
+/// projection reads it (`mov edx,[0x4f683c]` at `site`, `0x435ffe` and
+/// `0x436018`), F20 asks `cmr_ease_far` (`cmrhooks.dll`, `easing`) for a
+/// value that follows it smoothly; it also sets the terrain cull radius.
+/// Without the library the game's value is used. Opt-in
+/// (`smooth_distance`).
+macro_rules! f20_read {
+    ($site:expr, $stub:expr) => {
+        [
+            Piece {
+                at: At::Image($site),
+                ops: &[Op::Jmp(At::Cave($stub)), Op::Raw(&[NOP])],
+            },
+            Piece {
+                at: At::Cave($stub),
+                ops: &[
+                    Op::Raw(&[0x50, 0x51]),                         // push eax ; push ecx
+                    Op::Raw(&[0x8b, 0x15, 0x3c, 0x68, 0x4f, 0x00]), // mov edx,[0x4f683c]
+                    Op::Raw(&[0xa1]),                               // mov eax,[cmr_ease_far]
+                    Op::Addr(At::Cave(F13_TABLE + slot::EASE_FAR)),
+                    Op::Raw(&[0x85, 0xc0, 0x74, 0x05]), // test eax,eax ; jz +5
+                    Op::Raw(&[0x52, 0xff, 0xd0, 0x8b, 0xd0]), // push edx ; call eax ; mov edx,eax
+                    Op::Raw(&[0x59, 0x58]),             // pop ecx ; pop eax
+                    Op::Jmp(At::Image($site + 6)),
+                ],
+            },
+        ]
+    };
+}
+
+const F20_READS: [[Piece; 2]; 2] = [
+    f20_read!(0x0043_5ffe, F20_CAVE),
+    f20_read!(0x0043_6018, F20_CAVE + 0x20),
+];
+
+const F20: Fix = Fix {
+    id: "F20",
+    what: "smooth view distance changes (needs cmrhooks.dll)",
+    optional: true,
+    code: &F20_PIECES,
+};
+
+const F20_PIECES: [Piece; 4] = {
+    let [[a, b], [c, d]] = F20_READS;
+    [a, b, c, d]
+};
+
+const F21_CAVE: u32 = 0xc20;
+const F21_RET: u32 = 0xc70;
+const F21_BLOCK: u32 = 0xc74;
+const F21_PLAYER: u32 = 0xc78;
+const F22_CAVE: u32 = 0xc80;
+const _: () = assert!(
+    F21_CAVE >= F20_CAVE + 0x20 + 29 && F21_RET >= F21_CAVE + 64 + 11 && F22_CAVE >= F21_PLAYER + 4
+);
+
+/// The in-race control map `0x449580(block, scheme, player)` writes each
+/// car's controls; a pad's triggers reach it only through WinMM's combined
+/// axis (F7), so pressing both cancels out. F21 wraps it: after it runs,
+/// `cmr_pedals(block, player)` (`cmrhooks.dll`, `xinput`) raises throttle
+/// (`+0x304`) and brake (`+0x308`) to the XInput pad's right and left
+/// triggers. Keys and sticks still work. With `gamepad_axes`.
+const F21: Fix = Fix {
+    id: "F21",
+    what: "gamepad triggers as separate pedals through XInput (needs cmrhooks.dll)",
+    optional: true,
+    code: &[
+        // push ebp ; mov ebp,esp ; sub esp,0xc -> jmp ; nop
+        Piece {
+            at: At::Image(0x0044_9580),
+            ops: &[Op::Jmp(At::Cave(F21_CAVE)), Op::Raw(&[NOP])],
+        },
+        Piece {
+            at: At::Cave(F21_CAVE),
+            ops: &[
+                Op::Raw(&[0x8f, 0x05]), // pop dword [ret]
+                Op::Addr(At::Cave(F21_RET)),
+                Op::Raw(&[0x60, 0x8b, 0x44, 0x24, 0x20, 0xa3]), // pushad ; mov eax,[esp+0x20] (block) ; mov [b],eax
+                Op::Addr(At::Cave(F21_BLOCK)),
+                Op::Raw(&[0x8b, 0x44, 0x24, 0x28, 0xa3]), // mov eax,[esp+0x28] (player) ; mov [p],eax
+                Op::Addr(At::Cave(F21_PLAYER)),
+                Op::Raw(&[0x61]), // popad
+                Op::Call(At::Cave(F21_CAVE + 64)),
+                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[cmr_pedals]
+                Op::Addr(At::Cave(F13_TABLE + slot::PEDALS)),
+                Op::Raw(&[0x85, 0xc9, 0x74, 0x0e]), // test ecx,ecx ; jz +14
+                Op::Raw(&[0xff, 0x35]),             // push [player]
+                Op::Addr(At::Cave(F21_PLAYER)),
+                Op::Raw(&[0xff, 0x35]), // push [block]
+                Op::Addr(At::Cave(F21_BLOCK)),
+                Op::Raw(&[0xff, 0xd1, 0x61, 0xff, 0x35]), // call ecx ; popad ; push [ret]
+                Op::Addr(At::Cave(F21_RET)),
+                Op::Raw(&[0xc3]), // ret
+                // the moved instructions
+                Op::Raw(&[0x55, 0x8b, 0xec, 0x83, 0xec, 0x0c]),
+                Op::Jmp(At::Image(0x0044_9586)),
+            ],
+        },
+        Piece {
+            at: At::Cave(F21_RET),
+            ops: &[Op::Raw(&[0; 12])],
+        },
+    ],
+};
+
+/// The impact sound `0x469e80(severity, position, kind)` plays player 1's
+/// collisions; F22 hands each one's severity (Q16) to `cmr_rumble`, which
+/// rumbles the pad and lets it fade (each frame, in `cmr_present`, F17).
+/// Opt-in (`rumble`).
+const F22: Fix = Fix {
+    id: "F22",
+    what: "gamepad rumble on impacts (needs cmrhooks.dll)",
+    optional: true,
+    code: &[
+        // push ebp ; mov ebp,esp ; cmp dword [ebp+8],0x10000 -> jmp ; 5 x nop
+        Piece {
+            at: At::Image(0x0046_9e80),
+            ops: &[Op::Jmp(At::Cave(F22_CAVE)), Op::Raw(&[NOP; 5])],
+        },
+        Piece {
+            at: At::Cave(F22_CAVE),
+            ops: &[
+                Op::Raw(&[0x60, 0x8b, 0x0d]), // pushad ; mov ecx,[cmr_rumble]
+                Op::Addr(At::Cave(F13_TABLE + slot::RUMBLE)),
+                Op::Raw(&[0x85, 0xc9, 0x74, 0x0b]), // test ecx,ecx ; jz +11
+                Op::Raw(&[0x68]),                   // push settings
+                Op::Addr(At::Cave(F17_SETTINGS)),
+                Op::Raw(&[0xff, 0x74, 0x24, 0x28]), // push dword [esp+0x28] (severity)
+                Op::Raw(&[0xff, 0xd1, 0x61]),       // call ecx ; popad
+                // the moved instructions
+                Op::Raw(&[0x55, 0x8b, 0xec, 0x81, 0x7d, 0x08, 0x00, 0x00, 0x01, 0x00]),
+                Op::Jmp(At::Image(0x0046_9e8a)),
+            ],
         },
     ],
 };
@@ -1081,7 +1544,7 @@ mod tests {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
         let expected: Vec<_> = (1..=ids.len()).map(|i| format!("F{i}")).collect();
         assert_eq!(ids, expected);
-        assert_eq!(ids.len(), 17);
+        assert_eq!(ids.len(), 22);
     }
 
     #[test]
@@ -1276,47 +1739,234 @@ mod tests {
             let r = u32::from_le_bytes(code[end - 4..end].try_into().unwrap());
             (base + end as u32).wrapping_add(r)
         };
-        // The update: lock first, then save the return address; the moved
-        // prologue follows the stub.
+        // The update: an entry hook, nothing waits.
         let base = CAVE + F13_FUNCTIONS;
         let update = at(base);
-        assert_eq!(update.len(), 46 + 5 + 5);
         assert_eq!(
             update[3..7],
             (CAVE + F13_TABLE + slot::UPDATE).to_le_bytes()
         );
-        assert_eq!(&update[14..16], [0x8f, 0x05], "pop [ret] after the lock");
-        assert_eq!(update[16..20], (CAVE + F13_RETS + 24).to_le_bytes());
-        assert_eq!(update[20], 0xe8);
         assert_eq!(
-            rel(&update, 25, base),
-            base + 46,
-            "calls the moved instructions"
+            &update[14..19],
+            [0xa1, 0xcc, 0xef, 0x96, 0x00],
+            "moved prologue"
         );
-        assert_eq!(
-            &update[25..27],
-            [0xff, 0x35],
-            "push [ret] before the unlock"
-        );
-        assert_eq!(
-            update[34..38],
-            (CAVE + F13_TABLE + slot::UPDATE_END).to_le_bytes()
-        );
-        assert_eq!(update[45], 0xc3);
-        assert_eq!(&update[46..51], [0xa1, 0xcc, 0xef, 0x96, 0x00]);
-        assert_eq!(rel(&update, 56, base), 0x443db5);
+        assert_eq!(rel(&update, update.len(), base), 0x443db5);
         assert_eq!(at(0x443db0).len(), 5);
-        // D3D set-up: the moved call keeps its target.
+        // D3D set-up: a real-size section; the moved call keeps its target.
         let base = CAVE + F13_FUNCTIONS + 0x180;
         let d3d = at(base);
-        assert_eq!(d3d[3..7], (CAVE + F13_TABLE + slot::REAL).to_le_bytes());
+        assert_eq!(d3d[9..13], (CAVE + F13_TABLE + slot::REAL).to_le_bytes());
         assert_eq!(
-            d3d[34..38],
+            d3d[28..32],
             (CAVE + F13_TABLE + slot::REAL_END).to_le_bytes()
         );
         assert_eq!(&d3d[46..48], [0x6a, 0x7c]);
         assert_eq!(rel(&d3d, 53, base), 0x4990d0);
         assert_eq!(rel(&d3d, 58, base), 0x4a6957);
+        // Scene draw: 3D work, the view block handed to begin and end.
+        let base = CAVE + F13_VIEWS + 0xf0;
+        let draw = at(base);
+        assert_eq!(
+            draw[9..13],
+            (CAVE + F13_TABLE + slot::THREE_D).to_le_bytes()
+        );
+        assert_eq!(
+            &draw[13..18],
+            [0x85, 0xc9, 0x74, 7, 0x68],
+            "jz skips push and call"
+        );
+        assert_eq!(draw[18..22], (CAVE + F13_VIEW).to_le_bytes());
+        assert_eq!(
+            rel(&draw, 30, base),
+            base + 56,
+            "calls the moved instructions"
+        );
+        assert_eq!(
+            draw[33..37],
+            (CAVE + F13_TABLE + slot::THREE_D_END).to_le_bytes()
+        );
+        assert_eq!(&draw[56..61], [0xa1, 0x6c, 0x27, 0x50, 0x00]);
+        assert_eq!(rel(&draw, draw.len(), base), 0x49fe35);
+    }
+
+    #[test]
+    fn f13_screen_size_reads_see_the_3d_view() {
+        let read = at(CAVE + F13_READ_EAX);
+        assert_eq!(read.len(), 35);
+        assert_eq!(&read[7..9], [0x74, 0x14], "depth 0: to the game's read");
+        assert_eq!(
+            &read[9..15],
+            [0x64, 0xa1, 0x24, 0x00, 0x00, 0x00],
+            "thread id"
+        );
+        assert_eq!(
+            &read[21..23],
+            [0x75, 6],
+            "another thread: to the game's read"
+        );
+        assert_eq!(read[24..28], (CAVE + F13_VIEW + 8).to_le_bytes());
+        assert_eq!(&read[29..35], [0xa1, 0x18, 0x25, 0x50, 0x00, 0xc3]);
+        assert_eq!(at(CAVE + F11_READ), read, "F11's own copy");
+        for (site, n, stub) in [
+            (0x435d3f, 5, F13_READ_EAX),
+            (0x49ffd4, 5, F13_READ_EAX),
+            (0x48f896, 5, F13_READ_EAX),
+            (0x4a2ab0, 6, F13_READ_ECX),
+            (0x4b069f, 6, F13_READ_EDX),
+        ] {
+            let call = at(site);
+            assert_eq!(call.len(), n);
+            assert_eq!(call[0], 0xe8);
+            let r = u32::from_le_bytes(call[1..5].try_into().unwrap());
+            assert_eq!((site + 5).wrapping_add(r), CAVE + stub);
+        }
+    }
+
+    #[test]
+    fn f18_hooks_texture_creation_uploads_and_filtering() {
+        let back = |code: &[u8], base: u32| {
+            let n = code.len();
+            assert_eq!(code[n - 5], 0xe9);
+            let rel = u32::from_le_bytes(code[n - 4..].try_into().unwrap());
+            (base + n as u32).wrapping_add(rel)
+        };
+        let desc = at(CAVE + F18_CAVE);
+        assert_eq!(
+            desc[3..7],
+            (CAVE + F13_TABLE + slot::TEXTURE_DESC).to_le_bytes()
+        );
+        assert_eq!(
+            &desc[7..11],
+            [0x85, 0xc9, 0x74, 7],
+            "jz skips lea, push and call"
+        );
+        assert_eq!(back(&desc, CAVE + F18_CAVE), 0x49eb6b);
+        // Each upload stub: the replaced bytes end with the Load call, then
+        // push dst + call is exactly the 5 bytes jz skips.
+        for (off, orig, resume) in [
+            (0x30, 12, 0x49a14e),
+            (0x60, 12, 0x49a454),
+            (0x90, 11, 0x49ad05),
+        ] {
+            let stub = at(CAVE + F18_CAVE + off);
+            assert_eq!(
+                &stub[orig - 3..orig],
+                &[0xff, stub[orig - 2], 0x14],
+                "Load at {off:#x}"
+            );
+            assert_eq!(&stub[orig + 7..orig + 11], [0x85, 0xc9, 0x74, 5]);
+            assert_eq!(&stub[orig + 14..orig + 16], [0xff, 0xd1]);
+            assert_eq!(back(&stub, CAVE + F18_CAVE + off), resume);
+        }
+        let tri = at(CAVE + F18_CAVE + 0xc0);
+        assert_eq!(
+            &tri[..9],
+            [0x83, 0xfe, 0x02, 0x75, 0x04, 0x6a, 0x06, 0xeb, 0x01]
+        );
+        assert_eq!(back(&tri, CAVE + F18_CAVE + 0xc0), 0x4a2444);
+        assert_eq!(at(0x4a243e).len(), 6);
+        assert_eq!(at(0x4a9fe0), [0x31, 0xc0, 0xc3], "F19: no filtering");
+    }
+
+    #[test]
+    fn cull_factor_follows_the_aspect() {
+        assert_eq!(cull_t(1440, 1080), 0x10000);
+        assert_eq!(cull_t(640, 480), 0x10000);
+        assert_eq!(cull_t(1920, 1080), 0x15555);
+        assert_eq!(cull_t(3440, 1440), 0x1caaa);
+        assert_eq!(cull_t(1280, 1024), 0x10000, "narrower than 4:3: unchanged");
+    }
+
+    #[test]
+    fn f11_widens_the_culling_wedges() {
+        for imm in F11_CULL_IMMS {
+            assert_eq!(
+                at(imm),
+                0x10000u32.to_le_bytes(),
+                "1.0 until the launcher fills t"
+            );
+        }
+        for (site, stub) in [
+            (0x4a0a21, F11_CULL_STUBS),
+            (0x4a0a32, F11_CULL_STUBS + 0x20),
+        ] {
+            assert_eq!(at(site).len(), 6);
+            let code = at(CAVE + stub);
+            assert_eq!(
+                &code[..6],
+                [0x8b, 0x15, 0xec, 0x22, 0x50, 0x00],
+                "the replaced load"
+            );
+            assert_eq!(code[11..15], (CAVE + F11_CULL_T).to_le_bytes());
+            let n = code.len();
+            let rel = u32::from_le_bytes(code[n - 4..].try_into().unwrap());
+            assert_eq!((CAVE + stub + n as u32).wrapping_add(rel), site + 6);
+        }
+    }
+
+    #[test]
+    fn f20_eases_both_far_plane_reads() {
+        for (site, stub) in [(0x435ffe, F20_CAVE), (0x436018, F20_CAVE + 0x20)] {
+            assert_eq!(at(site).len(), 6);
+            let code = at(CAVE + stub);
+            assert_eq!(
+                &code[2..8],
+                [0x8b, 0x15, 0x3c, 0x68, 0x4f, 0x00],
+                "the game's value first"
+            );
+            assert_eq!(
+                code[9..13],
+                (CAVE + F13_TABLE + slot::EASE_FAR).to_le_bytes()
+            );
+            assert_eq!(
+                &code[13..17],
+                [0x85, 0xc0, 0x74, 5],
+                "jz skips push, call, mov"
+            );
+            let n = code.len();
+            let rel = u32::from_le_bytes(code[n - 4..].try_into().unwrap());
+            assert_eq!((CAVE + stub + n as u32).wrapping_add(rel), site + 6);
+        }
+    }
+
+    #[test]
+    fn f21_and_f22_pass_their_arguments() {
+        let ctl = at(CAVE + F21_CAVE);
+        assert_eq!(ctl.len(), 64 + 11);
+        assert_eq!(
+            &ctl[6..11],
+            [0x60, 0x8b, 0x44, 0x24, 0x20],
+            "block = argument 1"
+        );
+        assert_eq!(
+            &ctl[16..20],
+            [0x8b, 0x44, 0x24, 0x28],
+            "player = argument 3"
+        );
+        assert_eq!(&ctl[38..42], [0x85, 0xc9, 0x74, 14]);
+        assert_eq!(
+            &ctl[64..70],
+            [0x55, 0x8b, 0xec, 0x83, 0xec, 0x0c],
+            "moved prologue"
+        );
+        let rel = u32::from_le_bytes(ctl[71..75].try_into().unwrap());
+        assert_eq!((CAVE + F21_CAVE + 75).wrapping_add(rel), 0x449586);
+        let call = u32::from_le_bytes(ctl[27..31].try_into().unwrap());
+        assert_eq!(
+            (CAVE + F21_CAVE + 31).wrapping_add(call),
+            CAVE + F21_CAVE + 64
+        );
+        let imp = at(CAVE + F22_CAVE);
+        assert_eq!(&imp[7..11], [0x85, 0xc9, 0x74, 11]);
+        assert_eq!(imp[12..16], (CAVE + F17_SETTINGS).to_le_bytes());
+        assert_eq!(
+            &imp[16..20],
+            [0xff, 0x74, 0x24, 0x28],
+            "severity = argument 1"
+        );
+        let rel = u32::from_le_bytes(imp[34..38].try_into().unwrap());
+        assert_eq!((CAVE + F22_CAVE + 38).wrapping_add(rel), 0x469e8a);
     }
 
     #[test]
@@ -1342,8 +1992,8 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        // the last piece is the panel entry stub (34 bytes)
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F13_RECTS + 0x90 + 34);
+        // the last piece is F11's 35-byte copy of the view read
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F11_READ + 35);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
@@ -1364,7 +2014,8 @@ mod tests {
     #[test]
     fn only_optional_fixes_can_be_skipped() {
         let skip = [
-            "F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F17", "F1",
+            "F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F17", "F18", "F19", "F20",
+            "F21", "F22", "F1",
         ];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
         assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9", "F15"]);
@@ -1376,8 +2027,9 @@ mod tests {
                 .all(|w| w.fix != "F6")
         );
         assert_eq!(
-            COMMUNITY_EU_15
-                .cave_size(&["F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F17"]),
+            COMMUNITY_EU_15.cave_size(&[
+                "F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F17", "F18", "F19"
+            ]),
             F9_CAVE + 24
         );
     }

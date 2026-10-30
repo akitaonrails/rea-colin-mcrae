@@ -15,9 +15,12 @@
 //! (`canvas`). Display set-up and the 3D draw see the real screen.
 
 pub mod canvas;
+pub mod easing;
+pub mod mipmap;
 pub mod pacing;
 pub mod present;
 pub mod sections;
+pub mod xinput;
 
 #[cfg(all(not(test), windows))]
 #[panic_handler]
@@ -36,11 +39,6 @@ pub extern "C" fn rust_eh_personality() {}
 #[cfg(all(not(test), windows))]
 #[unsafe(no_mangle)]
 pub extern "system" fn DllMainCRTStartup(_: *mut u8, reason: u32, _: *mut u8) -> i32 {
-    const DLL_PROCESS_ATTACH: u32 = 1;
-    #[cfg(target_arch = "x86")]
-    if reason == DLL_PROCESS_ATTACH {
-        exports::init();
-    }
     let _ = reason;
     1
 }

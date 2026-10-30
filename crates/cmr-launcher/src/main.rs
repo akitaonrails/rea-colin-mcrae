@@ -212,7 +212,7 @@ mod app {
         let mut uses_hooks = fixes::HOOK_FIXES.iter().any(|f| !skip.contains(f));
         if uses_hooks && !hooks_path.as_ref().is_some_and(|p| p.is_file()) {
             log_line(&format!(
-                "warning: {HOOKS_DLL} not found next to the launcher; the HUD, menus and frame-rate options are off"
+                "warning: {HOOKS_DLL} not found next to the launcher; the options that need it are off"
             ));
             let off: Vec<_> = fixes::HOOK_FIXES
                 .iter()
@@ -266,9 +266,23 @@ mod app {
                         ));
                     }
                 }
+                if !skip.contains(&"F11") {
+                    let (w, h) = settings.race_resolution().unwrap_or((640, 480));
+                    let t = fixes::cull_t(w, h).to_le_bytes();
+                    let filled = fill_data(&mut writes, cave.wrapping_add(fixes::F11_CULL_T), &t)
+                        && fixes::F11_CULL_IMMS
+                            .iter()
+                            .all(|&a| fill_data(&mut writes, a, &t));
+                    if filled {
+                        log_line(&format!(
+                            "F11 culling widened x{:.3}",
+                            f64::from(fixes::cull_t(w, h)) / 65536.0
+                        ));
+                    }
+                }
                 if !skip.contains(&"F17") {
                     let cap = settings.fps_cap().unwrap_or(0);
-                    let block: Vec<u8> = [cap, settings.flip_flags()]
+                    let block: Vec<u8> = [cap, settings.flip_flags(), settings.rumble_strength()]
                         .iter()
                         .flat_map(|v| v.to_le_bytes())
                         .collect();

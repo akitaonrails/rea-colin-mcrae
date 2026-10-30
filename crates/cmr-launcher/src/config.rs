@@ -33,6 +33,31 @@ pub struct Settings {
     /// Wait for the screen's refresh when showing a frame (fix F17); unset
     /// keeps the game's own choice.
     pub vsync: Option<bool>,
+    /// Texture filtering (fixes F18, F19); unset or original keeps the
+    /// game's.
+    pub texture_filter: Option<TextureFilter>,
+    /// Smooth view distance changes (fix F20). Off unless set.
+    pub smooth_distance: Option<bool>,
+    /// Gamepad rumble strength in percent (fix F22); 0 or unset: none.
+    pub rumble: Option<u32>,
+}
+
+/// `texture_filter`: the game's own filtering, smooth (mipmaps and
+/// trilinear, F18) or sharp (nearest pixels everywhere, F19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextureFilter {
+    Original,
+    Smooth,
+    Sharp,
+}
+
+fn parse_filter(v: &str) -> Option<TextureFilter> {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "original" => Some(TextureFilter::Original),
+        "smooth" => Some(TextureFilter::Smooth),
+        "sharp" => Some(TextureFilter::Sharp),
+        _ => None,
+    }
 }
 
 pub const FILE_NAME: &str = "launcher.cfg";
@@ -102,6 +127,19 @@ gamepad_axes = true
 # true waits for the screen's refresh before showing each frame (no
 # tearing); false shows frames at once. Unset keeps the game's own choice.
 #vsync = true
+
+# Texture filtering: smooth adds mipmaps and trilinear filtering, so the
+# road and scenery don't shimmer in the distance; sharp shows every texture
+# with crisp, unfiltered pixels; original keeps the game's own.
+#texture_filter = smooth
+
+# Stages change their view distance from section to section at once, so
+# scenery pops in or out; true eases each change over about a second.
+#smooth_distance = true
+
+# Gamepad rumble on impacts, as a strength from 1 to 100 (percent); off or
+# unset for none. Needs an XInput pad (Xbox-style; most pads under Steam).
+#rumble = 60
 ";
 
 pub const USAGE: &str = concat!(
@@ -120,6 +158,9 @@ CMRLauncher [options]
   --draw-distance <n>      1.0 to 3.0
   --fps-limit <n>|off      frame-rate cap, e.g. 60
   --vsync on|off           wait for the screen's refresh
+  --texture-filter <f>     original, smooth or sharp
+  --smooth-distance on|off ease view distance changes
+  --rumble <0-100>|off     gamepad rumble strength
   --gamepad-axes on|off    triggers/right stick as pedals, Start pauses
   --close-quits on|off     closing the window quits the game
 
@@ -166,6 +207,15 @@ fn parse_factor(v: &str) -> Option<u32> {
     (1.0..=3.0)
         .contains(&f)
         .then(|| (f * 65536.0).round() as u32)
+}
+
+/// A percentage, 0..=100, or `off` (0).
+fn parse_percent(v: &str) -> Option<u32> {
+    let v = v.trim();
+    if v.eq_ignore_ascii_case("off") {
+        return Some(0);
+    }
+    v.parse().ok().filter(|p| *p <= 100)
 }
 
 /// A frame-rate cap, 10..=1000, or `off`/`0` for none (0).
@@ -234,6 +284,18 @@ impl Settings {
                     Some(f) => s.fps_limit = Some(f),
                     None => bad("fps_limit needs a number from 10 to 1000 or off, not"),
                 },
+                "rumble" => match parse_percent(value) {
+                    Some(r) => s.rumble = Some(r),
+                    None => bad("rumble needs a number from 0 to 100 or off, not"),
+                },
+                "smooth_distance" => match parse_bool(value) {
+                    Some(b) => s.smooth_distance = Some(b),
+                    None => bad("smooth_distance needs true or false, not"),
+                },
+                "texture_filter" => match parse_filter(value) {
+                    Some(f) => s.texture_filter = Some(f),
+                    None => bad("texture_filter needs original, smooth or sharp, not"),
+                },
                 "vsync" => match parse_bool(value) {
                     Some(b) => s.vsync = Some(b),
                     None => bad("vsync needs true or false, not"),
@@ -262,7 +324,15 @@ impl Settings {
             draw_distance: over.draw_distance.or(self.draw_distance),
             fps_limit: over.fps_limit.or(self.fps_limit),
             vsync: over.vsync.or(self.vsync),
+            texture_filter: over.texture_filter.or(self.texture_filter),
+            smooth_distance: over.smooth_distance.or(self.smooth_distance),
+            rumble: over.rumble.or(self.rumble),
         }
+    }
+
+    /// The rumble strength in percent, 0 for none.
+    pub fn rumble_strength(&self) -> u32 {
+        self.rumble.unwrap_or(0).min(100)
     }
 
     /// The frame-rate cap to apply, if any.
@@ -295,6 +365,7 @@ impl Settings {
         if self.gamepad_axes == Some(false) {
             skip.push("F7");
             skip.push("F14");
+            skip.push("F21");
         }
         if self.race_resolution().is_none() {
             skip.push("F10");
@@ -307,8 +378,24 @@ impl Settings {
         if self.draw_distance.is_none() {
             skip.push("F12");
         }
-        if self.race_resolution().is_none() && self.fps_cap().is_none() && self.vsync.is_none() {
+        if self.race_resolution().is_none()
+            && self.fps_cap().is_none()
+            && self.vsync.is_none()
+            && self.rumble_strength() == 0
+        {
             skip.push("F17");
+        }
+        if self.texture_filter != Some(TextureFilter::Smooth) {
+            skip.push("F18");
+        }
+        if self.texture_filter != Some(TextureFilter::Sharp) {
+            skip.push("F19");
+        }
+        if self.smooth_distance != Some(true) {
+            skip.push("F20");
+        }
+        if self.rumble_strength() == 0 {
+            skip.push("F22");
         }
         skip
     }
@@ -338,6 +425,20 @@ impl Settings {
                         format!("--resolution needs WIDTHxHEIGHT or original, not {v}\n\n{USAGE}")
                     })?);
                 }
+                "--rumble" => {
+                    let v = value("--rumble")?;
+                    s.rumble = Some(parse_percent(&v).ok_or_else(|| {
+                        format!("--rumble needs 0 to 100 or off, not {v}\n\n{USAGE}")
+                    })?);
+                }
+                "--texture-filter" => {
+                    let v = value("--texture-filter")?;
+                    s.texture_filter = Some(parse_filter(&v).ok_or_else(|| {
+                        format!(
+                            "--texture-filter needs original, smooth or sharp, not {v}\n\n{USAGE}"
+                        )
+                    })?);
+                }
                 "--fps-limit" => {
                     let v = value("--fps-limit")?;
                     s.fps_limit = Some(parse_fps(&v).ok_or_else(|| {
@@ -350,7 +451,8 @@ impl Settings {
                         format!("--draw-distance needs 1.0 to 3.0, not {v}\n\n{USAGE}")
                     })?);
                 }
-                flag @ ("--widescreen" | "--gamepad-axes" | "--close-quits" | "--vsync") => {
+                flag @ ("--widescreen" | "--gamepad-axes" | "--close-quits" | "--vsync"
+                | "--smooth-distance") => {
                     let v = value(flag)?;
                     let b = parse_bool(&v)
                         .ok_or_else(|| format!("{flag} needs on or off, not {v}\n\n{USAGE}"))?;
@@ -358,6 +460,7 @@ impl Settings {
                         "--widescreen" => s.widescreen = Some(b),
                         "--gamepad-axes" => s.gamepad_axes = Some(b),
                         "--vsync" => s.vsync = Some(b),
+                        "--smooth-distance" => s.smooth_distance = Some(b),
                         _ => s.close_quits = Some(b),
                     }
                 }
@@ -429,12 +532,36 @@ mod tests {
         assert_eq!(s.race_resolution(), Some((2560, 1440)));
         assert_eq!(s.widescreen, Some(true));
         assert_eq!(s.draw_distance, Some(0x20000));
-        assert_eq!(s.skipped_fixes(), ["F6", "F7", "F14"]);
+        assert_eq!(
+            s.skipped_fixes(),
+            ["F6", "F7", "F14", "F21", "F18", "F19", "F20", "F22"]
+        );
         assert!(args(&["--widescreen", "maybe"]).is_err());
         let s = args(&["--fps-limit", "120", "--vsync", "off"]).unwrap();
         assert_eq!((s.fps_cap(), s.flip_flags()), (Some(120), 9));
         assert_eq!(args(&["--fps-limit", "off"]).unwrap().fps_cap(), None);
         assert!(args(&["--fps-limit", "5"]).is_err());
+        let smooth = args(&["--texture-filter", "smooth"])
+            .unwrap()
+            .skipped_fixes();
+        assert!(!smooth.contains(&"F18") && smooth.contains(&"F19"));
+        let sharp = args(&["--texture-filter", "SHARP"])
+            .unwrap()
+            .skipped_fixes();
+        assert!(sharp.contains(&"F18") && !sharp.contains(&"F19"));
+        assert!(args(&["--texture-filter", "blurry"]).is_err());
+        let r = args(&["--rumble", "60"]).unwrap();
+        assert_eq!(r.rumble_strength(), 60);
+        assert!(!r.skipped_fixes().contains(&"F22") && !r.skipped_fixes().contains(&"F17"));
+        assert!(args(&["--rumble", "150"]).is_err());
+        assert!(
+            args(&["--gamepad-axes", "off"])
+                .unwrap()
+                .skipped_fixes()
+                .contains(&"F21")
+        );
+        let eased = args(&["--smooth-distance", "on"]).unwrap();
+        assert!(!eased.skipped_fixes().contains(&"F20"));
         // A cap alone needs the present hook (F17), not the race resolution.
         let cap = args(&["--fps-limit", "60"]).unwrap();
         assert!(cap.skipped_fixes().contains(&"F16") && !cap.skipped_fixes().contains(&"F17"));
@@ -461,7 +588,9 @@ mod tests {
         );
         assert_eq!(
             s.skipped_fixes(),
-            ["F10", "F13", "F16", "F11", "F12", "F17"]
+            [
+                "F10", "F13", "F16", "F11", "F12", "F17", "F18", "F19", "F20", "F22"
+            ]
         );
     }
 
@@ -473,7 +602,10 @@ mod tests {
         assert_eq!(saved.language.as_deref(), Some("FRENCH"));
         assert_eq!(saved.resolution, Some((1920, 1440)));
         assert_eq!(saved.draw_distance, Some(0x18000));
-        assert_eq!(saved.skipped_fixes(), ["F6", "F7", "F14", "F11"]);
+        assert_eq!(
+            saved.skipped_fixes(),
+            ["F6", "F7", "F14", "F21", "F11", "F18", "F19", "F20", "F22"]
+        );
         let m = saved.merged(args(&["--game", r"C:\new"]).unwrap());
         assert_eq!(m.game, Some(PathBuf::from(r"C:\new")));
         assert_eq!(m.runtime, Some(PathBuf::from(r"C:\rt")));
