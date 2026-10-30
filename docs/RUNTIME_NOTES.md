@@ -209,3 +209,21 @@ A crash during a run is now reported in `launcher.log` ("the game crashed:
 code, module+offset, registers"), from `crash.log` written by the hook
 library's crash handler. A forced crash (display pointer `0x502518` zeroed
 mid-race) logged `0xc0000005 at Rally.exe+0x9e40a`.
+
+## GPU rendering and two slow paths (2026-10-30)
+
+Under Wine 11 the owner's game rendered on llvmpipe: Wine draws OpenGL
+through EGL on X11, and the container's NVIDIA EGL has no X11 platform
+(egl-x11), so Mesa's software driver took over. `UseEGL = N` (GLX) puts it on
+the GPU (wined3d reports the RTX 5090); the launcher sets it under Wine.
+
+On the GPU the race ran at 24 fps at 4K (49 at 1440p, 38 at 1800p: cost in
+step with the pixel count). Stack samples showed Wine converting depth
+values pixel by pixel; the game's depth test `0x49fa70` locks the whole
+depth buffer each frame to read one pixel. Turning the test off gave 60;
+F26 reads just that pixel and keeps 60 at 4K with 16 or 24-bit depth.
+
+The menus (E5) wrote the enlarged picture straight into the visible screen
+and skipped the flip. Under GLX inside a gamescope window those writes
+were shown only now and then (menu frozen while its sounds played); they
+now go into the back buffer and the game flips as always. Same speed.
