@@ -81,8 +81,10 @@ games.
 
 ## 2. Download
 
-Get the latest `CMRLauncher-….zip` from the
-[Releases page](https://github.com/akitaonrails/rea-colin-mcrae/releases) and
+Download `CMRLauncher-….zip` from the
+[latest release](https://github.com/akitaonrails/rea-colin-mcrae/releases/latest)
+(under **Assets**; older versions are on the
+[Releases page](https://github.com/akitaonrails/rea-colin-mcrae/releases)) and
 unpack it anywhere, for example into your game folder. It contains:
 
 - `CMRLauncher.exe` — the launcher
