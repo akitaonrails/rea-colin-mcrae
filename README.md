@@ -232,7 +232,8 @@ Under Wine and Proton these are inside the Wine prefix (for Steam:
 
 ## Known limitations
 
-- Menus at 4K can run below 30 fps (enlarged on the CPU for now).
+- The menus are enlarged on the CPU; at 4K with software rendering they run
+  at about 44 fps (on a GPU the copy costs much less).
 - A short white flash before the legal screen at high resolutions.
 - Split screen isn't adjusted for widescreen.
 - Only the European v1.5 `Rally.exe` is recognised so far.

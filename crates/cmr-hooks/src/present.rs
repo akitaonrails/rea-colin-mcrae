@@ -73,6 +73,43 @@ pub unsafe fn blit(
     h: u32,
 ) {
     let (x0, y0, tw, th) = target(w, h);
+    let px = dst_bits as usize / 8;
+    let (left, picture) = (x0 as usize * px, tw as usize * px);
+    for y in 0..h {
+        let row = unsafe { dst.add(y as usize * dst_pitch) };
+        if y < y0 || y >= y0 + th {
+            unsafe { core::ptr::write_bytes(row, 0, w as usize * px) };
+        } else {
+            unsafe {
+                core::ptr::write_bytes(row, 0, left);
+                core::ptr::write_bytes(
+                    row.add(left + picture),
+                    0,
+                    w as usize * px - left - picture,
+                );
+            }
+        }
+    }
+    let pic = unsafe { dst.add(y0 as usize * dst_pitch + left) };
+    unsafe { blit_picture(src, src_pitch, green6, pic, dst_pitch, dst_bits, tw, th) };
+}
+
+/// The picture part of `blit`: the 640x480 picture enlarged to `tw` x `th`
+/// pixels at `dst` (the picture's top left), nothing outside it.
+///
+/// # Safety
+/// As `blit`, with `dst` holding `th` rows of at least `tw` pixels.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn blit_picture(
+    src: *const u8,
+    src_pitch: usize,
+    green6: bool,
+    dst: *mut u8,
+    dst_pitch: usize,
+    dst_bits: u32,
+    tw: u32,
+    th: u32,
+) {
     // The source column of every picture column, computed once per frame
     // (the same for all rows); screens are at most 7680 wide.
     let mut cols = [0u16; 7680];
@@ -80,36 +117,31 @@ pub unsafe fn blit(
     for (i, c) in cols.iter_mut().enumerate().take(tw as usize) {
         *c = source(i as u32, tw, SRC_W) as u16;
     }
-    let (x0, x1) = (x0 as usize, (x0 + tw) as usize);
-    for y in 0..h {
-        let row = unsafe { dst.add(y as usize * dst_pitch) };
-        if y < y0 || y >= y0 + th {
-            unsafe { core::ptr::write_bytes(row, 0, w as usize * (dst_bits as usize / 8)) };
+    let picture = tw as usize * (dst_bits as usize / 8);
+    let mut last: Option<(u32, *const u8)> = None;
+    for y in 0..th {
+        let pic = unsafe { dst.add(y as usize * dst_pitch) };
+        let sy = source(y, th, SRC_H);
+        // Rows enlarged from the same source row are copies of the first.
+        if let Some((prev_sy, prev)) = last
+            && prev_sy == sy
+        {
+            unsafe { core::ptr::copy_nonoverlapping(prev, pic, picture) };
             continue;
         }
-        let sy = source(y - y0, th, SRC_H);
         let srow = unsafe { src.add(sy as usize * src_pitch) } as *const u16;
         if dst_bits == 32 {
-            let row = row as *mut u32;
-            for x in 0..w as usize {
-                let v = if x >= x0 && x < x1 {
-                    to_rgb32(unsafe { *srow.add(cols[x - x0] as usize) }, green6)
-                } else {
-                    0
-                };
-                unsafe { *row.add(x) = v };
+            let pic = pic as *mut u32;
+            for (x, &c) in cols[..tw as usize].iter().enumerate() {
+                unsafe { *pic.add(x) = to_rgb32(*srow.add(c as usize), green6) };
             }
         } else {
-            let row = row as *mut u16;
-            for x in 0..w as usize {
-                let v = if x >= x0 && x < x1 {
-                    unsafe { *srow.add(cols[x - x0] as usize) }
-                } else {
-                    0
-                };
-                unsafe { *row.add(x) = v };
+            let pic = pic as *mut u16;
+            for (x, &c) in cols[..tw as usize].iter().enumerate() {
+                unsafe { *pic.add(x) = *srow.add(c as usize) };
             }
         }
+        last = Some((sy, pic as *const u8));
     }
 }
 
@@ -163,6 +195,39 @@ mod tests {
             );
         }
         assert!(dst.iter().all(|&p| p == 0xff0000));
+    }
+
+    #[test]
+    fn repeated_rows_match_the_per_pixel_result() {
+        // Every screen pixel equals the nearest source pixel, at a
+        // non-integer scale (4K: 4.5x) and on a narrow screen (bars on top).
+        let src: Vec<u16> = (0..640 * 480).map(|i| (i * 7 % 65521) as u16).collect();
+        for (w, h) in [(3840u32, 2160u32), (1280, 1024)] {
+            let mut dst = vec![0xaaaau16; (w * h) as usize];
+            unsafe {
+                blit(
+                    src.as_ptr().cast(),
+                    640 * 2,
+                    true,
+                    dst.as_mut_ptr().cast(),
+                    w as usize * 2,
+                    16,
+                    w,
+                    h,
+                );
+            }
+            let (x0, y0, tw, th) = target(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    let want = if x >= x0 && x < x0 + tw && y >= y0 && y < y0 + th {
+                        src[(source(y - y0, th, SRC_H) * 640 + source(x - x0, tw, SRC_W)) as usize]
+                    } else {
+                        0
+                    };
+                    assert_eq!(dst[(y * w + x) as usize], want, "{w}x{h} at {x},{y}");
+                }
+            }
+        }
     }
 
     #[test]
