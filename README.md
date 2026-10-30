@@ -13,6 +13,11 @@ You point the launcher at your installed game and it does the rest. No game
 patches, no compatibility settings, no registry edits. Your game folder is
 never changed: the launcher works on its own private copy.
 
+[![A full stage in New Zealand, played with the launcher: high resolution, 16:9 widescreen, HUD in the corners](https://new-uploads-akitaonrails.s3.us-east-2.amazonaws.com/2026/10/29/colin-mcrae-rally/showcase-poster.jpg)](https://new-uploads-akitaonrails.s3.us-east-2.amazonaws.com/2026/10/29/colin-mcrae-rally/showcase-h264.mp4)
+
+*A full stage in New Zealand at high resolution and 16:9, with the HUD in
+the corners. Click to watch (3½ minutes, with sound).*
+
 ![The Linux launcher](docs/images/launcher.png)
 
 ## What it adds to the original game
