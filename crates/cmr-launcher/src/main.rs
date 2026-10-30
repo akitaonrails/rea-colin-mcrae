@@ -247,6 +247,10 @@ mod app {
         }
 
         let mut skip = settings.skipped_fixes();
+        // The joystick panel works on Windows; only Wine needs F24.
+        if !win32::is_wine() {
+            skip.push("F24");
+        }
         // These fixes need the hook library next to the launcher.
         let hooks_path = std::env::current_exe()
             .ok()
@@ -349,6 +353,11 @@ mod app {
                             }
                         ));
                     }
+                }
+                let map = settings.button_map();
+                if fill_data(&mut writes, cave.wrapping_add(fixes::F23_MAP), &map) && map != [0; 12]
+                {
+                    log_line(&format!("F23 button layout {map:?}"));
                 }
                 if let Some((w, h)) = settings.race_resolution() {
                     let size: Vec<u8> = [w, h].iter().flat_map(|v| v.to_le_bytes()).collect();

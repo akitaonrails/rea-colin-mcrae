@@ -42,6 +42,42 @@ pub struct Settings {
     pub rumble: Option<u32>,
     /// Linux only: how `cmr-play`'s gamescope enlarges the picture.
     pub scaler: Option<Scaler>,
+    /// Pad button layout (fix F23): for the game's buttons 1 to 8, the
+    /// physical button (1-based) that presses it, 0 for its own.
+    pub buttons: Option<[u8; 8]>,
+}
+
+/// The game's own pad layout: every button presses its own.
+pub const ORIGINAL_BUTTONS: [u8; 8] = [0; 8];
+
+/// The modern layout for Xbox-style pads (WinMM numbers A 1, B 2, X 3, Y 4,
+/// LB 5, RB 6, Back 7, Start 8). The game's buttons are: 1 select (menus),
+/// 2 back (menus), 3 change view, 4 gear down, 5 handbrake, 6 gear up,
+/// 7 (unused), 8 pause. A selects and is the handbrake, B goes back, Y
+/// changes the view, the bumpers change gear, Start pauses.
+pub const MODERN_BUTTONS: [u8; 8] = [1, 2, 4, 5, 1, 6, 7, 8];
+
+/// `original`, `modern` or eight button numbers separated by commas.
+fn parse_buttons(v: &str) -> Option<[u8; 8]> {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "original" => return Some(ORIGINAL_BUTTONS),
+        "modern" => return Some(MODERN_BUTTONS),
+        _ => {}
+    }
+    let numbers: Vec<u8> = v
+        .split(',')
+        .map(|n| n.trim().parse().ok().filter(|n| *n <= 32))
+        .collect::<Option<_>>()?;
+    numbers.try_into().ok()
+}
+
+/// The `buttons` value for a layout: its name when it is one.
+pub fn buttons_value(b: &[u8; 8]) -> String {
+    match *b {
+        ORIGINAL_BUTTONS => "original".into(),
+        MODERN_BUTTONS => "modern".into(),
+        _ => b.map(|n| n.to_string()).join(","),
+    }
 }
 
 /// `scaler` (Linux, gamescope's filter): sharp pixels, sharp pixels of
@@ -172,6 +208,13 @@ gamepad_axes = true
 # unset for none. Needs an XInput pad (Xbox-style; most pads under Steam).
 #rumble = 60
 
+# Pad buttons: original (the game's own order), modern (Xbox-style pads: A
+# selects and is the handbrake, B goes back, Y changes the view, LB/RB
+# change gear, Start pauses), or for the game's buttons select, back, change
+# view, gear down, handbrake, gear up, (unused), pause the pad button number
+# that presses each, e.g. 1,2,4,5,1,6,7,8. The d-pad moves through menus.
+#buttons = modern
+
 # Linux (cmr-play) only: how gamescope enlarges the picture. nearest (sharp
 # pixels), pixel (sharp, all pixels the same size), fsr (smooth, then
 # sharpened) or linear (smooth).
@@ -197,6 +240,7 @@ CMRLauncher [options]
   --texture-filter <f>     original, smooth or sharp
   --smooth-distance on|off ease view distance changes
   --rumble <0-100>|off     gamepad rumble strength
+  --buttons <layout>       pad buttons: original, modern or 8 numbers
   --gamepad-axes on|off    triggers/right stick as pedals, Start pauses
   --close-quits on|off     closing the window quits the game
 
@@ -337,6 +381,10 @@ impl Settings {
                     Some(f) => s.texture_filter = Some(f),
                     None => bad("texture_filter needs original, smooth or sharp, not"),
                 },
+                "buttons" => match parse_buttons(value) {
+                    Some(b) => s.buttons = Some(b),
+                    None => bad("buttons needs original, modern or 8 button numbers, not"),
+                },
                 "scaler" => match Scaler::parse(value) {
                     Some(f) => s.scaler = Some(f),
                     None => bad("scaler needs nearest, pixel, fsr or linear, not"),
@@ -373,6 +421,7 @@ impl Settings {
             smooth_distance: over.smooth_distance.or(self.smooth_distance),
             rumble: over.rumble.or(self.rumble),
             scaler: over.scaler.or(self.scaler),
+            buttons: over.buttons.or(self.buttons),
         }
     }
 
@@ -397,6 +446,14 @@ impl Settings {
         }
     }
 
+    /// F23's map: the physical button for each of the game's 12 buttons
+    /// (0 for its own).
+    pub fn button_map(&self) -> [u8; 12] {
+        let mut map = [0; 12];
+        map[..8].copy_from_slice(&self.buttons.unwrap_or(ORIGINAL_BUTTONS));
+        map
+    }
+
     /// The race resolution to apply, if any.
     pub fn race_resolution(&self) -> Option<(u32, u32)> {
         self.resolution.filter(|&r| r != ORIGINAL)
@@ -412,6 +469,7 @@ impl Settings {
             skip.push("F7");
             skip.push("F14");
             skip.push("F21");
+            skip.push("F23");
         }
         if self.race_resolution().is_none() {
             skip.push("F10");
@@ -469,6 +527,12 @@ impl Settings {
                     let v = value("--resolution")?;
                     s.resolution = Some(parse_resolution(&v).ok_or_else(|| {
                         format!("--resolution needs WIDTHxHEIGHT or original, not {v}\n\n{USAGE}")
+                    })?);
+                }
+                "--buttons" => {
+                    let v = value("--buttons")?;
+                    s.buttons = Some(parse_buttons(&v).ok_or_else(|| {
+                        format!("--buttons needs original, modern or 8 button numbers, not {v}\n\n{USAGE}")
                     })?);
                 }
                 "--rumble" => {
@@ -562,6 +626,25 @@ pub fn clear_key(text: &str, key: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn button_layouts() {
+        let parse = |v: &str| Settings::parse_file(&format!("buttons = {v}"));
+        assert_eq!(parse("modern").0.buttons, Some(MODERN_BUTTONS));
+        assert_eq!(parse("Original").0.buttons, Some(ORIGINAL_BUTTONS));
+        assert_eq!(
+            parse("3, 2,1,0,0,0,0,8").0.buttons,
+            Some([3, 2, 1, 0, 0, 0, 0, 8])
+        );
+        assert_eq!(parse("1,2,3").1.len(), 1, "eight numbers");
+        assert_eq!(parse("1,2,3,4,5,6,7,99").1.len(), 1, "up to 32");
+        assert_eq!(buttons_value(&MODERN_BUTTONS), "modern");
+        assert_eq!(buttons_value(&[3, 2, 1, 0, 0, 0, 0, 8]), "3,2,1,0,0,0,0,8");
+        let s = parse("modern").0;
+        assert_eq!(s.button_map()[..8], MODERN_BUTTONS);
+        assert_eq!(s.button_map()[8..], [0; 4]);
+        assert_eq!(Settings::default().button_map(), [0; 12]);
+    }
+
     fn args(a: &[&str]) -> Result<Settings, String> {
         Settings::parse_args(a.iter().map(|s| s.to_string()))
     }
@@ -596,7 +679,7 @@ mod tests {
         assert_eq!(s.draw_distance, Some(0x20000));
         assert_eq!(
             s.skipped_fixes(),
-            ["F6", "F7", "F14", "F21", "F18", "F19", "F20", "F22"]
+            ["F6", "F7", "F14", "F21", "F23", "F18", "F19", "F20", "F22"]
         );
         assert!(args(&["--widescreen", "maybe"]).is_err());
         let s = args(&["--fps-limit", "120", "--vsync", "off"]).unwrap();
@@ -666,7 +749,9 @@ mod tests {
         assert_eq!(saved.draw_distance, Some(0x18000));
         assert_eq!(
             saved.skipped_fixes(),
-            ["F6", "F7", "F14", "F21", "F11", "F18", "F19", "F20", "F22"]
+            [
+                "F6", "F7", "F14", "F21", "F23", "F11", "F18", "F19", "F20", "F22"
+            ]
         );
         let m = saved.merged(args(&["--game", r"C:\new"]).unwrap());
         assert_eq!(m.game, Some(PathBuf::from(r"C:\new")));

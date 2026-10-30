@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use cmr_launcher::config::Settings;
 use cmr_launcher::edition;
-use cmr_launcher::form::{self, Form, Look, Picture};
+use cmr_launcher::form::{self, Form, Layout, Look, Picture};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Key, Mesh,
     Rect, Sense, Shape, Stroke, StrokeKind, TextureHandle, Vec2, pos2, vec2,
@@ -152,6 +152,7 @@ enum Tab {
     Play,
     Picture,
     Controls,
+    Buttons,
 }
 
 /// What the game folder holds, checked when its text changes.
@@ -303,6 +304,7 @@ impl eframe::App for Window<'_> {
                 Tab::Play => self.play_tab(ui),
                 Tab::Picture => self.picture_tab(ui),
                 Tab::Controls => self.controls_tab(ui),
+                Tab::Buttons => self.buttons_tab(ui),
             }
         });
         let footer = Rect::from_min_max(
@@ -395,6 +397,7 @@ impl Window<'_> {
                 (Tab::Play, "Play"),
                 (Tab::Picture, "Picture"),
                 (Tab::Controls, "Controls"),
+                (Tab::Buttons, "Buttons"),
             ] {
                 let on = self.tab == tab;
                 let galley = ui.painter().layout_no_wrap(
@@ -487,7 +490,14 @@ impl Window<'_> {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for (look, title, note, recommended) in cards {
-                if look_card(ui, w, self.form.look == look, title, &note, recommended) {
+                if look_card(
+                    ui,
+                    vec2(w, 104.0),
+                    self.form.look == look,
+                    title,
+                    &note,
+                    recommended,
+                ) {
                     self.form.set_look(look, self.screen);
                     if look == Look::Custom {
                         self.tab = Tab::Picture;
@@ -568,7 +578,7 @@ impl Window<'_> {
             "Gamepad: triggers or right stick as pedals, Start pauses",
         );
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_top(|ui| {
             field(ui, "Rumble");
             chips(ui, &form::RUMBLES, &mut self.form.rumble);
         });
@@ -584,6 +594,54 @@ impl Window<'_> {
             &mut self.form.close_quits,
             "Closing the game window quits the game",
         );
+    }
+
+    fn buttons_tab(&mut self, ui: &mut egui::Ui) {
+        let cards = [
+            (
+                Layout::Original,
+                "Original 1998",
+                "As shipped in 1998.",
+                false,
+            ),
+            (Layout::Modern, "Modern", "Like today's racers.", true),
+            (Layout::Custom, "Custom", "Your own choice.", false),
+        ];
+        let gap = 12.0;
+        let w = (ui.available_width() - 2.0 * gap) / 3.0;
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for (layout, title, note, recommended) in cards {
+                if look_card(
+                    ui,
+                    vec2(w, 70.0),
+                    self.form.layout == layout,
+                    title,
+                    note,
+                    recommended,
+                ) {
+                    self.form.set_layout(layout);
+                }
+            }
+        });
+        ui.label(
+            egui::RichText::new(
+                "Names follow Xbox-style pads (A is button 1). The d-pad moves through the menus.",
+            )
+            .font(font(13.0))
+            .color(MUTED),
+        );
+        ui.spacing_mut().item_spacing.y = 4.0;
+        let options = &form::PAD_BUTTONS[..8];
+        for (k, name) in form::ACTIONS {
+            ui.horizontal_top(|ui| {
+                field(ui, name);
+                let mut button = self.form.pad_button(k);
+                chips(ui, options, &mut button);
+                self.form.set_pad_button(k, button);
+            });
+        }
     }
 
     fn footer(&mut self, ui: &mut egui::Ui, rect: Rect, ctx: &egui::Context) {
@@ -685,6 +743,8 @@ fn heading(ui: &mut egui::Ui, text: &str) {
     );
 }
 
+/// A row's label, as tall as a chip. Rows of labels and chips are
+/// top-aligned (`horizontal_top`), so both start on the same line.
 fn field(ui: &mut egui::Ui, text: &str) {
     let (rect, _) = ui.allocate_exact_size(vec2(118.0, 30.0), Sense::hover());
     ui.painter().text(
@@ -743,7 +803,7 @@ fn chips<T: PartialEq + Copy, S: AsRef<str>>(
     options: &[(T, S)],
     current: &mut T,
 ) {
-    ui.horizontal_wrapped(|ui| {
+    ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         for (value, label) in options {
             let on = *current == *value;
@@ -824,13 +884,14 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool, text: &str) {
 /// One of the three looks; true when clicked.
 fn look_card(
     ui: &mut egui::Ui,
-    w: f32,
+    size: Vec2,
     on: bool,
     title: &str,
     note: &str,
     recommended: bool,
 ) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, 104.0), Sense::click());
+    let w = size.x;
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let p = ui.painter();
     let fill = if on {
         PANEL

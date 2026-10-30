@@ -64,6 +64,40 @@ fn landscape((a, b): (u32, u32)) -> Option<(u32, u32)> {
     (w > 640 && h > 480 && w <= 7680 && h <= 4320).then_some((w, h))
 }
 
+/// The pad button layouts (see `config::MODERN_BUTTONS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    Original,
+    Modern,
+    Custom,
+}
+
+/// The game's pad buttons the window offers, by index (0-based), in the
+/// order shown.
+pub const ACTIONS: [(usize, &str); 7] = [
+    (4, "Handbrake"),
+    (5, "Gear up"),
+    (3, "Gear down"),
+    (2, "Change view"),
+    (7, "Pause"),
+    (0, "Select (menus)"),
+    (1, "Back (menus)"),
+];
+
+/// Pad buttons by their WinMM number, named as on Xbox-style pads.
+pub const PAD_BUTTONS: [(u8, &str); 10] = [
+    (1, "A"),
+    (2, "B"),
+    (3, "X"),
+    (4, "Y"),
+    (5, "LB"),
+    (6, "RB"),
+    (7, "Back"),
+    (8, "Start"),
+    (9, "LS"),
+    (10, "RS"),
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Look {
     Original,
@@ -84,6 +118,9 @@ pub struct Form {
     pub gamepad_axes: bool,
     pub close_quits: bool,
     pub scaler: Scaler,
+    /// For the game's pad buttons 1..8, the physical button (0: its own).
+    pub buttons: [u8; 8],
+    pub layout: Layout,
 }
 
 /// Choices offered for each picture setting, with their labels.
@@ -183,6 +220,47 @@ impl Form {
             gamepad_axes: s.gamepad_axes != Some(false),
             close_quits: s.close_quits != Some(false),
             scaler: s.scaler.unwrap_or(Scaler::Nearest),
+            buttons: s.buttons.unwrap_or(config::ORIGINAL_BUTTONS),
+            layout: Form::layout_of(&s.buttons.unwrap_or(config::ORIGINAL_BUTTONS)),
+        }
+    }
+
+    /// The layout these buttons make.
+    pub fn layout_of(buttons: &[u8; 8]) -> Layout {
+        match *buttons {
+            config::ORIGINAL_BUTTONS => Layout::Original,
+            config::MODERN_BUTTONS => Layout::Modern,
+            _ => Layout::Custom,
+        }
+    }
+
+    /// Picks a layout; Custom keeps the current buttons to edit.
+    pub fn set_layout(&mut self, layout: Layout) {
+        self.layout = layout;
+        match layout {
+            Layout::Original => self.buttons = config::ORIGINAL_BUTTONS,
+            Layout::Modern => self.buttons = config::MODERN_BUTTONS,
+            Layout::Custom => {}
+        }
+    }
+
+    /// The physical button that presses the game's button `k` (0-based).
+    pub fn pad_button(&self, k: usize) -> u8 {
+        match self.buttons[k] {
+            0 => k as u8 + 1,
+            b => b,
+        }
+    }
+
+    /// Sets the physical button for the game's button `k`.
+    pub fn set_pad_button(&mut self, k: usize, button: u8) {
+        if self.pad_button(k) != button {
+            // Spell out every button, so the others keep what they show.
+            for i in 0..8 {
+                self.buttons[i] = self.pad_button(i);
+            }
+            self.buttons[k] = button;
+            self.layout = Form::layout_of(&self.buttons);
         }
     }
 
@@ -243,6 +321,11 @@ impl Form {
         put("gamepad_axes", Some(self.gamepad_axes.to_string()));
         put("close_quits", Some(self.close_quits.to_string()));
         put("scaler", Some(self.scaler.key().into()));
+        put(
+            "buttons",
+            (self.buttons != config::ORIGINAL_BUTTONS)
+                .then(|| config::buttons_value(&self.buttons)),
+        );
         t
     }
 }
@@ -339,6 +422,29 @@ mod tests {
         assert_eq!(back, f);
         let (_, warnings) = Settings::parse_file(&saved);
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn button_layouts_round_trip_and_custom_edits_spell_out_every_button() {
+        let mut f = form(config::TEMPLATE);
+        assert_eq!(f.layout, Layout::Original);
+        assert_eq!(f.pad_button(4), 5, "handbrake on its own button 5");
+        f.set_layout(Layout::Modern);
+        assert_eq!(form(&f.save(config::TEMPLATE)).layout, Layout::Modern);
+        assert_eq!(f.pad_button(4), 1, "modern handbrake on A");
+
+        let mut g = form(config::TEMPLATE);
+        g.set_pad_button(2, 3); // change view on X: what it is already
+        assert_eq!(g.layout, Layout::Original, "no change");
+        g.set_pad_button(2, 4); // change view on Y
+        assert_eq!(g.layout, Layout::Custom);
+        assert_eq!(g.buttons, [1, 2, 4, 4, 5, 6, 7, 8]);
+        let saved = g.save(config::TEMPLATE);
+        assert!(saved.contains("buttons = 1,2,4,4,5,6,7,8"));
+        assert_eq!(form(&saved).buttons, g.buttons);
+        // Back to the original removes the key.
+        g.set_layout(Layout::Original);
+        assert_eq!(Settings::parse_file(&g.save(&saved)).0.buttons, None);
     }
 
     #[test]

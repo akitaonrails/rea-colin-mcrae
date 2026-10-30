@@ -18,6 +18,7 @@ pub mod canvas;
 pub mod easing;
 pub mod mipmap;
 pub mod pacing;
+pub mod pad;
 pub mod present;
 pub mod sections;
 pub mod xinput;
