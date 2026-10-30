@@ -9,6 +9,8 @@ source. Add a row before bundling anything new.
 | --- | --- | --- |
 | `sha2` and its RustCrypto dependencies | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
 | `windows-sys` | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
+| `eframe`, `egui` and their dependencies (`winit`, `glutin`, `glow`, `ab_glyph`, …): the settings window | MIT OR Apache-2.0 (dependencies: MIT, Apache-2.0, Zlib, BSD; see `cargo tree`) | https://github.com/emilk/egui |
+| `jpeg-decoder` | MIT OR Apache-2.0 | https://github.com/image-rs/jpeg-decoder |
 | Rust standard library | MIT OR Apache-2.0 | https://github.com/rust-lang/rust |
 | MinGW-w64 runtime (static parts linked by the GNU target) | ZPL-2.1 / public domain | https://www.mingw-w64.org |
 
@@ -16,11 +18,12 @@ source. Add a row before bundling anything new.
 
 None yet. Candidates and their state are in `docs/THIN_APP_PLAN.md`.
 
-## Linux launcher artwork
+## Settings window artwork and fonts (compiled into CMRLauncher.exe)
 
 | File | Licence | Source |
 | --- | --- | --- |
-| `linux/quickshell-launcher/img/portrait.jpg` — Colin McRae, photo by Carolyn Williams (resized) | CC BY 2.0 | https://commons.wikimedia.org/wiki/File:Colin_Mcrae_crop.jpg |
+| `crates/cmr-launcher/assets/portrait.jpg` — Colin McRae, photo by Carolyn Williams (resized) | CC BY 2.0 (credited in the window) | https://commons.wikimedia.org/wiki/File:Colin_Mcrae_crop.jpg |
+| `crates/cmr-launcher/assets/fonts/Barlow-*.ttf`, `BarlowCondensed-*.ttf` | SIL OFL 1.1 (`assets/fonts/OFL.txt`) | https://github.com/jpt/barlow |
 
 ## Compiled into cmrhooks.dll
 

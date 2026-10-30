@@ -18,7 +18,7 @@ never changed: the launcher works on its own private copy.
 *A full stage in New Zealand at high resolution and 16:9, with the HUD in
 the corners. Click to watch (3½ minutes, with sound).*
 
-![The Linux launcher](docs/images/launcher.png)
+![The settings window](docs/images/launcher.png)
 
 ## What it adds to the original game
 
@@ -58,7 +58,7 @@ the corners. Click to watch (3½ minutes, with sound).*
 
 - Your saves live in a folder you choose, outside the game.
 - Your game folder is never modified.
-- One settings file with comments, and an optional Linux launcher window.
+- A settings window, the same on Windows and Linux, and a commented settings file.
 
 This project contains **no game files**. You need your own copy of the game.
 
@@ -101,22 +101,19 @@ unpack it anywhere, for example into your game folder. It contains:
 
 - `CMRLauncher.exe` — the launcher
 - `cmrhooks.dll` — needed for the HUD at high resolutions; keep it next to the launcher
-- `linux/` — the Linux helper and desktop launcher
+- `linux/` — `cmr-play`, the Linux helper for Wine and gamescope
 
 ## 3. Play on Windows
 
-1. Unpack the zip into your game folder (next to `Rally.exe`).
-2. Double-click `CMRLauncher.exe`.
+1. Unpack the zip anywhere, for example into your game folder.
+2. Double-click `CMRLauncher.exe`. The settings window opens.
+3. If the game folder is empty, press **Browse…** and pick the folder with
+   your `Rally.exe`; the window shows which version it found.
+4. Choose a look: **Original 1998**, **Enhanced** (fitted to your screen)
+   or **Custom**, then press **Play** (or Enter).
 
-That's it: the first start takes a few seconds while the launcher makes its
-private copy of the game. If you unpacked the zip somewhere else, start it once
-from a command prompt with your game folder:
-
-```text
-CMRLauncher.exe --game "C:\Games\Colin McRae Rally"
-```
-
-The folder is remembered, so from then on a double-click is enough.
+The first start takes a few seconds while the launcher makes its private copy
+of the game. Your choices are remembered for next time.
 
 > Windows support is new: the launcher has so far been tested under Wine and
 > Proton. If something goes wrong on Windows, please open an issue with your
@@ -133,14 +130,9 @@ The folder is remembered, so from then on a double-click is enough.
    **Force the use of a specific Steam Play compatibility tool** and choose
    **GE-Proton** (tested with GE-Proton 11; Proton Experimental should work
    too).
-4. In **Properties → General → Launch options**, tell it where your game is
-   (Linux paths are written with `Z:` in front):
-
-   ```text
-   %command% --game "Z:/home/you/Games/Colin McRae Rally"
-   ```
-
-5. Press **Play**. The folder is remembered after the first start.
+4. Press **Play**. The settings window opens: press **Browse…** and pick
+   your game folder (your Linux files are under drive `Z:`), choose a look
+   and press **Play**. Everything is remembered for next time.
 
 ### With Wine and gamescope
 
@@ -149,16 +141,11 @@ installed, the `linux/cmr-play` script runs the game in its own correctly
 sized screen:
 
 ```sh
-cd ~/Games/cmr-launcher
-# once: tell the launcher where your game is
-WINEPREFIX=~/.local/share/cmr-launcher/prefix wine CMRLauncher.exe --game "Z:/home/you/Games/Colin McRae Rally"
-# every time
-linux/cmr-play
+~/Games/cmr-launcher/linux/cmr-play
 ```
 
-On desktops with [Quickshell](https://quickshell.org) you can use the
-launcher shown above instead (`qs -p linux/quickshell-launcher`): pick your
-game folder, press **Check**, choose your options and press **Start**. See
+It shows the settings window first (with one more choice, the scaler: how
+gamescope enlarges the picture), then starts the game in gamescope. See
 [linux/README.md](linux/README.md).
 
 ## 5. Settings
@@ -166,9 +153,14 @@ game folder, press **Check**, choose your options and press **Start**. See
 Everything is optional; the defaults give you the original game, with
 working gamepads and a window that closes properly.
 
-Settings live in a text file, `launcher.cfg`, created with comments the
-first time the launcher runs (see [Where things are](#where-things-are)).
-Open it in any text editor; lines starting with `#` are switched off.
+The settings window covers all of them: **Play** has the game folder, the
+look and the saves folder, **Picture** each picture setting and
+**Controls** the gamepad options. They are kept in a text file,
+`launcher.cfg` (see [Where things are](#where-things-are)), which you can
+also edit by hand; lines starting with `#` are switched off. Starting
+`CMRLauncher.exe` with any option (for example `--resolution 1920x1080`)
+skips the window and plays straight away; `--no-window` does so with the
+saved settings.
 
 | Setting | What it does | Default |
 | --- | --- | --- |

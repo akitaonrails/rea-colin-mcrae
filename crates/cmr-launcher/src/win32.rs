@@ -108,6 +108,52 @@ pub fn stop_rumble() {
     }
 }
 
+/// The main screen's size in pixels, if known.
+pub fn screen_size() -> Option<(u32, u32)> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    // SAFETY: plain metric queries.
+    let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+    (w > 0 && h > 0).then_some((w as u32, h as u32))
+}
+
+/// Asks for a folder with the system's folder picker.
+pub fn pick_folder(title: &str) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree,
+    };
+    use windows_sys::Win32::UI::Shell::{
+        BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS, BROWSEINFOW, SHBrowseForFolderW,
+        SHGetPathFromIDListW,
+    };
+    let title = wide(title);
+    let mut name = [0u16; 260];
+    // SAFETY: the structure and buffers live across the modal call; the
+    // returned item list is freed with the COM allocator.
+    unsafe {
+        CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
+        let info = BROWSEINFOW {
+            hwndOwner: std::ptr::null_mut(),
+            pidlRoot: std::ptr::null_mut(),
+            pszDisplayName: name.as_mut_ptr(),
+            lpszTitle: title.as_ptr(),
+            ulFlags: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE,
+            lpfn: None,
+            lParam: 0,
+            iImage: 0,
+        };
+        let list = SHBrowseForFolderW(&info);
+        if list.is_null() {
+            return None;
+        }
+        let mut path = [0u16; 1024];
+        let ok = SHGetPathFromIDListW(list, path.as_mut_ptr()) != 0;
+        CoTaskMemFree(list as *const _);
+        let n = path.iter().position(|&c| c == 0).unwrap_or(0);
+        (ok && n > 0).then(|| std::ffi::OsString::from_wide(&path[..n]).into())
+    }
+}
+
 /// True when running under Wine or Proton.
 pub fn is_wine() -> bool {
     unsafe {

@@ -40,6 +40,37 @@ pub struct Settings {
     pub smooth_distance: Option<bool>,
     /// Gamepad rumble strength in percent (fix F22); 0 or unset: none.
     pub rumble: Option<u32>,
+    /// Linux only: how `cmr-play`'s gamescope enlarges the picture.
+    pub scaler: Option<Scaler>,
+}
+
+/// `scaler` (Linux, gamescope's filter): sharp pixels, sharp pixels of
+/// even size, FSR, or plain smoothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scaler {
+    Nearest,
+    Pixel,
+    Fsr,
+    Linear,
+}
+
+impl Scaler {
+    pub const ALL: [Scaler; 4] = [Scaler::Nearest, Scaler::Pixel, Scaler::Fsr, Scaler::Linear];
+
+    /// The value in launcher.cfg (and gamescope's `-F` name).
+    pub fn key(self) -> &'static str {
+        match self {
+            Scaler::Nearest => "nearest",
+            Scaler::Pixel => "pixel",
+            Scaler::Fsr => "fsr",
+            Scaler::Linear => "linear",
+        }
+    }
+
+    fn parse(v: &str) -> Option<Scaler> {
+        let v = v.trim().to_ascii_lowercase();
+        Scaler::ALL.into_iter().find(|s| s.key() == v)
+    }
 }
 
 /// `texture_filter`: the game's own filtering, smooth (mipmaps and
@@ -140,6 +171,11 @@ gamepad_axes = true
 # Gamepad rumble on impacts, as a strength from 1 to 100 (percent); off or
 # unset for none. Needs an XInput pad (Xbox-style; most pads under Steam).
 #rumble = 60
+
+# Linux (cmr-play) only: how gamescope enlarges the picture. nearest (sharp
+# pixels), pixel (sharp, all pixels the same size), fsr (smooth, then
+# sharpened) or linear (smooth).
+#scaler = nearest
 ";
 
 pub const USAGE: &str = concat!(
@@ -164,7 +200,12 @@ CMRLauncher [options]
   --gamepad-axes on|off    triggers/right stick as pedals, Start pauses
   --close-quits on|off     closing the window quits the game
 
-These override launcher.cfg for one run (only --game is remembered).
+These override launcher.cfg for one run (only --game is remembered). Without
+options the settings window opens first.
+
+  --no-window              play with the saved settings, no window
+  --settings [--linux]     only the settings window (exit 0: play, 3: closed;
+                           --linux adds the gamescope scaler, for cmr-play)
 
 CMRLauncher --check [--game <folder>]
   checks the game folder and tells you whether its Rally.exe is supported
@@ -296,6 +337,10 @@ impl Settings {
                     Some(f) => s.texture_filter = Some(f),
                     None => bad("texture_filter needs original, smooth or sharp, not"),
                 },
+                "scaler" => match Scaler::parse(value) {
+                    Some(f) => s.scaler = Some(f),
+                    None => bad("scaler needs nearest, pixel, fsr or linear, not"),
+                },
                 "vsync" => match parse_bool(value) {
                     Some(b) => s.vsync = Some(b),
                     None => bad("vsync needs true or false, not"),
@@ -327,6 +372,7 @@ impl Settings {
             texture_filter: over.texture_filter.or(self.texture_filter),
             smooth_distance: over.smooth_distance.or(self.smooth_distance),
             rumble: over.rumble.or(self.rumble),
+            scaler: over.scaler.or(self.scaler),
         }
     }
 
@@ -492,6 +538,22 @@ pub fn set_key(text: &str, key: &str, value: &str) -> String {
     }
     if !done {
         out.push_str(&format!("{key} = {value}\n"));
+    }
+    out
+}
+
+/// Turns `key` off in a settings file: its active line becomes a comment
+/// (`#key = `), so the default applies; other lines are kept.
+pub fn clear_key(text: &str, key: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    for line in text.lines() {
+        let t = line.trim();
+        if !t.starts_with('#') && t.split_once('=').is_some_and(|(k, _)| k.trim() == key) {
+            out.push_str(&format!("#{key} ="));
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
     }
     out
 }
