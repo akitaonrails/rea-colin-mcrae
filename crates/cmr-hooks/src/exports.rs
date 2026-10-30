@@ -60,6 +60,10 @@ impl Game {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetCurrentThreadId() -> u32;
+    fn GetCurrentThread() -> *mut u8;
+    fn GetCurrentProcess() -> *mut u8;
+    fn GetProcessAffinityMask(process: *mut u8, mask: *mut usize, system: *mut usize) -> i32;
+    fn SetThreadAffinityMask(thread: *mut u8, mask: usize) -> usize;
     fn QueryPerformanceCounter(count: *mut i64) -> i32;
     fn QueryPerformanceFrequency(freq: *mut i64) -> i32;
     fn Sleep(ms: u32);
@@ -147,6 +151,7 @@ fn canvas() -> Option<Canvas> {
 /// main thread): keeps the race's virtual screen in place.
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_update_begin() {
+    share_core(&raw mut UPDATE_THREAD);
     install_crash_filter();
     diag_update();
     hud().sections.update(&mut Game);
@@ -207,6 +212,12 @@ struct Diag {
     last_frame: i64,
     frame_max: i64,
     frames: u32,
+    /// Rumble: impacts seen, the strongest (Q16), the fastest motor speed
+    /// sent and the sends XInput refused.
+    impacts: u32,
+    severity_max: i32,
+    motor_max: u16,
+    send_errors: u32,
 }
 
 static mut DIAG: Diag = Diag::ZERO;
@@ -283,7 +294,15 @@ fn diag_frame() {
         .num((d.frames as i64 * freq / (t - d.window).max(1)) as u32)
         .text(b", frame max ")
         .num(ms(d.frame_max))
-        .text(b" ms, state ")
+        .text(b" ms, impacts ")
+        .num(d.impacts)
+        .text(b" max ")
+        .num((d.severity_max.max(0) as u32 * 100) >> 16)
+        .text(b"%, motor max ")
+        .num(u32::from(d.motor_max) * 100 / 65535)
+        .text(b"%, send errors ")
+        .num(d.send_errors)
+        .text(b", state ")
         .num(Game.state() as u32)
         .text(b"\r\n");
     if let Some(f) = d.file {
@@ -319,6 +338,10 @@ impl Diag {
         last_frame: 0,
         frame_max: 0,
         frames: 0,
+        impacts: 0,
+        severity_max: 0,
+        motor_max: 0,
+        send_errors: 0,
     };
 }
 
@@ -754,11 +777,48 @@ pub extern "stdcall" fn cmr_rumble(severity: i32, settings: *const PresentSettin
     // and update threads' only shared write, a few floats.
     unsafe {
         let strength = (*settings).rumble;
+        if let Some(d) = diag() {
+            d.impacts += 1;
+            d.severity_max = d.severity_max.max(severity);
+        }
         if strength > 0 {
             (*addr_of_mut!(RUMBLE)).impact(severity, strength, now());
         }
     }
 }
+
+/// The game's two threads, its race updates (a multimedia timer, 25 a
+/// second) and its drawing (the main thread), were written for one-core
+/// PCs, where they never ran at the same moment: an update interrupted
+/// the drawing and finished before it went on. On several cores they run
+/// side by side, and the drawing can read the car and camera halfway
+/// through an update (a frame with the camera somewhere else). Both are
+/// kept on one core, as on the PCs the game was made for: nothing waits on
+/// a lock and an update still runs when it is due, taking over the core
+/// for its millisecond. Wine's renderer threads stay on the other cores.
+/// Each thread is pinned once (a new timer thread on its first update).
+fn share_core(pinned: *mut u32) {
+    // SAFETY: plain Win32 calls; each thread only writes its own slot.
+    unsafe {
+        let me = GetCurrentThreadId();
+        if *pinned == me {
+            return;
+        }
+        *pinned = me;
+        let (mut process, mut system) = (0usize, 0usize);
+        if GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) == 0
+            || process.count_ones() < 2
+        {
+            return;
+        }
+        // The highest core the process may use (core 0 takes most interrupts).
+        let core = 1usize << (usize::BITS - 1 - process.leading_zeros());
+        SetThreadAffinityMask(GetCurrentThread(), core);
+    }
+}
+
+static mut UPDATE_THREAD: u32 = 0;
+static mut DRAW_THREAD: u32 = 0;
 
 /// The crash handler that was there before ours (the game's, or none).
 static mut PREVIOUS_FILTER: Option<ExceptionFilter> = None;
@@ -888,8 +948,12 @@ fn update_rumble(settings: &PresentSettings) {
         let sent = &mut *addr_of_mut!(MOTORS);
         if motors != *sent {
             let mut v = [motors.0, motors.1];
-            set(0, &mut v);
+            let rc = set(0, &mut v);
             *sent = motors;
+            if let Some(d) = diag() {
+                d.motor_max = d.motor_max.max(motors.0);
+                d.send_errors += u32::from(rc != 0);
+            }
         }
     }
 }
@@ -940,6 +1004,7 @@ pub extern "stdcall" fn cmr_present(display: *mut u8, settings: *const PresentSe
     if display.is_null() || settings.is_null() {
         return 0;
     }
+    share_core(&raw mut DRAW_THREAD);
     // SAFETY: the launcher's settings block in the fix memory.
     let settings = unsafe { &*settings };
     diag_frame();

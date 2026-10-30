@@ -201,7 +201,7 @@ ourselves and apply it in memory; the file on disk is never changed.
 | F19 | `0x4a9fe0` (device can filter) | some prefer the unfiltered look | answers "can't filter": nearest everywhere; `texture_filter = sharp` | **verified** headless |
 | F20 | `0x435ffe`, `0x436018` (far plane reads in the projection) | section changes switch the view distance at once: scenery pops in or out | `cmr_ease_far` eases the value (half the gap per 0.33 s, snaps after stalls); `smooth_distance` | **verified** headless |
 | F21 | `0x449580` (in-race control map, wrapped) | a pad's triggers are one combined axis through WinMM: both pressed cancel out | `cmr_pedals` adds the XInput triggers as separate throttle and brake; with `gamepad_axes` | **verified** headless |
-| F22 | `0x469e80` (impact sound) | no rumble | `cmr_rumble` by impact severity, fading; `rumble` (percent) | **verified** headless |
+| F22 | `0x469e80` (impact sound) | no rumble | `cmr_rumble` by impact severity, fading; `rumble` (percent); a felt minimum (30 %) and a square-root curve, as most impacts are mild (21–42 %) and pad motors barely turn below a third | **verified** headless |
 | F23 | `0x49cef6` (pad buttons in the joystick read) | buttons fixed to their 1998 order; d-pad ignored | `cmr_pad_buttons`: the `buttons` layout, d-pad as directions | **verified** headless |
 | F24 | `0x49cb90` (RUN JOYSTICK PANEL) | under Wine the game waits forever for a hidden panel | the item does nothing; applied only under Wine | applied (not exercised) |
 | F25 | `0x4a6e9b` (depth buffer request) | 16-bit depth: with a longer view, distant hills flicker through each other | asks for 24-bit depth (F26 reads it); with `draw_distance` | race at 3x distance renders cleanly (headless); effect on the reported Greece mountains to confirm |
@@ -310,7 +310,8 @@ Skipped for now, to revisit later:
   copying to the window. Needs a Windows machine to build and test.
 - C3, C4: the in-game Button Setup loops back with no exit and its capture
   can record a direction; the launcher's Buttons tab covers remapping.
-- R17: a rare camera jump for about a second (owner: twice to the top of the car, once to its right side), then back; seen about once in two sessions.
+- R17: a rare camera jump for about a second (owner: to the top of the car, once to its right side), then back. Likely the update thread and the drawing running side by side on a multi-core CPU (the game was written for one core); since 0.2.1 both are kept on one core (`share_core`). Owner to confirm.
+- The far hill seen as floating trees and road edges with no ground (owner screenshot, a green stage at 3x distance): not reproduced on Greece stage 1; the in-game Track and Object distance options are equal (2). Needs the exact stage.
 
 ### Probes
 

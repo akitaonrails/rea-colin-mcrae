@@ -80,11 +80,33 @@ impl Rumble {
     }
 }
 
+/// Below this a pad's motors barely turn: any rumble starts here.
+const FELT: f32 = 0.3;
+
 /// The two motors' speeds for a level: the heavy (low-frequency) motor
-/// carries the impact, the light one adds a little bite.
+/// carries the impact, the light one adds a little bite. Most impacts are
+/// mild (a fifth to a half of the strongest), and pad motors don't spin
+/// below about a third, so the speed starts at a felt minimum and grows
+/// with the square root of the level.
 pub fn motors(level: f32) -> (u16, u16) {
     let l = level.clamp(0.0, 1.0);
-    ((l * 65535.0) as u16, (l * 0.6 * 65535.0) as u16)
+    if l <= 0.0 {
+        return (0, 0);
+    }
+    let heavy = FELT + (1.0 - FELT) * sqrt(l);
+    ((heavy * 65535.0) as u16, (heavy * 0.6 * 65535.0) as u16)
+}
+
+/// Square root without `std` (a few Newton steps; 0..=1 here).
+fn sqrt(x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let mut r = if x < 0.25 { 0.25 } else { x };
+    for _ in 0..6 {
+        r = 0.5 * (r + x / r);
+    }
+    r
 }
 
 #[cfg(test)]
@@ -122,5 +144,18 @@ mod tests {
         assert_eq!(motors(0.0), (0, 0));
         assert_eq!(motors(1.0), (65535, 39321));
         assert_eq!(motors(2.0), (65535, 39321));
+        // A mild impact (21 %) at Medium (60 %) is felt: about 55 %, not 13 %.
+        let (heavy, light) = motors(0.21 * 0.6);
+        assert!((0.52..=0.58).contains(&(heavy as f32 / 65535.0)), "{heavy}");
+        assert!(light < heavy);
+        // The faintest rumble still turns the motor.
+        assert!(motors(0.001).0 as f32 / 65535.0 >= FELT);
+    }
+
+    #[test]
+    fn square_root() {
+        for x in [0.01f32, 0.1, 0.25, 0.5, 0.9, 1.0] {
+            assert!((sqrt(x) - x.sqrt()).abs() < 1e-4, "{x}");
+        }
     }
 }
