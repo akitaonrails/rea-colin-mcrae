@@ -1,6 +1,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(windows)]
+mod ui;
+#[cfg(windows)]
 mod win32;
 
 #[cfg(windows)]
@@ -31,7 +33,7 @@ mod app {
     use cmr_launcher::config::{self, Settings};
     use cmr_launcher::{edition, fill_data, fixes, pe, prepare, registry, runtime};
 
-    use crate::win32;
+    use crate::{ui, win32};
 
     const EXE: &str = "Rally.exe";
     const HOOKS_DLL: &str = "cmrhooks.dll";
@@ -94,6 +96,17 @@ mod app {
         ))
     }
 
+    /// `--settings` exit codes for cmr-play: closed without playing, or no
+    /// window could be shown (play with the saved settings).
+    const WINDOW_CLOSED: u32 = 3;
+    const WINDOW_UNAVAILABLE: u32 = 4;
+
+    fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
+        let found = args.iter().any(|a| a == flag);
+        args.retain(|a| a != flag);
+        found
+    }
+
     pub fn run() -> Result<u32, String> {
         let mut args = std::env::args().skip(1).peekable();
         if args.peek().map(String::as_str) == Some("--controllers") {
@@ -112,13 +125,42 @@ mod app {
         }
         log_line(concat!("CMRLauncher ", env!("CARGO_PKG_VERSION")));
         let settings_path = settings_path();
+        let mut cli: Vec<String> = std::env::args().skip(1).collect();
+        // The settings window: shown when started without options (a
+        // double click), or alone with --settings (Linux: cmr-play shows it,
+        // then starts the game in gamescope). Any other option skips it.
+        let settings_only = take_flag(&mut cli, "--settings");
+        let linux = take_flag(&mut cli, "--linux");
+        let no_window = take_flag(&mut cli, "--no-window");
+        if settings_only || (cli.is_empty() && !no_window) {
+            let text =
+                fs::read_to_string(&settings_path).unwrap_or_else(|_| config::TEMPLATE.into());
+            match ui::show(&settings_path, &text, linux) {
+                Ok(ui::Outcome::Play) => {
+                    log_line("settings window: play");
+                    if settings_only {
+                        return Ok(0);
+                    }
+                }
+                Ok(ui::Outcome::Closed) => {
+                    log_line("settings window: closed");
+                    return Ok(if settings_only { WINDOW_CLOSED } else { 0 });
+                }
+                Err(e) => {
+                    // No window possible (no OpenGL): play with the saved settings.
+                    log_line(&format!("settings window unavailable: {e}"));
+                    if settings_only {
+                        return Ok(WINDOW_UNAVAILABLE);
+                    }
+                }
+            }
+        }
         let existing = fs::read_to_string(&settings_path).ok();
         let file_text = existing.as_deref().unwrap_or(config::TEMPLATE);
         let (saved, warnings) = Settings::parse_file(file_text);
         for w in &warnings {
             log_line(&format!("warning: {w}"));
         }
-        let mut cli: Vec<String> = std::env::args().skip(1).collect();
         let check_only = cli.iter().any(|a| a == "--check");
         cli.retain(|a| a != "--check");
         let settings = saved.clone().merged(Settings::parse_args(cli)?);

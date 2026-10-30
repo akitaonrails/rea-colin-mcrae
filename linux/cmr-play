@@ -1,15 +1,14 @@
 #!/bin/sh
 # Plays Colin McRae Rally on Linux through Wine and gamescope.
 #
-#   cmr-play                  start the game with the saved settings
-#   cmr-play get              print the current settings (key=value)
-#   cmr-play play KEY=VALUE…  save settings, then start the game
-#   cmr-play check FOLDER     is this a supported game folder?
-#   cmr-play stop | status
+#   cmr-play           show the settings window, then start the game
+#   cmr-play --play    start the game with the saved settings (no window)
+#   cmr-play stop      end the game
+#   cmr-play status    running or idle
 #
-# The game's settings (resolution, widescreen, saves, …) are kept in
-# launcher.cfg inside the Wine prefix, exactly as on Windows. The scaler
-# (how gamescope enlarges the picture) is kept in ~/.config/cmr-launcher.
+# The settings window is CMRLauncher.exe's own (the same as on Windows),
+# shown through Wine before gamescope starts. Settings live in launcher.cfg
+# inside the Wine prefix, the gamescope scaler included.
 #
 # Optional environment:
 #   CMR_PREFIX    Wine prefix       (default ~/.local/share/cmr-launcher/prefix)
@@ -37,14 +36,6 @@ for d in "$PREFIX"/drive_c/users/*/AppData/Local/CMRLauncher; do
 done
 [ -z "$CFG" ] && CFG=$PREFIX/drive_c/users/$USER/AppData/Local/CMRLauncher/launcher.cfg
 
-set_key() { # key value; an empty value comments the key out
-  mkdir -p "$(dirname "$CFG")"; [ -f "$CFG" ] || : > "$CFG"
-  # Escape \ & | for sed (Windows paths have backslashes).
-  v=$(printf '%s' "$2" | sed 's/[\\&|]/\\&/g')
-  if [ -z "$2" ]; then sed -i "s|^$1 *=.*|#$1 = |" "$CFG"
-  elif grep -q "^#\?$1 *=" "$CFG"; then sed -i "s|^#\?$1 *=.*|$1 = $v|" "$CFG"
-  else printf '%s = %s\n' "$1" "$2" >> "$CFG"; fi
-}
 get_key() { [ -f "$CFG" ] && sed -n "s|^$1 *= *||p" "$CFG" | tail -1; }
 LOCK=$STATE/running.pid
 # Running, or still starting: Rally.exe exists, or the gamescope session we
@@ -54,45 +45,18 @@ running() {
   [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK")" 2>/dev/null
 }
 
-# Supported Rally.exe versions (SHA-256), as in crates/cmr-launcher/src/edition.rs.
-edition() {
-  case "$1" in
-    0eb6ea9652219b9a35c0a6134bf0cdf316dce21215b724cdfc10ba85eb95982a) echo "Official European v1.5" ;;
-    46500c8e22ce3e943b6855eca63ae9288261162347ca76fa36cad77cbb19c0bb) echo "European v1.5 (community pack)" ;;
-    *) return 1 ;;
-  esac
-}
-
-# Linux folder -> the Z:\ path Wine shows it as; Z:/... and C:/... are kept.
-to_wine() {
-  case "$1" in
-    [A-Za-z]:*) echo "$1" ;;
-    *) echo "Z:$(readlink -f "$1")" ;;
-  esac
-}
-
-check() {
-  dir=$1
-  case "$dir" in Z:*|z:*) dir=${dir#??} ;; esac
-  [ -d "$dir" ] || { echo "no such folder"; return 1; }
-  exe=$(find "$dir" -maxdepth 1 -iname rally.exe | head -1)
-  [ -n "$exe" ] || { echo "no Rally.exe in this folder"; return 1; }
-  sum=$(sha256sum "$exe" | cut -d' ' -f1)
-  if name=$(edition "$sum"); then echo "ok: $name"; else echo "unsupported Rally.exe (SHA-256 $sum)"; return 1; fi
-}
-
 start() {
   if [ -z "$LAUNCHER" ] || [ ! -f "$LAUNCHER" ]; then
     echo "CMRLauncher.exe not found next to cmr-play (or set CMR_LAUNCHER)"; exit 1
   fi
   res=$(get_key resolution); W=640; H=480
   if [ -n "$res" ]; then W=${res%x*}; H=${res#*x}; fi
-  F=$(cat "$STATE/scaler" 2>/dev/null); F=${F:-nearest}
+  F=$(get_key scaler); F=${F:-nearest}
   inner=$STATE/inner.sh
   cat > "$inner" <<INNER
 #!/bin/sh
 trap 'wineserver -k; exit' INT TERM HUP
-wine '$LAUNCHER'
+wine '$LAUNCHER' --no-window
 sleep 3; while pgrep -x Rally.exe >/dev/null; do sleep 1; done
 wineserver -k
 INNER
@@ -106,36 +70,30 @@ INNER
   echo $! > "$LOCK"
 }
 
-case "${1:-start}" in
-  get)
-    for k in resolution widescreen draw_distance fps_limit vsync texture_filter smooth_distance rumble close_quits gamepad_axes saves; do
-      echo "$k=$(get_key "$k")"
-    done
-    g=$(get_key game); case "$g" in Z:*|z:*) g=${g#??} ;; esac
-    echo "game=$g"
-    echo "scaler=$(cat "$STATE/scaler" 2>/dev/null)" ;;
+# The settings window; its exit code says what to do next.
+settings() {
+  $RUN env WINEPREFIX="$PREFIX" wine "$LAUNCHER" --settings --linux 2>/dev/null
+  case $? in
+    0|4) return 0 ;;  # Play pressed, or no window could be shown
+    *) return 1 ;;    # closed
+  esac
+}
+
+case "${1:-}" in
+  "")
+    if running; then echo "already running"; exit 0; fi
+    if [ -z "$LAUNCHER" ] || [ ! -f "$LAUNCHER" ]; then
+      echo "CMRLauncher.exe not found next to cmr-play (or set CMR_LAUNCHER)"; exit 1
+    fi
+    settings || exit 0
+    start ;;
+  --play|start)
+    if running; then echo "already running"; else start; fi ;;
   status) if running; then echo running; else echo idle; fi ;;
-  check) check "${2:-}" ;;
   stop)
     $RUN env WINEPREFIX="$PREFIX" wineserver -k 2>/dev/null
     [ -f "$LOCK" ] && kill "$(cat "$LOCK")" 2>/dev/null
     rm -f "$LOCK"
     echo stopped ;;
-  start)
-    if running; then echo "already running"; else start; fi ;;
-  play)
-    shift
-    if running; then echo "already running"; exit 0; fi
-    for kv in "$@"; do
-      k=${kv%%=*}; v=${kv#*=}
-      case "$k" in
-        resolution) if [ "$v" = original ]; then set_key resolution ""; else set_key resolution "$v"; fi ;;
-        scaler) echo "$v" > "$STATE/scaler" ;;
-        game) if [ -n "$v" ]; then check "$v" >/dev/null || { echo "game folder: $(check "$v")"; exit 1; }
-                set_key game "$(to_wine "$v")"; fi ;;
-        widescreen|draw_distance|fps_limit|vsync|texture_filter|smooth_distance|rumble|saves|close_quits|gamepad_axes) set_key "$k" "$v" ;;
-      esac
-    done
-    start ;;
-  *) echo "usage: $0 [start|get|play KEY=VALUE…|stop|status]"; exit 2 ;;
+  *) echo "usage: $0 [--play|stop|status]"; exit 2 ;;
 esac

@@ -2,7 +2,8 @@
 name = "cmr-launcher"
 version = "0.1.0"
 edition.workspace = true
-rust-version.workspace = true
+# The settings window's eframe needs 1.95.
+rust-version = "1.95"
 license.workspace = true
 description = "Runs the user's own copy of Colin McRae Rally (1998, PC) on modern Windows and under Proton/Wine"
 
@@ -12,6 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 sha2.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow"] }
+jpeg-decoder = { version = "0.3", default-features = false }
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
@@ -24,5 +29,8 @@ features = [
     "Win32_System_Memory",
     "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ]
