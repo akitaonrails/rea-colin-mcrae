@@ -1,0 +1,67 @@
+name: Test report
+description: Tell us how the launcher runs on your PC (Windows, Steam Deck, Linux), working or not.
+title: "Test report: "
+labels: ["test report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing! Reports that everything works are as useful as bug reports.
+        Please don't attach any game files.
+  - type: dropdown
+    id: system
+    attributes:
+      label: Where did you play?
+      options:
+        - Windows 11
+        - Windows 10
+        - Steam Deck (Game Mode)
+        - Steam Deck (Desktop Mode)
+        - Linux with Steam / Proton
+        - Linux with the AppImage
+        - Linux with Wine and cmr-play
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Launcher version
+      description: The first line of launcher.log, e.g. "CMRLauncher 0.2.0".
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Graphics card and screen
+      description: e.g. "RTX 3060, 2560x1440 at 144 Hz".
+  - type: checkboxes
+    id: worked
+    attributes:
+      label: What worked?
+      options:
+        - label: The settings window opened
+        - label: The intro and menus showed
+        - label: A full stage could be driven
+        - label: Gamepad (steering, pedals, buttons)
+        - label: Rumble
+        - label: Alt-Tab and back
+        - label: The game closed cleanly
+  - type: textarea
+    id: settings
+    attributes:
+      label: Settings used
+      description: The look (Original, Enhanced, Custom) and anything you changed, or paste launcher.cfg without the game and saves paths.
+  - type: textarea
+    id: problems
+    attributes:
+      label: What went wrong (if anything)?
+      description: What you did, what you expected and what happened.
+  - type: textarea
+    id: log
+    attributes:
+      label: launcher.log
+      description: |
+        Windows: %LOCALAPPDATA%\CMRLauncher\launcher.log. Under Wine/Proton it is inside the prefix.
+        Remove anything personal (your user name in paths) before posting.
+      render: text

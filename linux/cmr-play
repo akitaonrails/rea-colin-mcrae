@@ -15,6 +15,7 @@
 #   CMR_LAUNCHER  CMRLauncher.exe   (default: next to this script, or one folder up)
 #   CMR_RUN       a wrapper that runs wine and gamescope, e.g.
 #                 "distrobox enter gaming --" when they live in a container
+#   CMR_WAIT      set: wait for the game to end (the AppImage sets it)
 set -u
 HERE=$(dirname "$(readlink -f "$0")")
 PREFIX=${CMR_PREFIX:-$HOME/.local/share/cmr-launcher/prefix}
@@ -61,13 +62,28 @@ sleep 3; while pgrep -x Rally.exe >/dev/null; do sleep 1; done
 wineserver -k
 INNER
   chmod +x "$inner"
-  echo "starting at ${W}x${H}, scaler $F"
+  # Already inside gamescope (a Steam Deck in Game Mode), or none installed:
+  # the game runs directly (a second gamescope inside one fails). Otherwise
   # gamescope gives the game a landscape screen of the race size and scales
   # it to the monitor, keeping its shape.
-  setsid $RUN env WINEPREFIX="$PREFIX" \
-    gamescope -w "$W" -h "$H" -f -S fit -F "$F" -- "$inner" \
-    > "$STATE/play.log" 2>&1 < /dev/null &
-  echo $! > "$LOCK"
+  if [ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" ] || ! $RUN sh -c "command -v gamescope" >/dev/null 2>&1; then
+    echo "starting without a gamescope of our own"
+    launch sh "$inner"
+  else
+    echo "starting at ${W}x${H}, scaler $F"
+    launch gamescope -w "$W" -h "$H" -f -S fit -F "$F" -- "$inner"
+  fi
+}
+
+# Runs a command in the prefix: in the background, or with CMR_WAIT (the
+# AppImage, unmounted when its script ends) until it exits.
+launch() {
+  if [ -n "${CMR_WAIT:-}" ]; then
+    $RUN env WINEPREFIX="$PREFIX" "$@" > "$STATE/play.log" 2>&1
+  else
+    setsid $RUN env WINEPREFIX="$PREFIX" "$@" > "$STATE/play.log" 2>&1 < /dev/null &
+    echo $! > "$LOCK"
+  fi
 }
 
 # The settings window; its exit code says what to do next.

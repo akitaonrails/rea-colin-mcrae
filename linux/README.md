@@ -30,4 +30,14 @@ It needs `wine` and `gamescope`. Optional environment variables:
 | `CMR_RUN` | a wrapper that runs wine and gamescope, e.g. `distrobox enter gaming --` | none |
 
 `cmr-play` refuses to start a second game while one is running or still
-loading.
+loading. Inside a gamescope session (a Steam Deck in Game Mode), or when
+gamescope isn't installed, it runs the game directly.
+
+## AppImage
+
+`packaging/appimage/build.sh <unpacked zip folder> <output folder>` builds
+`CMRLauncher-x86_64.AppImage`: the launcher, `cmr-play` and a portable Wine
+(Kron4ek's 11.20 WoW64 build, checked by SHA-256), so players need no Wine.
+Its `AppRun` puts that Wine first on the `PATH` and runs `cmr-play`, which
+waits for the game (`CMR_WAIT`) because the AppImage is unmounted when it
+returns. CI builds it with every package.

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Colin McRae Rally
+Comment=Play your own copy of Colin McRae Rally (1998)
+Exec=AppRun
+Icon=cmr-launcher
+Categories=Game;
+Terminal=false

@@ -47,11 +47,23 @@ jobs:
           cp -r linux "dist/$name/linux"
           (cd dist && zip -r "$name.zip" "$name")
           echo "PACKAGE=dist/$name.zip" >> "$GITHUB_ENV"
+          echo "PACKAGE_DIR=dist/$name" >> "$GITHUB_ENV"
+          echo "APPIMAGE=dist/$name-x86_64.AppImage" >> "$GITHUB_ENV"
+
+      - name: Build the Linux AppImage (with a portable Wine)
+        run: |
+          packaging/appimage/build.sh "$PACKAGE_DIR" dist/appimage
+          mv dist/appimage/CMRLauncher-x86_64.AppImage "$APPIMAGE"
 
       - uses: actions/upload-artifact@v7
         with:
           name: CMRLauncher-windows
           path: ${{ env.PACKAGE }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: CMRLauncher-linux
+          path: ${{ env.APPIMAGE }}
 
   release:
     name: Publish a release for version tags
@@ -63,8 +75,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: CMRLauncher-windows
+          pattern: CMRLauncher-*
+          merge-multiple: true
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes ./*.zip
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes ./*.zip ./*.AppImage
