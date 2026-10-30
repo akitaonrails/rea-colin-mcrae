@@ -156,7 +156,7 @@ fn rel32(at: u32, len: u32, to: u32) -> [u8; 4] {
 /// The community-patched EU v1.5 (`46500c8e…`) carries F1-F5 on disk; it
 /// is the same build, so F6 applies at the same addresses.
 pub static COMMUNITY_EU_15: FixSet = FixSet {
-    fixes: &[F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16],
+    fixes: &[F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16, F17],
 };
 
 /// Official EU v1.5 (`0eb6ea96…`).
@@ -237,6 +237,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         F14,
         F15,
         F16,
+        F17,
     ],
 };
 
@@ -639,7 +640,7 @@ const F12: Fix = Fix {
 /// entry makes its stub do nothing, so the game runs as without F13.
 pub const F13_TABLE: u32 = 0x250;
 /// The exports F13's table holds, in order (`slot::*` are their offsets).
-pub const F13_EXPORTS: [&str; 9] = [
+pub const F13_EXPORTS: [&str; 10] = [
     "cmr_hud_begin",
     "cmr_hud_end",
     "cmr_hud_rects",
@@ -649,8 +650,9 @@ pub const F13_EXPORTS: [&str; 9] = [
     "cmr_real_begin",
     "cmr_real_end",
     "cmr_update_end",
+    "cmr_present",
 ];
-const _: () = assert!(F13_TABLE >= F12_TRIGGER + 22 && F13_TABLE + 36 <= 0x280);
+const _: () = assert!(F13_TABLE >= F12_TRIGGER + 22 && F13_TABLE + 40 <= 0x280);
 /// Offsets of the exports in F13's table.
 mod slot {
     pub const HUD: u32 = 0;
@@ -661,6 +663,7 @@ mod slot {
     pub const REAL: u32 = 24;
     pub const REAL_END: u32 = 28;
     pub const UPDATE_END: u32 = 32;
+    pub const PRESENT: u32 = 36;
 }
 
 /// With a race resolution the game never had (F10), the in-race 2D (HUD,
@@ -747,7 +750,7 @@ macro_rules! hud_code {
             Piece {
                 at: At::Cave(F13_TABLE),
                 // the F13_EXPORTS addresses, filled by the launcher
-                ops: &[Op::Raw(&[0; 36])],
+                ops: &[Op::Raw(&[0; 40])],
             },
         ]
     };
@@ -959,27 +962,6 @@ const F16: Fix = Fix {
                 Op::Jmp(At::Image(0x0049_7dc1)),
             ],
         },
-        // mov eax,[esi+0x10] ; push 1 ; push 0 ; mov ecx,[eax] ; push eax ;
-        // call [ecx+0x2c] (Flip) -> jmp ; 8 x nop
-        Piece {
-            at: At::Image(0x0049_8705),
-            ops: &[Op::Jmp(At::Cave(F16_PRESENT)), Op::Raw(&[NOP; 8])],
-        },
-        Piece {
-            at: At::Cave(F16_PRESENT),
-            ops: &[
-                Op::Raw(&[0xa1]), // mov eax,[fe_present]
-                Op::Addr(At::Cave(F13_TABLE + 12)),
-                Op::Raw(&[0x85, 0xc0, 0x74, 0x07]), // test eax,eax ; jz +7
-                Op::Raw(&[0x56, 0xff, 0xd0]),       // push esi (display) ; call eax
-                Op::Raw(&[0x85, 0xc0, 0x75, 0x0d]), // test eax,eax ; jnz +13 (presented)
-                // the replaced Flip
-                Op::Raw(&[
-                    0x8b, 0x46, 0x10, 0x6a, 0x01, 0x6a, 0x00, 0x8b, 0x08, 0x50, 0xff, 0x51, 0x2c,
-                ]),
-                Op::Jmp(At::Image(0x0049_8712)),
-            ],
-        },
         // call 0x4c2fb0 (draws the legal screen) -> call the stub
         Piece {
             at: At::Image(0x004c_1e5f),
@@ -1004,6 +986,58 @@ const F16: Fix = Fix {
         Piece {
             at: At::Cave(F16_RET),
             ops: &[Op::Raw(&[0; 4])],
+        },
+    ],
+};
+
+/// The fixes that call into `cmrhooks.dll` (off without it).
+pub const HOOK_FIXES: [&str; 3] = ["F13", "F16", "F17"];
+
+/// F17's settings block: frame-rate cap (frames per second, 0 none) and the
+/// `Flip` flags (0: the game's own), filled by the launcher.
+pub const F17_SETTINGS: u32 = 0x5e0;
+const F17_PRESENT: u32 = F16_PRESENT;
+const _: () = assert!(
+    F17_PRESENT + 39 <= F16_LEGAL && F17_SETTINGS >= F16_RET + 4 && F17_SETTINGS + 8 <= F13_CALLS
+);
+
+/// Every frame, menus and races, is shown by `0x498660` with `Flip`
+/// (`0x49870f`). F17 hands that moment to `cmr_present` (`cmrhooks.dll`):
+/// it waits for the frame-rate cap, enlarges the front end's picture (F16)
+/// and flips with the chosen vsync; without the library, or with neither
+/// set, the game flips as it always did. Applied with F16 or when a cap or
+/// vsync choice is set.
+const F17: Fix = Fix {
+    id: "F17",
+    what: "frame-rate cap and vsync, front-end picture shown enlarged (needs cmrhooks.dll)",
+    optional: true,
+    code: &[
+        // mov eax,[esi+0x10] ; push 1 ; push 0 ; mov ecx,[eax] ; push eax ;
+        // call [ecx+0x2c] (Flip) -> jmp ; 8 x nop
+        Piece {
+            at: At::Image(0x0049_8705),
+            ops: &[Op::Jmp(At::Cave(F17_PRESENT)), Op::Raw(&[NOP; 8])],
+        },
+        Piece {
+            at: At::Cave(F17_PRESENT),
+            ops: &[
+                Op::Raw(&[0xa1]), // mov eax,[cmr_present]
+                Op::Addr(At::Cave(F13_TABLE + slot::PRESENT)),
+                Op::Raw(&[0x85, 0xc0, 0x74, 0x0c]), // test eax,eax ; jz +12
+                Op::Raw(&[0x68]),                   // push settings
+                Op::Addr(At::Cave(F17_SETTINGS)),
+                Op::Raw(&[0x56, 0xff, 0xd0]), // push esi (display) ; call eax
+                Op::Raw(&[0x85, 0xc0, 0x75, 0x0d]), // test eax,eax ; jnz +13 (shown)
+                // the replaced Flip
+                Op::Raw(&[
+                    0x8b, 0x46, 0x10, 0x6a, 0x01, 0x6a, 0x00, 0x8b, 0x08, 0x50, 0xff, 0x51, 0x2c,
+                ]),
+                Op::Jmp(At::Image(0x0049_8712)),
+            ],
+        },
+        Piece {
+            at: At::Cave(F17_SETTINGS),
+            ops: &[Op::Raw(&[0; 8])],
         },
     ],
 };
@@ -1047,7 +1081,7 @@ mod tests {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
         let expected: Vec<_> = (1..=ids.len()).map(|i| format!("F{i}")).collect();
         assert_eq!(ids, expected);
-        assert_eq!(ids.len(), 16);
+        assert_eq!(ids.len(), 17);
     }
 
     #[test]
@@ -1188,14 +1222,21 @@ mod tests {
         assert_eq!(mode[9..11], [0x8b, 0x0d]);
         assert_eq!(mode[15], 0xa1);
         assert_eq!(back(&mode, CAVE + F16_MODE), 0x497dc1);
-        let present = at(CAVE + F16_PRESENT);
-        assert_eq!(present.len(), 34);
-        assert_eq!(present[1..5], (CAVE + F13_TABLE + 12).to_le_bytes());
-        // jz +7 lands on the original Flip, jnz +13 jumps over it.
-        assert_eq!(&present[7..9], [0x74, 7]);
-        assert_eq!(&present[14..16], [0x75, 13]);
-        assert_eq!(&present[16..19], [0x8b, 0x46, 0x10]);
-        assert_eq!(back(&present, CAVE + F16_PRESENT), 0x498712);
+        let present = at(CAVE + F17_PRESENT);
+        assert_eq!(present.len(), 39);
+        assert_eq!(
+            present[1..5],
+            (CAVE + F13_TABLE + slot::PRESENT).to_le_bytes()
+        );
+        // jz +12 lands on the original Flip, jnz +13 jumps over it.
+        assert_eq!(&present[5..7], [0x85, 0xc0]);
+        assert_eq!(&present[7..9], [0x74, 12]);
+        assert_eq!(present[9], 0x68, "push the settings block");
+        assert_eq!(present[10..14], (CAVE + F17_SETTINGS).to_le_bytes());
+        assert_eq!(&present[14..17], [0x56, 0xff, 0xd0]);
+        assert_eq!(&present[19..21], [0x75, 13]);
+        assert_eq!(&present[21..24], [0x8b, 0x46, 0x10]);
+        assert_eq!(back(&present, CAVE + F17_PRESENT), 0x498712);
         assert_eq!(at(0x498705).len(), 13);
         assert_eq!(at(0x497db9).len(), 8);
         let legal = at(CAVE + F16_LEGAL);
@@ -1322,7 +1363,9 @@ mod tests {
 
     #[test]
     fn only_optional_fixes_can_be_skipped() {
-        let skip = ["F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F1"];
+        let skip = [
+            "F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F17", "F1",
+        ];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
         assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9", "F15"]);
         assert_eq!(OFFICIAL_EU_15.cave_size(&skip), F9_CAVE + 24);
@@ -1333,7 +1376,8 @@ mod tests {
                 .all(|w| w.fix != "F6")
         );
         assert_eq!(
-            COMMUNITY_EU_15.cave_size(&["F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16"]),
+            COMMUNITY_EU_15
+                .cave_size(&["F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F17"]),
             F9_CAVE + 24
         );
     }

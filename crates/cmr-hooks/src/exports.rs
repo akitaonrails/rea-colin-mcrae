@@ -4,6 +4,7 @@
 use core::ptr::addr_of_mut;
 
 use crate::canvas::{Canvas, Rect};
+use crate::pacing::Pacer;
 use crate::sections::{Screen, Sections};
 
 /// `cmr_hud_rects`' clip index for calls without a clip rectangle (the
@@ -58,6 +59,9 @@ unsafe extern "system" {
     fn EnterCriticalSection(lock: *mut CriticalSection);
     fn LeaveCriticalSection(lock: *mut CriticalSection);
     fn GetCurrentThreadId() -> u32;
+    fn QueryPerformanceCounter(count: *mut i64) -> i32;
+    fn QueryPerformanceFrequency(freq: *mut i64) -> i32;
+    fn Sleep(ms: u32);
 }
 
 /// The scaling state, the lock that keeps updates and real sections apart,
@@ -369,6 +373,81 @@ fn desc_of(surface: *mut usize) -> Option<SurfaceDesc> {
         desc.size = core::mem::size_of::<SurfaceDesc>() as u32;
         let get: GetSurfaceDesc = method(surface, GET_SURFACE_DESC);
         (get(surface, &mut desc) == 0).then_some(desc)
+    }
+}
+
+/// The frame-rate cap and vsync choice, filled by the launcher (F17).
+#[repr(C)]
+pub struct PresentSettings {
+    /// Frames per second, 0 for no cap.
+    fps_limit: u32,
+    /// `Flip` flags (`DDFLIP_WAIT`, `DDFLIP_NOVSYNC`), 0 for the game's own.
+    flip_flags: u32,
+}
+
+type Flip = unsafe extern "system" fn(*mut usize, *mut usize, u32) -> i32;
+const FLIP: usize = 0x2c / 4;
+
+static mut PACER: Pacer = Pacer::new();
+
+fn now() -> i64 {
+    let mut t = 0;
+    // SAFETY: a plain Win32 call.
+    unsafe { QueryPerformanceCounter(&mut t) };
+    t
+}
+
+/// Waits until the cap lets the next frame be shown: sleeps most of the
+/// time, then spins the last millisecond or two (Sleep is coarse).
+fn pace(limit: u32) {
+    let mut freq = 0;
+    // SAFETY: a plain Win32 call.
+    unsafe { QueryPerformanceFrequency(&mut freq) };
+    // SAFETY: only the main thread presents.
+    let pacer = unsafe { &mut *addr_of_mut!(PACER) };
+    let start = now();
+    let deadline = start + pacer.wait(start, freq, limit);
+    loop {
+        let left = deadline - now();
+        if left <= 0 {
+            break;
+        }
+        let ms = left * 1000 / freq;
+        if ms > 2 {
+            // SAFETY: a plain Win32 call.
+            unsafe { Sleep((ms - 2) as u32) };
+        } else {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Instead of each frame's `Flip` (`0x498705`, F17): waits for the frame
+/// cap, enlarges the front end's picture when it needs it, else flips with
+/// the chosen vsync. Returns 1 when the frame was shown, 0 to let the game
+/// flip as it always did.
+#[unsafe(no_mangle)]
+pub extern "stdcall" fn cmr_present(display: *mut u8, settings: *const PresentSettings) -> u32 {
+    if display.is_null() || settings.is_null() {
+        return 0;
+    }
+    // SAFETY: the launcher's settings block in the fix memory.
+    let settings = unsafe { &*settings };
+    pace(settings.fps_limit);
+    if cmr_fe_present(display) != 0 {
+        return 1;
+    }
+    if settings.flip_flags == 0 {
+        return 0;
+    }
+    // SAFETY: the game's display struct, +0x10 the primary surface.
+    unsafe {
+        let primary = *(display.add(0x10) as *const *mut usize);
+        if primary.is_null() {
+            return 0;
+        }
+        let flip: Flip = method(primary, FLIP);
+        (flip(primary, core::ptr::null_mut(), settings.flip_flags) == 0) as u32
     }
 }
 

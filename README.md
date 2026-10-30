@@ -46,6 +46,7 @@ the corners. Click to watch (3½ minutes, with sound).*
   of wide screens.
 - 16:9 widescreen that shows more to the sides instead of stretching.
 - A longer view distance, up to 3× further down the stage.
+- A frame-rate cap and a vsync choice, for smooth, even frames.
 
 **Comfort**
 
@@ -168,6 +169,8 @@ Open it in any text editor; lines starting with `#` are switched off.
 | `resolution = 1920x1080` | Races at this resolution, up to `3840x2160`. Leave the game's own **Resolution** option (in its graphics settings) on 640×480: that's the choice this replaces. | the game's own (up to 800×600) |
 | `widescreen = true` | On a 16:9 screen, shows more to the sides instead of stretching the picture. | off |
 | `draw_distance = 1.5` | Sees further down the stage, from `1.0` to `3.0`. Longer distances can flicker far away and cost speed. | off |
+| `fps_limit = 60` | Caps the frame rate (10 to 1000, or `off`). The driving keeps its own fixed rate; only the redraws change. | off |
+| `vsync = true` | `true` waits for the screen's refresh (no tearing), `false` doesn't. | the game's own |
 | `gamepad_axes = true` | Triggers and right stick work as accelerate/brake; Start pauses. | on |
 | `close_quits = true` | Closing the window (Alt+F4) quits the game. | on |
 | `saves = D:\Rally saves` | Where your saves are kept. | `Saved Games\Colin McRae Rally` in your user folder |
@@ -184,8 +187,8 @@ CMRLauncher.exe --check --game "D:\Games\Colin McRae Rally"   # is this folder s
 ```
 
 Flags: `--game`, `--saves`, `--runtime`, `--language`, `--resolution`,
-`--widescreen on|off`, `--draw-distance`, `--gamepad-axes on|off`,
-`--close-quits on|off`. Only `--game` is remembered; the others override
+`--widescreen on|off`, `--draw-distance`, `--fps-limit`, `--vsync on|off`,
+`--gamepad-axes on|off`, `--close-quits on|off`. Only `--game` is remembered; the others override
 `launcher.cfg` for that run. `CMRLauncher.exe --help` lists them.
 
 ### Gamepad

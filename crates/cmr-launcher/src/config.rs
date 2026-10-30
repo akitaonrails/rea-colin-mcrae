@@ -28,6 +28,11 @@ pub struct Settings {
     pub widescreen: Option<bool>,
     /// Draw distance factor in Q16 (fix F12), 1.0 to 3.0. Off unless set.
     pub draw_distance: Option<u32>,
+    /// Frame-rate cap in frames per second (fix F17); 0 or unset: none.
+    pub fps_limit: Option<u32>,
+    /// Wait for the screen's refresh when showing a frame (fix F17); unset
+    /// keeps the game's own choice.
+    pub vsync: Option<bool>,
 }
 
 pub const FILE_NAME: &str = "launcher.cfg";
@@ -88,6 +93,15 @@ gamepad_axes = true
 # Object Distance options still apply on top. Longer distances cost speed
 # and can show flicker far away (the game's 16-bit depth buffer).
 #draw_distance = 1.5
+
+# Frame-rate cap in frames per second, e.g. 60, 120 or 144; off for none.
+# The game's driving runs at its own fixed rate, so the cap only changes
+# how often the picture is redrawn (smoother pacing, less heat and noise).
+#fps_limit = 60
+
+# true waits for the screen's refresh before showing each frame (no
+# tearing); false shows frames at once. Unset keeps the game's own choice.
+#vsync = true
 ";
 
 pub const USAGE: &str = concat!(
@@ -104,6 +118,8 @@ CMRLauncher [options]
   --resolution <WxH>       race resolution, e.g. 1920x1080, or original
   --widescreen on|off      wider view on wide screens
   --draw-distance <n>      1.0 to 3.0
+  --fps-limit <n>|off      frame-rate cap, e.g. 60
+  --vsync on|off           wait for the screen's refresh
   --gamepad-axes on|off    triggers/right stick as pedals, Start pauses
   --close-quits on|off     closing the window quits the game
 
@@ -150,6 +166,16 @@ fn parse_factor(v: &str) -> Option<u32> {
     (1.0..=3.0)
         .contains(&f)
         .then(|| (f * 65536.0).round() as u32)
+}
+
+/// A frame-rate cap, 10..=1000, or `off`/`0` for none (0).
+fn parse_fps(v: &str) -> Option<u32> {
+    let v = v.trim();
+    if v.eq_ignore_ascii_case("off") || v == "0" {
+        return Some(0);
+    }
+    let f: u32 = v.parse().ok()?;
+    (10..=1000).contains(&f).then_some(f)
 }
 
 fn parse_language(v: &str) -> Option<String> {
@@ -204,6 +230,14 @@ impl Settings {
                     Some(f) => s.draw_distance = Some(f),
                     None => bad("draw_distance needs a number from 1.0 to 3.0, not"),
                 },
+                "fps_limit" => match parse_fps(value) {
+                    Some(f) => s.fps_limit = Some(f),
+                    None => bad("fps_limit needs a number from 10 to 1000 or off, not"),
+                },
+                "vsync" => match parse_bool(value) {
+                    Some(b) => s.vsync = Some(b),
+                    None => bad("vsync needs true or false, not"),
+                },
                 "resolution" => match parse_resolution(value) {
                     Some(r) => s.resolution = Some(r),
                     None => bad("resolution needs WIDTHxHEIGHT (320x240 to 7680x4320), not"),
@@ -226,6 +260,24 @@ impl Settings {
             resolution: over.resolution.or(self.resolution),
             widescreen: over.widescreen.or(self.widescreen),
             draw_distance: over.draw_distance.or(self.draw_distance),
+            fps_limit: over.fps_limit.or(self.fps_limit),
+            vsync: over.vsync.or(self.vsync),
+        }
+    }
+
+    /// The frame-rate cap to apply, if any.
+    pub fn fps_cap(&self) -> Option<u32> {
+        self.fps_limit.filter(|&f| f > 0)
+    }
+
+    /// `Flip` flags for the vsync choice: 0 keeps the game's own,
+    /// `DDFLIP_WAIT` (1) waits for the refresh, adding `DDFLIP_NOVSYNC` (8)
+    /// doesn't.
+    pub fn flip_flags(&self) -> u32 {
+        match self.vsync {
+            None => 0,
+            Some(true) => 1,
+            Some(false) => 1 | 8,
         }
     }
 
@@ -255,6 +307,9 @@ impl Settings {
         if self.draw_distance.is_none() {
             skip.push("F12");
         }
+        if self.race_resolution().is_none() && self.fps_cap().is_none() && self.vsync.is_none() {
+            skip.push("F17");
+        }
         skip
     }
 
@@ -283,19 +338,26 @@ impl Settings {
                         format!("--resolution needs WIDTHxHEIGHT or original, not {v}\n\n{USAGE}")
                     })?);
                 }
+                "--fps-limit" => {
+                    let v = value("--fps-limit")?;
+                    s.fps_limit = Some(parse_fps(&v).ok_or_else(|| {
+                        format!("--fps-limit needs 10 to 1000 or off, not {v}\n\n{USAGE}")
+                    })?);
+                }
                 "--draw-distance" => {
                     let v = value("--draw-distance")?;
                     s.draw_distance = Some(parse_factor(&v).ok_or_else(|| {
                         format!("--draw-distance needs 1.0 to 3.0, not {v}\n\n{USAGE}")
                     })?);
                 }
-                flag @ ("--widescreen" | "--gamepad-axes" | "--close-quits") => {
+                flag @ ("--widescreen" | "--gamepad-axes" | "--close-quits" | "--vsync") => {
                     let v = value(flag)?;
                     let b = parse_bool(&v)
                         .ok_or_else(|| format!("{flag} needs on or off, not {v}\n\n{USAGE}"))?;
                     match flag {
                         "--widescreen" => s.widescreen = Some(b),
                         "--gamepad-axes" => s.gamepad_axes = Some(b),
+                        "--vsync" => s.vsync = Some(b),
                         _ => s.close_quits = Some(b),
                     }
                 }
@@ -369,6 +431,13 @@ mod tests {
         assert_eq!(s.draw_distance, Some(0x20000));
         assert_eq!(s.skipped_fixes(), ["F6", "F7", "F14"]);
         assert!(args(&["--widescreen", "maybe"]).is_err());
+        let s = args(&["--fps-limit", "120", "--vsync", "off"]).unwrap();
+        assert_eq!((s.fps_cap(), s.flip_flags()), (Some(120), 9));
+        assert_eq!(args(&["--fps-limit", "off"]).unwrap().fps_cap(), None);
+        assert!(args(&["--fps-limit", "5"]).is_err());
+        // A cap alone needs the present hook (F17), not the race resolution.
+        let cap = args(&["--fps-limit", "60"]).unwrap();
+        assert!(cap.skipped_fixes().contains(&"F16") && !cap.skipped_fixes().contains(&"F17"));
         assert!(args(&["--draw-distance", "9"]).is_err());
 
         // `original` on the command line overrides a file's resolution.
@@ -390,7 +459,10 @@ mod tests {
                 ..Settings::default()
             }
         );
-        assert_eq!(s.skipped_fixes(), ["F10", "F13", "F16", "F11", "F12"]);
+        assert_eq!(
+            s.skipped_fixes(),
+            ["F10", "F13", "F16", "F11", "F12", "F17"]
+        );
     }
 
     #[test]
