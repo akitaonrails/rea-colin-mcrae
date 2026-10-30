@@ -241,6 +241,12 @@ mod app {
                 }),
             |cave| {
                 let mut writes = prepare(&image, edition.fixes, &skip, cave)?;
+                let pads = win32::xinput_pads();
+                log_line(&if pads.is_empty() {
+                    "XInput pads: none (rumble and separate trigger pedals need an Xbox-style pad; on 8BitDo pads use X-input mode)".to_string()
+                } else {
+                    format!("XInput pads: {pads:?}")
+                });
                 let axes = win32::centred_axes();
                 let bytes: Vec<u8> = axes.iter().flat_map(|a| a.to_le_bytes()).collect();
                 if fill_data(&mut writes, cave.wrapping_add(fixes::F7_TABLE), &bytes) {
@@ -313,6 +319,15 @@ mod app {
             &mut |line| log_line(line),
         )?;
         log_line(&format!("game exited with {code}"));
+        // The hook library writes crash.log in the game's folder on a crash.
+        let crash = rt.join("crash.log");
+        if let Ok(report) = std::fs::read_to_string(&crash) {
+            log_line(&format!("the game crashed: {}", report.trim()));
+            let _ = std::fs::remove_file(&crash);
+        }
+        if settings.rumble_strength() > 0 {
+            win32::stop_rumble();
+        }
         match runtime::mirror(&rt_save, &saves) {
             Ok(n) => log_line(&format!("saves: {n} files written back")),
             Err(e) => log_line(&format!(

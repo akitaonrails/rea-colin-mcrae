@@ -77,7 +77,13 @@ unsafe extern "system" {
     fn SetFilePointer(file: *mut u8, lo: i32, hi: *mut i32, method: u32) -> u32;
     fn WriteFile(file: *mut u8, buf: *const u8, len: u32, written: *mut u32, ov: *mut u8) -> i32;
     fn GetProcAddress(module: *mut u8, name: *const u8) -> *mut u8;
+    fn SetUnhandledExceptionFilter(filter: Option<ExceptionFilter>) -> Option<ExceptionFilter>;
+    fn GetModuleHandleExA(flags: u32, name: *const u8, module: *mut *mut u8) -> i32;
+    fn GetModuleFileNameA(module: *mut u8, buf: *mut u8, size: u32) -> u32;
+    fn CloseHandle(handle: *mut u8) -> i32;
 }
+
+type ExceptionFilter = unsafe extern "system" fn(*mut u8) -> i32;
 
 /// The scaling state and the scaled copies of the rectangles handed to the
 /// 2D primitives.
@@ -141,6 +147,7 @@ fn canvas() -> Option<Canvas> {
 /// main thread): keeps the race's virtual screen in place.
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_update_begin() {
+    install_crash_filter();
     diag_update();
     hud().sections.update(&mut Game);
 }
@@ -342,6 +349,19 @@ impl Line {
             }
         }
         self
+    }
+
+    fn hex(&mut self, n: u32) -> &mut Line {
+        let mut digits = *b"0x00000000";
+        for (i, d) in digits[2..].iter_mut().enumerate() {
+            let v = (n >> (28 - 4 * i)) & 0xf;
+            *d = if v < 10 {
+                b'0' + v as u8
+            } else {
+                b'a' + v as u8 - 10
+            };
+        }
+        self.text(&digits)
     }
 
     fn num(&mut self, mut n: u32) -> &mut Line {
@@ -731,7 +751,116 @@ pub extern "stdcall" fn cmr_rumble(severity: i32, settings: *const PresentSettin
     }
 }
 
-/// Each frame: sends the fading rumble to player 1's pad; off outside races.
+/// The crash handler that was there before ours (the game's, or none).
+static mut PREVIOUS_FILTER: Option<ExceptionFilter> = None;
+static mut FILTER_SET: bool = false;
+
+/// Motors off now (on a pause, outside races, when the game ends or
+/// crashes). The launcher also turns them off after the game exits.
+pub fn stop_rumble() {
+    let Some((_, set)) = xinput() else { return };
+    // SAFETY: the rumble statics; a plain XInput call.
+    unsafe {
+        (*addr_of_mut!(RUMBLE)).stop();
+        let sent = &mut *addr_of_mut!(MOTORS);
+        if *sent != (0, 0) {
+            let mut v = [0u16, 0];
+            set(0, &mut v);
+            *sent = (0, 0);
+        }
+    }
+}
+
+/// Installs the crash handler once (the first game update or frame).
+fn install_crash_filter() {
+    // SAFETY: main/update thread statics, set once; a plain Win32 call.
+    unsafe {
+        if !*addr_of_mut!(FILTER_SET) {
+            *addr_of_mut!(FILTER_SET) = true;
+            *addr_of_mut!(PREVIOUS_FILTER) = SetUnhandledExceptionFilter(Some(crash_filter));
+        }
+    }
+}
+
+/// Writes `crash.log` in the game's folder: the exception code, where it
+/// happened (module + offset) and the main registers. The launcher copies
+/// it into its log when the game has exited.
+unsafe fn write_crash_log(info: *mut u8) {
+    unsafe {
+        let record = *(info as *const *const u32);
+        let context = *(info.add(4) as *const *const u8);
+        if record.is_null() || context.is_null() {
+            return;
+        }
+        let code = *record;
+        let address = *record.add(3);
+        let mut line = Line::default();
+        line.text(b"crash ").hex(code).text(b" at ").hex(address);
+        let mut module = core::ptr::null_mut();
+        // FROM_ADDRESS | UNCHANGED_REFCOUNT
+        if GetModuleHandleExA(6, address as *const u8, &mut module) != 0 {
+            let mut path = [0u8; 260];
+            let n = GetModuleFileNameA(module, path.as_mut_ptr(), 260) as usize;
+            let name = path[..n].rsplit(|&b| b == b'\\').next().unwrap_or(&[]);
+            line.text(b" (")
+                .text(name)
+                .text(b"+")
+                .hex(address.wrapping_sub(module as u32))
+                .text(b")");
+        }
+        let reg = |off: usize| *(context.add(off) as *const u32);
+        for (name, off) in [
+            (&b" eax="[..], 0xb0),
+            (b" ebx=", 0xa4),
+            (b" ecx=", 0xac),
+            (b" edx=", 0xa8),
+            (b" esi=", 0xa0),
+            (b" edi=", 0x9c),
+            (b" ebp=", 0xb4),
+            (b" esp=", 0xc4),
+        ] {
+            line.text(name).hex(reg(off));
+        }
+        line.text(b"\r\n");
+        // GENERIC_WRITE, CREATE_ALWAYS
+        let f = CreateFileA(
+            c"crash.log".as_ptr().cast(),
+            0x4000_0000,
+            0,
+            core::ptr::null_mut(),
+            2,
+            0x80,
+            core::ptr::null_mut(),
+        );
+        if f as isize != -1 {
+            let mut written = 0;
+            WriteFile(
+                f,
+                line.buf.as_ptr(),
+                line.len as u32,
+                &mut written,
+                core::ptr::null_mut(),
+            );
+            CloseHandle(f);
+        }
+    }
+}
+
+/// On a crash: the motors stop, `crash.log` is written, then the previous
+/// handler (if any) runs as before.
+unsafe extern "system" fn crash_filter(info: *mut u8) -> i32 {
+    stop_rumble();
+    // SAFETY: the system's exception pointers.
+    unsafe { write_crash_log(info) };
+    // SAFETY: the handler that was installed before ours.
+    match unsafe { *addr_of_mut!(PREVIOUS_FILTER) } {
+        Some(previous) => unsafe { previous(info) },
+        None => 0, // EXCEPTION_CONTINUE_SEARCH
+    }
+}
+
+/// Each frame: sends the fading rumble to player 1's pad; off outside
+/// driving (menus, loading, the pause menu).
 fn update_rumble(settings: &PresentSettings) {
     if settings.rumble == 0 {
         return;
@@ -742,7 +871,8 @@ fn update_rumble(settings: &PresentSettings) {
     unsafe {
         QueryPerformanceFrequency(&mut freq);
         let rumble = &mut *addr_of_mut!(RUMBLE);
-        if !Game.in_race() {
+        // Driving states only: 5..=9 (state 0xa is the pause menu).
+        if !(5..=9).contains(&Game.state()) {
             rumble.stop();
         }
         let motors = crate::xinput::motors(rumble.level(now(), freq));

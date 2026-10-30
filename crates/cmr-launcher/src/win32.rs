@@ -16,7 +16,7 @@ use windows_sys::Win32::System::Diagnostics::Debug::{
     FlushInstructionCache, ReadProcessMemory, WriteProcessMemory,
 };
 use windows_sys::Win32::System::LibraryLoader::{
-    DONT_RESOLVE_DLL_REFERENCES, GetModuleHandleW, GetProcAddress, LoadLibraryExW,
+    DONT_RESOLVE_DLL_REFERENCES, GetModuleHandleW, GetProcAddress, LoadLibraryExW, LoadLibraryW,
 };
 use windows_sys::Win32::System::Memory::{
     MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE, VirtualAllocEx,
@@ -60,6 +60,51 @@ pub fn message(title: &str, text: &str, error: bool) {
             wide(title).as_ptr(),
             MB_OK | icon,
         );
+    }
+}
+
+/// An XInput function from the newest XInput DLL present.
+fn xinput_proc(name: &std::ffi::CStr) -> Option<unsafe extern "system" fn() -> isize> {
+    for dll in ["xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll"] {
+        // SAFETY: plain loader calls with NUL-terminated names.
+        unsafe {
+            let module = LoadLibraryW(wide(dll).as_ptr());
+            if !module.is_null()
+                && let Some(proc) = GetProcAddress(module, name.as_ptr().cast())
+            {
+                return Some(proc);
+            }
+        }
+    }
+    None
+}
+
+/// The XInput (Xbox-style) pads connected now, by slot 0..=3. Rumble and
+/// separate trigger pedals (F21, F22) need one; other pads only reach the
+/// game through WinMM (F7).
+pub fn xinput_pads() -> Vec<u32> {
+    type GetState = unsafe extern "system" fn(u32, *mut [u8; 16]) -> u32;
+    let Some(get) = xinput_proc(c"XInputGetState") else {
+        return Vec::new();
+    };
+    // SAFETY: XInputGetState's signature; the state is 16 bytes.
+    let get: GetState = unsafe { std::mem::transmute(get) };
+    (0..4)
+        .filter(|&i| unsafe { get(i, &mut [0u8; 16]) } == 0)
+        .collect()
+}
+
+/// Turns every XInput pad's motors off. Called after the game exits, however
+/// it ended, so a crash can't leave a pad rumbling.
+pub fn stop_rumble() {
+    type SetState = unsafe extern "system" fn(u32, *mut [u16; 2]) -> u32;
+    let Some(set) = xinput_proc(c"XInputSetState") else {
+        return;
+    };
+    // SAFETY: XInputSetState's signature; the vibration is two u16 speeds.
+    let set: SetState = unsafe { std::mem::transmute(set) };
+    for i in 0..4 {
+        unsafe { set(i, &mut [0, 0]) };
     }
 }
 
