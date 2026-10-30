@@ -103,6 +103,9 @@ unpack it anywhere, for example into your game folder. It contains:
 - `cmrhooks.dll` — needed for the HUD at high resolutions; keep it next to the launcher
 - `linux/` — `cmr-play`, the Linux helper for Wine and gamescope
 
+On Linux without Steam you can instead download
+`CMRLauncher-…-x86_64.AppImage`, which brings its own Wine (see below).
+
 ## 3. Play on Windows
 
 1. Unpack the zip anywhere, for example into your game folder.
@@ -116,12 +119,30 @@ The first start takes a few seconds while the launcher makes its private copy
 of the game. Your choices are remembered for next time.
 
 > Windows support is new: the launcher has so far been tested under Wine and
-> Proton. If something goes wrong on Windows, please open an issue with your
-> `launcher.log` (see [Where things are](#where-things-are)).
+> Proton. Whether it works or not, please
+> [send a test report](https://github.com/akitaonrails/rea-colin-mcrae/issues/new?template=test-report.yml)
+> with your `launcher.log` (see [Where things are](#where-things-are)).
 
 ## 4. Play on Linux
 
-### With Steam (easiest)
+### AppImage (no Wine needed)
+
+Download `CMRLauncher-…-x86_64.AppImage`, make it executable and run it:
+
+```sh
+chmod +x CMRLauncher-*-x86_64.AppImage
+./CMRLauncher-*-x86_64.AppImage
+```
+
+It contains the launcher and a portable Wine (11.20), so nothing else has to
+be installed. The settings window opens: press **Browse…** and pick your game
+folder (your Linux files are under drive `Z:`), choose a look and press
+**Play**. If [gamescope](https://github.com/ValveSoftware/gamescope) is
+installed, the game runs in it at the right size (recommended, especially
+with a rotated monitor); otherwise in a plain window. Its Wine prefix is
+`~/.local/share/cmr-launcher/prefix` (change it with `CMR_PREFIX`).
+
+### With Steam
 
 1. Unpack the zip, for example into `~/Games/cmr-launcher`.
 2. In Steam: **Games → Add a Non-Steam Game to My Library… → Browse** and pick
@@ -133,6 +154,23 @@ of the game. Your choices are remembered for next time.
 4. Press **Play**. The settings window opens: press **Browse…** and pick
    your game folder (your Linux files are under drive `Z:`), choose a look
    and press **Play**. Everything is remembered for next time.
+
+### Steam Deck
+
+Not tested on a Deck yet; if you try it, please
+[report how it went](https://github.com/akitaonrails/rea-colin-mcrae/issues/new?template=test-report.yml).
+Follow **With Steam** above in Desktop Mode (GE-Proton is installed with
+ProtonUp-Qt from Discover), then play from Game Mode:
+
+- The settings window works with the touchscreen or the right trackpad.
+  Pick **Enhanced**: it fits the Deck's 1280×800 screen with widescreen.
+- In **Buttons** choose **Modern**: A is the handbrake, the bumpers change
+  gear, Y changes the view, the triggers are the pedals and Start pauses.
+- In the game: **Options → Settings → Controller 1**, Joystick 1, Analogue
+  joystick, and steering, acceleration and braking on Analogue (see
+  [Gamepad](#gamepad)).
+- Rumble should work: under Proton, Steam shows the Deck's controls to the
+  game as an Xbox-style pad.
 
 ### With Wine and gamescope
 

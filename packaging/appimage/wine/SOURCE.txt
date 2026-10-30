@@ -1,0 +1,10 @@
+This AppImage includes Wine 11.20 (amd64, WoW64), as built by Kron4ek's
+Wine-Builds from the unmodified WineHQ sources.
+
+Wine is licensed under the GNU Lesser General Public License, version 2.1
+or later (see LICENSE and COPYING.LIB next to this file).
+
+Source code:
+  Wine 11.20:       https://dl.winehq.org/wine/source/11.x/wine-11.20.tar.xz
+  Build scripts:    https://github.com/Kron4ek/Wine-Builds
+  Binary package:   https://github.com/Kron4ek/Wine-Builds/releases/tag/11.20
