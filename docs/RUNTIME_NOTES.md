@@ -227,3 +227,18 @@ The menus (E5) wrote the enlarged picture straight into the visible screen
 and skipped the flip. Under GLX inside a gamescope window those writes
 were shown only now and then (menu frozen while its sounds played); they
 now go into the back buffer and the game flips as always. Same speed.
+
+## Threads and rumble (2026-10-30, 0.2.1)
+
+The race update runs on a multimedia-timer thread, 25 times a second,
+while the main thread draws. The game was written for one-core PCs, where
+an update interrupted the drawing and finished before it went on; on a
+multi-core CPU they run side by side, so the drawing can read the car and
+camera halfway through an update. The hook library pins both threads to
+one core (the highest the process may use) on their first call: no lock,
+no waiting; at 4K the race keeps 60 fps and 40-41 ms between updates.
+Wine's renderer and audio threads keep every core.
+
+Rumble: impacts arrive at 21-42 % severity; at Medium (60 %) the motors got
+12-25 %, below what a pad's motors turn at. With a 30 % minimum and a
+square-root curve the same impacts give 55-64 %. XInput accepted every send.
