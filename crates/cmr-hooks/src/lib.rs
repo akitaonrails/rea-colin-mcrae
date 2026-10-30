@@ -15,6 +15,7 @@
 //! (`canvas`). Display set-up and the 3D draw see the real screen.
 
 pub mod canvas;
+pub mod pacing;
 pub mod present;
 pub mod sections;
 

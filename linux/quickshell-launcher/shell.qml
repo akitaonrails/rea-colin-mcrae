@@ -37,6 +37,13 @@ ShellRoot {
     { key: "1.0", label: "1×" }, { key: "1.25", label: "1.25×" }, { key: "1.5", label: "1.5×" },
     { key: "2.0", label: "2×" }, { key: "2.5", label: "2.5×" }, { key: "3.0", label: "3×" }
   ]
+  readonly property var frameRates: [
+    { key: "", label: "Original" }, { key: "30", label: "30" }, { key: "60", label: "60" },
+    { key: "120", label: "120" }, { key: "144", label: "144" }
+  ]
+  readonly property var vsyncs: [
+    { key: "", label: "As the game" }, { key: "true", label: "On" }, { key: "false", label: "Off" }
+  ]
   // gamescope filters, sharpest first
   readonly property var scalers: [
     { key: "nearest", label: "Sharp" },
@@ -74,6 +81,8 @@ ShellRoot {
     res.current = find(resolutions, kv.resolution || "original", 0);
     dist.current = find(distances, kv.draw_distance || "1.0", 0);
     scaler.current = find(scalers, kv.scaler || "nearest", 0);
+    fps.current = find(frameRates, kv.fps_limit === "off" ? "" : (kv.fps_limit || ""), 0);
+    vsync.current = find(vsyncs, kv.vsync || "", 0);
     wide.checked = kv.widescreen === "true";
     quit.checked = kv.close_quits !== "false";
     pad.checked = kv.gamepad_axes !== "false";
@@ -196,7 +205,7 @@ ShellRoot {
   FloatingWindow {
     title: "Colin McRae Rally"
     implicitWidth: 900
-    implicitHeight: 760
+    implicitHeight: 860
     // A fixed-size dialog: equal minimum and maximum sizes tell the
     // compositor not to tile it (a tiled window can open under floating ones).
     minimumSize: Qt.size(implicitWidth, implicitHeight)
@@ -329,6 +338,10 @@ ShellRoot {
         Chips { id: res; options: root.resolutions }
         FieldLabel { text: "Draw distance" }
         Chips { id: dist; options: root.distances }
+        FieldLabel { text: "Frame-rate cap" }
+        Chips { id: fps; options: root.frameRates }
+        FieldLabel { text: "Vsync" }
+        Chips { id: vsync; options: root.vsyncs }
         FieldLabel { text: "Scaler" }
         ColumnLayout {
           spacing: 6
@@ -407,6 +420,8 @@ ShellRoot {
                   "resolution=" + root.resolutions[res.current].key,
                   "widescreen=" + (wide.checked ? "true" : ""),
                   "draw_distance=" + (dist.current === 0 ? "" : root.distances[dist.current].key),
+                  "fps_limit=" + root.frameRates[fps.current].key,
+                  "vsync=" + root.vsyncs[vsync.current].key,
                   "scaler=" + root.scalers[scaler.current].key,
                   "close_quits=" + (quit.checked ? "true" : "false"),
                   "gamepad_axes=" + (pad.checked ? "true" : "false"),

@@ -205,16 +205,21 @@ mod app {
         }
 
         let mut skip = settings.skipped_fixes();
-        // F13 needs the hook library next to the launcher.
+        // These fixes need the hook library next to the launcher.
         let hooks_path = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join(HOOKS_DLL)));
-        if !skip.contains(&"F13") && !hooks_path.as_ref().is_some_and(|p| p.is_file()) {
+        let mut uses_hooks = fixes::HOOK_FIXES.iter().any(|f| !skip.contains(f));
+        if uses_hooks && !hooks_path.as_ref().is_some_and(|p| p.is_file()) {
             log_line(&format!(
-                "warning: {HOOKS_DLL} not found next to the launcher; the HUD is not scaled"
+                "warning: {HOOKS_DLL} not found next to the launcher; the HUD, menus and frame-rate options are off"
             ));
-            skip.push("F13");
-            skip.push("F16");
+            let off: Vec<_> = fixes::HOOK_FIXES
+                .iter()
+                .filter(|f| !skip.contains(f))
+                .collect();
+            skip.extend(off);
+            uses_hooks = false;
         }
         if !skip.is_empty() {
             log_line(&format!(
@@ -228,7 +233,7 @@ mod app {
             edition.fixes.cave_size(&skip),
             hooks_path
                 .as_deref()
-                .filter(|_| !skip.contains(&"F13"))
+                .filter(|_| uses_hooks)
                 .map(|path| win32::HookLibrary {
                     path,
                     table: fixes::F13_TABLE,
@@ -258,6 +263,28 @@ mod app {
                         log_line(&format!(
                             "F12 draw distance x{:.2}",
                             f64::from(factor) / 65536.0
+                        ));
+                    }
+                }
+                if !skip.contains(&"F17") {
+                    let cap = settings.fps_cap().unwrap_or(0);
+                    let block: Vec<u8> = [cap, settings.flip_flags()]
+                        .iter()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect();
+                    if fill_data(&mut writes, cave.wrapping_add(fixes::F17_SETTINGS), &block) {
+                        log_line(&format!(
+                            "F17 frame-rate cap {}, vsync {}",
+                            if cap > 0 {
+                                cap.to_string()
+                            } else {
+                                "off".into()
+                            },
+                            match settings.vsync {
+                                None => "as the game",
+                                Some(true) => "on",
+                                Some(false) => "off",
+                            }
                         ));
                     }
                 }
