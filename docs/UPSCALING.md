@@ -1,9 +1,10 @@
 # Upscaling the 2D art (study)
 
-Status: **study, with a working offline pipeline**. The game does not load
-upscaled images yet; this page records what was learned, the tool that
-extracts and upscales the images, and the plan to show them in the game.
-It is written for whoever picks this up next.
+Status: **the race HUD works in the game** (opt-in `hd_art`, F27); the
+menus and loading screens are upscaled offline but not shown yet. This
+page records what was learned, the tool that extracts and upscales the
+images, how the game shows them, and what is left. It is written for
+whoever picks this up next.
 
 ## What is meant
 
@@ -69,10 +70,30 @@ Notes:
   gradients) are where the models disagree with the artist. Options to try:
   blend the upscale with a plain Lanczos enlargement, or keep those few
   images at sharp pixels.
-- **Speed.** Real-ESRGAN loads its model once per run (seconds), so the
-  tool runs each model once over a folder: the 233 HUD images take about
-  12 s on an RTX 5090; all 912 images, both sets, 83 s (68 MB for `x4/`,
-  28 MB for `x2/`). One-off, at set-up time.
+- **Real-ESRGAN's folder mode is broken.** `realesrgan-ncnn-vulkan`
+  20220424, given a folder, saved many results under other images' names
+  (same size, different picture) or as noise, differently on every run
+  (RTX 5090, NVIDIA driver; one thread per stage did not help). One image
+  per run is always right, but each run spends about 5 s building its GPU
+  pipelines. So `cmr-hd` packs each model's images into sheets of up to
+  2048x2048, each image in a 16-pixel gutter of its own edge pixels (more
+  than the model's reach), runs once per sheet and cuts the results out
+  (`src/atlas.rs`). The 233 HUD images make one sheet: about 35 s.
+- **The upscalers redraw colours.** On the HUD the artwork model turned
+  one-pixel grey outlines into thin dark lines and drew the original's
+  one-pixel staircases as wavy edges. Every result is therefore held to
+  the original (`src/lock.rs`):
+  - *flat art* (the HUD): each pixel takes one of the colours the
+    original has within two pixels of the spot, the one the (lightly
+    smoothed) upscale is closest to, favouring nearer and more common
+    ones. Colours stay exactly the artist's, outlines keep their width,
+    and lone anti-aliasing pixels at the edges drop out; the upscale only
+    decides where the edges run. Guiding by a blurred enlargement instead
+    of the model was tried and broke thin lines (tick marks) into dashes.
+  - *pictures and interface*: back-projection. The upscale is corrected
+    eight times by the (smoothly spread) difference between the original
+    and the upscale averaged back to the original's size, so colours and
+    shading match the original and the added detail stays.
 - **Two sets, chosen by resolution.** The game's 2D is laid out for 480
   lines: 1080p needs 2.25x, 1440p 3x, 4K 4.5x. `cmr-hd upscale` writes `x4/`
   (the model's 4x, for 1440p and up) and `x2/` (the 4x made half as large
@@ -81,6 +102,10 @@ Notes:
   else `x4`, and the GPU's filtered stretch does the rest.
 
 ## The tool
+
+Real-ESRGAN runs once per sheet (see Findings); on the RTX 5090 the 233
+HUD images take about 35 s.
+
 
 `crates/cmr-hd` (a host program; not part of the launcher package):
 
@@ -96,6 +121,9 @@ cmr-hd upscale <work>/extracted <work>/hd --esrgan <path>/realesrgan-ncnn-vulkan
 - `src/classes.rs`: which folders are pictures, interface or HUD, and the
   model for each, with tests. Change the rules here.
 - `src/key.rs`: the colour key to alpha and back, with tests.
+- `src/atlas.rs`: packing images into sheets for the upscaler, with tests.
+- `src/lock.rs`: holding results to the original's colours, with tests.
+- `src/palette.rs`: the 8-bit runtime copies, in the original's palette.
 - `manifest.tsv` records each image's path, class, the SHA-256 of the game
   file it came from, its size and the model. A runtime loader must check
   the digest, so a different game version never gets the wrong picture.
@@ -104,42 +132,62 @@ Get Real-ESRGAN from its releases (the package with `models/`), e.g.
 `realesrgan-ncnn-vulkan-20220424-ubuntu.zip` from
 <https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0>.
 
-## Showing them in the game (the plan)
+## Showing them in the game
 
 The general mechanism follows the rule of fixing a whole class in one
-place: **keep the game's own surfaces, sizes and layout exactly as they
-are, and swap pixels only where 2D is drawn.**
+place: **keep the game's own textures, sizes and layout exactly as they
+are, and swap pixels only where they are drawn.**
 
-1. **Load.** Where the game turns a loaded bitmap into a DirectDraw surface,
-   look the file up in the HD set (by game path and the manifest's
-   SHA-256). If there is one, create a *shadow* surface at the HD size and
-   remember the pair (game surface -> shadow, factor). The game keeps its
-   original surface and sizes, so its layout code sees nothing new.
-2. **Draw.** The 2D primitives F13 already wraps (sprite queues
-   `0x49b420`/`0x49b1d0`, blit `0x49e3e0`, panel `0x49e200`) scale every
-   destination rectangle to the real screen. When the source surface has a
-   shadow, draw from the shadow instead, with the source rectangle
-   multiplied by its factor. One place, every HUD element.
-3. **Front end.** The menus are drawn into a 640x480 picture that F16/E5
-   enlarges as a whole, which has no per-image step to hook. To get HD
-   menus, the front end moves to the race's model: a virtual 640x480
-   with rectangles scaled at the same primitives (F13's design), drawn
-   into the real-size back buffer. Then step 2 covers the menus too, and
-   any image without an HD version is still enlarged as today.
-4. **Settings.** An opt-in `hd_art` setting (default off, the faithful
-   game first) and a set-up step in the launcher window that runs the
-   extraction and upscaling once, with progress, into the launcher's data
-   folder.
+### The race HUD (done, F27)
+
+The HUD is drawn as Direct3D textured quads, not with the 2D blit (which
+the race never calls).
+
+1. **Files.** `cmr-hd upscale` writes, for each HUD image, a BMP named by
+   the FNV-1a 64 hash of the game's own BMP bytes (`crates/cmr-hooks/src/hd.rs`,
+   shared by the tool and the hook library), in `x2/` and `x4/`. An 8-bit
+   original gets an 8-bit copy in its own palette (the game keeps 8-bit
+   textures as palette indices, with index 0 the colour key); others get
+   24-bit.
+2. **Load.** F27 wraps the game's bitmap loader `0x499ec0(bmp, flags)`,
+   which every image goes through. For a texture (flags bit 1) with a file
+   in the HD set (`CMR_HD_ART`, which the launcher points at `x2` up to
+   1080p, else `x4`) it loads that file through the same loader: the twin.
+   The game's own texture is untouched.
+3. **Bind.** Every texture bind goes through the device's
+   `SetRenderState(TEXTUREHANDLE, h)` (slot 23 of the `IDirect3DDevice2`
+   at `[[0x50283c]+0x10]`). F27 takes that one slot over: a game handle with
+   a twin binds the twin's handle instead, and switches that draw to
+   smooth (bilinear) sampling so the HD edges come out as straight lines;
+   the game's own filters return with its next texture. The texture
+   coordinates are fractions of the picture, so the twin needs no change
+   to the layout. Pairs are checked against each record's current handle
+   at every bind and forgotten outside races.
+4. **Checked** headless at 1080p and 4K: 35 pairs, about 6000 twin binds
+   per race, none stale, 60 fps at 4K.
+
+### Next
+
+- **The menus and loading screens.** They are drawn into a 640x480 picture
+  that F16/E5 enlarges as a whole, which has no per-image step to hook.
+  The front end has to move to the race's model first: a virtual 640x480
+  with rectangles scaled at the 2D primitives (blit `0x49e3e0`, panel
+  `0x49e200`), drawn into the real-size back buffer; then a blit from a
+  surface with an HD twin draws from the twin with its source rectangle
+  multiplied by the factor.
+- **Fonts** (`*.fon`, `ini/cdFONT.BMP`, the race timer's digit sheets) are
+  a separate class; text could be redrawn from a vector font.
+- **Set-up in the launcher**: run the extraction and upscaling once from
+  the settings window, with progress, into the launcher's data folder
+  (bundling Real-ESRGAN needs a `THIRD_PARTY.md` row).
+- **Stripe edges.** The rev bar's long diagonal stripes still show a faint
+  wobble at 4K where the original's staircases are steepest.
 
 Things to watch:
 
-- Palette effects: a few front-end screens fade or cycle palettes; the
-  16-bit path (F2) already converts at load time, so check that HD copies
-  follow the same conversion when the palette changes.
-- Animated sprites made from strips (digits, LEDs): the factor applies to
-  the source rectangle, so strips keep working if every frame is upscaled
-  in one image (they are).
-- Fonts (`*.fon`, `ini/cdFONT.BMP`) are a separate format and class; text
-  could later be redrawn with a vector font instead.
-- 3D textures (cars, stages) are out of scope here: they live inside
-  `.c3d` files and go through Direct3D, not the 2D blits.
+- Palette effects: a few front-end screens fade or cycle palettes; check
+  that HD copies follow when the palette changes.
+- Animated sprites made from strips (digits, LEDs) keep working as long
+  as every frame is upscaled in one image (they are).
+- 3D textures (cars, stages) are out of scope: they live inside `.c3d`
+  files.

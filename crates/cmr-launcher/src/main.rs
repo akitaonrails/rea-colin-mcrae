@@ -285,6 +285,20 @@ mod app {
                 skip.join(", ")
             ));
         }
+        // HD art (F27): the set for this resolution, read by the hook library.
+        if let Some(set) = settings.hd_set() {
+            if set.is_dir() {
+                // SAFETY: set before the game starts; no other thread reads
+                // the environment yet.
+                unsafe { std::env::set_var("CMR_HD_ART", &set) };
+                log_line(&format!("F27 HD art from {}", set.display()));
+            } else {
+                log_line(&format!(
+                    "warning: hd_art: {} doesn't exist (run cmr-hd upscale, see docs/UPSCALING.md)",
+                    set.display()
+                ));
+            }
+        }
         let code = win32::run_patched(
             &rt.join(EXE),
             &rt,

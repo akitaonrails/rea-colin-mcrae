@@ -249,6 +249,7 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
         F24,
         F25,
         F26,
+        F27,
     ],
 };
 
@@ -731,7 +732,7 @@ const F12: Fix = Fix {
 /// entry makes its stub do nothing, so the game runs as without F13.
 pub const F13_TABLE: u32 = 0x250;
 /// The exports F13's table holds, in order (`slot::*` are their offsets).
-pub const F13_EXPORTS: [&str; 18] = [
+pub const F13_EXPORTS: [&str; 19] = [
     "cmr_hud_begin",
     "cmr_hud_end",
     "cmr_hud_rects",
@@ -750,6 +751,7 @@ pub const F13_EXPORTS: [&str; 18] = [
     "cmr_3d_end",
     "cmr_pad_buttons",
     "cmr_depth_visible",
+    "cmr_hd_load",
 ];
 /// The table's size in bytes (one address per export).
 const F13_TABLE_LEN: usize = 4 * F13_EXPORTS.len();
@@ -774,6 +776,7 @@ mod slot {
     pub const THREE_D_END: u32 = 60;
     pub const PAD_BUTTONS: u32 = 64;
     pub const DEPTH_VISIBLE: u32 = 68;
+    pub const HD_LOAD: u32 = 72;
 }
 
 /// With a race resolution the game never had (F10), the in-race 2D (HUD,
@@ -1210,8 +1213,8 @@ const F16: Fix = Fix {
 };
 
 /// The fixes that call into `cmrhooks.dll` (off without it).
-pub const HOOK_FIXES: [&str; 9] = [
-    "F13", "F16", "F17", "F18", "F20", "F21", "F22", "F23", "F26",
+pub const HOOK_FIXES: [&str; 10] = [
+    "F13", "F16", "F17", "F18", "F20", "F21", "F22", "F23", "F26", "F27",
 ];
 
 /// RUN JOYSTICK PANEL (a controls screen, `0x4cdbc0`) calls `0x49cb90`,
@@ -1247,6 +1250,46 @@ const F25: Fix = Fix {
 };
 
 const F26_CAVE: u32 = 0xe60;
+const F27_CAVE: u32 = 0xe80;
+const F27_TRAMPOLINE: u32 = F27_CAVE + 28;
+const _: () = assert!(F27_CAVE >= F26_CAVE + 25);
+
+/// HD art (docs/UPSCALING.md). Every bitmap the game loads goes through
+/// `0x499ec0(bmp, flags)` with the whole BMP in memory. F27 sends the load
+/// to `cmr_hd_load`, which runs the game's own load (through a trampoline)
+/// and, for a texture with an upscaled version made by `cmr-hd`, a second
+/// load of that version, its twin. The race HUD is drawn with 2D blits from
+/// these surfaces, through F13's blit hook, which copies from the twin with
+/// the source rectangle scaled. The game's own surfaces, sizes and layout
+/// are untouched. Opt-in (`hd_art`).
+const F27: Fix = Fix {
+    id: "F27",
+    what: "HD art: upscaled race HUD textures from the hd_art folder (needs cmrhooks.dll)",
+    optional: true,
+    code: &[
+        // the loader: mov eax,[esp+8] ; test al,1 -> jmp ; nop
+        Piece {
+            at: At::Image(0x0049_9ec0),
+            ops: &[Op::Jmp(At::Cave(F27_CAVE)), Op::Raw(&[NOP])],
+        },
+        Piece {
+            at: At::Cave(F27_CAVE),
+            ops: &[
+                Op::Raw(&[0x8b, 0x0d]), // mov ecx,[cmr_hd_load]
+                Op::Addr(At::Cave(F13_TABLE + slot::HD_LOAD)),
+                // test ecx,ecx ; jz trampoline ; push flags ; push bmp ;
+                // push trampoline ; call ecx ; ret 8 (its result is ours)
+                Op::Raw(&[0x85, 0xc9, 0x74, 0x12]),
+                Op::Raw(&[0xff, 0x74, 0x24, 0x08, 0xff, 0x74, 0x24, 0x08, 0x68]),
+                Op::Addr(At::Cave(F27_TRAMPOLINE)),
+                Op::Raw(&[0xff, 0xd1, 0xc2, 0x08, 0x00]),
+                // the trampoline: the game's loader, from its moved start
+                Op::Raw(&[0x8b, 0x44, 0x24, 0x08, 0xa8, 0x01]),
+                Op::Jmp(At::Image(0x0049_9ec6)),
+            ],
+        },
+    ],
+};
 
 /// The game's depth test `0x49fa70(x, y)` (is anything drawn in front at a
 /// screen point; the only place depth pixels are read) locks the whole
@@ -1662,7 +1705,7 @@ mod tests {
         let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
         let expected: Vec<_> = (1..=ids.len()).map(|i| format!("F{i}")).collect();
         assert_eq!(ids, expected);
-        assert_eq!(ids.len(), 26);
+        assert_eq!(ids.len(), 27);
     }
 
     #[test]
@@ -1685,6 +1728,26 @@ mod tests {
         let rel = u32::from_le_bytes(cave[30..34].try_into().unwrap());
         assert_eq!((CAVE + F23_CAVE + 34).wrapping_add(rel), 0x49cefc);
         assert_eq!(at(CAVE + F23_MAP), [0; 12]);
+    }
+
+    #[test]
+    fn f27_loads_through_the_hook_or_the_trampoline() {
+        let jump_at = |code: &[u8], at: u32, off: usize| {
+            assert_eq!(code[off], 0xe9);
+            let rel = u32::from_le_bytes(code[off + 1..off + 5].try_into().unwrap());
+            (at + off as u32 + 5).wrapping_add(rel)
+        };
+        let site = at(0x499ec0);
+        assert_eq!(jump_at(&site, 0x499ec0, 0), CAVE + F27_CAVE);
+        let c = at(CAVE + F27_CAVE);
+        assert_eq!(c.len(), 39);
+        assert_eq!(c[2..6], (CAVE + F13_TABLE + slot::HD_LOAD).to_le_bytes());
+        // jz lands on the trampoline (28): 10 + 0x12
+        assert_eq!(&c[6..10], [0x85, 0xc9, 0x74, 0x12]);
+        assert_eq!(c[19..23], (CAVE + F27_TRAMPOLINE).to_le_bytes());
+        assert_eq!(&c[23..28], [0xff, 0xd1, 0xc2, 0x08, 0x00]);
+        assert_eq!(&c[28..34], [0x8b, 0x44, 0x24, 0x08, 0xa8, 0x01]);
+        assert_eq!(jump_at(&c, CAVE + F27_CAVE, 34), 0x499ec6);
     }
 
     #[test]
@@ -2156,8 +2219,8 @@ mod tests {
 
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
-        // the last piece is F26's depth test
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F26_CAVE + 25);
+        // the last piece is F27's loader stub
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F27_CAVE + 39);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]
@@ -2179,7 +2242,7 @@ mod tests {
     fn only_optional_fixes_can_be_skipped() {
         let skip = [
             "F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F17", "F18", "F19", "F20",
-            "F21", "F22", "F23", "F24", "F25", "F26", "F1",
+            "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F1",
         ];
         let ids: Vec<_> = OFFICIAL_EU_15.active(&skip).map(|f| f.id).collect();
         assert_eq!(ids, ["F1", "F2", "F3", "F4", "F5", "F8", "F9", "F15"]);
