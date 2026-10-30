@@ -1,6 +1,6 @@
 [package]
 name = "cmr-launcher"
-version = "0.2.1"
+version = "0.3.0"
 edition.workspace = true
 # The settings window's eframe needs 1.95.
 rust-version = "1.95"
