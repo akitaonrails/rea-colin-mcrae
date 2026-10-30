@@ -17,6 +17,7 @@
 pub mod canvas;
 pub mod depth;
 pub mod easing;
+pub mod hd;
 pub mod mipmap;
 pub mod pacing;
 pub mod pad;

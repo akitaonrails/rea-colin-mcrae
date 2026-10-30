@@ -31,6 +31,18 @@ impl Class {
         }
     }
 
+    /// Whether the game can load the HD version (F27 swaps texture loads;
+    /// the race HUD is drawn with textures, the menus aren't yet).
+    pub fn runtime(self) -> bool {
+        self == Class::Hud
+    }
+
+    /// Whether the art is flat colours (`lock::exact`), not shaded
+    /// (`lock::back_project`).
+    pub fn flat(self) -> bool {
+        self == Class::Hud
+    }
+
     /// Whether pure black marks transparency (the game's colour key 0).
     pub fn keyed(self) -> bool {
         matches!(self, Class::Interface | Class::Hud)

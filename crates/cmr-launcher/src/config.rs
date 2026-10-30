@@ -45,6 +45,9 @@ pub struct Settings {
     /// Pad button layout (fix F23): for the game's buttons 1 to 8, the
     /// physical button (1-based) that presses it, 0 for its own.
     pub buttons: Option<[u8; 8]>,
+    /// HD art (fix F27): the folder `cmr-hd upscale` wrote (with `x2` and
+    /// `x4` sets). Off unless set.
+    pub hd_art: Option<PathBuf>,
 }
 
 /// The game's own pad layout: every button presses its own.
@@ -219,6 +222,11 @@ gamepad_axes = true
 # that presses each, e.g. 1,2,4,5,1,6,7,8. The d-pad moves through menus.
 #buttons = original
 
+# HD art (a study, see docs/UPSCALING.md): the folder `cmr-hd upscale`
+# wrote from your own game files. The race HUD then uses the upscaled
+# images (the 2x set up to 1080p, the 4x set above).
+#hd_art = C:\Users\you\cmr-hd
+
 # Linux (cmr-play) only: how gamescope enlarges the picture. nearest (sharp
 # pixels), pixel (sharp, all pixels the same size), fsr (smooth, then
 # sharpened) or linear (smooth).
@@ -245,6 +253,7 @@ CMRLauncher [options]
   --smooth-distance on|off ease view distance changes
   --rumble <0-100>|off     gamepad rumble strength
   --buttons <layout>       pad buttons: original, modern or 8 numbers
+  --hd-art <folder>        HD art made by cmr-hd (docs/UPSCALING.md)
   --gamepad-axes on|off    triggers/right stick as pedals, Start pauses
   --close-quits on|off     closing the window quits the game
 
@@ -385,6 +394,7 @@ impl Settings {
                     Some(f) => s.texture_filter = Some(f),
                     None => bad("texture_filter needs original, smooth or sharp, not"),
                 },
+                "hd_art" => s.hd_art = Some(value.into()),
                 "buttons" => match parse_buttons(value) {
                     Some(b) => s.buttons = Some(b),
                     None => bad("buttons needs original, modern or 8 button numbers, not"),
@@ -426,6 +436,7 @@ impl Settings {
             rumble: over.rumble.or(self.rumble),
             scaler: over.scaler.or(self.scaler),
             buttons: over.buttons.or(self.buttons),
+            hd_art: over.hd_art.or(self.hd_art),
         }
     }
 
@@ -448,6 +459,14 @@ impl Settings {
             Some(true) => 1,
             Some(false) => 1 | 8,
         }
+    }
+
+    /// The HD art set for the race resolution: `x2` up to 2.5 times the
+    /// game's 480 lines (1080p), `x4` above (1440p, 4K).
+    pub fn hd_set(&self) -> Option<PathBuf> {
+        let dir = self.hd_art.as_ref()?;
+        let height = self.race_resolution().map_or(480, |(_, h)| h);
+        Some(dir.join(if height * 2 <= 480 * 5 { "x2" } else { "x4" }))
     }
 
     /// F23's map: the physical button for each of the game's 12 buttons
@@ -506,6 +525,9 @@ impl Settings {
         if self.rumble_strength() == 0 {
             skip.push("F22");
         }
+        if self.hd_art.is_none() {
+            skip.push("F27");
+        }
         skip
     }
 
@@ -534,6 +556,7 @@ impl Settings {
                         format!("--resolution needs WIDTHxHEIGHT or original, not {v}\n\n{USAGE}")
                     })?);
                 }
+                "--hd-art" => s.hd_art = Some(value("--hd-art")?.into()),
                 "--buttons" => {
                     let v = value("--buttons")?;
                     s.buttons = Some(parse_buttons(&v).ok_or_else(|| {
@@ -632,6 +655,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hd_art_set_follows_the_resolution() {
+        let at = |res: &str| {
+            Settings::parse_file(&format!("hd_art = C:\\hd\nresolution = {res}"))
+                .0
+                .hd_set()
+        };
+        assert_eq!(at("1920x1080"), Some(PathBuf::from("C:\\hd").join("x2")));
+        assert_eq!(at("2560x1440"), Some(PathBuf::from("C:\\hd").join("x4")));
+        assert_eq!(at("3840x2160"), Some(PathBuf::from("C:\\hd").join("x4")));
+        assert_eq!(at("original"), Some(PathBuf::from("C:\\hd").join("x2")));
+        assert_eq!(Settings::default().hd_set(), None);
+        let s = Settings::parse_args(["--hd-art".to_string(), "D:\\x".to_string()]).unwrap();
+        assert_eq!(s.hd_art, Some(PathBuf::from("D:\\x")));
+    }
+
+    #[test]
     fn button_layouts() {
         let parse = |v: &str| Settings::parse_file(&format!("buttons = {v}"));
         assert_eq!(parse("modern").0.buttons, Some(MODERN_BUTTONS));
@@ -689,7 +728,9 @@ mod tests {
         assert_eq!(s.draw_distance, Some(0x20000));
         assert_eq!(
             s.skipped_fixes(),
-            ["F6", "F7", "F14", "F21", "F23", "F18", "F19", "F20", "F22"]
+            [
+                "F6", "F7", "F14", "F21", "F23", "F18", "F19", "F20", "F22", "F27"
+            ]
         );
         assert!(args(&["--widescreen", "maybe"]).is_err());
         let s = args(&["--fps-limit", "120", "--vsync", "off"]).unwrap();
@@ -744,7 +785,7 @@ mod tests {
         assert_eq!(
             s.skipped_fixes(),
             [
-                "F10", "F13", "F16", "F11", "F12", "F25", "F17", "F18", "F19", "F20", "F22"
+                "F10", "F13", "F16", "F11", "F12", "F25", "F17", "F18", "F19", "F20", "F22", "F27"
             ]
         );
     }
@@ -760,7 +801,7 @@ mod tests {
         assert_eq!(
             saved.skipped_fixes(),
             [
-                "F6", "F7", "F14", "F21", "F23", "F11", "F18", "F19", "F20", "F22"
+                "F6", "F7", "F14", "F21", "F23", "F11", "F18", "F19", "F20", "F22", "F27"
             ]
         );
         let m = saved.merged(args(&["--game", r"C:\new"]).unwrap());

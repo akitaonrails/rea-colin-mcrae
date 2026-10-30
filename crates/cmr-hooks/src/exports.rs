@@ -85,6 +85,12 @@ unsafe extern "system" {
     fn GetModuleHandleExA(flags: u32, name: *const u8, module: *mut *mut u8) -> i32;
     fn GetModuleFileNameA(module: *mut u8, buf: *mut u8, size: u32) -> u32;
     fn CloseHandle(handle: *mut u8) -> i32;
+    fn ReadFile(file: *mut u8, buf: *mut u8, len: u32, read: *mut u32, ov: *mut u8) -> i32;
+    fn GetFileSize(file: *mut u8, high: *mut u32) -> u32;
+    fn GetProcessHeap() -> *mut u8;
+    fn HeapAlloc(heap: *mut u8, flags: u32, bytes: usize) -> *mut u8;
+    fn HeapFree(heap: *mut u8, flags: u32, mem: *mut u8) -> i32;
+    fn VirtualProtect(addr: *mut u8, size: usize, protect: u32, old: *mut u32) -> i32;
 }
 
 type ExceptionFilter = unsafe extern "system" fn(*mut u8) -> i32;
@@ -218,6 +224,10 @@ struct Diag {
     severity_max: i32,
     motor_max: u16,
     send_errors: u32,
+    /// HD art: texture binds that used an HD twin, and those refused
+    /// because a record had changed.
+    hd_binds: u32,
+    hd_stale: u32,
 }
 
 static mut DIAG: Diag = Diag::ZERO;
@@ -302,6 +312,18 @@ fn diag_frame() {
         .num(u32::from(d.motor_max) * 100 / 65535)
         .text(b"%, send errors ")
         .num(d.send_errors)
+        .text(b", hd pairs ")
+        // SAFETY: a count the main thread writes; a diagnostic.
+        .num(unsafe { (*addr_of_mut!(HD_PAIRS)).1 } as u32)
+        .text(b" binds ")
+        .num(d.hd_binds)
+        .text(b" stale ")
+        .num(d.hd_stale)
+        .text(if unsafe { (*addr_of_mut!(SET_RENDER_STATE)).is_some() } {
+            b" (hooked)"
+        } else {
+            b" (not hooked)"
+        })
         .text(b", state ")
         .num(Game.state() as u32)
         .text(b"\r\n");
@@ -342,19 +364,21 @@ impl Diag {
         severity_max: 0,
         motor_max: 0,
         send_errors: 0,
+        hd_binds: 0,
+        hd_stale: 0,
     };
 }
 
 /// A small text buffer for the diagnostics (no `std` formatting here).
 struct Line {
-    buf: [u8; 200],
+    buf: [u8; 400],
     len: usize,
 }
 
 impl Default for Line {
     fn default() -> Line {
         Line {
-            buf: [0; 200],
+            buf: [0; 400],
             len: 0,
         }
     }
@@ -787,6 +811,253 @@ pub extern "stdcall" fn cmr_rumble(severity: i32, settings: *const PresentSettin
     }
 }
 
+/// The HD art folder (`CMR_HD_ART`, set by the launcher to the 2x or 4x set
+/// for the resolution), read once; length 0 when there is none.
+static mut HD_DIR: ([u8; 300], usize, bool) = ([0; 300], 0, false);
+
+/// Pairs of D3D texture handles: a game texture and its HD twin. Emptied
+/// outside races (`cmr_present`), so a reused handle never maps to a freed
+/// texture.
+static mut HD_PAIRS: ([HdPair; 512], usize) = ([HdPair::NONE; 512], 0);
+
+/// A game texture record and its HD twin's (each with the D3D handle at
+/// +0x10 it had when paired; checked at each bind, so a record the game
+/// freed and reused never swaps in the wrong picture).
+#[derive(Clone, Copy)]
+struct HdPair {
+    game: usize,
+    twin: usize,
+    game_handle: u32,
+    twin_handle: u32,
+}
+
+impl HdPair {
+    const NONE: HdPair = HdPair {
+        game: 0,
+        twin: 0,
+        game_handle: 0,
+        twin_handle: 0,
+    };
+
+    /// Both records still hold the handles they were paired with.
+    unsafe fn live(&self) -> bool {
+        // SAFETY: the game's texture records (+0x10 the handle).
+        unsafe {
+            *((self.game + 0x10) as *const u32) == self.game_handle
+                && *((self.twin + 0x10) as *const u32) == self.twin_handle
+        }
+    }
+}
+
+/// The game's bitmap loader (`0x499ec0(bmp, flags)`), reached through
+/// F27's trampoline.
+type LoadBitmap = unsafe extern "stdcall" fn(*const u8, u32) -> *mut u8;
+
+/// The HD version of a bitmap from the HD folder (see `hd`), in a heap
+/// block the caller frees, or null.
+unsafe fn hd_bitmap(bmp: *const u8) -> *mut u8 {
+    // SAFETY: the game's BMP in memory (its header says how long it is);
+    // plain Win32 file and heap calls; loading runs on the main thread.
+    unsafe {
+        let dir = &mut *addr_of_mut!(HD_DIR);
+        if !dir.2 {
+            dir.2 = true;
+            let n = GetEnvironmentVariableA(c"CMR_HD_ART".as_ptr().cast(), dir.0.as_mut_ptr(), 260);
+            dir.1 = if n > 0 && n < 260 { n as usize } else { 0 };
+        }
+        if dir.1 == 0 {
+            return core::ptr::null_mut();
+        }
+        let Some(len) = crate::hd::bmp_len(&*(bmp as *const [u8; 6])) else {
+            return core::ptr::null_mut();
+        };
+        let name = crate::hd::name(core::slice::from_raw_parts(bmp, len));
+        let mut path = [0u8; 300];
+        let n = dir.1;
+        path[..n].copy_from_slice(&dir.0[..n]);
+        path[n] = b'\\';
+        path[n + 1..n + 17].copy_from_slice(&name);
+        path[n + 17..n + 22].copy_from_slice(b".bmp\0");
+        // GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING
+        let f = CreateFileA(
+            path.as_ptr(),
+            0x8000_0000,
+            1,
+            core::ptr::null_mut(),
+            3,
+            0x80,
+            core::ptr::null_mut(),
+        );
+        if f as isize == -1 {
+            return core::ptr::null_mut();
+        }
+        let heap = GetProcessHeap();
+        let size = GetFileSize(f, core::ptr::null_mut());
+        let mut out = core::ptr::null_mut();
+        if (54..=64 << 20).contains(&size) {
+            let buf = HeapAlloc(heap, 0, size as usize);
+            let mut read = 0;
+            if !buf.is_null()
+                && ReadFile(f, buf, size, &mut read, core::ptr::null_mut()) != 0
+                && read == size
+                && crate::hd::bmp_len(&*(buf as *const [u8; 6])) == Some(size as usize)
+            {
+                out = buf;
+            } else if !buf.is_null() {
+                HeapFree(heap, 0, buf);
+            }
+        }
+        CloseHandle(f);
+        out
+    }
+}
+
+/// Instead of the game's bitmap loader `0x499ec0` (F27): the game's own
+/// load, and for textures (flags bit 1; the race HUD among them) with an
+/// HD version, a second load of that version, its twin. The game keeps its
+/// own textures and sizes; only binding (`hd_set_render_state`) swaps in
+/// the twin, whose coordinates are the same fractions of the picture.
+#[unsafe(no_mangle)]
+pub extern "stdcall" fn cmr_hd_load(load: LoadBitmap, bmp: *const u8, flags: u32) -> *mut u8 {
+    // SAFETY: the game's loader and its texture records (+0x10 the handle
+    // of the texture it draws with); loading runs on the main thread.
+    unsafe {
+        let game = load(bmp, flags);
+        if game.is_null() || bmp.is_null() || flags & 1 == 0 {
+            return game;
+        }
+        let hd = hd_bitmap(bmp);
+        if hd.is_null() {
+            return game;
+        }
+        let twin = load(hd, flags);
+        HeapFree(GetProcessHeap(), 0, hd);
+        let pairs = &mut *addr_of_mut!(HD_PAIRS);
+        if !twin.is_null() && pairs.1 < pairs.0.len() {
+            let handle = |rec: *mut u8| *(rec.add(0x10) as *const u32);
+            pairs.0[pairs.1] = HdPair {
+                game: game as usize,
+                twin: twin as usize,
+                game_handle: handle(game),
+                twin_handle: handle(twin),
+            };
+            pairs.1 += 1;
+            hook_texture_binds();
+        }
+        game
+    }
+}
+
+/// The device's `SetRenderState` (slot 23 of the `IDirect3DDevice2` the
+/// game holds at `[[0x50283c]+0x10]`), before F27 took the slot.
+type SetRenderState = unsafe extern "stdcall" fn(*mut usize, u32, u32) -> i32;
+static mut SET_RENDER_STATE: Option<SetRenderState> = None;
+const SET_RENDER_STATE_SLOT: usize = 23;
+const TEXTUREHANDLE: u32 = 1;
+
+/// The game binds textures from several places, all through the device's
+/// `SetRenderState(TEXTUREHANDLE, handle)`; that one method of the device
+/// is taken over once, so every bind of a texture with a twin uses the twin.
+unsafe fn hook_texture_binds() {
+    // SAFETY: the game's 3D settings and its live D3D device; the method
+    // table is made writable for the one entry and restored.
+    unsafe {
+        if (*addr_of_mut!(SET_RENDER_STATE)).is_some() {
+            return;
+        }
+        let settings = *(0x0050_283c as *const *const u8);
+        let device = if settings.is_null() {
+            core::ptr::null_mut()
+        } else {
+            *(settings.add(0x10) as *const *mut usize)
+        };
+        if device.is_null() {
+            return;
+        }
+        let entry = (*device as *mut usize).add(SET_RENDER_STATE_SLOT);
+        let mut old = 0;
+        if VirtualProtect(entry.cast(), 4, 0x04, &mut old) == 0 {
+            return;
+        }
+        *addr_of_mut!(SET_RENDER_STATE) =
+            Some(core::mem::transmute::<usize, SetRenderState>(*entry));
+        *entry = hd_set_render_state as *const () as usize;
+        VirtualProtect(entry.cast(), 4, old, &mut old);
+    }
+}
+
+/// `D3DRENDERSTATE_TEXTUREMAG` and `TEXTUREMIN`, and `D3DFILTER_LINEAR`.
+const TEXTUREMAG: u32 = 17;
+const TEXTUREMIN: u32 = 18;
+const FILTER_LINEAR: u32 = 2;
+
+/// Whether a twin is bound, and the filters the game last asked for
+/// (`TEXTUREMAG`, `TEXTUREMIN`; 0 before it asked).
+static mut HD_FILTER: (bool, [u32; 2]) = (false, [0; 2]);
+
+/// Every bind of a texture with a twin binds the twin, sampled smoothly:
+/// the game draws its 2D with sharp pixels, which at the twin's finer grid
+/// would still step along diagonals; filtered, its edges come out as
+/// straight lines. The game's own filters come back with its next texture.
+unsafe extern "stdcall" fn hd_set_render_state(device: *mut usize, state: u32, value: u32) -> i32 {
+    // SAFETY: the original method saved by `hook_texture_binds`; the main
+    // thread's own tables.
+    unsafe {
+        let Some(original) = *addr_of_mut!(SET_RENDER_STATE) else {
+            return 0;
+        };
+        let filter = &mut *addr_of_mut!(HD_FILTER);
+        match state {
+            TEXTUREHANDLE => {
+                let pairs = &*addr_of_mut!(HD_PAIRS);
+                let mut value = value;
+                let mut twin = false;
+                if let Some(p) = pairs.0[..pairs.1].iter().find(|p| p.game_handle == value) {
+                    if p.live() {
+                        value = p.twin_handle;
+                        twin = true;
+                        if let Some(d) = diag() {
+                            d.hd_binds += 1;
+                        }
+                    } else if let Some(d) = diag() {
+                        d.hd_stale += 1;
+                    }
+                }
+                if twin != filter.0 {
+                    filter.0 = twin;
+                    for (state, game) in [(TEXTUREMAG, filter.1[0]), (TEXTUREMIN, filter.1[1])] {
+                        let want = if twin { FILTER_LINEAR } else { game };
+                        if want != 0 {
+                            original(device, state, want);
+                        }
+                    }
+                }
+                original(device, state, value)
+            }
+            TEXTUREMAG | TEXTUREMIN => {
+                filter.1[(state - TEXTUREMAG) as usize] = value;
+                original(device, state, if filter.0 { FILTER_LINEAR } else { value })
+            }
+            _ => original(device, state, value),
+        }
+    }
+}
+
+/// Outside races the textures are gone: forget the pairs.
+fn forget_hd_pairs() {
+    // SAFETY: the main thread's own table.
+    unsafe {
+        let pairs = &mut *addr_of_mut!(HD_PAIRS);
+        if pairs.1 != 0 && !(4..=0xb).contains(&Game.state()) {
+            pairs.1 = 0;
+        }
+        // The device may not exist yet when the textures load.
+        if pairs.1 != 0 {
+            hook_texture_binds();
+        }
+    }
+}
+
 /// The game's two threads, its race updates (a multimedia timer, 25 a
 /// second) and its drawing (the main thread), were written for one-core
 /// PCs, where they never ran at the same moment: an update interrupted
@@ -1005,6 +1276,7 @@ pub extern "stdcall" fn cmr_present(display: *mut u8, settings: *const PresentSe
         return 0;
     }
     share_core(&raw mut DRAW_THREAD);
+    forget_hd_pairs();
     // SAFETY: the launcher's settings block in the fix memory.
     let settings = unsafe { &*settings };
     diag_frame();

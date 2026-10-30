@@ -11,8 +11,16 @@
 //! and `x2/` (the 4x made half as large, for 1080p).
 
 mod asset;
+mod atlas;
 mod classes;
+/// The runtime names of HD bitmaps: the hook library's own source file, so
+/// the tool and the game side can't disagree (compiled here, not linked:
+/// on Windows the hook library is built without `std`).
+#[path = "../../cmr-hooks/src/hd.rs"]
+mod hd;
 mod key;
+mod lock;
+mod palette;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use classes::Class;
+use image::RgbaImage;
 use sha2::{Digest, Sha256};
 
 const USAGE: &str = "usage:
@@ -35,6 +44,8 @@ docs/UPSCALING.md. The outputs come from your game: keep them to yourself.";
 /// The upscale factor of every Real-ESRGAN model used here.
 const SCALE: u32 = 4;
 const MANIFEST: &str = "manifest.tsv";
+/// The largest side of a sheet, in source pixels (4 Mpixels, 64 after 4x).
+const SHEET: u32 = 2048;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -93,7 +104,19 @@ fn bitmaps(root: &Path) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-fn decode(game: &Path, rel: &str) -> Result<(image::RgbaImage, String), String> {
+/// A game image.
+struct Decoded {
+    /// Its pixels.
+    img: image::RgbaImage,
+    /// The SHA-256 of the game file.
+    digest: String,
+    /// The name its HD version has at run time (`hd::name`).
+    name: String,
+    /// The BMP the game loads (its palette makes the 8-bit HD version).
+    bmp: Vec<u8>,
+}
+
+fn decode(game: &Path, rel: &str) -> Result<Decoded, String> {
     let stored = fs::read(game.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
     let digest = Sha256::digest(&stored)
         .iter()
@@ -102,7 +125,21 @@ fn decode(game: &Path, rel: &str) -> Result<(image::RgbaImage, String), String> 
     let bmp = asset::unwrap(&stored).map_err(|e| format!("{rel}: {e}"))?;
     let img = image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp)
         .map_err(|e| format!("{rel}: {e}"))?;
-    Ok((img.to_rgba8(), digest))
+    // The same bytes the hook library hashes: the header's bfSize.
+    let header: [u8; 6] = bmp
+        .get(..6)
+        .and_then(|h| h.try_into().ok())
+        .ok_or_else(|| format!("{rel}: too short for a BMP"))?;
+    let len = hd::bmp_len(&header)
+        .filter(|&n| n <= bmp.len())
+        .ok_or_else(|| format!("{rel}: its BMP header has no usable size"))?;
+    let name = String::from_utf8_lossy(&hd::name(&bmp[..len])).into_owned();
+    Ok(Decoded {
+        img: img.to_rgba8(),
+        digest,
+        name,
+        bmp,
+    })
 }
 
 fn list(game: &Path) -> Result<(), String> {
@@ -110,7 +147,7 @@ fn list(game: &Path) -> Result<(), String> {
     for rel in bitmaps(game)? {
         let class = classes::classify(&rel);
         let pixels = decode(game, &rel)
-            .map(|(img, _)| u64::from(img.width()) * u64::from(img.height()))
+            .map(|d| u64::from(d.img.width()) * u64::from(d.img.height()))
             .unwrap_or(0);
         let e = by_class.entry(class.name()).or_default();
         e.0 += 1;
@@ -130,7 +167,8 @@ fn png_path(out: &Path, rel: &str) -> PathBuf {
 }
 
 fn extract(game: &Path, out: &Path, all: bool) -> Result<(), String> {
-    let mut manifest = String::from("# path\tclass\tsha256 of the game file\twidth\theight\n");
+    let mut manifest =
+        String::from("# path\tclass\tsha256 of the game file\twidth\theight\truntime name\n");
     let (mut done, mut failed) = (0, 0);
     for rel in bitmaps(game)? {
         let class = classes::classify(&rel);
@@ -138,16 +176,22 @@ fn extract(game: &Path, out: &Path, all: bool) -> Result<(), String> {
             continue;
         }
         match decode(game, &rel) {
-            Ok((mut img, digest)) => {
+            Ok(Decoded {
+                mut img,
+                digest,
+                name,
+                bmp,
+            }) => {
                 if class.keyed() {
                     key::to_alpha(&mut img);
                 }
                 let path = png_path(out, &rel);
                 fs::create_dir_all(path.parent().expect("a parent"))
                     .and_then(|()| img.save(&path).map_err(std::io::Error::other))
+                    .and_then(|()| fs::write(out.join(format!("{rel}.orig.bmp")), &bmp))
                     .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
                 manifest.push_str(&format!(
-                    "{rel}\t{}\t{digest}\t{}\t{}\n",
+                    "{rel}\t{}\t{digest}\t{}\t{}\t{name}\n",
                     class.name(),
                     img.width(),
                     img.height()
@@ -172,12 +216,132 @@ fn extract(game: &Path, out: &Path, all: bool) -> Result<(), String> {
 struct Job<'a> {
     rel: &'a str,
     class: Class,
+    /// The runtime name of its HD bitmaps.
+    name: &'a str,
     rest: String,
 }
 
-/// Upscales by model in batches: Real-ESRGAN loads its model once per run
-/// (seconds), so each model's images go through one run over a folder of
-/// numbered copies, then move to their own paths.
+/// Writes the BMP the game loads in place of `original`: 8-bit in the
+/// original's palette when the original is 8-bit (the game keeps those as
+/// indices), else 24-bit.
+fn write_runtime(
+    img: &image::RgbaImage,
+    original: &[u8],
+    keyed: bool,
+    path: &Path,
+) -> Result<(), String> {
+    let mut file = fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut encoder = image::codecs::bmp::BmpEncoder::new(&mut file);
+    let result = match palette::of_bmp(original) {
+        Some(colours) => {
+            let indices: Vec<u8> = img
+                .pixels()
+                .map(|p| palette::index(&colours, p.0, keyed))
+                .collect();
+            encoder.encode_with_palette(
+                &indices,
+                img.width(),
+                img.height(),
+                image::ExtendedColorType::L8,
+                Some(&colours),
+            )
+        }
+        None => {
+            let rgb = image::DynamicImage::ImageRgba8(img.clone()).to_rgb8();
+            encoder.encode(
+                &rgb,
+                img.width(),
+                img.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+        }
+    };
+    result.map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Runs Real-ESRGAN 4x on one image file and reads the result.
+fn run_esrgan(
+    esrgan: &Path,
+    model: &str,
+    input: &Path,
+    output: &Path,
+) -> Result<RgbaImage, String> {
+    let mut cmd = Command::new(esrgan);
+    cmd.arg("-i").arg(input).arg("-o").arg(output);
+    cmd.args(["-n", model, "-s", &SCALE.to_string(), "-f", "png"]);
+    if let Some(m) = esrgan
+        .parent()
+        .map(|d| d.join("models"))
+        .filter(|m| m.is_dir())
+    {
+        cmd.arg("-m").arg(m);
+    }
+    let run = cmd
+        .output()
+        .map_err(|e| format!("cannot run {}: {e}", esrgan.display()))?;
+    if !run.status.success() {
+        return Err(format!(
+            "{model}: the upscaler failed: {}",
+            String::from_utf8_lossy(&run.stderr)
+                .lines()
+                .last()
+                .unwrap_or("")
+        ));
+    }
+    image::open(output)
+        .map(|i| i.to_rgba8())
+        .map_err(|e| format!("{}: {e}", output.display()))
+}
+
+/// Saves an image's 4x result and the 2x set made from it (half as large:
+/// sharper than enlarging the original twice), as PNG under `x4/` and
+/// `x2/`, plus the BMP the game loads for the classes drawn at run time.
+fn save_sets(
+    job: &Job,
+    original: &RgbaImage,
+    x4: RgbaImage,
+    src: &Path,
+    hd: &Path,
+) -> Result<(), String> {
+    let x2 = image::imageops::resize(
+        &x4,
+        x4.width() / 2,
+        x4.height() / 2,
+        image::imageops::FilterType::Lanczos3,
+    );
+    // Each set held to the original's colours (`lock`).
+    let fit = |up: RgbaImage, scale: u32| {
+        if job.class.flat() {
+            lock::exact(original, &up, scale)
+        } else {
+            lock::back_project(original, &up, scale)
+        }
+    };
+    let (mut x4, mut x2) = (fit(x4, 4), fit(x2, 2));
+    if job.class.keyed() {
+        key::to_key(&mut x4);
+        key::to_key(&mut x2);
+    }
+    for (set, img) in [("x4", &x4), ("x2", &x2)] {
+        let output = png_path(&hd.join(set), job.rel);
+        fs::create_dir_all(output.parent().expect("a parent")).map_err(|e| e.to_string())?;
+        img.save(&output).map_err(|e| e.to_string())?;
+        if job.class.runtime() {
+            let original = fs::read(src.join(format!("{}.orig.bmp", job.rel)))
+                .map_err(|e| format!("{}: {e}", job.rel))?;
+            write_runtime(
+                img,
+                &original,
+                job.class.keyed(),
+                &hd.join(set).join(format!("{}.bmp", job.name)),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Upscales by model, the images of each packed into sheets (`atlas`):
+/// one upscaler run per sheet.
 fn upscale(src: &Path, hd: &Path, esrgan: &Path, only: Option<&str>) -> Result<(), String> {
     let manifest = fs::read_to_string(src.join(MANIFEST)).map_err(|e| {
         format!(
@@ -188,7 +352,7 @@ fn upscale(src: &Path, hd: &Path, esrgan: &Path, only: Option<&str>) -> Result<(
     let mut jobs: BTreeMap<&str, Vec<Job>> = BTreeMap::new();
     for line in manifest.lines().filter(|l| !l.starts_with('#')) {
         let f: Vec<&str> = line.split('\t').collect();
-        let [rel, class, digest, w, h] = f[..] else {
+        let [rel, class, digest, w, h, name] = f[..] else {
             continue;
         };
         let class = Class::from_name(class);
@@ -196,74 +360,58 @@ fn upscale(src: &Path, hd: &Path, esrgan: &Path, only: Option<&str>) -> Result<(
         if only.is_some_and(|p| !rel.starts_with(p)) {
             continue;
         }
-        let rest = format!("{}\t{digest}\t{w}\t{h}\t{model}", class.name());
-        jobs.entry(model)
-            .or_default()
-            .push(Job { rel, class, rest });
+        let rest = format!("{}\t{digest}\t{w}\t{h}\t{name}\t{model}", class.name());
+        jobs.entry(model).or_default().push(Job {
+            rel,
+            class,
+            name,
+            rest,
+        });
     }
-    let models = esrgan.parent().map(|d| d.join("models"));
     let mut out = String::from(
-        "# path\tclass\tsha256 of the game file\twidth\theight\tmodel (x4/ and x2/ hold the 4x and 2x sets)\n",
+        "# path\tclass\tsha256 of the game file\twidth\theight\truntime name\tmodel (x4/ and x2/ hold the 4x and 2x sets)\n",
     );
     let mut done = 0;
     for (model, jobs) in &jobs {
         let batch = hd.join(format!(".batch-{model}"));
-        let (bin, bout) = (batch.join("in"), batch.join("out"));
         let _ = fs::remove_dir_all(&batch);
-        fs::create_dir_all(&bin)
-            .and_then(|()| fs::create_dir_all(&bout))
-            .map_err(|e| e.to_string())?;
-        for (i, job) in jobs.iter().enumerate() {
-            fs::copy(png_path(src, job.rel), bin.join(format!("{i:05}.png")))
-                .map_err(|e| format!("{}: {e}", job.rel))?;
-        }
-        println!("{model}: {} images", jobs.len());
-        let mut cmd = Command::new(esrgan);
-        cmd.arg("-i").arg(&bin).arg("-o").arg(&bout);
-        cmd.args(["-n", model, "-s", &SCALE.to_string(), "-f", "png"]);
-        if let Some(m) = models.as_ref().filter(|m| m.is_dir()) {
-            cmd.arg("-m").arg(m);
-        }
-        let run = cmd
-            .output()
-            .map_err(|e| format!("cannot run {}: {e}", esrgan.display()))?;
-        if !run.status.success() {
-            return Err(format!(
-                "{model}: the upscaler failed: {}",
-                String::from_utf8_lossy(&run.stderr)
-                    .lines()
-                    .last()
-                    .unwrap_or("")
-            ));
-        }
-        for (i, job) in jobs.iter().enumerate() {
-            let result = bout.join(format!("{i:05}.png"));
-            if !result.is_file() {
-                eprintln!("skipped: {}: no output", job.rel);
-                continue;
+        fs::create_dir_all(&batch).map_err(|e| e.to_string())?;
+        let images = jobs
+            .iter()
+            .map(|job| {
+                image::open(png_path(src, job.rel))
+                    .map(|i| i.to_rgba8())
+                    .map_err(|e| format!("{}: {e}", job.rel))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let sizes: Vec<_> = images.iter().map(RgbaImage::dimensions).collect();
+        let sheets = atlas::pack(&sizes, SHEET);
+        println!("{model}: {} images on {} sheets", jobs.len(), sheets.len());
+        for (n, sheet) in sheets.iter().enumerate() {
+            let mut canvas = RgbaImage::new(sheet.width, sheet.height);
+            for p in &sheet.places {
+                atlas::draw(&mut canvas, &images[p.index], p.x, p.y);
             }
-            let x4 = image::open(&result)
-                .map_err(|e| format!("{}: {e}", result.display()))?
-                .to_rgba8();
-            // The 2x set, for 1080p: the 4x result made half as large (a
-            // sharper result than enlarging the original twice).
-            let mut x2 = image::imageops::resize(
-                &x4,
-                (x4.width() / 2).max(1),
-                (x4.height() / 2).max(1),
-                image::imageops::FilterType::Lanczos3,
+            let (input, output) = (
+                batch.join(format!("{n}.png")),
+                batch.join(format!("{n}.x4.png")),
             );
-            let mut x4 = x4;
-            if job.class.keyed() {
-                key::to_key(&mut x4);
-                key::to_key(&mut x2);
+            canvas.save(&input).map_err(|e| e.to_string())?;
+            let up = run_esrgan(esrgan, model, &input, &output)?;
+            if up.dimensions() != (sheet.width * SCALE, sheet.height * SCALE) {
+                return Err(format!(
+                    "{model}: the upscaler returned a sheet of the wrong size"
+                ));
             }
-            for (set, img) in [("x4", &x4), ("x2", &x2)] {
-                let output = png_path(&hd.join(set), job.rel);
-                fs::create_dir_all(output.parent().expect("a parent"))
-                    .map_err(|e| e.to_string())?;
-                img.save(&output).map_err(|e| e.to_string())?;
+            for p in &sheet.places {
+                let (w, h) = sizes[p.index];
+                let x4 =
+                    image::imageops::crop_imm(&up, p.x * SCALE, p.y * SCALE, w * SCALE, h * SCALE)
+                        .to_image();
+                save_sets(&jobs[p.index], &images[p.index], x4, src, hd)?;
             }
+        }
+        for job in jobs {
             out.push_str(&format!("{}\t{}\n", job.rel, job.rest));
             done += 1;
         }
