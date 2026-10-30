@@ -36,8 +36,9 @@ never changed: the launcher works on its own private copy.
 
 - Races at higher resolutions, up to 4K (the original stops at 800×600).
 - The intro and menus are enlarged to your screen with sharp pixels, and
-  the HUD (speedometer, timer, pause menu, results) scales with the
-  resolution and sits in the corners of wide screens.
+  everything drawn during a race (HUD, messages, pause menu, results,
+  loading screen) scales with the resolution; the HUD sits in the corners
+  of wide screens.
 - 16:9 widescreen that shows more to the sides instead of stretching.
 - A longer view distance, up to 3× further down the stage.
 
