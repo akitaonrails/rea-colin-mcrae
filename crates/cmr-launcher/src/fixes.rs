@@ -732,7 +732,7 @@ const F12: Fix = Fix {
 /// entry makes its stub do nothing, so the game runs as without F13.
 pub const F13_TABLE: u32 = 0x250;
 /// The exports F13's table holds, in order (`slot::*` are their offsets).
-pub const F13_EXPORTS: [&str; 19] = [
+pub const F13_EXPORTS: [&str; 20] = [
     "cmr_hud_begin",
     "cmr_hud_end",
     "cmr_hud_rects",
@@ -752,6 +752,7 @@ pub const F13_EXPORTS: [&str; 19] = [
     "cmr_pad_buttons",
     "cmr_depth_visible",
     "cmr_hd_load",
+    "cmr_hd_load_2d",
 ];
 /// The table's size in bytes (one address per export).
 const F13_TABLE_LEN: usize = 4 * F13_EXPORTS.len();
@@ -777,6 +778,7 @@ mod slot {
     pub const PAD_BUTTONS: u32 = 64;
     pub const DEPTH_VISIBLE: u32 = 68;
     pub const HD_LOAD: u32 = 72;
+    pub const HD_LOAD_2D: u32 = 76;
 }
 
 /// With a race resolution the game never had (F10), the in-race 2D (HUD,
@@ -1253,6 +1255,9 @@ const F26_CAVE: u32 = 0xe60;
 const F27_CAVE: u32 = 0xe80;
 const F27_TRAMPOLINE: u32 = F27_CAVE + 28;
 const _: () = assert!(F27_CAVE >= F26_CAVE + 25);
+/// The 2D surface loader's stub, after the texture loader's 39 bytes.
+const F27_CAVE_2D: u32 = F27_CAVE + 40;
+const F27_TRAMPOLINE_2D: u32 = F27_CAVE_2D + 32;
 
 /// HD art (docs/UPSCALING.md). Every bitmap the game loads goes through
 /// `0x499ec0(bmp, flags)` with the whole BMP in memory. F27 sends the load
@@ -1261,7 +1266,10 @@ const _: () = assert!(F27_CAVE >= F26_CAVE + 25);
 /// load of that version, its twin. The race HUD is drawn with 2D blits from
 /// these surfaces, through F13's blit hook, which copies from the twin with
 /// the source rectangle scaled. The game's own surfaces, sizes and layout
-/// are untouched. Opt-in (`hd_art`).
+/// are untouched. The front end's images (logos, cars, buttons) load as
+/// plain surfaces through `0x499320(record, bmp, flags)`; F27 sends those
+/// to `cmr_hd_load_2d` in the same way, and the menu picture draws their
+/// twins at the screen's size (`cmr_fe_present`). Opt-in (`hd_art`).
 const F27: Fix = Fix {
     id: "F27",
     what: "HD art: upscaled race HUD textures from the hd_art folder (needs cmrhooks.dll)",
@@ -1286,6 +1294,28 @@ const F27: Fix = Fix {
                 // the trampoline: the game's loader, from its moved start
                 Op::Raw(&[0x8b, 0x44, 0x24, 0x08, 0xa8, 0x01]),
                 Op::Jmp(At::Image(0x0049_9ec6)),
+            ],
+        },
+        // the 2D loader: sub esp,0x3b0 -> jmp ; nop
+        Piece {
+            at: At::Image(0x0049_9320),
+            ops: &[Op::Jmp(At::Cave(F27_CAVE_2D)), Op::Raw(&[NOP])],
+        },
+        Piece {
+            at: At::Cave(F27_CAVE_2D),
+            ops: &[
+                Op::Raw(&[0x8b, 0x0d]), // mov ecx,[cmr_hd_load_2d]
+                Op::Addr(At::Cave(F13_TABLE + slot::HD_LOAD_2D)),
+                // test ecx,ecx ; jz trampoline ; push flags ; push bmp ;
+                // push record ; push trampoline ; call ecx ; ret 12
+                Op::Raw(&[0x85, 0xc9, 0x74, 0x16]),
+                Op::Raw(&[0xff, 0x74, 0x24, 0x0c, 0xff, 0x74, 0x24, 0x0c]),
+                Op::Raw(&[0xff, 0x74, 0x24, 0x0c, 0x68]),
+                Op::Addr(At::Cave(F27_TRAMPOLINE_2D)),
+                Op::Raw(&[0xff, 0xd1, 0xc2, 0x0c, 0x00]),
+                // the trampoline: the game's 2D loader, from its moved start
+                Op::Raw(&[0x81, 0xec, 0xb0, 0x03, 0x00, 0x00]),
+                Op::Jmp(At::Image(0x0049_9326)),
             ],
         },
     ],
@@ -1748,6 +1778,19 @@ mod tests {
         assert_eq!(&c[23..28], [0xff, 0xd1, 0xc2, 0x08, 0x00]);
         assert_eq!(&c[28..34], [0x8b, 0x44, 0x24, 0x08, 0xa8, 0x01]);
         assert_eq!(jump_at(&c, CAVE + F27_CAVE, 34), 0x499ec6);
+
+        let site = at(0x499320);
+        assert_eq!(site.len(), 6);
+        assert_eq!(jump_at(&site, 0x499320, 0), CAVE + F27_CAVE_2D);
+        let c = at(CAVE + F27_CAVE_2D);
+        assert_eq!(c.len(), 43);
+        assert_eq!(c[2..6], (CAVE + F13_TABLE + slot::HD_LOAD_2D).to_le_bytes());
+        // jz lands on the trampoline (32): 10 + 0x16
+        assert_eq!(&c[6..10], [0x85, 0xc9, 0x74, 0x16]);
+        assert_eq!(c[23..27], (CAVE + F27_TRAMPOLINE_2D).to_le_bytes());
+        assert_eq!(&c[27..32], [0xff, 0xd1, 0xc2, 0x0c, 0x00]);
+        assert_eq!(&c[32..38], [0x81, 0xec, 0xb0, 0x03, 0x00, 0x00]);
+        assert_eq!(jump_at(&c, CAVE + F27_CAVE_2D, 38), 0x499326);
     }
 
     #[test]
@@ -2220,7 +2263,7 @@ mod tests {
         let cave = at(CAVE);
         assert_eq!(cave.len(), 22);
         // the last piece is F27's loader stub
-        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F27_CAVE + 39);
+        assert_eq!(OFFICIAL_EU_15.cave_size(&[]), F27_CAVE_2D + 43);
         let target = |off: usize, len: u32| {
             let rel = u32::from_le_bytes(
                 cave[off + len as usize - 4..off + len as usize]

@@ -13,6 +13,7 @@
 mod asset;
 mod atlas;
 mod classes;
+mod depixel;
 /// The runtime names of HD bitmaps: the hook library's own source file, so
 /// the tool and the game side can't disagree (compiled here, not linked:
 /// on Windows the hook library is built without `std`).
@@ -218,25 +219,48 @@ struct Job<'a> {
     class: Class,
     /// The runtime name of its HD bitmaps.
     name: &'a str,
+    /// Its pixels (keyed images with transparency).
+    img: RgbaImage,
     rest: String,
 }
 
-/// Writes the BMP the game loads in place of `original`: 8-bit in the
-/// original's palette when the original is 8-bit (the game keeps those as
-/// indices), else 24-bit.
+/// How an image is enlarged: flat art (the HUD; logos, flags and icons of
+/// few colours) is redrawn with smooth outlines (`depixel`), as if drawn
+/// with vector lines; the rest by Real-ESRGAN with this model.
+fn method(class: Class, img: &RgbaImage) -> Option<&'static str> {
+    let colours = img
+        .pixels()
+        .map(|p| p.0)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    if class.flat(colours) {
+        Some(DEPIXEL)
+    } else {
+        class.model()
+    }
+}
+
+const DEPIXEL: &str = "depixel";
+
+/// Writes the BMP the game loads in place of `original`: for a texture
+/// (the HUD) with an 8-bit original, 8-bit in the original's palette (the
+/// game keeps those as indices); else 24-bit (2D surfaces are converted to
+/// the screen's 16 bits as they load, so the smooth edges keep their
+/// in-between shades).
 fn write_runtime(
     img: &image::RgbaImage,
     original: &[u8],
-    keyed: bool,
+    class: Class,
     path: &Path,
 ) -> Result<(), String> {
     let mut file = fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut encoder = image::codecs::bmp::BmpEncoder::new(&mut file);
-    let result = match palette::of_bmp(original) {
+    let palette = palette::of_bmp(original).filter(|_| class.texture());
+    let result = match palette {
         Some(colours) => {
             let indices: Vec<u8> = img
                 .pixels()
-                .map(|p| palette::index(&colours, p.0, keyed))
+                .map(|p| palette::index(&colours, p.0, class.keyed()))
                 .collect();
             encoder.encode_with_palette(
                 &indices,
@@ -293,46 +317,61 @@ fn run_esrgan(
         .map_err(|e| format!("{}: {e}", output.display()))
 }
 
-/// Saves an image's 4x result and the 2x set made from it (half as large:
-/// sharper than enlarging the original twice), as PNG under `x4/` and
-/// `x2/`, plus the BMP the game loads for the classes drawn at run time.
-fn save_sets(
-    job: &Job,
-    original: &RgbaImage,
-    x4: RgbaImage,
-    src: &Path,
-    hd: &Path,
-) -> Result<(), String> {
+/// The 4x and 2x versions of a flat image: redrawn with smooth outlines,
+/// and for a texture (8-bit at run time) held to the original's own colours.
+fn redraw(job: &Job) -> (RgbaImage, RgbaImage) {
+    let at = |scale: u32| {
+        let up = depixel::scale(&job.img, scale);
+        if job.class.texture() {
+            lock::exact(&job.img, &up, scale)
+        } else {
+            up
+        }
+    };
+    (at(4), at(2))
+}
+
+/// The 4x and 2x versions from Real-ESRGAN's 4x: the 2x made half as large
+/// (sharper than enlarging the original twice), both held to the
+/// original's colours.
+fn from_esrgan(job: &Job, x4: RgbaImage) -> (RgbaImage, RgbaImage) {
     let x2 = image::imageops::resize(
         &x4,
         x4.width() / 2,
         x4.height() / 2,
         image::imageops::FilterType::Lanczos3,
     );
-    // Each set held to the original's colours (`lock`).
-    let fit = |up: RgbaImage, scale: u32| {
-        if job.class.flat() {
-            lock::exact(original, &up, scale)
-        } else {
-            lock::back_project(original, &up, scale)
-        }
-    };
-    let (mut x4, mut x2) = (fit(x4, 4), fit(x2, 2));
+    (
+        lock::back_project(&job.img, &x4, 4),
+        lock::back_project(&job.img, &x2, 2),
+    )
+}
+
+/// Saves an image's 4x and 2x versions as PNG under `x4/` and `x2/`, plus
+/// the BMP the game loads (none for images larger than the screen the game
+/// draws, like the menu's panorama: their twins would be too large).
+fn save_sets(
+    job: &Job,
+    (mut x4, mut x2): (RgbaImage, RgbaImage),
+    src: &Path,
+    hd: &Path,
+) -> Result<(), String> {
     if job.class.keyed() {
         key::to_key(&mut x4);
         key::to_key(&mut x2);
     }
+    let runtime = job.class.runtime() && job.img.width() <= 640 && job.img.height() <= 480;
     for (set, img) in [("x4", &x4), ("x2", &x2)] {
         let output = png_path(&hd.join(set), job.rel);
         fs::create_dir_all(output.parent().expect("a parent")).map_err(|e| e.to_string())?;
         img.save(&output).map_err(|e| e.to_string())?;
-        if job.class.runtime() {
+        if runtime {
             let original = fs::read(src.join(format!("{}.orig.bmp", job.rel)))
                 .map_err(|e| format!("{}: {e}", job.rel))?;
             write_runtime(
                 img,
                 &original,
-                job.class.keyed(),
+                job.class,
                 &hd.join(set).join(format!("{}.bmp", job.name)),
             )?;
         }
@@ -340,8 +379,7 @@ fn save_sets(
     Ok(())
 }
 
-/// Upscales by model, the images of each packed into sheets (`atlas`):
-/// one upscaler run per sheet.
+/// Upscales every image the manifest lists, by method (`method`).
 fn upscale(src: &Path, hd: &Path, esrgan: &Path, only: Option<&str>) -> Result<(), String> {
     let manifest = fs::read_to_string(src.join(MANIFEST)).map_err(|e| {
         format!(
@@ -356,15 +394,21 @@ fn upscale(src: &Path, hd: &Path, esrgan: &Path, only: Option<&str>) -> Result<(
             continue;
         };
         let class = Class::from_name(class);
-        let Some(model) = class.model() else { continue };
-        if only.is_some_and(|p| !rel.starts_with(p)) {
+        if class.model().is_none() || only.is_some_and(|p| !rel.starts_with(p)) {
             continue;
         }
+        let img = image::open(png_path(src, rel))
+            .map_err(|e| format!("{rel}: {e}"))?
+            .to_rgba8();
+        let Some(model) = method(class, &img) else {
+            continue;
+        };
         let rest = format!("{}\t{digest}\t{w}\t{h}\t{name}\t{model}", class.name());
         jobs.entry(model).or_default().push(Job {
             rel,
             class,
             name,
+            img,
             rest,
         });
     }
@@ -373,24 +417,48 @@ fn upscale(src: &Path, hd: &Path, esrgan: &Path, only: Option<&str>) -> Result<(
     );
     let mut done = 0;
     for (model, jobs) in &jobs {
+        if *model == DEPIXEL {
+            println!("{model}: {} images", jobs.len());
+            for job in jobs {
+                save_sets(job, redraw(job), src, hd)?;
+            }
+        } else {
+            upscale_sheets(model, jobs, src, hd, esrgan)?;
+        }
+        for job in jobs {
+            out.push_str(&format!("{}\t{}\n", job.rel, job.rest));
+            done += 1;
+        }
+    }
+    fs::write(hd.join(MANIFEST), out).map_err(|e| e.to_string())?;
+    println!(
+        "{done} images upscaled into {}/x4 and {}/x2",
+        hd.display(),
+        hd.display()
+    );
+    Ok(())
+}
+
+/// Real-ESRGAN over one model's images, packed into sheets (`atlas`): one
+/// upscaler run per sheet.
+fn upscale_sheets(
+    model: &str,
+    jobs: &[Job],
+    src: &Path,
+    hd: &Path,
+    esrgan: &Path,
+) -> Result<(), String> {
+    {
         let batch = hd.join(format!(".batch-{model}"));
         let _ = fs::remove_dir_all(&batch);
         fs::create_dir_all(&batch).map_err(|e| e.to_string())?;
-        let images = jobs
-            .iter()
-            .map(|job| {
-                image::open(png_path(src, job.rel))
-                    .map(|i| i.to_rgba8())
-                    .map_err(|e| format!("{}: {e}", job.rel))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let sizes: Vec<_> = images.iter().map(RgbaImage::dimensions).collect();
+        let sizes: Vec<_> = jobs.iter().map(|j| j.img.dimensions()).collect();
         let sheets = atlas::pack(&sizes, SHEET);
         println!("{model}: {} images on {} sheets", jobs.len(), sheets.len());
         for (n, sheet) in sheets.iter().enumerate() {
             let mut canvas = RgbaImage::new(sheet.width, sheet.height);
             for p in &sheet.places {
-                atlas::draw(&mut canvas, &images[p.index], p.x, p.y);
+                atlas::draw(&mut canvas, &jobs[p.index].img, p.x, p.y);
             }
             let (input, output) = (
                 batch.join(format!("{n}.png")),
@@ -408,20 +476,10 @@ fn upscale(src: &Path, hd: &Path, esrgan: &Path, only: Option<&str>) -> Result<(
                 let x4 =
                     image::imageops::crop_imm(&up, p.x * SCALE, p.y * SCALE, w * SCALE, h * SCALE)
                         .to_image();
-                save_sets(&jobs[p.index], &images[p.index], x4, src, hd)?;
+                save_sets(&jobs[p.index], from_esrgan(&jobs[p.index], x4), src, hd)?;
             }
-        }
-        for job in jobs {
-            out.push_str(&format!("{}\t{}\n", job.rel, job.rest));
-            done += 1;
         }
         let _ = fs::remove_dir_all(&batch);
     }
-    fs::write(hd.join(MANIFEST), out).map_err(|e| e.to_string())?;
-    println!(
-        "{done} images upscaled into {}/x4 and {}/x2",
-        hd.display(),
-        hd.display()
-    );
     Ok(())
 }

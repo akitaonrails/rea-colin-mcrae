@@ -31,15 +31,22 @@ impl Class {
         }
     }
 
-    /// Whether the game can load the HD version (F27 swaps texture loads;
-    /// the race HUD is drawn with textures, the menus aren't yet).
+    /// Whether the game loads the HD version (F27: the race HUD's textures
+    /// and the front end's images).
     pub fn runtime(self) -> bool {
-        self == Class::Hud
+        self != Class::Skip
     }
 
-    /// Whether the art is flat colours (`lock::exact`), not shaded
-    /// (`lock::back_project`).
-    pub fn flat(self) -> bool {
+    /// Whether an image of this class with `colours` colours is flat art,
+    /// redrawn with smooth outlines (the HUD always; interface pieces of
+    /// few colours: logos, flags, icons) rather than upscaled.
+    pub fn flat(self, colours: usize) -> bool {
+        self == Class::Hud || (self == Class::Interface && colours <= 32)
+    }
+
+    /// Whether the game draws it as a texture (the race HUD), kept as 8-bit
+    /// palette indices; the rest are 2D surfaces.
+    pub fn texture(self) -> bool {
         self == Class::Hud
     }
 

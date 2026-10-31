@@ -1,7 +1,8 @@
 # Upscaling the 2D art (study)
 
-Status: **the race HUD works in the game** (opt-in `hd_art`, F27); the
-menus and loading screens are upscaled offline but not shown yet. This
+Status: **works in the game** (opt-in `hd_art`, F27) for the race HUD and
+the front end's images (logos, flags, buttons, car pictures); full-screen
+pictures larger than the game's 640x480 (the menu panorama) are not shown. This
 page records what was learned, the tool that extracts and upscales the
 images, how the game shows them, and what is left. It is written for
 whoever picks this up next.
@@ -79,11 +80,20 @@ Notes:
   2048x2048, each image in a 16-pixel gutter of its own edge pixels (more
   than the model's reach), runs once per sheet and cuts the results out
   (`src/atlas.rs`). The 233 HUD images make one sheet: about 35 s.
+- **Flat art is redrawn, not upscaled.** The AI models draw the
+  original's one-pixel staircases as wavy or still-stepped edges. Flat art
+  (the HUD, and interface pieces of 32 colours or fewer: logos, flags,
+  icons) is instead redrawn with smooth outlines by the Kopf–Lischinski
+  "Depixelizing Pixel Art" method (`src/depixel.rs`, ported from the MIT
+  depixel-js): it joins the pixels into regions, fits curves through their
+  staircases and keeps one-pixel lines connected, as if traced by hand in a
+  vector editor. Real-ESRGAN stays for shaded art (car renders, photos).
 - **The upscalers redraw colours.** On the HUD the artwork model turned
   one-pixel grey outlines into thin dark lines and drew the original's
   one-pixel staircases as wavy edges. Every result is therefore held to
   the original (`src/lock.rs`):
-  - *flat art* (the HUD): each pixel takes one of the colours the
+  - *HUD textures* (kept as 8-bit palette indices by the game): each
+    pixel of the redrawn version takes one of the colours the
     original has within two pixels of the spot, the one the (lightly
     smoothed) upscale is closest to, favouring nearer and more common
     ones. Colours stay exactly the artist's, outlines keep their width,
@@ -103,8 +113,8 @@ Notes:
 
 ## The tool
 
-Real-ESRGAN runs once per sheet (see Findings); on the RTX 5090 the 233
-HUD images take about 35 s.
+Real-ESRGAN runs once per sheet (see Findings). Flat art skips it
+(`depixel`). All 912 images, both sets: about 18 minutes.
 
 
 `crates/cmr-hd` (a host program; not part of the launcher package):
@@ -123,6 +133,8 @@ cmr-hd upscale <work>/extracted <work>/hd --esrgan <path>/realesrgan-ncnn-vulkan
 - `src/key.rs`: the colour key to alpha and back, with tests.
 - `src/atlas.rs`: packing images into sheets for the upscaler, with tests.
 - `src/lock.rs`: holding results to the original's colours, with tests.
+- `src/depixel.rs`: the smooth-outline redraw for flat art, with tests
+  checked against depixel-js's own output.
 - `src/palette.rs`: the 8-bit runtime copies, in the original's palette.
 - `manifest.tsv` records each image's path, class, the SHA-256 of the game
   file it came from, its size and the model. A runtime loader must check
@@ -166,22 +178,34 @@ the race never calls).
 4. **Checked** headless at 1080p and 4K: 35 pairs, about 6000 twin binds
    per race, none stale, 60 fps at 4K.
 
+### The front end (done, F27)
+
+The menus are one 640x480 picture, enlarged to the screen each frame.
+
+1. **Load.** Their images load as plain surfaces through
+   `0x499320(record, bmp, flags)`; F27 loads a twin beside each image
+   that has an HD file (`cmr_hd_load_2d`).
+2. **Note.** F13's hook at the entry of the blit `0x49e3e0` notes every
+   blit of the frame: where it went and, for an image with a twin, the
+   source rectangle in the twin's pixels.
+3. **Draw.** After the picture is enlarged (`cmr_fe_present`), each noted
+   twin is drawn over its spot at the screen's size (DirectDraw `Blt`,
+   with the game's colour key), but only when nothing drawn later covers
+   it and the finished picture still shows the original image there
+   (`fe_hd::intact`: the menu's globe and other things are drawn without
+   the blit). Anything else keeps the enlarged original, so the picture's
+   order is never broken.
+
 ### Next
 
-- **The menus and loading screens.** They are drawn into a 640x480 picture
-  that F16/E5 enlarges as a whole, which has no per-image step to hook.
-  The front end has to move to the race's model first: a virtual 640x480
-  with rectangles scaled at the 2D primitives (blit `0x49e3e0`, panel
-  `0x49e200`), drawn into the real-size back buffer; then a blit from a
-  surface with an HD twin draws from the twin with its source rectangle
-  multiplied by the factor.
 - **Fonts** (`*.fon`, `ini/cdFONT.BMP`, the race timer's digit sheets) are
   a separate class; text could be redrawn from a vector font.
 - **Set-up in the launcher**: run the extraction and upscaling once from
   the settings window, with progress, into the launcher's data folder
   (bundling Real-ESRGAN needs a `THIRD_PARTY.md` row).
-- **Stripe edges.** The rev bar's long diagonal stripes still show a faint
-  wobble at 4K where the original's staircases are steepest.
+- **Speed.** The whole set takes about 18 minutes on a 16-core CPU, mostly
+  the back-projection of the large pictures; it is plain single-threaded
+  code and would split across cores easily.
 
 Things to watch:
 
