@@ -145,6 +145,47 @@ pub unsafe fn blit_picture(
     }
 }
 
+/// As `blit`, with each picture pixel from `sample(fx, fy)`, the colour
+/// at that point of the 640x480 picture (fractions: the screen pixel's
+/// centre), for pictures composed at the screen's own size
+/// (`fe_compose`).
+///
+/// # Safety
+/// `dst` must hold `h` rows of `dst_pitch` bytes of `dst_bits`-bit pixels.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn blit_sampled(
+    sample: impl Fn(f32, f32) -> u16,
+    green6: bool,
+    dst: *mut u8,
+    dst_pitch: usize,
+    dst_bits: u32,
+    w: u32,
+    h: u32,
+) {
+    let (x0, y0, tw, th) = target(w, h);
+    let px = dst_bits as usize / 8;
+    for y in 0..h {
+        let row = unsafe { dst.add(y as usize * dst_pitch) };
+        unsafe { core::ptr::write_bytes(row, 0, w as usize * px) };
+        if y < y0 || y >= y0 + th {
+            continue;
+        }
+        let fy = ((y - y0) as f32 + 0.5) * SRC_H as f32 / th as f32;
+        for x in 0..tw {
+            let fx = (x as f32 + 0.5) * SRC_W as f32 / tw as f32;
+            let v = sample(fx, fy);
+            let at = (x0 + x) as usize;
+            unsafe {
+                if dst_bits == 32 {
+                    *(row as *mut u32).add(at) = to_rgb32(v, green6);
+                } else {
+                    *(row as *mut u16).add(at) = v;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

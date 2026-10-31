@@ -421,6 +421,13 @@ impl Line {
         self.text(&digits)
     }
 
+    fn int(&mut self, n: i32) -> &mut Line {
+        if n < 0 {
+            self.text(b"-");
+        }
+        self.num(n.unsigned_abs())
+    }
+
     fn num(&mut self, mut n: u32) -> &mut Line {
         let mut digits = [0u8; 10];
         let mut i = digits.len();
@@ -486,6 +493,9 @@ unsafe fn scale_arg(slot: *mut *mut Rect, canvas: &Canvas, store: &mut Rect) {
 /// Both are replaced by scaled copies.
 #[unsafe(no_mangle)]
 pub extern "stdcall" fn cmr_hud_rects(args: *mut *mut Rect, clip: u32) {
+    // SAFETY: the queue's own arguments (`0x49b420(src, dst, texture,
+    // ...)`, rectangles of four shorts), read before any scaling.
+    unsafe { trace_queue(args as *const usize) };
     let hud = hud();
     let Some(canvas) = canvas() else {
         return;
@@ -626,6 +636,7 @@ pub extern "stdcall" fn cmr_depth_visible(x: i32, y: i32) -> u32 {
 pub extern "stdcall" fn cmr_fe_present(display: *mut u8) -> u32 {
     // A race frame's virtual 640x480 is not the front end's picture.
     if display.is_null() || hud().sections.active() {
+        forget_fe_draws();
         return 0;
     }
     // SAFETY: the game's display struct: +0 W, +4 H, +0x428 the back
@@ -635,39 +646,216 @@ pub extern "stdcall" fn cmr_fe_present(display: *mut u8) -> u32 {
         let (w, h) = (*(display as *const i32), *(display.add(4) as *const i32));
         let back = *(display.add(0x428) as *const *mut usize);
         if (w, h) != (640, 480) || back.is_null() {
+            forget_fe_draws();
             return 0;
         }
-        let Some(buf) = lock(back, 0) else {
+        let Some(desc) = desc_of(back) else {
+            forget_fe_draws();
             return 0;
         };
-        if buf.width > 640 && buf.height >= 480 && buf.bits == 16 && buf.pitch > 0 {
+        let (sw, sh) = (desc.width, desc.height);
+        if sw <= 640 || sh < 480 {
+            forget_fe_draws();
+            return 0;
+        }
+        // The picture, read alone (a GPU copies back only what is locked).
+        let corner = [0, 0, 640, 480];
+        let Some(buf) = lock_rect(back, &corner, DDLOCK_READONLY) else {
+            forget_fe_draws();
+            return 0;
+        };
+        let ok = buf.bits == 16 && buf.pitch > 0;
+        let green6 = buf.green_mask == 0x7e0;
+        if ok {
             let scratch = &mut *addr_of_mut!(PICTURE);
-            let pitch = buf.pitch as usize;
             for y in 0..480 {
                 core::ptr::copy_nonoverlapping(
-                    buf.surface.add(y * pitch) as *const u16,
+                    buf.surface.add(y * buf.pitch as usize) as *const u16,
                     scratch.as_mut_ptr().add(y * 640),
                     640,
                 );
             }
-            crate::present::blit(
-                scratch.as_ptr() as *const u8,
-                640 * 2,
-                buf.green_mask == 0x7e0,
-                buf.surface,
-                pitch,
-                16,
-                buf.width,
-                buf.height,
-            );
         }
-        let size = (buf.width, buf.height);
         unlock(back);
-        if size.0 > 640 && size.1 >= 480 {
-            draw_fe_twins(back, size.0, size.1);
+        if !ok {
+            forget_fe_draws();
+            return 0;
         }
+        let composed = compose_fe(back);
+        if let Some(buf) = lock(back, DDLOCK_WRITEONLY) {
+            let pitch = buf.pitch as usize;
+            if composed {
+                let (layers, n) = &*addr_of_mut!(FE_LAYERS);
+                let (top, under) = (&*addr_of_mut!(FE_TOP), &*addr_of_mut!(FE_UNDER));
+                let picture = &*addr_of_mut!(PICTURE);
+                crate::present::blit_sampled(
+                    |fx, fy| crate::fe_compose::sample(&layers[..*n], top, under, picture, fx, fy),
+                    green6,
+                    buf.surface,
+                    pitch,
+                    buf.bits,
+                    sw,
+                    sh,
+                );
+            } else {
+                crate::present::blit(
+                    (*addr_of_mut!(PICTURE)).as_ptr() as *const u8,
+                    640 * 2,
+                    green6,
+                    buf.surface,
+                    pitch,
+                    buf.bits,
+                    sw,
+                    sh,
+                );
+            }
+            unlock(back);
+        }
+        forget_fe_draws();
         diag_frame();
         0
+    }
+}
+
+/// This frame's layers for `fe_compose`, and its owner maps.
+static mut FE_LAYERS: ([crate::fe_compose::Layer<'static>; 1024], usize) =
+    ([crate::fe_compose::Layer::EMPTY; 1024], 0);
+static mut FE_TOP: [u16; 640 * 480] = [0; 640 * 480];
+static mut FE_UNDER: [u16; 640 * 480] = [0; 640 * 480];
+
+/// Builds the frame's layers from its noted blits into `back` and their
+/// owners (`fe_compose`); true when some picture pixel comes from a twin.
+unsafe fn compose_fe(back: *mut usize) -> bool {
+    // SAFETY: the main thread's own tables; the game's live surfaces.
+    unsafe {
+        let draws = &*addr_of_mut!(FE_DRAWS);
+        if draws.2 {
+            return false;
+        }
+        let (layers, n) = &mut *addr_of_mut!(FE_LAYERS);
+        *n = 0;
+        let mut twins = false;
+        for d in draws.0[..draws.1]
+            .iter()
+            .filter(|d| d.dst_surface == back as usize)
+        {
+            let Some(image) = cached_pixels(d.surface) else {
+                // An image that can't be read: its pixels stay unexplained.
+                continue;
+            };
+            let twin = if d.draw.twin {
+                cached_pixels(d.twin_surface).map(|p| (p, d.twin_src))
+            } else {
+                None
+            };
+            twins |= twin.is_some();
+            layers[*n] = crate::fe_compose::Layer::new(
+                d.draw.dst,
+                d.src,
+                image,
+                twin,
+                d.key.map(|k| k[0] as u16),
+            );
+            *n += 1;
+        }
+        if !twins {
+            return false;
+        }
+        let (top, under) = (&mut *addr_of_mut!(FE_TOP), &mut *addr_of_mut!(FE_UNDER));
+        crate::fe_compose::owners(&layers[..*n], &*addr_of_mut!(PICTURE), top, under);
+        let any = crate::fe_compose::any_twin(&layers[..*n], top);
+        if let Some(dg) = diag() {
+            dg.fe_draws += *n as u32;
+            dg.fe_shown += u32::from(any);
+        }
+        any
+    }
+}
+
+/// A copy of a 16-bit surface's pixels, kept until images load again.
+#[derive(Clone, Copy)]
+struct Cached {
+    surface: usize,
+    px: *mut u16,
+    w: i32,
+    h: i32,
+}
+
+static mut PIXELS: ([Cached; 1024], usize) = (
+    [Cached {
+        surface: 0,
+        px: core::ptr::null_mut(),
+        w: 0,
+        h: 0,
+    }; 1024],
+    0,
+);
+
+/// The pixels of a game surface (16-bit), read once.
+unsafe fn cached_pixels(surface: usize) -> Option<crate::fe_compose::Pixels<'static>> {
+    // SAFETY: the main thread's own table; a live surface locked for
+    // reading and unlocked again; heap blocks the table owns.
+    unsafe {
+        let cache = &mut *addr_of_mut!(PIXELS);
+        let view = |c: &Cached| crate::fe_compose::Pixels {
+            px: core::slice::from_raw_parts(c.px, (c.w * c.h) as usize),
+            w: c.w,
+            h: c.h,
+            stride: c.w as usize,
+        };
+        if let Some(c) = cache.0[..cache.1].iter().find(|c| c.surface == surface) {
+            return Some(view(c));
+        }
+        if surface == 0 || cache.1 == cache.0.len() {
+            return None;
+        }
+        let s = surface as *mut usize;
+        let desc = lock(s, DDLOCK_READONLY)?;
+        let (w, h) = (desc.width as i32, desc.height as i32);
+        let px = if desc.bits == 16 && w > 0 && h > 0 {
+            HeapAlloc(GetProcessHeap(), 0, (w * h * 2) as usize) as *mut u16
+        } else {
+            core::ptr::null_mut()
+        };
+        if !px.is_null() {
+            for y in 0..h as usize {
+                core::ptr::copy_nonoverlapping(
+                    desc.surface.add(y * desc.pitch as usize) as *const u16,
+                    px.add(y * w as usize),
+                    w as usize,
+                );
+            }
+        }
+        unlock(s);
+        if px.is_null() {
+            return None;
+        }
+        let c = Cached { surface, px, w, h };
+        cache.0[cache.1] = c;
+        cache.1 += 1;
+        Some(view(&c))
+    }
+}
+
+/// Forgets the cached pixels (images are being loaded: surfaces change).
+fn forget_pixels() {
+    // SAFETY: the main thread's own table and its heap blocks.
+    unsafe {
+        let cache = &mut *addr_of_mut!(PIXELS);
+        for c in &cache.0[..cache.1] {
+            HeapFree(GetProcessHeap(), 0, c.px.cast());
+        }
+        cache.1 = 0;
+    }
+}
+
+/// Clears the frame's noted blits.
+fn forget_fe_draws() {
+    // SAFETY: the main thread's own table.
+    unsafe {
+        let draws = &mut *addr_of_mut!(FE_DRAWS);
+        draws.1 = 0;
+        draws.2 = false;
     }
 }
 
@@ -941,6 +1129,9 @@ pub extern "stdcall" fn cmr_hd_load(load: LoadBitmap, bmp: *const u8, flags: u32
     // of the texture it draws with); loading runs on the main thread.
     unsafe {
         let game = load(bmp, flags);
+        if !game.is_null() && !bmp.is_null() {
+            trace_name(game, bmp);
+        }
         if game.is_null() || bmp.is_null() || flags & 1 == 0 {
             return game;
         }
@@ -1131,10 +1322,12 @@ pub extern "stdcall" fn cmr_hd_load_2d(
     // SAFETY: the game's loader and its records (+0 the surface); loading
     // runs on the main thread.
     unsafe {
+        forget_pixels();
         let game = load(record, bmp, flags);
         if game.is_null() || bmp.is_null() {
             return game;
         }
+        trace_name(game, bmp);
         let twins = &mut *addr_of_mut!(FE_TWINS);
         let known = twins.0[..twins.1]
             .iter()
@@ -1236,6 +1429,7 @@ unsafe fn note_fe_blit(args: *const usize) {
         }
         let rect = |r: *const i16| core::array::from_fn(|i| i32::from(*r.add(i)));
         let dst = rect(dst_rect);
+        trace_draw(b"fe", src_rec as usize, rect(src_rect), dst);
         let mut entry = FeDraw {
             dst_surface: *dst_rec,
             draw: crate::fe_hd::Draw { dst, twin: false },
@@ -1259,106 +1453,148 @@ unsafe fn note_fe_blit(args: *const usize) {
     }
 }
 
-/// `IDirectDrawSurface::Blt` and `SetColorKey`.
-type Blt = unsafe extern "system" fn(
-    *mut usize,
-    *const [i32; 4],
-    *mut usize,
-    *const [i32; 4],
-    u32,
-    *const u8,
-) -> i32;
-const BLT: usize = 0x14 / 4;
-type SetColorKey = unsafe extern "system" fn(*mut usize, u32, *const [u32; 2]) -> i32;
-const SET_COLOR_KEY: usize = 0x74 / 4;
-const DDBLT_WAIT: u32 = 0x0100_0000;
-const DDBLT_KEYSRC: u32 = 0x8000;
+/// The draw trace (`CMR_HD_TRACE=<file>`, a tool for making HD art,
+/// docs/UPSCALING.md): each distinct HUD sprite and front-end blit, once,
+/// as `hud|fe <runtime name> src x y w h dst x y w h`, so the screens can
+/// be rebuilt from their pieces. Off unless the variable is set.
+struct Trace {
+    /// None until checked; Some(null) when off.
+    file: Option<*mut u8>,
+    /// Images by record: the record and its runtime name.
+    names: [(usize, [u8; 16]); 2048],
+    count: usize,
+    /// Hashes of the lines written (open addressing; 0 is empty).
+    seen: [u64; 8192],
+}
 
-/// Whether the finished picture (`PICTURE`) still shows the image of blit
-/// `d` where it was drawn (`fe_hd::intact`).
-unsafe fn image_intact(d: &FeDraw, w: i32, h: i32) -> bool {
-    let Some((dst, src)) = crate::fe_hd::clip(d.draw.dst, d.src, w, h) else {
-        return false;
-    };
-    // SAFETY: the image's live surface, read and unlocked again; the
-    // picture copied out by `cmr_fe_present` this frame.
-    unsafe {
-        let surface = d.surface as *mut usize;
-        let Some(img) = lock(surface, DDLOCK_READONLY) else {
-            return false;
+static mut TRACE: Trace = Trace {
+    file: None,
+    names: [(0, [0; 16]); 2048],
+    count: 0,
+    seen: [0; 8192],
+};
+
+fn trace() -> Option<&'static mut Trace> {
+    // SAFETY: the main thread's own state (loading and drawing).
+    let t = unsafe { &mut *addr_of_mut!(TRACE) };
+    if t.file.is_none() {
+        let mut path = [0u8; 260];
+        // SAFETY: plain Win32 calls with buffers of the stated sizes.
+        let file = unsafe {
+            let n =
+                GetEnvironmentVariableA(c"CMR_HD_TRACE".as_ptr().cast(), path.as_mut_ptr(), 259);
+            if n == 0 || n >= 259 {
+                core::ptr::null_mut()
+            } else {
+                // GENERIC_WRITE, share read, CREATE_ALWAYS, normal file
+                let f = CreateFileA(
+                    path.as_ptr(),
+                    0x4000_0000,
+                    1,
+                    core::ptr::null_mut(),
+                    2,
+                    0x80,
+                    core::ptr::null_mut(),
+                );
+                if f as isize == -1 {
+                    core::ptr::null_mut()
+                } else {
+                    f
+                }
+            }
         };
-        let ok = img.bits == 16
-            && crate::fe_hd::intact(
-                &*addr_of_mut!(PICTURE),
-                dst,
-                src,
-                |x, y| {
-                    *(img.surface.add(y as usize * img.pitch as usize) as *const u16)
-                        .add(x as usize)
-                },
-                d.key.map(|k| k[0] as u16),
-            );
-        unlock(surface);
-        ok
+        t.file = Some(file);
+    }
+    (!t.file?.is_null()).then_some(t)
+}
+
+/// Notes the runtime name of a loaded image's record.
+unsafe fn trace_name(record: *mut u8, bmp: *const u8) {
+    let Some(t) = trace() else { return };
+    // SAFETY: the game's BMP in memory; its header gives its length.
+    unsafe {
+        let Some(len) = crate::hd::bmp_len(&*(bmp as *const [u8; 6])) else {
+            return;
+        };
+        let name = crate::hd::name(core::slice::from_raw_parts(bmp, len));
+        let at = t.names[..t.count]
+            .iter()
+            .position(|n| n.0 == record as usize);
+        match at {
+            Some(i) => t.names[i].1 = name,
+            None if t.count < t.names.len() => {
+                t.names[t.count] = (record as usize, name);
+                t.count += 1;
+            }
+            None => {}
+        }
     }
 }
 
-/// After the menu picture is enlarged onto `back` (`w` x `h`): each twin
-/// noted this frame that nothing later covers, drawn over its spot at the
-/// screen's size. Then the frame's notes are cleared.
-unsafe fn draw_fe_twins(back: *mut usize, w: u32, h: u32) {
-    // SAFETY: the game's live surfaces; the main thread's own table.
+/// Traces a sprite queue entry (`0x49b420(src, dst, texture, ...)`).
+unsafe fn trace_queue(args: *const usize) {
+    if trace().is_none() {
+        return;
+    }
+    // SAFETY: as the caller says.
     unsafe {
-        let draws = &mut *addr_of_mut!(FE_DRAWS);
-        let noted = &draws.0[..draws.1];
-        // The blits into the picture, in order.
-        let mut picture = [crate::fe_hd::Draw {
-            dst: [0; 4],
-            twin: false,
-        }; 1024];
-        let mut which = [0usize; 1024];
-        let mut n = 0;
-        for (i, d) in noted.iter().enumerate() {
-            if d.dst_surface == back as usize {
-                picture[n] = d.draw;
-                which[n] = i;
-                n += 1;
-            }
+        let (src, dst, texture) = (
+            *args as *const i16,
+            *args.add(1) as *const i16,
+            *args.add(2),
+        );
+        if src.is_null() || dst.is_null() || texture == 0 {
+            return;
         }
-        let mut shown = 0;
-        if !draws.2 {
-            let target = crate::present::target(w, h);
-            let blt: Blt = method(back, BLT);
-            for (k, show) in crate::fe_hd::shown(&picture[..n]).enumerate() {
-                let d = &noted[which[k]];
-                let (w, h) = (crate::present::SRC_W as i32, crate::present::SRC_H as i32);
-                let clipped = crate::fe_hd::clip(d.draw.dst, d.twin_src, w, h);
-                let (true, Some((dst, src))) = (show, clipped) else {
-                    continue;
-                };
-                if !image_intact(d, w, h) {
-                    continue;
-                }
-                let twin = d.twin_surface as *mut usize;
-                let mut flags = DDBLT_WAIT;
-                if let Some(key) = d.key {
-                    let set: SetColorKey = method(twin, SET_COLOR_KEY);
-                    set(twin, DDCKEY_SRCBLT, &key);
-                    flags |= DDBLT_KEYSRC;
-                }
-                let screen = crate::fe_hd::to_screen(dst, target);
-                let src = [src[0], src[1], src[0] + src[2], src[1] + src[3]];
-                if blt(back, &screen, twin, &src, flags, core::ptr::null()) == 0 {
-                    shown += 1;
-                }
-            }
+        let rect = |r: *const i16| core::array::from_fn(|i| i32::from(*r.add(i)));
+        trace_draw(b"hud", texture, rect(src), rect(dst));
+    }
+}
+
+/// Writes one trace line for a draw of `record`, once per distinct line.
+fn trace_draw(kind: &[u8], record: usize, src: [i32; 4], dst: [i32; 4]) {
+    let Some(t) = trace() else { return };
+    let Some(&(_, name)) = t.names[..t.count].iter().find(|n| n.0 == record) else {
+        return;
+    };
+    let mut line = Line::default();
+    line.text(kind).text(b" ").text(&name).text(b" src");
+    for v in src {
+        line.text(b" ").int(v);
+    }
+    line.text(b" dst");
+    for v in dst {
+        line.text(b" ").int(v);
+    }
+    line.text(b"\r\n");
+    // FNV-1a of the line, to write it once.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in &line.buf[..line.len] {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    let h = h.max(1);
+    let mut i = (h as usize) % t.seen.len();
+    for _ in 0..t.seen.len() {
+        match t.seen[i] {
+            0 => break,
+            v if v == h => return,
+            _ => i = (i + 1) % t.seen.len(),
         }
-        if let Some(dg) = diag() {
-            dg.fe_draws += n as u32;
-            dg.fe_shown += shown;
-        }
-        draws.1 = 0;
-        draws.2 = false;
+    }
+    if t.seen[i] != 0 {
+        return; // full
+    }
+    t.seen[i] = h;
+    let mut written = 0;
+    // SAFETY: an open file handle and a buffer of the stated length.
+    unsafe {
+        WriteFile(
+            t.file.unwrap_or(core::ptr::null_mut()),
+            line.buf.as_ptr(),
+            line.len as u32,
+            &mut written,
+            core::ptr::null_mut(),
+        );
     }
 }
 

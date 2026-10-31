@@ -11,6 +11,10 @@ license = "MIT OR Apache-2.0"
 sha2 = "0.11.1"
 windows-sys = "0.61"
 
+[profile.release.package.cmr-hooks]
+# The front end's HD compositor runs per screen pixel (fe_compose).
+opt-level = 3
+
 [profile.release]
 panic = "abort"
 opt-level = "s"
