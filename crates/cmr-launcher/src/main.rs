@@ -31,7 +31,7 @@ mod app {
     use std::path::{Path, PathBuf};
 
     use cmr_launcher::config::{self, Settings};
-    use cmr_launcher::{edition, fill_data, fixes, pe, prepare, registry, runtime};
+    use cmr_launcher::{edition, fill_data, fixes, hdpack, pe, prepare, registry, runtime};
 
     use crate::{ui, win32};
 
@@ -285,8 +285,33 @@ mod app {
                 skip.join(", ")
             ));
         }
-        // HD art (F27): the set for this resolution, read by the hook library.
-        if let Some(set) = settings.hd_set() {
+        // HD art (F27): the set for this resolution, read by the hook
+        // library; the pack that comes with the launcher is installed into
+        // the runtime folder once.
+        let bundled = match (
+            &settings.hd_art,
+            hooks_path.as_ref().and_then(|p| p.parent()),
+        ) {
+            (Some(config::HdArt::Bundled), Some(dir)) if uses_hooks => {
+                let started = std::time::Instant::now();
+                match hdpack::install(&dir.join("hd"), &rt.join("hd")) {
+                    Ok(at) => {
+                        log_line(&format!(
+                            "HD art pack ready in {} ({} ms)",
+                            at.display(),
+                            started.elapsed().as_millis()
+                        ));
+                        at
+                    }
+                    Err(e) => {
+                        log_line(&format!("warning: HD art pack: {e}"));
+                        PathBuf::new()
+                    }
+                }
+            }
+            _ => PathBuf::new(),
+        };
+        if let Some(set) = settings.hd_set(&bundled).filter(|_| uses_hooks) {
             if set.is_dir() {
                 // SAFETY: set before the game starts; no other thread reads
                 // the environment yet.

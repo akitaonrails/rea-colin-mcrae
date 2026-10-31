@@ -6,6 +6,7 @@
 //!   cmr-hd list <game folder>
 //!   cmr-hd extract <game folder> <out folder> [--all]
 //!   cmr-hd upscale <extracted folder> <hd folder> --esrgan <realesrgan-ncnn-vulkan> [--only <path prefix>]
+//!   cmr-hd pack <hd folder> <pack folder>
 //!
 //! `upscale` writes two sets: `x4/` (Real-ESRGAN's 4x, for 1440p and up)
 //! and `x2/` (the 4x made half as large, for 1080p).
@@ -21,6 +22,7 @@ mod depixel;
 mod hd;
 mod key;
 mod lock;
+mod pack;
 mod palette;
 
 use std::collections::BTreeMap;
@@ -36,11 +38,13 @@ const USAGE: &str = "usage:
   cmr-hd list <game folder>
   cmr-hd extract <game folder> <out folder> [--all]
   cmr-hd upscale <extracted folder> <hd folder> --esrgan <realesrgan-ncnn-vulkan> [--only <path prefix>]
+  cmr-hd pack <hd folder> <pack folder>
 
 extract writes each image as PNG (keyed sprites with transparency) and a
 manifest.tsv; upscale runs Real-ESRGAN 4x on them by class and writes
 x4/ (1440p and up) and x2/ (1080p, the 4x made half as large). See
-docs/UPSCALING.md. The outputs come from your game: keep them to yourself.";
+docs/UPSCALING.md. pack stores an HD set compactly for the launcher to
+install.";
 
 /// The upscale factor of every Real-ESRGAN model used here.
 const SCALE: u32 = 4;
@@ -57,6 +61,10 @@ fn main() {
             Path::new(&args[2]),
             args.iter().any(|a| a == "--all"),
         ),
+        Some("pack") if args.len() == 3 => {
+            let hd = Path::new(&args[1]);
+            keyed_names(hd).and_then(|keyed| pack::pack(hd, Path::new(&args[2]), &keyed))
+        }
         Some("upscale") if args.len() >= 3 => {
             let flag = |name: &str| {
                 args.iter()
@@ -80,6 +88,20 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(1);
     }
+}
+
+/// Whether each runtime name is a keyed image, from an HD set's manifest.
+fn keyed_names(hd: &Path) -> Result<BTreeMap<String, bool>, String> {
+    let manifest = fs::read_to_string(hd.join(MANIFEST))
+        .map_err(|e| format!("no {MANIFEST} in {}: {e}", hd.display()))?;
+    Ok(manifest
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            Some((f.get(5)?.to_string(), Class::from_name(f.get(1)?).keyed()))
+        })
+        .collect())
 }
 
 /// Every `.bmp` under `root`, as forward-slash paths relative to it.

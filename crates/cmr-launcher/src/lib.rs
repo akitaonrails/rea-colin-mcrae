@@ -4,6 +4,7 @@ pub mod config;
 pub mod edition;
 pub mod fixes;
 pub mod form;
+pub mod hdpack;
 pub mod pe;
 pub mod registry;
 pub mod runtime;

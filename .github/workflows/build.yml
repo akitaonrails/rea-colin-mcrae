@@ -48,6 +48,11 @@ jobs:
              target/i686-pc-windows-gnu/release/cmrhooks.dll \
              README.md THIRD_PARTY.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
           cp -r linux "dist/$name/linux"
+          # The HD art pack, fetched and checked (packaging/hd-pack.txt).
+          read -r url digest < <(grep -v '^#' packaging/hd-pack.txt)
+          curl -fsSL "$url" -o hd-pack.zip
+          echo "$digest  hd-pack.zip" | sha256sum -c -
+          unzip -q hd-pack.zip -d "dist/$name/hd"
           (cd dist && zip -r "$name.zip" "$name")
           echo "PACKAGE=dist/$name.zip" >> "$GITHUB_ENV"
           echo "PACKAGE_DIR=dist/$name" >> "$GITHUB_ENV"

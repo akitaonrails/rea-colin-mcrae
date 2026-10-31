@@ -23,6 +23,8 @@ pub struct Picture {
     pub fps_limit: Option<u32>,
     pub vsync: Option<bool>,
     pub smooth_distance: bool,
+    /// HD art (the pack that comes with the launcher, or a folder).
+    pub hd_art: bool,
 }
 
 const ONE: u32 = 0x10000;
@@ -37,6 +39,7 @@ impl Picture {
         fps_limit: None,
         vsync: None,
         smooth_distance: false,
+        hd_art: false,
     };
 
     /// The recommended look for a screen: its own size (on its long side
@@ -53,6 +56,7 @@ impl Picture {
             fps_limit: None,
             vsync: Some(true),
             smooth_distance: true,
+            hd_art: true,
         }
     }
 }
@@ -68,6 +72,7 @@ impl Picture {
         fps_limit: Some(60),
         vsync: Some(true),
         smooth_distance: true,
+        hd_art: true,
     };
 }
 
@@ -147,6 +152,8 @@ pub struct Form {
     /// For the game's pad buttons 1..8, the physical button (0: its own).
     pub buttons: [u8; 8],
     pub layout: Layout,
+    /// A folder `hd_art` names instead of the bundled pack, kept as is.
+    pub hd_folder: Option<String>,
 }
 
 /// Choices offered for each picture setting, with their labels.
@@ -256,6 +263,7 @@ impl Form {
             fps_limit: s.fps_cap(),
             vsync: s.vsync,
             smooth_distance: s.smooth_distance == Some(true),
+            hd_art: s.hd_on(),
         };
         Form {
             game: path(&s.game),
@@ -268,6 +276,10 @@ impl Form {
             scaler: s.scaler.unwrap_or(Scaler::Nearest),
             buttons: s.buttons.unwrap_or(config::DEFAULT_BUTTONS),
             layout: Form::layout_of(&s.buttons.unwrap_or(config::DEFAULT_BUTTONS)),
+            hd_folder: match &s.hd_art {
+                Some(config::HdArt::Folder(dir)) => Some(dir.display().to_string()),
+                _ => None,
+            },
         }
     }
 
@@ -366,6 +378,11 @@ impl Form {
             },
         );
         put("smooth_distance", p.smooth_distance.then(|| "true".into()));
+        put(
+            "hd_art",
+            p.hd_art
+                .then(|| self.hd_folder.clone().unwrap_or_else(|| "on".into())),
+        );
         put("rumble", (self.rumble > 0).then(|| self.rumble.to_string()));
         put("gamepad_axes", Some(self.gamepad_axes.to_string()));
         put("close_quits", Some(self.close_quits.to_string()));
@@ -473,6 +490,7 @@ mod tests {
             fps_limit: Some(144),
             vsync: Some(false),
             smooth_distance: true,
+            hd_art: true,
         };
         f.rumble = 30;
         f.gamepad_axes = false;

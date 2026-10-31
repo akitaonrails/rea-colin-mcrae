@@ -41,6 +41,7 @@ for tool in function_grep.pl widl winebuild winecpp winedump wineg++ winegcc win
   rm -f "$APPDIR/usr/lib/wine/bin/$tool"
 done
 cp "$PKG/CMRLauncher.exe" "$PKG/cmrhooks.dll" "$PKG/linux/cmr-play" "$APPDIR/usr/lib/cmr/"
+if [ -d "$PKG/hd" ]; then cp -r "$PKG/hd" "$APPDIR/usr/lib/cmr/hd"; fi
 mkdir -p "$APPDIR/usr/share/doc/wine"
 cp "$HERE"/wine/* "$APPDIR/usr/share/doc/wine/"
 cp "$HERE/AppRun" "$APPDIR/AppRun"
