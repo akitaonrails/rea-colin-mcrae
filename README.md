@@ -221,7 +221,7 @@ saved settings.
 | `gamepad_axes = true` | Triggers and right stick work as accelerate/brake (with an Xbox-style pad, both triggers can be held at once); Start pauses. | on |
 | `rumble = 60` | Gamepad rumble on impacts, strength 1–100. Needs an Xbox-style (XInput) pad. **Test** next to it in the window shakes the pad for half a second. | off |
 | `buttons = original` | Pad buttons. `modern` (Xbox-style pads): A selects and is the handbrake, B goes back, Y changes the view, LB/RB change gear, Start pauses. `original`: the game's own 1998 order. Or eight pad button numbers for select, back, change view, gear down, handbrake, gear up, (unused), pause, e.g. `1,2,4,5,1,6,7,8`. The window's **Buttons** tab sets it. | `modern` |
-| `hd_art = D:\cmr-hd` | Experimental: an HD race HUD (dials, pace notes) made on your PC from your own game with the `cmr-hd` tool ([docs/UPSCALING.md](docs/UPSCALING.md)). The 2x set is used up to 1080p, the 4x set above. | off |
+| `hd_art = D:\cmr-hd` | Experimental: HD art for the race HUD (dials, pace notes) and the menus' logos, flags and car pictures, made on your PC from your own game with the `cmr-hd` tool ([docs/UPSCALING.md](docs/UPSCALING.md)). The 2x set is used up to 1080p, the 4x set above. | off |
 | `close_quits = true` | Closing the window (Alt+F4) quits the game. | on |
 | `saves = D:\Rally saves` | Where your saves are kept. | `Saved Games\Colin McRae Rally` in your user folder |
 | `language = FRENCH` | Game language on first setup: ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN. | ENGLISH |

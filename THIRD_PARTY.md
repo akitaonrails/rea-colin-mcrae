@@ -42,6 +42,7 @@ not part of the package. It links:
 | --- | --- | --- |
 | `flate2` (with `miniz_oxide`) | MIT OR Apache-2.0 | https://github.com/rust-lang/flate2-rs |
 | `image` (BMP and PNG codecs) and its dependencies | MIT OR Apache-2.0 | https://github.com/image-rs/image |
+| `crates/cmr-hd/src/depixel.rs`: ported code (Rust port of depixel-js by Jimb Esser, itself a port of Felix Kreuzer's "Depixelizing Pixel Art on GPUs", after Kopf and Lischinski's paper "Depixelizing Pixel Art") | MIT (both) | https://github.com/Jimbly/depixel-js , https://github.com/falichs/Depixelizing-Pixel-Art-on-GPUs , https://johanneskopf.de/publications/pixelart/ |
 
 It runs Real-ESRGAN (`realesrgan-ncnn-vulkan`, BSD-3-Clause,
 https://github.com/xinntao/Real-ESRGAN) as a separate program the user

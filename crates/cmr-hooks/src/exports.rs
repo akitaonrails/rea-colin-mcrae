@@ -228,6 +228,10 @@ struct Diag {
     /// because a record had changed.
     hd_binds: u32,
     hd_stale: u32,
+    /// HD art in the front end: blits into the menu picture, and twins
+    /// drawn over it.
+    fe_draws: u32,
+    fe_shown: u32,
 }
 
 static mut DIAG: Diag = Diag::ZERO;
@@ -324,6 +328,13 @@ fn diag_frame() {
         } else {
             b" (not hooked)"
         })
+        .text(b", fe twins ")
+        // SAFETY: as above.
+        .num(unsafe { (*addr_of_mut!(FE_TWINS)).1 } as u32)
+        .text(b" draws ")
+        .num(d.fe_draws)
+        .text(b" shown ")
+        .num(d.fe_shown)
         .text(b", state ")
         .num(Game.state() as u32)
         .text(b"\r\n");
@@ -366,6 +377,8 @@ impl Diag {
         send_errors: 0,
         hd_binds: 0,
         hd_stale: 0,
+        fe_draws: 0,
+        fe_shown: 0,
     };
 }
 
@@ -648,7 +661,12 @@ pub extern "stdcall" fn cmr_fe_present(display: *mut u8) -> u32 {
                 buf.height,
             );
         }
+        let size = (buf.width, buf.height);
         unlock(back);
+        if size.0 > 640 && size.1 >= 480 {
+            draw_fe_twins(back, size.0, size.1);
+        }
+        diag_frame();
         0
     }
 }
@@ -1058,6 +1076,292 @@ fn forget_hd_pairs() {
     }
 }
 
+/// Front-end images with an HD twin (F27): the game's 2D record and its
+/// twin's, each with the surface it held when paired (checked at each use,
+/// so a record the game reused never draws the wrong picture).
+#[derive(Clone, Copy)]
+struct FeTwin {
+    game: usize,
+    twin: usize,
+    game_surface: usize,
+    twin_surface: usize,
+}
+
+impl FeTwin {
+    const NONE: FeTwin = FeTwin {
+        game: 0,
+        twin: 0,
+        game_surface: 0,
+        twin_surface: 0,
+    };
+
+    /// The twin of the record `game`, if both still hold their surfaces.
+    unsafe fn of(game: usize) -> Option<FeTwin> {
+        // SAFETY: the main thread's own table; records start with their
+        // surface.
+        unsafe {
+            let twins = &*addr_of_mut!(FE_TWINS);
+            twins.0[..twins.1].iter().copied().find(|t| {
+                t.game == game
+                    && *(t.game as *const usize) == t.game_surface
+                    && *(t.twin as *const usize) == t.twin_surface
+            })
+        }
+    }
+}
+
+static mut FE_TWINS: ([FeTwin; 512], usize) = ([FeTwin::NONE; 512], 0);
+
+/// The game's 2D surface loader (`0x499320(record, bmp, flags)`), reached
+/// through F27's trampoline.
+type LoadSurface = unsafe extern "stdcall" fn(*mut u8, *const u8, u32) -> *mut u8;
+
+/// Instead of the 2D surface loader `0x499320` (F27): the game's own load,
+/// and for an image with an HD version a second load of that version, its
+/// twin. Flags bit 1 makes a new surface (the front end's images); without
+/// it the pixels go into an existing record (textures, reloads), which has
+/// a twin only if it had one before, reloaded too.
+#[unsafe(no_mangle)]
+pub extern "stdcall" fn cmr_hd_load_2d(
+    load: LoadSurface,
+    record: *mut u8,
+    bmp: *const u8,
+    flags: u32,
+) -> *mut u8 {
+    // SAFETY: the game's loader and its records (+0 the surface); loading
+    // runs on the main thread.
+    unsafe {
+        let game = load(record, bmp, flags);
+        if game.is_null() || bmp.is_null() {
+            return game;
+        }
+        let twins = &mut *addr_of_mut!(FE_TWINS);
+        let known = twins.0[..twins.1]
+            .iter()
+            .position(|t| t.game == game as usize);
+        if flags & 1 == 0 && known.is_none() {
+            return game;
+        }
+        let hd = hd_bitmap(bmp);
+        let twin = if hd.is_null() {
+            core::ptr::null_mut()
+        } else {
+            let into = match known {
+                Some(i) if flags & 1 == 0 => twins.0[i].twin as *mut u8,
+                _ => core::ptr::null_mut(),
+            };
+            let twin = load(into, hd, flags | u32::from(into.is_null()));
+            HeapFree(GetProcessHeap(), 0, hd);
+            twin
+        };
+        let entry = FeTwin {
+            game: game as usize,
+            twin: twin as usize,
+            game_surface: *(game as *const usize),
+            twin_surface: if twin.is_null() {
+                0
+            } else {
+                *(twin as *const usize)
+            },
+        };
+        match known {
+            Some(i) if twin.is_null() => {
+                twins.1 -= 1;
+                twins.0[i] = twins.0[twins.1];
+            }
+            Some(i) => twins.0[i] = entry,
+            None if !twin.is_null() && twins.1 < twins.0.len() => {
+                twins.0[twins.1] = entry;
+                twins.1 += 1;
+            }
+            None => {}
+        }
+        game
+    }
+}
+
+/// A blit of the frame (`cmr_hud_rect_at`): its destination surface and
+/// rectangle, and for an image with a twin what to draw from the twin.
+#[derive(Clone, Copy)]
+struct FeDraw {
+    dst_surface: usize,
+    draw: crate::fe_hd::Draw,
+    /// The source in the image's pixels, and the image's surface.
+    src: crate::fe_hd::Rect,
+    surface: usize,
+    /// The source in the twin's pixels, and the twin's surface.
+    twin_src: crate::fe_hd::Rect,
+    twin_surface: usize,
+    key: Option<[u32; 2]>,
+}
+
+/// This frame's blits, oldest first; `full` when some were not noted (then
+/// no twin is drawn, as one might cover a later blit).
+static mut FE_DRAWS: ([FeDraw; 1024], usize, bool) = (
+    [FeDraw {
+        dst_surface: 0,
+        draw: crate::fe_hd::Draw {
+            dst: [0; 4],
+            twin: false,
+        },
+        src: [0; 4],
+        surface: 0,
+        twin_src: [0; 4],
+        twin_surface: 0,
+        key: None,
+    }; 1024],
+    0,
+    false,
+);
+
+/// Notes a front-end blit (`0x49e3e0(src, src_rect, dst, dst_rect,
+/// key_low, key_high, keyed)`; records start with their surface and hold
+/// their width and height at +8; rectangles are four shorts).
+unsafe fn note_fe_blit(args: *const usize) {
+    // SAFETY: the blit's own arguments, at its entry.
+    unsafe {
+        let draws = &mut *addr_of_mut!(FE_DRAWS);
+        if draws.1 == draws.0.len() {
+            draws.2 = true;
+            return;
+        }
+        let (src_rec, src_rect, dst_rec, dst_rect) = (
+            *args as *const usize,
+            *args.add(1) as *const i16,
+            *args.add(2) as *const usize,
+            *args.add(3) as *const i16,
+        );
+        if src_rec.is_null() || dst_rec.is_null() || src_rect.is_null() || dst_rect.is_null() {
+            return;
+        }
+        let rect = |r: *const i16| core::array::from_fn(|i| i32::from(*r.add(i)));
+        let dst = rect(dst_rect);
+        let mut entry = FeDraw {
+            dst_surface: *dst_rec,
+            draw: crate::fe_hd::Draw { dst, twin: false },
+            src: rect(src_rect),
+            surface: *src_rec,
+            twin_src: [0; 4],
+            twin_surface: 0,
+            key: (*args.add(6) != 0).then(|| [*args.add(4) as u32, *args.add(5) as u32]),
+        };
+        if let Some(t) = FeTwin::of(src_rec as usize) {
+            let size = |rec: usize| {
+                let r = rec as *const i16;
+                (i32::from(*r.add(4)), i32::from(*r.add(5)))
+            };
+            entry.twin_src = crate::fe_hd::scale(entry.src, size(t.game), size(t.twin));
+            entry.twin_surface = t.twin_surface;
+            entry.draw.twin = true;
+        }
+        draws.0[draws.1] = entry;
+        draws.1 += 1;
+    }
+}
+
+/// `IDirectDrawSurface::Blt` and `SetColorKey`.
+type Blt = unsafe extern "system" fn(
+    *mut usize,
+    *const [i32; 4],
+    *mut usize,
+    *const [i32; 4],
+    u32,
+    *const u8,
+) -> i32;
+const BLT: usize = 0x14 / 4;
+type SetColorKey = unsafe extern "system" fn(*mut usize, u32, *const [u32; 2]) -> i32;
+const SET_COLOR_KEY: usize = 0x74 / 4;
+const DDBLT_WAIT: u32 = 0x0100_0000;
+const DDBLT_KEYSRC: u32 = 0x8000;
+
+/// Whether the finished picture (`PICTURE`) still shows the image of blit
+/// `d` where it was drawn (`fe_hd::intact`).
+unsafe fn image_intact(d: &FeDraw, w: i32, h: i32) -> bool {
+    let Some((dst, src)) = crate::fe_hd::clip(d.draw.dst, d.src, w, h) else {
+        return false;
+    };
+    // SAFETY: the image's live surface, read and unlocked again; the
+    // picture copied out by `cmr_fe_present` this frame.
+    unsafe {
+        let surface = d.surface as *mut usize;
+        let Some(img) = lock(surface, DDLOCK_READONLY) else {
+            return false;
+        };
+        let ok = img.bits == 16
+            && crate::fe_hd::intact(
+                &*addr_of_mut!(PICTURE),
+                dst,
+                src,
+                |x, y| {
+                    *(img.surface.add(y as usize * img.pitch as usize) as *const u16)
+                        .add(x as usize)
+                },
+                d.key.map(|k| k[0] as u16),
+            );
+        unlock(surface);
+        ok
+    }
+}
+
+/// After the menu picture is enlarged onto `back` (`w` x `h`): each twin
+/// noted this frame that nothing later covers, drawn over its spot at the
+/// screen's size. Then the frame's notes are cleared.
+unsafe fn draw_fe_twins(back: *mut usize, w: u32, h: u32) {
+    // SAFETY: the game's live surfaces; the main thread's own table.
+    unsafe {
+        let draws = &mut *addr_of_mut!(FE_DRAWS);
+        let noted = &draws.0[..draws.1];
+        // The blits into the picture, in order.
+        let mut picture = [crate::fe_hd::Draw {
+            dst: [0; 4],
+            twin: false,
+        }; 1024];
+        let mut which = [0usize; 1024];
+        let mut n = 0;
+        for (i, d) in noted.iter().enumerate() {
+            if d.dst_surface == back as usize {
+                picture[n] = d.draw;
+                which[n] = i;
+                n += 1;
+            }
+        }
+        let mut shown = 0;
+        if !draws.2 {
+            let target = crate::present::target(w, h);
+            let blt: Blt = method(back, BLT);
+            for (k, show) in crate::fe_hd::shown(&picture[..n]).enumerate() {
+                let d = &noted[which[k]];
+                let (w, h) = (crate::present::SRC_W as i32, crate::present::SRC_H as i32);
+                let clipped = crate::fe_hd::clip(d.draw.dst, d.twin_src, w, h);
+                let (true, Some((dst, src))) = (show, clipped) else {
+                    continue;
+                };
+                if !image_intact(d, w, h) {
+                    continue;
+                }
+                let twin = d.twin_surface as *mut usize;
+                let mut flags = DDBLT_WAIT;
+                if let Some(key) = d.key {
+                    let set: SetColorKey = method(twin, SET_COLOR_KEY);
+                    set(twin, DDCKEY_SRCBLT, &key);
+                    flags |= DDBLT_KEYSRC;
+                }
+                let screen = crate::fe_hd::to_screen(dst, target);
+                let src = [src[0], src[1], src[0] + src[2], src[1] + src[3]];
+                if blt(back, &screen, twin, &src, flags, core::ptr::null()) == 0 {
+                    shown += 1;
+                }
+            }
+        }
+        if let Some(dg) = diag() {
+            dg.fe_draws += n as u32;
+            dg.fe_shown += shown;
+        }
+        draws.1 = 0;
+        draws.2 = false;
+    }
+}
+
 /// The game's two threads, its race updates (a multimedia timer, 25 a
 /// second) and its drawing (the main thread), were written for one-core
 /// PCs, where they never ran at the same moment: an update interrupted
@@ -1409,6 +1713,11 @@ pub extern "stdcall" fn cmr_texture_loaded(texture: *mut usize) {
 pub extern "stdcall" fn cmr_hud_rect_at(args: *mut *mut Rect, index: u32) {
     let hud = hud();
     let Some(canvas) = canvas() else {
+        // The front end: its blits are noted for HD twins (F27).
+        if index == 3 {
+            // SAFETY: the stub passes the blit's argument area.
+            unsafe { note_fe_blit(args as *const usize) };
+        }
         return;
     };
     if index >= 8 {
