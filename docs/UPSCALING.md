@@ -87,6 +87,13 @@ Notes:
   depixel-js): it joins the pixels into regions, fits curves through their
   staircases and keeps one-pixel lines connected, as if traced by hand in a
   vector editor. Real-ESRGAN stays for shaded art (car renders, photos).
+  Each image is first continued past its border by its own edge pixels
+  and cut back after the redraw: the game joins sprites edge to edge and
+  stretches thin tiles (the HUD frame is 4x4 bar tiles stretched along
+  the screen, meeting 16x16 corners), so a line that runs off one piece
+  has to leave it straight and at full width to meet the next. Traced
+  inside its own borders, the frame's corner bent into an S and swelled
+  where it met the bars.
 - **The upscalers redraw colours.** On the HUD the artwork model turned
   one-pixel grey outlines into thin dark lines and drew the original's
   one-pixel staircases as wavy edges. Every result is therefore held to

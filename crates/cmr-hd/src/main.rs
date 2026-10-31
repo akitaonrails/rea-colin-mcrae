@@ -354,7 +354,7 @@ fn run_esrgan(
 /// and for a texture (8-bit at run time) held to the original's own colours.
 fn redraw(job: &Job) -> (RgbaImage, RgbaImage) {
     let at = |scale: u32| {
-        let up = depixel::scale(&job.img, scale);
+        let up = depixel_edges(&job.img, scale);
         if job.class.texture() {
             lock::exact(&job.img, &up, scale)
         } else {
@@ -362,6 +362,26 @@ fn redraw(job: &Job) -> (RgbaImage, RgbaImage) {
         }
     };
     (at(4), at(2))
+}
+
+/// Pixels a flat image is continued by on every side before it is redrawn.
+const EDGE: u32 = 4;
+
+/// `depixel::scale` with the image's edge pixels continued past its border
+/// first, then cut back: the game joins sprites edge to edge and stretches
+/// thin tiles (the HUD frame's corners meet its bars), so a line that runs
+/// off the edge keeps its course and width there instead of ending in a
+/// curve of its own.
+fn depixel_edges(img: &RgbaImage, scale: u32) -> RgbaImage {
+    let (w, h) = img.dimensions();
+    let wide = RgbaImage::from_fn(w + 2 * EDGE, h + 2 * EDGE, |x, y| {
+        *img.get_pixel(
+            x.saturating_sub(EDGE).min(w - 1),
+            y.saturating_sub(EDGE).min(h - 1),
+        )
+    });
+    let up = depixel::scale(&wide, scale);
+    image::imageops::crop_imm(&up, EDGE * scale, EDGE * scale, w * scale, h * scale).to_image()
 }
 
 /// The 4x and 2x versions from Real-ESRGAN's 4x: the 2x made half as large
@@ -559,4 +579,51 @@ fn upscale_sheets(
         let _ = fs::remove_dir_all(&batch);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::Rgba;
+
+    /// The HUD's vertical bar tile: grey, white, white, grey.
+    fn bar() -> RgbaImage {
+        RgbaImage::from_fn(4, 4, |x, _| match x {
+            1 | 2 => Rgba([230, 230, 230, 255]),
+            _ => Rgba([90, 90, 90, 255]),
+        })
+    }
+
+    #[test]
+    fn a_stretched_tile_stays_straight_to_its_edges() {
+        let up = depixel_edges(&bar(), 4);
+        assert_eq!(up.dimensions(), (16, 16));
+        for y in 1..16 {
+            for x in 0..16 {
+                assert_eq!(up.get_pixel(x, y), up.get_pixel(x, 0), "({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_leaving_the_edge_keeps_its_width_there() {
+        // The bar's top half, then it turns right: at the bottom edge it
+        // must still be the bar (as the tile it joins continues it).
+        let img = RgbaImage::from_fn(8, 8, |x, y| {
+            let core = (x == 1 || x == 2) && y >= 4 || (y == 1 || y == 2) && x >= 1;
+            let edge = (x == 0 || x == 3) && y >= 3 || y == 0 || y == 3;
+            if core {
+                Rgba([230, 230, 230, 255])
+            } else if edge {
+                Rgba([90, 90, 90, 255])
+            } else {
+                Rgba([0, 0, 0, 0])
+            }
+        });
+        let up = depixel_edges(&img, 4);
+        let tile = depixel_edges(&bar(), 4);
+        for x in 0..16 {
+            assert_eq!(up.get_pixel(x, 31), tile.get_pixel(x, 0), "x {x}");
+        }
+    }
 }
