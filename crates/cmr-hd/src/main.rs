@@ -7,6 +7,7 @@
 //!   cmr-hd extract <game folder> <out folder> [--all]
 //!   cmr-hd upscale <extracted folder> <hd folder> --esrgan <realesrgan-ncnn-vulkan> [--only <path prefix>]
 //!   cmr-hd pack <hd folder> <pack folder>
+//!   cmr-hd import <extracted folder> <redrawn folder> <hd folder>
 //!
 //! `upscale` writes two sets: `x4/` (Real-ESRGAN's 4x, for 1440p and up)
 //! and `x2/` (the 4x made half as large, for 1080p).
@@ -39,12 +40,14 @@ const USAGE: &str = "usage:
   cmr-hd extract <game folder> <out folder> [--all]
   cmr-hd upscale <extracted folder> <hd folder> --esrgan <realesrgan-ncnn-vulkan> [--only <path prefix>]
   cmr-hd pack <hd folder> <pack folder>
+  cmr-hd import <extracted folder> <redrawn folder> <hd folder>
 
 extract writes each image as PNG (keyed sprites with transparency) and a
 manifest.tsv; upscale runs Real-ESRGAN 4x on them by class and writes
 x4/ (1440p and up) and x2/ (1080p, the 4x made half as large). See
 docs/UPSCALING.md. pack stores an HD set compactly for the launcher to
-install.";
+install. import makes an HD set from images redrawn elsewhere (at 4x, as
+<path>.png, with transparency for keyed images).";
 
 /// The upscale factor of every Real-ESRGAN model used here.
 const SCALE: u32 = 4;
@@ -65,6 +68,11 @@ fn main() {
             let hd = Path::new(&args[1]);
             keyed_names(hd).and_then(|keyed| pack::pack(hd, Path::new(&args[2]), &keyed))
         }
+        Some("import") if args.len() == 4 => import(
+            Path::new(&args[1]),
+            Path::new(&args[2]),
+            Path::new(&args[3]),
+        ),
         Some("upscale") if args.len() >= 3 => {
             let flag = |name: &str| {
                 args.iter()
@@ -264,6 +272,9 @@ fn method(class: Class, img: &RgbaImage) -> Option<&'static str> {
 
 const DEPIXEL: &str = "depixel";
 
+/// The largest side of an HD twin the game loads, in pixels.
+const MAX_TWIN: u32 = 8192;
+
 /// Writes the BMP the game loads in place of `original`: for a texture
 /// (the HUD) with an 8-bit original, 8-bit in the original's palette (the
 /// game keeps those as indices); else 24-bit (2D surfaces are converted to
@@ -370,8 +381,8 @@ fn from_esrgan(job: &Job, x4: RgbaImage) -> (RgbaImage, RgbaImage) {
 }
 
 /// Saves an image's 4x and 2x versions as PNG under `x4/` and `x2/`, plus
-/// the BMP the game loads (none for images larger than the screen the game
-/// draws, like the menu's panorama: their twins would be too large).
+/// the BMP the game loads (none when the twin would be wider or taller
+/// than `MAX_TWIN`, like the menu's panorama enlarged 4x).
 fn save_sets(
     job: &Job,
     (mut x4, mut x2): (RgbaImage, RgbaImage),
@@ -382,7 +393,7 @@ fn save_sets(
         key::to_key(&mut x4);
         key::to_key(&mut x2);
     }
-    let runtime = job.class.runtime() && job.img.width() <= 640 && job.img.height() <= 480;
+    let runtime = job.class.runtime() && x4.width() <= MAX_TWIN && x4.height() <= MAX_TWIN;
     for (set, img) in [("x4", &x4), ("x2", &x2)] {
         let output = png_path(&hd.join(set), job.rel);
         fs::create_dir_all(output.parent().expect("a parent")).map_err(|e| e.to_string())?;
@@ -398,6 +409,50 @@ fn save_sets(
             )?;
         }
     }
+    Ok(())
+}
+
+/// An HD set from images redrawn elsewhere (`redrawn/<path>.png`, at 4x;
+/// wide images may be smaller): each becomes the 4x set, half of it the 2x
+/// set, with the same keying and runtime BMPs as `upscale`.
+fn import(src: &Path, redrawn: &Path, hd: &Path) -> Result<(), String> {
+    let manifest = fs::read_to_string(src.join(MANIFEST))
+        .map_err(|e| format!("no {MANIFEST} in {}: {e}", src.display()))?;
+    let mut out = String::from(
+        "# path\tclass\tsha256 of the game file\twidth\theight\truntime name\tmodel\n",
+    );
+    let mut done = 0;
+    for line in manifest.lines().filter(|l| !l.starts_with('#')) {
+        let f: Vec<&str> = line.split('\t').collect();
+        let [rel, class, digest, w, h, name] = f[..] else {
+            continue;
+        };
+        let Ok(up) = image::open(png_path(redrawn, rel)) else {
+            continue;
+        };
+        let up = up.to_rgba8();
+        let class = Class::from_name(class);
+        let job = Job {
+            rel,
+            class,
+            name,
+            img: image::open(png_path(src, rel))
+                .map_err(|e| format!("{rel}: {e}"))?
+                .to_rgba8(),
+            rest: format!("{}\t{digest}\t{w}\t{h}\t{name}\tredrawn", class.name()),
+        };
+        let x2 = image::imageops::resize(
+            &up,
+            (up.width() / 2).max(1),
+            (up.height() / 2).max(1),
+            image::imageops::FilterType::Lanczos3,
+        );
+        save_sets(&job, (up, x2), src, hd)?;
+        out.push_str(&format!("{rel}\t{}\n", job.rest));
+        done += 1;
+    }
+    fs::write(hd.join(MANIFEST), out).map_err(|e| e.to_string())?;
+    println!("{done} redrawn images imported into {}", hd.display());
     Ok(())
 }
 
