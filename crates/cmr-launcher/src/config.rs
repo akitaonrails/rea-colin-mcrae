@@ -6,7 +6,7 @@
 //! it. Unknown keys are ignored so older launchers can read newer files;
 //! values it cannot read are reported and ignored.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::registry::LANGUAGES;
 
@@ -45,9 +45,28 @@ pub struct Settings {
     /// Pad button layout (fix F23): for the game's buttons 1 to 8, the
     /// physical button (1-based) that presses it, 0 for its own.
     pub buttons: Option<[u8; 8]>,
-    /// HD art (fix F27): the folder `cmr-hd upscale` wrote (with `x2` and
-    /// `x4` sets). Off unless set.
-    pub hd_art: Option<PathBuf>,
+    /// HD art (fix F27). Off unless set.
+    pub hd_art: Option<HdArt>,
+}
+
+/// Where the HD art comes from (`hd_art`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HdArt {
+    Off,
+    /// The pack that comes with the launcher (`hd` next to it).
+    Bundled,
+    /// A folder `cmr-hd upscale` wrote (with `x2` and `x4` sets).
+    Folder(PathBuf),
+}
+
+impl HdArt {
+    fn parse(value: &str) -> HdArt {
+        match parse_bool(value) {
+            Some(true) => HdArt::Bundled,
+            Some(false) => HdArt::Off,
+            None => HdArt::Folder(value.into()),
+        }
+    }
 }
 
 /// The game's own pad layout: every button presses its own.
@@ -222,10 +241,11 @@ gamepad_axes = true
 # that presses each, e.g. 1,2,4,5,1,6,7,8. The d-pad moves through menus.
 #buttons = original
 
-# HD art (a study, see docs/UPSCALING.md): the folder `cmr-hd upscale`
-# wrote from your own game files. The race HUD then uses the upscaled
-# images (the 2x set up to 1080p, the 4x set above).
-#hd_art = C:\Users\you\cmr-hd
+# HD art: the race HUD and the menus' images redrawn at high resolution
+# (docs/UPSCALING.md). on uses the pack that comes with the launcher, or
+# give a folder made with cmr-hd. The 2x set is used up to 1080p, the 4x
+# set above.
+#hd_art = on
 
 # Linux (cmr-play) only: how gamescope enlarges the picture. nearest (sharp
 # pixels), pixel (sharp, all pixels the same size), fsr (smooth, then
@@ -394,7 +414,7 @@ impl Settings {
                     Some(f) => s.texture_filter = Some(f),
                     None => bad("texture_filter needs original, smooth or sharp, not"),
                 },
-                "hd_art" => s.hd_art = Some(value.into()),
+                "hd_art" => s.hd_art = Some(HdArt::parse(value)),
                 "buttons" => match parse_buttons(value) {
                     Some(b) => s.buttons = Some(b),
                     None => bad("buttons needs original, modern or 8 button numbers, not"),
@@ -461,10 +481,20 @@ impl Settings {
         }
     }
 
-    /// The HD art set for the race resolution: `x2` up to 2.5 times the
-    /// game's 480 lines (1080p), `x4` above (1440p, 4K).
-    pub fn hd_set(&self) -> Option<PathBuf> {
-        let dir = self.hd_art.as_ref()?;
+    /// Whether HD art is on.
+    pub fn hd_on(&self) -> bool {
+        matches!(self.hd_art, Some(HdArt::Bundled | HdArt::Folder(_)))
+    }
+
+    /// The HD art set for the race resolution, from `bundled` (the
+    /// installed pack) or the folder set: `x2` up to 2.5 times the game's
+    /// 480 lines (1080p), `x4` above (1440p, 4K).
+    pub fn hd_set(&self, bundled: &Path) -> Option<PathBuf> {
+        let dir = match self.hd_art.as_ref()? {
+            HdArt::Off => return None,
+            HdArt::Bundled => bundled,
+            HdArt::Folder(dir) => dir,
+        };
         let height = self.race_resolution().map_or(480, |(_, h)| h);
         Some(dir.join(if height * 2 <= 480 * 5 { "x2" } else { "x4" }))
     }
@@ -525,7 +555,7 @@ impl Settings {
         if self.rumble_strength() == 0 {
             skip.push("F22");
         }
-        if self.hd_art.is_none() {
+        if !self.hd_on() {
             skip.push("F27");
         }
         skip
@@ -556,7 +586,7 @@ impl Settings {
                         format!("--resolution needs WIDTHxHEIGHT or original, not {v}\n\n{USAGE}")
                     })?);
                 }
-                "--hd-art" => s.hd_art = Some(value("--hd-art")?.into()),
+                "--hd-art" => s.hd_art = Some(HdArt::parse(&value("--hd-art")?)),
                 "--buttons" => {
                     let v = value("--buttons")?;
                     s.buttons = Some(parse_buttons(&v).ok_or_else(|| {
@@ -656,18 +686,35 @@ mod tests {
 
     #[test]
     fn hd_art_set_follows_the_resolution() {
-        let at = |res: &str| {
-            Settings::parse_file(&format!("hd_art = C:\\hd\nresolution = {res}"))
+        let pack = Path::new("P:\\pack");
+        let at = |art: &str, res: &str| {
+            Settings::parse_file(&format!("hd_art = {art}\nresolution = {res}"))
                 .0
-                .hd_set()
+                .hd_set(pack)
         };
-        assert_eq!(at("1920x1080"), Some(PathBuf::from("C:\\hd").join("x2")));
-        assert_eq!(at("2560x1440"), Some(PathBuf::from("C:\\hd").join("x4")));
-        assert_eq!(at("3840x2160"), Some(PathBuf::from("C:\\hd").join("x4")));
-        assert_eq!(at("original"), Some(PathBuf::from("C:\\hd").join("x2")));
-        assert_eq!(Settings::default().hd_set(), None);
-        let s = Settings::parse_args(["--hd-art".to_string(), "D:\\x".to_string()]).unwrap();
-        assert_eq!(s.hd_art, Some(PathBuf::from("D:\\x")));
+        assert_eq!(
+            at("C:\\hd", "1920x1080"),
+            Some(PathBuf::from("C:\\hd").join("x2"))
+        );
+        assert_eq!(
+            at("C:\\hd", "2560x1440"),
+            Some(PathBuf::from("C:\\hd").join("x4"))
+        );
+        assert_eq!(
+            at("C:\\hd", "original"),
+            Some(PathBuf::from("C:\\hd").join("x2"))
+        );
+        assert_eq!(at("on", "3840x2160"), Some(pack.join("x4")));
+        assert_eq!(at("off", "3840x2160"), None);
+        assert_eq!(Settings::default().hd_set(pack), None);
+        assert!(Settings::default().skipped_fixes().contains(&"F27"));
+        let s = Settings::parse_args(["--hd-art".to_string(), "on".to_string()]).unwrap();
+        assert_eq!(s.hd_art, Some(HdArt::Bundled));
+        assert!(!s.skipped_fixes().contains(&"F27"));
+        // The command line's off wins over the file's on.
+        let file = Settings::parse_file("hd_art = on").0;
+        let off = Settings::parse_args(["--hd-art".to_string(), "off".to_string()]).unwrap();
+        assert!(!file.merged(off).hd_on());
     }
 
     #[test]

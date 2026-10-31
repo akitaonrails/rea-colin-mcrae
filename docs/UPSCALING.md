@@ -1,6 +1,7 @@
 # Upscaling the 2D art (study)
 
-Status: **works in the game** (opt-in `hd_art`, F27) for the race HUD and
+Status: **works in the game and ships with the launcher** (`hd_art = on`,
+part of the Enhanced and Steam Deck looks; F27) for the race HUD and
 the front end's images (logos, flags, buttons, car pictures); full-screen
 pictures larger than the game's 640x480 (the menu panorama) are not shown. This
 page records what was learned, the tool that extracts and upscales the
@@ -19,15 +20,13 @@ screen's real size.
 
 ## Ground rules
 
-- **Nothing derived from the game is ever committed or shipped**, not the
-  images, not their upscaled versions, not comparison screenshots (see
-  `AGENTS.md`). The tool reads the player's own game folder and writes to
-  a folder of their choice, like the launcher's private runtime copy.
+- **The originals are never committed or shipped** (see `AGENTS.md`).
+  The HD art pack, made from them, is the one exception (owner decision,
+  2026-10-31): it is published as a release asset and bundled with
+  releases, never committed.
 - The game folder is only read.
-- The upscaler is open source and would be bundled like any other
-  component: Real-ESRGAN (`realesrgan-ncnn-vulkan`, BSD-3-Clause, with its
-  released models) runs on any Vulkan GPU on Windows and Linux. Bundling it
-  needs a `THIRD_PARTY.md` row; the study uses a local download only.
+- Real-ESRGAN (`realesrgan-ncnn-vulkan`, BSD-3-Clause) is used to make the
+  pack and is not shipped; players get the finished pack.
 
 ## What the game has
 
@@ -195,6 +194,27 @@ The menus are one 640x480 picture, enlarged to the screen each frame.
    (`fe_hd::intact`: the menu's globe and other things are drawn without
    the blit). Anything else keeps the enlarged original, so the picture's
    order is never broken.
+
+### The pack in releases
+
+The HD set is 1.5 GB of BMPs; releases carry it compactly instead:
+
+1. `cmr-hd pack <hd> <pack>` stores each runtime BMP as a palette PNG (the
+   HUD's 8-bit textures, exact) or a colour image: a lossless PNG, or a
+   near-lossless WebP (quality 92, about 41 dB) when that is much smaller.
+   Lossless files are checked to give back the same pixels. About 38 MB.
+2. The zipped pack is published once as a release asset (`hd-pack-1`).
+   `packaging/hd-pack.txt` pins its URL and SHA-256; CI downloads and
+   checks it and puts it in the zip and the AppImage as `hd/`, next to
+   `CMRLauncher.exe`.
+3. With `hd_art = on`, the launcher installs the pack into the runtime
+   folder (`<runtime>/hd/<id>/x2`, `x4`, `crates/cmr-launcher/src/hdpack.rs`
+   with the format in `crates/cmr-hdpack`), once per pack, in a few
+   seconds, and points the hook library at the set for the resolution.
+
+To make a new pack: `cmr-hd extract`, `cmr-hd upscale`, `cmr-hd pack`,
+zip `pack.txt`, `x2/` and `x4/`, publish it as `hd-pack-<n>`, and update
+`packaging/hd-pack.txt`.
 
 ### Next
 

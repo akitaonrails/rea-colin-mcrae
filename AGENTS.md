@@ -9,6 +9,10 @@ Linux (Proton/Wine). It is not a distribution of the game.
 - Never commit, vendor, embed, or publish original executables, DLLs, media,
   archives, fonts, palettes, tracks, car data, or other game assets, or
   anything copied out of them.
+  Exception (owner decision, 2026-10-31): the HD art pack (`cmr-hd`'s
+  redrawn and upscaled 2D art, see `docs/UPSCALING.md`) is published as a
+  release asset (`hd-pack-*`) and bundled with releases. It is never
+  committed; `packaging/hd-pack.txt` pins its URL and digest.
 - The user's game folder is read only. The launcher builds a separate runtime
   folder from it.
 - Never commit a developer's absolute game path. Commands and code take an
@@ -34,7 +38,7 @@ Linux (Proton/Wine). It is not a distribution of the game.
   from our hook library, keyed to the exact executable by hash, never by
   patching files on disk.
 - The faithful, unchanged game is the default. Enhancements (resolution,
-  widescreen, frame rate) are opt-in settings. Exception (owner decision,
+  widescreen, frame rate, HD art) are opt-in settings. Exception (owner decision,
   2026-10-30): the pad button layout defaults to Modern.
 
 ## Code and commits

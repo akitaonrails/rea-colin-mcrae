@@ -11,8 +11,15 @@ source. Add a row before bundling anything new.
 | `windows-sys` | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | `eframe`, `egui` and their dependencies (`winit`, `glutin`, `glow`, `ab_glyph`, …): the settings window | MIT OR Apache-2.0 (dependencies: MIT, Apache-2.0, Zlib, BSD; see `cargo tree`) | https://github.com/emilk/egui |
 | `jpeg-decoder` | MIT OR Apache-2.0 | https://github.com/image-rs/jpeg-decoder |
+| `image`, `image-webp`, `png` and their dependencies: installing the HD art pack | MIT OR Apache-2.0 | https://github.com/image-rs/image |
 | Rust standard library | MIT OR Apache-2.0 | https://github.com/rust-lang/rust |
 | MinGW-w64 runtime (static parts linked by the GNU target) | ZPL-2.1 / public domain | https://www.mingw-w64.org |
+
+## Bundled data
+
+| Component | Licence | Source |
+| --- | --- | --- |
+| The HD art pack (`hd/`): the game's own 2D art redrawn and upscaled with `cmr-hd` (owner decision, see `AGENTS.md`) | derived from Colin McRae Rally (Codemasters); not covered by this project's licence | `packaging/hd-pack.txt` (release asset `hd-pack-1`) |
 
 ## Bundled DLLs
 
@@ -43,6 +50,7 @@ not part of the package. It links:
 | `flate2` (with `miniz_oxide`) | MIT OR Apache-2.0 | https://github.com/rust-lang/flate2-rs |
 | `image` (BMP and PNG codecs) and its dependencies | MIT OR Apache-2.0 | https://github.com/image-rs/image |
 | `crates/cmr-hd/src/depixel.rs`: ported code (Rust port of depixel-js by Jimb Esser, itself a port of Felix Kreuzer's "Depixelizing Pixel Art on GPUs", after Kopf and Lischinski's paper "Depixelizing Pixel Art") | MIT (both) | https://github.com/Jimbly/depixel-js , https://github.com/falichs/Depixelizing-Pixel-Art-on-GPUs , https://johanneskopf.de/publications/pixelart/ |
+| `libwebp` (through the `webp` crate) in `cmr-hd`, for making the pack (not shipped) | BSD-3-Clause (`webp`: MIT OR Apache-2.0) | https://chromium.googlesource.com/webm/libwebp , https://github.com/jaredforth/webp |
 
 It runs Real-ESRGAN (`realesrgan-ncnn-vulkan`, BSD-3-Clause,
 https://github.com/xinntao/Real-ESRGAN) as a separate program the user

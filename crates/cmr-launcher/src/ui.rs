@@ -588,6 +588,11 @@ impl Window<'_> {
                 &mut p.smooth_distance,
                 "Ease view distance changes (less pop-in)",
             );
+            toggle(
+                ui,
+                &mut p.hd_art,
+                "HD art: sharp HUD, logos and menu pictures",
+            );
         });
         if self.linux {
             let scaler = &mut self.form.scaler;
