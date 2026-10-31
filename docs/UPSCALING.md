@@ -179,21 +179,35 @@ the race never calls).
 
 ### The front end (done, F27)
 
-The menus are one 640x480 picture, enlarged to the screen each frame.
+The menus are one 640x480 picture made of blits, enlarged to the screen
+each frame.
 
 1. **Load.** Their images load as plain surfaces through
    `0x499320(record, bmp, flags)`; F27 loads a twin beside each image
    that has an HD file (`cmr_hd_load_2d`).
 2. **Note.** F13's hook at the entry of the blit `0x49e3e0` notes every
-   blit of the frame: where it went and, for an image with a twin, the
-   source rectangle in the twin's pixels.
-3. **Draw.** After the picture is enlarged (`cmr_fe_present`), each noted
-   twin is drawn over its spot at the screen's size (DirectDraw `Blt`,
-   with the game's colour key), but only when nothing drawn later covers
-   it and the finished picture still shows the original image there
-   (`fe_hd::intact`: the menu's globe and other things are drawn without
-   the blit). Anything else keeps the enlarged original, so the picture's
-   order is never broken.
+   blit of the frame: image, source and destination rectangles, colour
+   key, and the source rectangle in the twin's pixels.
+3. **Compose** (`crates/cmr-hooks/src/fe_compose.rs`). At present time
+   the frame's blits are replayed to know, for each picture pixel, which
+   image drew it last and which one is under it; pixels whose replayed
+   colour isn't the picture's were drawn some other way (the menu's
+   globe) and keep the picture. While the picture is enlarged, a screen
+   pixel owned by an image with a twin is taken from the twin, its
+   transparent edges from the image under it. Backgrounds, overlaps and
+   animation compose in the game's own order. The game's and the twins'
+   pixels are cached once per load; at 4K the menu runs at about 40 fps.
+
+### The draw trace
+
+`CMR_HD_TRACE=<file>` makes the hook library write each distinct HUD
+sprite (`hud`, from the sprite queue `0x49b420`) and front-end blit (`fe`)
+once, as `<runtime name> src x y w h dst x y w h` in the game's 640x480.
+It shows which images make up each screen (the race loading screen is the
+country's `Game/Welcome/*/Flag_*.BMP`, the main menu the panorama
+`Backdrop/Main.bmp` panned), and where every HUD piece goes: enough to
+rebuild the whole HUD as one picture, redraw it in one piece and cut the
+pieces out again, so that joints line up.
 
 ### The pack in releases
 
