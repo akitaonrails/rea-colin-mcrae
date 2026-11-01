@@ -218,11 +218,11 @@ dependencies = [
 
 [[package]]
 name = "cmr-hooks"
-version = "0.5.0"
+version = "0.5.1"
 
 [[package]]
 name = "cmr-launcher"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "cmr-hdpack",
  "eframe",
