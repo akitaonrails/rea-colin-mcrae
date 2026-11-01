@@ -301,8 +301,9 @@ as reference only, no code taken):
 
 Skipped for now, to revisit later:
 
-- HD 2D art (owner request, 2026-10-30): shipped (F27, `hd-pack-3`);
-  the globe, fonts and the car and country pictures are still to do
+- HD 2D art (owner request, 2026-10-30): shipped (F27, `hd-pack-4`, with
+  skies, cars and trackside signs); the globe, fonts and the front end's
+  car and country pictures are still to do
   (`docs/UPSCALING.md`, "Next").
 
 - Steering wheels with force feedback (dead zone, rotation).

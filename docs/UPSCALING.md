@@ -1,11 +1,16 @@
 # HD 2D art
 
 Status: **ships with the launcher** (`hd_art = on`, part of the Enhanced
-and Steam Deck looks; fix F27). The pack (`hd-pack-3`) covers the race
-HUD, the intro and legal screens, the main menu (panorama, ring words,
-selected word), the race loading screens (`Game/Welcome`), every stage's
-sky and distant scenery, and the front end's flat art (logos, flags,
-icons, buttons of 32 colours or fewer).
+and Steam Deck looks; fix F27). The pack (`hd-pack-4`) covers the race
+HUD (with the positions board's car icons and the results screens'
+badges and flags), the intro and legal screens, the main menu (panorama,
+ring words, selected word), the race loading screens (`Game/Welcome`),
+every stage's sky and distant scenery, its start/finish banners and
+sponsor billboards (124 of 164 signs), the cars' textures (247 of 370:
+liveries, glass, wheels, cockpits; the Celica, Cosworth, Integrale,
+Escort Mk2, Quattro, RS200, Seat and Toyota keep their original main
+livery) and the front end's flat art (logos, flags, icons, buttons of 32
+colours or fewer).
 Everything else is still drawn from the game's own 640x480 art. This page
 says what works, what doesn't, how to rebuild the pack and how to extend
 it. It is written for whoever picks this up next.
@@ -123,7 +128,9 @@ Real-ESRGAN versions; they were dropped as not faithful enough).
 - **Look at every result** next to its original, at the size the game
   shows it. Drift numbers miss a changed digit.
 - Cost: pack 2 took about 130 requests (each tile and each try is one);
-  the skies of pack 3 about 100 more.
+  the skies of pack 3 about 100 more; pack 4's cars and signs about 1500
+  image requests (three passes) plus as many cheap checks. Retries rarely
+  rescue a texture that failed twice: stop there.
 
 ## The pipeline
 
@@ -310,7 +317,7 @@ The HD set is about 800 MB of BMPs; releases carry it compactly:
 1. `cmr-hd pack <set> <pack>` stores each runtime BMP as a palette PNG
    (the HUD's 8-bit textures, exact) or a colour image: a lossless PNG,
    or a near-lossless WebP (quality 92, about 41 dB) when that is much
-   smaller. Pack 3 is about 28 MB.
+   smaller. Pack 4 is about 47 MB.
 2. Zip `pack.txt`, `x2/` and `x4/` from the pack folder and publish the
    zip once as a release asset under its own tag (`hd-pack-<n>`, a
    pre-release). `packaging/hd-pack.txt` pins its URL and SHA-256; CI
@@ -341,6 +348,9 @@ run), so `cmr-hd` packs images into sheets and runs it once per sheet
 - **Fonts** (`*.fon`, `ini/cdFONT.BMP`, the race timer's digit sheets):
   a separate class; text could be redrawn from a vector font.
 - **Car and country pictures, thumbnails**: `tiles.py` should suit them.
+- **The 8 main liveries and 40 signs that still fail** the writing check:
+  their small print needs another approach (drawing the decals separately,
+  or patching more of them back with `fixtext.py`).
 - **More of the scenery**: the rest of each stage's `*.obj` (buildings,
   trees, spectators, vehicles), its `*.sht` and the road and terrain
   textures in its `*.c3d` are whole bitmaps too, loaded the same way: a

@@ -19,7 +19,7 @@ source. Add a row before bundling anything new.
 
 | Component | Licence | Source |
 | --- | --- | --- |
-| The HD art pack (`hd/`): the game's own 2D art redrawn with `cmr-hd` and `tools/hd-redraw` (owner decision, see `AGENTS.md`) | derived from Colin McRae Rally (Codemasters); not covered by this project's licence | `packaging/hd-pack.txt` (release asset `hd-pack-3`) |
+| The HD art pack (`hd/`): the game's own 2D art redrawn with `cmr-hd` and `tools/hd-redraw` (owner decision, see `AGENTS.md`) | derived from Colin McRae Rally (Codemasters); not covered by this project's licence | `packaging/hd-pack.txt` (release asset `hd-pack-4`) |
 
 ## Bundled DLLs
 
@@ -66,7 +66,7 @@ runs on the developer's machine and is not part of the package. It uses:
 | NumPy | BSD-3-Clause | https://numpy.org |
 | SciPy | BSD-3-Clause | https://scipy.org |
 | Pillow | MIT-CMU (HPND) | https://python-pillow.org |
-| Google's Gemini API, model `gemini-3.1-flash-image`: a web service the scripts call with the developer's own key; nothing of it is bundled | Gemini API terms of service | https://ai.google.dev/gemini-api/terms |
+| Google's Gemini API, models `gemini-3.1-flash-image` (redraws) and `gemini-3.5-flash` (checks): a web service the scripts call with the developer's own key; nothing of it is bundled | Gemini API terms of service | https://ai.google.dev/gemini-api/terms |
 
 ## Compiled into cmrhooks.dll
 
