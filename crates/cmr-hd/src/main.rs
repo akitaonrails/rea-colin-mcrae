@@ -149,9 +149,9 @@ fn bitmaps(root: &Path) -> Result<Vec<String>, String> {
 }
 
 /// Model files whose textures are whole bitmaps inside them (a stage's
-/// horizon, `CM3D` models such as the cars); a bitmap inside one is
-/// `<path>.<ext>/<n>.bmp`.
-const MODELS: [&str; 2] = ["hzn", "c3d"];
+/// horizon and its trackside objects, `CM3D` models such as the cars); a
+/// bitmap inside one is `<path>.<ext>/<n>.bmp`.
+const MODELS: [&str; 3] = ["hzn", "c3d", "obj"];
 
 /// A bitmap's model file and index, from its path, if it is inside one.
 fn in_model(rel: &str) -> Option<(String, usize)> {
@@ -429,7 +429,7 @@ fn held(
         }
         match (painted, class) {
             (false, _) => lock::exact(original, &up, scale),
-            (true, Class::Car) => lock::back_project(original, &up, scale),
+            (true, Class::Car | Class::Scenery) => lock::back_project(original, &up, scale),
             (true, _) => lock::tone(original, &up, scale),
         }
     };
@@ -831,6 +831,10 @@ mod tests {
         assert_eq!(
             in_model("Game/Objects/Cars/SubDay.c3d/4.bmp"),
             Some(("Game/Objects/Cars/SubDay.c3d".to_string(), 4))
+        );
+        assert_eq!(
+            in_model("Game/NZ/1/NZ1.obj/0.bmp"),
+            Some(("Game/NZ/1/NZ1.obj".to_string(), 0))
         );
         assert_eq!(in_model("Game/Images/osdnew/ARRWS.BMP"), None);
     }
