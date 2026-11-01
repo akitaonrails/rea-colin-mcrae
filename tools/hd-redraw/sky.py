@@ -24,6 +24,8 @@ import redraw_api
 S = 4            # output scale
 LOW = 2.0        # tone and lighting kept from the original below this (original px)
 EDGE = 4         # fade back to the original within this many original px of a border
+FLAT = 0.5       # an original with less fine detail than this is one colour: kept as it is
+DRIFT = 50       # a redraw that strays further from the original is dropped
 PROMPTS = {
  "band": "This is a panorama of the sky and the distant landscape on the horizon from a 1998 rally video game, an "
   "old low-resolution, dithered 8-bit photograph shown enlarged. Redraw it as the same photograph taken with a modern "
@@ -101,6 +103,14 @@ def finish(got, img):
     return Image.fromarray(np.clip(out * t + base * (1 - t), 0, 255).astype(np.uint8))
 
 
+def worth_it(img, drift):
+    """Whether a redraw goes in: the original has detail to redraw (on a
+    flat texture the model only invents speckles and waves) and the redraw
+    stays close to it (the model smeared one stage's sky)."""
+    a = np.asarray(img.convert("L"), np.float32)
+    return float(np.abs(a - ndimage.gaussian_filter(a, 2)).mean()) >= FLAT and drift <= DRIFT
+
+
 def horizon(ext, rels):
     """Every bitmap of one horizon file, redrawn: {path: (image, drift)}."""
     imgs = {r: Image.open(os.path.join(ext, r + ".png")).convert("RGB") for r in rels}
@@ -151,9 +161,13 @@ def main():
     print(len(jobs), "horizons", flush=True)
 
     def job(rels):
-        if all(os.path.exists(os.path.join(out, r + ".png")) for r in rels): return
+        if any(os.path.exists(os.path.join(out, r + ".png")) for r in rels): return
         try:
             for r, (img, e) in horizon(ext, rels).items():
+                original = Image.open(os.path.join(ext, r + ".png")).convert("RGB")
+                if not worth_it(original, e):
+                    with lock: log.write(f"{r}\t{e:.1f}\tkept the original\n"); log.flush(); print(r, "kept the original", flush=True)
+                    continue
                 dst = os.path.join(out, r + ".png"); os.makedirs(os.path.dirname(dst), exist_ok=True)
                 img.save(dst)
                 with lock: log.write(f"{r}\t{e:.1f}\n"); log.flush(); print(r, f"{e:.1f}", flush=True)
