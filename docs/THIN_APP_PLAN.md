@@ -206,7 +206,7 @@ ourselves and apply it in memory; the file on disk is never changed.
 | F24 | `0x49cb90` (RUN JOYSTICK PANEL) | under Wine the game waits forever for a hidden panel | the item does nothing; applied only under Wine | applied (not exercised) |
 | F25 | `0x4a6e9b` (depth buffer request) | 16-bit depth: with a longer view, distant hills flicker through each other | asks for 24-bit depth (F26 reads it); with `draw_distance` | race at 3x distance renders cleanly (headless); effect on the reported Greece mountains to confirm |
 | F26 | `0x49fa70` (the depth test: is anything in front at a screen point, the sun's glare) | it locks the whole depth buffer to read one value; under Wine on a GPU every frame copies all of it back (24 fps at 4K) | `cmr_depth_visible` locks only that pixel (16 or 24-bit), off-screen points (-1,-1) count as hidden; without the hook library the game's own test runs | **verified**: 60 fps at 4K (was 24), answers checked mid-race |
-| F27 | `0x499ec0` (texture loader), `0x499320` (2D surface loader); with F13's blit hook `0x49e3e0` | 2D art drawn for 640x480 is enlarged with sharp pixels | twins from `hd_art` (named by a hash of the game's BMP, made by `cmr-hd`) load beside the game's images; HUD textures: the device's `SetRenderState` (slot 23) binds the twin, sampled smoothly; front end: noted blits draw their twins over the enlarged picture where the original is still intact (`fe_hd`); the game keeps its own images, sizes and layout; with `hd_art` | **verified** headless at 1080p and 4K: HUD and menus from twins, 60 fps (race), menu globe and flag strip in order |
+| F27 | `0x499ec0` (texture loader), `0x499320` (2D surface loader); with F13's blit hook `0x49e3e0` | 2D art drawn for 640x480 is enlarged with sharp pixels | twins from `hd_art` (named by a hash of the game's BMP, made by `cmr-hd`) load beside the game's images; HUD textures: the device's `SetRenderState` (slot 23) binds the twin, sampled smoothly; front end: the frame's noted blits are replayed per pixel and the enlarged picture takes each pixel from its owner's twin (`fe_compose`); the game keeps its own images, sizes and layout; with `hd_art` | **verified** headless at 1080p and 4K: HUD and menus from twins, 60 fps (race), menu globe and flag strip in order |
 | F9 | `0x49d67d` (device-type setter `FUN_0049d670`) | a joystick type written to keyboard record 0 (from F8's case, or a save made before F8) makes the game read key codes as joystick axes: the car circles in reverse | records 0 and 1 always keep type 1 (keyboard); repairs such saves at start-up | **verified** headless (broken save: car waits at the start instead of circling) |
 
 ### Editions
@@ -299,10 +299,9 @@ as reference only, no code taken):
 
 Skipped for now, to revisit later:
 
-- HD 2D art (owner request, 2026-10-30): studied in `docs/UPSCALING.md`;
-  `crates/cmr-hd` extracts and upscales locally (912 images, 83 s, x2 and
-  x4 sets). Runtime loading (shadow surfaces at the 2D primitives, then
-  the front end on F13's model) is the next step.
+- HD 2D art (owner request, 2026-10-30): shipped (F27, `hd-pack-2`);
+  the globe, fonts and the car and country pictures are still to do
+  (`docs/UPSCALING.md`, "Next").
 
 - Steering wheels with force feedback (dead zone, rotation).
 - HD texture packs loaded from the user's own folder (never shipped by us).
