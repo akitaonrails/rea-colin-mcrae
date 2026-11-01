@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 
 MODEL = "gemini-3.1-flash-image"
+CHECKER = "gemini-3.5-flash"   # a vision model that reads the redraws' writing
 # The aspect ratios the model accepts.
 RATIOS = {"1:1": 1, "4:3": 4/3, "3:4": 3/4, "3:2": 1.5, "2:3": 2/3, "16:9": 16/9, "9:16": 9/16,
           "5:4": 1.25, "4:5": 0.8, "21:9": 21/9, "4:1": 4, "1:4": 0.25, "8:1": 8, "1:8": 0.125}
@@ -51,3 +52,32 @@ def fit_ratio(img, fill):
     pw, ph = (max(w, round(h * r)), h) if r >= w / h else (w, max(h, round(w / r)))
     pad = Image.new("RGB", (pw, ph), fill); ox, oy = (pw - w) // 2, (ph - h) // 2; pad.paste(img, (ox, oy))
     return pad, ratio, (ox, oy)
+
+
+WRITING = ("This image is a redrawn graphic from a 1998 rally video game (a car, a car's texture, a badge). Look at "
+  "every piece of writing in it: letters, words, numbers, sponsor names. Answer YES if all of it is real, correctly "
+  "spelled and makes sense there (real brand or sponsor names such as MARTINI, Castrol, PIRELLI, SUBARU, a race "
+  "number, a number plate), or if there is no writing at all. Answer NO if any of it is made-up, misspelled, "
+  "garbled, mirrored or nonsense. Reply with exactly one word: YES or NO.")
+
+
+def writing_ok(img):
+    """Whether every piece of writing in img is real and makes sense (or
+    there is none), as a vision model reads it."""
+    buf = io.BytesIO(); img.convert("RGB").save(buf, "PNG")
+    body = {"contents": [{"parts": [{"text": WRITING},
+              {"inline_data": {"mime_type": "image/png", "data": base64.b64encode(buf.getvalue()).decode()}}]}]}
+    req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{CHECKER}:generateContent",
+        data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "x-goog-api-key": os.environ["GEMINI_API_KEY"]})
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                d = json.load(r)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 503): time.sleep(10 * (attempt + 1)); continue
+            raise RuntimeError(f"API error {e.code}")
+    else:
+        raise RuntimeError("gave up after retries")
+    text = "".join(p.get("text", "") for c in d.get("candidates", []) for p in c.get("content", {}).get("parts", []))
+    return text.strip().upper().startswith("YES")

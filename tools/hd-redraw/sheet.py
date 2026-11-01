@@ -19,8 +19,11 @@ PROMPTS = {
  "cars": "These are small side-view icons of 1998 rally cars from a video game's race display, on a black "
   "background, shown enlarged with visible pixels. Redraw each one from scratch as a crisp, clean high-resolution "
   "illustration: the same car model, livery, colours, stripes and sponsor shapes, the same proportions, facing the "
-  "same way, in exactly the same place and size. Smooth outlines and shading, no pixel staircases, no blur. Do not "
-  "add numbers, text or details that are not there. Keep the background pure flat black (#000000).",
+  "same way, in exactly the same place and size. Smooth outlines and shading, no pixel staircases, no blur. Where "
+  "the original only hints at a race-number plate or a sponsor sticker with a few blurry pixels, draw a clean, crisp "
+  "plain white plate or sticker of the same size and place, never a blurry grey patch. Write a word only where the "
+  "original clearly shows that real sponsor name (such as MARTINI or Castrol); otherwise draw the mark as simple "
+  "coloured shapes, never made-up letters or numbers. Keep the background pure flat black (#000000).",
 }
 
 

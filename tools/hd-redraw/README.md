@@ -15,6 +15,7 @@ what works and what doesn't, and the whole pipeline with `cmr-hd`:
 | `tiles.py` | large pictures in tiles, tone kept from the original |
 | `sky.py` | every stage's sky and distant scenery (`*.hzn`) |
 | `sheet.py` | a family of small sprites (the race's car icons) on one sheet |
+| `pick.py` | per image, the first candidate redraw whose writing is real |
 | `redraw_api.py` | the shared request, retries and aspect-ratio padding |
 
 ```sh

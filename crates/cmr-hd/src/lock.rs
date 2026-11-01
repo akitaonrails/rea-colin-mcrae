@@ -74,6 +74,82 @@ pub fn exact(original: &RgbaImage, up: &RgbaImage, scale: u32) -> RgbaImage {
     })
 }
 
+/// How far the original's tone reaches into a redraw held by `tone`, in
+/// original pixels.
+const TONE: f32 = 3.0;
+
+/// `up` (the original enlarged `scale` times) with the original's tone: the
+/// colours of both smoothed over `TONE` original pixels (weighted by
+/// opacity, so transparent surroundings don't darken edges) and the
+/// difference added. The redraw keeps its own edges and shading; only its
+/// colours, lighting and drift come back to the original's.
+pub fn tone(original: &RgbaImage, up: &RgbaImage, scale: u32) -> RgbaImage {
+    let (w, h) = up.dimensions();
+    let base = image::imageops::resize(original, w, h, image::imageops::FilterType::Triangle);
+    let smooth = |img: &RgbaImage| {
+        let mut v: Vec<f32> = img
+            .pixels()
+            .flat_map(|p| {
+                let a = f32::from(p.0[3]) / 255.0;
+                [
+                    f32::from(p.0[0]) * a,
+                    f32::from(p.0[1]) * a,
+                    f32::from(p.0[2]) * a,
+                    a,
+                ]
+            })
+            .collect();
+        gaussian(&mut v, w as usize, h as usize, TONE * scale as f32);
+        v
+    };
+    let (lu, lb) = (smooth(up), smooth(&base));
+    let mut out = up.clone();
+    for (i, p) in out.pixels_mut().enumerate() {
+        if p.0[3] == 0 {
+            continue;
+        }
+        let (au, ab) = (lu[i * 4 + 3].max(1e-3), lb[i * 4 + 3].max(1e-3));
+        for c in 0..3 {
+            let shift = lb[i * 4 + c] / ab - lu[i * 4 + c] / au;
+            p.0[c] = (f32::from(p.0[c]) + shift).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+/// A separable Gaussian blur of `w` x `h` pixels of four channels, in place.
+fn gaussian(v: &mut [f32], w: usize, h: usize, sigma: f32) {
+    let r = (sigma * 3.0).ceil() as isize;
+    let k: Vec<f32> = (-r..=r)
+        .map(|d| (-(d * d) as f32 / (2.0 * sigma * sigma)).exp())
+        .collect();
+    let sum: f32 = k.iter().sum();
+    let mut tmp = vec![0f32; v.len()];
+    for (pass, (n, m)) in [(w, h), (h, w)].into_iter().enumerate() {
+        let src = if pass == 0 { &*v } else { &tmp[..] };
+        let mut dst = vec![0f32; v.len()];
+        for j in 0..m {
+            for i in 0..n {
+                for c in 0..4 {
+                    let mut acc = 0.0;
+                    for (t, kv) in k.iter().enumerate() {
+                        let q = (i as isize + t as isize - r).clamp(0, n as isize - 1) as usize;
+                        let at = if pass == 0 { j * w + q } else { q * w + j };
+                        acc += kv * src[at * 4 + c];
+                    }
+                    let at = if pass == 0 { j * w + i } else { i * w + j };
+                    dst[at * 4 + c] = acc / sum;
+                }
+            }
+        }
+        if pass == 0 {
+            tmp = dst;
+        } else {
+            v.copy_from_slice(&dst);
+        }
+    }
+}
+
 /// `up` (the original enlarged `scale` times) corrected so that, averaged
 /// back over each `scale` x `scale` block, it gives `original`. The error is
 /// spread smoothly (bilinear) and the correction repeated, so no block
