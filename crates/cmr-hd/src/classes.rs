@@ -16,6 +16,10 @@ pub enum Class {
     /// The race HUD (dials, pace-note arrows, positions): the artwork model,
     /// black transparent.
     Hud,
+    /// The stages' sky and distant scenery (the bitmaps inside each
+    /// `*.hzn`): redrawn elsewhere (`tools/hd-redraw/sky.py`) and imported;
+    /// drawn as 3D textures, opaque.
+    Sky,
     /// Not upscaled by this tool: 3D textures and effects (smoke, grass,
     /// snow; these are tiled or drawn as textures, see docs/UPSCALING.md).
     Skip,
@@ -27,7 +31,7 @@ impl Class {
         match self {
             Class::Picture => Some("realesrgan-x4plus"),
             Class::Interface | Class::Hud => Some("realesrgan-x4plus-anime"),
-            Class::Skip => None,
+            Class::Sky | Class::Skip => None,
         }
     }
 
@@ -57,7 +61,7 @@ impl Class {
 
     /// The class named in a manifest (unknown names are skipped).
     pub fn from_name(name: &str) -> Class {
-        [Class::Picture, Class::Interface, Class::Hud]
+        [Class::Picture, Class::Interface, Class::Hud, Class::Sky]
             .into_iter()
             .find(|c| c.name() == name)
             .unwrap_or(Class::Skip)
@@ -68,6 +72,7 @@ impl Class {
             Class::Picture => "picture",
             Class::Interface => "interface",
             Class::Hud => "hud",
+            Class::Sky => "sky",
             Class::Skip => "skip",
         }
     }
@@ -87,7 +92,9 @@ pub fn classify(path: &str) -> Class {
         "game/welcome/",
         "game/images/loading/",
     ];
-    if picture_dirs.iter().any(|d| p.starts_with(d))
+    if p.contains(".hzn/") {
+        Class::Sky
+    } else if picture_dirs.iter().any(|d| p.starts_with(d))
         || (p.starts_with("ini/") && p.ends_with(".bmp") && !p.contains("font"))
     {
         Class::Picture
@@ -125,6 +132,7 @@ mod tests {
             "an effect texture"
         );
         assert_eq!(classify("Game/Images/CLOTA1.BMP"), Class::Skip);
+        assert_eq!(classify("Game/NZ/1/nz1.hzn/1.bmp"), Class::Sky);
     }
 
     #[test]
@@ -134,7 +142,13 @@ mod tests {
         assert_eq!(Class::Hud.model(), Some("realesrgan-x4plus-anime"));
         assert!(Class::Hud.keyed() && Class::Interface.keyed());
         assert_eq!(Class::Skip.model(), None);
-        for c in [Class::Picture, Class::Interface, Class::Hud, Class::Skip] {
+        for c in [
+            Class::Picture,
+            Class::Interface,
+            Class::Hud,
+            Class::Sky,
+            Class::Skip,
+        ] {
             assert_eq!(Class::from_name(c.name()), c);
         }
         assert_eq!(Class::from_name("unknown"), Class::Skip);

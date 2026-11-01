@@ -30,6 +30,34 @@ pub fn unwrap(stored: &[u8]) -> Result<Vec<u8>, String> {
     Ok(payload.split_off(8))
 }
 
+/// The bitmaps stored inside a model file (a stage's horizon, `*.hzn`:
+/// a `CM3D` model whose sky and ground textures are whole Windows bitmaps),
+/// in file order. Only complete files with the usual 40-byte header count.
+pub fn embedded_bitmaps(model: &[u8]) -> Vec<&[u8]> {
+    let u32_at = |o: usize| u32::from_le_bytes(model[o..o + 4].try_into().expect("4 bytes"));
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at + 54 <= model.len() {
+        let size = u32_at(at + 2) as usize;
+        let is_bitmap = &model[at..at + 2] == b"BM"
+            && u32_at(at + 6) == 0
+            && u32_at(at + 14) == 40
+            && model[at + 26..at + 28] == [1, 0]
+            && matches!(model[at + 28], 8 | 24)
+            && (1..=4096).contains(&u32_at(at + 18))
+            && (1..=4096).contains(&u32_at(at + 22))
+            && size > 54
+            && at + size <= model.len();
+        if is_bitmap {
+            found.push(&model[at..at + size]);
+            at += size;
+        } else {
+            at += 1;
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,5 +94,30 @@ mod tests {
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         gz.write_all(b"CMPR\x09\0\0\0BM").unwrap();
         assert!(unwrap(&gz.finish().unwrap()).is_err(), "wrong length");
+    }
+
+    #[test]
+    fn bitmaps_inside_a_model() {
+        // A 2x1 8-bit bitmap (2-entry palette, one padded row).
+        let mut bmp = b"BM".to_vec();
+        let size: u32 = 14 + 40 + 8 + 4;
+        bmp.extend_from_slice(&size.to_le_bytes());
+        bmp.extend_from_slice(&0u32.to_le_bytes());
+        bmp.extend_from_slice(&(14u32 + 40 + 8).to_le_bytes());
+        bmp.extend_from_slice(&40u32.to_le_bytes());
+        bmp.extend_from_slice(&2u32.to_le_bytes());
+        bmp.extend_from_slice(&1u32.to_le_bytes());
+        bmp.extend_from_slice(&[1, 0, 8, 0]);
+        bmp.extend_from_slice(&[0; 24]);
+        bmp.extend_from_slice(&[0, 0, 0, 0, 255, 255, 255, 0]);
+        bmp.extend_from_slice(&[0, 1, 0, 0]);
+        assert_eq!(bmp.len(), size as usize);
+        let mut model = b"CM3D BM not a bitmap ".to_vec();
+        model.extend_from_slice(&bmp);
+        model.extend_from_slice(b"mesh");
+        model.extend_from_slice(&bmp);
+        let found = embedded_bitmaps(&model);
+        assert_eq!(found, [&bmp[..], &bmp[..]]);
+        assert!(embedded_bitmaps(&bmp[..40]).is_empty(), "cut short");
     }
 }

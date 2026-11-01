@@ -110,27 +110,55 @@ fn keyed_names(hd: &Path) -> Result<BTreeMap<String, bool>, String> {
         .collect())
 }
 
-/// Every `.bmp` under `root`, as forward-slash paths relative to it.
+/// Every `.bmp` under `root`, as forward-slash paths relative to it, and
+/// the bitmaps inside each stage's horizon (`<path>.hzn/<n>.bmp`, see
+/// `HORIZON`).
 fn bitmaps(root: &Path) -> Result<Vec<String>, String> {
     fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
+            let is = |ext: &str| {
+                path.extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+            };
             if path.is_dir() {
                 walk(&path, root, out)?;
-            } else if path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("bmp"))
-            {
+            } else if is("bmp") || is("hzn") {
                 let rel = path.strip_prefix(root).expect("under root");
                 out.push(rel.to_string_lossy().replace('\\', "/"));
             }
         }
         Ok(())
     }
+    let mut files = Vec::new();
+    walk(root, root, &mut files).map_err(|e| format!("cannot read {}: {e}", root.display()))?;
     let mut out = Vec::new();
-    walk(root, root, &mut out).map_err(|e| format!("cannot read {}: {e}", root.display()))?;
+    for rel in files {
+        if rel.to_ascii_lowercase().ends_with(".hzn") {
+            let stored = fs::read(root.join(&rel)).map_err(|e| format!("{rel}: {e}"))?;
+            let model = asset::unwrap(&stored).map_err(|e| format!("{rel}: {e}"))?;
+            out.extend(
+                (0..asset::embedded_bitmaps(&model).len()).map(|n| format!("{rel}/{n}.bmp")),
+            );
+        } else {
+            out.push(rel);
+        }
+    }
     out.sort();
     Ok(out)
+}
+
+/// Marks a bitmap inside a horizon file: `<path>.hzn/<n>.bmp`.
+const HORIZON: &str = ".hzn/";
+
+/// A horizon bitmap's file and index, from its path.
+fn in_horizon(rel: &str) -> Option<(String, usize)> {
+    let at = rel.to_ascii_lowercase().find(HORIZON)?;
+    let n = rel[at + HORIZON.len()..]
+        .strip_suffix(".bmp")?
+        .parse()
+        .ok()?;
+    Some((rel[..at + HORIZON.len() - 1].to_string(), n))
 }
 
 /// A game image.
@@ -146,12 +174,20 @@ struct Decoded {
 }
 
 fn decode(game: &Path, rel: &str) -> Result<Decoded, String> {
-    let stored = fs::read(game.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
+    let horizon = in_horizon(rel);
+    let file = horizon.as_ref().map_or(rel, |(file, _)| file);
+    let stored = fs::read(game.join(file)).map_err(|e| format!("{rel}: {e}"))?;
     let digest = Sha256::digest(&stored)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    let bmp = asset::unwrap(&stored).map_err(|e| format!("{rel}: {e}"))?;
+    let mut bmp = asset::unwrap(&stored).map_err(|e| format!("{rel}: {e}"))?;
+    if let Some((_, n)) = horizon {
+        bmp = asset::embedded_bitmaps(&bmp)
+            .get(n)
+            .ok_or_else(|| format!("{rel}: no bitmap {n} in the horizon"))?
+            .to_vec();
+    }
     let img = image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp)
         .map_err(|e| format!("{rel}: {e}"))?;
     // The same bytes the hook library hashes: the header's bfSize.
@@ -348,18 +384,44 @@ fn run_esrgan(
         .map_err(|e| format!("{}: {e}", output.display()))
 }
 
-/// The 4x and 2x versions of a flat image: redrawn with smooth outlines,
-/// and for a texture (8-bit at run time) held to the original's own colours.
+/// The 4x and 2x versions of a flat image, redrawn with smooth outlines.
 fn redraw(job: &Job) -> (RgbaImage, RgbaImage) {
-    let at = |scale: u32| {
-        let up = depixel_edges(&job.img, scale);
-        if job.class.texture() {
-            lock::exact(&job.img, &up, scale)
-        } else {
-            up
-        }
+    (depixel_edges(&job.img, 4), depixel_edges(&job.img, 2))
+}
+
+/// A texture's HD versions (the HUD: 8-bit at run time) held to the
+/// original's own colours, whatever made them: each pixel takes one of the
+/// colours the original has around the spot. Colours stay the artist's,
+/// and transparency stays where the original has it; an image model's
+/// near-black (a pace-note arrow) would otherwise become the colour key.
+fn held(
+    class: Class,
+    original: &RgbaImage,
+    (x4, x2): (RgbaImage, RgbaImage),
+) -> (RgbaImage, RgbaImage) {
+    if !class.texture() {
+        return (x4, x2);
+    }
+    let (w, h) = original.dimensions();
+    // Inside: the original pixel and its eight neighbours are all opaque.
+    let inside = |x: u32, y: u32| {
+        (x.saturating_sub(1)..=(x + 1).min(w - 1)).all(|nx| {
+            (y.saturating_sub(1)..=(y + 1).min(h - 1)).all(|ny| original.get_pixel(nx, ny).0[3] > 0)
+        })
     };
-    (at(4), at(2))
+    let lock = |mut up: RgbaImage| {
+        let scale = up.width() / w.max(1);
+        if scale == 0 || up.width() != w * scale {
+            return up; // not a whole multiple of the original
+        }
+        for (x, y, p) in up.enumerate_pixels_mut() {
+            if inside(x / scale, y / scale) {
+                p.0[3] = 255;
+            }
+        }
+        lock::exact(original, &up, scale)
+    };
+    (lock(x4), lock(x2))
 }
 
 /// Pixels a flat image is continued by on every side before it is redrawn.
@@ -401,12 +463,8 @@ fn from_esrgan(job: &Job, x4: RgbaImage) -> (RgbaImage, RgbaImage) {
 /// Saves an image's 4x and 2x versions as PNG under `x4/` and `x2/`, plus
 /// the BMP the game loads (none when the twin would be wider or taller
 /// than `MAX_TWIN`, like the menu's panorama enlarged 4x).
-fn save_sets(
-    job: &Job,
-    (mut x4, mut x2): (RgbaImage, RgbaImage),
-    src: &Path,
-    hd: &Path,
-) -> Result<(), String> {
+fn save_sets(job: &Job, sets: (RgbaImage, RgbaImage), src: &Path, hd: &Path) -> Result<(), String> {
+    let (mut x4, mut x2) = held(job.class, &job.img, sets);
     if job.class.keyed() {
         key::to_key(&mut x4);
         key::to_key(&mut x2);
@@ -437,6 +495,7 @@ fn import(src: &Path, redrawn: &Path, hd: &Path) -> Result<(), String> {
     let manifest = fs::read_to_string(src.join(MANIFEST))
         .map_err(|e| format!("no {MANIFEST} in {}: {e}", src.display()))?;
     let mut rows = read_rows(hd);
+    let mut imported = BTreeMap::new();
     let mut done = 0;
     for line in manifest.lines().filter(|l| !l.starts_with('#')) {
         let f: Vec<&str> = line.split('\t').collect();
@@ -464,8 +523,16 @@ fn import(src: &Path, redrawn: &Path, hd: &Path) -> Result<(), String> {
             image::imageops::FilterType::Lanczos3,
         );
         save_sets(&job, (up, x2), src, hd)?;
-        rows.insert(rel.to_string(), job.rest);
+        rows.insert(rel.to_string(), job.rest.clone());
+        imported.insert(name, job.rest);
         done += 1;
+    }
+    // The same game file at other paths shares the twin just written.
+    for line in manifest.lines().filter(|l| !l.starts_with('#')) {
+        let f: Vec<&str> = line.split('\t').collect();
+        if let (Some(rel), Some(rest)) = (f.first(), f.get(5).and_then(|n| imported.get(n))) {
+            rows.insert(rel.to_string(), rest.clone());
+        }
     }
     write_rows(hd, &rows)?;
     println!("{done} redrawn images imported into {}", hd.display());
@@ -661,5 +728,61 @@ mod tests {
         assert_eq!(last["a.bmp"], rows["a.bmp"]);
         assert!(last["b.bmp"].ends_with("redrawn"));
         let _ = fs::remove_dir_all(&hd);
+    }
+
+    #[test]
+    fn redrawn_textures_keep_the_originals_colours_and_transparency() {
+        // A pace-note sign: transparent corner ring, yellow fill, a dark
+        // grey arrow in the middle.
+        let original = RgbaImage::from_fn(8, 8, |x, y| {
+            if x == 0 || y == 0 || x == 7 || y == 7 {
+                Rgba([0, 0, 0, 0])
+            } else if (3..5).contains(&x) && (2..6).contains(&y) {
+                Rgba([24, 24, 24, 255])
+            } else {
+                Rgba([250, 200, 0, 255])
+            }
+        });
+        // An image model's redraw: the fill drifted to ochre, the arrow
+        // came back pure black (keyed as transparent).
+        let redraw = |s: u32| {
+            RgbaImage::from_fn(8 * s, 8 * s, |x, y| {
+                let o = original.get_pixel(x / s, y / s).0;
+                match o {
+                    [0, 0, 0, 0] => Rgba([0, 0, 0, 0]),
+                    [24, ..] => Rgba([0, 0, 0, 0]),
+                    _ => Rgba([200, 150, 20, 255]),
+                }
+            })
+        };
+        let (x4, x2) = held(Class::Hud, &original, (redraw(4), redraw(2)));
+        for (img, s) in [(&x4, 4), (&x2, 2)] {
+            for y in 0..8 * s {
+                for x in 0..8 * s {
+                    let want = original.get_pixel(x / s, y / s);
+                    // Away from the edges between colours, the original's.
+                    let inner = |v: u32| !v.is_multiple_of(s) && v % s != s - 1;
+                    if inner(x) && inner(y) {
+                        assert_eq!(img.get_pixel(x, y), want, "({x}, {y}) at {s}x");
+                    }
+                }
+            }
+        }
+        // Pictures are left alone.
+        let (p, _) = held(Class::Picture, &original, (redraw(4), redraw(2)));
+        assert_eq!(p, redraw(4));
+    }
+
+    #[test]
+    fn horizon_paths() {
+        assert_eq!(
+            in_horizon("Game/NZ/1/nz1.hzn/2.bmp"),
+            Some(("Game/NZ/1/nz1.hzn".to_string(), 2))
+        );
+        assert_eq!(
+            in_horizon("Game/Au/1/AU1.HZN/0.bmp"),
+            Some(("Game/Au/1/AU1.HZN".to_string(), 0))
+        );
+        assert_eq!(in_horizon("Game/Images/osdnew/ARRWS.BMP"), None);
     }
 }

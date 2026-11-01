@@ -25,6 +25,9 @@ DEFAULT = ("ini/English/", "ini/loading", "ini/loaded", "ini/cdtemplate", "New_F
            "New_Fe/Images/Load/", "New_Fe/Images/MainOpts/English/", "Game/Images/osdnew/high/",
            "Game/Images/osdnew/revs/", "Game/Images/osdnew/ARRWS")
 OWN_SCRIPT = ("/Anim/", "Backdrop/Main.bmp", "Game/Welcome/")
+# Pieces the game joins on screen (the rev bar's segments): the model keeps
+# their staircases or breaks them; `cmr-hd upscale` (depixel) joins them.
+JOINED = ("/2wheel/rev0",)
 
 
 def flat_rgb(img):
@@ -90,7 +93,7 @@ def main():
     for line in open(os.path.join(ext, "manifest.tsv")):
         if line.startswith("#"): continue
         rel, cls, _, w, h, name = line.rstrip("\n").split("\t")[:6]
-        if name in seen or not rel.startswith(prefixes) or any(p in rel for p in OWN_SCRIPT): continue
+        if name in seen or not rel.startswith(prefixes) or any(p in rel for p in OWN_SCRIPT + JOINED): continue
         img = Image.open(os.path.join(ext, rel + ".png"))
         colours = len(img.getcolors(1 << 20) or [0] * 999)
         if min(int(w), int(h)) < 12 or colours <= 2: continue
