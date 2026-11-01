@@ -72,7 +72,8 @@ mod tests {
     use fixes::{At, Fix, Op, Piece};
 
     static TEST_FIXES: FixSet = FixSet {
-        fixes: &[Fix {
+        shared: &[],
+        own: &[Fix {
             id: "T1",
             what: "test",
             optional: false,

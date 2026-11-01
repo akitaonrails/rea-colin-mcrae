@@ -19,7 +19,11 @@ pub struct Fix {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct FixSet {
-    pub fixes: &'static [Fix],
+    /// Fixes only this build needs.
+    pub own: &'static [Fix],
+    /// Then the fixes it shares with the other builds of its version (one
+    /// list, so a new fix reaches every build).
+    pub shared: &'static [Fix],
 }
 
 /// Where a piece of code goes.
@@ -89,9 +93,13 @@ impl FixSet {
     /// The fixes to apply: all of them except the optional ones named in
     /// `skip` (required fixes are never skipped).
     pub fn active<'a>(&'a self, skip: &'a [&str]) -> impl Iterator<Item = &'a Fix> {
-        self.fixes
-            .iter()
+        self.all()
             .filter(move |f| !(f.optional && skip.contains(&f.id)))
+    }
+
+    /// Every fix of the set, in order.
+    pub fn all(&self) -> impl Iterator<Item = &Fix> {
+        self.own.iter().chain(self.shared)
     }
 
     /// Bytes the cave needs; 0 means no cave is allocated.
@@ -154,16 +162,23 @@ fn rel32(at: u32, len: u32, to: u32) -> [u8; 4] {
 }
 
 /// The community-patched EU v1.5 (`46500c8e…`) carries F1-F5 on disk; it
-/// is the same build, so F6 applies at the same addresses.
+/// is the same build otherwise (the two executables differ only where
+/// F1-F5 write), so every later fix applies at the same addresses.
 pub static COMMUNITY_EU_15: FixSet = FixSet {
-    fixes: &[
-        F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16, F17, F18, F19,
-    ],
+    own: &[],
+    shared: &EU_15_SHARED,
 };
+
+/// The fixes both EU v1.5 executables take.
+static EU_15_SHARED: [Fix; 22] = [
+    F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16, F17, F18, F19, F20, F21, F22, F23, F24, F25,
+    F26, F27,
+];
 
 /// Official EU v1.5 (`0eb6ea96…`).
 pub static OFFICIAL_EU_15: FixSet = FixSet {
-    fixes: &[
+    shared: &EU_15_SHARED,
+    own: &[
         Fix {
             id: "F1",
             what: "CD-ROM check always finds the disc (the files come from CDPath)",
@@ -228,28 +243,6 @@ pub static OFFICIAL_EU_15: FixSet = FixSet {
                 ops: &[Op::Raw(&[0xc2, 0x04, 0x00])],
             }],
         },
-        F6,
-        F7,
-        F8,
-        F9,
-        F10,
-        F11,
-        F12,
-        F13,
-        F14,
-        F15,
-        F16,
-        F17,
-        F18,
-        F19,
-        F20,
-        F21,
-        F22,
-        F23,
-        F24,
-        F25,
-        F26,
-        F27,
     ],
 };
 
@@ -1732,10 +1725,19 @@ mod tests {
 
     #[test]
     fn fixes_are_in_order() {
-        let ids: Vec<_> = OFFICIAL_EU_15.fixes.iter().map(|f| f.id).collect();
+        let ids: Vec<_> = OFFICIAL_EU_15.all().map(|f| f.id).collect();
         let expected: Vec<_> = (1..=ids.len()).map(|i| format!("F{i}")).collect();
         assert_eq!(ids, expected);
         assert_eq!(ids.len(), 27);
+    }
+
+    #[test]
+    fn the_community_build_takes_every_fix_but_those_it_carries() {
+        // Its executable has F1-F5 on disk; v0.5.0 and earlier left it
+        // without F20-F27, so the game's own depth test (F26's) crashed.
+        let official: Vec<_> = OFFICIAL_EU_15.all().map(|f| f.id).collect();
+        let community: Vec<_> = COMMUNITY_EU_15.all().map(|f| f.id).collect();
+        assert_eq!(community, official[5..]);
     }
 
     #[test]
@@ -2296,12 +2298,7 @@ mod tests {
                 .iter()
                 .all(|w| w.fix != "F6")
         );
-        assert_eq!(
-            COMMUNITY_EU_15.cave_size(&[
-                "F6", "F7", "F10", "F11", "F12", "F13", "F14", "F16", "F17", "F18", "F19"
-            ]),
-            F9_CAVE + 24
-        );
+        assert_eq!(COMMUNITY_EU_15.cave_size(&skip), F9_CAVE + 24);
     }
 
     #[test]
