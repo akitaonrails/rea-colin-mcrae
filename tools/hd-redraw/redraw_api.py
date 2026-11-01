@@ -61,11 +61,10 @@ WRITING = ("This image is a redrawn graphic from a 1998 rally video game (a car,
   "garbled, mirrored or nonsense. Reply with exactly one word: YES or NO.")
 
 
-def writing_ok(img):
-    """Whether every piece of writing in img is real and makes sense (or
-    there is none), as a vision model reads it."""
+def ask(img, question):
+    """A vision model's answer (text) to a question about img."""
     buf = io.BytesIO(); img.convert("RGB").save(buf, "PNG")
-    body = {"contents": [{"parts": [{"text": WRITING},
+    body = {"contents": [{"parts": [{"text": question},
               {"inline_data": {"mime_type": "image/png", "data": base64.b64encode(buf.getvalue()).decode()}}]}]}
     req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{CHECKER}:generateContent",
         data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "x-goog-api-key": os.environ["GEMINI_API_KEY"]})
@@ -79,5 +78,10 @@ def writing_ok(img):
             raise RuntimeError(f"API error {e.code}")
     else:
         raise RuntimeError("gave up after retries")
-    text = "".join(p.get("text", "") for c in d.get("candidates", []) for p in c.get("content", {}).get("parts", []))
-    return text.strip().upper().startswith("YES")
+    return "".join(p.get("text", "") for c in d.get("candidates", []) for p in c.get("content", {}).get("parts", [])).strip()
+
+
+def writing_ok(img):
+    """Whether every piece of writing in img is real and makes sense (or
+    there is none), as a vision model reads it."""
+    return ask(img, WRITING).upper().startswith("YES")

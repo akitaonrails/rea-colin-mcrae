@@ -24,6 +24,11 @@ pub enum Class {
     /// redrawn elsewhere (`tools/hd-redraw/redraw.py`) and imported; drawn as
     /// 3D textures, 8-bit with pure black transparent, like the HUD's.
     Car,
+    /// The stages' trackside objects (the bitmaps inside each `*.obj`:
+    /// banners, billboards, buildings, trees, spectators): the signs among
+    /// them are redrawn elsewhere (`tools/hd-redraw/signs.py`) and imported;
+    /// 3D textures, 8-bit with pure black transparent.
+    Scenery,
     /// Not upscaled by this tool: 3D textures and effects (smoke, grass,
     /// snow; these are tiled or drawn as textures, see docs/UPSCALING.md).
     Skip,
@@ -35,7 +40,7 @@ impl Class {
         match self {
             Class::Picture => Some("realesrgan-x4plus"),
             Class::Interface | Class::Hud => Some("realesrgan-x4plus-anime"),
-            Class::Sky | Class::Car | Class::Skip => None,
+            Class::Sky | Class::Car | Class::Scenery | Class::Skip => None,
         }
     }
 
@@ -55,12 +60,15 @@ impl Class {
     /// Whether the game draws it as a texture (the race HUD), kept as 8-bit
     /// palette indices; the rest are 2D surfaces.
     pub fn texture(self) -> bool {
-        matches!(self, Class::Hud | Class::Car)
+        matches!(self, Class::Hud | Class::Car | Class::Scenery)
     }
 
     /// Whether pure black marks transparency (the game's colour key 0).
     pub fn keyed(self) -> bool {
-        matches!(self, Class::Interface | Class::Hud | Class::Car)
+        matches!(
+            self,
+            Class::Interface | Class::Hud | Class::Car | Class::Scenery
+        )
     }
 
     /// The class named in a manifest (unknown names are skipped).
@@ -71,6 +79,7 @@ impl Class {
             Class::Hud,
             Class::Sky,
             Class::Car,
+            Class::Scenery,
         ]
         .into_iter()
         .find(|c| c.name() == name)
@@ -84,6 +93,7 @@ impl Class {
             Class::Hud => "hud",
             Class::Sky => "sky",
             Class::Car => "car",
+            Class::Scenery => "scenery",
             Class::Skip => "skip",
         }
     }
@@ -111,6 +121,8 @@ pub fn classify(path: &str) -> Class {
         Class::Sky
     } else if p.starts_with("game/objects/cars/") && p.contains(".c3d/") {
         Class::Car
+    } else if p.contains(".obj/") {
+        Class::Scenery
     } else if picture_dirs.iter().any(|d| p.starts_with(d))
         || (p.starts_with("ini/") && p.ends_with(".bmp") && !p.contains("font"))
     {
@@ -156,6 +168,7 @@ mod tests {
             Class::Skip,
             "a stage model"
         );
+        assert_eq!(classify("Game/NZ/1/NZ1.obj/0.bmp"), Class::Scenery);
         assert_eq!(
             classify("Game/Images/LOGOS2.BMP"),
             Class::Hud,
@@ -176,6 +189,7 @@ mod tests {
             Class::Hud,
             Class::Sky,
             Class::Car,
+            Class::Scenery,
             Class::Skip,
         ] {
             assert_eq!(Class::from_name(c.name()), c);

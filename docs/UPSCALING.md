@@ -39,6 +39,7 @@ What was tried, on the official European v1.5:
 | **Manufacturer badges and flags of the race's own screens** (stage results: `Game/Images/LOGOS2.BMP`, `CUNTLOGO.BMP`) | `redraw.py` on the whole sheet (class `hud` through `RACE_SHEETS`) | — |
 | **HUD pieces the game joins on screen**: the rev bar's segments (`2wheel/rev0*`) | `depixel` (`redraw.py` skips them) | the image model (kept the staircases or broke the pieces apart) |
 | **Car textures** (the bitmaps inside `Objects/Cars/**/*.c3d`: UV atlases of the livery, glass, wheels and cockpit) | `redraw.py` (class `car`, an atlas prompt: everything in exactly the same place, writing legible and real), best of three by drift, then `pick.py`; back-projected onto the original by `cmr-hd`; reviewed by eye | spinning wheels (redrawn, they show still spokes at speed) and plain panels (the model engraves details) keep the original: `redraw.py` finds them by their angular detail against a sibling; some tries add parts (a spare wheel, a bonnet scoop) |
+| **Trackside signs** (start and finish banners, sponsor billboards, rally plates, road and message boards: among the bitmaps inside each stage's `*.obj`, class `scenery`) | `tools/hd-redraw/signs.py`: a vision model picks the signs out of the 1372 trackside textures (164 are signs), says how each turns to read and transcribes its writing; each is redrawn upright with that exact writing in the prompt; two passes, then `pick.py`; back-projected by `cmr-hd` | redrawing without the transcription (the model misread SNR as SMX, doubled letters: New ZeZealand); taking a single pass (some banners came back upside down or with doubled words) |
 | **Sky and distant scenery**: the bitmaps inside each stage's `*.hzn` (two bands that make the horizon panorama, stored on their side, and a ground texture that tiles) | `tools/hd-redraw/sky.py`: bands turned upright and joined into one panorama, redrawn soft and hazy in one request, tone from the original, borders faded back to it; single-colour textures and redraws that stray far (drift above 50) keep the original | redrawing single-colour textures (night grounds: the model scatters speckles); one stage's sky came back smeared and one city skyline blurred (a second try was right) |
 
 Not done yet: the spinning globe and its flag strip (drawn by a path that
@@ -166,6 +167,13 @@ python tools/hd-redraw/redraw.py $W/extracted $W/final Game/Images/LOGOS2.BMP Ga
 for n in 1 2; do python tools/hd-redraw/redraw.py $W/extracted $W/cars$n Game/Objects/Cars/; done
 python tools/hd-redraw/pick.py $W/final $W/cars1 $W/cars2
 
+# The trackside signs: classified and transcribed once (signs.tsv; copy
+# it into the second folder), redrawn twice, picked.
+python tools/hd-redraw/signs.py $W/extracted $W/signs1
+mkdir -p $W/signs2 && cp $W/signs1/signs.tsv $W/signs2/
+python tools/hd-redraw/signs.py $W/extracted $W/signs2
+python tools/hd-redraw/pick.py $W/final $W/signs1 $W/signs2
+
 # Into the set (a redraw replaces the same image's depixel version), then
 # the pack.
 cmr-hd import $W/extracted $W/final $W/set
@@ -194,9 +202,10 @@ and 3 don't use it.
   runtime name, so the same twin), such as the HUD sheets the game keeps
   in several folders.
 - A stage's sky and ground are whole bitmaps inside its horizon model
-  (`*.hzn`, a stored `CM3D`), and so are a car's textures (`*.c3d`);
-  `extract` lists them as `<path>.hzn/<n>.bmp` and `<path>.c3d/<n>.bmp`
-  (`asset::embedded_bitmaps`), classes `sky` and `car`. The game loads
+  (`*.hzn`, a stored `CM3D`), and so are a car's textures (`*.c3d`) and a
+  stage's trackside objects (`*.obj`); `extract` lists them as
+  `<path>.<ext>/<n>.bmp` (`asset::embedded_bitmaps`), classes `sky`,
+  `car` and `scenery`. The game loads
   them through the same loader as the HUD's textures, so F27 shows their
   twins with no hook of its own. Car textures are colour-keyed 8-bit
   (a palette entry equal to entry 0's colour is transparent), so their
@@ -326,8 +335,9 @@ run), so `cmr-hd` packs images into sheets and runs it once per sheet
 - **Fonts** (`*.fon`, `ini/cdFONT.BMP`, the race timer's digit sheets):
   a separate class; text could be redrawn from a vector font.
 - **Car and country pictures, thumbnails**: `tiles.py` should suit them.
-- **More of the scenery**: the stages' other textures live in their
-  `.c3d` models in the game's own formats, not as bitmaps; the sky shows
-  that a texture loaded through the bitmap loader needs only a twin.
+- **More of the scenery**: the rest of each stage's `*.obj` (buildings,
+  trees, spectators, vehicles), its `*.sht` and the road and terrain
+  textures in its `*.c3d` are whole bitmaps too, loaded the same way: a
+  twin is all they need.
 - Palette effects: a few front-end screens fade or cycle palettes; check
   that HD twins follow.
