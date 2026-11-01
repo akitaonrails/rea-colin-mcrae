@@ -3,7 +3,8 @@
 from the original. Writes <out>/<path>.png (alpha for keyed images: black
 is transparent) and <out>/log.tsv (path, drift, kind, seconds).
 usage: redraw.py <extracted> <out> [path prefix ...]
-Without prefixes: the full-screen pictures, the main menu's pieces and the
+Car textures (class `car`) are redrawn as texture atlases; name them with a
+prefix (e.g. Game/Objects/Cars/Sub). Without prefixes: the full-screen pictures, the main menu's pieces and the
 race HUD's larger images. The menu ring frames (ring.py) and large
 detailed pictures (tiles.py) have their own scripts and are left out.
 Key: GEMINI_API_KEY, never printed."""
@@ -17,10 +18,16 @@ import redraw_api
 
 PROMPTS = {
  "picture": "This is a 640x480 screen from a 1998 PC rally video game. Remaster it as a clean, sharp, highly detailed high-resolution image, as if the artist had originally painted and rendered it at 4K. Keep EXACTLY the same composition, framing, positions, proportions, colours, lighting and every piece of text with the same typeface, wording and placement. Do not add, remove, move or restyle anything; no new objects, no new text, no borders. Text must be crisp, like a high-resolution vector font.",
+ "texture": "This is a texture atlas of a 1998 rally car from a video game: flat pieces of the car's livery, "
+  "panels, decals, numbers, windows or wheels, laid out side by side and wrapped onto a 3D model, shown enlarged with "
+  "visible pixels. Redraw it as the same texture made at high resolution: every piece, edge, decal, stripe, logo, "
+  "letter and number in EXACTLY the same place, size, angle and colour (the 3D model depends on it), with clean sharp "
+  "detail and smooth gradients instead of pixels. Do not add, remove, move or restyle anything; keep pure black areas "
+  "pure black (#000000).",
  "art": "This is a small user-interface graphic from a 1998 PC rally video game, shown enlarged. Redraw it from scratch as crisp high-resolution vector artwork (as if drawn in Adobe Illustrator): perfectly smooth straight lines, clean diagonals and round curves, no pixel staircases, no blur, no noise. Keep EXACTLY the same design, layout, positions, proportions, line widths, flat colours and text (same letterforms). Do not add, remove or move anything. The pure black background must stay pure flat black (#000000).",
 }
 # A try this close to the original (RGB RMSE at the original's size) is kept.
-GOOD = {"picture": 28, "art": 40}
+GOOD = {"picture": 28, "art": 40, "texture": 20}
 DEFAULT = ("ini/English/", "ini/loading", "ini/loaded", "ini/cdtemplate", "New_Fe/Images/Backdrop/",
            "New_Fe/Images/Load/", "New_Fe/Images/MainOpts/English/", "Game/Images/osdnew/high/",
            "Game/Images/osdnew/revs/", "Game/Images/osdnew/ARRWS")
@@ -76,11 +83,11 @@ def main():
         dst = os.path.join(out, rel + ".png")
         if os.path.exists(dst): return
         orig = Image.open(os.path.join(ext, rel + ".png")).convert("RGBA")
-        kind = "picture" if cls == "picture" else "art"
+        kind = {"picture": "picture", "car": "texture"}.get(cls, "art")
         t = time.time()
         try:
             img, e = best_of(flat_rgb(orig), kind, 3 if orig.width > 640 else 4)
-            if cls in ("interface", "hud"): img = keyed_alpha(img)
+            if cls in ("interface", "hud", "car"): img = keyed_alpha(img)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             img.save(dst)
             line = f"{rel}\t{e:.1f}\t{kind}\t{time.time() - t:.0f}s"

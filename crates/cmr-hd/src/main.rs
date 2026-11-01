@@ -111,8 +111,8 @@ fn keyed_names(hd: &Path) -> Result<BTreeMap<String, bool>, String> {
 }
 
 /// Every `.bmp` under `root`, as forward-slash paths relative to it, and
-/// the bitmaps inside each stage's horizon (`<path>.hzn/<n>.bmp`, see
-/// `HORIZON`).
+/// the bitmaps inside each model file (a stage's horizon, a car:
+/// `<path>.hzn/<n>.bmp`, `<path>.c3d/<n>.bmp`, see `MODELS`).
 fn bitmaps(root: &Path) -> Result<Vec<String>, String> {
     fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
         for entry in fs::read_dir(dir)? {
@@ -123,7 +123,7 @@ fn bitmaps(root: &Path) -> Result<Vec<String>, String> {
             };
             if path.is_dir() {
                 walk(&path, root, out)?;
-            } else if is("bmp") || is("hzn") {
+            } else if is("bmp") || MODELS.iter().any(|m| is(m)) {
                 let rel = path.strip_prefix(root).expect("under root");
                 out.push(rel.to_string_lossy().replace('\\', "/"));
             }
@@ -134,7 +134,7 @@ fn bitmaps(root: &Path) -> Result<Vec<String>, String> {
     walk(root, root, &mut files).map_err(|e| format!("cannot read {}: {e}", root.display()))?;
     let mut out = Vec::new();
     for rel in files {
-        if rel.to_ascii_lowercase().ends_with(".hzn") {
+        if !rel.to_ascii_lowercase().ends_with(".bmp") {
             let stored = fs::read(root.join(&rel)).map_err(|e| format!("{rel}: {e}"))?;
             let model = asset::unwrap(&stored).map_err(|e| format!("{rel}: {e}"))?;
             out.extend(
@@ -148,17 +148,19 @@ fn bitmaps(root: &Path) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// Marks a bitmap inside a horizon file: `<path>.hzn/<n>.bmp`.
-const HORIZON: &str = ".hzn/";
+/// Model files whose textures are whole bitmaps inside them (a stage's
+/// horizon, `CM3D` models such as the cars); a bitmap inside one is
+/// `<path>.<ext>/<n>.bmp`.
+const MODELS: [&str; 2] = ["hzn", "c3d"];
 
-/// A horizon bitmap's file and index, from its path.
-fn in_horizon(rel: &str) -> Option<(String, usize)> {
-    let at = rel.to_ascii_lowercase().find(HORIZON)?;
-    let n = rel[at + HORIZON.len()..]
-        .strip_suffix(".bmp")?
-        .parse()
-        .ok()?;
-    Some((rel[..at + HORIZON.len() - 1].to_string(), n))
+/// A bitmap's model file and index, from its path, if it is inside one.
+fn in_model(rel: &str) -> Option<(String, usize)> {
+    let lower = rel.to_ascii_lowercase();
+    let at = MODELS
+        .iter()
+        .find_map(|m| lower.find(&format!(".{m}/")).map(|at| at + m.len() + 1))?;
+    let n = rel[at + 1..].strip_suffix(".bmp")?.parse().ok()?;
+    Some((rel[..at].to_string(), n))
 }
 
 /// A game image.
@@ -174,18 +176,18 @@ struct Decoded {
 }
 
 fn decode(game: &Path, rel: &str) -> Result<Decoded, String> {
-    let horizon = in_horizon(rel);
-    let file = horizon.as_ref().map_or(rel, |(file, _)| file);
+    let model = in_model(rel);
+    let file = model.as_ref().map_or(rel, |(file, _)| file);
     let stored = fs::read(game.join(file)).map_err(|e| format!("{rel}: {e}"))?;
     let digest = Sha256::digest(&stored)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let mut bmp = asset::unwrap(&stored).map_err(|e| format!("{rel}: {e}"))?;
-    if let Some((_, n)) = horizon {
+    if let Some((_, n)) = model {
         bmp = asset::embedded_bitmaps(&bmp)
             .get(n)
-            .ok_or_else(|| format!("{rel}: no bitmap {n} in the horizon"))?
+            .ok_or_else(|| format!("{rel}: no bitmap {n} in the model"))?
             .to_vec();
     }
     let img = image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp)
@@ -390,14 +392,18 @@ fn redraw(job: &Job) -> (RgbaImage, RgbaImage) {
 }
 
 /// A texture's HD versions (the HUD: 8-bit at run time) held to the
-/// original's own colours, whatever made them: each pixel takes one of the
-/// colours the original has around the spot. Colours stay the artist's,
-/// and transparency stays where the original has it; an image model's
-/// near-black (a pace-note arrow) would otherwise become the colour key.
+/// original, whatever made them. Transparency stays where the original has
+/// it (an image model's near-black, a pace-note arrow, would otherwise
+/// become the colour key). Flat redraws (`depixel`) take, pixel by pixel,
+/// one of the colours the original has around the spot; `painted` ones (an
+/// image model's: smooth shading, a car's) are back-projected instead, so
+/// each original pixel's area averages to its colour without the shading
+/// being cut back into steps.
 fn held(
     class: Class,
     original: &RgbaImage,
     (x4, x2): (RgbaImage, RgbaImage),
+    painted: bool,
 ) -> (RgbaImage, RgbaImage) {
     if !class.texture() {
         return (x4, x2);
@@ -419,7 +425,11 @@ fn held(
                 p.0[3] = 255;
             }
         }
-        lock::exact(original, &up, scale)
+        if painted {
+            lock::back_project(original, &up, scale)
+        } else {
+            lock::exact(original, &up, scale)
+        }
     };
     (lock(x4), lock(x2))
 }
@@ -463,8 +473,15 @@ fn from_esrgan(job: &Job, x4: RgbaImage) -> (RgbaImage, RgbaImage) {
 /// Saves an image's 4x and 2x versions as PNG under `x4/` and `x2/`, plus
 /// the BMP the game loads (none when the twin would be wider or taller
 /// than `MAX_TWIN`, like the menu's panorama enlarged 4x).
-fn save_sets(job: &Job, sets: (RgbaImage, RgbaImage), src: &Path, hd: &Path) -> Result<(), String> {
-    let (mut x4, mut x2) = held(job.class, &job.img, sets);
+/// Writes a job's HD versions; `painted` as for `held`.
+fn save_sets(
+    job: &Job,
+    sets: (RgbaImage, RgbaImage),
+    painted: bool,
+    src: &Path,
+    hd: &Path,
+) -> Result<(), String> {
+    let (mut x4, mut x2) = held(job.class, &job.img, sets, painted);
     if job.class.keyed() {
         key::to_key(&mut x4);
         key::to_key(&mut x2);
@@ -522,7 +539,7 @@ fn import(src: &Path, redrawn: &Path, hd: &Path) -> Result<(), String> {
             (up.height() / 2).max(1),
             image::imageops::FilterType::Lanczos3,
         );
-        save_sets(&job, (up, x2), src, hd)?;
+        save_sets(&job, (up, x2), true, src, hd)?;
         rows.insert(rel.to_string(), job.rest.clone());
         imported.insert(name, job.rest);
         done += 1;
@@ -578,7 +595,7 @@ fn upscale(src: &Path, hd: &Path, esrgan: Option<&Path>, only: Option<&str>) -> 
         if *model == DEPIXEL {
             println!("{model}: {} images", jobs.len());
             for job in jobs {
-                save_sets(job, redraw(job), src, hd)?;
+                save_sets(job, redraw(job), false, src, hd)?;
             }
         } else if let Some(esrgan) = esrgan {
             upscale_sheets(model, jobs, src, hd, esrgan)?;
@@ -657,7 +674,13 @@ fn upscale_sheets(
                 let x4 =
                     image::imageops::crop_imm(&up, p.x * SCALE, p.y * SCALE, w * SCALE, h * SCALE)
                         .to_image();
-                save_sets(&jobs[p.index], from_esrgan(&jobs[p.index], x4), src, hd)?;
+                save_sets(
+                    &jobs[p.index],
+                    from_esrgan(&jobs[p.index], x4),
+                    true,
+                    src,
+                    hd,
+                )?;
             }
         }
         let _ = fs::remove_dir_all(&batch);
@@ -755,7 +778,7 @@ mod tests {
                 }
             })
         };
-        let (x4, x2) = held(Class::Hud, &original, (redraw(4), redraw(2)));
+        let (x4, x2) = held(Class::Hud, &original, (redraw(4), redraw(2)), false);
         for (img, s) in [(&x4, 4), (&x2, 2)] {
             for y in 0..8 * s {
                 for x in 0..8 * s {
@@ -768,21 +791,45 @@ mod tests {
                 }
             }
         }
+        // Painted (an image model's): each original pixel's block averages
+        // back to its colour, and the arrow stays opaque.
+        let (x4, _) = held(Class::Hud, &original, (redraw(4), redraw(2)), true);
+        for y in 1..7 {
+            for x in 1..7 {
+                let want = original.get_pixel(x, y).0;
+                let mut sum = [0u32; 4];
+                for (dx, dy) in (0..16).map(|i| (i % 4, i / 4)) {
+                    let p = x4.get_pixel(x * 4 + dx, y * 4 + dy).0;
+                    (0..4).for_each(|c| sum[c] += u32::from(p[c]));
+                }
+                for c in 0..4 {
+                    let avg = sum[c] as i32 / 16;
+                    assert!(
+                        (avg - i32::from(want[c])).abs() <= 6,
+                        "({x}, {y}) {c}: {avg} vs {want:?}"
+                    );
+                }
+            }
+        }
         // Pictures are left alone.
-        let (p, _) = held(Class::Picture, &original, (redraw(4), redraw(2)));
+        let (p, _) = held(Class::Picture, &original, (redraw(4), redraw(2)), false);
         assert_eq!(p, redraw(4));
     }
 
     #[test]
-    fn horizon_paths() {
+    fn model_paths() {
         assert_eq!(
-            in_horizon("Game/NZ/1/nz1.hzn/2.bmp"),
+            in_model("Game/NZ/1/nz1.hzn/2.bmp"),
             Some(("Game/NZ/1/nz1.hzn".to_string(), 2))
         );
         assert_eq!(
-            in_horizon("Game/Au/1/AU1.HZN/0.bmp"),
+            in_model("Game/Au/1/AU1.HZN/0.bmp"),
             Some(("Game/Au/1/AU1.HZN".to_string(), 0))
         );
-        assert_eq!(in_horizon("Game/Images/osdnew/ARRWS.BMP"), None);
+        assert_eq!(
+            in_model("Game/Objects/Cars/SubDay.c3d/4.bmp"),
+            Some(("Game/Objects/Cars/SubDay.c3d".to_string(), 4))
+        );
+        assert_eq!(in_model("Game/Images/osdnew/ARRWS.BMP"), None);
     }
 }
