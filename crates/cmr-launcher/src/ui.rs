@@ -9,9 +9,9 @@
 
 use std::path::{Path, PathBuf};
 
-use cmr_launcher::config::Settings;
+use cmr_launcher::config::{self, Settings};
 use cmr_launcher::edition;
-use cmr_launcher::form::{self, Form, Layout, Look, Picture};
+use cmr_launcher::form::{self, Form, Layout, Look, PadAction, Picture};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Key, Mesh,
     Rect, Sense, Shape, Stroke, StrokeKind, TextureHandle, Vec2, pos2, vec2,
@@ -157,6 +157,16 @@ enum Tab {
     Buttons,
 }
 
+impl Tab {
+    const ALL: [Tab; 4] = [Tab::Play, Tab::Picture, Tab::Controls, Tab::Buttons];
+
+    /// The tab `by` places along (wrapping), for LB and RB.
+    fn step(self, by: isize) -> Tab {
+        let at = Tab::ALL.iter().position(|&t| t == self).unwrap_or(0) as isize;
+        Tab::ALL[(at + by).rem_euclid(Tab::ALL.len() as isize) as usize]
+    }
+}
+
 /// What the game folder holds, checked when its text changes.
 enum Check {
     Empty,
@@ -209,6 +219,10 @@ struct Window<'a> {
     sized: bool,
     /// What the last rumble test found.
     rumble_test: Option<String>,
+    /// The gamepad buttons held at the last look, and what pressing them
+    /// asks of this frame.
+    pad_held: u16,
+    pad_actions: Vec<PadAction>,
     outcome: &'a mut Outcome,
 }
 
@@ -221,8 +235,11 @@ impl<'a> Window<'a> {
         outcome: &'a mut Outcome,
     ) -> Window<'a> {
         let screen = win32::screen_size();
-        let (settings, _) = Settings::parse_file(&text);
-        let form = Form::new(&settings, screen);
+        let form = if text == config::TEMPLATE {
+            Form::first_run(screen)
+        } else {
+            Form::new(&Settings::parse_file(&text).0, screen)
+        };
         let check = check_game(&form.game);
         Window {
             checked: form.game.clone(),
@@ -239,6 +256,8 @@ impl<'a> Window<'a> {
             error: None,
             sized: false,
             rumble_test: None,
+            pad_held: 0,
+            pad_actions: Vec::new(),
             outcome,
         }
     }
@@ -309,6 +328,32 @@ fn load_portrait(ctx: &egui::Context) -> Option<TextureHandle> {
 }
 
 impl eframe::App for Window<'_> {
+    /// The gamepad, as keys: the d-pad moves the focus (Tab, Shift+Tab), A
+    /// presses the control in focus (Space); Start and LB/RB are handled in
+    /// `ui`, which also asks for the next look.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        let now = win32::xinput_buttons();
+        self.pad_actions = form::pad_actions(self.pad_held, now);
+        self.pad_held = now;
+        for action in &self.pad_actions {
+            let (key, modifiers) = match action {
+                PadAction::Next => (Key::Tab, egui::Modifiers::NONE),
+                PadAction::Previous => (Key::Tab, egui::Modifiers::SHIFT),
+                PadAction::Press => (Key::Space, egui::Modifiers::NONE),
+                _ => continue,
+            };
+            for pressed in [true, false] {
+                raw.events.push(egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                });
+            }
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if !self.sized {
@@ -354,6 +399,16 @@ impl eframe::App for Window<'_> {
 
         if ctx.input(|i| i.key_pressed(Key::Enter)) && !ctx.egui_wants_keyboard_input() {
             self.play(&ctx);
+        }
+        // A pad sends no events: look again soon.
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        for action in std::mem::take(&mut self.pad_actions) {
+            match action {
+                PadAction::Play => self.play(&ctx),
+                PadAction::NextTab => self.tab = self.tab.step(1),
+                PadAction::PreviousTab => self.tab = self.tab.step(-1),
+                _ => {}
+            }
         }
         if self.form.game != self.checked {
             self.checked = self.form.game.clone();

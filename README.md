@@ -120,8 +120,12 @@ On Linux without Steam you can instead download
 2. Double-click `CMRLauncher.exe`. The settings window opens.
 3. If the game folder is empty, press **Browse…** and pick the folder with
    your `Rally.exe`; the window shows which version it found.
-4. Choose a look: **Original 1998**, **Enhanced** (fitted to your screen),
-   **Steam Deck** or **Custom**, then press **Play** (or Enter).
+4. Choose a look: **Steam Deck** (the first time's choice), **Enhanced**
+   (fitted to your screen), **Original 1998** or **Custom**, then press
+   **Play** (or Enter, or Start on a gamepad).
+
+The window also works with an Xbox-style gamepad: the d-pad moves between
+settings, A changes the one in focus, LB and RB switch tabs and Start plays.
 
 The first start takes a few seconds while the launcher makes its private copy
 of the game. Your choices are remembered for next time.

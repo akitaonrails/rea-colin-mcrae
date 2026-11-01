@@ -27,5 +27,5 @@ for scaler in nearest pixel fsr linear; do
 done
 printf 'resolution = 1920x1080\n' > "$CFGDIR/launcher.cfg"
 start > /dev/null
-case "$(cat "$T/ran")" in *"-F nearest --"*) echo "ok   default is nearest" ;; *) echo "FAIL default"; fails=$((fails + 1)) ;; esac
+case "$(cat "$T/ran")" in *"-F linear --"*) echo "ok   default is linear" ;; *) echo "FAIL default"; fails=$((fails + 1)) ;; esac
 [ "$fails" = 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

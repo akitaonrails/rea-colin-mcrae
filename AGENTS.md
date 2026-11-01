@@ -38,8 +38,10 @@ Linux (Proton/Wine). It is not a distribution of the game.
   from our hook library, keyed to the exact executable by hash, never by
   patching files on disk.
 - The faithful, unchanged game is the default. Enhancements (resolution,
-  widescreen, frame rate, HD art) are opt-in settings. Exception (owner decision,
-  2026-10-30): the pad button layout defaults to Modern.
+  widescreen, frame rate, HD art) are opt-in settings. Exceptions (owner
+  decisions): the pad button layout defaults to Modern (2026-10-30); the
+  settings window starts a first run on the Steam Deck look, and the Linux
+  scaler defaults to Smooth (2026-11-01).
 
 ## Code and commits
 
