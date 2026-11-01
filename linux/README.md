@@ -16,10 +16,10 @@ cmr-play status   # running or idle
 
 The settings window is the launcher's own (the same as on Windows), shown
 through Wine before gamescope starts. On Linux it has one more choice, the
-scaler (how gamescope enlarges the picture): Sharp (`nearest`, crisp pixels,
-closest to the original artwork), Even pixels (`pixel`), FSR (`fsr`, smooth
-then sharpened) and Smooth (`linear`). Everything is saved in
-`launcher.cfg` inside the Wine prefix.
+scaler (how gamescope enlarges the picture): Smooth (`linear`, the
+default, suits the HD art), Sharp (`nearest`, crisp pixels, closest to the
+original artwork), Even pixels (`pixel`) and FSR (`fsr`, smooth then
+sharpened). Everything is saved in `launcher.cfg` inside the Wine prefix.
 
 It needs `wine` and `gamescope`. Optional environment variables:
 

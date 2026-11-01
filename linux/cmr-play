@@ -83,7 +83,7 @@ start() {
   fi
   res=$(get_key resolution); W=640; H=480
   if [ -n "$res" ]; then W=${res%x*}; H=${res#*x}; fi
-  F=$(get_key scaler); F=${F:-nearest}
+  F=$(get_key scaler); F=${F:-linear}
   inner=$STATE/inner.sh
   cat > "$inner" <<INNER
 #!/bin/sh

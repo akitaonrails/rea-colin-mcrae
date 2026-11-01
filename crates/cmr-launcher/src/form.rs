@@ -206,6 +206,48 @@ pub const SCALERS: [(Scaler, &str, &str); 4] = [
     ),
 ];
 
+/// What a gamepad does in the settings window, from the XInput buttons
+/// pressed since the last look (`wButtons` bits): Start plays, the d-pad
+/// moves between controls (as Tab and Shift+Tab do), A presses the one in
+/// focus (as Space does), LB and RB change tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadAction {
+    Play,
+    Next,
+    Previous,
+    Press,
+    NextTab,
+    PreviousTab,
+}
+
+pub const PAD_UP: u16 = 0x0001;
+pub const PAD_DOWN: u16 = 0x0002;
+pub const PAD_LEFT: u16 = 0x0004;
+pub const PAD_RIGHT: u16 = 0x0008;
+pub const PAD_START: u16 = 0x0010;
+pub const PAD_LB: u16 = 0x0100;
+pub const PAD_RB: u16 = 0x0200;
+pub const PAD_A: u16 = 0x1000;
+
+/// The actions of the buttons in `now` that were not held in `before`.
+pub fn pad_actions(before: u16, now: u16) -> Vec<PadAction> {
+    let pressed = now & !before;
+    [
+        (PAD_START, PadAction::Play),
+        (PAD_DOWN, PadAction::Next),
+        (PAD_RIGHT, PadAction::Next),
+        (PAD_UP, PadAction::Previous),
+        (PAD_LEFT, PadAction::Previous),
+        (PAD_A, PadAction::Press),
+        (PAD_RB, PadAction::NextTab),
+        (PAD_LB, PadAction::PreviousTab),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| pressed & bit != 0)
+    .map(|(_, action)| action)
+    .collect()
+}
+
 /// The settings window's design size in points.
 pub const WINDOW: (f32, f32) = (880.0, 640.0);
 
@@ -273,7 +315,7 @@ impl Form {
             rumble: s.rumble_strength(),
             gamepad_axes: s.gamepad_axes != Some(false),
             close_quits: s.close_quits != Some(false),
-            scaler: s.scaler.unwrap_or(Scaler::Nearest),
+            scaler: s.scaler.unwrap_or(Scaler::Linear),
             buttons: s.buttons.unwrap_or(config::DEFAULT_BUTTONS),
             layout: Form::layout_of(&s.buttons.unwrap_or(config::DEFAULT_BUTTONS)),
             hd_folder: match &s.hd_art {
@@ -281,6 +323,16 @@ impl Form {
                 _ => None,
             },
         }
+    }
+
+    /// The form for a first run (no settings file yet): the template's
+    /// settings with the Steam Deck look, which suits the HD art and runs
+    /// lightly everywhere (owner decision, see `AGENTS.md`).
+    pub fn first_run(screen: Option<(u32, u32)>) -> Form {
+        let (settings, _) = Settings::parse_file(config::TEMPLATE);
+        let mut form = Form::new(&settings, screen);
+        form.set_look(Look::SteamDeck, screen);
+        form
     }
 
     /// The layout these buttons make.
@@ -594,5 +646,40 @@ mod tests {
             1
         );
         assert_eq!(resolutions(None).len(), 4);
+    }
+
+    #[test]
+    fn a_first_run_starts_with_the_steam_deck_look_and_smooth_scaling() {
+        let f = Form::first_run(SCREEN);
+        assert_eq!(f.look, Look::SteamDeck);
+        assert_eq!(f.picture, Picture::STEAM_DECK);
+        assert_eq!(f.scaler, Scaler::Linear);
+        // Saved and read back, it is still the Steam Deck look.
+        assert_eq!(form(&f.save(config::TEMPLATE)).look, Look::SteamDeck);
+        // A settings file that chose another look keeps it.
+        let mut f = form(config::TEMPLATE);
+        f.set_look(Look::Original, SCREEN);
+        assert_eq!(form(&f.save(config::TEMPLATE)).look, Look::Original);
+    }
+
+    #[test]
+    fn gamepad_buttons_act_once_per_press() {
+        assert_eq!(pad_actions(0, PAD_START), [PadAction::Play]);
+        assert_eq!(
+            pad_actions(PAD_START, PAD_START),
+            [],
+            "held, not pressed again"
+        );
+        assert_eq!(
+            pad_actions(0, PAD_DOWN | PAD_A),
+            [PadAction::Next, PadAction::Press]
+        );
+        assert_eq!(
+            pad_actions(PAD_DOWN, PAD_DOWN | PAD_UP),
+            [PadAction::Previous]
+        );
+        assert_eq!(pad_actions(0, PAD_RB), [PadAction::NextTab]);
+        assert_eq!(pad_actions(0, PAD_LB), [PadAction::PreviousTab]);
+        assert_eq!(pad_actions(PAD_A, 0), []);
     }
 }

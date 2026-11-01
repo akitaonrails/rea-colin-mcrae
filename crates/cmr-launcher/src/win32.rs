@@ -79,10 +79,9 @@ fn xinput_proc(name: &std::ffi::CStr) -> Option<unsafe extern "system" fn() -> i
     None
 }
 
-/// The XInput (Xbox-style) pads connected now, by slot 0..=3. Rumble and
-/// separate trigger pedals (F21, F22) need one; other pads only reach the
-/// game through WinMM (F7).
-pub fn xinput_pads() -> Vec<u32> {
+/// The state (16 bytes: a packet number, then the gamepad, `wButtons`
+/// first) of each XInput pad connected now, by slot 0..=3.
+fn xinput_states() -> Vec<(u32, [u8; 16])> {
     type GetState = unsafe extern "system" fn(u32, *mut [u8; 16]) -> u32;
     let Some(get) = xinput_proc(c"XInputGetState") else {
         return Vec::new();
@@ -90,8 +89,26 @@ pub fn xinput_pads() -> Vec<u32> {
     // SAFETY: XInputGetState's signature; the state is 16 bytes.
     let get: GetState = unsafe { std::mem::transmute(get) };
     (0..4)
-        .filter(|&i| unsafe { get(i, &mut [0u8; 16]) } == 0)
+        .filter_map(|i| {
+            let mut state = [0u8; 16];
+            (unsafe { get(i, &mut state) } == 0).then_some((i, state))
+        })
         .collect()
+}
+
+/// The XInput (Xbox-style) pads connected now, by slot 0..=3. Rumble and
+/// separate trigger pedals (F21, F22) need one; other pads only reach the
+/// game through WinMM (F7).
+pub fn xinput_pads() -> Vec<u32> {
+    xinput_states().into_iter().map(|(i, _)| i).collect()
+}
+
+/// The buttons (`wButtons` bits) held on any XInput pad now, for the
+/// settings window's gamepad navigation; 0 without XInput.
+pub fn xinput_buttons() -> u16 {
+    xinput_states()
+        .into_iter()
+        .fold(0, |all, (_, s)| all | u16::from_le_bytes([s[4], s[5]]))
 }
 
 /// Sets both motors of every XInput pad slot; returns the slots that took

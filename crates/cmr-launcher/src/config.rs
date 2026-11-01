@@ -249,8 +249,8 @@ gamepad_axes = true
 
 # Linux (cmr-play) only: how gamescope enlarges the picture. nearest (sharp
 # pixels), pixel (sharp, all pixels the same size), fsr (smooth, then
-# sharpened) or linear (smooth).
-#scaler = nearest
+# sharpened) or linear (smooth, the default).
+#scaler = linear
 ";
 
 pub const USAGE: &str = concat!(
