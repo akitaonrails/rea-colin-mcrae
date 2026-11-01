@@ -5,7 +5,7 @@
 //!
 //!   cmr-hd list <game folder>
 //!   cmr-hd extract <game folder> <out folder> [--all]
-//!   cmr-hd upscale <extracted folder> <hd folder> --esrgan <realesrgan-ncnn-vulkan> [--only <path prefix>]
+//!   cmr-hd upscale <extracted folder> <hd folder> [--esrgan <realesrgan-ncnn-vulkan>] [--only <path prefix>]
 //!   cmr-hd pack <hd folder> <pack folder>
 //!   cmr-hd import <extracted folder> <redrawn folder> <hd folder>
 //!
@@ -38,16 +38,17 @@ use sha2::{Digest, Sha256};
 const USAGE: &str = "usage:
   cmr-hd list <game folder>
   cmr-hd extract <game folder> <out folder> [--all]
-  cmr-hd upscale <extracted folder> <hd folder> --esrgan <realesrgan-ncnn-vulkan> [--only <path prefix>]
+  cmr-hd upscale <extracted folder> <hd folder> [--esrgan <realesrgan-ncnn-vulkan>] [--only <path prefix>]
   cmr-hd pack <hd folder> <pack folder>
   cmr-hd import <extracted folder> <redrawn folder> <hd folder>
 
 extract writes each image as PNG (keyed sprites with transparency) and a
-manifest.tsv; upscale runs Real-ESRGAN 4x on them by class and writes
-x4/ (1440p and up) and x2/ (1080p, the 4x made half as large). See
-docs/UPSCALING.md. pack stores an HD set compactly for the launcher to
-install. import makes an HD set from images redrawn elsewhere (at 4x, as
-<path>.png, with transparency for keyed images).";
+manifest.tsv; upscale redraws flat art with smooth outlines and runs
+Real-ESRGAN 4x on the rest by class (without --esrgan, flat art only),
+writing x4/ (1440p and up) and x2/ (1080p, the 4x made half as large).
+See docs/UPSCALING.md. pack stores an HD set compactly for the launcher
+to install. import adds images redrawn elsewhere (at 4x, as <path>.png,
+with transparency for keyed images) to an HD set, replacing its own.";
 
 /// The upscale factor of every Real-ESRGAN model used here.
 const SCALE: u32 = 4;
@@ -80,15 +81,12 @@ fn main() {
                     .and_then(|i| args.get(i + 1))
                     .cloned()
             };
-            match flag("--esrgan") {
-                Some(esrgan) => upscale(
-                    Path::new(&args[1]),
-                    Path::new(&args[2]),
-                    Path::new(&esrgan),
-                    flag("--only").as_deref(),
-                ),
-                None => Err(format!("upscale needs --esrgan\n\n{USAGE}")),
-            }
+            upscale(
+                Path::new(&args[1]),
+                Path::new(&args[2]),
+                flag("--esrgan").as_deref().map(Path::new),
+                flag("--only").as_deref(),
+            )
         }
         _ => Err(USAGE.to_string()),
     };
@@ -438,9 +436,7 @@ fn save_sets(
 fn import(src: &Path, redrawn: &Path, hd: &Path) -> Result<(), String> {
     let manifest = fs::read_to_string(src.join(MANIFEST))
         .map_err(|e| format!("no {MANIFEST} in {}: {e}", src.display()))?;
-    let mut out = String::from(
-        "# path\tclass\tsha256 of the game file\twidth\theight\truntime name\tmodel\n",
-    );
+    let mut rows = read_rows(hd);
     let mut done = 0;
     for line in manifest.lines().filter(|l| !l.starts_with('#')) {
         let f: Vec<&str> = line.split('\t').collect();
@@ -468,16 +464,16 @@ fn import(src: &Path, redrawn: &Path, hd: &Path) -> Result<(), String> {
             image::imageops::FilterType::Lanczos3,
         );
         save_sets(&job, (up, x2), src, hd)?;
-        out.push_str(&format!("{rel}\t{}\n", job.rest));
+        rows.insert(rel.to_string(), job.rest);
         done += 1;
     }
-    fs::write(hd.join(MANIFEST), out).map_err(|e| e.to_string())?;
+    write_rows(hd, &rows)?;
     println!("{done} redrawn images imported into {}", hd.display());
     Ok(())
 }
 
 /// Upscales every image the manifest lists, by method (`method`).
-fn upscale(src: &Path, hd: &Path, esrgan: &Path, only: Option<&str>) -> Result<(), String> {
+fn upscale(src: &Path, hd: &Path, esrgan: Option<&Path>, only: Option<&str>) -> Result<(), String> {
     let manifest = fs::read_to_string(src.join(MANIFEST)).map_err(|e| {
         format!(
             "no {MANIFEST} in {} (run extract first): {e}",
@@ -497,7 +493,7 @@ fn upscale(src: &Path, hd: &Path, esrgan: &Path, only: Option<&str>) -> Result<(
         let img = image::open(png_path(src, rel))
             .map_err(|e| format!("{rel}: {e}"))?
             .to_rgba8();
-        let Some(model) = method(class, &img) else {
+        let Some(model) = method(class, &img).filter(|&m| m == DEPIXEL || esrgan.is_some()) else {
             continue;
         };
         let rest = format!("{}\t{digest}\t{w}\t{h}\t{name}\t{model}", class.name());
@@ -509,9 +505,7 @@ fn upscale(src: &Path, hd: &Path, esrgan: &Path, only: Option<&str>) -> Result<(
             rest,
         });
     }
-    let mut out = String::from(
-        "# path\tclass\tsha256 of the game file\twidth\theight\truntime name\tmodel (x4/ and x2/ hold the 4x and 2x sets)\n",
-    );
+    let mut rows = read_rows(hd);
     let mut done = 0;
     for (model, jobs) in &jobs {
         if *model == DEPIXEL {
@@ -519,21 +513,44 @@ fn upscale(src: &Path, hd: &Path, esrgan: &Path, only: Option<&str>) -> Result<(
             for job in jobs {
                 save_sets(job, redraw(job), src, hd)?;
             }
-        } else {
+        } else if let Some(esrgan) = esrgan {
             upscale_sheets(model, jobs, src, hd, esrgan)?;
         }
         for job in jobs {
-            out.push_str(&format!("{}\t{}\n", job.rel, job.rest));
+            rows.insert(job.rel.to_string(), job.rest.clone());
             done += 1;
         }
     }
-    fs::write(hd.join(MANIFEST), out).map_err(|e| e.to_string())?;
+    write_rows(hd, &rows)?;
     println!(
         "{done} images upscaled into {}/x4 and {}/x2",
         hd.display(),
         hd.display()
     );
     Ok(())
+}
+
+/// An HD set's manifest rows (path to the rest of the row), empty if it
+/// has none yet: upscale and import add to a set, replacing their paths.
+fn read_rows(hd: &Path) -> BTreeMap<String, String> {
+    fs::read_to_string(hd.join(MANIFEST))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(rel, rest)| (rel.to_string(), rest.to_string()))
+        .collect()
+}
+
+fn write_rows(hd: &Path, rows: &BTreeMap<String, String>) -> Result<(), String> {
+    let mut out = String::from(
+        "# path\tclass\tsha256 of the game file\twidth\theight\truntime name\tmodel (x4/ and x2/ hold the 4x and 2x sets)\n",
+    );
+    for (rel, rest) in rows {
+        out.push_str(&format!("{rel}\t{rest}\n"));
+    }
+    fs::create_dir_all(hd).map_err(|e| e.to_string())?;
+    fs::write(hd.join(MANIFEST), out).map_err(|e| e.to_string())
 }
 
 /// Real-ESRGAN over one model's images, packed into sheets (`atlas`): one
@@ -625,5 +642,24 @@ mod tests {
         for x in 0..16 {
             assert_eq!(up.get_pixel(x, 31), tile.get_pixel(x, 0), "x {x}");
         }
+    }
+
+    #[test]
+    fn sets_keep_their_rows_and_new_ones_replace_them() {
+        let hd = std::env::temp_dir().join(format!("cmr-hd-rows-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&hd);
+        let mut rows = read_rows(&hd);
+        assert!(rows.is_empty());
+        rows.insert("a.bmp".into(), "hud\tx\t1\t1\tn\tdepixel".into());
+        rows.insert("b.bmp".into(), "picture\ty\t1\t1\tm\tdepixel".into());
+        write_rows(&hd, &rows).unwrap();
+        let mut again = read_rows(&hd);
+        assert_eq!(again, rows);
+        again.insert("b.bmp".into(), "picture\ty\t1\t1\tm\tredrawn".into());
+        write_rows(&hd, &again).unwrap();
+        let last = read_rows(&hd);
+        assert_eq!(last["a.bmp"], rows["a.bmp"]);
+        assert!(last["b.bmp"].ends_with("redrawn"));
+        let _ = fs::remove_dir_all(&hd);
     }
 }
