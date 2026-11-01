@@ -84,8 +84,14 @@ Real-ESRGAN versions; they were dropped as not faithful enough).
   (`gemini-3.5-flash`) whether every word and number in a redraw is real,
   correctly spelled and makes sense there; `pick.py` takes, per image, the
   first candidate that passes (several runs into separate folders), and
-  leaves the original where none does. It doesn't know whether a real
-  sponsor name is the right one: look.
+  leaves the original where none does. Signs are checked against their
+  transcription (`--texts`), so the game's own joke names pass; car
+  textures side by side with the original (`--against`), since their
+  writing is partly mirrored on purpose. Where a car livery still fails
+  (drivers' signatures and tiny stickers turned into made-up names),
+  `fixtext.py` has the vision model box the wrong writing and puts the
+  original back there, feathered (1-7 % of a livery), then checks again.
+  None of this knows whether a real sponsor name is the right one: look.
 
 ### Image-model redraws (Nano Banana 2)
 

@@ -17,6 +17,7 @@ what works and what doesn't, and the whole pipeline with `cmr-hd`:
 | `sheet.py` | a family of small sprites (the race's car icons) on one sheet |
 | `signs.py` | the trackside signs: picked out, transcribed, redrawn upright |
 | `pick.py` | per image, the first candidate redraw whose writing is real |
+| `fixtext.py` | puts the original back where a redraw's writing is wrong |
 | `redraw_api.py` | the shared request, retries and aspect-ratio padding |
 
 ```sh
