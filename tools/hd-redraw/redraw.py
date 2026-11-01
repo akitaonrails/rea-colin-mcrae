@@ -12,6 +12,7 @@ import os, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PIL import Image
+from scipy import ndimage
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import redraw_api
@@ -22,8 +23,10 @@ PROMPTS = {
   "panels, decals, numbers, windows or wheels, laid out side by side and wrapped onto a 3D model, shown enlarged with "
   "visible pixels. Redraw it as the same texture made at high resolution: every piece, edge, decal, stripe, logo, "
   "letter and number in EXACTLY the same place, size, angle and colour (the 3D model depends on it), with clean sharp "
-  "detail and smooth gradients instead of pixels. Do not add, remove, move or restyle anything; keep pure black areas "
-  "pure black (#000000).",
+  "detail and smooth gradients instead of pixels. Writing (sponsor names, numbers, number plates) must be crisp, "
+  "legible and correctly spelled: the real names the original shows; where a mark is too small to read, draw it as "
+  "simple shapes, never made-up letters. Do not add, remove, move or restyle anything; keep pure black areas pure "
+  "black (#000000).",
  "art": "This is a small user-interface graphic from a 1998 PC rally video game, shown enlarged. Redraw it from scratch as crisp high-resolution vector artwork (as if drawn in Adobe Illustrator): perfectly smooth straight lines, clean diagonals and round curves, no pixel staircases, no blur, no noise. Keep EXACTLY the same design, layout, positions, proportions, line widths, flat colours and text (same letterforms). Do not add, remove or move anything. The pure black background must stay pure flat black (#000000).",
 }
 # A try this close to the original (RGB RMSE at the original's size) is kept.
@@ -35,6 +38,31 @@ OWN_SCRIPT = ("/Anim/", "Backdrop/Main.bmp", "Game/Welcome/")
 # Pieces the game joins on screen (the rev bar's segments): the model keeps
 # their staircases or breaks them; `cmr-hd upscale` (depixel) joins them.
 JOINED = ("/2wheel/rev0",)
+
+
+def angular(a):
+    """How much a square image changes going round its centre."""
+    h, w = a.shape; R = min(h, w) / 2
+    r, t = np.meshgrid(np.linspace(0.15 * R, 0.7 * R, 24), np.linspace(0, 2 * np.pi, 180, endpoint=False))
+    v = ndimage.map_coordinates(a, [h / 2 + r * np.sin(t) - 0.5, w / 2 + r * np.cos(t) - 0.5], order=1)
+    return float(np.abs(np.diff(v, axis=0)).mean())
+
+
+def keep_original(img, siblings):
+    """For a car texture: whether it is a spinning wheel (a sharper wheel of
+    the same size is in the same model, and this is it smeared round its
+    centre) or a plain panel next to a detailed one. Redrawn, the first
+    shows still spokes at speed and the model engraves details into the
+    second; both keep the original."""
+    a = np.asarray(img.convert("L"), np.float32)
+    if a.shape[0] != a.shape[1]: return False
+    for sib in siblings:
+        b = np.asarray(sib.convert("L"), np.float32)
+        if b.shape != a.shape: continue
+        ratio = angular(a) / max(angular(b), 1e-3)
+        corr = float(np.corrcoef(ndimage.gaussian_filter(a, 3).ravel(), ndimage.gaussian_filter(b, 3).ravel())[0, 1])
+        if (ratio < 0.7 and corr > 0.95) or (ratio < 0.45 and corr > 0.6): return True
+    return False
 
 
 def flat_rgb(img):
@@ -96,6 +124,10 @@ def main():
         with lock:
             log.write(line + "\n"); log.flush(); print(line, flush=True)
 
+    models = {}
+    for line in open(os.path.join(ext, "manifest.tsv")):
+        f = line.rstrip("\n").split("\t")
+        if len(f) > 1 and f[1] == "car": models.setdefault(f[0].rsplit("/", 1)[0], []).append(f[0])
     seen, jobs = set(), []
     for line in open(os.path.join(ext, "manifest.tsv")):
         if line.startswith("#"): continue
@@ -104,6 +136,10 @@ def main():
         img = Image.open(os.path.join(ext, rel + ".png"))
         colours = len(img.getcolors(1 << 20) or [0] * 999)
         if min(int(w), int(h)) < 12 or colours <= 2: continue
+        if cls == "car":
+            sibs = [Image.open(os.path.join(ext, r + ".png")) for r in models[rel.rsplit("/", 1)[0]] if r != rel]
+            if keep_original(img, sibs):
+                print(rel, "kept the original (a spinning wheel or a plain panel)", flush=True); continue
         seen.add(name); jobs.append((rel, cls))
     print(len(jobs), "images", flush=True)
     with ThreadPoolExecutor(6) as pool:

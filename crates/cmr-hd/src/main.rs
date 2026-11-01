@@ -395,10 +395,12 @@ fn redraw(job: &Job) -> (RgbaImage, RgbaImage) {
 /// original, whatever made them. Transparency stays where the original has
 /// it (an image model's near-black, a pace-note arrow, would otherwise
 /// become the colour key). Flat redraws (`depixel`) take, pixel by pixel,
-/// one of the colours the original has around the spot; `painted` ones (an
-/// image model's: smooth shading, a car's) are back-projected instead, so
-/// each original pixel's area averages to its colour without the shading
-/// being cut back into steps.
+/// one of the colours the original has around the spot. `painted` ones (an
+/// image model's) keep their own edges and shading: HUD art takes the
+/// original's tone (`lock::tone`; it is drawn several times its size, where
+/// anything stricter shows the original's pixels again); a car's textures,
+/// wrapped on the car near their own size, are back-projected so each
+/// original pixel's area averages to its colour.
 fn held(
     class: Class,
     original: &RgbaImage,
@@ -425,10 +427,10 @@ fn held(
                 p.0[3] = 255;
             }
         }
-        if painted {
-            lock::back_project(original, &up, scale)
-        } else {
-            lock::exact(original, &up, scale)
+        match (painted, class) {
+            (false, _) => lock::exact(original, &up, scale),
+            (true, Class::Car) => lock::back_project(original, &up, scale),
+            (true, _) => lock::tone(original, &up, scale),
         }
     };
     (lock(x4), lock(x2))
@@ -791,9 +793,9 @@ mod tests {
                 }
             }
         }
-        // Painted (an image model's): each original pixel's block averages
-        // back to its colour, and the arrow stays opaque.
-        let (x4, _) = held(Class::Hud, &original, (redraw(4), redraw(2)), true);
+        // A painted car texture: each original pixel's block averages back
+        // to its colour, and the arrow stays opaque.
+        let (x4, _) = held(Class::Car, &original, (redraw(4), redraw(2)), true);
         for y in 1..7 {
             for x in 1..7 {
                 let want = original.get_pixel(x, y).0;
@@ -831,5 +833,55 @@ mod tests {
             Some(("Game/Objects/Cars/SubDay.c3d".to_string(), 4))
         );
         assert_eq!(in_model("Game/Images/osdnew/ARRWS.BMP"), None);
+    }
+
+    #[test]
+    fn painted_hud_art_takes_the_originals_tone_and_keeps_its_shapes() {
+        // A 48x48 sign: yellow fill, a dark grey arrow, a transparent ring.
+        let original = RgbaImage::from_fn(48, 48, |x, y| {
+            if x == 0 || y == 0 || x == 47 || y == 47 {
+                Rgba([0, 0, 0, 0])
+            } else if (23..25).contains(&x) && (12..36).contains(&y) {
+                Rgba([24, 24, 24, 255])
+            } else {
+                Rgba([250, 200, 0, 255])
+            }
+        });
+        // The redraw: fill drifted to ochre, arrow pure black (keyed) and a
+        // smooth edge the original doesn't have (a half pixel wider).
+        let redraw = RgbaImage::from_fn(192, 192, |x, y| {
+            let (fx, fy) = (x as f32 / 4.0, y as f32 / 4.0);
+            let ring = fx < 1.0 || fy < 1.0 || fx >= 47.0 || fy >= 47.0;
+            let arrow = (22.5..25.0).contains(&fx) && (12.0..36.0).contains(&fy);
+            if ring || arrow {
+                Rgba([0, 0, 0, 0])
+            } else {
+                Rgba([200, 150, 20, 255])
+            }
+        });
+        let (x4, _) = held(
+            Class::Hud,
+            &original,
+            (redraw.clone(), redraw.clone()),
+            true,
+        );
+        // Far from other colours, the fill is the original's again.
+        for (x, y) in [(40, 40), (150, 40), (40, 150), (150, 150)] {
+            let p = x4.get_pixel(x, y).0;
+            assert!(
+                p[..3]
+                    .iter()
+                    .zip([250u8, 200, 0])
+                    .all(|(a, b)| a.abs_diff(b) <= 6),
+                "({x}, {y}) {p:?}"
+            );
+        }
+        // The arrow is opaque and dark; the redraw's own edge (the column
+        // the original doesn't have) keeps its shape: dark, not yellow.
+        for y in 60..132 {
+            assert_eq!(x4.get_pixel(96, y).0[3], 255);
+            assert!(x4.get_pixel(96, y).0[0] < 80);
+            assert!(x4.get_pixel(91, y).0[0] < 120, "the redraw's edge at y {y}");
+        }
     }
 }
