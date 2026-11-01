@@ -177,7 +177,9 @@ Sources: the decomp ledger (the parked reconstruction's `EVIDENCE.md`, kept outs
 
 Derived from the decomp and confirmed by the community-patched exe, which is
 the official EU v1.5 plus exactly these changes. We reimplement each fix
-ourselves and apply it in memory; the file on disk is never changed.
+ourselves and apply it in memory; the file on disk is never changed. The
+community exe gets every fix from F6 on, from the same list as the official
+one (`EU_15_SHARED`); the two files differ only where F1-F5 write.
 
 | # | Address (EU v1.5) | Problem | Fix | State |
 | --- | --- | --- | --- | --- |
