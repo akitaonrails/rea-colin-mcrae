@@ -19,7 +19,7 @@ source. Add a row before bundling anything new.
 
 | Component | Licence | Source |
 | --- | --- | --- |
-| The HD art pack (`hd/`): the game's own 2D art redrawn with `cmr-hd` and `tools/hd-redraw` (owner decision, see `AGENTS.md`) | derived from Colin McRae Rally (Codemasters); not covered by this project's licence | `packaging/hd-pack.txt` (release asset `hd-pack-2`) |
+| The HD art pack (`hd/`): the game's own 2D art redrawn with `cmr-hd` and `tools/hd-redraw` (owner decision, see `AGENTS.md`) | derived from Colin McRae Rally (Codemasters); not covered by this project's licence | `packaging/hd-pack.txt` (release asset `hd-pack-3`) |
 
 ## Bundled DLLs
 

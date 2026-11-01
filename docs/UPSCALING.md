@@ -1,7 +1,7 @@
 # HD 2D art
 
 Status: **ships with the launcher** (`hd_art = on`, part of the Enhanced
-and Steam Deck looks; fix F27). The pack (`hd-pack-2`) covers the race
+and Steam Deck looks; fix F27). The pack (`hd-pack-3`) covers the race
 HUD, the intro and legal screens, the main menu (panorama, ring words,
 selected word), the race loading screens (`Game/Welcome`), every stage's
 sky and distant scenery, and the front end's flat art (logos, flags,
@@ -97,7 +97,8 @@ Real-ESRGAN versions; they were dropped as not faithful enough).
   pictures, the shape of the ink for lettering.
 - **Look at every result** next to its original, at the size the game
   shows it. Drift numbers miss a changed digit.
-- Cost: pack 2 took about 130 requests (each tile and each try is one).
+- Cost: pack 2 took about 130 requests (each tile and each try is one);
+  the skies of pack 3 about 100 more.
 
 ## The pipeline
 
@@ -145,8 +146,8 @@ cmr-hd pack $W/set $W/pack
 ```
 
 `cmr-hd upscale --esrgan <realesrgan-ncnn-vulkan>` also runs Real-ESRGAN
-on the classes that aren't flat art (see "Real-ESRGAN" below); pack 2
-doesn't use it.
+on the classes that aren't flat art (see "Real-ESRGAN" below); packs 2
+and 3 don't use it.
 
 `cmr-hd`'s files:
 
@@ -264,7 +265,7 @@ The HD set is about 800 MB of BMPs; releases carry it compactly:
 1. `cmr-hd pack <set> <pack>` stores each runtime BMP as a palette PNG
    (the HUD's 8-bit textures, exact) or a colour image: a lossless PNG,
    or a near-lossless WebP (quality 92, about 41 dB) when that is much
-   smaller. Pack 2 is about 22 MB.
+   smaller. Pack 3 is about 28 MB.
 2. Zip `pack.txt`, `x2/` and `x4/` from the pack folder and publish the
    zip once as a release asset under its own tag (`hd-pack-<n>`, a
    pre-release). `packaging/hd-pack.txt` pins its URL and SHA-256; CI
@@ -281,7 +282,7 @@ The HD set is about 800 MB of BMPs; releases carry it compactly:
 used to make a pack, never shipped) on pictures (`realesrgan-x4plus`) and
 interface pieces (`realesrgan-x4plus-anime`), then back-projects the
 result onto the original (`src/lock.rs`). Pack 1 used it for 912 images.
-It was dropped for pack 2: it invents textures (cracked leather on the
+It was dropped from pack 2 on: it invents textures (cracked leather on the
 carbon weave), draws one-pixel staircases as wavy edges and outlines menu
 lettering. It may still suit photographs. Its folder mode is broken
 (results saved under other images' names, or noise, differently each

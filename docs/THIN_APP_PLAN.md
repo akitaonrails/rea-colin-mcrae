@@ -301,7 +301,7 @@ as reference only, no code taken):
 
 Skipped for now, to revisit later:
 
-- HD 2D art (owner request, 2026-10-30): shipped (F27, `hd-pack-2`);
+- HD 2D art (owner request, 2026-10-30): shipped (F27, `hd-pack-3`);
   the globe, fonts and the car and country pictures are still to do
   (`docs/UPSCALING.md`, "Next").
 

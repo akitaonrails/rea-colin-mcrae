@@ -1,4 +1,4 @@
 # The HD art pack bundled with releases (docs/UPSCALING.md, "The
 # pipeline"): made with cmr-hd and tools/hd-redraw, published as a release
 # asset, fetched by CI and checked against this digest. One line: URL SHA-256.
-https://github.com/akitaonrails/rea-colin-mcrae/releases/download/hd-pack-2/cmr-hd-pack-2.zip 6f274b0065c1d90199f29001c7f2a8e763d67747547ba863e027a9ebc05b67f8
+https://github.com/akitaonrails/rea-colin-mcrae/releases/download/hd-pack-3/cmr-hd-pack-3.zip bcb7aae9d9d99fa228ec51db8c2337e27d9cfdd21a8707d566f6ecd876bb1a41
