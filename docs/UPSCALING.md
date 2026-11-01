@@ -3,8 +3,9 @@
 Status: **ships with the launcher** (`hd_art = on`, part of the Enhanced
 and Steam Deck looks; fix F27). The pack (`hd-pack-2`) covers the race
 HUD, the intro and legal screens, the main menu (panorama, ring words,
-selected word), the race loading screens (`Game/Welcome`) and the front
-end's flat art (logos, flags, icons, buttons of 32 colours or fewer).
+selected word), the race loading screens (`Game/Welcome`), every stage's
+sky and distant scenery, and the front end's flat art (logos, flags,
+icons, buttons of 32 colours or fewer).
 Everything else is still drawn from the game's own 640x480 art. This page
 says what works, what doesn't, how to rebuild the pack and how to extend
 it. It is written for whoever picks this up next.
@@ -33,7 +34,9 @@ What was tried, on the official European v1.5:
 | **Flat art**: the HUD (dials, rev bar, frame, pace notes), logos, flags, icons | `depixel` in `cmr-hd` (Kopf–Lischinski "Depixelizing Pixel Art"): smooth vector-like outlines in the exact original colours, deterministic, local | Real-ESRGAN (stepped or wavy diagonals, dark halos); redrawing each piece with an image model (pieces that join on screen stop lining up) |
 | **Lettering on a curve**: the main menu's ring of words | `tools/hd-redraw/ring.py`: unwrap the ring, redraw the frame's words together on one sheet, wrap back | asking the model for the rotated ring (garbled and mirrored words); one word per request (the model swaps the condensed typeface for a generic one); a smoothed unwrap as input (soft, ghosted letters) |
 | **Large detailed pictures**: the menu panorama, the loading screens | `tools/hd-redraw/tiles.py`: redraw in 320-pixel tiles shown 4x, keep only fine detail from the redraw and the tone from the original | redrawing the whole picture in one request (invents a different texture, changes numbers, adds objects, moves faint lines); Real-ESRGAN (invents a cracked-leather texture on the carbon weave, or flattens it) |
-| **Small pictures and menu pieces**: full-screen `ini/` screens, menu labels, the HUD's rev-bar sheets | `tools/hd-redraw/redraw.py` (one request per image, best of three), then `filter.py` and `align.py` | — |
+| **Small pictures and HUD sprites**: full-screen `ini/` screens, menu labels, the pace-note signs, the rev dial, car silhouettes | `tools/hd-redraw/redraw.py` (one request per image, best of three), then `filter.py` and `align.py`; HUD textures are then held to the original's colours and transparency by `cmr-hd` | importing HUD redraws as they come (the model's near-black arrow became the colour key, so the signs were see-through, and their fills drifted) |
+| **HUD pieces the game joins on screen**: the rev bar's segments (`2wheel/rev0*`) | `depixel` (`redraw.py` skips them) | the image model (kept the staircases or broke the pieces apart) |
+| **Sky and distant scenery**: the bitmaps inside each stage's `*.hzn` (two bands that make the horizon panorama, stored on their side, and a ground texture that tiles) | `tools/hd-redraw/sky.py`: bands turned upright and joined into one panorama, redrawn soft and hazy in one request, tone from the original, borders faded back to it | — |
 
 Not done yet: the spinning globe and its flag strip (drawn by a path that
 isn't a blit, see "The front end" below), fonts and the race timer's
@@ -56,6 +59,14 @@ Real-ESRGAN versions; they were dropped as not faithful enough).
   borders, the frame's corner bent into an S where it met the bars.
 - `cmr-hd` picks it for the HUD (`Game/Images/osdnew`) and for interface
   pieces of 32 colours or fewer (`src/classes.rs`).
+
+- **Held to the original, whatever made it.** `cmr-hd` holds every HUD
+  texture to the original's colours (`held` in `src/main.rs`), depixel
+  and imported redraws alike, and takes its transparency from the
+  original: inside the original's opaque area (a pixel and its eight
+  neighbours opaque) the result is opaque, so a redraw's black can't
+  become the colour key; only near the original's own edges does the
+  redraw shape the outline.
 
 ### Image-model redraws (Nano Banana 2)
 
@@ -124,6 +135,9 @@ for f in $W/extracted/Game/Welcome/*/Flag_*.png; do
   python tools/hd-redraw/tiles.py "$f" "$out" 4
 done
 
+# Every stage's sky and distant scenery (stages that share a sky once).
+python tools/hd-redraw/sky.py $W/extracted $W/final
+
 # Into the set (a redraw replaces the same image's depixel version), then
 # the pack.
 cmr-hd import $W/extracted $W/final $W/set
@@ -147,7 +161,15 @@ doesn't use it.
 - `src/pack.rs`: the compact pack (below).
 - `manifest.tsv` records each image's path, class, the SHA-256 of the
   game file it came from, its size and the method. `upscale` and
-  `import` add to a set's manifest, replacing rows for the same path.
+  `import` add to a set's manifest, replacing rows for the same path; an
+  import also marks every other path of the same game file (the same
+  runtime name, so the same twin), such as the HUD sheets the game keeps
+  in several folders.
+- A stage's sky and ground are whole bitmaps inside its horizon model
+  (`*.hzn`, a stored `CM3D`); `extract` lists them as
+  `<path>.hzn/<n>.bmp` (`asset::embedded_bitmaps`), class `sky`. The game
+  loads them through the same loader as the HUD's textures, so F27 shows
+  their twins with no hook of its own.
 
 ## How to extend it
 
@@ -273,5 +295,8 @@ run), so `cmr-hd` packs images into sheets and runs it once per sheet
 - **Fonts** (`*.fon`, `ini/cdFONT.BMP`, the race timer's digit sheets):
   a separate class; text could be redrawn from a vector font.
 - **Car and country pictures, thumbnails**: `tiles.py` should suit them.
+- **More of the scenery**: the stages' other textures live in their
+  `.c3d` models in the game's own formats, not as bitmaps; the sky shows
+  that a texture loaded through the bitmap loader needs only a twin.
 - Palette effects: a few front-end screens fade or cycle palettes; check
   that HD twins follow.

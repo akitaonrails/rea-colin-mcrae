@@ -1,9 +1,10 @@
 # hd-redraw
 
-Scripts that redraw the game's menus, loading screens and larger HUD
-images with Google's Nano Banana 2 (`gemini-3.1-flash-image`) for the HD
-art pack. What each one is for, what works and what doesn't, and the whole
-pipeline with `cmr-hd`: [docs/UPSCALING.md](../../docs/UPSCALING.md).
+Scripts that redraw the game's menus, loading screens, larger HUD
+images and the stages' skies with Google's Nano Banana 2
+(`gemini-3.1-flash-image`) for the HD art pack. What each one is for,
+what works and what doesn't, and the whole pipeline with `cmr-hd`:
+[docs/UPSCALING.md](../../docs/UPSCALING.md).
 
 | Script | Does |
 | --- | --- |
@@ -12,6 +13,7 @@ pipeline with `cmr-hd`: [docs/UPSCALING.md](../../docs/UPSCALING.md).
 | `align.py` | aligns `redraw.py` results to their originals |
 | `ring.py` | the main menu's ring of words, frame by frame |
 | `tiles.py` | large pictures in tiles, tone kept from the original |
+| `sky.py` | every stage's sky and distant scenery (`*.hzn`) |
 | `redraw_api.py` | the shared request, retries and aspect-ratio padding |
 
 ```sh
