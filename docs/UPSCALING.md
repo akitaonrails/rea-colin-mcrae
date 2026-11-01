@@ -35,7 +35,10 @@ What was tried, on the official European v1.5:
 | **Lettering on a curve**: the main menu's ring of words | `tools/hd-redraw/ring.py`: unwrap the ring, redraw the frame's words together on one sheet, wrap back | asking the model for the rotated ring (garbled and mirrored words); one word per request (the model swaps the condensed typeface for a generic one); a smoothed unwrap as input (soft, ghosted letters) |
 | **Large detailed pictures**: the menu panorama, the loading screens | `tools/hd-redraw/tiles.py`: redraw in 320-pixel tiles shown 4x, keep only fine detail from the redraw and the tone from the original | redrawing the whole picture in one request (invents a different texture, changes numbers, adds objects, moves faint lines); Real-ESRGAN (invents a cracked-leather texture on the carbon weave, or flattens it) |
 | **Small pictures and HUD sprites**: full-screen `ini/` screens, menu labels, the pace-note signs, the rev dial, car silhouettes | `tools/hd-redraw/redraw.py` (one request per image, best of three), then `filter.py` and `align.py`; HUD textures are then held to the original's colours and transparency by `cmr-hd` | importing HUD redraws as they come (the model's near-black arrow became the colour key, so the signs were see-through, and their fills drifted) |
+| **Car icons** (the race's positions board, `osdnew/*/common/<car>.bmp`, `car1-4`) | `tools/hd-redraw/sheet.py`: all of them on one sheet in one request, cut back out | one icon per request (the model drifted in style and invented a race number) |
+| **Manufacturer badges and flags of the race's own screens** (stage results: `Game/Images/LOGOS2.BMP`, `CUNTLOGO.BMP`) | `redraw.py` on the whole sheet (class `hud` through `RACE_SHEETS`) | — |
 | **HUD pieces the game joins on screen**: the rev bar's segments (`2wheel/rev0*`) | `depixel` (`redraw.py` skips them) | the image model (kept the staircases or broke the pieces apart) |
+| **Car textures** (the bitmaps inside `Objects/Cars/**/*.c3d`: UV atlases of the livery, glass, wheels and cockpit) | `redraw.py` (class `car`, an atlas prompt: everything in exactly the same place), best of several tries by drift, then reviewed by eye; back-projected onto the original by `cmr-hd` | the motion-blurred wheels (redrawn, they show still spokes at speed: kept original); plain or gradient panels (the model engraves invented details: kept original); some tries add parts (a spare wheel, a bonnet scoop) |
 | **Sky and distant scenery**: the bitmaps inside each stage's `*.hzn` (two bands that make the horizon panorama, stored on their side, and a ground texture that tiles) | `tools/hd-redraw/sky.py`: bands turned upright and joined into one panorama, redrawn soft and hazy in one request, tone from the original, borders faded back to it; single-colour textures and redraws that stray far (drift above 50) keep the original | redrawing single-colour textures (night grounds: the model scatters speckles); one stage's sky came back smeared and one city skyline blurred (a second try was right) |
 
 Not done yet: the spinning globe and its flag strip (drawn by a path that
@@ -60,13 +63,18 @@ Real-ESRGAN versions; they were dropped as not faithful enough).
 - `cmr-hd` picks it for the HUD (`Game/Images/osdnew`) and for interface
   pieces of 32 colours or fewer (`src/classes.rs`).
 
-- **Held to the original, whatever made it.** `cmr-hd` holds every HUD
-  texture to the original's colours (`held` in `src/main.rs`), depixel
-  and imported redraws alike, and takes its transparency from the
-  original: inside the original's opaque area (a pixel and its eight
-  neighbours opaque) the result is opaque, so a redraw's black can't
-  become the colour key; only near the original's own edges does the
-  redraw shape the outline.
+- **Held to the original, whatever made it.** `cmr-hd` holds every 8-bit
+  texture (HUD, car) to the original (`held` in `src/main.rs`) and takes
+  its transparency from the original: inside the original's opaque area
+  (a pixel and its eight neighbours opaque) the result is opaque, so a
+  redraw's black can't become the colour key; only near the original's
+  own edges does the redraw shape the outline. Flat redraws (depixel)
+  take, pixel by pixel, one of the original's colours nearby; painted
+  ones (an image model's) are back-projected, so each original pixel's
+  area averages to its colour without cutting smooth shading back into
+  steps (the car icons came out blocky under the per-pixel lock). The
+  back-projection also wipes most of what a redraw invents on a plain
+  surface, leaving a faint ghost.
 
 ### Image-model redraws (Nano Banana 2)
 
@@ -139,6 +147,13 @@ done
 # Every stage's sky and distant scenery (stages that share a sky once).
 python tools/hd-redraw/sky.py $W/extracted $W/final
 
+# The race's car icons, together on one sheet; the race screens' logo
+# sheets; a car's textures (review each one, see the table above).
+python tools/hd-redraw/sheet.py $W/extracted $W/final cars \
+  '^Game/Images/osdnew/(high|low)/common/(audi|celica|ford|golf|lancia|mitsbshi|mk2|mr4|rs200|seat|skoda|subaru|toyota|car[1-4])\.'
+python tools/hd-redraw/redraw.py $W/extracted $W/final Game/Images/LOGOS2.BMP Game/Images/CUNTLOGO.BMP
+python tools/hd-redraw/redraw.py $W/extracted $W/final Game/Objects/Cars/Sub Game/Objects/Cars/Interiors/Subarudo
+
 # Into the set (a redraw replaces the same image's depixel version), then
 # the pack.
 cmr-hd import $W/extracted $W/final $W/set
@@ -167,10 +182,13 @@ and 3 don't use it.
   runtime name, so the same twin), such as the HUD sheets the game keeps
   in several folders.
 - A stage's sky and ground are whole bitmaps inside its horizon model
-  (`*.hzn`, a stored `CM3D`); `extract` lists them as
-  `<path>.hzn/<n>.bmp` (`asset::embedded_bitmaps`), class `sky`. The game
-  loads them through the same loader as the HUD's textures, so F27 shows
-  their twins with no hook of its own.
+  (`*.hzn`, a stored `CM3D`), and so are a car's textures (`*.c3d`);
+  `extract` lists them as `<path>.hzn/<n>.bmp` and `<path>.c3d/<n>.bmp`
+  (`asset::embedded_bitmaps`), classes `sky` and `car`. The game loads
+  them through the same loader as the HUD's textures, so F27 shows their
+  twins with no hook of its own. Car textures are colour-keyed 8-bit
+  (a palette entry equal to entry 0's colour is transparent), so their
+  twins keep the original's palette like the HUD's.
 
 ## How to extend it
 
@@ -296,6 +314,8 @@ run), so `cmr-hd` packs images into sheets and runs it once per sheet
 - **Fonts** (`*.fon`, `ini/cdFONT.BMP`, the race timer's digit sheets):
   a separate class; text could be redrawn from a vector font.
 - **Car and country pictures, thumbnails**: `tiles.py` should suit them.
+- **Every car's textures**: the Subaru's are done as a test (review
+  each texture: see the table); the other cars take the same steps.
 - **More of the scenery**: the stages' other textures live in their
   `.c3d` models in the game's own formats, not as bitmaps; the sky shows
   that a texture loaded through the bitmap loader needs only a twin.
