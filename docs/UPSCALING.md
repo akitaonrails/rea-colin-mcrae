@@ -1,190 +1,210 @@
-# Upscaling the 2D art (study)
+# HD 2D art
 
-Status: **works in the game and ships with the launcher** (`hd_art = on`,
-part of the Enhanced and Steam Deck looks; F27) for the race HUD and
-the front end's images (logos, flags, buttons, car pictures); full-screen
-pictures larger than the game's 640x480 (the menu panorama) are not shown. This
-page records what was learned, the tool that extracts and upscales the
-images, how the game shows them, and what is left. It is written for
-whoever picks this up next.
-
-## What is meant
-
-The game's 2D art was drawn for 640x480: the intro and menus, the loading
-and legal screens, the front end's buttons, flags and car pictures, and
-the race HUD (dials, pace-note arrows, positions). Today the launcher
-enlarges it with sharp pixels (the menus as a whole picture, F16/E5; the
-race HUD rectangle by rectangle, F13). The idea: replace each image with
-an AI-upscaled version made on the player's machine, and draw it at the
-screen's real size.
+Status: **ships with the launcher** (`hd_art = on`, part of the Enhanced
+and Steam Deck looks; fix F27). The pack (`hd-pack-2`) covers the race
+HUD, the intro and legal screens, the main menu (panorama, ring words,
+selected word), the race loading screens (`Game/Welcome`) and the front
+end's flat art (logos, flags, icons, buttons of 32 colours or fewer).
+Everything else is still drawn from the game's own 640x480 art. This page
+says what works, what doesn't, how to rebuild the pack and how to extend
+it. It is written for whoever picks this up next.
 
 ## Ground rules
 
 - **The originals are never committed or shipped** (see `AGENTS.md`).
   The HD art pack, made from them, is the one exception (owner decision,
   2026-10-31): it is published as a release asset and bundled with
-  releases, never committed.
+  releases, never committed. Nor are redrawn images, the extracted
+  images or the HD sets: keep them under `.work/`.
 - The game folder is only read.
-- Real-ESRGAN (`realesrgan-ncnn-vulkan`, BSD-3-Clause) is used to make the
-  pack and is not shipped; players get the finished pack.
+- **Faithful first.** An HD image must be the same design: same layout,
+  text, numbers, colours and lighting, only sharper. A redraw that is
+  prettier but different is a bug (one panorama redraw turned the dial's
+  "50" into a second "60"). Check every redraw against its original
+  before it goes in a pack.
 
-## What the game has
+## What works and what doesn't
 
-Measured on the official European v1.5 (`cmr-hd list`):
+The game's 2D art falls into four kinds, and each needs its own method.
+What was tried, on the official European v1.5:
 
-| Class | Images | Pixels | Where |
-| --- | ---: | ---: | --- |
-| picture | 105 | 8.7 M | `New_Fe/Images/{Backdrop,cars,Country,Thumbs,Load}`, `Game/Welcome`, `Game/Images/Loading`, the full-screen `ini/*.bmp` (loading, legal) |
-| interface | 574 | 19.3 M | the rest of `New_Fe/Images` (buttons, sliders, LEDs, panels, flags, logos), `Game/SetRep` |
-| hud | 233 | 1.5 M | `Game/Images/osdnew` (`high/`, `low/`, `revs/` sets) |
-| skip | 1096 | 7.0 M | effect and 3D textures (`Game/Images/{Dust,Grass*,Snow*,...}`), small sprites drawn as textures, font sheets |
+| Art | Method that works | Tried and dropped |
+| --- | --- | --- |
+| **Flat art**: the HUD (dials, rev bar, frame, pace notes), logos, flags, icons | `depixel` in `cmr-hd` (Kopf–Lischinski "Depixelizing Pixel Art"): smooth vector-like outlines in the exact original colours, deterministic, local | Real-ESRGAN (stepped or wavy diagonals, dark halos); redrawing each piece with an image model (pieces that join on screen stop lining up) |
+| **Lettering on a curve**: the main menu's ring of words | `tools/hd-redraw/ring.py`: unwrap the ring, redraw the frame's words together on one sheet, wrap back | asking the model for the rotated ring (garbled and mirrored words); one word per request (the model swaps the condensed typeface for a generic one); a smoothed unwrap as input (soft, ghosted letters) |
+| **Large detailed pictures**: the menu panorama, the loading screens | `tools/hd-redraw/tiles.py`: redraw in 320-pixel tiles shown 4x, keep only fine detail from the redraw and the tone from the original | redrawing the whole picture in one request (invents a different texture, changes numbers, adds objects, moves faint lines); Real-ESRGAN (invents a cracked-leather texture on the carbon weave, or flattens it) |
+| **Small pictures and menu pieces**: full-screen `ini/` screens, menu labels, the HUD's rev-bar sheets | `tools/hd-redraw/redraw.py` (one request per image, best of three), then `filter.py` and `align.py` | — |
 
-Notes:
+Not done yet: the spinning globe and its flag strip (drawn by a path that
+isn't a blit, see "The front end" below), fonts and the race timer's
+digit sheets, the car and country pictures and thumbnails (pack 1 had
+Real-ESRGAN versions; they were dropped as not faithful enough).
 
-- **Storage.** Most files are a gzip stream whose payload is `CMPR`, a
-  little-endian length, then an ordinary Windows bitmap; a few are plain
-  bitmaps. The game reads both through one loader (`FUN_00495ed0`). Most
-  images are 8-bit palettized (256 colours); the game shows them through a
-  16-bit (RGB565) screen (F2).
-- **Sizes.** Full screens are 640x480; the main menu backdrop is a 2244x960
-  panorama that the menu pans across; HUD pieces are small (32x32 tiles,
-  64x16 digit strips, a 256x128 pace-note sheet).
-- **Transparency.** Sprites use pure black as the colour key (the blit
-  path's key 0). A plain upscale would smear black into dark halos, so the
-  tool turns black into alpha first and restores an exact key afterwards
-  (opaque pixels are nudged off pure black so the key still matches).
+### Flat art: `depixel`
 
-## Findings
+- `crates/cmr-hd/src/depixel.rs` (a Rust port of the MIT depixel-js,
+  checked against its output) joins the pixels into regions, fits curves
+  through their staircases and keeps one-pixel lines connected.
+- HUD textures are then held to the original's palette (`src/lock.rs`):
+  each pixel takes one of the colours the original has nearby, so colours
+  and line widths stay the artist's.
+- **Edges continue.** Each image is first extended by its own edge
+  pixels and cut back after the redraw. The game joins sprites edge to
+  edge and stretches thin tiles (the HUD frame is 4x4 bar tiles stretched
+  along the screen, meeting 16x16 corners), so a line that runs off one
+  piece has to leave it straight and at full width. Traced inside its own
+  borders, the frame's corner bent into an S where it met the bars.
+- `cmr-hd` picks it for the HUD (`Game/Images/osdnew`) and for interface
+  pieces of 32 colours or fewer (`src/classes.rs`).
 
-- **No single model suits everything.** On the menu art the general model
-  (`realesrgan-x4plus`) gives crisp lettering but invents a cracked-leather
-  texture on the carbon-fibre weave; the artwork model
-  (`realesrgan-x4plus-anime`) gives the cleanest edges and text but smooths
-  the weave flat. Photographs and painted screens suit the general model;
-  interface pieces and the HUD suit the artwork model. `cmr-hd` picks by
-  folder (`crates/cmr-hd/src/classes.rs`); per-image overrides are the
-  obvious next step.
-- **The HUD upscales very well**: the pace-note arrows come out crisp with
-  clean borders and no halo, at 4x.
-- **Fine dithered patterns** (the carbon weave, the 8-bit dithering in
-  gradients) are where the models disagree with the artist. Options to try:
-  blend the upscale with a plain Lanczos enlargement, or keep those few
-  images at sharp pixels.
-- **Real-ESRGAN's folder mode is broken.** `realesrgan-ncnn-vulkan`
-  20220424, given a folder, saved many results under other images' names
-  (same size, different picture) or as noise, differently on every run
-  (RTX 5090, NVIDIA driver; one thread per stage did not help). One image
-  per run is always right, but each run spends about 5 s building its GPU
-  pipelines. So `cmr-hd` packs each model's images into sheets of up to
-  2048x2048, each image in a 16-pixel gutter of its own edge pixels (more
-  than the model's reach), runs once per sheet and cuts the results out
-  (`src/atlas.rs`). The 233 HUD images make one sheet: about 35 s.
-- **Flat art is redrawn, not upscaled.** The AI models draw the
-  original's one-pixel staircases as wavy or still-stepped edges. Flat art
-  (the HUD, and interface pieces of 32 colours or fewer: logos, flags,
-  icons) is instead redrawn with smooth outlines by the Kopf–Lischinski
-  "Depixelizing Pixel Art" method (`src/depixel.rs`, ported from the MIT
-  depixel-js): it joins the pixels into regions, fits curves through their
-  staircases and keeps one-pixel lines connected, as if traced by hand in a
-  vector editor. Real-ESRGAN stays for shaded art (car renders, photos).
-  Each image is first continued past its border by its own edge pixels
-  and cut back after the redraw: the game joins sprites edge to edge and
-  stretches thin tiles (the HUD frame is 4x4 bar tiles stretched along
-  the screen, meeting 16x16 corners), so a line that runs off one piece
-  has to leave it straight and at full width to meet the next. Traced
-  inside its own borders, the frame's corner bent into an S and swelled
-  where it met the bars.
-- **The upscalers redraw colours.** On the HUD the artwork model turned
-  one-pixel grey outlines into thin dark lines and drew the original's
-  one-pixel staircases as wavy edges. Every result is therefore held to
-  the original (`src/lock.rs`):
-  - *HUD textures* (kept as 8-bit palette indices by the game): each
-    pixel of the redrawn version takes one of the colours the
-    original has within two pixels of the spot, the one the (lightly
-    smoothed) upscale is closest to, favouring nearer and more common
-    ones. Colours stay exactly the artist's, outlines keep their width,
-    and lone anti-aliasing pixels at the edges drop out; the upscale only
-    decides where the edges run. Guiding by a blurred enlargement instead
-    of the model was tried and broke thin lines (tick marks) into dashes.
-  - *pictures and interface*: back-projection. The upscale is corrected
-    eight times by the (smoothly spread) difference between the original
-    and the upscale averaged back to the original's size, so colours and
-    shading match the original and the added detail stays.
-- **Two sets, chosen by resolution.** The game's 2D is laid out for 480
-  lines: 1080p needs 2.25x, 1440p 3x, 4K 4.5x. `cmr-hd upscale` writes `x4/`
-  (the model's 4x, for 1440p and up) and `x2/` (the 4x made half as large
-  with Lanczos, sharper than enlarging the original twice, for 1080p). The
-  runtime picks the smallest set at least as large as the screen needs,
-  else `x4`, and the GPU's filtered stretch does the rest.
+### Image-model redraws (Nano Banana 2)
 
-## The tool
+`tools/hd-redraw/` calls Google's `gemini-3.1-flash-image` ("Nano Banana
+2") image-to-image, at 4K. Lessons that hold for all of it:
 
-Real-ESRGAN runs once per sheet (see Findings). Flat art skips it
-(`depixel`). All 912 images, both sets: about 18 minutes.
+- **Show the model big pixels.** Send small art enlarged with nearest
+  neighbour to about 1000–1500 pixels. Sent small, the model copies the
+  staircases; sent blurred, it draws soft, ghosted shapes.
+- **Give it context.** The model keeps a typeface or texture when it sees
+  several samples at once: all of a frame's words on one sheet, not one
+  word per request.
+- **Keep the request small enough to copy.** A whole 2244x960 panorama
+  is reinterpreted; 320-pixel tiles are copied. Large pictures go in
+  tiles with 64 pixels of overlap, feathered together.
+- **Never trust its colours.** `tiles.py` replaces everything below
+  1.5 original pixels (tone, lighting, glow) with the original's and keeps
+  only the redraw's fine detail; `redraw.py` results are checked for
+  drift (`filter.py`) and aligned to the original (`align.py`).
+- **Transparency.** Ask for a background that can't be confused with the
+  art. The ring words have a dark shadow, so they are drawn on pure green
+  and unmixed: the model never paints exactly #00FF00, so the green is
+  estimated from pixels far from any ink and smoothed, then
+  alpha = 1 − (G − (R+B)/2) of the pixel over that of the background.
+  Other keyed images use black (the game's colour key).
+- **Pick the best of three tries** by a measure that ignores what the
+  model is allowed to change: RGB drift at the original's size for
+  pictures, the shape of the ink for lettering.
+- **Look at every result** next to its original, at the size the game
+  shows it. Drift numbers miss a changed digit.
+- Cost: pack 2 took about 130 requests (each tile and each try is one).
 
+## The pipeline
 
-`crates/cmr-hd` (a host program; not part of the launcher package):
+Tools: `crates/cmr-hd` (Rust, host program) and `tools/hd-redraw`
+(Python 3 with numpy, scipy and Pillow: `pip install -r
+tools/hd-redraw/requirements.txt`). The redraw scripts need
+`GEMINI_API_KEY` in the environment and never print it. Put all output
+under `.work/`.
 
 ```sh
 cargo build --release -p cmr-hd
-cmr-hd list    "<game folder>"
-cmr-hd extract "<game folder>" <work>/extracted          # PNGs + manifest.tsv
-cmr-hd upscale <work>/extracted <work>/hd --esrgan <path>/realesrgan-ncnn-vulkan
-#              writes <work>/hd/x4/... and <work>/hd/x2/...
+W=.work/hd
+cmr-hd extract "$CMR_GAME_DIR" $W/extracted            # PNGs + manifest.tsv
+
+# Flat art (no model, no key): the HUD, logos, flags, icons.
+cmr-hd upscale $W/extracted $W/set                      # writes set/x4, set/x2
+
+# Small pictures and menu pieces, then check and align them.
+python tools/hd-redraw/redraw.py  $W/extracted $W/redrawn
+python tools/hd-redraw/filter.py  $W/extracted $W/redrawn
+python tools/hd-redraw/align.py   $W/extracted $W/redrawn $W/final
+
+# The menu ring words, one frame at a time (seven frames).
+A=New_Fe/Images/MainOpts/English/Anim
+for f in 0 1 2 3 4 5 6; do
+  python tools/hd-redraw/ring.py $W/extracted/$A/english$f.bmp.png $W/final/$A/english$f.bmp.png
+done
+
+# Large pictures in tiles: the panorama (only the part the menu shows, at
+# 3x so it stays under the game's 8192-pixel limit) and the loading screens.
+python tools/hd-redraw/tiles.py $W/extracted/New_Fe/Images/Backdrop/Main.bmp.png \
+  $W/final/New_Fe/Images/Backdrop/Main.bmp.png 3 600 0 1832 760
+for f in $W/extracted/Game/Welcome/*/Flag_*.png; do
+  out=$W/final/${f#$W/extracted/}; mkdir -p "$(dirname "$out")"
+  python tools/hd-redraw/tiles.py "$f" "$out" 4
+done
+
+# Into the set (a redraw replaces the same image's depixel version), then
+# the pack.
+cmr-hd import $W/extracted $W/final $W/set
+cmr-hd pack $W/set $W/pack
 ```
 
-- `src/asset.rs`: the stored-file container (gzip, `CMPR`), with tests.
-- `src/classes.rs`: which folders are pictures, interface or HUD, and the
-  model for each, with tests. Change the rules here.
-- `src/key.rs`: the colour key to alpha and back, with tests.
-- `src/atlas.rs`: packing images into sheets for the upscaler, with tests.
-- `src/lock.rs`: holding results to the original's colours, with tests.
-- `src/depixel.rs`: the smooth-outline redraw for flat art, with tests
-  checked against depixel-js's own output.
-- `src/palette.rs`: the 8-bit runtime copies, in the original's palette.
-- `manifest.tsv` records each image's path, class, the SHA-256 of the game
-  file it came from, its size and the model. A runtime loader must check
-  the digest, so a different game version never gets the wrong picture.
+`cmr-hd upscale --esrgan <realesrgan-ncnn-vulkan>` also runs Real-ESRGAN
+on the classes that aren't flat art (see "Real-ESRGAN" below); pack 2
+doesn't use it.
 
-Get Real-ESRGAN from its releases (the package with `models/`), e.g.
-`realesrgan-ncnn-vulkan-20220424-ubuntu.zip` from
-<https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0>.
+`cmr-hd`'s files:
+
+- `src/asset.rs`: the stored-file container (gzip, `CMPR`), with tests.
+- `src/classes.rs`: which folders are pictures, interface or HUD, and
+  which are flat art, with tests.
+- `src/key.rs`: the colour key to alpha and back, with tests.
+- `src/depixel.rs`, `src/lock.rs`: the flat-art redraw and the colour
+  lock, with tests.
+- `src/atlas.rs`: packing images into sheets for Real-ESRGAN, with tests.
+- `src/palette.rs`: the 8-bit runtime copies, in the original's palette.
+- `src/pack.rs`: the compact pack (below).
+- `manifest.tsv` records each image's path, class, the SHA-256 of the
+  game file it came from, its size and the method. `upscale` and
+  `import` add to a set's manifest, replacing rows for the same path.
+
+## How to extend it
+
+1. **Find what a screen draws.** Run the game with
+   `CMR_HD_TRACE=<file>` (see "The draw trace"): every distinct HUD sprite
+   and front-end blit is listed once with its runtime name (the hash in
+   `manifest.tsv`'s sixth column), source and destination rectangles.
+   Map the names to paths through the manifest. Draws that aren't in the
+   trace (the globe) need a new hook, not new art.
+2. **Pick the method** from the table above. Flat art needs nothing but
+   `cmr-hd upscale`. For a new kind of art, start from the closest script:
+   - New lettering that isn't straight: reuse `ring.py`'s idea (map it to
+     straight text, redraw all of it on one sheet, map back).
+   - A large or detailed picture: `tiles.py <in> <out> <scale> [box]`;
+     restrict the box to what the game shows (the trace says).
+   - Anything else: `redraw.py <extracted> <out> <path prefix>`.
+3. **Scale.** 4x for 640x480 art; 3x for images wider than 640 (a twin's
+   side must stay at or below 8192 pixels, `MAX_TWIN` in `cmr-hd`). The
+   launcher picks the `x2` set up to 1080p and `x4` above; `import` makes
+   `x2` from the redraw.
+4. **Check it** next to the original at the size the game shows it, then
+   in the game headless at 1080p and 4K (the front end should stay near
+   40 fps at 4K, races at 60).
+5. **Ship it**: `cmr-hd import` into the set, `cmr-hd pack`, then publish
+   as below.
 
 ## Showing them in the game
 
 The general mechanism follows the rule of fixing a whole class in one
 place: **keep the game's own textures, sizes and layout exactly as they
-are, and swap pixels only where they are drawn.**
+are, and swap pixels only where they are drawn.** Twins are BMPs named by
+the FNV-1a 64 hash of the game's own BMP bytes
+(`crates/cmr-hooks/src/hd.rs`, shared by the tool and the hook library),
+in `x2/` and `x4/`.
 
-### The race HUD (done, F27)
+### The race HUD (F27)
 
 The HUD is drawn as Direct3D textured quads, not with the 2D blit (which
 the race never calls).
 
-1. **Files.** `cmr-hd upscale` writes, for each HUD image, a BMP named by
-   the FNV-1a 64 hash of the game's own BMP bytes (`crates/cmr-hooks/src/hd.rs`,
-   shared by the tool and the hook library), in `x2/` and `x4/`. An 8-bit
-   original gets an 8-bit copy in its own palette (the game keeps 8-bit
-   textures as palette indices, with index 0 the colour key); others get
-   24-bit.
+1. **Files.** An 8-bit HUD original gets an 8-bit twin in its own
+   palette (the game keeps 8-bit textures as palette indices, with index
+   0 the colour key); others get 24-bit.
 2. **Load.** F27 wraps the game's bitmap loader `0x499ec0(bmp, flags)`,
    which every image goes through. For a texture (flags bit 1) with a file
-   in the HD set (`CMR_HD_ART`, which the launcher points at `x2` up to
-   1080p, else `x4`) it loads that file through the same loader: the twin.
-   The game's own texture is untouched.
+   in the HD set (`CMR_HD_ART`) it loads that file through the same
+   loader: the twin. The game's own texture is untouched.
 3. **Bind.** Every texture bind goes through the device's
    `SetRenderState(TEXTUREHANDLE, h)` (slot 23 of the `IDirect3DDevice2`
-   at `[[0x50283c]+0x10]`). F27 takes that one slot over: a game handle with
-   a twin binds the twin's handle instead, and switches that draw to
-   smooth (bilinear) sampling so the HD edges come out as straight lines;
-   the game's own filters return with its next texture. The texture
-   coordinates are fractions of the picture, so the twin needs no change
-   to the layout. Pairs are checked against each record's current handle
-   at every bind and forgotten outside races.
-4. **Checked** headless at 1080p and 4K: 35 pairs, about 6000 twin binds
-   per race, none stale, 60 fps at 4K.
+   at `[[0x50283c]+0x10]`). F27 takes that one slot over: a game handle
+   with a twin binds the twin's handle instead, and switches that draw to
+   smooth (bilinear) sampling; the game's own filters return with its next
+   texture. Texture coordinates are fractions of the picture, so the twin
+   needs no change to the layout. Pairs are checked against each record's
+   current handle at every bind and forgotten outside races.
 
-### The front end (done, F27)
+### The front end (F27)
 
 The menus are one 640x480 picture made of blits, enlarged to the screen
 each frame.
@@ -201,58 +221,59 @@ each frame.
    colour isn't the picture's were drawn some other way (the menu's
    globe) and keep the picture. While the picture is enlarged, a screen
    pixel owned by an image with a twin is taken from the twin, its
-   transparent edges from the image under it. Backgrounds, overlaps and
-   animation compose in the game's own order. The game's and the twins'
-   pixels are cached once per load; at 4K the menu runs at about 40 fps.
+   transparent edges from the image under it. Backgrounds, overlaps,
+   the panning panorama and animation compose in the game's own order.
+   Pixels are cached once per load; at 4K the menu runs at about 40 fps.
 
 ### The draw trace
 
 `CMR_HD_TRACE=<file>` makes the hook library write each distinct HUD
 sprite (`hud`, from the sprite queue `0x49b420`) and front-end blit (`fe`)
-once, as `<runtime name> src x y w h dst x y w h` in the game's 640x480.
-It shows which images make up each screen (the race loading screen is the
-country's `Game/Welcome/*/Flag_*.BMP`, the main menu the panorama
-`Backdrop/Main.bmp` panned), and where every HUD piece goes: enough to
-rebuild the whole HUD as one picture, redraw it in one piece and cut the
-pieces out again, so that joints line up.
+once, as `<kind> <runtime name> src x y w h dst x y w h` in the game's
+640x480. It shows which images make up each screen (the race loading
+screen is the country's `Game/Welcome/*/Flag_*.BMP`; the main menu pans
+`Backdrop/Main.bmp` across x 640–1791, y 0–720; `select/select.bmp` is a
+plain red square, not part of the dial) and where every HUD piece goes.
 
-### The pack in releases
+## The pack in releases
 
-The HD set is 1.5 GB of BMPs; releases carry it compactly instead:
+The HD set is about 800 MB of BMPs; releases carry it compactly:
 
-1. `cmr-hd pack <hd> <pack>` stores each runtime BMP as a palette PNG (the
-   HUD's 8-bit textures, exact) or a colour image: a lossless PNG, or a
-   near-lossless WebP (quality 92, about 41 dB) when that is much smaller.
-   Lossless files are checked to give back the same pixels. About 38 MB.
-2. The zipped pack is published once as a release asset (`hd-pack-1`).
-   `packaging/hd-pack.txt` pins its URL and SHA-256; CI downloads and
-   checks it and puts it in the zip and the AppImage as `hd/`, next to
-   `CMRLauncher.exe`.
+1. `cmr-hd pack <set> <pack>` stores each runtime BMP as a palette PNG
+   (the HUD's 8-bit textures, exact) or a colour image: a lossless PNG,
+   or a near-lossless WebP (quality 92, about 41 dB) when that is much
+   smaller. Pack 2 is about 22 MB.
+2. Zip `pack.txt`, `x2/` and `x4/` from the pack folder and publish the
+   zip once as a release asset under its own tag (`hd-pack-<n>`, a
+   pre-release). `packaging/hd-pack.txt` pins its URL and SHA-256; CI
+   downloads and checks it and puts it in the zip and the AppImage as
+   `hd/`, next to `CMRLauncher.exe`.
 3. With `hd_art = on`, the launcher installs the pack into the runtime
-   folder (`<runtime>/hd/<id>/x2`, `x4`, `crates/cmr-launcher/src/hdpack.rs`
-   with the format in `crates/cmr-hdpack`), once per pack, in a few
-   seconds, and points the hook library at the set for the resolution.
+   folder (`<runtime>/hd/<id>/x2`, `x4`; `crates/cmr-launcher/src/hdpack.rs`
+   with the format in `crates/cmr-hdpack`), once per pack, and points the
+   hook library at the set for the resolution.
 
-To make a new pack: `cmr-hd extract`, `cmr-hd upscale`, `cmr-hd pack`,
-zip `pack.txt`, `x2/` and `x4/`, publish it as `hd-pack-<n>`, and update
-`packaging/hd-pack.txt`.
+## Real-ESRGAN
 
-### Next
+`cmr-hd upscale --esrgan` runs `realesrgan-ncnn-vulkan` (BSD-3-Clause,
+used to make a pack, never shipped) on pictures (`realesrgan-x4plus`) and
+interface pieces (`realesrgan-x4plus-anime`), then back-projects the
+result onto the original (`src/lock.rs`). Pack 1 used it for 912 images.
+It was dropped for pack 2: it invents textures (cracked leather on the
+carbon weave), draws one-pixel staircases as wavy edges and outlines menu
+lettering. It may still suit photographs. Its folder mode is broken
+(results saved under other images' names, or noise, differently each
+run), so `cmr-hd` packs images into sheets and runs it once per sheet
+(`src/atlas.rs`).
 
-- **Fonts** (`*.fon`, `ini/cdFONT.BMP`, the race timer's digit sheets) are
+## Next
+
+- **The globe and its flag strip** are drawn by a path that isn't the
+  blit; they need their own hook before they can have twins.
+- **Fonts** (`*.fon`, `ini/cdFONT.BMP`, the race timer's digit sheets):
   a separate class; text could be redrawn from a vector font.
-- **Set-up in the launcher**: run the extraction and upscaling once from
-  the settings window, with progress, into the launcher's data folder
-  (bundling Real-ESRGAN needs a `THIRD_PARTY.md` row).
-- **Speed.** The whole set takes about 18 minutes on a 16-core CPU, mostly
-  the back-projection of the large pictures; it is plain single-threaded
-  code and would split across cores easily.
-
-Things to watch:
-
+- **Car and country pictures, thumbnails**: `tiles.py` should suit them.
+- **Port `tools/hd-redraw` to Rust** inside `cmr-hd` (`AGENTS.md`: our
+  code is Rust); the Python scripts are a stopgap.
 - Palette effects: a few front-end screens fade or cycle palettes; check
-  that HD copies follow when the palette changes.
-- Animated sprites made from strips (digits, LEDs) keep working as long
-  as every frame is upscaled in one image (they are).
-- 3D textures (cars, stages) are out of scope: they live inside `.c3d`
-  files.
+  that HD twins follow.

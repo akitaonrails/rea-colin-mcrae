@@ -19,7 +19,7 @@ source. Add a row before bundling anything new.
 
 | Component | Licence | Source |
 | --- | --- | --- |
-| The HD art pack (`hd/`): the game's own 2D art redrawn and upscaled with `cmr-hd` (owner decision, see `AGENTS.md`) | derived from Colin McRae Rally (Codemasters); not covered by this project's licence | `packaging/hd-pack.txt` (release asset `hd-pack-1`) |
+| The HD art pack (`hd/`): the game's own 2D art redrawn with `cmr-hd` and `tools/hd-redraw` (owner decision, see `AGENTS.md`) | derived from Colin McRae Rally (Codemasters); not covered by this project's licence | `packaging/hd-pack.txt` (release asset `hd-pack-2`) |
 
 ## Bundled DLLs
 
@@ -52,9 +52,21 @@ not part of the package. It links:
 | `crates/cmr-hd/src/depixel.rs`: ported code (Rust port of depixel-js by Jimb Esser, itself a port of Felix Kreuzer's "Depixelizing Pixel Art on GPUs", after Kopf and Lischinski's paper "Depixelizing Pixel Art") | MIT (both) | https://github.com/Jimbly/depixel-js , https://github.com/falichs/Depixelizing-Pixel-Art-on-GPUs , https://johanneskopf.de/publications/pixelart/ |
 | `libwebp` (through the `webp` crate) in `cmr-hd`, for making the pack (not shipped) | BSD-3-Clause (`webp`: MIT OR Apache-2.0) | https://chromium.googlesource.com/webm/libwebp , https://github.com/jaredforth/webp |
 
-It runs Real-ESRGAN (`realesrgan-ncnn-vulkan`, BSD-3-Clause,
+It can run Real-ESRGAN (`realesrgan-ncnn-vulkan`, BSD-3-Clause,
 https://github.com/xinntao/Real-ESRGAN) as a separate program the user
-downloads; nothing of it is bundled yet.
+downloads; nothing of it is bundled.
+
+## The tools/hd-redraw scripts (run, not shipped)
+
+`tools/hd-redraw` (docs/UPSCALING.md) makes part of the HD art pack. It
+runs on the developer's machine and is not part of the package. It uses:
+
+| Component | Licence | Source |
+| --- | --- | --- |
+| NumPy | BSD-3-Clause | https://numpy.org |
+| SciPy | BSD-3-Clause | https://scipy.org |
+| Pillow | MIT-CMU (HPND) | https://python-pillow.org |
+| Google's Gemini API, model `gemini-3.1-flash-image`: a web service the scripts call with the developer's own key; nothing of it is bundled | Gemini API terms of service | https://ai.google.dev/gemini-api/terms |
 
 ## Compiled into cmrhooks.dll
 

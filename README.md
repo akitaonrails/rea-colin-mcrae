@@ -221,7 +221,7 @@ saved settings.
 | `gamepad_axes = true` | Triggers and right stick work as accelerate/brake (with an Xbox-style pad, both triggers can be held at once); Start pauses. | on |
 | `rumble = 60` | Gamepad rumble on impacts, strength 1–100. Needs an Xbox-style (XInput) pad. **Test** next to it in the window shakes the pad for half a second. | off |
 | `buttons = original` | Pad buttons. `modern` (Xbox-style pads): A selects and is the handbrake, B goes back, Y changes the view, LB/RB change gear, Start pauses. `original`: the game's own 1998 order. Or eight pad button numbers for select, back, change view, gear down, handbrake, gear up, (unused), pause, e.g. `1,2,4,5,1,6,7,8`. The window's **Buttons** tab sets it. | `modern` |
-| `hd_art = on` | Sharp, redrawn art for the race HUD (dials, pace notes) and the menus' logos, flags and car pictures. The pack comes with the launcher and installs itself on first use; or give a folder made with `cmr-hd` ([docs/UPSCALING.md](docs/UPSCALING.md)). On in the Enhanced and Steam Deck looks. | off |
+| `hd_art = on` | Sharp, redrawn art for the race HUD (dials, pace notes), the intro, the main menu, the race loading screens and the menus' logos and flags. The pack comes with the launcher and installs itself on first use; or give a folder made with `cmr-hd` ([docs/UPSCALING.md](docs/UPSCALING.md)). On in the Enhanced and Steam Deck looks. | off |
 | `close_quits = true` | Closing the window (Alt+F4) quits the game. | on |
 | `saves = D:\Rally saves` | Where your saves are kept. | `Saved Games\Colin McRae Rally` in your user folder |
 | `language = FRENCH` | Game language on first setup: ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN. | ENGLISH |
@@ -305,10 +305,10 @@ release for tags named `v…`. How it works and what's left:
 [docs/GRAPHICS.md](docs/GRAPHICS.md), [docs/RUNTIME_NOTES.md](docs/RUNTIME_NOTES.md).
 Rules for contributors are in [AGENTS.md](AGENTS.md).
 
-**HD 2D art (study).** `crates/cmr-hd` extracts the menus, loading screens
-and HUD from your own game folder and upscales them with Real-ESRGAN into
-1080p and 4K sets, on your machine; the game doesn't load them yet. The
-findings and the plan for showing them in the game are in
+**HD 2D art.** `crates/cmr-hd` and `tools/hd-redraw` make the HD art pack
+from a game folder: flat art (the HUD, logos, flags) redrawn with smooth
+outlines, menus and loading screens redrawn with an image model. What
+works, what doesn't, and how to rebuild or extend the pack:
 [docs/UPSCALING.md](docs/UPSCALING.md).
 
 The game fixes are applied in memory to the running game, keyed to the exact

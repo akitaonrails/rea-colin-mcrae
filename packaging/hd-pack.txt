@@ -1,4 +1,4 @@
-# The HD art pack bundled with releases (docs/UPSCALING.md): made with
-# `cmr-hd upscale` and `cmr-hd pack`, published as a release asset, fetched
-# by CI and checked against this digest. One line: URL SHA-256.
-https://github.com/akitaonrails/rea-colin-mcrae/releases/download/hd-pack-1/cmr-hd-pack-1.zip ad0d48ea9fa64cb2a058e461724e0e22a50f5549558b13dbc8f35c2372cafe5e
+# The HD art pack bundled with releases (docs/UPSCALING.md, "The
+# pipeline"): made with cmr-hd and tools/hd-redraw, published as a release
+# asset, fetched by CI and checked against this digest. One line: URL SHA-256.
+https://github.com/akitaonrails/rea-colin-mcrae/releases/download/hd-pack-2/cmr-hd-pack-2.zip 6f274b0065c1d90199f29001c7f2a8e763d67747547ba863e027a9ebc05b67f8
