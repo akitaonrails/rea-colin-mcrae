@@ -13,11 +13,11 @@ You point the launcher at your installed game and it does the rest. No game
 patches, no compatibility settings, no registry edits. Your game folder is
 never changed: the launcher works on its own private copy.
 
-[![A full stage played with the launcher: 16:9 widescreen at high resolution, a longer view distance, the HUD in the corners](https://new-uploads-akitaonrails.s3.us-east-2.amazonaws.com/2026/10/30/colin-mcrae-rally/showcase-poster.jpg)](https://new-uploads-akitaonrails.s3.us-east-2.amazonaws.com/2026/10/30/colin-mcrae-rally/showcase-h264.mp4)
+[![Stages in Greece and Sweden played with the launcher: 16:9 widescreen at high resolution, the HD art pack's redrawn HUD, pace-note signs and skies](https://new-uploads-akitaonrails.s3.us-east-2.amazonaws.com/2026/11/01/colin-mcrae-rally/showcase-poster.jpg)](https://new-uploads-akitaonrails.s3.us-east-2.amazonaws.com/2026/11/01/colin-mcrae-rally/showcase-h264.mp4)
 
-*A full stage with version 0.2: 16:9 widescreen at high resolution, a longer
-view distance and the HUD in the corners. Click to watch (2½ minutes, with
-sound).*
+*Greece and Sweden with version 0.6: 16:9 widescreen at high resolution and
+the HD art pack, with the redrawn HUD, pace-note signs, skies and distant
+scenery. Click to watch (3 minutes, with sound).*
 
 ![The settings window](docs/images/launcher.png)
 
