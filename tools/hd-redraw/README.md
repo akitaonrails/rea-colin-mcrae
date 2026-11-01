@@ -22,4 +22,5 @@ export GEMINI_API_KEY=...   # your own key; the scripts never print it
 Inputs come from `cmr-hd extract`; write outputs under `.work/`. Never
 commit them: they are made from the game's art.
 
-These are a stopgap in Python; the plan is to port them into `cmr-hd`.
+They stay in Python (owner decision, see `AGENTS.md`); they make the pack
+and are not shipped.

@@ -273,7 +273,5 @@ run), so `cmr-hd` packs images into sheets and runs it once per sheet
 - **Fonts** (`*.fon`, `ini/cdFONT.BMP`, the race timer's digit sheets):
   a separate class; text could be redrawn from a vector font.
 - **Car and country pictures, thumbnails**: `tiles.py` should suit them.
-- **Port `tools/hd-redraw` to Rust** inside `cmr-hd` (`AGENTS.md`: our
-  code is Rust); the Python scripts are a stopgap.
 - Palette effects: a few front-end screens fade or cycle palettes; check
   that HD twins follow.
