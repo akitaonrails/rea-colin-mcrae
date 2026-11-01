@@ -49,6 +49,8 @@ Linux (Proton/Wine). It is not a distribution of the game.
   one screen at a time; if one is unavoidable, say why.
 
 - Rust for our own code. Keep `unsafe` and Win32 FFI in narrow modules.
+  Exception (owner decision, 2026-11-01): the HD art redraw scripts in
+  `tools/hd-redraw` stay in Python; they make the pack and are not shipped.
 - Unit-test the logic that can run on the host (edition detection, runtime
   folder layout, configuration, patch tables) before each milestone commit;
   record what was checked by running the game.
