@@ -24,8 +24,9 @@ PROMPTS = {
   "visible pixels. Redraw it as the same texture made at high resolution: every piece, edge, decal, stripe, logo, "
   "letter and number in EXACTLY the same place, size, angle and colour (the 3D model depends on it), with clean sharp "
   "detail and smooth gradients instead of pixels. Writing (sponsor names, numbers, number plates) must be crisp, "
-  "legible and correctly spelled: the real names the original shows; where a mark is too small to read, draw it as "
-  "simple shapes, never made-up letters. Do not add, remove, move or restyle anything; keep pure black areas pure "
+  "legible and correctly spelled: the real names the original shows. Writing too small to read in the original "
+  "(drivers' signatures, small sponsor stickers, tiny print) must stay a soft, unreadable smudge of the same colours, "
+  "exactly as vague as in the original: never invent letters, names or words for it. Do not add, remove, move or restyle anything; keep pure black areas pure "
   "black (#000000).",
  "art": "This is a small user-interface graphic from a 1998 PC rally video game, shown enlarged. Redraw it from scratch as crisp high-resolution vector artwork (as if drawn in Adobe Illustrator): perfectly smooth straight lines, clean diagonals and round curves, no pixel staircases, no blur, no noise. Keep EXACTLY the same design, layout, positions, proportions, line widths, flat colours and text (same letterforms). Do not add, remove or move anything. The pure black background must stay pure flat black (#000000).",
 }

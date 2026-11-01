@@ -81,7 +81,32 @@ def ask(img, question):
     return "".join(p.get("text", "") for c in d.get("candidates", []) for p in c.get("content", {}).get("parts", [])).strip()
 
 
-def writing_ok(img):
+def writing_ok(img, expected=None):
     """Whether every piece of writing in img is real and makes sense (or
-    there is none), as a vision model reads it."""
+    there is none), as a vision model reads it; with `expected` (the
+    original's writing, transcribed), whether it reads exactly that, so
+    made-up names that are really there (the game's joke signs) pass."""
+    if expected and expected.upper() != "NONE":
+        question = (f"This is a redrawn sign from a 1998 rally video game. Its writing must read exactly: {expected} "
+          "(lines separated by ' / '). Answer YES if every letter is there, correctly spelled and cleanly drawn, with "
+          "no extra, missing, merged, doubled or garbled letters; otherwise NO. Reply with exactly one word.")
+        return ask(img, question).upper().startswith("YES")
     return ask(img, WRITING).upper().startswith("YES")
+
+
+MATCHES = ("Left: an original low-resolution texture from a 1998 rally video game (a car's livery or a sign, laid out to "
+  "wrap onto a 3D model, so some writing is mirrored or upside down on purpose). Right: a high-resolution redraw of "
+  "it. Compare the writing. Answer YES if every word, name and number that is legible on the left is on the right in "
+  "the same place, correctly spelled (mirrored where the left is mirrored), and the right adds no made-up, garbled or "
+  "misspelled writing; marks too small to read on the left may be drawn as shapes. Otherwise answer NO. Reply with "
+  "exactly one word.")
+
+
+def writing_matches(original, redraw):
+    """Whether the redraw keeps the original's writing (as a vision model
+    compares them side by side): for textures whose writing is mirrored on
+    purpose, which `writing_ok` alone would reject."""
+    h = max(original.height, redraw.height)
+    pair = Image.new("RGB", (original.width + redraw.width + 16, h), (128, 128, 128))
+    pair.paste(original.convert("RGB"), (0, 0)); pair.paste(redraw.convert("RGB"), (original.width + 16, 0))
+    return ask(pair, MATCHES).upper().startswith("YES")
