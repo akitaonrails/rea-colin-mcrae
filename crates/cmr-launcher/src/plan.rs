@@ -225,6 +225,7 @@ impl Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
 
     const WINDOWS: Env = Env {
         wine: false,
@@ -342,5 +343,45 @@ mod tests {
         );
         let off = settings("resolution = 3840x2160\n");
         assert_eq!(plan(&off, &WINDOWS).hd_set(&off, Path::new("P")), None);
+    }
+
+    /// Every game-affecting flag, end to end: `--flag value` → the same
+    /// settings as its `launcher.cfg` key → a launch plan that differs from
+    /// the default one (a fix on or off, a value written, the registry).
+    #[test]
+    fn every_flag_changes_the_launch() {
+        use crate::config::OPTIONS;
+        use rea_launcher::cfg::spec;
+        let base = plan(&Settings::default(), &WINDOWS);
+        let cases = [
+            ("language", "french"),
+            ("look", "enhanced"),
+            ("resolution", "1920x1080"),
+            ("widescreen", "on"),
+            ("draw_distance", "1.5"),
+            ("texture_filter", "smooth"),
+            ("fps_limit", "60"),
+            ("vsync", "on"),
+            ("smooth_distance", "on"),
+            ("hd_art", "on"),
+            ("gamepad_axes", "off"),
+            ("rumble", "30"),
+            ("buttons", "original"),
+            ("close_quits", "off"),
+        ];
+        for row in spec::active(OPTIONS) {
+            let tested = cases.iter().any(|(k, _)| *k == row.key);
+            // Folders, and the helper's scaler (linux/tests/scaler.sh).
+            let elsewhere = matches!(row.key, "game" | "saves" | "runtime" | "scaler");
+            assert!(tested || elsewhere, "{} has no end-to-end case", row.key);
+        }
+        for (key, value) in cases {
+            let flag = config::option(key).flag_name(rea_launcher::cfg::KeyStyle::Underscore);
+            let (cli, _) = Settings::parse_args([flag.clone(), value.to_string()]).unwrap();
+            let file = Settings::parse_file(&format!("{key} = {value}\n")).0;
+            assert_eq!(cli, file, "{flag} and {key} read alike");
+            let run = crate::form::with_look(Settings::default(), cli, Some((2560, 1440)));
+            assert_ne!(plan(&run, &WINDOWS), base, "{flag} {value} changes nothing");
+        }
     }
 }
