@@ -27,6 +27,11 @@ pub struct Picture {
     pub smooth_distance: bool,
     /// HD art (the pack that comes with the launcher, or a folder).
     pub hd_art: bool,
+    /// The pad's triggers and right stick as pedals (`gamepad_axes`, F7):
+    /// not a picture value, but part of what a look means (owner decision
+    /// 2026-11-02). It has no control of its own; the key stays for the
+    /// file and the command line.
+    pub gamepad_axes: bool,
 }
 
 const ONE: u32 = 0x10000;
@@ -42,6 +47,7 @@ impl Picture {
         vsync: None,
         smooth_distance: false,
         hd_art: false,
+        gamepad_axes: false,
     };
 
     /// The recommended look for a screen: its own size (on its long side
@@ -59,6 +65,7 @@ impl Picture {
             vsync: Some(true),
             smooth_distance: true,
             hd_art: true,
+            gamepad_axes: true,
         }
     }
 }
@@ -75,6 +82,7 @@ impl Picture {
         vsync: Some(true),
         smooth_distance: true,
         hd_art: true,
+        gamepad_axes: true,
     };
 }
 
@@ -126,6 +134,7 @@ impl Picture {
             } else {
                 HdArt::Off
             }),
+            gamepad_axes: Some(self.gamepad_axes),
             ..Settings::default()
         }
     }
@@ -210,7 +219,8 @@ pub struct Form {
     /// values match another (and "Custom" stays open while editing).
     pub look: Look,
     pub rumble: u32,
-    pub gamepad_axes: bool,
+    /// Closing the window quits (`close_quits`, F6): on in every look
+    /// (STANDARDS "Clean exit"); no control, an older file's value is kept.
     pub close_quits: bool,
     pub scaler: Scaler,
     /// For the game's pad buttons 1..8, the physical button (0: its own).
@@ -289,6 +299,7 @@ impl Form {
             vsync: s.vsync,
             smooth_distance: s.smooth_distance == Some(true),
             hd_art: s.hd_on(),
+            gamepad_axes: s.gamepad_axes != Some(false),
         };
         Form {
             game: path(&s.game),
@@ -297,7 +308,6 @@ impl Form {
             picture,
             look: Form::look_of(&picture, screen),
             rumble: s.rumble_strength(),
-            gamepad_axes: s.gamepad_axes != Some(false),
             close_quits: s.close_quits != Some(false),
             scaler: s.scaler.unwrap_or(Scaler::Linear),
             buttons: s.buttons.unwrap_or(config::DEFAULT_BUTTONS),
@@ -358,12 +368,21 @@ impl Form {
     }
 
     /// The look these picture values make on a screen.
+    /// The pedals don't count: a file's own `gamepad_axes` (an advanced
+    /// key) wins over its look without making it Custom.
     pub fn look_of(picture: &Picture, screen: Option<(u32, u32)>) -> Look {
-        if *picture == Picture::ORIGINAL {
+        let is = |look: Picture| {
+            *picture
+                == Picture {
+                    gamepad_axes: picture.gamepad_axes,
+                    ..look
+                }
+        };
+        if is(Picture::ORIGINAL) {
             Look::Original
-        } else if *picture == Picture::enhanced(screen) {
+        } else if is(Picture::enhanced(screen)) {
             Look::Enhanced
-        } else if *picture == Picture::STEAM_DECK {
+        } else if is(Picture::STEAM_DECK) {
             Look::SteamDeck
         } else {
             Look::Custom
@@ -422,8 +441,9 @@ impl Form {
                 .then(|| self.hd_folder.clone().unwrap_or_else(|| "on".into())),
         );
         put("rumble", (self.rumble > 0).then(|| self.rumble.to_string()));
-        put("gamepad_axes", Some(self.gamepad_axes.to_string()));
-        put("close_quits", Some(self.close_quits.to_string()));
+        // On is the default: only off is written.
+        put("gamepad_axes", (!p.gamepad_axes).then(|| "false".into()));
+        put("close_quits", (!self.close_quits).then(|| "false".into()));
         put("scaler", Some(self.scaler.key().into()));
         put(
             "buttons",
@@ -443,12 +463,67 @@ mod tests {
         Form::new(&Settings::parse_file(text).0, SCREEN)
     }
 
+    /// The looks carry the pad pedals (owner decision 2026-11-02): the
+    /// 1998 game drove with the left stick only; the others use triggers.
+    /// Closing the window quits in every look (STANDARDS "Clean exit").
+    #[test]
+    fn the_looks_set_the_gamepad_pedals() {
+        let run = |text: &str| with_look(Settings::parse_file(text).0, Settings::default(), SCREEN);
+        assert_eq!(run("look = original\n").gamepad_axes, Some(false));
+        assert_eq!(run("look = enhanced\n").gamepad_axes, Some(true));
+        assert_eq!(run("look = steam_deck\n").gamepad_axes, Some(true));
+        for look in ["original", "enhanced", "steam_deck"] {
+            assert_ne!(
+                run(&format!("look = {look}\n")).close_quits,
+                Some(false),
+                "{look}"
+            );
+        }
+        // Given on its own, the advanced key wins over the file's look.
+        assert_eq!(
+            run("look = original\ngamepad_axes = on\n").gamepad_axes,
+            Some(true)
+        );
+        // The window: picking Original saves the pedals off, Enhanced on.
+        let mut f = form("");
+        f.set_look(Look::Original, SCREEN);
+        assert_eq!(
+            Settings::parse_file(&f.save("")).0.gamepad_axes,
+            Some(false)
+        );
+        f.set_look(Look::Enhanced, SCREEN);
+        assert_ne!(
+            Settings::parse_file(&f.save("")).0.gamepad_axes,
+            Some(false)
+        );
+    }
+
+    /// A launcher.cfg from 0.7 with the advanced keys set by hand keeps
+    /// them through the window, and its look isn't turned into Custom.
+    #[test]
+    fn advanced_keys_from_an_older_file_are_kept() {
+        let old = "resolution = original\ngamepad_axes = true\nclose_quits = false\n";
+        let f = form(old);
+        assert_eq!(f.look, Look::Original);
+        let (s, _) = Settings::parse_file(&f.save(old));
+        assert_ne!(s.gamepad_axes, Some(false));
+        assert_eq!(s.close_quits, Some(false));
+    }
+
     #[test]
     fn a_new_player_starts_with_the_original_game() {
         let f = form(&config::template());
         assert_eq!(f.look, Look::Original);
-        assert_eq!(f.picture, Picture::ORIGINAL);
-        assert!(f.gamepad_axes && f.close_quits);
+        // With nothing set the pedals keep their default, on; the
+        // Original look itself turns them off.
+        assert_eq!(
+            f.picture,
+            Picture {
+                gamepad_axes: true,
+                ..Picture::ORIGINAL
+            }
+        );
+        assert!(f.close_quits);
         assert_eq!(f.rumble, 0);
     }
 
@@ -488,7 +563,11 @@ mod tests {
         assert_eq!(form(&back).look, Look::Original);
         let (s, warnings) = Settings::parse_file(&back);
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(s.skipped_fixes(), Settings::default().skipped_fixes());
+        let pedals_off = Settings {
+            gamepad_axes: Some(false),
+            ..Settings::default()
+        };
+        assert_eq!(s.skipped_fixes(), pedals_off.skipped_fixes());
     }
 
     #[test]
@@ -529,9 +608,9 @@ mod tests {
             vsync: Some(false),
             smooth_distance: true,
             hd_art: true,
+            gamepad_axes: false,
         };
         f.rumble = 30;
-        f.gamepad_axes = false;
         f.close_quits = false;
         f.scaler = Scaler::Fsr;
         let saved = f.save(&config::template());
@@ -622,6 +701,7 @@ mod tests {
         assert!(!s.hd_on());
         let rumble_only = Settings {
             rumble: Some(60),
+            gamepad_axes: Some(false),
             ..Settings::default()
         };
         assert_eq!(s.skipped_fixes(), rumble_only.skipped_fixes());

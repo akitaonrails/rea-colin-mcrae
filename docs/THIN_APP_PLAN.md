@@ -317,7 +317,7 @@ Skipped for now, to revisit later:
   display-mode switch, 16-bit offscreen front and back buffers, our present
   copying to the window. Needs a Windows machine to build and test.
 - C3, C4: the in-game Button Setup loops back with no exit and its capture
-  can record a direction; the launcher's Buttons tab covers remapping.
+  can record a direction; the launcher's Controls tab covers remapping.
 - R17: a rare camera jump for about a second (owner: to the top of the car, once to its right side), then back. Likely the update thread and the drawing running side by side on a multi-core CPU (the game was written for one core); since 0.2.1 both are kept on one core (`share_core`). Owner to confirm.
 - The far hill seen as floating trees and road edges with no ground (owner screenshot, a green stage at 3x distance): not reproduced on Greece stage 1; the in-game Track and Object distance options are equal (2). Needs the exact stage.
 

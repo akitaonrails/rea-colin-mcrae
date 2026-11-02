@@ -28,12 +28,12 @@ pub const TITLE: &str = "Colin McRae Rally";
 pub enum Tab {
     Play,
     Picture,
+    /// The pad: rumble, then the button layout.
     Controls,
-    Buttons,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Play, Tab::Picture, Tab::Controls, Tab::Buttons];
+    pub const ALL: [Tab; 3] = [Tab::Play, Tab::Picture, Tab::Controls];
 
     /// The tab `by` places along (wrapping), for LB and RB.
     pub fn step(self, by: isize) -> Tab {
@@ -200,7 +200,6 @@ pub fn draw(
                 (Tab::Play, "Play"),
                 (Tab::Picture, "Picture"),
                 (Tab::Controls, "Controls"),
-                (Tab::Buttons, "Buttons"),
             ],
             &mut state.tab,
         );
@@ -209,7 +208,6 @@ pub fn draw(
             Tab::Play => play_tab(ui, state, platform),
             Tab::Picture => picture_tab(ui, state),
             Tab::Controls => controls_tab(ui, state, platform),
-            Tab::Buttons => buttons_tab(ui, state),
         });
     });
     let hint = if !state.ready() {
@@ -497,9 +495,6 @@ fn picture_tab(ui: &mut egui::Ui, state: &mut State) {
 }
 
 fn controls_tab(ui: &mut egui::Ui, state: &mut State, platform: &mut Platform<'_>) {
-    if let Some(on) = spec_choice(ui, "gamepad_axes", toggle_text(state.form.gamepad_axes)) {
-        state.form.gamepad_axes = on == "on";
-    }
     let rumble = config::option("rumble");
     mark_rendered(ui.ctx(), rumble.key);
     let rumbles = form::with_value(&owned(&form::RUMBLES), &state.form.rumble, |r| {
@@ -536,13 +531,13 @@ fn controls_tab(ui: &mut egui::Ui, state: &mut State, platform: &mut Platform<'_
         n => format!("{n} Xbox-style pads connected."),
     };
     widgets::note(ui, &pads);
-    ui.add_space(12.0);
-    if let Some(on) = spec_choice(ui, "close_quits", toggle_text(state.form.close_quits)) {
-        state.form.close_quits = on == "on";
-    }
+    ui.add_space(18.0);
+    pad_buttons(ui, state);
 }
 
-fn buttons_tab(ui: &mut egui::Ui, state: &mut State) {
+/// The pad layout cards and a row per action (the Controls tab's second
+/// part; the gamepad pedals and closing the window come with the looks).
+fn pad_buttons(ui: &mut egui::Ui, state: &mut State) {
     let buttons = config::option("buttons");
     mark_rendered(ui.ctx(), buttons.key);
     widgets::heading(ui, buttons.label);
@@ -668,7 +663,7 @@ mod tests {
     #[test]
     fn every_option_has_a_control_in_the_window() {
         let mut ui = open(Some(""), true);
-        for name in ["Picture", "Controls", "Buttons", "Play"] {
+        for name in ["Picture", "Controls", "Play"] {
             tab(&mut ui, name);
         }
         spec::assert_parity(
@@ -714,11 +709,14 @@ mod tests {
                 "{key}"
             );
         }
+        // Three tabs, as in CMR3's launcher: the pad's rumble and buttons
+        // share Controls; the pedals and closing come with the looks.
+        assert!(ui.query_by_role_and_label(Role::Tab, "Buttons").is_none());
         tab(&mut ui, "Controls");
-        ui.get_by_role_and_label(Role::Switch, "Gamepad pedals");
         ui.get_by_role_and_label(Role::RadioGroup, "Rumble");
-        ui.get_by_role_and_label(Role::Switch, "Closing quits");
-        tab(&mut ui, "Buttons");
+        for gone in ["Gamepad pedals", "Closing quits"] {
+            assert!(ui.query_by_label(gone).is_none(), "{gone}");
+        }
         ui.get_by_role_and_label(Role::RadioButton, "Modern");
         for (_, action) in form::ACTIONS {
             ui.get_by_role_and_label(Role::RadioGroup, action);
@@ -795,13 +793,8 @@ mod tests {
         press(&mut ui, Role::Button, "Test");
         assert_eq!(ui.state().rumbled, [100]);
         assert!(ui.state().state.rumble_test.is_some());
-        press(&mut ui, Role::Switch, "Gamepad pedals");
-        press(&mut ui, Role::Switch, "Closing quits");
-        let s = saved(&ui);
-        assert_eq!(s.rumble, Some(100));
-        assert_eq!((s.gamepad_axes, s.close_quits), (Some(false), Some(false)));
+        assert_eq!(saved(&ui).rumble, Some(100));
 
-        tab(&mut ui, "Buttons");
         click(&mut ui, "Original 1998");
         assert_eq!(saved(&ui).buttons, Some(config::ORIGINAL_BUTTONS));
 

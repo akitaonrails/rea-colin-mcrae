@@ -150,17 +150,20 @@ only what changed. Your choices are remembered for next time.
 - **Play**: the game folder, the look, the saves folder and the game's
   language.
 - **Picture**: each picture setting (and on Linux the scaler).
-- **Controls**: the gamepad pedals, rumble with a **Test** button, and
-  whether closing the window quits the game.
-- **Buttons**: the pad layout: **Modern**, **Original 1998** or **Custom**,
-  with a button for each action.
+- **Controls**: rumble with a **Test** button, then the pad layout:
+  **Modern**, **Original 1998** or **Custom**, with a button for each
+  action.
 
 | Look | Race resolution | Picture | When to pick it |
 | --- | --- | --- | --- |
-| **Original 1998** | the game's own (640×480) | the game as it shipped | to play it as in 1998 |
+| **Original 1998** | the game's own (640×480) | the game as it shipped; only the left stick drives (no trigger pedals) | to play it as in 1998 |
 | **Enhanced** | your screen's | widescreen on wide screens, 1.5× draw distance, smooth textures, eased view distance, vsync, HD art | on a PC (Recommended) |
 | **Steam Deck** | 1280×800 | widescreen, 1.25× draw distance, smooth textures, eased view distance, vsync, 60 fps cap, HD art | on a Deck, easy on the battery; the first run's look |
 | **Custom** | any | any change in the Picture tab | your own mix |
+
+The pad's trigger pedals come with the look: on in Enhanced and Steam
+Deck, off in Original 1998. Closing the game window quits the game in
+every look.
 
 The window works with a pad or the keyboard alone: the d-pad or Tab moves
 between controls, A or Space changes the one in focus, LB/RB or Ctrl+Tab
@@ -185,7 +188,7 @@ screen.
 | Start | — | pause |
 | D-pad | move | — |
 
-That is the **Modern** layout; pick another in the **Buttons** tab.
+That is the **Modern** layout; pick another in the **Controls** tab.
 Rumble and separate trigger pedals need an Xbox-style (XInput) pad; on
 8BitDo pads use X-input mode. Under Wine and Proton, **Run joystick panel**
 in the game does nothing (it opens an old Windows dialog that can't appear
@@ -216,10 +219,10 @@ every option commented out and explained.
 | `smooth_distance` / `--smooth-distance` | Picture: Ease view distance | `on`, `off` | off | Eases the stage's view distance changes over about a second, so scenery doesn't pop in. |
 | `hd_art` / `--hd-art` | Picture: HD art | `on`, `off`, or a folder made with `cmr-hd` | off | The HUD, logos, menu pictures and more, redrawn at high resolution ([docs/UPSCALING.md](docs/UPSCALING.md)). |
 | `scaler` / `--scaler` | Picture: Scaler (Linux only) | `nearest`, `pixel`, `fsr`, `linear` | `linear` | How gamescope enlarges the picture: Crisp pixels, Even pixels, FSR or Soft. Read by `cmr-play`. |
-| `gamepad_axes` / `--gamepad-axes` | Controls: Gamepad pedals | `on`, `off` | on | Triggers or right stick as throttle and brake, Start pauses. Off: only the left stick drives, as in 1998. |
+| `gamepad_axes` / `--gamepad-axes` | — (advanced; the look sets it) | `on`, `off` | on (off in the Original look) | Triggers or right stick as throttle and brake, Start pauses. Off: only the left stick drives, as in 1998. |
 | `rumble` / `--rumble` | Controls: Rumble | `0` to `100`, `off` | off | Shakes the pad on impacts, at this strength in percent. |
 | `buttons` / `--buttons` | Buttons: Pad buttons | `modern`, `original`, or eight button numbers | `modern` | The pad layout. The numbers are for select, back, change view, gear down, handbrake, gear up, (unused), pause, e.g. `1,2,4,5,1,6,7,8`. |
-| `close_quits` / `--close-quits` | Controls: Closing quits | `on`, `off` | on | Closing the game window (Alt+F4) quits the game. Off: the 1998 behaviour. |
+| `close_quits` / `--close-quits` | — (advanced) | `on`, `off` | on, in every look | Closing the game window (Alt+F4) quits the game. Off: the 1998 behaviour. |
 
 Unset means the game's own value (or the default named above). Starting
 `CMRLauncher.exe` with any option skips the window and plays; options

@@ -334,9 +334,11 @@ pub const OPTIONS: &[OptionSpec] = &[
         "gamepad_axes",
         Kind::Toggle,
         "Gamepad pedals",
-        "The triggers or the right stick work as throttle and brake, and Start pauses a race. \
-         Off: only the left stick drives, as in 1998. On unless set off.",
-    ),
+        "Advanced; the look sets it. The triggers or the right stick work as throttle and \
+         brake, and Start pauses a race. Off (the Original look): only the left stick drives, \
+         as in 1998. On unless the look or this key says off.",
+    )
+    .launcher_only(),
     OptionSpec::new(
         "rumble",
         Kind::Range { min: 0, max: 100 },
@@ -363,9 +365,11 @@ pub const OPTIONS: &[OptionSpec] = &[
         "close_quits",
         Kind::Toggle,
         "Closing quits",
-        "Closing the game window (Alt+F4, the window's close button) quits the game. Off: \
-         the 1998 behaviour, where closing does nothing. On unless set off.",
-    ),
+        "Advanced. Closing the game window (Alt+F4, the window's close button) quits the \
+         game, in every look. Off: the 1998 behaviour, where closing does nothing. On unless \
+         set off.",
+    )
+    .launcher_only(),
 ];
 
 /// The row for `key`; every key the launcher uses has one.

@@ -39,6 +39,13 @@ described on the GitHub releases page.
   values; files written by 0.7 read unchanged.
 - The AppImage is named `CMRLauncher-<version>-x86_64.AppImage`.
 
+- The looks carry the pad pedals: Original 1998 drives with the left
+  stick only, as the game did; Enhanced and Steam Deck use the triggers
+  and right stick. `gamepad_axes` and `close_quits` lose their window
+  controls and stay as advanced `launcher.cfg` keys and flags; closing the
+  window quits in every look. The pad's rumble and button layout share
+  the Controls tab (the Buttons tab is gone).
+
 ### Fixed
 
 - Windows builds link with LLD (GNU ld 2.47 could leave imports
