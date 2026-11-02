@@ -1,5 +1,15 @@
+# Every Windows target links with LLD. GNU ld 2.47 mis-merges the per-crate
+# raw-dylib kernel32 import groups for i686 AND x86_64: some import slots end
+# up outside every import descriptor, never get resolved, and the program
+# jumps into data on its first call (here: the Windows-target tests crashed
+# on "execute access" before running a test). CI checks this file
+# (sdk/packaging/check-lld.sh) and the built programs
+# (sdk/packaging/check-imports.sh).
+
 [target.i686-pc-windows-gnu]
 linker = "i686-w64-mingw32-gcc"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
