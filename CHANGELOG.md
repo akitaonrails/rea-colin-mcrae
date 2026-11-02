@@ -45,3 +45,6 @@ described on the GitHub releases page.
   unresolved).
 - The runtime/game folder overlap check works on Windows paths under
   Wine (case, `\\?\` prefixes).
+- The settings window opened a `launcher.cfg` with `look = enhanced` or
+  `steam_deck` on the Original look, and Play then saved Original: it
+  now opens on the file's look and saves that look's values.

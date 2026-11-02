@@ -109,7 +109,12 @@ impl State {
     /// 2026-11-01, `AGENTS.md`).
     pub fn new(text: Option<&str>, linux: bool, screen: Option<(u32, u32)>, pads: usize) -> State {
         let form = match text {
-            Some(text) => Form::new(&Settings::parse_file(text).0, screen),
+            // A `look =` line gives every picture value it doesn't set
+            // itself, as for a launch (Play then saves the values).
+            Some(text) => Form::new(
+                &form::with_look(Settings::parse_file(text).0, Settings::default(), screen),
+                screen,
+            ),
             None => Form::first_run(screen),
         };
         State {
@@ -847,6 +852,28 @@ mod tests {
         ui.run();
         assert_eq!(ui.state().played, 0);
         std::fs::remove_dir_all(game).unwrap();
+    }
+
+    /// A `look =` line written by hand (or by an older setup) opens on that
+    /// look, and Play keeps it as the look's values instead of dropping to
+    /// Original.
+    #[test]
+    fn a_look_in_the_file_opens_on_that_look_and_play_keeps_it() {
+        for (key, look, picture) in [
+            ("enhanced", Look::Enhanced, form::Picture::enhanced(SCREEN)),
+            ("steam_deck", Look::SteamDeck, form::Picture::STEAM_DECK),
+        ] {
+            let ui = open(Some(&format!("look = {key}\n")), false);
+            let state = &ui.state().state;
+            assert_eq!(state.form.look, look, "{key}");
+            let text = state.form.save(&format!("look = {key}\n"));
+            let (s, _) = Settings::parse_file(&text);
+            assert_eq!(Form::new(&s, SCREEN).picture, picture, "{key}: {text}");
+        }
+        // A picture value of its own still wins over the file's look.
+        let ui = open(Some("look = steam_deck\nfps_limit = 30\n"), false);
+        assert_eq!(ui.state().state.form.picture.fps_limit, Some(30));
+        assert_eq!(ui.state().state.form.look, Look::Custom);
     }
 
     #[test]
