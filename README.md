@@ -39,7 +39,7 @@ watch (3 minutes, with sound).*
 
 ## Screenshots
 
-![The settings window: the Play tab with the game folder, the looks and the saves folder](docs/images/launcher.png)
+![The settings window: the Play tab with the game folder, the looks (Enhanced picked) and the saves folder](docs/images/launcher.jpg)
 
 ## What you need
 

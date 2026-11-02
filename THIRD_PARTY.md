@@ -48,7 +48,7 @@ Pinned by URL and SHA-256 in `sdk/packaging/appimage/tools.pins`.
 
 | File | What | Licence | Source |
 | --- | --- | --- | --- |
-| `docs/images/launcher.png` | A screenshot of the settings window | ours (MIT OR Apache-2.0); shows the portrait above | this repository |
+| `docs/images/launcher.jpg` | A screenshot of the settings window | ours (MIT OR Apache-2.0); shows the portrait above | this repository |
 | The showcase video and its poster (hosted outside the repository) | Gameplay recorded by the owner with the launcher: shows the game | gameplay footage of Colin McRae Rally (Codemasters) | linked from `README.md` |
 
 ## The cmr-hd study tool (built, not shipped)
