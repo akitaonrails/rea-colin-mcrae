@@ -63,10 +63,12 @@ Launcher options may follow `--play` for one run, without changing
 cmr-play --play --scaler nearest --resolution 1280x960
 ```
 
-gamescope gets the race resolution (640×480 when it is unset, `original`
-or `off`) and fits it to the screen. A `--look` given this way changes the
-game's picture, but gamescope keeps the resolution from `launcher.cfg`;
-give `--resolution` too. Inside a gamescope session (a Steam Deck in Game
+gamescope gets the race resolution (640×480 when it is `original` or
+`off`) and fits it to the screen. A look (`look =` in `launcher.cfg`, or
+`--look` for one run) with no resolution of its own sets the size the way
+it sets the game's: Steam Deck 1280×800, Enhanced your screen, Original
+640×480. A `--resolution` wins over a `--look`, and both win over
+`launcher.cfg`. With neither set the size is 640×480. Inside a gamescope session (a Steam Deck in Game
 Mode), or when gamescope isn't installed, the game runs directly.
 
 `cmr-play` needs `wine` and, for the scaled screen, `gamescope`. If they

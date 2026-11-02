@@ -48,3 +48,8 @@ described on the GitHub releases page.
 - The settings window opened a `launcher.cfg` with `look = enhanced` or
   `steam_deck` on the Original look, and Play then saved Original: it
   now opens on the file's look and saves that look's values.
+- `cmr-play`: a look (`look =` in `launcher.cfg` or `--look`) with no
+  resolution next to it left gamescope at 640×480 while the race was
+  drawn at the look's size (Steam Deck 1280×800 in a 640×480 screen).
+  gamescope now gets the look's size: Steam Deck 1280×800, Enhanced the
+  screen, Original 640×480; `--resolution` still wins.

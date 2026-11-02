@@ -64,6 +64,33 @@ rea_main --play > /dev/null
 expect "a plain --play reads launcher.cfg again" '*-w 1920 -h 1080 -f -S fit -F linear --*'
 rea_main --play --scaler=nearest > /dev/null
 expect "--scaler=nearest for one run" '*-F nearest --*'
+# A look without a resolution sizes gamescope as the launcher sizes the
+# race (form::with_look): Steam Deck 1280x800, Enhanced the screen (on its
+# long side first), Original the game's 640x480.
+printf 'look = steam_deck\n' > "$CFG"
+rea_start > /dev/null
+expect "file look steam_deck: 1280x800" '*gamescope -w 1280 -h 800 -f*'
+printf 'look = Enhanced\n' > "$CFG"
+REA_SCREEN=2560x1440 rea_start > /dev/null
+expect "file look enhanced: the screen" '*gamescope -w 2560 -h 1440 -f*'
+REA_SCREEN=2160x3840 rea_start > /dev/null
+expect "a portrait screen gives a landscape size" '*gamescope -w 3840 -h 2160 -f*'
+printf 'look = original\n' > "$CFG"
+rea_start > /dev/null
+expect "file look original: 640x480" '*gamescope -w 640 -h 480 -f*'
+printf 'look = steam_deck\nresolution = 1920x1080\n' > "$CFG"
+rea_start > /dev/null
+expect "the file's own resolution wins over its look" '*gamescope -w 1920 -h 1080 -f*'
+rea_main --play --look steam_deck > /dev/null
+expect "--look wins over the file's resolution, and reaches the launcher" \
+  '*gamescope -w 1280 -h 800 -f*--no-window --look steam_deck*'
+rea_main --play --look=original > /dev/null
+expect "--look=original" '*gamescope -w 640 -h 480 -f*'
+rea_main --play --look steam_deck --resolution 2560x1440 > /dev/null
+expect "--resolution wins over --look" '*gamescope -w 2560 -h 1440 -f*'
+printf 'resolution = 1920x1080\n' > "$CFG"
+rea_main --play --look bogus > /dev/null
+expect "an unknown --look leaves the file's size" '*gamescope -w 1920 -h 1080 -f*'
 # Inside gamescope already (Steam Deck Game Mode): no second one.
 GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 rea_start > /dev/null
 case "$(ran)" in *gamescope\ -w*) echo "FAIL nested gamescope"; fails=$((fails + 1)) ;; *inner.sh*) echo "ok   no nested gamescope" ;; *) echo "FAIL nested: $(ran)"; fails=$((fails + 1)) ;; esac
