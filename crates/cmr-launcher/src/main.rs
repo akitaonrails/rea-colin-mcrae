@@ -34,7 +34,7 @@ mod app {
     use cmr_launcher::form;
     use cmr_launcher::instance::{self, SecondStart};
     use cmr_launcher::registry::{self, When};
-    use cmr_launcher::{Image, edition, fill_data, fixes, hdpack, prepare, runtime};
+    use cmr_launcher::{Image, edition, fixes, hdpack, plan, prepare, runtime};
     use rea_launcher::cfg::ArgError;
     use rea_launcher::log::Log;
     use rea_launcher::{cfg, fsx, paths};
@@ -332,14 +332,22 @@ mod app {
             ));
         }
 
-        let language = settings
-            .language
-            .clone()
-            .unwrap_or_else(|| "ENGLISH".into());
-        let root = rt.display().to_string();
-        let place = write_registry(&registry::values(&root, &language))?;
-        // The GPU, not software rendering, and the faster of two GPUs.
+        // What this launch does to the game, from the settings alone
+        // (`plan`, tested and snapshotted on the host).
         let wine = wine::is_wine();
+        let hooks_path = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(HOOKS_DLL)));
+        let env = plan::Env {
+            wine,
+            hooks: hooks_path.as_ref().is_some_and(|p| p.is_file()),
+            axes: win32::centred_axes(),
+        };
+        let plan = plan::plan(&settings, &env);
+
+        let root = rt.display().to_string();
+        let place = write_registry(&plan.registry(&root))?;
+        // The GPU, not software rendering, and the faster of two GPUs.
         let gpu = if wine {
             gpu::prefer_glx().map(|w| w.then_some("Wine: OpenGL through GLX (UseEGL=N)"))
         } else {
@@ -364,27 +372,12 @@ mod app {
             }
         }
 
-        let mut skip = settings.skipped_fixes();
-        // The joystick panel works on Windows; only Wine needs F24.
-        if !wine {
-            skip.push("F24");
-        }
-        // These fixes need the hook library next to the launcher.
-        let hooks_path = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join(HOOKS_DLL)));
-        let mut uses_hooks = fixes::HOOK_FIXES.iter().any(|f| !skip.contains(f));
-        if uses_hooks && !hooks_path.as_ref().is_some_and(|p| p.is_file()) {
+        if plan.hooks_missing {
             log_line(&format!(
                 "warning: {HOOKS_DLL} not found next to the launcher; the options that need it are off"
             ));
-            let off: Vec<_> = fixes::HOOK_FIXES
-                .iter()
-                .filter(|f| !skip.contains(f))
-                .collect();
-            skip.extend(off);
-            uses_hooks = false;
         }
+        let skip = &plan.skip;
         if !skip.is_empty() {
             log_line(&format!(
                 "fixes turned off by settings: {}",
@@ -394,11 +387,8 @@ mod app {
         // HD art (F27): the set for this resolution, read by the hook
         // library; the pack that comes with the launcher is installed into
         // the runtime folder once.
-        let bundled = match (
-            &settings.hd_art,
-            hooks_path.as_ref().and_then(|p| p.parent()),
-        ) {
-            (Some(config::HdArt::Bundled), Some(dir)) if uses_hooks => {
+        let bundled = match (&plan.hd_art, hooks_path.as_ref().and_then(|p| p.parent())) {
+            (Some(config::HdArt::Bundled), Some(dir)) => {
                 let started = std::time::Instant::now();
                 match hdpack::install(&dir.join("hd"), &rt.join("hd")) {
                     Ok(at) => {
@@ -417,7 +407,7 @@ mod app {
             }
             _ => PathBuf::new(),
         };
-        if let Some(set) = settings.hd_set(&bundled).filter(|_| uses_hooks) {
+        if let Some(set) = plan.hd_set(&settings, &bundled) {
             if set.is_dir() {
                 // SAFETY: set before the game starts; no other thread reads
                 // the environment yet.
@@ -430,97 +420,28 @@ mod app {
                 ));
             }
         }
+        let pads: Vec<u32> = xinput::pads().iter().map(|p| p.slot).collect();
+        log_line(&if pads.is_empty() {
+            "XInput pads: none (rumble and separate trigger pedals need an Xbox-style pad; on 8BitDo pads use X-input mode)".to_string()
+        } else {
+            format!("XInput pads: {pads:?}")
+        });
         let code = win32::run_patched(
             &rt.join(EXE),
             &rt,
-            edition.fixes.cave_size(&skip),
+            edition.fixes.cave_size(skip),
             hooks_path
                 .as_deref()
-                .filter(|_| uses_hooks)
+                .filter(|_| plan.hooks)
                 .map(|path| win32::HookLibrary {
                     path,
                     table: fixes::F13_TABLE,
                     exports: &fixes::F13_EXPORTS,
                 }),
             |cave| {
-                let mut writes = prepare(&image, edition.fixes, &skip, cave)?;
-                let pads: Vec<u32> = xinput::pads().iter().map(|p| p.slot).collect();
-                log_line(&if pads.is_empty() {
-                    "XInput pads: none (rumble and separate trigger pedals need an Xbox-style pad; on 8BitDo pads use X-input mode)".to_string()
-                } else {
-                    format!("XInput pads: {pads:?}")
-                });
-                let axes = win32::centred_axes();
-                let bytes: Vec<u8> = axes.iter().flat_map(|a| a.to_le_bytes()).collect();
-                if fill_data(&mut writes, cave.wrapping_add(fixes::F7_TABLE), &bytes) {
-                    log_line(&format!(
-                        "F7 axes per joystick (1 = Z, 2 = R): {:?}",
-                        &axes[..4]
-                    ));
-                }
-                if let Some(factor) = settings.draw_distance {
-                    let q16 = |v: u32| ((u64::from(v) * u64::from(factor)) >> 16) as u32;
-                    let cap = q16(fixes::F12_CAP).to_le_bytes();
-                    let filled = fill_data(
-                        &mut writes,
-                        cave.wrapping_add(fixes::F12_FACTOR),
-                        &factor.to_le_bytes(),
-                    ) && fixes::F12_CAPS
-                        .iter()
-                        .all(|&a| fill_data(&mut writes, a, &cap));
-                    if filled {
-                        log_line(&format!(
-                            "F12 draw distance x{:.2}",
-                            f64::from(factor) / 65536.0
-                        ));
-                    }
-                }
-                if !skip.contains(&"F11") {
-                    let (w, h) = settings.race_resolution().unwrap_or((640, 480));
-                    let t = fixes::cull_t(w, h).to_le_bytes();
-                    let filled = fill_data(&mut writes, cave.wrapping_add(fixes::F11_CULL_T), &t)
-                        && fixes::F11_CULL_IMMS
-                            .iter()
-                            .all(|&a| fill_data(&mut writes, a, &t));
-                    if filled {
-                        log_line(&format!(
-                            "F11 culling widened x{:.3}",
-                            f64::from(fixes::cull_t(w, h)) / 65536.0
-                        ));
-                    }
-                }
-                if !skip.contains(&"F17") {
-                    let cap = settings.fps_cap().unwrap_or(0);
-                    let block: Vec<u8> = [cap, settings.flip_flags(), settings.rumble_strength()]
-                        .iter()
-                        .flat_map(|v| v.to_le_bytes())
-                        .collect();
-                    if fill_data(&mut writes, cave.wrapping_add(fixes::F17_SETTINGS), &block) {
-                        log_line(&format!(
-                            "F17 frame-rate cap {}, vsync {}",
-                            if cap > 0 {
-                                cap.to_string()
-                            } else {
-                                "off".into()
-                            },
-                            match settings.vsync {
-                                None => "as the game",
-                                Some(true) => "on",
-                                Some(false) => "off",
-                            }
-                        ));
-                    }
-                }
-                let map = settings.button_map();
-                if fill_data(&mut writes, cave.wrapping_add(fixes::F23_MAP), &map) && map != [0; 12]
-                {
-                    log_line(&format!("F23 button layout {map:?}"));
-                }
-                if let Some((w, h)) = settings.race_resolution() {
-                    let size: Vec<u8> = [w, h].iter().flat_map(|v| v.to_le_bytes()).collect();
-                    if fill_data(&mut writes, cave.wrapping_add(fixes::F10_SIZE), &size) {
-                        log_line(&format!("F10 race resolution {w}x{h}"));
-                    }
+                let mut writes = prepare(&image, edition.fixes, skip, cave)?;
+                for line in plan.fill(&mut writes, cave) {
+                    log_line(&line);
                 }
                 Ok(writes)
             },

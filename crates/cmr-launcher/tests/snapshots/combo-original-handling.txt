@@ -1,0 +1,14 @@
+env: wine false, hooks true
+skipped: F6 F7 F14 F21 F23 F10 F13 F16 F11 F12 F25 F17 F18 F19 F20 F22 F27 F24
+hook library: true
+applied (Official EU v1.5): F1 F2 F3 F4 F5 F8 F9 F15 F26
+applied (EU v1.5, community-patched): F8 F9 F15 F26
+registry CDPath = C:\Users\José\AppData\Local\CMRLauncher\Rally (Always)
+registry HDPath = C:\Users\José\AppData\Local\CMRLauncher\Rally (Always)
+registry AVIPath = C:\Users\José\AppData\Local\CMRLauncher\Rally (Always)
+registry WAVPath = C:\Users\José\AppData\Local\CMRLauncher\Rally (Always)
+registry Language = ENGLISH (IfMissing)
+registry Hardware = 5 (IfMissing)
+registry Initialised = 0 (IfMissing)
+CMR_HD_ART: -
+cmr-play scaler: linear

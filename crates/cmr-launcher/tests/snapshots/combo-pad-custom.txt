@@ -1,0 +1,23 @@
+env: wine true, hooks true
+skipped: F12 F25 F18 F20
+hook library: true
+applied (Official EU v1.5): F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F13 F14 F15 F16 F17 F19 F21 F22 F23 F24 F26 F27
+applied (EU v1.5, community-patched): F6 F7 F8 F9 F10 F11 F13 F14 F15 F16 F17 F19 F21 F22 F23 F24 F26 F27
+fill F7 cave+0xc0 = 01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+fill F11 cave+0xb90 = 55550100
+fill F11 0x004902c6 = 55550100
+fill F11 0x004902e5 = 55550100
+fill F11 0x004a097e = 55550100
+fill F11 0x004a099f = 55550100
+fill F17 cave+0x5e0 = 900000000900000064000000
+fill F23 cave+0xe50 = 030201040506070800000000
+fill F10 cave+0x168 = 8007000038040000
+registry CDPath = C:\Users\José\AppData\Local\CMRLauncher\Rally (Always)
+registry HDPath = C:\Users\José\AppData\Local\CMRLauncher\Rally (Always)
+registry AVIPath = C:\Users\José\AppData\Local\CMRLauncher\Rally (Always)
+registry WAVPath = C:\Users\José\AppData\Local\CMRLauncher\Rally (Always)
+registry Language = GERMAN (IfMissing)
+registry Hardware = 5 (IfMissing)
+registry Initialised = 0 (IfMissing)
+CMR_HD_ART: D:/HD art/x2
+cmr-play scaler: nearest

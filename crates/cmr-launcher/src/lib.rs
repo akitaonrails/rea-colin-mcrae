@@ -20,6 +20,7 @@ pub mod hdpack;
 pub mod instance;
 #[cfg(any(windows, test))]
 pub mod look;
+pub mod plan;
 pub mod registry;
 pub mod runtime;
 #[cfg(any(windows, test))]

@@ -1,0 +1,40 @@
+CMRLauncher <version>
+
+CMRLauncher [options]
+
+  --game <folder>                                   Game folder
+  --saves <folder>                                  Saves
+  --runtime <folder>                                Runtime folder
+  --language ENGLISH|FRENCH|GERMAN|SPANISH|ITALIAN  Language
+  --look original|enhanced|steam_deck               Look
+  --resolution <WxH>                                Race resolution
+  --widescreen on|off                               Widescreen
+  --draw-distance <1.0-3.0>                         Draw distance
+  --texture-filter original|smooth|sharp            Textures
+  --fps-limit <10-1000|off>                         Frame-rate cap
+  --vsync on|off                                    Vsync
+  --smooth-distance on|off                          Ease view distance
+  --hd-art on|off|<folder>                          HD art
+  --scaler nearest|pixel|fsr|linear                 Scaler (Linux helper)
+  --gamepad-axes on|off                             Gamepad pedals
+  --rumble <0-100|off>                              Rumble
+  --buttons <layout>                                Pad buttons
+  --close-quits on|off                              Closing quits
+
+These override launcher.cfg for one run (only --game is remembered);
+every one is also a launcher.cfg key (--hd-art is hd_art) and a control
+in the settings window. Without options the settings window opens first.
+
+  --no-window              play with the saved settings, no window
+  --settings [--linux]     only the settings window (exit 0: Play pressed,
+                           3: closed without Play, 4: no window possible);
+                           --linux adds the gamescope scaler, for cmr-play
+  --check                  checks the game folder and its Rally.exe without
+                           playing; the report goes to the terminal and
+                           launcher.log (exit 0: ready, 1: unknown Rally.exe)
+  --controllers [seconds]  lists the joysticks the game can see and logs every
+                           stick, trigger and button you move for that long
+                           (default 30) to launcher.log
+  --help                   this text
+
+The log is %LOCALAPPDATA%\CMRLauncher\launcher.log.
