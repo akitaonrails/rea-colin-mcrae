@@ -10,7 +10,6 @@ described on the GitHub releases page.
 - `--look original|enhanced|steam_deck` (and `look =` in `launcher.cfg`):
   every picture setting of that look at once; picture flags given with it
   win.
-- The game's language has a control in the settings window (Play tab).
 - `--scaler` sets the Linux scaler for one run, like every other option,
   and `cmr-play --play --scaler fsr --resolution 1280x720` uses it for
   gamescope without changing `launcher.cfg`.
@@ -45,6 +44,10 @@ described on the GitHub releases page.
   controls and stay as advanced `launcher.cfg` keys and flags; closing the
   window quits in every look. The pad's rumble and button layout share
   the Controls tab (the Buttons tab is gone).
+
+- `language` has no window control any more: in the real game, rewriting
+  the registry's `Language` changed nothing (the game keeps its own). The
+  key stays, seeded into the registry when missing (advanced).
 
 ### Fixed
 

@@ -432,14 +432,6 @@ fn play_tab(ui: &mut egui::Ui, state: &mut State, platform: &mut Platform<'_>) {
         "Leave empty for the default. Saves are copied in before the game starts and back \
          when it ends.",
     );
-    ui.add_space(10.0);
-    if let Some(language) = spec_choice(
-        ui,
-        "language",
-        state.form.language.as_deref().unwrap_or_default(),
-    ) {
-        state.form.language = Some(language).filter(|l| !l.is_empty());
-    }
 }
 
 fn picture_tab(ui: &mut egui::Ui, state: &mut State) {
@@ -682,7 +674,9 @@ mod tests {
         );
         ui.get_by_role_and_label(Role::TextInput, "Saves");
         ui.get_by_role_and_label(Role::RadioButton, "Enhanced");
-        ui.get_by_role_and_label(Role::RadioGroup, "Language");
+        // The game keeps its own language (RUNTIME_NOTES 2026-11-02): no
+        // control, the key stays for the file and the command line.
+        assert!(ui.query_by_label("Language").is_none());
         tab(&mut ui, "Picture");
         for key in [
             "resolution",
@@ -798,8 +792,8 @@ mod tests {
         click(&mut ui, "Original 1998");
         assert_eq!(saved(&ui).buttons, Some(config::ORIGINAL_BUTTONS));
 
-        tab(&mut ui, "Play");
-        click(&mut ui, "Deutsch");
+        // A language set in the file is kept by Play.
+        let ui = open(Some("language = GERMAN\n"), false);
         assert_eq!(saved(&ui).language.as_deref(), Some("GERMAN"));
     }
 

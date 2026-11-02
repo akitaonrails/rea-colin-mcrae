@@ -238,11 +238,12 @@ pub const OPTIONS: &[OptionSpec] = &[
         "language",
         Kind::Choice(LANGUAGE_CHOICES),
         "Language",
-        "The game's language, set when the launcher first sets the game up. After that the \
-         game keeps the language it has.",
+        "Advanced. The Language value the launcher seeds into the game's registry key when \
+         it is missing. The game picks and keeps its own language: rewriting the value later \
+         changes nothing.",
     )
-    .unset_label(AS_THE_GAME)
-    .with_example("ENGLISH"),
+    .with_example("ENGLISH")
+    .launcher_only(),
     OptionSpec::new(
         "look",
         Kind::Choice(LOOKS),

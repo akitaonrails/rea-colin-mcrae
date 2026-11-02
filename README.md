@@ -147,8 +147,7 @@ only what changed. Your choices are remembered for next time.
 
 ## The settings window
 
-- **Play**: the game folder, the look, the saves folder and the game's
-  language.
+- **Play**: the game folder, the look and the saves folder.
 - **Picture**: each picture setting (and on Linux the scaler).
 - **Controls**: rumble with a **Test** button, then the pad layout:
   **Modern**, **Original 1998** or **Custom**, with a button for each
@@ -208,7 +207,7 @@ every option commented out and explained.
 | `game` / `--game` | Play: Game folder | a folder | found next to the launcher, else asked | The folder with your installed `Rally.exe`; only read. Remembered once given. |
 | `saves` / `--saves` | Play: Saves | a folder | `Saved Games\Colin McRae Rally` | Where your saves and settings (`cmRally.cfg`, `SAVESLOT*.cms`) are kept: copied into the game before it starts and back when it ends. |
 | `runtime` / `--runtime` | — (file and flag only) | a folder | `%LOCALAPPDATA%\CMRLauncher\Rally` | Where the launcher keeps its private copy of the game. |
-| `language` / `--language` | Play: Language | `ENGLISH`, `FRENCH`, `GERMAN`, `SPANISH`, `ITALIAN` | English | The game's language, set when the launcher first sets the game up; after that the game keeps its own. |
+| `language` / `--language` | — (advanced) | `ENGLISH`, `FRENCH`, `GERMAN`, `SPANISH`, `ITALIAN` | English | The `Language` value seeded into the game's registry key when it is missing. The game picks and keeps its own language; changing this later changes nothing ([docs/RUNTIME_NOTES.md](docs/RUNTIME_NOTES.md)). |
 | `look` / `--look` | Play: the look cards | `original`, `enhanced`, `steam_deck` | each picture option on its own | Every picture setting at once; picture options given on their own win over it. The window saves the single values instead. |
 | `resolution` / `--resolution` | Picture: Race resolution | `WIDTHxHEIGHT` (320×240 to 7680×4320), `original`, `off` | the game's own | The size races are drawn at, in place of the game's 640×480. Keep the game's own Resolution option on 640×480; the menus stay 640×480. |
 | `widescreen` / `--widescreen` | Picture: Widescreen | `on`, `off` | off | On a 16:9 or wider race resolution, shows more to the sides instead of stretching. |
