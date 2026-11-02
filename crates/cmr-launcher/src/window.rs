@@ -516,14 +516,12 @@ fn controls_tab(ui: &mut egui::Ui, state: &mut State, platform: &mut Platform<'_
         ui.add(egui::Label::new(egui::RichText::new(result).font(body(13.0)).color(GOLD)).wrap());
     }
     let pads = match state.pads {
-        0 => "Rumble and separate trigger pedals need an Xbox-style (XInput) pad; none is \
-              connected now. On 8BitDo pads use X-input mode."
-            .to_string(),
+        0 => "No Xbox-style pad is connected now (on 8BitDo pads use X-input mode).".to_string(),
         1 => "One Xbox-style pad connected.".to_string(),
         n => format!("{n} Xbox-style pads connected."),
     };
     widgets::note(ui, &pads);
-    ui.add_space(18.0);
+    ui.add_space(12.0);
     pad_buttons(ui, state);
 }
 
