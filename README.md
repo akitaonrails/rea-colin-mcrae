@@ -298,9 +298,9 @@ faster one for the game in the per-program graphics settings.
 ## Known limitations
 
 - Only the European v1.5 `Rally.exe` is recognised so far.
-- Native Windows and the Steam Deck haven't been tested yet. Neither have
-  the newest changes in the real game: the `--look` flag, one launcher at a
-  time and the new saves copying. See [docs/RUNTIME_NOTES.md](docs/RUNTIME_NOTES.md).
+- Native Windows and the Steam Deck haven't been tested yet. Under Wine
+  the looks, one launcher at a time, the saves copying and every way of
+  quitting were checked in the game; see [docs/RUNTIME_NOTES.md](docs/RUNTIME_NOTES.md).
 - The menus are enlarged on the CPU each frame; without a graphics card
   (software drawing) that is slower at 4K.
 - A short white flash before the legal screen at high resolutions.

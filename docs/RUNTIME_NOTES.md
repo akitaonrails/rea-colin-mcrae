@@ -5,35 +5,67 @@ was seen. Static facts live in the parked reconstruction's documents (kept outsi
 
 ## Pending real-game checks (rea-launcher-sdk v0.3.3 migration, 2026-11-02)
 
-The launcher moved onto the shared SDK. Host tests, the headless window
-tests and the Windows-target tests under Wine pass; none of the following
-has been seen in the real game yet:
+Checked headless on 2026-11-02 (next section) unless listed here:
 
-- A full launch from the new build (runtime sync through the SDK, the
-  suspended start and fixes unchanged): the log's fix lines and fills
-  should match 0.7's for the same settings (`tests/snapshots/`).
-- The saves mirror with its recorded state: saves from 0.7 come in at the
-  first start, a save made in a race reaches the saves folder, a session
-  killed before the write-back keeps its save at the next start.
-- One instance: a second start while the window is open brings it
-  forward; while the game runs it says the game is running. The game's
-  window title (`instance::GAME_WINDOW_TITLE`, assumed "Colin McRae
-  Rally") must differ from the launcher's ("Colin McRae Rally launcher").
-- Play-time errors (wrong game folder, unknown `Rally.exe`) show a dialog
-  under `cmr-play`, the AppImage and Proton.
-- `--look enhanced` / `--look steam_deck` from the command line play like
-  the window's looks (planned values are identical by test). Under
-  `cmr-play --play --look …` gamescope still takes its size from
-  `launcher.cfg`'s `resolution`, not the look's.
-- The settings window drawn by the SDK widgets under Wine and on Windows
-  (layout, 704-point height on a 1280×800 Deck, pad navigation). The README
-  screenshots still show 0.7's window: retake them.
-- `cmr-play` on the SDK's play library: stop, Ctrl+C and a closed gamescope
-  leave no Rally.exe, wineserver or gamescope behind.
-- The release `cmrhooks.dll` linked with lld (exports and imports checked;
-  not yet loaded into the game).
-- Clean exit by every route (STANDARDS "Clean exit"): the game's Quit,
-  Alt+F4 (F6), Steam's Stop, `cmr-play stop`, gamescope closed.
+- Play-time errors under the AppImage and Proton (seen under `cmr-play`).
+- The settings window on Windows and on a 1280×800 Deck, and pad
+  navigation in it (needs a person and a pad).
+- `cmr-play`'s Ctrl+C from a real terminal (SIGINT to the waiting helper
+  was checked).
+- Steam's Stop button (no Steam in the harness).
+- A race at 4K with this build: the scripted keys reached the service
+  screen, not the stage (the 60 fps at 4K below is from 2026-10-30).
+
+## 2026-11-02: real-game verification of the SDK build (headless)
+
+Setup: the owner's install (`EU v1.5, community-patched`, `46500c8e…`),
+read-only; the release build of this branch (`CMRLauncher.exe`,
+`cmrhooks.dll` linked with lld) with the HD art pack from
+`dist/CMRLauncher-dev/hd`; `linux/cmr-play` with `CMR_PREFIX` and
+`CMR_LAUNCHER` in `.work/realgame/`; everything inside the `gaming`
+distrobox from `env -i` (private `HOME` and `XDG_RUNTIME_DIR`), gamescope
+3.17 on its headless backend (a PATH shim adds `--backend headless`),
+Wine 11.21, sound to a private PipeWire null sink. Supervisor:
+`.work/realgame/rg.sh <scenario>` (scenarios in `scenarios.sh`), with a
+deadline inside the box; after each run it looked for our processes by
+`XDG_RUNTIME_DIR` and by `WINEPREFIX`, and for defunct entries. Every run
+ended with none left. Logs: `.work/realgame/logs/<scenario>*.log`;
+screenshots: `.work/realgame/shots/`.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| First run, Steam Deck look (`--look steam_deck`) | VERIFIED: 5174 files copied, HD pack installed (1.6 s), fixes F6–F27 except F19/F22, exactly the snapshot's list for this edition; `cmrhooks.dll loaded`; menu reached | `deck.launcher.log`, `shots/deck-menu.png` |
+| Second run, Enhanced look | VERIFIED: 0 files copied, menu in ~35 s | `enhanced.log`, `shots/enhanced-menu.jpg` |
+| Original look | VERIFIED: menu; with this branch's looks F7/F14/F21/F23 off | `original_*.log`, `killed_save.launcher.log` |
+| gamescope size from the look (`cmr-play --look steam_deck`, no resolution) | FAILED before `0d7556b`: gamescope 640×480 with the race at 1280×800, the front end drawn with wrong colours. VERIFIED after: gamescope 1280×800, the game's window 1280×800, the menu clean | `shots/deck-menu.png`, `deck2.log`, `shots/deck2-menu.jpg` |
+| The game's window title | VERIFIED: "Colin McRae Rally" (one mapped window, 640×480; 1280×800 with the Deck look) | `deck.log`, `deck2.log` |
+| Second start, game running | VERIFIED: `cmr-play --play` says "already running", exit 0; `CMRLauncher.exe` itself shows "Colin McRae Rally is already running…" and exits 0 after OK (log: `GameRunning`) | `deck.log`, `shots/deck-second-start.png` |
+| Second start, settings window open | VERIFIED: the second launcher raised the window (`WindowRaised`) and exited 0 at once | `window.log` |
+| `cmr-play`'s window while another launcher holds the prefix | FAILED before `83dacbb`: hung 40 s (timeout) waiting for the other session's wineserver. VERIFIED after: returns at once ("nothing started") | `window2_old.log`, `window2.log` |
+| Quit: the game's own Quit (main menu) | VERIFIED: all gone 3.1 s after Enter; game exit 13; `cmRally.cfg` written back | `menu_quit.log`, `shots/menu_quit-quit-left.jpg` |
+| Quit: WM_CLOSE (`wine taskkill`, no /f) | VERIFIED: all gone in 4–5 s (taskkill itself included), exit 0, saves written back | `deck.log`, `deck2.log`, `lang.log` |
+| Quit: Alt+F4 (XTest) | VERIFIED: all gone 3.2 s after the keys; exit 61536 (`SC_CLOSE`); no `cmRally.cfg` write on this path | `altf4.log` |
+| Quit: `cmr-play stop` | VERIFIED: all gone in 1.7 s, status idle | `enhanced.log` |
+| Quit: SIGINT / SIGTERM to the waiting helper (`CMR_WAIT=1`) | VERIFIED: all gone in 1.8 s / 1.4 s, helper exit 143 (the run's launcher is killed, so no write-back) | `original_int.log`, `original_term.log` |
+| Quit: gamescope closed (SIGTERM) | VERIFIED: all gone in 1.5 s | `kill_gamescope.log` |
+| Settings window closed (WM_CLOSE) | VERIFIED: "settings window: closed", gone in 1.5 s | `window.log` |
+| Saves from 0.7 (folder with `cmRally.cfg` and `SAVESLOT0.cms`, no record) | VERIFIED: "2 files in, 0 out" at the first start; the game's `cmRally.cfg` came back after the run ("1 files written back") | `deck.launcher.log` |
+| A session killed before its write-back | VERIFIED (simulated change of the runtime's slot, as a game write the kill never copied back): the next start copied it out ("0 files in, 1 out"), the saves folder got the newer slot | `killed_save.log` |
+| Play-time errors under `cmr-play` | VERIFIED: a missing folder ("cannot read D:\Games\Nowhere\Rally.exe: Path not found") and an unknown `Rally.exe` (SHA-256 and the report link) show a dialog in the game's display; OK ends everything | `errors.log`, `shots/errors-*.png` |
+| HD art pack (already in `dist/`) | VERIFIED: installed into the runtime, `F27 HD art from …\x2`; HD menu in the Deck look | `deck.launcher.log`, `shots/deck2-menu.jpg` |
+| `language` | Rewriting the registry's `Language` to FRENCH (game already set up) and, separately, a fresh first setup (Initialised and Language removed) with `--language FRENCH`: the front end stayed English both times (`USE LEFT, RIGHT AND ENTER…`; `french.txt` has `UTILISEZ GAUCHE…`). The window control was removed (`f6f6205`) | `lang.log`, `lang2.log`, `shots/lang*-menu.jpg` |
+| Front end at 4K (`--resolution 3840x2160`) | 76–90 fps in the menus, briefing and service screens (`CMRHOOKS_LOG`); a race wasn't reached by the scripted keys | `race4k.hooks.log`, `shots/race4k-*.jpg` |
+| README screenshot | Retaken headless (1920×1080 gamescope, a `D:` drive for a neutral path) | `docs/images/launcher.jpg` |
+
+Notes:
+
+- The scripted harness's background job ignores SIGINT (POSIX), so the
+  first SIGINT run "failed"; with `env --default-signal=INT` (as from a
+  terminal) the helper ends as it should.
+- The launcher's main thread shows as `main` in `/proc/<pid>/comm` (Rust
+  names it); look for `CMRLauncher.exe` by command line.
+- The settings window under Wine is 880×704 on a 1280×800 or 1920×1080
+  screen.
 
 ## 2026-11-02: first Proton runs (GE-Proton 11-1, `proton run` outside Steam)
 
