@@ -1,0 +1,22 @@
+# Everything the zip folder (dist/CMRLauncher-<version>/) may hold; anything
+# else fails sdk/packaging/smoke-package.sh in CI. Never game files.
+# Flags: x (executable), empty (may be empty), optional (may be missing).
+CMRLauncher.exe
+cmrhooks.dll
+README.md
+THIRD_PARTY.md
+CHANGELOG.md
+LICENSE-MIT
+LICENSE-APACHE
+linux/cmr-play x
+linux/rea-play.sh
+linux/README.md
+linux/tests/*.sh
+licenses/Barlow-OFL.txt
+# The HD art pack (owner decision 2026-10-31, THIRD_PARTY.md): our redrawn
+# and upscaled images, never the game's own files.
+hd/pack.txt
+hd/x2/*.png
+hd/x2/*.webp
+hd/x4/*.png
+hd/x4/*.webp

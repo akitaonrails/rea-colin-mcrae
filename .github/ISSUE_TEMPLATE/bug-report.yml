@@ -1,0 +1,72 @@
+name: Bug report
+description: "CMRLauncher.exe does not run Colin McRae Rally as it should."
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Never attach Rally.exe, DLLs, saves, media or any other
+        game files. Remove usernames and personal paths from settings and logs.
+        Problems in the parts every rea launcher shares (the settings window's widgets, the
+        runtime folder, rea-play.sh, packaging, CI) belong in rea-launcher-sdk; if you're not
+        sure, report here and we'll move it.
+  - type: dropdown
+    id: system
+    attributes:
+      label: Where did you play?
+      options:
+        - Windows 11
+        - Windows 10
+        - Steam Deck (Game Mode)
+        - Steam Deck (Desktop Mode)
+        - Linux with Steam / Proton
+        - Linux with the AppImage
+        - Linux with Wine and cmr-play
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Launcher version
+      description: The first line of launcher.log, e.g. "CMRLauncher 0.1.0".
+    validations:
+      required: true
+  - type: input
+    id: sha256
+    attributes:
+      label: SHA-256 of Rally.exe
+      description: |
+        The launcher shows it when it does not know your build (also in launcher.log).
+        Windows: `certutil -hashfile Rally.exe SHA256`. Linux: `sha256sum Rally.exe`.
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: CPU, graphics card, controller and screen
+      description: e.g. "Ryzen 7 7800X3D, RTX 3060, Xbox-style pad, 2560x1440 at 144 Hz".
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: settings
+    attributes:
+      label: Settings used
+      description: The look and anything you changed, or launcher.cfg without personal paths.
+  - type: textarea
+    id: log
+    attributes:
+      label: launcher.log
+      description: |
+        Windows: %LOCALAPPDATA%\CMRLauncher\launcher.log. Under Wine or Proton it is inside
+        the prefix (cmr-play and the AppImage:
+        ~/.local/share/cmr-launcher/prefix/drive_c/users/<you>/AppData/Local/CMRLauncher/launcher.log;
+        add ~/.config/cmr-launcher/play.log and settings.log). Remove personal paths before posting.
+      render: text
+    validations:
+      required: true

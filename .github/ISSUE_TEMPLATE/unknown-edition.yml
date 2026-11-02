@@ -1,0 +1,46 @@
+name: Unknown edition
+description: "CMRLauncher.exe said your Rally.exe is a build it does not know."
+title: "Unknown edition: "
+labels: ["edition"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The launcher only changes builds it has identified by SHA-256, so it refused yours and
+        left it untouched. Tell us about your copy and we will add it. Never attach game files.
+  - type: input
+    id: sha256
+    attributes:
+      label: SHA-256
+      description: The 64-character SHA-256 the launcher showed (also in launcher.log).
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Where is your copy of the game from?
+      options:
+        - Retail disc
+        - GOG
+        - Steam
+        - Another store
+        - Patched by hand (official or community patch)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: details
+    attributes:
+      label: Version, language and patches
+      description: e.g. "v1.1, English, official 1.1 patch". The file's size in bytes helps too.
+  - type: input
+    id: version
+    attributes:
+      label: Launcher version
+      description: The first line of launcher.log, e.g. "CMRLauncher 0.1.0".
+  - type: textarea
+    id: log
+    attributes:
+      label: launcher.log
+      description: Optional. Remove personal paths before posting.
+      render: text

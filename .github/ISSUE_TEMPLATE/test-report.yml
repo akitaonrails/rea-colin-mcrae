@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Thanks for testing! Reports that everything works are as useful as bug reports.
-        Please don't attach any game files.
+        Please don't attach any game files. For a problem, the Bug report form asks the right questions.
   - type: dropdown
     id: system
     attributes:
@@ -30,6 +30,13 @@ body:
       description: The first line of launcher.log, e.g. "CMRLauncher 0.2.0".
     validations:
       required: true
+  - type: input
+    id: sha256
+    attributes:
+      label: SHA-256 of Rally.exe
+      description: |
+        launcher.log names the game's edition, or shows the SHA-256 of a build it does not know.
+        Windows: `certutil -hashfile Rally.exe SHA256`. Linux: `sha256sum Rally.exe`.
   - type: input
     id: hardware
     attributes:
@@ -62,6 +69,8 @@ body:
     attributes:
       label: launcher.log
       description: |
-        Windows: %LOCALAPPDATA%\CMRLauncher\launcher.log. Under Wine/Proton it is inside the prefix.
+        Windows: %LOCALAPPDATA%\CMRLauncher\launcher.log. Under Wine or Proton it is inside
+        the prefix (cmr-play and the AppImage:
+        ~/.local/share/cmr-launcher/prefix/drive_c/users/<you>/AppData/Local/CMRLauncher/launcher.log).
         Remove anything personal (your user name in paths) before posting.
       render: text

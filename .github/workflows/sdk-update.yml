@@ -1,0 +1,30 @@
+name: sdk-update
+
+# Keeps the launcher on the newest rea-launcher-sdk tag without adopting
+# it silently: every week (and on demand) the SDK's sdk-update workflow
+# compares the newest tag with sdk/VERSION, runs that tag's sdk-bump on
+# the branch sdk-update/vX.Y.Z, and opens or updates a pull request that
+# lists the Migration items and a review checklist. It never merges:
+# follow sdk/docs/playbooks/sdk-change.md, "Upgrading a launcher".
+#
+# Needs "Allow GitHub Actions to create and approve pull requests"
+# (Settings > Actions > General). A PR opened with the default token runs
+# no CI; set the SDK_UPDATE_TOKEN secret (fine-grained: contents and pull
+# requests write) and uncomment the secrets line to get CI on it.
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: akitaonrails/rea-launcher-sdk/.github/workflows/sdk-update.yml@v0.3.3
+    # secrets:
+    #   token: ${{ secrets.SDK_UPDATE_TOKEN }}

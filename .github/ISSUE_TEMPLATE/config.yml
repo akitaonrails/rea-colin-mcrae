@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Shared launcher code (rea-launcher-sdk)
+    url: https://github.com/akitaonrails/rea-launcher-sdk/issues
+    about: Bugs in code every rea launcher shares (window kit, Linux helper, packaging, CI) belong in the SDK.

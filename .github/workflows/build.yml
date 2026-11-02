@@ -1,5 +1,9 @@
 name: build
 
+# Checks, the Windows build and both packages through the SDK's reusable
+# workflows (rea-launcher-sdk, pinned by tag; sdk/VERSION must match);
+# version tags publish a release with the tag's CHANGELOG section.
+
 on:
   push:
     branches: [main]
@@ -7,85 +11,51 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 permissions:
   contents: read
 
 jobs:
-  windows-binaries:
-    name: Test and build the Windows package
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install the 32-bit MinGW toolchain
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-i686 zip
-
-      - name: Install Rust (with the 32-bit Windows target)
-        run: |
-          rustup toolchain install stable --profile minimal --component clippy,rustfmt
-          rustup target add i686-pc-windows-gnu
-
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Unit tests (host)
-        run: cargo test --workspace
-
-      - name: Linux helper tests (GPU choice, scalers)
-        run: sh linux/tests/gpu-env.sh && sh linux/tests/scaler.sh
-
-      - name: Lint (Windows target)
-        run: cargo clippy --release --target i686-pc-windows-gnu --workspace -- -D warnings
-
-      - name: Build CMRLauncher.exe and cmrhooks.dll
-        run: cargo build --release --target i686-pc-windows-gnu --workspace
-
-      - name: Package
-        run: |
-          name=CMRLauncher-${GITHUB_REF_NAME//\//-}
-          mkdir -p "dist/$name"
-          cp target/i686-pc-windows-gnu/release/CMRLauncher.exe \
-             target/i686-pc-windows-gnu/release/cmrhooks.dll \
-             README.md THIRD_PARTY.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
-          cp -r linux "dist/$name/linux"
-          # The HD art pack, fetched and checked (packaging/hd-pack.txt).
-          read -r url digest < <(grep -v '^#' packaging/hd-pack.txt)
-          curl -fsSL "$url" -o hd-pack.zip
-          echo "$digest  hd-pack.zip" | sha256sum -c -
-          unzip -q hd-pack.zip -d "dist/$name/hd"
-          (cd dist && zip -r "$name.zip" "$name")
-          echo "PACKAGE=dist/$name.zip" >> "$GITHUB_ENV"
-          echo "PACKAGE_DIR=dist/$name" >> "$GITHUB_ENV"
-          echo "APPIMAGE=dist/$name-x86_64.AppImage" >> "$GITHUB_ENV"
-
-      - name: Build the Linux AppImage (with a portable Wine)
-        run: |
-          packaging/appimage/build.sh "$PACKAGE_DIR" dist/appimage
-          mv dist/appimage/CMRLauncher-x86_64.AppImage "$APPIMAGE"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: CMRLauncher-windows
-          path: ${{ env.PACKAGE }}
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: CMRLauncher-linux
-          path: ${{ env.APPIMAGE }}
+  # The shared rea-launcher-sdk CI: formatting, host tests, cargo audit and
+  # deny, sdk/ drift, shell syntax and the Linux helper and packaging tests,
+  # Windows-target clippy, the release build (CMRLauncher.exe, cmrhooks.dll
+  # and the cmr-hd study tool), the import check, the Windows-target tests
+  # under Wine (headless), packaging and the package allowlist
+  # (sdk/docs/playbooks/ci-and-releases.md).
+  ci:
+    uses: akitaonrails/rea-launcher-sdk/.github/workflows/launcher-ci.yml@v0.3.3
+    with:
+      rust-target: i686-pc-windows-gnu
+      # MinGW links the exe and the hook DLL, and compiles cmr-hd's libwebp
+      # for the Windows target; zip/unzip for the package and the HD pack.
+      apt-packages: gcc-mingw-w64-i686 lld zip unzip
+      # The library and binaries, as before the SDK (the hook DLL is no_std
+      # on Windows; its tests run on the host).
+      clippy-args: ""
+      wine-tests: true
+      # cmr-hooks is no_std on Windows: its tests only build for the host.
+      wine-test-args: --locked --workspace --exclude cmr-hooks
+      package-command: packaging/package.sh "dist/CMRLauncher-$REA_VERSION_NAME"
+      package-dir: dist/CMRLauncher-*/ dist/CMRLauncher-*.zip
+      package-allowlist: packaging/package.allow
+      artifact-name: CMRLauncher-packages
+      artifact-paths: |
+        dist/*.zip
+        dist/*.AppImage
 
   release:
-    name: Publish a release for version tags
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: windows-binaries
-    runs-on: ubuntu-24.04
+    needs: ci
+    # All three, even with attest: false (GitHub checks a called workflow's
+    # permissions before any if:).
     permissions:
       contents: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: CMRLauncher-*
-          merge-multiple: true
-      - name: Create the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes ./*.zip ./*.AppImage
+      id-token: write
+      attestations: write
+    uses: akitaonrails/rea-launcher-sdk/.github/workflows/launcher-release.yml@v0.3.3
+    with:
+      package: cmr-launcher
+      artifact-pattern: CMRLauncher-*
