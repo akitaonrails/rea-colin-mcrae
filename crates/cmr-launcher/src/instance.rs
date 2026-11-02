@@ -15,10 +15,10 @@ pub const NAME: &str = "rea-colin-mcrae";
 /// game's window instead.
 pub const WINDOW_TITLE: &str = "Colin McRae Rally launcher";
 
-/// The game's own window title, the name the game is known by (to be
-/// confirmed on the real game, `docs/RUNTIME_NOTES.md`). A second start
-/// that found this window would raise the game and say nothing; 0.7's
-/// settings window had this title.
+/// The game's own window title, seen in the real game on 2026-11-02 (the
+/// only mapped window of `Rally.exe`, 640x480; `docs/RUNTIME_NOTES.md`).
+/// A second start that found this window would raise the game and say
+/// nothing; 0.7's settings window had this title.
 pub const GAME_WINDOW_TITLE: &str = "Colin McRae Rally";
 
 /// Shown when a second start finds no launcher window to bring forward:
