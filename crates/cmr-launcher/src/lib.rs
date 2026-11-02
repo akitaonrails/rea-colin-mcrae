@@ -1,16 +1,58 @@
-//! Launcher logic that runs anywhere; the Windows-only parts live in `win32`.
+//! Launcher logic that runs anywhere; the Windows-only parts live in the
+//! binary's `win32`, `ui` and `app` modules.
+//!
+//! Unlike its siblings, which assemble open-source components around their
+//! games, this launcher applies its fixes in memory: it starts `Rally.exe`
+//! suspended, checks and writes the byte fixes (`fixes`), loads the hook
+//! library (`cmr-hooks`) and resumes it. The user's folder stays read-only;
+//! everything happens in the runtime copy (`runtime`).
+//!
+//! The generic machinery (runtime sync, whole-file swaps, save mirroring,
+//! `launcher.cfg` editing, edition hashes, PE headers) is the shared
+//! `rea_launcher` SDK; this crate holds the game's own knowledge.
 
+pub mod audience;
 pub mod config;
 pub mod edition;
 pub mod fixes;
 pub mod form;
 pub mod hdpack;
-pub mod pe;
 pub mod registry;
 pub mod runtime;
 
 use fixes::{FixSet, Write};
-use pe::Image;
+use rea_launcher::pe::{Format, Pe};
+
+/// A 32-bit executable's file bytes and headers.
+pub struct Image<'a> {
+    pub file: &'a [u8],
+    pub pe: Pe,
+}
+
+impl<'a> Image<'a> {
+    /// Parses a PE32 executable (the game is 32-bit).
+    pub fn parse(file: &'a [u8]) -> Result<Image<'a>, String> {
+        let pe = Pe::parse(file).map_err(|e| e.to_string())?;
+        if pe.format != Format::Pe32 {
+            return Err("not a 32-bit Windows executable".into());
+        }
+        Ok(Image { file, pe })
+    }
+
+    /// The file bytes that load at `[address, address + len)`, if that
+    /// whole range is backed by the file inside one executable section.
+    pub fn code_at(&self, address: u32, len: usize) -> Option<&'a [u8]> {
+        let rva = u64::from(address).checked_sub(self.pe.image_base)?;
+        let s = self.pe.sections.iter().find(|s| {
+            s.characteristics & rea_launcher::pe::SCN_EXECUTE != 0
+                && rva >= u64::from(s.rva)
+                && (rva - u64::from(s.rva)) as usize + len
+                    <= s.raw_size.min(s.virtual_size) as usize
+        })?;
+        let off = s.raw_offset as usize + (rva - u64::from(s.rva)) as usize;
+        self.file.get(off..off + len)
+    }
+}
 
 /// A write plus the file bytes it replaces, checked against memory first.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,9 +132,39 @@ mod tests {
         }],
     };
 
+    /// A tiny PE32 with one executable section at 0x401000 holding `code`.
+    pub(crate) fn synthetic(code: &[u8]) -> Vec<u8> {
+        use rea_launcher::pe::synthetic::{CODE, image};
+        image(Format::Pe32, 0x40_0000, &[(".text", 0x1000, code, CODE)])
+    }
+
+    #[test]
+    fn maps_code_addresses() {
+        let file = synthetic(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let img = Image::parse(&file).unwrap();
+        assert_eq!(img.pe.image_base, 0x400000);
+        assert_eq!(img.code_at(0x401002, 3), Some(&[3, 4, 5][..]));
+        assert_eq!(img.code_at(0x401006, 3), None, "runs past the section");
+        assert_eq!(img.code_at(0x400fff, 1), None, "before the section");
+    }
+
+    #[test]
+    fn rejects_non_pe_and_64_bit() {
+        assert!(Image::parse(b"hello").is_err());
+        let pe64 = rea_launcher::pe::synthetic::image(
+            Format::Pe32Plus,
+            0x1_4000_0000,
+            &[(".text", 0x1000, &[0x90], rea_launcher::pe::synthetic::CODE)],
+        );
+        assert_eq!(
+            Image::parse(&pe64).err().as_deref(),
+            Some("not a 32-bit Windows executable")
+        );
+    }
+
     #[test]
     fn prepare_reads_the_replaced_bytes() {
-        let file = pe::tests::synthetic(&[0x55, 0x8b, 0xec, 0x90]);
+        let file = synthetic(&[0x55, 0x8b, 0xec, 0x90]);
         let img = Image::parse(&file).unwrap();
         let w = prepare(&img, &TEST_FIXES, &[], 0x500000).unwrap();
         assert_eq!(w[0].original, [0xec]);
@@ -101,7 +173,7 @@ mod tests {
 
     #[test]
     fn data_is_filled_only_when_sizes_match() {
-        let file = pe::tests::synthetic(&[0x55, 0x8b, 0xec, 0x90]);
+        let file = synthetic(&[0x55, 0x8b, 0xec, 0x90]);
         let img = Image::parse(&file).unwrap();
         let mut w = prepare(&img, &TEST_FIXES, &[], 0x500000).unwrap();
         assert!(!fill_data(&mut w, 0x500000, &[1, 2]));
@@ -117,7 +189,7 @@ mod tests {
 
     #[test]
     fn prepare_refuses_sites_outside_code() {
-        let file = pe::tests::synthetic(&[0x90]);
+        let file = synthetic(&[0x90]);
         let img = Image::parse(&file).unwrap();
         assert!(prepare(&img, &TEST_FIXES, &[], 0x500000).is_err());
     }

@@ -641,44 +641,8 @@ impl Settings {
 }
 
 /// Sets `key` in a settings file, keeping every other line (and comments)
-/// as it was: replaces the first active or empty `key =` line, else appends.
-pub fn set_key(text: &str, key: &str, value: &str) -> String {
-    let is_key = |line: &str| {
-        let line = line.trim();
-        !line.starts_with('#') && line.split_once('=').is_some_and(|(k, _)| k.trim() == key)
-    };
-    let mut out = String::with_capacity(text.len() + key.len() + value.len() + 4);
-    let mut done = false;
-    for line in text.lines() {
-        if !done && is_key(line) {
-            out.push_str(&format!("{key} = {value}"));
-            done = true;
-        } else {
-            out.push_str(line);
-        }
-        out.push('\n');
-    }
-    if !done {
-        out.push_str(&format!("{key} = {value}\n"));
-    }
-    out
-}
-
-/// Turns `key` off in a settings file: its active line becomes a comment
-/// (`#key = `), so the default applies; other lines are kept.
-pub fn clear_key(text: &str, key: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    for line in text.lines() {
-        let t = line.trim();
-        if !t.starts_with('#') && t.split_once('=').is_some_and(|(k, _)| k.trim() == key) {
-            out.push_str(&format!("#{key} ="));
-        } else {
-            out.push_str(line);
-        }
-        out.push('\n');
-    }
-    out
-}
+/// as it was; turns `key` off by commenting its lines out.
+pub use rea_launcher::cfg::{clear_key, set_key};
 
 #[cfg(test)]
 mod tests {
@@ -881,6 +845,11 @@ mod tests {
         // Replaced again in place; a commented key is not touched.
         let again = set_key(&filled, "game", r"E:\CMR");
         assert_eq!(again.matches("game =").count(), 1);
-        assert!(set_key("#game = x\n", "game", "y").ends_with("#game = x\ngame = y\n"));
+        // A commented placeholder becomes the line, under its comment
+        // (SDK v0.1 migration note; 0.7 appended at the end).
+        assert_eq!(
+            set_key("# The game\n#game =\n", "game", "y"),
+            "# The game\ngame = y\n"
+        );
     }
 }

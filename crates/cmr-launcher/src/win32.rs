@@ -1,14 +1,15 @@
-//! All Win32 calls. Kept small: process start + memory writes, registry,
-//! message boxes.
+//! The Win32 calls the SDK (`rea-launcher-win32`) doesn't make: starting
+//! the game suspended, checking and writing the fixes into its memory,
+//! loading the hook library into it, and the WinMM joystick reads (the API
+//! the game itself uses) for F7 and `--controllers`. Registry, dialogs,
+//! XInput, GPU choice and Wine detection are the SDK's.
 
 use std::ffi::{OsStr, c_void};
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, FreeLibrary, HANDLE,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, FreeLibrary, HANDLE};
 use windows_sys::Win32::Media::Multimedia::{
     JOYCAPSW, JOYERR_NOERROR, JOYINFOEX, joyGetDevCapsW, joyGetPosEx,
 };
@@ -16,28 +17,19 @@ use windows_sys::Win32::System::Diagnostics::Debug::{
     FlushInstructionCache, ReadProcessMemory, WriteProcessMemory,
 };
 use windows_sys::Win32::System::LibraryLoader::{
-    DONT_RESOLVE_DLL_REFERENCES, GetModuleHandleW, GetProcAddress, LoadLibraryExW, LoadLibraryW,
+    DONT_RESOLVE_DLL_REFERENCES, GetModuleHandleW, GetProcAddress, LoadLibraryExW,
 };
 use windows_sys::Win32::System::Memory::{
     MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE, VirtualAllocEx,
     VirtualFreeEx, VirtualProtectEx,
-};
-use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_32KEY,
-    REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW, RegQueryValueExW,
-    RegSetValueExW,
 };
 use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CreateProcessW, CreateRemoteThread, GetExitCodeProcess, GetExitCodeThread,
     INFINITE, PROCESS_INFORMATION, ResumeThread, STARTUPINFOW, TerminateProcess,
     WaitForSingleObject,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MessageBoxW,
-};
 
 use cmr_launcher::CheckedWrite;
-use cmr_launcher::registry::{KEY, VIRTUAL_STORE_KEY, Value, When};
 
 fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
     s.as_ref().encode_wide().chain(Some(0)).collect()
@@ -45,285 +37,6 @@ fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
 
 fn last_error() -> std::io::Error {
     std::io::Error::last_os_error()
-}
-
-pub fn message(title: &str, text: &str, error: bool) {
-    let icon = if error {
-        MB_ICONERROR
-    } else {
-        MB_ICONINFORMATION
-    };
-    unsafe {
-        MessageBoxW(
-            null_mut(),
-            wide(text).as_ptr(),
-            wide(title).as_ptr(),
-            MB_OK | icon,
-        );
-    }
-}
-
-/// An XInput function from the newest XInput DLL present.
-fn xinput_proc(name: &std::ffi::CStr) -> Option<unsafe extern "system" fn() -> isize> {
-    for dll in ["xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll"] {
-        // SAFETY: plain loader calls with NUL-terminated names.
-        unsafe {
-            let module = LoadLibraryW(wide(dll).as_ptr());
-            if !module.is_null()
-                && let Some(proc) = GetProcAddress(module, name.as_ptr().cast())
-            {
-                return Some(proc);
-            }
-        }
-    }
-    None
-}
-
-/// The state (16 bytes: a packet number, then the gamepad, `wButtons`
-/// first) of each XInput pad connected now, by slot 0..=3.
-fn xinput_states() -> Vec<(u32, [u8; 16])> {
-    type GetState = unsafe extern "system" fn(u32, *mut [u8; 16]) -> u32;
-    let Some(get) = xinput_proc(c"XInputGetState") else {
-        return Vec::new();
-    };
-    // SAFETY: XInputGetState's signature; the state is 16 bytes.
-    let get: GetState = unsafe { std::mem::transmute(get) };
-    (0..4)
-        .filter_map(|i| {
-            let mut state = [0u8; 16];
-            (unsafe { get(i, &mut state) } == 0).then_some((i, state))
-        })
-        .collect()
-}
-
-/// The XInput (Xbox-style) pads connected now, by slot 0..=3. Rumble and
-/// separate trigger pedals (F21, F22) need one; other pads only reach the
-/// game through WinMM (F7).
-pub fn xinput_pads() -> Vec<u32> {
-    xinput_states().into_iter().map(|(i, _)| i).collect()
-}
-
-/// The buttons (`wButtons` bits) held on any XInput pad now, for the
-/// settings window's gamepad navigation; 0 without XInput.
-pub fn xinput_buttons() -> u16 {
-    xinput_states()
-        .into_iter()
-        .fold(0, |all, (_, s)| all | u16::from_le_bytes([s[4], s[5]]))
-}
-
-/// Sets both motors of every XInput pad slot; returns the slots that took
-/// it (0 from `XInputSetState`).
-fn set_motors(speed: u16) -> Vec<u32> {
-    type SetState = unsafe extern "system" fn(u32, *mut [u16; 2]) -> u32;
-    let Some(set) = xinput_proc(c"XInputSetState") else {
-        return Vec::new();
-    };
-    // SAFETY: XInputSetState's signature; the vibration is two u16 speeds.
-    let set: SetState = unsafe { std::mem::transmute(set) };
-    (0..4)
-        .filter(|&i| unsafe { set(i, &mut [speed, speed]) } == 0)
-        .collect()
-}
-
-/// Turns every XInput pad's motors off. Called after the game exits, however
-/// it ended, so a crash can't leave a pad rumbling.
-pub fn stop_rumble() {
-    set_motors(0);
-}
-
-/// Shakes every XInput pad for half a second at `percent` strength (the
-/// settings window's test); returns how many pads took it.
-pub fn test_rumble(percent: u32) -> usize {
-    let speed = (percent.min(100) * 65535 / 100) as u16;
-    let took = set_motors(speed).len();
-    std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        set_motors(0);
-    });
-    took
-}
-
-/// The main screen's size in pixels, if known.
-pub fn screen_size() -> Option<(u32, u32)> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-    // SAFETY: plain metric queries.
-    let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-    (w > 0 && h > 0).then_some((w as u32, h as u32))
-}
-
-/// Asks for a folder with the system's folder picker.
-pub fn pick_folder(title: &str) -> Option<std::path::PathBuf> {
-    use std::os::windows::ffi::OsStringExt;
-    use windows_sys::Win32::System::Com::{
-        COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree,
-    };
-    use windows_sys::Win32::UI::Shell::{
-        BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS, BROWSEINFOW, SHBrowseForFolderW,
-        SHGetPathFromIDListW,
-    };
-    let title = wide(title);
-    let mut name = [0u16; 260];
-    // SAFETY: the structure and buffers live across the modal call; the
-    // returned item list is freed with the COM allocator.
-    unsafe {
-        CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
-        let info = BROWSEINFOW {
-            hwndOwner: std::ptr::null_mut(),
-            pidlRoot: std::ptr::null_mut(),
-            pszDisplayName: name.as_mut_ptr(),
-            lpszTitle: title.as_ptr(),
-            ulFlags: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE,
-            lpfn: None,
-            lParam: 0,
-            iImage: 0,
-        };
-        let list = SHBrowseForFolderW(&info);
-        if list.is_null() {
-            return None;
-        }
-        let mut path = [0u16; 1024];
-        let ok = SHGetPathFromIDListW(list, path.as_mut_ptr()) != 0;
-        CoTaskMemFree(list as *const _);
-        let n = path.iter().position(|&c| c == 0).unwrap_or(0);
-        (ok && n > 0).then(|| std::ffi::OsString::from_wide(&path[..n]).into())
-    }
-}
-
-/// True when running under Wine or Proton.
-pub fn is_wine() -> bool {
-    unsafe {
-        let ntdll = GetModuleHandleW(wide("ntdll.dll").as_ptr());
-        !ntdll.is_null() && GetProcAddress(ntdll, c"wine_get_version".as_ptr().cast()).is_some()
-    }
-}
-
-struct Key(HKEY);
-
-impl Drop for Key {
-    fn drop(&mut self) {
-        unsafe {
-            RegCloseKey(self.0);
-        }
-    }
-}
-
-fn create_key(root: HKEY, path: &str, wow32: bool) -> Result<Key, u32> {
-    let mut key: HKEY = null_mut();
-    let access = KEY_QUERY_VALUE | KEY_SET_VALUE | if wow32 { KEY_WOW64_32KEY } else { 0 };
-    let rc = unsafe {
-        RegCreateKeyExW(
-            root,
-            wide(path).as_ptr(),
-            0,
-            null(),
-            REG_OPTION_NON_VOLATILE,
-            access,
-            null(),
-            &mut key,
-            null_mut(),
-        )
-    };
-    if rc == ERROR_SUCCESS {
-        Ok(Key(key))
-    } else {
-        Err(rc)
-    }
-}
-
-/// Writes the game's registry values. Returns where they went.
-pub fn write_registry(values: &[Value]) -> Result<&'static str, String> {
-    let (key, place) = match create_key(HKEY_LOCAL_MACHINE, KEY, true) {
-        Ok(k) => (k, "HKLM"),
-        Err(ERROR_ACCESS_DENIED) => (
-            create_key(HKEY_CURRENT_USER, VIRTUAL_STORE_KEY, false)
-                .map_err(|rc| format!("cannot open the registry key (error {rc})"))?,
-            "HKCU VirtualStore",
-        ),
-        Err(rc) => return Err(format!("cannot open the registry key (error {rc})")),
-    };
-    write_values(&key, values)?;
-    Ok(place)
-}
-
-/// Writes values into an open key (`IfMissing` ones only when absent).
-fn write_values(key: &Key, values: &[Value]) -> Result<(), String> {
-    for v in values {
-        if v.when == When::IfMissing && has_value(key, v.name) {
-            continue;
-        }
-        write_named(key, v.name, &v.data)?;
-    }
-    Ok(())
-}
-
-/// True when the key already holds a value called `name`.
-fn has_value(key: &Key, name: &str) -> bool {
-    let name = wide(name);
-    // SAFETY: an open key and a NUL-terminated name; nothing is read back.
-    let rc = unsafe {
-        RegQueryValueExW(
-            key.0,
-            name.as_ptr(),
-            null(),
-            null_mut(),
-            null_mut(),
-            null_mut(),
-        )
-    };
-    rc != ERROR_FILE_NOT_FOUND
-}
-
-/// Writes the string value `name` = `data`.
-fn write_named(key: &Key, name: &str, data: &str) -> Result<(), String> {
-    let wname = wide(name);
-    let data = wide(data);
-    // SAFETY: an open key and NUL-terminated strings.
-    let rc = unsafe {
-        RegSetValueExW(
-            key.0,
-            wname.as_ptr(),
-            0,
-            REG_SZ,
-            data.as_ptr().cast(),
-            (data.len() * 2) as u32,
-        )
-    };
-    if rc == ERROR_SUCCESS {
-        Ok(())
-    } else {
-        Err(format!("cannot write registry value {name} (error {rc})"))
-    }
-}
-
-/// Sets a string value under HKCU unless it is already there (a player's
-/// own choice is kept). Returns true when written.
-fn set_user_value_if_missing(path: &str, name: &str, data: &str) -> Result<bool, String> {
-    let key = create_key(HKEY_CURRENT_USER, path, false)
-        .map_err(|rc| format!("cannot open HKCU\\{path} (error {rc})"))?;
-    if has_value(&key, name) {
-        return Ok(false);
-    }
-    write_named(&key, name, data)?;
-    Ok(true)
-}
-
-/// Under Wine: draw OpenGL through GLX (`UseEGL` = N). Wine 11 draws
-/// through EGL by default, and where the GPU driver has no EGL for X11
-/// (NVIDIA without egl-x11) that falls back to software rendering; GLX
-/// reaches the GPU.
-pub fn prefer_gpu_opengl() -> Result<bool, String> {
-    set_user_value_if_missing(r"Software\Wine\X11 Driver", "UseEGL", "N")
-}
-
-/// On Windows with two GPUs (a laptop's integrated and discrete ones): the
-/// high-performance one for the game (the per-program choice of Settings >
-/// Display > Graphics).
-pub fn prefer_fast_gpu(exe: &Path) -> Result<bool, String> {
-    set_user_value_if_missing(
-        r"Software\Microsoft\DirectX\UserGpuPreferences",
-        &exe.display().to_string(),
-        "GpuPreference=2;",
-    )
 }
 
 struct Child {

@@ -12,12 +12,13 @@ use std::path::{Path, PathBuf};
 use cmr_launcher::config::{self, Settings};
 use cmr_launcher::edition;
 use cmr_launcher::form::{self, Form, Layout, Look, PadAction, Picture};
-use eframe::egui::{
+use rea_launcher_ui::eframe;
+use rea_launcher_ui::egui::{
     self, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Key, Mesh,
     Rect, Sense, Shape, Stroke, StrokeKind, TextureHandle, Vec2, pos2, vec2,
 };
 
-use crate::win32;
+use rea_launcher_win32::{dialog, display, wine, xinput};
 
 const BLUE: Color32 = Color32::from_rgb(0x0f, 0x2e, 0x6e);
 const PANEL: Color32 = Color32::from_rgb(0x16, 0x3a, 0x85);
@@ -55,7 +56,7 @@ pub fn show(settings_path: &Path, text: &str, linux: bool) -> Result<Outcome, St
             .with_maximize_button(false),
         // Under Wine the desktop's window manager places it (on the monitor
         // in use); Wine's idea of the main screen can be another monitor.
-        centered: !win32::is_wine(),
+        centered: !wine::is_wine(),
         ..Default::default()
     };
     let path = settings_path.to_path_buf();
@@ -234,7 +235,7 @@ impl<'a> Window<'a> {
         linux: bool,
         outcome: &'a mut Outcome,
     ) -> Window<'a> {
-        let screen = win32::screen_size();
+        let screen = display::screen_size();
         let form = if text == config::TEMPLATE {
             Form::first_run(screen)
         } else {
@@ -248,7 +249,7 @@ impl<'a> Window<'a> {
             tab: Tab::Play,
             screen,
             resolutions: form::resolutions(screen),
-            pads: win32::xinput_pads().len(),
+            pads: xinput::connected(),
             linux,
             portrait: load_portrait(ctx),
             path,
@@ -281,7 +282,7 @@ impl<'a> Window<'a> {
         ] {
             ctx.send_viewport_cmd(cmd);
         }
-        if win32::is_wine() {
+        if wine::is_wine() {
             return;
         }
         if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
@@ -300,10 +301,7 @@ impl<'a> Window<'a> {
             return;
         }
         let saved = self.form.save(&self.text);
-        if let Some(dir) = self.path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        match std::fs::write(&self.path, saved) {
+        match rea_launcher::fsx::write_atomic(&self.path, saved) {
             Ok(()) => {
                 *self.outcome = Outcome::Play;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -314,17 +312,7 @@ impl<'a> Window<'a> {
 }
 
 fn load_portrait(ctx: &egui::Context) -> Option<TextureHandle> {
-    let mut decoder = jpeg_decoder::Decoder::new(&include_bytes!("../assets/portrait.jpg")[..]);
-    let rgb = decoder.decode().ok()?;
-    let info = decoder.info()?;
-    let size = [usize::from(info.width), usize::from(info.height)];
-    (rgb.len() == size[0] * size[1] * 3).then(|| {
-        ctx.load_texture(
-            "portrait",
-            egui::ColorImage::from_rgb(size, &rgb),
-            egui::TextureOptions::LINEAR,
-        )
-    })
+    rea_launcher_ui::widgets::load_jpeg(ctx, "portrait", include_bytes!("../assets/portrait.jpg"))
 }
 
 impl eframe::App for Window<'_> {
@@ -332,7 +320,7 @@ impl eframe::App for Window<'_> {
     /// presses the control in focus (Space); Start and LB/RB are handled in
     /// `ui`, which also asks for the next look.
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        let now = win32::xinput_buttons();
+        let now = xinput::buttons();
         self.pad_actions = form::pad_actions(self.pad_held, now);
         self.pad_held = now;
         for action in &self.pad_actions {
@@ -678,7 +666,7 @@ impl Window<'_> {
             chips(ui, &form::RUMBLES, &mut self.form.rumble);
             ui.add_space(8.0);
             if self.form.rumble > 0 && outline_button(ui, "Test").clicked() {
-                let took = win32::test_rumble(self.form.rumble);
+                let took = xinput::test_rumble(self.form.rumble, std::time::Duration::from_millis(500));
                 self.rumble_test = Some(match took {
                     0 => "No pad took the rumble. Under Wine the pad's device must be writable (most desktops allow it); check that it is in X-input mode.".to_string(),
                     _ => "Sent: your pad should have shaken for half a second. In a race it shakes on impacts.".to_string(),
@@ -874,7 +862,7 @@ fn folder_field(ui: &mut egui::Ui, value: &mut String, hint: &str, title: &str) 
             .desired_width(w);
         changed |= ui.add(edit).changed();
         if outline_button(ui, "Browse…").clicked()
-            && let Some(dir) = win32::pick_folder(title)
+            && let Some(dir) = dialog::pick_folder(title)
         {
             *value = dir.display().to_string();
             changed = true;

@@ -11,7 +11,7 @@ fn main() {
         Ok(code) => code,
         Err(err) => {
             app::log_line(&format!("error: {err}"));
-            win32::message("Colin McRae Rally launcher", &err, true);
+            app::fatal(&err);
             1
         }
     };
@@ -27,16 +27,22 @@ fn main() {
 #[cfg(windows)]
 mod app {
     use std::fs;
-    use std::io::Write as _;
     use std::path::{Path, PathBuf};
 
+    use cmr_launcher::audience::{self, Audience};
     use cmr_launcher::config::{self, Settings};
-    use cmr_launcher::{edition, fill_data, fixes, hdpack, pe, prepare, registry, runtime};
+    use cmr_launcher::registry::{self, When};
+    use cmr_launcher::{Image, edition, fill_data, fixes, hdpack, prepare, runtime};
+    use rea_launcher::log::Log;
+    use rea_launcher::{cfg, fsx, paths};
+    use rea_launcher_win32::reg::Key;
+    use rea_launcher_win32::{gpu, report, wine, xinput};
 
     use crate::{ui, win32};
 
     const EXE: &str = "Rally.exe";
     const HOOKS_DLL: &str = "cmrhooks.dll";
+    const TITLE: &str = "Colin McRae Rally launcher";
 
     fn home() -> PathBuf {
         std::env::var_os("LOCALAPPDATA")
@@ -46,15 +52,39 @@ mod app {
     }
 
     pub fn log_line(line: &str) {
-        let dir = home();
-        let _ = fs::create_dir_all(&dir);
-        if let Ok(mut f) = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("launcher.log"))
-        {
-            let _ = writeln!(f, "{line}");
+        Log::new(home().join("launcher.log")).line(line);
+    }
+
+    /// Who sees this run's messages (`audience`): under Wine (cmr-play,
+    /// the AppImage, Proton) a person even with `--no-window`.
+    fn audience() -> Audience {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        audience::audience(&args, wine::is_wine())
+    }
+
+    /// An error the launcher stops on: a dialog whenever a person may be
+    /// watching, and printed (cmr-play's log).
+    pub fn fatal(text: &str) {
+        report::fatal(TITLE, text, audience().mode());
+    }
+
+    /// Information or a warning, routed like [`fatal`].
+    fn note(text: &str, warning: bool) {
+        report::note(TITLE, text, audience().mode(), warning);
+    }
+
+    /// Writes the game's registry values; returns where they went.
+    fn write_registry(values: &[registry::Value]) -> Result<&'static str, String> {
+        let (key, place) = Key::machine_or_virtual_store(registry::KEY)?;
+        for v in values {
+            match v.when {
+                When::Always => key.set_string(v.name, &v.data)?,
+                When::IfMissing => {
+                    key.set_string_if_missing(v.name, &v.data)?;
+                }
+            }
         }
+        Ok(place.describe())
     }
 
     /// A `launcher.cfg` next to the exe wins (portable installs); otherwise
@@ -100,6 +130,16 @@ mod app {
     /// window could be shown (play with the saved settings).
     const WINDOW_CLOSED: u32 = 3;
     const WINDOW_UNAVAILABLE: u32 = 4;
+    /// A flag the launcher doesn't know, or a value it can't use.
+    const BAD_ARGUMENTS: u32 = 2;
+    /// `--check` found an executable the launcher doesn't know.
+    const CHECK_FAILED: u32 = 1;
+
+    /// The settings file's text: `None` on a first run (no file yet).
+    /// A file that cannot be read is never written over.
+    fn read_settings(path: &Path) -> Result<Option<String>, String> {
+        cfg::read_file(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
+    }
 
     fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
         let found = args.iter().any(|a| a == flag);
@@ -113,8 +153,7 @@ mod app {
             args.next();
             let seconds = args.next().and_then(|s| s.parse().ok()).unwrap_or(30);
             win32::controllers(seconds, &mut |line| log_line(line));
-            win32::message(
-                "Colin McRae Rally launcher",
+            note(
                 &format!(
                     "Controller report written to {}",
                     home().join("launcher.log").display()
@@ -133,8 +172,17 @@ mod app {
         let linux = take_flag(&mut cli, "--linux");
         let no_window = take_flag(&mut cli, "--no-window");
         if settings_only || (cli.is_empty() && !no_window) {
-            let text =
-                fs::read_to_string(&settings_path).unwrap_or_else(|_| config::TEMPLATE.into());
+            // A window under Wine draws through OpenGL: GLX, not Wine 11's
+            // default EGL (software on NVIDIA boxes without egl-x11).
+            if wine::is_wine()
+                && let Ok(true) = gpu::prefer_glx()
+            {
+                log_line("Wine: OpenGL through GLX (UseEGL=N)");
+            }
+            let text = read_settings(&settings_path)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| config::TEMPLATE.into());
             match ui::show(&settings_path, &text, linux) {
                 Ok(ui::Outcome::Play) => {
                     log_line("settings window: play");
@@ -155,7 +203,15 @@ mod app {
                 }
             }
         }
-        let existing = fs::read_to_string(&settings_path).ok();
+        // Unreadable (not missing): played with the defaults, never
+        // written over.
+        let (existing, writable) = match read_settings(&settings_path) {
+            Ok(text) => (text, true),
+            Err(e) => {
+                log_line(&format!("warning: {e}; left as it is"));
+                (None, false)
+            }
+        };
         let file_text = existing.as_deref().unwrap_or(config::TEMPLATE);
         let (saved, warnings) = Settings::parse_file(file_text);
         for w in &warnings {
@@ -163,29 +219,50 @@ mod app {
         }
         let check_only = cli.iter().any(|a| a == "--check");
         cli.retain(|a| a != "--check");
-        let settings = saved.clone().merged(Settings::parse_args(cli)?);
+        let settings = match Settings::parse_args(cli) {
+            Ok(cli) => saved.clone().merged(cli),
+            Err(e) if e == config::USAGE => {
+                note(config::USAGE, false);
+                return Ok(0);
+            }
+            Err(e) => {
+                log_line(&format!("error: {e}"));
+                fatal(&e);
+                return Ok(BAD_ARGUMENTS);
+            }
+        };
 
         let game = find_game(&settings)?;
         let exe_bytes = fs::read(game.join(EXE))
             .map_err(|e| format!("cannot read {}: {e}", game.join(EXE).display()))?;
-        let edition = edition::identify(&exe_bytes).map_err(|digest| {
-            format!(
-                "This {EXE} is not a version the launcher knows yet.\n\nSHA-256: {}",
-                edition::to_hex(&digest)
-            )
-        })?;
-        let image = pe::Image::parse(&exe_bytes).map_err(|e| e.to_string())?;
-        log_line(&format!("game: {} ({})", game.display(), edition.name));
+        let digest = edition::sha256(&exe_bytes);
+        let edition = match edition::identify(&exe_bytes) {
+            Ok(e) => e,
+            Err(digest) => {
+                let text = edition::refusal(&digest);
+                if check_only {
+                    log_line(&format!("check: {text}"));
+                    note(&text, true);
+                    return Ok(CHECK_FAILED);
+                }
+                return Err(text);
+            }
+        };
+        let image = Image::parse(&exe_bytes)?;
+        log_line(&format!(
+            "game: {} ({}) [sha256 {}]",
+            game.display(),
+            edition.name,
+            edition::to_hex(&digest)
+        ));
         if check_only {
-            win32::message(
-                "Colin McRae Rally launcher",
-                &format!(
-                    "Ready to play.\n\nGame folder: {}\nVersion: {}",
-                    game.display(),
-                    edition.name
-                ),
-                false,
+            let text = format!(
+                "Ready to play.\n\nGame folder: {}\nVersion: {}",
+                game.display(),
+                edition.name
             );
+            log_line(&format!("check: {}", text.replace('\n', " ")));
+            note(&text, false);
             return Ok(0);
         }
 
@@ -193,26 +270,32 @@ mod app {
             .runtime
             .clone()
             .unwrap_or_else(|| home().join("Rally"));
-        runtime::check_separate(&game, &rt)?;
-        let copied = runtime::sync(&game, &rt)
+        paths::check_separate(&game, &rt)?;
+        let report = runtime::sync(&game, &rt)
             .map_err(|e| format!("cannot prepare {}: {e}", rt.display()))?;
         log_line(&format!(
-            "runtime: {} ({copied} files copied)",
-            rt.display()
+            "runtime: {} ({} files copied)",
+            rt.display(),
+            report.brought
         ));
+        for w in &report.warnings {
+            log_line(&format!("warning: {w}"));
+        }
         // The player's saves live outside the runtime copy; the game reads
         // and writes its own `save` folder, kept in step before and after.
         let saves = settings.saves.clone().unwrap_or_else(default_saves);
         let rt_save = runtime::save_dir(&rt).map_err(|e| format!("cannot prepare saves: {e}"))?;
-        if !saves.is_dir() {
-            // First run with this folder: start it from what the game has.
-            let n = runtime::mirror(&rt_save, &saves)
-                .map_err(|e| format!("cannot create {}: {e}", saves.display()))?;
-            log_line(&format!("saves: created {} ({n} files)", saves.display()));
-        }
-        let n = runtime::mirror(&saves, &rt_save)
-            .map_err(|e| format!("cannot read saves from {}: {e}", saves.display()))?;
-        log_line(&format!("saves: {} ({n} files updated)", saves.display()));
+        let saves_state = rt.join(runtime::SAVES_STATE);
+        let mirror = runtime::saves_mirror(&rt_save, &saves, &saves_state);
+        let moved = mirror
+            .before()
+            .map_err(|e| format!("cannot prepare the saves: {e}"))?;
+        log_line(&format!(
+            "saves: {} ({} files in, {} out)",
+            saves.display(),
+            moved.to_runtime.len(),
+            moved.to_saves.len()
+        ));
 
         if let Ok(listing) = runtime::list(&game)
             && let Some((len, rel)) = runtime::longest_path(&rt, &listing)
@@ -229,12 +312,13 @@ mod app {
             .clone()
             .unwrap_or_else(|| "ENGLISH".into());
         let root = rt.display().to_string();
-        let place = win32::write_registry(&registry::values(&root, &language))?;
+        let place = write_registry(&registry::values(&root, &language))?;
         // The GPU, not software rendering, and the faster of two GPUs.
-        let gpu = if win32::is_wine() {
-            win32::prefer_gpu_opengl().map(|w| w.then_some("Wine: OpenGL through GLX (UseEGL=N)"))
+        let wine = wine::is_wine();
+        let gpu = if wine {
+            gpu::prefer_glx().map(|w| w.then_some("Wine: OpenGL through GLX (UseEGL=N)"))
         } else {
-            win32::prefer_fast_gpu(&rt.join(EXE))
+            gpu::prefer_fast_gpu(&rt.join(EXE))
                 .map(|w| w.then_some("Windows: high-performance GPU for the game"))
         };
         match gpu {
@@ -242,15 +326,12 @@ mod app {
             Ok(None) => {}
             Err(e) => log_line(&format!("warning: {e}")),
         }
-        log_line(&format!(
-            "registry written ({place}); wine: {}",
-            win32::is_wine()
-        ));
+        log_line(&format!("registry written ({place}); wine: {wine}"));
 
         // Remember the game folder; the rest of the file stays as written.
-        if existing.is_none() || saved.game.as_ref() != Some(&game) {
+        if writable && (existing.is_none() || saved.game.as_ref() != Some(&game)) {
             let text = config::set_key(file_text, "game", &game.display().to_string());
-            if let Err(e) = fs::write(&settings_path, text) {
+            if let Err(e) = fsx::write_atomic(&settings_path, text) {
                 log_line(&format!(
                     "warning: cannot write {}: {e}",
                     settings_path.display()
@@ -260,7 +341,7 @@ mod app {
 
         let mut skip = settings.skipped_fixes();
         // The joystick panel works on Windows; only Wine needs F24.
-        if !win32::is_wine() {
+        if !wine {
             skip.push("F24");
         }
         // These fixes need the hook library next to the launcher.
@@ -338,7 +419,7 @@ mod app {
                 }),
             |cave| {
                 let mut writes = prepare(&image, edition.fixes, &skip, cave)?;
-                let pads = win32::xinput_pads();
+                let pads: Vec<u32> = xinput::pads().iter().map(|p| p.slot).collect();
                 log_line(&if pads.is_empty() {
                     "XInput pads: none (rumble and separate trigger pedals need an Xbox-style pad; on 8BitDo pads use X-input mode)".to_string()
                 } else {
@@ -428,10 +509,10 @@ mod app {
             let _ = std::fs::remove_file(&crash);
         }
         if settings.rumble_strength() > 0 {
-            win32::stop_rumble();
+            xinput::stop_rumble();
         }
-        match runtime::mirror(&rt_save, &saves) {
-            Ok(n) => log_line(&format!("saves: {n} files written back")),
+        match mirror.after() {
+            Ok(copied) => log_line(&format!("saves: {} files written back", copied.len())),
             Err(e) => log_line(&format!(
                 "warning: saves not written back to {}: {e}",
                 saves.display()

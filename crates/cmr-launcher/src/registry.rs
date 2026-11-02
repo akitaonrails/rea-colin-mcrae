@@ -1,16 +1,11 @@
 //! The registry values the game reads at startup.
 //!
 //! Key: `HKLM\SOFTWARE\Codemasters\Rally\1.00` in the 32-bit view
-//! (`WOW6432Node` on 64-bit Windows). Missing `Language` or `Hardware` makes
+//! (`WOW6432Node` on 64-bit Windows), or its HKCU VirtualStore twin when
+//! HKLM is not writable without administrator rights (`rea_launcher_win32::reg`). Missing `Language` or `Hardware` makes
 //! the game read uninitialized memory, so both always exist after a launch.
 
 pub const KEY: &str = r"SOFTWARE\Codemasters\Rally\1.00";
-
-/// Where a 32-bit, unmanifested process's HKLM\SOFTWARE writes and reads are
-/// redirected when UAC virtualization is active: used when HKLM itself is
-/// not writable without administrator rights.
-pub const VIRTUAL_STORE_KEY: &str =
-    r"Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Codemasters\Rally\1.00";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum When {

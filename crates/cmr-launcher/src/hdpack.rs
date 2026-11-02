@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
+use rea_launcher::identify;
 
 /// Where the pack `pack` is installed under `root`, installing it first if
 /// needed. Returns the folder holding the `x2` and `x4` sets.
@@ -18,10 +18,7 @@ pub fn install(pack: &Path, root: &Path) -> Result<PathBuf, String> {
     if lines.next() != Some(cmr_hdpack::HEADER) {
         return Err(format!("{}: not an HD art pack", pack.display()));
     }
-    let id: String = Sha256::digest(list.as_bytes())[..8]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let id = identify::hex(&identify::sha256(list.as_bytes())[..8]);
     let dest = root.join(&id);
     let done = dest.join("installed");
     if done.is_file() {

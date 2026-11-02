@@ -12,12 +12,12 @@ name = "CMRLauncher"
 path = "src/main.rs"
 
 [dependencies]
-sha2.workspace = true
 cmr-hdpack = { path = "../cmr-hdpack" }
+rea-launcher.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-eframe = { version = "0.37", default-features = false, features = ["glow"] }
-jpeg-decoder = { version = "0.3", default-features = false }
+rea-launcher-win32.workspace = true
+rea-launcher-ui.workspace = true
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
@@ -38,3 +38,8 @@ features = [
 
 [dev-dependencies]
 png = "0.18"
+# The settings window is tested headless (egui_kittest), on the host and
+# under Wine.
+rea-launcher-ui = { workspace = true, features = ["testing"] }
+# report's routing table (`audience`) is tested on the host too.
+rea-launcher-win32.workspace = true
