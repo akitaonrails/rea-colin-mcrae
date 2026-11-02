@@ -134,6 +134,21 @@ for case in 0:0 4:0 3:1 1:1; do
   if rea_settings > /dev/null; then got=0; else got=1; fi
   if [ "$got" = "${case#*:}" ]; then ok "settings exit ${case%:*} -> $got"; else fail "settings exit ${case%:*} gave $got"; fi
 done
+# Exit 3 is also a second launcher refused while another one (or its game)
+# holds the prefix: waiting for the prefix's wineserver would wait for that
+# game. Nothing follows a 3, so nothing waits; Play still waits.
+cat > "$T/fake-run" <<'FAKE'
+#!/bin/sh
+case "$*" in *"--settings --linux"*) echo "$*" > "$T/settings"; exit "$(cat "$T/rc")" ;; esac
+case "$*" in *"wineserver -w"*) echo waited >> "$T/waits" ;; esac
+exit 0
+FAKE
+for case in 3:0 0:1; do
+  : > "$T/waits"; echo "${case%:*}" > "$T/rc"
+  rea_settings > /dev/null
+  n=$(wc -l < "$T/waits" | tr -d ' ')
+  if [ "$n" = "${case#*:}" ]; then ok "settings exit ${case%:*}: $n wineserver waits"; else fail "settings exit ${case%:*}: $n wineserver waits"; fi
+done
 case "$(cat "$T/settings")" in
   *SDL_*) fail "the window got the game's SDL settings" ;;
   *"wine $REA_EXE --settings --linux"*) ok "the window is the launcher's own" ;;

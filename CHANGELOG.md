@@ -53,3 +53,6 @@ described on the GitHub releases page.
   drawn at the look's size (Steam Deck 1280×800 in a 640×480 screen).
   gamescope now gets the look's size: Steam Deck 1280×800, Enhanced the
   screen, Original 640×480; `--resolution` still wins.
+- `cmr-play`: a second start refused because another launcher holds the
+  prefix no longer waits for that launcher's game to end before it
+  returns.
