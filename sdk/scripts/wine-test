@@ -1,0 +1,121 @@
+#!/bin/sh
+# Runs `cargo test` for a Windows GNU target under Wine, headless.
+#
+#   scripts/wine-test [--target TRIPLE] [cargo test args...] [-- test args...]
+#   scripts/wine-test --failures-from LOG     names the failures in a saved log
+#
+# Run it from the root of the Cargo workspace to test (the SDK, or a
+# launcher through its vendored sdk/scripts/wine-test), e.g.
+#   scripts/wine-test --locked --workspace
+#   sdk/scripts/wine-test --target x86_64-pc-windows-gnu --locked
+#
+# Target: --target or REA_WINE_TARGET, i686-pc-windows-gnu (default) or
+# x86_64-pc-windows-gnu. Needs that MinGW toolchain, lld and Wine (WoW64
+# runs both) on PATH. Paths: build output in $CARGO_TARGET_DIR (default
+# <workspace>/target/wine), the Wine prefix in $REA_WINE_TEST_PREFIX
+# (default <workspace>/target/wine/prefix); both are absolute once resolved,
+# so they don't depend on $HOME (which differs inside a distrobox).
+#
+# No window ever opens: the display variables are cleared, and the private
+# prefix uses Wine's null graphics driver (HKCU\Software\Wine\Drivers
+# Graphics=null) with the crash dialog off. Every failing test is named:
+# from cargo's "failures:" lists when a test binary reports normally, and by
+# rerunning each test alone when a binary aborted (a panic can abort the
+# whole binary under Wine).
+set -eu
+
+# Prints "FAIL <test>" for every test in a cargo test log's failures lists.
+failures_from() {
+  tr -d '\r' <"$1" | awk '
+    /^failures:$/ { inlist = 1; next }
+    inlist && /^    [^ ]/ { sub(/^ +/, ""); print "FAIL " $0; next }
+    inlist && !/^[ \t]*$/ { inlist = 0 }
+  ' | sort -u
+}
+
+# Prints the test executables cargo reports as aborted: not exit status 101
+# (101 is a normal "some tests failed" exit, already named by failures_from).
+aborted_from() {
+  tr -d '\r' <"$1" | grep 'process didn.t exit successfully: `wine ' |
+    grep -v '(exit status: 101)$' | sed -n 's/.*`wine \([^`]*\.exe\).*/\1/p' | sort -u
+}
+
+if [ "${1:-}" = --failures-from ]; then
+  [ $# -eq 2 ] && [ -f "$2" ] || { echo "usage: $0 --failures-from LOG" >&2; exit 2; }
+  failures_from "$2"
+  aborted_from "$2" | sed 's/^/ABORTED /'
+  exit 0
+fi
+
+# Split our --target out of the cargo arguments; keep everything else in order.
+target=${REA_WINE_TARGET:-i686-pc-windows-gnu}
+n=$# i=0 passthrough=''
+while [ "$i" -lt "$n" ]; do
+  a=$1; shift; i=$((i + 1))
+  if [ -n "$passthrough" ]; then set -- "$@" "$a"; continue; fi
+  case $a in
+    --target)
+      [ "$i" -lt "$n" ] || { echo "wine-test: --target needs a value" >&2; exit 2; }
+      target=$1; shift; i=$((i + 1)) ;;
+    --target=*) target=${a#--target=} ;;
+    --) passthrough=1; set -- "$@" "$a" ;;
+    *) set -- "$@" "$a" ;;
+  esac
+done
+case $target in
+  i686-pc-windows-gnu | x86_64-pc-windows-gnu) ;;
+  *) echo "wine-test: unsupported target $target (i686-pc-windows-gnu or x86_64-pc-windows-gnu)" >&2; exit 2 ;;
+esac
+# One test at a time: tests share the prefix's registry and files.
+if [ -n "$passthrough" ]; then set -- "$@" --test-threads=1; else set -- "$@" -- --test-threads=1; fi
+
+root=$(pwd -P)
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target/wine}"
+case $CARGO_TARGET_DIR in /*) ;; *) CARGO_TARGET_DIR=$root/$CARGO_TARGET_DIR ;; esac
+prefix=${REA_WINE_TEST_PREFIX:-$CARGO_TARGET_DIR/prefix}
+case $prefix in /*) ;; *) prefix=$root/$prefix ;; esac
+runner_var=CARGO_TARGET_$(printf '%s' "$target" | tr 'a-z-' 'A-Z_')_RUNNER
+export "$runner_var=wine"
+export WINEPREFIX="$prefix" WINEDEBUG=-all WINEDLLOVERRIDES="winemenubuilder.exe=d"
+unset DISPLAY WAYLAND_DISPLAY
+for tool in cargo wine wineboot wineserver; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "wine-test: $tool is not on PATH" >&2; exit 2; }
+done
+echo "wine-test: $target, prefix $prefix, build $CARGO_TARGET_DIR" >&2
+
+# The private prefix, set up once: no crash dialog, and Wine's null
+# graphics driver (there is never a display here), so tests that create
+# windows run without each one setting it. The marker lists what is done,
+# so a prefix from an older wine-test gets the missing settings once.
+marker=$prefix/.rea-headless
+if [ ! -f "$marker" ]; then
+  mkdir -p "$prefix"
+  wineboot -i >/dev/null 2>&1 || true
+  wine reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f >/dev/null 2>&1 || true
+  : >"$marker"
+fi
+if ! grep -qx 'graphics=null' "$marker" 2>/dev/null; then
+  wine reg add 'HKCU\Software\Wine\Drivers' /v Graphics /t REG_SZ /d null /f >/dev/null 2>&1 || true
+  echo 'graphics=null' >>"$marker"
+fi
+wineserver -w || true
+
+log=$(mktemp "${TMPDIR:-/tmp}/rea-wine-test.XXXXXX")
+trap 'rm -f "$log"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# --no-fail-fast: every test binary runs, so every failure gets a name.
+if cargo test --target "$target" --no-fail-fast "$@" >"$log" 2>&1; then
+  grep -E '^test result' "$log" || true
+  exit 0
+fi
+grep -E '^test result|^error' "$log" || tail -20 "$log"
+failures_from "$log"
+aborted_from "$log" | while IFS= read -r exe; do
+  echo "aborted: $exe; running its tests one by one" >&2
+  wine "$exe" --list 2>/dev/null | tr -d '\r' | sed -n 's/: test$//p' | while IFS= read -r t; do
+    wine "$exe" --exact "$t" --test-threads=1 >/dev/null 2>&1 || echo "FAIL $t"
+  done
+done
+exit 1

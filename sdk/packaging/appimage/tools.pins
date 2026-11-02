@@ -1,0 +1,16 @@
+# Tools for packaging/appimage-wine.sh, in pins.sh format:
+#   name url sha256 [fallback-url ...]
+# Moving the Wine pin means updating appimage/wine/SOURCE.txt too (the
+# builder refuses a SOURCE.txt that names another Wine version).
+
+# Wine 11.20 (LGPL-2.1+), Kron4ek's portable WoW64 build of the unmodified
+# WineHQ sources: 32-bit games need no 32-bit system libraries.
+wine https://github.com/Kron4ek/Wine-Builds/releases/download/11.20/wine-11.20-amd64-wow64.tar.xz 482a493c755dcea776199b86560e0fb0f969bb0275c67d88120b0b35b0df34b9
+
+# appimagetool 1.9.1 (MIT), packs the AppDir.
+appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+
+# AppImage type2 runtime 20251108 (MIT), the loader at the front of the
+# AppImage. A dated release: `continuous` is rebuilt in place, which breaks
+# a checksum pin (and appimagetool would otherwise fetch the latest).
+appimage-runtime https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d

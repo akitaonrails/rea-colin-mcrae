@@ -1,0 +1,146 @@
+#!/bin/sh
+# rea-launcher-sdk scripts/clean: frees the disk space a task's builds and
+# scratch files took, inside one repository (a launcher or the SDK).
+#
+#   clean [--yes] [--keep PATH]... [--work-all] [repo]
+#
+# Dry run by default: lists each candidate with its size, and the total.
+# --yes removes exactly those paths. Candidates:
+#   target/  dist/       build output (target/wine/ holds the Wine test prefix)
+#   .work/ entries listed in .work/.task-created
+#       The manifest convention: whenever an agent creates scratch under
+#       .work/ for the current task, it appends that path (repo-relative,
+#       e.g. `.work/probe-2026-11-02`) to .work/.task-created, one per line
+#       (# comments allowed). Anything else in .work/ is kept: it may be
+#       investigation evidence from earlier sessions.
+#   --work-all  all of .work/ (warns: it may hold evidence the user wants)
+#   --keep PATH never touch PATH (repeatable; a candidate holding it is skipped)
+#
+# Every candidate must be inside the repository (after resolving links),
+# ignored by Git and untracked; a symlink pointing out of the repository is
+# refused. Any refusal removes nothing and exits 1. Never runs `git clean`,
+# never expands a glob beyond this list. See docs/STANDARDS.md, "Clean up
+# after yourself".
+set -eu
+die() { echo "clean: $*" >&2; exit 2; }
+usage() { echo "usage: $0 [--yes] [--keep PATH]... [--work-all] [repo]" >&2; exit 2; }
+
+YES='' WORK_ALL='' KEEPS=''
+NL='
+'
+while [ $# -gt 0 ]; do
+  case $1 in
+    --yes) YES=1; shift ;;
+    --work-all) WORK_ALL=1; shift ;;
+    --keep) [ $# -ge 2 ] || usage; KEEPS="$KEEPS$2$NL"; shift 2 ;;
+    -h | --help) usage ;;
+    -*) die "unknown option $1" ;;
+    *) break ;;
+  esac
+done
+[ $# -le 1 ] || usage
+[ -d "${1:-.}" ] || die "no folder ${1:-.}"
+ROOT=$(git -C "${1:-.}" rev-parse --show-toplevel 2>/dev/null) || die "${1:-.} is not inside a git work tree"
+ROOT=$(cd "$ROOT" && pwd -P)
+
+canon() { # absolute path (always: no "--" needed, busybox lacks it) with every link resolved
+  case $1 in /*) ;; *) return 1 ;; esac
+  if command -v realpath >/dev/null 2>&1; then realpath "$1"; else readlink -f "$1"; fi
+}
+
+T=$(mktemp -d "${TMPDIR:-/tmp}/rea-clean.XXXXXX")
+trap 'rm -rf "$T"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+refused=0
+refuse() { echo "clean: refused: $1: $2" >&2; refused=$((refused + 1)); }
+
+# Candidate list, repo-relative, one per line.
+: > "$T/cand"
+for p in target dist; do
+  if [ -e "$ROOT/$p" ] || [ -L "$ROOT/$p" ]; then echo "$p" >> "$T/cand"; fi
+done
+MANIFEST=$ROOT/.work/.task-created
+if [ -n "$WORK_ALL" ]; then
+  if [ -e "$ROOT/.work" ]; then
+    echo "clean: warning: --work-all includes all of .work/, which may hold investigation evidence (REA snapshots, notes) the user wants" >&2
+    echo ".work" >> "$T/cand"
+  fi
+elif [ -f "$MANIFEST" ]; then
+  awk '!/^[ \t]*(#|$)/ { sub(/^\.\//, ""); sub(/\/+$/, ""); if (!seen[$0]++) print }' "$MANIFEST" > "$T/manifest"
+  while IFS= read -r p; do
+    case $p in
+      */../* | */.. | .work/.task-created) refuse "$p" "a .work/.task-created entry must name a path inside .work/" ;;
+      .work/?*)
+        if [ -e "$ROOT/$p" ] || [ -L "$ROOT/$p" ]; then echo "$p" >> "$T/cand"; else echo "clean: already gone: $p" >&2; fi ;;
+      *) refuse "$p" "a .work/.task-created entry must name a path inside .work/" ;;
+    esac
+  done < "$T/manifest"
+fi
+
+# Kept paths, canonical.
+: > "$T/keep"
+printf '%s' "$KEEPS" | while IFS= read -r k; do
+  [ -n "$k" ] || continue
+  case $k in /*) ;; *) k=$ROOT/$k ;; esac
+  if [ -e "$k" ] || [ -L "$k" ]; then canon "$k"; else printf '%s\n' "$k"; fi
+done > "$T/keep"
+
+: > "$T/ok"
+while IFS= read -r rel; do
+  abs=$ROOT/$rel
+  # The path itself, or a link anywhere on the way, must stay in the repo.
+  real=$(canon "$abs") || { refuse "$rel" "cannot resolve"; continue; }
+  case $real in
+    "$ROOT"/*) ;;
+    *) refuse "$rel" "resolves outside the repository ($real)"; continue ;;
+  esac
+  case $real/ in "$ROOT"/.git/*) refuse "$rel" "inside .git"; continue ;; esac
+  if [ -n "$(git --literal-pathspecs -C "$ROOT" ls-files -- "$rel")" ]; then
+    refuse "$rel" "Git tracks files in it"; continue
+  fi
+  if ! git -C "$ROOT" check-ignore -q -- "$rel"; then
+    refuse "$rel" "not ignored by Git"; continue
+  fi
+  skip=''
+  while IFS= read -r k; do
+    [ -n "$k" ] || continue
+    case $k/ in "$real"/*) skip=1 ;; esac
+  done < "$T/keep"
+  if [ -n "$skip" ]; then echo "clean: kept (--keep): $rel" >&2; continue; fi
+  echo "$rel" >> "$T/ok"
+done < "$T/cand"
+
+if [ "$refused" -gt 0 ]; then
+  echo "clean: $refused refusal(s); nothing removed" >&2
+  exit 1
+fi
+if [ ! -s "$T/ok" ]; then
+  echo "nothing to clean in $ROOT"
+  exit 0
+fi
+
+# Sizes (du -k is POSIX), then the total in human units.
+human() { awk -v k="$1" 'BEGIN { u = "KMGT"; i = 1; while (k >= 1024 && i < 4) { k /= 1024; i++ } printf (i == 1 ? "%d%s" : "%.1f%s"), k, substr(u, i, 1) }'; }
+total=0
+if [ -n "$YES" ]; then echo "removing from $ROOT:"; else echo "would remove from $ROOT (dry run; --yes removes):"; fi
+while IFS= read -r rel; do
+  if [ -L "$ROOT/$rel" ]; then k=0; else k=$(du -sk -- "$ROOT/$rel" | awk '{ print $1 }'); fi
+  total=$((total + k))
+  printf '  %8s  %s\n' "$(human "$k")" "$rel"
+done < "$T/ok"
+printf '  %8s  total\n' "$(human "$total")"
+[ -n "$YES" ] || exit 0
+
+while IFS= read -r rel; do
+  if [ -L "$ROOT/$rel" ]; then rm -f -- "$ROOT/$rel"; else rm -rf -- "${ROOT:?}/$rel"; fi
+done < "$T/ok"
+# Drop removed entries from the manifest; delete it once empty.
+if [ -f "$MANIFEST" ]; then
+  awk 'NR == FNR { gone[$0] = 1; next } { p = $0; sub(/^\.\//, "", p); sub(/\/+$/, "", p) } !(p in gone)' \
+    "$T/ok" "$MANIFEST" > "$T/manifest.new"
+  if grep -q '^[^#]' "$T/manifest.new" 2>/dev/null; then cat "$T/manifest.new" > "$MANIFEST"; else rm -f "$MANIFEST"; fi
+fi
+echo "freed about $(human "$total")"

@@ -1,0 +1,228 @@
+#!/bin/sh
+# rea-launcher-sdk scripts/sdk-bump: moves a launcher repository to another
+# SDK tag in one step.
+#
+#   sdk-bump [--force] [--no-cargo] [--notes FILE] [--since vA.B.C] vX.Y.Z [launcher-repo]
+#
+# In <launcher-repo> (default: the current folder) it
+#   1. rewrites the tag of every rea-launcher-sdk git dependency in every
+#      Cargo.toml (inline tables and [dependencies.x] tables),
+#   2. runs `cargo update -p` for the SDK crates present in Cargo.lock,
+#   3. re-vendors sdk/ with sdk-sync from a checkout of that tag,
+#   4. moves every `akitaonrails/rea-launcher-sdk/.github/workflows/*.yml@…`
+#      to @vX.Y.Z,
+#   5. prints the CHANGELOG **Migration** items between the launcher's old
+#      SDK version and the new one (also to FILE with --notes).
+#
+# The SDK checkout: this SDK itself when it is a clean git checkout at the
+# tag; otherwise a clone kept in $REA_SDK_CACHE (default
+# ${XDG_CACHE_HOME:-~/.cache}/rea-launcher-sdk/checkout), fetched from
+# $REA_SDK_URL, else from this SDK checkout when it has the tag, else
+# https://github.com/akitaonrails/rea-launcher-sdk.
+#
+# Idempotent. Refuses a dirty work tree and a downgrade unless --force.
+# --no-cargo skips step 2 (then run cargo update yourself). --since lists
+# the Migration items after vA.B.C instead of after the launcher's current
+# version (sdk-update.yml: a branch already bumped, notes from the base).
+set -eu
+die() { echo "sdk-bump: $*" >&2; exit 1; }
+usage() { echo "usage: $0 [--force] [--no-cargo] [--notes FILE] [--since vA.B.C] vX.Y.Z [launcher-repo]" >&2; exit 2; }
+
+FORCE='' NO_CARGO='' NOTES='' SINCE=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    --force) FORCE=1; shift ;;
+    --no-cargo) NO_CARGO=1; shift ;;
+    --notes) [ $# -ge 2 ] || usage; NOTES=$2; shift 2 ;;
+    --since) [ $# -ge 2 ] || usage; SINCE=$2; shift 2 ;;
+    -h | --help) usage ;;
+    -*) die "unknown option $1" ;;
+    *) break ;;
+  esac
+done
+[ $# -ge 1 ] && [ $# -le 2 ] || usage
+NEW=$1
+case $NEW in
+  v[0-9]*.[0-9]*.[0-9]*) ;;
+  *) die "want a tag like v1.2.3, got '$NEW'" ;;
+esac
+case $NEW in *[!A-Za-z0-9.+-]*) die "unsafe tag '$NEW'" ;; esac
+case $SINCE in '' | v[0-9]*.[0-9]*.[0-9]*) ;; *) die "--since wants a tag like v1.2.3" ;; esac
+[ -d "${2:-.}" ] || die "no launcher repository ${2:-.}"
+REPO=$(cd "${2:-.}" && pwd -P)
+HERE=$(cd "$(dirname "$0")/.." && pwd -P)
+[ "$REPO" != "$HERE" ] || die "run it on a launcher repository, not on the SDK"
+git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$REPO is not a git work tree"
+if [ -z "$FORCE" ] && [ -n "$(git -C "$REPO" status --porcelain)" ]; then
+  die "$REPO has uncommitted changes (commit or stash them, or pass --force)"
+fi
+
+T=$(mktemp -d "${TMPDIR:-/tmp}/sdk-bump.XXXXXX")
+trap 'rm -rf "$T"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Prints -1, 0 or 1 comparing two vX.Y.Z (numeric fields only).
+vercmp() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    sub(/^v/, "", a); sub(/^v/, "", b); split(a, x, "."); split(b, y, ".")
+    for (i = 1; i <= 3; i++) {
+      if (x[i] + 0 < y[i] + 0) { print -1; exit }
+      if (x[i] + 0 > y[i] + 0) { print 1; exit }
+    }
+    print 0
+  }'
+}
+
+# Cargo.toml files of the launcher (not build output, not the vendored SDK).
+find "$REPO" \( -name target -o -name .git -o -path "$REPO/sdk" \) -prune -o \
+  -name Cargo.toml -type f -print > "$T/tomls"
+
+# The launcher's current SDK version: sdk/VERSION, else the first Cargo tag.
+OLD=''
+if [ -f "$REPO/sdk/VERSION" ]; then
+  OLD=$(sed -n 's/^tag=\(v[0-9][0-9.]*\)$/\1/p' "$REPO/sdk/VERSION")
+fi
+if [ -z "$OLD" ]; then
+  while IFS= read -r f; do
+    OLD=$(grep 'akitaonrails/rea-launcher-sdk' "$f" | sed -n 's/.*tag *= *"\(v[0-9][0-9.]*\)".*/\1/p' | head -n 1)
+    [ -z "$OLD" ] || break
+  done < "$T/tomls"
+fi
+if [ -n "$OLD" ] && [ "$(vercmp "$NEW" "$OLD")" = -1 ] && [ -z "$FORCE" ]; then
+  die "$NEW is older than the launcher's $OLD (pass --force to downgrade)"
+fi
+echo "sdk-bump: ${OLD:-unknown} -> $NEW in $REPO"
+
+# 0. An SDK checkout at the tag.
+if [ -d "$HERE/.git" ] && [ -f "$HERE/scripts/sdk-sync" ] \
+  && [ "$(git -C "$HERE" describe --tags --exact-match HEAD 2>/dev/null || true)" = "$NEW" ] \
+  && [ -z "$(git -C "$HERE" status --porcelain 2>/dev/null)" ]; then
+  CO=$HERE
+else
+  if [ -n "${REA_SDK_URL:-}" ]; then
+    SRC=$REA_SDK_URL
+  elif [ -d "$HERE/.git" ] && git -C "$HERE" rev-parse -q --verify "refs/tags/$NEW" >/dev/null 2>&1; then
+    SRC=$HERE
+  else
+    SRC=https://github.com/akitaonrails/rea-launcher-sdk
+  fi
+  CO=${REA_SDK_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/rea-launcher-sdk/checkout}
+  if [ ! -d "$CO/.git" ]; then
+    mkdir -p "$(dirname "$CO")"
+    git clone --quiet --no-checkout "$SRC" "$CO" || die "cannot clone $SRC"
+  fi
+  git -C "$CO" fetch --quiet --force --tags "$SRC" || die "cannot fetch tags from $SRC"
+  git -C "$CO" -c advice.detachedHead=false checkout --quiet --force --detach "refs/tags/$NEW" \
+    || die "no tag $NEW in $SRC"
+fi
+[ -f "$CO/scripts/sdk-sync" ] || die "SDK $NEW has no scripts/sdk-sync"
+echo "sdk-bump: SDK $NEW from $CO"
+
+# 1. Cargo.toml git dependencies.
+while IFS= read -r f; do
+  grep -q 'akitaonrails/rea-launcher-sdk' "$f" || continue
+  awk -v new="$NEW" '
+    /^[ \t]*\[/ { table_sdk = 0 }
+    /akitaonrails\/rea-launcher-sdk/ {
+      if ($0 ~ /tag[ \t]*=[ \t]*"/) sub(/tag[ \t]*=[ \t]*"[^"]*"/, "tag = \"" new "\"")
+      else if ($0 ~ /^[ \t]*git[ \t]*=/) table_sdk = 1
+      if ($0 ~ /(rev|branch)[ \t]*=/) printf "sdk-bump: warning: %s:%d pins the SDK by rev/branch, left as is\n", FILENAME, NR > "/dev/stderr"
+      print; next
+    }
+    table_sdk && /^[ \t]*tag[ \t]*=/ { sub(/"[^"]*"/, "\"" new "\"") }
+    { print }
+  ' "$f" > "$T/toml"
+  if ! cmp -s "$T/toml" "$f"; then
+    cat "$T/toml" > "$f"
+    echo "sdk-bump: ${f#"$REPO"/}: SDK tag -> $NEW"
+  fi
+done < "$T/tomls"
+
+# 2. Cargo.lock.
+if [ -n "$NO_CARGO" ]; then
+  echo "sdk-bump: skipped cargo update (--no-cargo)"
+elif [ -f "$REPO/Cargo.lock" ]; then
+  command -v cargo >/dev/null 2>&1 || die "cargo is not on PATH (or pass --no-cargo)"
+  set --
+  for c in rea-launcher rea-launcher-win32 rea-launcher-ui; do
+    if grep -qx "name = \"$c\"" "$REPO/Cargo.lock"; then set -- "$@" -p "$c"; fi
+  done
+  if [ $# -gt 0 ]; then
+    (cd "$REPO" && cargo update "$@") || die "cargo update failed"
+  fi
+fi
+
+# 3. Vendored files, from the new version's own sdk-sync.
+sh "$CO/scripts/sdk-sync" --tag "$NEW" "$REPO"
+
+# 4. Reusable workflow references.
+for f in "$REPO"/.github/workflows/*.yml "$REPO"/.github/workflows/*.yaml; do
+  [ -f "$f" ] || continue
+  sed 's#\(akitaonrails/rea-launcher-sdk/\.github/workflows/[A-Za-z0-9._-]*\.ya\{0,1\}ml@\)[A-Za-z0-9._/-]*#\1'"$NEW"'#g' "$f" > "$T/wf"
+  if ! cmp -s "$T/wf" "$f"; then
+    cat "$T/wf" > "$f"
+    echo "sdk-bump: ${f#"$REPO"/}: workflows -> @$NEW"
+  fi
+done
+
+# 5. Migration items of every version after OLD (or --since) up to NEW.
+FROM=${SINCE:-$OLD}
+: > "$T/notes"
+if [ -f "$CO/CHANGELOG.md" ]; then
+  awk -v old="${FROM#v}" -v new="${NEW#v}" '
+    # Per release in range: its "### Migration" section when it has one;
+    # else (older changelogs) every bullet that mentions **Migration**.
+    function cmp(a, b,   x, y, i) {
+      split(a, x, "."); split(b, y, ".")
+      for (i = 1; i <= 3; i++) {
+        if (x[i] + 0 < y[i] + 0) return -1
+        if (x[i] + 0 > y[i] + 0) return 1
+      }
+      return 0
+    }
+    function end_bullet(   i) {
+      if (nb && bullet_mig) for (i = 1; i <= nb; i++) inl[++ni] = b[i]
+      nb = 0; bullet_mig = 0
+    }
+    function flush(   i) {
+      end_bullet()
+      if (inrange && (ns || ni)) {
+        if (shown) print ""
+        print "### v" ver; shown = 1
+        if (ns) for (i = 1; i <= ns; i++) print sec[i]
+        else for (i = 1; i <= ni; i++) print inl[i]
+      }
+      ns = 0; ni = 0; insec = 0
+    }
+    /^## / {
+      flush()
+      h = $0; sub(/^##[ \t]+/, "", h); sub(/[ \t].*$/, "", h)
+      gsub(/\[/, "", h); gsub(/\]/, "", h); sub(/^v/, "", h)
+      ver = h
+      inrange = (h ~ /^[0-9]+\.[0-9]+\.[0-9]+/) && (old == "" || cmp(h, old) > 0) && cmp(h, new) <= 0
+      next
+    }
+    /^### / { end_bullet(); insec = ($0 ~ /^### Migration[ \t]*$/); next }
+    !inrange { next }
+    insec { if ($0 !~ /^[ \t]*$/) sec[++ns] = $0; next }
+    /^- / { end_bullet(); b[++nb] = $0; bullet_mig = ($0 ~ /\*\*Migration/); next }
+    nb && /^  +[^ ]/ { b[++nb] = $0; if ($0 ~ /\*\*Migration/) bullet_mig = 1; next }
+    { end_bullet() }
+    END { flush() }
+  ' "$CO/CHANGELOG.md" > "$T/notes"
+fi
+if [ -s "$T/notes" ]; then
+  echo
+  echo "Migration items from ${FROM:-the start} to $NEW (rea-launcher-sdk CHANGELOG.md):"
+  cat "$T/notes"
+else
+  echo
+  echo "No Migration items between ${FROM:-the start} and $NEW."
+fi
+if [ -n "$NOTES" ]; then cp "$T/notes" "$NOTES"; fi
+
+echo
+echo "Changed files:"
+git -C "$REPO" status --short

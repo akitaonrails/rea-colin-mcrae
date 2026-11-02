@@ -2,7 +2,9 @@
 # Plays Colin McRae Rally on Linux through Wine and gamescope.
 #
 #   cmr-play           show the settings window, then start the game
-#   cmr-play --play    start the game with the saved settings (no window)
+#   cmr-play --play    start the game with the saved settings (no window);
+#                      launcher flags may follow for one run, e.g.
+#                      --scaler fsr --resolution 1280x960
 #   cmr-play stop      end the game
 #   cmr-play status    running or idle
 #
@@ -16,141 +18,64 @@
 #   CMR_RUN       a wrapper that runs wine and gamescope, e.g.
 #                 "distrobox enter gaming --" when they live in a container
 #   CMR_WAIT      set: wait for the game to end (the AppImage sets it)
+#
+# The session, GPU choice, Wine prefix and gamescope handling are the
+# shared rea-launcher-sdk play library (rea-play.sh, beside this script in
+# a package, else the repository's vendored sdk/); this script holds the
+# game's own settings.
 set -u
-HERE=$(dirname "$(readlink -f "$0")")
-PREFIX=${CMR_PREFIX:-$HOME/.local/share/cmr-launcher/prefix}
-LAUNCHER=${CMR_LAUNCHER:-}
-if [ -z "$LAUNCHER" ]; then
-  for p in "$HERE/CMRLauncher.exe" "$HERE/../CMRLauncher.exe"; do
-    [ -f "$p" ] && LAUNCHER=$(readlink -f "$p") && break
-  done
+
+_fonly=${REA_FUNCTIONS_ONLY:-}
+_here=$(dirname "$(readlink -f "$0")")
+[ "$_fonly" = 1 ] && [ -n "${REA_PLAY_HERE:-}" ] && _here=$REA_PLAY_HERE
+if [ -f "$_here/rea-play.sh" ]; then
+  . "$_here/rea-play.sh"
+elif [ -f "$_here/../sdk/rea-play.sh" ]; then
+  . "$_here/../sdk/rea-play.sh"
+else
+  echo "rea-play.sh not found next to $0 or in ../sdk (run scripts/sdk-sync)" >&2
+  exit 1
 fi
-RUN=${CMR_RUN:-}
-STATE=$HOME/.config/cmr-launcher
-mkdir -p "$STATE" "$PREFIX"
+REA_HERE=$_here REA_NAME=cmr-play
 
-# launcher.cfg is in the prefix user's AppData\Local\CMRLauncher.
-CFG=
-for d in "$PREFIX"/drive_c/users/*/AppData/Local/CMRLauncher; do
-  case "$d" in */users/Public/*|*'*'*) continue ;; esac
-  [ -d "$d" ] && CFG=$d/launcher.cfg
-done
-[ -z "$CFG" ] && CFG=$PREFIX/drive_c/users/$USER/AppData/Local/CMRLauncher/launcher.cfg
+# The player-facing CMR_* names, mapped onto the library's settings.
+REA_APP=cmr-launcher                  # ~/.config/cmr-launcher, the prefix name
+REA_EXE_NAME=CMRLauncher.exe
+REA_EXE_HINT=CMR_LAUNCHER
+REA_EXE=${CMR_LAUNCHER:-}
+REA_PREFIX=${CMR_PREFIX:-}
+REA_RUN=${CMR_RUN:-}
+# A launch returns at once (the lock remembers the session), unless
+# CMR_WAIT asks to wait for the game.
+REA_ALWAYS_WAIT=0
+REA_WAIT=${CMR_WAIT:-}
+# launcher.cfg: next to the launcher (a portable install or the AppImage),
+# or in the prefix user's AppData\Local\CMRLauncher.
+REA_CFG_APPDATA=CMRLauncher
+# The race resolution replaces the game's 640x480; unset, original or off
+# is the game's own 640x480, which gamescope then scales to the screen.
+REA_DEFAULT_SIZE=640x480
+REA_ORIGINAL_SIZE=640x480
+REA_ORIGINAL_WORDS="original off"
+# gamescope gets the game's size only (-w/-h) and fits it to the monitor,
+# as cmr-play always did.
+REA_GAMESCOPE_OUTPUT=0
+# The 1998 game reads pads through WinMM (Wine's joystick driver); it
+# never needed SDL settings of its own.
+REA_SDL_ENV=
+# The game's own DLLs are all it loads; the launcher adds its hook
+# library in memory (no override needed).
+REA_DLL_OVERRIDES=
+# The launcher returns once the game is up: wait for the game itself.
+REA_GAME_PROCS=Rally.exe
 
-get_key() { [ -f "$CFG" ] && sed -n "s|^$1 *= *||p" "$CFG" | tail -1; }
-LOCK=$STATE/running.pid
-# Running, or still starting: Rally.exe exists, or the gamescope session we
-# started is alive (the launcher copies files before Rally.exe appears).
-running() {
-  pgrep -x Rally.exe >/dev/null && return 0
-  [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK")" 2>/dev/null
-}
+# `cmr-play --play --scaler fsr --resolution 1280x960`: flags for one run.
+# The launcher reads them itself; the library lays the ones this script
+# reads too (gamescope's size and filter) over launcher.cfg for this run
+# only, never writing it.
+REA_HELPER_KEYS="scaler resolution"
 
-# The best GPU for the game, as environment assignments (none: the
-# default GPU). A player's own DRI_PRIME / __NV_PRIME_RENDER_OFFLOAD win.
-# - NVIDIA with its driver and OpenGL library: NVIDIA's render offload,
-#   which picks it over an integrated GPU (harmless when it drives the
-#   screen anyway).
-# - Several Mesa GPUs, the screen's one integrated (Intel, or less video
-#   memory than another): DRI_PRIME=1, the other one.
-# CMR_SYSFS replaces /sys (tests).
-gpu_env() {
-  [ -n "${DRI_PRIME:-}${__NV_PRIME_RENDER_OFFLOAD:-}" ] && return
-  sys=${CMR_SYSFS:-/sys}
-  n=0 nvidia= boot= boot_vram=0 other_vram=0
-  for d in "$sys"/class/drm/card*; do
-    case "${d##*/}" in *-*) continue ;; esac  # connectors (card0-DP-1)
-    [ -r "$d/device/vendor" ] || continue
-    n=$((n + 1))
-    vram=$(cat "$d/device/mem_info_vram_total" 2>/dev/null || echo 0)
-    [ "$(basename "$(readlink "$d/device/driver")")" = nvidia ] && nvidia=1
-    if [ "$(cat "$d/device/boot_vga" 2>/dev/null)" = 1 ]; then
-      boot=$(cat "$d/device/vendor"); boot_vram=$vram
-    elif [ "$vram" -gt "$other_vram" ]; then
-      other_vram=$vram
-    fi
-  done
-  if [ -n "$nvidia" ] && $RUN sh -c 'ldconfig -p 2>/dev/null | grep -q libGLX_nvidia.so.0'; then
-    echo "__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only"
-  elif [ "$n" -ge 2 ] && { [ "$boot" = 0x8086 ] || [ "$other_vram" -gt "$boot_vram" ]; }; then
-    echo "DRI_PRIME=1"
-  fi
-}
-
-start() {
-  if [ -z "$LAUNCHER" ] || [ ! -f "$LAUNCHER" ]; then
-    echo "CMRLauncher.exe not found next to cmr-play (or set CMR_LAUNCHER)"; exit 1
-  fi
-  res=$(get_key resolution); W=640; H=480
-  if [ -n "$res" ]; then W=${res%x*}; H=${res#*x}; fi
-  F=$(get_key scaler); F=${F:-linear}
-  inner=$STATE/inner.sh
-  cat > "$inner" <<INNER
-#!/bin/sh
-trap 'wineserver -k; exit' INT TERM HUP
-wine '$LAUNCHER' --no-window
-sleep 3; while pgrep -x Rally.exe >/dev/null; do sleep 1; done
-wineserver -k
-INNER
-  chmod +x "$inner"
-  # Already inside gamescope (a Steam Deck in Game Mode), or none installed:
-  # the game runs directly (a second gamescope inside one fails). Otherwise
-  # gamescope gives the game a landscape screen of the race size and scales
-  # it to the monitor, keeping its shape.
-  if [ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" ] || ! $RUN sh -c "command -v gamescope" >/dev/null 2>&1; then
-    echo "starting without a gamescope of our own"
-    launch sh "$inner"
-  else
-    echo "starting at ${W}x${H}, scaler $F"
-    launch gamescope -w "$W" -h "$H" -f -S fit -F "$F" -- "$inner"
-  fi
-}
-
-# Runs a command in the prefix: in the background, or with CMR_WAIT (the
-# AppImage, unmounted when its script ends) until it exits.
-launch() {
-  if [ -n "${CMR_WAIT:-}" ]; then
-    $RUN env WINEPREFIX="$PREFIX" $GPU "$@" > "$STATE/play.log" 2>&1
-  else
-    setsid $RUN env WINEPREFIX="$PREFIX" $GPU "$@" > "$STATE/play.log" 2>&1 < /dev/null &
-    echo $! > "$LOCK"
-  fi
-}
-
-# The settings window; its exit code says what to do next.
-settings() {
-  $RUN env WINEPREFIX="$PREFIX" $GPU wine "$LAUNCHER" --settings --linux 2>/dev/null
-  rc=$?
-  # The window ran on the desktop. Its wineserver lingers for a few seconds
-  # and is tied to the desktop's display; a game started meanwhile would
-  # join it and open there instead of in gamescope. Wait for it to end.
-  $RUN env WINEPREFIX="$PREFIX" wineserver -w 2>/dev/null
-  case $rc in
-    0|4) return 0 ;;  # Play pressed, or no window could be shown
-    *) return 1 ;;    # closed
-  esac
-}
-
-# Tests load the functions above without running anything.
-[ -n "${CMR_PLAY_FUNCTIONS_ONLY:-}" ] && return 0
-GPU=$(gpu_env)
-[ -n "$GPU" ] && echo "GPU: $GPU"
-
-case "${1:-}" in
-  "")
-    if running; then echo "already running"; exit 0; fi
-    if [ -z "$LAUNCHER" ] || [ ! -f "$LAUNCHER" ]; then
-      echo "CMRLauncher.exe not found next to cmr-play (or set CMR_LAUNCHER)"; exit 1
-    fi
-    settings || exit 0
-    start ;;
-  --play|start)
-    if running; then echo "already running"; else start; fi ;;
-  status) if running; then echo running; else echo idle; fi ;;
-  stop)
-    $RUN env WINEPREFIX="$PREFIX" wineserver -k 2>/dev/null
-    [ -f "$LOCK" ] && kill "$(cat "$LOCK")" 2>/dev/null
-    rm -f "$LOCK"
-    echo stopped ;;
-  *) echo "usage: $0 [--play|stop|status]"; exit 2 ;;
-esac
+rea_init || exit 1
+# Tests load the configuration and functions without running anything.
+[ "$_fonly" = 1 ] && return 0
+rea_main "$@"
