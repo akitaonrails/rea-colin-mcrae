@@ -7,10 +7,11 @@ source. Add a row before bundling anything new.
 
 | Component | Licence | Source |
 | --- | --- | --- |
+| `rea-launcher`, `rea-launcher-win32`, `rea-launcher-ui` (the shared launcher SDK; tag in `Cargo.toml`, vendored scripts in `sdk/`) | MIT OR Apache-2.0 | https://github.com/akitaonrails/rea-launcher-sdk |
 | `sha2` and its RustCrypto dependencies | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
 | `windows-sys` | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
-| `eframe`, `egui` and their dependencies (`winit`, `glutin`, `glow`, `ab_glyph`, …): the settings window | MIT OR Apache-2.0 (dependencies: MIT, Apache-2.0, Zlib, BSD; see `cargo tree`) | https://github.com/emilk/egui |
-| `jpeg-decoder` | MIT OR Apache-2.0 | https://github.com/image-rs/jpeg-decoder |
+| `eframe`, `egui` and their dependencies (`winit`, `glutin`, `glow`, `ab_glyph`, AccessKit, …): the settings window, through `rea-launcher-ui` | MIT OR Apache-2.0 (dependencies: MIT, Apache-2.0, Zlib, BSD; see `cargo tree`; `cargo deny check` keeps them to `deny.toml`'s list) | https://github.com/emilk/egui |
+| `jpeg-decoder` (the portrait, through `rea-launcher-ui`) | MIT OR Apache-2.0 | https://github.com/image-rs/jpeg-decoder |
 | `image`, `image-webp`, `png` and their dependencies: installing the HD art pack | MIT OR Apache-2.0 | https://github.com/image-rs/image |
 | Rust standard library | MIT OR Apache-2.0 | https://github.com/rust-lang/rust |
 | MinGW-w64 runtime (static parts linked by the GNU target) | ZPL-2.1 / public domain | https://www.mingw-w64.org |
@@ -25,12 +26,15 @@ source. Add a row before bundling anything new.
 
 None yet. Candidates and their state are in `docs/THIN_APP_PLAN.md`.
 
-## Bundled in the Linux AppImage (`packaging/appimage`)
+## Bundled in the Linux AppImage (`packaging/package.sh`, `sdk/packaging/appimage-wine.sh`)
+
+Pinned by URL and SHA-256 in `sdk/packaging/appimage/tools.pins`.
 
 | Component | Licence | Source |
 | --- | --- | --- |
 | Wine 11.20 (amd64, WoW64), Kron4ek's build of the unmodified WineHQ sources; licence and source notes inside the AppImage under `usr/share/doc/wine` | LGPL-2.1-or-later | https://dl.winehq.org/wine/source/11.x/wine-11.20.tar.xz, build scripts https://github.com/Kron4ek/Wine-Builds |
-| AppImage runtime (added by `appimagetool` 1.9.1) | MIT | https://github.com/AppImage/type2-runtime |
+| AppImage type2 runtime 20251108 and `appimagetool` 1.9.1 (builds it; not shipped) | MIT | https://github.com/AppImage/type2-runtime , https://github.com/AppImage/appimagetool |
+| `rea-play.sh`, the Linux play library beside `cmr-play` (zip and AppImage) | MIT OR Apache-2.0 | https://github.com/akitaonrails/rea-launcher-sdk |
 | The AppImage icon `packaging/appimage/cmr-launcher.png` | ours (MIT OR Apache-2.0), set in Barlow (OFL) | this repository |
 
 ## Settings window artwork and fonts (compiled into CMRLauncher.exe)
@@ -38,7 +42,14 @@ None yet. Candidates and their state are in `docs/THIN_APP_PLAN.md`.
 | File | Licence | Source |
 | --- | --- | --- |
 | `crates/cmr-launcher/assets/portrait.jpg` — Colin McRae, photo by Carolyn Williams (resized) | CC BY 2.0 (credited in the window) | https://commons.wikimedia.org/wiki/File:Colin_Mcrae_crop.jpg |
-| `crates/cmr-launcher/assets/fonts/Barlow-*.ttf`, `BarlowCondensed-*.ttf` | SIL OFL 1.1 (`assets/fonts/OFL.txt`) | https://github.com/jpt/barlow |
+| The Barlow fonts (Barlow Regular and SemiBold, Barlow Condensed SemiBold and Black Italic, by Jeremy Tribby), compiled in by `rea-launcher-ui` | SIL OFL 1.1 (shipped as `licenses/Barlow-OFL.txt`) | https://github.com/jpt/barlow |
+
+## README images and video (not shipped)
+
+| File | What | Licence | Source |
+| --- | --- | --- | --- |
+| `docs/images/launcher.png` | A screenshot of the settings window | ours (MIT OR Apache-2.0); shows the portrait above | this repository |
+| The showcase video and its poster (hosted outside the repository) | Gameplay recorded by the owner with the launcher: shows the game | gameplay footage of Colin McRae Rally (Codemasters) | linked from `README.md` |
 
 ## The cmr-hd study tool (built, not shipped)
 

@@ -3,6 +3,38 @@
 Observations from running the user's own game. Each entry: date, setup, what
 was seen. Static facts live in the parked reconstruction's documents (kept outside this repository) and local notes.
 
+## Pending real-game checks (rea-launcher-sdk v0.3.3 migration, 2026-11-02)
+
+The launcher moved onto the shared SDK. Host tests, the headless window
+tests and the Windows-target tests under Wine pass; none of the following
+has been seen in the real game yet:
+
+- A full launch from the new build (runtime sync through the SDK, the
+  suspended start and fixes unchanged): the log's fix lines and fills
+  should match 0.7's for the same settings (`tests/snapshots/`).
+- The saves mirror with its recorded state: saves from 0.7 come in at the
+  first start, a save made in a race reaches the saves folder, a session
+  killed before the write-back keeps its save at the next start.
+- One instance: a second start while the window is open brings it
+  forward; while the game runs it says the game is running. The game's
+  window title (`instance::GAME_WINDOW_TITLE`, assumed "Colin McRae
+  Rally") must differ from the launcher's ("Colin McRae Rally launcher").
+- Play-time errors (wrong game folder, unknown `Rally.exe`) show a dialog
+  under `cmr-play`, the AppImage and Proton.
+- `--look enhanced` / `--look steam_deck` from the command line play like
+  the window's looks (planned values are identical by test). Under
+  `cmr-play --play --look …` gamescope still takes its size from
+  `launcher.cfg`'s `resolution`, not the look's.
+- The settings window drawn by the SDK widgets under Wine and on Windows
+  (layout, 704-point height on a 1280×800 Deck, pad navigation). The README
+  screenshots still show 0.7's window: retake them.
+- `cmr-play` on the SDK's play library: stop, Ctrl+C and a closed gamescope
+  leave no Rally.exe, wineserver or gamescope behind.
+- The release `cmrhooks.dll` linked with lld (exports and imports checked;
+  not yet loaded into the game).
+- Clean exit by every route (STANDARDS "Clean exit"): the game's Quit,
+  Alt+F4 (F6), Steam's Stop, `cmr-play stop`, gamescope closed.
+
 ## 2026-11-02: first Proton runs (GE-Proton 11-1, `proton run` outside Steam)
 
 Setup: a hard-linked copy of the user's installed game with `Rally.exe`
