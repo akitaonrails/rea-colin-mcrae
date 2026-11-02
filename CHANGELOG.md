@@ -5,6 +5,8 @@ described on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-02
+
 ### Added
 
 - `--look original|enhanced|steam_deck` (and `look =` in `launcher.cfg`):
@@ -37,14 +39,12 @@ described on the GitHub releases page.
 - The first-run `launcher.cfg` lists every option commented out, with its
   values; files written by 0.7 read unchanged.
 - The AppImage is named `CMRLauncher-<version>-x86_64.AppImage`.
-
 - The looks carry the pad pedals: Original 1998 drives with the left
   stick only, as the game did; Enhanced and Steam Deck use the triggers
   and right stick. `gamepad_axes` and `close_quits` lose their window
   controls and stay as advanced `launcher.cfg` keys and flags; closing the
   window quits in every look. The pad's rumble and button layout share
   the Controls tab (the Buttons tab is gone).
-
 - `language` has no window control any more: in the real game, rewriting
   the registry's `Language` changed nothing (the game keeps its own). The
   key stays, seeded into the registry when missing (advanced).
