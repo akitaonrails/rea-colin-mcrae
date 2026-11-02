@@ -197,11 +197,13 @@ pub const FILTERS: &[(&str, &str)] = &[
     ("smooth", "Smooth"),
     ("sharp", "Sharp"),
 ];
+/// The scaler's chips. Not "Sharp"/"Smooth": the Textures row above them
+/// uses those words for something else.
 pub const SCALERS: &[(&str, &str)] = &[
-    ("nearest", "Sharp"),
+    ("nearest", "Crisp pixels"),
     ("pixel", "Even pixels"),
     ("fsr", "FSR"),
-    ("linear", "Smooth"),
+    ("linear", "Soft"),
 ];
 
 /// The window's chip for an unset option: the game keeps its own value.
@@ -323,9 +325,9 @@ pub const OPTIONS: &[OptionSpec] = &[
         "scaler",
         Kind::Choice(SCALERS),
         "Scaler",
-        "Linux only: how gamescope enlarges the picture to your screen. Sharp: crisp blocks. \
-         Even pixels: crisp, all the same size. FSR: smoothed, then sharpened. Smooth: the \
-         softest (the default).",
+        "Linux only: how gamescope enlarges the picture to your screen. Crisp pixels: every \
+         game pixel a sharp block. Even pixels: sharp, all the same size. FSR: smoothed, then \
+         sharpened. Soft: plain smoothing (the default).",
     )
     .helper_owned(),
     OptionSpec::new(

@@ -707,6 +707,24 @@ mod tests {
         );
     }
 
+    /// Each chip label means one thing in a tab: the scaler doesn't reuse
+    /// the Textures row's Sharp and Smooth.
+    #[test]
+    fn chip_labels_are_unambiguous_in_the_picture_tab() {
+        let mut ui = open(Some(""), true);
+        tab(&mut ui, "Picture");
+        // "Original" is on several rows, meaning the same each time:
+        // the game's own value.
+        for label in ["Sharp", "Smooth"] {
+            assert_eq!(
+                ui.get_all_by_role_and_label(Role::RadioButton, label)
+                    .count(),
+                1,
+                "{label}"
+            );
+        }
+    }
+
     #[test]
     fn the_scaler_is_only_for_cmr_play() {
         let mut ui = open(Some(""), false);
@@ -723,12 +741,7 @@ mod tests {
         };
         click(&mut ui, "1440p");
         click(&mut ui, "2×");
-        // Textures' Sharp comes first; the scaler has one too.
-        let sharp: Vec<_> = ui
-            .get_all_by_role_and_label(Role::RadioButton, "Sharp")
-            .collect();
-        sharp[0].click();
-        ui.run();
+        click(&mut ui, "Sharp");
         click(&mut ui, "120");
         click(&mut ui, "FSR");
         for switch in ["Widescreen", "Ease view distance", "HD art"] {
