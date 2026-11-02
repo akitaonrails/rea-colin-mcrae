@@ -30,12 +30,13 @@ pub enum Outcome {
 }
 
 /// Shows the window over `settings_path` (its text; `None` on a first run,
-/// when `template` is what gets saved). `linux` adds the gamescope scaler.
+/// when `template` is what gets saved; an error when it exists but can't
+/// be read, and is then never written). `linux` adds the gamescope scaler.
 /// Errors when no window can be made (no OpenGL); the caller then goes on
 /// without it.
 pub fn show(
     settings_path: &Path,
-    text: Option<&str>,
+    text: Result<Option<&str>, &str>,
     template: &str,
     linux: bool,
 ) -> Result<Outcome, String> {
@@ -50,8 +51,11 @@ pub fn show(
     let fit = WindowFit::new(look::SIZE, wine, screen, wine_scale).with_native_fit(true);
     let options = fit.native_options(WINDOW_TITLE);
     let path = settings_path.to_path_buf();
-    let state = State::new(text, linux, screen, xinput::connected());
-    let text = text.unwrap_or(template).to_string();
+    let state = match text {
+        Ok(text) => State::new(text, linux, screen, xinput::connected()),
+        Err(why) => State::unreadable(why, linux, screen, xinput::connected()),
+    };
+    let text = text.ok().flatten().unwrap_or(template).to_string();
     eframe::run_native(
         WINDOW_TITLE,
         options,
@@ -96,7 +100,13 @@ impl Window<'_> {
             self.state.tab = window::Tab::Play;
             return;
         }
-        let saved = self.state.form.save(&self.text);
+        // An unreadable file is left as it is (the run plays with the
+        // defaults, as without the window).
+        let Some(saved) = self.state.saved_text(&self.text) else {
+            *self.outcome = Outcome::Play;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        };
         match rea_launcher::fsx::write_atomic(&self.path, saved) {
             Ok(()) => {
                 *self.outcome = Outcome::Play;

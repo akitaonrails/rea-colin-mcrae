@@ -101,6 +101,14 @@ pub struct State {
     pub error: Option<String>,
     /// What the last rumble test found.
     pub rumble_test: Option<String>,
+    /// Why launcher.cfg couldn't be read: it is then never written.
+    pub unreadable: Option<String>,
+}
+
+/// What the window says when launcher.cfg exists but can't be read; the
+/// same words `launcher.log` gets without the window.
+pub fn unreadable_message(why: &str) -> String {
+    format!("{why}; left as it is. This run plays with the default settings.")
 }
 
 impl State {
@@ -128,7 +136,22 @@ impl State {
             linux,
             error: None,
             rumble_test: None,
+            unreadable: None,
         }
+    }
+
+    /// The window over a launcher.cfg that exists but can't be read
+    /// (`why`): the default settings, and Play saves nothing.
+    pub fn unreadable(why: &str, linux: bool, screen: Option<(u32, u32)>, pads: usize) -> State {
+        let mut state = State::new(Some(""), linux, screen, pads);
+        state.unreadable = Some(unreadable_message(why));
+        state
+    }
+
+    /// What Play writes to launcher.cfg (the form over the file's `text`);
+    /// `None` when the file couldn't be read: it is never written over.
+    pub fn saved_text(&self, text: &str) -> Option<String> {
+        self.unreadable.is_none().then(|| self.form.save(text))
     }
 
     /// Play is possible: a game folder with a known Rally.exe.
@@ -231,7 +254,10 @@ fn draw_photo(ui: &mut egui::Ui, rect: Rect, portrait: Option<&TextureHandle>) {
 }
 
 fn status(ui: &mut egui::Ui, state: &State) {
-    let (text, color) = match (&state.error, &state.check) {
+    let (text, color) = match (
+        state.error.as_ref().or(state.unreadable.as_ref()),
+        &state.check,
+    ) {
         (Some(e), _) => (e.clone(), ERROR),
         (None, Check::Found(_)) => ("Ready. Press Play or Enter.".to_string(), MUTED),
         (None, _) => (
@@ -874,6 +900,45 @@ mod tests {
         let ui = open(Some("look = steam_deck\nfps_limit = 30\n"), false);
         assert_eq!(ui.state().state.form.picture.fps_limit, Some(30));
         assert_eq!(ui.state().state.form.look, Look::Custom);
+    }
+
+    /// A launcher.cfg that exists but can't be read is never written over:
+    /// the window says so, and Play saves nothing (the run then plays with
+    /// the defaults, as without the window).
+    #[test]
+    fn an_unreadable_settings_file_is_never_written_over() {
+        let why = "cannot read C:\\x\\launcher.cfg: access denied";
+        let app = App {
+            state: State::unreadable(why, false, SCREEN, 0),
+            played: 0,
+            rumbled: Vec::new(),
+        };
+        let mut ui = testing::harness_sized(
+            &look::PALETTE,
+            &look::METRICS,
+            look::SIZE,
+            app,
+            |ui, app| {
+                let mut platform = Platform {
+                    pick: &mut |_| None,
+                    rumble: &mut |_| 0,
+                };
+                if draw(ui, &mut app.state, None, &mut platform) {
+                    app.played += 1;
+                }
+            },
+        );
+        ui.run();
+        let shown = unreadable_message(why);
+        assert!(
+            shown.contains(why) && shown.contains("left as it is"),
+            "{shown}"
+        );
+        ui.get_by_label(&shown);
+        assert_eq!(ui.state().state.saved_text("look = enhanced\n"), None);
+        // A readable file is saved as before.
+        let state = State::new(Some(""), false, SCREEN, 0);
+        assert!(state.saved_text("").is_some());
     }
 
     #[test]

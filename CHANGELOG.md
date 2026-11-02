@@ -56,3 +56,7 @@ described on the GitHub releases page.
 - `cmr-play`: a second start refused because another launcher holds the
   prefix no longer waits for that launcher's game to end before it
   returns.
+- The settings window over a `launcher.cfg` that exists but can't be read
+  (permissions, a lock) treated it as a first run, and Play wrote the
+  template over it. The file is now left as it is, the window says so,
+  and the run plays with the defaults, as without the window.

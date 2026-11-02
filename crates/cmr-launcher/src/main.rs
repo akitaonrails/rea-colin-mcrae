@@ -219,8 +219,12 @@ mod app {
             {
                 log_line("Wine: OpenGL through GLX (UseEGL=N)");
             }
-            let text = read_settings(&settings_path).ok().flatten();
-            match ui::show(&settings_path, text.as_deref(), &template, linux) {
+            let read = read_settings(&settings_path);
+            let text = match &read {
+                Ok(text) => Ok(text.as_deref()),
+                Err(why) => Err(why.as_str()),
+            };
+            match ui::show(&settings_path, text, &template, linux) {
                 Ok(ui::Outcome::Play) => {
                     log_line("settings window: play");
                     if settings_only {
