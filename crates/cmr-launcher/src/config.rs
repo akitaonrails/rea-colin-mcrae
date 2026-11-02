@@ -1,22 +1,32 @@
 //! Command line and the settings file (`launcher.cfg`).
 //!
-//! The file is plain `key = value` lines with `#` comments, written once from
-//! a commented template so users can edit it. The launcher later changes
-//! only the lines it owns (`game`), keeping everything else as the user left
-//! it. Unknown keys are ignored so older launchers can read newer files;
-//! values it cannot read are reported and ignored.
+//! Every option is declared once, in [`OPTIONS`] (the SDK's
+//! `rea_launcher::cfg::spec`): its key, flag, values, label and a one-line
+//! description. `--help`, the commented template written on a first run,
+//! the file and flag parsing and the settings window's rows all come from
+//! that table, so the window and the command line can't drift apart.
+//!
+//! The file is plain `key = value` lines with `#` comments. The launcher
+//! later changes only the lines it owns (`game`), keeping everything else
+//! as the user left it. Unknown keys are reported, ignored and kept, so
+//! older launchers can read newer files; values it cannot read are
+//! reported and ignored.
 
 use std::path::{Path, PathBuf};
 
-use crate::registry::LANGUAGES;
+use rea_launcher::cfg::spec::{self, Kind, OptionSpec, Value};
+use rea_launcher::cfg::{self, ArgError, KeyStyle, Rejected, Resolution};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     pub game: Option<PathBuf>,
     pub runtime: Option<PathBuf>,
-    /// Where the player's saves live (see `TEMPLATE`).
+    /// Where the player's saves live (see [`OPTIONS`]).
     pub saves: Option<PathBuf>,
     pub language: Option<String>,
+    /// A look's name ([`LOOKS`]): its picture values for every picture
+    /// setting not given (see `form::with_look`).
+    pub look: Option<&'static str>,
     /// Closing the window quits the game (fix F6). Default on.
     pub close_quits: Option<bool>,
     /// Pad triggers and right stick work as throttle/brake (fix F7). Default on.
@@ -61,7 +71,7 @@ pub enum HdArt {
 
 impl HdArt {
     fn parse(value: &str) -> HdArt {
-        match parse_bool(value) {
+        match cfg::parse_bool(value) {
             Some(true) => HdArt::Bundled,
             Some(false) => HdArt::Off,
             None => HdArt::Folder(value.into()),
@@ -129,8 +139,7 @@ impl Scaler {
         }
     }
 
-    fn parse(v: &str) -> Option<Scaler> {
-        let v = v.trim().to_ascii_lowercase();
+    fn from_key(v: &str) -> Option<Scaler> {
         Scaler::ALL.into_iter().find(|s| s.key() == v)
     }
 }
@@ -144,297 +153,375 @@ pub enum TextureFilter {
     Sharp,
 }
 
-fn parse_filter(v: &str) -> Option<TextureFilter> {
-    match v.trim().to_ascii_lowercase().as_str() {
-        "original" => Some(TextureFilter::Original),
-        "smooth" => Some(TextureFilter::Smooth),
-        "sharp" => Some(TextureFilter::Sharp),
-        _ => None,
+impl TextureFilter {
+    pub const ALL: [TextureFilter; 3] = [
+        TextureFilter::Original,
+        TextureFilter::Smooth,
+        TextureFilter::Sharp,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            TextureFilter::Original => "original",
+            TextureFilter::Smooth => "smooth",
+            TextureFilter::Sharp => "sharp",
+        }
+    }
+
+    fn from_key(v: &str) -> Option<TextureFilter> {
+        TextureFilter::ALL.into_iter().find(|f| f.key() == v)
     }
 }
 
 pub const FILE_NAME: &str = "launcher.cfg";
 
-/// The file written on first run.
-pub const TEMPLATE: &str = r"# Colin McRae Rally launcher settings.
-#
-# One setting per line as key = value; lines starting with # are comments.
-# Command-line options (--game, --runtime, --language) override this file
-# for one run. A launcher.cfg next to CMRLauncher.exe is used instead of
-# this one when it exists (for portable installs).
-
-# The folder with your installed Rally.exe. Filled in by --game; the game
-# folder is only read, never changed.
-game =
-
-# Where the launcher keeps its private, writable copy of the game, including
-# your saves. Default: %LOCALAPPDATA%\CMRLauncher\Rally
-#runtime =
-
-# Where your saves and settings (cmRally.cfg, SAVESLOT*.cms) are kept. They
-# are copied into the game before it starts and back when it exits.
-# Default: %USERPROFILE%\Saved Games\Colin McRae Rally
-#saves =
-
-# Game language, used when the game is first set up:
-# ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN.
-#language = ENGLISH
-
-# Closing the game window (Alt+F4, the window manager's close) quits the
-# game. Set to false for the original 1998 behaviour, where closing the
-# window does nothing.
-close_quits = true
-
-# Gamepads (CONTROL METHOD: JOYSTICK, CONTROLLER TYPE: ANALOGUE JOYSTICK):
-# the left stick steers; R2 or the right stick up accelerates, L2 or the
-# right stick down brakes (left stick up/down still works too, and moves
-# through the menus). In Options > Settings > Controller 1 choose
-# JOYSTICK 1, ANALOGUE JOYSTICK, and set steering, acceleration and braking
-# to ANALOGUE. Only axes that rest at centre are used, so wheel pedals are
-# not affected. Set to false for the original handling, where only the left
-# stick drives. With it on, the pad's Start button also pauses a race.
-gamepad_axes = true
-
-# Race resolution, e.g. 1440x1080 (4:3) or 2880x2160. It replaces the
-# 640x480 choice of the game's RESOLUTION option (Options > Settings >
-# Graphics), so pick 640x480 there; the menus stay 640x480. The screen must
-# offer that mode (Proton and gamescope do). Unset keeps the original sizes.
-#resolution = 1440x1080
-
-# For a 16:9 (or wider) race resolution such as 1920x1080 or 3840x2160:
-# shows more to the sides instead of stretching the 4:3 picture. Has no
-# effect at 4:3.
-#widescreen = true
-
-# Draw distance: multiplies every stage's view distance (usually 150 m)
-# and its object distances, 1.0 to 3.0; the game's own Track Distance and
-# Object Distance options still apply on top. Longer distances cost speed
-# and can show flicker far away (the game's 16-bit depth buffer).
-#draw_distance = 1.5
-
-# Frame-rate cap in frames per second, e.g. 60, 120 or 144; off for none.
-# The game's driving runs at its own fixed rate, so the cap only changes
-# how often the picture is redrawn (smoother pacing, less heat and noise).
-#fps_limit = 60
-
-# true waits for the screen's refresh before showing each frame (no
-# tearing); false shows frames at once. Unset keeps the game's own choice.
-#vsync = true
-
-# Texture filtering: smooth adds mipmaps and trilinear filtering, so the
-# road and scenery don't shimmer in the distance; sharp shows every texture
-# with crisp, unfiltered pixels; original keeps the game's own.
-#texture_filter = smooth
-
-# Stages change their view distance from section to section at once, so
-# scenery pops in or out; true eases each change over about a second.
-#smooth_distance = true
-
-# Gamepad rumble on impacts, as a strength from 1 to 100 (percent); off or
-# unset for none. Needs an XInput pad (Xbox-style; most pads under Steam).
-#rumble = 60
-
-# Pad buttons: modern (the default; Xbox-style pads: A selects and is the
-# handbrake, B goes back, Y changes the view, LB/RB change gear, Start
-# pauses), original (the game's own 1998 order), or for the game's buttons select, back, change
-# view, gear down, handbrake, gear up, (unused), pause the pad button number
-# that presses each, e.g. 1,2,4,5,1,6,7,8. The d-pad moves through menus.
-#buttons = original
-
-# HD art: the race HUD and the menus' images redrawn at high resolution
-# (docs/UPSCALING.md). on uses the pack that comes with the launcher, or
-# give a folder made with cmr-hd. The 2x set is used up to 1080p, the 4x
-# set above.
-#hd_art = on
-
-# Linux (cmr-play) only: how gamescope enlarges the picture. nearest (sharp
-# pixels), pixel (sharp, all pixels the same size), fsr (smooth, then
-# sharpened) or linear (smooth, the default).
-#scaler = linear
-";
-
-pub const USAGE: &str = concat!(
-    "CMRLauncher ",
-    env!("CARGO_PKG_VERSION"),
-    "\n\n",
-    "\
-CMRLauncher [options]
-
-  --game <folder>          the folder with your installed Rally.exe (remembered)
-  --saves <folder>         where your saves are kept
-  --runtime <folder>       where the launcher keeps its private copy
-  --language <name>        ENGLISH, FRENCH, GERMAN, SPANISH or ITALIAN
-  --resolution <WxH>       race resolution, e.g. 1920x1080, or original
-  --widescreen on|off      wider view on wide screens
-  --draw-distance <n>      1.0 to 3.0
-  --fps-limit <n>|off      frame-rate cap, e.g. 60
-  --vsync on|off           wait for the screen's refresh
-  --texture-filter <f>     original, smooth or sharp
-  --smooth-distance on|off ease view distance changes
-  --rumble <0-100>|off     gamepad rumble strength
-  --buttons <layout>       pad buttons: original, modern or 8 numbers
-  --hd-art <folder>        HD art made by cmr-hd (docs/UPSCALING.md)
-  --gamepad-axes on|off    triggers/right stick as pedals, Start pauses
-  --close-quits on|off     closing the window quits the game
-
-These override launcher.cfg for one run (only --game is remembered). Without
-options the settings window opens first.
-
-  --no-window              play with the saved settings, no window
-  --settings [--linux]     only the settings window (exit 0: play, 3: closed;
-                           --linux adds the gamescope scaler, for cmr-play)
-
-CMRLauncher --check [--game <folder>]
-  checks the game folder and tells you whether its Rally.exe is supported
-
-CMRLauncher --controllers [seconds]
-  lists the joysticks the game can see and logs every stick, trigger and
-  button you move for that long (default 30) to launcher.log
-
-Other settings are in launcher.cfg (see the comments in it)."
-);
-
-fn parse_bool(v: &str) -> Option<bool> {
-    match v.to_ascii_lowercase().as_str() {
-        "true" | "yes" | "on" | "1" => Some(true),
-        "false" | "no" | "off" | "0" => Some(false),
-        _ => None,
-    }
-}
-
-/// `WxH`, within what a 1998 DirectDraw game and a modern screen can hold;
-/// `original` (or `off`) is `ORIGINAL`, the game's own sizes.
-fn parse_resolution(v: &str) -> Option<(u32, u32)> {
-    let lower = v.trim().to_ascii_lowercase();
-    if lower == "original" || lower == "off" {
-        return Some(ORIGINAL);
-    }
-    let (w, h) = lower.split_once('x')?;
-    let w: u32 = w.trim().parse().ok()?;
-    let h: u32 = h.trim().parse().ok()?;
-    ((320..=7680).contains(&w) && (240..=4320).contains(&h)).then_some((w, h))
-}
-
-/// `resolution` value meaning "the game's own sizes" (used to override a
-/// file's resolution from the command line).
+/// `resolution = original` (or `off`): the game's own sizes (used to
+/// override a file's resolution from the command line).
 pub const ORIGINAL: (u32, u32) = (0, 0);
+
+/// The looks, as `--look` and `look =` name them (the window's cards).
+pub const LOOKS: &[(&str, &str)] = &[
+    ("original", "Original 1998"),
+    ("enhanced", "Enhanced"),
+    ("steam_deck", "Steam Deck"),
+];
+pub const LANGUAGE_CHOICES: &[(&str, &str)] = &[
+    ("ENGLISH", "English"),
+    ("FRENCH", "Français"),
+    ("GERMAN", "Deutsch"),
+    ("SPANISH", "Español"),
+    ("ITALIAN", "Italiano"),
+];
+pub const FILTERS: &[(&str, &str)] = &[
+    ("original", "Original"),
+    ("smooth", "Smooth"),
+    ("sharp", "Sharp"),
+];
+pub const SCALERS: &[(&str, &str)] = &[
+    ("nearest", "Sharp"),
+    ("pixel", "Even pixels"),
+    ("fsr", "FSR"),
+    ("linear", "Smooth"),
+];
+
+/// The window's chip for an unset option: the game keeps its own value.
+pub const AS_THE_GAME: &str = "As the game";
+
+/// Every option: one row each for the file, the flags, `--help`, the
+/// template and the window.
+pub const OPTIONS: &[OptionSpec] = &[
+    OptionSpec::new(
+        "game",
+        Kind::Path,
+        "Game folder",
+        "The folder with your installed Rally.exe. It is only read, never changed. \
+         Remembered once given.",
+    ),
+    OptionSpec::new(
+        "saves",
+        Kind::Path,
+        "Saves",
+        "Where your saves and settings (cmRally.cfg, SAVESLOT*.cms) are kept: copied into the \
+         game before it starts and back when it ends. Default: Saved Games\\Colin McRae Rally.",
+    ),
+    OptionSpec::new(
+        "runtime",
+        Kind::Path,
+        "Runtime folder",
+        "Where the launcher keeps its private, writable copy of the game. \
+         Default: %LOCALAPPDATA%\\CMRLauncher\\Rally.",
+    )
+    .launcher_only(),
+    OptionSpec::new(
+        "language",
+        Kind::Choice(LANGUAGE_CHOICES),
+        "Language",
+        "The game's language, set when the launcher first sets the game up. After that the \
+         game keeps the language it has.",
+    )
+    .unset_label(AS_THE_GAME)
+    .with_example("ENGLISH"),
+    OptionSpec::new(
+        "look",
+        Kind::Choice(LOOKS),
+        "Look",
+        "Every picture setting at once: the game as it shipped, the screen's own size with \
+         every improvement, or the Steam Deck's screen. Picture settings given on their own \
+         win over it.",
+    ),
+    OptionSpec::new(
+        "resolution",
+        Kind::Size {
+            min: (320, 240),
+            max: (7680, 4320),
+            aliases: cfg::ORIGINAL_OR_OFF,
+        },
+        "Race resolution",
+        "The size races are drawn at, in place of the game's 640×480 (keep 640×480 in the \
+         game's own menu); the menus stay 640×480. Original keeps the game's sizes.",
+    )
+    .with_example("1920x1080"),
+    OptionSpec::new(
+        "widescreen",
+        Kind::Toggle,
+        "Widescreen",
+        "On a 16:9 or wider race resolution, shows more to the sides instead of stretching \
+         the 4:3 picture.",
+    ),
+    OptionSpec::new(
+        "draw_distance",
+        Kind::Text,
+        "Draw distance",
+        "How far you see: every stage's view and object distances times this, 1.0 to 3.0. \
+         Longer costs speed and can flicker far away.",
+    )
+    .with_needs("1.0 to 3.0")
+    .with_placeholder("<1.0-3.0>")
+    .with_example("1.5"),
+    OptionSpec::new(
+        "texture_filter",
+        Kind::Choice(FILTERS),
+        "Textures",
+        "Smooth: the road and scenery don't shimmer in the distance. Sharp: crisp, \
+         unfiltered pixels. Original: the game's own.",
+    ),
+    OptionSpec::new(
+        "fps_limit",
+        Kind::Range { min: 10, max: 1000 },
+        "Frame-rate cap",
+        "The most frames a second the picture is redrawn (the driving keeps its own rate): \
+         smoother pacing, less heat and noise. Off: no cap.",
+    )
+    .with_value_aliases(&[("off", "0")])
+    .with_example("60"),
+    OptionSpec::new(
+        "vsync",
+        Kind::Toggle,
+        "Vsync",
+        "Waits for the screen's refresh before showing each frame: no tearing. Unset keeps \
+         the game's own choice.",
+    )
+    .unset_label(AS_THE_GAME),
+    OptionSpec::new(
+        "smooth_distance",
+        Kind::Toggle,
+        "Ease view distance",
+        "Stages change their view distance from section to section at once, so scenery pops \
+         in; this eases each change over about a second.",
+    ),
+    OptionSpec::new(
+        "hd_art",
+        Kind::Text,
+        "HD art",
+        "The race HUD, logos and menu pictures redrawn at high resolution: on uses the pack \
+         that comes with the launcher, or give a folder made with cmr-hd.",
+    )
+    .with_needs("on, off or a folder")
+    .with_placeholder("on|off|<folder>")
+    .with_example("on"),
+    OptionSpec::new(
+        "scaler",
+        Kind::Choice(SCALERS),
+        "Scaler",
+        "Linux only: how gamescope enlarges the picture to your screen. Sharp: crisp blocks. \
+         Even pixels: crisp, all the same size. FSR: smoothed, then sharpened. Smooth: the \
+         softest (the default).",
+    )
+    .helper_owned(),
+    OptionSpec::new(
+        "gamepad_axes",
+        Kind::Toggle,
+        "Gamepad pedals",
+        "The triggers or the right stick work as throttle and brake, and Start pauses a race. \
+         Off: only the left stick drives, as in 1998. On unless set off.",
+    ),
+    OptionSpec::new(
+        "rumble",
+        Kind::Range { min: 0, max: 100 },
+        "Rumble",
+        "The pad shakes on impacts, at this strength in percent. Needs an Xbox-style \
+         (XInput) pad. Off: none.",
+    )
+    .with_value_aliases(&[("off", "0")])
+    .with_needs("0 to 100 or off")
+    .with_placeholder("<0-100|off>")
+    .with_example("60"),
+    OptionSpec::new(
+        "buttons",
+        Kind::Text,
+        "Pad buttons",
+        "Modern (the default): A selects and is the handbrake, B goes back, Y changes the \
+         view, LB and RB change gear, Start pauses. Original: the 1998 order. Or eight button \
+         numbers for select, back, change view, gear down, handbrake, gear up, (unused), pause.",
+    )
+    .with_needs("original, modern or 8 button numbers")
+    .with_placeholder("<layout>")
+    .with_example("original"),
+    OptionSpec::new(
+        "close_quits",
+        Kind::Toggle,
+        "Closing quits",
+        "Closing the game window (Alt+F4, the window's close button) quits the game. Off: \
+         the 1998 behaviour, where closing does nothing. On unless set off.",
+    ),
+];
+
+/// The row for `key`; every key the launcher uses has one.
+pub fn option(key: &str) -> &'static OptionSpec {
+    spec::find(OPTIONS, key).unwrap_or_else(|| panic!("no option row for {key}"))
+}
+
+/// The file written on first run: a commented line for every option.
+pub fn template() -> String {
+    spec::template(
+        "Colin McRae Rally launcher settings.\n\
+         \n\
+         One setting per line as key = value; lines starting with # are comments. \
+         A setting left unset keeps the game's own value (or the default named). \
+         Command-line options (--resolution 1920x1080, ...) override this file for one run. \
+         A launcher.cfg next to CMRLauncher.exe is used instead of this one when it exists \
+         (portable installs).",
+        OPTIONS,
+    )
+}
+
+/// The launcher's own switches, which take no value.
+pub const SWITCHES: [&str; 4] = ["--settings", "--linux", "--no-window", "--check"];
+
+/// `--help`: the options from [`OPTIONS`], the switches and exit codes.
+pub fn usage() -> String {
+    format!(
+        "CMRLauncher {}\n\n\
+         CMRLauncher [options]\n\n\
+         {}\n\n\
+         These override launcher.cfg for one run (only --game is remembered);\n\
+         every one is also a launcher.cfg key (--hd-art is hd_art) and a control\n\
+         in the settings window. Without options the settings window opens first.\n\n\
+         \x20 --no-window              play with the saved settings, no window\n\
+         \x20 --settings [--linux]     only the settings window (exit 0: Play pressed,\n\
+         \x20                          3: closed without Play, 4: no window possible);\n\
+         \x20                          --linux adds the gamescope scaler, for cmr-play\n\
+         \x20 --check                  checks the game folder and its Rally.exe without\n\
+         \x20                          playing; the report goes to the terminal and\n\
+         \x20                          launcher.log (exit 0: ready, 1: unknown Rally.exe)\n\
+         \x20 --controllers [seconds]  lists the joysticks the game can see and logs every\n\
+         \x20                          stick, trigger and button you move for that long\n\
+         \x20                          (default 30) to launcher.log\n\
+         \x20 --help                   this text\n\n\
+         The log is %LOCALAPPDATA%\\CMRLauncher\\launcher.log.",
+        env!("CARGO_PKG_VERSION"),
+        spec::usage(OPTIONS, KeyStyle::Underscore).trim_end(),
+    )
+}
+
+/// Why a parsed value can't be used: only an option row whose kind and
+/// key disagree (a bug in [`OPTIONS`]).
+fn mismatch() -> Rejected {
+    Rejected::Unknown
+}
+
+fn text(v: Value<'_>) -> Result<&str, Rejected> {
+    match v {
+        Value::Text(t) => Ok(t),
+        _ => Err(mismatch()),
+    }
+}
+
+fn toggle(v: Value) -> Result<bool, Rejected> {
+    match v {
+        Value::Toggle(on) => Ok(on),
+        _ => Err(mismatch()),
+    }
+}
+
+fn number(v: Value) -> Result<u32, Rejected> {
+    match v {
+        Value::Number(n) => Ok(n),
+        _ => Err(mismatch()),
+    }
+}
+
+fn choice<T>(v: Value, from: fn(&str) -> Option<T>) -> Result<T, Rejected> {
+    match v {
+        Value::Choice(c) => from(c).ok_or_else(mismatch),
+        _ => Err(mismatch()),
+    }
+}
 
 /// A factor 1.0..=3.0 as Q16.
 fn parse_factor(v: &str) -> Option<u32> {
-    let f: f64 = v.parse().ok()?;
+    let f: f64 = v.trim().parse().ok()?;
     (1.0..=3.0)
         .contains(&f)
         .then(|| (f * 65536.0).round() as u32)
 }
 
-/// A percentage, 0..=100, or `off` (0).
-fn parse_percent(v: &str) -> Option<u32> {
-    let v = v.trim();
-    if v.eq_ignore_ascii_case("off") {
-        return Some(0);
-    }
-    v.parse().ok().filter(|p| *p <= 100)
-}
-
-/// A frame-rate cap, 10..=1000, or `off`/`0` for none (0).
-fn parse_fps(v: &str) -> Option<u32> {
-    let v = v.trim();
-    if v.eq_ignore_ascii_case("off") || v == "0" {
-        return Some(0);
-    }
-    let f: u32 = v.parse().ok()?;
-    (10..=1000).contains(&f).then_some(f)
-}
-
-fn parse_language(v: &str) -> Option<String> {
-    let v = v.to_ascii_uppercase();
-    LANGUAGES.contains(&v.as_str()).then_some(v)
-}
-
-/// Splits `key = value`, ignoring comments and blank values.
-fn entry(line: &str) -> Option<(&str, &str)> {
-    let line = line.trim();
-    if line.starts_with('#') {
-        return None;
-    }
-    let (key, value) = line.split_once('=')?;
-    let value = value.trim();
-    (!value.is_empty()).then_some((key.trim(), value))
+/// The `draw_distance` value for a Q16 factor.
+pub fn factor_value(q16: u32) -> String {
+    format!("{}", f64::from(q16) / 65536.0)
 }
 
 impl Settings {
+    /// Sets one value by its `launcher.cfg` key, already checked against
+    /// its row in [`OPTIONS`]. The command line's `--some-key` is
+    /// `some_key`, so the file and the flags read alike.
+    fn apply(&mut self, key: &str, value: Value) -> Result<(), Rejected> {
+        let needs = || Rejected::needs(option(key).needs());
+        match key {
+            "game" => self.game = Some(text(value)?.into()),
+            "runtime" => self.runtime = Some(text(value)?.into()),
+            "saves" => self.saves = Some(text(value)?.into()),
+            "language" => self.language = Some(choice(value, |c| Some(c.to_string()))?),
+            "look" => {
+                self.look = Some(choice(value, |c| {
+                    LOOKS.iter().find(|(v, _)| *v == c).map(|(v, _)| *v)
+                })?)
+            }
+            "close_quits" => self.close_quits = Some(toggle(value)?),
+            "gamepad_axes" => self.gamepad_axes = Some(toggle(value)?),
+            "widescreen" => self.widescreen = Some(toggle(value)?),
+            "vsync" => self.vsync = Some(toggle(value)?),
+            "smooth_distance" => self.smooth_distance = Some(toggle(value)?),
+            "resolution" => {
+                let Value::Size(r) = value else {
+                    return Err(mismatch());
+                };
+                self.resolution = Some(match r {
+                    Resolution::Size(w, h) => (w, h),
+                    Resolution::Original | Resolution::Fullscreen => ORIGINAL,
+                });
+            }
+            "draw_distance" => {
+                self.draw_distance = Some(parse_factor(text(value)?).ok_or_else(needs)?)
+            }
+            "fps_limit" => self.fps_limit = Some(number(value)?),
+            "rumble" => self.rumble = Some(number(value)?),
+            "texture_filter" => self.texture_filter = Some(choice(value, TextureFilter::from_key)?),
+            "scaler" => self.scaler = Some(choice(value, Scaler::from_key)?),
+            "buttons" => self.buttons = Some(parse_buttons(text(value)?).ok_or_else(needs)?),
+            "hd_art" => self.hd_art = Some(HdArt::parse(text(value)?)),
+            _ => return Err(Rejected::Unknown),
+        }
+        Ok(())
+    }
+
     /// Reads a settings file; the second value lists lines it could not use.
     pub fn parse_file(text: &str) -> (Settings, Vec<String>) {
         let mut s = Settings::default();
-        let mut warnings = Vec::new();
-        for (n, line) in text.lines().enumerate() {
-            let Some((key, value)) = entry(line) else {
-                continue;
-            };
-            let mut bad = |what: &str| {
-                warnings.push(format!("{FILE_NAME} line {}: {what} {value:?}", n + 1));
-            };
-            match key {
-                "game" => s.game = Some(value.into()),
-                "runtime" => s.runtime = Some(value.into()),
-                "saves" => s.saves = Some(value.into()),
-                "language" => match parse_language(value) {
-                    Some(l) => s.language = Some(l),
-                    None => bad("unknown language"),
-                },
-                "close_quits" => match parse_bool(value) {
-                    Some(b) => s.close_quits = Some(b),
-                    None => bad("close_quits needs true or false, not"),
-                },
-                "gamepad_axes" => match parse_bool(value) {
-                    Some(b) => s.gamepad_axes = Some(b),
-                    None => bad("gamepad_axes needs true or false, not"),
-                },
-                "widescreen" => match parse_bool(value) {
-                    Some(b) => s.widescreen = Some(b),
-                    None => bad("widescreen needs true or false, not"),
-                },
-                "draw_distance" => match parse_factor(value) {
-                    Some(f) => s.draw_distance = Some(f),
-                    None => bad("draw_distance needs a number from 1.0 to 3.0, not"),
-                },
-                "fps_limit" => match parse_fps(value) {
-                    Some(f) => s.fps_limit = Some(f),
-                    None => bad("fps_limit needs a number from 10 to 1000 or off, not"),
-                },
-                "rumble" => match parse_percent(value) {
-                    Some(r) => s.rumble = Some(r),
-                    None => bad("rumble needs a number from 0 to 100 or off, not"),
-                },
-                "smooth_distance" => match parse_bool(value) {
-                    Some(b) => s.smooth_distance = Some(b),
-                    None => bad("smooth_distance needs true or false, not"),
-                },
-                "texture_filter" => match parse_filter(value) {
-                    Some(f) => s.texture_filter = Some(f),
-                    None => bad("texture_filter needs original, smooth or sharp, not"),
-                },
-                "hd_art" => s.hd_art = Some(HdArt::parse(value)),
-                "buttons" => match parse_buttons(value) {
-                    Some(b) => s.buttons = Some(b),
-                    None => bad("buttons needs original, modern or 8 button numbers, not"),
-                },
-                "scaler" => match Scaler::parse(value) {
-                    Some(f) => s.scaler = Some(f),
-                    None => bad("scaler needs nearest, pixel, fsr or linear, not"),
-                },
-                "vsync" => match parse_bool(value) {
-                    Some(b) => s.vsync = Some(b),
-                    None => bad("vsync needs true or false, not"),
-                },
-                "resolution" => match parse_resolution(value) {
-                    Some(r) => s.resolution = Some(r),
-                    None => bad("resolution needs WIDTHxHEIGHT (320x240 to 7680x4320), not"),
-                },
-                _ => {}
-            }
-        }
+        let warnings = spec::parse_file(text, FILE_NAME, OPTIONS, |k, v| s.apply(k, v));
         (s, warnings)
+    }
+
+    /// The command line: `--key value` settings and the launcher's own
+    /// [`SWITCHES`] (returned in order), in one pass.
+    pub fn parse_args<I: IntoIterator<Item = String>>(
+        args: I,
+    ) -> Result<(Settings, Vec<String>), ArgError> {
+        let mut s = Settings::default();
+        let switches = spec::parse_args(args, KeyStyle::Underscore, OPTIONS, &SWITCHES, |k, v| {
+            s.apply(k, v)
+        })?;
+        Ok((s, switches))
     }
 
     /// Command-line values override the file's.
@@ -444,6 +531,7 @@ impl Settings {
             runtime: over.runtime.or(self.runtime),
             saves: over.saves.or(self.saves),
             language: over.language.or(self.language),
+            look: over.look.or(self.look),
             close_quits: over.close_quits.or(self.close_quits),
             gamepad_axes: over.gamepad_axes.or(self.gamepad_axes),
             resolution: over.resolution.or(self.resolution),
@@ -560,84 +648,6 @@ impl Settings {
         }
         skip
     }
-
-    pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Settings, String> {
-        let mut s = Settings::default();
-        let mut args = args.into_iter();
-        while let Some(arg) = args.next() {
-            let mut value = |name: &str| {
-                args.next()
-                    .ok_or_else(|| format!("{name} needs a value\n\n{USAGE}"))
-            };
-            match arg.as_str() {
-                "--game" => s.game = Some(value("--game")?.into()),
-                "--runtime" => s.runtime = Some(value("--runtime")?.into()),
-                "--saves" => s.saves = Some(value("--saves")?.into()),
-                "--language" => {
-                    let v = value("--language")?;
-                    s.language = Some(
-                        parse_language(&v)
-                            .ok_or_else(|| format!("unknown language {v}\n\n{USAGE}"))?,
-                    );
-                }
-                "--resolution" => {
-                    let v = value("--resolution")?;
-                    s.resolution = Some(parse_resolution(&v).ok_or_else(|| {
-                        format!("--resolution needs WIDTHxHEIGHT or original, not {v}\n\n{USAGE}")
-                    })?);
-                }
-                "--hd-art" => s.hd_art = Some(HdArt::parse(&value("--hd-art")?)),
-                "--buttons" => {
-                    let v = value("--buttons")?;
-                    s.buttons = Some(parse_buttons(&v).ok_or_else(|| {
-                        format!("--buttons needs original, modern or 8 button numbers, not {v}\n\n{USAGE}")
-                    })?);
-                }
-                "--rumble" => {
-                    let v = value("--rumble")?;
-                    s.rumble = Some(parse_percent(&v).ok_or_else(|| {
-                        format!("--rumble needs 0 to 100 or off, not {v}\n\n{USAGE}")
-                    })?);
-                }
-                "--texture-filter" => {
-                    let v = value("--texture-filter")?;
-                    s.texture_filter = Some(parse_filter(&v).ok_or_else(|| {
-                        format!(
-                            "--texture-filter needs original, smooth or sharp, not {v}\n\n{USAGE}"
-                        )
-                    })?);
-                }
-                "--fps-limit" => {
-                    let v = value("--fps-limit")?;
-                    s.fps_limit = Some(parse_fps(&v).ok_or_else(|| {
-                        format!("--fps-limit needs 10 to 1000 or off, not {v}\n\n{USAGE}")
-                    })?);
-                }
-                "--draw-distance" => {
-                    let v = value("--draw-distance")?;
-                    s.draw_distance = Some(parse_factor(&v).ok_or_else(|| {
-                        format!("--draw-distance needs 1.0 to 3.0, not {v}\n\n{USAGE}")
-                    })?);
-                }
-                flag @ ("--widescreen" | "--gamepad-axes" | "--close-quits" | "--vsync"
-                | "--smooth-distance") => {
-                    let v = value(flag)?;
-                    let b = parse_bool(&v)
-                        .ok_or_else(|| format!("{flag} needs on or off, not {v}\n\n{USAGE}"))?;
-                    match flag {
-                        "--widescreen" => s.widescreen = Some(b),
-                        "--gamepad-axes" => s.gamepad_axes = Some(b),
-                        "--vsync" => s.vsync = Some(b),
-                        "--smooth-distance" => s.smooth_distance = Some(b),
-                        _ => s.close_quits = Some(b),
-                    }
-                }
-                "--help" | "-h" | "/?" => return Err(USAGE.into()),
-                other => return Err(format!("unknown argument {other}\n\n{USAGE}")),
-            }
-        }
-        Ok(s)
-    }
 }
 
 /// Sets `key` in a settings file, keeping every other line (and comments)
@@ -647,6 +657,12 @@ pub use rea_launcher::cfg::{clear_key, set_key};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn args(a: &[&str]) -> Result<Settings, String> {
+        Settings::parse_args(a.iter().map(|s| s.to_string()))
+            .map(|(s, _)| s)
+            .map_err(|e| e.to_string())
+    }
 
     #[test]
     fn hd_art_set_follows_the_resolution() {
@@ -672,12 +688,12 @@ mod tests {
         assert_eq!(at("off", "3840x2160"), None);
         assert_eq!(Settings::default().hd_set(pack), None);
         assert!(Settings::default().skipped_fixes().contains(&"F27"));
-        let s = Settings::parse_args(["--hd-art".to_string(), "on".to_string()]).unwrap();
+        let s = args(&["--hd-art", "on"]).unwrap();
         assert_eq!(s.hd_art, Some(HdArt::Bundled));
         assert!(!s.skipped_fixes().contains(&"F27"));
         // The command line's off wins over the file's on.
         let file = Settings::parse_file("hd_art = on").0;
-        let off = Settings::parse_args(["--hd-art".to_string(), "off".to_string()]).unwrap();
+        let off = args(&["--hd-art", "off"]).unwrap();
         assert!(!file.merged(off).hd_on());
     }
 
@@ -705,8 +721,10 @@ mod tests {
         assert_eq!(parse("original").0.button_map(), [0; 12]);
     }
 
-    fn args(a: &[&str]) -> Result<Settings, String> {
-        Settings::parse_args(a.iter().map(|s| s.to_string()))
+    #[test]
+    fn the_languages_are_the_games() {
+        let keys: Vec<_> = LANGUAGE_CHOICES.iter().map(|(k, _)| *k).collect();
+        assert_eq!(keys, crate::registry::LANGUAGES);
     }
 
     #[test]
@@ -717,6 +735,92 @@ mod tests {
         assert!(args(&["--language", "klingon"]).is_err());
         assert!(args(&["--game"]).is_err());
         assert!(args(&["--bogus"]).is_err());
+    }
+
+    #[test]
+    fn switches_come_back_in_order_and_values_stay_values() {
+        let (s, switches) = Settings::parse_args(
+            [
+                "--settings",
+                "--linux",
+                "--vsync",
+                "on",
+                "--no-window",
+                "--check",
+            ]
+            .map(String::from),
+        )
+        .unwrap();
+        assert_eq!(
+            switches,
+            ["--settings", "--linux", "--no-window", "--check"]
+        );
+        assert_eq!(s.vsync, Some(true));
+        let (s, switches) = Settings::parse_args(["--game", "--check"].map(String::from)).unwrap();
+        assert!(switches.is_empty());
+        assert_eq!(s.game, Some(PathBuf::from("--check")));
+    }
+
+    /// Scripts pass `--key=value` and the underscore spelling of a
+    /// hyphenated flag; both read.
+    #[test]
+    fn equals_and_underscore_flag_spellings_read() {
+        let s = args(&["--scaler=fsr", "--draw_distance", "2", "--fps-limit=off"]).unwrap();
+        assert_eq!(s.scaler, Some(Scaler::Fsr));
+        assert_eq!(s.draw_distance, Some(0x20000));
+        assert_eq!(s.fps_limit, Some(0));
+    }
+
+    #[test]
+    fn bad_flags_say_what_they_need() {
+        for (given, message) in [
+            (
+                &["--vsync", "maybe"][..],
+                "--vsync needs on or off, not maybe",
+            ),
+            (&["--fps-limit"], "--fps-limit needs a value"),
+            (
+                &["--fps-limit", "5"],
+                "--fps-limit needs 10 to 1000 or off, not 5",
+            ),
+            (
+                &["--draw-distance", "9"],
+                "--draw-distance needs 1.0 to 3.0, not 9",
+            ),
+            (
+                &["--rumble", "150"],
+                "--rumble needs 0 to 100 or off, not 150",
+            ),
+            (
+                &["--texture-filter", "blurry"],
+                "--texture-filter needs original, smooth or sharp, not blurry",
+            ),
+            (
+                &["--buttons", "1,2"],
+                "--buttons needs original, modern or 8 button numbers, not 1,2",
+            ),
+            (
+                &["--resolution", "8000x100"],
+                "--resolution needs WIDTHxHEIGHT, original or off, not 8000x100",
+            ),
+            (
+                &["--scaler", "blurry"],
+                "--scaler needs nearest, pixel, fsr or linear, not blurry",
+            ),
+            (
+                &["--look", "modern"],
+                "--look needs original, enhanced or steam_deck, not modern",
+            ),
+            (&["--bogus"], "unknown argument --bogus"),
+        ] {
+            assert_eq!(args(given).unwrap_err(), message, "{given:?}");
+        }
+        for help in ["--help", "-h", "/?"] {
+            assert!(matches!(
+                Settings::parse_args([help.to_string()]),
+                Err(ArgError::Help(_))
+            ));
+        }
     }
 
     #[test]
@@ -743,11 +847,10 @@ mod tests {
                 "F6", "F7", "F14", "F21", "F23", "F18", "F19", "F20", "F22", "F27"
             ]
         );
-        assert!(args(&["--widescreen", "maybe"]).is_err());
         let s = args(&["--fps-limit", "120", "--vsync", "off"]).unwrap();
         assert_eq!((s.fps_cap(), s.flip_flags()), (Some(120), 9));
         assert_eq!(args(&["--fps-limit", "off"]).unwrap().fps_cap(), None);
-        assert!(args(&["--fps-limit", "5"]).is_err());
+        assert_eq!(args(&["--fps-limit", "0"]).unwrap().fps_cap(), None);
         let smooth = args(&["--texture-filter", "smooth"])
             .unwrap()
             .skipped_fixes();
@@ -756,23 +859,23 @@ mod tests {
             .unwrap()
             .skipped_fixes();
         assert!(sharp.contains(&"F18") && !sharp.contains(&"F19"));
-        assert!(args(&["--texture-filter", "blurry"]).is_err());
         let r = args(&["--rumble", "60"]).unwrap();
         assert_eq!(r.rumble_strength(), 60);
         assert!(!r.skipped_fixes().contains(&"F22") && !r.skipped_fixes().contains(&"F17"));
-        assert!(args(&["--rumble", "150"]).is_err());
-        assert!(
-            args(&["--gamepad-axes", "off"])
-                .unwrap()
-                .skipped_fixes()
-                .contains(&"F21")
-        );
+        assert_eq!(args(&["--rumble", "off"]).unwrap().rumble_strength(), 0);
         let eased = args(&["--smooth-distance", "on"]).unwrap();
         assert!(!eased.skipped_fixes().contains(&"F20"));
         // A cap alone needs the present hook (F17), not the race resolution.
         let cap = args(&["--fps-limit", "60"]).unwrap();
         assert!(cap.skipped_fixes().contains(&"F16") && !cap.skipped_fixes().contains(&"F17"));
-        assert!(args(&["--draw-distance", "9"]).is_err());
+        assert_eq!(
+            args(&["--scaler", "pixel"]).unwrap().scaler,
+            Some(Scaler::Pixel)
+        );
+        assert_eq!(
+            args(&["--look", "steam_deck"]).unwrap().look,
+            Some("steam_deck")
+        );
 
         // `original` on the command line overrides a file's resolution.
         let (file, _) = Settings::parse_file("resolution = 1920x1080\n");
@@ -783,29 +886,50 @@ mod tests {
 
     #[test]
     fn template_parses_to_the_defaults() {
-        let (s, warnings) = Settings::parse_file(TEMPLATE);
+        let (s, warnings) = Settings::parse_file(&template());
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(
-            s,
-            Settings {
-                close_quits: Some(true),
-                gamepad_axes: Some(true),
-                ..Settings::default()
-            }
-        );
+        assert_eq!(s, Settings::default());
+        // close_quits and gamepad_axes are on unless set off.
         assert_eq!(
             s.skipped_fixes(),
             [
                 "F10", "F13", "F16", "F11", "F12", "F25", "F17", "F18", "F19", "F20", "F22", "F27"
             ]
         );
+        for row in spec::active(OPTIONS) {
+            assert!(
+                template().contains(&format!("\n#{} =", row.key)),
+                "{}",
+                row.key
+            );
+        }
+    }
+
+    /// The template launcher 0.7 wrote (with its active `close_quits =
+    /// true` and `gamepad_axes = true` lines) still reads, warning-free,
+    /// to the same settings.
+    #[test]
+    fn a_launcher_cfg_from_0_7_still_reads() {
+        let old = include_str!("../tests/fixtures/launcher-0.7.cfg");
+        let (s, warnings) = Settings::parse_file(old);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(s.close_quits, Some(true));
+        assert_eq!(s.gamepad_axes, Some(true));
+        assert_eq!(
+            s.skipped_fixes(),
+            Settings::parse_file(&template()).0.skipped_fixes()
+        );
+        // The game folder is filled in place.
+        let filled = set_key(old, "game", r"D:\CMR");
+        assert_eq!(filled.lines().count(), old.lines().count());
+        assert!(filled.contains("\ngame = D:\\CMR\n"));
     }
 
     #[test]
     fn file_values_and_args_win() {
         let text = "game = C:\\old\nruntime=C:\\rt\nsaves = D:\\My Saves\nlanguage = french\nclose_quits = no\ngamepad_axes=off\nresolution = 1920X1440\ndraw_distance=1.5\n";
         let (saved, warnings) = Settings::parse_file(text);
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(saved.language.as_deref(), Some("FRENCH"));
         assert_eq!(saved.resolution, Some((1920, 1440)));
         assert_eq!(saved.draw_distance, Some(0x18000));
@@ -822,34 +946,29 @@ mod tests {
     }
 
     #[test]
-    fn file_ignores_junk_and_reports_bad_values() {
+    fn file_reports_bad_values_and_unknown_keys() {
         let (s, warnings) = Settings::parse_file(
             "# game = C:\\commented\nfuture=1\ngame = C:\\G \n\nruntime=\nclose_quits = maybe\nlanguage=xx\nresolution=8000x100\n",
         );
         assert_eq!(s.game, Some(PathBuf::from(r"C:\G")));
         assert_eq!(s.runtime, None);
         assert_eq!(s.close_quits, None);
-        assert_eq!(warnings.len(), 3, "{warnings:?}");
-        assert!(warnings[0].contains("line 6"));
+        // The unknown key is reported (and kept in the file), then the
+        // three bad values.
+        assert_eq!(warnings.len(), 4, "{warnings:?}");
+        assert!(warnings[0].contains("future"), "{warnings:?}");
+        assert!(warnings[1].contains("line 6"), "{warnings:?}");
     }
 
+    /// A launcher.cfg saved by Notepad in a Windows code page (Latin-1),
+    /// with CRLF and accented folder names, reads as text.
     #[test]
-    fn set_key_keeps_the_rest_of_the_file() {
-        let filled = set_key(TEMPLATE, "game", r"D:\CMR");
-        assert_eq!(filled.lines().count(), TEMPLATE.lines().count());
-        assert!(filled.contains("\ngame = D:\\CMR\n"));
-        assert!(filled.contains("#runtime =\n"));
-        let (s, _) = Settings::parse_file(&filled);
-        assert_eq!(s.game, Some(PathBuf::from(r"D:\CMR")));
-
-        // Replaced again in place; a commented key is not touched.
-        let again = set_key(&filled, "game", r"E:\CMR");
-        assert_eq!(again.matches("game =").count(), 1);
-        // A commented placeholder becomes the line, under its comment
-        // (SDK v0.1 migration note; 0.7 appended at the end).
-        assert_eq!(
-            set_key("# The game\n#game =\n", "game", "y"),
-            "# The game\ngame = y\n"
-        );
+    fn a_code_page_file_with_crlf_reads() {
+        let bytes = b"game = C:\\Jogos d'A\xe7\xe3o\\CMR\r\nvsync = on\r\n".to_vec();
+        let text = cfg::decode(bytes);
+        let (s, warnings) = Settings::parse_file(&text);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(s.game, Some(PathBuf::from("C:\\Jogos d'Ação\\CMR")));
+        assert_eq!(s.vsync, Some(true));
     }
 }

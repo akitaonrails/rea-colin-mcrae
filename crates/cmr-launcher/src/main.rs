@@ -31,18 +31,22 @@ mod app {
 
     use cmr_launcher::audience::{self, Audience};
     use cmr_launcher::config::{self, Settings};
+    use cmr_launcher::form;
+    use cmr_launcher::instance::{self, SecondStart};
     use cmr_launcher::registry::{self, When};
     use cmr_launcher::{Image, edition, fill_data, fixes, hdpack, prepare, runtime};
+    use rea_launcher::cfg::ArgError;
     use rea_launcher::log::Log;
     use rea_launcher::{cfg, fsx, paths};
+    use rea_launcher_win32::instance::{self as win32_instance, Window};
     use rea_launcher_win32::reg::Key;
-    use rea_launcher_win32::{gpu, report, wine, xinput};
+    use rea_launcher_win32::{display, gpu, report, wine, xinput};
 
     use crate::{ui, win32};
 
     const EXE: &str = "Rally.exe";
     const HOOKS_DLL: &str = "cmrhooks.dll";
-    const TITLE: &str = "Colin McRae Rally launcher";
+    const TITLE: &str = instance::WINDOW_TITLE;
 
     fn home() -> PathBuf {
         std::env::var_os("LOCALAPPDATA")
@@ -141,12 +145,6 @@ mod app {
         cfg::read_file(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
     }
 
-    fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
-        let found = args.iter().any(|a| a == flag);
-        args.retain(|a| a != flag);
-        found
-    }
-
     pub fn run() -> Result<u32, String> {
         let mut args = std::env::args().skip(1).peekable();
         if args.peek().map(String::as_str) == Some("--controllers") {
@@ -164,14 +162,56 @@ mod app {
         }
         log_line(concat!("CMRLauncher ", env!("CARGO_PKG_VERSION")));
         let settings_path = settings_path();
-        let mut cli: Vec<String> = std::env::args().skip(1).collect();
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let given = args.len();
+        let (cli, switches) = match Settings::parse_args(args) {
+            Ok(parsed) => parsed,
+            Err(ArgError::Help(_)) => {
+                note(&config::usage(), false);
+                return Ok(0);
+            }
+            Err(e) => {
+                log_line(&format!("error: {e}"));
+                fatal(&format!("{e}\n\n{}", config::usage()));
+                return Ok(BAD_ARGUMENTS);
+            }
+        };
+        let switch = |name: &str| switches.iter().any(|s| s == name);
         // The settings window: shown when started without options (a
-        // double click), or alone with --settings (Linux: cmr-play shows it,
-        // then starts the game in gamescope). Any other option skips it.
-        let settings_only = take_flag(&mut cli, "--settings");
-        let linux = take_flag(&mut cli, "--linux");
-        let no_window = take_flag(&mut cli, "--no-window");
-        if settings_only || (cli.is_empty() && !no_window) {
+        // double click), or alone with --settings (Linux: cmr-play shows
+        // it, then starts the game in gamescope). Any other option skips
+        // it.
+        let settings_only = switch("--settings");
+        let linux = switch("--linux");
+        let no_window = switch("--no-window");
+        let check_only = switch("--check");
+        let other_options = given > switches.len() || check_only;
+        // One launcher at a time, held until the game this run starts has
+        // ended: a second start raises the window or says the game runs
+        // (`instance`). --check only reads and runs alongside.
+        let _instance = if check_only {
+            None
+        } else {
+            match win32_instance::single(instance::NAME) {
+                Ok(guard) => Some(guard),
+                Err(running) => {
+                    let second = SecondStart::new(
+                        running.bring_to_front(Window::Title(instance::WINDOW_TITLE)),
+                    );
+                    log_line(&format!("another launcher is running: {second:?}"));
+                    // A play-time message: the player started a second
+                    // copy and must see why nothing happened.
+                    if let Some(message) = second.message() {
+                        let interactive = audience().interactive;
+                        report::note(TITLE, message, report::Mode::Play { interactive }, true);
+                    }
+                    // cmr-play --settings: nothing was started.
+                    return Ok(if settings_only { WINDOW_CLOSED } else { 0 });
+                }
+            }
+        };
+        let template = config::template();
+        if settings_only || (!other_options && !no_window) {
             // A window under Wine draws through OpenGL: GLX, not Wine 11's
             // default EGL (software on NVIDIA boxes without egl-x11).
             if wine::is_wine()
@@ -179,11 +219,8 @@ mod app {
             {
                 log_line("Wine: OpenGL through GLX (UseEGL=N)");
             }
-            let text = read_settings(&settings_path)
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| config::TEMPLATE.into());
-            match ui::show(&settings_path, &text, linux) {
+            let text = read_settings(&settings_path).ok().flatten();
+            match ui::show(&settings_path, text.as_deref(), &template, linux) {
                 Ok(ui::Outcome::Play) => {
                     log_line("settings window: play");
                     if settings_only {
@@ -195,7 +232,8 @@ mod app {
                     return Ok(if settings_only { WINDOW_CLOSED } else { 0 });
                 }
                 Err(e) => {
-                    // No window possible (no OpenGL): play with the saved settings.
+                    // No window possible (no OpenGL): play with the saved
+                    // settings.
                     log_line(&format!("settings window unavailable: {e}"));
                     if settings_only {
                         return Ok(WINDOW_UNAVAILABLE);
@@ -212,25 +250,12 @@ mod app {
                 (None, false)
             }
         };
-        let file_text = existing.as_deref().unwrap_or(config::TEMPLATE);
+        let file_text = existing.as_deref().unwrap_or(&template);
         let (saved, warnings) = Settings::parse_file(file_text);
         for w in &warnings {
             log_line(&format!("warning: {w}"));
         }
-        let check_only = cli.iter().any(|a| a == "--check");
-        cli.retain(|a| a != "--check");
-        let settings = match Settings::parse_args(cli) {
-            Ok(cli) => saved.clone().merged(cli),
-            Err(e) if e == config::USAGE => {
-                note(config::USAGE, false);
-                return Ok(0);
-            }
-            Err(e) => {
-                log_line(&format!("error: {e}"));
-                fatal(&e);
-                return Ok(BAD_ARGUMENTS);
-            }
-        };
+        let settings = form::with_look(saved.clone(), cli, display::screen_size());
 
         let game = find_game(&settings)?;
         let exe_bytes = fs::read(game.join(EXE))

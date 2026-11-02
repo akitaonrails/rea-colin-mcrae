@@ -17,8 +17,13 @@ pub mod edition;
 pub mod fixes;
 pub mod form;
 pub mod hdpack;
+pub mod instance;
+#[cfg(any(windows, test))]
+pub mod look;
 pub mod registry;
 pub mod runtime;
+#[cfg(any(windows, test))]
+pub mod window;
 
 use fixes::{FixSet, Write};
 use rea_launcher::pe::{Format, Pe};

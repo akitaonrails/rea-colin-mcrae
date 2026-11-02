@@ -9,7 +9,9 @@
 
 use std::path::PathBuf;
 
-use crate::config::{self, Scaler, Settings, TextureFilter};
+use rea_launcher::display::{STEAM_DECK_SCREEN, landscape};
+
+use crate::config::{self, HdArt, Scaler, Settings, TextureFilter};
 
 /// The picture settings the look presets cover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,22 +78,82 @@ impl Picture {
     };
 }
 
-pub const STEAM_DECK_SCREEN: (u32, u32) = (1280, 800);
-
 /// The look to recommend on a screen: Steam Deck on a Deck, else Enhanced.
 pub fn recommended(screen: Option<(u32, u32)>) -> Look {
-    if screen.and_then(landscape) == Some(STEAM_DECK_SCREEN) {
+    if rea_launcher::display::is_steam_deck(screen) {
         Look::SteamDeck
     } else {
         Look::Enhanced
     }
 }
 
-/// A screen size as a landscape race resolution the game can use, or
-/// `None` when it is too small to be worth it.
-fn landscape((a, b): (u32, u32)) -> Option<(u32, u32)> {
-    let (w, h) = (a.max(b) & !1, a.min(b) & !1);
-    (w > 640 && h > 480 && w <= 7680 && h <= 4320).then_some((w, h))
+impl Look {
+    /// The look a `look` value (`config::LOOKS`) names.
+    pub fn from_key(key: &str) -> Option<Look> {
+        match key {
+            "original" => Some(Look::Original),
+            "enhanced" => Some(Look::Enhanced),
+            "steam_deck" => Some(Look::SteamDeck),
+            _ => None,
+        }
+    }
+
+    /// The look's picture on a screen; `None` for Custom.
+    pub fn picture(self, screen: Option<(u32, u32)>) -> Option<Picture> {
+        match self {
+            Look::Original => Some(Picture::ORIGINAL),
+            Look::Enhanced => Some(Picture::enhanced(screen)),
+            Look::SteamDeck => Some(Picture::STEAM_DECK),
+            Look::Custom => None,
+        }
+    }
+}
+
+impl Picture {
+    /// These picture values as settings: every picture key set (Original's
+    /// as the game's own: unset, or `original`).
+    pub fn settings(&self) -> Settings {
+        Settings {
+            resolution: Some(self.resolution.unwrap_or(config::ORIGINAL)),
+            widescreen: Some(self.widescreen),
+            draw_distance: (self.draw_distance != ONE).then_some(self.draw_distance),
+            texture_filter: Some(self.texture_filter),
+            fps_limit: Some(self.fps_limit.unwrap_or(0)),
+            vsync: self.vsync,
+            smooth_distance: Some(self.smooth_distance),
+            hd_art: Some(if self.hd_art {
+                HdArt::Bundled
+            } else {
+                HdArt::Off
+            }),
+            ..Settings::default()
+        }
+    }
+}
+
+/// The settings a run uses: the file's over the look it names; then a
+/// `--look` from the command line over those; then the other flags
+/// (`sdk/docs/STANDARDS.md`: "Looks have a --look flag that sets all of
+/// the look's values").
+pub fn with_look(file: Settings, args: Settings, screen: Option<(u32, u32)>) -> Settings {
+    let picture = |look: Option<&str>| {
+        look.and_then(Look::from_key)
+            .and_then(|l| l.picture(screen))
+            .map(|p| p.settings())
+    };
+    let mut base = match picture(file.look) {
+        Some(look) => look.merged(file),
+        None => file,
+    };
+    if let Some(look) = picture(args.look) {
+        // A folder of HD art the file names stays chosen.
+        let folder = matches!(base.hd_art, Some(HdArt::Folder(_))).then(|| base.hd_art.clone());
+        base = base.merged(look);
+        if let Some(folder) = folder.filter(|_| base.hd_on()) {
+            base.hd_art = folder;
+        }
+    }
+    base.merged(args)
 }
 
 /// The pad button layouts (see `config::MODERN_BUTTONS`).
@@ -141,6 +203,8 @@ pub enum Look {
 pub struct Form {
     pub game: String,
     pub saves: String,
+    /// The game's language (`None`: the game keeps its own).
+    pub language: Option<String>,
     pub picture: Picture,
     /// Remembered so a look picked by name stays picked even when its
     /// values match another (and "Custom" stays open while editing).
@@ -172,100 +236,19 @@ pub const FRAME_RATES: [(Option<u32>, &str); 5] = [
     (Some(120), "120"),
     (Some(144), "144"),
 ];
-pub const VSYNCS: [(Option<bool>, &str); 3] = [
-    (None, "As the game"),
-    (Some(true), "On"),
-    (Some(false), "Off"),
-];
-pub const FILTERS: [(TextureFilter, &str); 3] = [
-    (TextureFilter::Original, "Original"),
-    (TextureFilter::Smooth, "Smooth"),
-    (TextureFilter::Sharp, "Sharp"),
-];
 pub const RUMBLES: [(u32, &str); 4] = [(0, "Off"), (30, "Light"), (60, "Medium"), (100, "Strong")];
-pub const SCALERS: [(Scaler, &str, &str); 4] = [
-    (
-        Scaler::Nearest,
-        "Sharp",
-        "Every game pixel becomes a crisp block. Best for the 1998 artwork.",
-    ),
-    (
-        Scaler::Pixel,
-        "Even pixels",
-        "Crisp blocks, with only their edges blended so all are the same size.",
-    ),
-    (
-        Scaler::Fsr,
-        "FSR",
-        "AMD FSR: smooth, then sharpened. Softer than Sharp.",
-    ),
-    (
-        Scaler::Linear,
-        "Smooth",
-        "Plain smoothing. The softest, most blurred look.",
-    ),
-];
-
-/// What a gamepad does in the settings window, from the XInput buttons
-/// pressed since the last look (`wButtons` bits): Start plays, the d-pad
-/// moves between controls (as Tab and Shift+Tab do), A presses the one in
-/// focus (as Space does), LB and RB change tabs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PadAction {
-    Play,
-    Next,
-    Previous,
-    Press,
-    NextTab,
-    PreviousTab,
-}
-
-pub const PAD_UP: u16 = 0x0001;
-pub const PAD_DOWN: u16 = 0x0002;
-pub const PAD_LEFT: u16 = 0x0004;
-pub const PAD_RIGHT: u16 = 0x0008;
-pub const PAD_START: u16 = 0x0010;
-pub const PAD_LB: u16 = 0x0100;
-pub const PAD_RB: u16 = 0x0200;
-pub const PAD_A: u16 = 0x1000;
-
-/// The actions of the buttons in `now` that were not held in `before`.
-pub fn pad_actions(before: u16, now: u16) -> Vec<PadAction> {
-    let pressed = now & !before;
-    [
-        (PAD_START, PadAction::Play),
-        (PAD_DOWN, PadAction::Next),
-        (PAD_RIGHT, PadAction::Next),
-        (PAD_UP, PadAction::Previous),
-        (PAD_LEFT, PadAction::Previous),
-        (PAD_A, PadAction::Press),
-        (PAD_RB, PadAction::NextTab),
-        (PAD_LB, PadAction::PreviousTab),
-    ]
-    .into_iter()
-    .filter(|(bit, _)| pressed & bit != 0)
-    .map(|(_, action)| action)
-    .collect()
-}
-
-/// The settings window's design size in points.
-pub const WINDOW: (f32, f32) = (880.0, 640.0);
-
-/// How much larger to draw the window on a screen (`screen` in pixels,
-/// `native` the system's own scale, 1.0 under Wine unless its DPI is set):
-/// 1x up to 1440 pixels on the shorter side, then in step with it (1.5x at
-/// 4K); never below the system's scale and never larger than 90 % of the
-/// screen. In steps of 0.05.
-pub fn window_zoom(screen: Option<(u32, u32)>, native: f32) -> f32 {
-    let native = if native > 0.0 { native } else { 1.0 };
-    let Some((w, h)) = screen else {
-        return 1.0;
-    };
-    let (w, h) = (w as f32, h as f32);
-    let fit = 0.9 * (w / WINDOW.0).min(h / WINDOW.1);
-    let target = (w.min(h) / 1440.0).max(1.0).min(fit);
-    let zoom = (target / native).max(1.0);
-    (zoom * 20.0).round() / 20.0
+/// `choices` with `current` added (labelled by `label`) when no chip has
+/// it: a value saved from the file or the command line is shown, and kept.
+pub fn with_value<T: PartialEq + Clone>(
+    choices: &[(T, String)],
+    current: &T,
+    label: impl Fn(&T) -> String,
+) -> Vec<(T, String)> {
+    let mut out = choices.to_vec();
+    if !out.iter().any(|(v, _)| v == current) {
+        out.push((current.clone(), label(current)));
+    }
+    out
 }
 
 /// Race resolutions offered: the game's own, the screen's (when it is not
@@ -310,6 +293,7 @@ impl Form {
         Form {
             game: path(&s.game),
             saves: path(&s.saves),
+            language: s.language.clone(),
             picture,
             look: Form::look_of(&picture, screen),
             rumble: s.rumble_strength(),
@@ -329,8 +313,7 @@ impl Form {
     /// settings with the Steam Deck look, which suits the HD art and runs
     /// lightly everywhere (owner decision, see `AGENTS.md`).
     pub fn first_run(screen: Option<(u32, u32)>) -> Form {
-        let (settings, _) = Settings::parse_file(config::TEMPLATE);
-        let mut form = Form::new(&settings, screen);
+        let mut form = Form::new(&Settings::default(), screen);
         form.set_look(Look::SteamDeck, screen);
         form
     }
@@ -403,7 +386,9 @@ impl Form {
     /// line (comments, keys the window doesn't show) is kept.
     pub fn save(&self, text: &str) -> String {
         let p = &self.picture;
-        let mut t = text.to_string();
+        // The window saves every value on its own; a `look =` line would
+        // win over them on the next read.
+        let mut t = config::clear_key(text, "look");
         let mut put = |key: &str, value: Option<String>| {
             t = match &value {
                 Some(v) => config::set_key(&t, key, v),
@@ -413,11 +398,12 @@ impl Form {
         let path = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
         put("game", path(&self.game));
         put("saves", path(&self.saves));
+        put("language", self.language.clone());
         put("resolution", p.resolution.map(|(w, h)| format!("{w}x{h}")));
         put("widescreen", p.widescreen.then(|| "true".into()));
         put(
             "draw_distance",
-            (p.draw_distance != ONE).then(|| format!("{}", p.draw_distance as f64 / ONE as f64)),
+            (p.draw_distance != ONE).then(|| config::factor_value(p.draw_distance)),
         );
         put("fps_limit", p.fps_limit.map(|f| f.to_string()));
         put("vsync", p.vsync.map(|v| v.to_string()));
@@ -459,7 +445,7 @@ mod tests {
 
     #[test]
     fn a_new_player_starts_with_the_original_game() {
-        let f = form(config::TEMPLATE);
+        let f = form(&config::template());
         assert_eq!(f.look, Look::Original);
         assert_eq!(f.picture, Picture::ORIGINAL);
         assert!(f.gamepad_axes && f.close_quits);
@@ -488,9 +474,9 @@ mod tests {
 
     #[test]
     fn the_look_is_worked_out_from_the_saved_values() {
-        let mut f = form(config::TEMPLATE);
+        let mut f = form(&config::template());
         f.set_look(Look::Enhanced, SCREEN);
-        let saved = f.save(config::TEMPLATE);
+        let saved = f.save(&config::template());
         assert_eq!(form(&saved).look, Look::Enhanced);
         // One value off the preset: custom.
         let tweaked = config::set_key(&saved, "draw_distance", "2");
@@ -507,10 +493,10 @@ mod tests {
 
     #[test]
     fn the_steam_deck_look_and_its_recommendation() {
-        let mut f = form(config::TEMPLATE);
+        let mut f = form(&config::template());
         f.set_look(Look::SteamDeck, SCREEN);
         assert_eq!(f.picture.resolution, Some((1280, 800)));
-        assert_eq!(form(&f.save(config::TEMPLATE)).look, Look::SteamDeck);
+        assert_eq!(form(&f.save(&config::template())).look, Look::SteamDeck);
         assert_eq!(recommended(Some((1280, 800))), Look::SteamDeck);
         assert_eq!(
             recommended(Some((800, 1280))),
@@ -523,7 +509,7 @@ mod tests {
 
     #[test]
     fn custom_keeps_the_values_to_edit() {
-        let mut f = form(config::TEMPLATE);
+        let mut f = form(&config::template());
         f.set_look(Look::Enhanced, SCREEN);
         f.set_look(Look::Custom, SCREEN);
         assert_eq!(f.picture, Picture::enhanced(SCREEN));
@@ -531,7 +517,7 @@ mod tests {
 
     #[test]
     fn saving_keeps_comments_and_round_trips_every_field() {
-        let mut f = form(config::TEMPLATE);
+        let mut f = form(&config::template());
         f.game = r"D:\Games\CMR".into();
         f.saves = r"Z:\home\me\saves".into();
         f.picture = Picture {
@@ -548,7 +534,7 @@ mod tests {
         f.gamepad_axes = false;
         f.close_quits = false;
         f.scaler = Scaler::Fsr;
-        let saved = f.save(config::TEMPLATE);
+        let saved = f.save(&config::template());
         assert!(saved.contains("# Colin McRae Rally launcher settings."));
         let mut back = form(&saved);
         assert_eq!(back.look, Look::Custom);
@@ -560,11 +546,11 @@ mod tests {
 
     #[test]
     fn button_layouts_round_trip_and_custom_edits_spell_out_every_button() {
-        let mut f = form(config::TEMPLATE);
+        let mut f = form(&config::template());
         assert_eq!(f.layout, Layout::Modern, "the default");
         assert_eq!(f.pad_button(4), 1, "modern handbrake on A");
         f.set_layout(Layout::Original);
-        let saved = f.save(config::TEMPLATE);
+        let saved = f.save(&config::template());
         assert!(
             saved.contains("buttons = original"),
             "a choice away from the default is written"
@@ -582,7 +568,7 @@ mod tests {
         g.set_pad_button(2, 4); // change view on Y
         assert_eq!(g.layout, Layout::Custom);
         assert_eq!(g.buttons, [1, 2, 4, 4, 5, 6, 7, 8]);
-        let saved = g.save(config::TEMPLATE);
+        let saved = g.save(&config::template());
         assert!(saved.contains("buttons = 1,2,4,4,5,6,7,8"));
         assert_eq!(form(&saved).buttons, g.buttons);
         // Back to the default removes the key.
@@ -591,37 +577,13 @@ mod tests {
     }
 
     #[test]
-    fn the_window_grows_with_the_screen() {
-        assert_eq!(window_zoom(Some((1920, 1080)), 1.0), 1.0);
-        assert_eq!(window_zoom(Some((2560, 1440)), 1.0), 1.0);
-        assert_eq!(window_zoom(Some((3840, 2160)), 1.0), 1.5);
-        assert_eq!(
-            window_zoom(Some((2160, 3840)), 1.0),
-            1.5,
-            "a rotated 4K screen"
-        );
-        assert_eq!(window_zoom(Some((5120, 2880)), 1.0), 2.0);
-        // Windows already scales by 150 %: nothing more at 4K.
-        assert_eq!(window_zoom(Some((3840, 2160)), 1.5), 1.0);
-        // 125 % at 4K: the rest of the way to 1.5.
-        assert_eq!(window_zoom(Some((3840, 2160)), 1.25), 1.2);
-        // A small screen never gets a larger window than fits.
-        assert_eq!(window_zoom(Some((1280, 800)), 1.0), 1.0);
-        assert_eq!(window_zoom(None, 1.0), 1.0);
-    }
-
-    #[test]
     fn every_scaler_is_offered_and_round_trips() {
-        assert_eq!(SCALERS.len(), Scaler::ALL.len());
+        assert_eq!(config::SCALERS.len(), Scaler::ALL.len());
         for scaler in Scaler::ALL {
-            let (_, label, note) = SCALERS
-                .iter()
-                .find(|s| s.0 == scaler)
-                .expect("each scaler has a chip");
-            assert!(!label.is_empty() && !note.is_empty());
-            let mut f = form(config::TEMPLATE);
+            assert!(config::SCALERS.iter().any(|(key, _)| *key == scaler.key()));
+            let mut f = form(&config::template());
             f.scaler = scaler;
-            let saved = f.save(config::TEMPLATE);
+            let saved = f.save(&config::template());
             assert!(saved.contains(&format!("scaler = {}", scaler.key())));
             let (s, warnings) = Settings::parse_file(&saved);
             assert!(warnings.is_empty(), "{warnings:?}");
@@ -631,6 +593,59 @@ mod tests {
         let keys: Vec<_> = Scaler::ALL.iter().map(|s| s.key()).collect();
         assert_eq!(keys, ["nearest", "pixel", "fsr", "linear"]);
         assert!(Settings::parse_file("scaler = blurry").1.len() == 1);
+    }
+
+    #[test]
+    fn a_look_sets_every_picture_value_and_given_values_win() {
+        let file = |t: &str| Settings::parse_file(t).0;
+        let cli = |a: &[&str]| {
+            Settings::parse_args(a.iter().map(|s| s.to_string()))
+                .unwrap()
+                .0
+        };
+        // `look = enhanced` in the file, one value of its own on top.
+        let s = with_look(
+            file("look = enhanced\ndraw_distance = 2\n"),
+            Settings::default(),
+            SCREEN,
+        );
+        assert_eq!(s.race_resolution(), Some((2560, 1440)));
+        assert_eq!(s.draw_distance, Some(ONE * 2));
+        assert!(s.hd_on() && s.widescreen == Some(true));
+        // `--look original` beats the file's picture values...
+        let s = with_look(
+            file("resolution = 1920x1080\nhd_art = on\nrumble = 60\n"),
+            cli(&["--look", "original"]),
+            SCREEN,
+        );
+        assert_eq!(s.race_resolution(), None);
+        assert!(!s.hd_on());
+        let rumble_only = Settings {
+            rumble: Some(60),
+            ..Settings::default()
+        };
+        assert_eq!(s.skipped_fixes(), rumble_only.skipped_fixes());
+        // ...but not the flags given with it, nor what isn't a picture.
+        let s = with_look(
+            Settings::default(),
+            cli(&["--look", "steam_deck", "--fps-limit", "30"]),
+            SCREEN,
+        );
+        assert_eq!(s.race_resolution(), Some((1280, 800)));
+        assert_eq!(s.fps_cap(), Some(30));
+        // A look's values read back as that look in the window.
+        let s = with_look(Settings::default(), cli(&["--look", "enhanced"]), SCREEN);
+        assert_eq!(Form::new(&s, SCREEN).look, Look::Enhanced);
+        // A folder of HD art stays the one chosen.
+        let s = with_look(
+            file("hd_art = D:\\hd\n"),
+            cli(&["--look", "enhanced"]),
+            SCREEN,
+        );
+        assert_eq!(s.hd_art, Some(HdArt::Folder("D:\\hd".into())));
+        // Saving from the window drops the look line.
+        let saved = Form::new(&s, SCREEN).save("look = enhanced\n");
+        assert_eq!(Settings::parse_file(&saved).0.look, None);
     }
 
     #[test]
@@ -655,31 +670,10 @@ mod tests {
         assert_eq!(f.picture, Picture::STEAM_DECK);
         assert_eq!(f.scaler, Scaler::Linear);
         // Saved and read back, it is still the Steam Deck look.
-        assert_eq!(form(&f.save(config::TEMPLATE)).look, Look::SteamDeck);
+        assert_eq!(form(&f.save(&config::template())).look, Look::SteamDeck);
         // A settings file that chose another look keeps it.
-        let mut f = form(config::TEMPLATE);
+        let mut f = form(&config::template());
         f.set_look(Look::Original, SCREEN);
-        assert_eq!(form(&f.save(config::TEMPLATE)).look, Look::Original);
-    }
-
-    #[test]
-    fn gamepad_buttons_act_once_per_press() {
-        assert_eq!(pad_actions(0, PAD_START), [PadAction::Play]);
-        assert_eq!(
-            pad_actions(PAD_START, PAD_START),
-            [],
-            "held, not pressed again"
-        );
-        assert_eq!(
-            pad_actions(0, PAD_DOWN | PAD_A),
-            [PadAction::Next, PadAction::Press]
-        );
-        assert_eq!(
-            pad_actions(PAD_DOWN, PAD_DOWN | PAD_UP),
-            [PadAction::Previous]
-        );
-        assert_eq!(pad_actions(0, PAD_RB), [PadAction::NextTab]);
-        assert_eq!(pad_actions(0, PAD_LB), [PadAction::PreviousTab]);
-        assert_eq!(pad_actions(PAD_A, 0), []);
+        assert_eq!(form(&f.save(&config::template())).look, Look::Original);
     }
 }
