@@ -37,10 +37,11 @@ mod app {
     use rea_launcher::cfg::ArgError;
     use rea_launcher::log::Log;
     use rea_launcher::{cfg, fsx, paths};
+    use rea_launcher_win32::gpu::{self, Glx};
     use rea_launcher_win32::instance::{self as win32_instance, SecondStart, Window};
     use rea_launcher_win32::reg::Key;
     use rea_launcher_win32::report::{self, Audience, Run};
-    use rea_launcher_win32::{display, gpu, process, wine, xinput};
+    use rea_launcher_win32::{display, process, wine, xinput};
 
     use crate::{ui, win32};
 
@@ -191,7 +192,7 @@ mod app {
         // ended: a second start brings the window forward or says the game
         // runs (`instance`); a run without the window never just brings it
         // forward. --check only reads and runs alongside.
-        let _instance = if check_only {
+        let mut instance_guard = if check_only {
             None
         } else {
             match win32_instance::single(instance::NAME) {
@@ -213,11 +214,21 @@ mod app {
         let template = config::template();
         if shows_window {
             // A window under Wine draws through OpenGL: GLX, not Wine 11's
-            // default EGL (software on NVIDIA boxes without egl-x11).
-            if wine::is_wine()
-                && let Ok(true) = gpu::prefer_glx()
-            {
-                log_line("Wine: OpenGL through GLX (UseEGL=N)");
+            // default EGL (software on NVIDIA boxes without egl-x11). On a
+            // fresh prefix the setting only applies to the next process, so
+            // the launcher runs itself once more and this first start gets
+            // the window too.
+            match gpu::prefer_glx_or_restart(instance_guard.take()) {
+                Glx::Restarted { exit_code } => {
+                    log_line("Wine: OpenGL through GLX (UseEGL=N) set; started again");
+                    return Ok(exit_code);
+                }
+                Glx::Ready { instance, warning } => {
+                    instance_guard = instance;
+                    if let Some(warning) = warning {
+                        log_line(&format!("warning: {warning}"));
+                    }
+                }
             }
             let read = read_settings(&settings_path);
             let text = match &read {
@@ -476,6 +487,8 @@ mod app {
                 saves.display()
             )),
         }
+        // The next launcher may start once the saves are back.
+        drop(instance_guard);
         Ok(code)
     }
 }
