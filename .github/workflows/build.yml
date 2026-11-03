@@ -36,8 +36,9 @@ jobs:
       # on Windows; its tests run on the host).
       clippy-args: ""
       wine-tests: true
-      # cmr-hooks is no_std on Windows: its tests only build for the host.
-      wine-test-args: --locked --workspace --exclude cmr-hooks
+      # cmr-hooks is no_std on Windows: its tests only build for the host
+      # ([package.metadata.rea] wine-test = false leaves it out).
+      wine-test-args: --locked --workspace
       package-command: packaging/package.sh "dist/CMRLauncher-$REA_VERSION_NAME"
       package-dir: dist/CMRLauncher-*/ dist/CMRLauncher-*.zip
       package-allowlist: packaging/package.allow

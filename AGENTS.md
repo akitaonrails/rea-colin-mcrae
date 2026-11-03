@@ -47,8 +47,9 @@ here the Windows target is `i686-pc-windows-gnu`. MinGW, lld and Wine live
 in the `gaming` distrobox (clippy for Windows needs MinGW's gcc too: cmr-hd
 builds libwebp): run them as `distrobox enter gaming -- sh -c 'cd
 /absolute/path && …'`. Windows-target tests: `sdk/scripts/wine-test
---locked --workspace --exclude cmr-hooks` (the hook DLL is `no_std` on
-Windows and can't build in the test profile). Examples take the game
+--locked --workspace` (it leaves out the hook DLL, `no_std` on Windows and
+unable to build in the test profile: `[package.metadata.rea] wine-test =
+false` in its Cargo.toml). Examples take the game
 folder from `CMR_GAME_DIR`, never a developer's path.
 
 ## Colin McRae Rally: what is specific to this game

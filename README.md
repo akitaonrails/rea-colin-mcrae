@@ -343,7 +343,7 @@ cargo clippy --release --target i686-pc-windows-gnu --workspace -- -D warnings
 cargo deny check
 for t in linux/tests/*.sh packaging/tests/*.sh; do sh "$t"; done
 cargo build --release --locked --target i686-pc-windows-gnu --workspace
-sdk/scripts/wine-test --locked --workspace --exclude cmr-hooks   # Windows-target tests under Wine, headless
+sdk/scripts/wine-test --locked --workspace   # Windows-target tests under Wine, headless
 sh <sdk>/scripts/sdk-sync --check .             # sdk/ matches the pinned SDK tag
 ```
 
