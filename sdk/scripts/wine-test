@@ -3,6 +3,7 @@
 #
 #   scripts/wine-test [--target TRIPLE] [cargo test args...] [-- test args...]
 #   scripts/wine-test --failures-from LOG     names the failures in a saved log
+#   scripts/wine-test --details-from LOG      what the failing tests printed
 #
 # Run it from the root of the Cargo workspace to test (the SDK, or a
 # launcher through its vendored sdk/scripts/wine-test), e.g.
@@ -22,6 +23,16 @@
 # from cargo's "failures:" lists when a test binary reports normally, and by
 # rerunning each test alone when a binary aborted (a panic can abort the
 # whole binary under Wine).
+#
+# Locale: LANG and LC_ALL are C.UTF-8, whatever the caller's (an empty or
+# POSIX locale gives Wine an ANSI code page, and tests with accented paths
+# fail only on that machine).
+#
+# Host-only crates (a no_std hook DLL whose tests only build for the host,
+# CMR1's cmr-hooks): with --workspace, every crate whose Cargo.toml says
+#   [package.metadata.rea]
+#   wine-test = false
+# is left out (--exclude), and --exclude NAME works as in cargo.
 set -eu
 
 # Prints "FAIL <test>" for every test in a cargo test log's failures lists.
@@ -33,6 +44,17 @@ failures_from() {
   ' | sort -u
 }
 
+# Prints what each failing test printed (cargo's "---- NAME stdout ----"
+# blocks: the panic message and the test's own output), at most 40 lines
+# per test, so a CI log says why and not only which.
+details_from() {
+  tr -d '\r' <"$1" | awk '
+    /^---- .* stdout ----$/ { on = 1; n = 0; print; next }
+    on && (/^failures:$/ || /^---- /) { on = 0 }
+    on && n < 40 { print; n++ }
+  '
+}
+
 # Prints the test executables cargo reports as aborted: not exit status 101
 # (101 is a normal "some tests failed" exit, already named by failures_from).
 aborted_from() {
@@ -40,12 +62,38 @@ aborted_from() {
     grep -v '(exit status: 101)$' | sed -n 's/.*`wine \([^`]*\.exe\).*/\1/p' | sort -u
 }
 
+if [ "${1:-}" = --details-from ]; then
+  [ $# -eq 2 ] && [ -f "$2" ] || { echo "usage: $0 --details-from LOG" >&2; exit 2; }
+  details_from "$2"
+  exit 0
+fi
 if [ "${1:-}" = --failures-from ]; then
   [ $# -eq 2 ] && [ -f "$2" ] || { echo "usage: $0 --failures-from LOG" >&2; exit 2; }
   failures_from "$2"
   aborted_from "$2" | sed 's/^/ABORTED /'
   exit 0
 fi
+
+# Crates whose Cargo.toml opts out ([package.metadata.rea] wine-test =
+# false), below the current folder (not build output, scratch or sdk/).
+opted_out() {
+  find . \( -name target -o -name .work -o -name .git -o -path ./sdk \) -prune -o \
+    -name Cargo.toml -type f -print 2>/dev/null | while IFS= read -r m; do
+    awk '
+      /^\[/ { t = $0; sub(/[ \t]*(#.*)?$/, "", t) }
+      t == "[package]" && /^name[ \t]*=/ { n = $0; sub(/^[^"]*"/, "", n); sub(/".*$/, "", n) }
+      t == "[package.metadata.rea]" && /^wine-test[ \t]*=[ \t]*false/ { off = 1 }
+      END { if (off && n != "") print n }
+    ' "$m"
+  done | sort -u
+}
+workspace=''
+for a; do
+  [ "$a" = -- ] && break
+  [ "$a" = --workspace ] && workspace=1
+done
+excludes=''
+if [ -n "$workspace" ]; then excludes=$(opted_out); fi
 
 # Split our --target out of the cargo arguments; keep everything else in order.
 target=${REA_WINE_TARGET:-i686-pc-windows-gnu}
@@ -58,7 +106,10 @@ while [ "$i" -lt "$n" ]; do
       [ "$i" -lt "$n" ] || { echo "wine-test: --target needs a value" >&2; exit 2; }
       target=$1; shift; i=$((i + 1)) ;;
     --target=*) target=${a#--target=} ;;
-    --) passthrough=1; set -- "$@" "$a" ;;
+    --)
+      passthrough=1
+      for x in $excludes; do set -- "$@" --exclude "$x"; done
+      set -- "$@" "$a" ;;
     *) set -- "$@" "$a" ;;
   esac
 done
@@ -67,7 +118,13 @@ case $target in
   *) echo "wine-test: unsupported target $target (i686-pc-windows-gnu or x86_64-pc-windows-gnu)" >&2; exit 2 ;;
 esac
 # One test at a time: tests share the prefix's registry and files.
-if [ -n "$passthrough" ]; then set -- "$@" --test-threads=1; else set -- "$@" -- --test-threads=1; fi
+if [ -n "$passthrough" ]; then
+  set -- "$@" --test-threads=1
+else
+  for x in $excludes; do set -- "$@" --exclude "$x"; done
+  set -- "$@" -- --test-threads=1
+fi
+for x in $excludes; do echo "wine-test: leaving out $x ([package.metadata.rea] wine-test = false)" >&2; done
 
 root=$(pwd -P)
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target/wine}"
@@ -77,6 +134,7 @@ case $prefix in /*) ;; *) prefix=$root/$prefix ;; esac
 runner_var=CARGO_TARGET_$(printf '%s' "$target" | tr 'a-z-' 'A-Z_')_RUNNER
 export "$runner_var=wine"
 export WINEPREFIX="$prefix" WINEDEBUG=-all WINEDLLOVERRIDES="winemenubuilder.exe=d"
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
 unset DISPLAY WAYLAND_DISPLAY
 for tool in cargo wine wineboot wineserver; do
   command -v "$tool" >/dev/null 2>&1 || { echo "wine-test: $tool is not on PATH" >&2; exit 2; }
@@ -111,6 +169,7 @@ if cargo test --target "$target" --no-fail-fast "$@" >"$log" 2>&1; then
   exit 0
 fi
 grep -E '^test result|^error' "$log" || tail -20 "$log"
+details_from "$log"
 failures_from "$log"
 aborted_from "$log" | while IFS= read -r exe; do
   echo "aborted: $exe; running its tests one by one" >&2

@@ -1,0 +1,166 @@
+#!/bin/sh
+# rea-launcher-sdk scripts/prepush-scan: looks for committed secrets before
+# a push, with a pinned gitleaks, and never prints what it found.
+#
+#   prepush-scan [--all | --range A..B] [--no-tree] [repo]
+#
+# Scans, in <repo> (default: the current folder):
+#   1. the commits a push would publish: @{upstream}..HEAD, else
+#      origin/HEAD..HEAD, else the whole history (--all: always the whole
+#      history; --range: those commits);
+#   2. the tree at HEAD (every tracked file as committed), unless --no-tree.
+# Uncommitted changes are never pushed and are not scanned.
+#
+# Prints only the file, line, commit id and rule of each finding, never the
+# matched text (a secret in the terminal is a secret in a log). Exit 0
+# clean, 1 findings, 2 usage or tool error. A repository's .gitleaks.toml
+# and .gitleaksignore apply; without a .gitleaks.toml, gitleaks' default
+# rules run with the SDK's allowlist below (launcher-ci.yml carries the
+# same one).
+#
+# gitleaks: $REA_GITLEAKS, else `gitleaks` on PATH, else the pinned release
+# below, downloaded into a temp folder (removed afterwards) and checked
+# against its SHA-256 (Linux x86_64 / aarch64). REA_NO_FETCH=1 forbids the
+# download.
+set -eu
+GITLEAKS_VERSION=8.30.1
+GITLEAKS_SHA256_x86_64=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+GITLEAKS_SHA256_aarch64=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
+# gitleaks' default rules, minus what every rea launcher has: play-script
+# settings named *_KEY (`REA_SCALER_KEY= REA_DEFAULT_SCALER=nis` reads as
+# a generic API key).
+GITLEAKS_CONFIG="[extend]
+useDefault = true
+
+[[allowlists]]
+description = \"rea-play.sh settings named *_KEY, not secrets\"
+regexTarget = \"line\"
+regexes = ['''\\bREA_[A-Z0-9_]*KEY=''']"
+
+die() { echo "prepush-scan: $*" >&2; exit 2; }
+usage() { echo "usage: $0 [--all | --range A..B] [--no-tree] [repo]" >&2; exit 2; }
+
+ALL='' RANGE='' TREE=1
+while [ $# -gt 0 ]; do
+  case $1 in
+    --all) ALL=1; shift ;;
+    --range) [ $# -ge 2 ] || usage; RANGE=$2; shift 2 ;;
+    --no-tree) TREE=''; shift ;;
+    -h | --help) usage ;;
+    -*) die "unknown option $1" ;;
+    *) break ;;
+  esac
+done
+[ $# -le 1 ] || usage
+case $RANGE in *[!A-Za-z0-9._/@{}~^-]*) die "unexpected characters in --range" ;; esac
+REPO=$(cd "${1:-.}" 2>/dev/null && pwd -P) || die "no folder ${1:-.}"
+git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$REPO is not a git work tree"
+REPO=$(git -C "$REPO" rev-parse --show-toplevel)
+
+T=$(mktemp -d "${TMPDIR:-/tmp}/prepush-scan.XXXXXX")
+T=$(cd "$T" && pwd -P)   # gitleaks reports the tree scan's paths resolved
+trap 'rm -rf "$T"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# --- gitleaks ------------------------------------------------------------------
+fetch_gitleaks() {
+  [ "${REA_NO_FETCH:-}" != 1 ] || die "gitleaks is not installed and REA_NO_FETCH=1 forbids the download (install gitleaks $GITLEAKS_VERSION, or set REA_GITLEAKS)"
+  arch=$(uname -m)
+  case $(uname -s):$arch in
+    Linux:x86_64) asset=linux_x64 sum=$GITLEAKS_SHA256_x86_64 ;;
+    Linux:aarch64 | Linux:arm64) asset=linux_arm64 sum=$GITLEAKS_SHA256_aarch64 ;;
+    *) die "gitleaks is not installed; install gitleaks $GITLEAKS_VERSION (no pinned download for $(uname -s) $arch)" ;;
+  esac
+  command -v curl >/dev/null 2>&1 || die "gitleaks is not installed and curl is missing"
+  url=https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_${GITLEAKS_VERSION}_$asset.tar.gz
+  echo "prepush-scan: fetching gitleaks $GITLEAKS_VERSION (pinned) into a temp folder" >&2
+  curl -fsSL --retry 3 -o "$T/gitleaks.tgz" "$url" || die "cannot download $url"
+  got=$(sha256sum "$T/gitleaks.tgz" | cut -d' ' -f1)
+  [ "$got" = "$sum" ] || die "gitleaks download has SHA-256 $got, pinned $sum: refusing it"
+  mkdir "$T/gitleaks"
+  tar -xzf "$T/gitleaks.tgz" -C "$T/gitleaks" gitleaks || die "cannot unpack gitleaks"
+  GITLEAKS=$T/gitleaks/gitleaks
+}
+if [ -n "${REA_GITLEAKS:-}" ]; then
+  GITLEAKS=$REA_GITLEAKS
+elif command -v gitleaks >/dev/null 2>&1; then
+  GITLEAKS=$(command -v gitleaks)
+else
+  fetch_gitleaks
+fi
+[ -x "$GITLEAKS" ] || die "gitleaks $GITLEAKS is not executable"
+
+# One line per finding: rule|line|commit|file (the file last: it may hold
+# a |). Never .Secret or .Match.
+printf '%s\n' '{{- range . }}{{ .RuleID }}|{{ .StartLine }}|{{ .Commit }}|{{ .File }}' '{{ end -}}' > "$T/template"
+
+# run_gitleaks MODE TARGET [git log options]: findings appended to $T/found.
+run_gitleaks() {
+  mode=$1 target=$2
+  shift 2
+  : > "$T/report"
+  set -- "$mode" --no-banner --no-color --log-level error --redact --exit-code 0 \
+    --gitleaks-ignore-path "$REPO" --report-format template \
+    --report-template "$T/template" --report-path "$T/report" "$@" "$target"
+  if [ -f "$REPO/.gitleaks.toml" ]; then
+    set -- -c "$REPO/.gitleaks.toml" "$@"
+  else
+    printf '%s\n' "$GITLEAKS_CONFIG" > "$T/gitleaks.toml"
+    set -- -c "$T/gitleaks.toml" "$@"
+  fi
+  # gitleaks' own output can quote a finding: it goes nowhere.
+  if ! "$GITLEAKS" "$@" > "$T/log" 2>&1; then
+    echo "prepush-scan: gitleaks $mode failed:" >&2
+    # Errors only (paths, git messages); a finding is never an error line.
+    grep -i 'err\|fatal' "$T/log" | grep -v -i 'secret\|match' | head -n 5 >&2 || true
+    exit 2
+  fi
+  cat "$T/report" >> "$T/found"
+}
+: > "$T/found"
+
+# --- 1. the commits a push publishes ----------------------------------------
+if [ -z "$RANGE" ] && [ -z "$ALL" ]; then
+  for base in '@{upstream}' origin/HEAD origin/main origin/master; do
+    if git -C "$REPO" rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1; then
+      RANGE="$base..HEAD"
+      break
+    fi
+  done
+  [ -n "$RANGE" ] || echo "prepush-scan: no upstream branch: scanning the whole history" >&2
+fi
+if git -C "$REPO" rev-parse -q --verify 'HEAD^{commit}' >/dev/null 2>&1; then
+  n=$(git -C "$REPO" rev-list --count "${RANGE:-HEAD}" 2>/dev/null) || die "bad range ${RANGE:-HEAD}"
+  echo "prepush-scan: $n commit(s) in ${RANGE:-the whole history}"
+  if [ "$n" -gt 0 ]; then
+    if [ -n "$RANGE" ]; then run_gitleaks git "$REPO" --log-opts="$RANGE"; else run_gitleaks git "$REPO"; fi
+  fi
+  # --- 2. the tree at HEAD ---------------------------------------------------
+  if [ -n "$TREE" ]; then
+    mkdir "$T/tree"
+    git -C "$REPO" archive --format=tar HEAD | tar -xf - -C "$T/tree"
+    echo "prepush-scan: the tree at HEAD ($(git -C "$REPO" ls-files | wc -l | tr -d ' ') files)"
+    run_gitleaks dir "$T/tree"
+  fi
+else
+  echo "prepush-scan: no commits yet"
+fi
+
+# --- report -------------------------------------------------------------------
+if [ ! -s "$T/found" ]; then
+  echo "prepush-scan: no secrets found"
+  exit 0
+fi
+# Paths of the tree scan are inside the temp copy: show them as the repo's.
+sort -u "$T/found" | while IFS='|' read -r rule line commit file; do
+  file=${file#"$T/tree/"}
+  if [ -n "$commit" ]; then
+    echo "possible secret: $file:$line (commit $(printf '%.12s' "$commit"), rule $rule)"
+  else
+    echo "possible secret: $file:$line (tree at HEAD, rule $rule)"
+  fi
+done
+echo "prepush-scan: remove the secret (and rotate it), or allow a false positive in .gitleaksignore; do not push" >&2
+exit 1

@@ -20,8 +20,10 @@
 #   REA_GAMESCOPE_CHECK  command run instead of `command -v gamescope`
 #   REA_LAUNCH_CMD       command run instead of the whole supervised launch
 #   REA_PROC             replaces /proc for the game-process check
+#   REA_GAMESCOPE_HEADLESS  1: gamescope --backend headless (no window on
+#                        the desktop; real-game tests)
 
-REA_SDK_VERSION=0.3.3
+REA_SDK_VERSION=0.4.1
 
 # --- configuration -------------------------------------------------------------
 # Every configuration variable the library reads. Sourcing unsets them, so
@@ -39,7 +41,8 @@ REA_SDL_SETTINGS REA_GPU_ICD_PIN REA_GPU REA_DLL_OVERRIDES REA_WINEDBG_OFF
 REA_GAME_PROCS REA_GAME_SETTLE REA_WINEBUS_MARKER REA_WINEBUS_VALUES
 REA_DIRECT_NOTE REA_TEST REA_SYSFS REA_ICD_DIRS REA_NV_LIB_CHECK
 REA_GAMESCOPE_CHECK REA_LAUNCH_CMD REA_PROC REA_INITED REA_ORIGINAL_WORDS
-REA_FUNCTIONS_ONLY REA_PLAY_HERE REA_HELPER_KEYS REA_FLAG_SWITCHES REA_ONE_RUN'
+REA_FUNCTIONS_ONLY REA_PLAY_HERE REA_HELPER_KEYS REA_FLAG_SWITCHES REA_ONE_RUN
+REA_LOOK_KEY REA_LOOK_SIZES REA_GAME_PREFIX REA_GAMESCOPE_HEADLESS'
 # shellcheck disable=SC2086
 unset $REA_CONFIG_VARS 2>/dev/null || true
 
@@ -71,6 +74,11 @@ rea_defaults() {
   : "${REA_DEFAULT_SIZE:=1920x1080}"
   : "${REA_ORIGINAL_SIZE:=}"        # "original" means this (empty: default)
   : "${REA_ORIGINAL_WORDS:=original}"  # the words that mean it (OR's Rust: "original off")
+  # The size each look gives when no resolution is set, e.g.
+  # "original=640x480 steam_deck=1280x800 enhanced=screen" (screen or auto:
+  # the screen's size). Empty: looks never size gamescope.
+  : "${REA_LOOK_SIZES:=}"
+  : "${REA_LOOK_KEY:=look}"
   : "${REA_FULLSCREEN_SIZE:=}"      # "screen": fullscreen = the screen size
   : "${REA_SCREEN:=}"               # WIDTHxHEIGHT instead of asking xrandr
   : "${REA_SCALER_KEY=scaler}"      # empty: always REA_DEFAULT_SCALER
@@ -93,7 +101,7 @@ rea_defaults() {
   # One-run flags: launcher.cfg keys the helper itself reads, which a
   # `--play --<key> value` run overrides for that run (rea_one_run).
   : "${REA_HELPER_KEYS=}"           # e.g. "scaler resolution display_mode postfx dxvk"
-  : "${REA_FLAG_SWITCHES=--no-window --settings --linux --check}"  # flags without a value
+  : "${REA_FLAG_SWITCHES=--no-window --settings --linux --check --help --version}"  # flags without a value
 }
 
 # A test seam's value, only under REA_TEST=1.
@@ -117,6 +125,9 @@ rea_run() {
 }
 
 REA_WINEBUS_KEY='HKLM\System\CurrentControlSet\Services\winebus'
+# The exit code of a refused second start: the launchers' ALREADY_RUNNING
+# (rea_launcher::instance, rea_launcher_win32::instance), and this helper's.
+REA_EXIT_RUNNING=5
 
 # --- hooks the game script may override ------------------------------------
 
@@ -140,6 +151,9 @@ rea_init() {
   if [ "$REA_MODE" = wine ]; then
     REA_PREFIX=${REA_PREFIX:-$HOME/.local/share/$REA_APP/prefix}
     mkdir -p "$REA_PREFIX"
+    REA_GAME_PREFIX=$(readlink -f "$REA_PREFIX")
+  else
+    REA_GAME_PREFIX=
   fi
   [ -n "$REA_EXE" ] || rea_find_exe
   [ -n "$REA_CFG" ] || rea_find_cfg
@@ -254,7 +268,10 @@ rea_is_off() {
 # is ignored.
 rea_one_run() {
   REA_ONE_RUN=
-  [ -n "$REA_HELPER_KEYS" ] || return 0
+  _rea_keys=$REA_HELPER_KEYS
+  # Looks size gamescope: this run's --look and --resolution count too.
+  [ -n "$REA_LOOK_SIZES" ] && _rea_keys="$_rea_keys $REA_LOOK_KEY $REA_RES_KEY"
+  [ -n "$_rea_keys" ] || return 0
   while [ "$#" -gt 0 ]; do
     _rea_a=$1; shift
     case $_rea_a in
@@ -274,7 +291,7 @@ rea_one_run() {
     case $_rea_val in *'
 '*) continue ;; esac
     rea_noglob
-    for _rea_k in $REA_HELPER_KEYS; do
+    for _rea_k in $_rea_keys; do
       [ "$_rea_k" = "$_rea_key" ] && REA_ONE_RUN="$REA_ONE_RUN$_rea_key=$_rea_val
 "
     done
@@ -320,7 +337,7 @@ rea_screen_size() {
 # screen, when REA_FULLSCREEN_SIZE=screen); anything else is
 # REA_DEFAULT_SIZE.
 rea_game_size() {
-  _rea_r=$(rea_get_value "$REA_RES_KEY" | tr -d ' \t\r')
+  _rea_r=$(rea_resolution_value)
   _rea_size=
   rea_noglob
   # shellcheck disable=SC2086
@@ -338,6 +355,61 @@ rea_game_size() {
   esac
   [ -n "$_rea_size" ] || _rea_size=$(rea_parse_size "$REA_DEFAULT_SIZE") || _rea_size=1920x1080
   REA_W=${_rea_size%x*} REA_H=${_rea_size#*x}
+}
+
+# The size a look gives (REA_LOOK_SIZES), lowercased look name in $1:
+# WIDTHxHEIGHT, the screen's size for screen/auto, else the word as it is
+# (e.g. original, read as a resolution). Fails for a look not listed.
+rea_look_size() {
+  rea_noglob
+  # shellcheck disable=SC2086
+  set -- "$1" $REA_LOOK_SIZES
+  rea_glob
+  _rea_look=$1; shift
+  for _rea_pair in "$@"; do
+    case $_rea_pair in *=*) ;; *) continue ;; esac
+    [ "$(printf '%s' "${_rea_pair%%=*}" | tr 'A-Z' 'a-z')" = "$_rea_look" ] || continue
+    _rea_lv=$(printf '%s' "${_rea_pair#*=}" | tr 'A-Z' 'a-z')
+    case $_rea_lv in
+      screen|auto) rea_screen_size || rea_parse_size "$REA_DEFAULT_SIZE" ;;
+      *) printf '%s\n' "$_rea_lv" ;;
+    esac
+    return 0
+  done
+  return 1
+}
+
+# The resolution text rea_game_size reads. With REA_LOOK_SIZES, as the
+# launchers resolve it: this run's --resolution, else this run's --look,
+# else launcher.cfg's resolution, else its look; `auto` (or unset) is no
+# explicit size, and when no look gives one either it is the screen.
+# Without REA_LOOK_SIZES: the resolution as it is.
+rea_resolution_value() {
+  if [ -z "$REA_LOOK_SIZES" ]; then
+    rea_get_value "$REA_RES_KEY" | tr -d ' \t\r'
+    return 0
+  fi
+  _rea_auto=
+  for _rea_src in run file; do
+    if [ "$_rea_src" = run ]; then
+      _rea_rv=$(REA_CFG=; rea_get_value "$REA_RES_KEY" | tr -d ' \t\r')
+      _rea_lk=$(REA_CFG=; rea_get_value "$REA_LOOK_KEY" | tr -d ' \t\r')
+    else
+      [ -n "$REA_CFG" ] && [ -f "$REA_CFG" ] || break
+      _rea_rv=$(rea_get_value "$REA_RES_KEY" "$REA_CFG" | tr -d ' \t\r')
+      _rea_lk=$(rea_get_value "$REA_LOOK_KEY" "$REA_CFG" | tr -d ' \t\r')
+    fi
+    if [ "$_rea_rv" = auto ]; then
+      _rea_auto=1
+    elif [ -n "$_rea_rv" ]; then
+      printf '%s\n' "$_rea_rv"; return 0
+    fi
+    if [ -n "$_rea_lk" ] && _rea_ls=$(rea_look_size "$_rea_lk"); then
+      printf '%s\n' "$_rea_ls"; return 0
+    fi
+  done
+  [ -n "$_rea_auto" ] && rea_screen_size
+  return 0
 }
 
 # gamescope's -F filter from the cfg's scaler; unknown values (gamescope
@@ -533,23 +605,44 @@ rea_seed_winebus_now() {
 
 # --- the game's own processes ----------------------------------------------------
 
-# True while a process named in REA_GAME_PROCS is alive. Zombies do not
-# count: a crashed session can leave one, which would block the wait loop
-# for good. Shared verbatim with the inner script (self-contained).
+# True while a process named in REA_GAME_PROCS is alive in this prefix.
+# Zombies do not count: a crashed session can leave one, which would block
+# the wait loop for good. A process whose environment names another Wine
+# prefix (WINEPREFIX or WINECONFIGDIR) is another copy of the game, not
+# ours (CMR3: a second install kept the wait loop going); only that one
+# value is read, and nothing of the environment is printed. A process
+# whose environment can't be read, or names no prefix, still counts, as
+# before. REA_GAME_PREFIX is the prefix (empty in native mode: every
+# process counts). Shared verbatim with the inner script (self-contained).
 REA_GAME_ALIVE_FN='rea_game_alive() {
   [ -n "${REA_GAME_PROCS:-}" ] || return 1
+  _ga_proc=/proc
+  [ "${REA_TEST:-}" = 1 ] && _ga_proc=${REA_PROC:-/proc}
   _ga_ifs=$IFS; IFS="|"; set -f
   set -- $REA_GAME_PROCS
   set +f; IFS=$_ga_ifs
   for _ga_name in "$@"; do
     for _ga_pid in $(pgrep -x "$_ga_name"); do
-      _ga_proc=/proc
-      [ "${REA_TEST:-}" = 1 ] && _ga_proc=${REA_PROC:-/proc}
       _ga_state=$(sed "s/.*) //" "$_ga_proc/$_ga_pid/stat" 2>/dev/null | cut -d" " -f1)
-      [ -n "$_ga_state" ] && [ "$_ga_state" != Z ] && return 0
+      [ -n "$_ga_state" ] && [ "$_ga_state" != Z ] || continue
+      rea_game_ours "$_ga_proc/$_ga_pid" && return 0
     done
   done
   return 1
+}
+rea_game_ours() {
+  [ -n "${REA_GAME_PREFIX:-}" ] || return 0
+  [ -r "$1/environ" ] || return 0
+  _ga_seen=
+  for _ga_var in WINEPREFIX WINECONFIGDIR; do
+    _ga_val=$(tr "\\000" "\\n" < "$1/environ" 2>/dev/null | sed -n "s/^$_ga_var=//p" | head -n 1)
+    [ -n "$_ga_val" ] || continue
+    _ga_seen=1
+    while [ "${_ga_val%/}" != "$_ga_val" ]; do _ga_val=${_ga_val%/}; done
+    [ "$_ga_val" = "$REA_GAME_PREFIX" ] && return 0
+    [ "$(readlink -f "$_ga_val" 2>/dev/null)" = "$REA_GAME_PREFIX" ] && return 0
+  done
+  [ -z "$_ga_seen" ]
 }'
 eval "$REA_GAME_ALIVE_FN"
 
@@ -562,6 +655,7 @@ eval "$REA_GAME_ALIVE_FN"
 #   REA_INNER_MODE      wine | native
 #   REA_GAME_ENV_FILE   NAME=VALUE lines for the game only (data, not sourced)
 #   REA_GAME_PROCS      the game's process names to wait for (Wine)
+#   REA_GAME_PREFIX     the prefix they must run in (canonical path)
 #   REA_GAME_SETTLE     seconds before that wait starts
 #   REA_TEST            the library's own REA_TEST (empty outside tests)
 rea_write_inner() {
@@ -581,6 +675,10 @@ if [ "${REA_INNER_MODE:-wine}" = native ]; then
 fi
 trap 'wineserver -k; exit' INT TERM HUP
 wine "$@"
+_rc=$?
+# 5: the launcher refused to start because another one (or its game) holds
+# this prefix. Nothing of ours runs: never wait for, or kill, its game.
+[ "$_rc" = 5 ] && exit 5
 if [ -n "${REA_GAME_PROCS:-}" ]; then
   # The launcher can return before the game it started (an isolated Wine
   # desktop hands back early): wait for the game itself.
@@ -809,11 +907,22 @@ rea_settings() {
   rea_glob
   rea_run env "$@" 2>"$REA_STATE/settings.log"
   _rea_rc=$?
-  [ "$REA_MODE" = wine ] && rea_wineserver_wait
+  # Exit 5 (REA_EXIT_RUNNING; older launchers used 3, which also means a
+  # plain close) is "another launcher holds this prefix": the prefix's
+  # wineserver then serves that launcher's game, and waiting for it would
+  # block until that game ends (CMR1 83dacbb). Nothing starts after a 3 or
+  # a 5, so nothing waits.
+  case $_rea_rc in
+    3|"$REA_EXIT_RUNNING") ;;
+    *) [ "$REA_MODE" = wine ] && rea_wineserver_wait ;;
+  esac
   case $_rea_rc in
     0) return 0 ;;
     4) echo "no settings window could open; playing with the saved settings"; return 0 ;;
     3) echo "settings window closed without Play; nothing started" ;;
+    "$REA_EXIT_RUNNING")
+      echo "another launcher (or its game) is already running; nothing started"
+      return "$REA_EXIT_RUNNING" ;;
     *) echo "settings window failed (exit $_rea_rc); see $REA_STATE/settings.log" ;;
   esac
   return 1
@@ -848,12 +957,14 @@ rea_start() {
   if rea_use_gamescope; then
     rea_game_size
     rea_scaler
+    _rea_backend=
+    [ "$(rea_seam REA_GAMESCOPE_HEADLESS)" = 1 ] && _rea_backend='--backend headless'
     rea_noglob
     # shellcheck disable=SC2086
     if [ "$REA_GAMESCOPE_OUTPUT" = 1 ]; then
-      set -- gamescope -W "$REA_W" -H "$REA_H" -w "$REA_W" -h "$REA_H" -f -S fit -F "$REA_F" $REA_GAMESCOPE_EXTRA -- "$@"
+      set -- gamescope $_rea_backend -W "$REA_W" -H "$REA_H" -w "$REA_W" -h "$REA_H" -f -S fit -F "$REA_F" $REA_GAMESCOPE_EXTRA -- "$@"
     else
-      set -- gamescope -w "$REA_W" -h "$REA_H" -f -S fit -F "$REA_F" $REA_GAMESCOPE_EXTRA -- "$@"
+      set -- gamescope $_rea_backend -w "$REA_W" -h "$REA_H" -f -S fit -F "$REA_F" $REA_GAMESCOPE_EXTRA -- "$@"
     fi
     rea_glob
     echo "starting at ${REA_W}x${REA_H}, scaler $REA_F"
@@ -862,6 +973,7 @@ rea_start() {
   fi
   set -- REA_INNER_MODE="$REA_MODE" REA_GAME_ENV_FILE="$REA_GAME_ENV_FILE" \
     REA_GAME_PROCS="$REA_GAME_PROCS" REA_GAME_SETTLE="$REA_GAME_SETTLE" \
+    REA_GAME_PREFIX="$REA_GAME_PREFIX" \
     REA_TEST="${REA_TEST:-}" "$@"
   if [ "$REA_MODE" = wine ]; then
     _rea_o=$(rea_dll_overrides)
@@ -893,15 +1005,23 @@ rea_usage() {
 }
 
 # Settings window, then the game (arguments go to the window).
+# A start while our game runs (our session lock), or that the launcher
+# refuses because another one holds the prefix, starts nothing and exits
+# REA_EXIT_RUNNING (5, rea_launcher_win32::instance::ALREADY_RUNNING): a
+# script or a Steam shortcut must not read it as a game that ran.
 rea_cmd_default() {
-  if rea_running; then echo "already running"; exit 0; fi
+  if rea_running; then echo "already running"; exit "$REA_EXIT_RUNNING"; fi
   rea_require_exe || exit 1
-  rea_settings "$@" || exit 0
+  rea_settings "$@" || {
+    _rea_rc=$?
+    [ "$_rea_rc" = "$REA_EXIT_RUNNING" ] && exit "$REA_EXIT_RUNNING"
+    exit 0
+  }
   rea_start
 }
 
 rea_cmd_play() {
-  if rea_running; then echo "already running"; return 0; fi
+  if rea_running; then echo "already running"; return "$REA_EXIT_RUNNING"; fi
   rea_start "$@"
 }
 

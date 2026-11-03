@@ -10,8 +10,9 @@
    trait implementation, a new behaviour is opt-in until every launcher has
    verified it. Add tests (host and `scripts/wine-test`), update the crate
    README (and its MIGRATION notes if behaviour differs), `CHANGELOG.md`.
-3. Run `scripts/dev-check`. Release: bump the workspace version, CHANGELOG
-   section, tag `vX.Y.Z`, push with the tag.
+3. Run `scripts/dev-check` (it includes `launcher-check`'s tests and a
+   fresh scaffold passing it). Release: bump the workspace version,
+   CHANGELOG section, tag `vX.Y.Z`, push with the tag.
 
 ## Releasing an SDK version
 
@@ -27,6 +28,13 @@
    notes from the CHANGELOG.
 
 ## Upgrading a launcher (avoid regressions)
+
+**Only when it pays.** Bump a launcher only when the new SDK version
+fixes something or adds a feature that launcher uses (security fixes
+always count). Read the CHANGELOG between the pinned tag and the new one
+and name the items that matter for this launcher in the bump commit; if
+there are none, skip the launcher and close its `sdk-update` pull
+request.
 
 1. **Baseline.** On the launcher's `main`: full check, `sdk/scripts/wine-test`,
    and the golden snapshots (`STANDARDS.md`, "Golden snapshots") all pass.
@@ -48,13 +56,27 @@
    unexplained diff is a regression — fix it or report it to the SDK
    (`CONTRIBUTING.md`), don't regenerate the snapshot.
 7. **All checks** again: fmt, tests, clippy (Windows target), shell tests,
-   `cargo deny`, `sdk-sync --check`, `wine-test`, release build links.
+   `cargo deny`, `sdk-sync --check`, `wine-test`, release build links, and
+   `sdk/scripts/launcher-check` (the new version's: rules that waited for
+   this SDK version are errors now). Fix every error; a rule the owner
+   decided to waive gets a `rule: reason` line in `.rea-check-waivers`.
 8. **Runtime notes.** Behaviour changes that need the real game go into
    `docs/RUNTIME_NOTES.md` as pending checks; run them headless when the game
    is available.
 9. **CHANGELOG** "Unreleased": `Updated rea-launcher-sdk to vX.Y.Z` plus every
    player-visible change. Merge when CI is green; release a launcher version
    when the owner says so.
+
+## When a launcher repeats a mistake
+
+A mistake found in one launcher that a file could show (a missing test, a
+hand-made rule the SDK has a helper for, a missing document entry) becomes
+a `scripts/launcher-check` rule in the same SDK change: the reason and the
+fix in its `--explain` text, a case in `scripts/tests/launcher-check.sh`,
+and, when it needs a new SDK API, `SINCE` set to that version so older
+launchers see a warning until they bump. Run it read-only against every
+launcher and tune false positives; never hide a real one. Only what can't
+be checked goes into STANDARDS or a playbook.
 
 ## Auditing the launchers for drift
 

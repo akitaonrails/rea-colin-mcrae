@@ -157,9 +157,14 @@ mkdir -p "$LIB" "$DOC"
 
 if [ "$MODE" = wine ]; then
   WINE=$(pin_fetch wine "$DL") || die "cannot fetch Wine"
-  # The shipped source notes must name the Wine we ship.
-  WINE_VERSION=$(basename "$(pin_url wine)" | sed -n 's/^wine-\([0-9][0-9.]*[0-9]\)-.*/\1/p')
-  [ -n "$WINE_VERSION" ] || die "cannot read the Wine version from the wine pin's file name"
+  # The shipped source notes must name the Wine we ship: the archive's own
+  # top folder (wine-11.20-amd64-wow64/) says which, whatever the pin's
+  # url is called (a file:// copy named by its checksum, offline); else the
+  # url's file name.
+  WINE_VERSION=$( (tar -tJf "$WINE" 2>/dev/null || true) | head -n 1 \
+    | sed -n 's#^\./##; s#^wine-\([0-9][0-9.]*[0-9]\)[-/].*#\1#p')
+  [ -n "$WINE_VERSION" ] || WINE_VERSION=$(basename "$(pin_url wine)" | sed -n 's/^wine-\([0-9][0-9.]*[0-9]\)-.*/\1/p')
+  [ -n "$WINE_VERSION" ] || die "cannot read the Wine version from the Wine archive's top folder or the wine pin's file name"
   grep -q "Wine $WINE_VERSION" "$HERE/appimage/wine/SOURCE.txt" \
     || die "appimage/wine/SOURCE.txt does not describe Wine $WINE_VERSION"
   mkdir -p "$APPDIR/usr/lib/wine" "$APPDIR/usr/share/doc/wine"

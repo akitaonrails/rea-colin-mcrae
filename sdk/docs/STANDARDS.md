@@ -1,7 +1,19 @@
 # Launcher standards
 
-The rules every rea launcher follows. Each launcher's `AGENTS.md` repeats the
-non-negotiables in its own words and adds what is specific to its game.
+The rules every rea launcher follows. Each launcher's `AGENTS.md` points
+here (`sdk/docs/STANDARDS.md`) and adds only what is specific to its game.
+
+**What a machine can check, it checks.** `sdk/scripts/launcher-check` (run
+by `launcher-ci`, input `conformance`, on by default) tests a launcher
+against the rules below that can be read from its files: golden snapshots,
+the SDK's audience and instance guard, a draft for every fix of our own,
+the README outline, AGENTS.md, SDK pins, lld, the option tests, the quit
+paths in `RUNTIME_NOTES.md`, the issue forms, DRM exceptions.
+`launcher-check --explain RULE` gives the reason and the fix. Run it before
+every commit and before a release; an error blocks both. An exception is
+an owner decision, recorded as a line `rule: reason` in the launcher's
+`.rea-check-waivers` (the check shows each waiver and its reason); an agent
+never adds one on its own.
 
 ## Non-negotiables
 
@@ -105,6 +117,13 @@ them: write each draft in `docs/CONTRIBUTIONS.md` (target page or project,
 text ready to paste, evidence, status) and tell the owner. The owner
 reviews and posts. Only publish fixes verified in the real game.
 
+**Every fix of our own gets a draft**, in the same piece of work that
+ships it: a `RESEARCH.md` row decided **Our own** cites its draft id (C1…),
+and a byte patch, hook DLL or preload library has one too. An unverified
+fix is a draft marked "needs verification"; one that can't be shared says
+`no draft: <reason>` in its row. DiRT Rally and CMR1 shipped their own
+fixes with an empty `CONTRIBUTIONS.md` (`launcher-check`: `own-fix-draft`).
+
 ## Product rules
 
 **Who it's for:** players who are not technical. They download one package,
@@ -188,7 +207,9 @@ that: if a step could be done by the launcher, the launcher does it.
   winebus, `wine-test` for i686. They ship native Windows and Linux builds,
   run their Windows-target tests with `scripts/wine-test --target
   x86_64-pc-windows-gnu`, and build the emulator from a pinned commit with a
-  corresponding-source archive for GPL code.
+  corresponding-source archive for GPL code. A game with a native Linux
+  port (DiRT Rally) follows the native-Linux recipe in
+  `docs/playbooks/new-launcher.md` ("Patterns").
 - **Old-game trouble spots** to check for every game (skip what doesn't
   apply to its runtime, and say so): timers and frame
   pacing on fast CPUs, multi-core affinity, DirectSound3D/EAX audio (DSOAL),
@@ -209,6 +230,17 @@ that: if a step could be done by the launcher, the launcher does it.
   community fix the owner approved, with the decision recorded in
   `AGENTS.md` and `THIRD_PARTY.md` (OutRun's OutRun2006Tweaks executable;
   Sega Rally Revo's no-DVD build as a supported edition).
+- **DRM exceptions.** Supporting a build whose DRM or disc check someone
+  else removed (a pre-activated copy of a delisted game, as DiRT Rally; a
+  no-DVD build) is the owner's decision, never the agent's. Ask first.
+  Then: record it, dated and with the reason, in `docs/RESEARCH.md`
+  ("Owner decisions") and `AGENTS.md`; identify that build by SHA-256 like
+  any edition; the launcher never applies, ships, downloads, patches or
+  debugs DRM or Steam files, and never tells the player how to get such a
+  build; the README says, in one plain sentence, which builds it runs and
+  that it can't and won't remove DRM; and the waiver line
+  `drm-exception: owner decision <date>, <why> (<where recorded>)` goes in
+  `.rea-check-waivers`.
 - **Family consistency.** Same CLI flags (`--game`, `--settings`,
   `--no-window`, `--check`, `--linux`, `--look`), exit codes for the Linux
   helper's `--settings` mode (0 Play pressed, 3 window closed without Play,
@@ -221,7 +253,13 @@ that: if a step could be done by the launcher, the launcher does it.
   edition, game folder missing, already running, a failed install) always
   show a dialog when a person may be watching, and are printed to the log
   too. Under Wine stdout always goes to a log nobody reads, so it never
-  counts as a terminal. `rea_launcher_win32::report` implements this rule.
+  counts as a terminal. `rea_launcher_win32::report::audience` (from the
+  parsed flags, `report::Run`) decides who is watching, and
+  `report::fatal`/`note` show it; never write `interactive = !no_window`
+  or `!linux` yourself: the Linux helper starts the game run with
+  `--no-window --linux` for a player in front of the screen, and that
+  mistake hid errors in CMR3, CMR4 and DiRT. A native Linux launcher shows
+  its errors before the window with `rea_launcher_ui::report::fatal`.
 - **Action flags and one instance.** An action flag (`--download-*`,
   `--check`) while another launcher instance is open is reported and exits
   non-zero, never a silent exit 0.
@@ -355,8 +393,15 @@ its close hook.
   game and closes every handle.
 - **One instance.** A second launcher start doesn't open a second window or
   a second game: it brings the existing window forward (or says the game
-  is running) — a named mutex on Windows, the session lock on Linux. Play
-  is refused while the game from this runtime is still running.
+  is running) — `rea_launcher_win32::instance::single` on Windows, with
+  `AlreadyRunning::second_start(action, Window::Own(WINDOW_TITLE))` (exit
+  0, or 5 when refused); `rea_launcher::instance::single` (a lock file) in a
+  native Linux build, which the helper's session lock doesn't cover when
+  the binary is started directly. Play is refused while the game from this
+  runtime is still running (`process::find_running` on the runtime's exe).
+- **The launcher's window title differs from the game's.** A shared title
+  made CMR3's second start find the game's window, and test scripts that
+  wait for the game's window found the launcher's.
 - **Test it:** the shell tests cover stop/interrupt/lock with fakes; a
   real-game, env-gated test runs the game headless (`gamescope --backend
   headless`), sends each close request, and checks that the process list
@@ -470,7 +515,10 @@ upgrade or a refactor can't change behaviour silently:
   arguments and the patch sets it would apply.
 
 Keep the planning in a host-testable function (`plan(settings, game) ->
-Plan`) and compare its output with files under `tests/snapshots/`. A
+Plan`) and compare its output with files under `tests/snapshots/`, with
+`rea_launcher::snapshot!` (it stores the crate version as `<version>`; a
+snapshot that held the version broke three tag builds). The scaffold
+ships `tests/snapshots.rs`; a launcher without it fails `launcher-check`. A
 snapshot change is reviewed like code: it must match an intended change or
 an SDK **Migration** item, never be regenerated blindly.
 

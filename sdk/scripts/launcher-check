@@ -1,0 +1,649 @@
+#!/bin/sh
+# rea-launcher-sdk scripts/launcher-check: checks that a launcher repository
+# follows docs/STANDARDS.md where a machine can tell, and says how to fix
+# each problem. Read-only: it never writes into the repository.
+#
+#   sdk/scripts/launcher-check [options] [repo]     (default repo: .)
+#
+# Options:
+#   --github         also print GitHub annotations (::error / ::warning)
+#   --explain RULE   why RULE exists and how to fix it; `--explain all` for every rule
+#   --list           the rules, their level and the SDK version they start at
+#   -h, --help       this text
+#
+# Each problem is one line: `error[rule] file:line: what is wrong`, then
+# `  fix: what to do`. Errors exit 1; warnings only report.
+#
+# Waivers: an exception the owner decided (DiRT Rally's pre-activated copy)
+# goes in `.rea-check-waivers` at the repository root, one per line:
+#
+#   drm-exception: owner decision 2026-11-02, pre-activated copies of a delisted game (AGENTS.md)
+#
+# A waived rule is reported as `waived[rule]` with its reason and never
+# fails. A waiver needs a reason; an unknown rule or a waiver that no longer
+# matches anything is reported too.
+#
+# Rules that need an SDK API newer than the launcher's sdk/VERSION tag are
+# warnings until the launcher bumps to that version, then errors.
+set -u
+
+# --- SDK API names the rules look for (one place to change them) -------------
+# Each is a space-separated list of paths; naming any one counts.
+# Who sees a message: the SDK's audience rule (rea-launcher-win32).
+AUDIENCE_API='rea_launcher_win32::report::audience rea_launcher_win32::report::Audience'
+# One launcher at a time on Windows (named mutex) and on Linux (flock).
+INSTANCE_WIN_API='rea_launcher_win32::instance::single'
+INSTANCE_UNIX_API='rea_launcher::instance::single'
+# The second start: the launcher's own window, never a title or a class.
+OWN_WINDOW_API='rea_launcher_win32::instance::Window::Own'
+# Golden snapshots with the crate version masked.
+SNAPSHOT_API='rea_launcher::snapshot rea_launcher::snapshots rea_launcher::testing'
+# A native Linux launcher's errors in a message window.
+NATIVE_REPORT_API='rea_launcher_ui::report::fatal'
+# Linux pads in a native window; GLX on a fresh prefix.
+JOYSTICK_API='rea_launcher_ui::pad::joystick::Joysticks'
+GLX_API='rea_launcher_win32::gpu::prefer_glx_or_restart'
+# The SDK version these APIs arrive in.
+NEW_API_SINCE='v0.4.0'
+WAIVERS_FILE='.rea-check-waivers'
+
+RULES='snapshots snapshot-version snapshot-helper audience instance instance-unix
+window-lookup native-report native-pad glx-restart light-widgets ms-dll-overrides
+own-fix-draft readme-sections readme-order readme-contributing readme-links
+readme-versions agents-pointer agents-duplicate sdk-workflows sdk-tag lld
+wine-tests look-flag look-sizes option-tests quit-paths issue-unknown-edition
+issue-bug-report sdk-update drm-exception waivers'
+
+# rule ID: sets SEV (error|warn), SINCE (SDK tag or empty), FIX and WHY.
+rule() {
+  SINCE=''
+  case $1 in
+    snapshots) SEV=error
+      WHY='Golden snapshots are the regression guard: an SDK bump or a refactor must not change --help, the launcher.cfg template or what each look writes without someone seeing the diff. DiRT Rally shipped without them.'
+      FIX='add tests/snapshots.rs: compare --help, the launcher.cfg template and each look'"'"'s plan (files, registry, environment, arguments) with files under tests/snapshots/ (STANDARDS "Golden snapshots"; the scaffold has one)' ;;
+    snapshot-version) SEV=error
+      WHY='A snapshot that holds the crate version fails on every release bump, so it gets regenerated blindly and stops guarding anything. It broke a release in v0.3.'
+      FIX="mask the version before comparing ($SNAPSHOT_API replaces it with <version>) and regenerate only that line" ;;
+    snapshot-helper) SEV=warn SINCE=$NEW_API_SINCE
+      WHY='The SDK helper masks the crate version and prints a readable diff, so every launcher compares snapshots the same way.'
+      FIX='compare snapshots with rea_launcher::snapshot!("name.txt", text) (rea_launcher::testing)' ;;
+    audience) SEV=error SINCE=$NEW_API_SINCE
+      WHY='Who may be watching decides whether an error becomes a dialog. Hand-written rules (!no_window, !linux) were wrong in CMR3, CMR4 and DiRT: errors vanished into a log under Wine, or dialogs popped up for scripts.'
+      FIX='decide it with rea_launcher_win32::report::audience(Run { .. }).mode() (or Audience::of) and report::fatal/note; delete the local rule (fn interactive, audience.rs, console::output for messages)' ;;
+    instance) SEV=error
+      WHY='A second start must not open a second window or game on the same runtime copy (STANDARDS "One instance").'
+      FIX="take $INSTANCE_WIN_API at start-up and bring the open window forward (or say the game is running) when it is taken" ;;
+    instance-unix) SEV=error SINCE=$NEW_API_SINCE
+      WHY='A native Linux launcher started directly (not through <id>-play) has no session lock, so two copies can run the game from one runtime folder (DiRT Rally).'
+      FIX="take $INSTANCE_UNIX_API in the native Linux build too" ;;
+    window-lookup) SEV=error SINCE=$NEW_API_SINCE
+      WHY='eframe windows all share one class, and a title also matches an Explorer window or the game'"'"'s own window: CMR4'"'"'s second start "found" those and exited silently.'
+      FIX="find the window with $OWN_WINDOW_API(TITLE) (running.second_start(action, Window::Own(TITLE)))" ;;
+    native-report) SEV=error SINCE=$NEW_API_SINCE
+      WHY='A native Linux launcher double-clicked with a missing or unknown game printed to stderr and exited: the player saw nothing (DiRT Rally).'
+      FIX="show errors before the window with $NATIVE_REPORT_API (the unknown-edition form as its link)" ;;
+    native-pad) SEV=warn SINCE=$NEW_API_SINCE
+      WHY='The SDK reads Linux pads for native windows; a local /dev/input/js reader is a copy to keep in step.'
+      FIX="use $JOYSTICK_API and feed its buttons() to PadNav" ;;
+    glx-restart) SEV=warn SINCE=$NEW_API_SINCE
+      WHY='On a fresh Wine prefix prefer_glx only helps the next start, so the first start shows no window.'
+      FIX="call $GLX_API(guard) before the settings window" ;;
+    light-widgets) SEV=warn SINCE=$NEW_API_SINCE
+      WHY='The theme fills egui widgets from the palette (light palettes too), and contrast_problems checks those fills; a local fill fix hides what the check sees.'
+      FIX='delete the local widget-fill override (light_widgets, weak_bg_fill/bg_fill assignments); keep the palette test' ;;
+    ms-dll-overrides) SEV=warn
+      WHY='Wine replaces a DLL whose version info names Microsoft with its own builtin, even from the program folder: a bundled d3dx9_*, msvcp*, xinput1_* is ignored unless overridden (Sega Rally Revo).'
+      FIX='name every bundled Microsoft redistributable DLL in the launcher'"'"'s wine::app_dll_overrides list' ;;
+    own-fix-draft) SEV=error
+      WHY='A fix we found ourselves is owed back to the community (STANDARDS "Contribute back"). DiRT Rally and CMR1 left CONTRIBUTIONS.md empty while shipping their own fixes.'
+      FIX='write a draft in docs/CONTRIBUTIONS.md (a table row with an id such as C1, and its text) and cite the id in the RESEARCH.md row; or write "no draft: <reason>" in that row' ;;
+    readme-sections) SEV=error
+      WHY='Players move between launchers; every README has the same sections (docs/playbooks/readme.md, "The outline").'
+      FIX='add the missing headings with the exact wording of docs/playbooks/readme.md (templates/launcher/README.md has them all)' ;;
+    readme-order) SEV=warn
+      WHY='The outline order puts what players need first and developer material last.'
+      FIX='move the sections into the order of docs/playbooks/readme.md, "The outline"' ;;
+    readme-contributing) SEV=error
+      WHY='Issues about shared code belong in the SDK repository, so the fix reaches every launcher.'
+      FIX='in ## Contributing, link the SDK issues (https://github.com/akitaonrails/rea-launcher-sdk/issues) for shared code (docs/playbooks/readme.md, "Contributing")' ;;
+    readme-links) SEV=error
+      WHY='An issue-form link to a template that does not exist sends the player to an empty page.'
+      FIX='point the link at a file in .github/ISSUE_TEMPLATE/, or add that template' ;;
+    readme-versions) SEV=warn
+      WHY='Versioned download links and asset names go stale with the next tag.'
+      FIX='link releases/latest and write asset names with <version>' ;;
+    agents-pointer) SEV=error
+      WHY='The SDK rules are vendored in sdk/docs/; AGENTS.md must send agents there, so they read the version the launcher pins.'
+      FIX='say in AGENTS.md: "Read sdk/docs/STANDARDS.md before any work; the playbooks are in sdk/docs/playbooks/"' ;;
+    agents-duplicate) SEV=error
+      WHY='A copy of STANDARDS in AGENTS.md goes stale at the next SDK release and then contradicts it.'
+      FIX='replace the copied passages with a pointer to sdk/docs/STANDARDS.md; keep only what is specific to this game' ;;
+    sdk-workflows) SEV=error
+      WHY='The SDK reusable workflows run the family checks (lld, imports, Wine tests, sdk/ drift, allowlist, this check) and publish releases the same way.'
+      FIX='call akitaonrails/rea-launcher-sdk/.github/workflows/launcher-ci.yml and launcher-release.yml at the sdk/VERSION tag in .github/workflows/build.yml (docs/playbooks/ci-and-releases.md)' ;;
+    sdk-tag) SEV=error
+      WHY='Cargo, the vendored sdk/ and the workflows must be one SDK version, or CI tests code the release never ships.'
+      FIX='run sdk/scripts/sdk-bump <tag>: it moves the Cargo tags, sdk/ and the workflow pins together' ;;
+    lld) SEV=error
+      WHY='GNU ld 2.47 mis-links the import tables of Rust Windows programs; Screamer shipped a build that crashed before main.'
+      FIX='in .cargo/config.toml, give every Windows target rustflags = ["-C", "link-arg=-fuse-ld=lld"] (the scaffold has both)' ;;
+    wine-tests) SEV=error
+      WHY='Clippy never runs cfg(windows) code; four SDK bugs showed only under Wine.'
+      FIX='pass wine-tests: true to launcher-ci for the Windows target' ;;
+    look-flag) SEV=error
+      WHY='Every launcher has a --look flag that sets all of a look'"'"'s values (STANDARDS "Family consistency"); CMR3 lacks it.'
+      FIX='add a "look" option to the option table (Original, recommended, Steam Deck)' ;;
+    look-sizes) SEV=error SINCE=$NEW_API_SINCE
+      WHY='gamescope must open at the size the look gives the game; CMR1, CMR4, OR, CMR2005 and DiRT Rally each wrote their own sizing, and Steam Deck looks opened at 640x480 with garbled colours.'
+      FIX='declare the looks in the Linux helper: REA_LOOK_SIZES="original=original recommended=screen steam_deck=1280x800" (sdk shell/README.md)' ;;
+    option-tests) SEV=error
+      WHY='Every window option and CLI flag is tested end to end (STANDARDS "Every option is tested end to end"). The check looks for each key or flag in the test code.'
+      FIX='add a test per option: control or flag -> launcher.cfg key -> the game file, registry value or environment it changes' ;;
+    quit-paths) SEV=warn
+      WHY='Old games ignore modern quit requests and leave processes behind (CMR4, CMR2005). Each quit path is checked in the real game and recorded.'
+      FIX='record in docs/RUNTIME_NOTES.md: quit from the game menu, window close / Alt+F4, SIGINT/SIGTERM to <id>-play, and that no process is left behind' ;;
+    issue-unknown-edition) SEV=error
+      WHY='An unknown build is refused with its SHA-256 and a link to a form, so players can report it.'
+      FIX='add .github/ISSUE_TEMPLATE/unknown-edition.yml (templates/launcher has it)' ;;
+    issue-bug-report) SEV=warn
+      WHY='A bug report says what worked as well as what did not, so a report narrows the problem down (CMR1 test-report.yml).'
+      FIX='add .github/ISSUE_TEMPLATE/bug-report.yml with a "What worked" checkboxes field (templates/launcher has it)' ;;
+    sdk-update) SEV=warn
+      WHY='The weekly sdk-update workflow opens the upgrade pull request when the SDK releases.'
+      FIX='add .github/workflows/sdk-update.yml calling the SDK sdk-update.yml workflow (templates/launcher has it)' ;;
+    drm-exception) SEV=error
+      WHY='We never write a crack and never ship, apply or patch DRM files. Supporting a pre-activated, no-CD or cracked build is an owner decision, and it must be recorded where the check can see it.'
+      FIX="record the owner's decision (date, why) in AGENTS.md and docs/RESEARCH.md, then add '$WAIVERS_FILE' line 'drm-exception: <owner decision, date, where recorded>' (STANDARDS \"DRM\")" ;;
+    waivers) SEV=error
+      WHY='A waiver is an owner decision; it needs a reason and must name a real rule.'
+      FIX="write each line of $WAIVERS_FILE as 'rule: reason' with a rule from --list" ;;
+    *) return 1 ;;
+  esac
+}
+
+usage() { sed -n '2,/^set -u/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit "${1:-2}"; }
+
+GITHUB='' REPO='.'
+while [ $# -gt 0 ]; do
+  case $1 in
+    --github) GITHUB=1; shift ;;
+    --explain)
+      [ $# -ge 2 ] || usage
+      if [ "$2" = all ]; then set -- $RULES; else set -- "$2"; fi
+      for r; do
+        rule "$r" || { echo "launcher-check: no rule '$r' (see --list)" >&2; exit 2; }
+        printf '%s (%s%s)\n  why: %s\n  fix: %s\n' "$r" "$SEV" "${SINCE:+, from SDK $SINCE}" "$WHY" "$FIX"
+      done
+      exit 0 ;;
+    --list)
+      for r in $RULES; do rule "$r"; printf '%-22s %-5s %s\n' "$r" "$SEV" "${SINCE:+from $SINCE}"; done
+      exit 0 ;;
+    -h | --help) usage 0 ;;
+    -*) echo "launcher-check: unknown option $1" >&2; usage ;;
+    *) REPO=$1; shift; [ $# -eq 0 ] || usage ;;
+  esac
+done
+[ -d "$REPO" ] || { echo "launcher-check: no folder $REPO" >&2; exit 2; }
+R=$(cd "$REPO" && pwd -P)
+
+T=$(mktemp -d "${TMPDIR:-/tmp}/launcher-check.XXXXXX") || exit 2
+trap 'rm -rf "$T"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# --- reporting -----------------------------------------------------------------
+errors=0 warnings=0 waived=0
+: > "$T/waived-used"
+# The waivers: rule -> reason.
+: > "$T/waivers"
+if [ -f "$R/$WAIVERS_FILE" ]; then
+  awk '{ sub(/\r$/, "") } /^[ \t]*(#|$)/ { next } { print FNR "\t" $0 }' "$R/$WAIVERS_FILE" > "$T/waiver-lines"
+fi
+
+# Version order: 1 when tag $1 >= $2 (vX.Y.Z); untagged counts as newest.
+tag_at_least() {
+  case $1 in untagged | '') return 0 ;; esac
+  awk -v a="${1#v}" -v b="${2#v}" 'BEGIN {
+    split(a, x, "."); split(b, y, ".")
+    for (i = 1; i <= 3; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 }
+    exit 0 }'
+}
+
+# emit RULE WHERE MESSAGE  (WHERE: path or path:line, relative to the repo)
+emit() {
+  rule "$1" || { echo "launcher-check: internal: no rule $1" >&2; exit 2; }
+  e_rule=$1 e_where=$2 e_msg=$3 e_sev=$SEV
+  if [ "$e_sev" = error ] && [ -n "$SINCE" ] && ! tag_at_least "$SDK_TAG" "$SINCE"; then
+    e_sev=warn
+    e_msg="$e_msg (an error once the launcher is on SDK $SINCE; it pins ${SDK_TAG:-no version})"
+  fi
+  if [ "$e_rule" != waivers ] && reason=$(awk -F'\t' -v r="$e_rule" '{ s = $2; sub(/^[ \t]*/, "", s) } index(s, r ":") == 1 { s = substr(s, length(r) + 2); sub(/^[ \t]*/, "", s); print s; exit }' "$T/waiver-lines" 2>/dev/null) && [ -n "$reason" ]; then
+    echo "waived[$e_rule] $e_where: $e_msg"
+    echo "  reason: $reason"
+    echo "$e_rule" >> "$T/waived-used"
+    waived=$((waived + 1))
+    return 0
+  fi
+  if [ "$e_sev" = error ]; then errors=$((errors + 1)); else warnings=$((warnings + 1)); fi
+  echo "${e_sev}[$e_rule] $e_where: $e_msg"
+  echo "  fix: $FIX"
+  if [ -n "$GITHUB" ]; then
+    e_file=${e_where%%:*} e_line=''
+    case $e_where in *:[0-9]*) e_line=${e_where#*:}; e_line=${e_line%%[!0-9]*} ;; esac
+    e_kind=error
+    [ "$e_sev" = error ] || e_kind=warning
+    text=$(printf '%s Fix: %s (launcher-check --explain %s)' "$e_msg" "$FIX" "$e_rule" | sed 's/%/%25/g' | tr '\n' ' ')
+    echo "::$e_kind file=$e_file${e_line:+,line=$e_line},title=launcher-check $e_rule::$text"
+  fi
+}
+
+# --- facts about the repository ---------------------------------------------------
+cd "$R" || exit 2
+SDK_TAG=''
+if [ -f sdk/VERSION ]; then SDK_TAG=$(sed -n 's/^tag=//p' sdk/VERSION | head -n 1); fi
+
+# Rust sources outside the vendored SDK and build output: code and tests apart.
+# A file under a tests/ folder is test code; in src, everything from the first
+# #[cfg(test)] on is.
+: > "$T/code.txt"
+: > "$T/tests.txt"
+find . \( -path ./target -o -path ./sdk -o -path ./.work -o -path ./.git -o -path ./dist -o -path ./.rea-sdk \) -prune \
+  -o -type f -name '*.rs' -print | sed 's|^\./||' | LC_ALL=C sort > "$T/rs"
+while IFS= read -r f; do
+  awk -v f="$f" -v code="$T/code.txt" -v tests="$T/tests.txt" '
+    BEGIN { t = (f ~ /(^|\/)tests\//) }
+    /^[ \t]*#\[cfg\(test\)\]/ { t = 1 }
+    { print f ":" FNR ":" $0 >> (t ? tests : code) }' "$f"
+done < "$T/rs"
+
+# Where a problem with no line of its own is reported.
+MAIN_RS=$(grep -m1 -E '(^|/)src/main\.rs$' "$T/rs" || echo src/main.rs)
+CONFIG_RS=$(grep -m1 -E '(^|/)src/config\.rs$' "$T/rs" || echo src/config.rs)
+
+BUILD=.github/workflows/build.yml
+[ -f "$BUILD" ] || BUILD=''
+# The launcher-ci calls, one line per job: its rust-target ("native" for
+# rust-target "", the input's default i686 when unset) and "pkg" when it
+# builds packages. Windows targets with packages ship a Windows program.
+: > "$T/targets"
+NATIVE_LINUX=''
+if [ -n "$BUILD" ]; then
+  awk '
+    function flush() { if (ci) print (t == "" ? "i686-pc-windows-gnu" : t), (pkg ? "pkg" : "nopkg"); ci = 0; t = ""; pkg = 0 }
+    { sub(/\r$/, "") }
+    /^  [A-Za-z0-9_-]+:[ \t]*(#.*)?$/ { flush(); next }
+    /uses:.*\/launcher-ci\.yml/ { ci = 1 }
+    /^[ \t]+rust-target:/ { v = $0; sub(/.*rust-target:[ \t]*/, "", v); sub(/[ \t]#.*/, "", v); gsub(/["'"'"' \t]/, "", v); t = (v == "" ? "native" : v) }
+    /^[ \t]+package-command:/ { pkg = 1 }
+    END { flush() }' "$BUILD" > "$T/targets"
+  if grep -q '^native ' "$T/targets"; then NATIVE_LINUX=1; fi
+fi
+grep -- '-windows-' "$T/targets" | cut -d' ' -f1 | LC_ALL=C sort -u > "$T/win-targets" || true
+grep -- '-windows-.* pkg$' "$T/targets" > "$T/win-shipped" || true
+
+# Crate versions: the package build.yml releases, else every package.
+pkg_version() { # Cargo.toml -> version (follows version.workspace)
+  v=$(awk '/^\[package\]/ { p = 1; next } /^\[/ { p = 0 } p && /^version[ \t]*=/ { s = $0; sub(/^[^"]*"/, "", s); sub(/".*/, "", s); print s; exit } p && /^version\.workspace/ { print "ws"; exit }' "$1")
+  if [ "$v" = ws ]; then
+    v=$(awk '/^\[workspace\.package\]/ { p = 1; next } /^\[/ { p = 0 } p && /^version[ \t]*=/ { s = $0; sub(/^[^"]*"/, "", s); sub(/".*/, "", s); print s; exit }' Cargo.toml)
+  fi
+  printf '%s\n' "$v"
+}
+pkg_name() { awk '/^\[package\]/ { p = 1; next } /^\[/ { p = 0 } p && /^name[ \t]*=/ { s = $0; sub(/^[^"]*"/, "", s); sub(/".*/, "", s); print s; exit }' "$1"; }
+RELEASED=''
+if [ -n "$BUILD" ]; then
+  RELEASED=$(awk '/uses:.*launcher-release\.yml/ { r = 1 } r && /^[ \t]*package:/ { s = $0; sub(/.*package:[ \t]*/, "", s); gsub(/["'"'"' \t]/, "", s); print s; exit }' "$BUILD")
+fi
+: > "$T/versions"
+for c in Cargo.toml crates/*/Cargo.toml; do
+  [ -f "$c" ] || continue
+  n=$(pkg_name "$c")
+  [ -n "$n" ] || continue
+  if [ -z "$RELEASED" ] || [ "$n" = "$RELEASED" ]; then pkg_version "$c" >> "$T/versions"; fi
+done
+
+mentions() { # code-file "API..." -> 0 when the code names one of them (full path, module + item, or module::item)
+  for m_api in $2; do
+    m_mod=${m_api%::*} m_item=${m_api##*::}
+    m_short=${m_mod##*::}::$m_item
+    grep -qF "$m_api" "$1" && return 0
+    # The module itself must be named (rea_launcher::instance is not
+    # rea_launcher_win32::instance), then the item from it.
+    grep -qE "(^|[^A-Za-z0-9_])$m_mod([^A-Za-z0-9_]|\$)" "$1" || continue
+    grep -E "(^|[^A-Za-z0-9_])$m_mod([^A-Za-z0-9_]|\$)" "$1" | grep -qE "(::|[{, ])$m_item([},: ;(!]|\$)" && return 0
+    grep -qF "$m_short" "$1" && return 0
+  done
+  return 1
+}
+
+# --- golden snapshots ------------------------------------------------------------
+SNAP_TESTS=$(grep -E '(^|/)(tests|src)/snapshots[^/]*\.rs$' "$T/rs" || true)
+if [ -z "$SNAP_TESTS" ]; then
+  emit snapshots tests "no golden snapshot test (tests/snapshots.rs) in any crate"
+else
+  find . \( -path ./target -o -path ./sdk -o -path ./.work -o -path ./.git \) -prune \
+    -o -type d -path '*tests/snapshots*' -print > "$T/snapdirs"
+  while IFS= read -r v; do
+    [ -n "$v" ] || continue
+    re=$(printf '%s' "$v" | sed 's/\./\\./g')
+    while IFS= read -r d; do
+      grep -rnE "(^|[^0-9.])$re([^0-9]|\$)" "$d" 2>/dev/null | head -n 3 | while IFS= read -r hit; do
+        echo "${hit%%:*}:$(printf '%s' "${hit#*:}" | cut -d: -f1)"
+      done
+    done < "$T/snapdirs"
+  done < "$T/versions" | sed 's|^\./||' | LC_ALL=C sort -u > "$T/snaphits"
+  while IFS= read -r where; do
+    emit snapshot-version "$where" "this snapshot holds the crate's current version"
+  done < "$T/snaphits"
+  if ! mentions "$T/tests.txt" "$SNAPSHOT_API"; then
+    emit snapshot-helper "$(echo "$SNAP_TESTS" | head -n 1)" "snapshots are compared without the SDK helper (rea_launcher::snapshot!)"
+  fi
+fi
+
+# --- who sees a message, one instance ----------------------------------------------
+awk '
+  { s = $0; sub(/^[^:]*:[0-9]+:/, "", s) }
+  s ~ /^[ \t]*\/\// { next }
+  s ~ /fn[ \t]+interactive[ \t]*\(/ { win = 6 }
+  (win > 0 || s ~ /interactive[ \t]*[:=]/) && s ~ /!/ && s ~ /(no_window|NO_WINDOW|--no-window|(^|[^a-z_])linux([^a-z_]|$))/ {
+    split($0, p, ":"); print p[1] ":" p[2]; win = 0; next }
+  s ~ /console::output\(/ { split($0, p, ":"); print p[1] ":" p[2]; next }
+  win > 0 { win-- }' "$T/code.txt" > "$T/local-audience"
+while IFS= read -r where; do
+  emit audience "$where" "a local 'who is watching' rule (from --no-window or --linux, or console::output) instead of the SDK's"
+done < "$T/local-audience"
+if [ ! -s "$T/local-audience" ] && ! mentions "$T/code.txt" "$AUDIENCE_API" && tag_at_least "$SDK_TAG" "$NEW_API_SINCE"; then
+  emit audience "$MAIN_RS" "messages are shown without $AUDIENCE_API"
+fi
+
+if [ -s "$T/win-shipped" ] && ! mentions "$T/code.txt" "$INSTANCE_WIN_API"; then
+  emit instance "$MAIN_RS" "no single-instance guard ($INSTANCE_WIN_API) for the Windows build"
+fi
+if [ -n "$NATIVE_LINUX" ] && ! mentions "$T/code.txt" "$INSTANCE_UNIX_API"; then
+  emit instance-unix "$MAIN_RS" "the native Linux build has no single-instance lock ($INSTANCE_UNIX_API)"
+fi
+
+# The second start finds the launcher's own window.
+grep -nE 'Window::(Title|Class)\(|FindWindowW|EnumWindows' "$T/code.txt" | head -n 3 | cut -d: -f2,3 > "$T/lookups"
+while IFS= read -r where; do
+  emit window-lookup "$where" "finds the running launcher's window by title or class"
+done < "$T/lookups"
+# A native Linux launcher shows its errors in a window.
+if [ -n "$NATIVE_LINUX" ] && ! mentions "$T/code.txt" "$NATIVE_REPORT_API"; then
+  emit native-report "$MAIN_RS" "the native Linux build reports errors only on stderr and in the log"
+fi
+grep -nF '/dev/input/js' "$T/code.txt" | head -n 1 | cut -d: -f2,3 > "$T/js"
+if [ -s "$T/js" ] && ! mentions "$T/code.txt" "$JOYSTICK_API"; then
+  emit native-pad "$(cat "$T/js")" "reads /dev/input/js itself"
+fi
+grep -nE 'prefer_glx[ \t]*\(' "$T/code.txt" | head -n 1 | cut -d: -f2,3 > "$T/glx"
+if [ -s "$T/glx" ]; then
+  emit glx-restart "$(cat "$T/glx")" "prefer_glx() without the restart: the first start on a fresh prefix shows no window"
+fi
+grep -nE 'fn[ \t]+light_widgets|weak_bg_fill[ \t]*=|\.bg_fill[ \t]*=' "$T/code.txt" | head -n 1 | cut -d: -f2,3 > "$T/fills"
+if [ -s "$T/fills" ]; then
+  emit light-widgets "$(cat "$T/fills")" "overrides egui's widget fills by hand"
+fi
+# Bundled Microsoft redistributables need a Wine DLL override.
+cat packaging/package.allow packaging/*.pins 2>/dev/null \
+  | grep -oiE '(d3dx9_[0-9]+|d3dx10_[0-9]+|d3dx11_[0-9]+|d3dcompiler_[0-9]+|msvcp[0-9]+|msvcr[0-9]+|vcruntime[0-9_]+|xinput1_[0-9]|xaudio2_[0-9])\.dll' \
+  | tr 'A-Z' 'a-z' | LC_ALL=C sort -u > "$T/msdlls"
+tr 'A-Z' 'a-z' < "$T/code.txt" > "$T/code-lower.txt"
+while IFS= read -r dll; do
+  stem=${dll%.dll}
+  grep -qF "\"$stem" "$T/code-lower.txt" || echo "$dll"
+done < "$T/msdlls" > "$T/msmissing"
+if [ -s "$T/msmissing" ]; then
+  emit ms-dll-overrides packaging/package.allow "bundled, but not in the code's DLL overrides: $(tr '\n' ' ' < "$T/msmissing" | sed 's/ $//')"
+fi
+
+# --- own fixes have drafts -----------------------------------------------------------
+if [ -f docs/CONTRIBUTIONS.md ]; then
+  # Table data rows (after each header and separator) that hold anything
+  # but the status placeholder; ids are first cells like C1, S2, R3.
+  awk '{ sub(/\r$/, "") }
+    /^\|/ { n++; if (n <= 2) next
+      # Filled: any cell but the last (the status placeholder) holds text.
+      nc = split($0, c, "|"); filled = 0
+      for (i = 2; i < nc - 1; i++) { v = c[i]; gsub(/[ \t]/, "", v); if (v != "") filled = 1 }
+      if (filled) { rows++
+        split($0, c, "|"); id = c[2]; gsub(/[ \t*`]/, "", id)
+        if (id ~ /^[A-Za-z]+[0-9]+$/) print "id " id }
+      r = $0
+      while (match(r, /RESEARCH(\.md)?[ \t]*#[A-Za-z0-9]+/)) {
+        ref = substr(r, RSTART, RLENGTH); sub(/.*#/, "", ref); print "ref " ref; r = substr(r, RSTART + RLENGTH) }
+      next }
+    { n = 0 }
+    END { print "rows " rows + 0 }' docs/CONTRIBUTIONS.md > "$T/contrib"
+else
+  echo "rows 0" > "$T/contrib"
+fi
+CONTRIB_ROWS=$(sed -n 's/^rows //p' "$T/contrib")
+sed -n 's/^id //p' "$T/contrib" > "$T/contrib-ids"
+sed -n 's/^ref //p' "$T/contrib" > "$T/contrib-refs"
+# A RESEARCH.md table row decided as our own work (not "our own config").
+OWN_RE='[*][*]our own|our own (fix|patch|shim|hook|preload|code|dll|reverse|change|work)|own fix|own patch|[|][ *]*ours[ *]*[|]'
+if [ -f docs/RESEARCH.md ]; then
+  awk -v ids="$T/contrib-ids" -v refs="$T/contrib-refs" -v OWN_RE="$OWN_RE" '
+    BEGIN { while ((getline id < ids) > 0) known[id] = 1; while ((getline id < refs) > 0) cited[id] = 1 }
+    { sub(/\r$/, "") }
+    !/^\|/ { next }
+    { l = tolower($0) }
+    l ~ OWN_RE {
+      if (l ~ /contributions|no draft/) next
+      split($0, c, "|"); first = c[2]; gsub(/[ \t*`#]/, "", first)
+      if (first in cited) next
+      n = split($0, w, /[^A-Za-z0-9]+/); ok = 0
+      for (i = 1; i <= n; i++) if (w[i] in known) ok = 1
+      if (!ok) print FNR }' docs/RESEARCH.md > "$T/own-rows"
+  while IFS= read -r n; do
+    emit own-fix-draft "docs/RESEARCH.md:$n" "our own fix, and no draft in docs/CONTRIBUTIONS.md is cited"
+  done < "$T/own-rows"
+  OWN=$(awk -v OWN_RE="$OWN_RE" '{ l = tolower($0) } /^\|/ && l ~ OWN_RE && l !~ /no draft/ { n++ } END { print n + 0 }' docs/RESEARCH.md)
+else
+  OWN=0
+fi
+# Byte patches or in-memory fixes in the code are our own fixes too.
+# So is a hook or preload library of our own (a cdylib crate in the workspace).
+PATCHES=$(grep -cE 'rea_launcher::patch|PatchSet' "$T/code.txt")
+HOOKS=$(grep -lE '^[ \t]*crate-type[ \t]*=.*cdylib' crates/*/Cargo.toml Cargo.toml 2>/dev/null | head -n 1)
+if [ "${CONTRIB_ROWS:-0}" -eq 0 ] && { [ "$OWN" -gt 0 ] || [ "$PATCHES" -gt 0 ] || [ -n "$HOOKS" ]; }; then
+  if [ "$OWN" -gt 0 ]; then why="docs/RESEARCH.md lists $OWN own fix(es)"
+  elif [ "$PATCHES" -gt 0 ]; then why="the code applies its own byte patches"
+  else why="$HOOKS builds a hook or preload library of our own"; fi
+  emit own-fix-draft docs/CONTRIBUTIONS.md "$why, and the drafts table is empty"
+fi
+
+# --- README ---------------------------------------------------------------------------
+SECTIONS='Problems this launcher solves|Screenshots|What you need|Download and install|First run|The settings window|Gamepad|Options|Where things live|Troubleshooting|Known limitations|Uninstall|For developers|How it works|Built on rea-launcher-sdk|Contributing|Credits|Legal'
+OPTIONAL_SECTIONS='Gamepad|How it works'
+if [ ! -f README.md ]; then
+  emit readme-sections README.md "no README.md"
+else
+  awk '{ sub(/\r$/, "") } /^```/ { f = !f } !f && /^## / { s = substr($0, 4); sub(/[ \t]+$/, "", s); print s }' README.md > "$T/headings"
+  missing='' order=''
+  last=0
+  old_ifs=$IFS
+  IFS='|'
+  for s in $SECTIONS; do
+    if grep -qixF -- "$s" "$T/headings"; then
+      pos=$(grep -nixF -- "$s" "$T/headings" | head -n 1 | cut -d: -f1)
+      if [ "$pos" -lt "$last" ]; then order="$order, $s"; fi
+      last=$pos
+    else
+      case "|$OPTIONAL_SECTIONS|" in *"|$s|"*) ;; *) missing="$missing, ## $s" ;; esac
+    fi
+  done
+  IFS=$old_ifs
+  if ! grep -qE '^# .*[Ll]auncher[ \t]*$' README.md; then missing="# <Game> Launcher (the title)$missing"; fi
+  [ -z "$missing" ] || emit readme-sections README.md "missing: ${missing#, }"
+  [ -z "$order" ] || emit readme-order README.md "out of order: ${order#, }"
+  # Contributing routes shared code to the SDK's issues.
+  awk '{ sub(/\r$/, "") } /^## / { c = (tolower($0) ~ /^## contributing/) ; next } c' README.md > "$T/contributing"
+  if grep -qixF 'Contributing' "$T/headings" && ! grep -qE 'rea-launcher-sdk[^ )]*/issues|rea-launcher-sdk\]\([^)]*/issues' "$T/contributing"; then
+    emit readme-contributing README.md "## Contributing does not send shared-code issues to the SDK repository"
+  fi
+  # Issue-form links name templates that exist.
+  grep -noE 'issues/new\?template=[A-Za-z0-9._-]+' README.md linux/README.md 2>/dev/null | while IFS= read -r hit; do
+    file=${hit%%:*} rest=${hit#*:} line=${rest%%:*} tpl=${hit##*template=}
+    [ -f ".github/ISSUE_TEMPLATE/$tpl" ] || echo "$file:$line $tpl"
+  done > "$T/badlinks"
+  while IFS=' ' read -r where tpl; do
+    emit readme-links "$where" "links the issue template $tpl, which .github/ISSUE_TEMPLATE/ does not have"
+  done < "$T/badlinks"
+  grep -nE 'releases/(download|tag)/v[0-9]' README.md | cut -d: -f1 | while IFS= read -r n; do echo "README.md:$n"; done > "$T/verlinks"
+  while IFS= read -r where; do
+    emit readme-versions "$where" "a link to one release version"
+  done < "$T/verlinks"
+fi
+
+# --- AGENTS.md ---------------------------------------------------------------------------
+if [ ! -f AGENTS.md ]; then
+  emit agents-pointer AGENTS.md "no AGENTS.md"
+else
+  grep -qF 'sdk/docs/STANDARDS.md' AGENTS.md || emit agents-pointer AGENTS.md "does not point to sdk/docs/STANDARDS.md"
+  if [ -f sdk/docs/STANDARDS.md ]; then
+    # Passages copied from STANDARDS: shared runs of 8 words.
+    copied=$(awk -v K=8 '
+      FNR == 1 { file++; nb = 0; s = 0 }
+      { line = tolower($0); gsub(/[^a-z0-9]+/, " ", line); n = split(line, w, " "); for (i = 1; i <= n; i++) buf[++nb] = w[i]
+        for (; s <= nb - K; s++) { k = ""; for (j = s + 1; j <= s + K; j++) k = k " " buf[j]
+          if (file == 1) std[k] = 1; else if (k in std) hit++ } }
+      END { print hit + 0 }' sdk/docs/STANDARDS.md AGENTS.md)
+    if [ "$copied" -gt 40 ]; then
+      emit agents-duplicate AGENTS.md "repeats sdk/docs/STANDARDS.md ($copied runs of 8 words in common)"
+    fi
+  fi
+fi
+
+# --- SDK pins: Cargo, sdk/VERSION, workflows ---------------------------------------------------
+if [ -z "$BUILD" ]; then
+  emit sdk-workflows .github/workflows/build.yml "no build.yml"
+else
+  grep -qE 'uses:[ \t]*[^ ]*/rea-launcher-sdk/\.github/workflows/launcher-ci\.yml@' "$BUILD" \
+    || emit sdk-workflows "$BUILD" "does not call the SDK's launcher-ci workflow"
+  grep -qE 'uses:[ \t]*[^ ]*/rea-launcher-sdk/\.github/workflows/launcher-release\.yml@' "$BUILD" \
+    || emit sdk-workflows "$BUILD" "does not call the SDK's launcher-release workflow"
+fi
+if [ ! -f sdk/VERSION ]; then
+  emit sdk-tag sdk/VERSION "no sdk/VERSION: vendor the SDK with its scripts/sdk-sync"
+elif [ -z "$SDK_TAG" ] || [ "$SDK_TAG" = untagged ]; then
+  emit sdk-tag sdk/VERSION "sdk/ was vendored from an untagged SDK checkout (tag=${SDK_TAG:-})"
+else
+  { grep -nE 'rea-launcher[a-z0-9-]*[ \t]*=.*rea-launcher-sdk' Cargo.toml crates/*/Cargo.toml 2>/dev/null \
+      | sed -n 's/^\([^:]*:[0-9]*\):.*tag[ \t]*=[ \t]*"\([^"]*\)".*/\1 \2/p'
+    for w in .github/workflows/*.yml; do
+      [ -f "$w" ] || continue
+      grep -nE 'uses:[ \t]*[^ ]*/rea-launcher-sdk/\.github/workflows/[^@]*@' "$w" \
+        | sed -n "s|^\([0-9]*\):.*@\([^ \"'#]*\).*|$w:\1 \2|p"
+    done
+  } > "$T/pins"
+  while IFS=' ' read -r where tag; do
+    [ "$tag" = "$SDK_TAG" ] || emit sdk-tag "$where" "pins rea-launcher-sdk $tag, sdk/VERSION says $SDK_TAG"
+  done < "$T/pins"
+  grep -qE 'rea-launcher[a-z0-9-]*[ \t]*=.*tag[ \t]*=' Cargo.toml 2>/dev/null \
+    || emit sdk-tag Cargo.toml "the rea-launcher crates are not pinned by tag (git = ..., tag = \"$SDK_TAG\")"
+fi
+
+# --- Windows builds: lld, Wine tests ----------------------------------------------------------
+while IFS= read -r t; do
+  if [ ! -f .cargo/config.toml ] || ! awk -v t="[target.$t]" '
+      { sub(/\r$/, "") } /^\[/ { in_t = ($0 == t); next }
+      in_t && /fuse-ld=lld/ { ok = 1 } END { exit !ok }' .cargo/config.toml; then
+    emit lld .cargo/config.toml "$t does not link with lld"
+  fi
+done < "$T/win-targets"
+if [ -s "$T/win-targets" ] && [ -n "$BUILD" ] && ! grep -qE '^[ \t]*wine-tests:[ \t]*true' "$BUILD"; then
+  emit wine-tests "$BUILD" "the Windows-target tests never run under Wine"
+fi
+
+# --- options: --look, tests per key ----------------------------------------------------------
+awk '
+  { s = $0; sub(/^[^:]*:[0-9]+:/, "", s) }
+  index(s, "OptionSpec::new(") { want = 1; s = substr(s, index(s, "OptionSpec::new(") + 16) }
+  want && match(s, /"[a-z0-9_]+"/) { print substr(s, RSTART + 1, RLENGTH - 2); want = 0 }' "$T/code.txt" | awk '!seen[$0]++' > "$T/keys"
+if [ ! -s "$T/keys" ]; then
+  emit option-tests "$CONFIG_RS" "no option table (rea_launcher::cfg OptionSpec::new) found, so the option tests can't be checked"
+else
+  grep -qx look "$T/keys" || emit look-flag "$CONFIG_RS" "the option table has no look option (--look)"
+  if grep -qx look "$T/keys"; then
+    for play in "$R"/linux/*-play; do
+      [ -f "$play" ] && grep -q 'rea-play\.sh' "$play" || continue
+      grep -q '^[[:space:]]*REA_LOOK_SIZES=' "$play" ||
+        emit look-sizes "linux/${play##*/}" "the Linux helper never says what size each look gives gamescope (REA_LOOK_SIZES)"
+    done
+  fi
+  untested=$(awk -v tests="$T/tests.txt" '
+    BEGIN { while ((getline l < tests) > 0) { sub(/^[^:]*:[0-9]+:/, "", l); body = body "\n" l } }
+    function word(text, w,   p, rest, before, after) {
+      rest = text
+      while ((p = index(rest, w)) > 0) {
+        before = (p > 1) ? substr(rest, p - 1, 1) : " "; after = substr(rest, p + length(w), 1)
+        if (before !~ /[A-Za-z0-9_]/ && after !~ /[A-Za-z0-9_]/) return 1
+        rest = substr(rest, p + length(w))
+      }
+      return 0 }
+    { flag = $0; gsub(/_/, "-", flag); if (!word(body, $0) && !word(body, "--" flag)) printf "%s%s", (n++ ? ", " : ""), $0 }' "$T/keys")
+  [ -z "$untested" ] || emit option-tests "$CONFIG_RS" "no test names these options: $untested"
+fi
+
+# --- runtime notes: every way of quitting ------------------------------------------------------
+if [ -f docs/RUNTIME_NOTES.md ]; then
+  q=$(awk '{ l = tolower($0) }
+    l ~ /(quit|exit)/ && l ~ /menu/ || l ~ /game.s own quit|in-game quit|quit from the game|quit in the game/ { a = 1 }
+    l ~ /alt\+f4|alt-f4|wm_close|close button|window close|closing the window|close the window/ { b = 1 }
+    l ~ /sigint|sigterm|ctrl\+c|ctrl-c|-play stop/ { c = 1 }
+    l ~ /leftover|left behind|left over|no process|process (list|table)|stray process|orphan|processes by|(our|its|the game.s) processes|no wineserver/ { d = 1 }
+    END { if (!a) m = m ", quit from the game menu"; if (!b) m = m ", window close / Alt+F4"
+          if (!c) m = m ", SIGINT/SIGTERM"; if (!d) m = m ", no leftover processes"; print substr(m, 3) }' docs/RUNTIME_NOTES.md)
+  [ -z "$q" ] || emit quit-paths docs/RUNTIME_NOTES.md "no entry for: $q"
+else
+  emit quit-paths docs/RUNTIME_NOTES.md "no docs/RUNTIME_NOTES.md"
+fi
+
+# --- GitHub files --------------------------------------------------------------------------------
+I=.github/ISSUE_TEMPLATE
+[ -f $I/unknown-edition.yml ] || [ -f $I/unknown-edition.yaml ] \
+  || emit issue-unknown-edition $I/unknown-edition.yml "no unknown-edition issue form"
+if [ ! -f $I/bug-report.yml ]; then
+  emit issue-bug-report $I/bug-report.yml "no bug-report issue form"
+elif ! grep -q 'type: checkboxes' $I/bug-report.yml || ! grep -qi 'what worked' $I/bug-report.yml; then
+  emit issue-bug-report $I/bug-report.yml "no \"What worked\" checklist"
+fi
+grep -lsqE 'rea-launcher-sdk/\.github/workflows/sdk-update\.yml@' .github/workflows/*.yml \
+  || emit sdk-update .github/workflows/sdk-update.yml "no weekly SDK update workflow"
+
+# --- DRM: only by a recorded owner decision ----------------------------------------------------------
+# Lines of AGENTS.md and the edition code that accept such a build; a line
+# that refuses one, or names an official DRM-free release, doesn't count.
+DRM_RE='pre-?activated|crack|reloaded|no-?dvd|no-?cd|drm-free|steam_?emu'
+DRM_NOT='official|never|not |n.t |refuse|unknown|won.t'
+for f in AGENTS.md $(grep -E '(^|/)src/edition[^/]*\.rs$|(^|/)src/edition/' "$T/rs"); do
+  [ -f "$f" ] || continue
+  n=$(grep -niE "$DRM_RE" "$f" | grep -viE "$DRM_NOT" | head -n 1 | cut -d: -f1)
+  [ -z "$n" ] || echo "$f:$n"
+done > "$T/drm"
+if [ -s "$T/drm" ]; then
+  emit drm-exception "$(head -n 1 "$T/drm")" "supports a build with its DRM or disc check removed ($(tr '\n' ' ' < "$T/drm" | sed 's/ $//'))"
+fi
+
+# --- waivers ------------------------------------------------------------------------------------
+if [ -f "$T/waiver-lines" ]; then
+  while IFS="$(printf '\t')" read -r n line; do
+    r=${line%%:*}
+    r=$(printf '%s' "$r" | tr -d ' \t')
+    reason=${line#*:}
+    reason=$(printf '%s' "$reason" | sed 's/^[ \t]*//')
+    if [ "$r" = "$line" ] || [ -z "$reason" ]; then
+      emit waivers "$WAIVERS_FILE:$n" "needs 'rule: reason'"
+    elif ! rule "$r" || [ "$r" = waivers ]; then
+      emit waivers "$WAIVERS_FILE:$n" "no rule '$r' to waive"
+    elif ! grep -qx "$r" "$T/waived-used"; then
+      echo "note: $WAIVERS_FILE:$n waives $r, which found nothing; remove the line"
+    fi
+  done < "$T/waiver-lines"
+fi
+
+echo "launcher-check: $errors error(s), $warnings warning(s), $waived waived (sdk ${SDK_TAG:-unknown}; --explain RULE says why)"
+[ "$errors" -eq 0 ]

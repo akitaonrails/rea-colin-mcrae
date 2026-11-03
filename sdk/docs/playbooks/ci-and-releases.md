@@ -59,7 +59,11 @@ jobs:
   false`: GitHub checks a called workflow's permissions before any `if:`.
 - The launcher's checks all run in `ci`: fmt, tests, `cargo deny`/`audit`,
   shell syntax and `linux/tests`, Windows-target clippy and build, Wine
-  tests, the `sdk/` drift check, the package build and the allowlist check.
+  tests, the `sdk/` drift check, the family rules (`sdk/scripts/launcher-check`,
+  input `conformance`: errors fail, warnings are annotations), the package
+  build and the allowlist check. Don't turn `conformance` off to get a
+  green build: fix the error, or ask the owner for a waiver line in
+  `.rea-check-waivers`.
 - **Link with lld, for every Windows target** (i686 and x86_64): GNU ld 2.47
   leaves imports unresolved and the program crashes on that call, often
   before `main`. `.cargo/config.toml` sets `-C link-arg=-fuse-ld=lld` per
@@ -74,6 +78,33 @@ jobs:
   component publishes something new), `mirror` (copies mirrorable pins into
   the repo's `thirdparty` release), `sdk-update` (weekly SDK upgrade pull
   request). See `packaging/README.md`.
+
+### Native Linux launchers
+
+A launcher for a game's native Linux build (DiRT Rally) calls
+`launcher-ci` twice, with a `concurrency-key` each:
+
+```yaml
+  linux-packages:
+    uses: akitaonrails/rea-launcher-sdk/.github/workflows/launcher-ci.yml@vX.Y.Z
+    with:
+      concurrency-key: linux
+      rust-target: ""                     # host build: the native launcher
+      package-command: packaging/package.sh "dist/<Id>Launcher-$REA_VERSION_NAME"
+      # package-dir, package-allowlist, artifact-*: as above
+  windows-tests:
+    uses: akitaonrails/rea-launcher-sdk/.github/workflows/launcher-ci.yml@vX.Y.Z
+    with:
+      concurrency-key: windows-tests
+      rust-target: i686-pc-windows-gnu    # the shared code under Wine
+      wine-tests: true
+      audit: false                        # the Linux job runs these
+      sdk-check: false
+      conformance: false
+      shell-tests: ""
+```
+
+and the `release` job `needs: [linux-packages, windows-tests]`.
 
 ## 2. What the package must contain
 
@@ -92,17 +123,31 @@ anything else, and any game file, fails CI.
 - Branch protection on `main` requiring the `ci` job is recommended.
 - No secrets are needed: `GITHUB_TOKEN` creates the release.
 
-## 4. Cutting a release (only when the owner says so)
+## 4. Before every push
 
-1. `main` is green in CI.
-2. Bump the crate version in `Cargo.toml` (`cargo update -w` to refresh
-   `Cargo.lock`), turn CHANGELOG "Unreleased" into `## [X.Y.Z] - date`.
-   Commit `chore: release vX.Y.Z`.
-3. `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin main vX.Y.Z`.
-4. Watch it: `gh run watch` on the tag's run. The release job checks the tag
-   against the crate version, writes `SHA256SUMS`, attests provenance,
-   takes the notes from that CHANGELOG section and publishes the zip and
-   AppImage.
+`sdk/scripts/prepush-scan` scans the commits a push would publish and the
+tree for secrets with a pinned gitleaks, and prints only paths, lines and
+commit ids, never the matched text. A finding stops the push until the
+owner decides. CI scans again; the local scan keeps a secret from ever
+reaching GitHub.
+
+## 5. Cutting a release (only when the owner says so)
+
+1. `main` is green in CI, and `sdk/scripts/launcher-check` has no errors.
+2. `sdk/scripts/release X.Y.Z`: bumps the crate that `launcher-release`
+   checks (its `package:` input), dates the CHANGELOG section, runs
+   `cargo test --locked` after the bump (what the tag's CI runs), checks
+   the release notes, commits `chore: release vX.Y.Z` and makes the
+   annotated tag. It never pushes.
+3. `sdk/scripts/prepush-scan`, then push `main` and the tag when the owner
+   says so.
+4. Watch it gently: one `gh run view` every minute or two, not `gh run
+   watch` in a tight loop. Frequent polling trips GitHub's secondary rate
+   limit and the command exits non-zero, which looks like a failed release.
+   Before you call a release failed, check `gh release view vX.Y.Z` and the
+   run's conclusion. The release job checks the tag against the crate
+   version, writes `SHA256SUMS`, attests provenance, takes the notes from
+   that CHANGELOG section and publishes the zip and AppImage.
 5. Verify: `gh release view vX.Y.Z` lists the zip, the AppImage and
    `SHA256SUMS`; README download links point at `releases/latest` without a
    hard-coded version.
@@ -112,4 +157,8 @@ anything else, and any game file, fails CI.
    the space freed.
 
 If the release job fails after the tag was pushed, fix forward with a new
-patch version; never move a published tag.
+patch version; never move a published tag. The fix-forward release's notes
+include the unpublished version's section: pass `notes-since: vX.Y.Z`
+(the tag that never published) to `launcher-release`, or
+`notes-since: latest-release`, for that one release; it runs
+`release-notes.sh --since`.

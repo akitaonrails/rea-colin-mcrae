@@ -15,10 +15,17 @@
 #      SDK version and the new one (also to FILE with --notes).
 #
 # The SDK checkout: this SDK itself when it is a clean git checkout at the
-# tag; otherwise a clone kept in $REA_SDK_CACHE (default
-# ${XDG_CACHE_HOME:-~/.cache}/rea-launcher-sdk/checkout), fetched from
-# $REA_SDK_URL, else from this SDK checkout when it has the tag, else
-# https://github.com/akitaonrails/rea-launcher-sdk.
+# tag; otherwise a clone fetched from $REA_SDK_URL, else from this SDK
+# checkout when it has the tag, else
+# https://github.com/akitaonrails/rea-launcher-sdk. The clone is kept in
+# $REA_SDK_CACHE when set, else in the launcher's own .work/sdk-checkout
+# when .work/ is git-ignored there, else in a temp folder removed at exit.
+# Never in the home folder (everything outside the repository is the
+# user's).
+#
+# Only the launcher's own Cargo.toml files are rewritten: tracked or
+# untracked but not git-ignored (never .work/, target/ or another ignored
+# folder), and never the vendored sdk/.
 #
 # Idempotent. Refuses a dirty work tree and a downgrade unless --force.
 # --no-cargo skips step 2 (then run cargo update yourself). --since lists
@@ -75,9 +82,10 @@ vercmp() {
   }'
 }
 
-# Cargo.toml files of the launcher (not build output, not the vendored SDK).
-find "$REPO" \( -name target -o -name .git -o -path "$REPO/sdk" \) -prune -o \
-  -name Cargo.toml -type f -print > "$T/tomls"
+# Cargo.toml files of the launcher: what git tracks or would track (never
+# an ignored folder such as .work/ or target/), not the vendored SDK.
+git -C "$REPO" ls-files -co --exclude-standard -- 'Cargo.toml' '*/Cargo.toml' \
+  | grep -v '^sdk/' | awk -v r="$REPO" '{ print r "/" $0 }' > "$T/tomls" || true
 
 # The launcher's current SDK version: sdk/VERSION, else the first Cargo tag.
 OLD=''
@@ -108,7 +116,13 @@ else
   else
     SRC=https://github.com/akitaonrails/rea-launcher-sdk
   fi
-  CO=${REA_SDK_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/rea-launcher-sdk/checkout}
+  if [ -n "${REA_SDK_CACHE:-}" ]; then
+    CO=$REA_SDK_CACHE
+  elif git -C "$REPO" check-ignore -q .work/sdk-checkout 2>/dev/null; then
+    CO=$REPO/.work/sdk-checkout
+  else
+    CO=$T/sdk-checkout
+  fi
   if [ ! -d "$CO/.git" ]; then
     mkdir -p "$(dirname "$CO")"
     git clone --quiet --no-checkout "$SRC" "$CO" || die "cannot clone $SRC"

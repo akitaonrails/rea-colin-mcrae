@@ -1,0 +1,233 @@
+#!/bin/sh
+# rea-launcher-sdk scripts/release: prepares a launcher release commit and
+# its annotated tag, locally. It never pushes.
+#
+#   release [--date YYYY-MM-DD] [--no-test] VERSION [launcher-repo]
+#
+# In <launcher-repo> (default: the current folder) it
+#   1. finds the crate to bump: the `package:` given to launcher-release.yml
+#      in .github/workflows (the tag check compares the tag with exactly
+#      that crate; never the first crate found), and refuses when the
+#      workflows name none or several;
+#   2. sets its version to VERSION (X.Y.Z or vX.Y.Z; it must be newer and
+#      untagged), in its Cargo.toml or, for `version.workspace = true`, in
+#      the root's [workspace.package], and refreshes Cargo.lock;
+#   3. dates the CHANGELOG: the "## Unreleased" section becomes the
+#      version's, in the heading style of the repo's own latest release
+#      (`## [X] - date`, `## vX - date`, `## X - date`), with a new empty
+#      Unreleased heading above it and Keep a Changelog links moved on; or an
+#      existing undated "## X" heading gets the date;
+#   4. runs `cargo test --locked --workspace` after the bump (the tag's CI
+#      runs the same; a help snapshot with the version broke three tag
+#      builds), unless --no-test;
+#   5. checks that release-notes.sh prints the version's notes;
+#   6. commits "chore: release vX" and creates the annotated tag vX.
+# Any failure puts the files back. Pushing is the owner's call: it prints
+# the commands.
+set -eu
+die() { echo "release: $*" >&2; exit 1; }
+usage() { echo "usage: $0 [--date YYYY-MM-DD] [--no-test] VERSION [launcher-repo]" >&2; exit 2; }
+
+DATE='' TEST=1
+while [ $# -gt 0 ]; do
+  case $1 in
+    --date) [ $# -ge 2 ] || usage; DATE=$2; shift 2 ;;
+    --no-test) TEST=''; shift ;;
+    -h | --help) usage ;;
+    -*) die "unknown option $1" ;;
+    *) break ;;
+  esac
+done
+[ $# -ge 1 ] && [ $# -le 2 ] || usage
+VERSION=${1#v}
+case $VERSION in
+  [0-9]*.[0-9]*.[0-9]*) ;;
+  *) die "want a version like 1.2.3 or v1.2.3, got '$1'" ;;
+esac
+case $VERSION in *[!0-9.]* | *..* | *.*.*.*) die "want a plain X.Y.Z version, got '$1'" ;; esac
+TAG=v$VERSION
+: "${DATE:=$(date +%Y-%m-%d)}"
+case $DATE in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) die "--date wants YYYY-MM-DD" ;; esac
+[ -d "${2:-.}" ] || die "no folder ${2:-.}"
+REPO=$(cd "${2:-.}" && pwd -P)
+HERE=$(cd "$(dirname "$0")/.." && pwd -P)
+git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$REPO is not a git work tree"
+REPO=$(git -C "$REPO" rev-parse --show-toplevel)
+[ -z "$(git -C "$REPO" status --porcelain)" ] || die "$REPO has uncommitted changes"
+if git -C "$REPO" rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then die "tag $TAG already exists"; fi
+
+T=$(mktemp -d "${TMPDIR:-/tmp}/rea-release.XXXXXX")
+CHANGED=''
+restore() {
+  # Puts back what this run changed (the tree was clean before).
+  for f in $CHANGED; do git -C "$REPO" checkout -q -- "$f" 2>/dev/null || true; done
+}
+trap 'rm -rf "$T"' EXIT
+trap 'restore; exit 129' HUP
+trap 'restore; exit 130' INT
+trap 'restore; exit 143' TERM
+fail() { restore; die "$*"; }
+
+# Prints -1, 0 or 1 comparing two X.Y.Z.
+vercmp() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    split(a, x, "."); split(b, y, ".")
+    for (i = 1; i <= 3; i++) {
+      if (x[i] + 0 < y[i] + 0) { print -1; exit }
+      if (x[i] + 0 > y[i] + 0) { print 1; exit }
+    }
+    print 0
+  }'
+}
+
+# --- 1. the crate launcher-release checks ---------------------------------------
+# Every `package:` in the `with:` of a job that uses launcher-release.yml.
+for f in "$REPO"/.github/workflows/*.yml "$REPO"/.github/workflows/*.yaml; do
+  [ -f "$f" ] || continue
+  awk '
+    function indent(s) { match(s, /^ */); return RLENGTH }
+    /^[ \t]*#/ { next }
+    /uses:[ \t]*[^ \t]*\/\.github\/workflows\/launcher-release\.ya?ml@/ { job = indent($0); inrel = 1; next }
+    inrel && $0 !~ /^[ \t]*$/ && indent($0) < job { inrel = 0 }
+    inrel && /^[ \t]*package:/ {
+      v = $0; sub(/^[ \t]*package:[ \t]*/, "", v); sub(/[ \t]+#.*$/, "", v)
+      gsub(/^["\047]|["\047]$/, "", v); print v
+    }
+  ' "$f"
+done | sort -u > "$T/packages"
+case $(wc -l < "$T/packages" | tr -d ' ') in
+  0) die "no launcher-release.yml call with a package: input in .github/workflows (the tag check needs it; the SDK itself releases by docs/playbooks/sdk-change.md)" ;;
+  1) PACKAGE=$(cat "$T/packages") ;;
+  *) die "the workflows give launcher-release different packages: $(tr '\n' ' ' < "$T/packages")" ;;
+esac
+case $PACKAGE in '' | *[!A-Za-z0-9_-]*) die "unexpected package name '$PACKAGE'" ;; esac
+
+# Its manifest: the Cargo.toml (outside target/, .work/, sdk/) whose
+# [package] name is PACKAGE.
+MANIFEST=''
+git -C "$REPO" ls-files -co --exclude-standard -- 'Cargo.toml' '*/Cargo.toml' | grep -v '^sdk/' > "$T/tomls" || true
+while IFS= read -r f; do
+  name=$(awk '/^\[/ { p = ($0 ~ /^\[package\][ \t]*$/) } p && /^name[ \t]*=/ { v = $0; sub(/^[^"]*"/, "", v); sub(/".*$/, "", v); print v; exit }' "$REPO/$f")
+  if [ "$name" = "$PACKAGE" ]; then
+    [ -z "$MANIFEST" ] || die "two crates are named $PACKAGE ($MANIFEST, $f)"
+    MANIFEST=$f
+  fi
+done < "$T/tomls"
+[ -n "$MANIFEST" ] || die "no Cargo.toml with [package] name = \"$PACKAGE\" (named by launcher-release's package: input)"
+
+if grep -Eq '^version(\.workspace[ \t]*=[ \t]*true|[ \t]*=[ \t]*\{[ \t]*workspace[ \t]*=[ \t]*true)' "$REPO/$MANIFEST"; then
+  VFILE=Cargo.toml VTABLE='workspace.package'
+else
+  VFILE=$MANIFEST VTABLE='package'
+fi
+[ -f "$REPO/$VFILE" ] || die "no $VFILE"
+# Reads or (with a new value) writes `version = "…"` in table VTABLE.
+version_in() { # file table [new]
+  awk -v table="[$2]" -v new="${3:-}" '
+    /^\[/ { t = $0; sub(/[ \t]*(#.*)?$/, "", t); intable = (t == table) }
+    intable && !done && /^version[ \t]*=[ \t]*"/ {
+      if (new == "") { v = $0; sub(/^[^"]*"/, "", v); sub(/".*$/, "", v); print v; exit }
+      sub(/"[^"]*"/, "\"" new "\""); done = 1
+    }
+    new != "" { print }
+  ' "$1"
+}
+CURRENT=$(version_in "$REPO/$VFILE" "$VTABLE")
+[ -n "$CURRENT" ] || die "no version in [$VTABLE] of $VFILE"
+[ "$(vercmp "$VERSION" "$CURRENT")" = 1 ] || die "$VERSION is not newer than $PACKAGE's $CURRENT"
+echo "release: $PACKAGE $CURRENT -> $VERSION ($VFILE [$VTABLE])"
+
+# --- 2. the version and Cargo.lock ----------------------------------------------
+version_in "$REPO/$VFILE" "$VTABLE" "$VERSION" > "$T/toml"
+cat "$T/toml" > "$REPO/$VFILE"
+CHANGED="$CHANGED $VFILE"
+[ "$(version_in "$REPO/$VFILE" "$VTABLE")" = "$VERSION" ] || fail "could not set the version in $VFILE"
+if [ -f "$REPO/Cargo.lock" ]; then
+  CHANGED="$CHANGED Cargo.lock"
+  command -v cargo >/dev/null 2>&1 || fail "cargo is not on PATH"
+  (cd "$REPO" && { cargo update --workspace --offline 2>/dev/null || cargo update --workspace; }) \
+    || fail "cargo update --workspace failed"
+fi
+
+# --- 3. the CHANGELOG -----------------------------------------------------------
+CL=CHANGELOG.md
+[ -f "$REPO/$CL" ] || fail "no $CL"
+CHANGED="$CHANGED $CL"
+URL=$(sed -n 's#^\[[Uu]nreleased\]:[ \t]*\(.*\)/compare/v[0-9][^ ]*\.\.\.HEAD[ \t]*$#\1#p' "$REPO/$CL" | head -n 1)
+awk -v ver="$VERSION" -v date="$DATE" -v cur="$CURRENT" -v url="$URL" '
+  function hv(line,   h) {
+    h = line; sub(/^##[ \t]+/, "", h); sub(/[ \t].*$/, "", h)
+    gsub(/\[/, "", h); gsub(/\]/, "", h); sub(/^v/, "", h); return h
+  }
+  { line[++n] = $0 }
+  /^## / {
+    if (tolower(hv($0)) == "unreleased" && !unrel) unrel = n
+    else if (hv($0) == ver && !own) own = n
+    else if (hv($0) ~ /^[0-9]+\.[0-9]+\.[0-9]+/ && !style) style = $0
+  }
+  END {
+    if (own) {
+      # An existing "## X" heading: give it the date when it has none.
+      h = line[own]
+      if (h !~ /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) {
+        sub(/[ \t]*(-[ \t]*)?([Uu]nreleased|TBD|tbd)?[ \t]*$/, "", h); h = h " - " date
+      }
+      line[own] = h
+    } else if (unrel) {
+      # Unreleased content must exist.
+      for (i = unrel + 1; i <= n && line[i] !~ /^## / && line[i] !~ /^\[[^ \t]*\]: /; i++)
+        if (line[i] !~ /^[ \t]*$/) body = 1
+      if (!body) { print "empty" > "/dev/stderr"; exit 3 }
+      # The repo latest release heading style.
+      if (style ~ /^## \[/) h = "## [" ver "]"
+      else if (style ~ /^## v/) h = "## v" ver
+      else if (style != "") h = "## " ver
+      else h = "## [" ver "]"
+      if (style == "" || style ~ /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) h = h " - " date
+      line[unrel] = line[unrel] "\n\n" h
+    } else { exit 4 }
+    for (i = 1; i <= n; i++) {
+      if (url != "" && line[i] ~ /^\[[Uu]nreleased\]: .*\/compare\/v[0-9][^ ]*\.\.\.HEAD[ \t]*$/) {
+        sub(/compare\/v[0-9][^ ]*\.\.\.HEAD/, "compare/v" ver "...HEAD", line[i])
+        print line[i]
+        if (!linked) print "[" ver "]: " url "/compare/v" cur "...v" ver
+        linked = 1
+        continue
+      }
+      print line[i]
+    }
+  }
+' "$REPO/$CL" > "$T/cl" || {
+  rc=$?
+  case $rc in
+    3) fail "the Unreleased section of $CL is empty: write the release's entries first" ;;
+    4) fail "$CL has no Unreleased section and no '## $VERSION' heading" ;;
+    *) fail "could not date $CL" ;;
+  esac
+}
+cat "$T/cl" > "$REPO/$CL"
+
+# --- 4. the tag's checks, locally -----------------------------------------------
+if [ -n "$TEST" ]; then
+  echo "release: cargo test --locked --workspace (what the tag's CI runs)"
+  (cd "$REPO" && cargo test --locked --workspace) > "$T/test.log" 2>&1 || {
+    tail -n 30 "$T/test.log" >&2
+    fail "cargo test failed after the bump (a snapshot with the version? use rea_launcher::snapshot!)"
+  }
+fi
+
+# --- 5. the release notes -------------------------------------------------------
+NOTES=$REPO/sdk/packaging/release-notes.sh
+[ -f "$NOTES" ] || NOTES=$HERE/packaging/release-notes.sh
+[ -f "$NOTES" ] || fail "no release-notes.sh (re-run scripts/sdk-sync)"
+sh "$NOTES" "$TAG" "$REPO/$CL" > "$T/notes" 2>"$T/notes.err" || fail "release notes: $(cat "$T/notes.err")"
+echo "release: notes for $TAG ($(wc -l < "$T/notes" | tr -d ' ') lines):"
+sed 's/^/  | /' "$T/notes" | head -n 15
+
+# --- 6. commit and tag ----------------------------------------------------------
+# shellcheck disable=SC2086 # the changed paths, one word each
+git -C "$REPO" add -- $CHANGED
+git -C "$REPO" commit -q -m "chore: release $TAG" || fail "git commit failed"
+git -C "$REPO" tag -a "$TAG" -m "$TAG" || die "git tag failed (the release commit stays; tag it by hand)"
+echo "release: committed and tagged $TAG ($(git -C "$REPO" rev-parse --short HEAD)). Nothing was pushed."
+echo "release: after the owner's go-ahead: git push origin HEAD && git push origin $TAG"
