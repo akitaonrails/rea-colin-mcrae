@@ -3,6 +3,26 @@
 Observations from running the user's own game. Each entry: date, setup, what
 was seen. Static facts live in the parked reconstruction's documents (kept outside this repository) and local notes.
 
+## Pending real-game checks (rea-launcher-sdk v0.4.1, 2026-11-02)
+
+Run headless as the 2026-11-02 verification below did:
+
+- Each look reaches the game, with gamescope sized by `REA_LOOK_SIZES`
+  (Steam Deck 1280×800, Enhanced the screen, Original 640×480).
+- A play-time error (missing folder, unknown `Rally.exe`) still shows a
+  dialog under `cmr-play`.
+- Second start while the game runs: `cmr-play --play` and
+  `CMRLauncher.exe` itself refuse with exit 5 (was 0), the latter with
+  its message; with the settings window open a plain start brings it
+  forward (exit 0), a `--settings` start exits 5 and `cmr-play` says
+  another launcher is running.
+- A launcher killed while its game runs: the next start refuses Play
+  (`process::find_running`), exit 5, nothing copied over the runtime.
+- A fresh prefix: the settings window opens on the first start
+  (`gpu::prefer_glx_or_restart` runs the launcher once more).
+- Every quit path (the game's Quit, WM_CLOSE / Alt+F4, gamescope closed,
+  SIGINT/SIGTERM, `cmr-play stop`) leaves nothing behind.
+
 ## Pending real-game checks (rea-launcher-sdk v0.3.3 migration, 2026-11-02)
 
 Checked headless on 2026-11-02 (next section) unless listed here:
