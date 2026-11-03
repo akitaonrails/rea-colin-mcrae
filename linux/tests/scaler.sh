@@ -84,6 +84,8 @@ expect "the file's own resolution wins over its look" '*gamescope -w 1920 -h 108
 rea_main --play --look steam_deck > /dev/null
 expect "--look wins over the file's resolution, and reaches the launcher" \
   '*gamescope -w 1280 -h 800 -f*--no-window --look steam_deck*'
+REA_SCREEN=1600x2560 rea_main --play --look enhanced > /dev/null
+expect "--look enhanced on a portrait screen: landscape" '*gamescope -w 2560 -h 1600 -f*--look enhanced*'
 rea_main --play --look=original > /dev/null
 expect "--look=original" '*gamescope -w 640 -h 480 -f*'
 rea_main --play --look steam_deck --resolution 2560x1440 > /dev/null
