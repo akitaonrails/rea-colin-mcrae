@@ -5,6 +5,8 @@ described on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-03
+
 ### Changed
 
 - Updated rea-launcher-sdk to v0.4.1.
