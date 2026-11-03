@@ -2,5 +2,6 @@
 # pipeline"): made with cmr-hd and tools/hd-redraw, published as a release
 # asset (owner decision 2026-10-31; THIRD_PARTY.md), fetched by
 # packaging/package.sh and checked against this digest. One pin line in
-# sdk/packaging/pins.sh format: url sha256 [fallback-url ...] [hosted].
-https://github.com/akitaonrails/rea-colin-mcrae/releases/download/hd-pack-4/cmr-hd-pack-4.zip ff5044ff37b9c23a4c09260ed9bffbb7424acdb66e50c5147daff964a261dda8 hosted
+# sdk/packaging/pins.sh format: url sha256 [fallback-url ...] [hosted]
+# [tag=RELEASE]; tag= names the release that hosts it (not thirdparty).
+https://github.com/akitaonrails/rea-colin-mcrae/releases/download/hd-pack-4/cmr-hd-pack-4.zip ff5044ff37b9c23a4c09260ed9bffbb7424acdb66e50c5147daff964a261dda8 hosted tag=hd-pack-4

@@ -72,56 +72,29 @@ REA_GAME_PROCS=Rally.exe
 # `cmr-play --play --scaler fsr --resolution 1280x960`: flags for one run.
 # The launcher reads them itself; the library lays the ones this script
 # reads too (gamescope's size and filter) over launcher.cfg for this run
-# only, never writing it.
-REA_HELPER_KEYS="scaler resolution look"
+# only, never writing it. Look and resolution flags are read through
+# REA_LOOK_SIZES.
+REA_HELPER_KEYS="scaler"
 
-# The race size a look gives (the launcher's form::Picture): Steam Deck
-# 1280x800; Enhanced the screen, landscape (the launcher inside takes
-# gamescope's screen as its own); Original the game's 640x480.
-cmr_look_size() {
-  case $1 in
-    steam_deck) echo 1280x800 ;;
-    enhanced)
-      _cmr_s=$(rea_screen_size) || _cmr_s=1920x1080
-      _cmr_w=${_cmr_s%x*} _cmr_h=${_cmr_s#*x}
-      if [ "$_cmr_h" -gt "$_cmr_w" ]; then echo "${_cmr_h}x$_cmr_w"; else echo "$_cmr_s"; fi ;;
-    original) echo original ;;
-    *) return 1 ;;
-  esac
-}
+# The race size a look gives (the launcher's form::Picture), when neither
+# this run nor launcher.cfg names a resolution: Steam Deck 1280x800,
+# Enhanced the screen, Original the game's 640x480. The library resolves
+# them as the launcher does (form::with_look): a --resolution, else a
+# --look, else the file's resolution, else its look.
+REA_LOOK_SIZES="original=original enhanced=screen steam_deck=1280x800"
 
-# A look fills in the resolution its own source left unset, and this run's
-# flags win over launcher.cfg, as in the launcher (form::with_look): a
-# --resolution, else a --look, else the file's resolution, else its look.
-# The size goes into this run's values, which rea_game_size reads first.
-rea_hook_before_start() {
-  [ -n "$(REA_CFG=; rea_get_key resolution)" ] && return 0
-  _cmr_size=
-  _cmr_look=$(REA_CFG=; rea_get_value look)
-  [ -n "$_cmr_look" ] && { _cmr_size=$(cmr_look_size "$_cmr_look") || _cmr_size=; }
-  if [ -z "$_cmr_size" ] && [ -n "$REA_CFG" ] &&
-    [ -z "$(rea_get_key resolution "$REA_CFG")" ]; then
-    _cmr_look=$(rea_get_value look "$REA_CFG")
-    [ -n "$_cmr_look" ] && { _cmr_size=$(cmr_look_size "$_cmr_look") || _cmr_size=; }
+# The race is always landscape (the launcher's display::landscape): a
+# rotated monitor gives its long side first; a screen xrandr can't read is
+# 1920x1080 (not the game's 640x480). The library's own rea_screen_size,
+# turned; until the SDK's has a landscape option.
+rea_screen_size() {
+  if [ -n "$REA_SCREEN" ]; then
+    _cmr_s=$(rea_parse_size "$REA_SCREEN") || _cmr_s=1920x1080
+  else
+    _cmr_s=$(rea_parse_size "$(xrandr --current 2>/dev/null | awk '/\*/ { print $1; exit }')") || _cmr_s=1920x1080
   fi
-  [ -n "$_cmr_size" ] || return 0
-  REA_ONE_RUN="${REA_ONE_RUN:+$REA_ONE_RUN
-}resolution=$_cmr_size"
-}
-
-# The settings window's exit 3 is also "another launcher holds this
-# prefix" (a second start, instance.rs): the library would then wait for
-# the prefix's wineserver, which serves that other launcher's game, and
-# block until it ends. Nothing starts after a 3, so skip that wait; every
-# other wait stays. (Until the SDK's rea_settings does this itself.)
-rea_hook_before_settings() { _cmr_settings=1; }
-rea_wineserver_wait() {
-  if [ -n "${_cmr_settings:-}" ]; then
-    _cmr_settings=
-    [ "${_rea_rc:-}" = 3 ] && return 0
-  fi
-  rea_wineserver -w 2>/dev/null
-  return 0
+  _cmr_w=${_cmr_s%x*} _cmr_h=${_cmr_s#*x}
+  if [ "$_cmr_h" -gt "$_cmr_w" ]; then echo "${_cmr_h}x$_cmr_w"; else echo "$_cmr_s"; fi
 }
 
 rea_init || exit 1

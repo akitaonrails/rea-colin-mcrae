@@ -43,6 +43,51 @@ Seen by the player in races and menus, unless marked as a demo-race check
   path: dgVoodoo2's `DirectDrawCreate` then fails with `E_OUTOFMEMORY`
   and the game dereferences null at `0x4a6015`. Not the launcher's.
 
+## 2026-11-03: real-game verification of the SDK v0.4.1 build (headless)
+
+Setup as on 2026-11-02 (below): the owner's install (`EU v1.5,
+community-patched`, `46500c8e…`), read-only; the release build of branch
+`sdk-update/v0.4.1` packaged with the HD art pack; `linux/cmr-play` of the
+branch; a new private prefix; inside the `gaming` distrobox from `env -i`,
+gamescope 3.17 headless, Wine 11.21, sound to a private null sink (the
+supervisor checks the default output didn't move to it). The supervisor
+finds our processes by testing one variable of each process
+(`XDG_RUNTIME_DIR`, `WINEPREFIX`) without printing anything, and signals
+only those. Every run ended with nothing of ours left and no defunct
+entries of ours. Logs: `.work/realgame/logs/<scenario>*.log`;
+screenshots: `.work/realgame/shots/`.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Fresh prefix: settings window on the first start | VERIFIED: the launcher set `UseEGL=N`, started itself again (`launcher.log`: two starts, then "Wine: OpenGL through GLX (UseEGL=N) set; started again"), and the window drew at once | `fresh_window*.log`, `restart_close*.log`, `shots/fresh_window-play.png` |
+| Second start, settings window open | VERIFIED: plain start brings it forward, exit 0; `--settings --linux` exit 5; `--no-window` says "The Colin McRae Rally launcher window is open. Use it there…", exit 5 | `fresh_window*.log`, `shots/fresh_window-nowindow-second.png` |
+| `cmr-play` window while another launcher holds the prefix | VERIFIED: returns at once, exit 5, "another launcher (or its game) is already running; nothing started" (the local wait override is gone) | `window2*.log` |
+| Steam Deck look, first run | VERIFIED: gamescope 1280×800 from `REA_LOOK_SIZES`, 5174 files copied, HD pack installed, fixes F6–F27 except F19/F22, menu | `deck41*.log`, `shots/deck41-menu.png` |
+| Enhanced look (`REA_SCREEN=1920x1080`) | VERIFIED: gamescope 1920×1080, race resolution 1920×1080, menu | `enhanced41*.log`, `shots/enhanced41-menu.png` |
+| Original look | VERIFIED: gamescope 640×480, menu | `original_*.log`, `menu_quit*.log` |
+| Second start, game running | VERIFIED: `cmr-play --play` "already running", exit 5; `CMRLauncher.exe --no-window` shows "Colin McRae Rally is already running from this launcher…", exit 5 after OK | `deck41*.log`, `shots/deck41-second-start.png` |
+| Launcher killed while its game runs | VERIFIED: the game kept running; the next start read the game folder, then refused Play (`process::find_running`) with the dialog, exit 5, nothing copied | `killed_launcher*.log`, `shots/killed_launcher-busy.png` |
+| Play-time errors under `cmr-play` | VERIFIED: a missing folder and an unknown `Rally.exe` (SHA-256 and the report link) show a dialog in the game's display; OK ends everything | `errors*.log`, `shots/errors-*.png` |
+| Quit: the game's own Quit | VERIFIED: all gone 2.4 s after Enter; exit 13; 1 save file written back | `menu_quit*.log` |
+| Quit: WM_CLOSE (`wine taskkill`, no /f) | VERIFIED: all gone in 3.8 s, exit 0 (this run's game wrote no save file: "0 files written back") | `deck41*.log` |
+| Quit: Alt+F4 (XTest) | VERIFIED: all gone 2.3 s after the keys; exit 61536 | `altf4*.log` |
+| Quit: `cmr-play stop` | VERIFIED: all gone in 1.1 s, status idle | `enhanced41*.log` |
+| Quit: SIGINT / SIGTERM to the waiting helper | VERIFIED: all gone in 1.1 s each, helper exit 143 | `original_int*.log`, `original_term*.log` |
+| Quit: gamescope closed (SIGTERM) | VERIFIED: all gone in 1.1 s | `kill_gamescope*.log` |
+| Settings window closed | VERIFIED: WM_CLOSE (no restart) 1.1 s; Alt+F4 on the restarted window 1.1 s | `window*.log`, `restart_close*.log` |
+
+Notes:
+
+- After the GLX restart there are two `CMRLauncher.exe` (the first waits
+  for the second, without a window); `wine taskkill /im CMRLauncher.exe`
+  then answered "Could not find process", while Alt+F4 on the window
+  closed both. Players close the window, so nothing changes for them.
+- The settings window looks as before (no README screenshot retaken).
+
+Still pending from the list below: Play-time errors under the AppImage
+and Proton, the window on Windows and on a Deck with a pad, a real
+terminal's Ctrl+C, Steam's Stop button.
+
 ## Pending real-game checks (rea-launcher-sdk v0.3.3 migration, 2026-11-02)
 
 Checked headless on 2026-11-02 (next section) unless listed here:

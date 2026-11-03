@@ -6,6 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 description = "Hook library loaded into Colin McRae Rally by CMRLauncher: logic for in-memory fixes too large for hand-written stubs"
 
+# no_std on Windows: its tests only build for the host, so
+# sdk/scripts/wine-test leaves it out of --workspace runs.
+[package.metadata.rea]
+wine-test = false
+
 [lib]
 name = "cmrhooks"
 crate-type = ["cdylib", "rlib"]

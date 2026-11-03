@@ -11,9 +11,9 @@ license = "MIT OR Apache-2.0"
 sha2 = "0.11.1"
 windows-sys = "0.61"
 # The shared launcher SDK; bump the tag here and rerun scripts/sdk-sync.
-rea-launcher = { git = "https://github.com/akitaonrails/rea-launcher-sdk", tag = "v0.3.3" }
-rea-launcher-win32 = { git = "https://github.com/akitaonrails/rea-launcher-sdk", tag = "v0.3.3" }
-rea-launcher-ui = { git = "https://github.com/akitaonrails/rea-launcher-sdk", tag = "v0.3.3" }
+rea-launcher = { git = "https://github.com/akitaonrails/rea-launcher-sdk", tag = "v0.4.1" }
+rea-launcher-win32 = { git = "https://github.com/akitaonrails/rea-launcher-sdk", tag = "v0.4.1" }
+rea-launcher-ui = { git = "https://github.com/akitaonrails/rea-launcher-sdk", tag = "v0.4.1" }
 
 [profile.release.package.cmr-hooks]
 # The front end's HD compositor runs per screen pixel (fe_compose).

@@ -38,6 +38,26 @@ described on the GitHub releases page.
   threads (the game's own thread is pinned to one core, often an
   efficiency core on hybrid CPUs). About 80 fps now.
 
+## [0.9.0] - 2026-11-03
+
+### Changed
+
+- Updated rea-launcher-sdk to v0.4.1.
+- A second start that can't bring the open window forward says the game
+  is already running and exits with 5 (it exited with 0). A start with
+  options while the settings window is open asks you to use the window,
+  also with 5. `cmr-play` reports both as "already running".
+- Under `cmr-play`, an error in the settings-window run no longer shows
+  a dialog of its own; the window or `cmr-play` reports it.
+
+### Fixed
+
+- Play is refused while the game from the launcher's copy still runs,
+  even if the launcher that started it was killed; before, a second
+  game could start over the same files.
+- On a fresh Wine prefix the settings window opens at the first start
+  (the launcher starts itself once more with OpenGL through GLX).
+
 ## [0.8.0] - 2026-11-02
 
 ### Added

@@ -2,7 +2,12 @@
 
 For a coding agent asked to make an old PC game plug-and-play with this SDK.
 Read `docs/STANDARDS.md` first; it is binding. This playbook is the order of
-work. Each phase ends with something committed and checked.
+work. Each phase ends with something committed and checked, and "checked"
+always includes `sdk/scripts/launcher-check` with no errors: it knows the
+mistakes earlier launchers shipped (no golden snapshots, a hand-made
+audience, no instance guard, own fixes without drafts…). Treat its errors
+as blocking; `--explain RULE` says why and how to fix. Only the owner
+waives a rule (`.rea-check-waivers`).
 
 ## Inputs (ask for any that are missing)
 
@@ -71,8 +76,12 @@ apart.
 
 This creates the repository shape from `STANDARDS.md` with the SDK as a
 pinned dependency, `sdk/` vendored, `AGENTS.md`, CI calling the SDK
-workflows, packaging, and a launcher that builds and passes its checks.
-`git init`, commit, and run the checks before changing anything.
+workflows (and the weekly `sdk-update`), packaging, golden snapshots, the
+SDK audience and instance guard, the issue forms, and a launcher that
+builds and passes its checks, `launcher-check` included. `git init`,
+commit, and run the checks before changing anything. Keep what the
+scaffold wires (snapshots, `report::audience`, `instance::single`,
+`WINDOW_TITLE`): replace the example options, never the wiring.
 
 ## Phase 4 — Build, in this order
 
@@ -91,7 +100,9 @@ Commit after each step, only when the checks pass.
    for the game's own files using the INI editor that keeps the player's
    values. Unset = keep the game's value.
 5. **Patches** (only from Phase 2): exact-build byte sites, tested against
-   golden bytes, applied to the runtime copy only.
+   golden bytes, applied to the runtime copy only. Each fix of our own gets
+   its draft in `docs/CONTRIBUTIONS.md` in the same commit, cited from its
+   `RESEARCH.md` row (STANDARDS "Contribute back").
 6. **Looks**: Original (as shipped), a recommended look from the screen,
    Steam Deck.
 7. **Settings window**: use a design skill (`frontend-design`, then review
@@ -118,6 +129,10 @@ Commit after each step, only when the checks pass.
   every file format an earlier release wrote.
 - `--check` on every known edition and on an unknown file (refused with its
   SHA-256 and the issue-template link).
+- Every way of quitting, in the real game, recorded in the
+  `RUNTIME_NOTES.md` "Quitting and leftovers" table: the game's menu,
+  window close / Alt+F4, `<id>-play stop` and Ctrl+C, then the process
+  table (STANDARDS "Clean exit, single instance"; see "Test notes" below).
 - The platform list in `STANDARDS.md`: Steam Deck Game Mode, Proton without
   the helper, multi-monitor, HiDPI/4K, ultrawide — record each as verified
   or not yet in `docs/RUNTIME_NOTES.md`.
@@ -138,8 +153,10 @@ Commit after each step, only when the checks pass.
 - `THIRD_PARTY.md`, `CHANGELOG.md`, `AGENTS.md` up to date.
 - GitHub Actions build the zip and AppImage and publish releases: check
   and adapt the generated `.github/workflows/build.yml` following
-  `docs/playbooks/ci-and-releases.md`. Push only when the owner says so;
-  release (tag) only once CI is green and the owner asks.
+  `docs/playbooks/ci-and-releases.md`. Push only when the owner says so
+  (after `sdk/scripts/prepush-scan`); release (tag) only once CI is green
+  and the owner asks, with `sdk/scripts/release X.Y.Z` after
+  `sdk/scripts/launcher-check` passes.
 
 ## Maintain it
 
@@ -155,3 +172,70 @@ upgrades follow `sdk-change.md` ("Upgrading a launcher").
 If Phase 2 produced a fix the community lacks and it is verified in the
 game, draft a contribution (`docs/playbooks/contribute-back.md`). Never post
 without the owner's approval.
+
+## Patterns (from the launchers so far)
+
+Not checkable, so written down. Each names the launcher to read.
+
+**Native Linux port** (the game ships its own Linux build: DiRT Rally).
+The launcher is a native Linux program for that build and a Windows
+program for the Windows build.
+- CI: two `launcher-ci` jobs (`docs/playbooks/ci-and-releases.md`, "Native
+  Linux"): Linux packages with `rust-target: ""`, and the Windows-target
+  tests with `rust-target: i686-pc-windows-gnu`, `wine-tests: true`.
+- Errors before the window: `rea_launcher_ui::report::fatal` (a small
+  message window with the issue link), never only `eprintln!`.
+- One instance: `rea_launcher::instance::single`; the helper's session lock
+  doesn't cover the binary started from a menu.
+- Pads in the window: `rea_launcher_ui::pad::joystick::Joysticks` feeding
+  `PadNav` (`/dev/input/js*`).
+
+**Old native Linux ports** (2015–2018 Feral/Aspyr builds, DiRT Rally).
+- Zen 3+ CPUs with protection keys fault on execute-only mappings: a small
+  `LD_PRELOAD` library that adds read to exec-only `mmap`/`mprotect`
+  (DiRT Rally's `dirtrally-exec-read`). Our own fix, so it gets a draft.
+- Legacy libraries the distro no longer has (OpenSSL 1.0, libidn11…) are
+  bundled in the game's own `game-libs/` and put on the game's
+  `LD_LIBRARY_PATH` only, never on the launcher's own.
+- glibc ≥ 2.37 no longer expands `$PLATFORM` in RPATH: point
+  `LD_LIBRARY_PATH` at the runtime's `lib/x86_64`.
+- Feral's pad list (`share/inputdevices.json`): newer pads are only a
+  joystick until added there, in the runtime copy.
+
+**Game source from an installer** (CMR2005: GOG's installer). GOG
+installers hang under Wine, so the launcher unpacks the installer itself
+with a bundled `innoextract`: identify the installer by the setup's
+SHA-256 and part sizes, unpack in steps with a progress window (time
+left), and on cancel or failure remove the partial folder. The unpacked
+folder is then the game folder (read-only from then on).
+
+**Portrait main monitor** (CMR2005, CMR4). Without gamescope, a game on a
+portrait main monitor under Wine fails with "Adapter has no modes": run it
+in a landscape Wine virtual desktop, and track `explorer.exe` of that
+desktop, not the game, as the process to wait for.
+
+**Saves through a registry path** (CMR2005). When the game reads its save
+folder from the registry, point the value at the launcher's saves folder
+(no mirror), and import old saves once, with a marker, so a save the
+player deleted never comes back.
+
+**Headless screenshots** for the README: `docs/playbooks/readme.md`,
+"Screenshots, headless".
+
+### Test notes
+
+- gamescope has a file capability, so its `/proc/<pid>/environ` can't be
+  read: match it by command line.
+- A command a script starts in the background (`&`) has SIGINT ignored,
+  and a shell can't undo that: a Ctrl+C test starts the helper in the
+  foreground of its own process group, or from a program that resets the
+  signal, then sends SIGINT.
+- The launcher's window title must differ from the game's
+  (`WINDOW_TITLE`, "… Launcher"): CMR3's tests and second start found the
+  wrong window.
+- `scripts/wine-test` keeps its prefix between runs: a registry test
+  cleans up the keys it wrote.
+- A test never depends on what this machine has installed (gamescope,
+  xrandr, Wine): put a stand-in first on `PATH` or set the helper's
+  `REA_*` seam. A Linux helper test passed on a desktop with gamescope
+  and failed in the gaming box and on CI runners, which have none.

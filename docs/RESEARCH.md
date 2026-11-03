@@ -31,6 +31,37 @@ such and were not all re-verified.
 | dgVoodoo2 (often recommended with the fixes) | DirectDraw/D3D wrapper | freeware, no redistribution licence | yes | Not used: the game runs on Wine's and Windows' own DirectDraw with the launcher's fixes; nothing to wrap so far |
 | The community "fan pack" EU v1.5 `Rally.exe` (ChemicalFlood) | The EU v1.5 exe already patched on disk with the CD/OS checks removed | n/a (the player's own file) | n/a | Supported edition (`46500c8e…`): the launcher skips F1–F5 for it |
 
+## Our own fixes
+
+Fixes nobody had, found by our reverse engineering (`docs/THIN_APP_PLAN.md`)
+and applied in memory, the hook library's included; each has a draft in
+`docs/CONTRIBUTIONS.md`. F1–F5 are the community's (above).
+
+| Fix | What | Decision |
+|---|---|---|
+| F6 | Closing the window quits the game | **Our own** (draft C1) |
+| F7 | Triggers and right stick as throttle and brake | **Our own** (draft C2) |
+| F8 | Pads no longer drop to the keyboard | **Our own** (draft C3) |
+| F9 | Car circling in reverse after a joystick save | **Our own** (draft C4) |
+| F10 | Races at any resolution | **Our own** (draft C5) |
+| F11 | Hor+ widescreen | **Our own** (draft C6) |
+| F12 | Longer draw distance | **Our own** (draft C7) |
+| F13 | HUD, messages and results scaled to the race resolution | **Our own** (draft C8) |
+| F14 | Start pauses the race on a pad | **Our own** (draft C9) |
+| F15 | No multi-second wait at start and exit | **Our own** (draft C10) |
+| F16 | Intro and menus enlarged to the screen | **Our own** (draft C11) |
+| F17 | Frame-rate cap and vsync choice | **Our own** (draft C12) |
+| F18 | Mipmaps and trilinear filtering | **Our own** (draft C13) |
+| F19 | Sharp (unfiltered) textures option | **Our own** (draft C14) |
+| F20 | No pop-in when the view distance changes | **Our own** (draft C15) |
+| F21 | Triggers as separate pedals (XInput) | **Our own** (draft C16) |
+| F22 | Rumble on impacts | **Our own** (draft C17) |
+| F23 | Button layout and d-pad | **Our own** (draft C18) |
+| F24 | RUN JOYSTICK PANEL no longer freezes under Wine | **Our own** (draft C19) |
+| F25 | 24-bit depth buffer | **Our own** (draft C20) |
+| F26 | Fast depth test (24 → 60 fps at 4K under Wine) | **Our own** (draft C21) |
+| F27 | HD 2D art | **Our own** (draft C22) |
+
 ## Editions
 
 | Build | Source | `Rally.exe` SHA-256 | Notes |

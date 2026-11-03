@@ -3,6 +3,14 @@
 When a launcher's own reverse engineering produced a fix the community does
 not have yet (`STANDARDS.md`, "Contribute back").
 
+**Every fix of our own has a draft, from the commit that ships it.** Not
+verified yet: draft it anyway with status "needs verification", and post
+only after step 1 holds. Give it an id (C1…) and cite the id in its
+`docs/RESEARCH.md` row; a fix that can't be shared says `no draft:
+<reason>` there. `sdk/scripts/launcher-check` (rule `own-fix-draft`) fails
+on a row decided **Our own**, a byte patch or a hook/preload library with
+no draft.
+
 1. **Qualify it.** Verified in the real game (`docs/RUNTIME_NOTES.md`), tied
    to an exact executable (SHA-256 and version), and not already on the
    game's PCGamingWiki page or in an upstream project.

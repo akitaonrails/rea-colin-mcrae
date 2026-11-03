@@ -42,6 +42,10 @@ they need. Nothing in the top half requires reading the bottom half.
 
 ## The outline
 
+`sdk/scripts/launcher-check` checks the headings, their order, the
+Contributing link to the SDK and the issue-form links; the rest of this
+playbook is for a person (or agent) to check.
+
 Use these headings, in this order, with this exact wording (the game's
 name goes only in the title). A section marked *optional* is left out
 when it doesn't apply; every other section is always there, even if
@@ -364,6 +368,14 @@ there."
 components, write config, start, sync saves). Useful for curious players
 and reviewers; keep it plain.
 
+### What you need: a DRM exception
+
+When the owner decided the launcher runs a build whose DRM or disc check
+was removed elsewhere (STANDARDS "DRM exceptions"), "What you need" says
+so in one or two plain sentences, and nothing more: which copies it runs,
+and that the launcher doesn't remove, add or patch copy protection and
+can't help get such a copy. No links, no names of groups or tools.
+
 ### 18. Built on rea-launcher-sdk
 
 Two or three sentences: which parts come from the
@@ -416,6 +428,25 @@ contains no game files and only runs a copy you own; our code is MIT OR
 Apache-2.0 (link both files); bundled parts keep their licences
 (`THIRD_PARTY.md`); GPL components (DOSBox) say where the corresponding
 source is.
+
+## Screenshots, headless
+
+README screenshots are retaken whenever the window changes (STANDARDS
+"Screenshots follow the window"), without a window on the owner's desktop:
+
+1. A private X server the agent starts and stops itself: `Xvfb :<n>
+   -screen 0 2560x1440x24` (the `gaming` box may lack Xvfb; run it where
+   it is installed, or `gamescope --backend headless`), `DISPLAY=:<n>`, and
+   `WAYLAND_DISPLAY` unset.
+2. An isolated home: `HOME`, `XDG_*` and `WINEPREFIX` under the repo's
+   `.work/`, Wine at 96 DPI, started from `env -i` with only those
+   variables. Running it inside `bwrap` with the game folder bound
+   read-only (`--ro-bind`) proves the launcher never writes there.
+3. The window pointed at a real game install, so the Play tab shows a
+   detected edition; switch tabs with XTest key or click events
+   (`xdotool`), capture with `import -window root` (or `xwd`), crop.
+4. Save as JPEG ≤ ~1 MB, about 1600 px wide, under `docs/images/` with the
+   names the README uses; stop the X server and check no process is left.
 
 ## `linux/README.md`
 

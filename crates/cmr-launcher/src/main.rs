@@ -29,18 +29,19 @@ mod app {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use cmr_launcher::audience::{self, Audience};
     use cmr_launcher::config::{self, Settings};
     use cmr_launcher::form;
-    use cmr_launcher::instance::{self, SecondStart};
+    use cmr_launcher::instance;
     use cmr_launcher::registry::{self, When};
     use cmr_launcher::{Image, edition, fixes, hdpack, plan, prepare, runtime};
     use rea_launcher::cfg::ArgError;
     use rea_launcher::log::Log;
     use rea_launcher::{cfg, fsx, paths};
-    use rea_launcher_win32::instance::{self as win32_instance, Window};
+    use rea_launcher_win32::gpu::{self, Glx};
+    use rea_launcher_win32::instance::{self as win32_instance, SecondStart, Window};
     use rea_launcher_win32::reg::Key;
-    use rea_launcher_win32::{display, gpu, report, wine, xinput};
+    use rea_launcher_win32::report::{self, Audience, Run};
+    use rea_launcher_win32::{display, process, wine, xinput};
 
     use crate::{ui, win32};
 
@@ -59,11 +60,11 @@ mod app {
         Log::new(home().join("launcher.log")).line(line);
     }
 
-    /// Who sees this run's messages (`audience`): under Wine (cmr-play,
+    /// Who sees this run's messages (the SDK's rule): under Wine (cmr-play,
     /// the AppImage, Proton) a person even with `--no-window`.
     fn audience() -> Audience {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        audience::audience(&args, wine::is_wine())
+        report::audience(Run::from_args(&args, cmr_launcher::COMMAND_FLAGS))
     }
 
     /// An error the launcher stops on: a dialog whenever a person may be
@@ -177,47 +178,57 @@ mod app {
             }
         };
         let switch = |name: &str| switches.iter().any(|s| s == name);
-        // The settings window: shown when started without options (a
-        // double click), or alone with --settings (Linux: cmr-play shows
-        // it, then starts the game in gamescope). Any other option skips
-        // it.
         let settings_only = switch("--settings");
         let linux = switch("--linux");
         let no_window = switch("--no-window");
         let check_only = switch("--check");
         let other_options = given > switches.len() || check_only;
+        // The settings window: shown when started without options (a
+        // double click), or alone with --settings (Linux: cmr-play shows
+        // it, then starts the game in gamescope). Any other option skips
+        // it.
+        let shows_window = settings_only || (!other_options && !no_window);
         // One launcher at a time, held until the game this run starts has
-        // ended: a second start raises the window or says the game runs
-        // (`instance`). --check only reads and runs alongside.
-        let _instance = if check_only {
+        // ended: a second start brings the window forward or says the game
+        // runs (`instance`); a run without the window never just brings it
+        // forward. --check only reads and runs alongside.
+        let mut instance_guard = if check_only {
             None
         } else {
             match win32_instance::single(instance::NAME) {
                 Ok(guard) => Some(guard),
                 Err(running) => {
-                    let second = SecondStart::new(
-                        running.bring_to_front(Window::Title(instance::WINDOW_TITLE)),
-                    );
-                    log_line(&format!("another launcher is running: {second:?}"));
+                    let second = running.second_start(!shows_window, Window::Own(TITLE));
+                    log_line(second.log_line());
                     // A play-time message: the player started a second
                     // copy and must see why nothing happened.
-                    if let Some(message) = second.message() {
-                        let interactive = audience().interactive;
-                        report::note(TITLE, message, report::Mode::Play { interactive }, true);
+                    if let Some(text) = second.message(instance::GAME) {
+                        fatal(&text);
                     }
-                    // cmr-play --settings: nothing was started.
-                    return Ok(if settings_only { WINDOW_CLOSED } else { 0 });
+                    return Ok(
+                        instance::second_start_exit(second.exit_code(), settings_only) as u32,
+                    );
                 }
             }
         };
         let template = config::template();
-        if settings_only || (!other_options && !no_window) {
+        if shows_window {
             // A window under Wine draws through OpenGL: GLX, not Wine 11's
-            // default EGL (software on NVIDIA boxes without egl-x11).
-            if wine::is_wine()
-                && let Ok(true) = gpu::prefer_glx()
-            {
-                log_line("Wine: OpenGL through GLX (UseEGL=N)");
+            // default EGL (software on NVIDIA boxes without egl-x11). On a
+            // fresh prefix the setting only applies to the next process, so
+            // the launcher runs itself once more and this first start gets
+            // the window too.
+            match gpu::prefer_glx_or_restart(instance_guard.take()) {
+                Glx::Restarted { exit_code } => {
+                    log_line("Wine: OpenGL through GLX (UseEGL=N) set; started again");
+                    return Ok(exit_code);
+                }
+                Glx::Ready { instance, warning } => {
+                    instance_guard = instance;
+                    if let Some(warning) = warning {
+                        log_line(&format!("warning: {warning}"));
+                    }
+                }
             }
             let read = read_settings(&settings_path);
             let text = match &read {
@@ -300,6 +311,14 @@ mod app {
             .clone()
             .unwrap_or_else(|| home().join("Rally"));
         paths::check_separate(&game, &rt)?;
+        // A launcher that was killed released the instance, but its game
+        // may still run from this runtime copy: never sync under it.
+        if !process::find_running(&rt.join(EXE)).is_empty() {
+            let busy = SecondStart::Busy;
+            log_line(busy.log_line());
+            fatal(&busy.message(instance::GAME).unwrap_or_default());
+            return Ok(busy.exit_code() as u32);
+        }
         let report = runtime::sync(&game, &rt)
             .map_err(|e| format!("cannot prepare {}: {e}", rt.display()))?;
         log_line(&format!(
@@ -468,6 +487,8 @@ mod app {
                 saves.display()
             )),
         }
+        // The next launcher may start once the saves are back.
+        drop(instance_guard);
         Ok(code)
     }
 }

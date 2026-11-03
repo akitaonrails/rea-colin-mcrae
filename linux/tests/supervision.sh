@@ -123,27 +123,28 @@ case "$calls" in
 esac
 
 # The settings window: Play (0) and no window (4) go on to the game;
-# closing it (3) or a failure does not.
+# closing it (3), another launcher running (5) or a failure does not.
 cat > "$T/fake-run" <<'FAKE'
 #!/bin/sh
 case "$*" in *"--settings --linux"*) echo "$*" > "$T/settings"; exit "$(cat "$T/rc")" ;; esac
 exit 0
 FAKE
-for case in 0:0 4:0 3:1 1:1; do
+for case in 0:0 4:0 3:1 5:1 1:1; do
   echo "${case%:*}" > "$T/rc"
   if rea_settings > /dev/null; then got=0; else got=1; fi
   if [ "$got" = "${case#*:}" ]; then ok "settings exit ${case%:*} -> $got"; else fail "settings exit ${case%:*} gave $got"; fi
 done
-# Exit 3 is also a second launcher refused while another one (or its game)
-# holds the prefix: waiting for the prefix's wineserver would wait for that
-# game. Nothing follows a 3, so nothing waits; Play still waits.
+# Exit 5 (3 from older launchers) is a second launcher refused while
+# another one (or its game) holds the prefix: waiting for the prefix's
+# wineserver would wait for that game. Nothing follows a 3 or a 5, so
+# nothing waits; Play still waits.
 cat > "$T/fake-run" <<'FAKE'
 #!/bin/sh
 case "$*" in *"--settings --linux"*) echo "$*" > "$T/settings"; exit "$(cat "$T/rc")" ;; esac
 case "$*" in *"wineserver -w"*) echo waited >> "$T/waits" ;; esac
 exit 0
 FAKE
-for case in 3:0 0:1; do
+for case in 3:0 5:0 0:1; do
   : > "$T/waits"; echo "${case%:*}" > "$T/rc"
   rea_settings > /dev/null
   n=$(wc -l < "$T/waits" | tr -d ' ')
