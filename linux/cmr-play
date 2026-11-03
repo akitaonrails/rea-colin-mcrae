@@ -109,21 +109,6 @@ rea_hook_before_start() {
 }resolution=$_cmr_size"
 }
 
-# The settings window's exit 3 is also "another launcher holds this
-# prefix" (a second start, instance.rs): the library would then wait for
-# the prefix's wineserver, which serves that other launcher's game, and
-# block until it ends. Nothing starts after a 3, so skip that wait; every
-# other wait stays. (Until the SDK's rea_settings does this itself.)
-rea_hook_before_settings() { _cmr_settings=1; }
-rea_wineserver_wait() {
-  if [ -n "${_cmr_settings:-}" ]; then
-    _cmr_settings=
-    [ "${_rea_rc:-}" = 3 ] && return 0
-  fi
-  rea_wineserver -w 2>/dev/null
-  return 0
-}
-
 rea_init || exit 1
 # Tests load the configuration and functions without running anything.
 [ "$_fonly" = 1 ] && return 0
