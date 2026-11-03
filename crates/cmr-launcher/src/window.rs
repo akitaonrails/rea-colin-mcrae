@@ -512,6 +512,12 @@ fn controls_tab(ui: &mut egui::Ui, state: &mut State, platform: &mut Platform<'_
         });
         note_under(ui, rumble.description);
     });
+    if let Some(on) = spec_choice(ui, "trigger_rumble", toggle_text(state.form.trigger_rumble)) {
+        state.form.trigger_rumble = on == "on";
+    }
+    if let Some(on) = spec_choice(ui, "road_rumble", toggle_text(state.form.road_rumble)) {
+        state.form.road_rumble = on == "on";
+    }
     if let Some(result) = &state.rumble_test {
         ui.add(egui::Label::new(egui::RichText::new(result).font(body(13.0)).color(GOLD)).wrap());
     }

@@ -219,7 +219,9 @@ every option commented out and explained.
 | `hd_art` / `--hd-art` | Picture: HD art | `on`, `off`, or a folder made with `cmr-hd` | off | The HUD, logos, menu pictures and more, redrawn at high resolution ([docs/UPSCALING.md](docs/UPSCALING.md)). |
 | `scaler` / `--scaler` | Picture: Scaler (Linux only) | `nearest`, `pixel`, `fsr`, `linear` | `linear` | How gamescope enlarges the picture: Crisp pixels, Even pixels, FSR or Soft. Read by `cmr-play`. |
 | `gamepad_axes` / `--gamepad-axes` | — (advanced; the look sets it) | `on`, `off` | on (off in the Original look) | Triggers or right stick as throttle and brake, Start pauses. Off: only the left stick drives, as in 1998. |
-| `rumble` / `--rumble` | Controls: Rumble | `0` to `100`, `off` | off | Shakes the pad on impacts, at this strength in percent. |
+| `rumble` / `--rumble` | Controls: Rumble | `0` to `100`, `off` | off | Shakes the pad on impacts, at this strength in percent, and gives the driving feel below. |
+| `trigger_rumble` / `--trigger-rumble` | Controls: Trigger rumble | `on`, `off` | on | The triggers shake when the wheels spin (right) or lock under hard braking (left). Needs trigger motors (Xbox One or newer). |
+| `road_rumble` / `--road-rumble` | Controls: Road rumble | `on`, `off` | on | A faint buzz while driving, stronger on rough ground, and at the rev limiter. |
 | `buttons` / `--buttons` | Buttons: Pad buttons | `modern`, `original`, or eight button numbers | `modern` | The pad layout. The numbers are for select, back, change view, gear down, handbrake, gear up, (unused), pause, e.g. `1,2,4,5,1,6,7,8`. |
 | `close_quits` / `--close-quits` | — (advanced) | `on`, `off` | on, in every look | Closing the game window (Alt+F4) quits the game. Off: the 1998 behaviour. |
 

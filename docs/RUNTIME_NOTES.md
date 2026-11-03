@@ -3,6 +3,46 @@
 Observations from running the user's own game. Each entry: date, setup, what
 was seen. Static facts live in the parked reconstruction's documents (kept outside this repository) and local notes.
 
+## 2026-11-03: native Windows 11 with dgVoodoo2 (a player's PC)
+
+Setup: Windows 11 Pro (26300), RTX 5090, i9-14900K (hybrid: efficiency
+cores on the highest CPU numbers), a 4K 144 Hz TV as the only display,
+an Xbox Elite Series 2 on the Xbox Wireless Adapter. Official EU v1.5
+(`0eb6ea96…`). The release zip's launcher and hooks, rebuilt from this
+branch. Windows' own DirectDraw has no Ramp device, so the runtime folder
+holds **dgVoodoo2 2.87.6** (`DDraw.dll`, `D3DImm.dll`, `dgVoodoo.conf`),
+put there by hand: the launcher doesn't bundle a wrapper for Windows yet.
+`dgVoodoo.conf` [DirectX]: `OutputAPI = bestavailable` (D3D12),
+`VideoCard = internal3D`, `VRAM = 256`, `Mipmapping = appdriven`,
+`Filtering = 16`, `KeepFilterIfPointSampled = true`; [General]
+`FullScreenMode = true` with `FullscreenAttributes = fake` (exclusive
+fullscreen trapped the player: no Alt+Tab), `CaptureMouse = false`.
+
+Seen by the player in races and menus, unless marked as a demo-race check
+(the attract mode, screenshots taken from the desktop):
+
+- 4K races at 120 fps (cap), widescreen, draw distance 1.5x and 2x,
+  smooth textures with mipmaps, eased view distance, HD art (HUD,
+  pace notes, skies, panoramas), 16x anisotropic from dgVoodoo2.
+- Before the fixes: any race resolution crashed in the menus; HD art
+  crashed after the developer splash; entering a race with HD art
+  crashed; HD skies drew black; smooth textures left scenery missing and
+  parts of the car transparent; HD menus ran at about 20 fps.
+- The car-selection screen's 3D car is not drawn at a race resolution
+  (not in the game's own 640x480 picture, with or without HD art); with
+  `--look original` it is drawn with wrong-palette (pink) textures.
+  Open.
+- Pads: WinMM gives a pad's input only to the foreground window. When
+  the game starts unfocused (started from a shell), it finds no joystick,
+  falls back to the keyboard and saves that (`cmRally.cfg` byte `0x24`:
+  `06` joystick, `01` keyboard); the attract-mode demo saves it too.
+- Driving feel (trigger motors through Windows.Gaming.Input): tuned with
+  the player over three rounds on recorded stages. The car block fields
+  it reads are in `crates/cmr-hooks/src/feel.rs`.
+- A display that is off (the TV switched off) leaves no active display
+  path: dgVoodoo2's `DirectDrawCreate` then fails with `E_OUTOFMEMORY`
+  and the game dereferences null at `0x4a6015`. Not the launcher's.
+
 ## Pending real-game checks (rea-launcher-sdk v0.3.3 migration, 2026-11-02)
 
 Checked headless on 2026-11-02 (next section) unless listed here:

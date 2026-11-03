@@ -219,6 +219,10 @@ pub struct Form {
     /// values match another (and "Custom" stays open while editing).
     pub look: Look,
     pub rumble: u32,
+    /// The trigger and road feel (`trigger_rumble`, `road_rumble`): on
+    /// unless the file says off.
+    pub trigger_rumble: bool,
+    pub road_rumble: bool,
     /// Closing the window quits (`close_quits`, F6): on in every look
     /// (STANDARDS "Clean exit"); no control, an older file's value is kept.
     pub close_quits: bool,
@@ -308,6 +312,8 @@ impl Form {
             picture,
             look: Form::look_of(&picture, screen),
             rumble: s.rumble_strength(),
+            trigger_rumble: s.trigger_rumble != Some(false),
+            road_rumble: s.road_rumble != Some(false),
             close_quits: s.close_quits != Some(false),
             scaler: s.scaler.unwrap_or(Scaler::Linear),
             buttons: s.buttons.unwrap_or(config::DEFAULT_BUTTONS),
@@ -441,6 +447,12 @@ impl Form {
                 .then(|| self.hd_folder.clone().unwrap_or_else(|| "on".into())),
         );
         put("rumble", (self.rumble > 0).then(|| self.rumble.to_string()));
+        // On is the default: only off is written.
+        put(
+            "trigger_rumble",
+            (!self.trigger_rumble).then(|| "false".into()),
+        );
+        put("road_rumble", (!self.road_rumble).then(|| "false".into()));
         // On is the default: only off is written.
         put("gamepad_axes", (!p.gamepad_axes).then(|| "false".into()));
         put("close_quits", (!self.close_quits).then(|| "false".into()));
