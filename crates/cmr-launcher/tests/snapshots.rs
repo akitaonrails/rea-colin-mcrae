@@ -6,32 +6,23 @@
 //! bytes: only what the launcher generates.
 //!
 //! A diff is reviewed like code. To accept an intended change:
-//! `CMR_UPDATE_SNAPSHOTS=1 cargo test --test snapshots`, then read the diff.
+//! `CMR_UPDATE_SNAPSHOTS=1 cargo test --test snapshots` (or
+//! `REA_UPDATE_SNAPSHOTS=1`), then read the diff.
 
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use cmr_launcher::config::{self, Settings};
 use cmr_launcher::edition::EDITIONS;
 use cmr_launcher::form::{self, Form, Look};
 use cmr_launcher::plan::{self, Env, Target};
 
+/// Compares with `tests/snapshots/<name>` through the SDK helper, which
+/// stores this crate's version as `<version>` and treats CRLF as LF.
 fn check(name: &str, actual: &str) {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/snapshots")
-        .join(name);
-    if std::env::var_os("CMR_UPDATE_SNAPSHOTS").is_some() {
-        std::fs::write(&path, actual).unwrap();
-        return;
-    }
-    let expected = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{}: {e} (CMR_UPDATE_SNAPSHOTS=1 writes it)", path.display()));
-    // Compared without regard to line endings (a Windows checkout).
-    assert_eq!(
-        expected.replace("\r\n", "\n"),
-        actual,
-        "{name} changed: review the difference, then update it on purpose"
-    );
+    rea_launcher::snapshots!()
+        .update_var("CMR_UPDATE_SNAPSHOTS")
+        .assert(name, actual);
 }
 
 const SCREEN: Option<(u32, u32)> = Some((2560, 1440));
@@ -116,11 +107,8 @@ fn look(look: Look) -> Settings {
 
 #[test]
 fn help() {
-    // The version changes with every release; the text must not.
-    check(
-        "help.txt",
-        &config::usage().replace(env!("CARGO_PKG_VERSION"), "<version>"),
-    );
+    // The helper writes the release's version as `<version>`.
+    check("help.txt", &config::usage());
 }
 
 #[test]
