@@ -46,6 +46,20 @@ body:
     attributes:
       label: CPU, graphics card, controller and screen
       description: e.g. "Ryzen 7 7800X3D, RTX 3060, Xbox-style pad, 2560x1440 at 144 Hz".
+  - type: checkboxes
+    id: worked
+    attributes:
+      label: What worked?
+      description: Tick everything that worked, so we know how far the game got.
+      options:
+        - label: The settings window opened
+        - label: The game started (intro or menus showed)
+        - label: A full stage could be driven
+        - label: Gamepad (steering, pedals, buttons)
+        - label: Sound and music
+        - label: Alt+Tab and back
+        - label: Quitting from the game's menu closed everything
+        - label: Closing the window (or Alt+F4) closed everything
   - type: textarea
     id: problem
     attributes:
