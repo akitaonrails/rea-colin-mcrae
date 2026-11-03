@@ -84,13 +84,14 @@ REA_HELPER_KEYS="scaler"
 REA_LOOK_SIZES="original=original enhanced=screen steam_deck=1280x800"
 
 # The race is always landscape (the launcher's display::landscape): a
-# rotated monitor gives its long side first. The library's own
-# rea_screen_size, turned; until the SDK's has a landscape option.
+# rotated monitor gives its long side first; a screen xrandr can't read is
+# 1920x1080 (not the game's 640x480). The library's own rea_screen_size,
+# turned; until the SDK's has a landscape option.
 rea_screen_size() {
   if [ -n "$REA_SCREEN" ]; then
-    _cmr_s=$(rea_parse_size "$REA_SCREEN") || return 1
+    _cmr_s=$(rea_parse_size "$REA_SCREEN") || _cmr_s=1920x1080
   else
-    _cmr_s=$(rea_parse_size "$(xrandr --current 2>/dev/null | awk '/\*/ { print $1; exit }')") || return 1
+    _cmr_s=$(rea_parse_size "$(xrandr --current 2>/dev/null | awk '/\*/ { print $1; exit }')") || _cmr_s=1920x1080
   fi
   _cmr_w=${_cmr_s%x*} _cmr_h=${_cmr_s#*x}
   if [ "$_cmr_h" -gt "$_cmr_w" ]; then echo "${_cmr_h}x$_cmr_w"; else echo "$_cmr_s"; fi
