@@ -11,7 +11,6 @@
 //! `launcher.cfg` editing, edition hashes, PE headers) is the shared
 //! `rea_launcher` SDK; this crate holds the game's own knowledge.
 
-pub mod audience;
 pub mod config;
 pub mod edition;
 pub mod fixes;
@@ -25,6 +24,10 @@ pub mod registry;
 pub mod runtime;
 #[cfg(any(windows, test))]
 pub mod window;
+
+/// This launcher's commands on top of the family's (`--help`, `--check`):
+/// a run with one of them prints its result (`report::Run::from_args`).
+pub const COMMAND_FLAGS: &[&str] = &["--controllers"];
 
 use fixes::{FixSet, Write};
 use rea_launcher::pe::{Format, Pe};

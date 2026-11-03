@@ -29,7 +29,6 @@ mod app {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use cmr_launcher::audience::{self, Audience};
     use cmr_launcher::config::{self, Settings};
     use cmr_launcher::form;
     use cmr_launcher::instance::{self, SecondStart};
@@ -40,7 +39,8 @@ mod app {
     use rea_launcher::{cfg, fsx, paths};
     use rea_launcher_win32::instance::{self as win32_instance, Window};
     use rea_launcher_win32::reg::Key;
-    use rea_launcher_win32::{display, gpu, report, wine, xinput};
+    use rea_launcher_win32::report::{self, Audience, Run};
+    use rea_launcher_win32::{display, gpu, wine, xinput};
 
     use crate::{ui, win32};
 
@@ -59,11 +59,11 @@ mod app {
         Log::new(home().join("launcher.log")).line(line);
     }
 
-    /// Who sees this run's messages (`audience`): under Wine (cmr-play,
+    /// Who sees this run's messages (the SDK's rule): under Wine (cmr-play,
     /// the AppImage, Proton) a person even with `--no-window`.
     fn audience() -> Audience {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        audience::audience(&args, wine::is_wine())
+        report::audience(Run::from_args(&args, cmr_launcher::COMMAND_FLAGS))
     }
 
     /// An error the launcher stops on: a dialog whenever a person may be
