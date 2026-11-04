@@ -5,6 +5,8 @@ described on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-03
+
 From a test of the launcher on native Windows 10
 ([rea-launcher-sdk#1](https://github.com/akitaonrails/rea-launcher-sdk/issues/1)).
 
