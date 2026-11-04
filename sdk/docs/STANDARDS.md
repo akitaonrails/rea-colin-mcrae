@@ -261,8 +261,20 @@ that: if a step could be done by the launcher, the launcher does it.
   mistake hid errors in CMR3, CMR4 and DiRT. A native Linux launcher shows
   its errors before the window with `rea_launcher_ui::report::fatal`.
 - **Action flags and one instance.** An action flag (`--download-*`,
-  `--check`) while another launcher instance is open is reported and exits
-  non-zero, never a silent exit 0.
+  `--check`, `--setup`) while another launcher instance is open is reported
+  and exits non-zero, never a silent exit 0. `--check` takes the instance
+  like any action. Decide it with `rea_launcher_win32::instance::is_action`
+  (`ACTION_FLAGS` plus the launcher's own); never a literal `false`
+  (`launcher-check` rule `action-flags`).
+- **A bad command line** (an unknown flag, a bad value) prints the error
+  and the usage and exits 2 (`report::BAD_COMMAND_LINE`). It is reported
+  like a command (`report::Run::bad_command_line`): a modal dialog from a
+  terminal would hang a script with a typo (rule `bad-command-line`).
+- **A GUI program on Windows.** `src/main.rs` starts with
+  `#![cfg_attr(windows, windows_subsystem = "windows")]`; commands reach
+  the terminal through `console::attach_parent` (rule
+  `windows-subsystem`). A console build opens a second, black window on a
+  double click and exits 3 when its window is closed.
 - **Owner checkpoints.** Stop and ask rather than guess on licence-less
   assets, official art, DRM, and anything public (push, release, posts).
 - **Screenshots and video** of the game in the README are fine (they show
@@ -545,6 +557,10 @@ an SDK **Migration** item, never be regenerated blindly.
   never runs `cfg(windows)` code.
 - **Running the real game in a test** (allowed, from the player's own
   install outside the repo; never modify it):
+  - opt-in only: the script does nothing and exits 0 unless a variable
+    such as `<ID>_E2E=1` asks for it, so a loop over the test folder never
+    starts the game (CMR3's e2e.sh opened a visible 4K window on the
+    owner's desktop, 2026-11-02; `launcher-check` rule `real-game-gated`);
   - inside the container that has Wine/gamescope, with a finite timeout
     *inside* it and a supervisor that waits for the actual game process —
     never `timeout` around `distrobox enter`, never a live launcher piped
@@ -568,6 +584,15 @@ an SDK **Migration** item, never be regenerated blindly.
   print `env`, `printenv` or `/proc/*/environ` contents — to find a task
   process by environment, test for one variable without printing values —
   and before finishing, scan scratch output for key patterns (paths only).
+  Other processes' **command lines** are secrets too: another session's
+  `docker exec -e …` carries the owner's keys, and a harness's
+  `ps -eo pid,stat,args` printed them into a log (2026-11-02). Find
+  processes with `pgrep -x NAME` (pids only) or `ps -o pid,stat,comm`;
+  match `/proc/PID/cmdline` against our runtime path without printing it.
+  Never `ps aux`/`-ef`/`-o args`, `pgrep -a`, or `cat /proc/*/cmdline`
+  (`launcher-check` rule `process-listing`; harnesses in `.work/` too).
+  A leak that stayed on this machine is scrubbed and reported; nothing
+  secret ever goes into a commit, release, issue or post.
 - **The real game stays outside the repository** and outside ordinary host
   tests. Env-gated tests (`<GAME>_GAME_DIR=... cargo test -- --ignored`)
   may use it.

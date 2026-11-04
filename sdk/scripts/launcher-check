@@ -43,8 +43,12 @@ NATIVE_REPORT_API='rea_launcher_ui::report::fatal'
 # Linux pads in a native window; GLX on a fresh prefix.
 JOYSTICK_API='rea_launcher_ui::pad::joystick::Joysticks'
 GLX_API='rea_launcher_win32::gpu::prefer_glx_or_restart'
+# A bad command line reported like a command; the family's action flags.
+USAGE_API='rea_launcher_win32::report::Run::bad_command_line'
+ACTION_API='rea_launcher_win32::instance::is_action'
 # The SDK version these APIs arrive in.
 NEW_API_SINCE='v0.4.0'
+USAGE_API_SINCE='v0.4.2'
 WAIVERS_FILE='.rea-check-waivers'
 
 RULES='snapshots snapshot-version snapshot-helper audience instance instance-unix
@@ -52,7 +56,8 @@ window-lookup native-report native-pad glx-restart light-widgets ms-dll-override
 own-fix-draft readme-sections readme-order readme-contributing readme-links
 readme-versions agents-pointer agents-duplicate sdk-workflows sdk-tag lld
 wine-tests look-flag look-sizes option-tests quit-paths issue-unknown-edition
-issue-bug-report sdk-update drm-exception waivers'
+issue-bug-report sdk-update windows-subsystem bad-command-line action-flags release-notes watch-pins unwatched-pins process-listing
+real-game-gated drm-exception waivers'
 
 # rule ID: sets SEV (error|warn), SINCE (SDK tag or empty), FIX and WHY.
 rule() {
@@ -151,6 +156,30 @@ rule() {
     sdk-update) SEV=warn
       WHY='The weekly sdk-update workflow opens the upgrade pull request when the SDK releases.'
       FIX='add .github/workflows/sdk-update.yml calling the SDK sdk-update.yml workflow (templates/launcher has it)' ;;
+    windows-subsystem) SEV=error
+      WHY='A console-subsystem launcher opens a black console window beside the settings window on a double click, loses --check output when the console closes, and reports a window close as an error (ScreamerLauncher 0.8.0, Windows 10 test 2026-11-03).'
+      FIX='start src/main.rs with #![cfg_attr(windows, windows_subsystem = "windows")] and attach to the parent console for commands (rea_launcher_win32::console::attach_parent, which report::fatal/note already do)' ;;
+    bad-command-line) SEV=error SINCE=$USAGE_API_SINCE
+      WHY='A command line that fails to parse is not a play run: reported as one it opens a modal box that a script waits on forever (CMR, CMR4, DiRT, SRR on Windows 10), and the family exit code for it is 2, not 1.'
+      FIX="report a parse error with report::audience($USAGE_API(&args)).mode() and exit report::BAD_COMMAND_LINE (2)" ;;
+    action-flags) SEV=error SINCE=$USAGE_API_SINCE
+      WHY='An action flag (--check, --setup, --download-*) that finds the window open must be refused with exit 5, never answered by bringing the window forward with exit 0: SRR'"'"'s --setup did nothing and reported success.'
+      FIX="pass $ACTION_API(&args, &[own actions]) as the action argument of second_start / SecondStart::decide, and take the instance for --check too" ;;
+    release-notes) SEV=error
+      WHY='launcher-release takes the release notes from the CHANGELOG section of the tag. notes: generate replaces them with GitHub'"'"'s commit list, and CMR4 v0.4.0 went out with only a "Full Changelog" link.'
+      FIX='remove notes: generate from the launcher-release call in build.yml; keep a "## [X.Y.Z]" CHANGELOG section per release' ;;
+    watch-pins) SEV=error
+      WHY='The weekly upstream watch compares the checksum of the file the latest release uploads with the pin. A pin of anything else (a commit or tag archive of the same release) never matches, so the watch reported CMR3'"'"'s vkBasalt 0.3.2.10 as an update to itself every week.'
+      FIX='pin the file the release uploads (https://github.com/OWNER/REPO/releases/download/TAG/FILE), or take the component out of the watch list when its releases upload nothing (sdk/docs/playbooks/community-components.md)' ;;
+    unwatched-pins) SEV=warn
+      WHY='A pinned component nobody watches falls behind silently: CMR4 still bundles Xidi 4.3.1 while Xidi 5 changed its files and settings, and only CMR3, which runs the watch, heard of it.'
+      FIX='add the component to packaging/upstream-watch.txt (name owner/repo asset-prefix) and call the SDK upstream-watch.yml from .github/workflows/watch-upstream.yml (templates/launcher has both)' ;;
+    process-listing) SEV=error
+      WHY='Other processes'"'"' command lines and environments hold other people'"'"'s secrets: a test harness ran ps -eo pid,stat,args and printed another session'"'"'s docker exec -e line, with the owner'"'"'s API and AWS keys, into a log (2026-11-02).'
+      FIX='find processes with pgrep -x NAME (pids only) or ps -o pid,stat,comm; match /proc/PID/cmdline or environ without printing it (grep -q, cmp, or a value read into a variable); never print env, printenv, ps args/aux/-ef or pgrep -a (STANDARDS "Secrets stay out of output")' ;;
+    real-game-gated) SEV=error
+      WHY='A test that runs the real game must not start because someone looped over the test folder: CMR3'"'"'s e2e.sh opened a visible 4K gamescope window for minutes on the owner'"'"'s desktop (2026-11-02).'
+      FIX='skip unless an opt-in variable is set (if [ "${<ID>_E2E:-}" != 1 ]; then echo skipped; exit 0; fi) and run gamescope with --backend headless unless asked otherwise (STANDARDS "Testing"; CMR3 linux/tests/e2e.sh)' ;;
     drm-exception) SEV=error
       WHY='We never write a crack and never ship, apply or patch DRM files. Supporting a pre-activated, no-CD or cracked build is an owner decision, and it must be recorded where the check can see it.'
       FIX="record the owner's decision (date, why) in AGENTS.md and docs/RESEARCH.md, then add '$WAIVERS_FILE' line 'drm-exception: <owner decision, date, where recorded>' (STANDARDS \"DRM\")" ;;
@@ -613,6 +642,130 @@ elif ! grep -q 'type: checkboxes' $I/bug-report.yml || ! grep -qi 'what worked' 
 fi
 grep -lsqE 'rea-launcher-sdk/\.github/workflows/sdk-update\.yml@' .github/workflows/*.yml \
   || emit sdk-update .github/workflows/sdk-update.yml "no weekly SDK update workflow"
+
+# --- Windows command line: GUI subsystem, bad command lines, action flags ----------------------------
+# Any Windows target counts: Screamer packages its Windows build in a job
+# of its own, outside launcher-ci.
+if [ -s "$T/win-targets" ]; then
+  grep -E '(^|/)src/main\.rs$' "$T/rs" | tr '\n' '\0' | xargs -0 -r grep -lE 'windows_subsystem[ \t]*=[ \t]*"windows"' 2>/dev/null | grep -q . \
+    || emit windows-subsystem "$MAIN_RS" "the Windows build is a console program (no windows_subsystem = \"windows\")"
+  if grep -qE 'report::audience|Run::from_args|report::Run' "$T/code.txt" && ! grep -qF 'bad_command_line' "$T/code.txt"; then
+    emit bad-command-line "$MAIN_RS" "a command line that fails to parse is not reported with Run::bad_command_line (a modal box from a terminal, exit 1)"
+  fi
+  grep -E '(second_start|SecondStart::decide)\([ \t]*(false|true)[ \t]*,' "$T/code.txt" | head -n 1 | cut -d: -f1,2 > "$T/literal-action"
+  if [ -s "$T/literal-action" ]; then
+    emit action-flags "$(cat "$T/literal-action")" "the second start's action is a literal, not instance::is_action(&args, ..)"
+  fi
+fi
+
+# --- release notes from the CHANGELOG --------------------------------------------------------------
+if [ -n "$BUILD" ]; then
+  n=$(grep -nE '^[ \t]*notes:[ \t]*["'"'"']?generate' "$BUILD" | head -n 1 | cut -d: -f1)
+  [ -z "$n" ] || emit release-notes "$BUILD:$n" "notes: generate replaces the CHANGELOG section with GitHub's commit list"
+fi
+
+# --- third-party pins: watched, and watchable ----------------------------------------------------
+# The watch workflow and its inputs (the SDK upstream-watch.yml defaults).
+WATCH_WF=$(grep -lsE 'rea-launcher-sdk/\.github/workflows/upstream-watch\.yml@' .github/workflows/*.yml | head -n 1)
+input() { # workflow input default
+  v=$(sed -n "s/^[ \t]*$2:[ \t]*//p" "$1" | head -n 1 | sed 's/[ \t]#.*//; s/["'"'"' \t]//g')
+  printf '%s\n' "${v:-$3}"
+}
+if [ -n "$WATCH_WF" ]; then
+  WATCH_PINS=$(input "$WATCH_WF" pins packaging/third-party.txt)
+  WATCH_LIST=$(input "$WATCH_WF" watch-list packaging/upstream-watch.txt)
+else
+  WATCH_PINS='' WATCH_LIST=''
+fi
+# The pin files: name url sha256 ... (sdk/packaging/pins.sh).
+for f in $WATCH_PINS packaging/third-party.txt packaging/*.pins; do [ -f "$f" ] && echo "$f"; done | awk '!seen[$0]++' > "$T/pin-files"
+# This repository on GitHub: its own release (a mirror, a hosted pack) needs no watch.
+SELF=$(git config --get remote.origin.url 2>/dev/null | sed -n 's|.*github\.com[:/]\([^/]*/[^/]*\)$|\1|p' | sed 's/\.git$//')
+: > "$T/watched"
+if [ -n "$WATCH_LIST" ] && [ -f "$WATCH_LIST" ]; then
+  awk '{ sub(/\r$/, "") } !/^[ \t]*(#|$)/ { print FNR, $1, $2 }' "$WATCH_LIST" > "$T/watched"
+  while read -r n name repo; do
+    pin=$(awk -v n="$name" '{ sub(/\r$/, "") } $1 == n { print FNR, $2; exit }' "$WATCH_PINS" 2>/dev/null)
+    if [ -z "$pin" ]; then
+      emit watch-pins "$WATCH_LIST:$n" "$name has no pin in $WATCH_PINS"
+      continue
+    fi
+    case ${pin#* } in
+      "https://github.com/$repo/releases/download/"*) ;;
+      *) emit watch-pins "$WATCH_PINS:${pin%% *}" "$name is watched in $repo but pinned to ${pin#* }, not a file its releases upload, so the watch reports it as changed every week" ;;
+    esac
+  done < "$T/watched"
+elif [ -n "$WATCH_WF" ]; then
+  emit watch-pins "$WATCH_WF" "no watch list ${WATCH_LIST:-packaging/upstream-watch.txt}"
+fi
+while IFS= read -r f; do
+  awk -v self="$SELF" '{ sub(/\r$/, "") } !/^[ \t]*(#|$)/ && $2 ~ /^https:\/\/github\.com\/[^\/]+\/[^\/]+\/releases\/download\// {
+      split($2, u, "/"); repo = u[4] "/" u[5]
+      if (tolower(repo) != tolower(self)) print FNR, $1, repo }' "$f" | while read -r n name repo; do
+    awk -v r="$repo" 'tolower($3) == tolower(r) { found = 1 } END { exit !found }' "$T/watched" \
+      || echo "$f:$n $name ($repo)"
+  done
+done < "$T/pin-files" > "$T/unwatched"
+if [ -s "$T/unwatched" ]; then
+  emit unwatched-pins "$(head -n 1 "$T/unwatched" | cut -d' ' -f1)" "no weekly watch for: $(cut -d' ' -f2- "$T/unwatched" | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+fi
+
+# --- secrets: other processes' command lines and environments ---------------------------------------
+# Scripts, test harnesses and workflows (not docs) of this repository:
+# task scratch (.work/), vendored sources and Python environments are not
+# ours to check here. Harnesses in .work/ follow the same rule (STANDARDS).
+find . \( -path ./target -o -path ./sdk -o -path ./.git -o -path ./dist -o -path ./.rea-sdk -o -path ./.work -o -path ./vendor \
+  -o -name node_modules -o -name site-packages -o -name '*venv*' \) -prune \
+  -o -type f \( -name '*.sh' -o -name '*.py' -o -name '*.yml' -o -name '*.yaml' -o -path './linux/*' -o -path './scripts/*' -o -path './packaging/*' \) \
+  ! -name '*.md' ! -name '*.png' ! -name '*.jpg' ! -name '*.txt' -print 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort > "$T/scripts"
+while IFS= read -r f; do
+  grep -Iq . "$f" 2>/dev/null || continue
+  awk -v f="$f" '
+    { l = $0; sub(/\r$/, "", l) }
+    l ~ /^[ \t]*(#|\/\/)/ { next }
+    {
+      hit = ""
+      # ps that prints command lines: args, cmd, command, aux, -f/-F, BSD e.
+      s = l
+      while (match(s, /(^|[^A-Za-z0-9_.$\/-])ps[ \t]+/)) {
+        rest = substr(s, RSTART + RLENGTH); s = rest
+        sub(/[|;&)`].*/, "", rest)
+        if (rest ~ /(^|[ \t,=])(args|cmd|command)([ \t,=]|$)/ || rest ~ /(^|[ \t])(a?uxw*|axu|-[A-Za-z]*[fF][A-Za-z]*|e)([ \t]|$)/) hit = "ps prints command lines"
+      }
+      if (l ~ /(^|[^A-Za-z0-9_-])pgrep[ \t]+(-[A-Za-z]*a|--list-full)/) hit = "pgrep -a prints command lines"
+      if (l ~ /(^|[;&|({`][ \t]*|\$\([ \t]*)(printenv|env)[ \t]*($|[|>;)`])/) hit = "prints the whole environment"
+      if (l ~ /\/proc\/[^ \t"]*\/(cmdline|environ)/ && l !~ />>?[ \t]*"?[^ \t]*\/(cmdline|environ)/) {
+        if (f ~ /\.py$/) { if (l ~ /print\(/) hit = "prints another process'"'"'s command line or environment" }
+        else if (l !~ /\$\(|-q|>[ \t]*\/dev\/null|cmp[ \t]/) hit = "prints another process'"'"'s command line or environment"
+      }
+      if (hit != "") print f ":" FNR "\t" hit
+    }' "$f"
+done < "$T/scripts" > "$T/listing"
+while IFS="$(printf '\t')" read -r where what; do
+  emit process-listing "$where" "$what"
+done < "$T/listing"
+
+# --- real-game tests: opt-in and headless ------------------------------------------------------------
+find . \( -path ./target -o -path ./sdk -o -path ./.git -o -path ./dist -o -path ./.rea-sdk -o -path ./.work \) -prune \
+  -o -type f \( -path '*/tests/*' -o -name '*e2e*' \) \( -name '*.sh' -o -name '*.py' -o ! -name '*.*' \) -print 2>/dev/null \
+  | sed 's|^\./||' | LC_ALL=C sort > "$T/test-scripts"
+while IFS= read -r f; do
+  grep -Iq . "$f" 2>/dev/null || continue
+  awk '{ l = $0 } l ~ /^[ \t]*#/ { next }
+    l ~ /distrobox enter|\/mnt\/|ROMS_FINAL|steamapps|\.local\/share\/Steam|\/run\/media\// { real = 1; if (!at) at = FNR }
+    l ~ /(E2E|REAL_GAME)/ && l ~ /(\[|test |if |environ|getenv)/ { gate = 1 }
+    l ~ /(exit|return)[ (]*0|skip/ { skip = 1 }
+    l ~ /(^|[^A-Za-z0-9_-])gamescope[ \t]/ && l !~ /command -v|which / { gs = 1; if (!gsat) gsat = FNR }
+    l ~ /--backend[ =]headless|REA_GAMESCOPE_HEADLESS/ { headless = 1 }
+    END {
+      if (!real) exit
+      if (!(gate && skip)) print at "\truns the real game whenever the test folder runs (no opt-in variable such as <ID>_E2E=1)"
+      if (gs && !headless) print gsat "\truns gamescope without --backend headless (a window on the desktop)"
+    }' "$f" | while IFS="$(printf '\t')" read -r n what; do echo "$f:$n	$what"; done
+done < "$T/test-scripts" > "$T/real-game"
+while IFS="$(printf '\t')" read -r where what; do
+  emit real-game-gated "$where" "$what"
+done < "$T/real-game"
 
 # --- DRM: only by a recorded owner decision ----------------------------------------------------------
 # Lines of AGENTS.md and the edition code that accept such a build; a line
