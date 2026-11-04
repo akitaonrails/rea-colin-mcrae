@@ -241,7 +241,8 @@ The launcher's own switches:
   pressed, 3 closed without Play, 4 no window possible, 5 another
   launcher is running; `--linux` adds the scaler).
 - `--check`: checks the game folder and its `Rally.exe` without playing.
-  The report goes to the terminal and `launcher.log`; exit 0 ready, 1 not.
+  The report goes to the terminal and `launcher.log`; exit 0 ready, 1 not,
+  5 another launcher is running.
 - `--controllers [seconds]`: logs what your joysticks send to
   `launcher.log`.
 - `--help`: the list of options.
@@ -249,8 +250,8 @@ The launcher's own switches:
 A flag or value the launcher can't use exits with 2 and says what it
 needs. Only one launcher runs at a time: starting a second one brings the
 open window forward, or says the game is already running and exits with
-5. A start with options (`--no-window`, `--game`…) while the window is
-open says to use the window, also with 5. Play is refused the same way
+5. A start with options (`--no-window`, `--game`, `--check`…) while the
+window is open says to use the window, also with 5. Play is refused the same way
 while the game from the launcher's copy still runs, even when the
 launcher that started it was killed.
 

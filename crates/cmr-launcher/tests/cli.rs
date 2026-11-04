@@ -10,6 +10,8 @@ mod program {
     use std::process::{Command, Output, Stdio};
     use std::time::{Duration, Instant};
 
+    use cmr_launcher::instance;
+    use rea_launcher_win32::instance as win32_instance;
     use rea_launcher_win32::report::BAD_COMMAND_LINE;
 
     /// Far longer than any of these runs takes.
@@ -80,5 +82,24 @@ mod program {
             assert!(out.contains("--no-window"), "the usage: {out}");
             assert!(log.contains(says), "{log}");
         }
+    }
+
+    /// rea-launcher-sdk#1: `--check` ran alongside an open launcher. It
+    /// takes the instance like any action: while another launcher holds
+    /// it (here this test; no window to find, headless), it is refused
+    /// with exit 5 and says why.
+    #[test]
+    fn check_is_refused_while_another_launcher_runs() {
+        let held = win32_instance::single(instance::NAME).expect("the instance");
+        let game = scratch("check-game");
+        let (output, log) = run("check", &["--check", "--game", &game.display().to_string()]);
+        drop(held);
+        assert_eq!(output.status.code(), Some(instance::ALREADY_RUNNING));
+        let out = stdout(&output);
+        assert!(
+            out.contains("Colin McRae Rally is already running"),
+            "{out}"
+        );
+        assert!(log.contains("second start"), "{log}");
     }
 }

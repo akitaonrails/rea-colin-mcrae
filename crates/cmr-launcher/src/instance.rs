@@ -8,8 +8,11 @@
 //! without the window never just brings the window forward
 //! (`SecondStart::decide`). Before Play, a game still running from the
 //! runtime copy (its launcher killed) refuses the start too
-//! (`process::find_running`). `--help` and `--check` only read, and run
-//! alongside. On Linux, `cmr-play`'s session lock does the same job.
+//! (`process::find_running`). `--check` takes the instance like any
+//! action (`rea_launcher_win32::instance::is_action`): with the window
+//! open it is refused with exit 5, never run alongside; `--help` and
+//! `--controllers` only read, and run alongside. On Linux, `cmr-play`'s
+//! session lock does the same job.
 
 /// The instance name (`Local\rea-launcher-rea-colin-mcrae`).
 pub const NAME: &str = "rea-colin-mcrae";
@@ -41,6 +44,11 @@ pub fn second_start_exit(code: i32, settings_only: bool) -> i32 {
 
 pub use rea_launcher::instance::ALREADY_RUNNING;
 
+/// This launcher's action flags on top of the family's (`--check`,
+/// `--setup`, `--download-*`: `rea_launcher_win32::instance::ACTION_FLAGS`):
+/// none. A second start with one is refused while the window is open.
+pub const ACTIONS: &[&str] = &[];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,6 +69,36 @@ mod tests {
         assert_eq!(second_start_exit(ALREADY_RUNNING, false), ALREADY_RUNNING);
         assert_eq!(second_start_exit(0, true), ALREADY_RUNNING);
         assert_eq!(second_start_exit(ALREADY_RUNNING, true), ALREADY_RUNNING);
+    }
+
+    /// rea-launcher-sdk#1: `--check` with the settings window open ran
+    /// the check alongside. It is an action now: the window stays where it
+    /// is, the run says to use it and exits 5. A plain start still brings
+    /// the window forward.
+    #[test]
+    fn check_with_the_window_open_is_refused() {
+        use rea_launcher_win32::instance::{SecondStart, is_action};
+        let action = |args: &[&str]| is_action(args, ACTIONS);
+        for args in [
+            &["--check"][..],
+            &["--check", "--game", "C:\\CMR"],
+            &["--check", "--linux"],
+        ] {
+            assert!(action(args), "{args:?}");
+            let start = SecondStart::decide(action(args), || true, || panic!("brought forward"));
+            assert_eq!(start, SecondStart::WindowOpen, "{args:?}");
+            assert_eq!(second_start_exit(start.exit_code(), false), ALREADY_RUNNING);
+            let text = start.message(GAME).unwrap();
+            assert!(
+                text.starts_with("The Colin McRae Rally launcher window is open"),
+                "{text}"
+            );
+        }
+        assert!(!action(&[]));
+        assert!(!action(&["--no-window"]));
+        let plain = SecondStart::decide(action(&[]), || panic!("only looked"), || true);
+        assert_eq!(plain, SecondStart::Focused);
+        assert_eq!(second_start_exit(plain.exit_code(), false), 0);
     }
 
     /// Under Wine (`sdk/scripts/wine-test`): while one launcher holds the

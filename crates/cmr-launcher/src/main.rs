@@ -198,24 +198,20 @@ mod app {
         // One launcher at a time, held until the game this run starts has
         // ended: a second start brings the window forward or says the game
         // runs (`instance`); a run without the window never just brings it
-        // forward. --check only reads and runs alongside.
-        let mut instance_guard = if check_only {
-            None
-        } else {
-            match win32_instance::single(instance::NAME) {
-                Ok(guard) => Some(guard),
-                Err(running) => {
-                    let second = running.second_start(!shows_window, Window::Own(TITLE));
-                    log_line(second.log_line());
-                    // A play-time message: the player started a second
-                    // copy and must see why nothing happened.
-                    if let Some(text) = second.message(instance::GAME) {
-                        fatal(&text);
-                    }
-                    return Ok(
-                        instance::second_start_exit(second.exit_code(), settings_only) as u32,
-                    );
+        // forward. --check takes the instance like any action: with the
+        // window open it is refused (exit 5), not run alongside.
+        let action = win32_instance::is_action(&args, instance::ACTIONS) || !shows_window;
+        let mut instance_guard = match win32_instance::single(instance::NAME) {
+            Ok(guard) => Some(guard),
+            Err(running) => {
+                let second = running.second_start(action, Window::Own(TITLE));
+                log_line(second.log_line());
+                // A play-time message: the player started a second copy
+                // and must see why nothing happened (printed for --check).
+                if let Some(text) = second.message(instance::GAME) {
+                    fatal(&text);
                 }
+                return Ok(instance::second_start_exit(second.exit_code(), settings_only) as u32);
             }
         };
         let template = config::template();
