@@ -5,6 +5,28 @@ described on the GitHub releases page.
 
 ## [Unreleased]
 
+From a test of the launcher on native Windows 10
+([rea-launcher-sdk#1](https://github.com/akitaonrails/rea-launcher-sdk/issues/1)).
+
+### Changed
+
+- Updated rea-launcher-sdk to v0.4.2.
+- `--check` while the settings window is open says to use the window and
+  exits with 5, like every other option; before, it ran the check next to
+  the window. While the game runs it says the game is already running,
+  also with 5.
+
+### Fixed
+
+- A mistyped flag or a bad value (`--bogus-flag`, `--look invalid`) from
+  a terminal is printed with the options and exits with 2 at once. Before,
+  a message box taller than a 768-pixel screen opened too, and a script
+  waited until someone pressed OK. Started without a terminal, it shows a
+  short message that points to `--help`.
+- The README says how to get past SmartScreen's "Windows protected your
+  PC" for the unsigned launcher, and lists every registry entry the
+  launcher writes, with how to remove them.
+
 ## [0.9.0] - 2026-11-03
 
 ### Changed
