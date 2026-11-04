@@ -421,6 +421,19 @@ pub fn usage() -> String {
     )
 }
 
+/// What a command line that fails to parse says (`error`, from
+/// [`Settings::parse_args`]): printed, the error and the whole usage; in a
+/// dialog (`dialog`: nobody sees a terminal) the error and where the
+/// options are, since the usage is taller than a 768-pixel screen as a
+/// message box.
+pub fn bad_command_line(error: &str, dialog: bool) -> String {
+    if dialog {
+        format!("{error}\n\nRun CMRLauncher --help from a terminal for the options.")
+    } else {
+        format!("{error}\n\n{}", usage())
+    }
+}
+
 /// Why a parsed value can't be used: only an option row whose kind and
 /// key disagree (a bug in [`OPTIONS`]).
 fn mismatch() -> Rejected {
@@ -828,6 +841,20 @@ mod tests {
                 Err(ArgError::Help(_))
             ));
         }
+    }
+
+    /// A Windows 10 test (rea-launcher-sdk#1): the dialog with the whole
+    /// usage was 819 pixels tall, taller than a 768-pixel screen.
+    #[test]
+    fn a_bad_command_line_dialog_is_short_and_the_terminal_gets_the_usage() {
+        let error = args(&["--look", "invalid"]).unwrap_err();
+        let dialog = bad_command_line(&error, true);
+        assert!(dialog.starts_with("--look needs original"), "{dialog}");
+        assert!(dialog.contains("--help"), "{dialog}");
+        assert!(dialog.lines().count() <= 4, "{dialog}");
+        let printed = bad_command_line(&error, false);
+        assert!(printed.starts_with(&error), "{printed}");
+        assert!(printed.ends_with(&usage()), "{printed}");
     }
 
     #[test]

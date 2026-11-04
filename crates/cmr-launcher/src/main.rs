@@ -135,8 +135,6 @@ mod app {
     /// window could be shown (play with the saved settings).
     const WINDOW_CLOSED: u32 = 3;
     const WINDOW_UNAVAILABLE: u32 = 4;
-    /// A flag the launcher doesn't know, or a value it can't use.
-    const BAD_ARGUMENTS: u32 = 2;
     /// `--check` found an executable the launcher doesn't know.
     const CHECK_FAILED: u32 = 1;
 
@@ -165,16 +163,25 @@ mod app {
         let settings_path = settings_path();
         let args: Vec<String> = std::env::args().skip(1).collect();
         let given = args.len();
-        let (cli, switches) = match Settings::parse_args(args) {
+        let (cli, switches) = match Settings::parse_args(args.iter().cloned()) {
             Ok(parsed) => parsed,
             Err(ArgError::Help(_)) => {
                 note(&config::usage(), false);
                 return Ok(0);
             }
             Err(e) => {
+                // Answered like a command: printed to the terminal, a
+                // dialog (a short one) only when nobody sees it. As a play
+                // run it was a modal box a script with a typo waited on.
                 log_line(&format!("error: {e}"));
-                fatal(&format!("{e}\n\n{}", config::usage()));
-                return Ok(BAD_ARGUMENTS);
+                let mode = report::audience(Run::bad_command_line(&args)).mode();
+                let dialog = report::route_here(mode).dialog;
+                report::fatal(
+                    TITLE,
+                    &config::bad_command_line(&e.to_string(), dialog),
+                    mode,
+                );
+                return Ok(report::BAD_COMMAND_LINE as u32);
             }
         };
         let switch = |name: &str| switches.iter().any(|s| s == name);
