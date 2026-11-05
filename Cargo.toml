@@ -14,6 +14,7 @@ windows-sys = "0.61"
 rea-launcher = { git = "https://github.com/akitaonrails/rea-launcher-sdk", tag = "v0.4.3" }
 rea-launcher-win32 = { git = "https://github.com/akitaonrails/rea-launcher-sdk", tag = "v0.4.3" }
 rea-launcher-ui = { git = "https://github.com/akitaonrails/rea-launcher-sdk", tag = "v0.4.3" }
+rea-launcher-build = { git = "https://github.com/akitaonrails/rea-launcher-sdk", tag = "v0.4.3" }
 
 [profile.release.package.cmr-hooks]
 # The front end's HD compositor runs per screen pixel (fe_compose).

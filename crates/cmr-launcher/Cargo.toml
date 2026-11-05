@@ -11,6 +11,9 @@ description = "Runs the user's own copy of Colin McRae Rally (1998, PC) on moder
 name = "CMRLauncher"
 path = "src/main.rs"
 
+[build-dependencies]
+rea-launcher-build.workspace = true
+
 [dependencies]
 cmr-hdpack = { path = "../cmr-hdpack" }
 rea-launcher.workspace = true

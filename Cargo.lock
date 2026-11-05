@@ -293,6 +293,9 @@ dependencies = [
 [[package]]
 name = "cmr-hooks"
 version = "0.8.0"
+dependencies = [
+ "rea-launcher-build",
+]
 
 [[package]]
 name = "cmr-launcher"
@@ -301,6 +304,7 @@ dependencies = [
  "cmr-hdpack",
  "png",
  "rea-launcher",
+ "rea-launcher-build",
  "rea-launcher-ui",
  "rea-launcher-win32",
  "windows-sys 0.61.2",
@@ -1953,6 +1957,11 @@ source = "git+https://github.com/akitaonrails/rea-launcher-sdk?tag=v0.4.3#160553
 dependencies = [
  "sha2",
 ]
+
+[[package]]
+name = "rea-launcher-build"
+version = "0.4.3"
+source = "git+https://github.com/akitaonrails/rea-launcher-sdk?tag=v0.4.3#160553090db5a7113d65fe5bc155ae3a3a08cf56"
 
 [[package]]
 name = "rea-launcher-ui"
