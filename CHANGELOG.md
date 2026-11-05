@@ -3,7 +3,50 @@
 What changed for players, release by release. Releases up to 0.7.0 are
 described on the GitHub releases page.
 
-## [Unreleased]
+## [0.9.2] - 2026-11-05
+
+A player's antivirus flagged the launcher on Windows. These changes make it
+look like what it is, so antivirus programs are less likely to flag it.
+
+### Changed
+
+- The launcher no longer writes into the running game. It used to start
+  the game paused and change it in memory, the way some malware does. Now
+  each start writes the fixes into the launcher's own copy of the game
+  (your game folder stays untouched), and Windows loads `cmrhooks.dll`
+  with the game. Everything plays as before: checked in the real game
+  with a race at 4K, the HD art, Alt+F4 and closing the window.
+- `CMRLauncher.exe` and `cmrhooks.dll` now say what they are: name,
+  version, publisher and the launcher's icon, as shown in Windows'
+  Properties and Task Manager.
+- If you go back to an older version later, delete `Rally.exe` from the
+  launcher's copy of the game first (`%LOCALAPPDATA%\CMRLauncher\Rally`), or
+  the older version refuses to start the game.
+- Built on rea-launcher-sdk v0.4.3.
+
+## [0.9.1] - 2026-11-03
+
+From a test of the launcher on native Windows 10
+([rea-launcher-sdk#1](https://github.com/akitaonrails/rea-launcher-sdk/issues/1)).
+
+### Changed
+
+- Updated rea-launcher-sdk to v0.4.2.
+- `--check` while the settings window is open says to use the window and
+  exits with 5, like every other option; before, it ran the check next to
+  the window. While the game runs it says the game is already running,
+  also with 5.
+
+### Fixed
+
+- A mistyped flag or a bad value (`--bogus-flag`, `--look invalid`) from
+  a terminal is printed with the options and exits with 2 at once. Before,
+  a message box taller than a 768-pixel screen opened too, and a script
+  waited until someone pressed OK. Started without a terminal, it shows a
+  short message that points to `--help`.
+- The README says how to get past SmartScreen's "Windows protected your
+  PC" for the unsigned launcher, and lists every registry entry the
+  launcher writes, with how to remove them.
 
 ### Added
 

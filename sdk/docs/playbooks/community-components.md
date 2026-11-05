@@ -30,8 +30,18 @@ command the player has to run, and never a silent download.
 
 ## 2. Pin it
 
-Every file is pinned by URL and SHA-256 in a pin file (`packaging/*.pins`, or one `packaging/<name>.txt` per pin — `pins.sh` reads both)
+Every file is pinned by URL and SHA-256 in a pin file (`packaging/third-party.txt` or
+`packaging/*.pins`, or one `packaging/<name>.txt` per pin — `pins.sh` reads them all)
 (`sdk/packaging/pins.sh` format: `name url sha256 [fallback-url…]`).
+
+- **Pin the file the release uploads**
+  (`https://github.com/OWNER/REPO/releases/download/TAG/FILE`): it is
+  byte-stable, and it is what the weekly watch compares. GitHub's generated
+  tag archives (`/archive/refs/tags/…`) can change bytes; a commit archive
+  (`/archive/<sha>.tar.gz`) is stable but never matches the release's own
+  file, so the watch reports it as changed every week (CMR3's vkBasalt,
+  2026-11-03). Use a commit archive only when the project uploads nothing,
+  and then leave it out of the watch list.
 
 - **Mirror** what the licence allows into the launcher's own GitHub release
   (the mirror workflow, the SDK's reusable `mirror.yml`) and list it as a
@@ -48,7 +58,22 @@ Every file is pinned by URL and SHA-256 in a pin file (`packaging/*.pins`, or on
   release of ours and pin that (OutRun's `update-tweaks.sh`).
 - **Watch upstream** with the SDK's `upstream-watch.yml`: it opens an issue
   when a pinned project publishes something new, so updating stays a
-  deliberate, tested change.
+  deliberate, tested change. The scaffold has `.github/workflows/watch-upstream.yml`
+  and `packaging/upstream-watch.txt` (`name owner/repo asset-prefix`); every
+  pin of a GitHub release goes in the list (`launcher-check` rules
+  `watch-pins`, `unwatched-pins`). CMR4 bundled Xidi 4.3.1 unwatched while
+  Xidi 5 changed its files and settings.
+- **Moving a pin to a new version** (after playing with it):
+  1. read the release notes for changed file names and settings (Xidi 5
+     added `Xidi.32.dll` next to `dinput8.dll` and rejects an `[Import]`
+     section);
+  2. install and take out every file of the new version (a test per file);
+  3. list the SHA-256 of each file earlier releases installed (the old DLLs,
+     the old generated configs) and pass them through
+     `Ledger::known_with_earlier`, so runtimes from before the ledger are
+     upgraded in place instead of refused as the player's files;
+  4. update `THIRD_PARTY.md`, the licence files and the snapshot tests,
+     then run the real game.
 
 ## 3. Install it into the runtime
 

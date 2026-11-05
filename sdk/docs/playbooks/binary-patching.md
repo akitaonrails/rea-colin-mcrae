@@ -85,6 +85,16 @@ physics; that is written down so nobody ships one again.
 - Expose a fix as an option only after layer 3 showed its effect; describe
   it in plain words in the window.
 
+**Never into the running game.** Write fixes into the runtime copy's file
+(`patch` for bytes in place, `pe::edit::add_section` for a fix's own code
+and data) and load a hook DLL through the runtime copy's import table
+(`pe::edit::add_import`, the address table where the fix reads it). A
+launcher that starts the game suspended and calls `VirtualAllocEx`,
+`WriteProcessMemory` or `CreateRemoteThread`, or hooks the game's thread
+from outside, looks like a trojan to antivirus heuristics: CMRLauncher 0.9.0
+was flagged on a player's Windows (Quiver feedback, 2026-11-04).
+`launcher-check` rule `remote-injection` fails on those calls.
+
 ## 6. Share it
 
 A verified patch the community lacks becomes a draft for PCGamingWiki

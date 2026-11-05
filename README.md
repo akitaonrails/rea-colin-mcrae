@@ -78,7 +78,11 @@ Download from the [latest release](https://github.com/akitaonrails/rea-colin-mcr
    pack.
 3. Double-click `CMRLauncher.exe`. The settings window opens.
 
-Native Windows hasn't been tested yet. Whether it works or not, please
+The launcher isn't signed, so the first start from a downloaded zip may
+show "Windows protected your PC": click **More info → Run anyway**.
+
+On native Windows 10 the launcher itself (the window, wrong folders, the
+command line) has been tested, the game not yet. Whether it works or not, please
 [send a test report](https://github.com/akitaonrails/rea-colin-mcrae/issues/new?template=test-report.yml)
 with your `launcher.log` (see [Where things live](#where-things-live)).
 
@@ -243,16 +247,18 @@ The launcher's own switches:
   pressed, 3 closed without Play, 4 no window possible, 5 another
   launcher is running; `--linux` adds the scaler).
 - `--check`: checks the game folder and its `Rally.exe` without playing.
-  The report goes to the terminal and `launcher.log`; exit 0 ready, 1 not.
+  The report goes to the terminal and `launcher.log`; exit 0 ready, 1 not,
+  5 another launcher is running.
 - `--controllers [seconds]`: logs what your joysticks send to
   `launcher.log`.
 - `--help`: the list of options.
 
-A flag or value the launcher can't use exits with 2 and says what it
-needs. Only one launcher runs at a time: starting a second one brings the
+A flag or value the launcher can't use exits with 2 and prints what it
+needs and the options; started without a terminal, it shows a short
+message instead. Only one launcher runs at a time: starting a second one brings the
 open window forward, or says the game is already running and exits with
-5. A start with options (`--no-window`, `--game`…) while the window is
-open says to use the window, also with 5. Play is refused the same way
+5. A start with options (`--no-window`, `--game`, `--check`…) while the
+window is open says to use the window, also with 5. Play is refused the same way
 while the game from the launcher's copy still runs, even when the
 launcher that started it was killed.
 
@@ -273,11 +279,13 @@ runtime copy's `save` folder; the launcher copies them to your saves
 folder after each run and back before the next, so the saves folder is the
 one to keep.
 
-The launcher writes the game's registry values at
-`HKLM\SOFTWARE\Codemasters\Rally\1.00` (32-bit view), or in your user's
-VirtualStore when that needs administrator rights; under Wine, `UseEGL=N`
-in Wine's own settings. On Windows with two graphics cards it picks the
-faster one for the game in the per-program graphics settings.
+The launcher writes these registry entries:
+
+| Entry | When |
+| --- | --- |
+| `HKLM\SOFTWARE\Codemasters\Rally\1.00` (32-bit view), or `HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Codemasters\Rally\1.00` when that needs administrator rights | Every Play: the game's own values (the paths point at the launcher's copy) |
+| `HKCU\Software\Microsoft\DirectX\UserGpuPreferences`, value `…\CMRLauncher\Rally\Rally.exe` = `GpuPreference=2;` | Native Windows, the first Play: the faster graphics card for the game (Settings → Display → Graphics); `launcher.log` says "high-performance GPU for the game" |
+| `HKCU\Software\Wine\X11 Driver`, value `UseEGL` = `N` | Under Wine only, when it isn't set: OpenGL through GLX |
 
 ## Troubleshooting
 
@@ -304,7 +312,8 @@ faster one for the game in the per-program graphics settings.
 ## Known limitations
 
 - Only the European v1.5 `Rally.exe` is recognised so far.
-- Native Windows and the Steam Deck haven't been tested yet. Under Wine
+- The game on native Windows and the Steam Deck hasn't been tested yet
+  (the launcher itself was, on Windows 10). Under Wine
   the looks, one launcher at a time, the saves copying and every way of
   quitting were checked in the game; see [docs/RUNTIME_NOTES.md](docs/RUNTIME_NOTES.md).
 - The menus are enlarged on the CPU each frame; without a graphics card
@@ -320,9 +329,14 @@ faster one for the game in the per-program graphics settings.
    prefix deletes it.
 2. Delete the launcher's folder (or the AppImage).
 3. Windows: delete `%LOCALAPPDATA%\CMRLauncher` (settings, log and the
-   private copy of the game). The registry key
-   `HKLM\SOFTWARE\Codemasters\Rally\1.00` is the game's own; keep it if you
-   still play the game without the launcher.
+   private copy of the game). In the registry, delete the value
+   `…\CMRLauncher\Rally\Rally.exe` under
+   `HKCU\Software\Microsoft\DirectX\UserGpuPreferences` (or reset the
+   game in Settings → Display → Graphics). The key
+   `HKLM\SOFTWARE\Codemasters\Rally\1.00` (or its VirtualStore copy,
+   `HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Codemasters\Rally\1.00`)
+   is the game's own; keep it if you still play the game without the
+   launcher.
 4. Linux: copy the saves out, then delete
    `~/.local/share/cmr-launcher/prefix` and `~/.config/cmr-launcher`.
    Proton: removing the Steam shortcut offers to delete its prefix, saves

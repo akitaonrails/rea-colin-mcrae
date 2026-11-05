@@ -184,7 +184,10 @@ AppImage, Linux zip):
 
 - `### Windows` — numbered steps: unzip anywhere (outside the game folder
   unless the launcher supports inside), keep its folders next to the exe,
-  run it. Name the folders that must stay together.
+  run it. Name the folders that must stay together. Then one sentence on
+  SmartScreen: the launcher is unsigned, so the first start from a
+  downloaded zip may show "Windows protected your PC"; *More info → Run
+  anyway* (a Windows 10 tester asked for it, 2026-11-03).
 - `### Steam Deck` — Desktop Mode: unzip (or keep the AppImage), Steam →
   *Add a Non-Steam Game*, Properties → Compatibility → force Proton (when
   the exe is added); back in Game Mode, the Steam Deck look is
@@ -286,7 +289,9 @@ Then: a `launcher.cfg` next to the exe is used instead (portable); under
 Proton everything is in Steam's `compatdata/<appid>/pfx`; and where the
 game writes its saves — in a saves folder the launcher mirrors, or only in
 the runtime copy (CMR4) — said plainly, because the uninstall depends on
-it. Registry keys the launcher writes go here too.
+it. Registry keys the launcher writes go here too, every one of them
+(CMR4's `HKCU\Software\Microsoft\DirectX\UserGpuPreferences` entry was
+missing), and the same list goes in Uninstall.
 
 ### 13. Troubleshooting
 

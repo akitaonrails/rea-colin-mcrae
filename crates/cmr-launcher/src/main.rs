@@ -135,8 +135,6 @@ mod app {
     /// window could be shown (play with the saved settings).
     const WINDOW_CLOSED: u32 = 3;
     const WINDOW_UNAVAILABLE: u32 = 4;
-    /// A flag the launcher doesn't know, or a value it can't use.
-    const BAD_ARGUMENTS: u32 = 2;
     /// `--check` found an executable the launcher doesn't know.
     const CHECK_FAILED: u32 = 1;
 
@@ -165,16 +163,25 @@ mod app {
         let settings_path = settings_path();
         let args: Vec<String> = std::env::args().skip(1).collect();
         let given = args.len();
-        let (cli, switches) = match Settings::parse_args(args) {
+        let (cli, switches) = match Settings::parse_args(args.iter().cloned()) {
             Ok(parsed) => parsed,
             Err(ArgError::Help(_)) => {
                 note(&config::usage(), false);
                 return Ok(0);
             }
             Err(e) => {
+                // Answered like a command: printed to the terminal, a
+                // dialog (a short one) only when nobody sees it. As a play
+                // run it was a modal box a script with a typo waited on.
                 log_line(&format!("error: {e}"));
-                fatal(&format!("{e}\n\n{}", config::usage()));
-                return Ok(BAD_ARGUMENTS);
+                let mode = report::audience(Run::bad_command_line(&args)).mode();
+                let dialog = report::route_here(mode).dialog;
+                report::fatal(
+                    TITLE,
+                    &config::bad_command_line(&e.to_string(), dialog),
+                    mode,
+                );
+                return Ok(report::BAD_COMMAND_LINE as u32);
             }
         };
         let switch = |name: &str| switches.iter().any(|s| s == name);
@@ -191,24 +198,20 @@ mod app {
         // One launcher at a time, held until the game this run starts has
         // ended: a second start brings the window forward or says the game
         // runs (`instance`); a run without the window never just brings it
-        // forward. --check only reads and runs alongside.
-        let mut instance_guard = if check_only {
-            None
-        } else {
-            match win32_instance::single(instance::NAME) {
-                Ok(guard) => Some(guard),
-                Err(running) => {
-                    let second = running.second_start(!shows_window, Window::Own(TITLE));
-                    log_line(second.log_line());
-                    // A play-time message: the player started a second
-                    // copy and must see why nothing happened.
-                    if let Some(text) = second.message(instance::GAME) {
-                        fatal(&text);
-                    }
-                    return Ok(
-                        instance::second_start_exit(second.exit_code(), settings_only) as u32,
-                    );
+        // forward. --check takes the instance like any action: with the
+        // window open it is refused (exit 5), not run alongside.
+        let action = win32_instance::is_action(&args, instance::ACTIONS) || !shows_window;
+        let mut instance_guard = match win32_instance::single(instance::NAME) {
+            Ok(guard) => Some(guard),
+            Err(running) => {
+                let second = running.second_start(action, Window::Own(TITLE));
+                log_line(second.log_line());
+                // A play-time message: the player started a second copy
+                // and must see why nothing happened (printed for --check).
+                if let Some(text) = second.message(instance::GAME) {
+                    fatal(&text);
                 }
+                return Ok(instance::second_start_exit(second.exit_code(), settings_only) as u32);
             }
         };
         let template = config::template();
@@ -449,18 +452,23 @@ mod app {
         } else {
             format!("XInput pads: {pads:?}")
         });
-        let code = win32::run_patched(
-            &rt.join(EXE),
-            &rt,
+        // Every fix goes into the runtime copy's executable, built afresh
+        // from the player's file on each start, and the hook library into
+        // its import table: Windows loads it with the game. Nothing is
+        // written into the running game (antivirus heuristics flag that).
+        let hooks = hooks_path.as_deref().filter(|_| plan.hooks);
+        if let Some(path) = hooks {
+            fsx::install_copy(path, &rt.join(HOOKS_DLL))
+                .map_err(|e| format!("cannot copy {HOOKS_DLL} into {}: {e}", rt.display()))?;
+        }
+        let (patched, writes) = cmr_launcher::patched_exe(
+            &image,
             edition.fixes.cave_size(skip),
-            hooks_path
-                .as_deref()
-                .filter(|_| plan.hooks)
-                .map(|path| win32::HookLibrary {
-                    path,
-                    table: fixes::F13_TABLE,
-                    exports: &fixes::F13_EXPORTS,
-                }),
+            hooks.map(|_| cmr_launcher::Hooks {
+                dll: HOOKS_DLL,
+                table: fixes::F13_TABLE,
+                exports: &fixes::F13_EXPORTS,
+            }),
             |cave| {
                 let mut writes = prepare(&image, edition.fixes, skip, cave)?;
                 for line in plan.fill(&mut writes, cave) {
@@ -468,8 +476,25 @@ mod app {
                 }
                 Ok(writes)
             },
-            &mut |line| log_line(line),
         )?;
+        for w in &writes {
+            log_line(&format!(
+                "{} applied at 0x{:08x} ({} bytes)",
+                w.write.fix,
+                w.write.address,
+                w.write.bytes.len()
+            ));
+        }
+        if hooks.is_some() {
+            log_line(&format!("{HOOKS_DLL} loads with the game (import table)"));
+        }
+        fsx::write_atomic(&rt.join(EXE), &patched).map_err(|e| {
+            format!(
+                "cannot write the game's copy {}: {e}",
+                rt.join(EXE).display()
+            )
+        })?;
+        let code = process::Launch::new(rt.join(EXE)).cwd(&rt).run()?;
         log_line(&format!("game exited with {code}"));
         // The hook library writes crash.log in the game's folder on a crash.
         let crash = rt.join("crash.log");

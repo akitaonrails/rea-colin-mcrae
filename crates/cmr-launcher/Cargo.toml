@@ -1,6 +1,6 @@
 [package]
 name = "cmr-launcher"
-version = "0.9.0"
+version = "0.9.2"
 edition.workspace = true
 # The settings window's eframe needs 1.95.
 rust-version = "1.95"
@@ -10,6 +10,9 @@ description = "Runs the user's own copy of Colin McRae Rally (1998, PC) on moder
 [[bin]]
 name = "CMRLauncher"
 path = "src/main.rs"
+
+[build-dependencies]
+rea-launcher-build.workspace = true
 
 [dependencies]
 cmr-hdpack = { path = "../cmr-hdpack" }

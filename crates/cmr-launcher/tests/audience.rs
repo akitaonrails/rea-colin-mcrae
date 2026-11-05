@@ -6,7 +6,7 @@
 //! is a dialog whenever a person may be watching.
 
 use cmr_launcher::COMMAND_FLAGS;
-use rea_launcher_win32::report::{Audience, Route, Run, Terminal, route};
+use rea_launcher_win32::report::{Audience, Mode, Route, Run, Terminal, route};
 
 fn audience(args: &[&str], wine: bool) -> Audience {
     Audience::of(Run::from_args(args, COMMAND_FLAGS), wine)
@@ -110,4 +110,44 @@ fn under_wine_the_game_run_error_is_a_dialog() {
     }
     let mode = report::audience(Run::from_args(&["--no-window"], COMMAND_FLAGS)).mode();
     assert!(report::route_here(mode).dialog);
+}
+
+/// A command line that fails to parse answers like a command
+/// (`Run::bad_command_line`, as `main` reports it): from PowerShell it is
+/// printed and exits 2, with no modal box for a script to wait on
+/// (rea-launcher-sdk#1: CMRLauncher showed one, 410x819, until OK).
+#[test]
+fn a_bad_command_line_is_printed_from_a_terminal() {
+    use rea_launcher_win32::report::BAD_COMMAND_LINE;
+    let terminal = Terminal {
+        attached: true,
+        redirected: false,
+        wine: false,
+    };
+    let shortcut = Terminal {
+        attached: false,
+        redirected: false,
+        wine: false,
+    };
+    for args in [&["--bogus-flag"][..], &["--look", "invalid"]] {
+        assert!(
+            cmr_launcher::config::Settings::parse_args(args.iter().map(|a| a.to_string())).is_err()
+        );
+        let mode = Audience::of(Run::bad_command_line(args), false).mode();
+        assert!(matches!(mode, Mode::Command { .. }), "{args:?}");
+        assert_eq!(
+            route(mode, terminal),
+            Route {
+                print: true,
+                dialog: false
+            },
+            "{args:?}"
+        );
+        // A shortcut with a typo: nobody sees a terminal, so the (short)
+        // dialog.
+        assert!(route(mode, shortcut).dialog, "{args:?}");
+        // The play-run rule it replaced showed the box from a terminal too.
+        assert!(route(audience(args, false).mode(), terminal).dialog);
+    }
+    assert_eq!(BAD_COMMAND_LINE, 2);
 }

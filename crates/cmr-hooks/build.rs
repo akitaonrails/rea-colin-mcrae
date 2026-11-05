@@ -5,4 +5,15 @@ fn main() {
         println!("cargo:rustc-cdylib-link-arg=-nostartfiles");
         println!("cargo:rustc-cdylib-link-arg=-Wl,--enable-stdcall-fixup");
     }
+    // Version information: a named, versioned library (antivirus heuristics
+    // distrust anonymous ones).
+    rea_launcher_build::Resources::new(
+        "CMR Launcher hooks",
+        "Colin McRae Rally fixes (CMR Launcher)",
+    )
+    .company("AkitaOnRails")
+    .file_name("cmrhooks.dll")
+    .dll()
+    .embed()
+    .unwrap();
 }

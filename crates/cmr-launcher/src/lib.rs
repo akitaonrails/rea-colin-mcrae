@@ -107,6 +107,77 @@ pub fn prepare(
 /// code whose piece carries the original value as a placeholder (the check
 /// against the file still compares the original bytes). Returns false when
 /// no such write is active or the size differs.
+/// The hook library the game's runtime copy imports (F13): the DLL's file
+/// name, where its address table goes in the cave, and the exports in table
+/// order.
+pub struct Hooks<'a> {
+    pub dll: &'a str,
+    pub table: u32,
+    pub exports: &'a [&'a str],
+}
+
+/// The game's executable with every fix written into the file, for the
+/// runtime copy (never the player's): each image write in place, the cave
+/// as a new section `.rea` (its address is passed to `writes_for`), and the
+/// hook library in the import table with its address table at the cave's
+/// F13 table, so Windows loads the DLL and fills the table before the game
+/// runs. Until v0.9.1 the launcher started the game suspended and wrote all
+/// of this into its memory (`VirtualAllocEx`, `WriteProcessMemory`,
+/// `CreateRemoteThread`), which antivirus heuristics flag as a trojan.
+/// Returns the file and the writes it holds (for the log).
+pub fn patched_exe(
+    image: &Image,
+    cave_size: u32,
+    hooks: Option<Hooks>,
+    writes_for: impl FnOnce(u32) -> Result<Vec<CheckedWrite>, String>,
+) -> Result<(Vec<u8>, Vec<CheckedWrite>), String> {
+    use rea_launcher::pe::edit;
+    let err = |e: edit::EditError| e.to_string();
+    let mut file = image.file.to_vec();
+    edit::fix_base(&mut file).map_err(err)?;
+    let cave_rva = edit::next_section_rva(&file).map_err(err)?;
+    let cave_base = if cave_size == 0 {
+        0
+    } else {
+        (image.pe.image_base + u64::from(cave_rva)) as u32
+    };
+    let writes = writes_for(cave_base)?;
+    let mut cave = vec![0u8; cave_size as usize];
+    for w in &writes {
+        let bytes = &w.write.bytes;
+        if w.write.in_image {
+            let at = image
+                .pe
+                .va_to_offset(u64::from(w.write.address))
+                .filter(|&at| file.get(at..at + bytes.len()) == Some(&w.original[..]))
+                .ok_or_else(|| {
+                    format!(
+                        "{}: 0x{:08x} doesn't match the executable",
+                        w.write.fix, w.write.address
+                    )
+                })?;
+            file[at..at + bytes.len()].copy_from_slice(bytes);
+        } else {
+            let at = w.write.address.wrapping_sub(cave_base) as usize;
+            cave.get_mut(at..at + bytes.len())
+                .ok_or_else(|| format!("{}: outside the fix section", w.write.fix))?
+                .copy_from_slice(bytes);
+        }
+    }
+    if cave_size == 0 {
+        return Ok((file, writes));
+    }
+    let (file, section) =
+        edit::add_section(&file, ".rea", &cave, edit::SCN_CODE_RWX).map_err(err)?;
+    debug_assert_eq!(section.rva, cave_rva);
+    let file = match hooks {
+        Some(h) => edit::add_import(&file, ".reaimp", h.dll, h.exports, Some(cave_rva + h.table))
+            .map_err(err)?,
+        None => file,
+    };
+    Ok((file, writes))
+}
+
 pub fn fill_data(writes: &mut [CheckedWrite], address: u32, bytes: &[u8]) -> bool {
     match writes.iter_mut().find(|w| w.write.address == address) {
         Some(w) if w.write.bytes.len() == bytes.len() => {
@@ -194,6 +265,81 @@ mod tests {
             (w[0].write.bytes.as_slice(), w[0].original.as_slice()),
             (&[0x90][..], &[0xec][..])
         );
+    }
+
+    #[test]
+    fn every_fix_is_written_into_the_file_and_the_hooks_into_its_imports() {
+        use rea_launcher::pe::edit;
+        let file = synthetic(&[0x55, 0x8b, 0xec, 0x90]);
+        let img = Image::parse(&file).unwrap();
+        let hooks = Hooks {
+            dll: "cmrhooks.dll",
+            table: 0x10,
+            exports: &["cmr_a", "cmr_b"],
+        };
+        let (patched, writes) = patched_exe(&img, 0x40, Some(hooks), |cave| {
+            prepare(&img, &TEST_FIXES, &[], cave)
+        })
+        .unwrap();
+        let pe = rea_launcher::pe::Pe::parse(&patched).unwrap();
+        let rea = pe.section(".rea").unwrap();
+        // The cave lands right after .text, at a fixed address.
+        assert_eq!(rea.rva, 0x2000);
+        assert_eq!(writes[1].write.address, 0x40_2000);
+        // The image write, in the file.
+        let at = pe.va_to_offset(0x40_1002).unwrap();
+        assert_eq!(patched[at], 0xc3);
+        // The cave's jmp back to 0x401000: e9 rel32 from 0x402005.
+        let cave = pe.va_to_offset(0x40_2000).unwrap();
+        assert_eq!(patched[cave], 0xe9);
+        let rel = i32::from_le_bytes(patched[cave + 1..cave + 5].try_into().unwrap());
+        assert_eq!(0x40_2005i64 + i64::from(rel), 0x40_1000);
+        // The hook library, its address table on the cave's table.
+        let imports = edit::imports(&patched).unwrap();
+        let hook = imports.iter().find(|i| i.dll == "cmrhooks.dll").unwrap();
+        assert_eq!(hook.functions, ["cmr_a", "cmr_b"]);
+        assert_eq!(hook.iat_rva, 0x2010);
+        // The player's bytes are never touched: only the copy changes.
+        assert_eq!(file[pe.va_to_offset(0x40_1002).unwrap()], 0xec);
+    }
+
+    #[test]
+    fn no_cave_means_no_section_and_no_hooks() {
+        let file = synthetic(&[0x55, 0x8b, 0xec, 0x90]);
+        let img = Image::parse(&file).unwrap();
+        let only_image = FixSet {
+            shared: &[],
+            own: &[Fix {
+                id: "T2",
+                what: "test",
+                optional: false,
+                code: &[Piece {
+                    at: At::Image(0x401002),
+                    ops: &[Op::Raw(&[0xc3])],
+                }],
+            }],
+        };
+        let (patched, _) = patched_exe(&img, 0, None, |cave| {
+            assert_eq!(cave, 0);
+            prepare(&img, &only_image, &[], cave)
+        })
+        .unwrap();
+        let pe = rea_launcher::pe::Pe::parse(&patched).unwrap();
+        assert!(pe.section(".rea").is_none());
+        assert_eq!(patched.len(), file.len());
+        assert_eq!(patched[pe.va_to_offset(0x40_1002).unwrap()], 0xc3);
+    }
+
+    #[test]
+    fn a_write_that_no_longer_matches_the_file_is_refused() {
+        let file = synthetic(&[0x55, 0x8b, 0xec, 0x90]);
+        let img = Image::parse(&file).unwrap();
+        let result = patched_exe(&img, 0x40, None, |cave| {
+            let mut writes = prepare(&img, &TEST_FIXES, &[], cave)?;
+            writes[0].original = vec![0x00];
+            Ok(writes)
+        });
+        assert!(result.unwrap_err().contains("doesn't match"));
     }
 
     #[test]
