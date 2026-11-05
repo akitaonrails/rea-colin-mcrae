@@ -62,6 +62,9 @@ From a test of the launcher on native Windows 10
 
 ### Fixed
 
+- The exact `Rally.exe` SHA-256 is written to `launcher.log` as soon as the
+  settings window opens, and the Play tab shows it with a Copy button for an
+  issue report, whether or not Play was pressed (issue #2).
 - Native Windows with dgVoodoo2:
   - Any race resolution crashed in the menus: the front end locked
     images the game had already released. Their pixels are now copied

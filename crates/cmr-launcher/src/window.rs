@@ -46,8 +46,20 @@ impl Tab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Check {
     Empty,
-    Found(&'static str),
+    /// A known edition, with the exact executable's SHA-256 (shown so the
+    /// player can copy it into a report, and logged).
+    Found { name: &'static str, sha256: String },
     Problem(String),
+}
+
+/// The `Rally.exe` in `dir`, matched without regard to case.
+fn rally_exe(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir).ok().and_then(|entries| {
+        entries.flatten().map(|e| e.path()).find(|p| {
+            p.file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case("rally.exe"))
+        })
+    })
 }
 
 pub fn check_game(folder: &str) -> Check {
@@ -59,12 +71,7 @@ pub fn check_game(folder: &str) -> Check {
     if !dir.is_dir() {
         return Check::Problem("No such folder. Check the path, or use Browse… to pick it.".into());
     }
-    let Some(exe) = std::fs::read_dir(dir).ok().and_then(|entries| {
-        entries.flatten().map(|e| e.path()).find(|p| {
-            p.file_name()
-                .is_some_and(|n| n.eq_ignore_ascii_case("rally.exe"))
-        })
-    }) else {
+    let Some(exe) = rally_exe(dir) else {
         return Check::Problem(
             "There is no Rally.exe in this folder. Choose the folder the game is installed in."
                 .into(),
@@ -72,7 +79,10 @@ pub fn check_game(folder: &str) -> Check {
     };
     match std::fs::read(&exe) {
         Ok(bytes) => match edition::identify(&bytes) {
-            Ok(e) => Check::Found(e.name),
+            Ok(e) => Check::Found {
+                name: e.name,
+                sha256: edition::to_hex(&edition::sha256(&bytes)),
+            },
             Err(digest) => Check::Problem(format!(
                 "This Rally.exe is a version the launcher doesn't know (SHA-256 {}). \
                  Please report it: {}",
@@ -84,6 +94,29 @@ pub fn check_game(folder: &str) -> Check {
             "Can't read Rally.exe ({e}). Check that the file isn't open elsewhere and that you may read it."
         )),
     }
+}
+
+/// The line `launcher.log` gets for the game folder as soon as the settings
+/// window opens: the executable, its edition (or `unknown`) and its exact
+/// SHA-256. `None` when there is nothing to identify yet (no folder, or no
+/// readable `Rally.exe`).
+#[must_use]
+pub fn describe_game(folder: &str) -> Option<String> {
+    let folder = folder.trim();
+    if folder.is_empty() {
+        return None;
+    }
+    let exe = rally_exe(Path::new(folder))?;
+    let bytes = std::fs::read(&exe).ok()?;
+    let name = edition::identify(&bytes)
+        .map(|e| e.name)
+        .unwrap_or("unknown");
+    Some(format!(
+        "game: {} ({}) [sha256 {}]",
+        exe.display(),
+        name,
+        edition::to_hex(&edition::sha256(&bytes))
+    ))
 }
 
 /// Everything the window shows and edits.
@@ -156,7 +189,7 @@ impl State {
 
     /// Play is possible: a game folder with a known Rally.exe.
     pub fn ready(&self) -> bool {
-        matches!(self.check, Check::Found(_))
+        matches!(self.check, Check::Found { .. })
     }
 
     /// Checks the game folder again after its text changed.
@@ -257,7 +290,7 @@ fn status(ui: &mut egui::Ui, state: &State) {
         &state.check,
     ) {
         (Some(e), _) => (e.clone(), ERROR),
-        (None, Check::Found(_)) => ("Ready. Press Play or Enter.".to_string(), MUTED),
+        (None, Check::Found { .. }) => ("Ready. Press Play or Enter.".to_string(), MUTED),
         (None, _) => (
             "First, show the launcher where the game is.".to_string(),
             MUTED,
@@ -360,10 +393,26 @@ fn play_tab(ui: &mut egui::Ui, state: &mut State, platform: &mut Platform<'_>) {
             "The game folder is only read, never changed.".to_string(),
             MUTED,
         ),
-        Check::Found(name) => (format!("Found: {name}"), GOLD),
+        Check::Found { name, .. } => (format!("Found: {name}"), GOLD),
         Check::Problem(p) => (p.clone(), ERROR),
     };
     ui.add(egui::Label::new(egui::RichText::new(note).font(body(13.0)).color(color)).wrap());
+    if let Check::Found { sha256, .. } = &state.check {
+        // The issue #2 report: the player needs this exact digest for an
+        // issue, so show it and copy it to the system clipboard in one click.
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("Rally.exe SHA-256: {sha256}"))
+                    .font(body(13.0))
+                    .color(MUTED),
+            )
+            .wrap(),
+        );
+        ui.add_space(4.0);
+        if widgets::outline_button(ui, "Copy SHA-256").clicked() {
+            ui.ctx().copy_text(sha256.clone());
+        }
+    }
     ui.add_space(10.0);
 
     let looks = config::option("look");
@@ -610,8 +659,12 @@ mod tests {
     }
 
     fn open(text: Option<&str>, linux: bool) -> Harness<'static, App> {
+        open_state(State::new(text, linux, SCREEN, 0))
+    }
+
+    fn open_state(state: State) -> Harness<'static, App> {
         let app = App {
-            state: State::new(text, linux, SCREEN, 0),
+            state,
             played: 0,
             rumbled: Vec::new(),
         };
@@ -792,6 +845,12 @@ mod tests {
         assert_eq!(ui.state().rumbled, [100]);
         assert!(ui.state().state.rumble_test.is_some());
         assert_eq!(saved(&ui).rumble, Some(100));
+        // The two feel switches start on and write only their off value.
+        for switch in ["Trigger rumble", "Road rumble"] {
+            press(&mut ui, Role::Switch, switch);
+        }
+        assert_eq!(saved(&ui).trigger_rumble, Some(false));
+        assert_eq!(saved(&ui).road_rumble, Some(false));
 
         click(&mut ui, "Original 1998");
         assert_eq!(saved(&ui).buttons, Some(config::ORIGINAL_BUTTONS));
@@ -930,6 +989,49 @@ mod tests {
         // A readable file is saved as before.
         let state = State::new(Some(""), false, SCREEN, 0);
         assert!(state.saved_text("").is_some());
+    }
+
+    #[test]
+    fn a_known_edition_shows_its_sha256_and_copies_it() {
+        let sha = "ab".repeat(32);
+        let mut state = State::new(Some(""), true, SCREEN, 0);
+        state.check = Check::Found {
+            name: "EU v1.5 (official)",
+            sha256: sha.clone(),
+        };
+        let mut ui = open_state(state);
+        assert!(
+            ui.query_by_label(&format!("Rally.exe SHA-256: {sha}"))
+                .is_some(),
+            "the digest is on the Play tab"
+        );
+        // One frame, so the click's clipboard command is still in its output
+        // (`run` repaints until idle, which would overwrite it).
+        ui.get_by_role_and_label(Role::Button, "Copy SHA-256")
+            .scroll_to_me();
+        ui.step();
+        ui.get_by_role_and_label(Role::Button, "Copy SHA-256")
+            .click();
+        ui.step();
+        let copied = ui.output().platform_output.commands.iter().any(
+            |c| matches!(c, egui::OutputCommand::CopyText(text) if text == &sha),
+        );
+        assert!(copied, "the system clipboard gets the digest");
+    }
+
+    #[test]
+    fn the_log_line_names_the_edition_and_sha256() {
+        let dir = temp("describe");
+        assert_eq!(describe_game(""), None);
+        assert_eq!(describe_game(dir.to_str().unwrap()), None, "no Rally.exe yet");
+        std::fs::write(dir.join("Rally.exe"), b"not a known build").unwrap();
+        let line = describe_game(dir.to_str().unwrap()).unwrap();
+        assert!(line.contains("Rally.exe"), "{line}");
+        assert!(line.contains("(unknown)"), "{line}");
+        assert!(
+            line.contains(&edition::to_hex(&edition::sha256(b"not a known build"))),
+            "{line}"
+        );
     }
 
     #[test]
