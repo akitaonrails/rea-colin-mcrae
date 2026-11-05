@@ -488,8 +488,12 @@ mod app {
         if hooks.is_some() {
             log_line(&format!("{HOOKS_DLL} loads with the game (import table)"));
         }
-        fsx::write_atomic(&rt.join(EXE), &patched)
-            .map_err(|e| format!("cannot write the game's copy {}: {e}", rt.join(EXE).display()))?;
+        fsx::write_atomic(&rt.join(EXE), &patched).map_err(|e| {
+            format!(
+                "cannot write the game's copy {}: {e}",
+                rt.join(EXE).display()
+            )
+        })?;
         let code = process::Launch::new(rt.join(EXE)).cwd(&rt).run()?;
         log_line(&format!("game exited with {code}"));
         // The hook library writes crash.log in the game's folder on a crash.

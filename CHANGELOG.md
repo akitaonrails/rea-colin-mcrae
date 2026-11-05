@@ -3,7 +3,7 @@
 What changed for players, release by release. Releases up to 0.7.0 are
 described on the GitHub releases page.
 
-## [Unreleased]
+## [0.9.2] - 2026-11-05
 
 A player's antivirus flagged the launcher on Windows. These changes make it
 look like what it is, so antivirus programs are less likely to flag it.
