@@ -5,6 +5,25 @@ described on the GitHub releases page.
 
 ## [Unreleased]
 
+A player's antivirus flagged the launcher on Windows. These changes make it
+look like what it is, so antivirus programs are less likely to flag it.
+
+### Changed
+
+- The launcher no longer writes into the running game. It used to start
+  the game paused and change it in memory, the way some malware does. Now
+  each start writes the fixes into the launcher's own copy of the game
+  (your game folder stays untouched), and Windows loads `cmrhooks.dll`
+  with the game. Everything plays as before: checked in the real game
+  with a race at 4K, the HD art, Alt+F4 and closing the window.
+- `CMRLauncher.exe` and `cmrhooks.dll` now say what they are: name,
+  version, publisher and the launcher's icon, as shown in Windows'
+  Properties and Task Manager.
+- If you go back to an older version later, delete `Rally.exe` from the
+  launcher's copy of the game first (`%LOCALAPPDATA%\CMRLauncher\Rally`), or
+  the older version refuses to start the game.
+- Built on rea-launcher-sdk v0.4.3.
+
 ## [0.9.1] - 2026-11-03
 
 From a test of the launcher on native Windows 10

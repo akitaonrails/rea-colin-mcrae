@@ -3,6 +3,30 @@
 Observations from running the user's own game. Each entry: date, setup, what
 was seen. Static facts live in the parked reconstruction's documents (kept outside this repository) and local notes.
 
+
+## 2026-11-05: no injection (fixes in the runtime copy, hooks by import) — headless
+
+Setup as on 2026-11-03: the owner's install (`EU v1.5, community-patched`,
+`46500c8e…`), read-only; the release build with SDK v0.4.3 (local path at
+first, then the tag); a new private prefix; `.work/realgame/run.sh`
+(gamescope 3.17 headless, Wine 11.21, private null sink). The launcher now
+writes `Rally.exe` in the runtime copy with the fixes in place, the fix
+code in a `.rea` section and `cmrhooks.dll` in the import table.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| `add_section` on `Rally.exe` | FAILED first: no free header slot, a build stamp ("Colin Mcrae Rally EXECUTABLE Compiled on Jun 8 2000…") follows the section table. FIXED in the SDK: the table moves to free header space, the stamp stays | `launcher.log` "no free space for another section header" |
+| 4K race, Enhanced look, HD art | VERIFIED: race reached; `cmrhooks.dll loads with the game (import table)`; hook statistics equal to v0.9.1's injected build on the same run (78 front-end twins, render-state hook "(not hooked)" in both) | `logs/race4k-new.hooks.log`, `logs/race4k-old.hooks.log` |
+| Quit by window close (taskkill) | VERIFIED: all gone 4.4 s after; game exit 0 | `race4k.log` |
+| Quit: Alt+F4 (XTest) | VERIFIED: all gone 3.3 s after the keys; exit 61536 (`SC_CLOSE`), as before | `altf4.log` |
+| Final binaries (version info, icon, manifest) | VERIFIED: race and exit as above with the release `CMRLauncher.exe` and `cmrhooks.dll` | `race4k.log` |
+| Leftovers | none of ours by `XDG_RUNTIME_DIR` or `WINEPREFIX` after every run | all logs |
+
+An older launcher (v0.9.1) refuses a runtime copy the new one patched
+("F6: game memory … does not match the executable"): the runtime sync
+keeps the launcher-written `Rally.exe`. Deleting it from the runtime copy
+lets the old version start again (CHANGELOG).
+
 ## 2026-11-03: real-game verification of the SDK v0.4.1 build (headless)
 
 Setup as on 2026-11-02 (below): the owner's install (`EU v1.5,
