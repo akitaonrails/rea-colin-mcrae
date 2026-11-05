@@ -35,16 +35,16 @@ files to download from elsewhere. The addresses are for the EU v1.5
 | C10 | F15: No multi-second wait at start and exit | PCGamingWiki: Colin McRae Rally, Issues fixed | THIN_APP_PLAN F15 (main menu ~6 s after start) | draft |
 | C11 | F16: Intro and menus enlarged to the screen | PCGamingWiki: Colin McRae Rally, Video settings: Widescreen resolution | THIN_APP_PLAN F16 (1920×1080 and 3840×2160 headless) | draft |
 | C12 | F17: Frame-rate cap and vsync choice | PCGamingWiki: Colin McRae Rally, Video settings: High frame rate / Vertical sync | THIN_APP_PLAN F17 (caps 30/60 exact, logic speed unchanged) | draft |
-| C13 | F18: Mipmaps and trilinear filtering | PCGamingWiki: Colin McRae Rally, Video settings: Anisotropic filtering | THIN_APP_PLAN F18 (headless) | draft |
+| C13 | F18: Mipmaps and trilinear filtering | PCGamingWiki: Colin McRae Rally, Video settings: Anisotropic filtering | THIN_APP_PLAN F18 (headless); palettized mip levels filled so smooth textures stay complete on a device with palettized textures (native Windows 11 + dgVoodoo2 2.87.6, RUNTIME_NOTES 2026-11-03) | draft |
 | C14 | F19: Sharp (unfiltered) textures option | PCGamingWiki: Colin McRae Rally, Video settings | THIN_APP_PLAN F19 (headless) | draft |
 | C15 | F20: No pop-in when the view distance changes | PCGamingWiki: Colin McRae Rally, Video settings | THIN_APP_PLAN F20 (headless) | draft |
 | C16 | F21: Triggers as separate pedals (XInput) | PCGamingWiki: Colin McRae Rally, Input settings: Controller support | THIN_APP_PLAN F21 (headless) | draft |
-| C17 | F22: Rumble on impacts | PCGamingWiki: Colin McRae Rally, Input settings: Controller support | THIN_APP_PLAN F22 (headless) | draft |
+| C17 | F22: Rumble on impacts and the driving feel on the trigger motors | PCGamingWiki: Colin McRae Rally, Input settings: Controller support | THIN_APP_PLAN F22 (headless); the trigger/road feel through Windows.Gaming.Input was tuned with a player over three rounds on recorded stages (native Windows 11, Xbox Elite Series 2; RUNTIME_NOTES 2026-11-03) | draft |
 | C18 | F23: Button layout and d-pad | PCGamingWiki: Colin McRae Rally, Input settings: Controller support | THIN_APP_PLAN F23 (headless) | draft |
 | C19 | F24: RUN JOYSTICK PANEL no longer freezes under Wine | PCGamingWiki: Colin McRae Rally, Issues fixed (Linux) | THIN_APP_PLAN F24 (applied, not exercised in the real game) | needs verification |
 | C20 | F25: 24-bit depth buffer | PCGamingWiki: Colin McRae Rally, Video settings | THIN_APP_PLAN F25 (race at 3× distance renders cleanly; the reported Greece mountains not yet confirmed) | needs verification |
 | C21 | F26: Fast depth test (24 → 60 fps at 4K under Wine) | PCGamingWiki: Colin McRae Rally, Issues fixed (Linux) / WineHQ AppDB note | THIN_APP_PLAN F26, RESEARCH R19 (60 fps at 4K, answers checked mid-race) | draft |
-| C22 | F27: HD 2D art | PCGamingWiki: Colin McRae Rally, Video settings | THIN_APP_PLAN F27 (1080p and 4K: HUD and menus from twins) | draft |
+| C22 | F27: HD 2D art | PCGamingWiki: Colin McRae Rally, Video settings | THIN_APP_PLAN F27 (1080p and 4K: HUD and menus from twins); native Windows 11 + dgVoodoo2 2.87.6: the game's 4-pixel BMP row stride, the unset palette count of RGB textures, 8-bit twins for palettized-texture devices, the 4096 texture limit and the front-end surface copies fixed (RUNTIME_NOTES 2026-11-03) | draft |
 
 ## Drafts
 

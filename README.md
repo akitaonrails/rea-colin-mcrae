@@ -10,9 +10,11 @@ never changed: the launcher plays from a private copy.
 This project contains no game files: you need your own copy of the game.
 
 > **Work in progress.** It has been played end to end under Linux, with
-> Wine and with Proton. It hasn't been tried on native Windows or on a
-> Steam Deck yet. If you play on either, please
-> [send a test report](https://github.com/akitaonrails/rea-colin-mcrae/issues/new?template=test-report.yml).
+> Wine and with Proton, and on native Windows 11 with dgVoodoo2 2.87.6
+> placed in the runtime folder (the launcher doesn't bundle it yet: see
+> [Known limitations](#known-limitations)). The Steam Deck is untested.
+> Please [send a test report](https://github.com/akitaonrails/rea-colin-mcrae/issues/new?template=test-report.yml)
+> whatever you play on.
 
 [![Stages in Greece and Sweden played with the launcher: 16:9 widescreen at high resolution, the HD art pack's redrawn HUD, pace-note signs and skies](https://new-uploads-akitaonrails.s3.us-east-2.amazonaws.com/2026/11/01/colin-mcrae-rally/showcase-poster.jpg)](https://new-uploads-akitaonrails.s3.us-east-2.amazonaws.com/2026/11/01/colin-mcrae-rally/showcase-h264.mp4)
 
@@ -81,8 +83,10 @@ Download from the [latest release](https://github.com/akitaonrails/rea-colin-mcr
 The launcher isn't signed, so the first start from a downloaded zip may
 show "Windows protected your PC": click **More info → Run anyway**.
 
-On native Windows 10 the launcher itself (the window, wrong folders, the
-command line) has been tested, the game not yet. Whether it works or not, please
+On native Windows the launcher itself (the window, wrong folders, the
+command line) has been tested on 10; the game has been played on Windows 11
+with dgVoodoo2 2.87.6 in the runtime folder (see
+[Known limitations](#known-limitations)). Whether it works or not, please
 [send a test report](https://github.com/akitaonrails/rea-colin-mcrae/issues/new?template=test-report.yml)
 with your `launcher.log` (see [Where things live](#where-things-live)).
 
@@ -312,10 +316,15 @@ The launcher writes these registry entries:
 ## Known limitations
 
 - Only the European v1.5 `Rally.exe` is recognised so far.
-- The game on native Windows and the Steam Deck hasn't been tested yet
-  (the launcher itself was, on Windows 10). Under Wine
-  the looks, one launcher at a time, the saves copying and every way of
-  quitting were checked in the game; see [docs/RUNTIME_NOTES.md](docs/RUNTIME_NOTES.md).
+- Native Windows needs a DirectDraw wrapper: Windows' own has no Ramp
+  device and the game doesn't start without one. dgVoodoo2 2.87.6 in the
+  runtime folder was tested; the launcher doesn't bundle it yet (its
+  licence allows no redistribution), so this stays a manual step until the
+  owner decides on a bundled or downloadable wrapper. Wine and Proton need
+  nothing.
+- The Steam Deck hasn't been tested yet. Under Wine the looks, one
+  launcher at a time, the saves copying and every way of quitting were
+  checked in the game; see [docs/RUNTIME_NOTES.md](docs/RUNTIME_NOTES.md).
 - The menus are enlarged on the CPU each frame; without a graphics card
   (software drawing) that is slower at 4K.
 - A short white flash before the legal screen at high resolutions.

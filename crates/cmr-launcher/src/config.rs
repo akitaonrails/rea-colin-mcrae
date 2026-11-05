@@ -361,13 +361,13 @@ pub const OPTIONS: &[OptionSpec] = &[
         "trigger_rumble",
         Kind::Toggle,
         "Trigger rumble",
-        "With rumble on, the triggers shake too: the right one when the wheels spin, the left          one braking hard and pulsing when the wheels lock. Needs a pad with trigger motors          (Xbox One or newer). On unless set off.",
+        "With rumble on, the triggers shake too: the right one when the wheels spin, the left one braking hard and pulsing when the wheels lock. Needs a pad with trigger motors (Xbox One or newer). On unless set off.",
     ),
     OptionSpec::new(
         "road_rumble",
         Kind::Toggle,
         "Road rumble",
-        "With rumble on, a faint buzz while driving, stronger on rough ground, and at the rev          limiter. Off: only impacts, landings, bumps and gear changes shake the pad. On          unless set off.",
+        "With rumble on, a faint buzz while driving, stronger on rough ground, and at the rev limiter. Off: only impacts, landings, bumps and gear changes shake the pad. On unless set off.",
     ),
     OptionSpec::new(
         "buttons",

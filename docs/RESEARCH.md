@@ -28,7 +28,7 @@ such and were not all re-verified.
 | kFYatek's Windows 7 fix | Patches the installed files for Windows 7 and newer and removes the CD check | none found | no | Not used: it patches the game folder on disk; the launcher's fixes F1–F5 do the same in memory, and the game folder stays read-only. The community pack's exe below already carries an equivalent |
 | Patrxgt's unofficial modern patch (PCGamingWiki files) | Alternative when kFYatek's fix fails on Windows 8+ | none found | unclear | Not used, same reason |
 | 16:9 widescreen exe files (community) | Pre-edited executables for 16:9 | none found | no | Not used: replacing the exe means an unknown build; the launcher's F11 widescreen works on the identified builds |
-| dgVoodoo2 (often recommended with the fixes) | DirectDraw/D3D wrapper | freeware, no redistribution licence | yes | Not used: the game runs on Wine's and Windows' own DirectDraw with the launcher's fixes; nothing to wrap so far |
+| dgVoodoo2 (often recommended with the fixes) | DirectDraw/D3D wrapper | freeware, no redistribution licence | yes | **Used by hand on native Windows** (2.87.6): Windows' DirectDraw has no Ramp device and the game doesn't start without a wrapper. The launcher doesn't bundle it (no redistribution licence), so native Windows keeps one manual step until the owner decides on a bundled or downloadable wrapper (CMR4's launcher bundles 2.80 by an owner decision). Wine and Proton need nothing |
 | The community "fan pack" EU v1.5 `Rally.exe` (ChemicalFlood) | The EU v1.5 exe already patched on disk with the CD/OS checks removed | n/a (the player's own file) | n/a | Supported edition (`46500c8e…`): the launcher skips F1–F5 for it |
 
 ## Our own fixes
@@ -51,16 +51,16 @@ and applied in memory, the hook library's included; each has a draft in
 | F15 | No multi-second wait at start and exit | **Our own** (draft C10) |
 | F16 | Intro and menus enlarged to the screen | **Our own** (draft C11) |
 | F17 | Frame-rate cap and vsync choice | **Our own** (draft C12) |
-| F18 | Mipmaps and trilinear filtering | **Our own** (draft C13) |
+| F18 | Mipmaps and trilinear filtering (including the palettized levels of native-Windows devices) | **Our own** (draft C13) |
 | F19 | Sharp (unfiltered) textures option | **Our own** (draft C14) |
 | F20 | No pop-in when the view distance changes | **Our own** (draft C15) |
 | F21 | Triggers as separate pedals (XInput) | **Our own** (draft C16) |
-| F22 | Rumble on impacts | **Our own** (draft C17) |
+| F22 | Rumble on impacts, plus the driving feel on the trigger motors (wheelspin, locking, gear changes, landings, bumps, rough ground, rev limiter) | **Our own** (draft C17) |
 | F23 | Button layout and d-pad | **Our own** (draft C18) |
 | F24 | RUN JOYSTICK PANEL no longer freezes under Wine | **Our own** (draft C19) |
 | F25 | 24-bit depth buffer | **Our own** (draft C20) |
 | F26 | Fast depth test (24 → 60 fps at 4K under Wine) | **Our own** (draft C21) |
-| F27 | HD 2D art | **Our own** (draft C22) |
+| F27 | HD 2D art, including the native-Windows dgVoodoo2 fixes (the game's BMP row stride, the palette count of RGB textures, 8-bit twins, the 4096 texture limit, front-end surface copies, parallel composition) | **Our own** (draft C22) |
 
 ## Editions
 
