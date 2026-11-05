@@ -32,7 +32,7 @@ watch (3 minutes, with sound).*
 | Only the left stick drives; triggers do nothing. | The triggers or the right stick are the throttle and brake. With an Xbox-style pad both triggers work at once (left-foot braking). Start pauses a race and the d-pad moves through the menus. |
 | The 1998 button order feels wrong on today's pads. | A modern layout by default (A handbrake, bumpers change gear, Y changes the view), or the 1998 order, or your own. |
 | The controller choice falls back to the keyboard by itself, and some saves leave the car turning in circles. | The choice stays, and a save left in that state starts normally again. |
-| No rumble. | Optional rumble on impacts, with a test button in the window. |
+| No rumble. | Optional rumble on impacts, plus a driving feel with trigger motors: wheelspin and locking, gear changes, landings, bumps, rough ground and the rev limiter. A test button in the window. |
 | The game offers no race resolution above 800×600, and stretches on a wide screen. | Races at higher resolutions, up to 4K. 16:9 widescreen shows more to the sides instead of stretching, and the HUD, messages, results and loading screens scale with the resolution. |
 | The view ends close, and scenery pops in between stage sections. | A longer view, up to 3× further, eased when the stage changes it, with less flicker on distant hills. |
 | Textures shimmer in the distance. | Smooth textures that don't shimmer, or a crisp unfiltered look. A frame-rate cap and a vsync choice for even frames. |
@@ -157,9 +157,9 @@ only what changed. Your choices are remembered for next time.
 
 - **Play**: the game folder, the look and the saves folder.
 - **Picture**: each picture setting (and on Linux the scaler).
-- **Controls**: rumble with a **Test** button, then the pad layout:
-  **Modern**, **Original 1998** or **Custom**, with a button for each
-  action.
+- **Controls**: rumble with a **Test** button, the trigger and road feel
+  switches, then the pad layout: **Modern**, **Original 1998** or
+  **Custom**, with a button for each action.
 
 | Look | Race resolution | Picture | When to pick it |
 | --- | --- | --- | --- |
