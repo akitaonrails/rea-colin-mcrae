@@ -452,18 +452,23 @@ mod app {
         } else {
             format!("XInput pads: {pads:?}")
         });
-        let code = win32::run_patched(
-            &rt.join(EXE),
-            &rt,
+        // Every fix goes into the runtime copy's executable, built afresh
+        // from the player's file on each start, and the hook library into
+        // its import table: Windows loads it with the game. Nothing is
+        // written into the running game (antivirus heuristics flag that).
+        let hooks = hooks_path.as_deref().filter(|_| plan.hooks);
+        if let Some(path) = hooks {
+            fsx::install_copy(path, &rt.join(HOOKS_DLL))
+                .map_err(|e| format!("cannot copy {HOOKS_DLL} into {}: {e}", rt.display()))?;
+        }
+        let (patched, writes) = cmr_launcher::patched_exe(
+            &image,
             edition.fixes.cave_size(skip),
-            hooks_path
-                .as_deref()
-                .filter(|_| plan.hooks)
-                .map(|path| win32::HookLibrary {
-                    path,
-                    table: fixes::F13_TABLE,
-                    exports: &fixes::F13_EXPORTS,
-                }),
+            hooks.map(|_| cmr_launcher::Hooks {
+                dll: HOOKS_DLL,
+                table: fixes::F13_TABLE,
+                exports: &fixes::F13_EXPORTS,
+            }),
             |cave| {
                 let mut writes = prepare(&image, edition.fixes, skip, cave)?;
                 for line in plan.fill(&mut writes, cave) {
@@ -471,8 +476,21 @@ mod app {
                 }
                 Ok(writes)
             },
-            &mut |line| log_line(line),
         )?;
+        for w in &writes {
+            log_line(&format!(
+                "{} applied at 0x{:08x} ({} bytes)",
+                w.write.fix,
+                w.write.address,
+                w.write.bytes.len()
+            ));
+        }
+        if hooks.is_some() {
+            log_line(&format!("{HOOKS_DLL} loads with the game (import table)"));
+        }
+        fsx::write_atomic(&rt.join(EXE), &patched)
+            .map_err(|e| format!("cannot write the game's copy {}: {e}", rt.join(EXE).display()))?;
+        let code = process::Launch::new(rt.join(EXE)).cwd(&rt).run()?;
         log_line(&format!("game exited with {code}"));
         // The hook library writes crash.log in the game's folder on a crash.
         let crash = rt.join("crash.log");
