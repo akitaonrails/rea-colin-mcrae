@@ -48,6 +48,8 @@ From a test of the launcher on native Windows 10
   PC" for the unsigned launcher, and lists every registry entry the
   launcher writes, with how to remove them.
 
+## [Unreleased]
+
 ### Added
 
 - Driving feel on the pad, with rumble on: the triggers shake when the
