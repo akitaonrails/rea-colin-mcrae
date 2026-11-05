@@ -310,7 +310,10 @@ The launcher writes these registry entries:
   options.
 - **Anything else:** run `CMRLauncher.exe --check`, then open an issue with
   the [bug form](https://github.com/akitaonrails/rea-colin-mcrae/issues/new?template=bug-report.yml)
-  and attach `launcher.log` (remove personal paths). Never attach game
+  and attach `launcher.log` (remove personal paths). The form asks for your
+  `Rally.exe` SHA-256: the Play tab shows it next to the edition, with a
+  **Copy SHA-256** button, and `launcher.log` gets the same line as soon as
+  the window opens, whether or not you press Play. Never attach game
   files.
 
 ## Known limitations
