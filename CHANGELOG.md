@@ -50,6 +50,8 @@ From a test of the launcher on native Windows 10
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-05
+
 ### Added
 
 - Driving feel on the pad, with rumble on: the triggers shake when the
