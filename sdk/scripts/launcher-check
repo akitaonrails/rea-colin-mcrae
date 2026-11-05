@@ -49,6 +49,11 @@ ACTION_API='rea_launcher_win32::instance::is_action'
 # The SDK version these APIs arrive in.
 NEW_API_SINCE='v0.4.0'
 USAGE_API_SINCE='v0.4.2'
+# Version info, icon and manifest in the exe; editing the runtime copy's
+# imports instead of injecting into the running game.
+RESOURCES_API='rea_launcher_build::Resources'
+IMPORT_API='rea_launcher::pe::edit::add_import rea_close_hook::import_into'
+AV_API_SINCE='v0.4.3'
 WAIVERS_FILE='.rea-check-waivers'
 
 RULES='snapshots snapshot-version snapshot-helper audience instance instance-unix
@@ -56,7 +61,8 @@ window-lookup native-report native-pad glx-restart light-widgets ms-dll-override
 own-fix-draft readme-sections readme-order readme-contributing readme-links
 readme-versions agents-pointer agents-duplicate sdk-workflows sdk-tag lld
 wine-tests look-flag look-sizes option-tests quit-paths issue-unknown-edition
-issue-bug-report sdk-update windows-subsystem bad-command-line action-flags release-notes watch-pins unwatched-pins process-listing
+issue-bug-report sdk-update windows-subsystem bad-command-line action-flags exe-resources
+remote-injection release-notes watch-pins unwatched-pins process-listing
 real-game-gated drm-exception waivers'
 
 # rule ID: sets SEV (error|warn), SINCE (SDK tag or empty), FIX and WHY.
@@ -165,6 +171,12 @@ rule() {
     action-flags) SEV=error SINCE=$USAGE_API_SINCE
       WHY='An action flag (--check, --setup, --download-*) that finds the window open must be refused with exit 5, never answered by bringing the window forward with exit 0: SRR'"'"'s --setup did nothing and reported success.'
       FIX="pass $ACTION_API(&args, &[own actions]) as the action argument of second_start / SecondStart::decide, and take the instance for --check too" ;;
+    exe-resources) SEV=error SINCE=$AV_API_SINCE
+      WHY='An executable with no name, version, publisher or icon is one of the signals antivirus heuristics weigh; a player'"'"'s antivirus flagged CMRLauncher 0.9.0, which had none (Quiver feedback, 2026-11-04).'
+      FIX="add a build.rs calling $RESOURCES_API::new(name, description).company(..).file_name(\"X.exe\").icon(\"../../packaging/appimage/<id>-launcher.png\").embed() and rea-launcher-build in [build-dependencies] (templates/launcher has it)" ;;
+    remote-injection) SEV=error SINCE=$AV_API_SINCE
+      WHY='Allocating, writing and starting threads in another process (VirtualAllocEx, WriteProcessMemory, CreateRemoteThread) or hooking its thread from outside is what trojans and keyloggers do; antivirus heuristics flag it. CMRLauncher injected cmrhooks.dll that way and was flagged.'
+      FIX="load the hook DLL through the runtime copy's import table ($IMPORT_API) and write fixes into the runtime copy's file, not the running game's memory (docs/playbooks/binary-patching.md)" ;;
     release-notes) SEV=error
       WHY='launcher-release takes the release notes from the CHANGELOG section of the tag. notes: generate replaces them with GitHub'"'"'s commit list, and CMR4 v0.4.0 went out with only a "Full Changelog" link.'
       FIX='remove notes: generate from the launcher-release call in build.yml; keep a "## [X.Y.Z]" CHANGELOG section per release' ;;
@@ -655,6 +667,17 @@ if [ -s "$T/win-targets" ]; then
   grep -E '(second_start|SecondStart::decide)\([ \t]*(false|true)[ \t]*,' "$T/code.txt" | head -n 1 | cut -d: -f1,2 > "$T/literal-action"
   if [ -s "$T/literal-action" ]; then
     emit action-flags "$(cat "$T/literal-action")" "the second start's action is a literal, not instance::is_action(&args, ..)"
+  fi
+fi
+
+# --- antivirus: resources in the exe, no injection --------------------------------------------------
+if [ -s "$T/win-targets" ]; then
+  find . \( -path ./target -o -path ./sdk -o -path ./.work -o -path ./.git \) -prune -o -name build.rs -exec grep -lF 'rea_launcher_build' {} + 2>/dev/null | grep -q . \
+    || emit exe-resources "$MAIN_RS" "the Windows executable has no version information, icon or manifest (no build.rs with rea_launcher_build)"
+  grep -E '(CreateRemoteThread|WriteProcessMemory|VirtualAllocEx|NtWriteVirtualMemory|QueueUserAPC|\.message_hook\()' "$T/code.txt" \
+    | grep -vE '^[^:]*:[0-9]+:[ \t]*(//|\*)' | head -n 1 | cut -d: -f1,2 > "$T/injection"
+  if [ -s "$T/injection" ]; then
+    emit remote-injection "$(cat "$T/injection")" "writes into or hooks the running game from outside (the injector pattern antivirus heuristics flag)"
   fi
 fi
 

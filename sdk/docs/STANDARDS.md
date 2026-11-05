@@ -445,6 +445,26 @@ the clean-up routine so the user's disk doesn't fill up:
 5. **Report** what was removed, how much space it freed, and what was kept
    on purpose.
 
+## Antivirus: look like what we are
+
+A launcher's job (patching a game, loading a hook DLL, closing a stuck
+game) overlaps with what malware does, so every launcher avoids the
+patterns antivirus heuristics flag (CMRLauncher 0.9.0 was flagged on a
+player's Windows, Quiver feedback 2026-11-04):
+
+- **Never inject into the running game.** No `VirtualAllocEx`,
+  `WriteProcessMemory`, `CreateRemoteThread` or hooks installed from
+  outside. Fixes go into the runtime copy's file; hook DLLs into its import
+  table (`rea_launcher::pe::edit`, `rea_close_hook::import_into`).
+  `launcher-check` rule `remote-injection`.
+- **A named, versioned executable.** Version information, the launcher's
+  icon and a manifest through `rea-launcher-build` in `build.rs`; hook DLLs
+  get version information too. Rule `exe-resources`.
+- **Not packed or obfuscated**, no network access beyond the pinned
+  downloads the player asks for, and the README's SmartScreen sentence.
+- Code signing, when the owner has a certificate, comes on top of these;
+  it doesn't replace them.
+
 ## Windows builds link with LLD
 
 GNU ld 2.47 mis-links the import tables of Rust Windows binaries (i686 and
