@@ -162,9 +162,29 @@ pub unsafe fn blit_sampled(
     w: u32,
     h: u32,
 ) {
+    unsafe { blit_sampled_rows(&sample, green6, dst, dst_pitch, dst_bits, w, h, 0, h) };
+}
+
+/// The rows `from..to` of `blit_sampled`; rows are independent, so separate
+/// ranges may be drawn at the same time on different threads.
+///
+/// # Safety
+/// As `blit_sampled`.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn blit_sampled_rows(
+    sample: &dyn Fn(f32, f32) -> u16,
+    green6: bool,
+    dst: *mut u8,
+    dst_pitch: usize,
+    dst_bits: u32,
+    w: u32,
+    h: u32,
+    from: u32,
+    to: u32,
+) {
     let (x0, y0, tw, th) = target(w, h);
     let px = dst_bits as usize / 8;
-    for y in 0..h {
+    for y in from..to.min(h) {
         let row = unsafe { dst.add(y as usize * dst_pitch) };
         unsafe { core::ptr::write_bytes(row, 0, w as usize * px) };
         if y < y0 || y >= y0 + th {

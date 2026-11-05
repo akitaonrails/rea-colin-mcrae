@@ -148,7 +148,7 @@ pub fn plan(settings: &Settings, env: &Env) -> Plan {
             )),
             parts: vec![(
                 Target::Cave(fixes::F17_SETTINGS),
-                le(&[cap, settings.flip_flags(), settings.rumble_strength()]),
+                le(&[cap, settings.flip_flags(), settings.rumble_word()]),
             )],
         });
     }
@@ -366,6 +366,8 @@ mod tests {
             ("hd_art", "on"),
             ("gamepad_axes", "off"),
             ("rumble", "30"),
+            ("trigger_rumble", "off"),
+            ("road_rumble", "off"),
             ("buttons", "original"),
             ("close_quits", "off"),
         ];
@@ -380,7 +382,21 @@ mod tests {
             let (cli, _) = Settings::parse_args([flag.clone(), value.to_string()]).unwrap();
             let file = Settings::parse_file(&format!("{key} = {value}\n")).0;
             assert_eq!(cli, file, "{flag} and {key} read alike");
-            let run = crate::form::with_look(Settings::default(), cli, Some((2560, 1440)));
+            // The trigger and road feel only shape a rumble that is on.
+            let needs_rumble = matches!(key, "trigger_rumble" | "road_rumble");
+            let with_rumble = |mut s: Settings| {
+                if needs_rumble {
+                    s.rumble = Some(60);
+                }
+                s
+            };
+            let run =
+                crate::form::with_look(Settings::default(), with_rumble(cli), Some((2560, 1440)));
+            let base = if needs_rumble {
+                plan(&with_rumble(Settings::default()), &WINDOWS)
+            } else {
+                base.clone()
+            };
             assert_ne!(plan(&run, &WINDOWS), base, "{flag} {value} changes nothing");
         }
     }

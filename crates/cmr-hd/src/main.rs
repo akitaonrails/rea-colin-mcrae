@@ -18,8 +18,11 @@ mod classes;
 mod depixel;
 /// The runtime names of HD bitmaps: the hook library's own source file, so
 /// the tool and the game side can't disagree (compiled here, not linked:
-/// on Windows the hook library is built without `std`).
+/// on Windows the hook library is built without `std`). The tool uses only
+/// the naming/format part; the hook-only BMP rewrites in the same file
+/// (the game-layout and 8-bit paths) are dead here.
 #[path = "../../cmr-hooks/src/hd.rs"]
+#[allow(dead_code)]
 mod hd;
 mod key;
 mod lock;

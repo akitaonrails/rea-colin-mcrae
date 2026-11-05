@@ -50,6 +50,12 @@ pub struct Settings {
     pub smooth_distance: Option<bool>,
     /// Gamepad rumble strength in percent (fix F22); 0 or unset: none.
     pub rumble: Option<u32>,
+    /// The trigger motors' feel: wheelspin and locking (`cmrhooks` feel).
+    /// On unless set off.
+    pub trigger_rumble: Option<bool>,
+    /// The faint road and rev-limiter feel (`cmrhooks` feel). On unless
+    /// set off.
+    pub road_rumble: Option<bool>,
     /// Linux only: how `cmr-play`'s gamescope enlarges the picture.
     pub scaler: Option<Scaler>,
     /// Pad button layout (fix F23): for the game's buttons 1 to 8, the
@@ -352,6 +358,18 @@ pub const OPTIONS: &[OptionSpec] = &[
     .with_placeholder("<0-100|off>")
     .with_example("60"),
     OptionSpec::new(
+        "trigger_rumble",
+        Kind::Toggle,
+        "Trigger rumble",
+        "With rumble on, the triggers shake too: the right one when the wheels spin, the left one braking hard and pulsing when the wheels lock. Needs a pad with trigger motors (Xbox One or newer). On unless set off.",
+    ),
+    OptionSpec::new(
+        "road_rumble",
+        Kind::Toggle,
+        "Road rumble",
+        "With rumble on, a faint buzz while driving, stronger on rough ground, and at the rev limiter. Off: only impacts, landings, bumps and gear changes shake the pad. On unless set off.",
+    ),
+    OptionSpec::new(
         "buttons",
         Kind::Text,
         "Pad buttons",
@@ -516,6 +534,8 @@ impl Settings {
             }
             "fps_limit" => self.fps_limit = Some(number(value)?),
             "rumble" => self.rumble = Some(number(value)?),
+            "trigger_rumble" => self.trigger_rumble = Some(toggle(value)?),
+            "road_rumble" => self.road_rumble = Some(toggle(value)?),
             "texture_filter" => self.texture_filter = Some(choice(value, TextureFilter::from_key)?),
             "scaler" => self.scaler = Some(choice(value, Scaler::from_key)?),
             "buttons" => self.buttons = Some(parse_buttons(text(value)?).ok_or_else(needs)?),
@@ -562,10 +582,21 @@ impl Settings {
             texture_filter: over.texture_filter.or(self.texture_filter),
             smooth_distance: over.smooth_distance.or(self.smooth_distance),
             rumble: over.rumble.or(self.rumble),
+            trigger_rumble: over.trigger_rumble.or(self.trigger_rumble),
+            road_rumble: over.road_rumble.or(self.road_rumble),
             scaler: over.scaler.or(self.scaler),
             buttons: over.buttons.or(self.buttons),
             hd_art: over.hd_art.or(self.hd_art),
         }
+    }
+
+    /// What `cmrhooks` reads for the rumble (F17's settings block): the
+    /// strength in percent in the low byte, bit 8 set with the trigger feel
+    /// off, bit 9 with the road feel off.
+    pub fn rumble_word(&self) -> u32 {
+        self.rumble_strength()
+            | (u32::from(self.trigger_rumble == Some(false)) << 8)
+            | (u32::from(self.road_rumble == Some(false)) << 9)
     }
 
     /// The rumble strength in percent, 0 for none.

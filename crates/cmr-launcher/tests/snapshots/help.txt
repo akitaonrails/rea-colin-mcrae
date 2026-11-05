@@ -18,6 +18,8 @@ CMRLauncher [options]
   --scaler nearest|pixel|fsr|linear                 Scaler (Linux helper)
   --gamepad-axes on|off                             Gamepad pedals
   --rumble <0-100|off>                              Rumble
+  --trigger-rumble on|off                           Trigger rumble
+  --road-rumble on|off                              Road rumble
   --buttons <layout>                                Pad buttons
   --close-quits on|off                              Closing quits
 

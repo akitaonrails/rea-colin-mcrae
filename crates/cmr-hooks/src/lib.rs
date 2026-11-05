@@ -19,6 +19,7 @@ pub mod depth;
 pub mod easing;
 pub mod fe_compose;
 pub mod fe_hd;
+pub mod feel;
 pub mod hd;
 pub mod mipmap;
 pub mod pacing;

@@ -91,6 +91,102 @@ unsafe extern "system" {
     fn HeapAlloc(heap: *mut u8, flags: u32, bytes: usize) -> *mut u8;
     fn HeapFree(heap: *mut u8, flags: u32, mem: *mut u8) -> i32;
     fn VirtualProtect(addr: *mut u8, size: usize, protect: u32, old: *mut u32) -> i32;
+    fn CreateThread(
+        attrs: *mut u8,
+        stack: usize,
+        start: unsafe extern "system" fn(*mut u8) -> u32,
+        param: *mut u8,
+        flags: u32,
+        id: *mut u32,
+    ) -> *mut u8;
+    fn WaitForMultipleObjects(n: u32, handles: *const *mut u8, all: i32, ms: u32) -> u32;
+}
+
+/// One band of rows of the front end's enlarged picture, for a helper thread.
+struct Band<'a> {
+    sample: &'a (dyn Fn(f32, f32) -> u16 + Sync),
+    green6: bool,
+    dst: *mut u8,
+    pitch: usize,
+    bits: u32,
+    w: u32,
+    h: u32,
+    from: u32,
+    to: u32,
+}
+
+unsafe extern "system" fn draw_band(param: *mut u8) -> u32 {
+    // SAFETY: `blit_sampled_parallel` keeps the band alive until this
+    // thread has ended; bands write disjoint rows.
+    unsafe {
+        let b = &*(param as *const Band);
+        crate::present::blit_sampled_rows(
+            b.sample, b.green6, b.dst, b.pitch, b.bits, b.w, b.h, b.from, b.to,
+        );
+    }
+    0
+}
+
+/// `present::blit_sampled` spread over helper threads. Composing the HD
+/// front end samples every screen pixel (6 million at 4K), and the main
+/// thread is pinned to one core (`share_core`: on hybrid CPUs often an
+/// efficiency core), which held the menus near 20 fps. The helpers are not
+/// pinned, so Windows runs them on the fast cores; the main thread waits.
+/// Falls back to drawing everything here when a thread can't start.
+unsafe fn blit_sampled_parallel(
+    sample: &(dyn Fn(f32, f32) -> u16 + Sync),
+    green6: bool,
+    dst: *mut u8,
+    pitch: usize,
+    bits: u32,
+    w: u32,
+    h: u32,
+) {
+    const BANDS: usize = 16;
+    let step = h.div_ceil(BANDS as u32);
+    let bands: [Band; BANDS] = core::array::from_fn(|i| Band {
+        sample,
+        green6,
+        dst,
+        pitch,
+        bits,
+        w,
+        h,
+        from: (i as u32 * step).min(h),
+        to: ((i as u32 + 1) * step).min(h),
+    });
+    let mut threads = [core::ptr::null_mut::<u8>(); BANDS];
+    let mut started = 0;
+    // SAFETY: plain Win32 calls; every started thread is waited for before
+    // `bands` goes out of scope.
+    unsafe {
+        for (i, band) in bands.iter().enumerate().skip(1) {
+            let t = CreateThread(
+                core::ptr::null_mut(),
+                64 * 1024,
+                draw_band,
+                band as *const Band as *mut u8,
+                0,
+                core::ptr::null_mut(),
+            );
+            if t.is_null() {
+                // This band and the rest are drawn here.
+                for b in &bands[i..] {
+                    draw_band(b as *const Band as *mut u8);
+                }
+                break;
+            }
+            threads[started] = t;
+            started += 1;
+        }
+        draw_band(&bands[0] as *const Band as *mut u8);
+        if started > 0 {
+            WaitForMultipleObjects(started as u32, threads.as_ptr(), 1, 0xffff_ffff);
+            for &t in &threads[..started] {
+                CloseHandle(t);
+            }
+        }
+    }
 }
 
 type ExceptionFilter = unsafe extern "system" fn(*mut u8) -> i32;
@@ -682,14 +778,15 @@ pub extern "stdcall" fn cmr_fe_present(display: *mut u8) -> u32 {
             return 0;
         }
         let composed = compose_fe(back);
+        fe_dump(back, composed);
         if let Some(buf) = lock(back, DDLOCK_WRITEONLY) {
             let pitch = buf.pitch as usize;
             if composed {
                 let (layers, n) = &*addr_of_mut!(FE_LAYERS);
                 let (top, under) = (&*addr_of_mut!(FE_TOP), &*addr_of_mut!(FE_UNDER));
                 let picture = &*addr_of_mut!(PICTURE);
-                crate::present::blit_sampled(
-                    |fx, fy| crate::fe_compose::sample(&layers[..*n], top, under, picture, fx, fy),
+                blit_sampled_parallel(
+                    &|fx, fy| crate::fe_compose::sample(&layers[..*n], top, under, picture, fx, fy),
                     green6,
                     buf.surface,
                     pitch,
@@ -717,6 +814,127 @@ pub extern "stdcall" fn cmr_fe_present(display: *mut u8) -> u32 {
     }
 }
 
+/// A diagnostic (`CMR_FE_DUMP=<folder>`): every 3 seconds the front end's
+/// picture (`pic.raw`, 640x480 16-bit) and the frame's blits into it
+/// (`layers.txt`), overwritten. Off unless the variable is set.
+static mut FE_DUMP: (Option<[u8; 260]>, usize, i64) = (None, 0, 0);
+static mut FE_DUMP_SEQ: u32 = 0;
+
+unsafe fn fe_dump(back: *mut usize, composed: bool) {
+    // SAFETY: plain Win32 calls; the main thread's own tables.
+    unsafe {
+        let d = &mut *addr_of_mut!(FE_DUMP);
+        if d.0.is_none() {
+            let mut dir = [0u8; 260];
+            let n = GetEnvironmentVariableA(c"CMR_FE_DUMP".as_ptr().cast(), dir.as_mut_ptr(), 230);
+            d.1 = if n > 0 && n < 230 { n as usize } else { 0 };
+            d.0 = Some(dir);
+        }
+        if d.1 == 0 {
+            return;
+        }
+        let (mut t, mut freq) = (0i64, 0i64);
+        QueryPerformanceCounter(&mut t);
+        QueryPerformanceFrequency(&mut freq);
+        if t - d.2 < 3 * freq {
+            return;
+        }
+        d.2 = t;
+        let dir = d.0.unwrap_or([0; 260]);
+        let seq = &mut *addr_of_mut!(FE_DUMP_SEQ);
+        *seq += 1;
+        let tag = [
+            b'0' + (*seq / 100 % 10) as u8,
+            b'0' + (*seq / 10 % 10) as u8,
+            b'0' + (*seq % 10) as u8,
+        ];
+        let open = |name: &[u8]| {
+            let mut path = [0u8; 260];
+            path[..d.1].copy_from_slice(&dir[..d.1]);
+            path[d.1] = b'\\';
+            path[d.1 + 1..d.1 + 4].copy_from_slice(&tag);
+            path[d.1 + 4] = b'_';
+            path[d.1 + 5..d.1 + 5 + name.len()].copy_from_slice(name);
+            // GENERIC_WRITE, share read, CREATE_ALWAYS
+            CreateFileA(
+                path.as_ptr(),
+                0x4000_0000,
+                1,
+                core::ptr::null_mut(),
+                2,
+                0x80,
+                core::ptr::null_mut(),
+            )
+        };
+        let f = open(b"pic.raw\0");
+        if f as isize != -1 {
+            let mut w = 0;
+            WriteFile(
+                f,
+                (*addr_of_mut!(PICTURE)).as_ptr().cast(),
+                640 * 480 * 2,
+                &mut w,
+                core::ptr::null_mut(),
+            );
+            CloseHandle(f);
+        }
+        let f = open(b"layers.txt\0");
+        if f as isize == -1 {
+            return;
+        }
+        let put = |line: &Line| {
+            let mut w = 0;
+            WriteFile(
+                f,
+                line.buf.as_ptr(),
+                line.len as u32,
+                &mut w,
+                core::ptr::null_mut(),
+            );
+        };
+        let draws = &*addr_of_mut!(FE_DRAWS);
+        let mut head = Line::default();
+        head.text(b"composed ")
+            .num(u32::from(composed))
+            .text(b" draws ")
+            .num(draws.1 as u32)
+            .text(b" full ")
+            .num(u32::from(draws.2))
+            .text(b"\r\n");
+        put(&head);
+        for dr in &draws.0[..draws.1] {
+            let mut l = Line::default();
+            let r = |l: &mut Line, x: [i32; 4]| {
+                for v in x {
+                    l.num(v.max(0) as u32).text(b" ");
+                }
+            };
+            l.text(if dr.dst_surface == back as usize {
+                b"back "
+            } else {
+                b"other "
+            });
+            l.text(b"dst ");
+            r(&mut l, dr.draw.dst);
+            l.text(b"src ");
+            r(&mut l, dr.src);
+            l.text(b"surf ").num(dr.surface as u32);
+            l.text(b" twin ")
+                .num(u32::from(dr.draw.twin))
+                .text(b" key ")
+                .num(dr.key.map_or(99999, |k| k[0]));
+            if let Some(p) = cached_pixels(dr.surface, false) {
+                l.text(b" img ").num(p.w as u32).text(b"x").num(p.h as u32);
+            } else {
+                l.text(b" img none");
+            }
+            l.text(b"\r\n");
+            put(&l);
+        }
+        CloseHandle(f);
+    }
+}
+
 /// This frame's layers for `fe_compose`, and its owner maps.
 static mut FE_LAYERS: ([crate::fe_compose::Layer<'static>; 1024], usize) =
     ([crate::fe_compose::Layer::EMPTY; 1024], 0);
@@ -732,6 +950,16 @@ unsafe fn compose_fe(back: *mut usize) -> bool {
         if draws.2 {
             return false;
         }
+        // Without a twin in the frame nothing is composed: don't lock the
+        // images at all. Reading every source surface each frame crashed
+        // inside dgVoodoo2's DirectDraw on native Windows (HD art off, any
+        // race resolution), and the copies would go unused anyway.
+        if !draws.0[..draws.1]
+            .iter()
+            .any(|d| d.dst_surface == back as usize && d.draw.twin)
+        {
+            return false;
+        }
         let (layers, n) = &mut *addr_of_mut!(FE_LAYERS);
         *n = 0;
         let mut twins = false;
@@ -739,12 +967,15 @@ unsafe fn compose_fe(back: *mut usize) -> bool {
             .iter()
             .filter(|d| d.dst_surface == back as usize)
         {
-            let Some(image) = cached_pixels(d.surface) else {
+            // Copies made when the blit was noted only: by now the game may
+            // have released the surface (a stale one crashed here on native
+            // Windows with dgVoodoo2).
+            let Some(image) = cached_pixels(d.surface, false) else {
                 // An image that can't be read: its pixels stay unexplained.
                 continue;
             };
             let twin = if d.draw.twin {
-                cached_pixels(d.twin_surface).map(|p| (p, d.twin_src))
+                cached_pixels(d.twin_surface, false).map(|p| (p, d.twin_src))
             } else {
                 None
             };
@@ -791,8 +1022,12 @@ static mut PIXELS: ([Cached; 1024], usize) = (
     0,
 );
 
-/// The pixels of a game surface (16-bit), read once.
-unsafe fn cached_pixels(surface: usize) -> Option<crate::fe_compose::Pixels<'static>> {
+/// The pixels of a game surface (16-bit), read once; with `may_lock` false
+/// only an earlier copy (the surface may be gone).
+unsafe fn cached_pixels(
+    surface: usize,
+    may_lock: bool,
+) -> Option<crate::fe_compose::Pixels<'static>> {
     // SAFETY: the main thread's own table; a live surface locked for
     // reading and unlocked again; heap blocks the table owns.
     unsafe {
@@ -806,7 +1041,7 @@ unsafe fn cached_pixels(surface: usize) -> Option<crate::fe_compose::Pixels<'sta
         if let Some(c) = cache.0[..cache.1].iter().find(|c| c.surface == surface) {
             return Some(view(c));
         }
-        if surface == 0 || cache.1 == cache.0.len() {
+        if !may_lock || surface == 0 || cache.1 == cache.0.len() {
             return None;
         }
         let s = surface as *mut usize;
@@ -969,10 +1204,25 @@ pub extern "stdcall" fn cmr_pedals(block: *mut u8, player: u32) {
     if block.is_null() || player > 3 {
         return;
     }
+    if player == 0 {
+        let mut freq = 0;
+        // SAFETY: the game's live car block; a plain Win32 call. The feel
+        // is written here (update thread) and read each frame (main
+        // thread): a torn reading of a few floats is harmless.
+        unsafe {
+            QueryPerformanceFrequency(&mut freq);
+            (*addr_of_mut!(FEEL)).update(crate::feel::Car::read(block), now(), freq);
+        }
+    }
     let Some((get, _)) = xinput() else { return };
     let mut pad = PadState::default();
     // SAFETY: XInput fills the state it is given.
-    if unsafe { get(player, &mut pad) } != 0 {
+    let read = unsafe { get(player, &mut pad) } == 0;
+    if player == 0 {
+        // SAFETY: the game's live car block (see `car_dump`).
+        unsafe { car_dump(block, pad.left_trigger, pad.right_trigger) };
+    }
+    if !read {
         return;
     }
     // SAFETY: the player's car control block: throttle +0x304 and brake
@@ -992,6 +1242,72 @@ pub extern "stdcall" fn cmr_pedals(block: *mut u8, player: u32) {
     }
 }
 
+/// A research aid (`CMR_CAR_DUMP=<file>`): twenty times a second, 16 KiB of
+/// the game's memory around player 1's car block (from 8 KiB before it;
+/// the cars are in the executable's own data) appended to the file after
+/// a header of the milliseconds since the first record, the block's
+/// address and the pad's two triggers. Off unless the variable is set.
+static mut CAR_DUMP: (Option<*mut u8>, i64) = (None, 0);
+
+unsafe fn car_dump(block: *mut u8, left: u8, right: u8) {
+    // SAFETY: plain Win32 calls; the block is the game's (4 KiB of car state).
+    unsafe {
+        let d = &mut *addr_of_mut!(CAR_DUMP);
+        if d.0.is_none() {
+            let mut path = [0u8; 260];
+            let n =
+                GetEnvironmentVariableA(c"CMR_CAR_DUMP".as_ptr().cast(), path.as_mut_ptr(), 259);
+            let f = if n == 0 || n >= 259 {
+                core::ptr::null_mut()
+            } else {
+                // GENERIC_WRITE, share read, CREATE_ALWAYS
+                let f = CreateFileA(
+                    path.as_ptr(),
+                    0x4000_0000,
+                    1,
+                    core::ptr::null_mut(),
+                    2,
+                    0x80,
+                    core::ptr::null_mut(),
+                );
+                if f as isize == -1 {
+                    core::ptr::null_mut()
+                } else {
+                    f
+                }
+            };
+            d.0 = Some(f);
+        }
+        let Some(f) = d.0.filter(|f| !f.is_null()) else {
+            return;
+        };
+        let (mut t, mut freq) = (0i64, 0i64);
+        QueryPerformanceCounter(&mut t);
+        QueryPerformanceFrequency(&mut freq);
+        if d.1 == 0 {
+            d.1 = t - freq;
+        }
+        static mut LAST: i64 = 0;
+        if t - LAST < freq / 20 {
+            return;
+        }
+        LAST = t;
+        // Only inside the executable's image (0x400000..0xd95000).
+        let from = block as usize - 0x2000;
+        if from < 0x0040_0000 || from + 0x4000 > 0x00d9_5000 {
+            return;
+        }
+        let head = [
+            ((t - d.1) * 1000 / freq.max(1)) as u32,
+            block as u32,
+            u32::from(left) | (u32::from(right) << 8),
+        ];
+        let mut w = 0;
+        WriteFile(f, head.as_ptr().cast(), 12, &mut w, core::ptr::null_mut());
+        WriteFile(f, from as *const u8, 0x4000, &mut w, core::ptr::null_mut());
+    }
+}
+
 static mut RUMBLE: crate::xinput::Rumble = crate::xinput::Rumble::new();
 /// The motor speeds last sent, so XInput is only called on a change.
 static mut MOTORS: (u16, u16) = (0, 0);
@@ -1006,7 +1322,7 @@ pub extern "stdcall" fn cmr_rumble(severity: i32, settings: *const PresentSettin
     // SAFETY: the launcher's settings block; the rumble state is the main
     // and update threads' only shared write, a few floats.
     unsafe {
-        let strength = (*settings).rumble;
+        let strength = (*settings).rumble & 0xff;
         if let Some(d) = diag() {
             d.impacts += 1;
             d.severity_max = d.severity_max.max(severity);
@@ -1084,9 +1400,59 @@ unsafe fn hd_bitmap(bmp: *const u8) -> *mut u8 {
         path[n] = b'\\';
         path[n + 1..n + 17].copy_from_slice(&name);
         path[n + 17..n + 22].copy_from_slice(b".bmp\0");
+        let heap = GetProcessHeap();
+        let (mut out, mut size) = read_bmp_file(path.as_ptr());
+        if out.is_null() {
+            return out;
+        }
+        // Larger than a texture may be (`hd::too_large`): the same picture
+        // from the x2 set, when this is the x4 one.
+        if crate::hd::too_large(core::slice::from_raw_parts(out, size as usize))
+            && n >= 2
+            && dir.0[n - 2..n].eq_ignore_ascii_case(b"x4")
+        {
+            path[n - 1] = b'2';
+            let (smaller, len) = read_bmp_file(path.as_ptr());
+            if !smaller.is_null() {
+                HeapFree(heap, 0, out);
+                (out, size) = (smaller, len);
+            }
+        }
+        // Rows the game would read sheared and past the end: lay them out
+        // its way (`hd::game_layout_len`).
+        let file = core::slice::from_raw_parts(out as *const u8, size as usize);
+        if let Some(len) = crate::hd::game_layout_len(file) {
+            let fixed = HeapAlloc(heap, 0, len);
+            let ok = !fixed.is_null()
+                && crate::hd::to_game_layout(file, core::slice::from_raw_parts_mut(fixed, len));
+            HeapFree(heap, 0, out);
+            if !ok {
+                if !fixed.is_null() {
+                    HeapFree(heap, 0, fixed);
+                }
+                return core::ptr::null_mut();
+            }
+            out = fixed;
+            size = len as u32;
+        }
+        // A defined palette size for RGB images (`hd::define_palette_count`).
+        crate::hd::define_palette_count(core::slice::from_raw_parts_mut(out, size as usize));
+        out
+    }
+}
+
+/// Scratch space for `hd::to_8bit` (loading runs on the main thread).
+static mut QUANT_HIST: [u32; 32768] = [0; 32768];
+static mut QUANT_LUT: [u8; 32768] = [0; 32768];
+
+/// A whole BMP file (`path` NUL-terminated) on the process heap, and its
+/// size; null when it can't be read or isn't a BMP of a sane size.
+unsafe fn read_bmp_file(path: *const u8) -> (*mut u8, u32) {
+    // SAFETY: plain Win32 file and heap calls.
+    unsafe {
         // GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING
         let f = CreateFileA(
-            path.as_ptr(),
+            path,
             0x8000_0000,
             1,
             core::ptr::null_mut(),
@@ -1095,7 +1461,7 @@ unsafe fn hd_bitmap(bmp: *const u8) -> *mut u8 {
             core::ptr::null_mut(),
         );
         if f as isize == -1 {
-            return core::ptr::null_mut();
+            return (core::ptr::null_mut(), 0);
         }
         let heap = GetProcessHeap();
         let size = GetFileSize(f, core::ptr::null_mut());
@@ -1114,7 +1480,26 @@ unsafe fn hd_bitmap(bmp: *const u8) -> *mut u8 {
             }
         }
         CloseHandle(f);
-        out
+        (out, size)
+    }
+}
+
+/// Where the game notes that the device has palettized textures:
+/// `[[0x50283c]+0x78]+0x6c`, non-zero when it does (the texture loader
+/// `0x499ef0` then makes 8-bit images palettized textures and copies their
+/// palette, `0x49a153`). Null when the game hasn't set its device up.
+unsafe fn palette_textures() -> *mut usize {
+    // SAFETY: the game's 3D settings and its device description.
+    unsafe {
+        let settings = *(0x0050_283c as *const *const u8);
+        if settings.is_null() {
+            return core::ptr::null_mut();
+        }
+        let device = *(settings.add(0x78) as *const *mut u8);
+        if device.is_null() {
+            return core::ptr::null_mut();
+        }
+        device.add(0x6c) as *mut usize
     }
 }
 
@@ -1138,6 +1523,45 @@ pub extern "stdcall" fn cmr_hd_load(load: LoadBitmap, bmp: *const u8, flags: u32
         let hd = hd_bitmap(bmp);
         if hd.is_null() {
             return game;
+        }
+        // An RGB twin on a device with palettized textures (dgVoodoo2 on
+        // native Windows; Wine has none): the game turns 8-bit images into
+        // palettized textures and has no working path for an RGB one there.
+        // It crashed copying an unset palette size, and with that defined
+        // (`hd::define_palette_count`) or the device's palettes hidden for
+        // the load the twin still drew black (the skies). Such a twin is
+        // made an 8-bit image with its own palette (`hd::to_8bit`), the
+        // kind the game makes working textures of there, like the HUD's.
+        let bits = *(hd.add(28) as *const u16);
+        let palettes = palette_textures();
+        let mut hd = hd;
+        if bits > 8 && !palettes.is_null() && *palettes != 0 {
+            let heap = GetProcessHeap();
+            let Some(file_len) = crate::hd::bmp_len(&*(hd as *const [u8; 6])) else {
+                HeapFree(heap, 0, hd);
+                return game;
+            };
+            let file = core::slice::from_raw_parts(hd as *const u8, file_len);
+            let eight = crate::hd::to_8bit_len(file).map_or(core::ptr::null_mut(), |len| {
+                let out = HeapAlloc(heap, 0, len);
+                if !out.is_null()
+                    && !crate::hd::to_8bit(
+                        file,
+                        core::slice::from_raw_parts_mut(out, len),
+                        &mut *addr_of_mut!(QUANT_HIST),
+                        &mut *addr_of_mut!(QUANT_LUT),
+                    )
+                {
+                    HeapFree(heap, 0, out);
+                    return core::ptr::null_mut();
+                }
+                out
+            });
+            HeapFree(heap, 0, hd);
+            if eight.is_null() {
+                return game;
+            }
+            hd = eight;
         }
         let twin = load(hd, flags);
         HeapFree(GetProcessHeap(), 0, hd);
@@ -1448,6 +1872,15 @@ unsafe fn note_fe_blit(args: *const usize) {
             entry.twin_surface = t.twin_surface;
             entry.draw.twin = true;
         }
+        // With HD twins about, copy the images' pixels now, while the game
+        // is drawing from them and they surely exist (`compose_fe` reads
+        // only these copies at the end of the frame).
+        if (*addr_of_mut!(FE_TWINS)).1 != 0 {
+            let _ = cached_pixels(entry.surface, true);
+            if entry.draw.twin {
+                let _ = cached_pixels(entry.twin_surface, true);
+            }
+        }
         draws.0[draws.1] = entry;
         draws.1 += 1;
     }
@@ -1638,6 +2071,16 @@ static mut FILTER_SET: bool = false;
 /// Motors off now (on a pause, outside races, when the game ends or
 /// crashes). The launcher also turns them off after the game exits.
 pub fn stop_rumble() {
+    // SAFETY: the main thread's pad, if one was found; its motors stopped.
+    unsafe {
+        (*addr_of_mut!(FEEL)).reset();
+        let pad = (*addr_of_mut!(WGI)).pad;
+        if !pad.is_null() && *addr_of_mut!(WGI_SENT) != [0; 4] {
+            let put: PutVibration = method(pad, IGAMEPAD_PUT_VIBRATION);
+            put(pad, 0.0, 0.0, 0.0, 0.0);
+            *addr_of_mut!(WGI_SENT) = [0; 4];
+        }
+    }
     let Some((_, set)) = xinput() else { return };
     // SAFETY: the rumble statics; a plain XInput call.
     unsafe {
@@ -1739,23 +2182,73 @@ unsafe extern "system" fn crash_filter(info: *mut u8) -> i32 {
     }
 }
 
-/// Each frame: sends the fading rumble to player 1's pad; off outside
-/// driving (menus, loading, the pause menu).
+/// Each frame: sends the impacts' fading rumble and the driving feel
+/// (`feel`) to player 1's pad; off outside driving (menus, loading, the
+/// pause menu). Through Windows.Gaming.Input, which also reaches the
+/// trigger motors, when it has the pad; else XInput's two motors.
 fn update_rumble(settings: &PresentSettings) {
-    if settings.rumble == 0 {
+    // The strength in the low byte; bits 8 and 9 switch the trigger and
+    // road feel off (`feel::Choices`).
+    let strength = settings.rumble & 0xff;
+    if strength == 0 {
         return;
     }
-    let Some((_, set)) = xinput() else { return };
+    let choices = crate::feel::Choices::of_word(settings.rumble);
     let mut freq = 0;
     // SAFETY: plain Win32 calls and the main thread's own statics.
     unsafe {
         QueryPerformanceFrequency(&mut freq);
+        let t = now();
         let rumble = &mut *addr_of_mut!(RUMBLE);
+        let feel = &mut *addr_of_mut!(FEEL);
         // Driving states only: 5..=9 (state 0xa is the pause menu).
-        if !(5..=9).contains(&Game.state()) {
+        let driving = (5..=9).contains(&Game.state());
+        if !driving {
             rumble.stop();
+            feel.reset();
         }
-        let motors = crate::xinput::motors(rumble.level(now(), freq));
+        let impact = crate::xinput::motors(rumble.level(t, freq));
+        let out = feel.output_with(
+            t,
+            freq,
+            (impact.0 as f32 / 65535.0, impact.1 as f32 / 65535.0),
+            strength.min(100) as f32 / 100.0,
+            choices,
+        );
+        let pad = wgi_pad(t, freq);
+        if !pad.is_null() {
+            // A 1/64 step, so a steady feel isn't sent again every frame.
+            let q = |v: f32| (v.clamp(0.0, 1.0) * 64.0) as u8;
+            let key = [
+                q(out.heavy),
+                q(out.light),
+                q(out.left_trigger),
+                q(out.right_trigger),
+            ];
+            let sent = &mut *addr_of_mut!(WGI_SENT);
+            if key != *sent {
+                let put: PutVibration = method(pad, IGAMEPAD_PUT_VIBRATION);
+                let hr = put(
+                    pad,
+                    f64::from(out.heavy),
+                    f64::from(out.light),
+                    f64::from(out.left_trigger),
+                    f64::from(out.right_trigger),
+                );
+                *sent = key;
+                if hr < 0 {
+                    // The pad went away: look for it again.
+                    wgi_forget_pad();
+                }
+                if let Some(d) = diag() {
+                    d.motor_max = d.motor_max.max((out.heavy * 65535.0) as u16);
+                    d.send_errors += u32::from(hr < 0);
+                }
+            }
+            return;
+        }
+        let Some((_, set)) = xinput() else { return };
+        let motors = ((out.heavy * 65535.0) as u16, (out.light * 65535.0) as u16);
         let sent = &mut *addr_of_mut!(MOTORS);
         if motors != *sent {
             let mut v = [motors.0, motors.1];
@@ -1766,6 +2259,127 @@ fn update_rumble(settings: &PresentSettings) {
                 d.send_errors += u32::from(rc != 0);
             }
         }
+    }
+}
+
+static mut FEEL: crate::feel::Feel = crate::feel::Feel::new();
+
+/// Windows.Gaming.Input's gamepad statics and player 1's pad, found once
+/// (the pad looked for again each second until there is one).
+struct Wgi {
+    tried: bool,
+    statics: *mut usize,
+    pad: *mut usize,
+    next_look: i64,
+}
+
+static mut WGI: Wgi = Wgi {
+    tried: false,
+    statics: core::ptr::null_mut(),
+    pad: core::ptr::null_mut(),
+    next_look: 0,
+};
+/// The vibration last sent (1/64 steps: heavy, light, left, right).
+static mut WGI_SENT: [u8; 4] = [0; 4];
+
+type RoInitialize = unsafe extern "system" fn(u32) -> i32;
+type RoGetActivationFactory = unsafe extern "system" fn(*mut u8, *const u8, *mut *mut usize) -> i32;
+type WindowsCreateString = unsafe extern "system" fn(*const u16, u32, *mut *mut u8) -> i32;
+type WindowsDeleteString = unsafe extern "system" fn(*mut u8) -> i32;
+type GetGamepads = unsafe extern "system" fn(*mut usize, *mut *mut usize) -> i32;
+type VectorGetAt = unsafe extern "system" fn(*mut usize, u32, *mut *mut usize) -> i32;
+type VectorSize = unsafe extern "system" fn(*mut usize, *mut u32) -> i32;
+/// `IGamepad::put_Vibration(GamepadVibration)`: the struct's four doubles
+/// (left motor, right motor, left trigger, right trigger) passed by value
+/// are, on x86, the same stack as four double arguments.
+type PutVibration = unsafe extern "system" fn(*mut usize, f64, f64, f64, f64) -> i32;
+/// Method slots after IInspectable's six.
+const STATICS_GET_GAMEPADS: usize = 10;
+const VECTOR_GET_AT: usize = 6;
+const VECTOR_SIZE: usize = 7;
+const IGAMEPAD_PUT_VIBRATION: usize = 7;
+/// IID_IGamepadStatics {8BBCE529-D49C-39E9-9560-E47DDE96B7C8}.
+const IID_IGAMEPAD_STATICS: [u8; 16] = [
+    0x29, 0xe5, 0xbc, 0x8b, 0x9c, 0xd4, 0xe9, 0x39, 0x95, 0x60, 0xe4, 0x7d, 0xde, 0x96, 0xb7, 0xc8,
+];
+
+/// Player 1's pad through Windows.Gaming.Input, or null (no such API, as
+/// under Wine; no pad yet).
+unsafe fn wgi_pad(now: i64, freq: i64) -> *mut usize {
+    // SAFETY: the main thread's own state; combase's documented exports;
+    // COM objects through their method tables, every reference released.
+    unsafe {
+        let w = &mut *addr_of_mut!(WGI);
+        if !w.tried {
+            w.tried = true;
+            let combase = LoadLibraryA(c"combase.dll".as_ptr().cast());
+            if combase.is_null() {
+                return core::ptr::null_mut();
+            }
+            let f = |name: &core::ffi::CStr| GetProcAddress(combase, name.as_ptr().cast());
+            let (init, factory, create, delete) = (
+                f(c"RoInitialize"),
+                f(c"RoGetActivationFactory"),
+                f(c"WindowsCreateString"),
+                f(c"WindowsDeleteString"),
+            );
+            if init.is_null() || factory.is_null() || create.is_null() || delete.is_null() {
+                return core::ptr::null_mut();
+            }
+            let init: RoInitialize = core::mem::transmute(init);
+            let factory: RoGetActivationFactory = core::mem::transmute(factory);
+            let create: WindowsCreateString = core::mem::transmute(create);
+            let delete: WindowsDeleteString = core::mem::transmute(delete);
+            // Multithreaded; a thread already in a COM apartment keeps it.
+            init(1);
+            let name = b"Windows.Gaming.Input.Gamepad";
+            let wide: [u16; 28] = core::array::from_fn(|i| u16::from(name[i]));
+            let mut hs = core::ptr::null_mut();
+            if create(wide.as_ptr(), wide.len() as u32, &mut hs) < 0 {
+                return core::ptr::null_mut();
+            }
+            let mut statics = core::ptr::null_mut();
+            let hr = factory(hs, IID_IGAMEPAD_STATICS.as_ptr(), &mut statics);
+            delete(hs);
+            if hr >= 0 {
+                w.statics = statics;
+            }
+        }
+        if w.statics.is_null() {
+            return core::ptr::null_mut();
+        }
+        if w.pad.is_null() && now >= w.next_look {
+            w.next_look = now + freq;
+            let get: GetGamepads = method(w.statics, STATICS_GET_GAMEPADS);
+            let mut view = core::ptr::null_mut();
+            if get(w.statics, &mut view) >= 0 && !view.is_null() {
+                let size: VectorSize = method(view, VECTOR_SIZE);
+                let mut n = 0;
+                if size(view, &mut n) >= 0 && n > 0 {
+                    let at: VectorGetAt = method(view, VECTOR_GET_AT);
+                    let mut pad = core::ptr::null_mut();
+                    if at(view, 0, &mut pad) >= 0 {
+                        w.pad = pad;
+                    }
+                }
+                let release: Release = method(view, RELEASE);
+                release(view);
+            }
+        }
+        w.pad
+    }
+}
+
+fn wgi_forget_pad() {
+    // SAFETY: the main thread's own state; the pad's reference released.
+    unsafe {
+        let w = &mut *addr_of_mut!(WGI);
+        if !w.pad.is_null() {
+            let release: Release = method(w.pad, RELEASE);
+            release(w.pad);
+            w.pad = core::ptr::null_mut();
+        }
+        *addr_of_mut!(WGI_SENT) = [0; 4];
     }
 }
 
@@ -1848,6 +2462,7 @@ const DDSD_MIPMAPCOUNT: u32 = 0x0002_0000;
 const DDCKEY_SRCBLT: u32 = 0x8;
 const DDPF_RGB: u32 = 0x40;
 const DDPF_ALPHAPIXELS: u32 = 0x1;
+const DDPF_PALETTEINDEXED8: u32 = 0x20;
 const QUERY_INTERFACE: usize = 0;
 const GET_ATTACHED_SURFACE: usize = 0x30 / 4;
 const GET_COLOR_KEY: usize = 0x40 / 4;
@@ -1906,7 +2521,39 @@ pub extern "stdcall" fn cmr_texture_loaded(texture: *mut usize) {
                 };
                 crate::mipmap::Format::new(d.red_mask, d.green_mask, d.blue_mask, alpha)
             });
+        // Palettized levels (dgVoodoo2 has such textures; Wine doesn't).
+        let palettized = fmt.is_none()
+            && desc_of(surface)
+                .is_some_and(|d| d.bits == 8 && d.pf_flags & DDPF_PALETTEINDEXED8 != 0);
         let mut cur = surface;
+        if palettized {
+            let caps = DDSCAPS_MIPMAP | DDSCAPS_TEXTURE;
+            loop {
+                let attached: GetAttachedSurface = method(cur, GET_ATTACHED_SURFACE);
+                let mut next = core::ptr::null_mut();
+                if attached(cur, &caps, &mut next) != 0 || next.is_null() {
+                    break;
+                }
+                if let Some(src) = lock(cur, DDLOCK_READONLY) {
+                    if let Some(dst) = lock(next, DDLOCK_WRITEONLY) {
+                        crate::mipmap::downsample8(
+                            key.map(|k| k as u8),
+                            src.surface as *const u8,
+                            src.pitch as usize,
+                            src.width,
+                            src.height,
+                            dst.surface,
+                            dst.pitch as usize,
+                        );
+                        unlock(next);
+                    }
+                    unlock(cur);
+                }
+                let release: Release = method(cur, RELEASE);
+                release(cur);
+                cur = next;
+            }
+        }
         if let Some(fmt) = fmt {
             let caps = DDSCAPS_MIPMAP | DDSCAPS_TEXTURE;
             loop {

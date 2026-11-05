@@ -10,9 +10,11 @@ never changed: the launcher plays from a private copy.
 This project contains no game files: you need your own copy of the game.
 
 > **Work in progress.** It has been played end to end under Linux, with
-> Wine and with Proton. It hasn't been tried on native Windows or on a
-> Steam Deck yet. If you play on either, please
-> [send a test report](https://github.com/akitaonrails/rea-colin-mcrae/issues/new?template=test-report.yml).
+> Wine and with Proton, and on native Windows 11 with dgVoodoo2 2.87.6
+> placed in the runtime folder (the launcher doesn't bundle it yet: see
+> [Known limitations](#known-limitations)). The Steam Deck is untested.
+> Please [send a test report](https://github.com/akitaonrails/rea-colin-mcrae/issues/new?template=test-report.yml)
+> whatever you play on.
 
 [![Stages in Greece and Sweden played with the launcher: 16:9 widescreen at high resolution, the HD art pack's redrawn HUD, pace-note signs and skies](https://new-uploads-akitaonrails.s3.us-east-2.amazonaws.com/2026/11/01/colin-mcrae-rally/showcase-poster.jpg)](https://new-uploads-akitaonrails.s3.us-east-2.amazonaws.com/2026/11/01/colin-mcrae-rally/showcase-h264.mp4)
 
@@ -30,7 +32,7 @@ watch (3 minutes, with sound).*
 | Only the left stick drives; triggers do nothing. | The triggers or the right stick are the throttle and brake. With an Xbox-style pad both triggers work at once (left-foot braking). Start pauses a race and the d-pad moves through the menus. |
 | The 1998 button order feels wrong on today's pads. | A modern layout by default (A handbrake, bumpers change gear, Y changes the view), or the 1998 order, or your own. |
 | The controller choice falls back to the keyboard by itself, and some saves leave the car turning in circles. | The choice stays, and a save left in that state starts normally again. |
-| No rumble. | Optional rumble on impacts, with a test button in the window. |
+| No rumble. | Optional rumble on impacts, plus a driving feel with trigger motors: wheelspin and locking, gear changes, landings, bumps, rough ground and the rev limiter. A test button in the window. |
 | The game offers no race resolution above 800×600, and stretches on a wide screen. | Races at higher resolutions, up to 4K. 16:9 widescreen shows more to the sides instead of stretching, and the HUD, messages, results and loading screens scale with the resolution. |
 | The view ends close, and scenery pops in between stage sections. | A longer view, up to 3× further, eased when the stage changes it, with less flicker on distant hills. |
 | Textures shimmer in the distance. | Smooth textures that don't shimmer, or a crisp unfiltered look. A frame-rate cap and a vsync choice for even frames. |
@@ -81,8 +83,10 @@ Download from the [latest release](https://github.com/akitaonrails/rea-colin-mcr
 The launcher isn't signed, so the first start from a downloaded zip may
 show "Windows protected your PC": click **More info → Run anyway**.
 
-On native Windows 10 the launcher itself (the window, wrong folders, the
-command line) has been tested, the game not yet. Whether it works or not, please
+On native Windows the launcher itself (the window, wrong folders, the
+command line) has been tested on 10; the game has been played on Windows 11
+with dgVoodoo2 2.87.6 in the runtime folder (see
+[Known limitations](#known-limitations)). Whether it works or not, please
 [send a test report](https://github.com/akitaonrails/rea-colin-mcrae/issues/new?template=test-report.yml)
 with your `launcher.log` (see [Where things live](#where-things-live)).
 
@@ -153,9 +157,9 @@ only what changed. Your choices are remembered for next time.
 
 - **Play**: the game folder, the look and the saves folder.
 - **Picture**: each picture setting (and on Linux the scaler).
-- **Controls**: rumble with a **Test** button, then the pad layout:
-  **Modern**, **Original 1998** or **Custom**, with a button for each
-  action.
+- **Controls**: rumble with a **Test** button, the trigger and road feel
+  switches, then the pad layout: **Modern**, **Original 1998** or
+  **Custom**, with a button for each action.
 
 | Look | Race resolution | Picture | When to pick it |
 | --- | --- | --- | --- |
@@ -223,7 +227,9 @@ every option commented out and explained.
 | `hd_art` / `--hd-art` | Picture: HD art | `on`, `off`, or a folder made with `cmr-hd` | off | The HUD, logos, menu pictures and more, redrawn at high resolution ([docs/UPSCALING.md](docs/UPSCALING.md)). |
 | `scaler` / `--scaler` | Picture: Scaler (Linux only) | `nearest`, `pixel`, `fsr`, `linear` | `linear` | How gamescope enlarges the picture: Crisp pixels, Even pixels, FSR or Soft. Read by `cmr-play`. |
 | `gamepad_axes` / `--gamepad-axes` | — (advanced; the look sets it) | `on`, `off` | on (off in the Original look) | Triggers or right stick as throttle and brake, Start pauses. Off: only the left stick drives, as in 1998. |
-| `rumble` / `--rumble` | Controls: Rumble | `0` to `100`, `off` | off | Shakes the pad on impacts, at this strength in percent. |
+| `rumble` / `--rumble` | Controls: Rumble | `0` to `100`, `off` | off | Shakes the pad on impacts, at this strength in percent, and gives the driving feel below. |
+| `trigger_rumble` / `--trigger-rumble` | Controls: Trigger rumble | `on`, `off` | on | The triggers shake when the wheels spin (right) or lock under hard braking (left). Needs trigger motors (Xbox One or newer). |
+| `road_rumble` / `--road-rumble` | Controls: Road rumble | `on`, `off` | on | A faint buzz while driving, stronger on rough ground, and at the rev limiter. |
 | `buttons` / `--buttons` | Buttons: Pad buttons | `modern`, `original`, or eight button numbers | `modern` | The pad layout. The numbers are for select, back, change view, gear down, handbrake, gear up, (unused), pause, e.g. `1,2,4,5,1,6,7,8`. |
 | `close_quits` / `--close-quits` | — (advanced) | `on`, `off` | on, in every look | Closing the game window (Alt+F4) quits the game. Off: the 1998 behaviour. |
 
@@ -310,10 +316,15 @@ The launcher writes these registry entries:
 ## Known limitations
 
 - Only the European v1.5 `Rally.exe` is recognised so far.
-- The game on native Windows and the Steam Deck hasn't been tested yet
-  (the launcher itself was, on Windows 10). Under Wine
-  the looks, one launcher at a time, the saves copying and every way of
-  quitting were checked in the game; see [docs/RUNTIME_NOTES.md](docs/RUNTIME_NOTES.md).
+- Native Windows needs a DirectDraw wrapper: Windows' own has no Ramp
+  device and the game doesn't start without one. dgVoodoo2 2.87.6 in the
+  runtime folder was tested; the launcher doesn't bundle it yet (its
+  licence allows no redistribution), so this stays a manual step until the
+  owner decides on a bundled or downloadable wrapper. Wine and Proton need
+  nothing.
+- The Steam Deck hasn't been tested yet. Under Wine the looks, one
+  launcher at a time, the saves copying and every way of quitting were
+  checked in the game; see [docs/RUNTIME_NOTES.md](docs/RUNTIME_NOTES.md).
 - The menus are enlarged on the CPU each frame; without a graphics card
   (software drawing) that is slower at 4K.
 - A short white flash before the legal screen at high resolutions.

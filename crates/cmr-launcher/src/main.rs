@@ -238,6 +238,17 @@ mod app {
                 Ok(text) => Ok(text.as_deref()),
                 Err(why) => Err(why.as_str()),
             };
+            // The player reporting a problem needs the exact executable's
+            // SHA-256: log it as soon as the window opens, before Play.
+            if let Ok(Some(text)) = text {
+                let (saved, _) = Settings::parse_file(text);
+                if let Some(game) = saved.game.as_ref()
+                    && let Some(line) =
+                        cmr_launcher::window::describe_game(&game.display().to_string())
+                {
+                    log_line(&line);
+                }
+            }
             match ui::show(&settings_path, text, &template, linux) {
                 Ok(ui::Outcome::Play) => {
                     log_line("settings window: play");

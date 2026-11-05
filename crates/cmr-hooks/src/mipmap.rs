@@ -94,9 +94,81 @@ pub unsafe fn downsample(
     }
 }
 
+/// The pixel of a 2x2 block of palette indices that represents it: the
+/// most frequent one (the first of a tie, in reading order). With `key`,
+/// that index is transparent: the block is when more than two of the four
+/// are, else the most frequent of the others. Palettized textures appear
+/// where the device has them (dgVoodoo2 on Windows; Wine has none, so all
+/// textures are 16-bit there): their levels were left unfilled, and drawn
+/// far away they went missing or transparent.
+pub fn pick(px: [u8; 4], key: Option<u8>) -> u8 {
+    let keyed = px.iter().filter(|&&p| Some(p) == key).count();
+    if let Some(k) = key
+        && keyed > 2
+    {
+        return k;
+    }
+    let count = |v: u8| px.iter().filter(|&&p| p == v).count();
+    px.iter()
+        .copied()
+        .filter(|&p| Some(p) != key)
+        .fold(None, |best: Option<u8>, p| match best {
+            Some(b) if count(b) >= count(p) => Some(b),
+            _ => Some(p),
+        })
+        .unwrap_or(px[0])
+}
+
+/// `downsample` for 8-bit palettized levels (`pick`). Pitches in bytes.
+///
+/// # Safety
+/// As `downsample`, with bytes for pixels.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn downsample8(
+    key: Option<u8>,
+    src: *const u8,
+    src_pitch: usize,
+    w: u32,
+    h: u32,
+    dst: *mut u8,
+    dst_pitch: usize,
+) {
+    let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+    for y in 0..nh as usize {
+        let (y0, y1) = ((2 * y).min(h as usize - 1), (2 * y + 1).min(h as usize - 1));
+        for x in 0..nw as usize {
+            let (x0, x1) = ((2 * x).min(w as usize - 1), (2 * x + 1).min(w as usize - 1));
+            let at = |yy: usize, xx: usize| unsafe { *src.add(yy * src_pitch + xx) };
+            let px = [at(y0, x0), at(y0, x1), at(y1, x0), at(y1, x1)];
+            unsafe { *dst.add(y * dst_pitch + x) = pick(px, key) };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_blocks_take_their_most_frequent_index() {
+        assert_eq!(pick([3, 3, 7, 9], None), 3);
+        assert_eq!(pick([1, 2, 2, 1], None), 1, "a tie keeps the first");
+        // Mostly keyed: transparent; otherwise the key never wins.
+        assert_eq!(pick([0, 0, 0, 5], Some(0)), 0);
+        assert_eq!(pick([0, 0, 5, 6], Some(0)), 5);
+        assert_eq!(pick([0, 4, 0, 4], Some(0)), 4);
+    }
+
+    #[test]
+    fn downsamples_a_palettized_level() {
+        // 4x2 with a pitch of 8 bytes: left 2x2 index 9, right 2x2 keyed.
+        let mut src = [0xeeu8; 16];
+        src[..4].copy_from_slice(&[9, 9, 0, 0]);
+        src[8..12].copy_from_slice(&[9, 9, 0, 0]);
+        let mut dst = [0x55u8; 2];
+        unsafe { downsample8(Some(0), src.as_ptr(), 8, 4, 2, dst.as_mut_ptr(), 2) };
+        assert_eq!(dst, [9, 0]);
+    }
 
     fn rgb565() -> Format {
         Format::new(0xf800, 0x7e0, 0x1f, 0).unwrap()

@@ -48,6 +48,44 @@ From a test of the launcher on native Windows 10
   PC" for the unsigned launcher, and lists every registry entry the
   launcher writes, with how to remove them.
 
+## [Unreleased]
+
+### Added
+
+- Driving feel on the pad, with rumble on: the triggers shake when the
+  wheels spin (right) and when braking hard, pulsing when the wheels lock
+  (left); the pad knocks at each gear change, on landings (small jumps
+  too) and on bumps, and buzzes faintly on rough ground and at the rev
+  limiter. Trigger motors are reached through Windows.Gaming.Input; without
+  it (Wine) the two main motors still work through XInput.
+- `trigger_rumble` and `road_rumble` (Controls tab, `--trigger-rumble`,
+  `--road-rumble`): switch the trigger feel or the road buzz off. Both on
+  unless set off.
+
+### Fixed
+
+- The exact `Rally.exe` SHA-256 is written to `launcher.log` as soon as the
+  settings window opens, and the Play tab shows it with a Copy button for an
+  issue report, whether or not Play was pressed (issue #2).
+- Native Windows with dgVoodoo2:
+  - Any race resolution crashed in the menus: the front end locked
+    images the game had already released. Their pixels are now copied
+    while the game draws from them.
+  - HD art crashed after the developer splash: the game's BMP reader steps
+    24-bit rows by the width rounded to 4 pixels, so HD images of other
+    widths were read sheared and past their end. They are laid out its way.
+  - Entering a race with HD art crashed: on a device with palettized
+    textures the texture loader copies an unset palette size for 24-bit
+    images. Such HD textures (skies, panoramas) are now made 8-bit with
+    their own palette; they had drawn black.
+  - HD textures over 4096 pixels (the x4 sky) use the x2 picture.
+  - With smooth textures, scenery went missing and parts of the car
+    transparent: the mipmap levels of palettized textures were never
+    filled. They are now.
+- The HD menus ran near 20 fps at 4K: composing them is spread over helper
+  threads (the game's own thread is pinned to one core, often an
+  efficiency core on hybrid CPUs). About 80 fps now.
+
 ## [0.9.0] - 2026-11-03
 
 ### Changed
