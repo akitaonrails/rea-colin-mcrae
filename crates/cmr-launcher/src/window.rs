@@ -48,7 +48,10 @@ pub enum Check {
     Empty,
     /// A known edition, with the exact executable's SHA-256 (shown so the
     /// player can copy it into a report, and logged).
-    Found { name: &'static str, sha256: String },
+    Found {
+        name: &'static str,
+        sha256: String,
+    },
     Problem(String),
 }
 
@@ -1013,9 +1016,12 @@ mod tests {
         ui.get_by_role_and_label(Role::Button, "Copy SHA-256")
             .click();
         ui.step();
-        let copied = ui.output().platform_output.commands.iter().any(
-            |c| matches!(c, egui::OutputCommand::CopyText(text) if text == &sha),
-        );
+        let copied = ui
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .any(|c| matches!(c, egui::OutputCommand::CopyText(text) if text == &sha));
         assert!(copied, "the system clipboard gets the digest");
     }
 
@@ -1023,7 +1029,11 @@ mod tests {
     fn the_log_line_names_the_edition_and_sha256() {
         let dir = temp("describe");
         assert_eq!(describe_game(""), None);
-        assert_eq!(describe_game(dir.to_str().unwrap()), None, "no Rally.exe yet");
+        assert_eq!(
+            describe_game(dir.to_str().unwrap()),
+            None,
+            "no Rally.exe yet"
+        );
         std::fs::write(dir.join("Rally.exe"), b"not a known build").unwrap();
         let line = describe_game(dir.to_str().unwrap()).unwrap();
         assert!(line.contains("Rally.exe"), "{line}");
