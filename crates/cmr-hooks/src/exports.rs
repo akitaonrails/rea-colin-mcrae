@@ -84,6 +84,8 @@ unsafe extern "system" {
     fn SetUnhandledExceptionFilter(filter: Option<ExceptionFilter>) -> Option<ExceptionFilter>;
     fn GetModuleHandleExA(flags: u32, name: *const u8, module: *mut *mut u8) -> i32;
     fn GetModuleFileNameA(module: *mut u8, buf: *mut u8, size: u32) -> u32;
+    fn GetSystemDirectoryA(buf: *mut u8, size: u32) -> u32;
+    fn GetFileAttributesA(name: *const u8) -> u32;
     fn CloseHandle(handle: *mut u8) -> i32;
     fn ReadFile(file: *mut u8, buf: *mut u8, len: u32, read: *mut u32, ov: *mut u8) -> i32;
     fn GetFileSize(file: *mut u8, high: *mut u32) -> u32;
@@ -2094,13 +2096,90 @@ pub fn stop_rumble() {
     }
 }
 
-/// Installs the crash handler once (the first game update or frame).
+/// Installs the crash handler once (on DLL attach or the first game update).
 fn install_crash_filter() {
     // SAFETY: main/update thread statics, set once; a plain Win32 call.
     unsafe {
         if !*addr_of_mut!(FILTER_SET) {
             *addr_of_mut!(FILTER_SET) = true;
             *addr_of_mut!(PREVIOUS_FILTER) = SetUnhandledExceptionFilter(Some(crash_filter));
+        }
+    }
+}
+
+/// Loads `<SystemDir>\dplayx.dll` only when the file exists on disk, so
+/// Windows 10/11's DirectPlay appcompat shim never opens `fondue.exe` when the
+/// optional DirectPlay feature is not installed.
+unsafe fn system_dplayx() -> *mut u8 {
+    static mut MODULE: *mut u8 = core::ptr::null_mut();
+    static mut TRIED: bool = false;
+    unsafe {
+        if *addr_of_mut!(TRIED) {
+            return *addr_of_mut!(MODULE);
+        }
+        *addr_of_mut!(TRIED) = true;
+        let mut path = [0u8; 280];
+        let n = GetSystemDirectoryA(path.as_mut_ptr(), 260) as usize;
+        let suffix = b"\\dplayx.dll\0";
+        if n == 0 || n + suffix.len() > path.len() {
+            return core::ptr::null_mut();
+        }
+        path[n..n + suffix.len()].copy_from_slice(suffix);
+        if GetFileAttributesA(path.as_ptr()) == u32::MAX {
+            return core::ptr::null_mut();
+        }
+        let m = LoadLibraryA(path.as_ptr());
+        *addr_of_mut!(MODULE) = m;
+        m
+    }
+}
+
+unsafe extern "system" fn dplay_enumerate_a(cb: *mut u8, ctx: *mut u8) -> i32 {
+    type EnumFn = unsafe extern "system" fn(*mut u8, *mut u8) -> i32;
+    unsafe {
+        let m = system_dplayx();
+        if !m.is_null() {
+            let f = GetProcAddress(m, c"DirectPlayEnumerateA".as_ptr().cast());
+            if !f.is_null() {
+                let func: EnumFn = core::mem::transmute(f);
+                return func(cb, ctx);
+            }
+        }
+        0 // DP_OK (0 connection providers)
+    }
+}
+
+unsafe extern "system" fn dplay_create(guid: *mut u8, dp: *mut *mut u8, unk: *mut u8) -> i32 {
+    type CreateFn = unsafe extern "system" fn(*mut u8, *mut *mut u8, *mut u8) -> i32;
+    unsafe {
+        let m = system_dplayx();
+        if !m.is_null() {
+            let f = GetProcAddress(m, c"DirectPlayCreate".as_ptr().cast());
+            if !f.is_null() {
+                let func: CreateFn = core::mem::transmute(f);
+                return func(guid, dp, unk);
+            }
+        }
+        -2_005_466_886 // 0x887700fa: DPERR_UNAVAILABLE
+    }
+}
+
+/// Runs on `DLL_PROCESS_ATTACH` before `WinMain`: installs the crash filter
+/// and points `Rally.exe`'s detached `DPLAYX.dll` IAT slots (`0x4e602c`,
+/// `0x4e6030`) at our dynamic wrappers.
+pub fn attach() {
+    install_crash_filter();
+    const IAT_ENUM: *mut usize = 0x004e_602c as *mut usize;
+    const IAT_CREATE: *mut usize = 0x004e_6030 as *mut usize;
+    const PAGE_READWRITE: u32 = 0x04;
+    unsafe {
+        let mut old = 0u32;
+        if VirtualProtect(IAT_ENUM.cast(), 8, PAGE_READWRITE, &mut old) != 0 {
+            if *IAT_ENUM == 0x004b_8755 {
+                *IAT_ENUM = dplay_enumerate_a as *const () as usize;
+                *IAT_CREATE = dplay_create as *const () as usize;
+            }
+            let _ = VirtualProtect(IAT_ENUM.cast(), 8, old, &mut old);
         }
     }
 }

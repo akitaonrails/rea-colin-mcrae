@@ -50,6 +50,30 @@ From a test of the launcher on native Windows 10
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-06
+
+### Fixed
+
+- Native Windows 10 and 11 now work out of the box without installing
+  anything by hand:
+  - **dgVoodoo2 2.87.6 (`DDraw.dll` and `D3DImm.dll`) is now bundled** in
+    `dgvoodoo/` and installed into the runtime folder (`%LOCALAPPDATA%\CMRLauncher\Rally`)
+    with a generated `dgVoodoo.conf` whenever the launcher runs on Windows.
+    Previously, Windows 10 and 11's built-in `ddraw.dll` failed DirectDraw /
+    `IDirect3D2` initialization or high-resolution mode switches and the game
+    exited immediately after pressing Play unless the player had placed
+    dgVoodoo2 into the runtime folder by hand.
+  - **Legacy Windows DirectPlay is no longer required to start the game.**
+    `Rally.exe` statically imported `DPLAYX.dll`, which is absent on Windows
+    10 and 11 unless the legacy `DirectPlay` Windows Feature is enabled. The
+    runtime copy now detaches the static `DPLAYX.dll` import and loads
+    `<SystemDir>\dplayx.dll` dynamically only when it is installed on the
+    system, falling back cleanly for single-player when it is not.
+  - **Crash and fatal Windows exit codes are now reported in a dialog**
+    pointing to `%LOCALAPPDATA%\CMRLauncher\launcher.log`, and the crash
+    handler is installed as soon as `cmrhooks.dll` attaches (before `WinMain`
+    starts) instead of waiting for the first race update.
+
 ## [0.10.0] - 2026-11-05
 
 ### Added

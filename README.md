@@ -444,6 +444,8 @@ the game's settings are this launcher's own.
 
 ## Credits
 
+- [dgVoodoo2](https://github.com/dege-diosg/dgVoodoo2) by Dege: the
+  DirectDraw and Direct3D Immediate Mode wrapper bundled for Windows 10 and 11.
 - [Carolyn Williams](https://commons.wikimedia.org/wiki/File:Colin_Mcrae_crop.jpg):
   the photo of Colin McRae in the settings window (CC BY 2.0).
 - [Barlow](https://github.com/jpt/barlow) by Jeremy Tribby: the window's

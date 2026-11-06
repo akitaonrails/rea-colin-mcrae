@@ -46,6 +46,11 @@ pub extern "C" fn rust_eh_personality() {}
 #[unsafe(no_mangle)]
 pub extern "system" fn DllMainCRTStartup(_: *mut u8, reason: u32, _: *mut u8) -> i32 {
     const DLL_PROCESS_DETACH: u32 = 0;
+    const DLL_PROCESS_ATTACH: u32 = 1;
+    #[cfg(target_arch = "x86")]
+    if reason == DLL_PROCESS_ATTACH {
+        exports::attach();
+    }
     // The game is ending: no rumble may outlive it.
     #[cfg(target_arch = "x86")]
     if reason == DLL_PROCESS_DETACH {

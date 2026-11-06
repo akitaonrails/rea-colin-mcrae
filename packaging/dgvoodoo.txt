@@ -1,0 +1,4 @@
+# dgVoodoo2 2.87.6 (MS/x86/DDraw.dll and MS/x86/D3DImm.dll): bundled into
+# dgvoodoo/ by packaging/package.sh and installed into the runtime folder on
+# native Windows (THIRD_PARTY.md, docs/RUNTIME_NOTES.md).
+https://github.com/dege-diosg/dgVoodoo2/releases/download/2.87.6/dgVoodoo2_87_6.zip 9afa493396feec7108f42a2d97661eef96bbaac5addf0dfb5cfbc3001cd76a0a mirror https://github.com/akitaonrails/rea-colin-mcrae/releases/download/thirdparty/dgVoodoo2_87_6.zip

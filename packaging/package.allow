@@ -13,6 +13,10 @@ linux/rea-play.sh
 linux/README.md
 linux/tests/*.sh
 licenses/Barlow-OFL.txt
+# dgVoodoo2 2.87.6 DirectDraw and Direct3D Immediate Mode wrappers for
+# native Windows (THIRD_PARTY.md).
+dgvoodoo/DDraw.dll
+dgvoodoo/D3DImm.dll
 # The HD art pack (owner decision 2026-10-31, THIRD_PARTY.md): our redrawn
 # and upscaled images, never the game's own files.
 hd/pack.txt

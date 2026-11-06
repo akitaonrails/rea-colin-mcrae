@@ -21,6 +21,12 @@ done
 (cd "$T/pack" && zip -qr "$T/cmr-hd-pack-test.zip" .)
 sha=$(sha256sum "$T/cmr-hd-pack-test.zip" | cut -d' ' -f1)
 echo "file://$T/cmr-hd-pack-test.zip $sha hosted" > "$T/pins/hd-pack.txt"
+mkdir -p "$T/dgv/MS/x86"
+printf 'MZ stand-in\n' > "$T/dgv/MS/x86/DDraw.dll"
+printf 'MZ stand-in\n' > "$T/dgv/MS/x86/D3DImm.dll"
+(cd "$T/dgv" && zip -qr "$T/dgVoodoo2_87_6.zip" .)
+dgv_sha=$(sha256sum "$T/dgVoodoo2_87_6.zip" | cut -d' ' -f1)
+echo "file://$T/dgVoodoo2_87_6.zip $dgv_sha hosted" > "$T/pins/dgvoodoo.txt"
 run() {
   REA_RELEASE_DIR=$1 REA_CACHE=$T/cache CMR_PACKAGE_PINS=$T/pins \
     sh "$ROOT/packaging/package.sh" --no-appimage "$2" > "$T/out" 2>&1

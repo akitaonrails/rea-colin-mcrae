@@ -12,6 +12,7 @@
 //! `rea_launcher` SDK; this crate holds the game's own knowledge.
 
 pub mod config;
+pub mod dgvoodoo;
 pub mod edition;
 pub mod fixes;
 pub mod form;
@@ -116,6 +117,69 @@ pub struct Hooks<'a> {
     pub exports: &'a [&'a str],
 }
 
+/// Removes the static `DPLAYX.dll` import descriptor from `Rally.exe` and
+/// points its two IAT slots (`0x4e602c` `DirectPlayEnumerateA`, `0x4e6030`
+/// `DirectPlayCreate`) at fallback stubs in the 11-byte NOP alignment block
+/// right before the thunks (`0x4b8755..0x4b8760`).
+///
+/// On Windows 10 and 11 where the optional legacy `DirectPlay` feature is not
+/// enabled, `C:\Windows\SysWOW64\dplayx.dll` is absent and a static import of
+/// `DPLAYX.dll` stops process creation with `STATUS_DLL_NOT_FOUND` (or opens
+/// `fondue.exe /enable-feature:DirectPlay`) even for single-player. When
+/// `cmrhooks.dll` loads, it replaces those two IAT slots with dynamic wrappers
+/// that load `<SystemDir>\dplayx.dll` only when that file exists on disk.
+pub fn detach_dplayx(file: &mut [u8]) -> bool {
+    const IMP_RVA: u32 = 0x000e_8fa4;
+    const NAME_RVA: u32 = 0x000e_9348;
+    const IAT_RVA: u32 = 0x000e_602c;
+    const STUB_OFF: usize = 0x000b_8755;
+    const ENUM_STUB_VA: u32 = 0x004b_8755;
+    const CREATE_STUB_VA: u32 = 0x004b_875a;
+
+    if file.len() < 0x000e_9354 {
+        return false;
+    }
+    let Some(pe_off) = file
+        .get(0x3c..0x40)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+    else {
+        return false;
+    };
+    let Some(imp_dir) = file.get(pe_off + 0x80..pe_off + 0x88) else {
+        return false;
+    };
+    let imp_rva = u32::from_le_bytes(imp_dir[0..4].try_into().unwrap());
+    let imp_size = u32::from_le_bytes(imp_dir[4..8].try_into().unwrap());
+    if imp_rva != IMP_RVA || imp_size < 40 {
+        return false;
+    }
+    let desc_off = IMP_RVA as usize;
+    let name_rva = u32::from_le_bytes(file[desc_off + 12..desc_off + 16].try_into().unwrap());
+    let iat_rva = u32::from_le_bytes(file[desc_off + 16..desc_off + 20].try_into().unwrap());
+    if name_rva != NAME_RVA || iat_rva != IAT_RVA {
+        return false;
+    }
+    if &file[NAME_RVA as usize..NAME_RVA as usize + 11] != b"DPLAYX.dll\0" {
+        return false;
+    }
+    if file[STUB_OFF..STUB_OFF + 11] != [0x90; 11] {
+        return false;
+    }
+    // 0x4b8755: xor eax, eax; ret 8  (DirectPlayEnumerateA -> DP_OK, 0 providers)
+    // 0x4b875a: or eax, -1; ret 12   (DirectPlayCreate -> E_FAIL)
+    file[STUB_OFF..STUB_OFF + 11].copy_from_slice(&[
+        0x31, 0xc0, 0xc2, 0x08, 0x00, 0x83, 0xc8, 0xff, 0xc2, 0x0c, 0x00,
+    ]);
+    let iat = IAT_RVA as usize;
+    file[iat..iat + 4].copy_from_slice(&ENUM_STUB_VA.to_le_bytes());
+    file[iat + 4..iat + 8].copy_from_slice(&CREATE_STUB_VA.to_le_bytes());
+    file[pe_off + 0x80..pe_off + 0x84].copy_from_slice(&(IMP_RVA + 20).to_le_bytes());
+    file[pe_off + 0x84..pe_off + 0x88].copy_from_slice(&(imp_size - 20).to_le_bytes());
+    file[desc_off..desc_off + 20].fill(0);
+    file[NAME_RVA as usize..NAME_RVA as usize + 11].fill(0);
+    true
+}
+
 /// The game's executable with every fix written into the file, for the
 /// runtime copy (never the player's): each image write in place, the cave
 /// as a new section `.rea` (its address is passed to `writes_for`), and the
@@ -135,6 +199,7 @@ pub fn patched_exe(
     let err = |e: edit::EditError| e.to_string();
     let mut file = image.file.to_vec();
     edit::fix_base(&mut file).map_err(err)?;
+    detach_dplayx(&mut file);
     let cave_rva = edit::next_section_rva(&file).map_err(err)?;
     let cave_base = if cave_size == 0 {
         0
@@ -347,5 +412,44 @@ mod tests {
         let file = synthetic(&[0x90]);
         let img = Image::parse(&file).unwrap();
         assert!(prepare(&img, &TEST_FIXES, &[], 0x500000).is_err());
+    }
+
+    #[test]
+    fn detaches_static_dplayx_import_and_sets_fallback_stubs() {
+        let mut file = vec![0u8; 0x000e_9360];
+        file[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        file[0x80 + 0x80..0x80 + 0x84].copy_from_slice(&0x000e_8fa4u32.to_le_bytes());
+        file[0x80 + 0x84..0x80 + 0x88].copy_from_slice(&0xdcu32.to_le_bytes());
+        file[0x000e_8fa4 + 12..0x000e_8fa4 + 16].copy_from_slice(&0x000e_9348u32.to_le_bytes());
+        file[0x000e_8fa4 + 16..0x000e_8fa4 + 20].copy_from_slice(&0x000e_602cu32.to_le_bytes());
+        file[0x000e_9348..0x000e_9348 + 11].copy_from_slice(b"DPLAYX.dll\0");
+        file[0x000b_8755..0x000b_8760].fill(0x90);
+
+        assert!(detach_dplayx(&mut file));
+        assert_eq!(
+            u32::from_le_bytes(file[0x80 + 0x80..0x80 + 0x84].try_into().unwrap()),
+            0x000e_8fb8
+        );
+        assert_eq!(
+            u32::from_le_bytes(file[0x80 + 0x84..0x80 + 0x88].try_into().unwrap()),
+            0xc8
+        );
+        assert_eq!(&file[0x000e_9348..0x000e_9348 + 11], &[0u8; 11]);
+        assert_eq!(
+            u32::from_le_bytes(file[0x000e_602c..0x000e_6030].try_into().unwrap()),
+            0x004b_8755
+        );
+        assert_eq!(
+            u32::from_le_bytes(file[0x000e_6030..0x000e_6034].try_into().unwrap()),
+            0x004b_875a
+        );
+        assert_eq!(
+            &file[0x000b_8755..0x000b_8760],
+            &[
+                0x31, 0xc0, 0xc2, 0x08, 0x00, 0x83, 0xc8, 0xff, 0xc2, 0x0c, 0x00
+            ]
+        );
+        // Second call is a no-op.
+        assert!(!detach_dplayx(&mut file));
     }
 }

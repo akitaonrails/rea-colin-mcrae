@@ -24,7 +24,9 @@ source. Add a row before bundling anything new.
 
 ## Bundled DLLs
 
-None yet. Candidates and their state are in `docs/THIN_APP_PLAN.md`.
+| Component | Licence | Source |
+| --- | --- | --- |
+| dgVoodoo2 2.87.6 (`dgvoodoo/DDraw.dll`, `dgvoodoo/D3DImm.dll`, by Dege): DirectDraw and Direct3D Immediate Mode wrapper installed into the runtime folder on native Windows | Freeware (no licence text in the archive; owner decision 2026-11-06 to bundle the two 32-bit wrapper DLLs from the upstream release so native Windows 10 and 11 run out of the box) | https://github.com/dege-diosg/dgVoodoo2/releases/tag/2.87.6 (`packaging/dgvoodoo.txt`) |
 
 ## Bundled in the Linux AppImage (`packaging/package.sh`, `sdk/packaging/appimage-wine.sh`)
 

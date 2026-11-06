@@ -33,7 +33,7 @@ mod app {
     use cmr_launcher::form;
     use cmr_launcher::instance;
     use cmr_launcher::registry::{self, When};
-    use cmr_launcher::{Image, edition, fixes, hdpack, plan, prepare, runtime};
+    use cmr_launcher::{Image, dgvoodoo, edition, fixes, hdpack, plan, prepare, runtime};
     use rea_launcher::cfg::ArgError;
     use rea_launcher::log::Log;
     use rea_launcher::{cfg, fsx, paths};
@@ -463,6 +463,15 @@ mod app {
         } else {
             format!("XInput pads: {pads:?}")
         });
+        let launcher_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from("."));
+        if let Some(line) =
+            dgvoodoo::sync(&game, &rt, &launcher_dir.join("dgvoodoo"), &settings, wine)?
+        {
+            log_line(&line);
+        }
         // Every fix goes into the runtime copy's executable, built afresh
         // from the player's file on each start, and the hook library into
         // its import table: Windows loads it with the game. Nothing is
@@ -506,13 +515,18 @@ mod app {
             )
         })?;
         let code = process::Launch::new(rt.join(EXE)).cwd(&rt).run()?;
-        log_line(&format!("game exited with {code}"));
+        log_line(&format!("game exited with {code} (0x{code:08x})"));
         // The hook library writes crash.log in the game's folder on a crash.
         let crash = rt.join("crash.log");
-        if let Ok(report) = std::fs::read_to_string(&crash) {
-            log_line(&format!("the game crashed: {}", report.trim()));
-            let _ = std::fs::remove_file(&crash);
-        }
+        let crashed = match std::fs::read_to_string(&crash) {
+            Ok(report) => {
+                let trimmed = report.trim().to_string();
+                log_line(&format!("the game crashed: {trimmed}"));
+                let _ = std::fs::remove_file(&crash);
+                Some(trimmed)
+            }
+            Err(_) => None,
+        };
         if settings.rumble_strength() > 0 {
             xinput::stop_rumble();
         }
@@ -525,6 +539,17 @@ mod app {
         }
         // The next launcher may start once the saves are back.
         drop(instance_guard);
+        if let Some(report) = crashed {
+            fatal(&format!(
+                "The game crashed ({report}).\n\nDetails were written to:\n{}",
+                home().join("launcher.log").display()
+            ));
+        } else if code >= 0xC000_0000 {
+            fatal(&format!(
+                "The game exited unexpectedly with Windows error 0x{code:08X}.\n\nDetails were written to:\n{}",
+                home().join("launcher.log").display()
+            ));
+        }
         Ok(code)
     }
 }

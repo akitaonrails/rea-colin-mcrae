@@ -40,7 +40,7 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/cmr-package.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 rm -rf "$pkg" "$dist/$name.zip"
-mkdir -p "$pkg/linux/tests" "$pkg/licenses" "$pkg/hd"
+mkdir -p "$pkg/linux/tests" "$pkg/licenses" "$pkg/hd" "$pkg/dgvoodoo"
 cp "$release/CMRLauncher.exe" "$release/cmrhooks.dll" "$pkg/"
 cp "$ROOT/README.md" "$ROOT/THIRD_PARTY.md" "$ROOT/LICENSE-MIT" "$ROOT/LICENSE-APACHE" "$pkg/"
 [ -f "$ROOT/CHANGELOG.md" ] && cp "$ROOT/CHANGELOG.md" "$pkg/"
@@ -57,6 +57,14 @@ cp "$ROOT"/packaging/licenses/* "$pkg/licenses/"
 zip=$(pin_fetch hd-pack "$work") || { echo "package: no source for the HD art pack matched its pin" >&2; exit 1; }
 unzip -q "$zip" -d "$pkg/hd"
 [ -f "$pkg/hd/pack.txt" ] || { echo "package: the HD art pack has no pack.txt" >&2; exit 1; }
+
+# dgVoodoo2 2.87.6 (MS/x86/DDraw.dll and MS/x86/D3DImm.dll): installed into
+# the runtime folder on native Windows so DirectDraw and Direct3D Immediate
+# Mode work on Windows 10 and 11 out of the box.
+dgv=$(pin_fetch dgvoodoo "$work") || { echo "package: no source for dgVoodoo2 matched its pin" >&2; exit 1; }
+mkdir -p "$work/dgvoodoo"
+unzip -q "$dgv" MS/x86/DDraw.dll MS/x86/D3DImm.dll -d "$work/dgvoodoo"
+cp "$work/dgvoodoo/MS/x86/DDraw.dll" "$work/dgvoodoo/MS/x86/D3DImm.dll" "$pkg/dgvoodoo/"
 
 (cd "$dist" && zip -qr "$name.zip" "$name")
 echo "built $dist/$name.zip"
