@@ -5,6 +5,8 @@ described on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-07
+
 ### Fixed
 
 - An unknown `Rally.exe` now shows its SHA-256 under the message on the
