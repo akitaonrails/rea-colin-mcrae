@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "cmr-launcher"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "cmr-hdpack",
  "png",
