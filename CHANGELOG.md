@@ -12,6 +12,9 @@ described on the GitHub releases page.
   can be pasted into the report form instead of retyped (issue #4). The
   window also says the game was found but the version is unknown, instead of
   asking for the game folder again.
+- The README explains the keyboard: the game plays with it, how to pick it
+  in the game's Options, and that the launcher's pad fixes only raise the
+  throttle or the brake while a pad's trigger is pressed (issue #3).
 
 ## [0.10.1] - 2026-11-06
 

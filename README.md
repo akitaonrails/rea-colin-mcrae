@@ -203,6 +203,20 @@ there). To see what your pad sends to the game, run
 `CMRLauncher.exe --controllers` and move every stick and button; the
 result goes to `launcher.log`.
 
+## Keyboard
+
+The game plays with the keyboard, as it did in 1998. A fresh save already
+starts on it: the arrow keys drive (up accelerates, left and right steer),
+and the rest of the keys are the game's own, listed in its setup screens.
+
+To pick it, or to get it back after a pad was chosen, open **Options →
+Settings → Controller 1** in the game and set **Control method** to
+**Keyboard**. A pad that is plugged in takes over the menus and the car
+while the method says Joystick, so with both connected set the method to
+the one you want to use. The launcher doesn't take the keyboard away: its
+pad fixes only raise the throttle or the brake while a pad's trigger is
+pressed.
+
 ## Options
 
 Every option has the same name in the window, in `launcher.cfg`
