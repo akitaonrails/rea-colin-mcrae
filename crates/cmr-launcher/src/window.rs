@@ -52,7 +52,24 @@ pub enum Check {
         name: &'static str,
         sha256: String,
     },
+    /// A `Rally.exe` no edition matches, with its SHA-256: shown and
+    /// copyable like a known one, so a report never needs it retyped.
+    Unknown {
+        sha256: String,
+    },
     Problem(String),
+}
+
+impl Check {
+    /// The digest the window shows and copies, for a `Rally.exe` it could
+    /// read (known edition or not).
+    #[must_use]
+    pub fn sha256(&self) -> Option<&str> {
+        match self {
+            Check::Found { sha256, .. } | Check::Unknown { sha256 } => Some(sha256),
+            Check::Empty | Check::Problem(_) => None,
+        }
+    }
 }
 
 /// The `Rally.exe` in `dir`, matched without regard to case.
@@ -86,12 +103,9 @@ pub fn check_game(folder: &str) -> Check {
                 name: e.name,
                 sha256: edition::to_hex(&edition::sha256(&bytes)),
             },
-            Err(digest) => Check::Problem(format!(
-                "This Rally.exe is a version the launcher doesn't know (SHA-256 {}). \
-                 Please report it: {}",
-                edition::to_hex(&digest),
-                edition::REPORT_URL
-            )),
+            Err(digest) => Check::Unknown {
+                sha256: edition::to_hex(&digest),
+            },
         },
         Err(e) => Check::Problem(format!(
             "Can't read Rally.exe ({e}). Check that the file isn't open elsewhere and that you may read it."
@@ -246,7 +260,9 @@ pub fn draw(
             Tab::Controls => controls_tab(ui, state, platform),
         });
     });
-    let hint = if !state.ready() {
+    let hint = if matches!(state.check, Check::Unknown { .. }) {
+        "Play needs a Rally.exe the launcher knows: the Play tab says why."
+    } else if !state.ready() {
         "Play needs the game folder: choose it in the Play tab."
     } else if state.form.picture.resolution.is_some() {
         "In the game keep Resolution on 640×480; the race resolution replaces it."
@@ -294,6 +310,10 @@ fn status(ui: &mut egui::Ui, state: &State) {
     ) {
         (Some(e), _) => (e.clone(), ERROR),
         (None, Check::Found { .. }) => ("Ready. Press Play or Enter.".to_string(), MUTED),
+        (None, Check::Unknown { .. }) => (
+            "The game was found, but this Rally.exe is an unknown version.".to_string(),
+            MUTED,
+        ),
         (None, _) => (
             "First, show the launcher where the game is.".to_string(),
             MUTED,
@@ -397,12 +417,21 @@ fn play_tab(ui: &mut egui::Ui, state: &mut State, platform: &mut Platform<'_>) {
             MUTED,
         ),
         Check::Found { name, .. } => (format!("Found: {name}"), GOLD),
+        Check::Unknown { .. } => (
+            format!(
+                "This Rally.exe is a version the launcher doesn't know yet, so it is not \
+                 patched. Please report it: {}",
+                edition::REPORT_URL
+            ),
+            ERROR,
+        ),
         Check::Problem(p) => (p.clone(), ERROR),
     };
     ui.add(egui::Label::new(egui::RichText::new(note).font(body(13.0)).color(color)).wrap());
-    if let Check::Found { sha256, .. } = &state.check {
-        // The issue #2 report: the player needs this exact digest for an
-        // issue, so show it and copy it to the system clipboard in one click.
+    if let Some(sha256) = state.check.sha256() {
+        // The issue #2 and #4 reports: the player needs this exact digest
+        // for an issue, so show it and copy it to the system clipboard in
+        // one click, whether or not the launcher knows the build.
         ui.add(
             egui::Label::new(
                 egui::RichText::new(format!("Rally.exe SHA-256: {sha256}"))
@@ -413,7 +442,7 @@ fn play_tab(ui: &mut egui::Ui, state: &mut State, platform: &mut Platform<'_>) {
         );
         ui.add_space(4.0);
         if widgets::outline_button(ui, "Copy SHA-256").clicked() {
-            ui.ctx().copy_text(sha256.clone());
+            ui.ctx().copy_text(sha256.to_string());
         }
     }
     ui.add_space(10.0);
@@ -922,11 +951,14 @@ mod tests {
         std::fs::write(game.join("Rally.exe"), b"not a known build").unwrap();
         ui.state_mut().state.form.game = game.display().to_string();
         ui.run();
-        let Check::Problem(problem) = &ui.state().state.check else {
+        let Check::Unknown { sha256 } = &ui.state().state.check else {
             panic!("an unknown build is not ready");
         };
-        assert!(problem.contains(&edition::to_hex(&edition::sha256(b"not a known build"))));
-        assert!(problem.contains(edition::REPORT_URL));
+        assert_eq!(
+            sha256,
+            &edition::to_hex(&edition::sha256(b"not a known build"))
+        );
+        assert!(!ui.state().state.ready());
         ui.get_by_role_and_label(Role::Button, "Play").click();
         ui.run();
         assert_eq!(ui.state().played, 0);
@@ -995,34 +1027,42 @@ mod tests {
     }
 
     #[test]
-    fn a_known_edition_shows_its_sha256_and_copies_it() {
+    fn the_sha256_is_shown_and_copied_for_known_and_unknown_builds() {
         let sha = "ab".repeat(32);
-        let mut state = State::new(Some(""), true, SCREEN, 0);
-        state.check = Check::Found {
-            name: "EU v1.5 (official)",
-            sha256: sha.clone(),
-        };
-        let mut ui = open_state(state);
-        assert!(
-            ui.query_by_label(&format!("Rally.exe SHA-256: {sha}"))
-                .is_some(),
-            "the digest is on the Play tab"
-        );
-        // One frame, so the click's clipboard command is still in its output
-        // (`run` repaints until idle, which would overwrite it).
-        ui.get_by_role_and_label(Role::Button, "Copy SHA-256")
-            .scroll_to_me();
-        ui.step();
-        ui.get_by_role_and_label(Role::Button, "Copy SHA-256")
-            .click();
-        ui.step();
-        let copied = ui
-            .output()
-            .platform_output
-            .commands
-            .iter()
-            .any(|c| matches!(c, egui::OutputCommand::CopyText(text) if text == &sha));
-        assert!(copied, "the system clipboard gets the digest");
+        for check in [
+            Check::Found {
+                name: "EU v1.5 (official)",
+                sha256: sha.clone(),
+            },
+            // Issue #4: an unknown build, which the player must report.
+            Check::Unknown {
+                sha256: sha.clone(),
+            },
+        ] {
+            let mut state = State::new(Some(""), true, SCREEN, 0);
+            state.check = check.clone();
+            let mut ui = open_state(state);
+            assert!(
+                ui.query_by_label(&format!("Rally.exe SHA-256: {sha}"))
+                    .is_some(),
+                "the digest is on the Play tab: {check:?}"
+            );
+            // One frame, so the click's clipboard command is still in its
+            // output (`run` repaints until idle, which would overwrite it).
+            ui.get_by_role_and_label(Role::Button, "Copy SHA-256")
+                .scroll_to_me();
+            ui.step();
+            ui.get_by_role_and_label(Role::Button, "Copy SHA-256")
+                .click();
+            ui.step();
+            let copied = ui
+                .output()
+                .platform_output
+                .commands
+                .iter()
+                .any(|c| matches!(c, egui::OutputCommand::CopyText(text) if text == &sha));
+            assert!(copied, "the system clipboard gets the digest: {check:?}");
+        }
     }
 
     #[test]
@@ -1048,10 +1088,10 @@ mod tests {
     fn a_game_folder_with_a_hostile_name_is_checked() {
         let game = temp("José/Jogos d'Ação/Colin McRae Rally");
         std::fs::write(game.join("RALLY.EXE"), b"x").unwrap();
-        let Check::Problem(p) = check_game(&game.display().to_string()) else {
-            panic!("found");
+        let Check::Unknown { sha256 } = check_game(&game.display().to_string()) else {
+            panic!("not an unknown build");
         };
-        assert!(p.contains("doesn't know"), "{p}");
+        assert_eq!(sha256, edition::to_hex(&edition::sha256(b"x")));
         assert!(matches!(
             check_game(&game.join("missing").display().to_string()),
             Check::Problem(p) if p.starts_with("No such folder")

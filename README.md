@@ -295,7 +295,8 @@ The launcher writes these registry entries:
 
 - **"This Rally.exe is not a version the launcher knows yet"**: the
   launcher shows the code (SHA-256) of your `Rally.exe` and doesn't patch
-  it. Please report the code with the
+  it. Press **Copy SHA-256** next to it (or take the same line from
+  `launcher.log`) and report the code with the
   [unknown version form](https://github.com/akitaonrails/rea-colin-mcrae/issues/new?template=unknown-edition.yml).
 - **The car doesn't move, or turns in circles.** The controls in your save
   point at a pad that isn't there. Plug the pad in, or set Control method

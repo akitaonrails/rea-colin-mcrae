@@ -7,6 +7,11 @@ described on the GitHub releases page.
 
 ### Fixed
 
+- An unknown `Rally.exe` now shows its SHA-256 under the message on the
+  Play tab, with a **Copy SHA-256** button, like a known edition does, so it
+  can be pasted into the report form instead of retyped (issue #4). The
+  window also says the game was found but the version is unknown, instead of
+  asking for the game folder again.
 
 ## [0.10.1] - 2026-11-06
 
