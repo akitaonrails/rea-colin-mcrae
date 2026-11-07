@@ -5,6 +5,12 @@ described on the GitHub releases page.
 
 ## [Unreleased]
 
+### Changed
+
+- Updated rea-launcher-sdk to v0.4.4: the AppImage's portable Wine is now
+  11.21, which fixes the startup crash on machines that cannot reserve
+  ~64 GiB of address space (16 GB handhelds).
+
 ## [0.10.2] - 2026-11-07
 
 ### Fixed
