@@ -1,6 +1,6 @@
 //! The WinMM joystick reads (the API the game itself uses) for F7 and
-//! `--controllers`: the Win32 calls the SDK (`rea-launcher-win32`) doesn't
-//! make. Registry, dialogs, XInput, GPU choice, Wine detection and starting
+//! `--controllers`, and a folder's short (8.3) name: the Win32 calls the
+//! SDK (`rea-launcher-win32`) doesn't make. Registry, dialogs, XInput, GPU choice, Wine detection and starting
 //! the game are the SDK's. The launcher never writes into the running game:
 //! the fixes and the hook library are in the runtime copy's executable
 //! (`cmr_launcher::patched_exe`).
@@ -157,4 +157,42 @@ pub fn centred_axes() -> [u32; 16] {
         }
     }
     table
+}
+
+/// Windows' short (8.3) name for an existing `path`, when the volume keeps
+/// them; `None` otherwise. The game reads its folder from the registry into
+/// a 100-byte buffer (`registry::root_for`).
+pub fn short_path(path: &std::path::Path) -> Option<String> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: a NUL-terminated input and an output buffer of the given size.
+    let len = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+    if len == 0 || len as usize >= buf.len() {
+        return None;
+    }
+    std::ffi::OsString::from_wide(&buf[..len as usize])
+        .into_string()
+        .ok()
+}
+
+/// [`short_path`] for a folder that may not exist yet (`--check` before the
+/// first start): the short name of its deepest existing parent, then the
+/// rest of the path as it is.
+pub fn short_path_ahead(path: &std::path::Path) -> Option<String> {
+    let mut existing = path;
+    let mut rest = Vec::new();
+    while !existing.exists() {
+        rest.push(existing.file_name()?.to_string_lossy().into_owned());
+        existing = existing.parent()?;
+    }
+    let mut short = short_path(existing)?;
+    for part in rest.iter().rev() {
+        if !short.ends_with('\\') {
+            short.push('\\');
+        }
+        short.push_str(part);
+    }
+    Some(short)
 }

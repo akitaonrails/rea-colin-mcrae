@@ -309,7 +309,21 @@ mod app {
             edition.name,
             edition::to_hex(&digest)
         ));
+        let rt = settings
+            .runtime
+            .clone()
+            .unwrap_or_else(|| home().join("Rally"));
         if check_only {
+            // The folder the game reads back from the registry (issue #5);
+            // before the first start the runtime folder doesn't exist yet.
+            if let Err(text) = registry::root_for(
+                &rt.display().to_string(),
+                win32::short_path_ahead(&rt).as_deref(),
+            ) {
+                log_line(&format!("check: {}", text.replace('\n', " ")));
+                note(&text, true);
+                return Ok(CHECK_FAILED);
+            }
             let text = format!(
                 "Ready to play.\n\nGame folder: {}\nVersion: {}",
                 game.display(),
@@ -320,10 +334,6 @@ mod app {
             return Ok(0);
         }
 
-        let rt = settings
-            .runtime
-            .clone()
-            .unwrap_or_else(|| home().join("Rally"));
         paths::check_separate(&game, &rt)?;
         // A launcher that was killed released the instance, but its game
         // may still run from this runtime copy: never sync under it.
@@ -382,7 +392,17 @@ mod app {
         };
         let plan = plan::plan(&settings, &env);
 
-        let root = rt.display().to_string();
+        // The game reads its folder back into a 100-byte buffer: a longer
+        // path is written as its short name (issue #5).
+        let long = rt.display().to_string();
+        let root = registry::root_for(&long, win32::short_path(&rt).as_deref())?;
+        if root != long.trim_end_matches('\\') {
+            log_line(&format!(
+                "runtime folder path is {} characters (the game reads at most {}): registry paths use {root}",
+                long.chars().count(),
+                registry::MAX_PATH_CHARS
+            ));
+        }
         let place = write_registry(&plan.registry(&root))?;
         // The GPU, not software rendering, and the faster of two GPUs.
         let gpu = if wine {
