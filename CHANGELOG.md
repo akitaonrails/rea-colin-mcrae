@@ -5,6 +5,8 @@ described on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-09
+
 ### Fixed
 
 - The game no longer crashes before showing anything (0xC0000005 at
