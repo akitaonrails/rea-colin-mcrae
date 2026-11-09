@@ -120,6 +120,15 @@ pub fn sync(
             ));
         }
     }
+    // A dgVoodoo.conf the player wrote stays as it is; ours is rewritten
+    // from the settings on every start (issue #5: a hand-tuned file came
+    // back replaced).
+    if fs::read(&conf_path).is_ok_and(|b| !owned_conf(&b)) {
+        return Ok(Some(
+            "Windows: dgVoodoo2 2.87.6 (DDraw.dll, D3DImm.dll) ready; your dgVoodoo.conf is used as it is"
+                .into(),
+        ));
+    }
     fsx::write_atomic(&conf_path, conf(settings))
         .map_err(|e| format!("cannot write {}: {e}", conf_path.display()))?;
     Ok(Some(
@@ -191,6 +200,33 @@ mod tests {
             assert!(!rt.join(name).exists(), "{name} should be removed");
         }
         assert!(!rt.join(CONF).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_players_own_conf_is_kept() {
+        // Issue #5: a hand-tuned dgVoodoo.conf (Filtering = 16) came back
+        // replaced by the generated one.
+        let root = temp("own-conf");
+        let game = root.join("game");
+        let rt = root.join("rt");
+        let bundled = root.join("dgvoodoo");
+        for d in [&game, &rt, &bundled] {
+            fs::create_dir_all(d).unwrap();
+        }
+        for name in DLLS {
+            fs::write(bundled.join(name), format!("bundled {name}")).unwrap();
+        }
+        let own = "[DirectX]\nFiltering = 16\n";
+        fs::write(rt.join(CONF), own).unwrap();
+        let msg = sync(&game, &rt, &bundled, &Settings::default(), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fs::read_to_string(rt.join(CONF)).unwrap(), own);
+        assert!(msg.contains("your dgVoodoo.conf"), "{msg}");
+        // Under Wine it stays too.
+        sync(&game, &rt, &bundled, &Settings::default(), true).unwrap();
+        assert_eq!(fs::read_to_string(rt.join(CONF)).unwrap(), own);
         fs::remove_dir_all(root).unwrap();
     }
 
