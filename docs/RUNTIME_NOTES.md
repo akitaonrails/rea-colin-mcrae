@@ -3,6 +3,33 @@
 Observations from running the user's own game. Each entry: date, setup, what
 was seen. Static facts live in the parked reconstruction's documents (kept outside this repository) and local notes.
 
+
+## 2026-11-09: issue #5, a crash at 0x49893a on native Windows 11 — reproduced and fixed (headless)
+
+A player's native Windows 11 (portable install, runtime in `…\_runtime\CMR`)
+crashed before anything was drawn: 0xC0000005 at `0x49893a`, the same with
+an untouched copy of the game and no launcher.
+
+Cause (decomp of the official exe, `0eb6ea96…`): the game reads its paths
+from `HKLM\SOFTWARE\Codemasters\Rally\1.00` into a 100-byte buffer
+(`FUN_00496b50`). A longer value fails with "more data", the buffer is
+cleared, and `HDPath` falls back to the developers' `c:\codemast\cmrally`.
+`ini\loading.pal` (loaded at start-up by `FUN_00497be0` through
+`FUN_00498910`) isn't there, the loader returns null and `FUN_00498910`
+copies the palette from `null + 0x18`. The untouched copy crashed the same
+way because it reads the same registry value. Not the exe variant: the
+community F1-F5 behave like the launcher's (byte comparison of all 89
+differing bytes) and not the graphics adapters.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Runtime folder of 103 characters, launcher v0.10.3, Wine 11.21 headless | REPRODUCED: "Unhandled page fault on read access to 00000018 at address 0049893A", nothing drawn | `.work/realgame/logs/longpath_seh*.log` |
+| Same folder of 47 characters | no fault, main menu | `shortpath_seh*.log` |
+| 103 characters, fixed launcher (short name in the registry) | VERIFIED: no fault, main menu drawn; `launcher.log`: "registry paths use C:\users\player\AppData\Local\CMRL~TZU\RUNT~DDK\Rally" | `longpath_seh*.log`, `shots/longpath_seh-after30.png` |
+
+Also from the report: on Windows the launcher rewrote a `dgVoodoo.conf` the
+player put in the runtime copy; a player's own file is now kept.
+
 ## 2026-11-05: no injection (fixes in the runtime copy, hooks by import) — headless
 
 Setup as on 2026-11-03: the owner's install (`EU v1.5, community-patched`,

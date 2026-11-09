@@ -5,6 +5,20 @@ described on the GitHub releases page.
 
 ## [Unreleased]
 
+### Fixed
+
+- The game no longer crashes before showing anything (0xC0000005 at
+  `0x49893a`) when the launcher's copy of the game is in a folder with a
+  path longer than 99 characters, as a portable install deep in a folder
+  can be ([#5](https://github.com/akitaonrails/rea-colin-mcrae/issues/5)).
+  The game can only read that many characters of its own folder from the
+  registry; the launcher now gives it Windows' short name for the folder,
+  and `--check` says when a folder can't work instead of "Ready to play".
+- On Windows a `dgVoodoo.conf` you put in the launcher's copy of the game is
+  used as it is; the launcher only rewrites its own.
+- The README no longer says to set up dgVoodoo2 by hand: the launcher
+  brings it.
+
 ## [0.10.3] - 2026-11-07
 
 ### Changed

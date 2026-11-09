@@ -85,7 +85,7 @@ show "Windows protected your PC": click **More info → Run anyway**.
 
 On native Windows the launcher itself (the window, wrong folders, the
 command line) has been tested on 10; the game has been played on Windows 11
-with dgVoodoo2 2.87.6 in the runtime folder (see
+with the dgVoodoo2 2.87.6 the launcher brings (see
 [Known limitations](#known-limitations)). Whether it works or not, please
 [send a test report](https://github.com/akitaonrails/rea-colin-mcrae/issues/new?template=test-report.yml)
 with your `launcher.log` (see [Where things live](#where-things-live)).
@@ -335,11 +335,17 @@ The launcher writes these registry entries:
 
 - Only the European v1.5 `Rally.exe` is recognised so far.
 - Native Windows needs a DirectDraw wrapper: Windows' own has no Ramp
-  device and the game doesn't start without one. dgVoodoo2 2.87.6 in the
-  runtime folder was tested; the launcher doesn't bundle it yet (its
-  licence allows no redistribution), so this stays a manual step until the
-  owner decides on a bundled or downloadable wrapper. Wine and Proton need
-  nothing.
+  device and the game doesn't start without one. The launcher brings
+  dgVoodoo2 2.87.6 and writes its `dgVoodoo.conf` from your settings on
+  every start. To tune dgVoodoo2 yourself, put your own `dgVoodoo.conf` in
+  the launcher's copy of the game: a file you wrote is used as it is and
+  never replaced. Wine and Proton need nothing.
+- The game reads its own folder back from the registry, at most 99
+  characters. When the launcher's copy of the game is in a folder with a
+  longer path, the launcher gives the game Windows' short name for it
+  (`C:\Users\...\CMRLAU~1\...`); if the drive keeps no short names, it
+  asks you to choose a shorter folder (`runtime` setting or `--runtime`)
+  rather than start a game that would crash.
 - The Steam Deck hasn't been tested yet. Under Wine the looks, one
   launcher at a time, the saves copying and every way of quitting were
   checked in the game; see [docs/RUNTIME_NOTES.md](docs/RUNTIME_NOTES.md).
