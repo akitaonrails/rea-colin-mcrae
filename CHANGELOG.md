@@ -5,6 +5,8 @@ described on the GitHub releases page.
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-11-09
+
 ### Fixed
 
 - On Windows without administrator rights the game could still crash at
