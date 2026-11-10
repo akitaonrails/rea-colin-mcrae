@@ -1,11 +1,113 @@
 //! The registry values the game reads at startup.
 //!
-//! Key: `HKLM\SOFTWARE\Codemasters\Rally\1.00` in the 32-bit view
-//! (`WOW6432Node` on 64-bit Windows), or its HKCU VirtualStore twin when
-//! HKLM is not writable without administrator rights (`rea_launcher_win32::reg`). Missing `Language` or `Hardware` makes
-//! the game read uninitialized memory, so both always exist after a launch.
+//! The game reads `HKLM\SOFTWARE\Codemasters\Rally\1.00`. With the hook
+//! library loaded (the usual case) it reads `HKCU\Software\Codemasters\
+//! Rally\1.00` instead (`cmr-hooks`' `registry`), so no administrator
+//! rights are needed and no machine-wide key can win. Without it, HKLM in
+//! the 32-bit view (`WOW6432Node` on 64-bit Windows); the HKCU VirtualStore
+//! is never written: whether the game reads it depends on UAC
+//! virtualization, which the launcher can't see (issue #6). Missing
+//! `Language` or `Hardware` makes the game read uninitialized memory, so
+//! both always exist after a launch, and every write is read back.
 
 pub const KEY: &str = r"SOFTWARE\Codemasters\Rally\1.00";
+
+/// The key the game reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reads {
+    /// `HKCU\Software\Codemasters\Rally\1.00`, through the hook library.
+    User,
+    /// `HKLM\SOFTWARE\Codemasters\Rally\1.00`, 32-bit view (no hook library).
+    Machine,
+}
+
+impl Reads {
+    /// [`Reads::User`] when the hook library loads with the game.
+    pub fn of(hooks: bool) -> Reads {
+        if hooks { Reads::User } else { Reads::Machine }
+    }
+
+    /// The key, for `launcher.log` and messages.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Reads::User => {
+                r"HKCU\Software\Codemasters\Rally\1.00 (cmrhooks.dll gives it to the game)"
+            }
+            Reads::Machine => r"HKLM\SOFTWARE\Codemasters\Rally\1.00 (32-bit view)",
+        }
+    }
+}
+
+/// `values` with each game-owned value ([`When::IfMissing`]) taken from
+/// `previous` (where the game read it before: an earlier launcher's HKLM or
+/// VirtualStore copy) when it has one, so moving to the player's key keeps
+/// the game's language and first-run state. Our paths are never carried.
+pub fn carried_over(values: Vec<Value>, previous: impl Fn(&str) -> Option<String>) -> Vec<Value> {
+    values
+        .into_iter()
+        .map(|mut v| {
+            if v.when == When::IfMissing
+                && let Some(old) = previous(v.name).filter(|old| !old.is_empty())
+            {
+                v.data = old;
+            }
+            v
+        })
+        .collect()
+}
+
+/// Reads back what the game will see (`read`, from `reads`' key) and
+/// compares it with what was written: our paths exactly, the game's own
+/// values present. The error is the message for the player.
+pub fn verify(
+    values: &[Value],
+    reads: Reads,
+    read: impl Fn(&str) -> Result<Option<String>, String>,
+) -> Result<(), String> {
+    let mut wrong = Vec::new();
+    for v in values {
+        match read(v.name) {
+            Ok(Some(got)) if v.when == When::IfMissing && !got.is_empty() => {}
+            Ok(Some(got)) if got == v.data => {}
+            Ok(Some(got)) => wrong.push(format!("{} is \"{got}\", not \"{}\"", v.name, v.data)),
+            Ok(None) => wrong.push(format!("{} is missing", v.name)),
+            Err(e) => wrong.push(format!("{} can't be read: {e}", v.name)),
+        }
+    }
+    if wrong.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "The game would not find its folders. It reads {}, and after writing it the launcher \
+         reads back:\n\n{}\n\nThe game would crash at start-up (0xC0000005 at 0x49893a). \
+         Please report this with launcher.log: \
+         https://github.com/akitaonrails/rea-colin-mcrae/issues",
+        reads.describe(),
+        wrong.join("\n")
+    ))
+}
+
+/// The message when the game reads HKLM (the hook library is missing) and
+/// the launcher can't write it.
+pub fn machine_denied() -> String {
+    format!(
+        "cmrhooks.dll is missing next to the launcher. Without it the game reads its folders \
+         from {}, which only an administrator can write, and would crash at start-up. \
+         Put the launcher's files back together (unpack the release again), or start the \
+         launcher once as administrator.",
+        Reads::Machine.describe()
+    )
+}
+
+/// `--check`'s registry verdict: ready when the game will see our values
+/// once Play writes them. `machine_matches`: HKLM already holds them.
+pub fn check(reads: Reads, wine: bool, machine_matches: bool) -> Result<(), String> {
+    match reads {
+        Reads::User => Ok(()),
+        Reads::Machine if wine || machine_matches => Ok(()),
+        Reads::Machine => Err(machine_denied()),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum When {
@@ -93,6 +195,60 @@ pub fn values(root: &str, language: &str) -> Vec<Value> {
     ]
 }
 
+/// Writes the game's values where it reads them and reads them back
+/// (issue #6). HKLM is never written without the rights for it, and no
+/// VirtualStore copy the game may not see is made.
+#[cfg(windows)]
+pub fn write(reads: Reads, values: Vec<Value>) -> Result<(), String> {
+    use rea_launcher_win32::reg::Key;
+    let written = match reads {
+        // The game's own values from where an earlier launcher put them.
+        Reads::User => {
+            let before = Key::read_machine(KEY).ok();
+            carried_over(values.clone(), |name| {
+                before.as_ref().and_then(|b| b.string(name).ok().flatten())
+            })
+        }
+        Reads::Machine => values.clone(),
+    };
+    let key = Key::create(hive(reads), KEY).map_err(|e| {
+        if reads == Reads::Machine && e.is_access_denied() {
+            machine_denied()
+        } else {
+            e.to_string()
+        }
+    })?;
+    for v in &written {
+        match v.when {
+            When::Always => key.set_string(v.name, &v.data)?,
+            When::IfMissing => {
+                key.set_string_if_missing(v.name, &v.data)?;
+            }
+        }
+    }
+    drop(key);
+    read_back(reads, &values)
+}
+
+#[cfg(windows)]
+fn hive(reads: Reads) -> rea_launcher_win32::reg::Hive {
+    use rea_launcher_win32::reg::Hive;
+    match reads {
+        Reads::User => Hive::CurrentUser,
+        Reads::Machine => Hive::LocalMachine,
+    }
+}
+
+/// [`verify`] against the key the game reads, opened read-only.
+#[cfg(windows)]
+pub fn read_back(reads: Reads, values: &[Value]) -> Result<(), String> {
+    let key = rea_launcher_win32::reg::Key::open_read(hive(reads), KEY)?;
+    verify(values, reads, |name| match &key {
+        Some(key) => key.string(name).map_err(|e| e.to_string()),
+        None => Ok(None),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +325,162 @@ mod tests {
             v.iter().find(|x| x.name == "Language").unwrap().data,
             "GERMAN"
         );
+    }
+
+    fn read_from<'a>(
+        pairs: &'a [(&'a str, &'a str)],
+    ) -> impl Fn(&str) -> Result<Option<String>, String> + 'a {
+        move |name| {
+            Ok(pairs
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| v.to_string()))
+        }
+    }
+
+    #[test]
+    fn with_the_hook_library_the_game_reads_the_players_own_key() {
+        // Issue #6: no HKLM, no VirtualStore, no elevation.
+        assert_eq!(Reads::of(true), Reads::User);
+        assert_eq!(Reads::of(false), Reads::Machine);
+        assert!(
+            Reads::User
+                .describe()
+                .starts_with(r"HKCU\Software\Codemasters\Rally\1.00")
+        );
+        assert!(
+            Reads::Machine
+                .describe()
+                .starts_with(r"HKLM\SOFTWARE\Codemasters\Rally\1.00")
+        );
+    }
+
+    #[test]
+    fn the_games_own_values_carry_over_from_where_it_read_them_before() {
+        let previous = |name: &str| match name {
+            "Language" => Some("FRENCH".to_string()),
+            "Initialised" => Some("1".to_string()),
+            // An old launcher's path never wins over the current one.
+            "CDPath" => Some(r"D:\old".to_string()),
+            "Hardware" => Some(String::new()),
+            _ => None,
+        };
+        let v = carried_over(values(r"C:\R", "ENGLISH"), previous);
+        let get = |name| v.iter().find(|x| x.name == name).unwrap().data.as_str();
+        assert_eq!(get("Language"), "FRENCH");
+        assert_eq!(get("Initialised"), "1");
+        assert_eq!(get("CDPath"), r"C:\R");
+        // Empty is missing: the default stays.
+        assert_eq!(get("Hardware"), "5");
+    }
+
+    #[test]
+    fn a_read_back_that_matches_is_ready() {
+        let v = values(r"C:\R", "ENGLISH");
+        let pairs = [
+            ("CDPath", r"C:\R"),
+            ("HDPath", r"C:\R"),
+            ("AVIPath", r"C:\R"),
+            ("WAVPath", r"C:\R"),
+            // The game's own values may differ from the seeds.
+            ("Language", "GERMAN"),
+            ("Hardware", "3"),
+            ("Initialised", "1"),
+        ];
+        assert_eq!(verify(&v, Reads::User, read_from(&pairs)), Ok(()));
+    }
+
+    #[test]
+    fn a_read_back_that_differs_or_is_missing_says_what_and_where() {
+        let v = values(r"C:\R", "ENGLISH");
+        // Issue #6's stale key: a folder from an old install.
+        let stale = [
+            ("CDPath", r"c:\codemast\cmrally"),
+            ("HDPath", r"C:\R"),
+            ("AVIPath", r"C:\R"),
+            ("WAVPath", r"C:\R"),
+            ("Language", "ENGLISH"),
+            ("Hardware", "5"),
+            ("Initialised", "1"),
+        ];
+        let err = verify(&v, Reads::Machine, read_from(&stale)).unwrap_err();
+        assert!(
+            err.contains("CDPath") && err.contains(r"c:\codemast\cmrally"),
+            "{err}"
+        );
+        assert!(
+            err.contains(r"HKLM\SOFTWARE\Codemasters\Rally\1.00"),
+            "{err}"
+        );
+        // Nothing there at all.
+        let err = verify(&v, Reads::User, read_from(&[])).unwrap_err();
+        assert!(err.contains("CDPath") && err.contains("missing"), "{err}");
+        // A read that fails is not a match.
+        let err = verify(&v, Reads::User, |_| Err("error 5".to_string())).unwrap_err();
+        assert!(err.contains("error 5"), "{err}");
+    }
+
+    #[test]
+    fn check_is_ready_only_when_the_game_will_see_the_values() {
+        // The hook answers from the player's key: nothing machine-wide needed.
+        assert_eq!(check(Reads::User, false, false), Ok(()));
+        // Wine: the prefix's HKLM is writable.
+        assert_eq!(check(Reads::Machine, true, false), Ok(()));
+        // Windows without the hook library: only a key that already matches.
+        assert_eq!(check(Reads::Machine, false, true), Ok(()));
+        let err = check(Reads::Machine, false, false).unwrap_err();
+        assert!(
+            err.contains("cmrhooks.dll") && err.contains("administrator"),
+            "{err}"
+        );
+    }
+
+    /// Under Wine (`sdk/scripts/wine-test`, its own prefix): the player's
+    /// key is written and read back, the game's own values come over from
+    /// HKLM where an earlier launcher left them, and HKLM is not touched.
+    #[cfg(windows)]
+    #[test]
+    fn the_players_key_is_written_read_back_and_takes_the_old_values() {
+        use rea_launcher_win32::reg::{Hive, Key};
+        let names = [
+            "CDPath",
+            "HDPath",
+            "AVIPath",
+            "WAVPath",
+            "Language",
+            "Hardware",
+            "Initialised",
+        ];
+        let machine = Key::create(Hive::LocalMachine, KEY).unwrap();
+        let user = Key::create(Hive::CurrentUser, KEY).unwrap();
+        for name in names {
+            machine.delete_value(name).unwrap();
+            user.delete_value(name).unwrap();
+        }
+        machine.set_string("Language", "FRENCH").unwrap();
+        machine.set_string("CDPath", r"D:\old").unwrap();
+
+        write(Reads::User, values(r"C:\R", "ENGLISH")).unwrap();
+        assert_eq!(user.string("CDPath").unwrap().as_deref(), Some(r"C:\R"));
+        assert_eq!(user.string("Language").unwrap().as_deref(), Some("FRENCH"));
+        assert_eq!(user.string("Initialised").unwrap().as_deref(), Some("0"));
+        assert_eq!(
+            machine.string("CDPath").unwrap().as_deref(),
+            Some(r"D:\old")
+        );
+        assert_eq!(read_back(Reads::User, &values(r"C:\R", "ENGLISH")), Ok(()));
+
+        // The game's own change survives the next launch.
+        user.set_string("Initialised", "1").unwrap();
+        write(Reads::User, values(r"C:\R2", "ENGLISH")).unwrap();
+        assert_eq!(user.string("Initialised").unwrap().as_deref(), Some("1"));
+        assert_eq!(user.string("WAVPath").unwrap().as_deref(), Some(r"C:\R2"));
+
+        // HKLM still holds a stale folder: read back, it is not ready.
+        let err = read_back(Reads::Machine, &values(r"C:\R2", "ENGLISH")).unwrap_err();
+        assert!(err.contains(r"D:\old"), "{err}");
+        // Without the hook library the game reads HKLM; Wine lets us write it.
+        write(Reads::Machine, values(r"C:\R2", "ENGLISH")).unwrap();
+        assert_eq!(machine.string("CDPath").unwrap().as_deref(), Some(r"C:\R2"));
     }
 }

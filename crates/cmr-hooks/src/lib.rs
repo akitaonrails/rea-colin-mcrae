@@ -25,6 +25,7 @@ pub mod mipmap;
 pub mod pacing;
 pub mod pad;
 pub mod present;
+pub mod registry;
 pub mod sections;
 pub mod xinput;
 

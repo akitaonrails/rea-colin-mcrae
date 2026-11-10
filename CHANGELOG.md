@@ -5,6 +5,22 @@ described on the GitHub releases page.
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows without administrator rights the game could still crash at
+  start-up (0xC0000005 at `0x49893a`) although `--check` said "Ready to
+  play" ([#6](https://github.com/akitaonrails/rea-colin-mcrae/issues/6)).
+  The launcher wrote the game's folders into the per-user VirtualStore copy
+  of `HKLM\SOFTWARE\Codemasters\Rally\1.00` and counted on Windows to
+  show it to the game, which it doesn't always do. Now the game's settings
+  live in `HKCU\Software\Codemasters\Rally\1.00` and `cmrhooks.dll`
+  gives that key to the game, so no administrator rights are needed and a
+  key left by an old install can't win. The game's own language and
+  first-run state come over from where it read them before. The launcher
+  reads the values back before starting the game and stops with the reason
+  if they aren't what the game will see; it never writes the VirtualStore
+  and never asks for administrator rights.
+
 ## [0.10.4] - 2026-11-09
 
 ### Fixed

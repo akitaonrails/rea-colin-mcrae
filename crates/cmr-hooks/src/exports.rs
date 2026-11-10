@@ -2164,11 +2164,99 @@ unsafe extern "system" fn dplay_create(guid: *mut u8, dp: *mut *mut u8, unk: *mu
     }
 }
 
-/// Runs on `DLL_PROCESS_ATTACH` before `WinMain`: installs the crash filter
-/// and points `Rally.exe`'s detached `DPLAYX.dll` IAT slots (`0x4e602c`,
-/// `0x4e6030`) at our dynamic wrappers.
+/// `ADVAPI32.dll`'s `RegOpenKeyA` and `RegOpenKeyExA`, looked up by
+/// `hook_registry`.
+static mut REG_OPEN: usize = 0;
+static mut REG_OPEN_EX: usize = 0;
+
+type RegOpenKeyA = unsafe extern "system" fn(u32, *const u8, *mut u32) -> i32;
+type RegOpenKeyExA = unsafe extern "system" fn(u32, *const u8, u32, u32, *mut u32) -> i32;
+
+/// The game's open of `subkey` under `root`, as `crate::registry::redirect`
+/// sends it.
+unsafe fn redirected(root: u32, subkey: *const u8) -> (u32, *const u8) {
+    if subkey.is_null() {
+        return (root, subkey);
+    }
+    // SAFETY: the game passes NUL-terminated names; only the first 9 bytes
+    // ("SOFTWARE" and its NUL) can match, so no more are read.
+    let name = unsafe {
+        let mut len = 0;
+        while len < 9 && *subkey.add(len) != 0 {
+            len += 1;
+        }
+        core::slice::from_raw_parts(subkey, len)
+    };
+    match crate::registry::redirect(root, name) {
+        Some((root, subkey)) => (root, subkey.as_ptr()),
+        None => (root, subkey),
+    }
+}
+
+unsafe extern "system" fn reg_open_key(root: u32, subkey: *const u8, out: *mut u32) -> i32 {
+    // SAFETY: REG_OPEN holds ADVAPI32's RegOpenKeyA (set before the slot
+    // pointed here); the arguments are the game's.
+    unsafe {
+        let real: RegOpenKeyA = core::mem::transmute(*addr_of_mut!(REG_OPEN));
+        let (root, subkey) = redirected(root, subkey);
+        real(root, subkey, out)
+    }
+}
+
+unsafe extern "system" fn reg_open_key_ex(
+    root: u32,
+    subkey: *const u8,
+    options: u32,
+    access: u32,
+    out: *mut u32,
+) -> i32 {
+    // SAFETY: as in `reg_open_key`.
+    unsafe {
+        let real: RegOpenKeyExA = core::mem::transmute(*addr_of_mut!(REG_OPEN_EX));
+        let (root, subkey) = redirected(root, subkey);
+        real(root, subkey, options, access, out)
+    }
+}
+
+/// Points `Rally.exe`'s `RegOpenKeyA` and `RegOpenKeyExA` IAT slots
+/// (`0x4e6000`, `0x4e6008`) at `reg_open_key*`, so the game reads and
+/// writes `HKCU\Software\Codemasters\Rally\1.00`, the key the launcher
+/// writes (`crate::registry`, issue #6). The hooks call ADVAPI32's own
+/// functions, whatever the slots held (a compatibility shim's wrapper).
+fn hook_registry() {
+    const IAT_OPEN: *mut usize = 0x004e_6000 as *mut usize;
+    const IAT_OPEN_EX: *mut usize = 0x004e_6008 as *mut usize;
+    const PAGE_READWRITE: u32 = 0x04;
+    // SAFETY: the IAT of the one executable these fixes are keyed to; the
+    // statics are set once, before WinMain, on the loader's thread.
+    unsafe {
+        let advapi = LoadLibraryA(c"advapi32.dll".as_ptr().cast());
+        if advapi.is_null() {
+            return;
+        }
+        let open = GetProcAddress(advapi, c"RegOpenKeyA".as_ptr().cast()) as usize;
+        let open_ex = GetProcAddress(advapi, c"RegOpenKeyExA".as_ptr().cast()) as usize;
+        if open == 0 || open_ex == 0 {
+            return;
+        }
+        *addr_of_mut!(REG_OPEN) = open;
+        *addr_of_mut!(REG_OPEN_EX) = open_ex;
+        let mut old = 0u32;
+        if VirtualProtect(IAT_OPEN.cast(), 12, PAGE_READWRITE, &mut old) != 0 {
+            *IAT_OPEN = reg_open_key as *const () as usize;
+            *IAT_OPEN_EX = reg_open_key_ex as *const () as usize;
+            let _ = VirtualProtect(IAT_OPEN.cast(), 12, old, &mut old);
+        }
+    }
+}
+
+/// Runs on `DLL_PROCESS_ATTACH` before `WinMain`: installs the crash filter,
+/// answers the game's registry key from HKCU (`hook_registry`) and points
+/// `Rally.exe`'s detached `DPLAYX.dll` IAT slots (`0x4e602c`, `0x4e6030`)
+/// at our dynamic wrappers.
 pub fn attach() {
     install_crash_filter();
+    hook_registry();
     const IAT_ENUM: *mut usize = 0x004e_602c as *mut usize;
     const IAT_CREATE: *mut usize = 0x004e_6030 as *mut usize;
     const PAGE_READWRITE: u32 = 0x04;

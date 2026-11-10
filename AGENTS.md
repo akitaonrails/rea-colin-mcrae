@@ -68,9 +68,11 @@ folder from `CMR_GAME_DIR`, never a developer's path.
 - **Files the game writes:** its `save` folder (`cmRally.cfg`,
   `SAVESLOT*.cms`), mirrored with the saves folder (`Saved Games\Colin
   McRae Rally` by default) before and after each run; the registry key
-  `HKLM\SOFTWARE\Codemasters\Rally\1.00` (32-bit view, or the HKCU
-  VirtualStore), where the paths are ours and the game's own values are
-  only seeded.
+  `HKCU\Software\Codemasters\Rally\1.00`, which `cmrhooks.dll` gives
+  the game when it opens `HKLM\SOFTWARE` (issue #6; HKLM 32-bit view only
+  without the hook library), where the paths are ours and the game's own
+  values are only seeded. Every write is read back; the VirtualStore is
+  never written.
 - **Sibling launcher:** keep this repository recognisably alike to
   `rea-colin-mcrae-3` (the same window look in its own colours, the same
   Linux helper), so improvements cross over.

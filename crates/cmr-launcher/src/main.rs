@@ -32,14 +32,13 @@ mod app {
     use cmr_launcher::config::{self, Settings};
     use cmr_launcher::form;
     use cmr_launcher::instance;
-    use cmr_launcher::registry::{self, When};
+    use cmr_launcher::registry::{self, Reads};
     use cmr_launcher::{Image, dgvoodoo, edition, fixes, hdpack, plan, prepare, runtime};
     use rea_launcher::cfg::ArgError;
     use rea_launcher::log::Log;
     use rea_launcher::{cfg, fsx, paths};
     use rea_launcher_win32::gpu::{self, Glx};
     use rea_launcher_win32::instance::{self as win32_instance, SecondStart, Window};
-    use rea_launcher_win32::reg::Key;
     use rea_launcher_win32::report::{self, Audience, Run};
     use rea_launcher_win32::{display, process, wine, xinput};
 
@@ -76,20 +75,6 @@ mod app {
     /// Information or a warning, routed like [`fatal`].
     fn note(text: &str, warning: bool) {
         report::note(TITLE, text, audience().mode(), warning);
-    }
-
-    /// Writes the game's registry values; returns where they went.
-    fn write_registry(values: &[registry::Value]) -> Result<&'static str, String> {
-        let (key, place) = Key::machine_or_virtual_store(registry::KEY)?;
-        for v in values {
-            match v.when {
-                When::Always => key.set_string(v.name, &v.data)?,
-                When::IfMissing => {
-                    key.set_string_if_missing(v.name, &v.data)?;
-                }
-            }
-        }
-        Ok(place.describe())
     }
 
     /// A `launcher.cfg` next to the exe wins (portable installs); otherwise
@@ -313,21 +298,45 @@ mod app {
             .runtime
             .clone()
             .unwrap_or_else(|| home().join("Rally"));
+        let wine = wine::is_wine();
+        let hooks_path = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(HOOKS_DLL)));
+        let hooks_present = hooks_path.as_ref().is_some_and(|p| p.is_file());
         if check_only {
+            let failed = |text: &str| {
+                log_line(&format!("check: {}", text.replace('\n', " ")));
+                note(text, true);
+                Ok(CHECK_FAILED)
+            };
             // The folder the game reads back from the registry (issue #5);
             // before the first start the runtime folder doesn't exist yet.
-            if let Err(text) = registry::root_for(
+            let root = match registry::root_for(
                 &rt.display().to_string(),
                 win32::short_path_ahead(&rt).as_deref(),
             ) {
-                log_line(&format!("check: {}", text.replace('\n', " ")));
-                note(&text, true);
-                return Ok(CHECK_FAILED);
+                Ok(root) => root,
+                Err(text) => return failed(&text),
+            };
+            // Where the game will read it, and whether it will see it
+            // (issue #6).
+            let env = plan::Env {
+                wine,
+                hooks: hooks_present,
+                axes: [0; 16],
+            };
+            let plan = plan::plan(&settings, &env);
+            let reads = Reads::of(plan.hooks);
+            let machine_matches = reads == Reads::Machine
+                && registry::read_back(reads, &plan.registry(&root)).is_ok();
+            if let Err(text) = registry::check(reads, wine, machine_matches) {
+                return failed(&text);
             }
             let text = format!(
-                "Ready to play.\n\nGame folder: {}\nVersion: {}",
+                "Ready to play.\n\nGame folder: {}\nVersion: {}\nThe game reads its folders from {}",
                 game.display(),
-                edition.name
+                edition.name,
+                reads.describe()
             );
             log_line(&format!("check: {}", text.replace('\n', " ")));
             note(&text, false);
@@ -381,13 +390,9 @@ mod app {
 
         // What this launch does to the game, from the settings alone
         // (`plan`, tested and snapshotted on the host).
-        let wine = wine::is_wine();
-        let hooks_path = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join(HOOKS_DLL)));
         let env = plan::Env {
             wine,
-            hooks: hooks_path.as_ref().is_some_and(|p| p.is_file()),
+            hooks: hooks_present,
             axes: win32::centred_axes(),
         };
         let plan = plan::plan(&settings, &env);
@@ -403,7 +408,11 @@ mod app {
                 registry::MAX_PATH_CHARS
             ));
         }
-        let place = write_registry(&plan.registry(&root))?;
+        // With the hook library the game reads the player's own key (issue
+        // #6); it is in the import table whenever plan.hooks (the fix cave
+        // always exists: F9).
+        let reads = Reads::of(plan.hooks);
+        registry::write(reads, plan.registry(&root))?;
         // The GPU, not software rendering, and the faster of two GPUs.
         let gpu = if wine {
             gpu::prefer_glx().map(|w| w.then_some("Wine: OpenGL through GLX (UseEGL=N)"))
@@ -416,7 +425,10 @@ mod app {
             Ok(None) => {}
             Err(e) => log_line(&format!("warning: {e}")),
         }
-        log_line(&format!("registry written ({place}); wine: {wine}"));
+        log_line(&format!(
+            "registry written and read back: {}; wine: {wine}",
+            reads.describe()
+        ));
 
         // Remember the game folder; the rest of the file stays as written.
         if writable && (existing.is_none() || saved.game.as_ref() != Some(&game)) {

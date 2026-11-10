@@ -301,7 +301,7 @@ The launcher writes these registry entries:
 
 | Entry | When |
 | --- | --- |
-| `HKLM\SOFTWARE\Codemasters\Rally\1.00` (32-bit view), or `HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Codemasters\Rally\1.00` when that needs administrator rights | Every Play: the game's own values (the paths point at the launcher's copy) |
+| `HKCU\Software\Codemasters\Rally\1.00` | Every Play: the game's own values (the paths point at the launcher's copy), read back before the game starts. The game asks for `HKLM\SOFTWARE\Codemasters\Rally\1.00`; `cmrhooks.dll` gives it this key instead, so no administrator rights are needed and an old install's key can't get in the way. Without `cmrhooks.dll` the launcher writes HKLM (32-bit view) and stops if it can't |
 | `HKCU\Software\Microsoft\DirectX\UserGpuPreferences`, value `…\CMRLauncher\Rally\Rally.exe` = `GpuPreference=2;` | Native Windows, the first Play: the faster graphics card for the game (Settings → Display → Graphics); `launcher.log` says "high-performance GPU for the game" |
 | `HKCU\Software\Wine\X11 Driver`, value `UseEGL` = `N` | Under Wine only, when it isn't set: OpenGL through GLX |
 
@@ -365,11 +365,12 @@ The launcher writes these registry entries:
    private copy of the game). In the registry, delete the value
    `…\CMRLauncher\Rally\Rally.exe` under
    `HKCU\Software\Microsoft\DirectX\UserGpuPreferences` (or reset the
-   game in Settings → Display → Graphics). The key
-   `HKLM\SOFTWARE\Codemasters\Rally\1.00` (or its VirtualStore copy,
-   `HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Codemasters\Rally\1.00`)
-   is the game's own; keep it if you still play the game without the
-   launcher.
+   game in Settings → Display → Graphics), and the key
+   `HKCU\Software\Codemasters\Rally\1.00`. Launchers before 0.10.5
+   wrote `HKLM\SOFTWARE\Codemasters\Rally\1.00` or its VirtualStore
+   copy (`HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Codemasters\Rally\1.00`);
+   that key is also the game's own, so keep it if you still play the game
+   without the launcher.
 4. Linux: copy the saves out, then delete
    `~/.local/share/cmr-launcher/prefix` and `~/.config/cmr-launcher`.
    Proton: removing the Steam shortcut offers to delete its prefix, saves

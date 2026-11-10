@@ -4,6 +4,47 @@ Observations from running the user's own game. Each entry: date, setup, what
 was seen. Static facts live in the parked reconstruction's documents (kept outside this repository) and local notes.
 
 
+## 2026-11-09: issue #6, the registry key the game reads — fixed, verified headless; native Windows pending
+
+A player's native Windows 11 (build 26300, launcher not elevated, runtime
+folder of 19 characters) crashed at `0x49893a` like issue #5. `launcher.log`:
+"registry written (HKCU VirtualStore)". The values were in
+`HKCU\Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Codemasters\Rally\1.00`,
+HKLM had none, and the game read nothing; with HKLM seeded by hand, or the
+launcher elevated (it then writes HKLM), the game ran.
+
+Cause: on access denied the launcher wrote the VirtualStore copy itself
+(SDK `Key::machine_or_virtual_store`) and counted on UAC registry
+virtualization to show it to the game. Microsoft documents virtualization
+as an interim compatibility measure, only for 32-bit interactive processes
+without `requestedExecutionLevel` in their manifest, and switchable off by
+policy and per key ("Registry Virtualization", learn.microsoft.com). The
+game as we start it qualifies as far as we can see: `Rally.exe` has no
+manifest (resources: icons, group icon, version only), the runtime copy
+gains only the `.rea` section and the `.reaimp` import (no resources), no
+`Rally.exe.manifest` is copied, and it starts through a plain
+`CreateProcessW` with no compatibility layer. Why it wasn't virtualized on
+that machine is unknown (Task Manager's "UAC virtualization" column for
+`Rally.exe` and the `EnableVirtualization` policy would tell); the point is
+that the launcher depended on something it can't control or check, and
+nothing read the values back.
+
+How the game reads the key (`0x496740`, `0x496890`, `0x496b50`):
+`RegOpenKeyExA(HKLM, "SOFTWARE", KEY_READ)`, then `Codemasters`, `Rally`,
+`1.00`, each relative to the last handle, then `RegQueryValueExA`. It sets
+`Initialised` through `RegOpenKeyA(HKLM, "Software")` … and
+`RegSetValueExA` (`0x4bf359`). Fix: `cmrhooks.dll` points the
+`RegOpenKeyA`/`RegOpenKeyExA` IAT slots (`0x4e6000`, `0x4e6008`) at hooks
+that turn the first step, `HKLM` + `SOFTWARE`, into `HKCU` + `Software`.
+The launcher writes `HKCU\Software\Codemasters\Rally\1.00` and reads it
+back; without the hook library it writes HKLM and stops when it can't.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| New private prefix, no Codemasters key in HKLM (both views), HKCU or the VirtualStore; launcher 0.10.5 candidate, Wine 11.21, gamescope headless | VERIFIED: main menu after 30 s, closed with exit 0; afterwards only `HKCU\Software\Codemasters\Rally\1.00` exists (7 values, `Initialised` = 1 written by the game through the hook); `launcher.log`: "registry written and read back: HKCU\Software\Codemasters\Rally\1.00 …" | `.work/realgame/logs/nokey.log`, `shots/nokey-menu.png` |
+| Control: that HKCU key deleted, the same runtime copy started directly | "page fault on read access to 00000018 at address 0049893A"; `crash.log` "crash 0xc0000005 at 0x0049893a": the game depends on the key the hook gives it | `nokey_control.log` |
+| Native Windows 11, unelevated, no HKLM key | PENDING (needs a player's machine) | — |
+
 ## 2026-11-09: issue #5, a crash at 0x49893a on native Windows 11 — reproduced and fixed (headless)
 
 A player's native Windows 11 (portable install, runtime in `…\_runtime\CMR`)
