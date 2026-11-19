@@ -4,6 +4,47 @@ Observations from running the user's own game. Each entry: date, setup, what
 was seen. Static facts live in the parked reconstruction's documents (kept outside this repository) and local notes.
 
 
+## 2026-11-19: issue #7, a small window in the top-left corner on Windows — not verified on Windows
+
+Two players' native Windows saw the game as a small window in the
+top-left corner of a black screen with the launcher's own
+`dgVoodoo.conf`: issue #7 (Windows 10, Radeon Vega 56, 1920x1080, launcher
+0.10.5, official EU v1.5 `0eb6ea96…`; the music plays, the 640x480 box
+stays white) and issue #6 (Windows 11, RTX 4090 with an idle Radeon 780M,
+3840x2160, "presents as a small window in the top-left rather than filling
+the screen"). With issue #7's own file the dgVoodoo watermark shows, and
+`OutputAPI = d3d11_fl11_0`, `d3d11_fl10_1` and no `FullscreenAttributes`
+changed nothing: dgVoodoo draws, so it is not the Direct3D 12 output.
+
+The only file ever verified on Windows (2026-11-03) had no `ScalingMode`
+line (dgVoodoo's default, `unspecified`). The generated file has had
+`ScalingMode = stretched_ar` since the wrapper was bundled (v0.10.1,
+`4a31663`), never run on Windows, and issue #7's test file kept it. The
+generated file now leaves `ScalingMode` out, as the verified one did.
+Pending: a player's confirmation on Windows.
+
+Ruled out under Wine 11.22 in headless gamescope, with a probe that loads
+the bundled `DDraw.dll` and reads `GetDeviceIdentifier`
+(`.work/issue7/ddid.exe`): the generated file is parsed (its `VideoCard`
+changes the reported vendor/device: `0000:0000` without a file,
+`10de:0280` with `geforce_ti_4800`), with or without dgVoodoo's
+`Version = 0x287` line and with the em dash in its first comment line. A
+second probe with the game's window (`WS_EX_TOPMOST`, `WS_POPUP |
+WS_SYSMENU`, desktop size, maximized; `SetCooperativeLevel(0x451)`,
+`SetDisplayMode(640, 480, 16)`) kept 1920x1080 with `stretched_ar` and
+shrank to 640x400 at the top left without it, the opposite of the two
+Windows reports, so Wine's window handling doesn't predict Windows here;
+dgVoodoo then crashes in `CreateSurface` under Wine, as before (THIN_APP_PLAN).
+
+From the game (`46500c8e…`): the fullscreen flag `0x5022f4` is 1 and is only
+ever read; the window is created at desktop size (`FUN_004987b0`), and
+the fullscreen path never moves or resizes it (`FUN_00498020`:
+`SetCooperativeLevel` with `DDSCL_FULLSCREEN | DDSCL_EXCLUSIVE |
+DDSCL_ALLOWMODEX | DDSCL_MULTITHREADED`, `SetWindowPos` only in the dormant
+windowed mode). Whatever makes the window 640x480 happens outside the game.
+The class brush is `NULL_BRUSH`, so nothing paints the window when
+dgVoodoo doesn't.
+
 ## 2026-11-09: issue #6, the registry key the game reads — fixed, verified headless; native Windows pending
 
 A player's native Windows 11 (build 26300, launcher not elevated, runtime

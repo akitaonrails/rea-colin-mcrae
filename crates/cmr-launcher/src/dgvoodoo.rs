@@ -25,8 +25,11 @@ pub const DLLS: [&str; 2] = ["DDraw.dll", "D3DImm.dll"];
 pub const CONF: &str = "dgVoodoo.conf";
 pub const OWNERSHIP_FILE: &str = ".cmr-launcher-components";
 
-/// Generates `dgVoodoo.conf` from `settings` (verified on Windows 11 in
-/// `docs/RUNTIME_NOTES.md`, 2026-11-03).
+/// Generates `dgVoodoo.conf` from `settings`, with the [General] keys of the
+/// file verified on Windows 11 (`docs/RUNTIME_NOTES.md`, 2026-11-03).
+/// `ScalingMode` stays at dgVoodoo's default: with `stretched_ar` two
+/// players got the game as a small window in the top-left corner of the
+/// screen (issues #6 and #7, RUNTIME_NOTES 2026-11-19).
 pub fn conf(settings: &Settings) -> String {
     let filtering = match settings.texture_filter {
         Some(TextureFilter::Smooth) => "16",
@@ -42,7 +45,6 @@ pub fn conf(settings: &Settings) -> String {
          [General]\n\
          OutputAPI                           = bestavailable\n\
          FullScreenMode                      = true\n\
-         ScalingMode                         = stretched_ar\n\
          CaptureMouse                        = false\n\n\
          [GeneralExt]\n\
          FullscreenAttributes                = fake\n\n\
@@ -153,6 +155,8 @@ mod tests {
     fn conf_follows_texture_filter_and_vsync() {
         let base = conf(&Settings::default());
         assert!(base.contains("FullscreenAttributes                = fake"));
+        // Issue #7: stretched_ar left a small window in the top-left corner.
+        assert!(!base.contains("ScalingMode"), "{base}");
         assert!(base.contains("Filtering                           = appdriven"));
         assert!(base.contains("ForceVerticalSync                   = false"));
         assert!(base.contains("dgVoodooWatermark                   = false"));

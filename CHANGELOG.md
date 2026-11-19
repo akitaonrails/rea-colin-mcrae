@@ -5,6 +5,16 @@ described on the GitHub releases page.
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows the game could show up as a small window in the top-left
+  corner of a black screen instead of filling it
+  ([#7](https://github.com/akitaonrails/rea-colin-mcrae/issues/7)). The
+  launcher's `dgVoodoo.conf` asked dgVoodoo2 for `ScalingMode =
+  stretched_ar`, which the setup verified on Windows never had; it now
+  leaves the scaling at dgVoodoo2's default, like that setup. A
+  `dgVoodoo.conf` you wrote yourself is still used as it is.
+
 ## [0.10.5] - 2026-11-09
 
 ### Fixed
