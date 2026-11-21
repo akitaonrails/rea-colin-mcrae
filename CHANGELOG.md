@@ -1,5 +1,12 @@
 # Changelog
 
+
+## Unreleased
+
+### Changed
+
+- Replaced placeholder launcher icon with custom high-contrast 256×256 CMR 1/2.0 rally artwork for Windows executable and Linux AppImage shortcuts.
+
 What changed for players, release by release. Releases up to 0.7.0 are
 described on the GitHub releases page.
 
