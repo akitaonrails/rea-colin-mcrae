@@ -18,7 +18,7 @@ pub struct Edition {
     pub fixes: &'static FixSet,
 }
 
-pub static EDITIONS: [Known<Edition>; 2] = [
+pub static EDITIONS: [Known<Edition>; 3] = [
     Known::new(
         "0eb6ea9652219b9a35c0a6134bf0cdf316dce21215b724cdfc10ba85eb95982a",
         Edition {
@@ -33,6 +33,16 @@ pub static EDITIONS: [Known<Edition>; 2] = [
         Edition {
             name: "EU v1.5, community-patched",
             fixes: &COMMUNITY_EU_15,
+        },
+    ),
+    // Polish eXtra Klasyka (2003) release: identical file size (1,114,190 B),
+    // identical .text layout (RVA 0x1000, VirtualSize 0xE4B8C), and verified
+    // byte-identical at all patch sites against Official EU v1.5 (issue #8).
+    Known::new(
+        "5f060a81d2272b153ee9145340b10b053a50c58a916be2a4183a3f3613b34087",
+        Edition {
+            name: "Polish eXtra Klasyka (2003) v1.5",
+            fixes: &OFFICIAL_EU_15,
         },
     ),
 ];

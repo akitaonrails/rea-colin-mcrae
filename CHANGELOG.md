@@ -3,6 +3,12 @@
 
 ## Unreleased
 
+## [0.10.7] - 2026-11-27
+
+### Added
+
+- Recognized the Polish eXtra Klasyka (2003) v1.5 `Rally.exe` (`5f060a81…`, verified identical at all patch sites to Official EU v1.5; [#8](https://github.com/akitaonrails/rea-colin-mcrae/issues/8)).
+
 ## [0.10.6] - 2026-11-21
 
 ### Changed
